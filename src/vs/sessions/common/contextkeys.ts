@@ -57,3 +57,9 @@ export const IsPhoneLayoutContext = new RawContextKey<boolean>('sessionsIsPhoneL
 export const KeyboardVisibleContext = new RawContextKey<boolean>('sessionsKeyboardVisible', false, localize('sessionsKeyboardVisible', "Whether the virtual keyboard is visible"));
 
 //#endregion
+
+//#region < --- Agent Studio --- >
+
+export const AgentStudioActiveContext = new RawContextKey<boolean>('agentStudio.active', false, localize('agentStudioActive', "Whether Agent Studio multi-agent workspace is active"));
+
+//#endregion

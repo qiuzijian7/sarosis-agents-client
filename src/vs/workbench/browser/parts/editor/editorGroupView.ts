@@ -1233,7 +1233,8 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			this.editorPartsView.groups.length > 1 	// only allow auto locking if more than 1 group is opened
 		) {
 			// only when the editor identifier is configured as such
-			if (openedEditor.editorId && this.groupsView.partOptions.autoLockGroups?.has(openedEditor.editorId)) {
+			// [Sarosis] Skip auto-lock for agent-studio editors — they should never lock their group
+			if (openedEditor.editorId && !openedEditor.editorId.startsWith('agentStudio.') && this.groupsView.partOptions.autoLockGroups?.has(openedEditor.editorId)) {
 				this.lock(true);
 			}
 		}
@@ -1446,6 +1447,37 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 				return false;
 			}
 		}
+
+		// Agent Studio zone protection: only agent-studio editors can enter agent-studio groups,
+		// and agent-studio editors cannot leave to non-agent-studio groups.
+		const isAgentStudioEditor = editor.resource?.scheme === 'agent-studio';
+		const targetEditors = target.model.getEditors(EditorsOrder.SEQUENTIAL);
+		const targetHasAgentStudio = targetEditors.some(e => e.resource?.scheme === 'agent-studio');
+		const targetHasNonAgentStudio = targetEditors.some(e => e.resource?.scheme !== 'agent-studio');
+		const targetIsEmpty = targetEditors.length === 0;
+		console.log('[AgentStudio DnD] doMoveOrCopyEditorAcrossGroups:', {
+			editorName: editor.getName(),
+			scheme: editor.resource?.scheme,
+			isAgentStudioEditor,
+			targetHasAgentStudio,
+			targetHasNonAgentStudio,
+			targetIsEmpty,
+			sourceGroupId: this.id,
+			targetGroupId: target.id,
+		});
+		if (!isAgentStudioEditor && targetHasAgentStudio) {
+			console.log('[AgentStudio DnD] BLOCKED doMoveOrCopyEditorAcrossGroups: non-agent-studio -> agent-studio');
+			return false; // non-agent-studio editor cannot enter agent-studio group
+		}
+		if (isAgentStudioEditor && targetHasNonAgentStudio) {
+			console.log('[AgentStudio DnD] BLOCKED doMoveOrCopyEditorAcrossGroups: agent-studio -> non-agent-studio');
+			return false; // agent-studio editor cannot enter a group with normal editors
+		}
+		// agent-studio editor CAN move to: empty groups, or groups that only have agent-studio editors
+
+		// Agent Studio: allow free docking between agent-studio groups.
+		// Standard move logic (open in target, then close from source) handles this correctly
+		// now that Singleton capability has been removed from AgentStudioEditorInput.
 
 		// When moving/copying an editor, try to preserve as much view state as possible
 		// by checking for the editor to be a text editor and creating the options accordingly
@@ -2078,6 +2110,11 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	lock(locked: boolean): void {
+		// [Sarosis] Prevent locking groups that contain agent-studio editors.
+		// Agent studio groups use zone protection instead of locking.
+		if (locked && this.editors.some(editor => editor.resource?.scheme === 'agent-studio')) {
+			return;
+		}
 		this.model.lock(locked);
 	}
 

@@ -1,0 +1,50 @@
+{
+  "name": "agent-studio",
+  "publisher": "vscode",
+  "version": "1.0.0",
+  "description": "Agent Studio integration for VS Code",
+  "main": "out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Agent Studio",
+      "properties": {
+        "agentStudio.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Agent Studio integration"
+        },
+        "agentStudio.url": {
+          "type": "string",
+          "default": "http://localhost:3000/dashboard",
+          "description": "Agent Studio URL"
+        },
+        "agentStudio.openOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open Agent Studio automatically on startup (disabled: native Agent Studio ViewPane replaces this)"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "agentStudio.open",
+        "title": "Open Agent Studio",
+        "category": "Agent Studio"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "agentStudio.open",
+          "when": "config.agentStudio.enabled"
+        }
+      ]
+    }
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  }
+}

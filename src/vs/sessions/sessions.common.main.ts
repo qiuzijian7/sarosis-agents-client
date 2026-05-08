@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+console.log('[Sarosis-Debug] ========== sessions.common.main.ts LOADED ==========');
+
 //#region --- editor/workbench core
 
 import '../editor/editor.all.js';
@@ -445,10 +447,11 @@ import './browser/layoutActions.js';
 
 import './contrib/accountMenu/browser/account.contribution.js';
 import './contrib/aiCustomizationTreeView/browser/aiCustomizationTreeView.contribution.js';
+// [Sarosis] Removed Copilot Chat — Agent Studio replaces it in the ChatBar
 import './contrib/chat/browser/chat.contribution.js';
 import './contrib/chat/browser/agentHost/agentHostSessionConfigPicker.js';
 import './contrib/chat/browser/customizationsDebugLog.contribution.js';
-import './contrib/copilotChatSessions/browser/copilotChatSessions.contribution.js';
+// import './contrib/copilotChatSessions/browser/copilotChatSessions.contribution.js';
 import './contrib/sessions/browser/sessions.contribution.js';
 import './contrib/sessions/browser/views/sessionsListModelService.js';
 import './contrib/remoteAgentHost/browser/agentHostFilterService.js';
@@ -471,6 +474,7 @@ import './contrib/workspace/browser/workspace.contribution.js';
 import './contrib/welcome/browser/welcome.contribution.js';
 import './contrib/aquarium/browser/aquarium.contribution.js';
 import './contrib/policyBlocked/browser/policyBlocked.contribution.js';
+import './contrib/agentStudio/browser/agentStudio.contribution.js';
 
 import './services/sessions/browser/sessionsManagementService.js';
 //#endregion

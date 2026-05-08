@@ -21,7 +21,7 @@ import { isTemporaryWorkspace, IWorkspaceContextService } from '../../../../plat
 import { CodeDataTransfers, containsDragType, Extensions as DragAndDropExtensions, IDragAndDropContributionRegistry, LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier, extractTreeDropData, ResourcesDropHandler } from '../../dnd.js';
 import { IEditorGroupsView, IEditorGroupView, prepareMoveCopyEditors } from './editor.js';
-import { EditorInputCapabilities, IEditorIdentifier, IUntypedEditorInput } from '../../../common/editor.js';
+import { EditorInputCapabilities, EditorsOrder, IEditorIdentifier, IUntypedEditorInput } from '../../../common/editor.js';
 import { EDITOR_DRAG_AND_DROP_BACKGROUND, EDITOR_DROP_INTO_PROMPT_BACKGROUND, EDITOR_DROP_INTO_PROMPT_BORDER, EDITOR_DROP_INTO_PROMPT_FOREGROUND } from '../../../common/theme.js';
 import { GroupDirection, IEditorDropTargetDelegate, IEditorGroup, IEditorGroupsService, IMergeGroupOptions, MergeGroupMode } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
@@ -151,6 +151,41 @@ class DropOverlay extends Themable {
 				const isDraggingGroup = this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype);
 				const isDraggingEditor = this.editorTransfer.hasData(DraggedEditorIdentifier.prototype);
 
+				// Agent Studio zone protection: prevent cross-zone drag between agent-studio and normal groups
+				const targetEditors = this.groupView.getEditors(EditorsOrder.SEQUENTIAL);
+				const targetHasAgentStudio = targetEditors.some(e => e.resource?.scheme === 'agent-studio');
+				const targetHasNonAgentStudio = targetEditors.some(e => e.resource?.scheme !== 'agent-studio');
+				if (isDraggingEditor) {
+					const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+					if (Array.isArray(data) && data.length > 0) {
+						const draggedEditor = data[0].identifier.editor;
+						const isAgentStudioEditor = draggedEditor.resource?.scheme === 'agent-studio';
+						console.log('[AgentStudio DnD] DropOverlay.onDragOver:', {
+							draggedEditorName: draggedEditor.getName?.() || 'unknown',
+							draggedScheme: draggedEditor.resource?.scheme,
+							isAgentStudioEditor,
+							targetHasAgentStudio,
+							targetHasNonAgentStudio,
+							targetGroupId: this.groupView.id,
+						});
+						if (isAgentStudioEditor && targetHasNonAgentStudio) {
+							console.log('[AgentStudio DnD] BLOCKED DropOverlay.onDragOver: agent-studio -> non-agent-studio');
+							this.hideOverlay();
+							return; // agent-studio editor cannot be dropped into group with normal editors
+						}
+						if (!isAgentStudioEditor && targetHasAgentStudio) {
+							console.log('[AgentStudio DnD] BLOCKED DropOverlay.onDragOver: non-agent-studio -> agent-studio');
+							this.hideOverlay();
+							return; // non-agent-studio editor cannot be dropped into agent-studio group
+						}
+					}
+				} else if (!isDraggingGroup && targetHasAgentStudio) {
+					// External file/resource drag into agent-studio group is not allowed
+					console.log('[AgentStudio DnD] BLOCKED DropOverlay.onDragOver: external -> agent-studio');
+					this.hideOverlay();
+					return;
+				}
+
 				// Update the dropEffect to "copy" if there is no local data to be dragged because
 				// in that case we can only copy the data into and not move it from its source
 				if (!isDraggingEditor && !isDraggingGroup && e.dataTransfer) {
@@ -250,6 +285,20 @@ class DropOverlay extends Themable {
 
 	private async handleDrop(event: DragEvent, splitDirection?: GroupDirection): Promise<void> {
 
+		// Agent Studio zone protection: prevent non-agent-studio content from being dropped into agent-studio groups
+		const targetHasAgentStudio = this.groupView.getEditors(EditorsOrder.SEQUENTIAL).some(e => e.resource?.scheme === 'agent-studio');
+		console.log('[AgentStudio DnD] handleDrop:', {
+			targetGroupId: this.groupView.id,
+			targetHasAgentStudio,
+			hasEditorTransfer: this.editorTransfer.hasData(DraggedEditorIdentifier.prototype),
+			hasGroupTransfer: this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype),
+			splitDirection,
+		});
+		if (targetHasAgentStudio && !this.editorTransfer.hasData(DraggedEditorIdentifier.prototype) && !this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype)) {
+			console.log('[AgentStudio DnD] BLOCKED handleDrop: non-editor-transfer into agent-studio group');
+			return; // only agent-studio editors (via internal editor transfer) can be dropped into agent-studio groups
+		}
+
 		// Determine target group
 		const ensureTargetGroup = () => {
 			let targetGroup: IEditorGroup;
@@ -308,6 +357,26 @@ class DropOverlay extends Themable {
 				const draggedEditors = data;
 				const firstDraggedEditor = data[0].identifier;
 
+				// Agent Studio zone protection: prevent cross-zone drag
+				const draggedEditor = firstDraggedEditor.editor;
+				const isAgentStudioEditor = draggedEditor.resource?.scheme === 'agent-studio';
+				const targetEditorsForDrop = this.groupView.getEditors(EditorsOrder.SEQUENTIAL);
+				const targetHasAgentStudioDrop = targetEditorsForDrop.some(e => e.resource?.scheme === 'agent-studio');
+				const targetHasNonAgentStudioDrop = targetEditorsForDrop.some(e => e.resource?.scheme !== 'agent-studio');
+				console.log('[AgentStudio DnD] handleDrop editor transfer:', {
+					draggedEditorName: draggedEditor.getName?.() || 'unknown',
+					draggedScheme: draggedEditor.resource?.scheme,
+					isAgentStudioEditor,
+					targetHasAgentStudioDrop,
+					targetHasNonAgentStudioDrop,
+					targetGroupId: this.groupView.id,
+				});
+				if ((isAgentStudioEditor && targetHasNonAgentStudioDrop) || (!isAgentStudioEditor && targetHasAgentStudioDrop)) {
+					console.log('[AgentStudio DnD] BLOCKED handleDrop: cross-zone drag');
+					this.editorTransfer.clearData(DraggedEditorIdentifier.prototype);
+					return; // prevent cross-zone drag
+				}
+
 				const sourceGroup = this.editorGroupService.getGroup(firstDraggedEditor.groupId);
 				if (sourceGroup) {
 					const copyEditor = this.isCopyOperation(event, firstDraggedEditor);
@@ -320,20 +389,25 @@ class DropOverlay extends Themable {
 						targetGroup = this.editorGroupService.moveGroup(sourceGroup, this.groupView, splitDirection);
 					}
 
-					// In any other case do a normal move/copy operation
-					else {
-						targetGroup = ensureTargetGroup();
-						if (sourceGroup === targetGroup) {
-							return;
-						}
-
-						const editorsWithOptions = prepareMoveCopyEditors(this.groupView, draggedEditors.map(editor => editor.identifier.editor));
-						if (!copyEditor) {
-							sourceGroup.moveEditors(editorsWithOptions, targetGroup);
-						} else {
-							sourceGroup.copyEditors(editorsWithOptions, targetGroup);
-						}
+				// In any other case do a normal move/copy operation
+				else {
+					targetGroup = ensureTargetGroup();
+					if (sourceGroup === targetGroup) {
+						return;
 					}
+
+					const editorsWithOptions = prepareMoveCopyEditors(this.groupView, draggedEditors.map(editor => editor.identifier.editor));
+					if (!copyEditor) {
+						sourceGroup.moveEditors(editorsWithOptions, targetGroup);
+					} else {
+						sourceGroup.copyEditors(editorsWithOptions, targetGroup);
+					}
+
+					// Agent Studio: remove empty source group after drag to clean up
+					if (!copyEditor && sourceGroup.count === 0 && this.editorGroupService.count > 1) {
+						this.editorGroupService.removeGroup(sourceGroup);
+					}
+				}
 
 					// Ensure target has focus
 					targetGroup.focus();

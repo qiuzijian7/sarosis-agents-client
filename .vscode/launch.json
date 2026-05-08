@@ -269,7 +269,8 @@
 			"cleanUp": "wholeBrowser",
 			"killBehavior": "polite",
 			"runtimeArgs": [
-				"--inspect-brk=5875",
+				"--inspect=5875",
+				"--remote-debugging-port=9222",
 				"--no-cached-data",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
@@ -287,7 +288,8 @@
 			],
 			"browserLaunchLocation": "workspace",
 			"presentation": {
-				"hidden": true,
+				"group": "0_vscode",
+				"order": 1
 			},
 		},
 		{
@@ -313,7 +315,8 @@
 			"cleanUp": "wholeBrowser",
 			"killBehavior": "polite",
 			"runtimeArgs": [
-				"--inspect-brk=5875",
+				"--inspect=5875",
+				"--remote-debugging-port=9222",
 				"--no-cached-data",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
@@ -332,7 +335,8 @@
 			],
 			"browserLaunchLocation": "workspace",
 			"presentation": {
-				"hidden": true,
+				"group": "0_vscode",
+				"order": 2
 			},
 		},
 		{
@@ -362,7 +366,7 @@
 			},
 			"cleanUp": "wholeBrowser",
 			"runtimeArgs": [
-				"--inspect-brk=5875",
+				"--inspect=5875",
 				"--no-cached-data",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
@@ -426,7 +430,7 @@
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat",
 			},
 			"runtimeArgs": [
-				"--inspect-brk=5875",
+				"--inspect=5875",
 				"--no-cached-data",
 			],
 			"outFiles": [

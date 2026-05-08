@@ -17,7 +17,7 @@ import { Disposable, DisposableStore, IDisposable } from '../../../base/common/l
 import { Schemas } from '../../../base/common/network.js';
 import { basename, join, normalize, posix } from '../../../base/common/path.js';
 import { getMarks, mark } from '../../../base/common/performance.js';
-import { INodeProcess, IProcessEnvironment, isMacintosh, isWindows, OS } from '../../../base/common/platform.js';
+import { IProcessEnvironment, isMacintosh, isWindows, OS } from '../../../base/common/platform.js';
 import { cwd } from '../../../base/common/process.js';
 import { extUriBiasedIgnorePathCase, isEqual, isEqualAuthority, normalizePath, originalFSPath, removeTrailingPathSeparator } from '../../../base/common/resources.js';
 import { assertReturnsDefined } from '../../../base/common/types.js';
@@ -335,7 +335,8 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		this.logService.trace('windowsManager#open');
 
 		// Take care of agents app specially
-		const isAgentsApp = (process as INodeProcess).isEmbeddedApp;
+		// [Sarosis] Disabled: Agent Studio now lives in main window AuxiliaryBar, no separate Sessions window
+		const isAgentsApp = false; // was: (process as INodeProcess).isEmbeddedApp;
 		if (isAgentsApp) {
 			openConfig = await this.ensureAgentsWindow(openConfig);
 		}

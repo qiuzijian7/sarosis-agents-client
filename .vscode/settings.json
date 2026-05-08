@@ -16,9 +16,6 @@
 	"editor.experimental.asyncTokenization": true,
 	"editor.experimental.asyncTokenizationVerification": true,
 	"editor.occurrencesHighlightDelay": 0,
-	// "editor.experimental.preferTreeSitter.typescript": true,
-	// "editor.experimental.preferTreeSitter.regex": true,
-	// "editor.experimental.preferTreeSitter.css": true,
 	// --- Language Specific ---
 	"[plaintext]": {
 		"files.insertFinalNewline": false
@@ -31,7 +28,7 @@
 	},
 	"[rust]": {
 		"editor.defaultFormatter": "rust-lang.rust-analyzer",
-		"editor.formatOnSave": true,
+		"editor.formatOnSave": true
 	},
 	"[github-issues]": {
 		"editor.wordWrap": "on"
@@ -48,9 +45,13 @@
 		".vscode-test": true,
 		"cli/target": true,
 		"build/**/*.js.map": true,
+		"extensions": true,
+		"out": true,
+		"out-build": true,
+		"out-vscode": true,
 		"build/**/*.js": {
 			"when": "$(basename).ts"
-		},
+		}
 	},
 	"files.associations": {
 		"cglicenses.json": "jsonc",
@@ -71,8 +72,10 @@
 		"test/smoke/out/**": true,
 		"test/automation/out/**": true,
 		"src/vs/platform/agentHost/common/state/protocol/**": true,
-		"test/integration/browser/out/**": true,
-		// "src/vs/sessions/**": true
+		"test/integration/browser/out/**": true
+	},
+	"files.watcherExclude": {
+		"**/*": true
 	},
 	// --- Search ---
 	"search.exclude": {
@@ -83,8 +86,9 @@
 		"out-build/**": true,
 		"out-vscode/**": true,
 		"i18n/**": true,
-		"extensions/**/dist/**": true,
-		"extensions/**/out/**": true,
+		"extensions": true,
+		"**/*.tsbuildinfo": true,
+		"**/*.snap": true,
 		"test/smoke/out/**": true,
 		"test/automation/out/**": true,
 		"test/integration/browser/out/**": true,
@@ -93,8 +97,7 @@
 		"src/vs/workbench/api/test/browser/extHostDocumentData.test.perf-data.ts": true,
 		"src/vs/base/test/node/uri.test.data.txt": true,
 		"src/vs/editor/test/node/diffing/fixtures/**": true,
-		"build/loader.min": true,
-		"**/*.snap": true,
+		"build/loader.min": true
 	},
 	// --- TypeScript ---
 	"js/ts.experimental.useTsgo": true,
@@ -109,13 +112,16 @@
 		"vscode-notebook-renderer",
 		"src/vs/workbench/workbench.web.main.internal.ts"
 	],
+	"typescript.suggest.autoImports": false,
+	"typescript.validate.enable": false,
+	"javascript.validate.enable": false,
 	// --- Languages ---
 	"json.schemas": [
 		{
 			"fileMatch": [
 				"cgmanifest.json"
 			],
-			"url": "https://www.schemastore.org/component-detection-manifest.json",
+			"url": "https://www.schemastore.org/component-detection-manifest.json"
 		},
 		{
 			"fileMatch": [
@@ -126,7 +132,11 @@
 	],
 	"css.format.spaceAroundSelectorSeparator": true,
 	// --- Git ---
+	"git.enabled": true,
+	"git.autorefresh": false,
+	"git.decorations.enabled": false,
 	"git.ignoreLimitWarning": true,
+	"git.openRepositoryPaths": [],
 	"git.branchProtection": [
 		"main",
 		"main-*",
@@ -135,17 +145,8 @@
 	],
 	"git.branchProtectionPrompt": "alwaysCommitToNewBranch",
 	"git.branchRandomName.enable": true,
-	"git.pullBeforeCheckout": true,
-	"git.mergeEditor": true,
-	"git.diagnosticsCommitHook.enabled": true,
-	"git.diagnosticsCommitHook.sources": {
-		"*": "error",
-		"ts": "warning",
-		"eslint": "warning"
-	},
-	"git.worktreeIncludeFiles": [
-		"product.overrides.json"
-	],
+	"git.pullBeforeCheckout": false,
+	"git.mergeEditor": false,
 	// --- GitHub ---
 	"githubPullRequests.experimental.createView": true,
 	"githubPullRequests.assignCreated": "${user}",
@@ -165,7 +166,7 @@
 	},
 	"extension-test-runner.debugOptions": {
 		"outFiles": [
-			"${workspaceFolder}/extensions/*/out/**/*.js",
+			"${workspaceFolder}/extensions/*/out/**/*.js"
 		]
 	},
 	// --- Coverage ---
@@ -201,9 +202,9 @@
 		"sash"
 	],
 	// --- Workbench ---
-	"editor.aiStats.enabled": true, // Team selfhosting on ai stats
+	"editor.aiStats.enabled": true,
 	"azureMcp.enabledServices": [
-		"kusto" // Needed for kusto tool in data.prompt.md
+		"kusto"
 	],
 	"azureMcp.serverMode": "all",
 	"azureMcp.readOnly": true,
@@ -211,6 +212,9 @@
 	"chat.agentSkillsLocations": {
 		".github/skills/.local": true,
 		".agents/skills/.local": true,
-		".claude/skills/.local": true,
-	}
+		".claude/skills/.local": true
+	},
+	// --- Extensions ---
+	"extensions.autoUpdate": false,
+	"extensions.autoCheckUpdates": false
 }

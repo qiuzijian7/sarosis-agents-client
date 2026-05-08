@@ -345,6 +345,21 @@ function registerEditorMoveCopyCommand(): void {
 		}
 
 		if (targetGroup) {
+			// Agent Studio constraint: prevent cross-zone move/copy
+			const hasAgentStudioEditor = editors.some(editor => editor.resource?.scheme === 'agent-studio');
+			const hasNormalEditor = editors.some(editor => editor.resource?.scheme !== 'agent-studio');
+			const targetEditors = targetGroup.getEditors(EditorsOrder.SEQUENTIAL);
+			const targetHasNonAgentStudio = targetEditors.some(e => e.resource?.scheme !== 'agent-studio');
+			const targetHasAgentStudio = targetEditors.some(e => e.resource?.scheme === 'agent-studio');
+			// Block: agent-studio editor into group with normal editors
+			if (hasAgentStudioEditor && targetHasNonAgentStudio) {
+				return;
+			}
+			// Block: normal editor into group with agent-studio editors
+			if (hasNormalEditor && targetHasAgentStudio) {
+				return;
+			}
+
 			const editorsWithOptions = prepareMoveCopyEditors(sourceGroup, editors);
 			if (isMove) {
 				sourceGroup.moveEditors(editorsWithOptions, targetGroup);

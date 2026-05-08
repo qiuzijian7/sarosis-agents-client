@@ -385,6 +385,15 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 			return false; // only if originating from tabs container
 		}
 
+		// Agent Studio constraint: prevent dragging the entire locked group
+		if (this.groupView.isLocked) {
+			e.preventDefault();
+			if (e.dataTransfer) {
+				e.dataTransfer.effectAllowed = 'none';
+			}
+			return false;
+		}
+
 		const isNewWindowOperation = this.isNewWindowOperation(e);
 
 		// Set editor group as transfer

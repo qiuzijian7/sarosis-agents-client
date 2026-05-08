@@ -774,6 +774,24 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 			return; // Cannot remove the last root group
 		}
 
+		// Agent Studio: protect the dual-zone layout.
+		// If any group contains agent-studio editors, ensure at least one non-agent-studio
+		// group remains (the left editor zone). This prevents the toggle button from disappearing.
+		const groupHasAgentStudio = groupView.editors.some(e => e.resource?.scheme === 'agent-studio');
+		if (!groupHasAgentStudio) {
+			// This group is a non-agent-studio group (left editor zone candidate).
+			// Check if there are agent-studio groups present — if so, protect this one
+			// if it's the last non-agent-studio group.
+			const allGroups = this.getGroups(GroupsOrder.GRID_APPEARANCE);
+			const hasAgentStudioGroup = allGroups.some(g => g.editors.some(e => e.resource?.scheme === 'agent-studio'));
+			if (hasAgentStudioGroup) {
+				const nonAgentStudioGroups = allGroups.filter(g => !g.editors.some(e => e.resource?.scheme === 'agent-studio'));
+				if (nonAgentStudioGroups.length <= 1) {
+					return; // Protect the last non-agent-studio group to maintain dual-zone layout
+				}
+			}
+		}
+
 		// Remove empty group
 		if (groupView.isEmpty) {
 			this.doRemoveEmptyGroup(groupView, preserveFocus);
@@ -935,7 +953,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		}
 
 		// Remove source if the view is now empty and not already removed
-		if (sourceView.isEmpty && !sourceView.disposed /* could have been disposed already via workbench.editor.closeEmptyGroups setting */) {
+		if (sourceView.isEmpty && !sourceView.disposed) {
 			this.removeGroup(sourceView, true);
 		}
 

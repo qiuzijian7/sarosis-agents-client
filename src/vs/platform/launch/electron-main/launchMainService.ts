@@ -56,7 +56,7 @@ export class LaunchMainService implements ILaunchMainService {
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
 		@IURLService private readonly urlService: IURLService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IProductService private readonly productService: IProductService,
+		@IProductService _productService: IProductService,
 	) { }
 
 	async start(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void> {
@@ -163,10 +163,10 @@ export class LaunchMainService implements ILaunchMainService {
 			await this.windowsMainService.openExtensionDevelopmentHostWindow(args.extensionDevelopmentPath, baseConfig);
 		}
 
-		// Agents window
-		else if (args['agents'] && this.productService.quality !== 'stable') {
-			usedWindows = await this.windowsMainService.openAgentsWindow(baseConfig);
-		}
+		// Agents window — [Sarosis] Disabled: Agent Studio embedded in main window
+		// else if (args['agents'] && this._productService.quality !== 'stable') {
+		// 	usedWindows = await this.windowsMainService.openAgentsWindow(baseConfig);
+		// }
 
 		// Start without file/folder arguments
 		else if (!args._.length && !args['folder-uri'] && !args['file-uri']) {

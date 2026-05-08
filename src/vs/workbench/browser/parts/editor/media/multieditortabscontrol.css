@@ -534,6 +534,26 @@
 	display: none;
 }
 
+/* Agent Studio: Toggle left editor group button */
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title .toggle-left-group-button {
+	cursor: pointer;
+	flex: initial;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: var(--editor-group-tab-height);
+	opacity: 0.7;
+	font-size: 14px;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title .toggle-left-group-button:hover {
+	opacity: 1;
+	background-color: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+	border-radius: 3px;
+}
+
 .monaco-workbench .part.editor > .content .editor-group-container > .title.two-tab-bars > .tabs-and-actions-container:first-child .editor-actions {
 
 	/* When multiple tab bars are visible, only show editor actions for the last tab bar */

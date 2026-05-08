@@ -121,9 +121,9 @@ function doFindGroup(input: EditorInputWithOptions | IUntypedEditorInput, prefer
 		const direction = preferredSideBySideGroupDirection(configurationService);
 
 		let candidateGroup = editorGroupService.findGroup({ direction });
-		if (!candidateGroup || isGroupLockedForEditor(candidateGroup, editor)) {
+		if (!candidateGroup || isGroupLockedForEditor(candidateGroup, editor) || isGroupExclusiveForAgentStudio(candidateGroup, editor)) {
 			// Create new group either when the candidate group
-			// is locked or was not found in the direction
+			// is locked, agent-studio exclusive, or was not found in the direction
 			candidateGroup = editorGroupService.addGroup(editorGroupService.activeGroup, direction);
 		}
 
@@ -194,16 +194,16 @@ function doFindGroup(input: EditorInputWithOptions | IUntypedEditorInput, prefer
 	}
 
 	// Fallback to active group if target not valid but avoid
-	// locked editor groups unless editor is already opened there
+	// locked editor groups and agent-studio exclusive groups
 	if (!group) {
 		let candidateGroup = editorGroupService.activeGroup;
 
-		// Locked group: find the next non-locked group
-		// going up the neigbours of the group or create
-		// a new group otherwise
-		if (isGroupLockedForEditor(candidateGroup, editor)) {
+		// Check if the active group is unsuitable (locked or agent-studio exclusive)
+		const isUnsuitableGroup = (g: IEditorGroup) => isGroupLockedForEditor(g, editor) || isGroupExclusiveForAgentStudio(g, editor);
+
+		if (isUnsuitableGroup(candidateGroup)) {
 			for (const group of editorGroupService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)) {
-				if (isGroupLockedForEditor(group, editor)) {
+				if (isUnsuitableGroup(group)) {
 					continue;
 				}
 
@@ -211,16 +211,15 @@ function doFindGroup(input: EditorInputWithOptions | IUntypedEditorInput, prefer
 				break;
 			}
 
-			if (isGroupLockedForEditor(candidateGroup, editor)) {
-				// Group is still locked, so we have to create a new
-				// group to the side of the candidate group
+			if (isUnsuitableGroup(candidateGroup)) {
+				// All groups are unsuitable, create a new group to the side
 				group = editorGroupService.addGroup(candidateGroup, preferredSideBySideGroupDirection(configurationService));
 			} else {
 				group = candidateGroup;
 			}
 		}
 
-		// Non-locked group: take as is
+		// Suitable group found: take as is
 		else {
 			group = candidateGroup;
 		}
@@ -244,6 +243,29 @@ function isGroupLockedForEditor(group: IEditorGroup, editor: EditorInput | IUnty
 
 	// group is locked for this editor
 	return true;
+}
+
+/**
+ * Agent Studio zone protection: a non-agent-studio editor must not be routed
+ * into a group that contains agent-studio editors, even if the group is unlocked.
+ * This ensures that clicking files in the explorer always opens them in the left
+ * editor zone and never pollutes the right-side agent-studio area.
+ */
+function isGroupExclusiveForAgentStudio(group: IEditorGroup, editor: EditorInput | IUntypedEditorInput): boolean {
+	// If the editor being opened IS an agent-studio editor, allow it
+	const editorResource = isEditorInput(editor) ? editor.resource : ('resource' in editor ? editor.resource : undefined);
+	if (editorResource?.scheme === 'agent-studio') {
+		return false;
+	}
+
+	// Check if the group contains any agent-studio editors
+	for (const groupEditor of group.editors) {
+		if (groupEditor.resource?.scheme === 'agent-studio') {
+			return true; // group has agent-studio content, block non-agent-studio editors
+		}
+	}
+
+	return false;
 }
 
 function isActive(group: IEditorGroup, editor: EditorInput | IUntypedEditorInput): boolean {

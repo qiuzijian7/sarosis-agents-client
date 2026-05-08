@@ -31,7 +31,7 @@ import { activeContrastBorder, contrastBorder, editorBackground } from '../../..
 import { ResourcesDropHandler, DraggedEditorIdentifier, DraggedEditorGroupIdentifier, extractTreeDropData, isWindowDraggedOver } from '../../dnd.js';
 import { Color } from '../../../../base/common/color.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { MergeGroupMode, IMergeGroupOptions } from '../../../services/editor/common/editorGroupsService.js';
+import { MergeGroupMode, IMergeGroupOptions, IEditorGroupsService, GroupsOrder } from '../../../services/editor/common/editorGroupsService.js';
 import { addDisposableListener, EventType, EventHelper, Dimension, scheduleAtNextAnimationFrame, findParentWithClass, clearNode, DragAndDropObserver, isMouseEvent, getWindow, $ } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
 import { IEditorGroupsView, EditorServiceImpl, IEditorGroupView, IInternalEditorOpenOptions, IEditorPartsView, prepareMoveCopyEditors } from './editor.js';
@@ -47,7 +47,6 @@ import { isHighContrast } from '../../../../platform/theme/common/theme.js';
 import { isSafari } from '../../../../base/browser/browser.js';
 import { equals } from '../../../../base/common/objects.js';
 import { EditorActivation, IEditorOptions } from '../../../../platform/editor/common/editor.js';
-import { UNLOCK_GROUP_COMMAND_ID } from './editorCommands.js';
 import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { ITreeViewsDnDService } from '../../../../editor/common/services/treeViewsDndService.js';
 import { DraggedTreeItemsIdentifier } from '../../../../editor/common/services/treeViewsDnd.js';
@@ -111,6 +110,12 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	private tabsScrollbar: ScrollableElement | undefined;
 	private tabSizingFixedDisposables: DisposableStore | undefined;
 
+	// Agent Studio: left editor group collapse toggle
+	private static leftGroupCollapsed = false;
+	private static readonly LEFT_GROUP_COLLAPSED_WIDTH = 35; // Only keep toggle button width
+	private static leftGroupPreviousWidth: number | undefined;
+	private toggleLeftGroupButton: HTMLElement | undefined;
+
 	private readonly closeEditorAction = this._register(this.instantiationService.createInstance(CloseEditorTabAction, CloseEditorTabAction.ID, CloseEditorTabAction.LABEL));
 	private readonly unpinEditorAction = this._register(this.instantiationService.createInstance(UnpinEditorAction, UnpinEditorAction.ID, UnpinEditorAction.LABEL));
 
@@ -152,6 +157,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		@ITreeViewsDnDService private readonly treeViewsDragAndDropService: ITreeViewsDnDService,
 		@IEditorResolverService editorResolverService: IEditorResolverService,
 		@IHostService hostService: IHostService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super(parent, editorPartsView, groupsView, groupView, tabsModel, contextMenuService, instantiationService, contextKeyService, keybindingService, notificationService, quickInputService, themeService, editorResolverService, hostService);
 
@@ -193,10 +199,83 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		// Create Editor Toolbar
 		this.createEditorActionsToolBar(this.tabsAndActionsContainer, ['editor-actions']);
 
+		// Agent Studio: Create toggle button for left editor group collapse/expand
+		this.createToggleLeftGroupButton(this.tabsAndActionsContainer);
+
 		// Set tabs control visibility
 		this.updateTabsControlVisibility();
 
 		return this.tabsAndActionsContainer;
+	}
+
+	private createToggleLeftGroupButton(parent: HTMLElement): void {
+		// Only show the toggle button on non-leftmost groups (i.e., the middle or right editor groups)
+		const groups = this.groupsView.getGroups(GroupsOrder.GRID_APPEARANCE);
+		if (groups.length < 2 || groups[0] === this.groupView) {
+			return; // Don't show on the leftmost group itself
+		}
+
+		this.toggleLeftGroupButton = $('div.toggle-left-group-button');
+		this.toggleLeftGroupButton.title = MultiEditorTabsControl.leftGroupCollapsed
+			? localize('expandLeftGroup', "Expand Left Editor")
+			: localize('collapseLeftGroup', "Collapse Left Editor");
+		this.toggleLeftGroupButton.classList.add('codicon');
+		this.toggleLeftGroupButton.classList.add(
+			MultiEditorTabsControl.leftGroupCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-left'
+		);
+		parent.appendChild(this.toggleLeftGroupButton);
+
+		this._register(addDisposableListener(this.toggleLeftGroupButton, EventType.CLICK, (e: MouseEvent) => {
+			EventHelper.stop(e, true);
+			this.toggleLeftEditorGroup();
+		}));
+	}
+
+	private toggleLeftEditorGroup(): void {
+		const groups = this.editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
+		if (groups.length < 2) {
+			return;
+		}
+
+		const leftGroup = groups[0];
+
+		if (MultiEditorTabsControl.leftGroupCollapsed) {
+			// Expand: restore previous width
+			const restoreWidth = MultiEditorTabsControl.leftGroupPreviousWidth || 300;
+			this.editorGroupsService.setSize(leftGroup, {
+				width: restoreWidth,
+				height: this.editorGroupsService.getSize(leftGroup).height
+			});
+			MultiEditorTabsControl.leftGroupCollapsed = false;
+		} else {
+			// Collapse: save current width and shrink
+			const currentSize = this.editorGroupsService.getSize(leftGroup);
+			MultiEditorTabsControl.leftGroupPreviousWidth = currentSize.width;
+			this.editorGroupsService.setSize(leftGroup, {
+				width: MultiEditorTabsControl.LEFT_GROUP_COLLAPSED_WIDTH,
+				height: currentSize.height
+			});
+			MultiEditorTabsControl.leftGroupCollapsed = true;
+		}
+
+		// Update button icon and title
+		this.updateToggleLeftGroupButtonState();
+	}
+
+	private updateToggleLeftGroupButtonState(): void {
+		if (!this.toggleLeftGroupButton) {
+			return;
+		}
+
+		if (MultiEditorTabsControl.leftGroupCollapsed) {
+			this.toggleLeftGroupButton.classList.remove('codicon-chevron-left');
+			this.toggleLeftGroupButton.classList.add('codicon-chevron-right');
+			this.toggleLeftGroupButton.title = localize('expandLeftGroup', "Expand Left Editor");
+		} else {
+			this.toggleLeftGroupButton.classList.remove('codicon-chevron-right');
+			this.toggleLeftGroupButton.classList.add('codicon-chevron-left');
+			this.toggleLeftGroupButton.title = localize('collapseLeftGroup', "Collapse Left Editor");
+		}
 	}
 
 	private createTabsScrollbar(scrollable: HTMLElement): ScrollableElement {
@@ -399,6 +478,10 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			onDrop: e => {
 				this.updateDropFeedback(tabsContainer, false, e);
 				tabsContainer.classList.remove('scroll');
+
+				if (!this.isSupportedDropTransfer(e)) {
+					return;
+				}
 
 				if (e.target === tabsContainer) {
 					const isGroupTransfer = this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype);
@@ -1094,6 +1177,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 					return;
 				}
 
+				// Agent Studio tabs are allowed to drag within right-side agent-studio groups (swap).
+				// Cross-zone protection is enforced at the drop/move level in doMoveOrCopyEditorAcrossGroups.
+
 				isNewWindowOperation = this.isNewWindowOperation(e);
 				const selectedEditors = this.groupView.selectedEditors;
 				this.editorTransfer.setData(selectedEditors.map(e => new DraggedEditorIdentifier({ editor: e, groupId: this.groupView.id })), DraggedEditorIdentifier.prototype);
@@ -1194,6 +1280,10 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			onDrop: e => {
 				this.updateDropFeedback(tab, false, e, tabIndex);
 
+				if (!this.isSupportedDropTransfer(e)) {
+					return;
+				}
+
 				// compute the target index
 				let targetIndex = tabIndex;
 				if (this.getTabDragOverLocation(e, tab) === 'right') {
@@ -1221,10 +1311,44 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		}
 
 		if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
-			return true; // (local) editors can always be dropped
+			// Agent Studio zone protection
+			const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+			if (Array.isArray(data) && data.length > 0) {
+				const draggedEditor = data[0].identifier.editor;
+				const isAgentStudioEditor = draggedEditor.resource?.scheme === 'agent-studio';
+				const targetEditors = this.groupView.getEditors(EditorsOrder.SEQUENTIAL);
+				const targetHasAgentStudio = targetEditors.some(ed => ed.resource?.scheme === 'agent-studio');
+				const targetHasNonAgentStudio = targetEditors.some(ed => ed.resource?.scheme !== 'agent-studio');
+				console.log('[AgentStudio DnD] isSupportedDropTransfer:', {
+					draggedEditorName: draggedEditor.getName?.() || 'unknown',
+					draggedScheme: draggedEditor.resource?.scheme,
+					isAgentStudioEditor,
+					targetHasAgentStudio,
+					targetHasNonAgentStudio,
+					targetGroupId: this.groupView.id,
+				});
+				// Block: non-agent-studio editor into agent-studio group
+				if (!isAgentStudioEditor && targetHasAgentStudio) {
+					console.log('[AgentStudio DnD] BLOCKED isSupportedDropTransfer: non-agent-studio -> agent-studio');
+					return false;
+				}
+				// Block: agent-studio editor into group that has normal editors
+				if (isAgentStudioEditor && targetHasNonAgentStudio) {
+					console.log('[AgentStudio DnD] BLOCKED isSupportedDropTransfer: agent-studio -> non-agent-studio');
+					return false;
+				}
+				// Allow: agent-studio editor into empty group or agent-studio-only group
+			}
+			return true;
 		}
 
 		if (e.dataTransfer && e.dataTransfer.types.length > 0) {
+			// Agent Studio zone protection: do not allow external data to be dropped into agent-studio groups
+			const targetHasAgentStudio = this.groupView.getEditors(EditorsOrder.SEQUENTIAL).some(ed => ed.resource?.scheme === 'agent-studio');
+			if (targetHasAgentStudio) {
+				console.log('[AgentStudio DnD] BLOCKED isSupportedDropTransfer: external data -> agent-studio group');
+				return false;
+			}
 			return true; // optimistically allow external data (// see https://github.com/microsoft/vscode/issues/25789)
 		}
 
@@ -1540,6 +1664,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		const isTabSticky = this.tabsModel.isSticky(tabIndex);
 		const options = this.groupsView.partOptions;
 
+		// All tabs are draggable (agent-studio tabs support swap between right-side groups).
+		tabContainer.setAttribute('draggable', 'true');
+
 		// Label
 		this.redrawTabLabel(editor, tabIndex, tabContainer, tabLabelWidget, tabLabel);
 
@@ -1759,24 +1886,14 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	protected override prepareEditorActions(editorActions: IToolbarActions): IToolbarActions {
-		const isGroupActive = this.groupsView.activeGroup === this.groupView;
-
-		// Active: allow all actions
-		if (isGroupActive) {
-			return editorActions;
-		}
-
-		// Inactive: only show "Unlock" and secondary actions
-		else {
-			return {
-				primary: this.groupsView.partOptions.alwaysShowEditorActions ? editorActions.primary : editorActions.primary.filter(action => action.id === UNLOCK_GROUP_COMMAND_ID),
-				secondary: editorActions.secondary
-			};
-		}
+		// Agent Studio: hide all editor title actions (split, "...", etc.)
+		// to maintain the fixed 3-column layout (sidebar | middle editor | right agent-studio).
+		return { primary: [], secondary: [] };
 	}
 
 	protected override prepareEditorLayoutActions(editorActions: IToolbarActions): IToolbarActions {
-		return editorActions;
+		// Agent Studio: hide all editor layout actions to maintain fixed 3-column layout.
+		return { primary: [], secondary: [] };
 	}
 
 	getHeight(): number {
@@ -2227,6 +2344,33 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 		this.updateDropFeedback(tabsContainer, false, e, targetTabIndex);
 		tabsContainer.classList.remove('scroll');
+
+		// Agent Studio zone protection at the onDrop entry point
+		const targetEditorsList = this.groupView.getEditors(EditorsOrder.SEQUENTIAL);
+		const targetHasAgentStudio = targetEditorsList.some(ed => ed.resource?.scheme === 'agent-studio');
+		const targetHasNonAgentStudio = targetEditorsList.some(ed => ed.resource?.scheme !== 'agent-studio');
+		if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
+			const transferData = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+			if (Array.isArray(transferData) && transferData.length > 0) {
+				const draggedEditor = transferData[0].identifier.editor;
+				const isAgentStudioEditor = draggedEditor.resource?.scheme === 'agent-studio';
+				// Block: agent-studio into group with normal editors, or non-agent-studio into agent-studio group
+				if ((isAgentStudioEditor && targetHasNonAgentStudio) || (!isAgentStudioEditor && targetHasAgentStudio)) {
+					console.log('[AgentStudio DnD] BLOCKED onDrop: cross-zone editor transfer', {
+						draggedEditorName: draggedEditor.getName?.() || 'unknown',
+						isAgentStudioEditor,
+						targetHasAgentStudio,
+						targetHasNonAgentStudio,
+					});
+					this.editorTransfer.clearData(DraggedEditorIdentifier.prototype);
+					return;
+				}
+			}
+		} else if (!this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype) && targetHasAgentStudio) {
+			// External data (file/resource) being dropped into agent-studio group
+			console.log('[AgentStudio DnD] BLOCKED onDrop: external data -> agent-studio group');
+			return;
+		}
 
 		let targetEditorIndex = this.tabsModel instanceof UnstickyEditorGroupModel ? targetTabIndex + this.groupView.stickyCount : targetTabIndex;
 		const options: IEditorOptions = {

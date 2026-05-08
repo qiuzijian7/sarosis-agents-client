@@ -1,0 +1,4 @@
+{
+  "main": "./test-esm.js",
+  "type": "module"
+}

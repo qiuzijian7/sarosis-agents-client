@@ -1,0 +1,96 @@
+/*---------------------------------------------------------------------------------------------
+ *  Agent Studio WebView - Employee Store (Zustand)
+ *--------------------------------------------------------------------------------------------*/
+
+import { create } from 'zustand';
+import { sendRequest } from '../bridge/messageClient';
+
+export interface Employee {
+	id: string;
+	name: string;
+	role: string;
+	email?: string;
+	avatar?: string;
+	presetId?: string;
+	model?: string;
+	customPrompt?: string;
+	skills?: { id: string; name: string; enabled: boolean }[];
+	status: 'idle' | 'working' | 'thinking' | 'error' | 'offline';
+	teamId?: string;
+	workspaceId?: string;
+	position?: { x: number; y: number };
+	tokenUsage?: number;
+}
+
+interface EmployeeState {
+	employees: Employee[];
+	selectedEmployeeId: string | null;
+	searchQuery: string;
+	isLoading: boolean;
+
+	// Actions
+	loadEmployees: (workspaceId?: string) => Promise<void>;
+	selectEmployee: (id: string | null) => void;
+	setSearchQuery: (query: string) => void;
+	createEmployee: (data: Partial<Employee>) => Promise<Employee>;
+	updateEmployee: (id: string, data: Partial<Employee>) => Promise<void>;
+	deleteEmployee: (id: string) => Promise<void>;
+
+	// Computed
+	filteredEmployees: () => Employee[];
+}
+
+export const useEmployeeStore = create<EmployeeState>((set, get) => ({
+	employees: [],
+	selectedEmployeeId: null,
+	searchQuery: '',
+	isLoading: false,
+
+	loadEmployees: async (workspaceId?: string) => {
+		set({ isLoading: true });
+		try {
+			const employees = await sendRequest<{ workspaceId?: string }, Employee[]>(
+				'employees.list',
+				{ workspaceId }
+			);
+			set({ employees, isLoading: false });
+		} catch (err) {
+			console.error('[EmployeeStore] Failed to load employees:', err);
+			set({ isLoading: false });
+		}
+	},
+
+	selectEmployee: (id) => set({ selectedEmployeeId: id }),
+	setSearchQuery: (query) => set({ searchQuery: query }),
+
+	createEmployee: async (data) => {
+		const employee = await sendRequest<Partial<Employee>, Employee>('employees.create', data);
+		set(state => ({ employees: [...state.employees, employee] }));
+		return employee;
+	},
+
+	updateEmployee: async (id, data) => {
+		await sendRequest('employees.update', { id, data });
+		set(state => ({
+			employees: state.employees.map(e => e.id === id ? { ...e, ...data } : e),
+		}));
+	},
+
+	deleteEmployee: async (id) => {
+		await sendRequest('employees.delete', { id });
+		set(state => ({
+			employees: state.employees.filter(e => e.id !== id),
+			selectedEmployeeId: state.selectedEmployeeId === id ? null : state.selectedEmployeeId,
+		}));
+	},
+
+	filteredEmployees: () => {
+		const { employees, searchQuery } = get();
+		if (!searchQuery) { return employees; }
+		const q = searchQuery.toLowerCase();
+		return employees.filter(e =>
+			e.name.toLowerCase().includes(q) ||
+			e.role.toLowerCase().includes(q)
+		);
+	},
+}));

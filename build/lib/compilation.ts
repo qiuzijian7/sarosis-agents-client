@@ -111,7 +111,7 @@ export function transpileTask(src: string, out: string, esbuild?: boolean): task
 	const task = () => {
 
 		const transpile = createCompile(src, { build: false, emitError: true, transpileOnly: { esbuild: !!esbuild }, preserveEnglish: false });
-		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` });
+		const srcPipe = gulp.src([`${src}/**`, `!${src}/**/node_modules/**`, `!${src}/vs/sessions/contrib/agentStudio/webview/**`], { base: `${src}` });
 
 		return srcPipe
 			.pipe(transpile())
@@ -131,7 +131,7 @@ export function compileTask(src: string, out: string, build: boolean, options: {
 		}
 
 		const compile = createCompile(src, { build, emitError: true, transpileOnly: false, preserveEnglish: !!options.preserveEnglish });
-		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` });
+		const srcPipe = gulp.src([`${src}/**`, `!${src}/**/node_modules/**`, `!${src}/vs/sessions/contrib/agentStudio/webview/**`], { base: `${src}` });
 		const generator = new MonacoGenerator(false);
 		if (src === 'src') {
 			generator.execute();
@@ -176,7 +176,7 @@ export function watchTypeCheckTask(src: string): task.Task {
 		const projectPath = path.join(import.meta.dirname, '../../', src, 'tsconfig.json');
 		const generator = new MonacoGenerator(true);
 		generator.execute();
-		const watchInput = watch(`${src}/**`, { base: src, readDelay: 200 });
+		const watchInput = watch([`${src}/**`, `!${src}/vs/sessions/contrib/agentStudio/webview/**`], { base: src, readDelay: 200 });
 		const tsgoStream = watchInput.pipe(generator.stream).pipe(util.debounce(() => {
 			const stream = createTsgoStream(projectPath, { taskName: 'watch-client-noEmit', noEmit: true });
 			const result = es.through();
