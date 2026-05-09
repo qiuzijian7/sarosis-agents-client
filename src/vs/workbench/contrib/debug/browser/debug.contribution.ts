@@ -23,7 +23,7 @@ import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContaine
 import { FocusedViewContext, IsSessionsWindowContext } from '../../../common/contextkeys.js';
 import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 import { EditorExtensions } from '../../../common/editor.js';
-import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
+import { IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../common/views.js';
 import { launchSchemaId } from '../../../services/configuration/common/configuration.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import { COPY_NOTEBOOK_VARIABLE_VALUE_ID, COPY_NOTEBOOK_VARIABLE_VALUE_LABEL } from '../../notebook/browser/contrib/notebookVariables/notebookVariableCommands.js';
@@ -463,6 +463,7 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewCo
 	icon: icons.runViewIcon,
 	alwaysUseContainerInfo: true,
 	order: 3,
+	windowEnablement: WindowEnablement.Sessions, // [Sarosis] Hide from main window Activity Bar
 }, ViewContainerLocation.Sidebar);
 
 // Register default debug views

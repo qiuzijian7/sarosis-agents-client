@@ -113,7 +113,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	) {
 		super(
 			Parts.SIDEBAR_PART,
-			{ hasTitle: false, trailingSeparator: false, borderWidth: () => 0 },
+			{ hasTitle: true, trailingSeparator: false, borderWidth: () => 0 },
 			SidebarPart.activeViewletSettingsKey,
 			ActiveViewletContext.bindTo(contextKeyService),
 			SidebarFocusContext.bindTo(contextKeyService),
@@ -265,12 +265,15 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		return this.layoutService.getSideBarPosition() === SideBarPosition.LEFT ? AnchorAlignment.LEFT : AnchorAlignment.RIGHT;
 	}
 
-	protected override createTitleLabel(_parent: HTMLElement): ICompositeTitleLabel {
-		// No title label in agent sessions sidebar
-		return {
-			updateTitle: () => { },
-			updateStyles: () => { }
-		};
+	protected override createTitleLabel(parent: HTMLElement): ICompositeTitleLabel {
+		// Let the parent class set titleContainer and titleLabelElement so that
+		// CompositeBarPosition.TITLE can use the title container for the composite bar.
+		const label = super.createTitleLabel(parent);
+		// Hide the title text element (we only need the composite bar icons)
+		if (this.titleLabelElement) {
+			this.titleLabelElement.style.display = 'none';
+		}
+		return label;
 	}
 
 	protected getCompositeBarOptions(): IPaneCompositeBarOptions {
@@ -279,23 +282,21 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			pinnedViewContainersKey: SidebarPart.pinnedViewContainersKey,
 			placeholderViewContainersKey: SidebarPart.placeholderViewContainersKey,
 			viewContainersWorkspaceStateKey: SidebarPart.viewContainersWorkspaceStateKey,
-			icon: false,
+			icon: true,
 			orientation: ActionsOrientation.HORIZONTAL,
 			recomputeSizes: true,
 			activityHoverOptions: {
-				position: () => this.getCompositeBarPosition() === CompositeBarPosition.BOTTOM ? HoverPosition.ABOVE : HoverPosition.BELOW,
+				position: () => HoverPosition.BELOW,
 			},
 			fillExtraContextMenuActions: actions => {
-				if (this.getCompositeBarPosition() === CompositeBarPosition.TITLE) {
-					const viewsSubmenuAction = this.getViewsSubmenuAction();
-					if (viewsSubmenuAction) {
-						actions.push(new Separator());
-						actions.push(viewsSubmenuAction);
-					}
+				const viewsSubmenuAction = this.getViewsSubmenuAction();
+				if (viewsSubmenuAction) {
+					actions.push(new Separator());
+					actions.push(viewsSubmenuAction);
 				}
 			},
 			compositeSize: 0,
-			iconSize: 16,
+			iconSize: 20,
 			overflowActionSize: 30,
 			colors: theme => ({
 				activeBackgroundColor: undefined,
@@ -312,7 +313,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	}
 
 	protected shouldShowCompositeBar(): boolean {
-		return false;
+		return true;
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {

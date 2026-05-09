@@ -24,6 +24,21 @@ export const AGENT_STUDIO_SESSIONS_VIEW_ID = 'agentStudio.sessionsView';
 export const AGENT_STUDIO_WORKSPACES_VIEW_ID = 'agentStudio.workspacesView';
 export const AGENT_STUDIO_DELEGATION_VIEW_ID = 'agentStudio.delegationView';
 
+// Toolbar View IDs (left sidebar toolbar)
+export const AGENT_STUDIO_TOOLBAR_VIEW_ID = 'agentStudio.toolbarView';
+export const AGENT_STUDIO_CLAW_CHAT_VIEW_ID = 'agentStudio.clawChatView';
+export const AGENT_STUDIO_WORKSPACE_VIEW_ID = 'agentStudio.workspaceView';
+export const AGENT_STUDIO_PRESET_AGENT_VIEW_ID = 'agentStudio.presetAgentView';
+export const AGENT_STUDIO_SKILLS_VIEW_ID = 'agentStudio.skillsView';
+export const AGENT_STUDIO_TASKS_VIEW_ID = 'agentStudio.tasksView';
+export const AGENT_STUDIO_SCHEDULE_VIEW_ID = 'agentStudio.scheduleView';
+export const AGENT_STUDIO_TOOLS_VIEW_ID = 'agentStudio.toolsView';
+export const AGENT_STUDIO_CHANGES_VIEW_ID = 'agentStudio.changesView';
+export const AGENT_STUDIO_SEARCH_VIEW_ID = 'agentStudio.searchView';
+export const AGENT_STUDIO_PLUGINS_VIEW_ID = 'agentStudio.pluginsView';
+export const AGENT_STUDIO_PERSONAL_VIEW_ID = 'agentStudio.personalView';
+export const AGENT_STUDIO_SETTINGS_VIEW_ID = 'agentStudio.settingsView';
+
 // Panel types (passed to WebView to select which React component to render)
 export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard';
 

@@ -19,7 +19,7 @@ import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/w
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IContextKeyService, IContextKey, ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IViewsRegistry, IViewDescriptor, Extensions, ViewContainer, IViewContainersRegistry, ViewContainerLocation, IViewDescriptorService, ViewContentGroups } from '../../../common/views.js';
+import { IViewsRegistry, IViewDescriptor, Extensions, ViewContainer, IViewContainersRegistry, ViewContainerLocation, IViewDescriptorService, ViewContentGroups, WindowEnablement } from '../../../common/views.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
@@ -263,6 +263,7 @@ export const VIEW_CONTAINER: ViewContainer = viewContainerRegistry.registerViewC
 	alwaysUseContainerInfo: true,
 	hideIfEmpty: true,
 	order: 0,
+	windowEnablement: WindowEnablement.Sessions, // [Sarosis] Hide from main window Activity Bar
 	openCommandActionDescriptor: {
 		id: VIEWLET_ID,
 		title: localize2('explore', "Explorer"),

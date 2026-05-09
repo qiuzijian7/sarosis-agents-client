@@ -19,7 +19,7 @@ import { IProgressService } from '../../../../platform/progress/common/progress.
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
-import { IViewContainersRegistry, IViewsRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation } from '../../../common/views.js';
+import { IViewContainersRegistry, IViewsRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation, WindowEnablement } from '../../../common/views.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { REVEAL_IN_EXPLORER_COMMAND_ID } from '../../files/browser/fileConstants.js';
 import { testingConfiguration } from '../common/configuration.js';
@@ -75,6 +75,7 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensio
 		order: 4,
 	},
 	hideIfEmpty: true,
+	windowEnablement: WindowEnablement.Sessions, // [Sarosis] Hide from main window Activity Bar
 }, ViewContainerLocation.Sidebar);
 
 
