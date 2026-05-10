@@ -25,17 +25,28 @@ import { ISessionsProvidersService } from '../../../services/sessions/browser/se
 import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
+import { IModelSelectorService } from '../common/modelSelector.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { IAgentInstanceService, IAgentGalleryService } from '../common/agentInstance.js';
 import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
 import { AgentOSService } from './agentOSService.js';
 import { AgentDriverService } from './agentDriverService.js';
+import { ModelSelectorService } from './modelSelectorService.js';
 import { WorkspaceRegistryService } from './workspaceRegistryService.js';
 import { AgentInstanceService } from './agentInstanceService.js';
 import { AgentGalleryService } from './agentGalleryService.js';
 import { AgentDelegationService } from './agentDelegationService.js';
 import { IGitCommitService, GitCommitService } from './gitCommitService.js';
+import { IAgentSchedulerService } from '../common/agentScheduler.js';
+import { AgentSchedulerService } from './agentSchedulerService.js';
+import { IHealthMonitorService } from '../common/healthMonitor.js';
+import { HealthMonitorService } from './healthMonitorService.js';
+import { IWorkspaceTemplateService } from '../common/workspaceTemplate.js';
+import { WorkspaceTemplateService } from './workspaceTemplateService.js';
+import { ICrewTeamService } from '../common/crewTeam.js';
+import { CrewTeamService } from './crewTeamService.js';
+import { IEventBridgeService, EventBridgeService } from '../common/eventBridge.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
@@ -52,6 +63,9 @@ import {
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_PERSONAL_VIEW_ID,
 	AGENT_STUDIO_SETTINGS_VIEW_ID,
+	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
+	AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID,
+	AGENT_STUDIO_CREW_TEAM_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_KNOT_TOKEN_SETTING,
 	AGENT_STUDIO_KNOT_AGENT_ID_SETTING,
@@ -76,6 +90,9 @@ import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { PersonalViewPane } from './views/personalView.js';
 import { SettingsViewPane } from './views/settingsView.js';
+import { HealthMonitorViewPane } from './views/healthMonitorView.js';
+import { WorkspaceTemplateViewPane } from './views/workspaceTemplateView.js';
+import { CrewTeamViewPane } from './views/crewTeamView.js';
 
 // --- Icons -----------------------------------------------------------------------
 
@@ -134,13 +151,18 @@ registerSingleton(IAgentStudioService, AgentStudioService, InstantiationType.Del
 registerSingleton(IAgentChatService, AgentChatService, InstantiationType.Delayed);
 registerSingleton(IAgentOSService, AgentOSService, InstantiationType.Delayed);
 registerSingleton(IAgentDriverService, AgentDriverService, InstantiationType.Delayed);
-// TODO: Fix type error - registerSingleton(IModelSelectorService, ModelSelectorService, InstantiationType.Delayed);
+registerSingleton(IModelSelectorService, ModelSelectorService, InstantiationType.Delayed);
 registerSingleton(IAgentDelegationService, AgentDelegationService, InstantiationType.Delayed);
 registerSingleton(IAgentTaskBoardService, AgentTaskBoardService, InstantiationType.Delayed);
 registerSingleton(IWorkspaceRegistry, WorkspaceRegistryService, InstantiationType.Delayed);
 registerSingleton(IAgentInstanceService, AgentInstanceService, InstantiationType.Delayed);
 registerSingleton(IAgentGalleryService, AgentGalleryService, InstantiationType.Delayed);
 registerSingleton(IGitCommitService, GitCommitService, InstantiationType.Delayed);
+registerSingleton(IAgentSchedulerService, AgentSchedulerService, InstantiationType.Delayed);
+registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType.Delayed);
+registerSingleton(IWorkspaceTemplateService, WorkspaceTemplateService, InstantiationType.Delayed);
+registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
+registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -367,6 +389,36 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
 			order: 90,
 			viewCtor: PluginsViewPane,
+		});
+
+		// 10.5 Health Monitor (order: 85)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.healthMonitor',
+			title: localize2('agentStudio.healthMonitor.title', "Health Monitor"),
+			icon: Codicon.pulse,
+			viewId: AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
+			order: 85,
+			viewCtor: HealthMonitorViewPane,
+		});
+
+		// 10.6 Workspace Template (order: 87)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.workspaceTemplate',
+			title: localize2('agentStudio.workspaceTemplate.title', "Workspace Templates"),
+			icon: Codicon.repo,
+			viewId: AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID,
+			order: 87,
+			viewCtor: WorkspaceTemplateViewPane,
+		});
+
+		// 10.7 Crew/Team (order: 89)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.crewTeam',
+			title: localize2('agentStudio.crewTeam.title', "Crew/Team"),
+			icon: Codicon.organization,
+			viewId: AGENT_STUDIO_CREW_TEAM_VIEW_ID,
+			order: 89,
+			viewCtor: CrewTeamViewPane,
 		});
 
 		// --- Bottom-aligned icons (order: 100+) -------------------------------

@@ -8,6 +8,8 @@ export const AGENT_STUDIO_ENABLED_SETTING = 'sessions.agentStudio.enabled';
 export const AGENT_STUDIO_KNOT_TOKEN_SETTING = 'sessions.agentStudio.knot.token';
 export const AGENT_STUDIO_KNOT_AGENT_ID_SETTING = 'sessions.agentStudio.knot.agentId';
 export const AGENT_STUDIO_KNOT_BASE_URL_SETTING = 'sessions.agentStudio.knot.baseUrl';
+export const AGENT_STUDIO_KNOT_MODELS_SETTING = 'sessions.agentStudio.knot.models';
+export const AGENT_STUDIO_KNOT_USER_SETTING = 'sessions.agentStudio.knot.user';
 export const AGENT_STUDIO_DATA_PATH_SETTING = 'sessions.agentStudio.dataPath';
 
 // ViewContainer IDs
@@ -38,6 +40,9 @@ export const AGENT_STUDIO_SEARCH_VIEW_ID = 'agentStudio.searchView';
 export const AGENT_STUDIO_PLUGINS_VIEW_ID = 'agentStudio.pluginsView';
 export const AGENT_STUDIO_PERSONAL_VIEW_ID = 'agentStudio.personalView';
 export const AGENT_STUDIO_SETTINGS_VIEW_ID = 'agentStudio.settingsView';
+export const AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID = 'agentStudio.healthMonitorView';
+export const AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID = 'agentStudio.workspaceTemplateView';
+export const AGENT_STUDIO_CREW_TEAM_VIEW_ID = 'agentStudio.crewTeamView';
 
 // Panel types (passed to WebView to select which React component to render)
 export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard';

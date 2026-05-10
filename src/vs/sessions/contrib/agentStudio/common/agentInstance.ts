@@ -89,7 +89,7 @@ export interface AgentInstance {
 	readonly name: string;
 	readonly templateId?: string;      // 来源模板 ID
 	readonly workspaceId: string;     // 所属工作区
-	readonly configPath: string;      // agent.yaml 路径
+	configPath: string;                  // agent.yaml 路径 (可修改)
 	readonly createdAt: string;
 	readonly updatedAt: string;
 	readonly status: AgentInstanceStatus;

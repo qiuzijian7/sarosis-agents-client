@@ -279,7 +279,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	private _editorMaximized = false;
 	private _editorLastNonMaximizedVisibility: IPartVisibilityState | undefined;
-	private _restoreAttachedEditorMaximizedOnShow = false;
 
 	private readonly restoredPromise = new DeferredPromise<void>();
 	readonly whenRestored = this.restoredPromise.p;
@@ -932,8 +931,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}
 
 			if (!this.partVisibility.editor) {
-				this.setEditorHidden(false);
-				this.restoreAttachedEditorMaximizedState();
+				this.setPartHidden(false, Parts.EDITOR_PART);
 			}
 		}));
 
@@ -948,28 +946,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const visDefaults = this.layoutPolicy.getPartVisibilityDefaults();
 		this.partVisibility.sidebar = visDefaults.sidebar;
 		this.partVisibility.editor = true; // Editor is always visible in this layout
-	}
-
-	private areAllGroupsEmpty(): boolean {
-		for (const group of this.editorGroupService.groups) {
-			if (!group.isEmpty) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private rememberAttachedEditorMaximizedState(): void {
-		this._restoreAttachedEditorMaximizedOnShow = this._editorMaximized && this.partVisibility.auxiliaryBar;
-	}
-
-	private restoreAttachedEditorMaximizedState(): void {
-		const shouldRestore = this._restoreAttachedEditorMaximizedOnShow && this.partVisibility.auxiliaryBar;
-		this._restoreAttachedEditorMaximizedOnShow = false;
-
-		if (shouldRestore) {
-			this.setEditorMaximized(true);
-		}
 	}
 
 	private registerLayoutListeners(): void {
@@ -1034,7 +1010,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				if (part === sideBar) {
 					this.setSideBarHidden(!visible);
 				} else if (part === editorPart) {
-					this.setEditorHidden(!visible);
+					this.setPartHidden(!visible, Parts.EDITOR_PART);
 				}
 
 				this._onDidChangePartVisibility.fire({ partId: part.getId(), visible });
@@ -1183,10 +1159,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					this.setSideBarHidden(!defaults.sidebar);
 				}
 				if (this.partVisibility.auxiliaryBar !== defaults.auxiliaryBar) {
-					this.setAuxiliaryBarHidden(!defaults.auxiliaryBar);
+					this.setPartHidden(!defaults.auxiliaryBar, Parts.AUXILIARYBAR_PART);
 				}
 				if (this.partVisibility.panel !== defaults.panel) {
-					this.setPanelHidden(!defaults.panel);
+					this.setPartHidden(!defaults.panel, Parts.PANEL_PART);
 				}
 			} else if (currentClass !== 'phone' && this.mobileTopBarElement) {
 				// Remove mobile components when leaving phone layout
@@ -1200,13 +1176,13 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					this.setSideBarHidden(!defaults.sidebar);
 				}
 				if (this.partVisibility.chatBar !== defaults.chatBar) {
-					this.setChatBarHidden(!defaults.chatBar);
+					this.setPartHidden(!defaults.chatBar, Parts.CHATBAR_PART);
 				}
 				if (this.partVisibility.auxiliaryBar !== defaults.auxiliaryBar) {
-					this.setAuxiliaryBarHidden(!defaults.auxiliaryBar);
+					this.setPartHidden(!defaults.auxiliaryBar, Parts.AUXILIARYBAR_PART);
 				}
 				if (this.partVisibility.panel !== defaults.panel) {
-					this.setPanelHidden(!defaults.panel);
+					this.setPartHidden(!defaults.panel, Parts.PANEL_PART);
 				}
 			}
 
@@ -1338,7 +1314,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	}
 
 	focus(): void {
-		this.focusPart(Parts.EDITOR_PART);
+		this.focusPart(Parts.EDITOR_PART, mainWindow);
 	}
 
 	//#endregion

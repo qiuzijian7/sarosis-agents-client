@@ -173,37 +173,62 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * Phase 2: 将实现完整编排逻辑
 	 */
 	async *executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
-		const modelProvider = this._getActiveModelProvider();
+		this._logService.info(`[AgentOS] executeAgentTurn: agentId=${request.agentId}, messages=${request.messages.length}`);
 
-		// 直通模式：无 Model Provider 时退化为现有行为
+		// ─── 编排流程 ───────────────────────────────────────
+		// 优先使用 ExecutionProvider（完整 Agent Loop）
+		// 若无，则退化为直接 Model Provider 调用
+
+		const executionProvider = this.getActiveExecutionProvider();
+		if (executionProvider) {
+			this._logService.info(`[AgentOS] Using ExecutionProvider: ${executionProvider.id}`);
+			try {
+				yield* executionProvider.runAgentLoop(request, this.getSlotRegistry());
+			} catch (error) {
+				this._logService.error('[AgentOS] ExecutionProvider failed', error);
+				yield { type: 'error', content: String(error) };
+			}
+			return;
+		}
+
+		// ─── 退化模式：直接调用 Model Provider ─────────────────
+		const modelProvider = this._getActiveModelProvider();
 		if (!modelProvider) {
-			this._logService.warn('[AgentOS] No ModelProvider available, falling back to direct chat');
-			// Phase 1: 委托给现有 agentChatService
-			// TODO Phase 2: 实现完整编排（Planning → Memory → Model → Tool → Memory）
+			this._logService.warn('[AgentOS] No ModelProvider available');
 			yield* this._fallbackToDirectChat(request);
 			return;
 		}
 
-		// Phase 2 实现：完整编排
-		// 1. Planning Slot 分析意图
-		// 2. Memory Slot 加载上下文
-		// 3. Model Slot 生成推理
-		// 4. Tool Slot 执行工具
-		// 5. Memory Slot 写回记忆
-		// 6. 返回结果给 UI
-
-		// Phase 1 占位：直接调用 Model Provider
+		this._logService.info(`[AgentOS] Using ModelProvider directly: ${modelProvider.id}`);
 		const selection = this.getActiveModelSelection();
-		const messages = request.messages as any[]; // TODO: 类型转换
+		const messages = request.messages as any[];
 		const options = request.options as any;
 
+		// 可选：加载 Memory 上下文（如果有 Memory Provider）
+		const memoryProvider = this.getActiveMemoryProvider();
+		if (memoryProvider) {
+			try {
+				// TODO: 将 memory context 合并到 messages 中
+				this._logService.info(`[AgentOS] Memory provider available for agent ${request.agentId}`);
+			} catch (error) {
+				this._logService.error('[AgentOS] Failed to load memory context', error);
+			}
+		}
+
+		// 调用 Model Provider
 		try {
 			const stream = await modelProvider.chat(selection.modelId, messages, options);
 			for await (const delta of stream) {
 				yield this._adaptModelDelta(delta);
 			}
+
+			// 可选：将对话写回 Memory（如果有 Memory Provider）
+			if (memoryProvider) {
+				// TODO: 构造 IMemoryEntry 并调用 memoryProvider.writeMemory()
+				this._logService.info(`[AgentOS] Would write memory for agent ${request.agentId}`);
+			}
 		} catch (error) {
-			this._logService.error('[AgentOS] executeAgentTurn failed', error);
+			this._logService.error('[AgentOS] ModelProvider chat failed', error);
 			yield { type: 'error', content: String(error) };
 		}
 	}

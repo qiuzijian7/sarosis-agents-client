@@ -122,7 +122,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		);
 	}
 
-	override get preferredWidth(): number | undefined {
+	get preferredWidth(): number | undefined {
 		// [Sarosis] Sidebar with activity bar + content panel
 		return 250;
 	}
