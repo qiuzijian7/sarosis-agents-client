@@ -69,3 +69,4 @@ tsc-errors.txt
 .workbuddy/memory/2026-05-09.md
 compile-output8.txt
 compile-output9.txt
+msbuild-output.txt

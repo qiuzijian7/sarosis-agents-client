@@ -22,8 +22,8 @@ import { MobilePanelPart } from './parts/mobile/mobilePanelPart.js';
 import { MobileSidebarPart } from './parts/mobile/mobileSidebarPart.js';
 import { MobileAuxiliaryBarPart } from './parts/mobile/mobileAuxiliaryBarPart.js';
 import { MobileChatBarPart } from './parts/mobile/mobileChatBarPart.js';
-import { getClientArea } from '../../base/browser/dom.js';
 import { mainWindow } from '../../base/browser/window.js';
+import { isMobile } from '../../base/common/platform.js';
 import { InstantiationType, registerSingleton } from '../../platform/instantiation/common/extensions.js';
 
 export class AgenticPaneCompositePartService extends Disposable implements IPaneCompositePartService {
@@ -43,8 +43,12 @@ export class AgenticPaneCompositePartService extends Disposable implements IPane
 	) {
 		super();
 
-		const { width } = getClientArea(mainWindow.document.body);
-		const isPhoneLayout = width < 640;
+		// Use platform detection (consistent with layoutPolicy.ts classifyViewport):
+		// On non-mobile platforms (Electron desktop), always use Desktop parts.
+		// On mobile platforms, check viewport width to decide phone vs tablet/desktop.
+		// This avoids depending on document.body width which may be 0 when the
+		// window is created hidden (show: false for maximized/fullscreen mode).
+		const isPhoneLayout = isMobile && (mainWindow.innerWidth || mainWindow.document.body.clientWidth || 800) < 640;
 
 		this.registerPart(ViewContainerLocation.Panel, instantiationService.createInstance(isPhoneLayout ? MobilePanelPart : PanelPart));
 		this.registerPart(ViewContainerLocation.Sidebar, instantiationService.createInstance(isPhoneLayout ? MobileSidebarPart : SidebarPart));

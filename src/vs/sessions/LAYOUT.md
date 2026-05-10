@@ -19,18 +19,30 @@ The Agent Sessions Workbench (`Workbench` in `sessions/browser/workbench.ts`) pr
 ### 2.1 Visual Representation
 
 ```
-┌─────────┬────────────────────────────────────────────────────────────────────┐
-│         │                            Titlebar                                │
-│         ├───────────────────────────┬────────────────┬───────────────────────┤
-│ Sidebar │         Chat Bar          │ Editor (hid.) │     Auxiliary Bar     │
-│         ├───────────────────────────┴────────────────┴───────────────────────┤
-│         │                              Panel                                 │
-└─────────┴────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                               Titlebar                                        │
+├──────────────────┬─────────────────────────┬─────────────────────────────────┤
+│    Sidebar       │   Editor Area (Left)    │    Editor Area (Right)          │
+│  (Activity Bar   │   Files / Code          │    Agent Studio                 │
+│   + Content)     │                         │                                 │
+│                  │                         │  ┌─ Agent Chat ──────────────┐  │
+│  ┌────────────┐  │  ┌───────────────────┐  │  │                          │  │
+│  │ tool icons │  │  │  file1.ts         │  │  │  (active tab content)    │  │
+│  │ + content  │  │  │  file2.ts         │  │  │                          │  │
+│  │   panel    │  │  │  ...              │  │  └──────────────────────────┘  │
+│  │            │  │  └───────────────────┘  │  [Chat] [TaskBoard] [Canvas]   │
+│  └────────────┘  │                         │  (sticky, uncloseable tabs)    │
+└──────────────────┴─────────────────────────┴─────────────────────────────────┘
 
-Editors open via MODAL_GROUP into the standard ModalEditorPart overlay
-(created on-demand by EditorParts.createModalEditorPart). The main
-editor part is hidden by default and is only shown for explicit
-editor opens or restores that target the main editor part.
+Layout: Sidebar (250px, resizable 170-450px) | Editor Left (files) | Editor Right (Agent Studio)
+
+- The left sidebar serves as an Activity Bar with tool icons and an expandable content panel.
+- The Editor area is split into TWO permanent editor groups (left and right).
+  - Left group: Regular file editors (code, diff, etc.)
+  - Right group: Agent Studio panels (Chat, TaskBoard, Canvas) as EditorPanes.
+    This group is LOCKED and the three tabs are STICKY + UNCLOSEABLE.
+- No Panel (removed), no AuxiliaryBar, no ChatBar in the grid.
+- Both editor groups cannot be closed or removed.
 ```
 
 ### 2.2 Parts
@@ -39,12 +51,9 @@ editor opens or restores that target the main editor part.
 
 | Part | ID Constant | Position | Default Visibility | ViewContainerLocation |
 |------|-------------|----------|------------|----------------------|
-| Titlebar | `Parts.TITLEBAR_PART` | Top of right section | Always visible | — |
-| Sidebar | `Parts.SIDEBAR_PART` | Left, spans full height from top to bottom | Visible | `ViewContainerLocation.Sidebar` |
-| Chat Bar | `Parts.CHATBAR_PART` | Top-right section, takes remaining width | Visible | `ViewContainerLocation.ChatBar` |
-| Editor | `Parts.EDITOR_PART` | Top-right section, in the grid but hidden by default; explicit opens or restores that target the main editor part can reveal it while modal editors still open via `MODAL_GROUP` into `ModalEditorPart` overlay | Hidden | — |
-| Auxiliary Bar | `Parts.AUXILIARYBAR_PART` | Top-right section, right side | Visible | `ViewContainerLocation.AuxiliaryBar` |
-| Panel | `Parts.PANEL_PART` | Below Chat Bar and Auxiliary Bar (right section only) | Hidden | `ViewContainerLocation.Panel` |
+| Titlebar | `Parts.TITLEBAR_PART` | Top, full width | Always visible | — |
+| Sidebar (Activity Bar + Content) | `Parts.SIDEBAR_PART` | Left, 250px default, resizable 170-450px | Visible | `ViewContainerLocation.Sidebar` |
+| Editor | `Parts.EDITOR_PART` | Right, split into left (files) + right (Agent Studio) groups | **Always Visible** | — |
 
 #### Excluded Parts
 
@@ -52,7 +61,7 @@ The following parts from the default workbench are **not included**:
 
 | Part | ID Constant | Reason |
 |------|-------------|--------|
-| Activity Bar | `Parts.ACTIVITYBAR_PART` | Simplified navigation; global activities (Accounts, Manage) are in titlebar instead |
+| Activity Bar | `Parts.ACTIVITYBAR_PART` | Sidebar acts as Activity Bar with 12 vertical icons |
 | Status Bar | `Parts.STATUSBAR_PART` | Reduced chrome |
 | Banner | `Parts.BANNER_PART` | Not needed |
 
@@ -155,64 +164,34 @@ The layout uses `SerializableGrid` from `vs/base/browser/ui/grid/grid.js`.
 
 ### 4.1 Grid Tree
 
-The Editor part is **not** in the grid — it is rendered as a modal overlay (see Section 4.3).
-
 ```
-Orientation: HORIZONTAL (root)
-├── Sidebar (leaf, size: 300px default)
-└── Right Section (branch, VERTICAL, size: remaining width)
-    ├── Titlebar (leaf, size: titleBarHeight)
-    ├── Top Right (branch, HORIZONTAL, size: remaining height - panel)
-    │   ├── Chat Bar (leaf, size: remaining width)
-    │   └── Auxiliary Bar (leaf, size: 300px default)
-    └── Panel (leaf, size: 300px default, hidden by default)
+Orientation: VERTICAL (root)
+├── Titlebar (leaf, size: titleBarHeight)
+└── Main Row (branch, HORIZONTAL, size: contentHeight)
+    ├── Sidebar (leaf, size: 250px, activity bar + content panel)
+    └── Editor (leaf, size: remaining width)
 ```
 
-This structure places the sidebar at the root level spanning the full window height. The titlebar, chat bar, auxiliary bar, and panel are all within the right section.
+The grid is extremely simple: Titlebar at top, then a horizontal row with Sidebar on the left and Editor on the right. The Editor part internally manages two editor groups (left for files, right for Agent Studio).
 
 ### 4.2 Default Sizes
 
 | Part | Default Size |
 |------|--------------|
-| Sidebar | 300px width |
-| Auxiliary Bar | 380px width |
-| Chat Bar | Remaining space |
-| Panel | 300px height |
+| Sidebar (Activity Bar + Content) | 250px width (resizable 170-450px) |
+| Editor | Remaining space (internally split into 2 groups) |
 | Titlebar | Determined by `minimumHeight` (~30px) |
 
-The sessions sidebar can be resized down to a minimum width of 170px (desktop) or 270px (web, sized to fit the titlebar's left toolbar which includes the host filter combo).
+### 4.3 Editor Mode
 
-The sessions auxiliary bar can generally be resized down to 270px. When the main editor part is visible (i.e. any editor is open in the main editor area adjacent to the auxiliary bar), the sash no longer snaps it closed; the titlebar toggle action still hides and shows the auxiliary bar as before. This behavior is automatic and applies to all editor types without requiring an explicit allowlist.
+The Editor part is **always visible** and cannot be hidden. It is split into two permanent editor groups:
 
-### 4.3 Editor Modal
+- **Left group** (unlocked): Regular file editors (code, diff, markdown, etc.) open here by default.
+- **Right group** (locked): Agent Studio EditorPanes (Chat, TaskBoard, Canvas) are opened here on startup as `pinned: true, sticky: true` tabs. This group cannot receive normal file editors.
 
-The main editor part is created hidden (`display:none`) and remains hidden for the default sessions experience. Flows that explicitly open or restore an editor into the main editor part can reveal it, and modal editor opens do not change the visibility of an already visible main editor. Editors without an explicit main-part target still open in the `ModalEditorPart` overlay via the standard `createModalEditorPart()` mechanism.
-
-#### How It Works
-
-The sessions configuration sets `workbench.editor.useModal` to `'all'` (in `contrib/configuration/browser/configuration.contribution.ts`). This causes `findGroup()` in `editorGroupFinder.ts` to redirect all editor opens (that do not specify an explicit preferred group) to `createModalEditorPart()`, which creates the standard workbench `ModalEditorPart` overlay on-demand.
-
-When the setting is `'all'`:
-- All editors without an explicit preferred group open in the modal editor part
-- The modal is not auto-closed when editors open without explicit `MODAL_GROUP` as preferred group
-
-#### Behavior
-
-| Trigger | Action |
-|---------|--------|
-| Any editor opens (no explicit group) | `ModalEditorPart` overlay created/reused automatically |
-| All editors closed in modal | Modal closes and is disposed |
-| Click backdrop | Close all editors, hide modal |
-| Press Escape | Close all editors, hide modal |
-
-#### Configuration
-
-The setting `workbench.editor.useModal` is an enum with three values:
-- `'off'`: Editors never open in a modal overlay
-- `'some'`: Certain editors (e.g. Settings, Keyboard Shortcuts) may open in a modal overlay when requested via `MODAL_GROUP`
-- `'all'`: All editors open in a modal overlay (used by agent sessions window)
-
-The sessions default configuration also sets `workbench.notifications.position` to `'bottom-right'` so notifications anchor in the bottom-right corner of the sessions window without changing the default notification placement in the regular workbench. The sessions-specific stylesheet adjusts both notification center and toast offsets to `15px` from the bottom/right or bottom/left edges, and to `top: 40px; right: 15px;` for the top-right placement. Because the shared workbench notification controllers also compute a top-right inline offset for custom titlebar windows, the sessions workbench reapplies its fixed `40px` top offset after those controllers run so the sessions-only placement stays stable.
+**Uncloseable behavior:**
+- Agent Studio tabs (Chat, TaskBoard, Canvas) are sticky and pinned. If closed by any means, they are immediately re-opened via `onDidCloseEditor` handler.
+- Both editor groups are permanent. If either group is removed, the layout is automatically recreated with `_openAgentStudioEditors()`.
 
 
 ---
@@ -223,16 +202,17 @@ The sessions default configuration also sets `workbench.notifications.position` 
 |---------|-------------------|----------------|-------|
 | Activity Bar | ✅ Configurable | ❌ Not included | — |
 | Status Bar | ✅ Configurable | ❌ Not included | — |
+| Panel | ✅ Configurable | ❌ Removed | No panel in this layout |
+| Auxiliary Bar | ✅ Configurable | ❌ Removed | No auxiliary bar in this layout |
+| Chat Bar | ✅ Configurable | ❌ Removed | Agent chat is an EditorPane |
 | Sidebar Position | ✅ Left/Right | 🔒 Fixed: Left | `getSideBarPosition()` returns `Position.LEFT` |
-| Panel Position | ✅ Top/Bottom/Left/Right | 🔒 Fixed: Bottom | `getPanelPosition()` returns `Position.BOTTOM` |
-| Panel Alignment | ✅ Left/Center/Right/Justify | 🔒 Fixed: Justify | `getPanelAlignment()` returns `'justify'` |
-| Maximize Panel | ✅ Supported | ✅ Supported | Excludes titlebar when maximizing |
-| Maximize Auxiliary Bar | ✅ Supported | ❌ No-op | `toggleMaximizedAuxiliaryBar()` does nothing |
+| Maximize Panel | ✅ Supported | ❌ No-op | No panel exists |
+| Maximize Auxiliary Bar | ✅ Supported | ❌ No-op | No auxiliary bar exists |
 | Zen Mode | ✅ Supported | ❌ No-op | `toggleZenMode()` does nothing |
 | Centered Editor Layout | ✅ Supported | ❌ No-op | `centerMainEditorLayout()` does nothing |
 | Menu Bar Toggle | ✅ Supported | ❌ No-op | `toggleMenuBar()` does nothing |
-| Resize Parts | ✅ Supported | ✅ Supported | Via grid or programmatic API |
-| Hide/Show Parts | ✅ Supported | ✅ Supported | Via `setPartHidden()` |
+| Resize Parts | ✅ Supported | ✅ Supported | Sidebar + Editor resize via grid |
+| Editor Maximize | ✅ Supported | ✅ Supported | Hides sidebar only |
 | Window Maximized State | ✅ Supported | ✅ Supported | Tracked per window ID |
 | Fullscreen | ✅ Supported | ✅ Supported | CSS class applied |
 
@@ -342,7 +322,7 @@ Applied to `mainContainer` based on part visibility:
 | Class | Applied When |
 |-------|--------------|
 | `nosidebar` | Sidebar is hidden |
-| `nomaineditorarea` | Editor part is hidden (always applied — main editor part is permanently hidden) |
+| `nomaineditorarea` | Editor part is hidden |
 | `noauxiliarybar` | Auxiliary bar is hidden |
 | `nochatbar` | Chat bar is hidden |
 | `nopanel` | Panel is hidden |
@@ -384,13 +364,13 @@ The Agent Sessions workbench uses specialized part implementations that extend t
 
 | Feature | Standard Parts | Agent Session Parts |
 |---------|----------------|---------------------|
-| Activity Bar integration | Full support | No activity bar; account widget in the titlebar |
+| Activity Bar integration | Full support | No activity bar; sidebar acts as activity bar with content panel |
 | Composite bar position | Configurable (top/bottom/title/hidden) | Fixed: Title |
-| Composite bar visibility | Configurable | Sidebar: hidden (`shouldShowCompositeBar()` returns `false`); ChatBar: hidden; Auxiliary Bar & Panel: visible. The Auxiliary Bar and Panel title tabs share the same pill treatment: title-case labels, 500 font weight, compact horizontal padding, checked-state background, and no persistent active underline outside keyboard focus. Separately, the internal chat tab strip shown inside the Chat Bar preserves each chat title's original casing instead of forcing per-word capitalization via CSS. |
+| Composite bar visibility | Configurable | Sidebar: visible (`shouldShowCompositeBar()` returns `true`); ChatBar: hidden; Auxiliary Bar & Panel: visible. The Auxiliary Bar and Panel title tabs share the same pill treatment: title-case labels, 500 font weight, compact horizontal padding, checked-state background, and no persistent active underline outside keyboard focus. Separately, the internal chat tab strip shown inside the Chat Bar preserves each chat title's original casing instead of forcing per-word capitalization via CSS. |
 | Auto-hide support | Configurable | Disabled |
 | Configuration listening | Many settings | Minimal |
 | Context menu actions | Full set | Simplified |
-| Title bar | Full support | Sidebar: `hasTitle: true` (with footer); ChatBar: `hasTitle: false`; Auxiliary Bar & Panel: `hasTitle: true` |
+| Title bar | Full support | Sidebar: `hasTitle: true` (with content panel title); ChatBar: `hasTitle: false`; Auxiliary Bar & Panel: `hasTitle: true` |
 | Visual margins | None | Auxiliary Bar: 16px top/right, 18px bottom (card appearance); Panel: 18px bottom, 16px left/right (card appearance); Sidebar: 0 (flush) |
 
 ### 9.3 Part Creation
@@ -460,8 +440,6 @@ The `AuxiliaryBarPart` provides a custom `DropdownWithPrimaryActionViewItem` for
 ### 9.7 Sidebar Footer
 
 The `SidebarPart` includes a footer section (35px height) positioned below the pane composite content. The sidebar uses a custom `layout()` override that reduces the content height by `FOOTER_HEIGHT` and renders a `MenuWorkbenchToolBar` driven by `Menus.SidebarFooter`. The footer hosts the account widget (see Section 3.6).
-
-On macOS native with custom titlebar, the sidebar title area includes a traffic light spacer (70px) to push content past the system window controls. The spacer is hidden in fullscreen mode and is not created when using native titlebar (since the OS renders traffic lights in its own title bar).
 
 The sessions appear animation applies only to the sidebar body (`.part.sidebar > .content`). The sidebar container, title area, and footer do not participate in the reveal animation, so the header region stays visually fixed while the body slides/fades in. Normal hover and pressed feedback for header/footer controls is preserved.
 
@@ -649,10 +627,9 @@ interface IPartVisibilityState {
 | Part | Initial Visibility |
 |------|--------------------|
 | Sidebar | `true` (visible) |
-| Auxiliary Bar | `true` (visible) |
-| Chat Bar | `true` (visible) |
-| Editor | `false` (hidden) |
-| Panel | `false` (hidden) |
+| Editor | `true` (always visible, split into 2 groups) |
+
+Note: Panel, AuxiliaryBar, and ChatBar are removed from the grid entirely.
 
 ---
 

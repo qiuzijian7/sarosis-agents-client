@@ -6,6 +6,8 @@
 import { mainWindow } from '../../../base/browser/window.js';
 import { MainEditorPart as MainEditorPartBase } from '../../../workbench/browser/parts/editor/editorPart.js';
 import { Parts } from '../../../workbench/services/layout/browser/layoutService.js';
+import { IEditorGroupView } from '../../../workbench/browser/parts/editor/editor.js';
+import { GroupIdentifier } from '../../../workbench/common/editor.js';
 
 export class MainEditorPart extends MainEditorPartBase {
 	static readonly MARGIN_TOP = 0;
@@ -25,5 +27,15 @@ export class MainEditorPart extends MainEditorPartBase {
 		const adjustedHeight = height - MainEditorPart.MARGIN_TOP - MainEditorPart.MARGIN_BOTTOM - 2 /* border width */;
 
 		super.layout(adjustedWidth, adjustedHeight, top, left);
+	}
+
+	/**
+	 * [Sarosis] Override removeGroup to prevent editor groups from being closed.
+	 * Both editor groups (left file editors + right Agent Studio) are permanent
+	 * and cannot be removed by the user.
+	 */
+	override removeGroup(_group: IEditorGroupView | GroupIdentifier, _preserveFocus?: boolean): void {
+		// No-op: editor groups cannot be removed in sessions workbench
+		return;
 	}
 }

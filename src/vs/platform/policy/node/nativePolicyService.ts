@@ -27,9 +27,10 @@ export class NativePolicyService extends AbstractPolicyService implements IPolic
 
 		let createWatcher: typeof import('@vscode/policy-watcher')['createWatcher'] | undefined;
 		try {
-			({ createWatcher } = await import('@vscode/policy-watcher'));
+			const mod = await import('@vscode/policy-watcher');
+			createWatcher = mod.createWatcher;
 		} catch (err) {
-			this.logService.warn(`NativePolicyService#_updatePolicyDefinitions - Failed to load @vscode/policy-watcher:`, err);
+			this.logService.warn(`NativePolicyService#_updatePolicyDefinitions - Failed to import @vscode/policy-watcher:`, err);
 			return;
 		}
 

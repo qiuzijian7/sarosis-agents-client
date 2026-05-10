@@ -24,9 +24,6 @@ export interface IPartVisibilityDefaults {
 /** Default sizes (in pixels) for each workbench part. */
 export interface IPartSizeDefaults {
 	readonly sideBarSize: number;
-	readonly auxiliaryBarSize: number;
-	readonly panelSize: number;
-	readonly chatBarWidth: number;
 }
 
 const PHONE_MAX_WIDTH = 640;
@@ -118,18 +115,17 @@ export class SessionsLayoutPolicy extends Disposable {
 		const vc = viewportClass ?? this._viewportClass.get();
 		switch (vc) {
 			case 'phone':
-				return { sidebar: false, auxiliaryBar: false, panel: false, chatBar: true, editor: false };
-			case 'tablet':
-			case 'desktop':
-				// Tablet and desktop share the standard multi-part workbench defaults.
-				// A dedicated tablet layout has not been designed yet.
-				return { sidebar: true, auxiliaryBar: true, panel: false, chatBar: true, editor: false };
+				return { sidebar: false, auxiliaryBar: false, panel: false, chatBar: false, editor: true };
+		case 'tablet':
+		case 'desktop':
+			// [Sarosis] Two-column layout: Sidebar | Editor (split into files + Agent Studio)
+			// No Panel, no AuxiliaryBar, no ChatBar.
+			return { sidebar: true, auxiliaryBar: false, panel: false, chatBar: false, editor: true };
 		}
 	}
 
 	/**
 	 * Returns the default part sizes for the given viewport dimensions.
-	 * If no viewport class is supplied the current observed class is used.
 	 *
 	 * @param width  Container width in pixels.
 	 * @param height Container height in pixels (reserved for future use).
@@ -141,19 +137,13 @@ export class SessionsLayoutPolicy extends Disposable {
 			case 'phone':
 				return {
 					sideBarSize: 0,
-					auxiliaryBarSize: 0,
-					panelSize: 0,
-					chatBarWidth: width,
 				};
-			case 'tablet':
-			case 'desktop':
-				// Tablet currently falls back to desktop sizing.
-				return {
-					sideBarSize: 300,
-					auxiliaryBarSize: 340,
-					panelSize: 300,
-					chatBarWidth: width - 300,
-				};
+		case 'tablet':
+		case 'desktop':
+			// [Sarosis] Sidebar with activity bar + content panel (250px default)
+			return {
+				sideBarSize: 250,
+			};
 		}
 	}
 }

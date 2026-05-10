@@ -20,7 +20,7 @@ import { IExtensionService, isProposedApiEnabled } from '../../../services/exten
 import { FilterViewPaneContainer } from '../../../browser/parts/views/viewsViewlet.js';
 import { VIEWLET_ID } from './remoteExplorer.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
-import { IViewDescriptor, IViewsRegistry, Extensions, ViewContainerLocation, IViewContainersRegistry, IViewDescriptorService, WindowEnablement } from '../../../common/views.js';
+import { IViewDescriptor, IViewsRegistry, Extensions, ViewContainerLocation, IViewContainersRegistry, IViewDescriptorService } from '../../../common/views.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IExtensionDescription } from '../../../../platform/extensions/common/extensions.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
@@ -661,8 +661,7 @@ Registry.as<IViewContainersRegistry>(Extensions.ViewContainersRegistry).register
 			}
 		},
 		icon: icons.remoteExplorerViewIcon,
-		order: 4,
-		windowEnablement: WindowEnablement.Sessions, // [Sarosis] Hide from main window Activity Bar
+		order: 4
 	}, ViewContainerLocation.Sidebar);
 
 export class RemoteMarkers implements IWorkbenchContribution {

@@ -51,7 +51,7 @@ export const DEFAULT_EDITOR_PART_OPTIONS: IEditorPartOptions = {
 	enablePreview: true,
 	openPositioning: 'right',
 	openSideBySideDirection: 'right',
-	closeEmptyGroups: true, // Agent Studio: allow empty groups to be removed, but removeGroup() ensures at least 1 group remains
+	closeEmptyGroups: true,
 	labelFormat: 'default',
 	splitSizing: 'auto',
 	splitOnDragAndDrop: true,

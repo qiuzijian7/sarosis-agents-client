@@ -13,24 +13,28 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
+import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 import { $ } from '../../../../../base/browser/dom.js';
-
-interface FileChange {
-	path: string;
-	status: 'modified' | 'added' | 'deleted' | 'renamed';
-	additions: number;
-	deletions: number;
-	agent?: string;
-}
+import { IGitCommitService, IGitRemote, IGitStatus } from '../gitCommitService.js';
 
 /**
  * Changes View - 变更管理面板
- * 功能：查看Agent产生的代码变更、文件diff、提交历史、撤回操作
+ * 功能：
+ * - 查看 Git 仓库状态
+ * - 一键提交（git add -A + git commit）
+ * - 自动推送到所有 remote（主仓库 + mirror 仓库）
  */
 export class ChangesViewPane extends ViewPane {
 
-	private listContainer!: HTMLElement;
-	private changes: FileChange[] = [];
+	private _container!: HTMLElement;
+	private _statusContainer!: HTMLElement;
+	private _remotesContainer!: HTMLElement;
+	private _logContainer!: HTMLElement;
+	private _commitBtn!: HTMLButtonElement;
+	private _commitMsgInput!: HTMLInputElement;
+
+	private _isOperating = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -43,6 +47,9 @@ export class ChangesViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
+		@INotificationService private readonly _notificationService: INotificationService,
+		@ILogService private readonly _logService: ILogService,
+		@IGitCommitService private readonly _gitCommitService: IGitCommitService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -50,167 +57,267 @@ export class ChangesViewPane extends ViewPane {
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 		container.classList.add('changes-view');
+		this._container = container;
 
-		// Header
+		// --- Header section ---
 		const header = $('div.changes-header');
 		const title = $('h3.changes-title');
-		title.textContent = '📝 Changes';
+		title.textContent = '📝 Source Control';
 		header.appendChild(title);
-
-		const actions = $('div.changes-header-actions');
-		const commitBtn = $('button.changes-action-btn.primary');
-		commitBtn.textContent = '✓ Commit All';
-		commitBtn.onclick = () => this._commitAll();
-		actions.appendChild(commitBtn);
-
-		const revertBtn = $('button.changes-action-btn');
-		revertBtn.textContent = '↩ Revert All';
-		revertBtn.onclick = () => this._revertAll();
-		actions.appendChild(revertBtn);
-
-		const refreshBtn = $('button.changes-action-btn');
-		refreshBtn.textContent = '↻';
-		refreshBtn.onclick = () => this._refreshChanges();
-		actions.appendChild(refreshBtn);
-		header.appendChild(actions);
 		container.appendChild(header);
 
-		// Summary
-		const summary = $('div.changes-summary');
-		this._updateSummary(summary);
-		container.appendChild(summary);
+		// --- Commit message input ---
+		const commitSection = $('div.changes-commit-section');
 
-		// Changes list
-		this.listContainer = $('div.changes-list');
-		this._renderChanges();
-		container.appendChild(this.listContainer);
+		this._commitMsgInput = document.createElement('input');
+		this._commitMsgInput.type = 'text';
+		this._commitMsgInput.placeholder = 'Commit message (leave empty for auto)';
+		this._commitMsgInput.className = 'changes-commit-input';
+		this._commitMsgInput.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter' && !this._isOperating) {
+				this._commitAndPushAll();
+			}
+		});
+		commitSection.appendChild(this._commitMsgInput);
+
+		// --- Action buttons ---
+		const actions = $('div.changes-actions');
+
+		this._commitBtn = document.createElement('button');
+		this._commitBtn.className = 'changes-action-btn primary';
+		this._commitBtn.textContent = '✓ Commit & Push All';
+		this._commitBtn.title = 'Commit all changes and push to all remotes (main + mirror)';
+		this._commitBtn.onclick = () => this._commitAndPushAll();
+		actions.appendChild(this._commitBtn);
+
+		const refreshBtn = document.createElement('button');
+		refreshBtn.className = 'changes-action-btn';
+		refreshBtn.textContent = '↻ Refresh';
+		refreshBtn.onclick = () => this._refreshStatus();
+		actions.appendChild(refreshBtn);
+
+		commitSection.appendChild(actions);
+		container.appendChild(commitSection);
+
+		// --- Status section ---
+		this._statusContainer = $('div.changes-status');
+		container.appendChild(this._statusContainer);
+
+		// --- Remotes section ---
+		this._remotesContainer = $('div.changes-remotes');
+		container.appendChild(this._remotesContainer);
+
+		// --- Operation log ---
+		this._logContainer = $('div.changes-log');
+		container.appendChild(this._logContainer);
+
+		// Initial load
+		this._initWorkingDirectory();
+		this._refreshStatus();
 	}
 
-	private _updateSummary(summary: HTMLElement): void {
-		const modified = this.changes.filter(c => c.status === 'modified').length;
-		const added = this.changes.filter(c => c.status === 'added').length;
-		const deleted = this.changes.filter(c => c.status === 'deleted').length;
-		const totalAdditions = this.changes.reduce((sum, c) => sum + c.additions, 0);
-		const totalDeletions = this.changes.reduce((sum, c) => sum + c.deletions, 0);
+	private _initWorkingDirectory(): void {
+		// Try to determine the working directory from the workspace
+		// In the sessions workbench, this is typically the opened folder
+		const folders = this.configurationService.getValue<string>('agentStudio.dataPath');
 
-		summary.innerHTML = `
-			<div class="summary-stats">
-				<span class="stat modified">M ${modified}</span>
-				<span class="stat added">A ${added}</span>
-				<span class="stat deleted">D ${deleted}</span>
-			</div>
-			<div class="summary-diff">
-				<span class="additions">+${totalAdditions}</span>
-				<span class="deletions">-${totalDeletions}</span>
-			</div>
-		`;
+		// Use a heuristic: check common locations
+		// The actual cwd should come from the workspace context
+		// For now, we use the first workspace folder or a configured path
+		let cwd = '';
+
+		if (folders) {
+			cwd = folders;
+		} else if (typeof process !== 'undefined' && process.cwd) {
+			cwd = process.cwd();
+		}
+
+		if (cwd) {
+			this._gitCommitService.setWorkingDirectory(cwd);
+		}
 	}
 
-	private _renderChanges(): void {
-		this.listContainer.innerHTML = '';
+	private async _refreshStatus(): Promise<void> {
+		try {
+			const [status, remotes] = await Promise.all([
+				this._gitCommitService.getStatus(),
+				this._gitCommitService.getRemotes(),
+			]);
 
-		if (this.changes.length === 0) {
-			const empty = $('div.changes-empty');
-			empty.innerHTML = `
-				<div class="empty-icon">✨</div>
-				<p>No pending changes</p>
-				<p class="empty-hint">Agent-produced changes will appear here for review</p>
+			this._renderStatus(status);
+			this._renderRemotes(remotes);
+		} catch (err) {
+			this._logService.error('[ChangesView] Failed to refresh status:', err);
+			this._statusContainer.innerHTML = `<div class="changes-error">⚠️ Unable to read git status</div>`;
+		}
+	}
+
+	private _renderStatus(status: IGitStatus): void {
+		this._statusContainer.innerHTML = '';
+
+		if (!status.hasChanges && status.ahead === 0) {
+			const clean = $('div.changes-clean');
+			clean.innerHTML = `
+				<div class="clean-icon">✨</div>
+				<p>Working tree clean</p>
+				<p class="clean-branch">Branch: <strong>${status.branch || '(unknown)'}</strong></p>
 			`;
-			this.listContainer.appendChild(empty);
+			this._statusContainer.appendChild(clean);
 			return;
 		}
 
-		// Group by agent
-		const byAgent = new Map<string, FileChange[]>();
-		for (const change of this.changes) {
-			const agent = change.agent || 'Unknown Agent';
-			if (!byAgent.has(agent)) {
-				byAgent.set(agent, []);
+		const info = $('div.changes-info');
+
+		// Branch info
+		const branchLine = $('div.changes-branch');
+		branchLine.innerHTML = `<strong>Branch:</strong> ${status.branch || '(unknown)'}`;
+		if (status.ahead > 0) {
+			branchLine.innerHTML += ` <span class="ahead-badge">${status.ahead}↑</span>`;
+		}
+		if (status.behind > 0) {
+			branchLine.innerHTML += ` <span class="behind-badge">${status.behind}↓</span>`;
+		}
+		info.appendChild(branchLine);
+
+		// File counts
+		if (status.staged.length > 0 || status.unstaged.length > 0 || status.untracked.length > 0) {
+			const stats = $('div.changes-file-stats');
+			const parts: string[] = [];
+			if (status.staged.length > 0) { parts.push(`<span class="stat-staged">● ${status.staged.length} staged</span>`); }
+			if (status.unstaged.length > 0) { parts.push(`<span class="stat-unstaged">● ${status.unstaged.length} modified</span>`); }
+			if (status.untracked.length > 0) { parts.push(`<span class="stat-untracked">● ${status.untracked.length} untracked</span>`); }
+			stats.innerHTML = parts.join(' &nbsp; ');
+			info.appendChild(stats);
+		}
+
+		// File list (limited)
+		const allFiles = [...status.staged, ...status.unstaged, ...status.untracked];
+		if (allFiles.length > 0) {
+			const fileList = $('div.changes-file-list');
+			const maxShow = 10;
+			const filesToShow = allFiles.slice(0, maxShow);
+			fileList.innerHTML = filesToShow.map(f => `<div class="change-file">• ${f}</div>`).join('');
+			if (allFiles.length > maxShow) {
+				fileList.innerHTML += `<div class="change-file more">... and ${allFiles.length - maxShow} more</div>`;
 			}
-			byAgent.get(agent)!.push(change);
+			info.appendChild(fileList);
 		}
 
-		for (const [agent, agentChanges] of byAgent) {
-			const group = $('div.changes-group');
+		this._statusContainer.appendChild(info);
+	}
 
-			const groupHeader = $('div.changes-group-header');
-			groupHeader.textContent = `🤖 ${agent} (${agentChanges.length} files)`;
-			group.appendChild(groupHeader);
+	private _renderRemotes(remotes: IGitRemote[]): void {
+		this._remotesContainer.innerHTML = '';
 
-			for (const change of agentChanges) {
-				const item = $('div.change-item');
-				item.classList.add(`change-${change.status}`);
+		if (remotes.length === 0) {
+			this._remotesContainer.innerHTML = '<div class="changes-no-remotes">No remotes configured</div>';
+			return;
+		}
 
-				const statusIcon = $('span.change-status');
-				statusIcon.textContent = this._getStatusIcon(change.status);
-				statusIcon.title = change.status;
-				item.appendChild(statusIcon);
+		const title = $('div.remotes-title');
+		title.innerHTML = `<strong>Push targets:</strong> ${remotes.length} remote(s)`;
+		this._remotesContainer.appendChild(title);
 
-				const pathEl = $('span.change-path');
-				pathEl.textContent = change.path;
-				item.appendChild(pathEl);
+		const list = $('div.remotes-list');
+		for (const remote of remotes) {
+			const item = $('div.remote-item');
+			const shortUrl = remote.url.replace(/https?:\/\//, '').replace(/\.git$/, '');
+			item.innerHTML = `<span class="remote-name">${remote.name}</span> <span class="remote-url">${shortUrl}</span>`;
+			list.appendChild(item);
+		}
+		this._remotesContainer.appendChild(list);
+	}
 
-				const diffEl = $('span.change-diff');
-				diffEl.innerHTML = `<span class="add">+${change.additions}</span> <span class="del">-${change.deletions}</span>`;
-				item.appendChild(diffEl);
+	private async _commitAndPushAll(): Promise<void> {
+		if (this._isOperating) {
+			return;
+		}
 
-				const itemActions = $('div.change-actions');
-				const viewBtn = $('button.change-action');
-				viewBtn.textContent = '👁';
-				viewBtn.title = 'View diff';
-				viewBtn.onclick = () => this._viewDiff(change);
-				itemActions.appendChild(viewBtn);
+		this._isOperating = true;
+		this._commitBtn.disabled = true;
+		this._commitBtn.textContent = '⏳ Committing & Pushing...';
+		this._clearLog();
+		this._appendLog('Starting commit & push to all remotes...', 'info');
 
-				const revertBtn = $('button.change-action');
-				revertBtn.textContent = '↩';
-				revertBtn.title = 'Revert file';
-				revertBtn.onclick = () => this._revertFile(change);
-				itemActions.appendChild(revertBtn);
-				item.appendChild(itemActions);
+		try {
+			const message = this._commitMsgInput.value.trim() || undefined;
 
-				group.appendChild(item);
+			const result = await this._gitCommitService.commitAndPushAll(message);
+
+			// Display results
+			if (result.commitResult.success) {
+				if (result.commitResult.stdout.includes('Nothing to commit')) {
+					this._appendLog('No new changes to commit (checking for unpushed commits...)', 'info');
+				} else {
+					this._appendLog('✓ Committed successfully', 'success');
+				}
+			} else {
+				this._appendLog(`✗ Commit failed: ${result.commitResult.stderr}`, 'error');
 			}
 
-			this.listContainer.appendChild(group);
+			for (const [remote, pushResult] of result.pushResults) {
+				if (pushResult.success) {
+					this._appendLog(`✓ Pushed to "${remote}" successfully`, 'success');
+				} else {
+					this._appendLog(`✗ Push to "${remote}" failed: ${pushResult.stderr}`, 'error');
+				}
+			}
+
+			// Show notification
+			const allSuccess = result.commitResult.success &&
+				Array.from(result.pushResults.values()).every(r => r.success);
+
+			if (allSuccess) {
+				this._notificationService.notify({
+					severity: Severity.Info,
+					message: `Commit & Push completed: ${result.pushResults.size} remote(s) updated`,
+				});
+			} else {
+				this._notificationService.notify({
+					severity: Severity.Warning,
+					message: result.summary,
+				});
+			}
+
+			// Clear commit message on success
+			if (result.commitResult.success) {
+				this._commitMsgInput.value = '';
+			}
+
+			// Refresh status
+			await this._refreshStatus();
+
+		} catch (err) {
+			this._appendLog(`Error: ${err}`, 'error');
+			this._notificationService.notify({
+				severity: Severity.Error,
+				message: `Commit & Push failed: ${err}`,
+			});
+		} finally {
+			this._isOperating = false;
+			this._commitBtn.disabled = false;
+			this._commitBtn.textContent = '✓ Commit & Push All';
 		}
 	}
 
-	private _getStatusIcon(status: string): string {
-		switch (status) {
-			case 'modified': return 'M';
-			case 'added': return 'A';
-			case 'deleted': return 'D';
-			case 'renamed': return 'R';
-			default: return '?';
-		}
+	private _appendLog(message: string, type: 'info' | 'success' | 'error'): void {
+		const line = $('div.log-line');
+		line.classList.add(`log-${type}`);
+		const time = new Date().toLocaleTimeString();
+		line.textContent = `[${time}] ${message}`;
+		this._logContainer.appendChild(line);
+		this._logContainer.scrollTop = this._logContainer.scrollHeight;
 	}
 
-	private _commitAll(): void {
-		// TODO: Implement commit
-	}
-
-	private _revertAll(): void {
-		this.changes = [];
-		this._renderChanges();
-	}
-
-	private _refreshChanges(): void {
-		// TODO: Refresh from git status
-	}
-
-	private _viewDiff(_change: FileChange): void {
-		// TODO: Open diff editor
-	}
-
-	private _revertFile(change: FileChange): void {
-		this.changes = this.changes.filter(c => c.path !== change.path);
-		this._renderChanges();
+	private _clearLog(): void {
+		this._logContainer.innerHTML = '';
 	}
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		if (this.listContainer) {
-			this.listContainer.style.height = `${height - 90}px`;
+		if (this._container) {
+			this._container.style.height = `${height}px`;
+			this._container.style.overflow = 'auto';
 		}
 	}
 }

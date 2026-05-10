@@ -1,0 +1,87 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { Event } from '../../../../base/common/event.js';
+import { IModelSelection, IModelInfo, ModelAuthStatus } from './providers.js';
+
+// ─── Model Selector Service ───────────────────────────────────────────────
+
+export const IModelSelectorService = createDecorator<IModelSelectorService>('modelSelectorService');
+
+/**
+ * 模型选择器服务 — 管理 UI 层的模型选择交互
+ *
+ * Model Slot 特殊性：用户需显式选择使用哪个 Provider 的哪个模型，
+ * 而非由 OS 自动按优先级选择。
+ */
+export interface IModelSelectorService {
+	readonly _serviceBrand: undefined;
+
+	// ─── 当前选择 ───────────────────────────────────────────────
+
+	readonly onDidChangeSelection: Event<IModelSelection>;
+	getSelection(): IModelSelection | undefined;
+	setSelection(selection: IModelSelection): void;
+
+	// ─── 可用模型列表（汇聚所有已注册 Model Provider）────────────────
+
+	readonly onDidChangeAvailableModels: Event<void>;
+	getAvailableModels(): IModelSelectorItem[];
+
+	// ─── UI 操作 ───────────────────────────────────────────────
+
+	/**
+	 * 显示快速选择器（QuickPick）
+	 */
+	showQuickPick(): Promise<IModelSelection | undefined>;
+
+	/**
+	 * 打开对应 Provider 的设置页面
+	 */
+	openSettings(providerId?: string): void;
+}
+
+// ─── Model Selector Item ─────────────────────────────────────────────────
+
+/**
+ * 模型选择器列表项（UI 展示用）
+ */
+export interface IModelSelectorItem {
+	readonly provider: IModelSelectorProviderInfo;
+	readonly model: IModelInfo;
+}
+
+export interface IModelSelectorProviderInfo {
+	readonly id: string;          // e.g. 'knot-agui'
+	readonly name: string;        // e.g. 'Knot AG-UI'
+	readonly icon?: string;       // URI string
+	readonly authStatus: ModelAuthStatus;
+}
+
+// ─── Model Selection Storage ──────────────────────────────────────────────
+
+/**
+ * 模型选择持久化（存储在 workspace/global state）
+ */
+export interface IModelSelectionStorage {
+	/**
+	 * 全局默认模型（Settings 配置）
+	 */
+	getGlobalDefault(): IModelSelection | undefined;
+	setGlobalDefault(selection: IModelSelection): void;
+
+	/**
+	 * 工作区级别覆盖
+	 */
+	getWorkspaceSelection(): IModelSelection | undefined;
+	setWorkspaceSelection(selection: IModelSelection): void;
+
+	/**
+	 * 最近使用记录
+	 */
+	getRecentSelections(limit?: number): IModelSelection[];
+	addRecentSelection(selection: IModelSelection): void;
+}

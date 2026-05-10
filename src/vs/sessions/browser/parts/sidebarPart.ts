@@ -22,7 +22,6 @@ import { LayoutPriority } from '../../../base/browser/ui/grid/grid.js';
 import { assertReturnsDefined } from '../../../base/common/types.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../../workbench/common/views.js';
 import { AbstractPaneCompositePart, CompositeBarPosition } from '../../../workbench/browser/parts/paneCompositePart.js';
-import { ICompositeTitleLabel } from '../../../workbench/browser/parts/compositePart.js';
 import { Part } from '../../../workbench/browser/part.js';
 import { ActionsOrientation } from '../../../base/browser/ui/actionbar/actionbar.js';
 import { HoverPosition } from '../../../base/browser/ui/hover/hoverWidget.js';
@@ -38,7 +37,7 @@ import { isFullscreen, onDidChangeFullscreen } from '../../../base/browser/brows
 import { mainWindow } from '../../../base/browser/window.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { hasNativeTitlebar, getTitleBarStyle } from '../../../platform/window/common/window.js';
-import { isMacintosh, isNative, isWeb } from '../../../base/common/platform.js';
+import { isMacintosh, isNative } from '../../../base/common/platform.js';
 
 /**
  * Sidebar part specifically for agent sessions workbench.
@@ -68,31 +67,15 @@ export class SidebarPart extends AbstractPaneCompositePart {
 
 	//#region IView
 
-	// On web the titlebar hosts an additional host filter combo alongside the
-	// sidebar toggle; use a wider minimum so those controls always fit within
-	// the sidebar's rendered area (below this the sidebar snaps closed).
-	readonly minimumWidth: number = isWeb ? 270 : 170;
-	readonly maximumWidth: number = Number.POSITIVE_INFINITY;
+	// [Sarosis] Sidebar with activity bar icons + content panel
+	// The sidebar can expand to show content when an icon is clicked.
+	readonly minimumWidth: number = 170;
+	readonly maximumWidth: number = 450;
 	readonly minimumHeight: number = 0;
 	readonly maximumHeight: number = Number.POSITIVE_INFINITY;
-	override get snap(): boolean { return true; }
+	override get snap(): boolean { return false; }
 
 	readonly priority: LayoutPriority = LayoutPriority.Low;
-
-	get preferredWidth(): number | undefined {
-		const viewlet = this.getActivePaneComposite();
-
-		if (!viewlet) {
-			return undefined;
-		}
-
-		const width = viewlet.getOptimalWidth();
-		if (typeof width !== 'number') {
-			return undefined;
-		}
-
-		return Math.max(width, 300);
-	}
 
 	//#endregion
 
@@ -137,6 +120,11 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			extensionService,
 			menuService,
 		);
+	}
+
+	override get preferredWidth(): number | undefined {
+		// [Sarosis] Sidebar with activity bar + content panel
+		return 250;
 	}
 
 	override create(parent: HTMLElement): void {
@@ -265,17 +253,6 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		return this.layoutService.getSideBarPosition() === SideBarPosition.LEFT ? AnchorAlignment.LEFT : AnchorAlignment.RIGHT;
 	}
 
-	protected override createTitleLabel(parent: HTMLElement): ICompositeTitleLabel {
-		// Let the parent class set titleContainer and titleLabelElement so that
-		// CompositeBarPosition.TITLE can use the title container for the composite bar.
-		const label = super.createTitleLabel(parent);
-		// Hide the title text element (we only need the composite bar icons)
-		if (this.titleLabelElement) {
-			this.titleLabelElement.style.display = 'none';
-		}
-		return label;
-	}
-
 	protected getCompositeBarOptions(): IPaneCompositeBarOptions {
 		return {
 			partContainerClass: 'sidebar',
@@ -283,10 +260,10 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			placeholderViewContainersKey: SidebarPart.placeholderViewContainersKey,
 			viewContainersWorkspaceStateKey: SidebarPart.viewContainersWorkspaceStateKey,
 			icon: true,
-			orientation: ActionsOrientation.HORIZONTAL,
-			recomputeSizes: true,
+			orientation: ActionsOrientation.VERTICAL,
+			recomputeSizes: false,
 			activityHoverOptions: {
-				position: () => HoverPosition.BELOW,
+				position: () => HoverPosition.RIGHT,
 			},
 			fillExtraContextMenuActions: actions => {
 				const viewsSubmenuAction = this.getViewsSubmenuAction();
@@ -295,9 +272,9 @@ export class SidebarPart extends AbstractPaneCompositePart {
 					actions.push(viewsSubmenuAction);
 				}
 			},
-			compositeSize: 0,
-			iconSize: 20,
-			overflowActionSize: 30,
+			compositeSize: 40,
+			iconSize: 24,
+			overflowActionSize: 40,
 			colors: theme => ({
 				activeBackgroundColor: undefined,
 				inactiveBackgroundColor: undefined,
@@ -308,7 +285,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 				badgeForeground: theme.getColor(ACTIVITY_BAR_BADGE_FOREGROUND),
 				dragAndDropBorder: theme.getColor(ACTIVITY_BAR_TOP_DRAG_AND_DROP_BORDER)
 			}),
-			compact: true
+			compact: false
 		};
 	}
 
@@ -317,7 +294,9 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {
-		return CompositeBarPosition.TITLE;
+		// [Sarosis] Use TOP position — the composite bar is placed in a header area
+		// above the content, then styled vertically via CSS to create the Activity Bar look.
+		return CompositeBarPosition.TOP;
 	}
 
 	async focusActivityBar(): Promise<void> {

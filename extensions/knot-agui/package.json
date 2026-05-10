@@ -1,0 +1,86 @@
+{
+  "name": "sarosis-knot-agui",
+  "displayName": "Knot AG-UI Model Provider",
+  "version": "1.0.0",
+  "description": "Provides Model capability via Knot AG-UI remote agents",
+  "publisher": "sarosis",
+  "engines": {
+    "vscode": "^1.85.0",
+    "agent-studio": "^1.0.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onAgentOS:capability.model",
+    "onCommand:knot.login",
+    "onCommand:knot.selectModel"
+  ],
+  "contributes": {
+    "agentCapabilities": [
+      {
+        "capability": "model",
+        "provider": "knot-agui",
+        "priority": 100
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Knot AG-UI",
+      "properties": {
+        "knot.auth.token": {
+          "type": "string",
+          "default": "",
+          "description": "Knot 平台 API Token（在 knot.woa.com 生成）",
+          "scope": "application",
+          "markdownDescription": "Knot 平台 API Token。前往 [Knot Console](https://knot.woa.com/console/tokens) 生成。"
+        },
+        "knot.endpoint": {
+          "type": "string",
+          "default": "https://knot.woa.com/api/v1",
+          "description": "Knot AG-UI API 端点地址"
+        },
+        "knot.defaultAgent": {
+          "type": "string",
+          "default": "",
+          "description": "默认 Agent ID（留空则在模型选择器中手动选择）",
+          "markdownDescription": "默认使用的 Agent ID。可在模型选择器中随时切换。"
+        },
+        "knot.agents": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "已收藏的 Agent 列表（自动同步远端）",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "description": "Agent ID" },
+              "name": { "type": "string", "description": "Agent 显示名称" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "knot.timeout": {
+          "type": "number",
+          "default": 60000,
+          "description": "请求超时时间（毫秒）"
+        },
+        "knot.streaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用流式响应"
+        }
+      }
+    },
+    "commands": [
+      { "command": "knot.login", "title": "Knot: Login / Set Token" },
+      { "command": "knot.selectModel", "title": "Knot: Select Agent Model" },
+      { "command": "knot.refreshAgents", "title": "Knot: Refresh Agent List" },
+      { "command": "knot.viewAgentDetails", "title": "Knot: View Agent Details" }
+    ]
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

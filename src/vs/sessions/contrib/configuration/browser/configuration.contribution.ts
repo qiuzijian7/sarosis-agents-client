@@ -10,6 +10,9 @@ Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerDefaultCon
 	overrides: {
 		'chat.customizationsMenu.userStoragePath': '~/.copilot',
 		'github.copilot.chat.claudeCode.enabled': true,
+		// [Sarosis] In the new three-column layout, editors open directly in the
+		// main editor area (center column) instead of a modal overlay.
+		'workbench.editor.useModal': 'off',
 	},
 	donotCache: true,
 	preventExperimentOverride: true,

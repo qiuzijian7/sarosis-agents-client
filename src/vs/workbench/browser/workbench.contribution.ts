@@ -343,12 +343,12 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 				'default': 'right',
 				'markdownDescription': localize('sideBySideDirection', "Controls the default direction of editors that are opened side by side (for example, from the Explorer). By default, editors will open on the right hand side of the currently active one. If changed to `down`, the editors will open below the currently active one. This also impacts the split editor action in the editor toolbar.")
 			},
-		'workbench.editor.closeEmptyGroups': {
-			'type': 'boolean',
-			'description': localize('closeEmptyGroups', "Controls the behavior of empty editor groups when the last tab in the group is closed. When enabled, empty groups will automatically close. When disabled, empty groups will remain part of the grid."),
-			'default': true, // Agent Studio: allow empty groups to close; removeGroup() keeps at least 1 group
-			'keywords': ['pane']
-		},
+			'workbench.editor.closeEmptyGroups': {
+				'type': 'boolean',
+				'description': localize('closeEmptyGroups', "Controls the behavior of empty editor groups when the last tab in the group is closed. When enabled, empty groups will automatically close. When disabled, empty groups will remain part of the grid."),
+				'default': true,
+				'keywords': ['pane']
+			},
 			'workbench.editor.revealIfOpen': {
 				'type': 'boolean',
 				'description': localize('revealIfOpen', "Controls whether an editor is revealed in any of the visible groups if opened. If disabled, an editor will prefer to open in the currently active editor group. If enabled, an already opened editor will be revealed instead of opened again in the currently active editor group. Note that there are some cases where this setting is ignored, such as when forcing an editor to open in a specific group or to the side of the currently active group."),

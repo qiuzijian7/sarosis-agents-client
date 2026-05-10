@@ -84,8 +84,11 @@ export class SplitEditorAction extends AbstractSplitEditorAction {
 		super({
 			id: SplitEditorAction.ID,
 			title: localize2('splitEditor', 'Split Editor'),
-			f1: false,
-			// Agent Studio: keybinding removed to maintain fixed 3-column layout
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyCode.Backslash
+			},
 			category: Categories.View
 		});
 	}
@@ -97,8 +100,11 @@ export class SplitEditorOrthogonalAction extends AbstractSplitEditorAction {
 		super({
 			id: 'workbench.action.splitEditorOrthogonal',
 			title: localize2('splitEditorOrthogonal', 'Split Editor Orthogonal'),
-			f1: false,
-			// Agent Studio: keybinding removed to maintain fixed 3-column layout
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Backslash)
+			},
 			category: Categories.View
 		});
 	}
@@ -116,8 +122,11 @@ export class SplitEditorLeftAction extends ExecuteCommandAction {
 		super({
 			id: SPLIT_EDITOR_LEFT,
 			title: localize2('splitEditorGroupLeft', 'Split Editor Left'),
-			f1: false,
-			// Agent Studio: keybinding removed to maintain fixed 3-column layout
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Backslash)
+			},
 			category: Categories.View
 		}, SPLIT_EDITOR_LEFT);
 	}
@@ -129,8 +138,11 @@ export class SplitEditorRightAction extends ExecuteCommandAction {
 		super({
 			id: SPLIT_EDITOR_RIGHT,
 			title: localize2('splitEditorGroupRight', 'Split Editor Right'),
-			f1: false,
-			// Agent Studio: keybinding removed to maintain fixed 3-column layout
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Backslash)
+			},
 			category: Categories.View
 		}, SPLIT_EDITOR_RIGHT);
 	}
@@ -144,8 +156,11 @@ export class SplitEditorUpAction extends ExecuteCommandAction {
 		super({
 			id: SPLIT_EDITOR_UP,
 			title: localize2('splitEditorGroupUp', "Split Editor Up"),
-			f1: false,
-			// Agent Studio: keybinding removed to maintain fixed 3-column layout
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Backslash)
+			},
 			category: Categories.View
 		}, SPLIT_EDITOR_UP);
 	}
@@ -159,8 +174,11 @@ export class SplitEditorDownAction extends ExecuteCommandAction {
 		super({
 			id: SPLIT_EDITOR_DOWN,
 			title: localize2('splitEditorGroupDown', "Split Editor Down"),
-			f1: false,
-			// Agent Studio: keybinding removed to maintain fixed 3-column layout
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Backslash)
+			},
 			category: Categories.View
 		}, SPLIT_EDITOR_DOWN);
 	}

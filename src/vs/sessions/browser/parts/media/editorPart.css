@@ -69,3 +69,9 @@
 .agent-sessions-workbench .part.editor.modal-editor-part .modal-editor-action-container .action-label.codicon.codicon-open-in-window {
 	transform: rotate(180deg);
 }
+
+/* [Sarosis] Hide the "Close Group" button (X) on empty editor groups.
+   Both editor groups are permanent and cannot be closed. */
+.agent-sessions-workbench .part.editor > .content .editor-group-container > .editor-group-container-toolbar .action-label.codicon-close {
+	display: none !important;
+}

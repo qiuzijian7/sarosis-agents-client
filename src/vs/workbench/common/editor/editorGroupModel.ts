@@ -1261,12 +1261,6 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 			this.sticky = data.sticky;
 		}
 
-		// [Sarosis] Agent-studio groups must never be locked (zone protection is used instead).
-		// Override any persisted locked state if group contains agent-studio editors.
-		if (this.locked && this.editors.some(editor => editor.resource?.scheme === 'agent-studio')) {
-			this.locked = false;
-		}
-
 		return this._id;
 	}
 

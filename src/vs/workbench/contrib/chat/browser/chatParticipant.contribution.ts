@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { coalesce, isNonEmptyArray } from '../../../../base/common/arrays.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Event } from '../../../../base/common/event.js';
 import { createCommandUri, MarkdownString } from '../../../../base/common/htmlContent.js';
@@ -11,15 +12,15 @@ import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import * as strings from '../../../../base/common/strings.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ExtensionIdentifier, IExtensionManifest } from '../../../../platform/extensions/common/extensions.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
-import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
-import { EditorExtensions } from '../../../common/editor.js';
-import { IViewsRegistry, Extensions as ViewExtensions } from '../../../common/views.js';
+import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
+import { IWorkbenchContribution } from '../../../common/contributions.js';
+import { IViewContainersRegistry, IViewDescriptor, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../common/views.js';
 import { Extensions, IExtensionFeaturesRegistry, IExtensionFeatureTableRenderer, IRenderedData, IRowData, ITableData } from '../../../services/extensionManagement/common/extensionFeatures.js';
 import { isProposedApiEnabled } from '../../../services/extensions/common/extensions.js';
 import * as extensionsRegistry from '../../../services/extensions/common/extensionsRegistry.js';
@@ -29,176 +30,57 @@ import { IChatAgentData, IChatAgentService } from '../common/participants/chatAg
 import { ChatContextKeys } from '../common/actions/chatContextKeys.js';
 import { IRawChatParticipantContribution } from '../common/participants/chatParticipantContribTypes.js';
 import { ChatAgentLocation, ChatModeKind } from '../common/constants.js';
-import { ChatViewId } from './chat.js';
-import { AgentStudioEditorPane } from '../../../../sessions/contrib/agentStudio/browser/agentStudioEditorPane.js';
-import { AgentStudioEditorInput } from '../../../../sessions/contrib/agentStudio/browser/agentStudioEditorInput.js';
-import { IEditorGroupsService, GroupOrientation, GroupsOrder } from '../../../services/editor/common/editorGroupsService.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
-import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
+import { ChatViewId, ChatViewContainerId } from './chat.js';
+import { ChatViewPane } from './widgetHosts/viewPane/chatViewPane.js';
 
-// --- Agent Studio Layout ---
-// All panels (Canvas, TaskBoard, Chat) → EditorPane in editor area
-// Left side: normal file editors | Right side: Canvas (top-right), TaskBoard (bottom-right-left), Chat (bottom-right-right)
+// --- Chat Container &  View Registration
 
-// ─── 1. Register Canvas & TaskBoard as EditorPanes (editor area) ─────────────
-(Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane)).registerEditorPane(
-	EditorPaneDescriptor.create(
-		AgentStudioEditorPane,
-		AgentStudioEditorPane.ID,
-		localize('agentStudio.editorPane', "Agent Studio")
-	),
-	[new SyncDescriptor(AgentStudioEditorInput)]
-);
+const chatViewIcon = registerIcon('chat-view-icon', Codicon.chatSparkle, localize('chatViewIcon', 'View icon of the chat view.'));
 
-// ─── Commands to open Canvas and TaskBoard in editor area (right side) ───────
+const chatViewContainer: ViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
+	id: ChatViewContainerId,
+	title: localize2('chat.viewContainer.label', "Chat"),
+	icon: chatViewIcon,
+	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [ChatViewContainerId, { mergeViewWithContainerWhenSingleView: true }]),
+	storageId: ChatViewContainerId,
+	hideIfEmpty: true,
+	order: 1,
+}, ViewContainerLocation.AuxiliaryBar, { isDefault: true, doNotRegisterOpenCommand: true });
 
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'agentStudio.openCanvas',
-			title: localize2('agentStudio.openCanvas', "Open Workspace Canvas"),
-			category: Categories.View,
-			f1: true,
-			keybinding: {
-				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyC,
-				weight: 200,
-			},
-		});
-	}
-	run(accessor: ServicesAccessor): void {
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const groups = editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-		// Find a locked group that already has Canvas, or use the first right-side group
-		const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
-		const targetGroup = groups.length >= 2 ? groups[1] : groups[0];
-		targetGroup.openEditor(canvasInput, { pinned: true });
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'agentStudio.openTaskBoard',
-			title: localize2('agentStudio.openTaskBoard', "Open Task Board"),
-			category: Categories.View,
-			f1: true,
-			keybinding: {
-				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyT,
-				weight: 200,
-			},
-		});
-	}
-	run(accessor: ServicesAccessor): void {
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const groups = editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-		const taskBoardInput = AgentStudioEditorInput.getOrCreate('taskboard');
-		// TaskBoard goes to the last group (bottom-right if layout is applied)
-		const targetGroup = groups.length >= 3 ? groups[2] : groups.length >= 2 ? groups[1] : groups[0];
-		targetGroup.openEditor(taskBoardInput, { pinned: true });
-	}
-});
-
-// ─── Auto-open: Create split layout with all Agent Studio panels on the right ────
-
-class AgentStudioEditorAutoOpen extends Disposable implements IWorkbenchContribution {
-	static readonly ID = 'workbench.contrib.agentStudioEditorAutoOpen';
-
-	constructor(
-		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
-	) {
-		super();
-		this._setupLayout();
-	}
-
-	private async _setupLayout(): Promise<void> {
-		// Layout structure:
-		// HORIZONTAL root → [ left(0.5), right-column(0.5) ]
-		// right-column (VERTICAL) → [ top(0.5), bottom-row(0.5) ]
-		// bottom-row (HORIZONTAL) → [ taskboard(0.5), chat(0.5) ]
-		//
-		// Result:
-		// ┌──────────┬───────────────────┐
-		// │          │   Canvas (top)    │
-		// │  Normal  ├─────────┬─────────┤
-		// │ Editors  │TaskBoard│  Chat   │
-		// │  (left)  │(btm-l)  │ (btm-r) │
-		// └──────────┴─────────┴─────────┘
-
-		this.editorGroupsService.applyLayout({
-			orientation: GroupOrientation.HORIZONTAL,
-			groups: [
-				{ size: 0.5 },                                          // [0] Left: normal editors
-				{ size: 0.5, groups: [                                   // Right column (vertical)
-					{},                                                 // [1] Right-top: Canvas
-					{ groups: [{}, {}] },                               // Right-bottom row: [2] TaskBoard, [3] Chat
-				] },
-			],
-		});
-
-		// Wait a tick for groups to be created
-		await new Promise(resolve => setTimeout(resolve, 0));
-
-		const groups = this.editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-		// groups[0] = left, groups[1] = right-top, groups[2] = right-bottom-left, groups[3] = right-bottom-right
-		if (groups.length >= 4) {
-			const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
-			const taskBoardInput = AgentStudioEditorInput.getOrCreate('taskboard');
-			const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-
-			// Open panels in their respective groups
-			await groups[1].openEditor(canvasInput, { pinned: true, preserveFocus: true });
-			await groups[2].openEditor(taskBoardInput, { pinned: true, preserveFocus: true });
-			await groups[3].openEditor(chatInput, { pinned: true, preserveFocus: true });
-
-			// NOTE: Groups are NOT locked. Zone protection in editorGroupFinder.ts
-			// prevents non-agent-studio editors from being routed here instead.
-			// Force-unlock all right-side groups to clear any persisted locked state
-			// from previous sessions where lock was enabled.
-			//groups[1].lock(false);
-			//groups[2].lock(false);
-			//groups[3].lock(false);
-		}
-
-		// Additionally, unlock ALL groups that contain agent-studio editors
-		// (handles edge cases where layout was restored from storage with locked state)
-		for (const group of this.editorGroupsService.groups) {
-			if (group.isLocked && group.editors.some(e => e.resource?.scheme === 'agent-studio')) {
-				//group.lock(false);
+const chatViewDescriptor: IViewDescriptor = {
+	id: ChatViewId,
+	containerIcon: chatViewContainer.icon,
+	containerTitle: chatViewContainer.title.value,
+	singleViewPaneContainerTitle: chatViewContainer.title.value,
+	name: localize2('chat.viewContainer.label', "Chat"),
+	canToggleVisibility: false,
+	canMoveView: true,
+	openCommandActionDescriptor: {
+		id: ChatViewContainerId,
+		title: chatViewContainer.title,
+		mnemonicTitle: localize({ key: 'miToggleChat', comment: ['&& denotes a mnemonic'] }, "&&Chat"),
+		keybindings: {
+			primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyI,
+			mac: {
+				primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyI
 			}
-		}
-	}
-}
-
-registerWorkbenchContribution2(AgentStudioEditorAutoOpen.ID, AgentStudioEditorAutoOpen, WorkbenchPhase.AfterRestored);
-
-// ─── Command to open Chat in editor area ─────────────────────────────────────
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'agentStudio.openChat',
-			title: localize2('agentStudio.openChat', "Open Agent Chat"),
-			category: Categories.View,
-			f1: true,
-			keybinding: {
-				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyI,
-				mac: {
-					primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyI
-				},
-				weight: 200,
-			},
-		});
-	}
-	run(accessor: ServicesAccessor): void {
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const groups = editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-		// Chat goes to the last group (bottom-right area)
-		const targetGroup = groups.length >= 4 ? groups[3] : groups.length >= 3 ? groups[2] : groups[0];
-		targetGroup.openEditor(chatInput, { pinned: true });
-	}
-});
+		},
+		order: 1
+	},
+	ctorDescriptor: new SyncDescriptor(ChatViewPane),
+	when: ContextKeyExpr.and(
+		ChatContextKeys.accountPolicyGateActive.negate(),
+		ContextKeyExpr.or(
+			ContextKeyExpr.and(
+				ChatContextKeys.Setup.hidden.negate(),
+				ChatContextKeys.Setup.disabledInWorkspace.negate(),
+			),
+			ChatContextKeys.panelParticipantRegistered,
+			ChatContextKeys.extensionInvalid
+		)
+	)
+};
+Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([chatViewDescriptor], chatViewContainer);
 
 const chatParticipantExtensionPoint = extensionsRegistry.ExtensionsRegistry.registerExtensionPoint<IRawChatParticipantContribution[]>({
 	extensionPoint: 'chatParticipants',
