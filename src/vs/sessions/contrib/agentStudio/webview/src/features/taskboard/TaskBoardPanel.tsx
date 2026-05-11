@@ -5,7 +5,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useTaskBoardStore, type TaskBoardRecord, type TaskBoardStatus, type TaskSource } from '../../store/useTaskBoardStore';
+import { useTaskBoardStore, type TaskBoardStatus, type TaskSource } from '../../store/useTaskBoardStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
@@ -28,7 +28,7 @@ const CollapseIcon = ({ collapsed }: { collapsed: boolean }) => (
 );
 
 export function TaskBoardPanel(): React.ReactElement {
-	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, deleteTask, archiveTask, setDragTarget, dragTargetId } = useTaskBoardStore();
+	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, deleteTask, archiveTask, setDragTarget } = useTaskBoardStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();

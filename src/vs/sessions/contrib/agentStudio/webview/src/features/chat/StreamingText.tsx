@@ -2,7 +2,7 @@
  *  Agent Studio WebView - Streaming Text Component (Typewriter effect)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef } from 'react';
 
 interface StreamingTextProps {
 	text: string;

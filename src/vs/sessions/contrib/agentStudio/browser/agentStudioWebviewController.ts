@@ -331,6 +331,16 @@ export class AgentStudioWebviewController extends Disposable {
 		this._register(this.agentTaskBoardService.onDidChangeTaskBoard(() => {
 			this._sendEvent('taskBoard.changed', {});
 		}));
+
+		// Listen for active workspace switching from the global toolbar
+		const onActiveWorkspaceChanged = (e: Event) => {
+			const detail = (e as CustomEvent).detail;
+			if (detail?.workspaceId) {
+				this._sendEvent('workspace.activeChanged', { workspaceId: detail.workspaceId });
+			}
+		};
+		document.addEventListener('agent-studio:active-workspace-changed', onActiveWorkspaceChanged);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:active-workspace-changed', onActiveWorkspaceChanged) });
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

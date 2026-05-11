@@ -1,6 +1,11 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Global Styles
- *  Four-zone layout: Title | Canvas+Chat (side by side) | Task Board (bottom)
+ *  Matching sarosis-webui workspace canvas layout:
+ *  - Workspace Toolbar (top)
+ *  - Canvas mode: ReactFlow with MiniMap, Controls, Background
+ *  - List mode: PM zone / Employee zone with drag reorder
+ *  - Chat panel (right side)
+ *  - Task board (bottom)
  *  Bridges VS Code CSS custom properties for seamless theme integration.
  *--------------------------------------------------------------------------------------------*/
 
@@ -30,14 +35,14 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* ═══ ① Title Bar / Toolbar ══════════════════════════════════════════════════ */
+/* ═══ ① Workspace Toolbar ══════════════════════════════════════════════════ */
 
-.toolbar {
+.workspace-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 8px;
-  height: 34px;
+  padding: 4px 12px;
+  height: 35px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
   background-color: var(--vscode-editorGroupHeader-tabsBackground);
@@ -52,6 +57,14 @@ html, body, #root {
   overflow: hidden;
 }
 
+.toolbar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
 .toolbar-right {
   display: flex;
   align-items: center;
@@ -59,58 +72,27 @@ html, body, #root {
   flex-shrink: 0;
 }
 
-.workspace-selector {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 4px;
-  background-color: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
-  font-size: 12px;
-  cursor: pointer;
-  max-width: 180px;
-  overflow: hidden;
-}
-
-.workspace-selector:hover {
-  border-color: var(--vscode-focusBorder);
-}
-
-.workspace-selector-icon {
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.workspace-selector-name {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 500;
-}
-
-.toolbar-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background-color: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
-  white-space: nowrap;
-}
-
+/* Toolbar buttons */
 .toolbar-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px;
   border: none;
   background: transparent;
   color: var(--vscode-foreground);
   border-radius: 4px;
   cursor: pointer;
   opacity: 0.7;
+  font-size: 11px;
+  transition: background-color 100ms, opacity 100ms;
+}
+
+.toolbar-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .toolbar-btn:hover {
@@ -124,6 +106,21 @@ html, body, #root {
   color: var(--vscode-list-activeSelectionForeground);
 }
 
+.toolbar-btn-primary {
+  opacity: 1;
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.toolbar-btn-primary:hover {
+  background-color: rgba(59, 130, 246, 0.25);
+}
+
+.toolbar-btn-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .toolbar-divider {
   width: 1px;
   height: 16px;
@@ -131,70 +128,330 @@ html, body, #root {
   margin: 0 4px;
 }
 
-/* Workspace Dropdown */
-.workspace-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 8px;
-  min-width: 200px;
-  max-width: 280px;
+/* ─── Toolbar: Workspace Selector ─────────────────────────────────────────── */
+
+.toolbar-ws-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+.toolbar-ws-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  transition: border-color 150ms, background-color 150ms;
+}
+
+.toolbar-ws-select-btn:hover {
+  border-color: var(--vscode-focusBorder);
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.toolbar-ws-select-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.toolbar-ws-chevron {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  transition: transform 200ms;
+}
+
+.toolbar-ws-chevron.rotate-180 {
+  transform: rotate(180deg);
+}
+
+/* Employee count badge (in toolbar) */
+.toolbar-ws-emp-count {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background-color: var(--vscode-input-background);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.toolbar-ws-emp-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.toolbar-ws-emp-text {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+/* ─── Toolbar Workspace Dropdown ──────────────────────────────────────────── */
+
+.toolbar-ws-dropdown {
+  position: fixed;
+  z-index: 10000;
   background-color: var(--vscode-dropdown-background, var(--vscode-editor-background));
   border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   overflow: hidden;
 }
 
-.dropdown-header {
-  padding: 6px 10px;
+.toolbar-ws-dd-current {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.toolbar-ws-dd-current-label {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--vscode-descriptionForeground);
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  margin-bottom: 4px;
 }
 
-.dropdown-empty {
-  padding: 12px 10px;
-  font-size: 12px;
-  color: var(--vscode-descriptionForeground);
-  text-align: center;
+.toolbar-ws-dd-current-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
 }
 
-.dropdown-item {
+.toolbar-ws-dd-divider {
+  height: 1px;
+  background-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.toolbar-ws-dd-opt {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  padding: 8px 14px;
   cursor: pointer;
   font-size: 12px;
+  transition: background-color 100ms;
 }
 
-.dropdown-item:hover {
+.toolbar-ws-dd-opt:hover {
   background-color: var(--vscode-list-hoverBackground);
 }
 
-.dropdown-item.active {
+.toolbar-ws-dd-opt.active {
   background-color: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
 }
 
-.dropdown-item-icon {
-  font-size: 12px;
-  flex-shrink: 0;
+.toolbar-ws-dd-opt-info {
+  flex: 1;
+  min-width: 0;
 }
 
-.dropdown-item-name {
-  flex: 1;
+.toolbar-ws-dd-opt-name {
+  font-size: 12px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dropdown-item-check {
-  font-size: 11px;
-  opacity: 0.8;
+.toolbar-ws-dd-opt-check {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.toolbar-ws-dd-opt-action {
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  gap: 8px;
+}
+
+.toolbar-ws-dd-opt-action-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Workspace list scrollable area */
+.toolbar-ws-dd-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.toolbar-ws-dd-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.toolbar-ws-dd-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.toolbar-ws-dd-list::-webkit-scrollbar-thumb {
+  background-color: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.4));
+  border-radius: 3px;
+}
+
+.toolbar-ws-dd-list::-webkit-scrollbar-thumb:hover {
+  background-color: var(--vscode-scrollbarSlider-hoverBackground, rgba(128, 128, 128, 0.7));
+}
+
+/* Create workspace form (in toolbar dropdown) */
+.toolbar-ws-dd-create-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+}
+
+.toolbar-ws-dd-create-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-focusBorder, #3b82f6));
+  border-radius: 4px;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 150ms;
+}
+
+.toolbar-ws-dd-create-input:focus {
+  border-color: var(--vscode-focusBorder, #3b82f6);
+}
+
+.toolbar-ws-dd-create-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, rgba(128, 128, 128, 0.6));
+}
+
+.toolbar-ws-dd-create-input:disabled {
+  opacity: 0.6;
+}
+
+.toolbar-ws-dd-create-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toolbar-ws-dd-create-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 100ms, opacity 100ms;
+}
+
+.toolbar-ws-dd-create-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.toolbar-ws-dd-create-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toolbar-ws-dd-create-confirm {
+  background-color: rgba(34, 197, 94, 0.15);
+  color: var(--vscode-terminal-ansiGreen, #22c55e);
+}
+
+.toolbar-ws-dd-create-confirm:hover:not(:disabled) {
+  background-color: rgba(34, 197, 94, 0.3);
+}
+
+.toolbar-ws-dd-create-cancel {
+  background-color: rgba(239, 68, 68, 0.1);
+  color: var(--vscode-errorForeground, #ef4444);
+}
+
+.toolbar-ws-dd-create-cancel:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.2);
+}
+
+/* Spinner for create button */
+.toolbar-ws-dd-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(34, 197, 94, 0.3);
+  border-top-color: var(--vscode-terminal-ansiGreen, #22c55e);
+  border-radius: 50%;
+  animation: toolbar-ws-dd-spin 0.6s linear infinite;
+}
+
+@keyframes toolbar-ws-dd-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ═══ Canvas Floating View Toggle ══════════════════════════════════════════ */
+
+.canvas-view-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background-color: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.canvas-view-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: background-color 100ms, opacity 100ms, border-color 100ms;
+}
+
+.canvas-view-toggle-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.canvas-view-toggle-btn:hover {
+  background-color: var(--vscode-list-hoverBackground);
+  opacity: 1;
+}
+
+.canvas-view-toggle-btn.active {
+  opacity: 1;
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  border-color: var(--vscode-focusBorder, #3b82f6);
 }
 
 /* ═══ Main Content Area (canvas + chat side by side) ═════════════════════════ */
@@ -225,114 +482,562 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* ═══ ② Canvas Wrapper ══════════════════════════════════════════════════════ */
+/* ═══ ② Canvas Container ═══════════════════════════════════════════════════ */
 
-.canvas-wrapper {
-  flex: 1;
-  min-height: 0;
-}
-
-/* ═══ ② Employee List View ═════════════════════════════════════════════════── */
-
-.employee-list-view {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
+.canvas-container {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
 }
 
-.employee-list-empty {
+/* Canvas flow area */
+.canvas-flow-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.workspace-canvas {
+  background: var(--vscode-editor-background) !important;
+}
+
+/* Canvas Controls (zoom +/-) */
+.canvas-controls {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background)) !important;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3)) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
+}
+
+.canvas-controls button {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background)) !important;
+  color: var(--vscode-foreground) !important;
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.3)) !important;
+  width: 24px !important;
+  height: 24px !important;
+}
+
+.canvas-controls button:hover {
+  background: var(--vscode-list-hoverBackground) !important;
+}
+
+/* Canvas MiniMap */
+.canvas-minimap {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background)) !important;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3)) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Canvas empty state */
+.canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.canvas-empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background-color: var(--vscode-input-background);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.canvas-empty-icon svg {
+  width: 32px;
+  height: 32px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.canvas-empty-text {
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.canvas-empty-hint {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+}
+
+/* Canvas list area */
+.canvas-list-area {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ═══ ② Employee Node (Canvas Mode) ══════════════════════════════════════ */
+
+.employee-node {
+  min-width: 220px;
+  max-width: 280px;
+  border-radius: 12px;
+  border: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  position: relative;
+  cursor: grab;
+  transition: border-color 200ms, box-shadow 200ms, transform 200ms;
+  overflow: hidden;
+}
+
+.employee-node:active {
+  cursor: grabbing;
+}
+
+.employee-node:hover {
+  border-color: rgba(88, 166, 255, 0.4);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+}
+
+.employee-node.selected {
+  border-color: var(--vscode-focusBorder, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3), 0 8px 16px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.employee-node.status-animated {
+  animation: node-glow 2s ease-in-out infinite;
+}
+
+@keyframes node-glow {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 12px rgba(59, 130, 246, 0.2); }
+}
+
+/* Handle styling */
+.employee-node-handle {
+  background: var(--vscode-textLink-foreground, #3b82f6) !important;
+  width: 8px !important;
+  height: 8px !important;
+  border: 2px solid var(--vscode-editor-background) !important;
+}
+
+/* Node body (vertical layout) */
+.employee-node-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px;
+  gap: 6px;
+  position: relative;
+}
+
+/* Avatar area */
+.employee-node-avatar-area {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.employee-card-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  transition: border-color 200ms, transform 200ms;
+}
+
+.employee-node:hover .employee-card-avatar {
+  border-color: rgba(88, 166, 255, 0.5);
+  transform: scale(1.05);
+}
+
+.employee-card-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.employee-card-avatar-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 18px;
+  color: white;
+  background: linear-gradient(135deg, var(--vscode-textLink-foreground, #3b82f6), #7c3aed);
+}
+
+/* Status dot on avatar */
+.employee-status-dot {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--vscode-editor-background);
+}
+
+/* Info area */
+.employee-node-info {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  width: 100%;
+}
+
+.employee-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.employee-card-role {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* Model badge */
+.employee-card-model-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.employee-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.model-badge {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--vscode-textLink-foreground, #60a5fa);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.badge-icon {
+  width: 11px;
+  height: 11px;
+}
+
+/* Delete button */
+.employee-node-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-errorForeground, #f87171);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms, background-color 150ms;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.employee-node-delete svg {
+  width: 12px;
+  height: 12px;
+}
+
+.employee-node:hover .employee-node-delete {
+  opacity: 0.6;
+}
+
+.employee-node-delete:hover {
+  opacity: 1 !important;
+  background-color: rgba(239, 68, 68, 0.15);
+}
+
+/* Tags bar at bottom */
+.employee-node-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.employee-card-skill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.employee-card-skill-more {
+  font-size: 9px;
+  color: var(--vscode-descriptionForeground);
+  font-weight: 500;
+}
+
+.employee-card-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.token-icon {
+  width: 10px;
+  height: 10px;
+}
+
+/* ═══ Employee List View (List Mode) ═══════════════════════════════════════ */
+
+.emp-list-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.emp-list-zone-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 4px 6px;
+  margin-top: 8px;
+}
+
+.emp-list-zone-header:first-child {
+  margin-top: 0;
+}
+
+.emp-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  margin-bottom: 2px;
+  transition: background-color 100ms, border-color 100ms;
+}
+
+.emp-list-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.emp-list-selected {
+  background: var(--vscode-list-activeSelectionBackground);
+  border-color: var(--vscode-focusBorder, #3b82f6);
+}
+
+.emp-list-drag-over-before {
+  border-top: 2px solid var(--vscode-focusBorder, #3b82f6);
+  margin-top: -1px;
+}
+
+.emp-list-drag-over-after {
+  border-bottom: 2px solid var(--vscode-focusBorder, #3b82f6);
+  margin-bottom: -1px;
+}
+
+.emp-list-drag-handle {
+  cursor: grab;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0;
+  padding: 2px;
+  border-radius: 3px;
+  transition: opacity 100ms, background-color 100ms;
+  flex-shrink: 0;
+}
+
+.emp-list-item:hover .emp-list-drag-handle {
+  opacity: 0.5;
+}
+
+.emp-list-drag-handle:hover {
+  opacity: 1 !important;
+  background: var(--vscode-list-hoverBackground);
+}
+
+.emp-list-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.emp-list-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.emp-list-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.emp-list-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emp-list-name:hover {
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.emp-pm-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 600;
+  line-height: 14px;
+  flex-shrink: 0;
+}
+
+.emp-pm-badge.active {
+  background-color: rgba(59, 130, 246, 0.2);
+  color: var(--vscode-textLink-foreground, #60a5fa);
+}
+
+.emp-list-role {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emp-list-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.emp-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.emp-dot-animated {
+  animation: pulse 1.5s infinite;
+}
+
+.emp-status-label {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.emp-list-menu-btn {
+  background: transparent;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 100ms, background-color 100ms;
+  flex-shrink: 0;
+}
+
+.emp-list-item:hover .emp-list-menu-btn {
+  opacity: 0.6;
+}
+
+.emp-list-menu-btn:hover {
+  opacity: 1 !important;
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-errorForeground, #f87171);
+}
+
+.emp-list-rename-input {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder, #3b82f6);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  width: 100%;
+  font-family: inherit;
+}
+
+.emp-list-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--vscode-descriptionForeground);
-  font-size: 12px;
-  gap: 4px;
+  padding: 32px;
+  text-align: center;
 }
 
-.employee-list-empty .hint {
-  font-size: 11px;
-  opacity: 0.7;
-}
-
-.employee-list-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background-color 100ms, border-color 100ms;
-}
-
-.employee-list-card:hover {
-  background-color: var(--vscode-list-hoverBackground);
-}
-
-.employee-list-card.selected {
-  background-color: var(--vscode-list-activeSelectionBackground);
-  color: var(--vscode-list-activeSelectionForeground);
-  border-color: var(--vscode-focusBorder);
-}
-
-.employee-list-card-left {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.employee-list-avatar {
-  width: 32px;
-  height: 32px;
+.emp-list-empty-icon {
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   background-color: var(--vscode-input-background);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
 }
 
-.employee-list-status {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 2px solid var(--vscode-editor-background);
-}
-
-.employee-list-card-info {
-  flex: 1;
-  overflow: hidden;
-}
-
-.employee-list-card-name {
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.employee-list-card-role {
-  font-size: 10px;
+.emp-list-empty-icon svg {
+  width: 28px;
+  height: 28px;
   color: var(--vscode-descriptionForeground);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.employee-list-card-right {
-  flex-shrink: 0;
+.emp-list-empty-text {
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
 }
 
-.employee-list-card-model {
-  font-size: 9px;
-  padding: 2px 5px;
-  border-radius: 3px;
-  background-color: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
+.emp-list-empty-hint {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
 }
 
 /* ═══ ③ Task Board Panel ═════════════════════════════════════════════════════ */
@@ -848,6 +1553,209 @@ html, body, #root {
 .chat-btn.stop {
   background-color: #ef4444;
   color: white;
+}
+
+/* ═══ Workspace Sidebar ═══════════════════════════════════════════════════════ */
+
+.workspace-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  flex-shrink: 0;
+}
+
+.sidebar-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.sidebar-action {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.sidebar-action:hover {
+  background-color: var(--vscode-list-hoverBackground);
+  opacity: 1;
+}
+
+.sidebar-search {
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+
+.search-input {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+}
+
+.search-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.sidebar-tree {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.workspace-group {
+  margin-bottom: 2px;
+}
+
+.sidebar-ws-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 100ms;
+}
+
+.sidebar-ws-header:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.sidebar-ws-header.active {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.workspace-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.workspace-icon {
+  font-size: 12px;
+}
+
+.workspace-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-count {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  line-height: 16px;
+}
+
+.workspace-employees {
+  padding-left: 12px;
+}
+
+.employee-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 100ms;
+}
+
+.employee-item:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.employee-item.selected {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.employee-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.employee-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background-color: var(--vscode-input-background);
+}
+
+.employee-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.employee-name {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.employee-role {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.empty-hint {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+}
+
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.sidebar-empty-hint {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 4px;
 }
 
 /* ═══ Scrollbar (match VS Code) ══════════════════════════════════════════════ */

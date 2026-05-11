@@ -52,7 +52,17 @@ export class CronParser {
 	private readonly _logService: ILogService;
 
 	constructor(logService?: ILogService) {
-		this._logService = logService || console as unknown as ILogService;
+		this._logService = logService ?? {
+			info: () => {},
+			warn: () => {},
+			error: () => {},
+			debug: () => {},
+			trace: () => {},
+			getLevel: () => 0,
+			setLevel: () => {},
+			onDidChangeLogLevel: Event.NONE,
+			dispose: () => {},
+		} as unknown as ILogService;
 	}
 
 	// ------------------------------------------------------------------------------------------------

@@ -36,6 +36,7 @@ interface WorkspaceState {
 
 	// Actions
 	loadWorkspaces: () => Promise<void>;
+	createWorkspace: (name: string, description?: string) => Promise<string | null>;
 	setActiveWorkspace: (id: string) => Promise<void>;
 	updateNodes: (nodes: WorkspaceNode[]) => void;
 	updateEdges: (edges: WorkspaceEdge[]) => void;
@@ -59,6 +60,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to load workspaces:', err);
 			set({ isLoading: false });
+		}
+	},
+
+	createWorkspace: async (name: string, description?: string) => {
+		try {
+			const result = await sendRequest<{ name: string; description?: string }, { id: string }>('workspace.create', { name, description });
+			if (result?.id) {
+				// Reload workspaces list and switch to new one
+				const workspaces = await sendRequest<unknown, Workspace[]>('workspace.list', {});
+				set({ workspaces, activeWorkspaceId: result.id, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } });
+				return result.id;
+			}
+			return null;
+		} catch (err) {
+			console.error('[WorkspaceStore] Failed to create workspace:', err);
+			return null;
 		}
 	},
 

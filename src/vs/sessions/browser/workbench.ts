@@ -33,7 +33,7 @@ import { ILifecycleService, LifecyclePhase, WillShutdownEvent } from '../../work
 import { IStorageService, WillSaveStateReason, StorageScope, StorageTarget } from '../../platform/storage/common/storage.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { IHostService } from '../../workbench/services/host/browser/host.js';
-import { IDialogService } from '../../platform/dialogs/common/dialogs.js';
+import { IDialogService, IFileDialogService } from '../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../platform/notification/common/notification.js';
 import { NotificationService } from '../../workbench/services/notification/common/notificationService.js';
 import { IHoverService, WorkbenchHoverDelegate } from '../../platform/hover/browser/hover.js';
@@ -75,6 +75,9 @@ import { MobileTitlebarPart } from './parts/mobile/mobileTitlebarPart.js';
 import { autorun } from '../../base/common/observable.js';
 import { ISessionsManagementService } from '../services/sessions/common/sessionsManagement.js';
 import { AgentStudioEditorInput } from '../contrib/agentStudio/browser/agentStudioEditorInput.js';
+import { AgentStudioWorkspaceToolbar } from '../contrib/agentStudio/browser/agentStudioWorkspaceToolbar.js';
+import { IAgentStudioService } from '../contrib/agentStudio/common/agentStudio.js';
+import '../contrib/agentStudio/browser/media/workspaceToolbar.css';
 
 //#region Workbench Options
 
@@ -884,6 +887,57 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, agentStudioGroup.id);
 		this.editorService.openEditor(taskboardInput, { pinned: true, sticky: true }, agentStudioGroup.id);
 		this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentStudioGroup.id);
+
+		// [Sarosis] Inject global Workspace Toolbar above the tab bar
+		// EditorGroupView.layout() uses absolute pixel heights for titleControl and
+		// editorContainer. It does not know about our toolbar, so we monkey-patch
+		// the layout method on the group's ISerializableView to subtract the toolbar
+		// height before delegating to the original layout.
+		const TOOLBAR_HEIGHT = 32;
+		const groupView = agentStudioGroup as unknown as ISerializableView;
+		const groupElement = groupView.element;
+
+		// 1. Create toolbar DOM immediately (no service dependency)
+		console.log('[workbench] Creating workspace toolbar, groupElement:',
+			groupElement, 'parent:', groupElement.parentElement);
+		const toolbar = new AgentStudioWorkspaceToolbar(groupElement);
+		this._register(toolbar);
+
+		// 2. Monkey-patch layout so the toolbar's height is accounted for.
+		const originalLayout = groupView.layout.bind(groupView);
+		groupView.layout = (width: number, height: number, top: number, left: number) => {
+			const adjustedHeight = Math.max(0, height - TOOLBAR_HEIGHT);
+			originalLayout(width, adjustedHeight, top + TOOLBAR_HEIGHT, left);
+			// Fix lastLayout so that relayout() stores the full outer height.
+			const gv = groupView as any;
+			if (gv.lastLayout) {
+				gv.lastLayout = { width, height, top, left };
+			}
+		};
+
+		// 3. Asynchronously connect the service (may be delayed)
+		const connectService = () => {
+			try {
+				const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
+				toolbar.connectService(agentStudioService);
+			} catch {
+				// Service not available yet — retry after a delay
+				setTimeout(connectService, 2000);
+			}
+		};
+		connectService();
+
+		// 4. Connect IFileDialogService for folder browsing in workspace creation
+		const connectFileDialog = () => {
+			try {
+				const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
+				toolbar.connectFileDialogService(fileDialogService);
+			} catch {
+				// Service not available yet — retry after a delay
+				setTimeout(connectFileDialog, 2000);
+			}
+		};
+		connectFileDialog();
 
 		// Prevent closing Agent Studio editors - re-open immediately if closed
 		this._register(agentStudioGroup.onDidCloseEditor(e => {

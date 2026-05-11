@@ -70,7 +70,7 @@ export class WorkspaceTemplateService extends Disposable implements IWorkspaceTe
   private static readonly STORAGE_KEY_SNAPSHOTS = 'agentStudio.workspaceTemplate.snapshots';
 
   /** 服务引用 */
-  private _logService: ILogService = console as unknown as ILogService;
+  private readonly _logService: ILogService;
   private _fileService?: IFileService;
   private _workspaceService?: IWorkspaceContextService;
   private _storageService?: IStorageService;
@@ -84,12 +84,13 @@ export class WorkspaceTemplateService extends Disposable implements IWorkspaceTe
   // ------------------------------------------------------------------------------------------------
 
   constructor(
+    @ILogService logService: ILogService,
     @IInstantiationService _instantiationService: IInstantiationService,
     @IStorageService storage: IStorageService,
   ) {
     super();
     
-    // 保存存储服务引用
+    this._logService = logService;
     this._storageService = storage;
     
     // 从持久化存储加载数据

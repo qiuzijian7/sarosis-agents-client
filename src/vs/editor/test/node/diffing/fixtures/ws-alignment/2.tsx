@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Nav } from '@fluentui/react';
 import { View } from '../../layout/layout';
 

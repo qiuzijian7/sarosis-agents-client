@@ -10,7 +10,7 @@ interface ChatMessageProps {
 }
 
 function ChatMessageRaw({ message }: ChatMessageProps): React.ReactElement {
-	const isUser = message.role === 'user';
+
 
 	return (
 		<div className={`chat-message ${message.role}`}>

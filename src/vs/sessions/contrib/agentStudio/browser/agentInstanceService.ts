@@ -23,15 +23,17 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 
 	private readonly _instances = new Map<string, AgentInstance>();
 
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 	private _galleryService: IAgentGalleryService | undefined;
-	private _fileService: IFileService | undefined;
+	private readonly _fileService: IFileService;
 
 	constructor(
+		@ILogService logService: ILogService,
 		@IAgentGalleryService agentGalleryService: IAgentGalleryService,
 		@IFileService fileService: IFileService,
 	) {
 		super();
+		this._logService = logService;
 		this._galleryService = agentGalleryService;
 		this._fileService = fileService;
 		// 启动时从文件系统加载已有实例
@@ -191,10 +193,6 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 			this._logService.error('[AgentInstance] Failed to parse agent config', error);
 			return undefined;
 		}
-	}
-
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
 	}
 
 	private async _getTemplateById(templateId: string): Promise<AgentTemplate | undefined> {

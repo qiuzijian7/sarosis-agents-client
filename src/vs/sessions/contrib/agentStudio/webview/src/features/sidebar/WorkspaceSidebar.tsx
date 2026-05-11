@@ -57,7 +57,7 @@ function WorkspaceGroup({
 		<div className="workspace-group">
 			{/* Workspace header */}
 			<div
-				className={`workspace-header ${isActive ? 'active' : ''}`}
+				className={`sidebar-ws-header ${isActive ? 'active' : ''}`}
 				onClick={() => { onSelect(); onToggle(); }}
 			>
 				<span className="workspace-chevron">

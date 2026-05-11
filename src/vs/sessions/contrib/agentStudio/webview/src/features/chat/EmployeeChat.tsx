@@ -3,8 +3,8 @@
  *  Simplified from sarosis-webui's EmployeeChat.tsx (176KB → focused on core chat)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useChatStore, type ChatMessage } from '../../store/useChatStore';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { StreamingText } from './StreamingText';

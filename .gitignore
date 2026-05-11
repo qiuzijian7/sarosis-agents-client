@@ -70,3 +70,94 @@ tsc-errors.txt
 compile-output8.txt
 compile-output9.txt
 msbuild-output.txt
+knot-test.txt
+log.txt
+
+# 临时文件和编译输出
+*.log
+*.tmp
+build.log
+build_errors.txt
+
+# 编译输出文件 (通用规则)
+compile-*.txt
+tsc-*.txt
+ts-*.txt
+*-output.txt
+*-out.txt
+*-err.txt
+*-error.txt
+*-result.txt
+*-log.txt
+*-check*.txt
+*-new*.txt
+*-full-*.txt
+
+# 安装和构建日志
+install-*.txt
+npm-*.log
+rebuild-*.txt
+msbuild-*.txt
+
+# 测试输出
+slot-test.txt
+knot-test.txt
+test-output.txt
+test-output.json
+agentOS-test-output.txt
+agentOSService-test.txt
+all-tests-summary.txt
+all-agentStudio-tests.txt
+browser-tests-output.txt
+common-tests-output.txt
+*-test-output.txt
+*-tests-*.txt
+
+# 调试和临时脚本
+debug-*.mjs
+debug-*.js
+run-*-tests.mjs
+run-test*.mjs
+run-test*.js
+test-*.mjs
+test-*.js
+test-*.cjs
+
+# 标准输出/错误日志
+stderr.txt
+stdout.txt
+error.txt
+errors.txt
+output.txt
+
+# 临时文档
+HERMES_AGENT_FRAMEWORK_ANALYSIS.md
+OpenClaw-*.md
+框架*.txt
+vscode框架/
+
+# 临时目录
+sarosis-hub-server/
+sarosis-mcp/
+sarosis-webui/
+stderr.txt
+stdout.txt
+agentOSService-test.txt
+build-errors.txt
+all-tests-summary.txt
+all-agentStudio-tests.txt
+error.txt
+errors.txt
+output.txt
+temp_employeeChat.txt
+
+# 本地配置目录
+.sarosis/
+.workbuddy/
+
+# 临时脚本和文档
+add-ts-nocheck.js
+add-ts-nocheck.py
+fix-employee-chat.js
+fix-webview.py
+AgentStudio_Framework_Analysis.md

@@ -29,7 +29,7 @@ export interface IModelSelectorService {
 	// ─── 可用模型列表（汇聚所有已注册 Model Provider）────────────────
 
 	readonly onDidChangeAvailableModels: Event<void>;
-	getAvailableModels(): IModelSelectorItem[];
+	getAvailableModels(): Promise<IModelSelectorItem[]>;
 
 	// ─── UI 操作 ───────────────────────────────────────────────
 

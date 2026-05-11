@@ -119,7 +119,7 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 
 	test('chat method uses modelId as agentId', async () => {
 		const provider = new MockKnotModelProvider();
-		
+
 		// 验证 modelId 被当作 agentId 使用
 		let capturedAgentId = '';
 		const originalChat = provider.chat.bind(provider);
@@ -128,7 +128,10 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 			yield* originalChat(modelId, messages, options);
 		};
 
-		await provider.chat('my-agent', [{ role: 'user', content: 'test' }], {});
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		for await (const _delta of provider.chat('my-agent', [{ role: 'user', content: 'test' }], {})) {
+			// consume the generator
+		}
 		assert.strictEqual(capturedAgentId, 'my-agent');
 	});
 

@@ -11,15 +11,24 @@ export interface Employee {
 	role: string;
 	email?: string;
 	avatar?: string;
+	avatarStyle?: string;
+	avatarSeed?: string;
 	presetId?: string;
 	model?: string;
+	provider?: string;
 	customPrompt?: string;
 	skills?: { id: string; name: string; enabled: boolean }[];
 	status: 'idle' | 'working' | 'thinking' | 'error' | 'offline';
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
-	tokenUsage?: number;
+	tokenUsage?: number | { input: number; output: number; total: number };
+	isPM?: boolean;
+	sortOrder?: number;
+	subagentOf?: string | null;
+	category?: string;
+	temperature?: number;
+	maxTokens?: number;
 }
 
 interface EmployeeState {

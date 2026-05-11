@@ -5,7 +5,10 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { IAgentSchedulerService, IScheduleHandle, IScheduleInfo, ScheduleType, ScheduleState, ICronScheduleConfig, IFileWatchScheduleConfig, IEventTriggerConfig, IOneShotConfig, IIntervalConfig, IScheduleInput, IHistoryQueryOptions, IScheduleTriggerEvent, IScheduleCompleteEvent, IScheduleChangeEvent, IScheduleErrorEvent, IScheduleExecution } from '../common/agentScheduler.js';
+// Runtime values (decorator + enums)
+import { IAgentSchedulerService, ScheduleState } from '../common/agentScheduler.js';
+// Type-only imports (interfaces / type aliases) — must be erased at compile time
+import type { IScheduleHandle, IScheduleInfo, ScheduleType, ICronScheduleConfig, IFileWatchScheduleConfig, IEventTriggerConfig, IOneShotConfig, IIntervalConfig, IScheduleInput, IHistoryQueryOptions, IScheduleTriggerEvent, IScheduleCompleteEvent, IScheduleChangeEvent, IScheduleErrorEvent, IScheduleExecution } from '../common/agentScheduler.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import { CronParser } from '../common/cronParser.js';
@@ -36,15 +39,17 @@ export class AgentSchedulerService extends Disposable implements IAgentScheduler
 	// 存储所有活跃的 Schedule
 	private readonly _schedules = new Map<string, ScheduleInternal>();
 	
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 	private _driverService: IAgentDriverService | null = null;
 	
 	constructor(
+		@ILogService logService: ILogService,
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IEventBridgeService private readonly _eventBridge: IEventBridgeService,
 	) {
 		super();
+		this._logService = logService;
 		
 		// 初始化 Emitter
 		this._onDidTrigger = this._register(new Emitter<IScheduleTriggerEvent>());
@@ -577,10 +582,6 @@ export class AgentSchedulerService extends Disposable implements IAgentScheduler
 	// 服务注入
 	// ============================================================================
 	
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
-	}
-	
 	setDriverService(driverService: IAgentDriverService): void {
 		this._driverService = driverService;
 	}
@@ -614,13 +615,20 @@ interface ScheduleInternal {
 // 重新导出接口（供其他模块导入）
 // ------------------------------------------------------------------------------------
 
+// Runtime values (decorator + enums) — keep as runtime exports
 export {
 	IAgentSchedulerService,
+	ScheduleState,
+	AgentTriggerEventType,
+	OverlapPolicy,
+	ExecutionStatus,
+} from '../common/agentScheduler.js';
+
+// Type-only re-exports (must use `export type` so they are erased at runtime)
+export type {
 	IScheduleHandle,
 	IScheduleInfo,
 	ScheduleType,
-	ScheduleState,
-	AgentTriggerEventType,
 	ICronScheduleConfig,
 	IFileWatchScheduleConfig,
 	IEventTriggerConfig,
@@ -629,8 +637,6 @@ export {
 	IScheduleInput,
 	IScheduleExecution,
 	IHistoryQueryOptions,
-	OverlapPolicy,
-	ExecutionStatus,
 	IScheduleTriggerEvent,
 	IScheduleCompleteEvent,
 	IScheduleErrorEvent,

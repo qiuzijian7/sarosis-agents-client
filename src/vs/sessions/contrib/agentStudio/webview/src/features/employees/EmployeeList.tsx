@@ -2,12 +2,12 @@
  *  Agent Studio WebView - Employee List Panel
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback } from 'react';
-import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
+import React from 'react';
+import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { EmployeeCard } from './EmployeeCard';
 
 export function EmployeeList(): React.ReactElement {
-	const { employees, searchQuery, setSearchQuery, selectedEmployeeId, selectEmployee, filteredEmployees } = useEmployeeStore();
+	const { searchQuery, setSearchQuery, selectedEmployeeId, selectEmployee, filteredEmployees } = useEmployeeStore();
 	const filtered = filteredEmployees();
 
 	return (

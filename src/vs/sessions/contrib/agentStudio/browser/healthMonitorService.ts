@@ -57,15 +57,17 @@ export class HealthMonitorService extends Disposable implements IHealthMonitorSe
 	private static readonly STORAGE_KEY_ALERT_RULES = 'agentStudio.healthMonitor.alertRules';
 	private static readonly STORAGE_KEY_ACTIVE_ALERTS = 'agentStudio.healthMonitor.activeAlerts';
 	
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 	private readonly _storageService: IStorageService;
 	
 	constructor(
+		@ILogService logService: ILogService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IAgentDriverService agentDriver: IAgentDriverService,
 		@IStorageService storageService: IStorageService,
 	) {
 		super();
+		this._logService = logService;
 		
 		// 保存存储服务引用
 		this._storageService = storageService;
@@ -717,10 +719,8 @@ export class HealthMonitorService extends Disposable implements IHealthMonitorSe
 	// 服务注入
 	// ============================================================================
 	
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
 	}
-}
+
 
 // ------------------------------------------------------------------------------------
 // 内部类型

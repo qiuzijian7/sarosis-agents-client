@@ -13,6 +13,7 @@ import {
 	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
 } from '../common/providers.js';
 import { SlotRegistry } from './slotRegistry.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 
 // ─── Agent OS Service Implementation ────────────────────────────────────
 
@@ -23,7 +24,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _slotRegistry: SlotRegistry;
 	private readonly _modelProviders: IModelProvider[] = [];
 	private _activeSelection: IModelSelection | undefined;
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 
 	// Events
 	private readonly _onDidChangeModelProviders = this._register(new Emitter<void>());
@@ -32,9 +33,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _onDidChangeAvailableModels = this._register(new Emitter<void>());
 	readonly onDidChangeAvailableModels = this._onDidChangeAvailableModels.event;
 
-	constructor() {
+	constructor(
+		@ILogService logService: ILogService,
+	) {
 		super();
-		this._slotRegistry = this._register(new SlotRegistry());
+		this._logService = logService;
+		this._slotRegistry = this._register(new SlotRegistry(logService));
 	}
 
 	// ─── 能力槽注册 ─────────────────────────────────────────────────
@@ -164,34 +168,51 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		return this._slotRegistry;
 	}
 
+	// ─── Fallback 配置 ─────────────────────────────────────────
+	private readonly _fallbackModels: string[] = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+	private readonly _maxFallbackAttempts: number = 3;
+
 	// ─── 统一执行入口 ───────────────────────────────────────────
 
 	/**
 	 * 执行一次 Agent 对话轮次
 	 *
-	 * Phase 1: 空壳实现 — 若无 Provider 则退化为直通模式（调用现有 agentChatService）
-	 * Phase 2: 将实现完整编排逻辑
+	 * 完整实现 — 包含错误恢复和 Fallback 机制
 	 */
 	async *executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		this._logService.info(`[AgentOS] executeAgentTurn: agentId=${request.agentId}, messages=${request.messages.length}`);
 
 		// ─── 编排流程 ───────────────────────────────────────
 		// 优先使用 ExecutionProvider（完整 Agent Loop）
-		// 若无，则退化为直接 Model Provider 调用
+		// 若无，则退化为直接 Model Provider 调用（带 Fallback）
 
 		const executionProvider = this.getActiveExecutionProvider();
 		if (executionProvider) {
 			this._logService.info(`[AgentOS] Using ExecutionProvider: ${executionProvider.id}`);
 			try {
-				yield* executionProvider.runAgentLoop(request, this.getSlotRegistry());
+				yield* this._executeWithFallback(
+					() => executionProvider.runAgentLoop(request, this.getSlotRegistry()),
+					request,
+				);
 			} catch (error) {
-				this._logService.error('[AgentOS] ExecutionProvider failed', error);
-				yield { type: 'error', content: String(error) };
+				this._logService.error('[AgentOS] ExecutionProvider failed, trying fallback', error);
+				yield {
+					type: 'text',
+					content: `\n[System: ExecutionProvider failed, falling back to direct mode]\n`,
+				};
+				yield* this._executeWithFallbackDirectly(request);
 			}
 			return;
 		}
 
-		// ─── 退化模式：直接调用 Model Provider ─────────────────
+		// ─── 退化模式：直接调用 Model Provider（带 Fallback）─────────────────
+		yield* this._executeWithFallbackDirectly(request);
+	}
+
+	/**
+	 * 带 Fallback 的直接模型调用
+	 */
+	private async *_executeWithFallbackDirectly(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		const modelProvider = this._getActiveModelProvider();
 		if (!modelProvider) {
 			this._logService.warn('[AgentOS] No ModelProvider available');
@@ -215,22 +236,92 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 		}
 
-		// 调用 Model Provider
-		try {
+		// 调用 Model Provider（带 Fallback）
+		const primaryIterable: AsyncIterable<IChatStreamDelta> = async function* (this: AgentOSService) {
 			const stream = await modelProvider.chat(selection.modelId, messages, options);
 			for await (const delta of stream) {
 				yield this._adaptModelDelta(delta);
 			}
+		}.bind(this)();
+		yield* this._executeWithFallback(
+			() => primaryIterable,
+			request,
+		);
+	}
 
-			// 可选：将对话写回 Memory（如果有 Memory Provider）
-			if (memoryProvider) {
-				// TODO: 构造 IMemoryEntry 并调用 memoryProvider.writeMemory()
-				this._logService.info(`[AgentOS] Would write memory for agent ${request.agentId}`);
-			}
+	/**
+	 * 带 Fallback 的执行包装器
+	 * @param primaryExecution 主执行函数
+	 * @param request 请求参数
+	 */
+	private async *_executeWithFallback(
+		primaryExecution: () => AsyncIterable<IChatStreamDelta>,
+		request: IAgentTurnRequest,
+	): AsyncIterable<IChatStreamDelta> {
+		let lastError: Error | undefined;
+		let attempt = 0;
+
+		// 尝试主执行
+		try {
+			yield* primaryExecution();
+			return; // 成功，直接返回
 		} catch (error) {
-			this._logService.error('[AgentOS] ModelProvider chat failed', error);
-			yield { type: 'error', content: String(error) };
+			lastError = error instanceof Error ? error : new Error(String(error));
+			this._logService.warn(`[AgentOS] Primary execution failed (attempt ${attempt + 1}):`, error);
+			attempt++;
 		}
+
+		// Fallback: 尝试备用模型
+		const modelProvider = this._getActiveModelProvider();
+		if (!modelProvider) {
+			yield {
+				type: 'error',
+				content: `All execution attempts failed. Last error: ${lastError?.message || 'Unknown error'}`,
+			};
+			return;
+		}
+
+		const primaryModelId = this.getActiveModelSelection().modelId;
+		const fallbackModels = this._fallbackModels.filter(m => m !== primaryModelId);
+
+		for (const fallbackModel of fallbackModels) {
+			if (attempt >= this._maxFallbackAttempts) {
+				this._logService.warn(`[AgentOS] Max fallback attempts (${this._maxFallbackAttempts}) reached`);
+				break;
+			}
+
+			try {
+				this._logService.info(`[AgentOS] Trying fallback model: ${fallbackModel}`);
+				yield {
+					type: 'text',
+					content: `\n[System: Switching to fallback model: ${fallbackModel}]\n`,
+				};
+
+				const messages = request.messages as any[];
+				const options = request.options as any;
+				const stream = await modelProvider.chat(fallbackModel, messages, options);
+
+				for await (const delta of stream) {
+					yield this._adaptModelDelta(delta);
+				}
+
+				// 成功，返回
+				this._logService.info(`[AgentOS] Fallback model ${fallbackModel} succeeded`);
+				return;
+
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+				this._logService.warn(`[AgentOS] Fallback model ${fallbackModel} failed:`, error);
+				attempt++;
+			}
+		}
+
+		// 所有 Fallback 都失败
+		this._logService.error('[AgentOS] All fallback attempts failed');
+		yield {
+			type: 'error',
+			content: `All models failed. Last error: ${lastError?.message || 'Unknown error'}`,
+		};
 	}
 
 	private _getActiveModelProvider(): IModelProvider | undefined {
@@ -265,13 +356,5 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		return { type: 'text', content: '' };
 	}
 
-	// ─── 服务注入 ────────────────────────────────────────────────
-
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
-		this._slotRegistry.setLogService(logService);
-	}
 }
 
-// Forward declarations
-import { ILogService } from '../../../../platform/log/common/log.js';

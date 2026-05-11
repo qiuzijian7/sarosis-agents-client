@@ -9,6 +9,8 @@ import { IWorkspaceRegistry, IWorkspaceConfig } from '../common/agentWorkspace.j
 import { IAgentOSService } from '../common/agentOS.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { AgentOSService } from './agentOSService.js';
 
 // ─── Workspace Registry Service Implementation ─────────────────
 
@@ -21,13 +23,17 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
 
 	private readonly _workspaces = new Map<string, {
 		config: IWorkspaceConfig;
-		osService: IAgentOSService | undefined;
+		osService: AgentOSService;
 	}>();
 
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 
-	constructor() {
+	constructor(
+		@ILogService logService: ILogService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+	) {
 		super();
+		this._logService = logService;
 	}
 
 	registerWorkspace(config: IWorkspaceConfig): IDisposable {
@@ -37,13 +43,13 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
 		}
 
 		// 为每个工作区创建独立的 OS 实例栈
-		// TODO: 实现工作区级别的 OS 实例创建
-		const osService: IAgentOSService | undefined = undefined; // 延迟初始化
+		const osService = this._instantiationService.createInstance(AgentOSService);
+		this._register(osService);
 
 		this._workspaces.set(config.id, { config, osService });
 		this._onDidChangeWorkspaces.fire();
 
-		this._logService.info(`[WorkspaceRegistry] Registered workspace: ${config.name} (${config.id})`);
+		this._logService.info(`[WorkspaceRegistry] Registered workspace: ${config.name} (${config.id}) with isolated OS instance`);
 
 		return {
 			dispose: () => {
@@ -56,10 +62,10 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
 		const entry = this._workspaces.get(workspaceId);
 		if (entry) {
 			// 清理 OS 实例
-			entry.osService = undefined;
+			entry.osService.dispose();
 			this._workspaces.delete(workspaceId);
 			this._onDidChangeWorkspaces.fire();
-			this._logService.info(`[WorkspaceRegistry] Unregistered workspace: ${workspaceId}`);
+			this._logService.info(`[WorkspaceRegistry] Unregistered workspace: ${workspaceId}, OS instance disposed`);
 		}
 	}
 
@@ -77,11 +83,16 @@ export class WorkspaceRegistryService extends Disposable implements IWorkspaceRe
 
 	getWorkspaceDriverService(_workspaceId: string): IAgentDriverService | undefined {
 		// TODO: 实现工作区级别的 Driver 实例获取
-		// 当前返回 undefined，等待 Phase 4 完善
 		return undefined;
 	}
 
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
+	override dispose(): void {
+		// 清理所有工作区的 OS 实例
+		for (const [id, entry] of this._workspaces) {
+			entry.osService.dispose();
+			this._logService.debug(`[WorkspaceRegistry] Disposed OS instance for workspace ${id}`);
+		}
+		this._workspaces.clear();
+		super.dispose();
 	}
 }

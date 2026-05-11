@@ -1,0 +1,60 @@
+# Agent 实例配置文件示例
+# 每个 Agent 实例对应一个独立的配置文件
+
+# 基本标识
+id: my-agent-001
+name: My Code Assistant
+description: 一个代码助手示例，使用 Knot AG-UI 作为模型提供商
+
+# 来源模板
+templateId: code-generator
+
+# 所属工作区
+workspaceId: workspace-default
+
+# 模型配置
+model:
+  providerId: knot-agui
+  modelId: gpt-4o
+  temperature: 0.7
+  maxTokens: 4096
+
+# Memory 配置
+memory:
+  providerId: mem0-memory
+  shortTermCapacity: 10
+  longTermCapacity: 100
+
+# Tool 配置（启用的工具列表）
+tools:
+  - filesystem
+  - search
+  - code-execution
+  - web-browser
+
+# Planning 配置
+planning:
+  providerId: basic-planning
+  enableTaskDecomposition: true
+
+# Execution 配置
+execution:
+  providerId: basic-execution
+  maxIterations: 10
+  enableReflection: true
+
+# Retrieval (RAG) 配置
+retrieval:
+  providerId: basic-retrieval
+  topK: 5
+  scoreThreshold: 0.7
+
+# Kanban 配置
+kanban:
+  providerId: basic-kanban
+  defaultBoard: main
+
+# 创建和更新时间（由系统自动管理）
+createdAt: 2026-01-01T00:00:00Z
+updatedAt: 2026-01-01T00:00:00Z
+status: active

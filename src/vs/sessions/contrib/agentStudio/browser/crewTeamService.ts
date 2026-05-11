@@ -84,7 +84,7 @@ export class CrewTeamService extends Disposable implements ICrewTeamService {
   private static readonly STORAGE_KEY_MESSAGES = 'agentStudio.crewTeam.messages';
 
   /** 服务引用 */
-  private _logService: ILogService = console as unknown as ILogService;
+  private readonly _logService: ILogService;
   
   /** 防抖保存定时器 */
   private _saveTimer: any = null;
@@ -95,10 +95,12 @@ export class CrewTeamService extends Disposable implements ICrewTeamService {
   // ------------------------------------------------------------------------------------------------
 
   constructor(
+    @ILogService logService: ILogService,
     @IStorageService private readonly _storageService: IStorageService,
     @IAgentDriverService private readonly _driverService: IAgentDriverService,
   ) {
     super();
+    this._logService = logService;
     
     // 从持久化存储加载数据
     this._loadFromStorage();

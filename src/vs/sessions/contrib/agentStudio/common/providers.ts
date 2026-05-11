@@ -224,11 +224,37 @@ export interface IAgentTurnRequest {
 }
 
 export interface IChatStreamDelta {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
 	readonly metadata?: Record<string, unknown>;
+	readonly progress?: number; // 0-100 进度百分比（用于 tool_progress 类型）
+	readonly stage?: string; // 当前阶段描述（用于 tool_progress 类型）
+}
+
+/**
+ * 工具执行进度回调
+ */
+export interface IToolProgressCallback {
+	/**
+	 * 报告工具执行进度
+	 * @param toolCallId 工具调用 ID
+	 * @param toolName 工具名称
+	 * @param progress 进度 (0-100)
+	 * @param stage 当前阶段描述
+	 */
+	onProgress(toolCallId: string, toolName: string, progress: number, stage?: string): void;
+
+	/**
+	 * 报告工具执行完成
+	 */
+	onComplete(toolCallId: string, toolName: string, success: boolean): void;
+
+	/**
+	 * 报告工具执行错误
+	 */
+	onError(toolCallId: string, toolName: string, error: string): void;
 }
 
 // ─── Retrieval Provider Interface ─────────────────────────────────────────────

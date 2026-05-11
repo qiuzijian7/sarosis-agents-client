@@ -27,6 +27,9 @@ initMessageClient((type, data) => {
 		case 'workspace.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:workspace-changed', { detail: data }));
 			break;
+		case 'workspace.activeChanged':
+			window.dispatchEvent(new CustomEvent('agentStudio:workspace-active-changed', { detail: data }));
+			break;
 		case 'delegations.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:delegations-changed'));
 			break;

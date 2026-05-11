@@ -25,6 +25,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
  */
 export class SlotRegistry extends Disposable implements ISlotRegistry {
 
+	private readonly _logService: ILogService;
+
 	private readonly _modelProviders: IModelProvider[] = [];
 	private readonly _memoryProviders: { provider: IMemoryProvider; priority: number }[] = [];
 	private readonly _toolProviders: { provider: IToolProvider; priority: number }[] = [];
@@ -32,6 +34,11 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 	private readonly _executionProviders: { provider: IExecutionProvider; priority: number }[] = [];
 	private readonly _retrievalProviders: { provider: IRetrievalProvider; priority: number }[] = [];
 	private readonly _kanbanProviders: { provider: IKanbanProvider; priority: number }[] = [];
+
+	constructor(logService: ILogService) {
+		super();
+		this._logService = logService;
+	}
 
 	// ── Events ───────────────────────────────────────────────────────
 
@@ -200,14 +207,6 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 		// 此处返回第一个注册的 Model Provider 作为 fallback
 		return this._modelProviders.length > 0 ? this._modelProviders[0] : undefined;
 	}
-
-	// ── 注入 LogService ────────────────────────────────────────
-
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
-	}
-
-	private _logService: ILogService = console as unknown as ILogService;
 
 	// ── 清理 ──────────────────────────────────────────────────
 

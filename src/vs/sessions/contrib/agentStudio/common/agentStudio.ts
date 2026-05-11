@@ -51,10 +51,13 @@ export interface IAgentStudioService {
 export const IAgentChatService = createDecorator<IAgentChatService>('agentChatService');
 
 export interface IChatStreamDelta {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'tool_progress' | 'done' | 'error';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
+	readonly metadata?: Record<string, unknown>;
+	readonly progress?: number;
+	readonly stage?: string;
 }
 
 export interface IChatSendOptions {

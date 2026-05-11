@@ -19,14 +19,16 @@ export class AgentGalleryService extends Disposable implements IAgentGalleryServ
 	private readonly _onDidChangeTemplates = this._register(new Emitter<void>());
 	readonly onDidChangeTemplates = this._onDidChangeTemplates.event;
 
-	private _logService: ILogService = console as unknown as ILogService;
-	private _fileService: IFileService | undefined;
+	private readonly _logService: ILogService;
+	private readonly _fileService: IFileService;
 	private _templates: AgentTemplate[] = [];
 
 	constructor(
+		@ILogService logService: ILogService,
 		@IFileService fileService: IFileService,
 	) {
 		super();
+		this._logService = logService;
 		this._fileService = fileService;
 		this._loadTemplates();
 	}
@@ -163,9 +165,5 @@ export class AgentGalleryService extends Disposable implements IAgentGalleryServ
 				tags: ['data', 'sql', 'python'],
 			},
 		];
-	}
-
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
 	}
 }

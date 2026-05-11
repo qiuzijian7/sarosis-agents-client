@@ -154,7 +154,7 @@ registerSingleton(IAgentDriverService, AgentDriverService, InstantiationType.Del
 registerSingleton(IModelSelectorService, ModelSelectorService, InstantiationType.Delayed);
 registerSingleton(IAgentDelegationService, AgentDelegationService, InstantiationType.Delayed);
 registerSingleton(IAgentTaskBoardService, AgentTaskBoardService, InstantiationType.Delayed);
-registerSingleton(IWorkspaceRegistry, WorkspaceRegistryService, InstantiationType.Delayed);
+registerSingleton(IWorkspaceRegistry, WorkspaceRegistryService as any, InstantiationType.Delayed);
 registerSingleton(IAgentInstanceService, AgentInstanceService, InstantiationType.Delayed);
 registerSingleton(IAgentGalleryService, AgentGalleryService, InstantiationType.Delayed);
 registerSingleton(IGitCommitService, GitCommitService, InstantiationType.Delayed);

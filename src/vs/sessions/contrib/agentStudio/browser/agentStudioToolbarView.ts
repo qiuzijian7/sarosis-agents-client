@@ -35,6 +35,10 @@ export class AgentStudioToolbarView extends ViewPane {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
 
+	getId(): string {
+		return this.id;
+	}
+
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 		container.classList.add('agent-studio-toolbar-view');

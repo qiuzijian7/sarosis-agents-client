@@ -1,146 +1,139 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Employee Node (ReactFlow custom node)
+ *  Vertical card layout matching sarosis-webui EmployeeNode style:
+ *  Avatar (top) → Name + Role → Model badge → Skills/Token tags (bottom)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
 
 interface EmployeeNodeData {
 	employee: Employee;
+	isSelected?: boolean;
+	onSelect?: (empId: string) => void;
+	onDelete?: (empId: string) => void;
 }
 
-const STATUS_COLORS: Record<string, { bg: string; border: string; dot: string }> = {
-	idle: { bg: 'var(--vscode-editor-background)', border: 'var(--vscode-panel-border)', dot: '#4ade80' },
-	working: { bg: 'var(--vscode-editor-background)', border: '#3b82f6', dot: '#3b82f6' },
-	thinking: { bg: 'var(--vscode-editor-background)', border: '#f59e0b', dot: '#f59e0b' },
-	error: { bg: 'var(--vscode-editor-background)', border: '#ef4444', dot: '#ef4444' },
-	offline: { bg: 'var(--vscode-editor-background)', border: 'var(--vscode-panel-border)', dot: '#6b7280' },
+// Status color/style configuration matching sarosis-webui STATUS_MAP
+const STATUS_MAP: Record<string, { label: string; color: string; bg: string; dot: string; animated: boolean }> = {
+	idle: { label: '空闲', color: '#9ca3af', bg: 'rgba(255,255,255,0.05)', dot: '#9ca3af', animated: false },
+	working: { label: '工作中', color: '#4ade80', bg: 'rgba(74,222,128,0.08)', dot: '#4ade80', animated: true },
+	thinking: { label: '思考中', color: '#7cb9ff', bg: 'rgba(124,185,255,0.08)', dot: '#7cb9ff', animated: true },
+	error: { label: '出错', color: '#e94560', bg: 'rgba(233,69,96,0.08)', dot: '#e94560', animated: false },
+	offline: { label: '离线', color: '#6b7280', bg: 'rgba(255,255,255,0.02)', dot: 'rgba(255,255,255,0.2)', animated: false },
 };
 
 function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData }): React.ReactElement {
-	const { employee } = data;
-	const statusStyle = STATUS_COLORS[employee.status] || STATUS_COLORS.idle;
+	const { employee, isSelected, onSelect, onDelete } = data;
+	const [imgError, setImgError] = useState(false);
+	const statusInfo = STATUS_MAP[employee.status] || STATUS_MAP.idle;
 
-	const avatarUrl = employee.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`;
-	const modelLabel = employee.model ? employee.model.slice(-12) : '';
+	const avatarUrl = employee.avatar
+		|| (employee.avatarStyle && employee.avatarSeed
+			? `https://api.dicebear.com/7.x/${employee.avatarStyle}/svg?seed=${employee.avatarSeed}`
+			: `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`);
+
+	const modelLabel = employee.model ? employee.model.split('/').pop()?.slice(0, 12) || '' : '';
+
+	// Token usage: support both number and object formats
+	const totalTokens = typeof employee.tokenUsage === 'object'
+		? employee.tokenUsage.total
+		: employee.tokenUsage || 0;
+
 	const enabledSkills = (employee.skills || []).filter(s => s.enabled);
 
 	return (
 		<div
-			className="employee-node"
-			style={{
-				backgroundColor: statusStyle.bg,
-				border: `2px solid ${statusStyle.border}`,
-				borderRadius: '8px',
-				padding: '10px',
-				minWidth: '160px',
-				maxWidth: '200px',
-				position: 'relative',
-			}}
+			className={`employee-node ${isSelected ? 'selected' : ''} ${statusInfo.animated ? 'status-animated' : ''}`}
+			style={{ background: statusInfo.bg }}
+			onClick={() => onSelect?.(employee.id)}
 		>
 			{/* Connection handles */}
-			<Handle type="target" position={Position.Top} style={{ background: '#555' }} />
-			<Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />
+			<Handle type="target" position={Position.Top} className="employee-node-handle" />
+			<Handle type="source" position={Position.Bottom} className="employee-node-handle" />
 
-			{/* Status dot */}
-			<div
-				style={{
-					position: 'absolute',
-					top: '8px',
-					right: '8px',
-					width: '8px',
-					height: '8px',
-					borderRadius: '50%',
-					backgroundColor: statusStyle.dot,
-					animation: employee.status === 'working' ? 'pulse 1.5s infinite' : undefined,
-				}}
-			/>
-
-			{/* Avatar */}
-			<div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-				<img
-					src={avatarUrl}
-					alt={employee.name}
-					style={{
-						width: '28px',
-						height: '28px',
-						borderRadius: '50%',
-						backgroundColor: 'var(--vscode-input-background)',
-					}}
-					onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-				/>
-				<div style={{ overflow: 'hidden' }}>
-					<div style={{
-						fontWeight: 600,
-						fontSize: '12px',
-						whiteSpace: 'nowrap',
-						overflow: 'hidden',
-						textOverflow: 'ellipsis',
-						color: 'var(--vscode-foreground)',
-					}}>
-						{employee.name}
+			{/* Card body - vertical layout */}
+			<div className="employee-node-body">
+				{/* Avatar area */}
+				<div className="employee-node-avatar-area">
+					<div
+						className="employee-card-avatar"
+						style={{ borderColor: statusInfo.dot }}
+					>
+						{!imgError ? (
+							<img
+								src={avatarUrl}
+								alt={employee.name}
+								className="employee-card-avatar-img"
+								onError={() => setImgError(true)}
+								draggable={false}
+							/>
+						) : (
+							<div className="employee-card-avatar-fallback">
+								{employee.name.charAt(0).toUpperCase()}
+							</div>
+						)}
 					</div>
-					<div style={{
-						fontSize: '10px',
-						color: 'var(--vscode-descriptionForeground)',
-						whiteSpace: 'nowrap',
-						overflow: 'hidden',
-						textOverflow: 'ellipsis',
-					}}>
-						{employee.role}
+					{/* Status indicator dot */}
+					<div
+						className={`employee-status-dot ${statusInfo.animated ? 'animate-pulse' : ''}`}
+						style={{ backgroundColor: statusInfo.dot }}
+						title={statusInfo.label}
+					/>
+				</div>
+
+				{/* Info area */}
+				<div className="employee-node-info">
+					<div className="employee-card-name">{employee.name}</div>
+					<div className="employee-card-role">
+						<span>{employee.role}</span>
 					</div>
-				</div>
-			</div>
-
-			{/* Model label */}
-			{modelLabel && (
-				<div style={{
-					fontSize: '10px',
-					color: 'var(--vscode-textLink-foreground)',
-					marginBottom: '4px',
-					whiteSpace: 'nowrap',
-					overflow: 'hidden',
-					textOverflow: 'ellipsis',
-				}}>
-					{modelLabel}
-				</div>
-			)}
-
-			{/* Skills tags */}
-			{enabledSkills.length > 0 && (
-				<div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
-					{enabledSkills.slice(0, 2).map(skill => (
-						<span key={skill.id} style={{
-							fontSize: '9px',
-							padding: '1px 4px',
-							borderRadius: '3px',
-							backgroundColor: 'var(--vscode-badge-background)',
-							color: 'var(--vscode-badge-foreground)',
-						}}>
-							{skill.name}
-						</span>
-					))}
-					{enabledSkills.length > 2 && (
-						<span style={{
-							fontSize: '9px',
-							padding: '1px 4px',
-							color: 'var(--vscode-descriptionForeground)',
-						}}>
-							+{enabledSkills.length - 2}
-						</span>
+					{/* Model badge */}
+					{modelLabel && (
+						<div className="employee-card-model-row">
+							<span className="employee-card-badge model-badge">
+								<svg className="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+								</svg>
+								{modelLabel}
+							</span>
+						</div>
 					)}
 				</div>
-			)}
 
-			{/* Token usage */}
-			{employee.tokenUsage != null && employee.tokenUsage > 0 && (
-				<div style={{
-					fontSize: '9px',
-					color: 'var(--vscode-descriptionForeground)',
-					marginTop: '4px',
-				}}>
-					{Math.round(employee.tokenUsage / 1000)}k tokens
+				{/* Delete button - top right */}
+				<button
+					onClick={(e) => {
+						e.stopPropagation();
+						onDelete?.(employee.id);
+					}}
+					className="employee-node-delete"
+					title="删除员工"
+				>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+					</svg>
+				</button>
+			</div>
+
+			{/* Bottom tags bar - Skills / Token */}
+			{(enabledSkills.length > 0 || totalTokens > 0) && (
+				<div className="employee-node-tags">
+					{enabledSkills.slice(0, 2).map(skill => (
+						<span key={skill.id} className="employee-card-skill">{skill.name}</span>
+					))}
+					{enabledSkills.length > 2 && (
+						<span className="employee-card-skill-more">+{enabledSkills.length - 2}</span>
+					)}
+					{totalTokens > 0 && (
+						<span className="employee-card-token">
+							<svg className="token-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+							</svg>
+							{(totalTokens / 1000).toFixed(1)}k
+						</span>
+					)}
 				</div>
 			)}
 		</div>

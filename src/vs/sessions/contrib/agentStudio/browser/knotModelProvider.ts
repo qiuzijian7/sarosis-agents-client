@@ -38,16 +38,15 @@ export class KnotModelProvider extends Disposable implements IModelProvider {
 	private readonly _onDidChangeAuthStatus = this._register(new Emitter<ModelAuthStatus>());
 	readonly onDidChangeAuthStatus = this._onDidChangeAuthStatus.event;
 
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 	private _configurationService: IConfigurationService | undefined;
 	private _authStatus: ModelAuthStatus = ModelAuthStatus.NotConfigured;
 	private _cachedModels: IModelInfo[] = [];
 
-	constructor() {
+	constructor(
+		@ILogService logService: ILogService,
+	) {
 		super();
-	}
-
-	setLogService(logService: ILogService): void {
 		this._logService = logService;
 	}
 

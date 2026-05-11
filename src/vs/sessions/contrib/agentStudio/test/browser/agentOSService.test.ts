@@ -216,27 +216,57 @@ function createTestAgentOSService(): any {
 	const providers: any[] = [];
 	const memoryProviders: { provider: any; priority: number }[] = [];
 	const toolProviders: { provider: any; priority: number }[] = [];
+	const planningProviders: { provider: any; priority: number }[] = [];
+	const executionProviders: { provider: any; priority: number }[] = [];
+	let activeSelection: { providerId: string; modelId: string } = { providerId: '', modelId: '' };
 
 	return {
 		registerModelProvider: (p: any) => {
 			providers.push(p);
-			return { dispose: () => {} };
+			return {
+				dispose: () => {
+					const idx = providers.indexOf(p);
+					if (idx !== -1) { providers.splice(idx, 1); }
+				}
+			};
 		},
 		getModelProviders: () => providers,
 		registerMemoryProvider: (p: any, priority: number) => {
 			memoryProviders.push({ provider: p, priority });
 			memoryProviders.sort((a, b) => b.priority - a.priority);
-			return { dispose: () => {} };
+			return {
+				dispose: () => {
+					const idx = memoryProviders.findIndex(mp => mp.provider === p);
+					if (idx !== -1) { memoryProviders.splice(idx, 1); }
+				}
+			};
 		},
 		getActiveMemoryProvider: () => memoryProviders[0]?.provider,
 		registerToolProvider: (p: any, priority: number) => {
 			toolProviders.push({ provider: p, priority });
 			toolProviders.sort((a, b) => b.priority - a.priority);
-			return { dispose: () => {} };
+			return {
+				dispose: () => {
+					const idx = toolProviders.findIndex(tp => tp.provider === p);
+					if (idx !== -1) { toolProviders.splice(idx, 1); }
+				}
+			};
 		},
 		getActiveToolProvider: () => toolProviders[0]?.provider,
-		setActiveModelSelection: (s: any) => {},
-		getActiveModelSelection: () => ({ providerId: '', modelId: '' }),
+		registerPlanningProvider: (p: any, priority: number) => {
+			planningProviders.push({ provider: p, priority });
+			planningProviders.sort((a, b) => b.priority - a.priority);
+			return { dispose: () => {} };
+		},
+		getActivePlanningProvider: () => planningProviders[0]?.provider,
+		registerExecutionProvider: (p: any, priority: number) => {
+			executionProviders.push({ provider: p, priority });
+			executionProviders.sort((a, b) => b.priority - a.priority);
+			return { dispose: () => {} };
+		},
+		getActiveExecutionProvider: () => executionProviders[0]?.provider,
+		setActiveModelSelection: (s: any) => { activeSelection = s; },
+		getActiveModelSelection: () => activeSelection,
 		executeAgentTurn: async function* (request: any) {
 			yield { type: 'error', content: 'No ModelProvider registered' };
 		},

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IAgentSchedulerService } from '../common/agentScheduler.js';
-import { ICronScheduleConfig, IFileWatchScheduleConfig, IEventTriggerConfig, IOneShotConfig, IIntervalConfig } from '../common/agentScheduler.js';
+import type { ICronScheduleConfig, IFileWatchScheduleConfig, IEventTriggerConfig, IOneShotConfig, IIntervalConfig } from '../common/agentScheduler.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
 // ------------------------------------------------------------------------------------
@@ -50,10 +50,12 @@ export interface IAgentYamlSchedule {
 
 export class AgentYamlParser {
 	
-	private _logService: ILogService = console as unknown as ILogService;
+	private readonly _logService: ILogService;
 	private _schedulerService?: IAgentSchedulerService;
 	
-	constructor() {}
+	constructor(logService: ILogService) {
+		this._logService = logService;
+	}
 	
 	// ============================================================================
 	// 公共方法
@@ -92,13 +94,6 @@ export class AgentYamlParser {
 		} catch (error) {
 			this._logService.error('[AgentYaml] Failed to parse agent.yaml:', error);
 		}
-	}
-	
-	/**
-	 * 设置日志服务
-	 */
-	setLogService(logService: ILogService): void {
-		this._logService = logService;
 	}
 	
 	// ============================================================================

@@ -30,6 +30,7 @@ import { Menus } from '../menus.js';
 import { ActiveChatBarContext, ChatBarFocusContext } from '../../common/contextkeys.js';
 import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
+import { EmployeeChatPanel } from '../../contrib/employeeChat/browser/employeeChatPanel.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
 
@@ -57,6 +58,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 	private static readonly SESSION_BAR_HEIGHT = 35;
 
 	private _sessionCompositeBar: ChatCompositeBar | undefined;
+	private _employeeChatPanel: EmployeeChatPanel | undefined;
 
 	protected _lastLayout: { readonly width: number; readonly height: number; readonly top: number; readonly left: number } | undefined;
 
@@ -118,6 +120,20 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		// Create the session composite bar and prepend it before the content area
 		this._sessionCompositeBar = this._register(this.instantiationService.createInstance(ChatCompositeBar));
 		prepend(parent, this._sessionCompositeBar.element);
+
+		// Create the employee chat panel and append after the session composite bar
+		this._employeeChatPanel = this._register(new EmployeeChatPanel({
+			onSendMessage: (text: string) => {
+				// TODO: Wire to sessions management service for actual message sending
+			},
+			onCancelExecution: () => {
+				// TODO: Wire to abort controller
+			},
+			onToggleCollapse: () => {
+				// TODO: Wire to layout toggle
+			},
+		}));
+		parent.appendChild(this._employeeChatPanel.element);
 
 		// Relayout when session bar visibility changes
 		this._register(this._sessionCompositeBar.onDidChangeVisibility(() => {
