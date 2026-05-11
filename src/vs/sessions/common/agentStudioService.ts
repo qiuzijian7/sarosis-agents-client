@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { Event } from '../../../../base/common/event.js';
-import type { Employee, Workspace, Delegation, ChatMessage, AgentStudioSession, Connection, WorkspaceLayout, TaskBoardRecord, TaskBoardStatus } from './types.js';
+import { createDecorator } from '../../platform/instantiation/common/instantiation.js';
+import { Event } from '../../base/common/event.js';
+import type { Employee, Workspace, Delegation, ChatMessage, AgentStudioSession, Connection, WorkspaceLayout, TaskBoardRecord, TaskBoardStatus } from './agentStudioTypes.js';
 
 // ─── Agent Studio Service ───────────────────────────────────────────────────────
 

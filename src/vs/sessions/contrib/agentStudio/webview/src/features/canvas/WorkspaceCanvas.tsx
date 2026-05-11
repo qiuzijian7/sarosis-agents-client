@@ -174,6 +174,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 	}, [nodes, updateNodes, saveLayout]);
 
 	const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+		console.warn(`[WorkspaceCanvas] onNodeClick: node.id=${node.id}`);
 		selectEmployee(node.id);
 	}, [selectEmployee]);
 
@@ -280,41 +281,42 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	return (
 		<div className="canvas-container">
-			{/* Floating action bar (top-right corner of canvas) */}
-			<div className="canvas-view-toggle">
-				<button
-					className="canvas-add-agent-btn"
-					onClick={() => setShowCreateModal(true)}
-					title="创建 Agent"
-				>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-					</svg>
-				</button>
-				<div className="canvas-toggle-divider" />
-				<button
-					className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
-					onClick={() => handleViewModeChange('canvas')}
-					title="画布视图"
-				>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-					</svg>
-				</button>
-				<button
-					className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
-					onClick={() => handleViewModeChange('list')}
-					title="列表视图"
-				>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-					</svg>
-				</button>
-			</div>
-
 			{/* Canvas mode */}
 			{displayMode === 'canvas' && (
 				<div className="canvas-flow-area" ref={reactFlowWrapper}>
+					{/* Floating action bar (top-right corner of canvas) */}
+					<div className="canvas-view-toggle">
+						<button
+							className="canvas-add-agent-btn"
+							onClick={() => setShowCreateModal(true)}
+							title="添加 Agent"
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+							</svg>
+							<span className="canvas-add-agent-label">添加 Agent</span>
+						</button>
+						<div className="canvas-toggle-divider" />
+						<button
+							className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
+							onClick={() => handleViewModeChange('canvas')}
+							title="画布视图"
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+							</svg>
+						</button>
+						<button
+							className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
+							onClick={() => handleViewModeChange('list')}
+							title="列表视图"
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+							</svg>
+						</button>
+					</div>
+
 					<ReactFlow
 						nodes={nodes}
 						edges={edges}
@@ -384,6 +386,39 @@ export function WorkspaceCanvas(): React.ReactElement {
 					onDragOver={onDragOver}
 					onDrop={onListDrop}
 				>
+					{/* Floating action bar (top-right corner of list) */}
+					<div className="canvas-view-toggle">
+						<button
+							className="canvas-add-agent-btn"
+							onClick={() => setShowCreateModal(true)}
+							title="添加 Agent"
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+							</svg>
+							<span className="canvas-add-agent-label">添加 Agent</span>
+						</button>
+						<div className="canvas-toggle-divider" />
+						<button
+							className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
+							onClick={() => handleViewModeChange('canvas')}
+							title="画布视图"
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+							</svg>
+						</button>
+						<button
+							className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
+							onClick={() => handleViewModeChange('list')}
+							title="列表视图"
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+							</svg>
+						</button>
+					</div>
+
 					<EmployeeListView
 						employees={employees}
 						selectedEmployeeId={useEmployeeStore.getState().selectedEmployeeId}

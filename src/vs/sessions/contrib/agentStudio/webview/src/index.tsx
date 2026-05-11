@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { initMessageClient } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError } from './bridge/streamHandler.js';
+import { useEmployeeStore } from './store/useEmployeeStore.js';
 import './styles/globals.css';
 
 // Initialize the message bridge (must happen before React mounts)
@@ -21,6 +22,18 @@ initMessageClient((type, data) => {
 		case 'chat.stream.error':
 			handleStreamError(data as Parameters<typeof handleStreamError>[0]);
 			break;
+		case 'employee.selected': {
+			const { employeeId } = (data as { employeeId: string | null }) ?? {};
+			console.log(`[AgentStudio] received 'employee.selected' event: employeeId=${employeeId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
+			if (employeeId !== undefined) {
+				// Update the store directly (bypass postMessage to avoid echo loop)
+				console.log(`[AgentStudio] → useEmployeeStore.setState({ selectedEmployeeId: '${employeeId}' })`);
+				useEmployeeStore.setState({ selectedEmployeeId: employeeId });
+			} else {
+				console.warn(`[AgentStudio] employee.selected event missing employeeId, data=`, data);
+			}
+			break;
+		}
 		case 'employees.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:employees-changed'));
 			break;

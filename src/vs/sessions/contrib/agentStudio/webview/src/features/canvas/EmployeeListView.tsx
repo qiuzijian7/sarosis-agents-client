@@ -239,7 +239,10 @@ const EmployeeListItem: React.FC<EmployeeListItemProps> = ({
 			className={`emp-list-item ${isSelected ? 'emp-list-selected' : ''} ${
 				dragOverSide === 'before' ? 'emp-list-drag-over-before' : ''
 			} ${dragOverSide === 'after' ? 'emp-list-drag-over-after' : ''}`}
-			onClick={onSelect}
+			onClick={() => {
+				console.warn(`[EmployeeListItem] onClick: employee=${employee.name}(${employee.id})`);
+				onSelect();
+			}}
 			draggable
 			onDragStart={(e) => onDragStart(e, employee.id)}
 			onDragOver={(e) => onDragOver(e, employee.id)}

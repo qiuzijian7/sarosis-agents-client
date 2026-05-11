@@ -12,6 +12,7 @@ export type RequestType =
 	| 'employees.create'
 	| 'employees.update'
 	| 'employees.delete'
+	| 'employees.selected'
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'

@@ -1,12 +1,11 @@
-// @ts-nocheck
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import './media/employeeChat.css';
-import { Disposable } from '../../../../base/common/lifecycle.js';
-import { $, append, clearNode, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
+import '../media/employeeChat.css';
+import { Disposable } from '../../../base/common/lifecycle.js';
+import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import {
 	IEmployeeChatMessage,
 	IToolCall,
@@ -16,9 +15,8 @@ import {
 	STATUS_MAP,
 	HeaderPanelType,
 	uniqueMsgId,
-} from '../common/employeeChatTypes.js';
+} from './employeeChatTypes.js';
 
-// ═══════════════════════════════════════════════════════════════════
 // EmployeeChatPanel — Full chat panel matching sarosis-webui layout
 //
 // Structure:
@@ -41,7 +39,6 @@ import {
 //         .chat-composer-toolbar
 //           .chat-toolbar-left (attach, voice, web-search, divider, provider, model)
 //           .chat-send-circle
-// ═══════════════════════════════════════════════════════════════════
 
 export class EmployeeChatPanel extends Disposable {
 
@@ -86,9 +83,7 @@ export class EmployeeChatPanel extends Disposable {
 
 	get element(): HTMLElement { return this._container; }
 
-	// ═══════════════════════════════════════════════════════════════
 	// Public API
-	// ═══════════════════════════════════════════════════════════════
 
 	setEmployee(employee: IEmployeeInfo | null): void {
 		this._employee = employee;
@@ -140,9 +135,7 @@ export class EmployeeChatPanel extends Disposable {
 		this._textarea?.focus();
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Rendering — Full render
-	// ═══════════════════════════════════════════════════════════════
 
 	private _render(): void {
 		clearNode(this._container);
@@ -162,9 +155,7 @@ export class EmployeeChatPanel extends Disposable {
 		this._renderInputArea();
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Empty state
-	// ═══════════════════════════════════════════════════════════════
 
 	private _renderEmptyState(): void {
 		const header = append(this._container, $('.chat-header'));
@@ -183,13 +174,11 @@ export class EmployeeChatPanel extends Disposable {
 		append(empty, $('p.chat-empty-subtext', undefined, '点击画布或列表中的 Agent 卡片'));
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Chat Header
-	// ═══════════════════════════════════════════════════════════════
 
 	private _renderHeader(): void {
 		const emp = this._employee!;
-		const statusInfo = STATUS_MAP[emp.status] || STATUS_MAP.idle;
+		const statusInfo = STATUS_MAP[emp.status] || STATUS_MAP[EmployeeStatus.Idle];
 
 		const header = append(this._container, $('.chat-header'));
 
@@ -255,12 +244,12 @@ export class EmployeeChatPanel extends Disposable {
 		// Right: toolbar buttons
 		const actions = append(header, $('.chat-header-actions'));
 		const toolButtons: { key: HeaderPanelType; title: string; svgPath: string }[] = [
-			{ key: 'prompt',        title: '编辑提示词',    svgPath: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z' },
+			{ key: 'prompt',        title: '编辑提示词',    svgPath: 'M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z' },
 			{ key: 'condense-skill', title: '对话沉淀为技能', svgPath: 'M12 2 2 7 12 12 22 7 12 2M2 17 12 22 22 17M2 12 12 17 22 12' },
-			{ key: 'skills',        title: '配置员工技能',    svgPath: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' },
+			{ key: 'skills',        title: '配置员工技能',    svgPath: 'M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 012.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.65 1.65 0 001.82.33l.06.06a2 2 0 012.83-2.83l-.06-.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z' },
 			{ key: 'config-html',   title: '配置页面',       svgPath: 'M3 3h18v18H3zM3 9h18M9 21V9' },
 			{ key: 'params',        title: '配置参数',       svgPath: 'M4 21V14M4 10V3M12 21V12M12 8V3M20 21V16M20 12V3M1 14h7M9 8h6M17 16h6' },
-			{ key: 'memory',        title: '员工记忆',       svgPath: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z' },
+			{ key: 'memory',        title: '员工记忆',       svgPath: 'M4 19.5A2.5 2.5 0 006.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z' },
 		];
 
 		for (const btn of toolButtons) {
@@ -288,9 +277,7 @@ export class EmployeeChatPanel extends Disposable {
 		}
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Messages area
-	// ═══════════════════════════════════════════════════════════════
 
 	private _renderMessagesArea(): void {
 		this._messagesWrapper = append(this._container, $('.chat-messages-wrapper'));
@@ -358,9 +345,7 @@ export class EmployeeChatPanel extends Disposable {
 		this._renderMessages();
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Message element builder
-	// ═══════════════════════════════════════════════════════════════
 
 	private _createMessageElement(msg: IEmployeeChatMessage): HTMLElement {
 		const isUser = msg.role === 'user';
@@ -448,7 +433,7 @@ export class EmployeeChatPanel extends Disposable {
 		return messageEl;
 	}
 
-	// ── Thinking card ──────────────────────────────────────────────
+	// ── Thinking card ─────────────────────────────────────────────
 
 	private _createThinkingCard(msg: IEmployeeChatMessage): HTMLElement {
 		const card = append($(`.thinking-card${msg.isThinking ? '.active' : ''}`), '');
@@ -490,7 +475,7 @@ export class EmployeeChatPanel extends Disposable {
 		return card;
 	}
 
-	// ── Tool call card ──────────────────────────────────────────────
+	// ── Tool call card ─────────────────────────────────────────────
 
 	private _createToolCallCard(tc: IToolCall): HTMLElement {
 		const isRunning = tc.status === 'running';
@@ -662,9 +647,7 @@ export class EmployeeChatPanel extends Disposable {
 		}
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Input area
-	// ═══════════════════════════════════════════════════════════════
 
 	private _renderInputArea(): void {
 		const emp = this._employee!;
@@ -709,13 +692,13 @@ export class EmployeeChatPanel extends Disposable {
 		// Voice button
 		this._appendToolbarBtn(leftToolbar, {
 			title: '语音输入',
-			svgPath: 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8',
+			svgPath: 'M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8',
 		});
 
 		// Web search button
 		const webSearchBtn = this._appendToolbarBtn(leftToolbar, {
 			title: '联网搜索',
-			svgPath: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
+			svgPath: 'M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z',
 			hasLabel: true,
 			label: '联网',
 			extraSvg: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>',
@@ -884,9 +867,7 @@ export class EmployeeChatPanel extends Disposable {
 		this._renderSendButtonSvg();
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Actions
-	// ═══════════════════════════════════════════════════════════════
 
 	private _handleSendMessage(): void {
 		const text = this._textarea?.value?.trim();
@@ -904,9 +885,7 @@ export class EmployeeChatPanel extends Disposable {
 		});
 	}
 
-	// ═══════════════════════════════════════════════════════════════
 	// Layout
-	// ═══════════════════════════════════════════════════════════════
 
 	layout(width: number, height: number): void {
 		// The CSS flexbox handles layout automatically

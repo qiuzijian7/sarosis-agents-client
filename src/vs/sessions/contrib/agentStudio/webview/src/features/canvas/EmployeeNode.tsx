@@ -47,7 +47,10 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 		<div
 			className={`employee-node ${isSelected ? 'selected' : ''} ${statusInfo.animated ? 'status-animated' : ''}`}
 			style={{ background: statusInfo.bg }}
-			onClick={() => onSelect?.(employee.id)}
+			onClick={() => {
+				console.warn(`[EmployeeNode] onClick: employee=${employee.name}(${employee.id}), onSelect=${!!onSelect}`);
+				onSelect?.(employee.id);
+			}}
 		>
 			{/* Connection handles */}
 			<Handle type="target" position={Position.Top} className="employee-node-handle" />

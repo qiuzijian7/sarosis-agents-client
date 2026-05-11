@@ -136,17 +136,23 @@ export class AgentStudioWebviewController extends Disposable {
 
 		const { id, type, payload } = message;
 
-		if (!id || !type) {
+		if (!type) {
 			return;
 		}
 
+		this.logService.info(`[AgentStudio] _handleMessage: type=${type}, id=${id}, panelType=${this.panelType}, payload=${JSON.stringify(payload)?.slice(0, 200)}`);
+
 		try {
 			const result = await this._dispatch(type as RequestType, payload);
-			this._sendResponse(id, type as RequestType, result);
+			if (id) {
+				this._sendResponse(id, type as RequestType, result);
+			}
 		} catch (err: unknown) {
 			const error = err instanceof Error ? err : new Error(String(err));
 			this.logService.error(`[AgentStudio] Error handling ${type}:`, error);
-			this._sendError(id, type as RequestType, error.message);
+			if (id) {
+				this._sendError(id, type as RequestType, error.message);
+			}
 		}
 	}
 
@@ -165,6 +171,9 @@ export class AgentStudioWebviewController extends Disposable {
 				return this.agentStudioService.updateEmployee(p.id as string, p.data as Record<string, unknown>);
 			case 'employees.delete':
 				return this.agentStudioService.deleteEmployee(p.id as string);
+			case 'employees.selected':
+				this.agentStudioService.fireSelectEmployee((p as Record<string, unknown>).employeeId as string | null ?? null);
+				return undefined;
 
 		// ─── Workspaces ─────────────────────────────────────────
 		case 'workspace.list':
@@ -310,6 +319,7 @@ export class AgentStudioWebviewController extends Disposable {
 			type: type as IEventMessage['type'],
 			data,
 		};
+		this.logService.info(`[AgentStudio] _sendEvent: type=${type}, hasWebview=${!!this._webview}, panelType=${this.panelType}`);
 		this._webview?.postMessage(event);
 	}
 
@@ -318,6 +328,11 @@ export class AgentStudioWebviewController extends Disposable {
 	private _registerServiceListeners(): void {
 		this._register(this.agentStudioService.onDidChangeEmployees(() => {
 			this._sendEvent('employees.changed', {});
+		}));
+
+		this._register(this.agentStudioService.onDidSelectEmployee((employeeId) => {
+			this.logService.info(`[AgentStudio] onDidSelectEmployee → _sendEvent('employee.selected', {employeeId=${employeeId}}) panelType=${this.panelType}`);
+			this._sendEvent('employee.selected', { employeeId });
 		}));
 
 		this._register(this.agentStudioService.onDidChangeWorkspace((id) => {

@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { create } from 'zustand';
-import { sendRequest } from '../bridge/messageClient';
+import { sendRequest, postMessage } from '../bridge/messageClient';
 
 export interface Employee {
 	id: string;
@@ -39,7 +39,7 @@ interface EmployeeState {
 
 	// Actions
 	loadEmployees: (workspaceId?: string) => Promise<void>;
-	selectEmployee: (id: string | null) => void;
+	selectEmployee: (id: string | null, _skipBroadcast?: boolean) => void;
 	setSearchQuery: (query: string) => void;
 	createEmployee: (data: Partial<Employee>) => Promise<Employee>;
 	updateEmployee: (id: string, data: Partial<Employee>) => Promise<void>;
@@ -69,7 +69,12 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 		}
 	},
 
-	selectEmployee: (id) => set({ selectedEmployeeId: id }),
+	selectEmployee: (id, _skipBroadcast = false) => {
+		set({ selectedEmployeeId: id });
+		if (!_skipBroadcast) {
+			postMessage('employees.selected', { employeeId: id });
+		}
+	},
 	setSearchQuery: (query) => set({ searchQuery: query }),
 
 	createEmployee: async (data) => {

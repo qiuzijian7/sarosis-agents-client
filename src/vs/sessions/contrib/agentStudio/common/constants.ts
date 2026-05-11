@@ -61,3 +61,6 @@ export const DATA_FILE_EMPLOYEES = 'employees.json';
 export const DATA_FILE_WORKSPACES = 'workspaces.json';
 export const DATA_FILE_DELEGATIONS = 'delegations.json';
 export const DATA_FILE_SESSIONS = 'sessions.json';
+
+// Workspace-local data directory name (stored inside the workspace folder)
+export const WORKSPACE_DATA_DIR = '.sarosisworkspace';

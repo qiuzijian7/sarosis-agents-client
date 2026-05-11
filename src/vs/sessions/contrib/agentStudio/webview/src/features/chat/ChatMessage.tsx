@@ -1,5 +1,10 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Chat Message Component
+ *  Matches sarosis-webui layout:
+ *  - No role label header above bubble
+ *  - Footer with time + token count at bottom
+ *  - Thinking block (collapsible)
+ *  - Tool calls (collapsible with status)
  *--------------------------------------------------------------------------------------------*/
 
 import React, { memo } from 'react';
@@ -7,25 +12,34 @@ import type { ChatMessage } from '../../store/useChatStore';
 
 interface ChatMessageProps {
 	message: ChatMessage;
+	isStreaming?: boolean;
 }
 
-function ChatMessageRaw({ message }: ChatMessageProps): React.ReactElement {
+function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): React.ReactElement {
+	const isUser = message.role === 'user';
 
+	const formatTime = (timestamp: string | number) => {
+		return new Date(timestamp).toLocaleTimeString('zh-CN', {
+			hour: '2-digit',
+			minute: '2-digit',
+		});
+	};
 
 	return (
 		<div className={`chat-message ${message.role}`}>
-			<div className="message-content">
+			<div className={`message-content ${isStreaming ? 'message-streaming' : ''}`}>
 				{/* Thinking block */}
 				{message.thinking && (
 					<details className="thinking-block">
-						<summary>Thinking...</summary>
+						<summary className="thinking-summary">思考过程</summary>
 						<div className="thinking-content">{message.thinking}</div>
 					</details>
 				)}
 
-				{/* Main content - render as simple text for now */}
+				{/* Main content */}
 				<div className="message-text">
 					{message.content}
+					{isStreaming && <span className="cursor-blink">▊</span>}
 				</div>
 
 				{/* Tool calls */}
@@ -49,9 +63,9 @@ function ChatMessageRaw({ message }: ChatMessageProps): React.ReactElement {
 				)}
 			</div>
 
-			{/* Timestamp */}
-			<div className="message-meta">
-				{new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+			{/* Footer: time + token count */}
+			<div className="message-footer">
+				<span className="message-time">{formatTime(message.timestamp)}</span>
 			</div>
 		</div>
 	);

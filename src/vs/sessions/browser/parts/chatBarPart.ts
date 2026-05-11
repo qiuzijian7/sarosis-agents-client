@@ -31,6 +31,7 @@ import { ActiveChatBarContext, ChatBarFocusContext } from '../../common/contextk
 import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
 import { EmployeeChatPanel } from '../../contrib/employeeChat/browser/employeeChatPanel.js';
+import { IAgentStudioService } from '../../contrib/agentStudio/common/agentStudio.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
 
@@ -80,7 +81,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		@IViewDescriptorService viewDescriptorService: IViewDescriptorService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IExtensionService extensionService: IExtensionService,
-		@IMenuService menuService: IMenuService
+		@IMenuService menuService: IMenuService,
+		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 	) {
 		super(
 			Parts.CHATBAR_PART,
@@ -123,8 +125,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 		// Create the employee chat panel and append after the session composite bar
 		this._employeeChatPanel = this._register(new EmployeeChatPanel({
-			onSendMessage: (text: string) => {
-				// TODO: Wire to sessions management service for actual message sending
+			onSendMessage: async (text: string) => {
+				// TODO: Wire to IAgentChatService for actual message sending
 			},
 			onCancelExecution: () => {
 				// TODO: Wire to abort controller
@@ -134,6 +136,34 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			},
 		}));
 		parent.appendChild(this._employeeChatPanel.element);
+
+		// Listen for employee selection from agentStudio webview
+		this._register(this._agentStudioService.onDidSelectEmployee(async (employeeId) => {
+			if (!employeeId) {
+				this._employeeChatPanel?.setEmployee(null);
+				return;
+			}
+			try {
+				const emp = await this._agentStudioService.getEmployee(employeeId);
+				if (emp && this._employeeChatPanel) {
+					this._employeeChatPanel.setEmployee({
+						id: emp.id,
+						name: emp.name,
+						role: emp.role,
+						avatarUrl: emp.avatar,
+						status: emp.status as any,
+						isPM: emp.presetId === 'pm' || emp.role?.toLowerCase().includes('project manager'),
+						customPrompt: emp.customPrompt,
+						model: emp.model,
+						provider: undefined,
+					});
+					// Load chat history
+					// TODO: const history = await this._agentChatService.getHistory(employeeId);
+				}
+			} catch (err) {
+				// Employee not found or service error — ignore
+			}
+		}));
 
 		// Relayout when session bar visibility changes
 		this._register(this._sessionCompositeBar.onDidChangeVisibility(() => {
