@@ -30,8 +30,9 @@ import { Menus } from '../menus.js';
 import { ActiveChatBarContext, ChatBarFocusContext } from '../../common/contextkeys.js';
 import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
-import { EmployeeChatPanel } from '../../contrib/employeeChat/browser/employeeChatPanel.js';
-import { IAgentStudioService } from '../../contrib/agentStudio/common/agentStudio.js';
+// @ts-ignore - employeeChatPanel is a .ts file that gets compiled to .js
+import { EmployeeChatPanel } from './employeeChat/employeeChatPanel.js';
+import { IAgentStudioService } from '../../common/agentStudioService.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
 
@@ -151,7 +152,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						name: emp.name,
 						role: emp.role,
 						avatarUrl: emp.avatar,
-						status: emp.status as any,
+						status: emp.status,
 						isPM: emp.presetId === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 						customPrompt: emp.customPrompt,
 						model: emp.model,

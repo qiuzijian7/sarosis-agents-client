@@ -14,7 +14,7 @@ import {
 	IModelInfo,
 	STATUS_MAP,
 	HeaderPanelType,
-	uniqueMsgId,
+	EmployeeStatus,
 } from './employeeChatTypes.js';
 
 // EmployeeChatPanel — Full chat panel matching sarosis-webui layout
@@ -65,7 +65,6 @@ export class EmployeeChatPanel extends Disposable {
 	// ── Callbacks ──
 	private readonly _onSendMessage: (text: string) => void;
 	private readonly _onCancelExecution: () => void;
-	private readonly _onToggleCollapse: () => void;
 
 	constructor(
 		opts: {
@@ -77,7 +76,6 @@ export class EmployeeChatPanel extends Disposable {
 		super();
 		this._onSendMessage = opts.onSendMessage;
 		this._onCancelExecution = opts.onCancelExecution;
-		this._onToggleCollapse = opts.onToggleCollapse;
 		this._container = $('.chat-container');
 	}
 
@@ -178,7 +176,8 @@ export class EmployeeChatPanel extends Disposable {
 
 	private _renderHeader(): void {
 		const emp = this._employee!;
-		const statusInfo = STATUS_MAP[emp.status] || STATUS_MAP[EmployeeStatus.Idle];
+		const status = emp.status as keyof typeof STATUS_MAP;
+		const statusInfo = STATUS_MAP[status] || STATUS_MAP[EmployeeStatus.Idle];
 
 		const header = append(this._container, $('.chat-header'));
 
@@ -436,10 +435,11 @@ export class EmployeeChatPanel extends Disposable {
 	// ── Thinking card ─────────────────────────────────────────────
 
 	private _createThinkingCard(msg: IEmployeeChatMessage): HTMLElement {
-		const card = append($(`.thinking-card${msg.isThinking ? '.active' : ''}`), '');
+		const card = $(`.thinking-card${msg.isThinking ? '.active' : ''}`);
 
 		// Header
-		const header = append(card, $('.thinking-card-header'));
+		const header = $('.thinking-card-header');
+		append(card, header);
 		const icon = append(header, $('span.thinking-card-icon'));
 		if (msg.isThinking) {
 			const spinnerSvg = append(icon, $('svg.thinking-spinner'));
@@ -460,7 +460,8 @@ export class EmployeeChatPanel extends Disposable {
 		toggle.textContent = '▼';
 
 		// Body (initially collapsed)
-		const body = append(card, $('.thinking-card-body'));
+		const body = $('.thinking-card-body');
+		append(card, body);
 		body.textContent = msg.thinking || (msg.isThinking ? '正在思考...' : '');
 		body.style.display = 'none';
 
@@ -482,7 +483,8 @@ export class EmployeeChatPanel extends Disposable {
 		const card = $(`.tool-call-card.${isRunning ? 'running' : 'completed'}`);
 
 		// Header
-		const header = append(card, $('.tool-call-header'));
+		const header = $('.tool-call-header');
+		append(card, header);
 		const iconEl = append(header, $('span.tool-call-icon'));
 		if (isRunning) {
 			const spinner = append(iconEl, $('svg.tool-spinner'));
@@ -512,7 +514,8 @@ export class EmployeeChatPanel extends Disposable {
 		toggle.textContent = '▼';
 
 		// Body (initially collapsed)
-		const body = append(card, $('.tool-call-body'));
+		const body = $('.tool-call-body');
+		append(card, body);
 		body.style.display = 'none';
 
 		if (tc.args) {
@@ -715,7 +718,7 @@ export class EmployeeChatPanel extends Disposable {
 		append(leftToolbar, $('.chat-toolbar-divider'));
 
 		// Provider chip
-		const providerBtn = this._appendToolbarBtn(leftToolbar, {
+		this._appendToolbarBtn(leftToolbar, {
 			title: '选择 Provider',
 			svgPath: 'M2 3h20v14H2zM8 21h8M12 17v4',
 			hasLabel: true,
@@ -725,7 +728,7 @@ export class EmployeeChatPanel extends Disposable {
 		});
 
 		// Model chip
-		const modelBtn = this._appendToolbarBtn(leftToolbar, {
+		this._appendToolbarBtn(leftToolbar, {
 			title: '选择模型',
 			svgPath: 'M4 17l6-6-6-6M12 19h8',
 			hasLabel: true,

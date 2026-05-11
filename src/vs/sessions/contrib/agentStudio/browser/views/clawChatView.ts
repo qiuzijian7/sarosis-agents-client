@@ -14,6 +14,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IAgentChatService } from '../../common/agentStudio.js';
+import type { IChatStreamDelta } from '../../common/agentStudio.js';
 
 import { $ } from '../../../../../base/browser/dom.js';
 import type { ChatMessage } from '../../common/types.js';
@@ -150,7 +151,7 @@ export class ClawChatViewPane extends ViewPane {
 				'claw-default',
 				text,
 				{},
-				(delta) => {
+				(delta: IChatStreamDelta) => {
 					if (delta.type === 'text' && delta.content) {
 						fullResponse += delta.content;
 						contentEl.textContent = fullResponse;

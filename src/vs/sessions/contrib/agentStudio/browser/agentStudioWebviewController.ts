@@ -330,12 +330,12 @@ export class AgentStudioWebviewController extends Disposable {
 			this._sendEvent('employees.changed', {});
 		}));
 
-		this._register(this.agentStudioService.onDidSelectEmployee((employeeId) => {
+		this._register(this.agentStudioService.onDidSelectEmployee((employeeId: string | null) => {
 			this.logService.info(`[AgentStudio] onDidSelectEmployee → _sendEvent('employee.selected', {employeeId=${employeeId}}) panelType=${this.panelType}`);
 			this._sendEvent('employee.selected', { employeeId });
 		}));
 
-		this._register(this.agentStudioService.onDidChangeWorkspace((id) => {
+		this._register(this.agentStudioService.onDidChangeWorkspace((id: string) => {
 			this._sendEvent('workspace.changed', { workspaceId: id });
 		}));
 

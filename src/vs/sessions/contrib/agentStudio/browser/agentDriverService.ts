@@ -145,7 +145,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			this._activeTurns.delete(turnId);
 		}
 		// 同时取消 agentChatService 中的流（兼容旧代码）
-		const chatService = this._instantiationService.invokeFunction(accessor => accessor.get(IAgentChatService));
+		const chatService = this._instantiationService.invokeFunction(accessor => accessor.get(IAgentChatService)) as IAgentChatService;
 		chatService.cancelStream(turnId);
 	}
 

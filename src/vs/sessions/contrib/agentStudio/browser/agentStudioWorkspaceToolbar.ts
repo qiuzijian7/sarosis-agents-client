@@ -212,7 +212,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		const current = this._workspaces.find(w => w.id === this._activeWorkspaceId);
 		const label = this._selectButton.querySelector('.astb-select-label');
 		if (label) {
-			label.textContent = current?.name || '选择工作区...';
+			label.textContent = current?.name ?? '选择工作区...';
 		}
 
 		// Update employee count badge

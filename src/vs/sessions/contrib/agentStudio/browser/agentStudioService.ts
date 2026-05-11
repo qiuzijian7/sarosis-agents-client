@@ -12,8 +12,8 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../common/types.js';
-import { EmployeeStatus } from '../common/types.js';
+import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../../../common/agentStudioTypes.js';
+import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
 import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR } from '../common/constants.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
@@ -381,7 +381,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		if (index === -1) {
 			throw new Error(`Workspace not found: ${workspaceId}`);
 		}
-		workspaces[index].connections = workspaces[index].connections.filter(c => c.id !== connectionId);
+		workspaces[index].connections = workspaces[index].connections.filter((c: Connection) => c.id !== connectionId);
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 

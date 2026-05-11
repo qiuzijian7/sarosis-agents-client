@@ -35,6 +35,7 @@ import { IAccessibilitySignalService } from '../../../../../platform/accessibili
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { SearchView } from '../../../../../workbench/contrib/search/browser/searchView.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
+import type { Workspace } from '../../../../common/agentStudioTypes.js';
 
 const $ = dom.$;
 
@@ -192,7 +193,7 @@ export class AgentStudioSearchViewPane extends SearchView {
 
 			// Restore selection
 			if (this.selectedWorkspaceId !== 'all') {
-				const exists = workspaces.some(ws => ws.id === this.selectedWorkspaceId);
+				const exists = workspaces.some((ws: Workspace) => ws.id === this.selectedWorkspaceId);
 				if (!exists) {
 					this.selectedWorkspaceId = 'all';
 				}
@@ -218,7 +219,7 @@ export class AgentStudioSearchViewPane extends SearchView {
 	private async _applyWorkspaceFolder(workspaceId: string): Promise<void> {
 		try {
 			const workspaces = await this.agentStudioService.getWorkspaces();
-			const ws = workspaces.find(w => w.id === workspaceId);
+			const ws = workspaces.find((w: Workspace) => w.id === workspaceId);
 			if (ws && ws.path) {
 				this._updateSearchIncludePattern(ws.path);
 			}

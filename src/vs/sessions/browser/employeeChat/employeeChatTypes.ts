@@ -3,9 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// ══════════════════════════════════════════════════════════════════
 // Employee Chat — Type definitions (ported from sarosis-webui)
-// ══════════════════════════════════════════════════════════════════
 
 import { EmployeeStatus } from '../../common/agentStudioTypes.js';
 
@@ -76,3 +74,5 @@ let _msgSeq = 0;
 export function uniqueMsgId(): string {
 	return `msg-${Date.now()}-${(++_msgSeq).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
+
+export { EmployeeStatus };
