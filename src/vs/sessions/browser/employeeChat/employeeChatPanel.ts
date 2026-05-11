@@ -11,8 +11,8 @@ import {
 	clearNode,
 	addDisposableListener,
 	EventType,
-	mainWindow,
 } from "../../../base/browser/dom.js";
+import { mainWindow } from "../../../base/browser/window.js";
 import {
 	IEmployeeChatMessage,
 	IToolCall,
