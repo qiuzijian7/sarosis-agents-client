@@ -30,8 +30,9 @@ import { Menus } from '../menus.js';
 import { ActiveChatBarContext, ChatBarFocusContext } from '../../common/contextkeys.js';
 import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
-// @ts-ignore - employeeChatPanel is a .ts file that gets compiled to .js
-import { EmployeeChatPanel } from './employeeChat/employeeChatPanel.js';
+// @ts-ignore - TypeScript cannot find type declarations for .ts files imported with .js extension
+// TODO: Create proper type declarations in employeeChatPanel.js.d.ts
+import { EmployeeChatPanel } from '../employeeChat/employeeChatPanel.js';
 import { IAgentStudioService } from '../../common/agentStudioService.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar

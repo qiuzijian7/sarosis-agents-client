@@ -70,6 +70,9 @@ export const unicodeFilter = Object.freeze<string[]>([
 	// sessions/contrib has its own code style
 	'!src/vs/sessions/contrib/**',
 
+	// sessions/browser/employeeChat uses Chinese strings for UI
+	'!src/vs/sessions/browser/employeeChat/**',
+
 	'!src/vs/base/browser/dompurify/**',
 	'!src/vs/workbench/services/keybinding/browser/keyboardLayouts/**',
 	'!src/vs/workbench/contrib/terminal/common/scripts/psreadline/**',

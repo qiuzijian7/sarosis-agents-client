@@ -1,8 +1,9 @@
-// @ts-nocheck
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+
+// @ts-nocheck
 
 /* eslint-disable no-restricted-globals */
 
@@ -120,7 +121,7 @@
 		try {
 			let workbenchUrl: string;
 			if (!!safeProcess.env['VSCODE_DEV'] && globalThis._VSCODE_USE_RELATIVE_IMPORTS) {
-				workbenchUrl = './sessions.desktop.main.js'; // for dev purposes only
+				workbenchUrl = '../sessions.desktop.main.js'; // for dev purposes only
 			} else {
 				workbenchUrl = new URL(`vs/sessions/sessions.desktop.main.js`, baseUrl).href;
 			}
