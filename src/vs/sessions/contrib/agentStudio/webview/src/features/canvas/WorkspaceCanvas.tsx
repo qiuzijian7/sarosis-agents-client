@@ -33,6 +33,7 @@ import '@xyflow/react/dist/style.css';
 import { EmployeeNode } from './EmployeeNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { EmployeeListView } from './EmployeeListView';
+import { CreateAgentModal } from '../employees/CreateAgentModal';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { sendRequest } from '../../bridge/messageClient';
@@ -51,6 +52,9 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, saveLayout } = useWorkspaceStore();
 	const { employees, selectEmployee, deleteEmployee, loadEmployees } = useEmployeeStore();
 	const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
+
+	// Create agent modal state
+	const [showCreateModal, setShowCreateModal] = useState(false);
 
 	// Display mode with localStorage persistence
 	const [displayMode, setDisplayMode] = useState<ViewMode>(() => {
@@ -267,10 +271,27 @@ export function WorkspaceCanvas(): React.ReactElement {
 		}
 	}, [activeWorkspaceId, loadEmployees]);
 
+	// Handler after agent is created
+	const handleAgentCreated = useCallback(() => {
+		if (activeWorkspaceId) {
+			loadEmployees(activeWorkspaceId);
+		}
+	}, [activeWorkspaceId, loadEmployees]);
+
 	return (
 		<div className="canvas-container">
-			{/* Floating view mode toggle (top-right corner of canvas) */}
+			{/* Floating action bar (top-right corner of canvas) */}
 			<div className="canvas-view-toggle">
+				<button
+					className="canvas-add-agent-btn"
+					onClick={() => setShowCreateModal(true)}
+					title="创建 Agent"
+				>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+					</svg>
+				</button>
+				<div className="canvas-toggle-divider" />
 				<button
 					className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
 					onClick={() => handleViewModeChange('canvas')}
@@ -340,8 +361,17 @@ export function WorkspaceCanvas(): React.ReactElement {
 									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
 								</svg>
 							</div>
-							<p className="canvas-empty-text">在左侧添加员工到画布</p>
-							<p className="canvas-empty-hint">拖拽卡片、连接关系来组织团队</p>
+							<p className="canvas-empty-text">还没有 Agent</p>
+							<p className="canvas-empty-hint">创建 Agent 来组织你的团队</p>
+							<button
+								className="canvas-empty-add-btn"
+								onClick={() => setShowCreateModal(true)}
+							>
+								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+								</svg>
+								创建 Agent
+							</button>
 						</div>
 					)}
 				</div>
@@ -364,6 +394,16 @@ export function WorkspaceCanvas(): React.ReactElement {
 					/>
 				</div>
 			)}
+
+			{/* Create Agent Modal */}
+			<CreateAgentModal
+				isOpen={showCreateModal}
+				onClose={() => {
+					setShowCreateModal(false);
+					handleAgentCreated();
+				}}
+				workspaceId={activeWorkspaceId || undefined}
+			/>
 		</div>
 	);
 }

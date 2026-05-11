@@ -346,7 +346,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		browseBtn.appendChild(_svgIcon(14, 14, [
 			'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z',
 		]));
-		browseBtn.addEventListener('click', () => this._browseForFolder(folderPathLabel));
+		browseBtn.addEventListener('click', () => this._browseForFolder(folderPathLabel, input));
 
 		const confirmBtn = document.createElement('button');
 		confirmBtn.className = 'astb-create-confirm';
@@ -396,8 +396,9 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 	/**
 	 * Opens the native folder picker dialog and updates the path label.
+	 * Also auto-fills the name input with the folder name if the input is empty.
 	 */
-	private async _browseForFolder(pathLabel: HTMLElement): Promise<void> {
+	private async _browseForFolder(pathLabel: HTMLElement, nameInput?: HTMLInputElement): Promise<void> {
 		if (!this._fileDialogService) {
 			console.warn('[AgentStudioWorkspaceToolbar] IFileDialogService not connected');
 			return;
@@ -416,14 +417,39 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 			pathLabel.textContent = displayPath;
 			pathLabel.title = displayPath;
 			pathLabel.classList.add('has-folder');
+
+			// Auto-fill name input with folder name if it's empty
+			if (nameInput && !nameInput.value.trim()) {
+				const segments = displayPath.split(/[/\\]/).filter(Boolean);
+				const folderName = segments[segments.length - 1] || '';
+				if (folderName) {
+					nameInput.value = folderName;
+				}
+			}
 		}
 	}
 
 	private async _submitCreate(name: string): Promise<void> {
-		const trimmed = name.trim();
-		if (!trimmed || !this._agentStudioService) {
+		let trimmed = name.trim();
+
+		// If no name but a folder is selected, derive name from folder path
+		if (!trimmed && this._selectedFolderUri) {
+			const fsPath = this._selectedFolderUri.fsPath || this._selectedFolderUri.path;
+			// Extract last segment as workspace name (handles both / and \ separators)
+			const segments = fsPath.split(/[/\\]/).filter(Boolean);
+			trimmed = segments[segments.length - 1] || '';
+		}
+
+		if (!trimmed) {
+			console.warn('[AgentStudioWorkspaceToolbar] _submitCreate: name is empty after trim');
 			return;
 		}
+		if (!this._agentStudioService) {
+			console.error('[AgentStudioWorkspaceToolbar] _submitCreate: agentStudioService is not connected!');
+			return;
+		}
+
+		console.log('[AgentStudioWorkspaceToolbar] _submitCreate: creating workspace...', { name: trimmed, path: this._selectedFolderUri?.fsPath });
 
 		try {
 			const createData: Partial<Workspace> = { name: trimmed };
@@ -431,13 +457,14 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 				createData.path = this._selectedFolderUri.fsPath || this._selectedFolderUri.path;
 			}
 			const newWorkspace = await this._agentStudioService.createWorkspace(createData);
+			console.log('[AgentStudioWorkspaceToolbar] _submitCreate: workspace created', newWorkspace);
 			this._activeWorkspaceId = newWorkspace.id;
 			this._selectedFolderUri = undefined;
 			this._fireWorkspaceChanged(newWorkspace.id);
 			this._closeDropdown();
 			await this._loadWorkspaces();
 		} catch (err) {
-			// Handle error silently
+			console.error('[AgentStudioWorkspaceToolbar] _submitCreate: FAILED', err);
 		}
 	}
 

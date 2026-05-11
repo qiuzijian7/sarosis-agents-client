@@ -143,10 +143,11 @@
 		"distro",
 		"release/*"
 	],
-	"git.branchProtectionPrompt": "alwaysCommitToNewBranch",
+	"git.branchProtectionPrompt": "commitToProtectedBranch",
 	"git.branchRandomName.enable": true,
 	"git.pullBeforeCheckout": false,
 	"git.mergeEditor": false,
+	"git.postCommitAction": "push",
 	// --- GitHub ---
 	"githubPullRequests.experimental.createView": true,
 	"githubPullRequests.assignCreated": "${user}",

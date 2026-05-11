@@ -1196,3 +1196,16 @@ P8 高阶能力建议主架构稳定后由 1-2 人专项推进。
 - **版本演进**: 文档版本与代码版本同步，重大变更走 RFC
 
 > 本文档为 **可执行规范**，不是设计文档。设计请参考 `Four-Layer-Architecture-Framework.md`。
+
+---
+
+## 配套执行路线
+
+> **2026-05-11 新增**：基于"功能优先"策略的三阶段执行路线见
+> [`Implementation-Roadmap-FunctionFirst.md`](./Implementation-Roadmap-FunctionFirst.md)
+>
+> - **Stage 1 · MVP 闭环** 34d / 8–9 周（30 任务）
+> - **Stage 2 · 测试补全** 12d / 2–3 周
+> - **Stage 3 · 鲁棒性加固** 16d / 3–4 周（按风险优先级）
+>
+> 本文档定义"做什么"，路线图定义"何时做、按什么顺序做"。

@@ -543,6 +543,10 @@ html, body, #root {
   pointer-events: none;
 }
 
+.canvas-empty > * {
+  pointer-events: auto;
+}
+
 .canvas-empty-icon {
   width: 64px;
   height: 64px;
@@ -1831,4 +1835,474 @@ html, body, #root {
 /* In standalone mode, chat fills entire height */
 .panel-standalone .employee-chat {
   height: 100%;
+}
+
+/* ═══ Create Agent Modal ═══════════════════════════════════════════════════════ */
+
+.create-agent-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.create-agent-modal {
+  background-color: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  width: 100%;
+  max-width: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Header */
+.create-agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  flex-shrink: 0;
+}
+
+.create-agent-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.create-agent-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.create-agent-close:hover {
+  background-color: var(--vscode-list-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.create-agent-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Step indicator */
+.create-agent-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.1));
+  flex-shrink: 0;
+}
+
+.create-agent-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.create-agent-step.active {
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.create-agent-step.done {
+  color: var(--vscode-foreground);
+}
+
+.step-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  background-color: var(--vscode-input-background);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+
+.create-agent-step.active .step-dot {
+  background-color: var(--vscode-textLink-foreground, #3b82f6);
+  color: white;
+  border-color: transparent;
+}
+
+.create-agent-step.done .step-dot {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: transparent;
+}
+
+.step-line {
+  width: 32px;
+  height: 1px;
+  background-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+
+.step-label {
+  font-weight: 500;
+}
+
+/* Preset section */
+.create-agent-preset-section {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.preset-search {
+  position: relative;
+  padding: 10px 16px;
+  flex-shrink: 0;
+}
+
+.preset-search-icon {
+  position: absolute;
+  left: 26px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.preset-search-input {
+  width: 100%;
+  padding: 6px 8px 6px 30px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+}
+
+.preset-search-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 4px 16px 12px;
+  overflow-y: auto;
+}
+
+.preset-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  cursor: pointer;
+  transition: border-color 100ms, background-color 100ms;
+}
+
+.preset-card:hover {
+  border-color: var(--vscode-textLink-foreground, #3b82f6);
+  background-color: rgba(59, 130, 246, 0.06);
+}
+
+.preset-card-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.preset-card-info {
+  min-width: 0;
+}
+
+.preset-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.preset-card-desc {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-custom-entry {
+  padding: 8px 16px 14px;
+  flex-shrink: 0;
+}
+
+.preset-custom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 100ms, color 100ms;
+  font-family: inherit;
+}
+
+.preset-custom-btn:hover {
+  border-color: var(--vscode-textLink-foreground, #3b82f6);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.preset-custom-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Form section */
+.create-agent-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.form-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.form-preset-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: rgba(59, 130, 246, 0.1);
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.preset-badge-icon {
+  font-size: 16px;
+}
+
+.preset-badge-name {
+  font-weight: 600;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.preset-badge-change {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: inherit;
+}
+
+.preset-badge-change:hover {
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.form-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.form-field {
+  margin-bottom: 10px;
+}
+
+.form-field-flex {
+  flex: 1;
+  min-width: 0;
+}
+
+.form-field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.form-field .required {
+  color: #ef4444;
+}
+
+.form-field input[type="text"],
+.form-field input[type="number"],
+.form-field input[type="email"],
+.form-field select,
+.form-field textarea {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.form-field textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.form-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.form-field select {
+  cursor: pointer;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  flex-shrink: 0;
+}
+
+.btn-primary {
+  padding: 6px 16px;
+  border-radius: 4px;
+  border: none;
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 100ms;
+}
+
+.btn-primary:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  padding: 6px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+  background: transparent;
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 100ms;
+}
+
+.btn-secondary:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+/* ═══ Canvas "Add Agent" Button ═══════════════════════════════════════════════ */
+
+.canvas-add-agent-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: background-color 100ms, opacity 100ms;
+}
+
+.canvas-add-agent-btn:hover {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  opacity: 1;
+}
+
+.canvas-add-agent-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.canvas-toggle-divider {
+  width: 1px;
+  height: 16px;
+  background-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+
+/* Canvas empty state "Add Agent" button */
+.canvas-empty-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 8px 20px;
+  border: 1px solid var(--vscode-textLink-foreground, #3b82f6);
+  border-radius: 6px;
+  background-color: rgba(59, 130, 246, 0.1);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 100ms;
+  font-family: inherit;
+}
+
+.canvas-empty-add-btn:hover {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+.canvas-empty-add-btn svg {
+  width: 14px;
+  height: 14px;
 }

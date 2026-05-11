@@ -9,6 +9,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../common/types.js';
@@ -33,6 +34,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		super();
 	}
@@ -43,10 +45,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			if (customPath) {
 				this._dataUri = URI.file(customPath);
 			} else {
-				// Default: use user home .agent-studio/data/
-				this._dataUri = URI.file(process.env.HOME || process.env.USERPROFILE || '~')
-					.with({ path: `${process.env.HOME || process.env.USERPROFILE || '~'}/.agent-studio/data` });
+				// Default: store data alongside VS Code user data
+				// userRoamingDataHome works in both browser and native contexts
+				this._dataUri = URI.joinPath(this.environmentService.userRoamingDataHome, 'agent-studio');
 			}
+			this.logService.debug(`[AgentStudio] Data directory: ${this._dataUri.toString()}`);
 		}
 		return this._dataUri;
 	}
@@ -63,7 +66,20 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	private async _writeJsonFile<T>(filename: string, data: T[]): Promise<void> {
-		const uri = URI.joinPath(this._getDataUri(), filename);
+		const dirUri = this._getDataUri();
+		// Ensure the data directory exists before writing
+		try {
+			await this.fileService.stat(dirUri);
+		} catch {
+			// Directory doesn't exist — create it recursively
+			try {
+				await this.fileService.createFolder(dirUri);
+			} catch (createErr) {
+				this.logService.error('[AgentStudio] Failed to create data directory', dirUri.toString(), createErr);
+				throw createErr;
+			}
+		}
+		const uri = URI.joinPath(dirUri, filename);
 		const content = VSBuffer.fromString(JSON.stringify(data, null, 2));
 		await this.fileService.writeFile(uri, content);
 	}

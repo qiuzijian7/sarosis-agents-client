@@ -10,11 +10,12 @@
  *  - WorkspaceCanvas (main area: canvas/list mode with MiniMap, Controls, Background)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { WorkspaceToolbar } from './features/title/WorkspaceToolbar';
 import { WorkspaceCanvas } from './features/canvas/WorkspaceCanvas';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { EmployeeChat } from './features/chat/EmployeeChat';
+import { CreateAgentModal } from './features/employees/CreateAgentModal';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
 import { useDelegationStore } from './store/useDelegationStore';
@@ -226,8 +227,10 @@ function FullLayout(): React.ReactElement {
 
 
 	const handleAddEmployee = useCallback(() => {
-		console.log('[AgentStudio] Add employee');
+		setShowAddEmployeeModal(true);
 	}, []);
+
+	const [showAddEmployeeModal, setShowAddEmployeeModal] = useState(false);
 
 	const handleRefresh = useCallback(() => {
 		if (activeWorkspaceId) {
@@ -260,6 +263,20 @@ function FullLayout(): React.ReactElement {
 
 			{/* ③ Bottom: Task Board */}
 			<TaskBoardPanel />
+
+			{/* Create Agent Modal */}
+			<CreateAgentModal
+				isOpen={showAddEmployeeModal}
+				onClose={() => {
+					setShowAddEmployeeModal(false);
+					if (activeWorkspaceId) {
+						loadEmployees(activeWorkspaceId);
+						loadDelegations(activeWorkspaceId);
+						loadTasks(activeWorkspaceId);
+					}
+				}}
+				workspaceId={activeWorkspaceId || undefined}
+			/>
 		</div>
 	);
 }
