@@ -67,6 +67,9 @@ export const unicodeFilter = Object.freeze<string[]>([
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
 
+	// sessions/contrib has its own code style
+	'!src/vs/sessions/contrib/**',
+
 	'!src/vs/base/browser/dompurify/**',
 	'!src/vs/workbench/services/keybinding/browser/keyboardLayouts/**',
 	'!src/vs/workbench/contrib/terminal/common/scripts/psreadline/**',
@@ -132,6 +135,9 @@ export const indentationFilter = Object.freeze<string[]>([
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
+
+	// sessions/contrib has its own code style
+	'!src/vs/sessions/contrib/**',
 
 	// except specific file types
 	'!src/vs/*/**/*.d.ts',
@@ -208,6 +214,9 @@ export const copyrightFilter = Object.freeze<string[]>([
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
+
+	// sessions/contrib has its own code style
+	'!src/vs/sessions/contrib/**',
 ]);
 
 export const tsFormattingFilter = Object.freeze<string[]>([
@@ -230,6 +239,9 @@ export const tsFormattingFilter = Object.freeze<string[]>([
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
+
+	// sessions/contrib has its own code style
+	'!src/vs/sessions/contrib/**',
 ]);
 
 export const eslintFilter = Object.freeze<string[]>([
@@ -244,5 +256,6 @@ export const eslintFilter = Object.freeze<string[]>([
 ]);
 
 export const stylelintFilter = Object.freeze<string[]>([
-	'src/**/*.css'
+	'src/**/*.css',
+	'!src/vs/sessions/contrib/**',
 ]);

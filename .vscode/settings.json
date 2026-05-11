@@ -147,6 +147,8 @@
 	"git.branchRandomName.enable": true,
 	"git.pullBeforeCheckout": false,
 	"git.mergeEditor": false,
+	"git.enableSmartCommit": true,
+	"git.smartCommitChanges": "all",
 	"git.postCommitAction": "push",
 	// --- GitHub ---
 	"githubPullRequests.experimental.createView": true,
