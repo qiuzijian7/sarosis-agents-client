@@ -70,6 +70,7 @@ export class AgentStudioEditorInput extends EditorInput {
 			case 'canvas': return 'Workspace Canvas';
 			case 'chat': return 'Agent Chat';
 			case 'taskboard': return 'Task Board';
+			case 'settings': return 'Settings';
 			default: return 'Agent Studio';
 		}
 	}

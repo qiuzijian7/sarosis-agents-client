@@ -9,12 +9,13 @@
     "agent-studio": "^1.0.0"
   },
   "main": "./dist/extension.js",
-  "activationEvents": [
-    "onAgentOS:capability.model",
-    "onCommand:knot.login",
-    "onCommand:knot.selectModel"
-  ],
   "contributes": {
+    "chatPlugins": [
+      {
+        "path": "./plugin",
+        "when": "extensionInstalled == sarosis-knot-agui"
+      }
+    ],
     "agentCapabilities": [
       {
         "capability": "model",
@@ -26,36 +27,51 @@
       "type": "object",
       "title": "Knot AG-UI",
       "properties": {
-        "knot.auth.token": {
+        "sessions.agentStudio.knot.token": {
           "type": "string",
           "default": "",
           "description": "Knot 平台 API Token（在 knot.woa.com 生成）",
           "scope": "application",
           "markdownDescription": "Knot 平台 API Token。前往 [Knot Console](https://knot.woa.com/console/tokens) 生成。"
         },
-        "knot.endpoint": {
+        "sessions.agentStudio.knot.user": {
           "type": "string",
-          "default": "https://knot.woa.com/api/v1",
-          "description": "Knot AG-UI API 端点地址"
+          "default": "",
+          "description": "API USER（企微英文名，使用团队 Token 时必填）",
+          "scope": "application"
         },
-        "knot.defaultAgent": {
+        "sessions.agentStudio.knot.agentId": {
           "type": "string",
           "default": "",
           "description": "默认 Agent ID（留空则在模型选择器中手动选择）",
-          "markdownDescription": "默认使用的 Agent ID。可在模型选择器中随时切换。"
+          "markdownDescription": "默认使用的 Agent ID。可在聊天框 Agent 选择器中随时切换。"
         },
-        "knot.agents": {
+        "sessions.agentStudio.knot.agents": {
           "type": "array",
           "default": [],
-          "markdownDescription": "已收藏的 Agent 列表（自动同步远端）",
+          "markdownDescription": "Agent 列表，每项包含 id、name 和可选的 models 数组。在设置页签中编辑。",
           "items": {
             "type": "object",
             "properties": {
               "id": { "type": "string", "description": "Agent ID" },
               "name": { "type": "string", "description": "Agent 显示名称" },
-              "description": { "type": "string" }
+              "description": { "type": "string" },
+              "models": { "type": "array", "items": { "type": "string" } }
             }
           }
+        },
+        "sessions.agentStudio.knot.models": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "模型列表，每项为一个模型 ID。在设置页签中编辑。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sessions.agentStudio.knot.baseUrl": {
+          "type": "string",
+          "default": "https://knot.woa.com",
+          "description": "Knot AG-UI API 端点地址"
         },
         "knot.timeout": {
           "type": "number",
@@ -73,7 +89,8 @@
       { "command": "knot.login", "title": "Knot: Login / Set Token" },
       { "command": "knot.selectModel", "title": "Knot: Select Agent Model" },
       { "command": "knot.refreshAgents", "title": "Knot: Refresh Agent List" },
-      { "command": "knot.viewAgentDetails", "title": "Knot: View Agent Details" }
+      { "command": "knot.viewAgentDetails", "title": "Knot: View Agent Details" },
+      { "command": "knot.openSettings", "title": "Knot: Open Settings" }
     ]
   },
   "dependencies": {

@@ -16,10 +16,13 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 		readonly id = 'knot-agui';
 		readonly name = 'Knot AG-UI';
 		readonly priority = 100;
-		
+
+		// Agent 支持
+		supportsAgents = true;
 		onDidChangeModels: any = { /* Event */ };
 		onDidChangeAuthStatus: any = { /* Event */ };
-		
+		onDidChangeAgents: any = { /* Event */ };
+
 		private _authStatus = ModelAuthStatus.NotConfigured;
 		private _agents: any[] = [];
 
@@ -36,7 +39,14 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 			return this._agents;
 		}
 
-		async *chat(modelId: string, messages: any[], options: any): AsyncIterable<any> {
+		async listAgents(): Promise<any[]> {
+			if (this._authStatus !== ModelAuthStatus.Authenticated) {
+				return [];
+			}
+			return this._agents;
+		}
+
+		async *chat(modelId: string, messages: any[], options: any, context?: any): AsyncIterable<any> {
 			// 模拟 AG-UI 流式响应
 			yield { type: 'text', content: 'Hello from Knot Agent' };
 			yield { type: 'done' };
@@ -117,19 +127,19 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 		assert.strictEqual(deltas[1].type, 'done');
 	});
 
-	test('chat method uses modelId as agentId', async () => {
+	test('chat method uses agentId from context', async () => {
 		const provider = new MockKnotModelProvider();
-
-		// 验证 modelId 被当作 agentId 使用
+		
+		// 验证 agentId 从 context 中读取
 		let capturedAgentId = '';
 		const originalChat = provider.chat.bind(provider);
-		provider.chat = async function* (modelId: string, messages: any[], options: any) {
-			capturedAgentId = modelId;
-			yield* originalChat(modelId, messages, options);
-		};
-
+		provider.chat = async function* (modelId: string, messages: any[], options: any, context?: any) {
+				capturedAgentId = context?.agentId || '';
+				yield* originalChat(modelId, messages, options, context);
+			};
+		
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
-		for await (const _delta of provider.chat('my-agent', [{ role: 'user', content: 'test' }], {})) {
+		for await (const _delta of provider.chat('some-model', [{ role: 'user', content: 'test' }], {}, { agentId: 'my-agent' })) {
 			// consume the generator
 		}
 		assert.strictEqual(capturedAgentId, 'my-agent');
@@ -152,7 +162,7 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 		const provider = new MockKnotModelProvider();
 		
 		// 模拟 AG-UI 的流式响应
-		provider.chat = async function* (modelId: string, messages: any[], options: any) {
+		provider.chat = async function* (modelId: string, messages: any[], options: any, context?: any) {
 			// 模拟流式文本
 			yield { type: 'text', content: 'Hello' };
 			yield { type: 'text', content: ' world' };
@@ -196,6 +206,99 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 		const provider = new MockKnotModelProvider();
 		
 		assert.ok('onDidChangeModels' in provider);
+	});
+
+	// ─── Agent 支持测试 ─────────────────────────────────────
+
+	test('supportsAgents property exists', () => {
+		const provider = new MockKnotModelProvider();
+		
+		// 添加 supportsAgents 属性
+		provider['supportsAgents'] = true;
+		assert.strictEqual(provider['supportsAgents'], true);
+	});
+
+	test('onDidChangeAgents event exists', () => {
+		const provider = new MockKnotModelProvider();
+		
+		// 添加 onDidChangeAgents 事件
+		provider['onDidChangeAgents'] = { /* Event */ };
+		assert.ok('onDidChangeAgents' in provider);
+	});
+
+	test('listAgents method exists', () => {
+		const provider = new MockKnotModelProvider();
+		
+		// 添加 listAgents 方法
+		provider.listAgents = async (): Promise<any[]> => {
+			return [
+				{ id: 'agent-1', name: 'Agent 1' },
+				{ id: 'agent-2', name: 'Agent 2' },
+			];
+		};
+		
+		assert.ok(typeof provider.listAgents === 'function');
+	});
+
+	test('listAgents returns agent list', async () => {
+		const provider = new MockKnotModelProvider();
+		
+		// 添加 listAgents 方法
+		provider.listAgents = async (): Promise<any[]> => {
+			return [
+				{ id: 'agent-1', name: 'Agent 1' },
+				{ id: 'agent-2', name: 'Agent 2' },
+			];
+		};
+		
+		const agents = await provider.listAgents!();
+		assert.strictEqual(agents.length, 2);
+		assert.strictEqual(agents[0].id, 'agent-1');
+		assert.strictEqual(agents[1].name, 'Agent 2');
+	});
+
+	test('listAgents returns empty when not authenticated', async () => {
+		const provider = new MockKnotModelProvider();
+		
+		// 添加 listAgents 方法（模拟未认证时返回空数组）
+		provider['_authStatus'] = ModelAuthStatus.NotConfigured;
+		provider.listAgents = async (): Promise<any[]> => {
+			if (provider['_authStatus'] !== ModelAuthStatus.Authenticated) {
+				return [];
+			}
+			return [
+				{ id: 'agent-1', name: 'Agent 1' },
+			];
+		};
+		
+		const agents = await provider.listAgents!();
+		assert.strictEqual(agents.length, 0);
+	});
+
+	test('chat method accepts context parameter with agentId', async () => {
+		const provider = new MockKnotModelProvider();
+		
+		// 验证 chat 方法接受 context 参数
+		let capturedContext: any = null;
+		provider.chat = async function* (
+			modelId: string,
+			messages: any[],
+			options: any,
+			context?: any,
+		): AsyncIterable<any> {
+			capturedContext = context;
+			yield { type: 'text', content: 'Hello' };
+			yield { type: 'done' };
+		};
+		
+		const context = { agentId: 'test-agent-123' };
+		const deltas = [];
+		for await (const delta of provider.chat('model-1', [{ role: 'user', content: 'test' }], {}, context)) {
+			deltas.push(delta);
+		}
+		
+		assert.strictEqual(capturedContext?.agentId, 'test-agent-123');
+		assert.ok(deltas.length > 0);
 	});
 
 	test('onDidChangeAuthStatus event exists', () => {

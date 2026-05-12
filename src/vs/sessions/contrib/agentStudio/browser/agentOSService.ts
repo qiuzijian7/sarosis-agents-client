@@ -238,7 +238,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		// 调用 Model Provider（带 Fallback）
 		const primaryIterable: AsyncIterable<IChatStreamDelta> = async function* (this: AgentOSService) {
-			const stream = await modelProvider.chat(selection.modelId, messages, options);
+			// 传递 context（包含 agentId）给 provider
+			const context: { agentId?: string } = {};
+			if (request.agentId) {
+				context.agentId = request.agentId;
+			}
+			const stream = await modelProvider.chat(selection.modelId, messages, options, context);
 			for await (const delta of stream) {
 				yield this._adaptModelDelta(delta);
 			}
@@ -299,7 +304,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 				const messages = request.messages as any[];
 				const options = request.options as any;
-				const stream = await modelProvider.chat(fallbackModel, messages, options);
+				// 传递 context（包含 agentId）给 provider
+				const context: { agentId?: string } = {};
+				if (request.agentId) {
+					context.agentId = request.agentId;
+				}
+				const stream = await modelProvider.chat(fallbackModel, messages, options, context);
 
 				for await (const delta of stream) {
 					yield this._adaptModelDelta(delta);

@@ -1,0 +1,11 @@
+{
+	"mcpServers": {
+		"knot-agui": {
+			"type": "sse",
+			"url": "https://knot.woa.com/apigw/api/v1/agents/agui/mcp",
+			"headers": {
+				"Authorization": "Bearer ${KNOT_TOKEN}"
+			}
+		}
+	}
+}

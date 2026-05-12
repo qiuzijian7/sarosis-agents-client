@@ -623,12 +623,16 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 	}
 
 	layout(dimension: Dimension): void {
+		console.log(`[Sarosis-Debug] ViewPaneContainer.layout() called: id=${this.viewContainer.id}, width=${dimension.width}, height=${dimension.height}`);
 		if (this.paneview) {
 			if (this.paneview.orientation !== this.orientation) {
 				this.paneview.flipOrientation(dimension.height, dimension.width);
 			}
 
+			console.log(`[Sarosis-Debug] Calling paneview.layout(height=${dimension.height}, width=${dimension.width})`);
 			this.paneview.layout(dimension.height, dimension.width);
+		} else {
+			console.log('[Sarosis-Debug] paneview is undefined!');
 		}
 
 		this.dimension = dimension;

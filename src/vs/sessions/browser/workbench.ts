@@ -62,6 +62,7 @@ import { IMarkdownRendererService } from '../../platform/markdown/browser/markdo
 import { EditorMarkdownCodeBlockRenderer } from '../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
 import { SyncDescriptor } from '../../platform/instantiation/common/descriptors.js';
 import { TitleService } from './parts/titlebarPart.js';
+import { SidebarPart } from './parts/sidebarPart.js';
 import { IContextKeyService } from '../../platform/contextkey/common/contextkey.js';
 import { EditorMaximizedContext, IsPhoneLayoutContext, KeyboardVisibleContext } from '../common/contextkeys.js';
 import {
@@ -1072,6 +1073,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}));
 		}
 
+		// [Sarosis] Listen for sidebar content collapse/expand to resize the grid.
+		// When the content panel toggles, the sidebar's width constraints change,
+		// so we resize the grid view to match.
+		if (sideBar instanceof SidebarPart) {
+			this._register(sideBar.onDidChangeContentCollapsed(collapsed => {
+				this.handleSidebarContentCollapsed(collapsed);
+			}));
+		}
+
 		// Wire up mobile nav stack: back-button pops close the corresponding part
 		this._register(this.mobileNavStack.onDidPop(layer => {
 			switch (layer) {
@@ -1118,9 +1128,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 */
 	private createDesktopGridDescriptor(width: number, height: number): ISerializedGrid {
 
-		// Default sizes from layout policy
-		const sizes = this.layoutPolicy.getPartSizes(width, height);
-		const sideBarSize = this.partVisibility.sidebar ? sizes.sideBarSize : Math.max(sizes.sideBarSize, 170);
+			// [Sarosis] Sidebar starts collapsed (48px icon strip only).
+		// When content is expanded, it resizes via handleSidebarContentCollapsed().
+		const sideBarSize = 48;
 		const titleBarHeight = this.titleBarPartView?.minimumHeight ?? 30;
 
 		// Calculate main content area dimensions
@@ -1307,8 +1317,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	}
 
 	getLayoutClasses(): string[] {
+		// [Sarosis] The sidebar (activity bar strip) is always visible,
+		// so we never add the SIDEBAR_HIDDEN class. The content panel
+		// collapses/expands instead of the entire sidebar disappearing.
 		return coalesce([
-			!this.partVisibility.sidebar ? LayoutClasses.SIDEBAR_HIDDEN : undefined,
 			LayoutClasses.PANEL_HIDDEN, // No panel in this layout
 			LayoutClasses.AUXILIARYBAR_HIDDEN, // No auxiliary bar in this layout
 			LayoutClasses.CHATBAR_HIDDEN, // No chat bar in this layout
@@ -1418,7 +1430,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// On phone layout the grid titlebar is hidden (replaced by MobileTitlebarPart)
 				return this.layoutPolicy.viewportClass.get() !== 'phone';
 			case Parts.SIDEBAR_PART:
-				return this.partVisibility.sidebar;
+				// [Sarosis] The sidebar (activity bar) is always visible in the grid.
+				// The content panel may be collapsed, but the icon strip is always shown.
+				return true;
 			case Parts.EDITOR_PART:
 				return true; // Editor is always visible in this layout
 			case Parts.AUXILIARYBAR_PART:
@@ -1450,20 +1464,22 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 
 		this.partVisibility.sidebar = !hidden;
-		this.mainContainer.classList.toggle(LayoutClasses.SIDEBAR_HIDDEN, hidden);
 
-		// Propagate to grid
-		this.workbenchGrid.setViewVisible(
-			this.sideBarPartView,
-			!hidden,
-		);
+		// [Sarosis] The sidebar (activity bar) is always visible in the grid.
+		// "Hidden" now means the content panel is collapsed, not the entire sidebar.
+		// We toggle the content panel via SidebarPart.setContentCollapsed()
+		// instead of removing the sidebar from the grid.
+		const sidebarPart = this.getPart(Parts.SIDEBAR_PART);
+		if (sidebarPart instanceof SidebarPart) {
+			sidebarPart.setContentCollapsed(hidden);
+		}
 
-		// If sidebar becomes hidden, also hide the current active pane composite
+		// If sidebar becomes hidden/collapsed, also hide the current active pane composite
 		if (hidden && this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)) {
 			this.paneCompositeService.hideActivePaneComposite(ViewContainerLocation.Sidebar);
 		}
 
-		// If sidebar becomes visible, show last active Viewlet or default viewlet
+		// If sidebar becomes visible/expanded, show last active Viewlet or default viewlet
 		if (!hidden && !this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)) {
 			const viewletToOpen = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Sidebar) ??
 				this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Sidebar)?.id;
@@ -1473,6 +1489,23 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 
 		this.layoutMobileSidebar();
+	}
+
+	/**
+	 * Handle sidebar content collapse/expand by resizing the grid view.
+	 * The activity bar icon strip always stays at 48px; only the content panel changes.
+	 */
+	private handleSidebarContentCollapsed(collapsed: boolean): void {
+		const expandedWidth = 250; // Default expanded width
+		const targetWidth = collapsed ? 48 : expandedWidth;
+		try {
+			// IViewSize requires both width and height; use a large default for height
+			this.workbenchGrid.resizeView(this.sideBarPartView, { width: targetWidth, height: 1000 });
+		} catch {
+			// resizeView can throw if the grid is not yet fully initialized;
+			// fall back to a full layout.
+			this.layout();
+		}
 	}
 
 	//#endregion
@@ -1546,7 +1579,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	getMaximumEditorDimensions(_container: HTMLElement): IDimension {
 		// Return the available space for editor (excluding sidebar)
-		const sidebarWidth = this.partVisibility.sidebar ? this.workbenchGrid.getViewSize(this.sideBarPartView).width : 0;
+		// [Sarosis] The sidebar is always in the grid (at least 48px for the icon strip).
+		const sidebarWidth = this.workbenchGrid.getViewSize(this.sideBarPartView).width;
 		const titleBarHeight = this.workbenchGrid.getViewSize(this.titleBarPartView).height;
 
 		return new Dimension(

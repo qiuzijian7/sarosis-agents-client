@@ -18,6 +18,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
 
@@ -67,10 +68,32 @@ import {
 	AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID,
 	AGENT_STUDIO_CREW_TEAM_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
-	AGENT_STUDIO_KNOT_TOKEN_SETTING,
-	AGENT_STUDIO_KNOT_AGENT_ID_SETTING,
-	AGENT_STUDIO_KNOT_BASE_URL_SETTING,
 	AGENT_STUDIO_DATA_PATH_SETTING,
+	AGENT_STUDIO_THEME_SETTING,
+	AGENT_STUDIO_LANGUAGE_SETTING,
+	AGENT_STUDIO_SEND_KEY_SETTING,
+	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
+	AGENT_STUDIO_BOT_NAME_SETTING,
+	AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING,
+	AGENT_STUDIO_NOTIFICATION_SOUND_SETTING,
+	AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING,
+	AGENT_STUDIO_CHECK_UPDATES_SETTING,
+	AGENT_STUDIO_AUX_VISION_PROVIDER,
+	AGENT_STUDIO_AUX_VISION_MODEL,
+	AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER,
+	AGENT_STUDIO_AUX_WEB_EXTRACT_MODEL,
+	AGENT_STUDIO_AUX_SESSION_SEARCH_PROVIDER,
+	AGENT_STUDIO_AUX_SESSION_SEARCH_MODEL,
+	AGENT_STUDIO_AUX_COMPRESSION_PROVIDER,
+	AGENT_STUDIO_AUX_COMPRESSION_MODEL,
+	AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER,
+	AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL,
+	AGENT_STUDIO_AUX_CURATOR_PROVIDER,
+	AGENT_STUDIO_AUX_CURATOR_MODEL,
+	AGENT_STUDIO_CLI_PATH_SETTING,
+	AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING,
+	AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING,
+	AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
@@ -78,6 +101,8 @@ import { AgentStudioSidebarView } from './agentStudioSidebarView.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
+import { SettingsEditorPane } from './settingsEditorPane.js';
+import { SettingsEditorInput } from './settingsEditorInput.js';
 import { ClawChatViewPane } from './views/clawChatView.js';
 import { WorkspaceViewPane } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
@@ -90,9 +115,13 @@ import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { PersonalViewPane } from './views/personalView.js';
 import { SettingsViewPane } from './views/settingsView.js';
+import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
 import { WorkspaceTemplateViewPane } from './views/workspaceTemplateView.js';
 import { CrewTeamViewPane } from './views/crewTeamView.js';
+import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
+import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 // --- Icons -----------------------------------------------------------------------
 
@@ -122,25 +151,136 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			description: localize('agentStudio.enabled', "Enable Agent Studio multi-agent workspace in the Sessions window."),
 		},
-		[AGENT_STUDIO_KNOT_TOKEN_SETTING]: {
+		// --- Preferences ---
+		[AGENT_STUDIO_THEME_SETTING]: {
+			type: 'string',
+			default: 'dark',
+			enum: ['dark', 'light', 'slate', 'solarized', 'monokai', 'nord', 'oled'],
+			description: localize('agentStudio.preferences.theme', "UI color theme."),
+		},
+		[AGENT_STUDIO_LANGUAGE_SETTING]: {
+			type: 'string',
+			default: 'en',
+			enum: ['en', 'zh-CN', 'ja'],
+			description: localize('agentStudio.preferences.language', "Display language."),
+		},
+		[AGENT_STUDIO_SEND_KEY_SETTING]: {
+			type: 'string',
+			default: 'enter',
+			enum: ['enter', 'ctrl+enter'],
+			description: localize('agentStudio.preferences.sendKey', "Key combination to send messages."),
+		},
+		[AGENT_STUDIO_DEFAULT_MODEL_SETTING]: {
 			type: 'string',
 			default: '',
-			description: localize('agentStudio.knot.token', "Knot AG-UI authentication token."),
+			description: localize('agentStudio.preferences.defaultModel', "Default AI model for new conversations. Leave empty to use system default."),
 		},
-		[AGENT_STUDIO_KNOT_AGENT_ID_SETTING]: {
+		[AGENT_STUDIO_BOT_NAME_SETTING]: {
 			type: 'string',
-			default: '',
-			description: localize('agentStudio.knot.agentId', "Knot AG-UI agent ID."),
+			default: 'Sarosis',
+			description: localize('agentStudio.preferences.botName', "Display name for the AI assistant."),
 		},
-		[AGENT_STUDIO_KNOT_BASE_URL_SETTING]: {
-			type: 'string',
-			default: 'https://knot.woa.com',
-			description: localize('agentStudio.knot.baseUrl', "Knot AG-UI base URL."),
+		[AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.preferences.showTokenUsage', "Show token usage after each assistant reply."),
 		},
+		[AGENT_STUDIO_NOTIFICATION_SOUND_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.preferences.notificationSound', "Play a sound when the assistant finishes replying."),
+		},
+		[AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.preferences.browserNotifications', "Show browser notifications when replies complete in the background."),
+		},
+		[AGENT_STUDIO_CHECK_UPDATES_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.preferences.checkUpdates', "Show update notification when a new version is available."),
+		},
+		// --- Knot AG-UI ---
+		// Knot configuration is registered by the knot-agui extension via its package.json
+		// contributes.configuration. The settings tab is discovered at runtime via
+		// ISettingsTabRegistry (contributes.agentStudioSettingsTab with when condition).
+		// --- Auxiliary Models ---
+		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {
+			type: 'string', default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.aux.vision.provider', "Provider for Vision (image analysis)."),
+		},
+		[AGENT_STUDIO_AUX_VISION_MODEL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.aux.vision.model', "Model for Vision. Leave empty for default."),
+		},
+		[AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER]: {
+			type: 'string', default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.aux.webExtract.provider', "Provider for Web Extract (page summarization)."),
+		},
+		[AGENT_STUDIO_AUX_WEB_EXTRACT_MODEL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.aux.webExtract.model', "Model for Web Extract. Leave empty for default."),
+		},
+		[AGENT_STUDIO_AUX_SESSION_SEARCH_PROVIDER]: {
+			type: 'string', default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.aux.sessionSearch.provider', "Provider for Session Search (history summarizing)."),
+		},
+		[AGENT_STUDIO_AUX_SESSION_SEARCH_MODEL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.aux.sessionSearch.model', "Model for Session Search. Leave empty for default."),
+		},
+		[AGENT_STUDIO_AUX_COMPRESSION_PROVIDER]: {
+			type: 'string', default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.aux.compression.provider', "Provider for Compression (context compression)."),
+		},
+		[AGENT_STUDIO_AUX_COMPRESSION_MODEL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.aux.compression.model', "Model for Compression. Leave empty for default."),
+		},
+		[AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER]: {
+			type: 'string', default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.aux.goalJudge.provider', "Provider for Goal Judge (goals feature)."),
+		},
+		[AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.aux.goalJudge.model', "Model for Goal Judge. Leave empty for default."),
+		},
+		[AGENT_STUDIO_AUX_CURATOR_PROVIDER]: {
+			type: 'string', default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.aux.curator.provider', "Provider for Curator (code review)."),
+		},
+		[AGENT_STUDIO_AUX_CURATOR_MODEL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.aux.curator.model', "Model for Curator. Leave empty for default."),
+		},
+		// --- Data Path ---
 		[AGENT_STUDIO_DATA_PATH_SETTING]: {
 			type: 'string',
 			default: '',
 			description: localize('agentStudio.dataPath', "Custom data directory path for Agent Studio. Defaults to workspace .agent-studio/data/."),
+		},
+		// --- CLI ---
+		[AGENT_STUDIO_CLI_PATH_SETTING]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.cli.cliPath', "Path to the CLI executable (e.g. /usr/local/bin/hermes)."),
+		},
+		[AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.cli.defaultWorkdir', "Default working directory for CLI sessions (e.g. ~/.hermes/workspace)."),
+		},
+		[AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING]: {
+			type: 'boolean', default: true,
+			description: localize('agentStudio.cli.autoConnect', "Auto-connect to local CLI backend on startup."),
+		},
+		[AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING]: {
+			type: 'boolean', default: true,
+			description: localize('agentStudio.cli.saveHistory', "Save CLI interaction history for recall and reuse."),
 		},
 	},
 });
@@ -163,6 +303,10 @@ registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType
 registerSingleton(IWorkspaceTemplateService, WorkspaceTemplateService, InstantiationType.Delayed);
 registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
 registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
+// ISettingsTabRegistry is still registered for the legacy SettingsViewPane (sidebar).
+// Plugin-specific settings (like Knot) now open as independent EditorPanes
+// rather than appearing as tabs in the Settings page.
+registerSingleton(ISettingsTabRegistry, SettingsTabRegistry, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -176,6 +320,18 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(AgentStudioEditorInput)
+	]
+);
+
+// Register SettingsEditorPane so that SettingsEditorInput opens in the editor area.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		SettingsEditorPane,
+		SettingsEditorPane.ID,
+		localize('agentStudioSettingsEditor', "Agent Studio Settings"),
+	),
+	[
+		new SyncDescriptor(SettingsEditorInput)
 	]
 );
 
@@ -483,4 +639,48 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 }
 
 registerWorkbenchContribution2(AgentStudioToolbarContribution.ID, AgentStudioToolbarContribution, WorkbenchPhase.BlockStartup);
+
+// --- Settings Icon → EditorPane Redirect ----------------------------------------
+// When the Settings sidebar icon is clicked, the sidebar ViewContainer is activated
+// but its content is CSS-hidden. This contribution intercepts that activation and
+// opens the SettingsEditorPane in the editor area instead.
+
+class SettingsEditorRedirectContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.settingsEditorRedirect';
+
+	constructor(
+		@IPaneCompositePartService private readonly paneCompositeService: IPaneCompositePartService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+		@IConfigurationService configurationService: IConfigurationService,
+	) {
+		super();
+
+		if (!configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
+			return;
+		}
+
+		// Listen for sidebar ViewContainer activations
+		this._register(this.paneCompositeService.onDidPaneCompositeOpen(({ composite, viewContainerLocation }) => {
+			if (viewContainerLocation === ViewContainerLocation.Sidebar && composite.getId() === 'agentStudio.settings') {
+				this._openSettingsInEditor();
+			}
+		}));
+	}
+
+	private _openSettingsInEditor(): void {
+		const input = SettingsEditorInput.getInstance();
+		// Find or create a left-side editor group for Settings
+		const groups = this.editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		if (groups.length <= 1) {
+			// Only one group — open to the side (creates a left group)
+			this.editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			// Use the first (leftmost) group
+			this.editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+}
+
+registerWorkbenchContribution2(SettingsEditorRedirectContribution.ID, SettingsEditorRedirectContribution, WorkbenchPhase.Eventually);
 

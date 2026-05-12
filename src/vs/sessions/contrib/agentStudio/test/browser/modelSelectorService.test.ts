@@ -11,13 +11,15 @@ suite('Model Selector Service (Phase 3)', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	// Mock IModelSelectorService
+	// Mock IModelSelectorService with agent support
 	class MockModelSelectorService {
 		private _modelProviders: any[] = [];
-		private _activeSelection: { providerId: string; modelId: string } | undefined;
+		private _activeSelection: { providerId: string; modelId: string; agentId?: string } | undefined;
+		private _selectedAgentId: string | undefined;
 		
 		onDidChangeModelProviders: any = { /* Event */ };
 		onDidChangeAvailableModels: any = { /* Event */ };
+		onDidChangeAgent: any = { /* Event */ };
 
 		getModelProviders(): any[] {
 			return this._modelProviders;
@@ -34,12 +36,61 @@ suite('Model Selector Service (Phase 3)', () => {
 			return provider.listModels();
 		}
 
-		getActiveSelection(): { providerId: string; modelId: string } | undefined {
+		getActiveSelection(): { providerId: string; modelId: string; agentId?: string } | undefined {
 			return this._activeSelection;
 		}
 
-		setActiveSelection(selection: { providerId: string; modelId: string }): void {
+		setActiveSelection(selection: { providerId: string; modelId: string; agentId?: string }): void {
+			const providerChanged = this._activeSelection?.providerId !== selection.providerId;
 			this._activeSelection = selection;
+			
+			// 切换 Provider 时重置 Agent 选择
+			if (providerChanged) {
+				this._selectedAgentId = undefined;
+			} else {
+				this._selectedAgentId = selection.agentId;
+			}
+		}
+
+		// Agent 选择相关方法
+		currentProviderSupportsAgents(): boolean {
+			if (!this._activeSelection) return false;
+			const provider = this._modelProviders.find(p => p.id === this._activeSelection!.providerId);
+			return provider?.supportsAgents === true;
+		}
+
+		async getAvailableAgents(): Promise<any[]> {
+			if (!this.currentProviderSupportsAgents()) {
+				return [];
+			}
+			const provider = this._modelProviders.find(p => p.id === this._activeSelection!.providerId);
+			if (!provider?.listAgents) {
+				return [];
+			}
+			return await provider.listAgents();
+		}
+
+		getSelectedAgentId(): string | undefined {
+			if (!this.currentProviderSupportsAgents()) {
+				return undefined;
+			}
+			return this._selectedAgentId;
+		}
+
+		setSelectedAgentId(agentId: string | undefined): void {
+			if (!this.currentProviderSupportsAgents()) {
+				this._selectedAgentId = undefined;
+				return;
+			}
+			this._selectedAgentId = agentId;
+			
+			// 同步更新当前选择中的 agentId
+			if (this._activeSelection) {
+				this._activeSelection = {
+					...this._activeSelection,
+					agentId,
+				};
+			}
 		}
 
 		addModelProvider(provider: any): void {
@@ -220,5 +271,160 @@ suite('Model Selector Service (Phase 3)', () => {
 		
 		const models = selector.getAvailableModels();
 		assert.strictEqual(models.length, 0);
+	});
+
+	// ─── Agent 选择器测试 ─────────────────────────────────────
+
+	test('currentProviderSupportsAgents returns false when no selection', () => {
+		const selector = new MockModelSelectorService();
+		assert.strictEqual(selector.currentProviderSupportsAgents(), false);
+	});
+
+	test('currentProviderSupportsAgents returns false when provider does not support agents', () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'provider-1',
+			name: 'Provider 1',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: false,
+		});
+
+		selector.setActiveSelection({ providerId: 'provider-1', modelId: 'model-1' });
+		assert.strictEqual(selector.currentProviderSupportsAgents(), false);
+	});
+
+	test('currentProviderSupportsAgents returns true when provider supports agents', () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'knot-agui',
+			name: 'Knot AG-UI',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: true,
+			listAgents: async () => [
+				{ id: 'agent-1', name: 'Agent 1' },
+				{ id: 'agent-2', name: 'Agent 2' },
+			],
+		});
+
+		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		assert.strictEqual(selector.currentProviderSupportsAgents(), true);
+	});
+
+	test('getAvailableAgents returns empty when provider does not support agents', async () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'provider-1',
+			name: 'Provider 1',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: false,
+		});
+
+		selector.setActiveSelection({ providerId: 'provider-1', modelId: 'model-1' });
+		const agents = await selector.getAvailableAgents();
+		assert.strictEqual(agents.length, 0);
+	});
+
+	test('getAvailableAgents returns agents when provider supports agents', async () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'knot-agui',
+			name: 'Knot AG-UI',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: true,
+			listAgents: async () => [
+				{ id: 'agent-1', name: 'Agent 1' },
+				{ id: 'agent-2', name: 'Agent 2' },
+			],
+		});
+
+		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		const agents = await selector.getAvailableAgents();
+		assert.strictEqual(agents.length, 2);
+		assert.strictEqual(agents[0].id, 'agent-1');
+		assert.strictEqual(agents[1].name, 'Agent 2');
+	});
+
+	test('getSelectedAgentId returns undefined when provider does not support agents', () => {
+		const selector = new MockModelSelectorService();
+		assert.strictEqual(selector.getSelectedAgentId(), undefined);
+	});
+
+	test('getSelectedAgentId returns selected agent ID', () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'knot-agui',
+			name: 'Knot AG-UI',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: true,
+			listAgents: async () => [
+				{ id: 'agent-1', name: 'Agent 1' },
+			],
+		});
+
+		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		selector.setSelectedAgentId('agent-1');
+		
+		assert.strictEqual(selector.getSelectedAgentId(), 'agent-1');
+	});
+
+	test('setSelectedAgentId updates agent ID and selection', () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'knot-agui',
+			name: 'Knot AG-UI',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: true,
+			listAgents: async () => [
+				{ id: 'agent-1', name: 'Agent 1' },
+			],
+		});
+
+		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1' });
+		selector.setSelectedAgentId('agent-1');
+		
+		assert.strictEqual(selector.getSelectedAgentId(), 'agent-1');
+		assert.strictEqual(selector.getActiveSelection()?.agentId, 'agent-1');
+	});
+
+	test('setSelectedAgentId resets when switching provider', () => {
+		const selector = new MockModelSelectorService();
+		
+		selector.addModelProvider({
+			id: 'knot-agui',
+			name: 'Knot AG-UI',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-1', name: 'Model 1' }],
+			supportsAgents: true,
+			listAgents: async () => [
+				{ id: 'agent-1', name: 'Agent 1' },
+			],
+		});
+
+		selector.setActiveSelection({ providerId: 'knot-agui', modelId: 'model-1', agentId: 'agent-1' });
+		assert.strictEqual(selector.getSelectedAgentId(), 'agent-1');
+		
+		// 切换到不支持 agent 的 provider
+		selector.addModelProvider({
+			id: 'provider-2',
+			name: 'Provider 2',
+			getAuthStatus: () => ModelAuthStatus.Authenticated,
+			listModels: async () => [{ id: 'model-2', name: 'Model 2' }],
+			supportsAgents: false,
+		});
+
+		selector.setActiveSelection({ providerId: 'provider-2', modelId: 'model-2' });
+		assert.strictEqual(selector.getSelectedAgentId(), undefined);
 	});
 });

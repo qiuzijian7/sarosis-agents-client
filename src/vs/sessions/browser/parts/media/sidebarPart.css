@@ -4,46 +4,116 @@
  *--------------------------------------------------------------------------------------------*/
 
 /* ---- [Sarosis] Activity Bar Style Sidebar ---- */
-/* The sessions sidebar now acts as a narrow Activity Bar with vertical icons. */
+/* The sessions sidebar now acts as a narrow Activity Bar with vertical icons.
+ * It supports two states:
+ *   - sidebar-content-collapsed: only the icon strip (48px) is visible
+ *   - sidebar-content-expanded: icon strip (48px) + content panel side by side
+ */
+
+/* ===== Base sidebar layout (always applies) ===== */
 
 .agent-sessions-workbench .part.sidebar {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	overflow: hidden;
+	height: 100%;
+}
+
+/* Never hide the sidebar entirely in sessions workbench — override the nosidebar class */
+.agent-sessions-workbench.nosidebar .part.sidebar {
+	display: flex !important;
+	visibility: visible !important;
+}
+
+/* ===== Collapsed state (default) — icon strip only ===== */
+
+.agent-sessions-workbench .part.sidebar.sidebar-content-collapsed {
 	width: 48px !important;
 	min-width: 48px !important;
 	max-width: 48px !important;
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	overflow: hidden;
 }
 
-/* Hide the title area — no text title needed in activity bar mode */
-.agent-sessions-workbench .part.sidebar > .composite.title {
+/* Hide the title area when collapsed — no text title needed in icon-only mode */
+.agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .composite.title {
 	display: none !important;
 }
 
-/* Hide the content area (view pane containers) — only show icons */
-.agent-sessions-workbench .part.sidebar > .content {
+/* Hide the content area when collapsed */
+.agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .content {
 	display: none !important;
 }
 
-/* Header area hosts the composite bar in TOP position — show it as vertical icon strip */
+/* ===== Expanded state — icon strip + content panel ===== */
+
+.agent-sessions-workbench .part.sidebar.sidebar-content-expanded {
+	display: grid !important;
+	grid-template-columns: 48px 1fr;
+	grid-template-rows: auto 1fr auto;
+	min-width: 170px;
+	max-width: 450px;
+}
+
+/* Title area in expanded state: column 2, row 1 */
+.agent-sessions-workbench .part.sidebar.sidebar-content-expanded > .composite.title {
+	display: flex !important;
+	grid-column: 2;
+	grid-row: 1;
+}
+
+/* Header-or-footer (icon strip): column 1, rows 1–2 (fills left side above footer) */
+.agent-sessions-workbench .part.sidebar.sidebar-content-expanded > .composite.header-or-footer {
+	grid-column: 1;
+	grid-row: 1 / 3;
+	/* Override PartLayout fixed height so grid stretches it across rows 1-2 */
+	height: 100% !important;
+	width: 48px !important;
+	min-width: 48px !important;
+	max-width: 48px !important;
+	/* Divider between activity bar and content panel */
+	border-right: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+}
+
+/* Content panel: column 2, row 2 */
+.agent-sessions-workbench .part.sidebar.sidebar-content-expanded > .content {
+	display: flex !important;
+	grid-column: 2;
+	grid-row: 2;
+	/* Override PartLayout inline width/height so grid controls sizing */
+	width: 100% !important;
+	height: 100% !important;
+	min-width: 0 !important;
+	min-height: 0 !important;
+	max-width: none !important;
+	max-height: none !important;
+}
+
+/* Footer: column 1, row 3 */
+.agent-sessions-workbench .part.sidebar.sidebar-content-expanded > .sidebar-footer {
+	grid-column: 1;
+	grid-row: 3;
+}
+
+/* ===== Header area — vertical icon strip (applies in both states) ===== */
+
 .agent-sessions-workbench .part.sidebar > .composite.header-or-footer {
 	display: flex !important;
 	flex-direction: column;
 	align-items: center;
-	width: 100%;
+	width: 48px;
 	flex: 1;
 	overflow-y: auto;
 	overflow-x: hidden;
-	padding-top: 8px;
+	padding-top: 4px;
 }
 
-/* The composite-bar-container inside header */
+/* ===== Composite bar container inside header ===== */
+
 .agent-sessions-workbench .part.sidebar .composite-bar-container {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	width: 100%;
+	width: 48px;
 }
 
 /* PaneCompositeBar internal: make actions-container vertical */
@@ -71,6 +141,7 @@
 	justify-content: center;
 	margin: 2px 0;
 	position: relative;
+	border-radius: 6px;
 }
 
 .agent-sessions-workbench .part.sidebar .composite-bar-container .action-label {
@@ -82,29 +153,49 @@
 	padding: 0 !important;
 }
 
-/* Active icon indicator (left border) */
-.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item.checked::before {
-	content: '';
-	position: absolute;
-	left: 0;
-	top: 25%;
-	height: 50%;
-	width: 2px;
-	border-radius: 1px;
-	background: var(--vscode-activityBar-activeBorder, var(--vscode-focusBorder));
+/* ===== Active icon indicator — HIGHLIGHT ONLY, no underline/border ===== */
+
+/* Remove the default border-bottom / border-top active indicator from paneCompositePart.css */
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item.checked .active-item-indicator:before,
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item:focus .active-item-indicator:before,
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item.checked.clicked:focus .active-item-indicator:before {
+	display: none !important;
+	content: none !important;
+	border: none !important;
 }
 
-/* Hide traffic light spacer in fullscreen (traffic lights are not shown) */
+/* Also remove the left-border indicator from activityaction.css that may leak in */
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item.checked::before,
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item:focus::before {
+	display: none !important;
+	content: none !important;
+	border: none !important;
+}
+
+/* Highlight background for checked/active items */
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item.checked {
+	background-color: var(--vscode-activityBarTop-activeBackground, rgba(255, 255, 255, 0.08));
+}
+
+/* Hover background */
+.agent-sessions-workbench .part.sidebar .composite-bar-container .action-item:hover {
+	background-color: var(--vscode-activityBarTop-activeBackground, rgba(255, 255, 255, 0.05));
+}
+
+/* ===== Hide traffic light spacer in fullscreen ===== */
+
 .monaco-workbench.fullscreen .part.sidebar .window-controls-container {
 	display: none;
 }
 
-/* Hide the titlebar drag region we inject */
+/* ===== Hide the titlebar drag region we inject ===== */
+
 .agent-sessions-workbench .part.sidebar .titlebar-drag-region {
 	display: none;
 }
 
-/* Sidebar Footer Container — positioned at bottom of activity bar */
+/* ===== Sidebar Footer — positioned at bottom of activity bar ===== */
+
 .agent-sessions-workbench .part.sidebar > .sidebar-footer {
 	display: flex;
 	flex-direction: column;
@@ -113,7 +204,7 @@
 	padding: 6px 0;
 	margin-top: auto;
 	flex-shrink: 0;
-	width: 100%;
+	width: 48px;
 }
 
 /* Make the toolbar stack actions vertically in the footer */
@@ -134,9 +225,10 @@
 	align-items: center;
 	justify-content: center;
 	cursor: default;
+	border-radius: 6px;
 }
 
-/* ---- Phone Layout: Sidebar Drawer Overlay ---- */
+/* ===== Phone Layout: Sidebar Drawer Overlay ===== */
 
 .agent-sessions-workbench.phone-layout .split-view-view:has(> .part.sidebar) {
 	position: absolute !important;
@@ -193,4 +285,22 @@
 .agent-sessions-workbench.phone-layout .part.sidebar > .sidebar-footer .sidebar-action-button {
 	min-height: 44px;
 	padding: 8px 12px;
+}
+
+/* ===== Override standard sidebar active indicator styles ===== */
+/* These rules from paneCompositePart.css and sidebarpart.css add border-top/bottom
+ * underlines for checked items. We override them for our activity bar. */
+
+.agent-sessions-workbench .part.sidebar > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked:not(:focus) .active-item-indicator:before,
+.agent-sessions-workbench .part.sidebar > .header-or-footer.header > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked.clicked:focus .active-item-indicator:before,
+.agent-sessions-workbench .part.sidebar > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked:not(:focus) .active-item-indicator:before,
+.agent-sessions-workbench .part.sidebar > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked.clicked:focus .active-item-indicator:before {
+	border-top-color: transparent !important;
+	border: none !important;
+}
+
+.agent-sessions-workbench .part.sidebar > .header-or-footer.footer > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked:not(:focus) .active-item-indicator:before,
+.agent-sessions-workbench .part.sidebar > .header-or-footer.footer > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked.clicked:focus .active-item-indicator:before {
+	border-bottom-color: transparent !important;
+	border: none !important;
 }

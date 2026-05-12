@@ -66,6 +66,7 @@ export interface IChatStreamDelta {
 
 export interface IChatSendOptions {
 	readonly model?: string;
+	readonly agentId?: string;       // 选中的 Agent ID（如 Knot Agent）
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
 	readonly workspaceId?: string;

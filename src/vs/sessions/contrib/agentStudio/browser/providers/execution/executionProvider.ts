@@ -102,11 +102,15 @@ export class ExecutionProvider implements IExecutionProvider {
 					stop: request.options?.stop,
 				};
 
-			// 7.3 调用模型
+			// 7.3 调用模型（传递 context 包含 agentId）
 			this._logService.debug(`[ExecutionProvider] Calling model ${modelId} with ${messages.length} messages`);
 
 			let modelResponse: IModelDelta[] = [];
-			const modelStream = modelProvider.chat(modelId, messages, modelOptions);
+			const modelContext: { agentId?: string } = {};
+			if (request.agentId) {
+				modelContext.agentId = request.agentId;
+			}
+			const modelStream = modelProvider.chat(modelId, messages, modelOptions, modelContext);
 
 			// 收集模型响应并 yield 给调用者
 			// 注意：IChatMessage 的属性是只读的，所以需要收集数据后创建新对象

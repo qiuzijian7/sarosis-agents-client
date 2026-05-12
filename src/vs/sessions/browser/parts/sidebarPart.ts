@@ -12,7 +12,7 @@ import { IContextMenuService } from '../../../platform/contextview/browser/conte
 import { IKeybindingService } from '../../../platform/keybinding/common/keybinding.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
 import { IThemeService } from '../../../platform/theme/common/themeService.js';
-import { SIDE_BAR_TITLE_FOREGROUND, SIDE_BAR_TITLE_BORDER, SIDE_BAR_FOREGROUND, SIDE_BAR_DRAG_AND_DROP_BACKGROUND, ACTIVITY_BAR_BADGE_BACKGROUND, ACTIVITY_BAR_BADGE_FOREGROUND, ACTIVITY_BAR_TOP_FOREGROUND, ACTIVITY_BAR_TOP_ACTIVE_BORDER, ACTIVITY_BAR_TOP_INACTIVE_FOREGROUND, ACTIVITY_BAR_TOP_DRAG_AND_DROP_BORDER } from '../../../workbench/common/theme.js';
+import { SIDE_BAR_TITLE_FOREGROUND, SIDE_BAR_TITLE_BORDER, SIDE_BAR_FOREGROUND, SIDE_BAR_DRAG_AND_DROP_BACKGROUND, ACTIVITY_BAR_BADGE_BACKGROUND, ACTIVITY_BAR_BADGE_FOREGROUND, ACTIVITY_BAR_TOP_FOREGROUND, ACTIVITY_BAR_TOP_INACTIVE_FOREGROUND, ACTIVITY_BAR_TOP_DRAG_AND_DROP_BORDER } from '../../../workbench/common/theme.js';
 import { agentsPanelForeground } from '../../common/theme.js';
 import { INotificationService } from '../../../platform/notification/common/notification.js';
 import { IContextKeyService } from '../../../platform/contextkey/common/contextkey.js';
@@ -38,10 +38,25 @@ import { mainWindow } from '../../../base/browser/window.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { hasNativeTitlebar, getTitleBarStyle } from '../../../platform/window/common/window.js';
 import { isMacintosh, isNative } from '../../../base/common/platform.js';
+import { Emitter } from '../../../base/common/event.js';
+import { SidebarContentVisibleContext } from '../../common/contextkeys.js';
+
+/** CSS class names for sidebar content collapsed/expanded states */
+const SIDEBAR_CONTENT_COLLAPSED_CLASS = 'sidebar-content-collapsed';
+const SIDEBAR_CONTENT_EXPANDED_CLASS = 'sidebar-content-expanded';
 
 /**
  * Sidebar part specifically for agent sessions workbench.
  * This is a simplified version of the SidebarPart for agent session contexts.
+ *
+ * The sidebar has two visual states:
+ *  - **Collapsed**: Only the 48px-wide activity bar icon strip is visible.
+ *  - **Expanded**: The icon strip + a content panel are shown side-by-side.
+ *
+ * The activity bar icon strip is ALWAYS visible (it never collapses).
+ * Expansion/collapse is triggered by:
+ *  - The titlebar toggle button (ToggleSidebarVisibilityAction)
+ *  - Clicking any icon in the activity bar (auto-expands to show the viewlet)
  */
 export class SidebarPart extends AbstractPaneCompositePart {
 
@@ -60,17 +75,37 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	private static readonly FOOTER_BOTTOM_MARGIN = 2;
 	private static readonly FOOTER_BORDER_TOP = 1;
 
+	/** Width constants */
+	private static readonly COLLAPSED_WIDTH = 48;
+	private static readonly EXPANDED_MIN_WIDTH = 170;
+	private static readonly EXPANDED_MAX_WIDTH = 450;
+	private static readonly EXPANDED_PREFERRED_WIDTH = 250;
+
 	private footerContainer: HTMLElement | undefined;
 	private sideBarTitleArea: HTMLElement | undefined;
 	private footerToolbar: MenuWorkbenchToolBar | undefined;
 	private previousLayoutDimensions: { width: number; height: number; top: number; left: number } | undefined;
 
+	/** Whether the content panel is currently collapsed (icon strip only). */
+	private _contentCollapsed: boolean = true;
+
+	/** Context key that tracks whether sidebar content is visible (expanded). */
+	private readonly sidebarContentVisibleContextKey!: ReturnType<typeof SidebarContentVisibleContext.bindTo>;
+
+	private readonly _onDidChangeContentCollapsed = new Emitter<boolean>();
+	readonly onDidChangeContentCollapsed = this._onDidChangeContentCollapsed.event;
+
 	//#region IView
 
 	// [Sarosis] Sidebar with activity bar icons + content panel
 	// The sidebar can expand to show content when an icon is clicked.
-	readonly minimumWidth: number = 170;
-	readonly maximumWidth: number = 450;
+	// Width is dynamic based on collapsed state.
+	get minimumWidth(): number {
+		return this._contentCollapsed ? SidebarPart.COLLAPSED_WIDTH : SidebarPart.EXPANDED_MIN_WIDTH;
+	}
+	get maximumWidth(): number {
+		return this._contentCollapsed ? SidebarPart.COLLAPSED_WIDTH : SidebarPart.EXPANDED_MAX_WIDTH;
+	}
 	readonly minimumHeight: number = 0;
 	readonly maximumHeight: number = Number.POSITIVE_INFINITY;
 	override get snap(): boolean { return false; }
@@ -120,16 +155,38 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			extensionService,
 			menuService,
 		);
+
+		this.sidebarContentVisibleContextKey = SidebarContentVisibleContext.bindTo(contextKeyService);
 	}
 
 	get preferredWidth(): number | undefined {
-		// [Sarosis] Sidebar with activity bar + content panel
-		return 250;
+		return this._contentCollapsed ? SidebarPart.COLLAPSED_WIDTH : SidebarPart.EXPANDED_PREFERRED_WIDTH;
+	}
+
+	/** Whether the sidebar content panel is currently collapsed. */
+	get contentCollapsed(): boolean {
+		return this._contentCollapsed;
 	}
 
 	override create(parent: HTMLElement): void {
 		super.create(parent);
+
+		// Apply initial collapsed state CSS class
+		parent.classList.add(SIDEBAR_CONTENT_COLLAPSED_CLASS);
+
 		this.createFooter(parent);
+	}
+
+	/**
+	 * Override openPaneComposite to auto-expand the content panel when
+	 * a viewlet icon is clicked while the sidebar is collapsed.
+	 */
+	override async openPaneComposite(id?: string, focus?: boolean): Promise<import('../../../workbench/browser/panecomposite.js').PaneComposite | undefined> {
+		// Auto-expand content panel when user clicks an activity bar icon
+		if (this._contentCollapsed) {
+			this.setContentCollapsed(false);
+		}
+		return super.openPaneComposite(id, focus);
 	}
 
 	protected override createTitleArea(parent: HTMLElement): HTMLElement | undefined {
@@ -166,6 +223,37 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		}
 
 		return titleArea;
+	}
+
+	/**
+	 * Toggle the sidebar content panel between collapsed and expanded.
+	 * The activity bar icon strip always remains visible.
+	 */
+	toggleContent(): void {
+		this.setContentCollapsed(!this._contentCollapsed);
+	}
+
+	/**
+	 * Set the sidebar content panel to a specific collapsed state.
+	 */
+	setContentCollapsed(collapsed: boolean): void {
+		if (this._contentCollapsed === collapsed) {
+			return;
+		}
+
+		this._contentCollapsed = collapsed;
+
+		const container = this.getContainer();
+		if (container) {
+			container.classList.toggle(SIDEBAR_CONTENT_COLLAPSED_CLASS, collapsed);
+			container.classList.toggle(SIDEBAR_CONTENT_EXPANDED_CLASS, !collapsed);
+		}
+
+		// Update context key
+		this.sidebarContentVisibleContextKey.set(!collapsed);
+
+		// Fire event so the workbench can resize the grid
+		this._onDidChangeContentCollapsed.fire(collapsed);
 	}
 
 	private createFooter(parent: HTMLElement): void {
@@ -235,6 +323,11 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			return;
 		}
 
+		// Track expanded width for restore
+		if (!this._contentCollapsed && width > SidebarPart.COLLAPSED_WIDTH) {
+			// Width tracked for future use when restoring from collapsed state
+		}
+
 		this.updateFooterVisibility();
 		const footerHeight = Math.min(height, this.getFooterHeight());
 
@@ -278,7 +371,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			colors: theme => ({
 				activeBackgroundColor: undefined,
 				inactiveBackgroundColor: undefined,
-				activeBorderBottomColor: theme.getColor(ACTIVITY_BAR_TOP_ACTIVE_BORDER),
+				activeBorderBottomColor: undefined,
 				activeForegroundColor: theme.getColor(ACTIVITY_BAR_TOP_FOREGROUND),
 				inactiveForegroundColor: theme.getColor(ACTIVITY_BAR_TOP_INACTIVE_FOREGROUND),
 				badgeBackground: theme.getColor(ACTIVITY_BAR_BADGE_BACKGROUND),

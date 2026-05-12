@@ -42,80 +42,75 @@ export class PersonalViewPane extends ViewPane {
 
 		// Profile card
 		const profile = $('div.personal-profile');
-		profile.innerHTML = `
-			<div class="profile-avatar">👤</div>
-			<div class="profile-info">
-				<div class="profile-name">User</div>
-				<div class="profile-email">user@example.com</div>
-				<div class="profile-plan">
-					<span class="plan-badge">Pro</span>
-					<span class="plan-status">Active</span>
-				</div>
-			</div>
-		`;
+		const avatar = $('div.profile-avatar', undefined, '👤');
+		const profileInfo = $('div.profile-info');
+		profileInfo.appendChild($('div.profile-name', undefined, 'User'));
+		profileInfo.appendChild($('div.profile-email', undefined, 'user@example.com'));
+		const planRow = $('div.profile-plan');
+		planRow.appendChild($('span.plan-badge', undefined, 'Pro'));
+		planRow.appendChild($('span.plan-status', undefined, 'Active'));
+		profileInfo.appendChild(planRow);
+		profile.appendChild(avatar);
+		profile.appendChild(profileInfo);
 		container.appendChild(profile);
 
 		// Usage stats
 		const stats = $('div.personal-stats');
-		stats.innerHTML = `
-			<h4>📊 Usage This Month</h4>
-			<div class="stats-grid">
-				<div class="stat-card">
-					<div class="stat-value">1,234</div>
-					<div class="stat-label">API Calls</div>
-					<div class="stat-bar"><div class="stat-bar-fill" style="width:42%"></div></div>
-				</div>
-				<div class="stat-card">
-					<div class="stat-value">56.7K</div>
-					<div class="stat-label">Tokens Used</div>
-					<div class="stat-bar"><div class="stat-bar-fill" style="width:28%"></div></div>
-				</div>
-				<div class="stat-card">
-					<div class="stat-value">23</div>
-					<div class="stat-label">Tasks Completed</div>
-				</div>
-				<div class="stat-card">
-					<div class="stat-value">5</div>
-					<div class="stat-label">Active Agents</div>
-				</div>
-			</div>
-		`;
+		stats.appendChild($('h4', undefined, '📊 Usage This Month'));
+		const statsGrid = $('div.stats-grid');
+		statsGrid.appendChild(this._createStatCard('1,234', 'API Calls', 42));
+		statsGrid.appendChild(this._createStatCard('56.7K', 'Tokens Used', 28));
+		statsGrid.appendChild(this._createStatCard('23', 'Tasks Completed'));
+		statsGrid.appendChild(this._createStatCard('5', 'Active Agents'));
+		stats.appendChild(statsGrid);
 		container.appendChild(stats);
 
 		// API Keys section
 		const apiKeys = $('div.personal-api-keys');
-		apiKeys.innerHTML = `
-			<h4>🔑 API Keys</h4>
-			<div class="api-key-list">
-				<div class="api-key-item">
-					<span class="key-provider">OpenAI</span>
-					<span class="key-status configured">✓ Configured</span>
-				</div>
-				<div class="api-key-item">
-					<span class="key-provider">Anthropic</span>
-					<span class="key-status configured">✓ Configured</span>
-				</div>
-				<div class="api-key-item">
-					<span class="key-provider">Google AI</span>
-					<span class="key-status not-configured">Not configured</span>
-				</div>
-			</div>
-			<button class="manage-keys-btn">Manage API Keys</button>
-		`;
+		apiKeys.appendChild($('h4', undefined, '🔑 API Keys'));
+		const keyList = $('div.api-key-list');
+		keyList.appendChild(this._createApiKeyItem('OpenAI', true));
+		keyList.appendChild(this._createApiKeyItem('Anthropic', true));
+		keyList.appendChild(this._createApiKeyItem('Google AI', false));
+		apiKeys.appendChild(keyList);
+		const manageBtn = $('button.manage-keys-btn', undefined, 'Manage API Keys');
+		apiKeys.appendChild(manageBtn);
 		container.appendChild(apiKeys);
 
 		// Quick actions
 		const actions = $('div.personal-actions');
-		actions.innerHTML = `
-			<h4>⚡ Quick Actions</h4>
-			<div class="action-list">
-				<button class="personal-action-btn">📤 Export Data</button>
-				<button class="personal-action-btn">📥 Import Config</button>
-				<button class="personal-action-btn">🔄 Sync Settings</button>
-				<button class="personal-action-btn danger">🚪 Sign Out</button>
-			</div>
-		`;
+		actions.appendChild($('h4', undefined, '⚡ Quick Actions'));
+		const actionList = $('div.action-list');
+		actionList.appendChild($('button.personal-action-btn', undefined, '📤 Export Data'));
+		actionList.appendChild($('button.personal-action-btn', undefined, '📥 Import Config'));
+		actionList.appendChild($('button.personal-action-btn', undefined, '🔄 Sync Settings'));
+		actionList.appendChild($('button.personal-action-btn.danger', undefined, '🚪 Sign Out'));
+		actions.appendChild(actionList);
 		container.appendChild(actions);
+	}
+
+	private _createStatCard(value: string, label: string, barPercent?: number): HTMLElement {
+		const card = $('div.stat-card');
+		card.appendChild($('div.stat-value', undefined, value));
+		card.appendChild($('div.stat-label', undefined, label));
+		if (barPercent !== undefined) {
+			const bar = $('div.stat-bar');
+			const fill = $('div.stat-bar-fill') as HTMLDivElement;
+			fill.style.width = `${barPercent}%`;
+			bar.appendChild(fill);
+			card.appendChild(bar);
+		}
+		return card;
+	}
+
+	private _createApiKeyItem(provider: string, configured: boolean): HTMLElement {
+		const item = $('div.api-key-item');
+		item.appendChild($('span.key-provider', undefined, provider));
+		const status = configured
+			? $('span.key-status.configured', undefined, '✓ Configured')
+			: $('span.key-status.not-configured', undefined, 'Not configured');
+		item.appendChild(status);
+		return item;
 	}
 
 	protected override layoutBody(height: number, width: number): void {

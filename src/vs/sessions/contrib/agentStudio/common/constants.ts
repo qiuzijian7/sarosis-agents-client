@@ -3,14 +3,45 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Configuration keys
+// Configuration keys — feature toggles
 export const AGENT_STUDIO_ENABLED_SETTING = 'sessions.agentStudio.enabled';
-export const AGENT_STUDIO_KNOT_TOKEN_SETTING = 'sessions.agentStudio.knot.token';
-export const AGENT_STUDIO_KNOT_AGENT_ID_SETTING = 'sessions.agentStudio.knot.agentId';
-export const AGENT_STUDIO_KNOT_BASE_URL_SETTING = 'sessions.agentStudio.knot.baseUrl';
-export const AGENT_STUDIO_KNOT_MODELS_SETTING = 'sessions.agentStudio.knot.models';
-export const AGENT_STUDIO_KNOT_USER_SETTING = 'sessions.agentStudio.knot.user';
 export const AGENT_STUDIO_DATA_PATH_SETTING = 'sessions.agentStudio.dataPath';
+
+// NOTE: Knot AG-UI configuration keys are defined in the knot-agui extension's
+// package.json (contributes.configuration) and discovered at runtime via
+// ISettingsTabRegistry (contributes.agentStudioSettingsTab). Do NOT add
+// Knot-specific config keys here — they belong to the plugin.
+
+// Configuration keys — Preferences
+export const AGENT_STUDIO_THEME_SETTING = 'sessions.agentStudio.preferences.theme';
+export const AGENT_STUDIO_LANGUAGE_SETTING = 'sessions.agentStudio.preferences.language';
+export const AGENT_STUDIO_SEND_KEY_SETTING = 'sessions.agentStudio.preferences.sendKey';
+export const AGENT_STUDIO_DEFAULT_MODEL_SETTING = 'sessions.agentStudio.preferences.defaultModel';
+export const AGENT_STUDIO_BOT_NAME_SETTING = 'sessions.agentStudio.preferences.botName';
+export const AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING = 'sessions.agentStudio.preferences.showTokenUsage';
+export const AGENT_STUDIO_NOTIFICATION_SOUND_SETTING = 'sessions.agentStudio.preferences.notificationSound';
+export const AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING = 'sessions.agentStudio.preferences.browserNotifications';
+export const AGENT_STUDIO_CHECK_UPDATES_SETTING = 'sessions.agentStudio.preferences.checkUpdates';
+
+// Configuration keys — Auxiliary Models
+export const AGENT_STUDIO_AUX_VISION_PROVIDER = 'sessions.agentStudio.aux.vision.provider';
+export const AGENT_STUDIO_AUX_VISION_MODEL = 'sessions.agentStudio.aux.vision.model';
+export const AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER = 'sessions.agentStudio.aux.webExtract.provider';
+export const AGENT_STUDIO_AUX_WEB_EXTRACT_MODEL = 'sessions.agentStudio.aux.webExtract.model';
+export const AGENT_STUDIO_AUX_SESSION_SEARCH_PROVIDER = 'sessions.agentStudio.aux.sessionSearch.provider';
+export const AGENT_STUDIO_AUX_SESSION_SEARCH_MODEL = 'sessions.agentStudio.aux.sessionSearch.model';
+export const AGENT_STUDIO_AUX_COMPRESSION_PROVIDER = 'sessions.agentStudio.aux.compression.provider';
+export const AGENT_STUDIO_AUX_COMPRESSION_MODEL = 'sessions.agentStudio.aux.compression.model';
+export const AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER = 'sessions.agentStudio.aux.goalJudge.provider';
+export const AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL = 'sessions.agentStudio.aux.goalJudge.model';
+export const AGENT_STUDIO_AUX_CURATOR_PROVIDER = 'sessions.agentStudio.aux.curator.provider';
+export const AGENT_STUDIO_AUX_CURATOR_MODEL = 'sessions.agentStudio.aux.curator.model';
+
+// Configuration keys — CLI
+export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';
+export const AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING = 'sessions.agentStudio.cli.defaultWorkdir';
+export const AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING = 'sessions.agentStudio.cli.autoConnect';
+export const AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING = 'sessions.agentStudio.cli.saveHistory';
 
 // ViewContainer IDs
 export const AGENT_STUDIO_CHATBAR_VIEW_CONTAINER_ID = 'agentStudio.chatBar';
@@ -45,7 +76,8 @@ export const AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID = 'agentStudio.workspaceTem
 export const AGENT_STUDIO_CREW_TEAM_VIEW_ID = 'agentStudio.crewTeamView';
 
 // Panel types (passed to WebView to select which React component to render)
-export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard';
+// 'settings' is rendered natively (no WebView) via SettingsEditorPane.
+export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard' | 'settings';
 
 // Provider ID
 export const AGENT_STUDIO_PROVIDER_ID = 'agentStudio';

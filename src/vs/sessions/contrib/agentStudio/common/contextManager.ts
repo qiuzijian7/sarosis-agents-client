@@ -75,7 +75,7 @@ export class ContextManager {
 			], {
 				temperature: 0.3,
 				maxTokens: 500,
-			});
+			}, {});
 
 			let summary = '';
 			for await (const delta of stream) {

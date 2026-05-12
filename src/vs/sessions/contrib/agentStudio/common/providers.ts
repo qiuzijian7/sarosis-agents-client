@@ -43,16 +43,30 @@ export interface IModelPricing {
 export interface IModelSelection {
 	readonly providerId: string;     // e.g. 'knot-agui'
 	readonly modelId: string;        // e.g. 'gpt-4o'
+	readonly agentId?: string;       // e.g. 'agent-123' (可选，仅支持 Agent 的 Provider 使用)
+}
+
+// ─── Model Agent Info ──────────────────────────────────────────────────────────
+// 表示 Provider 支持的一个 Agent（如 Knot 中的一个智能体）
+
+export interface IModelAgentInfo {
+	readonly id: string;               // e.g. 'agent-123'
+	readonly name: string;             // e.g. 'My Agent'
+	readonly description?: string;
+	readonly icon?: string;            // URI string
+	readonly models?: string[];        // 该 Agent 支持的模型 ID 列表
 }
 
 // ─── Model Provider Interface ───────────────────────────────────────────────────
 // 特殊性：支持同时注册多个 Provider，每个 Provider 可提供多个模型
+// 部分 Provider 还支持 Agent 选择（如 Knot）
 
 export interface IModelProvider {
 	readonly id: string;              // e.g. 'knot-agui', 'direct-openai'
 	readonly name: string;            // 显示名，e.g. 'Knot AG-UI'
 	readonly icon?: URI;
 	readonly priority: number;        // 默认优先级（决定默认选中）
+	readonly settingsSearchQuery?: string; // 打开设置时使用的搜索关键字（可选）
 
 	// 模型列表（可动态刷新）
 	readonly onDidChangeModels: Event<void>;
@@ -62,12 +76,30 @@ export interface IModelProvider {
 	readonly onDidChangeAuthStatus: Event<ModelAuthStatus>;
 	getAuthStatus(): ModelAuthStatus;
 
-	// 推理调用（指定模型）
+	// ─── Agent 支持（可选）────────────────────────────────────
+	// 如果 Provider 支持 Agent 选择，设置 supportsAgents = true
+	// 并在 listAgents() 中返回可用 Agent 列表
+
+	readonly supportsAgents?: boolean;         // 是否支持 Agent 选择
+	readonly onDidChangeAgents?: Event<void>; // Agent 列表变化事件
+	listAgents?(): Promise<IModelAgentInfo[]>; // 获取 Agent 列表
+
+	// 推理调用（指定模型，可选指定 Agent）
 	chat(
 		modelId: string,
 		messages: IChatMessage[],
 		options: IModelOptions,
+		context?: IChatContext,
 	): AsyncIterable<IModelDelta>;
+}
+
+// ─── Chat Context ──────────────────────────────────────────────────────
+// 传递给 chat() 的额外上下文（如选中的 Agent）
+
+export interface IChatContext {
+	readonly agentId?: string;       // 选中的 Agent ID
+	readonly sessionId?: string;     // 会话 ID
+	[key: string]: unknown;
 }
 
 export interface IChatMessage {

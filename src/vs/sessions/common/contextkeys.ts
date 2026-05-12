@@ -19,6 +19,12 @@ export const ChatSessionProviderIdContext = new RawContextKey<string>('chatSessi
 
 //#endregion
 
+//#region < --- Sidebar --- >
+
+export const SidebarContentVisibleContext = new RawContextKey<boolean>('sidebarContentVisible', false, localize('sidebarContentVisible', "Whether the sidebar content panel is expanded (visible)"));
+
+//#endregion
+
 //#region < --- Chat Bar --- >
 
 export const ActiveChatBarContext = new RawContextKey<string>('activeChatBar', '', localize('activeChatBar', "The identifier of the active chat bar panel"));

@@ -1,0 +1,6 @@
+{
+	"name": "knot-agui",
+	"version": "1.0.0",
+	"description": "Knot AG-UI plugin — connect to Knot platform agents via AG-UI protocol with streaming, tool calls, and thinking support.",
+	"publisher": "sarosis"
+}

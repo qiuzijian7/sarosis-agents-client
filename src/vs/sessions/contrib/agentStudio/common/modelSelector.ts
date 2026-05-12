@@ -5,7 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import { IModelSelection, IModelInfo, ModelAuthStatus } from './providers.js';
+import { IModelSelection, IModelInfo, IModelAgentInfo, ModelAuthStatus } from './providers.js';
 
 // ─── Model Selector Service ───────────────────────────────────────────────
 
@@ -16,6 +16,8 @@ export const IModelSelectorService = createDecorator<IModelSelectorService>('mod
  *
  * Model Slot 特殊性：用户需显式选择使用哪个 Provider 的哪个模型，
  * 而非由 OS 自动按优先级选择。
+ *
+ * 部分 Provider 支持 Agent 选择（如 Knot），此时还需选择 Agent。
  */
 export interface IModelSelectorService {
 	readonly _serviceBrand: undefined;
@@ -31,12 +33,41 @@ export interface IModelSelectorService {
 	readonly onDidChangeAvailableModels: Event<void>;
 	getAvailableModels(): Promise<IModelSelectorItem[]>;
 
+	// ─── Agent 选择（仅支持 Agent 的 Provider）────────────────────
+
+	/**
+	 * 当前选中的 Provider 是否支持 Agent 选择
+	 */
+	currentProviderSupportsAgents(): boolean;
+
+	/**
+	 * 获取当前 Provider 的 Agent 列表
+	 */
+	getAvailableAgents(): Promise<IModelAgentInfo[]>;
+
+	/**
+	 * 获取当前选中的 Agent ID
+	 */
+	getSelectedAgentId(): string | undefined;
+
+	/**
+	 * 设置选中的 Agent ID（会更新 IModelSelection）
+	 */
+	setSelectedAgentId(agentId: string | undefined): void;
+
+	readonly onDidChangeAgent: Event<string | undefined>;
+
 	// ─── UI 操作 ───────────────────────────────────────────────
 
 	/**
-	 * 显示快速选择器（QuickPick）
+	 * 显示快速选择器（QuickPick）— 选择 Provider/Model
 	 */
 	showQuickPick(): Promise<IModelSelection | undefined>;
+
+	/**
+	 * 显示 Agent 选择器（QuickPick）— 仅当 Provider 支持 Agent 时可用
+	 */
+	showAgentQuickPick(): Promise<string | undefined>;
 
 	/**
 	 * 打开对应 Provider 的设置页面

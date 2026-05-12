@@ -3,9 +3,17 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Event } from '../../../src/vs/base/common/event.js';
-import { IModelProvider, IModelInfo, ModelAuthStatus, IModelOptions, IModelDelta, IChatMessage } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
-import { BaseProviderAdapter } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
+import { Emitter } from '../../../src/vs/base/common/event.js';
+import {Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { IModelProvider, IModelInfo, IModelAgentInfo, ModelAuthStatus, IModelOptions, IModelDelta, IChatMessage, IChatContext } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
+import { ILogService } from '../../../src/vs/platform/log/common/log.js';
+
+// 本地定义配置常量（与 package.json 中的配置键保持一致）
+const KNOT_TOKEN_SETTING = 'sessions.agentStudio.knot.token';
+const KNOT_AGENT_ID_SETTING = 'sessions.agentStudio.knot.agentId';
+const KNOT_BASE_URL_SETTING = 'sessions.agentStudio.knot.baseUrl';
+const KNOT_USER_SETTING = 'sessions.agentStudio.knot.user';
+const KNOT_AGENTS_SETTING = 'sessions.agentStudio.knot.agents';
 
 /**
  * Knot AG-UI Model Provider
@@ -26,6 +34,8 @@ export class KnotAGUIModelProvider extends BaseProviderAdapter<any> implements I
 	readonly id = 'knot-agui';
 	readonly name = 'Knot AG-UI';
 	readonly priority = 100; // 高优先级 → 默认选中
+	readonly supportsAgents = true; // 支持 Agent 选择
+	readonly settingsSearchQuery = 'sessions.agentStudio.knot'; // 设置搜索关键字
 	readonly icon?: any; // TODO: 添加 Knot 图标 URI
 
 	private readonly _onDidChangeModels = new Event<void>();
@@ -34,8 +44,12 @@ export class KnotAGUIModelProvider extends BaseProviderAdapter<any> implements I
 	private readonly _onDidChangeAuthStatus = new Event<ModelAuthStatus>();
 	readonly onDidChangeAuthStatus = this._onDidChangeAuthStatus.event;
 
+	private readonly _onDidChangeAgents = new Event<void>();
+	readonly onDidChangeAgents = this._onDidChangeAgents.event;
+
 	private _authStatus: ModelAuthStatus = ModelAuthStatus.NotConfigured;
 	private _agents: IModelInfo[] = [];
+	private _agentsList: IModelAgentInfo[] = []; // Agent 列表
 	private _client: any = null;
 
 	constructor(private readonly _options: KnotModelProviderOptions) {
@@ -63,9 +77,18 @@ export class KnotAGUIModelProvider extends BaseProviderAdapter<any> implements I
 		return this._agents;
 	}
 
-	async chat(modelId: string, messages: IChatMessage[], options: IModelOptions): AsyncIterable<IModelDelta> {
-		// modelId = agentId in Knot context
-		const agentId = modelId;
+	// ─── Agent 支持（实现 IModelProvider 接口）────────────────────
+
+	async listAgents(): Promise<IModelAgentInfo[]> {
+		if (this._authStatus !== ModelAuthStatus.Authenticated) {
+			return [];
+		}
+		return this._agentsList;
+	}
+
+	async chat(modelId: string, messages: IChatMessage[], options: IModelOptions, context?: IChatContext): AsyncIterable<IModelDelta> {
+		// 优先使用 context 中的 agentId，其次使用 modelId
+		const agentId = context?.agentId || modelId;
 		const client = await this._getAGUIClient();
 		return client.streamRun(agentId, {
 			messages: this._convertMessages(messages),
@@ -88,7 +111,7 @@ export class KnotAGUIModelProvider extends BaseProviderAdapter<any> implements I
 	}
 
 	private async _validateAndLoadModels(): Promise<void> {
-		const token = this._options.configurationService.getValue<string>('knot.auth.token');
+		const token = this._options.configurationService.getValue<string>(KNOT_TOKEN_SETTING);
 		if (!token) {
 			this._authStatus = ModelAuthStatus.NotConfigured;
 			this._onDidChangeAuthStatus.fire(this._authStatus);
@@ -100,6 +123,8 @@ export class KnotAGUIModelProvider extends BaseProviderAdapter<any> implements I
 
 		try {
 			const agents = await this._fetchAvailableAgents(token);
+			
+			// 转换为 IModelInfo（用于 listModels）
 			this._agents = agents.map(agent => ({
 				id: agent.id,
 				name: agent.name,
@@ -107,8 +132,18 @@ export class KnotAGUIModelProvider extends BaseProviderAdapter<any> implements I
 				contextWindow: agent.contextWindow,
 				capabilities: agent.capabilities,
 			}));
+			
+			// 保存完整的 Agent 信息（用于 listAgents）
+			this._agentsList = agents.map(agent => ({
+				id: agent.id,
+				name: agent.name,
+				description: agent.description,
+				models: agent.models,
+			}));
+			
 			this._authStatus = ModelAuthStatus.Authenticated;
 			this._onDidChangeModels.fire();
+			this._onDidChangeAgents.fire(); // 通知 Agent 列表变化
 		} catch (err) {
 			this._authStatus = ModelAuthStatus.Failed;
 			this._logService.error('[Knot-AGUI] Failed to load agents:', err);

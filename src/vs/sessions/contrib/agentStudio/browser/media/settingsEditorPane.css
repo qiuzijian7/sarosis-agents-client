@@ -1,0 +1,587 @@
+/*---------------------------------------------------------------------------------------------
+ *  Agent Studio Settings Editor Pane Styles
+ *  Collapsible section layout for the editor area
+ *--------------------------------------------------------------------------------------------*/
+
+/* ─── Root Container ──────────────────────────────────────────────────────── */
+
+.as-settings-editor {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	background: var(--vscode-editor-background);
+}
+
+.as-settings-scroll {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 0 0 40px 0;
+}
+
+/* ─── Header ──────────────────────────────────────────────────────────────── */
+
+.as-settings-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 16px 28px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editor-background);
+	position: sticky;
+	top: 0;
+	z-index: 10;
+}
+
+.as-settings-header-left {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.as-settings-header-icon {
+	font-size: 20px;
+}
+
+.as-settings-title {
+	margin: 0;
+	font-size: 18px;
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+	letter-spacing: -0.3px;
+}
+
+.as-settings-header-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.as-settings-reset-btn {
+	padding: 5px 14px;
+	font-size: 12px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	transition: all 0.15s;
+}
+
+.as-settings-reset-btn:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-errorForeground);
+	border-color: var(--vscode-errorForeground);
+}
+
+/* ─── Search ──────────────────────────────────────────────────────────────── */
+
+.as-settings-search-wrap {
+	display: flex;
+	align-items: center;
+	margin: 12px 28px;
+	padding: 7px 12px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 8px;
+	background: var(--vscode-input-background);
+	transition: border-color 0.15s;
+}
+
+.as-settings-search-wrap:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.as-settings-search-icon {
+	font-size: 13px;
+	margin-right: 8px;
+	color: var(--vscode-descriptionForeground);
+	flex-shrink: 0;
+}
+
+.as-settings-search-input {
+	flex: 1;
+	border: none;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	font-size: 13px;
+	outline: none;
+}
+
+.as-settings-search-input::placeholder {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ─── Tabs ────────────────────────────────────────────────────────────────── */
+
+.as-settings-tabs {
+	display: flex;
+	gap: 2px;
+	padding: 0 28px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.as-settings-tab {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 16px;
+	font-size: 12px;
+	border-radius: 6px;
+	white-space: nowrap;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	border: 1px solid transparent;
+	cursor: pointer;
+	transition: all 0.15s;
+}
+
+.as-settings-tab:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-editor-foreground);
+}
+
+.as-settings-tab.active {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-background);
+}
+
+.as-settings-tab-icon {
+	font-size: 13px;
+}
+
+.as-settings-tab-label {
+	font-weight: 500;
+}
+
+/* ─── Content Area ────────────────────────────────────────────────────────── */
+
+.as-settings-content {
+	padding: 8px 28px 16px;
+}
+
+/* ─── Collapsible Section ─────────────────────────────────────────────────── */
+
+.as-section {
+	margin-bottom: 6px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	background: var(--vscode-editor-background);
+	overflow: hidden;
+	transition: border-color 0.15s;
+}
+
+.as-section:hover {
+	border-color: var(--vscode-focusBorder);
+}
+
+.as-section-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px 16px;
+	cursor: pointer;
+	user-select: none;
+	transition: background 0.12s;
+}
+
+.as-section-header:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.as-section-chevron {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	flex-shrink: 0;
+	transition: transform 0.15s;
+	width: 14px;
+	text-align: center;
+}
+
+.as-section-icon {
+	font-size: 16px;
+	flex-shrink: 0;
+}
+
+.as-section-header-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.as-section-label {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+	display: block;
+}
+
+.as-section-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	display: block;
+}
+
+/* Collapsed state */
+
+.as-section.as-section-collapsed .as-section-body {
+	display: none;
+}
+
+.as-section.as-section-collapsed .as-section-chevron {
+	transform: rotate(0deg);
+}
+
+.as-section:not(.as-section-collapsed) .as-section-chevron {
+	transform: rotate(0deg);
+}
+
+/* ─── Section Body ────────────────────────────────────────────────────────── */
+
+.as-section-body {
+	padding: 4px 16px 14px;
+	border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
+/* ─── Field Row ───────────────────────────────────────────────────────────── */
+
+.as-field-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 10px 0;
+	border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.12));
+}
+
+.as-field-row:last-child {
+	border-bottom: none;
+}
+
+.as-field-label-wrap {
+	flex: 1;
+	min-width: 0;
+}
+
+.as-field-label {
+	display: block;
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	cursor: default;
+}
+
+.as-field-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 3px;
+	line-height: 1.4;
+}
+
+.as-field-control {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	min-width: 160px;
+	justify-content: flex-end;
+}
+
+/* ─── Toggle Switch ───────────────────────────────────────────────────────── */
+
+.as-toggle {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	width: 36px;
+	height: 20px;
+	flex-shrink: 0;
+	cursor: pointer;
+}
+
+.as-toggle input {
+	opacity: 0;
+	width: 0;
+	height: 0;
+	position: absolute;
+}
+
+.as-toggle-slider {
+	position: absolute;
+	cursor: pointer;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 10px;
+	transition: 0.2s;
+}
+
+.as-toggle-slider::before {
+	content: '';
+	position: absolute;
+	height: 14px;
+	width: 14px;
+	left: 2px;
+	bottom: 2px;
+	background-color: var(--vscode-foreground);
+	border-radius: 50%;
+	transition: 0.2s;
+}
+
+.as-toggle input:checked + .as-toggle-slider {
+	background-color: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+
+.as-toggle input:checked + .as-toggle-slider::before {
+	transform: translateX(16px);
+	background-color: var(--vscode-button-foreground);
+}
+
+/* ─── Input Fields ────────────────────────────────────────────────────────── */
+
+.as-input {
+	width: 100%;
+	padding: 6px 10px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	box-sizing: border-box;
+	transition: border-color 0.15s;
+}
+
+.as-input:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.as-input-number {
+	width: 100px;
+}
+
+.as-select {
+	width: 100%;
+	max-width: 240px;
+	padding: 6px 10px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	box-sizing: border-box;
+	transition: border-color 0.15s;
+}
+
+.as-select:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.as-textarea {
+	width: 100%;
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 11px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	resize: vertical;
+	box-sizing: border-box;
+	transition: border-color 0.15s;
+}
+
+.as-textarea:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ─── Section Actions (Save button row) ───────────────────────────────────── */
+
+.as-section-actions {
+	display: flex;
+	gap: 10px;
+	padding: 12px 0 4px;
+}
+
+/* ─── Plugin Tab ──────────────────────────────────────────────────────────── */
+
+.as-plugin-header {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 14px 16px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	background: var(--vscode-editor-background);
+	margin-bottom: 12px;
+}
+
+.as-plugin-header-icon {
+	font-size: 24px;
+	flex-shrink: 0;
+}
+
+.as-plugin-header-info {
+	flex: 1;
+}
+
+.as-plugin-header-title {
+	font-size: 15px;
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+}
+
+.as-plugin-header-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+.as-plugin-hint {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	padding: 8px 14px;
+	margin-bottom: 12px;
+	border-radius: 6px;
+	background: var(--vscode-textBlockQuote-background, var(--vscode-input-background));
+	border-left: 3px solid var(--vscode-focusBorder);
+}
+
+.as-plugin-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+	gap: 10px;
+	margin-bottom: 12px;
+}
+
+.as-plugin-field-card {
+	padding: 12px 16px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	background: var(--vscode-editor-background);
+	transition: border-color 0.15s;
+}
+
+.as-plugin-field-card:hover {
+	border-color: var(--vscode-focusBorder);
+}
+
+.as-plugin-field-label {
+	display: block;
+	font-weight: 600;
+	font-size: 12px;
+	color: var(--vscode-editor-foreground);
+	margin-bottom: 4px;
+}
+
+.as-plugin-field-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+}
+
+.as-plugin-actions {
+	display: flex;
+	gap: 10px;
+	padding: 4px 0;
+}
+
+.as-plugin-btn {
+	padding: 7px 18px;
+	border-radius: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	border: none;
+	transition: all 0.15s;
+}
+
+.as-plugin-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.as-plugin-btn-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.as-plugin-btn-secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.as-plugin-btn-secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.as-plugin-btn-danger {
+	background: var(--vscode-errorBackground, rgba(255 0 0 / 0.1));
+	color: var(--vscode-errorForeground);
+}
+
+.as-plugin-btn-danger:hover {
+	background: var(--vscode-errorBackground, rgba(255 0 0 / 0.2));
+}
+
+.as-plugin-status {
+	padding: 8px 14px;
+	font-size: 12px;
+	border-radius: 6px;
+	margin-top: 8px;
+}
+
+.as-plugin-status:empty {
+	display: none;
+}
+
+/* ─── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+	.as-plugin-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.as-field-row {
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.as-field-control {
+		width: 100%;
+		justify-content: flex-start;
+		min-width: 0;
+	}
+
+	.as-select {
+		max-width: 100%;
+	}
+
+	.as-settings-header {
+		padding: 12px 16px 10px;
+	}
+
+	.as-settings-content {
+		padding: 8px 16px 12px;
+	}
+
+	.as-settings-search-wrap {
+		margin: 8px 16px;
+	}
+
+	.as-settings-tabs {
+		padding: 0 16px 10px;
+	}
+
+	.as-section-header {
+		padding: 10px 12px;
+	}
+
+	.as-section-body {
+		padding: 4px 12px 12px;
+	}
+}
