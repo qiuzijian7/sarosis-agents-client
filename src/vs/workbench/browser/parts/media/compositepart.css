@@ -5,6 +5,7 @@
 
 .monaco-workbench .part > .content > .composite {
 	height: 100%;
+	width: 100%;
 }
 
 .monaco-workbench .part > .composite.header-or-footer,

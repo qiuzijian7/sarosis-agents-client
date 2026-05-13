@@ -3,13 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IExecutionProvider, IAgentTurnRequest, IChatStreamDelta, ISlotRegistry, IToolResult } from '../../../common/providers.js';
+import type { IExecutionProvider, IAgentTurnRequest, IChatStreamDelta, ISlotRegistry, IToolResult } from '../../../common/providers.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { ContextManager } from '../../../common/contextManager.js';
 import { ToolArgumentRepairer } from '../../../common/toolRepair.js';
 import { ParallelToolExecutor } from '../../../common/parallelToolExecutor.js';
-import { IChatMessage, IModelOptions, IToolCallInfo, IModelDelta } from '../../../common/providers.js';
+import type { IChatMessage, IModelOptions, IToolCallInfo, IModelDelta } from '../../../common/providers.js';
 
 /**
  * 完整的 Execution Provider 实现

@@ -4,12 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 // Re-export service interfaces from sessions/common/ for backward compatibility
+
+// Value exports (the decorators for dependency injection)
 export {
 	IAgentStudioService,
 	IAgentChatService,
+	IAgentDelegationService,
+	IAgentTaskBoardService,
+} from '../../../common/agentStudioService.js';
+
+// Type-only exports (interfaces)
+export type {
 	IChatStreamDelta,
 	IChatSendOptions,
 	IAutoPlanResult,
-	IAgentDelegationService,
-	IAgentTaskBoardService,
 } from '../../../common/agentStudioService.js';

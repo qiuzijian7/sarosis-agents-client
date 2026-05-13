@@ -85,15 +85,21 @@ export class WorkspaceTemplateViewPane extends ViewPane {
 			this._templates = await this._templateService.listTemplates();
 			this._renderTemplates();
 		} catch (error) {
-			this._templatesContainer.innerHTML = '<div class="error">Failed to load templates</div>';
+			// 使用 DOM API 替代 innerHTML，避免 TrustedHTML CSP 阻塞
+			this._templatesContainer.replaceChildren();
+			const errorDiv = $('div.error');
+			errorDiv.textContent = 'Failed to load templates';
+			this._templatesContainer.appendChild(errorDiv);
 		}
 	}
 
 	private _renderTemplates(): void {
-		this._templatesContainer.innerHTML = '';
+		this._templatesContainer.replaceChildren();
 
 		if (this._templates.length === 0) {
-			this._templatesContainer.innerHTML = '<div class="empty-message">No templates yet. Create one!</div>';
+			const emptyDiv = $('div.empty-message');
+			emptyDiv.textContent = 'No templates yet. Create one!';
+			this._templatesContainer.appendChild(emptyDiv);
 			return;
 		}
 
@@ -114,12 +120,19 @@ export class WorkspaceTemplateViewPane extends ViewPane {
 			info.appendChild(description);
 
 			const meta = $('div.template-meta');
-			meta.innerHTML = `
-				<span>Type: ${template.type}</span>
-				<span>Scope: ${template.scope}</span>
-				<span>Size: ${this._formatSize(template.size)}</span>
-				<span>Applied: ${template.applyCount} times</span>
-			`;
+			// 使用 DOM API 替代 innerHTML，避免 TrustedHTML CSP 阻塞
+			const typeSpan = $('span');
+			typeSpan.textContent = `Type: ${template.type}`;
+			meta.appendChild(typeSpan);
+			const scopeSpan = $('span');
+			scopeSpan.textContent = `Scope: ${template.scope}`;
+			meta.appendChild(scopeSpan);
+			const sizeSpan = $('span');
+			sizeSpan.textContent = `Size: ${this._formatSize(template.size)}`;
+			meta.appendChild(sizeSpan);
+			const appliedSpan = $('span');
+			appliedSpan.textContent = `Applied: ${template.applyCount} times`;
+			meta.appendChild(appliedSpan);
 			info.appendChild(meta);
 
 			card.appendChild(info);

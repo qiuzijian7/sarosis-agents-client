@@ -131,7 +131,7 @@ export interface ToolCall {
 	status?: 'running' | 'done' | 'error';
 }
 
-export interface AgentStudioSession {
+export class AgentStudioSession {
 	readonly id: string;
 	name: string;
 	workspaceId: string;
@@ -139,6 +139,24 @@ export interface AgentStudioSession {
 	createdAt: string;
 	updatedAt: string;
 	archived?: boolean;
+
+	constructor(data: {
+		id: string;
+		name: string;
+		workspaceId: string;
+		activeEmployeeId?: string;
+		createdAt: string;
+		updatedAt: string;
+		archived?: boolean;
+	}) {
+		this.id = data.id;
+		this.name = data.name;
+		this.workspaceId = data.workspaceId;
+		this.activeEmployeeId = data.activeEmployeeId;
+		this.createdAt = data.createdAt;
+		this.updatedAt = data.updatedAt;
+		this.archived = data.archived;
+	}
 }
 
 export const enum TaskBoardStatus {

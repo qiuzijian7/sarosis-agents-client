@@ -16,6 +16,7 @@ export const AGENT_STUDIO_DATA_PATH_SETTING = 'sessions.agentStudio.dataPath';
 export const AGENT_STUDIO_THEME_SETTING = 'sessions.agentStudio.preferences.theme';
 export const AGENT_STUDIO_LANGUAGE_SETTING = 'sessions.agentStudio.preferences.language';
 export const AGENT_STUDIO_SEND_KEY_SETTING = 'sessions.agentStudio.preferences.sendKey';
+export const AGENT_STUDIO_DEFAULT_PROVIDER_SETTING = 'sessions.agentStudio.preferences.defaultProvider';
 export const AGENT_STUDIO_DEFAULT_MODEL_SETTING = 'sessions.agentStudio.preferences.defaultModel';
 export const AGENT_STUDIO_BOT_NAME_SETTING = 'sessions.agentStudio.preferences.botName';
 export const AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING = 'sessions.agentStudio.preferences.showTokenUsage';
@@ -36,6 +37,20 @@ export const AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER = 'sessions.agentStudio.aux.go
 export const AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL = 'sessions.agentStudio.aux.goalJudge.model';
 export const AGENT_STUDIO_AUX_CURATOR_PROVIDER = 'sessions.agentStudio.aux.curator.provider';
 export const AGENT_STUDIO_AUX_CURATOR_MODEL = 'sessions.agentStudio.aux.curator.model';
+
+// Configuration keys — Provider (API connections)
+export const AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY = 'sessions.agentStudio.provider.openrouter.apiKey';
+export const AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL = 'sessions.agentStudio.provider.openrouter.baseUrl';
+export const AGENT_STUDIO_PROVIDER_NOUS_API_KEY = 'sessions.agentStudio.provider.nous.apiKey';
+export const AGENT_STUDIO_PROVIDER_NOUS_BASE_URL = 'sessions.agentStudio.provider.nous.baseUrl';
+export const AGENT_STUDIO_PROVIDER_GEMINI_API_KEY = 'sessions.agentStudio.provider.gemini.apiKey';
+export const AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL = 'sessions.agentStudio.provider.gemini.baseUrl';
+export const AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY = 'sessions.agentStudio.provider.anthropic.apiKey';
+export const AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL = 'sessions.agentStudio.provider.anthropic.baseUrl';
+export const AGENT_STUDIO_PROVIDER_MAIN_API_KEY = 'sessions.agentStudio.provider.main.apiKey';
+export const AGENT_STUDIO_PROVIDER_MAIN_BASE_URL = 'sessions.agentStudio.provider.main.baseUrl';
+export const AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY = 'sessions.agentStudio.provider.custom.apiKey';
+export const AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL = 'sessions.agentStudio.provider.custom.baseUrl';
 
 // Configuration keys — CLI
 export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';

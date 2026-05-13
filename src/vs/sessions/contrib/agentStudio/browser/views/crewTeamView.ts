@@ -142,15 +142,20 @@ export class CrewTeamViewPane extends ViewPane {
 			this._crews = await this._crewTeamService.listCrews();
 			this._renderCrews();
 		} catch (error) {
-			this._crewsContainer.innerHTML = '<div class="error">Failed to load crews</div>';
+			this._crewsContainer.replaceChildren();
+			const errorDiv = $('div.error');
+			errorDiv.textContent = 'Failed to load crews';
+			this._crewsContainer.appendChild(errorDiv);
 		}
 	}
 
 	private _renderCrews(): void {
-		this._crewsContainer.innerHTML = '';
+		this._crewsContainer.replaceChildren();
 
 		if (this._crews.length === 0) {
-			this._crewsContainer.innerHTML = '<div class="empty-message">No crews yet. Create one!</div>';
+			const emptyMsg = $('div.empty-message');
+			emptyMsg.textContent = 'No crews yet. Create one!';
+			this._crewsContainer.appendChild(emptyMsg);
 			return;
 		}
 
@@ -171,11 +176,19 @@ export class CrewTeamViewPane extends ViewPane {
 			info.appendChild(description);
 
 			const meta = $('div.crew-meta');
-			meta.innerHTML = `
-				<span>Type: ${crew.type}</span>
-				<span>Members: ${crew.members.length}</span>
-				<span>Tasks: ${crew.tasks.length}</span>
-			`;
+
+			const typeSpan = $('span');
+			typeSpan.textContent = `Type: ${crew.type}`;
+			meta.appendChild(typeSpan);
+
+			const membersSpan = $('span');
+			membersSpan.textContent = `Members: ${crew.members.length}`;
+			meta.appendChild(membersSpan);
+
+			const tasksSpan = $('span');
+			tasksSpan.textContent = `Tasks: ${crew.tasks.length}`;
+			meta.appendChild(tasksSpan);
+
 			info.appendChild(meta);
 
 			card.appendChild(info);
@@ -237,7 +250,10 @@ export class CrewTeamViewPane extends ViewPane {
 			await this._crewTeamService.deleteCrew(crewId);
 			if (this._selectedCrewId === crewId) {
 				this._selectedCrewId = null;
-				this._tasksContainer.innerHTML = '<div class="empty-message">Select a crew to view tasks</div>';
+				this._tasksContainer.replaceChildren();
+				const emptyMsg = $('div.empty-message');
+				emptyMsg.textContent = 'Select a crew to view tasks';
+				this._tasksContainer.appendChild(emptyMsg);
 			}
 		} catch (error) {
 			console.error('Failed to delete crew:', error);
@@ -249,20 +265,27 @@ export class CrewTeamViewPane extends ViewPane {
 			this._tasks = await this._crewTeamService.listTasks(crewId);
 			this._renderTasks();
 		} catch (error) {
-			this._tasksContainer.innerHTML = '<div class="error">Failed to load tasks</div>';
+			this._tasksContainer.replaceChildren();
+			const errorDiv = $('div.error');
+			errorDiv.textContent = 'Failed to load tasks';
+			this._tasksContainer.appendChild(errorDiv);
 		}
 	}
 
 	private _renderTasks(): void {
-		this._tasksContainer.innerHTML = '';
+		this._tasksContainer.replaceChildren();
 
 		if (!this._selectedCrewId) {
-			this._tasksContainer.innerHTML = '<div class="empty-message">Select a crew to view tasks</div>';
+			const emptyMsg = $('div.empty-message');
+			emptyMsg.textContent = 'Select a crew to view tasks';
+			this._tasksContainer.appendChild(emptyMsg);
 			return;
 		}
 
 		if (this._tasks.length === 0) {
-			this._tasksContainer.innerHTML = '<div class="empty-message">No tasks yet. Create one!</div>';
+			const emptyMsg = $('div.empty-message');
+			emptyMsg.textContent = 'No tasks yet. Create one!';
+			this._tasksContainer.appendChild(emptyMsg);
 			return;
 		}
 
@@ -287,10 +310,15 @@ export class CrewTeamViewPane extends ViewPane {
 			item.appendChild(description);
 
 			const meta = $('div.task-meta');
-			meta.innerHTML = `
-				<span>Priority: ${task.priority}</span>
-				<span>Assigned to: ${task.assignedTo || 'Unassigned'}</span>
-			`;
+
+			const prioritySpan = $('span');
+			prioritySpan.textContent = `Priority: ${task.priority}`;
+			meta.appendChild(prioritySpan);
+
+			const assignedSpan = $('span');
+			assignedSpan.textContent = `Assigned to: ${task.assignedTo || 'Unassigned'}`;
+			meta.appendChild(assignedSpan);
+
 			item.appendChild(meta);
 
 			this._tasksContainer.appendChild(item);

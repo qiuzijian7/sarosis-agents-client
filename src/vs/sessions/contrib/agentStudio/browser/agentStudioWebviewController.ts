@@ -9,7 +9,8 @@ import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webvi
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { URI } from '../../../../base/common/uri.js';
 import { mainWindow } from '../../../../base/browser/window.js';
-import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, IChatStreamDelta } from '../common/agentStudio.js';
+import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService } from '../common/agentStudio.js';
+import type { IChatStreamDelta } from '../common/agentStudio.js';
 import { IEnvironmentService, type INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import type { RequestType, IResponseMessage, IEventMessage } from './messageProtocol.js';
 import type { AgentStudioPanelType } from '../common/constants.js';

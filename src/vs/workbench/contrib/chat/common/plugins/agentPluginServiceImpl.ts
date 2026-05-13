@@ -103,13 +103,17 @@ export class AgentPluginService extends Disposable implements IAgentPluginServic
 
 		const pluginsEnabled = observableConfigValue(ChatConfiguration.PluginsEnabled, true, configurationService);
 
+		console.log('[AgentPluginService] Constructor called. pluginsEnabled:', pluginsEnabled.get());
+
 		const discoveries: IAgentPluginDiscovery[] = [];
 		for (const descriptor of agentPluginDiscoveryRegistry.getAll()) {
 			const discovery = instantiationService.createInstance(descriptor);
 			this._register(discovery);
 			discoveries.push(discovery);
+			console.log(`[AgentPluginService] Starting discovery: ${discovery.constructor.name}`);
 			discovery.start(this.enablementModel);
 		}
+		console.log(`[AgentPluginService] Total discoveries started: ${discoveries.length}`);
 
 
 		this.plugins = derived(read => {
@@ -325,9 +329,10 @@ export abstract class AbstractAgentPluginDiscovery extends Disposable implements
 
 		readManifest();
 
+		const parentUri = URI.joinPath(uri, '..');
 		const plugin: PluginEntry = {
 			uri,
-			label: fromMarketplace?.name ?? basename(uri),
+			label: fromMarketplace?.name ?? basename(parentUri),
 			enablement,
 			remove: removeCallback,
 			hooks,
@@ -898,7 +903,11 @@ export class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery 
 			}
 		}));
 		epPlugins.setHandler((_extensions, delta) => {
+			console.log(`[ExtensionAgentPluginDiscovery] epPlugins handler called. added=${delta.added.length}, removed=${delta.removed.length}`);
+			this._logService.info(`[ExtensionAgentPluginDiscovery] epPlugins handler called. added=${delta.added.length}, removed=${delta.removed.length}`);
 			for (const ext of delta.added) {
+				console.log(`[ExtensionAgentPluginDiscovery] Processing extension: ${ext.description.identifier.value}, chatPlugins: ${ext.value.length}, location: ${ext.description.extensionLocation.toString()}`);
+				this._logService.info(`[ExtensionAgentPluginDiscovery] Processing extension: ${ext.description.identifier.value}, chatPlugins entries: ${ext.value.length}`);
 				for (const raw of ext.value) {
 					if (!raw.path) {
 						ext.collector.error(localize('extension.plugin.missing.path', "Extension '{0}' cannot register a chatPlugins entry without a path.", ext.description.identifier.value));
@@ -918,6 +927,8 @@ export class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery 
 						}
 					}
 					this._extensionPlugins.set(extensionPluginKey(ext.description.identifier, raw.path), { uri: pluginUri, when: whenExpr, extensionId: ext.description.identifier.value });
+					console.log(`[ExtensionAgentPluginDiscovery] Registered plugin: ${ext.description.identifier.value}/${raw.path} -> ${pluginUri.toString()}`);
+					this._logService.info(`[ExtensionAgentPluginDiscovery] Registered plugin: ${ext.description.identifier.value}/${raw.path} -> ${pluginUri.toString()}`);
 				}
 			}
 			for (const ext of delta.removed) {
@@ -925,6 +936,8 @@ export class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery 
 					this._extensionPlugins.delete(extensionPluginKey(ext.description.identifier, raw.path));
 				}
 			}
+			console.log(`[ExtensionAgentPluginDiscovery] Total extension plugins after handler: ${this._extensionPlugins.size}`);
+			this._logService.info(`[ExtensionAgentPluginDiscovery] Total extension plugins after handler: ${this._extensionPlugins.size}`);
 			this._rebuildWhenKeys();
 			scheduler.schedule();
 		});
@@ -942,28 +955,40 @@ export class ExtensionAgentPluginDiscovery extends AbstractAgentPluginDiscovery 
 	}
 
 	protected override async _discoverPluginSources(): Promise<readonly IPluginSource[]> {
+		console.log(`[ExtensionAgentPluginDiscovery] _discoverPluginSources called. extensionPlugins count: ${this._extensionPlugins.size}`);
+		this._logService.info(`[ExtensionAgentPluginDiscovery] _discoverPluginSources called. extensionPlugins count: ${this._extensionPlugins.size}`);
 		const sources: IPluginSource[] = [];
-		for (const [, entry] of this._extensionPlugins) {
+		for (const [key, entry] of this._extensionPlugins) {
+			console.log(`[ExtensionAgentPluginDiscovery] Checking plugin: ${key}, uri: ${entry.uri.toString()}, when: ${entry.when ? entry.when.serialize() : 'none'}`);
+			this._logService.info(`[ExtensionAgentPluginDiscovery] Checking plugin: ${key}, uri: ${entry.uri.toString()}, when: ${entry.when ? entry.when.serialize() : 'none'}`);
 			if (entry.when && !this._contextKeyService.contextMatchesRules(entry.when)) {
+				console.log(`[ExtensionAgentPluginDiscovery] Skipping plugin due to when condition: ${key}`);
+				this._logService.info(`[ExtensionAgentPluginDiscovery] Skipping plugin due to when condition: ${key}`);
 				continue;
 			}
 			let stat;
 			try {
 				stat = await this._fileService.resolve(entry.uri);
-			} catch {
-				this._logService.debug(`[ExtensionAgentPluginDiscovery] Could not resolve extension plugin path: ${entry.uri.toString()}`);
+			} catch (e) {
+				console.log(`[ExtensionAgentPluginDiscovery] Could not resolve extension plugin path: ${entry.uri.toString()}, error: ${e}`);
+				this._logService.info(`[ExtensionAgentPluginDiscovery] Could not resolve extension plugin path: ${entry.uri.toString()}, error: ${e}`);
 				continue;
 			}
 			if (!stat.isDirectory) {
-				this._logService.debug(`[ExtensionAgentPluginDiscovery] Extension plugin path is not a directory: ${entry.uri.toString()}`);
+				console.log(`[ExtensionAgentPluginDiscovery] Extension plugin path is not a directory: ${entry.uri.toString()}`);
+				this._logService.info(`[ExtensionAgentPluginDiscovery] Extension plugin path is not a directory: ${entry.uri.toString()}`);
 				continue;
 			}
+			console.log(`[ExtensionAgentPluginDiscovery] Adding plugin source: ${stat.resource.toString()}`);
+			this._logService.info(`[ExtensionAgentPluginDiscovery] Adding plugin source: ${stat.resource.toString()}`);
 			sources.push({
 				uri: stat.resource,
 				fromMarketplace: undefined,
 				remove: () => this._promptUninstallExtension(entry.extensionId),
 			});
 		}
+		console.log(`[ExtensionAgentPluginDiscovery] Total sources found: ${sources.length}`);
+		this._logService.info(`[ExtensionAgentPluginDiscovery] Total sources found: ${sources.length}`);
 		return sources;
 	}
 

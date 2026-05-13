@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import './media/pluginsView.css';
+
 import { IViewPaneOptions, ViewPane } from '../../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../../workbench/common/views.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -13,10 +15,11 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
-import { append, $ as $h } from '../../../../../base/browser/dom.js';
-import { IDisposable, dispose } from '../../../../../base/common/lifecycle.js';
+import { $, append } from '../../../../../base/browser/dom.js';
+import { IDisposable, dispose, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { WorkbenchList } from '../../../../../platform/list/browser/listService.js';
 import { IListVirtualDelegate, IListRenderer } from '../../../../../base/browser/ui/list/list.js';
+import { IListAccessibilityProvider } from '../../../../../base/browser/ui/list/listWidget.js';
 import { IAgentPluginService, IAgentPlugin } from '../../../../../workbench/contrib/chat/common/plugins/agentPluginService.js';
 import { ContributionEnablementState, IEnablementModel, isContributionEnabled } from '../../../../../workbench/contrib/chat/common/enablement.js';
 import { IObservable, autorun, derived, observableValue } from '../../../../../base/common/observable.js';
@@ -67,7 +70,7 @@ interface IPluginTemplateData {
 	badges: HTMLElement;
 	actionbar: ActionBar;
 	disposables: IDisposable[];
-	pluginDisposables: IDisposable[];
+	pluginDisposables: DisposableStore;
 }
 
 class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTemplateData> {
@@ -80,22 +83,22 @@ class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTem
 
 	renderTemplate(container: HTMLElement): IPluginTemplateData {
 		const root = container;
-		const element = append(root, $h('.agent-plugin-list-item'));
+		const element = append(root, $('.agent-plugin-list-item'));
 
 		// Icon
-		const iconContainer = append(element, $h('.icon-container'));
-		const iconEl = append(iconContainer, $h('span.plugin-icon-codicon'));
+		const iconContainer = append(element, $('.icon-container'));
+		const iconEl = append(iconContainer, $('span.plugin-icon-codicon'));
 		iconEl.classList.add(...ThemeIcon.asClassNameArray(Codicon.extensions));
 
 		// Details
-		const details = append(element, $h('.details'));
-		const headerContainer = append(details, $h('.header-container'));
-		const header = append(headerContainer, $h('.header'));
-		const name = append(header, $h('span.name'));
-		const badges = append(header, $h('span.badges'));
-		const description = append(details, $h('.description.ellipsis'));
-		const footer = append(details, $h('.footer'));
-		const author = append(footer, $h('span.author'));
+		const details = append(element, $('.details'));
+		const headerContainer = append(details, $('.header-container'));
+		const header = append(headerContainer, $('.header'));
+		const name = append(header, $('span.name'));
+		const badges = append(header, $('span.badges'));
+		const description = append(details, $('.description.ellipsis'));
+		const footer = append(details, $('.footer'));
+		const author = append(footer, $('span.author'));
 
 		// Action bar
 		const actionbar = new ActionBar(footer, { focusOnlyEnabledItems: true });
@@ -105,12 +108,14 @@ class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTem
 			root, element, iconContainer, name, description,
 			footer, author, badges, actionbar,
 			disposables: [actionbar],
-			pluginDisposables: []
+			pluginDisposables: new DisposableStore()
 		};
 	}
 
 	renderElement(item: IPluginDisplayInfo, _index: number, data: IPluginTemplateData): void {
-		data.pluginDisposables = dispose(data.pluginDisposables);
+		// 释放之前的 DisposableStore 并创建新的
+		data.pluginDisposables.dispose();
+		data.pluginDisposables = new DisposableStore();
 
 		data.name.textContent = item.label;
 		data.description.textContent = item.description;
@@ -121,19 +126,21 @@ class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTem
 		// Badges
 		data.badges.replaceChildren();
 		if (item.skillCount > 0) {
-			append(data.badges, $h('span.plugin-badge')).textContent = `${item.skillCount} skill${item.skillCount > 1 ? 's' : ''}`;
+			append(data.badges, $('span.plugin-badge')).textContent = `${item.skillCount} skill${item.skillCount > 1 ? 's' : ''}`;
 		}
 		if (item.commandCount > 0) {
-			append(data.badges, $h('span.plugin-badge')).textContent = `${item.commandCount} cmd${item.commandCount > 1 ? 's' : ''}`;
+			append(data.badges, $('span.plugin-badge')).textContent = `${item.commandCount} cmd${item.commandCount > 1 ? 's' : ''}`;
 		}
 		if (item.agentCount > 0) {
-			append(data.badges, $h('span.plugin-badge')).textContent = `${item.agentCount} agent${item.agentCount > 1 ? 's' : ''}`;
+			append(data.badges, $('span.plugin-badge')).textContent = `${item.agentCount} agent${item.agentCount > 1 ? 's' : ''}`;
 		}
 		if (item.hasMcp) {
-			append(data.badges, $h('span.plugin-badge.mcp')).textContent = 'MCP';
+			append(data.badges, $('span.plugin-badge.mcp')).textContent = 'MCP';
 		}
 
 		// Actions
+		// 使用 DisposableStore 来管理 Action 对象的生命周期
+		// 这确保了 GC 追踪器能正确追踪这些对象，避免 LEAKED DISPOSABLE 警告
 		const actions: Action[] = [];
 
 		if (item.enabled) {
@@ -162,6 +169,12 @@ class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTem
 			() => item.plugin.remove()
 		));
 
+		// 将创建的 Action 对象添加到 DisposableStore 中
+		// 这样它们会被正确追踪和管理
+		for (const action of actions) {
+			data.pluginDisposables.add(action);
+		}
+
 		data.actionbar.clear();
 		data.actionbar.push(actions, { icon: true, label: false });
 	}
@@ -175,8 +188,19 @@ class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTem
 	}
 
 	disposeTemplate(data: IPluginTemplateData): void {
-		data.pluginDisposables = dispose(data.pluginDisposables);
+		data.pluginDisposables.dispose();
 		data.disposables = dispose(data.disposables);
+	}
+}
+
+// --- Accessibility Provider ---
+
+class PluginListAccessibilityProvider implements IListAccessibilityProvider<IPluginDisplayInfo> {
+	getAriaLabel(item: IPluginDisplayInfo): string {
+		return `${item.label}, ${item.author}, ${item.description}`;
+	}
+	getWidgetAriaLabel(): string {
+		return localize('plugins', "Plugins");
 	}
 }
 
@@ -190,11 +214,14 @@ class PluginListRenderer implements IListRenderer<IPluginDisplayInfo, IPluginTem
  */
 export class PluginsViewPane extends ViewPane {
 
-	private list!: WorkbenchList<IPluginDisplayInfo>;
+	private list: WorkbenchList<IPluginDisplayInfo> | undefined;
 	private searchInput!: HTMLInputElement;
+	private detailContainer: HTMLElement | undefined;
+	private listContainer: HTMLElement | undefined;
 
 	private readonly _searchQuery = observableValue<string>('pluginsSearchQuery', '');
 	private readonly _activeTab = observableValue<'installed' | 'marketplace'>('pluginsActiveTab', 'installed');
+	private readonly _selectedPlugin = observableValue<IAgentPlugin | undefined>('selectedPlugin', undefined);
 
 	private readonly _filteredPlugins: IObservable<readonly IPluginDisplayInfo[]>;
 
@@ -236,13 +263,35 @@ export class PluginsViewPane extends ViewPane {
 		});
 	}
 
+	override shouldShowWelcome(): boolean {
+		return false;
+	}
+
+	override setVisible(visible: boolean): void {
+		super.setVisible(visible);
+		console.warn('[PluginsViewPane] setVisible called:', visible, 'isExpanded:', this.isExpanded(), 'element in DOM:', !!this.element?.parentElement, 'bodyRendered:', !!(this as any)._bodyRendered);
+		// Ensure the view is expanded when it becomes visible.
+		// In single-view containers with mergeViewWithContainerWhenSingleView,
+		// the view should always be expanded, but the container may not
+		// auto-expand it if areExtensionsReady is false at creation time.
+		if (visible && !this.isExpanded()) {
+			console.warn('[PluginsViewPane] forcing expansion from setVisible');
+			this.setExpanded(true);
+		}
+	}
+
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
+		console.warn('[PluginsViewPane] renderBody called, container:', container.tagName, container.className, 'parentElement:', container.parentElement?.tagName, container.parentElement?.className);
+
+		// Remove .welcome class — it hides all non-.welcome-view children via
+		// `.pane-body.welcome > :not(.welcome-view) { display: none }` in views.css
+		container.classList.remove('welcome');
 		container.classList.add('plugins-view');
 
 		// Tabs
-		const tabs = append(container, $h('.plugins-tabs'));
-		const installedTab = append(tabs, $h('button.plugins-tab.active'));
+		const tabs = append(container, $('.plugins-tabs'));
+		const installedTab = append(tabs, $('button.plugins-tab.active'));
 		installedTab.textContent = localize('installed', "Installed");
 		installedTab.onclick = () => {
 			this._activeTab.set('installed', undefined);
@@ -250,7 +299,7 @@ export class PluginsViewPane extends ViewPane {
 			installedTab.classList.add('active');
 		};
 
-		const marketplaceTab = append(tabs, $h('button.plugins-tab'));
+		const marketplaceTab = append(tabs, $('button.plugins-tab'));
 		marketplaceTab.textContent = localize('marketplace', "Marketplace");
 		marketplaceTab.onclick = () => {
 			this._activeTab.set('marketplace', undefined);
@@ -259,44 +308,109 @@ export class PluginsViewPane extends ViewPane {
 		};
 
 		// Search
-		this.searchInput = append(container, $h('input.plugins-search')) as HTMLInputElement;
+		this.searchInput = append(container, $('input.plugins-search')) as HTMLInputElement;
 		this.searchInput.placeholder = localize('searchPlugins', "Search Plugins...");
 		this.searchInput.type = 'text';
 		this.searchInput.oninput = () => {
 			this._searchQuery.set(this.searchInput.value, undefined);
 		};
 
-		// List
-		const listContainer = append(container, $h('.plugins-list-container'));
-		const delegate = new PluginListDelegate();
-		const renderer = new PluginListRenderer(this.agentPluginService.enablementModel);
+		// List Container
+		this.listContainer = append(container, $('.plugins-list-container'));
 
-		this.list = this.instantiationService.createInstance(
-			WorkbenchList,
-			'AgentPluginsList',
-			listContainer,
-			delegate,
-			[renderer],
-			{
-				multipleSelectionSupport: false,
-				setRowLineHeight: false,
-				horizontalScrolling: false,
-				accessibilityProvider: {
-					getAriaLabel(item: IPluginDisplayInfo): string {
-						return `${item.label}, ${item.author}, ${item.description}`;
-					},
-					getWidgetAriaLabel(): string {
-						return localize('plugins', "Plugins");
-					}
-				},
-				openOnSingleClick: false,
+		// Detail Container (hidden by default)
+		this.detailContainer = append(container, $('.plugins-detail-container.hidden'));
+
+		// Fix .empty class on ancestor composite part — this class shows an
+		// empty-message overlay and may prevent the composite area from rendering.
+		requestAnimationFrame(() => {
+			const paneCompositePart = this.element?.closest('.pane-composite-part') as HTMLElement | null;
+			if (paneCompositePart) {
+				paneCompositePart.classList.remove('empty');
+				const emptyMessage = paneCompositePart.querySelector('.empty-pane-message-area') as HTMLElement | null;
+				if (emptyMessage) {
+					emptyMessage.style.display = 'none';
+				}
 			}
-		) as WorkbenchList<IPluginDisplayInfo>;
 
-		this._register(autorun(reader => {
-			const items = this._filteredPlugins.read(reader);
-			this.list.splice(0, this.list.length, items);
-		}));
+			// Diagnostic: walk entire DOM ancestor chain logging width
+			console.warn('[PluginsViewPane] rAF DOM ancestor-width walk:');
+			let node: HTMLElement | null = container;
+			let depth = 0;
+			while (node && depth < 15) {
+				const cs = getComputedStyle(node);
+				console.warn(`[PluginsViewPane]   depth=${depth} tag=${node.tagName} class="${node.className}" id="${node.id}" offsetW=${node.offsetWidth} offsetH=${node.offsetHeight} display=${cs.display} width=${cs.width} position=${cs.position} overflow=${cs.overflow}`);
+				node = node.parentElement;
+				depth++;
+			}
+			// Also log children of body
+			console.warn('[PluginsViewPane]   body.isConnected:', container.isConnected, 'body.children.length:', container.children.length);
+			for (let i = 0; i < container.children.length; i++) {
+				const child = container.children[i] as HTMLElement;
+				const ccs = getComputedStyle(child);
+				console.warn(`[PluginsViewPane]   child[${i}]:`, child.tagName, child.className, 'display:', ccs.display, 'width:', ccs.width, 'height:', ccs.height, 'offsetW:', child.offsetWidth, 'offsetH:', child.offsetHeight);
+			}
+		});
+	}
+
+	private _showPluginDetail(plugin: IAgentPlugin): void {
+		if (!this.detailContainer || !this.listContainer) {
+			return;
+		}
+
+		// 隐藏列表，显示详情
+		this.listContainer.classList.add('hidden');
+		this.detailContainer.classList.remove('hidden');
+		this.detailContainer.replaceChildren();
+
+		// 返回按钮
+		const backButton = append(this.detailContainer, $('button.plugins-detail-back'));
+		backButton.textContent = '< Back to List';
+		backButton.onclick = () => {
+			this._selectedPlugin.set(undefined, undefined);
+			if (this.detailContainer) this.detailContainer.classList.add('hidden');
+			if (this.listContainer) this.listContainer.classList.remove('hidden');
+		};
+
+		// 插件名称
+		const nameEl = append(this.detailContainer, $('h2.plugins-detail-name'));
+		nameEl.textContent = plugin.label;
+
+		// 插件描述
+		const descEl = append(this.detailContainer, $('p.plugins-detail-desc'));
+		descEl.textContent = plugin.fromMarketplace?.description || 'No description available';
+
+		// 插件作者
+		const authorEl = append(this.detailContainer, $('p.plugins-detail-author'));
+		authorEl.textContent = `Author: ${plugin.fromMarketplace?.marketplace || 'Unknown'}`;
+
+		// 插件 URI
+		const uriEl = append(this.detailContainer, $('p.plugins-detail-uri'));
+		uriEl.textContent = `Location: ${plugin.uri.toString()}`;
+
+		// Skills 列表
+		const skills = plugin.skills.get();
+		if (skills.length > 0) {
+			const skillsHeader = append(this.detailContainer, $('h3'));
+			skillsHeader.textContent = `Skills (${skills.length})`;
+			const skillsList = append(this.detailContainer, $('ul.plugins-detail-skills'));
+			for (const skill of skills) {
+				const li = append(skillsList, $('li'));
+				li.textContent = skill.name || 'Unknown skill';
+			}
+		}
+
+		// Commands 列表
+		const commands = plugin.commands.get();
+		if (commands.length > 0) {
+			const cmdsHeader = append(this.detailContainer, $('h3'));
+			cmdsHeader.textContent = `Commands (${commands.length})`;
+			const cmdsList = append(this.detailContainer, $('ul.plugins-detail-commands'));
+			for (const cmd of commands) {
+				const li = append(cmdsList, $('li'));
+				li.textContent = cmd.name || 'Unknown command';
+			}
+		}
 	}
 
 	private _toDisplayInfo(plugin: IAgentPlugin, reader: any): IPluginDisplayInfo {
@@ -340,6 +454,57 @@ export class PluginsViewPane extends ViewPane {
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		this.list?.layout(height - 80, width);
+		console.warn('[PluginsViewPane] layoutBody called: h=', height, 'w=', width, 'hasList=', !!this.list, 'hasListContainer=', !!this.listContainer);
+		const listHeight = Math.max(0, height - 80);
+
+		if (this.listContainer) {
+			this.listContainer.style.height = `${listHeight}px`;
+			this.listContainer.style.width = `${width}px`;
+		}
+
+		// Defer WorkbenchList creation until container has positive dimensions
+		if (!this.list && this.listContainer && width > 0 && listHeight > 0) {
+			const delegate = new PluginListDelegate();
+			const renderer = new PluginListRenderer(this.agentPluginService.enablementModel);
+			const accessibilityProvider = new PluginListAccessibilityProvider();
+
+			this.list = this.instantiationService.createInstance(
+				WorkbenchList,
+				'AgentPluginsList',
+				this.listContainer,
+				delegate,
+				[renderer],
+				{
+					multipleSelectionSupport: false,
+					setRowLineHeight: false,
+					horizontalScrolling: false,
+					accessibilityProvider,
+					openOnSingleClick: true,
+				}
+			) as WorkbenchList<IPluginDisplayInfo>;
+
+			this._register(this.list);
+
+			this._register(this.list.onDidChangeSelection(e => {
+				if (e.elements.length > 0) {
+					const selected = e.elements[0];
+					this._selectedPlugin.set(selected.plugin, undefined);
+					this._showPluginDetail(selected.plugin);
+				}
+			}));
+
+			// Layout BEFORE first splice so rows compute positions against known dimensions
+			this.list.layout(listHeight, width);
+
+			// Reactively update the list when filtered plugins change (replaces setInterval polling)
+			this._register(autorun(reader => {
+				const items = this._filteredPlugins.read(reader);
+				if (this.list) {
+					this.list.splice(0, this.list.length, items);
+				}
+			}));
+		} else if (this.list) {
+			this.list.layout(listHeight, width);
+		}
 	}
 }

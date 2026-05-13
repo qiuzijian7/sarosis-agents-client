@@ -58,7 +58,41 @@
 }
 
 .monaco-workbench .activitybar > .content > .composite-bar {
-	margin-bottom: auto;
+	flex: 1;
+	display: flex;
+}
+
+.monaco-workbench .activitybar > .content > .composite-bar > .monaco-action-bar {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.monaco-workbench .activitybar > .content > .composite-bar > .monaco-action-bar > .actions-container {
+	display: flex !important;
+	flex-direction: column;
+	flex: 1;
+}
+
+/* Override vertical actionbar's display:block — need flex items for margin-top:auto */
+.monaco-workbench .activitybar > .content > .composite-bar > .monaco-action-bar > .actions-container > .action-item {
+	display: flex;
+}
+
+/* Bottom-align: Personal and Settings to the bottom */
+.action-item[data-composite-id="agentStudio.personal"],
+.action-item[data-composite-id="agentStudio.settings"] {
+	margin-top: auto !important;
+}
+
+/* DEBUG: highlight targeted action-items - red/blue background to verify CSS matching */
+.action-item[data-composite-id="agentStudio.personal"] {
+	background-color: rgba(255, 0, 0, 0.3) !important;
+	outline: 2px solid red !important;
+}
+.action-item[data-composite-id="agentStudio.settings"] {
+	background-color: rgba(0, 0, 255, 0.3) !important;
+	outline: 2px solid blue !important;
 }
 
 /** Menu Bar */

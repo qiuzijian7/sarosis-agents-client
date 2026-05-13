@@ -27,7 +27,11 @@ import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/icon
 import { Codicon } from '../../../../base/common/codicons.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { registerUpdateTitleBarMenuPlacement } from '../../../../workbench/contrib/update/browser/updateTitleBarEntry.js';
+import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { SettingsEditorInput } from '../../agentStudio/browser/settingsEditorInput.js';
 import { ChatEntitlement, ChatEntitlementService, IChatEntitlementService } from '../../../../workbench/services/chat/common/chatEntitlementService.js';
 import { ChatStatusDashboard, IChatStatusDashboardOptions } from '../../../../workbench/contrib/chat/browser/chatStatus/chatStatusDashboard.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
@@ -40,6 +44,7 @@ import { IAuthenticationUsageService } from '../../../../workbench/services/auth
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 import { IChatDashboardService } from '../../../browser/chatDashboardService.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+
 
 // --- Account Menu Items --- //
 const AccountMenu = Menus.AccountMenu;
@@ -700,6 +705,87 @@ registerAction2(class extends Action2 {
 	}
 
 	run(): void { }
+});
+
+// --- Sidebar Footer: My Exceptions button --- //
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'sessions.action.myExceptions',
+			title: localize2('myExceptions', 'My Exceptions'),
+			icon: Codicon.warning,
+			menu: {
+				id: Menus.SidebarFooter,
+				group: 'navigation',
+				order: 1,
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const notificationService = accessor.get(INotificationService);
+		notificationService.info(localize('myExceptionsClicked', "My Exceptions button clicked"));
+		// TODO: open exceptions panel in editor area
+	}
+});
+
+// --- Sidebar Footer: Personal button (moved from activity bar) --- //
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'sessions.action.sidebarFooterPersonal',
+			title: localize2('sidebarFooterPersonal', 'Personal'),
+			icon: Codicon.account,
+			menu: {
+				id: Menus.SidebarFooter,
+				group: 'navigation',
+				order: 2,
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const defaultAccountService = accessor.get(IDefaultAccountService);
+		const dialogService = accessor.get(IDialogService);
+		const account = await defaultAccountService.getDefaultAccount();
+		if (account) {
+			await dialogService.info(
+				localize('personalInfoTitle', "Personal"),
+				localize('personalInfoMessage', "Signed in as {0}", account.accountName)
+			);
+		} else {
+			await defaultAccountService.signIn();
+		}
+	}
+});
+
+// --- Sidebar Footer: Settings button (moved from activity bar) --- //
+// Opens the custom Agent Studio SettingsEditorPane instead of native VSCode settings.
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'sessions.action.sidebarFooterSettings',
+			title: localize2('sidebarFooterSettings', 'Settings'),
+			icon: Codicon.settingsGear,
+			menu: {
+				id: Menus.SidebarFooter,
+				group: 'navigation',
+				order: 3,
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const input = SettingsEditorInput.getInstance();
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		if (groups.length <= 1) {
+			// Only one group — open to the side (creates a left group)
+			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			// Use the first (leftmost) group
+			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
 });
 
 class AccountWidgetContribution extends Disposable implements IWorkbenchContribution {

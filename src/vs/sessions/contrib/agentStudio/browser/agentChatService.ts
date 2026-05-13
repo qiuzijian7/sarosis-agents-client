@@ -5,7 +5,8 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IAgentChatService, IChatStreamDelta, IChatSendOptions } from '../common/agentStudio.js';
+import { IAgentChatService } from '../common/agentStudio.js';
+import type { IChatStreamDelta, IChatSendOptions } from '../common/agentStudio.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import type { ChatMessage } from '../common/types.js';
 

@@ -18,6 +18,8 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
@@ -62,8 +64,6 @@ import {
 	AGENT_STUDIO_TOOLS_VIEW_ID,
 	AGENT_STUDIO_CHANGES_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
-	AGENT_STUDIO_PERSONAL_VIEW_ID,
-	AGENT_STUDIO_SETTINGS_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID,
 	AGENT_STUDIO_CREW_TEAM_VIEW_ID,
@@ -72,12 +72,25 @@ import {
 	AGENT_STUDIO_THEME_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
+	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
 	AGENT_STUDIO_BOT_NAME_SETTING,
 	AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING,
 	AGENT_STUDIO_NOTIFICATION_SOUND_SETTING,
 	AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING,
 	AGENT_STUDIO_CHECK_UPDATES_SETTING,
+	AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY,
+	AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
+	AGENT_STUDIO_PROVIDER_NOUS_API_KEY,
+	AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
+	AGENT_STUDIO_PROVIDER_GEMINI_API_KEY,
+	AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL,
+	AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY,
+	AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL,
+	AGENT_STUDIO_PROVIDER_MAIN_API_KEY,
+	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
+	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
+	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
 	AGENT_STUDIO_AUX_VISION_PROVIDER,
 	AGENT_STUDIO_AUX_VISION_MODEL,
 	AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER,
@@ -103,6 +116,7 @@ import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
 import { SettingsEditorPane } from './settingsEditorPane.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
+import './views/media/toolbarViews.css';
 import { ClawChatViewPane } from './views/clawChatView.js';
 import { WorkspaceViewPane } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
@@ -113,8 +127,6 @@ import { ToolsViewPane } from './views/toolsView.js';
 import { ChangesViewPane } from './views/changesView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
-import { PersonalViewPane } from './views/personalView.js';
-import { SettingsViewPane } from './views/settingsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
 import { WorkspaceTemplateViewPane } from './views/workspaceTemplateView.js';
@@ -138,8 +150,6 @@ const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('to
 const changesIcon = registerIcon('agent-studio-changes', Codicon.diff, localize('changesIcon', "Changes"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
-const personalIcon = registerIcon('agent-studio-personal', Codicon.person, localize('personalIcon', "Personal"));
-const settingsIcon = registerIcon('agent-studio-settings', Codicon.gear, localize('settingsIcon', "Settings"));
 
 // --- Configuration ---------------------------------------------------------------
 
@@ -169,6 +179,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: 'enter',
 			enum: ['enter', 'ctrl+enter'],
 			description: localize('agentStudio.preferences.sendKey', "Key combination to send messages."),
+		},
+		[AGENT_STUDIO_DEFAULT_PROVIDER_SETTING]: {
+			type: 'string',
+			default: 'auto',
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			description: localize('agentStudio.preferences.defaultProvider', "Default AI Provider for new conversations. 'auto' selects the first available authenticated provider."),
 		},
 		[AGENT_STUDIO_DEFAULT_MODEL_SETTING]: {
 			type: 'string',
@@ -204,6 +220,55 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// Knot configuration is registered by the knot-agui extension via its package.json
 		// contributes.configuration. The settings tab is discovered at runtime via
 		// ISettingsTabRegistry (contributes.agentStudioSettingsTab with when condition).
+		// --- Provider Connections ---
+		[AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.openrouter.apiKey', "OpenRouter API Key."),
+		},
+		[AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL]: {
+			type: 'string', default: 'https://openrouter.ai/api/v1',
+			description: localize('agentStudio.provider.openrouter.baseUrl', "OpenRouter API base URL."),
+		},
+		[AGENT_STUDIO_PROVIDER_NOUS_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.nous.apiKey', "Nous API Key."),
+		},
+		[AGENT_STUDIO_PROVIDER_NOUS_BASE_URL]: {
+			type: 'string', default: 'https://api.nous.com/v1',
+			description: localize('agentStudio.provider.nous.baseUrl', "Nous API base URL."),
+		},
+		[AGENT_STUDIO_PROVIDER_GEMINI_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.gemini.apiKey', "Gemini API Key."),
+		},
+		[AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL]: {
+			type: 'string', default: 'https://generativelanguage.googleapis.com',
+			description: localize('agentStudio.provider.gemini.baseUrl', "Gemini API base URL."),
+		},
+		[AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.anthropic.apiKey', "Anthropic API Key."),
+		},
+		[AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL]: {
+			type: 'string', default: 'https://api.anthropic.com',
+			description: localize('agentStudio.provider.anthropic.baseUrl', "Anthropic API base URL."),
+		},
+		[AGENT_STUDIO_PROVIDER_MAIN_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.main.apiKey', "Main Provider API Key."),
+		},
+		[AGENT_STUDIO_PROVIDER_MAIN_BASE_URL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.main.baseUrl', "Main Provider API base URL."),
+		},
+		[AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.custom.apiKey', "Custom Provider API Key."),
+		},
+		[AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.provider.custom.baseUrl', "Custom Provider API base URL."),
+		},
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {
 			type: 'string', default: 'auto',
@@ -334,6 +399,29 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 		new SyncDescriptor(SettingsEditorInput)
 	]
 );
+
+// Register a command to open the Agent Studio Settings editor directly
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openSettings',
+			title: localize2('agentStudio.openSettings', 'Open Agent Studio Settings'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const input = SettingsEditorInput.getInstance();
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		if (groups.length <= 1) {
+			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+});
 
 // --- Provider Contribution -------------------------------------------------------
 
@@ -577,27 +665,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: CrewTeamViewPane,
 		});
 
-		// --- Bottom-aligned icons (order: 100+) -------------------------------
-
-		// 11. Personal (order: 100 - pushed to bottom)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.personal',
-			title: localize2('agentStudio.personal.title', "Personal"),
-			icon: personalIcon,
-			viewId: AGENT_STUDIO_PERSONAL_VIEW_ID,
-			order: 100,
-			viewCtor: PersonalViewPane,
-		});
-
-		// 12. Settings (order: 110 - pushed to bottom, below Personal)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.settings',
-			title: localize2('agentStudio.settings.title', "Settings"),
-			icon: settingsIcon,
-			viewId: AGENT_STUDIO_SETTINGS_VIEW_ID,
-			order: 110,
-			viewCtor: SettingsViewPane,
-		});
+		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //
 	}
 
 	private _registerToolIcon(

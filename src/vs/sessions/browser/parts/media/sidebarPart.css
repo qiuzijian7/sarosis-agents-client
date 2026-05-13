@@ -34,6 +34,12 @@
 	max-width: 48px !important;
 }
 
+/* Override PartLayout fixed height so flex stretches the icon strip to fill available space */
+.agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .composite.header-or-footer {
+	height: auto !important;
+	flex: 1 !important;
+}
+
 /* Hide the title area when collapsed — no text title needed in icon-only mode */
 .agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .composite.title {
 	display: none !important;
@@ -52,6 +58,20 @@
 	grid-template-rows: auto 1fr auto;
 	min-width: 170px;
 	max-width: 450px;
+	position: relative;
+}
+
+/* Horizontal divider under the toggle button (top of sidebar), spanning full sidebar width */
+.agent-sessions-workbench .part.sidebar.sidebar-content-expanded::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 1px;
+	background-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+	z-index: 10;
+	pointer-events: none;
 }
 
 /* Title area in expanded state: column 2, row 1 */
@@ -88,10 +108,12 @@
 	max-height: none !important;
 }
 
-/* Footer: column 1, row 3 */
+/* Footer: column 1, row 3 (bottom of the activity bar column) */
 .agent-sessions-workbench .part.sidebar.sidebar-content-expanded > .sidebar-footer {
 	grid-column: 1;
 	grid-row: 3;
+	width: 48px !important;
+	min-width: 48px !important;
 }
 
 /* ===== Header area — vertical icon strip (applies in both states) ===== */

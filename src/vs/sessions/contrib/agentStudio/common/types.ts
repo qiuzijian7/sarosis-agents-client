@@ -4,22 +4,28 @@
  *--------------------------------------------------------------------------------------------*/
 
 // Re-export types from sessions/common/ for backward compatibility
+
+// Value exports (enums, classes) - these exist at runtime
 export {
-	EmployeeStatus,
+	AgentStudioSession,
 	ConnectionType,
 	DelegationStatus,
+	EmployeeStatus,
 	TaskBoardStatus,
 	TaskSource,
-	Employee,
-	EmployeeSkill,
-	Workspace,
-	WorkspaceLayout,
-	WorkspaceNode,
-	WorkspaceEdge,
+} from '../../../common/agentStudioTypes.js';
+
+// Type-only exports (interfaces) - erased at runtime, must use 'export type'
+export type {
+	ChatMessage,
 	Connection,
 	Delegation,
-	ChatMessage,
-	ToolCall,
-	AgentStudioSession,
+	Employee,
+	EmployeeSkill,
 	TaskBoardRecord,
+	ToolCall,
+	Workspace,
+	WorkspaceEdge,
+	WorkspaceLayout,
+	WorkspaceNode,
 } from '../../../common/agentStudioTypes.js';

@@ -1,0 +1,267 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* Plugins View Container */
+.plugins-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+
+
+/* 修复：.empty 类导致 composite 被隐藏 */
+.monaco-workbench .pane-composite-part.empty .composite.viewlet#agentStudio\.plugins,
+.monaco-workbench .pane-composite-part.empty .composite.viewlet#agentStudio\.personal,
+.monaco-workbench .pane-composite-part.empty .composite.viewlet#agentStudio\.settings {
+    display: block !important;
+}
+
+/* 修复：.empty 类导致空消息显示 */
+.monaco-workbench .pane-composite-part.empty:has(.composite.viewlet#agentStudio\.plugins) .empty-pane-message-area,
+.monaco-workbench .pane-composite-part.empty:has(.composite.viewlet#agentStudio\.personal) .empty-pane-message-area,
+.monaco-workbench .pane-composite-part.empty:has(.composite.viewlet#agentStudio\.settings) .empty-pane-message-area {
+    display: none !important;
+}
+
+/* 修复：.welcome 类导致 pane-body 内容被隐藏 */
+/* Only hide welcome-view when welcome class is present; never force display on content children */
+.monaco-workbench .pane > .pane-body.plugins-view.welcome > .welcome-view {
+    display: flex !important;
+}
+
+.monaco-workbench .pane > .pane-body.plugins-view.welcome > :not(.welcome-view) {
+    display: none !important;
+}
+
+.monaco-workbench .pane > .pane-body.plugins-view > .welcome-view {
+    display: none !important;
+}
+
+/* Tabs */
+.plugins-tabs {
+    display: flex;
+    padding: 8px 12px 0 12px;
+    gap: 4px;
+}
+
+.plugins-tab {
+    padding: 6px 12px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--vscode-foreground);
+    border-bottom: 2px solid transparent;
+}
+
+.plugins-tab:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.plugins-tab.active {
+    border-bottom-color: var(--vscode-focusBorder);
+    font-weight: 600;
+}
+
+/* Search Input */
+.plugins-search {
+    margin: 8px 12px;
+    padding: 4px 8px;
+    border: 1px solid var(--vscode-input-border, transparent);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border-radius: 2px;
+    font-size: 13px;
+}
+
+.plugins-search:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+
+/* List Container */
+.plugins-list-container {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.plugins-list-container.hidden {
+    display: none;
+}
+
+/* Detail Container */
+.plugins-detail-container {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+}
+
+.plugins-detail-container.hidden {
+    display: none;
+}
+
+/* Back Button */
+.plugins-detail-back {
+    padding: 4px 8px;
+    margin-bottom: 16px;
+    border: none;
+    background: transparent;
+    color: var(--vscode-textLink-foreground);
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.plugins-detail-back:hover {
+    text-decoration: underline;
+}
+
+/* Detail Elements */
+.plugins-detail-name {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+}
+
+.plugins-detail-desc {
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    color: var(--vscode-descriptionForeground);
+    line-height: 1.5;
+}
+
+.plugins-detail-author {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    color: var(--vscode-foreground);
+}
+
+.plugins-detail-uri {
+    margin: 0 0 16px 0;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    word-break: break-all;
+}
+
+.plugins-detail-skills,
+.plugins-detail-commands {
+    margin: 12px 0 0 0;
+    padding-left: 20px;
+}
+
+.plugins-detail-skills li,
+.plugins-detail-commands li {
+    font-size: 13px;
+    color: var(--vscode-foreground);
+    margin-bottom: 4px;
+}
+
+/* Plugin List Item */
+.agent-plugin-list-item {
+    display: flex;
+    align-items: flex-start;
+    padding: 8px 12px;
+    gap: 12px;
+    cursor: pointer;
+    color: var(--vscode-foreground, #cccccc);
+    background: transparent;
+}
+
+.agent-plugin-list-item:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.agent-plugin-list-item.disabled {
+    opacity: 0.5;
+}
+
+/* Icon */
+.icon-container {
+    flex-shrink: 0;
+    width: 42px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--vscode-badge-background);
+    border-radius: 4px;
+}
+
+.plugin-icon-codicon {
+    font-size: 24px;
+    color: var(--vscode-foreground);
+}
+
+/* Details */
+.details {
+    flex: 1;
+    min-width: 0;
+}
+
+.header-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.badges {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.plugin-badge {
+    padding: 1px 6px;
+    font-size: 11px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    border-radius: 3px;
+}
+
+.plugin-badge.mcp {
+    background: var(--vscode-charts-green);
+    color: white;
+}
+
+.description {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.author {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+}

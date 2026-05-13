@@ -489,7 +489,46 @@
 			}
 		},
 		{
-			"label": "Echo E2E Status",
+			"label": "🚀 Auto Dev Workflow (Compile + Debug)",
+			"type": "shell",
+			"command": "${workspaceFolder}/scripts/auto-dev-workflow.bat",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "new",
+				"focus": true
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": false
+			}
+		},
+		{
+			"label": "📋 Quick Compile & Run",
+			"type": "shell",
+			"command": "${workspaceFolder}/scripts/code.bat",
+			"args": [
+				"--inspect=5875",
+				"--remote-debugging-port=9222"
+			],
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "never"
+			},
+			"dependsOn": [
+				"Transpile Client"
+			],
+			"dependsOrder": "sequence"
+		},
+		{
+			"label": "🧪 Verify UI (Open DevTools)",
+			"type": "shell",
+			"command": "echo Opening Chrome DevTools for UI verification...",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always"
+			}
+		},
 			"type": "shell",
 			"command": "pwsh",
 			"args": [

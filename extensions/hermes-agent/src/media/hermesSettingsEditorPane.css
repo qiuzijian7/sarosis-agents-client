@@ -1,0 +1,214 @@
+/* Hermes Settings Editor Pane Styles */
+
+.hermes-settings-container {
+	padding: 20px;
+	max-width: 800px;
+	margin: 0 auto;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	color: var(--vscode-foreground);
+	background: var(--vscode-editor-background);
+}
+
+.hermes-settings {
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+}
+
+/* Header */
+.hermes-header {
+	border-bottom: 1px solid var(--vscode-panel-border);
+	padding-bottom: 16px;
+}
+
+.hermes-title {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.hermes-icon {
+	font-size: 32px;
+}
+
+.hermes-title h1 {
+	margin: 0;
+	font-size: 24px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.hermes-version {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background);
+	padding: 2px 8px;
+	border-radius: 10px;
+}
+
+.hermes-subtitle {
+	margin: 8px 0 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 14px;
+}
+
+/* Sections */
+.hermes-section {
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	padding: 16px 20px;
+}
+
+.hermes-section-title {
+	font-size: 16px;
+	font-weight: 600;
+	margin: 0 0 16px;
+	color: var(--vscode-foreground);
+}
+
+/* Fields */
+.hermes-field {
+	margin-bottom: 14px;
+}
+
+.hermes-field:last-child {
+	margin-bottom: 0;
+}
+
+.hermes-field > label {
+	display: block;
+	font-size: 13px;
+	font-weight: 500;
+	margin-bottom: 4px;
+	color: var(--vscode-foreground);
+}
+
+.hermes-field input[type="text"],
+.hermes-field input[type="password"],
+.hermes-field input[type="number"],
+.hermes-field select {
+	width: 100%;
+	padding: 6px 10px;
+	font-size: 13px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border);
+	color: var(--vscode-input-foreground);
+	border-radius: 4px;
+	box-sizing: border-box;
+}
+
+.hermes-field input:focus,
+.hermes-field select:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	border-color: var(--vscode-focusBorder);
+}
+
+.hermes-hint {
+	display: block;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+/* Input groups */
+.hermes-input-group {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+
+.hermes-input-group input {
+	flex: 1;
+}
+
+/* Buttons */
+.hermes-btn {
+	padding: 6px 14px;
+	font-size: 13px;
+	border: 1px solid var(--vscode-button-border);
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.hermes-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.hermes-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-border);
+}
+
+.hermes-btn-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.hermes-btn-icon {
+	padding: 4px 8px;
+	font-size: 16px;
+	border: 1px solid var(--vscode-input-border);
+	background: var(--vscode-input-background);
+	border-radius: 4px;
+	cursor: pointer;
+	line-height: 1;
+}
+
+/* Status */
+.hermes-status-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.hermes-status-indicator {
+	font-size: 13px;
+	font-weight: 500;
+}
+
+/* Checkbox */
+.hermes-field-checkbox label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: normal;
+}
+
+.hermes-field-checkbox input[type="checkbox"] {
+	width: auto;
+}
+
+/* Repo management */
+.hermes-repo-info {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 10px;
+}
+
+.hermes-repo-info code {
+	background: var(--vscode-textCodeBlock-background);
+	padding: 1px 4px;
+	border-radius: 3px;
+	font-size: 12px;
+}
+
+.hermes-repo-info a {
+	color: var(--vscode-textLink-foreground);
+	text-decoration: none;
+}
+
+.hermes-repo-info a:hover {
+	text-decoration: underline;
+}
+
+.hermes-repo-actions {
+	display: flex;
+	gap: 10px;
+}

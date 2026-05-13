@@ -237,6 +237,38 @@ export class CompositeBarActionViewItem extends BaseActionViewItem {
 			this.container.classList.add('icon');
 		}
 
+		// [Sarosis] Expose composite ID as data attribute for CSS targeting
+		if (this.compositeBarActionItem.id) {
+			this.container.setAttribute('data-composite-id', this.compositeBarActionItem.id);
+			// DEBUG: log computed styles for bottom-aligned icons
+			if (this.compositeBarActionItem.id === 'agentStudio.personal' || this.compositeBarActionItem.id === 'agentStudio.settings') {
+				// Use double rAF to ensure DOM is fully rendered
+				requestAnimationFrame(() => {
+					requestAnimationFrame(() => {
+						const actionsContainer = this.container.parentElement;
+						const actionBar = actionsContainer?.parentElement;
+						const compositeBar = actionBar?.parentElement;
+						const content = compositeBar?.parentElement;
+						const activityBar = content?.parentElement;
+						console.log('[Sarosis DEBUG] CompositeActionViewItem.render:', this.compositeBarActionItem.id);
+						console.log('  container:', this.container.tagName, '.className=', this.container.className, 'data-id=', this.container.getAttribute('data-composite-id'));
+						console.log('  actionsContainer:', actionsContainer?.tagName, '.className=', actionsContainer?.className, 'display=', actionsContainer ? window.getComputedStyle(actionsContainer).display : 'N/A', 'flex=', actionsContainer ? window.getComputedStyle(actionsContainer).flexDirection : 'N/A');
+						console.log('  actionBar:', actionBar?.tagName, '.className=', actionBar?.className, 'display=', actionBar ? window.getComputedStyle(actionBar).display : 'N/A', 'height=', actionBar ? window.getComputedStyle(actionBar).height : 'N/A');
+						console.log('  compositeBar:', compositeBar?.tagName, '.className=', compositeBar?.className, 'flex=', compositeBar ? window.getComputedStyle(compositeBar).flexDirection : 'N/A', 'flexGrow=', compositeBar ? window.getComputedStyle(compositeBar).flexGrow : 'N/A');
+						console.log('  content:', content?.tagName, '.className=', content?.className, 'display=', content ? window.getComputedStyle(content).display : 'N/A', 'height=', content ? window.getComputedStyle(content).height : 'N/A', 'justifyContent=', content ? window.getComputedStyle(content).justifyContent : 'N/A');
+						console.log('  activityBar:', activityBar?.tagName, '.className=', activityBar?.className, 'height=', activityBar ? window.getComputedStyle(activityBar).height : 'N/A');
+						// Check computed styles
+						const containerStyle = window.getComputedStyle(this.container);
+						console.log('  [computed] container.marginTop=', containerStyle.marginTop, 'outline=', containerStyle.outline);
+						if (actionsContainer) {
+							const acStyle = window.getComputedStyle(actionsContainer);
+							console.log('  [computed] actionsContainer.display=', acStyle.display, 'flexDirection=', acStyle.flexDirection, 'flex=', acStyle.flex);
+						}
+					});
+				});
+			}
+		}
+
 		// Use 'tab' inside tablist, 'button' for popup items outside tablist
 		const role = this.options.isTabList || !this.options.hasPopup ? 'tab' : 'button';
 		this.container.setAttribute('role', role);

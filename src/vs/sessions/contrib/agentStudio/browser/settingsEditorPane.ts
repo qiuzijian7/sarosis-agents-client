@@ -21,12 +21,25 @@ import {
 	AGENT_STUDIO_THEME_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
+	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
 	AGENT_STUDIO_BOT_NAME_SETTING,
 	AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING,
 	AGENT_STUDIO_NOTIFICATION_SOUND_SETTING,
 	AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING,
 	AGENT_STUDIO_CHECK_UPDATES_SETTING,
+	AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY,
+	AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
+	AGENT_STUDIO_PROVIDER_NOUS_API_KEY,
+	AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
+	AGENT_STUDIO_PROVIDER_GEMINI_API_KEY,
+	AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL,
+	AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY,
+	AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL,
+	AGENT_STUDIO_PROVIDER_MAIN_API_KEY,
+	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
+	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
+	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
 	AGENT_STUDIO_AUX_VISION_PROVIDER,
 	AGENT_STUDIO_AUX_VISION_MODEL,
 	AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER,
@@ -48,7 +61,7 @@ import {
 
 const { $ } = DOM;
 
-// ─── Settings Schema Definitions ────────────────────────────────────────────
+// ─── Settings Schema Definitions ──────────────────────────────────────────
 
 interface SettingField {
 	key: string;
@@ -72,7 +85,7 @@ interface SettingSection {
 	defaultCollapsed?: boolean;
 }
 
-// ─── Preference Sections ─────────────────────────────────────────────────────
+// ─── Preference Sections ─────────────────────────────────────────────
 
 const PREFERENCES_SECTIONS: SettingSection[] = [
 	{
@@ -99,6 +112,16 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 			{ key: AGENT_STUDIO_SEND_KEY_SETTING, label: '发送键', description: '发送消息的快捷键', type: 'select', default: 'enter', options: [
 				{ value: 'enter', label: 'Enter 发送，Shift+Enter 换行' },
 				{ value: 'ctrl+enter', label: 'Ctrl+Enter 发送，Enter 换行' },
+			] },
+			{ key: AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, label: '默认 Provider', description: '新对话使用的默认 AI Provider，留空使用自动选择', type: 'select', default: 'auto', options: [
+				{ value: 'auto', label: 'Auto（自动选择）' },
+				{ value: 'openrouter', label: 'OpenRouter' },
+				{ value: 'nous', label: 'Nous' },
+				{ value: 'gemini', label: 'Gemini' },
+				{ value: 'anthropic', label: 'Anthropic' },
+				{ value: 'main', label: 'Main' },
+				{ value: 'knot', label: 'Knot' },
+				{ value: 'custom', label: 'Custom' },
 			] },
 			{ key: AGENT_STUDIO_DEFAULT_MODEL_SETTING, label: '默认模型', description: '新对话使用的默认 AI 模型，留空使用系统默认', type: 'string', default: '', placeholder: '如 claude-sonnet-4-20250514' },
 			{ key: AGENT_STUDIO_BOT_NAME_SETTING, label: '助手名称', description: 'AI 助手在界面中的显示名称', type: 'string', default: 'Sarosis', placeholder: 'Sarosis' },
@@ -153,6 +176,31 @@ const AUX_SECTIONS: SettingSection[] = [
 	makeAuxBlock('curator', AGENT_STUDIO_AUX_CURATOR_PROVIDER, AGENT_STUDIO_AUX_CURATOR_MODEL, 'Curator（代码审查）', '用于审查代码变更'),
 ];
 
+// ─── Provider Sections ───────────────────────────────────────────────
+
+function makeProviderBlock(key: string, apiKeyKey: string, baseUrlKey: string, label: string, icon: string, defaultBaseUrl: string): SettingSection {
+	return {
+		id: `provider-${key}`,
+		label,
+		icon,
+		description: `${label} API 连接配置`,
+		defaultCollapsed: true,
+		fields: [
+			{ key: apiKeyKey, label: 'API Key', description: `${label} API 密钥`, type: 'password', default: '', placeholder: `粘贴你的 ${label} API Key` },
+			{ key: baseUrlKey, label: 'Base URL', description: `${label} API 端点地址，留空使用默认`, type: 'string', default: defaultBaseUrl, placeholder: defaultBaseUrl },
+		],
+	};
+}
+
+const PROVIDER_SECTIONS: SettingSection[] = [
+	makeProviderBlock('openrouter', AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY, AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL, 'OpenRouter', '🔀', 'https://openrouter.ai/api/v1'),
+	makeProviderBlock('nous', AGENT_STUDIO_PROVIDER_NOUS_API_KEY, AGENT_STUDIO_PROVIDER_NOUS_BASE_URL, 'Nous', '🧠', 'https://api.nous.com/v1'),
+	makeProviderBlock('gemini', AGENT_STUDIO_PROVIDER_GEMINI_API_KEY, AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL, 'Gemini', '💎', 'https://generativelanguage.googleapis.com'),
+	makeProviderBlock('anthropic', AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY, AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL, 'Anthropic', '🅰️', 'https://api.anthropic.com'),
+	makeProviderBlock('main', AGENT_STUDIO_PROVIDER_MAIN_API_KEY, AGENT_STUDIO_PROVIDER_MAIN_BASE_URL, 'Main', '🏠', ''),
+	makeProviderBlock('custom', AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY, AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL, 'Custom', '⚙️', ''),
+];
+
 const CLI_SECTION: SettingSection = {
 	id: 'cli',
 	label: 'Local CLI',
@@ -178,34 +226,34 @@ const DATA_SECTION: SettingSection = {
 	],
 };
 
-// ─── Tab definitions ─────────────────────────────────────────────────────────
+// ─── TOC Entries (VSCode-native style) ──────────────────────────────────────────
 
-interface TabDef {
+interface TocEntry {
 	id: string;
 	label: string;
 	icon: string;
+	sections: SettingSection[];
 }
 
-const BUILTIN_TABS: TabDef[] = [
-	{ id: 'preferences', label: '偏好', icon: '⚙️' },
-	{ id: 'auxiliary', label: '辅助模型', icon: '🧠' },
-	{ id: 'cli', label: 'CLI', icon: '💻' },
+const TOC_ENTRIES: TocEntry[] = [
+	{ id: 'preferences', label: '通用设置', icon: '⚙️', sections: PREFERENCES_SECTIONS },
+	{ id: 'provider', label: 'Provider 配置', icon: '🔌', sections: PROVIDER_SECTIONS },
+	{ id: 'auxiliary', label: '辅助模型', icon: '🧠', sections: AUX_SECTIONS },
+	{ id: 'cli', label: 'CLI 设置', icon: '💻', sections: [CLI_SECTION, DATA_SECTION] },
 ];
 
-// ─── Collapsed State (persisted via IStorageService) ────────────────────────
-
-// ─── Settings Editor Pane ────────────────────────────────────────────────────
+// ─── Settings Editor Pane (VSCode-native layout) ──────────────────────────────────────────
 
 export class SettingsEditorPane extends EditorPane {
 
 	static readonly ID = 'workbench.editor.agentStudioSettings';
 
 	private _container: HTMLElement | undefined;
-	private _scrollWrapper!: HTMLElement;
+	private _tocContainer!: HTMLElement;
+	private _contentScrollWrapper!: HTMLElement;
 	private _contentContainer!: HTMLElement;
-	private _tabsContainer!: HTMLElement;
 	private _searchInput!: HTMLInputElement;
-	private _activeTab: string = 'preferences';
+	private _activeTocId: string = 'preferences';
 	private _statusMessage: string = '';
 	private _initialized = false;
 
@@ -228,6 +276,8 @@ export class SettingsEditorPane extends EditorPane {
 		this._container.style.width = '100%';
 		this._container.style.height = '100%';
 		this._container.style.overflow = 'hidden';
+		this._container.style.display = 'flex';
+		this._container.style.flexDirection = 'column';
 		parent.appendChild(this._container);
 	}
 
@@ -244,36 +294,32 @@ export class SettingsEditorPane extends EditorPane {
 		}
 	}
 
-	// ─── Build Settings UI ──────────────────────────────────────────────────
+	// ─── Build Settings UI (VSCode-native style) ──────────────────────────────
 
 	private _buildSettingsUI(container: HTMLElement): void {
 		this._loadCollapsedState();
 
-		// Scrollable wrapper
-		this._scrollWrapper = document.createElement('div');
-		this._scrollWrapper.className = 'as-settings-scroll';
-		container.appendChild(this._scrollWrapper);
-
-		// Header
+		// ─── Header (fixed at top) ───────────────────────────────────────
 		const header = $('div.as-settings-header');
 		const headerLeft = $('div.as-settings-header-left');
 		const icon = $('span.as-settings-header-icon');
 		icon.textContent = '⚙️';
 		headerLeft.appendChild(icon);
 		const title = $('h2.as-settings-title');
-		title.textContent = 'Settings';
+		title.textContent = '设置';
 		headerLeft.appendChild(title);
 		header.appendChild(headerLeft);
 
 		const headerRight = $('div.as-settings-header-right');
 		const resetBtn = $('button.as-settings-reset-btn');
-		resetBtn.textContent = 'Reset All';
+		resetBtn.textContent = '恢复默认';
+		resetBtn.title = '将所有设置恢复为默认值';
 		resetBtn.onclick = () => this._resetAll();
 		headerRight.appendChild(resetBtn);
 		header.appendChild(headerRight);
-		this._scrollWrapper.appendChild(header);
+		container.appendChild(header);
 
-		// Search bar
+		// ─── Search bar ─────────────────────────────────────────────────
 		const searchWrap = $('div.as-settings-search-wrap');
 		const searchIcon = $('span.as-settings-search-icon');
 		searchIcon.textContent = '🔍';
@@ -282,66 +328,87 @@ export class SettingsEditorPane extends EditorPane {
 		this._searchInput.className = 'as-settings-search-input';
 		this._searchInput.placeholder = '搜索设置...';
 		this._searchInput.oninput = () => {
-			if (this._activeTab !== 'general') {
-				this._filterSettings(this._searchInput.value);
-			}
+			this._filterSettings(this._searchInput.value);
 		};
 		searchWrap.appendChild(this._searchInput);
-		this._scrollWrapper.appendChild(searchWrap);
+		container.appendChild(searchWrap);
 
-		// Tabs
-		this._tabsContainer = $('div.as-settings-tabs');
-		this._renderTabs();
-		this._scrollWrapper.appendChild(this._tabsContainer);
+		// ─── Split View: TOC (left) | Content (right) ─────────────────
+		const splitContainer = $('div.as-settings-split-container');
+		splitContainer.style.flex = '1';
+		splitContainer.style.overflow = 'hidden';
+		splitContainer.style.display = 'flex';
 
-		// Content
+		// Left: TOC sidebar
+		this._tocContainer = $('div.as-settings-toc');
+		this._renderToc();
+
+		// Right: Content area (scrollable)
+		this._contentScrollWrapper = $('div.as-settings-content-scroll');
 		this._contentContainer = $('div.as-settings-content');
-		this._scrollWrapper.appendChild(this._contentContainer);
 
-		// Render initial tab
-		this._renderActiveTab();
+		splitContainer.appendChild(this._tocContainer);
+		splitContainer.appendChild(this._contentScrollWrapper);
+		this._contentScrollWrapper.appendChild(this._contentContainer);
+		container.appendChild(splitContainer);
+
+		// Render initial content
+		this._renderTocContent();
 	}
 
-	// ─── Tab Bar ────────────────────────────────────────────────────────────
+	// ─── TOC Sidebar ─────────────────────────────────────────────────
 
-	private _renderTabs(): void {
-		this._tabsContainer.replaceChildren();
+	private _renderToc(): void {
+		this._tocContainer.replaceChildren();
+		this._tocContainer.className = 'as-settings-toc';
 
-		for (const tab of BUILTIN_TABS) {
-			const btn = $('button.as-settings-tab');
-			const tabIcon = $('span.as-settings-tab-icon');
-			tabIcon.textContent = tab.icon;
-			btn.appendChild(tabIcon);
-			const tabLabel = $('span.as-settings-tab-label');
-			tabLabel.textContent = tab.label;
-			btn.appendChild(tabLabel);
-			if (tab.id === this._activeTab) {
-				btn.classList.add('active');
+		const tocTitle = $('div.as-settings-toc-title');
+		tocTitle.textContent = '设置分类';
+		this._tocContainer.appendChild(tocTitle);
+
+		const tocList = $('div.as-settings-toc-list');
+		for (const entry of TOC_ENTRIES) {
+			const tocItem = $('div.as-settings-toc-item');
+			tocItem.dataset.tocId = entry.id;
+			if (entry.id === this._activeTocId) {
+				tocItem.classList.add('active');
 			}
-			btn.onclick = () => {
-				this._activeTab = tab.id;
-				this._tabsContainer.querySelectorAll('.as-settings-tab').forEach(b => b.classList.remove('active'));
-				btn.classList.add('active');
-				this._renderActiveTab();
+
+			const tocIcon = $('span.as-settings-toc-icon');
+			tocIcon.textContent = entry.icon;
+			tocItem.appendChild(tocIcon);
+
+			const tocLabel = $('span.as-settings-toc-label');
+			tocLabel.textContent = entry.label;
+			tocItem.appendChild(tocLabel);
+
+			tocItem.onclick = () => {
+				this._activeTocId = entry.id;
+				this._tocContainer.querySelectorAll('.as-settings-toc-item').forEach(el => el.classList.remove('active'));
+				tocItem.classList.add('active');
+				this._renderTocContent();
 			};
-			this._tabsContainer.appendChild(btn);
+
+			tocList.appendChild(tocItem);
 		}
+		this._tocContainer.appendChild(tocList);
 	}
 
-	private _renderActiveTab(): void {
+	private _renderTocContent(): void {
 		this._contentContainer.replaceChildren();
 		this._statusMessage = '';
 
-		switch (this._activeTab) {
-			case 'preferences':
-				this._renderCollapsibleSections(PREFERENCES_SECTIONS);
-				break;
-			case 'auxiliary':
-				this._renderCollapsibleSections(AUX_SECTIONS);
-				break;
-			case 'cli':
-				this._renderCollapsibleSections([CLI_SECTION, DATA_SECTION]);
-				break;
+		const entry = TOC_ENTRIES.find(e => e.id === this._activeTocId);
+		if (!entry) { return; }
+
+		// Render sections for this TOC entry
+		this._renderCollapsibleSections(entry.sections);
+
+		// Status message
+		if (this._statusMessage) {
+			const statusEl = $('div.as-plugin-status');
+			statusEl.textContent = this._statusMessage;
+			this._contentContainer.appendChild(statusEl);
 		}
 	}
 
@@ -409,13 +476,6 @@ export class SettingsEditorPane extends EditorPane {
 			}
 
 			this._contentContainer.appendChild(sectionEl);
-		}
-
-		// Status message
-		if (this._statusMessage) {
-			const statusEl = $('div.as-plugin-status');
-			statusEl.textContent = this._statusMessage;
-			this._contentContainer.appendChild(statusEl);
 		}
 	}
 
@@ -559,19 +619,20 @@ export class SettingsEditorPane extends EditorPane {
 	private _filterSettings(query: string): void {
 		const lowerQuery = query.toLowerCase();
 		if (!lowerQuery) {
-			this._renderActiveTab();
+			this._renderTocContent();
 			return;
 		}
 
-		// Get current sections based on active tab
-		let allSections: SettingSection[] = [];
-		switch (this._activeTab) {
-			case 'preferences': allSections = PREFERENCES_SECTIONS; break;
-			case 'auxiliary': allSections = AUX_SECTIONS; break;
-			case 'cli': allSections = [CLI_SECTION, DATA_SECTION]; break;
-		}
+		// Filter across all TOC entries
+		this._contentContainer.replaceChildren();
+		const allSections = [
+			...PREFERENCES_SECTIONS,
+			...PROVIDER_SECTIONS,
+			...AUX_SECTIONS,
+			CLI_SECTION,
+			DATA_SECTION,
+		];
 
-		// Filter sections and fields
 		const filtered: SettingSection[] = [];
 		for (const section of allSections) {
 			const matchedFields = section.fields.filter(f =>
@@ -588,19 +649,13 @@ export class SettingsEditorPane extends EditorPane {
 			}
 		}
 
-		this._contentContainer.replaceChildren();
 		this._renderCollapsibleSections(filtered);
 	}
 
-	// ─── Reset ──────────────────────────────────────────────────────────────
+	// ─── Reset ──────────────────────────────────────────────────────
 
 	private _resetAll(): void {
-		if (this._activeTab === 'general') {
-			this._activeTab = 'preferences';
-		}
-
-		// Reset all built-in settings to defaults
-		const allSections = [...PREFERENCES_SECTIONS, ...AUX_SECTIONS, CLI_SECTION, DATA_SECTION];
+		const allSections = [...PREFERENCES_SECTIONS, ...PROVIDER_SECTIONS, ...AUX_SECTIONS, CLI_SECTION, DATA_SECTION];
 		for (const section of allSections) {
 			for (const field of section.fields) {
 				this.configurationService.updateValue(field.key, field.default);
@@ -608,14 +663,14 @@ export class SettingsEditorPane extends EditorPane {
 		}
 
 		this._statusMessage = '✅ 已恢复默认设置';
-		this._renderActiveTab();
+		this._renderTocContent();
 		setTimeout(() => {
 			this._statusMessage = '';
-			this._renderActiveTab();
+			this._renderTocContent();
 		}, 3000);
 	}
 
-	// ─── EditorPane Overrides ───────────────────────────────────────────────
+	// ─── EditorPane Overrides ───────────────────────────────────────
 
 	override layout(dimension: DOM.Dimension): void {
 		if (this._container) {
@@ -633,7 +688,6 @@ export class SettingsEditorPane extends EditorPane {
 				this._collapsedState = new Map<string, boolean>(Object.entries(parsed));
 			}
 		} catch (e) {
-			// Ignore parse errors, use default state
 			this._collapsedState = new Map<string, boolean>();
 		}
 	}

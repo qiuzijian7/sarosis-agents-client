@@ -6,9 +6,11 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
-import { IAgentTurnRequest, IChatStreamDelta, IMemoryContext } from '../common/providers.js';
+import { IAgentTurnRequest, IMemoryContext } from '../common/providers.js';
+import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import { IAgentChatService, IChatSendOptions } from '../common/agentStudio.js';
+import { IAgentChatService } from '../common/agentStudio.js';
+import type { IChatSendOptions } from '../common/agentStudio.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 

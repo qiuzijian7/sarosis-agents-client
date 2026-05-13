@@ -5,8 +5,8 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import { IAgentTurnRequest, IChatStreamDelta } from './providers.js';
-import { IChatSendOptions } from './agentStudio.js';
+import type { IAgentTurnRequest, IChatStreamDelta } from './providers.js';
+import type { IChatSendOptions } from './agentStudio.js';
 
 // ─── Agent Driver Service ─────────────────────────────────────────
 

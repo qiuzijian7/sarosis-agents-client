@@ -76,6 +76,7 @@ export class ActivitybarPart extends Part {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 	) {
 		super(Parts.ACTIVITYBAR_PART, { hasTitle: false }, themeService, storageService, layoutService);
 
@@ -145,7 +146,7 @@ export class ActivitybarPart extends Part {
 				activeBackgroundColor: undefined, inactiveBackgroundColor: undefined, activeBorderBottomColor: undefined,
 			}),
 			overflowActionSize: actionHeight,
-		}, Parts.ACTIVITYBAR_PART, this.paneCompositePart, true);
+		}, Parts.ACTIVITYBAR_PART, this.paneCompositePart, !IsSessionsWindowContext.getValue(this.contextKeyService));
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {

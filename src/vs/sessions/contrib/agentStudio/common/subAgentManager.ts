@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IterationBudget } from './iterationBudget.js';
-import { IAgentTurnRequest, IChatStreamDelta } from './providers.js';
+import type { IAgentTurnRequest, IChatStreamDelta } from './providers.js';
 
 /**
  * 子Agent管理器

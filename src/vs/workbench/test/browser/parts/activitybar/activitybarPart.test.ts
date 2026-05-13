@@ -21,6 +21,7 @@ import { IPaneComposite } from '../../../../common/panecomposite.js';
 import { Extensions, PaneCompositeDescriptor } from '../../../../browser/panecomposite.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ViewContainerLocation } from '../../../../common/views.js';
+import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
 
 class StubPaneCompositePart implements IPaneCompositePart {
 	declare readonly _serviceBrand: undefined;
@@ -73,6 +74,7 @@ suite('ActivitybarPart', () => {
 		const storageService = disposables.add(new TestStorageService());
 		const themeService = new TestThemeService();
 		const layoutService = new TestLayoutService();
+		const contextKeyService = new MockContextKeyService();
 
 		// Override isVisible to return false so that create() does not call show()
 		// and attempt to instantiate the composite bar (which requires a full DI setup).
@@ -90,6 +92,7 @@ suite('ActivitybarPart', () => {
 			themeService,
 			storageService,
 			configService,
+			contextKeyService,
 		));
 
 		return { part, configService };
