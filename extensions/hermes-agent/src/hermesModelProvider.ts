@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter } from '../../../src/vs/base/common/event.js';
-import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import {
 	IModelProvider, IModelInfo, IModelAgentInfo, ModelAuthStatus,
 	IModelOptions, IModelDelta, IChatMessage, IChatContext,

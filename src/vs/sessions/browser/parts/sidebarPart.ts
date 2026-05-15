@@ -22,7 +22,8 @@ import { LayoutPriority } from '../../../base/browser/ui/grid/grid.js';
 import { assertReturnsDefined } from '../../../base/common/types.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../../workbench/common/views.js';
 import { AbstractPaneCompositePart, CompositeBarPosition } from '../../../workbench/browser/parts/paneCompositePart.js';
-import { Part } from '../../../workbench/browser/part.js';
+
+
 import { ActionsOrientation } from '../../../base/browser/ui/actionbar/actionbar.js';
 import { HoverPosition } from '../../../base/browser/ui/hover/hoverWidget.js';
 import { IPaneCompositeBarOptions } from '../../../workbench/browser/parts/paneCompositeBar.js';
@@ -331,15 +332,24 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		this.updateFooterVisibility();
 		const footerHeight = Math.min(height, this.getFooterHeight());
 
-		// Layout content with reduced height to account for footer
-		super.layout(
-			width,
-			height - footerHeight,
-			top, left
-		);
+		// The sidebar footer is absolutely positioned at the bottom of column 1,
+		// outside the grid flow (no third grid row). This avoids both:
+		//   (a) an empty cell at row 3 / column 2 (black gap at the bottom), and
+		//   (b) .content clientHeight inflation when grid-row spans the footer row.
+		// We add padding-bottom to the icon strip (header-or-footer) so icons
+		// aren't obscured by the absolutely-positioned footer overlay.
+		const container = this.getContainer();
+		if (container) {
+			const headerOrFooter = container.querySelector<HTMLElement>(':scope > .composite.header-or-footer');
+			if (headerOrFooter) {
+				headerOrFooter.style.paddingBottom = footerHeight > 0 ? `${footerHeight}px` : '';
+			}
+		}
 
-		// Restore the full grid-allocated dimensions so that Part.relayout() works correctly.
-		Part.prototype.layout.call(this, width, height, top, left);
+		// No height reduction needed: .content occupies grid row 2 (1fr) which
+		// fills all remaining space after row 1 (title, auto). The footer is
+		// absolutely positioned and doesn't affect the grid sizing.
+		super.layout(width, height, top, left);
 	}
 
 	protected override getTitleAreaDropDownAnchorAlignment(): AnchorAlignment {

@@ -31,9 +31,8 @@ import { HermesBridge } from './hermesBridge.js';
 export class HermesToolProvider extends BaseProviderAdapter<HermesBridge> implements IToolProvider {
 	readonly id = 'hermes-agent-tools';
 	readonly name = 'Hermes Agent Tools';
-
 	private _toolsCache = new Map<string, IToolDefinition[]>();
-	private _bridge: HermesBridge | undefined;
+	private _bridge?: HermesBridge;
 
 	constructor(context: IAgentOSPluginContext) {
 		super('hermes-agent-tools', context);

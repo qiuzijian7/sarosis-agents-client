@@ -165,3 +165,4 @@ extensions/hermes-agent/plugin/instructions/hermes-rules.instructions.md
 exitcode.txt
 stderr2.txt
 stdout2.txt
+check-tsc.ps1

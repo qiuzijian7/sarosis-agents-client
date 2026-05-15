@@ -806,5 +806,17 @@ export class PresetAgentViewPane extends ViewPane {
 			container.style.height = `${height}px`;
 			container.style.flex = 'none';
 		}
+		// Debug: log layout dimensions and parent hierarchy with class names
+		console.log(`[PresetAgent] layoutBody: height=${height}, width=${width}`);
+		if (container) {
+			let el: HTMLElement | null = container;
+			let level = 0;
+			const labels = ['container(body)', 'pane', 'split-view-view', 'split-view-container', 'scrollable', 'monaco-pane-view', 'composite?', 'content?', 'part?'];
+			while (el && level < 9) {
+				console.log(`[PresetAgent] L${level}(${labels[level]}): class="${el.className}", clientH=${el.clientHeight}, styleH="${el.style.height}", offsetH=${el.offsetHeight}`);
+				el = el.parentElement;
+				level++;
+			}
+		}
 	}
 }

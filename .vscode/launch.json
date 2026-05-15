@@ -728,49 +728,46 @@
 		{
 			"name": "VS Code",
 			"stopAll": true,
-			"configurations": [
-				"Launch VS Code Internal",
-				"Attach to Main Process",
-				"Attach to Extension Host",
-				"Attach to Shared Process",
-				"Attach to Agent Host Process"
-			],
-			"preLaunchTask": "Ensure Prelaunch Dependencies",
-			"presentation": {
-				"group": "0_vscode",
-				"order": 1
-			}
-		},
-		{
-			"name": "VS Code Agents",
-			"stopAll": true,
-			"configurations": [
-				"Launch VS Code Agents Internal",
-				"Attach to Main Process",
-				"Attach to Extension Host",
-				"Attach to Shared Process",
-			],
-			"preLaunchTask": "Ensure Prelaunch Dependencies",
-			"presentation": {
-				"group": "0_vscode",
-				"order": 1
-			}
-		},
-		{
-			"name": "VS Code (Hot Reload)",
-			"stopAll": true,
-			"configurations": [
-				"Launch VS Code Internal (Hot Reload)",
-				"Attach to Main Process",
-				"Attach to Extension Host",
-				"Attach to Shared Process",
-			],
-			"preLaunchTask": "Ensure Prelaunch Dependencies",
-			"presentation": {
-				"group": "0_vscode",
-				"order": 1
-			}
-		},
+		"configurations": [
+			"Launch VS Code Internal",
+			"Attach to Main Process",
+			"Attach to Extension Host",
+			"Attach to Shared Process",
+			"Attach to Agent Host Process"
+		],
+		"presentation": {
+			"group": "0_vscode",
+			"order": 1
+		}
+	},
+	{
+		"name": "VS Code Agents",
+		"stopAll": true,
+		"configurations": [
+			"Launch VS Code Agents Internal",
+			"Attach to Main Process",
+			"Attach to Extension Host",
+			"Attach to Shared Process",
+		],
+		"presentation": {
+			"group": "0_vscode",
+			"order": 1
+		}
+	},
+	{
+		"name": "VS Code (Hot Reload)",
+		"stopAll": true,
+		"configurations": [
+			"Launch VS Code Internal (Hot Reload)",
+			"Attach to Main Process",
+			"Attach to Extension Host",
+			"Attach to Shared Process",
+		],
+		"presentation": {
+			"group": "0_vscode",
+			"order": 1
+		}
+	},
 		{
 			"name": "Search, Renderer, and Main processes",
 			"configurations": [
@@ -818,23 +815,22 @@
 			}
 		},
 		{
-			"name": "Renderer and Main processes",
-			"stopAll": true,
-			"configurations": [
-				"Launch VS Code Internal",
-				"Attach to Main Process"
-			],
-			"preLaunchTask": "Ensure Prelaunch Dependencies"
-		},
-		{
-			"name": "Renderer and Agent Host processes",
-			"stopAll": true,
-			"configurations": [
-				"Launch VS Code Internal",
-				"Attach to Main Process",
-				"Attach to Agent Host Process"
-			],
-			"preLaunchTask": "Ensure Prelaunch Dependencies"
-		},
+			"name": "Re	{
+		"name": "Renderer and Main processes",
+		"stopAll": true,
+		"configurations": [
+			"Launch VS Code Internal",
+			"Attach to Main Process"
+		]
+	},
+	{
+		"name": "Renderer and Agent Host processes",
+		"stopAll": true,
+		"configurations": [
+			"Launch VS Code Internal",
+			"Attach to Main Process",
+			"Attach to Agent Host Process"
+		]
+	},
 	]
 }

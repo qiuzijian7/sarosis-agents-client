@@ -16,7 +16,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IResourceLabel, ResourceLabels } from '../../../../../workbench/browser/labels.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { FuzzyScore } from '../../../../../base/common/filters.js';
-import { WORKSPACE_DATA_DIR } from '../../common/constants.js';
+
 
 //#region Workspace Explorer Tree Element Interface
 
@@ -50,6 +50,8 @@ export interface IWorkspaceExplorerElement {
 	description?: string;
 	/** If true, this is a read-only info/label node — not openable */
 	isInfoNode?: boolean;
+	/** If true, this is a placeholder node shown when a directory is empty */
+	isEmptyPlaceholder?: boolean;
 }
 
 //#endregion
@@ -92,10 +94,9 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 
 	/**
 	 * Hidden directory/file names that should be excluded from the tree.
-	 * This includes the internal workspace data directory and common VCS directories.
+	 * This includes common VCS directories and OS metadata files.
 	 */
 	private static readonly HIDDEN_NAMES = new Set<string>([
-		WORKSPACE_DATA_DIR,   // '.sarosisworkspace'
 		'.git',
 		'.svn',
 		'.hg',
@@ -129,11 +130,13 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 			this.logService.info(`[WorkspaceExplorer] Resolving: ${element.resource.toString()}`);
 			const stat: IFileStat = await this.fileService.resolve(element.resource, { resolveSingleChildDescendants: false });
 			if (stat.children) {
+				const filtered: string[] = [];
 				const children = stat.children
 					.filter((child: IFileStat) => {
 						const name = basename(child.resource);
 						// Filter out hidden/internal entries
 						if (WorkspaceExplorerDataSource.HIDDEN_NAMES.has(name)) {
+							filtered.push(name);
 							return false;
 						}
 						return true;
@@ -143,11 +146,31 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 						name: basename(child.resource),
 						isDirectory: child.isDirectory,
 					}));
-				this.logService.info(`[WorkspaceExplorer] Resolved ${stat.children.length} raw children, ${children.length} after filtering for: ${element.name}`);
+				this.logService.info(`[WorkspaceExplorer] Resolved ${stat.children.length} raw children, ${children.length} after filtering for: ${element.name}${filtered.length > 0 ? ` (filtered out: ${filtered.join(', ')})` : ''}`);
+
+				// When all children were filtered out, show "empty folder" placeholder
+				if (children.length === 0 && stat.children.length > 0) {
+					return [{
+						resource: URI.joinPath(element.resource, '.empty-placeholder'),
+						name: localize('emptyFolder', "工作区目录为空"),
+						isDirectory: false,
+						isInfoNode: true,
+						isEmptyPlaceholder: true,
+					}];
+				}
+
 				return children;
 			}
+
+			// Directory has no children at all — show "empty folder" placeholder
 			this.logService.info(`[WorkspaceExplorer] No children found for: ${element.name}`);
-			return [];
+			return [{
+				resource: URI.joinPath(element.resource, '.empty-placeholder'),
+				name: localize('emptyFolder2', "工作区目录为空"),
+				isDirectory: false,
+				isInfoNode: true,
+				isEmptyPlaceholder: true,
+			}];
 		} catch (error) {
 			this.logService.error(`[WorkspaceExplorer] Error resolving ${element.resource.toString()}:`, error);
 			return [];
@@ -222,6 +245,10 @@ export class WorkspaceExplorerRenderer implements ICompressibleTreeRenderer<IWor
 	private _renderNode(element: IWorkspaceExplorerElement, templateData: IWorkspaceExplorerTemplateData): void {
 		// Info nodes (read-only label items inside virtual workspaces)
 		if (element.isInfoNode) {
+			const infoClasses = ['workspace-info-node'];
+			if (element.isEmptyPlaceholder) {
+				infoClasses.push('workspace-empty-placeholder');
+			}
 			templateData.label.setResource(
 				{
 					resource: element.resource,
@@ -229,7 +256,7 @@ export class WorkspaceExplorerRenderer implements ICompressibleTreeRenderer<IWor
 				},
 				{
 					fileKind: FileKind.FILE,
-					extraClasses: ['workspace-info-node'],
+					extraClasses: infoClasses,
 					hideIcon: true,
 				}
 			);
@@ -275,10 +302,6 @@ export class WorkspaceExplorerRenderer implements ICompressibleTreeRenderer<IWor
 
 export class WorkspaceExplorerFilter implements ITreeFilter<IWorkspaceExplorerElement, FuzzyScore> {
 
-	/**
-	 * Additional hidden patterns beyond the DataSource filter.
-	 * Names starting with '.' are generally hidden (like .git, .sarosisworkspace, etc.)
-	 */
 	filter(element: IWorkspaceExplorerElement): TreeVisibility {
 		// Workspace roots (real & virtual) are always visible
 		if (element.isWorkspaceRoot) {
@@ -288,13 +311,6 @@ export class WorkspaceExplorerFilter implements ITreeFilter<IWorkspaceExplorerEl
 		// Info nodes are always visible
 		if (element.isInfoNode) {
 			return TreeVisibility.Visible;
-		}
-
-		const name = element.name;
-
-		// Hide the internal workspace data directory and other dot-dirs/dot-files
-		if (name === WORKSPACE_DATA_DIR) {
-			return TreeVisibility.Hidden;
 		}
 
 		return TreeVisibility.Visible;

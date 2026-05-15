@@ -3,8 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CancellationToken } from '../../../src/vs/base/common/cancellation.js';
-import { IStorageService } from '../../../src/vs/platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../src/vs/platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../src/vs/platform/theme/common/themeService.js';
 import { EditorPane } from '../../../src/vs/workbench/browser/parts/editor/editorPane.js';
@@ -13,6 +11,8 @@ import { EditorInput } from '../../../src/vs/workbench/common/editor/editorInput
 import { IEditorGroup } from '../../../src/vs/workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../src/vs/platform/editor/common/editor.js';
 import { IConfigurationService } from '../../../src/vs/platform/configuration/common/configuration.js';
+import { IStorageService } from '../../../src/vs/platform/storage/common/storage.js';
+import { CancellationToken } from '../../../src/vs/base/common/cancellation.js';
 import { KnotSettingsEditorInput } from './knotSettingsEditorInput.js';
 import * as DOM from '../../../src/vs/base/browser/dom.js';
 
@@ -49,7 +49,8 @@ const KNOT_SETTINGS_FIELDS: KnotSettingField[] = [
 
 // ─── Collapsed State (persisted via IStorageService) ────────────────────────
 
-const COLLAPSED_STORAGE_KEY = 'knot.settings.collapsed';
+
+
 
 // ─── Knot Settings Editor Pane ──────────────────────────────────────────────
 
@@ -75,7 +76,7 @@ export class KnotSettingsEditorPane extends EditorPane {
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
-		@IStorageService private readonly storageService: IStorageService,
+		@IStorageService storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super(KnotSettingsEditorPane.ID, group, telemetryService, themeService, storageService);

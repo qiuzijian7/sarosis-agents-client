@@ -86,6 +86,7 @@
 
 .monaco-workbench .part > .content {
 	font-size: 13px;
+	overflow: hidden;
 }
 
 .monaco-workbench .part > .content > .monaco-progress-container,

@@ -22,9 +22,9 @@ import * as fs from 'fs';
  */
 
 export interface HermesBridgeConfig {
-	pythonPath: string;
+	pythonPath?: string;
 	hermesSourcePath: string;
-	hermesHome: string;
+	hermesHome?: string;
 	provider?: string;
 	model?: string;
 	apiKey?: string;
@@ -119,30 +119,30 @@ export class HermesBridge {
 			env.PYTHONPATH = hermesSource + (env.PYTHONPATH ? path.delimiter + env.PYTHONPATH : '');
 		}
 
-		this._process = spawn(this._config.pythonPath, [bridgeScript], {
+		this._process = spawn(this._config.pythonPath || 'python3', [bridgeScript], {
 			env,
 			stdio: ['pipe', 'pipe', 'pipe'],
 			cwd: hermesSource || undefined,
 		});
 
-		this._process.on('error', (err) => {
+		this._process!.on('error', (err) => {
 			console.error('[Hermes-Bridge] Process error:', err);
 			this._isRunning = false;
 		});
 
-		this._process.on('exit', (code, signal) => {
+		this._process!.on('exit', (code, signal) => {
 			console.error(`[Hermes-Bridge] Process exited: code=${code}, signal=${signal}`);
 			this._isRunning = false;
 			this._rejectAllPending(new Error(`Bridge process exited with code ${code}`));
 		});
 
 		// Read stdout
-		this._process.stdout!.on('data', (chunk: Buffer) => {
+		this._process!.stdout!.on('data', (chunk: Buffer) => {
 			this._onStdoutData(chunk.toString());
 		});
 
 		// Log stderr
-		this._process.stderr!.on('data', (chunk: Buffer) => {
+		this._process!.stderr!.on('data', (chunk: Buffer) => {
 			const text = chunk.toString().trim();
 			if (text) {
 				console.warn('[Hermes-Bridge stderr]', text);
@@ -362,7 +362,7 @@ export class HermesBridge {
 	}
 
 	private _rejectAllPending(reason: Error): void {
-		for (const [id, pending] of this._pendingRequests) {
+		for (const [, pending] of this._pendingRequests) {
 			clearTimeout(pending.timeout);
 			pending.reject(reason);
 		}

@@ -42,6 +42,14 @@
 	color: var(--vscode-editor-foreground);
 }
 
+/* When using ResourceLabels, the display name uses .label-name */
+.workspace-root-entry .label-name {
+	font-weight: 600;
+	text-transform: uppercase;
+	font-size: 11px;
+	letter-spacing: 0.04em;
+}
+
 .workspace-root-entry .workspace-explorer-icon {
 	color: var(--vscode-gitDecoration-submoduleResourceForeground, var(--vscode-icon-foreground));
 }
@@ -145,4 +153,19 @@
 	max-width: 240px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 8px;
+}
+
+/* ─── Info Nodes (virtual workspace metadata labels) ─────────────── */
+
+.workspace-info-node .label-name {
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+
+/* ─── Empty Folder Placeholder ───────────────────────────────────── */
+
+.workspace-empty-placeholder .label-name {
+	color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+	font-style: italic;
+	opacity: 0.7;
 }

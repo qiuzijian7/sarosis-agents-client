@@ -3,11 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { EditorPane } from '../../../src/vs/workbench/browser/editor.js';
+import { EditorPane } from '../../../src/vs/workbench/browser/parts/editor/editorPane.js';
 import { HermesSettingsEditorInput } from './hermesSettingsEditorInput.js';
-import { ILogService } from '../../../src/vs/platform/log/common/log.js';
-import { IConfigurationService } from '../../../src/vs/platform/configuration/common/configuration.js';
-import { INotificationService } from '../../../src/vs/notification/common/notification.js';
+import { IEditorGroup } from '../../../src/vs/workbench/services/editor/common/editorGroupsService.js';
+import { ITelemetryService } from '../../../src/vs/platform/telemetry/common/telemetry.js';
+import { IThemeService } from '../../../src/vs/platform/theme/common/themeService.js';
+import { IStorageService } from '../../../src/vs/platform/storage/common/storage.js';
+import { IEditorOptions } from '../../../src/vs/platform/editor/common/editor.js';
+import { IEditorOpenContext } from '../../../src/vs/workbench/common/editor.js';
+import { CancellationToken } from '../../../src/vs/base/common/cancellation.js';
+import * as DOM from '../../../src/vs/base/browser/dom.js';
 
 /**
  * Hermes Settings Editor Pane
@@ -64,12 +69,14 @@ export class HermesSettingsEditorPane extends EditorPane {
 	static readonly ID = 'hermes.settings.editor.pane';
 
 	private _container: HTMLElement | undefined;
-	private _configService: IConfigurationService | undefined;
-	private _logService: ILogService | undefined;
-	private _notificationService: INotificationService | undefined;
 
-	constructor() {
-		super(HermesSettingsEditorPane.ID, undefined);
+	constructor(
+		group: IEditorGroup,
+		@ITelemetryService telemetryService: ITelemetryService,
+		@IThemeService themeService: IThemeService,
+		@IStorageService storageService: IStorageService,
+	) {
+		super(HermesSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -80,8 +87,8 @@ export class HermesSettingsEditorPane extends EditorPane {
 		this._bindEvents();
 	}
 
-	override setInput(input: HermesSettingsEditorInput): Promise<void> {
-		return super.setInput(input);
+	override async setInput(input: HermesSettingsEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		await super.setInput(input, options, context, token);
 	}
 
 	private _getHTML(): string {
@@ -299,7 +306,11 @@ export class HermesSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	protected override layout(): void {
+	override layout(dimension: DOM.Dimension): void {
 		// Responsive layout adjustments if needed
+		if (this._container && dimension) {
+			this._container.style.width = `${dimension.width}px`;
+			this._container.style.height = `${dimension.height}px`;
+		}
 	}
 }

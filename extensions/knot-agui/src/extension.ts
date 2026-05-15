@@ -9,12 +9,14 @@ import { KnotAGUIModelProvider } from './knotModelProvider.js';
 import { KnotSettingsEditorPane } from './knotSettingsEditorPane.js';
 import { KnotSettingsEditorInput } from './knotSettingsEditorInput.js';
 import { Registry } from '../../../src/vs/platform/registry/common/platform.js';
-import { IEditorPaneRegistry, EditorExtensions } from '../../../src/vs/workbench/services/editor/common/editorPaneService.js';
+import { IEditorPaneRegistry } from '../../../src/vs/workbench/browser/editor.js';
+import { EditorExtensions } from '../../../src/vs/workbench/common/editor.js';
 import { EditorPaneDescriptor } from '../../../src/vs/workbench/browser/editor.js';
 import { SyncDescriptor } from '../../../src/vs/platform/instantiation/common/descriptors.js';
 import { IEditorService } from '../../../src/vs/workbench/services/editor/common/editorService.js';
 import { SIDE_GROUP } from '../../../src/vs/workbench/services/editor/common/editorService.js';
 import { ICommandService } from '../../../src/vs/platform/commands/common/commands.js';
+import { CommandsRegistry } from '../../../src/vs/platform/commands/common/commands.js';
 import './media/knotSettingsEditorPane.css';
 
 /**
@@ -115,12 +117,9 @@ export class KnotAguiPlugin implements IAgentCapabilityPlugin {
 		const editorService = context.instantiationService.invokeFunction(
 			(accessor) => accessor.get(IEditorService)
 		);
-		const commandService = context.instantiationService.invokeFunction(
-			(accessor) => accessor.get(ICommandService)
-		);
 
 		// Register the knot.openSettings command handler
-		const commandRegistration = commandService.registerCommand('knot.openSettings', () => {
+		const commandRegistration = CommandsRegistry.registerCommand('knot.openSettings', (accessor) => {
 			const input = KnotSettingsEditorInput.getInstance();
 			editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
 		});

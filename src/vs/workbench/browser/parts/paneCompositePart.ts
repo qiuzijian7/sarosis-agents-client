@@ -592,6 +592,9 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 		this.contentDimension = new Dimension(width, height);
 
+		// Debug: trace sidebar layout
+		console.log(`[PaneCompositePart] layout: partId=${this.partId}, width=${width}, height=${height}, top=${top}, left=${left}`);
+
 		// Layout contents
 		super.layout(this.contentDimension.width, this.contentDimension.height, top, left);
 

@@ -12,7 +12,8 @@ import { HermesBridge } from './hermesBridge.js';
 import { HermesSettingsEditorPane } from './hermesSettingsEditorPane.js';
 import { HermesSettingsEditorInput } from './hermesSettingsEditorInput.js';
 import { Registry } from '../../../src/vs/platform/registry/common/platform.js';
-import { IEditorPaneRegistry, EditorExtensions } from '../../../src/vs/workbench/services/editor/common/editorPaneService.js';
+import { IEditorPaneRegistry } from '../../../src/vs/workbench/browser/editor.js';
+import { EditorExtensions } from '../../../src/vs/workbench/common/editor.js';
 import { EditorPaneDescriptor } from '../../../src/vs/workbench/browser/editor.js';
 import { SyncDescriptor } from '../../../src/vs/platform/instantiation/common/descriptors.js';
 import { IEditorService } from '../../../src/vs/workbench/services/editor/common/editorService.js';
@@ -206,7 +207,7 @@ export class HermesAgentPlugin implements IAgentCapabilityPlugin {
 			context.notificationService.info(`Upgrading Hermes repository at ${sourcePath}...`);
 			// The actual git pull will be done by the bridge or a script
 			try {
-				const result = await bridge?.request('upgrade_repo', { path: sourcePath });
+				await bridge?.request('upgrade_repo', { path: sourcePath });
 				context.notificationService.info('Hermes repository upgraded successfully.');
 			} catch (err) {
 				context.notificationService.warn(`Upgrade requires manual git pull in ${sourcePath}`);

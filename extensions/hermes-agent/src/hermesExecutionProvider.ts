@@ -3,12 +3,22 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import {
 	IExecutionProvider, IAgentTurnRequest, IChatStreamDelta, ISlotRegistry
 } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 import { BaseProviderAdapter, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
 import { HermesBridge } from './hermesBridge.js';
+
+interface IModelOptions {
+	messages: Array<{ role: string; content: string }>;
+	provider?: string;
+	model?: string;
+	systemPrompt?: string;
+	temperature?: number;
+	maxTokens?: number;
+	maxIterations?: number;
+	sessionId?: string;
+}
 
 /**
  * Hermes Execution Provider
@@ -31,8 +41,7 @@ import { HermesBridge } from './hermesBridge.js';
 export class HermesExecutionProvider extends BaseProviderAdapter<HermesBridge> implements IExecutionProvider {
 	readonly id = 'hermes-agent-execution';
 	readonly name = 'Hermes Agent Execution';
-
-	private _bridge: HermesBridge | undefined;
+	private _bridge?: HermesBridge;
 
 	constructor(context: IAgentOSPluginContext) {
 		super('hermes-agent-execution', context);
@@ -75,13 +84,13 @@ export class HermesExecutionProvider extends BaseProviderAdapter<HermesBridge> i
 			systemPrompt += `\n\n[OS Memory Context]\n${memoryContext}`;
 		}
 
-		// Stream from hermes bridge
-		const stream = bridge.streamChat({
+	// Stream from hermes bridge
+	const stream = bridge.streamChat({
 			messages,
 			systemPrompt: systemPrompt || undefined,
 			temperature: request.options?.temperature,
 			maxTokens: request.options?.maxTokens,
-			maxIterations: request.options?.['maxIterations'] as number | undefined,
+			maxIterations: (request.options as any)?.maxIterations,
 			sessionId: request.sessionId,
 		});
 

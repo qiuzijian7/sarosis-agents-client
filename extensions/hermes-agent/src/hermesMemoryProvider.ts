@@ -4,11 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import {
-	IMemoryProvider, IMemoryContext, IMemoryEntry, IDocumentRef
+	IMemoryProvider, IMemoryContext, IMemoryEntry
 } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 import { BaseProviderAdapter, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
 import { HermesBridge } from './hermesBridge.js';
-import { URI } from '../../../src/vs/base/common/uri.js';
 
 /**
  * Hermes Memory Provider
@@ -28,8 +27,7 @@ import { URI } from '../../../src/vs/base/common/uri.js';
 export class HermesMemoryProvider extends BaseProviderAdapter<HermesBridge> implements IMemoryProvider {
 	readonly id = 'hermes-agent-memory';
 	readonly name = 'Hermes Agent Memory';
-
-	private _bridge: HermesBridge | undefined;
+	private _bridge?: HermesBridge;
 
 	constructor(context: IAgentOSPluginContext) {
 		super('hermes-agent-memory', context);

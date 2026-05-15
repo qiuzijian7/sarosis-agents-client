@@ -499,6 +499,95 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 
 registerWorkbenchContribution2(BYOKProviderContribution.ID, BYOKProviderContribution, WorkbenchPhase.AfterRestored);
 
+// --- Agent Capability Plugin Activation ------------------------------------------
+// Discovers and activates IAgentCapabilityPlugin extensions (knot-agui, hermes-agent)
+// that register Model/Execution/Tool/Memory providers into the AgentOS layer.
+
+import { IAgentOSPluginContext, IAgentCapabilityPlugin } from '../common/adapters.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+
+class AgentCapabilityPluginContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.agentCapabilityPlugins';
+
+	private readonly _activatedPlugins: IAgentCapabilityPlugin[] = [];
+
+	constructor(
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@ILogService private readonly logService: ILogService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@INotificationService private readonly notificationService: INotificationService,
+	) {
+		super();
+
+		if (!this.configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
+			return;
+		}
+
+		this._activatePlugins();
+	}
+
+	// Plugin module paths — stored in variables so TypeScript does not attempt
+	// static module resolution at compile time. These extensions are compiled
+	// independently (each has its own tsconfig) and the JS files only exist
+	// at runtime in the `out/` tree.
+	private static readonly KNOT_AGUI_MODULE = '../../../../extensions/knot-agui/src/extension.js';
+	private static readonly HERMES_AGENT_MODULE = '../../../../extensions/hermes-agent/src/extension.js';
+
+	private async _activatePlugins(): Promise<void> {
+		const context = this._createPluginContext();
+
+		// ─── Knot AG-UI Plugin ──────────────────────────────────
+		try {
+			const knotModule: { KnotAguiPlugin: new () => IAgentCapabilityPlugin } =
+				await import(AgentCapabilityPluginContribution.KNOT_AGUI_MODULE);
+			const knotPlugin = new knotModule.KnotAguiPlugin();
+			await knotPlugin.activate(context);
+			this._activatedPlugins.push(knotPlugin);
+			this.logService.info('[AgentCapabilityPlugins] Knot AG-UI plugin activated');
+		} catch (err) {
+			this.logService.warn('[AgentCapabilityPlugins] Knot AG-UI plugin activation failed:', err);
+		}
+
+		// ─── Hermes Agent Plugin ──────────────────────────────────
+		try {
+			const hermesModule: { HermesAgentPlugin: new () => IAgentCapabilityPlugin } =
+				await import(AgentCapabilityPluginContribution.HERMES_AGENT_MODULE);
+			const hermesPlugin = new hermesModule.HermesAgentPlugin();
+			await hermesPlugin.activate(context);
+			this._activatedPlugins.push(hermesPlugin);
+			this.logService.info('[AgentCapabilityPlugins] Hermes Agent plugin activated');
+		} catch (err) {
+			this.logService.warn('[AgentCapabilityPlugins] Hermes Agent plugin activation failed:', err);
+		}
+	}
+
+	private _createPluginContext(): IAgentOSPluginContext {
+		return {
+			extensionPath: '',
+			globalStoragePath: '',
+			workspaceStoragePath: '',
+			configurationService: this.configurationService,
+			logService: this.logService,
+			notificationService: this.notificationService,
+			instantiationService: this.instantiationService,
+			agentOSService: this.agentOSService,
+		};
+	}
+
+	override dispose(): void {
+		for (const plugin of this._activatedPlugins) {
+			plugin.deactivate().catch(err => {
+				this.logService.error('[AgentCapabilityPlugins] Plugin deactivation failed:', err);
+			});
+		}
+		this._activatedPlugins.length = 0;
+		super.dispose();
+	}
+}
+
+registerWorkbenchContribution2(AgentCapabilityPluginContribution.ID, AgentCapabilityPluginContribution, WorkbenchPhase.AfterRestored);
+
 // --- ViewContainer & Views Registration ------------------------------------------
 
 class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
@@ -513,7 +602,6 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 
 		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
 		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
-
 
 		// --- Layout Reference: Two-Column Layout ---------------------------------
 		// [Sarosis] Two-column layout:
@@ -797,4 +885,3 @@ class SettingsEditorRedirectContribution extends Disposable implements IWorkbenc
 }
 
 registerWorkbenchContribution2(SettingsEditorRedirectContribution.ID, SettingsEditorRedirectContribution, WorkbenchPhase.Eventually);
-

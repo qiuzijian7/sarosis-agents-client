@@ -15,10 +15,11 @@
 		"resolveJsonModule": true,
 		"allowJs": true,
 		"skipLibCheck": true,
-		"outDir": "../../out/vs",
-	"rootDir": ".",
-	"paths": {
-			"*": ["../../src/*"]
+		"outDir": "../out/extensions",
+		"rootDir": ".",
+		"baseUrl": ".",
+		"paths": {
+			"*": ["../src/*"]
 		}
 	},
 	"include": [

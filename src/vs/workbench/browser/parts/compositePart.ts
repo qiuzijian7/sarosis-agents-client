@@ -516,7 +516,11 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 		super.layout(width, height, top, left);
 
 		// Layout contents
-		this.contentAreaSize = Dimension.lift(super.layoutContents(width, height).contentSize);
+		const layoutResult = super.layoutContents(width, height);
+		this.contentAreaSize = Dimension.lift(layoutResult.contentSize);
+
+		// Debug: trace layout dimensions
+		console.log(`[CompositePart] layout: width=${width}, height=${height}, titleSize=${layoutResult.titleSize.height}, headerSize=${layoutResult.headerSize.height}, footerSize=${layoutResult.footerSize.height}, contentSize=${this.contentAreaSize.height}x${this.contentAreaSize.width}, compositeId=${this.activeComposite?.getId()}`);
 
 		// Layout composite
 		this.activeComposite?.layout(this.contentAreaSize);

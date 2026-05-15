@@ -18,6 +18,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { WorkbenchCompressibleAsyncDataTree } from '../../../../../platform/list/browser/listService.js';
 import { createFileIconThemableTreeContainerScope } from '../../../../../workbench/contrib/files/browser/views/explorerView.js';
@@ -74,6 +75,7 @@ export class WorkspaceViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@ILogService private readonly logService: ILogService,
+		@IFileService private readonly fileService: IFileService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
@@ -144,7 +146,11 @@ export class WorkspaceViewPane extends ViewPane {
 			'WorkspaceExplorer',
 			this.treeContainer,
 			new WorkspaceExplorerDelegate(),
-			{ isIncompressible: (element: IWorkspaceExplorerElement) => !!element.isWorkspaceRoot || !!element.isInfoNode || !!element.isVirtualWorkspace },
+			// Mark every node as incompressible so the tree renders a proper
+			// hierarchical structure — just like VS Code's native Explorer.
+			// Without this, the compressible tree merges single-child paths
+			// into flat entries like ".sarosisworkspace/employees.json".
+			{ isIncompressible: () => true },
 			[renderer],
 			this.instantiationService.createInstance(WorkspaceExplorerDataSource),
 			{
@@ -216,7 +222,7 @@ export class WorkspaceViewPane extends ViewPane {
 
 		try {
 			const workspaces: Workspace[] = await this.agentStudioService.getWorkspaces();
-			this.logService.info(`[WorkspaceViewPane] Loaded ${workspaces.length} workspaces`);
+			this.logService.info(`[WorkspaceViewPane] Loaded ${workspaces.length} workspaces: ${JSON.stringify(workspaces.map(w => ({ id: w.id, name: w.name, path: w.path })))}`);
 
 			if (workspaces.length === 0) {
 				// Show empty state
@@ -232,17 +238,65 @@ export class WorkspaceViewPane extends ViewPane {
 			// Build tree root nodes from ALL workspaces.
 			// Workspaces with a local path become real filesystem roots.
 			// Workspaces without a path become virtual roots (showing metadata only).
-			const workspaceRoots: IWorkspaceExplorerElement[] = workspaces.map(ws => {
+			const workspaceRoots: IWorkspaceExplorerElement[] = [];
+			for (const ws of workspaces) {
 				if (ws.path) {
 					// Real workspace — has a local path, children come from IFileService
-					this.logService.info(`[WorkspaceViewPane]   - "${ws.name}" path="${ws.path}" id=${ws.id}`);
-					return {
-						resource: URI.file(ws.path),
-						name: ws.name,
-						isDirectory: true,
-						isWorkspaceRoot: true,
-						workspaceId: ws.id,
-					};
+					// Validate that the path exists before treating it as a real workspace
+					const wsUri = URI.file(ws.path);
+					let pathExists = false;
+					try {
+						const stat = await this.fileService.stat(wsUri);
+						pathExists = stat.isDirectory;
+						this.logService.info(`[WorkspaceViewPane]   - "${ws.name}" path="${ws.path}" id=${ws.id} exists=${pathExists} isDir=${stat.isDirectory}`);
+					} catch (statErr) {
+						this.logService.warn(`[WorkspaceViewPane]   - "${ws.name}" path="${ws.path}" id=${ws.id} — path does not exist or cannot be accessed: ${statErr}`);
+					}
+
+					if (pathExists) {
+						workspaceRoots.push({
+							resource: wsUri,
+							name: ws.name,
+							isDirectory: true,
+							isWorkspaceRoot: true,
+							workspaceId: ws.id,
+						});
+					} else {
+						// Path doesn't exist — show as virtual workspace with error info
+						this.logService.warn(`[WorkspaceViewPane]   - "${ws.name}" path="${ws.path}" does not exist, showing as virtual`);
+						const infoUri = URI.from({ scheme: 'agent-studio-workspace', authority: ws.id, path: '/' });
+						const infoChildren: IWorkspaceExplorerElement[] = [];
+						if (ws.description) {
+							infoChildren.push({
+								resource: URI.joinPath(infoUri, 'description'),
+								name: ws.description,
+								isDirectory: false,
+								isInfoNode: true,
+							});
+						}
+						infoChildren.push({
+							resource: URI.joinPath(infoUri, 'path-missing'),
+							name: localize('pathMissing', "Path not found: {0}", ws.path),
+							isDirectory: false,
+							isInfoNode: true,
+						});
+						infoChildren.push({
+							resource: URI.joinPath(infoUri, 'created'),
+							name: localize('workspaceCreated', "Created: {0}", new Date(ws.createdAt).toLocaleDateString()),
+							isDirectory: false,
+							isInfoNode: true,
+						});
+						workspaceRoots.push({
+							resource: infoUri,
+							name: ws.name,
+							isDirectory: true,
+							isWorkspaceRoot: true,
+							isVirtualWorkspace: true,
+							workspaceId: ws.id,
+							description: ws.description,
+							children: infoChildren,
+						});
+					}
 				} else {
 					// Virtual workspace — no local path, show as folder with info children
 					this.logService.info(`[WorkspaceViewPane]   - "${ws.name}" (virtual, no path) id=${ws.id}`);
@@ -268,7 +322,7 @@ export class WorkspaceViewPane extends ViewPane {
 						isDirectory: false,
 						isInfoNode: true,
 					});
-					return {
+					workspaceRoots.push({
 						resource: infoUri,
 						name: ws.name,
 						isDirectory: true,
@@ -277,39 +331,44 @@ export class WorkspaceViewPane extends ViewPane {
 						workspaceId: ws.id,
 						description: ws.description,
 						children: infoChildren,
-					};
+					});
 				}
-			});
+			}
 
-			if (workspaceRoots.length === 1) {
-				// Single workspace — set as direct root, auto-expand
-				const root = workspaceRoots[0];
-				this.logService.info(`[WorkspaceViewPane] Setting single root: ${root.name} -> ${root.resource.toString()}`);
-				await this.tree.setInput(root);
+			// After validation, check if we still have any roots
+			if (workspaceRoots.length === 0) {
+				this.logService.warn('[WorkspaceViewPane] No valid workspace roots found after path validation');
+				this.treeContainer.style.display = 'none';
+				this.emptyStateContainer.style.display = 'flex';
+				this.wsProgressBar.stop().hide();
+				return;
+			}
+
+			this.logService.info(`[WorkspaceViewPane] Building tree with ${workspaceRoots.length} roots (real + virtual)`);
+
+			// Always use a hidden virtual root as tree input.
+			// The tree's input node itself is never rendered by AsyncDataTree,
+			// so workspace root nodes become the first visible layer — just
+			// like VS Code's native Explorer shows workspace folder names.
+			const virtualRoot: IWorkspaceExplorerElement = {
+				resource: URI.from({ scheme: 'agent-studio-workspace', authority: 'root', path: '/' }),
+				name: 'Workspaces',
+				isDirectory: true,
+				children: workspaceRoots,
+			};
+
+			this.logService.info(`[WorkspaceViewPane] Setting virtual root with ${workspaceRoots.length} workspace children`);
+			await this.tree.setInput(virtualRoot);
+			this.logService.info('[WorkspaceViewPane] setInput completed for virtual root');
+
+			// Auto-expand each workspace root so users see the file tree immediately
+			for (const root of workspaceRoots) {
 				try {
 					await this.tree.expand(root);
+					this.logService.info(`[WorkspaceViewPane] expanded workspace root: ${root.name}`);
 				} catch {
-					this.logService.warn(`[WorkspaceViewPane] Failed to expand root: ${root.name}`);
-				}
-			} else {
-				// Multiple workspaces — create a virtual root
-				const virtualRoot: IWorkspaceExplorerElement = {
-					resource: workspaceRoots[0].resource,
-					name: 'Workspaces',
-					isDirectory: true,
-					children: workspaceRoots,
-				};
-				this.logService.info(`[WorkspaceViewPane] Setting virtual root with ${workspaceRoots.length} workspace children`);
-				await this.tree.setInput(virtualRoot);
-				// Auto-expand the virtual root to show all workspace folders
-				await this.tree.expand(virtualRoot);
-				// Also expand each workspace root
-				for (const root of workspaceRoots) {
-					try {
-						await this.tree.expand(root);
-					} catch {
-						// Expand may fail if directory doesn't exist
-					}
+					// Expand may fail if directory doesn't exist
+					this.logService.warn(`[WorkspaceViewPane] Failed to expand workspace root: ${root.name}`);
 				}
 			}
 		} catch (err) {
