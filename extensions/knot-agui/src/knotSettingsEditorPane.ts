@@ -40,7 +40,9 @@ const KNOT_SETTINGS_FIELDS: KnotSettingField[] = [
 	{ key: 'sessions.agentStudio.knot.token', label: 'API TOKEN', description: 'Knot 平台 API Token', link: { label: '前往生成 →', href: 'https://knot.woa.com/settings/token' }, type: 'password', default: '', placeholder: '粘贴你的 Knot API Token' },
 	// 2. API User（企微英文名）
 	{ key: 'sessions.agentStudio.knot.user', label: 'API USER（企微英文名）', description: '使用团队 Token 时必填；个人 Token 可留空', type: 'string', default: '', placeholder: '如 zhangsan' },
-	// 3. 智能体列表（JSON 数组）
+	// 3. API URL（AGUI 协议端点）
+	{ key: 'sessions.agentStudio.knot.apiUrl', label: 'API URL', description: '智能体的 AG-UI 协议 API 端点，留空则使用默认地址', type: 'string', default: '', placeholder: 'https://knot.woa.com/apigw/api/v1/agents/agui/{agent_id}' },
+	// 4. 智能体列表（JSON 数组）
 	{ key: 'sessions.agentStudio.knot.agents', label: '智能体列表', description: 'JSON 数组格式，每项含 id、name 和可选的 models 数组', type: 'json', default: [], placeholder: '[{"id": "agent-1", "name": "Agent 1", "models": ["model-1"]}]', rows: 6 },
 	// 4. 高级选项
 	{ key: 'knot.streaming', label: '启用流式响应', description: '实时接收模型输出', type: 'boolean', default: true },

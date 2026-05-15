@@ -763,6 +763,192 @@ async function transpile(outDir: string, excludeTests: boolean): Promise<void> {
 		const destPath = path.join(REPO_ROOT, outDir, file.replace(/\.ts$/, '.js'));
 		return transpileFile(srcPath, destPath);
 	}));
+
+	// Transpile capability plugin extensions (dynamically imported at runtime)
+	await transpileCapabilityPlugins(outDir);
+}
+
+/**
+ * Capability plugin extensions (e.g. knot-agui, hermes-agent) are loaded via
+ * dynamic import() at runtime from paths like:
+ *   ../../../../extensions/<name>/src/extension.js
+ * (relative to out/vs/sessions/contrib/agentStudio/browser/).
+ *
+ * These resolve to out/vs/extensions/<name>/src/extension.js, so we bundle
+ * each extension into that path. We use esbuild's bundle mode so that imports
+ * referencing src/vs/... are resolved and rewritten correctly.
+ *
+ * Instead of hardcoding extension names, we auto-discover them by scanning
+ * each extension's package.json for those that declare "agentCapabilities"
+ * in their "contributes" section. This means installing a new provider plugin
+ * is as simple as dropping it into extensions/ with a proper package.json.
+ */
+
+interface CapabilityPluginManifest {
+	id: string;
+	name: string;
+	version: string;
+	module: string; // relative path from out/vs/sessions/contrib/agentStudio/browser/
+	capabilities: Array<{
+		capability: string;
+		provider: string;
+		priority?: number;
+	}>;
+	exportClass?: string; // The exported class name (e.g. 'KnotAguiPlugin')
+}
+
+/**
+ * Scan each extension's package.json to find all capability plugin extensions.
+ * An extension qualifies if it declares `contributes.agentCapabilities` in its
+ * package.json AND has a `src/extension.ts` entry point.
+ */
+function discoverCapabilityPlugins(): CapabilityPluginManifest[] {
+	const extensionsDir = path.join(REPO_ROOT, 'extensions');
+	const plugins: CapabilityPluginManifest[] = [];
+
+	if (!fs.existsSync(extensionsDir)) {
+		return plugins;
+	}
+
+	const entries = fs.readdirSync(extensionsDir, { withFileTypes: true });
+	for (const entry of entries) {
+		if (!entry.isDirectory()) {
+			continue;
+		}
+
+		const pkgJsonPath = path.join(extensionsDir, entry.name, 'package.json');
+		const entryTsPath = path.join(extensionsDir, entry.name, 'src', 'extension.ts');
+
+		// Must have both package.json and src/extension.ts
+		if (!fs.existsSync(pkgJsonPath) || !fs.existsSync(entryTsPath)) {
+			continue;
+		}
+
+		try {
+			const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
+			const capabilities = pkgJson?.contributes?.agentCapabilities;
+
+			if (!Array.isArray(capabilities) || capabilities.length === 0) {
+				continue;
+			}
+
+			plugins.push({
+				id: entry.name,
+				name: pkgJson.displayName || pkgJson.name || entry.name,
+				version: pkgJson.version || '0.0.0',
+				// Relative from out/vs/sessions/contrib/agentStudio/browser/
+				// to out/vs/extensions/<name>/src/extension.js
+				module: `../../../../extensions/${entry.name}/src/extension.js`,
+				capabilities,
+				exportClass: pkgJson.contributes?.agentCapabilities?.[0]?.exportClass,
+			});
+
+			console.log(`[discover] Found capability plugin: ${entry.name} (${capabilities.map((c: { capability: string }) => c.capability).join(', ')})`);
+		} catch (err) {
+			console.warn(`[discover] Failed to parse package.json for ${entry.name}:`, err);
+		}
+	}
+
+	return plugins;
+}
+
+// Discover at build time — replaces the old hardcoded list
+const DISCOVERED_CAPABILITY_PLUGINS = discoverCapabilityPlugins();
+const CAPABILITY_PLUGIN_EXTENSIONS = DISCOVERED_CAPABILITY_PLUGINS.map(p => p.id);
+
+async function transpileCapabilityPlugins(outDir: string): Promise<void> {
+	for (const extName of CAPABILITY_PLUGIN_EXTENSIONS) {
+		const entryPath = path.join(REPO_ROOT, 'extensions', extName, 'src', 'extension.ts');
+		if (!fs.existsSync(entryPath)) {
+			continue;
+		}
+
+		// Output to out/vs/extensions/<name>/src/extension.js
+		const outPath = path.join(REPO_ROOT, outDir, 'vs', 'extensions', extName, 'src', 'extension.js');
+
+		try {
+			await esbuild.build({
+				entryPoints: [entryPath],
+				outfile: outPath,
+				bundle: true,
+				format: 'esm',
+				platform: 'neutral',
+				target: ['es2024'],
+				// Mark all imports from src/vs/... as external — they are already
+				// bundled in the main app and available at runtime via module resolution.
+				// We rewrite the paths so they resolve from the output location.
+				plugins: [{
+					name: 'resolve-src-imports',
+					setup(build) {
+						// Intercept imports that reference ../../../src/vs/... paths
+						// and rewrite them to point to the correct location in out/
+						build.onResolve({ filter: /\.\.\/.*src\/vs\// }, (args) => {
+							// Extract the vs/... portion from the import path
+							const match = args.path.match(/src\/(vs\/.+)/);
+							if (match) {
+								// Rewrite to relative path from out/vs/extensions/<name>/src/
+								// to out/vs/<module>
+								// e.g. ../../../src/vs/sessions/... → ../../../../sessions/...
+								const vsPath = match[1];
+								return {
+									path: `../../../../${vsPath}`,
+									external: true,
+								};
+							}
+							return undefined;
+						});
+
+						// Mark CSS imports as external
+						build.onResolve({ filter: /\.css$/ }, (args) => ({
+							path: args.path,
+							external: true,
+						}));
+					},
+				}],
+				packages: 'external',
+				sourcemap: 'linked',
+				tsconfigRaw: JSON.stringify({
+					compilerOptions: {
+						experimentalDecorators: true,
+						useDefineForClassFields: false,
+					}
+				}),
+				logLevel: 'warning',
+			});
+
+			console.log(`[transpile] Bundled capability plugin: ${extName}`);
+		} catch (err) {
+			console.warn(`[transpile] Failed to bundle capability plugin ${extName}:`, err);
+		}
+
+		// Copy non-TS resource files (CSS, images, etc.) from src/ to the output directory
+		const extSrcDir = path.join(REPO_ROOT, 'extensions', extName, 'src');
+		const extOutDir = path.join(REPO_ROOT, outDir, 'vs', 'extensions', extName, 'src');
+		if (fs.existsSync(extSrcDir)) {
+			const resourceFiles = await globAsync('**/*', {
+				cwd: extSrcDir,
+				nodir: true,
+				ignore: ['**/*.ts', '**/*.d.ts'],
+			});
+			for (const file of resourceFiles) {
+				const srcResPath = path.join(extSrcDir, file);
+				const destResPath = path.join(extOutDir, file);
+				await fs.promises.mkdir(path.dirname(destResPath), { recursive: true });
+				await fs.promises.copyFile(srcResPath, destResPath);
+			}
+			if (resourceFiles.length > 0) {
+				console.log(`[transpile] Copied ${resourceFiles.length} resource files for ${extName}`);
+			}
+		}
+	}
+
+	// Generate the capability-plugins.json manifest for runtime auto-discovery.
+	// This file is read by AgentCapabilityPluginContribution at startup so it
+	// can dynamically import() each plugin without hardcoded paths.
+	const manifestPath = path.join(REPO_ROOT, outDir, 'vs', 'extensions', 'capability-plugins.json');
+	await fs.promises.mkdir(path.dirname(manifestPath), { recursive: true });
+	await fs.promises.writeFile(manifestPath, JSON.stringify(DISCOVERED_CAPABILITY_PLUGINS, null, '\t'), 'utf-8');
+	console.log(`[transpile] Generated capability-plugins.json (${DISCOVERED_CAPABILITY_PLUGINS.length} plugins)`);
 }
 
 // ============================================================================
@@ -1112,14 +1298,17 @@ async function watch(): Promise<void> {
 
 	let pendingTsFiles: Set<string> = new Set();
 	let pendingCopyFiles: Set<string> = new Set();
+	let pendingPluginRebundle = false;
 
 	const processChanges = async () => {
 		console.log('Starting transpilation...');
 		const t1 = Date.now();
 		const tsFiles = [...pendingTsFiles];
 		const filesToCopy = [...pendingCopyFiles];
+		const needPluginRebundle = pendingPluginRebundle;
 		pendingTsFiles = new Set();
 		pendingCopyFiles = new Set();
+		pendingPluginRebundle = false;
 
 		try {
 			// Transform changed TypeScript files in parallel
@@ -1130,6 +1319,12 @@ async function watch(): Promise<void> {
 					const destPath = path.join(REPO_ROOT, outDir, relativePath.replace(/\.ts$/, '.js'));
 					return transpileFile(srcPath, destPath);
 				}));
+			}
+
+			// Re-bundle capability plugins if any of their files changed
+			if (needPluginRebundle) {
+				console.log(`[watch] Re-bundling capability plugins...`);
+				await transpileCapabilityPlugins(outDir);
 			}
 
 			// Copy changed resource files in parallel
@@ -1143,7 +1338,7 @@ async function watch(): Promise<void> {
 				}));
 			}
 
-			if (tsFiles.length > 0 || filesToCopy.length > 0) {
+			if (tsFiles.length > 0 || filesToCopy.length > 0 || needPluginRebundle) {
 				console.log(`Finished transpilation with 0 errors after ${Date.now() - t1} ms`);
 			}
 		} catch (err) {
@@ -1172,7 +1367,24 @@ async function watch(): Promise<void> {
 		}
 	});
 
-	console.log('[watch] Watching src/**/*.{ts,css,...} (Ctrl+C to stop)');
+	// Watch capability plugin extensions directories
+	for (const extName of CAPABILITY_PLUGIN_EXTENSIONS) {
+		const extDir = path.join(REPO_ROOT, 'extensions', extName);
+		if (!fs.existsSync(extDir)) {
+			continue;
+		}
+
+		const pluginStream = gulpWatch(`extensions/${extName}/src/**/*.ts`, { base: extDir, readDelay: 200 });
+		pluginStream.on('data', (file: { path: string }) => {
+			if (file.path.endsWith('.ts') && !file.path.endsWith('.d.ts')) {
+				pendingPluginRebundle = true;
+				clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(processChanges, 200);
+			}
+		});
+	}
+
+	console.log('[watch] Watching src/**/*.{ts,css,...} + capability plugins (Ctrl+C to stop)');
 
 	// Keep process alive
 	process.on('SIGINT', () => {

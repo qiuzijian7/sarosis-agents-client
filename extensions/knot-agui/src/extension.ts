@@ -54,7 +54,8 @@ export class KnotAguiPlugin implements IAgentCapabilityPlugin {
 		// 从 Settings 读取配置（与 package.json 中的配置键保持一致）
 		const config = context.configurationService;
 		const token = config.getValue<string>('sessions.agentStudio.knot.token');
-		const endpoint = 'https://knot.woa.com';
+		const apiUrl = config.getValue<string>('sessions.agentStudio.knot.apiUrl') || '';
+		const endpoint = apiUrl || 'https://knot.woa.com';
 		// 创建 Model Provider（支持多 Agent/模型）
 		this._provider = new KnotAGUIModelProvider({
 			token,

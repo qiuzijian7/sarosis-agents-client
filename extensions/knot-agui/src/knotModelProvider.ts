@@ -8,6 +8,7 @@ import { IModelProvider, IModelInfo, IModelAgentInfo, ModelAuthStatus, IModelOpt
 
 // 本地定义配置常量（与 package.json 中的配置键保持一致）
 const KNOT_TOKEN_SETTING = 'sessions.agentStudio.knot.token';
+const KNOT_API_URL_SETTING = 'sessions.agentStudio.knot.apiUrl';
 
 /**
  * Knot AG-UI Model Provider
@@ -150,7 +151,8 @@ export class KnotAGUIModelProvider implements IModelProvider {
 	}
 
 	private async _fetchAvailableAgents(token: string): Promise<any[]> {
-		const baseUrl = this._options.endpoint || 'https://knot.woa.com';
+		const configApiUrl = this._options.configurationService.getValue(KNOT_API_URL_SETTING) as string || '';
+		const baseUrl = configApiUrl || this._options.endpoint || 'https://knot.woa.com';
 		const apiUrl = `${baseUrl}/apigw/api/v1/agents`;
 		const user = this._options.configurationService.getValue('sessions.agentStudio.knot.user') as string || '';
 		
@@ -174,7 +176,8 @@ export class KnotAGUIModelProvider implements IModelProvider {
 
 	private async *_createStreamGenerator(agentId: string, opts: any): AsyncGenerator<IModelDelta> {
 		const token = this._options.configurationService.getValue(KNOT_TOKEN_SETTING) as string || '';
-		const baseUrl = this._options.endpoint || 'https://knot.woa.com';
+		const configApiUrl = this._options.configurationService.getValue(KNOT_API_URL_SETTING) as string || '';
+		const baseUrl = configApiUrl || this._options.endpoint || 'https://knot.woa.com';
 		const url = `${baseUrl}/apigw/api/v1/agents/${agentId}/chat`;
 		
 		const user = this._options.configurationService.getValue('sessions.agentStudio.knot.user') as string || '';

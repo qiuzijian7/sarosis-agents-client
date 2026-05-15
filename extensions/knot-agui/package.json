@@ -39,6 +39,13 @@
           "description": "API USER（企微英文名，使用团队 Token 时必填）",
           "scope": "application"
         },
+        "sessions.agentStudio.knot.apiUrl": {
+          "type": "string",
+          "default": "",
+          "description": "智能体的 AG-UI 协议 API 端点（如 https://knot.woa.com/apigw/api/v1/agents/agui/{agent_id}）",
+          "markdownDescription": "智能体的 AG-UI 协议 API 端点。格式：`https://knot.woa.com/apigw/api/v1/agents/agui/{agent_id}`。留空则使用默认地址 `https://knot.woa.com`。",
+          "scope": "application"
+        },
         "sessions.agentStudio.knot.agents": {
           "type": "array",
           "default": [],

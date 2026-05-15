@@ -15,9 +15,9 @@
 		"resolveJsonModule": true,
 		"allowJs": true,
 		"skipLibCheck": true,
-		"outDir": "../../out/vs",
-	"rootDir": ".",
-	"paths": {
+		"outDir": "../../out/vs/extensions/knot-agui",
+		"rootDir": ".",
+		"paths": {
 			"*": ["../../src/*"]
 		}
 	},
