@@ -6,9 +6,11 @@
  *  - chat-send-circle (round send button on the right)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useRef, useCallback, KeyboardEvent } from 'react';
+import React, { useState, useRef, useCallback, KeyboardEvent, useEffect } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useProviderStore } from '../../store/useProviderStore';
+import type { ProviderInfo } from '../../store/useProviderStore';
 
 interface ChatComposerProps {
 	onSend: (message: string) => void;
@@ -19,15 +21,57 @@ interface ChatComposerProps {
 export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
 	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+	const [showProviderDropdown, setShowProviderDropdown] = useState(false);
+	const [showModelDropdown, setShowModelDropdown] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const providerDropdownRef = useRef<HTMLDivElement>(null);
+	const modelDropdownRef = useRef<HTMLDivElement>(null);
 	const { activeEmployeeId } = useChatStore();
 	const { employees } = useEmployeeStore();
+	const { providers, selection, selectProvider } = useProviderStore();
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
 
-	const provider = activeEmployee?.provider || 'Provider';
-	const model = activeEmployee?.model || 'Model';
+	// 从 provider store 获取当前选中的 Provider/Model 名称
+	const authenticatedProviders = providers.filter(p => p.authStatus === 'authenticated');
+	const providerDisplay = selection?.providerName || activeEmployee?.provider || 'Provider';
+	const modelDisplay = selection?.modelId || activeEmployee?.model || 'Model';
+
+	// 点击外部关闭下拉菜单
+	useEffect(() => {
+		const handleClickOutside = (e: MouseEvent) => {
+			if (providerDropdownRef.current && !providerDropdownRef.current.contains(e.target as Node)) {
+				setShowProviderDropdown(false);
+			}
+			if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+				setShowModelDropdown(false);
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		return () => document.removeEventListener('mousedown', handleClickOutside);
+	}, []);
+
+	const handleProviderSelect = useCallback((provider: ProviderInfo) => {
+		const firstModel = provider.models[0];
+		const firstAgent = provider.agents?.[0];
+		if (firstModel) {
+			selectProvider(provider.id, firstModel.id, firstAgent?.id);
+		}
+		setShowProviderDropdown(false);
+	}, [selectProvider]);
+
+	const handleModelSelect = useCallback((modelId: string, agentId?: string) => {
+		if (selection) {
+			selectProvider(selection.providerId, modelId, agentId);
+		}
+		setShowModelDropdown(false);
+	}, [selection, selectProvider]);
+
+	// 获取当前选中 Provider 的可用模型/Agent 列表
+	const currentProvider = selection
+		? authenticatedProviders.find(p => p.id === selection.providerId)
+		: null;
 
 	const handleSend = useCallback(() => {
 		if (!input.trim() || isLoading) return;
@@ -104,37 +148,97 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 							<span className="toolbar-btn-label">联网</span>
 						</button>
 
-						{/* 分隔线 */}
-						<div className="chat-toolbar-divider" />
+					{/* 分隔线 */}
+					<div className="chat-toolbar-divider" />
 
-						{/* Provider 选择器 */}
-						<div className="provider-model-chip-wrap">
-							<button className="chat-toolbar-btn has-label provider-tag" title="选择 Provider">
-								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-									<line x1="8" y1="21" x2="16" y2="21" />
-									<line x1="12" y1="17" x2="12" y2="21" />
-								</svg>
-								<span className="toolbar-btn-label">{provider}</span>
-								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-									<path d="M6 9l6 6 6-6" />
-								</svg>
-							</button>
-						</div>
+					{/* Provider 选择器 */}
+					<div className="provider-model-chip-wrap" ref={providerDropdownRef}>
+						<button
+							className="chat-toolbar-btn has-label provider-tag"
+							title="选择 Provider"
+							onClick={() => {
+								setShowProviderDropdown(!showProviderDropdown);
+								setShowModelDropdown(false);
+							}}
+						>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+								<rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+								<line x1="8" y1="21" x2="16" y2="21" />
+								<line x1="12" y1="17" x2="12" y2="21" />
+							</svg>
+							<span className="toolbar-btn-label">{providerDisplay}</span>
+							<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+								<path d="M6 9l6 6 6-6" />
+							</svg>
+						</button>
+						{showProviderDropdown && authenticatedProviders.length > 0 && (
+							<div className="provider-dropdown">
+								{authenticatedProviders.map(p => (
+									<button
+										key={p.id}
+										className={`provider-dropdown-item ${selection?.providerId === p.id ? 'active' : ''}`}
+										onClick={() => handleProviderSelect(p)}
+									>
+										<span className="provider-dropdown-name">{p.name}</span>
+										<span className="provider-dropdown-detail">
+											{p.supportsAgents
+												? `${p.agents?.length || 0} agents`
+												: `${p.models.length} models`}
+										</span>
+									</button>
+								))}
+							</div>
+						)}
+					</div>
 
-						{/* Model 选择器 */}
-						<div className="provider-model-chip-wrap">
-							<button className="chat-toolbar-btn has-label model-tag" title="选择模型">
-								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<polyline points="4 17 10 11 4 5" />
-									<line x1="12" y1="19" x2="20" y2="19" />
-								</svg>
-								<span className="toolbar-btn-label">{model}</span>
-								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-									<path d="M6 9l6 6 6-6" />
-								</svg>
-							</button>
-						</div>
+					{/* Model 选择器 */}
+					<div className="provider-model-chip-wrap" ref={modelDropdownRef}>
+						<button
+							className="chat-toolbar-btn has-label model-tag"
+							title="选择模型"
+							onClick={() => {
+								setShowModelDropdown(!showModelDropdown);
+								setShowProviderDropdown(false);
+							}}
+						>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+								<polyline points="4 17 10 11 4 5" />
+								<line x1="12" y1="19" x2="20" y2="19" />
+							</svg>
+							<span className="toolbar-btn-label">{modelDisplay}</span>
+							<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+								<path d="M6 9l6 6 6-6" />
+							</svg>
+						</button>
+						{showModelDropdown && currentProvider && (
+							<div className="provider-dropdown">
+								{currentProvider.supportsAgents && currentProvider.agents
+									? currentProvider.agents.map(a => (
+										<button
+											key={a.id}
+											className={`provider-dropdown-item ${selection?.agentId === a.id ? 'active' : ''}`}
+											onClick={() => handleModelSelect(a.id, a.id)}
+										>
+											<span className="provider-dropdown-name">{a.name}</span>
+											{a.models && (
+												<span className="provider-dropdown-detail">
+													{a.models.join(', ')}
+												</span>
+											)}
+										</button>
+									))
+									: currentProvider.models.map(m => (
+										<button
+											key={m.id}
+											className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
+											onClick={() => handleModelSelect(m.id)}
+										>
+											<span className="provider-dropdown-name">{m.name}</span>
+										</button>
+									))}
+							</div>
+						)}
+					</div>
 					</div>
 
 					{/* 右侧发送/取消按钮 */}

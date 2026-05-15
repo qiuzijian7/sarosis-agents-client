@@ -890,6 +890,7 @@ button.primary:hover,
 	border-radius: 6px;
 	background: var(--vscode-input-background);
 	gap: 6px;
+	flex-shrink: 0;
 }
 
 .preset-search-box:focus-within {
@@ -942,6 +943,106 @@ button.primary:hover,
 .preset-grid {
 	padding: 8px;
 	overflow-y: auto;
+	flex: 1;
+	min-height: 0;
+}
+
+/* ─── Scrollbar Styles ─────────────────────────────────────────────────────── */
+
+/* Vertical scrollbar for main list containers */
+.preset-grid::-webkit-scrollbar,
+.preset-dialog::-webkit-scrollbar,
+.preset-detail-prompt-text::-webkit-scrollbar,
+.workspace-list::-webkit-scrollbar,
+.skills-list::-webkit-scrollbar,
+.tasks-content::-webkit-scrollbar,
+.schedule-list::-webkit-scrollbar,
+.tools-list::-webkit-scrollbar,
+.changes-list::-webkit-scrollbar,
+.search-results::-webkit-scrollbar,
+.plugins-list::-webkit-scrollbar,
+.settings-content::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+.preset-grid::-webkit-scrollbar-track,
+.preset-dialog::-webkit-scrollbar-track,
+.preset-detail-prompt-text::-webkit-scrollbar-track,
+.workspace-list::-webkit-scrollbar-track,
+.skills-list::-webkit-scrollbar-track,
+.tasks-content::-webkit-scrollbar-track,
+.schedule-list::-webkit-scrollbar-track,
+.tools-list::-webkit-scrollbar-track,
+.changes-list::-webkit-scrollbar-track,
+.search-results::-webkit-scrollbar-track,
+.plugins-list::-webkit-scrollbar-track,
+.settings-content::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.preset-grid::-webkit-scrollbar-thumb,
+.preset-dialog::-webkit-scrollbar-thumb,
+.preset-detail-prompt-text::-webkit-scrollbar-thumb,
+.workspace-list::-webkit-scrollbar-thumb,
+.skills-list::-webkit-scrollbar-thumb,
+.tasks-content::-webkit-scrollbar-thumb,
+.schedule-list::-webkit-scrollbar-thumb,
+.tools-list::-webkit-scrollbar-thumb,
+.changes-list::-webkit-scrollbar-thumb,
+.search-results::-webkit-scrollbar-thumb,
+.plugins-list::-webkit-scrollbar-thumb,
+.settings-content::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background);
+	border-radius: 3px;
+}
+
+.preset-grid::-webkit-scrollbar-thumb:hover,
+.preset-dialog::-webkit-scrollbar-thumb:hover,
+.preset-detail-prompt-text::-webkit-scrollbar-thumb:hover,
+.workspace-list::-webkit-scrollbar-thumb:hover,
+.skills-list::-webkit-scrollbar-thumb:hover,
+.tasks-content::-webkit-scrollbar-thumb:hover,
+.schedule-list::-webkit-scrollbar-thumb:hover,
+.tools-list::-webkit-scrollbar-thumb:hover,
+.changes-list::-webkit-scrollbar-thumb:hover,
+.search-results::-webkit-scrollbar-thumb:hover,
+.plugins-list::-webkit-scrollbar-thumb:hover,
+.settings-content::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+.preset-grid::-webkit-scrollbar-thumb:active,
+.preset-dialog::-webkit-scrollbar-thumb:active,
+.preset-detail-prompt-text::-webkit-scrollbar-thumb:active,
+.workspace-list::-webkit-scrollbar-thumb:active,
+.skills-list::-webkit-scrollbar-thumb:active,
+.tasks-content::-webkit-scrollbar-thumb:active,
+.schedule-list::-webkit-scrollbar-thumb:active,
+.tools-list::-webkit-scrollbar-thumb:active,
+.changes-list::-webkit-scrollbar-thumb:active,
+.search-results::-webkit-scrollbar-thumb:active,
+.plugins-list::-webkit-scrollbar-thumb:active,
+.settings-content::-webkit-scrollbar-thumb:active {
+	background: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+/* Horizontal scrollbar for category filters */
+.preset-category-filters::-webkit-scrollbar {
+	height: 3px;
+}
+
+.preset-category-filters::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.preset-category-filters::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background);
+	border-radius: 2px;
+}
+
+.preset-category-filters::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground);
 }
 
 .preset-card {
@@ -2289,6 +2390,17 @@ button.primary:hover,
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	margin-bottom: 6px;
+}
+
+.plugin-tab-field-desc .plugin-tab-field-link {
+	color: var(--vscode-textLink-foreground);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.plugin-tab-field-desc .plugin-tab-field-link:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
 }
 
 .plugin-tab-input {

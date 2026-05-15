@@ -14,6 +14,7 @@ import { EditorPaneDescriptor } from '../../../src/vs/workbench/browser/editor.j
 import { SyncDescriptor } from '../../../src/vs/platform/instantiation/common/descriptors.js';
 import { IEditorService } from '../../../src/vs/workbench/services/editor/common/editorService.js';
 import { SIDE_GROUP } from '../../../src/vs/workbench/services/editor/common/editorService.js';
+import { ICommandService } from '../../../src/vs/platform/commands/common/commands.js';
 import './media/knotSettingsEditorPane.css';
 
 /**
@@ -51,14 +52,11 @@ export class KnotAguiPlugin implements IAgentCapabilityPlugin {
 		// 从 Settings 读取配置（与 package.json 中的配置键保持一致）
 		const config = context.configurationService;
 		const token = config.getValue<string>('sessions.agentStudio.knot.token');
-		const endpoint = config.getValue<string>('sessions.agentStudio.knot.baseUrl') || 'https://knot.woa.com/apigw/api/v1/agents/agui';
-		const defaultAgent = config.getValue<string>('sessions.agentStudio.knot.agentId');
-
+		const endpoint = 'https://knot.woa.com';
 		// 创建 Model Provider（支持多 Agent/模型）
 		this._provider = new KnotAGUIModelProvider({
 			token,
 			endpoint,
-			defaultAgent,
 			configurationService: config,
 			logService: context.logService,
 		});
@@ -114,20 +112,21 @@ export class KnotAguiPlugin implements IAgentCapabilityPlugin {
 	 * Called when the user clicks the Knot plugin in the plugins view.
 	 */
 	private _registerOpenSettingsCommand(context: IAgentOSPluginContext): void {
-		// Register as a command handler via the extension host command service
-		// The "knot.openSettings" command is declared in package.json
 		const editorService = context.instantiationService.invokeFunction(
 			(accessor) => accessor.get(IEditorService)
 		);
+		const commandService = context.instantiationService.invokeFunction(
+			(accessor) => accessor.get(ICommandService)
+		);
 
-		// We store the editorService reference for use when the command is triggered
-		this._disposables.push({
-			dispose() { /* cleanup */ }
+		// Register the knot.openSettings command handler
+		const commandRegistration = commandService.registerCommand('knot.openSettings', () => {
+			const input = KnotSettingsEditorInput.getInstance();
+			editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
 		});
+		this._disposables.push(commandRegistration);
 
-		// Expose a way to open settings from the plugin click handler
-		// The knot.openSettings command is registered via package.json contributes.commands
-		// and its handler is set up by the extension host
+		// Also expose a global function for fallback usage
 		(globalThis as any).__knotOpenSettings = () => {
 			const input = KnotSettingsEditorInput.getInstance();
 			editorService.openEditor(input, { pinned: true }, SIDE_GROUP);

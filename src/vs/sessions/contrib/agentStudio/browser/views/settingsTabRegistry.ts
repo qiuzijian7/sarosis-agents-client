@@ -63,6 +63,8 @@ export interface ISettingsFieldDescriptor {
 	min?: number;
 	/** Maximum value for `number` type */
 	max?: number;
+	/** Optional hyperlink shown after the description text */
+	link?: { label: string; href: string };
 }
 
 /**

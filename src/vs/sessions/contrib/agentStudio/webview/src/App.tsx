@@ -20,6 +20,7 @@ import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
 import { useDelegationStore } from './store/useDelegationStore';
 import { useTaskBoardStore } from './store/useTaskBoardStore';
+import { useProviderStore } from './store/useProviderStore';
 
 // Read the panel type injected by the VS Code host
 type PanelType = 'canvas' | 'chat' | 'taskboard' | undefined;
@@ -80,6 +81,7 @@ function CanvasPanel(): React.ReactElement {
 function ChatPanel(): React.ReactElement {
 	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
 	const { loadEmployees } = useEmployeeStore();
+	const { loadProviders } = useProviderStore();
 
 	useEffect(() => {
 		loadWorkspaces().then(() => {
@@ -89,6 +91,7 @@ function ChatPanel(): React.ReactElement {
 			}
 		});
 		loadEmployees();
+		loadProviders();
 	}, []);
 
 	useEffect(() => {
@@ -180,6 +183,7 @@ function FullLayout(): React.ReactElement {
 	const { loadEmployees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();
 	const { loadTasks } = useTaskBoardStore();
+	const { loadProviders } = useProviderStore();
 
 	// Initialize on mount
 	useEffect(() => {
@@ -190,6 +194,7 @@ function FullLayout(): React.ReactElement {
 			}
 		});
 		loadEmployees();
+		loadProviders();
 	}, []);
 
 	// Reload employees and tasks when workspace changes

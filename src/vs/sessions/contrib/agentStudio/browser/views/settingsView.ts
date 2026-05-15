@@ -391,9 +391,26 @@ export class SettingsViewPane extends ViewPane {
 		}
 		container.appendChild(labelEl);
 
-		if (field.description) {
+		if (field.description || field.link) {
 			const descEl = $('div.plugin-tab-field-desc');
-			descEl.textContent = field.description;
+			if (field.description) {
+				descEl.appendChild(document.createTextNode(field.description));
+			}
+			if (field.link) {
+				if (field.description) {
+					descEl.appendChild(document.createTextNode(' '));
+				}
+				const linkEl = document.createElement('a');
+				linkEl.className = 'plugin-tab-field-link';
+				linkEl.textContent = field.link.label;
+				linkEl.href = field.link.href;
+				linkEl.title = field.link.href;
+				linkEl.onclick = (e) => {
+					e.preventDefault();
+					window.open(field.link!.href, '_blank', 'noopener');
+				};
+				descEl.appendChild(linkEl);
+			}
 			container.appendChild(descEl);
 		}
 

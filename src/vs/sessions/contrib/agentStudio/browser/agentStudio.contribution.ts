@@ -7,6 +7,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
@@ -110,12 +111,15 @@ import {
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
+import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
 import { AgentStudioSidebarView } from './agentStudioSidebarView.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
 import { SettingsEditorPane } from './settingsEditorPane.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
+import { PluginDetailEditorPane } from './pluginDetailEditorPane.js';
+import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import './views/media/toolbarViews.css';
 import { ClawChatViewPane } from './views/clawChatView.js';
 import { WorkspaceViewPane } from './views/workspaceView.js';
@@ -400,6 +404,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register PluginDetailEditorPane so that PluginDetailEditorInput opens in the editor area.
+// Clicking a plugin in the Plugins sidebar view opens the detail in the editor area,
+// mirroring VS Code's native Extensions view behavior.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		PluginDetailEditorPane,
+		PluginDetailEditorPane.ID,
+		localize('pluginDetailEditor', "Plugin Detail"),
+	),
+	[
+		new SyncDescriptor(PluginDetailEditorInput)
+	]
+);
+
 // Register a command to open the Agent Studio Settings editor directly
 registerAction2(class extends Action2 {
 	constructor() {
@@ -452,6 +470,34 @@ class AgentStudioProviderContribution extends Disposable implements IWorkbenchCo
 }
 
 registerWorkbenchContribution2(AgentStudioProviderContribution.ID, AgentStudioProviderContribution, WorkbenchPhase.BlockStartup);
+
+// --- Built-in BYOK Provider Registration ------------------------------------
+// Reads API keys from Settings and registers IModelProvider instances so they
+// appear in the chat composer's provider picker.
+
+class BYOKProviderContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.byokProviders';
+
+	constructor(
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@ILogService private readonly logService: ILogService,
+	) {
+		super();
+
+		if (!this.configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
+			return;
+		}
+
+		for (const def of BUILTIN_BYOK_PROVIDERS) {
+			const provider = this._register(new BuiltInBYOKModelProvider(def, this.configurationService, this.logService));
+			this._register(this.agentOSService.registerModelProvider(provider));
+			this.logService.info(`[BYOK] Registered built-in provider: ${def.id}`);
+		}
+	}
+}
+
+registerWorkbenchContribution2(BYOKProviderContribution.ID, BYOKProviderContribution, WorkbenchPhase.AfterRestored);
 
 // --- ViewContainer & Views Registration ------------------------------------------
 

@@ -14,6 +14,9 @@ import type { IChatStreamDelta } from '../common/agentStudio.js';
 import { IEnvironmentService, type INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import type { RequestType, IResponseMessage, IEventMessage } from './messageProtocol.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
+import { IModelSelectorService } from '../common/modelSelector.js';
+import { IAgentOSService } from '../common/agentOS.js';
+import type { IProviderInfo, IProviderSelectPayload } from './messageProtocol.js';
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -44,6 +47,8 @@ export class AgentStudioWebviewController extends Disposable {
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentDelegationService private readonly agentDelegationService: IAgentDelegationService,
 		@IAgentTaskBoardService private readonly agentTaskBoardService: IAgentTaskBoardService,
+		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
 	) {
 		super();
 		this._createWebview();
@@ -254,6 +259,12 @@ export class AgentStudioWebviewController extends Disposable {
 			case 'session.delete':
 				return this.agentStudioService.deleteSession(p.id as string);
 
+		// ─── Providers (Model Provider 列表) ────────────────────
+			case 'providers.list':
+				return this._handleProvidersList();
+			case 'providers.select':
+				return this._handleProvidersSelect(p as unknown as IProviderSelectPayload);
+
 			default:
 				throw new Error(`Unknown message type: ${type}`);
 		}
@@ -357,6 +368,67 @@ export class AgentStudioWebviewController extends Disposable {
 		};
 		document.addEventListener('agent-studio:active-workspace-changed', onActiveWorkspaceChanged);
 		this._register({ dispose: () => document.removeEventListener('agent-studio:active-workspace-changed', onActiveWorkspaceChanged) });
+
+		// Listen for Model Provider changes (auth status, model list, provider add/remove)
+		this._register(this.modelSelectorService.onDidChangeAvailableModels(() => {
+			this.logService.info('[AgentStudio] Model providers changed, notifying webview');
+			this._handleProvidersList().then(providers => {
+				this._sendEvent('providers.changed', { providers });
+			}).catch(err => {
+				this.logService.error('[AgentStudio] Failed to get providers for event', err);
+			});
+		}));
+	}
+
+	// ─── Provider Handlers ─────────────────────────────────────────────────────
+
+	private async _handleProvidersList(): Promise<IProviderInfo[]> {
+		const providers = this.agentOSService.getModelProviders();
+		const result: IProviderInfo[] = [];
+
+		for (const provider of providers) {
+			const authStatus = provider.getAuthStatus();
+			let models: { id: string; name: string }[] = [];
+			let agents: { id: string; name: string; models?: string[] }[] = [];
+
+			try {
+				const modelList = await provider.listModels();
+				models = modelList.map(m => ({ id: m.id, name: m.name || m.id }));
+			} catch {
+				// ignore
+			}
+
+			if (provider.supportsAgents && provider.listAgents) {
+				try {
+					const agentList = await provider.listAgents();
+					agents = agentList.map(a => ({ id: a.id, name: a.name || a.id, models: a.models }));
+				} catch {
+					// ignore
+				}
+			}
+
+			result.push({
+				id: provider.id,
+				name: provider.name,
+				authStatus: authStatus,
+				supportsAgents: provider.supportsAgents,
+				models,
+				agents,
+			});
+		}
+
+		return result;
+	}
+
+	private _handleProvidersSelect(payload: IProviderSelectPayload): void {
+		this.modelSelectorService.setSelection({
+			providerId: payload.providerId,
+			modelId: payload.modelId,
+			agentId: payload.agentId,
+		});
+		if (payload.agentId) {
+			this.modelSelectorService.setSelectedAgentId(payload.agentId);
+		}
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

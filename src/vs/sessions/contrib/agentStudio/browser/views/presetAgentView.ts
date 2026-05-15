@@ -312,7 +312,7 @@ export class PresetAgentViewPane extends ViewPane {
 	private _renderPresets(): void {
 		try {
 			if (!this.listContainer) { return; }
-			this.listContainer.innerHTML = '';
+			this.listContainer.textContent = '';
 			const presets = this._getFilteredPresets();
 
 			if (presets.length === 0) {
@@ -352,7 +352,7 @@ export class PresetAgentViewPane extends ViewPane {
 		} catch (err) {
 			console.error('[PresetAgentView] _renderPresets error:', err);
 			if (this.listContainer) {
-				this.listContainer.innerHTML = '';
+				this.listContainer.textContent = '';
 				const errEl = document.createElement('div');
 				errEl.style.cssText = 'padding:16px;color:#ff6b6b;font-size:12px;';
 				errEl.textContent = `Failed to render presets: ${err instanceof Error ? err.message : String(err)}`;
@@ -795,9 +795,16 @@ export class PresetAgentViewPane extends ViewPane {
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		if (this.listContainer) {
-			// Approximate heights: header(~40) + search(~36) + tabs(~36) + filters(~34) = ~146
-			this.listContainer.style.height = `${Math.max(0, height - 146)}px`;
+		// The container is .pane-body which also has .preset-agent-view class.
+		// It sits inside .pane (display:flex, flex-direction:column).
+		// We override flex:1 with flex:none + explicit pixel height to ensure
+		// the container gets exactly the right height from the splitview layout.
+		// The children (.preset-header, .preset-search-box, etc.) are flex-shrink:0,
+		// and .preset-grid uses flex:1 + min-height:0 to fill remaining space.
+		const container = this.listContainer?.parentElement;
+		if (container) {
+			container.style.height = `${height}px`;
+			container.style.flex = 'none';
 		}
 	}
 }

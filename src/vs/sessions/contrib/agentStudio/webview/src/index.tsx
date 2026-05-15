@@ -8,6 +8,7 @@ import { App } from './App.js';
 import { initMessageClient } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError } from './bridge/streamHandler.js';
 import { useEmployeeStore } from './store/useEmployeeStore.js';
+import { useProviderStore } from './store/useProviderStore.js';
 import './styles/globals.css';
 
 // Initialize the message bridge (must happen before React mounts)
@@ -55,6 +56,13 @@ initMessageClient((type, data) => {
 		case 'theme.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:theme-changed', { detail: data }));
 			break;
+		case 'providers.changed': {
+			const { providers } = (data as { providers: any[] }) ?? {};
+			if (providers) {
+				useProviderStore.getState().updateProviders(providers);
+			}
+			break;
+		}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}

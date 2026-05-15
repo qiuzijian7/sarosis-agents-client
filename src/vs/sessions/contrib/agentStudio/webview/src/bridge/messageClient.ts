@@ -40,7 +40,9 @@ export type RequestType =
 	| 'session.list'
 	| 'session.get'
 	| 'session.create'
-	| 'session.delete';
+	| 'session.delete'
+	| 'providers.list'
+	| 'providers.select';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;

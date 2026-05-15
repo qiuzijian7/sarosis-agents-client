@@ -30,16 +30,19 @@ interface KnotSettingField {
 	rows?: number;
 	min?: number;
 	max?: number;
+	link?: { label: string; href: string };
 }
 
 // ─── Knot Settings Sections ───────────────────────────────────────────────
 
 const KNOT_SETTINGS_FIELDS: KnotSettingField[] = [
-	{ key: 'sessions.agentStudio.knot.token', label: 'API TOKEN', description: '个人或团队 Token（在 knot.woa.com 生成）', type: 'password', default: '', placeholder: '粘贴你的 Knot API Token' },
+	// 1. API Token
+	{ key: 'sessions.agentStudio.knot.token', label: 'API TOKEN', description: 'Knot 平台 API Token', link: { label: '前往生成 →', href: 'https://knot.woa.com/settings/token' }, type: 'password', default: '', placeholder: '粘贴你的 Knot API Token' },
+	// 2. API User（企微英文名）
 	{ key: 'sessions.agentStudio.knot.user', label: 'API USER（企微英文名）', description: '使用团队 Token 时必填；个人 Token 可留空', type: 'string', default: '', placeholder: '如 zhangsan' },
-	{ key: 'sessions.agentStudio.knot.agentId', label: '默认 Agent ID', description: '留空则在模型选择器中手动选择', type: 'string', default: '', placeholder: '如 your-agent-id' },
-	{ key: 'sessions.agentStudio.knot.models', label: '智能体列表', description: 'JSON 数组格式，每项含 id、name 和可选的 models 数组', type: 'json', default: [], placeholder: '[{"id": "agent-1", "name": "Agent 1", "models": ["model-1"]}]', rows: 6 },
-	{ key: 'sessions.agentStudio.knot.baseUrl', label: 'API 端点', description: 'Knot AG-UI 服务端点地址', type: 'string', default: 'https://knot.woa.com', placeholder: 'https://knot.woa.com' },
+	// 3. 智能体列表（JSON 数组）
+	{ key: 'sessions.agentStudio.knot.agents', label: '智能体列表', description: 'JSON 数组格式，每项含 id、name 和可选的 models 数组', type: 'json', default: [], placeholder: '[{"id": "agent-1", "name": "Agent 1", "models": ["model-1"]}]', rows: 6 },
+	// 4. 高级选项
 	{ key: 'knot.streaming', label: '启用流式响应', description: '实时接收模型输出', type: 'boolean', default: true },
 	{ key: 'knot.timeout', label: '请求超时（ms）', description: 'API 请求超时时间', type: 'number', default: 60000, min: 1000, max: 300000 },
 ];
@@ -64,6 +67,7 @@ export class KnotSettingsEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _scrollWrapper!: HTMLElement;
 	private _contentContainer!: HTMLElement;
+	private _cliStatusContainer!: HTMLElement;
 	private _statusMessage: string = '';
 	private _initialized = false;
 
@@ -131,6 +135,11 @@ export class KnotSettingsEditorPane extends EditorPane {
 		desc.textContent = '通过 Knot AG-UI 协议连接企业智能体，支持流式对话和工具调用。';
 		this._scrollWrapper.appendChild(desc);
 
+		// Knot CLI Status
+		this._cliStatusContainer = $('div.knot-field-card');
+		this._scrollWrapper.appendChild(this._cliStatusContainer);
+		this._checkKnotCliStatus();
+
 		// Content
 		this._contentContainer = $('div.knot-settings-content');
 		this._scrollWrapper.appendChild(this._contentContainer);
@@ -139,10 +148,6 @@ export class KnotSettingsEditorPane extends EditorPane {
 
 		// Actions
 		const actionsRow = $('div.knot-settings-actions');
-		const testBtn = $('button.knot-settings-btn.knot-settings-btn-secondary');
-		testBtn.textContent = '测试连接';
-		testBtn.onclick = () => this._handleTestConnection();
-		actionsRow.appendChild(testBtn);
 
 		const saveBtn = $('button.knot-settings-btn.knot-settings-btn-primary');
 		saveBtn.textContent = '保存设置';
@@ -177,9 +182,26 @@ export class KnotSettingsEditorPane extends EditorPane {
 		labelEl.setAttribute('for', `knot-field-${field.key}`);
 		card.appendChild(labelEl);
 
-		if (field.description) {
+		if (field.description || field.link) {
 			const descEl = $('div.knot-field-desc');
-			descEl.textContent = field.description;
+			if (field.description) {
+				descEl.appendChild(document.createTextNode(field.description));
+			}
+			if (field.link) {
+				if (field.description) {
+					descEl.appendChild(document.createTextNode(' '));
+				}
+				const linkEl = document.createElement('a');
+				linkEl.className = 'knot-field-link';
+				linkEl.textContent = field.link.label;
+				linkEl.href = field.link.href;
+				linkEl.title = field.link.href;
+				linkEl.onclick = (e) => {
+					e.preventDefault();
+					window.open(field.link!.href, '_blank', 'noopener');
+				};
+				descEl.appendChild(linkEl);
+			}
 			card.appendChild(descEl);
 		}
 
@@ -287,47 +309,145 @@ export class KnotSettingsEditorPane extends EditorPane {
 		return toggle;
 	}
 
-	// ─── Test Connection ──────────────────────────────────────────────────
+	// ─── Knot CLI Status ─────────────────────────────────────────────────
 
-	private async _handleTestConnection(): Promise<void> {
-		const token = this.configurationService.getValue<string>('sessions.agentStudio.knot.token');
-		if (!token) {
-			this._statusMessage = '⚠️ 请先填写 API Token';
-			this._renderFields();
-			return;
+	private _renderCliStatus(state: 'checking' | 'installed' | 'not_installed' | 'installing' | 'install_failed', version?: string, error?: string): void {
+		this._cliStatusContainer.replaceChildren();
+
+		const labelEl = $('label.knot-field-label');
+		labelEl.textContent = 'KNOT CLI 状态';
+		this._cliStatusContainer.appendChild(labelEl);
+
+		const descEl = $('div.knot-field-desc');
+		descEl.textContent = '检查 knot-cli 命令行工具的安装状态';
+		this._cliStatusContainer.appendChild(descEl);
+
+		const statusRow = $('div.knot-cli-status-row');
+
+		switch (state) {
+			case 'checking': {
+				const dot = $('span.knot-cli-status-dot.knot-cli-status-checking');
+				dot.textContent = '●';
+				statusRow.appendChild(dot);
+				const text = $('span.knot-cli-status-text');
+				text.textContent = '正在检查...';
+				statusRow.appendChild(text);
+				break;
+			}
+			case 'installed': {
+				const dot = $('span.knot-cli-status-dot.knot-cli-status-ok');
+				dot.textContent = '●';
+				statusRow.appendChild(dot);
+				const text = $('span.knot-cli-status-text');
+				text.textContent = version ? `knot-cli 已安装 (${version})` : 'knot-cli 已安装';
+				statusRow.appendChild(text);
+				break;
+			}
+			case 'not_installed': {
+				const dot = $('span.knot-cli-status-dot.knot-cli-status-error');
+				dot.textContent = '●';
+				statusRow.appendChild(dot);
+				const text = $('span.knot-cli-status-text');
+				text.textContent = 'knot-cli 未安装';
+				statusRow.appendChild(text);
+				const installBtn = $('button.knot-settings-btn.knot-settings-btn-secondary.knot-cli-install-btn');
+				installBtn.textContent = '安装 knot-cli';
+				installBtn.onclick = () => this._installKnotCli();
+				statusRow.appendChild(installBtn);
+				break;
+			}
+			case 'installing': {
+				const dot = $('span.knot-cli-status-dot.knot-cli-status-checking');
+				dot.textContent = '●';
+				statusRow.appendChild(dot);
+				const text = $('span.knot-cli-status-text');
+				text.textContent = '正在安装 knot-cli...';
+				statusRow.appendChild(text);
+				break;
+			}
+			case 'install_failed': {
+				const dot = $('span.knot-cli-status-dot.knot-cli-status-error');
+				dot.textContent = '●';
+				statusRow.appendChild(dot);
+				const text = $('span.knot-cli-status-text');
+				text.textContent = error ? `安装失败: ${error}` : '安装失败';
+				statusRow.appendChild(text);
+				const retryBtn = $('button.knot-settings-btn.knot-settings-btn-secondary.knot-cli-install-btn');
+				retryBtn.textContent = '重试安装';
+				retryBtn.onclick = () => this._installKnotCli();
+				statusRow.appendChild(retryBtn);
+				break;
+			}
 		}
 
-		this._statusMessage = '🔄 正在测试连接...';
-		this._renderFields();
+		this._cliStatusContainer.appendChild(statusRow);
+	}
+
+	private async _checkKnotCliStatus(): Promise<void> {
+		this._renderCliStatus('checking');
 
 		try {
-			const baseUrl = this.configurationService.getValue<string>('sessions.agentStudio.knot.baseUrl') || 'https://knot.woa.com';
-			const apiUrl = `${baseUrl}/apigw/api/v1/agents`;
-			const headers: Record<string, string> = {
-				'Content-Type': 'application/json',
-				'x-knot-api-token': token,
-			};
-			const user = this.configurationService.getValue<string>('sessions.agentStudio.knot.user');
-			if (user) {
-				headers['x-knot-api-user'] = user;
-			}
-
-			const response = await fetch(apiUrl, { method: 'GET', headers });
-			if (response.ok) {
-				this._statusMessage = '✅ 连接成功！';
+			const result = await this._execCommand('knot', ['--version']);
+			if (result.success) {
+				const version = result.stdout.trim();
+				this._renderCliStatus('installed', version);
 			} else {
-				const errorText = await response.text().catch(() => '');
-				this._statusMessage = `❌ 连接失败 (${response.status}): ${errorText.slice(0, 100)}`;
+				this._renderCliStatus('not_installed');
 			}
-		} catch (error) {
-			this._statusMessage = `❌ 连接失败: ${error}`;
+		} catch {
+			this._renderCliStatus('not_installed');
 		}
+	}
 
-		this._renderFields();
-		setTimeout(() => {
-			this._statusMessage = '';
-			this._renderFields();
-		}, 5000);
+	private async _installKnotCli(): Promise<void> {
+		this._renderCliStatus('installing');
+
+		try {
+			// Use npm to install knot-cli globally
+			const result = await this._execCommand('npm', ['install', '-g', 'knot-cli']);
+			if (result.success) {
+				// Verify installation
+				await this._checkKnotCliStatus();
+			} else {
+				this._renderCliStatus('install_failed', undefined, result.stderr.trim().slice(0, 200));
+			}
+		} catch (err) {
+			this._renderCliStatus('install_failed', undefined, String(err));
+		}
+	}
+
+	private _execCommand(command: string, args: string[]): Promise<{ success: boolean; stdout: string; stderr: string }> {
+		return new Promise((resolve) => {
+			try {
+				if (typeof process === 'undefined' || !(process as any).versions?.electron) {
+					resolve({ success: false, stdout: '', stderr: 'Not in Electron context' });
+					return;
+				}
+				// eslint-disable-next-line local/code-import-patterns
+				const cp = require('child_process') as typeof import('child_process');
+				const child = cp.spawn(command, args, {
+					env: process.env,
+					shell: true,
+					windowsHide: true,
+				});
+
+				let stdout = '';
+				let stderr = '';
+
+				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+				child.on('error', (err) => {
+					resolve({ success: false, stdout, stderr: err.message });
+				});
+
+				child.on('close', (code) => {
+					resolve({ success: code === 0, stdout, stderr });
+				});
+			} catch (err) {
+				resolve({ success: false, stdout: '', stderr: String(err) });
+			}
+		});
 	}
 
 	// ─── Save ─────────────────────────────────────────────────────────────

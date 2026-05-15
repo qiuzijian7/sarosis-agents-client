@@ -85,14 +85,31 @@
 	margin-top: auto !important;
 }
 
-/* DEBUG: highlight targeted action-items - red/blue background to verify CSS matching */
-.action-item[data-composite-id="agentStudio.personal"] {
-	background-color: rgba(255, 0, 0, 0.3) !important;
-	outline: 2px solid red !important;
+/* Vertical divider for bottom action items - matches activity bar border position */
+.monaco-workbench .activitybar.left.bordered > .content > .global-composite-bar > .monaco-action-bar .action-item::after,
+.monaco-workbench .activitybar.left.bordered > .content > .composite-bar > .monaco-action-bar .action-item[data-composite-id="agentStudio.personal"]::after,
+.monaco-workbench .activitybar.left.bordered > .content > .composite-bar > .monaco-action-bar .action-item[data-composite-id="agentStudio.settings"]::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 1px;
+	height: 100%;
+	background-color: var(--vscode-activityBar-border);
+	pointer-events: none;
 }
-.action-item[data-composite-id="agentStudio.settings"] {
-	background-color: rgba(0, 0, 255, 0.3) !important;
-	outline: 2px solid blue !important;
+
+.monaco-workbench .activitybar.right.bordered > .content > .global-composite-bar > .monaco-action-bar .action-item::after,
+.monaco-workbench .activitybar.right.bordered > .content > .composite-bar > .monaco-action-bar .action-item[data-composite-id="agentStudio.personal"]::after,
+.monaco-workbench .activitybar.right.bordered > .content > .composite-bar > .monaco-action-bar .action-item[data-composite-id="agentStudio.settings"]::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 1px;
+	height: 100%;
+	background-color: var(--vscode-activityBar-border);
+	pointer-events: none;
 }
 
 /** Menu Bar */

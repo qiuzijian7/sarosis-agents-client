@@ -3,7 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { WorkspaceFolderManagementContribution } from './workspaceFolderManagement.js';
+// NOTE: The Workspace view container in the activity bar is now registered by
+// agentStudio.contribution.ts (id: 'agentStudio.workspace', order: 10).
+// This file previously registered a duplicate 'workbench.view.workspaceContainer'
+// which caused two identical Workspace buttons in the activity bar.
+// The standalone registration has been removed to avoid the duplication.
 
-registerWorkbenchContribution2(WorkspaceFolderManagementContribution.ID, WorkspaceFolderManagementContribution, WorkbenchPhase.AfterRestored);

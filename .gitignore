@@ -162,3 +162,6 @@ fix-employee-chat.js
 fix-webview.py
 AgentStudio_Framework_Analysis.md
 extensions/hermes-agent/plugin/instructions/hermes-rules.instructions.md
+exitcode.txt
+stderr2.txt
+stdout2.txt

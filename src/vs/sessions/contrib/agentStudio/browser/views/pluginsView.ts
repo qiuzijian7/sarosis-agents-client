@@ -30,6 +30,9 @@ import { localize } from '../../../../../nls.js';
 import { basename } from '../../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { PluginDetailEditorInput } from '../pluginDetailEditorInput.js';
+import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 
 // --- Constants ---
 
@@ -489,7 +492,23 @@ export class PluginsViewPane extends ViewPane {
 				if (e.elements.length > 0) {
 					const selected = e.elements[0];
 					this._selectedPlugin.set(selected.plugin, undefined);
-					this._showPluginDetail(selected.plugin);
+					// Open plugin detail in editor area (like VS Code native Extensions view)
+					try {
+						const input = PluginDetailEditorInput.getOrCreate(selected.plugin);
+						this.instantiationService.invokeFunction((accessor: any) => {
+							const editorService = accessor.get(IEditorService);
+							const editorGroupsService = accessor.get(IEditorGroupsService);
+							const groups = editorGroupsService.getGroups(0);
+							if (groups.length <= 1) {
+								editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+							} else {
+								editorService.openEditor(input, { pinned: true }, groups[0]);
+							}
+						});
+					} catch (err) {
+						console.warn('[PluginsViewPane] openEditor failed, falling back to sidebar detail:', err);
+						this._showPluginDetail(selected.plugin);
+					}
 				}
 			}));
 

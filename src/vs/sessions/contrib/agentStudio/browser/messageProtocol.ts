@@ -51,7 +51,9 @@ export type RequestType =
 	| 'session.list'
 	| 'session.get'
 	| 'session.create'
-	| 'session.delete';
+	| 'session.delete'
+	| 'providers.list'
+	| 'providers.select';
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -65,7 +67,8 @@ export type EventType =
 	| 'delegations.changed'
 	| 'taskBoard.changed'
 	| 'session.activated'
-	| 'theme.changed';
+	| 'theme.changed'
+	| 'providers.changed';
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -172,3 +175,31 @@ export interface IAutoPlanPayload {
 
 export type HostMessage = IRequestMessage;
 export type WebviewMessage = IResponseMessage | IEventMessage;
+
+// ─── Provider Payloads ──────────────────────────────────────────────────────
+
+export interface IProviderInfo {
+	readonly id: string;
+	readonly name: string;
+	readonly authStatus: string; // 'Authenticated' | 'NotConfigured' | 'Failed' | 'Validating'
+	readonly supportsAgents?: boolean;
+	readonly models: IProviderModelInfo[];
+	readonly agents?: IProviderAgentInfo[];
+}
+
+export interface IProviderModelInfo {
+	readonly id: string;
+	readonly name: string;
+}
+
+export interface IProviderAgentInfo {
+	readonly id: string;
+	readonly name: string;
+	readonly models?: string[];
+}
+
+export interface IProviderSelectPayload {
+	readonly providerId: string;
+	readonly modelId: string;
+	readonly agentId?: string;
+}

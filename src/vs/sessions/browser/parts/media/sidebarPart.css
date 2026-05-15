@@ -94,11 +94,11 @@
 	border-right: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
 }
 
-/* Content panel: column 2, row 2 */
+/* Content panel: column 2, rows 2–3 (spans full remaining height including footer row) */
 .agent-sessions-workbench .part.sidebar.sidebar-content-expanded > .content {
 	display: flex !important;
 	grid-column: 2;
-	grid-row: 2;
+	grid-row: 2 / 4;
 	/* Override PartLayout inline width/height so grid controls sizing */
 	width: 100% !important;
 	height: 100% !important;
@@ -114,6 +114,8 @@
 	grid-row: 3;
 	width: 48px !important;
 	min-width: 48px !important;
+	/* Vertical divider — continuous with header-or-footer border-right */
+	border-right: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
 }
 
 /* ===== Header area — vertical icon strip (applies in both states) ===== */
@@ -241,7 +243,7 @@
 }
 
 .monaco-workbench .part.sidebar > .sidebar-footer .action-item {
-	width: 40px;
+	width: 48px;
 	height: 40px;
 	display: flex;
 	align-items: center;

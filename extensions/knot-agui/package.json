@@ -29,21 +29,15 @@
         "sessions.agentStudio.knot.token": {
           "type": "string",
           "default": "",
-          "description": "Knot 平台 API Token（在 knot.woa.com 生成）",
+          "description": "Knot 平台 API Token（在 knot.woa.com/settings/token 生成）",
           "scope": "application",
-          "markdownDescription": "Knot 平台 API Token。前往 [Knot Console](https://knot.woa.com/console/tokens) 生成。"
+          "markdownDescription": "Knot 平台 API Token。前往 [knot.woa.com/settings/token](https://knot.woa.com/settings/token) 生成。"
         },
         "sessions.agentStudio.knot.user": {
           "type": "string",
           "default": "",
           "description": "API USER（企微英文名，使用团队 Token 时必填）",
           "scope": "application"
-        },
-        "sessions.agentStudio.knot.agentId": {
-          "type": "string",
-          "default": "",
-          "description": "默认 Agent ID（留空则在模型选择器中手动选择）",
-          "markdownDescription": "默认使用的 Agent ID。可在聊天框 Agent 选择器中随时切换。"
         },
         "sessions.agentStudio.knot.agents": {
           "type": "array",
@@ -59,19 +53,7 @@
             }
           }
         },
-        "sessions.agentStudio.knot.models": {
-          "type": "array",
-          "default": [],
-          "markdownDescription": "模型列表，每项为一个模型 ID。在设置页签中编辑。",
-          "items": {
-            "type": "string"
-          }
-        },
-        "sessions.agentStudio.knot.baseUrl": {
-          "type": "string",
-          "default": "https://knot.woa.com",
-          "description": "Knot AG-UI API 端点地址"
-        },
+
         "knot.timeout": {
           "type": "number",
           "default": 60000,

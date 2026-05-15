@@ -15,7 +15,7 @@
 ## Agent Selection
 
 - When multiple agents are available, let the user choose from the agent list.
-- The default agent can be configured in `sessions.agentStudio.knot.agentId`.
+- Agents are configured in `sessions.agentStudio.knot.agents` with id, name, and models.
 - If no agents are listed, suggest refreshing the agent list.
 
 ## Error Handling
