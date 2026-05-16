@@ -34,6 +34,8 @@ export interface IBYOKProviderDefinition {
 	readonly staticModels?: IModelInfo[];
 	/** Optional: whether the provider uses OpenAI-compatible API */
 	readonly openAICompatible?: boolean;
+	/** Whether an API key is required. Defaults to true. Set false for local providers like Ollama. */
+	readonly requiresApiKey?: boolean;
 }
 
 // ─── Built-in BYOK Model Provider ──────────────────────────────────────────
@@ -128,11 +130,21 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		return configured || this._definition.defaultBaseUrl;
 	}
 
+	private _getAuthHeaders(): Record<string, string> {
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		const apiKey = this._getApiKey();
+		if (apiKey) {
+			headers['Authorization'] = `Bearer ${apiKey}`;
+		}
+		return headers;
+	}
+
 	private _checkAuth(): void {
 		const apiKey = this._getApiKey();
 		const oldStatus = this._authStatus;
+		const needsKey = this._definition.requiresApiKey !== false;
 
-		if (!apiKey) {
+		if (needsKey && !apiKey) {
 			this._authStatus = ModelAuthStatus.NotConfigured;
 			this._models = [];
 			this._modelsFetched = false;
@@ -178,10 +190,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			this._logService.info(`[BYOK:${this.id}] Fetching models from ${modelsUrl}`);
 			const response = await fetch(modelsUrl, {
 				method: 'GET',
-				headers: {
-					'Authorization': `Bearer ${apiKey}`,
-					'Content-Type': 'application/json',
-				},
+				headers: this._getAuthHeaders(),
 				signal: AbortSignal.timeout(15000),
 			});
 
@@ -289,10 +298,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			this._logService.info(`[BYOK:${this.id}] _streamChat: sending fetch request...`);
 			response = await fetch(url, {
 				method: 'POST',
-				headers: {
-					'Authorization': `Bearer ${apiKey}`,
-					'Content-Type': 'application/json',
-				},
+				headers: this._getAuthHeaders(),
 				body: JSON.stringify(body),
 			});
 			this._logService.info(`[BYOK:${this.id}] _streamChat: response status=${response.status} ${response.statusText}`);
@@ -402,6 +408,8 @@ import {
 	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
 	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
 	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
+	AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
+	AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
 } from '../common/constants.js';
 
 /**
@@ -478,5 +486,16 @@ export const BUILTIN_BYOK_PROVIDERS: IBYOKProviderDefinition[] = [
 		priority: 50,
 		modelsEndpointPath: 'models',
 		openAICompatible: true,
+	},
+	{
+		id: 'ollama',
+		name: 'Ollama',
+		apiKeyConfigKey: AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
+		baseUrlConfigKey: AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
+		defaultBaseUrl: 'http://localhost:11434/v1',
+		priority: 90,
+		modelsEndpointPath: 'models',
+		openAICompatible: true,
+		requiresApiKey: false,
 	},
 ];

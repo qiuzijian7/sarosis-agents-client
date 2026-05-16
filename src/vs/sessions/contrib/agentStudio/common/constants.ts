@@ -51,6 +51,8 @@ export const AGENT_STUDIO_PROVIDER_MAIN_API_KEY = 'sessions.agentStudio.provider
 export const AGENT_STUDIO_PROVIDER_MAIN_BASE_URL = 'sessions.agentStudio.provider.main.baseUrl';
 export const AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY = 'sessions.agentStudio.provider.custom.apiKey';
 export const AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL = 'sessions.agentStudio.provider.custom.baseUrl';
+export const AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY = 'sessions.agentStudio.provider.ollama.apiKey';
+export const AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL = 'sessions.agentStudio.provider.ollama.baseUrl';
 
 // Configuration keys — CLI
 export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';

@@ -37,68 +37,92 @@ interface ProviderDefinition {
 	id: string;
 	name: string;
 	icon: string;
+	iconColor: string;
 	apiKeySetting: string;
 	baseUrlSetting: string;
 	defaultBaseUrl: string;
 	description: string;
+	isBuiltin: boolean;
 }
 
 const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
 	{
 		id: 'openrouter',
 		name: 'OpenRouter',
-		icon: '🔀',
+		icon: 'OR',
+		iconColor: '#1E88E5',
 		apiKeySetting: AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY,
 		baseUrlSetting: AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
 		defaultBaseUrl: 'https://openrouter.ai/api/v1',
 		description: 'Access multiple AI models through OpenRouter',
+		isBuiltin: true,
 	},
 	{
 		id: 'nous',
 		name: 'Nous',
-		icon: '🧠',
+		icon: 'N',
+		iconColor: '#FF6B6B',
 		apiKeySetting: AGENT_STUDIO_PROVIDER_NOUS_API_KEY,
 		baseUrlSetting: AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
 		defaultBaseUrl: 'https://api.nous.com/v1',
 		description: 'Nous AI platform',
+		isBuiltin: true,
 	},
 	{
 		id: 'gemini',
 		name: 'Gemini',
-		icon: '💎',
+		icon: 'G',
+		iconColor: '#8B5CF6',
 		apiKeySetting: AGENT_STUDIO_PROVIDER_GEMINI_API_KEY,
 		baseUrlSetting: AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL,
 		defaultBaseUrl: 'https://generativelanguage.googleapis.com',
 		description: 'Google Gemini AI models',
+		isBuiltin: true,
 	},
 	{
 		id: 'anthropic',
 		name: 'Anthropic',
-		icon: '🅰️',
+		icon: 'A',
+		iconColor: '#D97757',
 		apiKeySetting: AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY,
 		baseUrlSetting: AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL,
 		defaultBaseUrl: 'https://api.anthropic.com',
 		description: 'Anthropic Claude models',
+		isBuiltin: true,
 	},
 	{
 		id: 'main',
 		name: 'Main',
-		icon: '🏠',
+		icon: 'M',
+		iconColor: '#10B981',
 		apiKeySetting: AGENT_STUDIO_PROVIDER_MAIN_API_KEY,
 		baseUrlSetting: AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
 		defaultBaseUrl: '',
 		description: 'Primary custom provider endpoint',
+		isBuiltin: true,
 	},
 	{
 		id: 'custom',
 		name: 'Custom',
-		icon: '⚙️',
+		icon: '+',
+		iconColor: '#6B7280',
 		apiKeySetting: AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
 		baseUrlSetting: AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
 		defaultBaseUrl: '',
 		description: 'Custom OpenAI-compatible endpoint',
+		isBuiltin: true,
 	},
 ];
+
+const AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING = 'sessions.agentStudio.provider.customProviders';
+
+interface CustomProviderData {
+	id: string;
+	name: string;
+	apiKey: string;
+	baseUrl: string;
+	description: string;
+}
 
 // ─── Provider View ───────────────────────────────────────────────────────────
 
@@ -156,15 +180,10 @@ export class ProviderViewPane extends ViewPane {
 		this.defaultProviderSelect = document.createElement('select');
 		this.defaultProviderSelect.className = 'provider-default-select';
 		const currentProvider = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING) || 'auto';
+		const allProviders = this._getAllProviders();
 		const providerOptions = [
 			{ value: 'auto', label: 'Auto（自动选择）' },
-			{ value: 'openrouter', label: 'OpenRouter' },
-			{ value: 'nous', label: 'Nous' },
-			{ value: 'gemini', label: 'Gemini' },
-			{ value: 'anthropic', label: 'Anthropic' },
-			{ value: 'main', label: 'Main' },
-			{ value: 'knot', label: 'Knot' },
-			{ value: 'custom', label: 'Custom' },
+			...allProviders.map(p => ({ value: p.id, label: p.name })),
 		];
 		for (const opt of providerOptions) {
 			const option = document.createElement('option');
@@ -204,6 +223,14 @@ export class ProviderViewPane extends ViewPane {
 		this._renderProviders();
 		container.appendChild(this.listContainer);
 
+		// Add Provider button
+		const addBtnRow = $('div.provider-add-row');
+		const addBtn = $('button.provider-add-btn');
+		addBtn.textContent = '+ 添加 Provider';
+		addBtn.onclick = () => this._showAddProviderForm();
+		addBtnRow.appendChild(addBtn);
+		container.appendChild(addBtnRow);
+
 		// Status message
 		if (this.statusMessage) {
 			const statusEl = $('div.provider-status-message');
@@ -212,13 +239,29 @@ export class ProviderViewPane extends ViewPane {
 		}
 	}
 
+	private _getAllProviders(): ProviderDefinition[] {
+		const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
+		const customDefs: ProviderDefinition[] = customProviders.map(cp => ({
+			id: cp.id,
+			name: cp.name,
+			icon: cp.name.slice(0, 2).toUpperCase(),
+			iconColor: '#6B7280',
+			apiKeySetting: `sessions.agentStudio.provider.${cp.id}.apiKey`,
+			baseUrlSetting: `sessions.agentStudio.provider.${cp.id}.baseUrl`,
+			defaultBaseUrl: cp.baseUrl || '',
+			description: cp.description || `${cp.name} provider`,
+			isBuiltin: false,
+		}));
+		return [...PROVIDER_DEFINITIONS, ...customDefs];
+	}
+
 	private _renderProviders(): void {
 		// Clear children safely (Trusted Types policy blocks innerHTML)
 		while (this.listContainer.firstChild) {
 			this.listContainer.removeChild(this.listContainer.firstChild);
 		}
 
-		for (const provider of PROVIDER_DEFINITIONS) {
+		for (const provider of this._getAllProviders()) {
 			const card = $('div.provider-card');
 			const isConfigured = !!this.configurationService.getValue<string>(provider.apiKeySetting);
 			if (isConfigured) {
@@ -230,6 +273,7 @@ export class ProviderViewPane extends ViewPane {
 
 			const iconEl = $('span.provider-card-icon');
 			iconEl.textContent = provider.icon;
+			iconEl.style.backgroundColor = provider.iconColor;
 			cardHeader.appendChild(iconEl);
 
 			const infoEl = $('div.provider-card-info');
@@ -258,6 +302,18 @@ export class ProviderViewPane extends ViewPane {
 			const chevronEl = $('span.provider-card-chevron');
 			chevronEl.textContent = '▸';
 			cardHeader.appendChild(chevronEl);
+
+			// Delete button for custom providers
+			if (!provider.isBuiltin) {
+				const deleteBtn = $('span.provider-card-delete');
+				deleteBtn.textContent = '✕';
+				deleteBtn.title = '删除此 Provider';
+				deleteBtn.onclick = (e) => {
+					e.stopPropagation();
+					this._deleteCustomProvider(provider.id);
+				};
+				cardHeader.appendChild(deleteBtn);
+			}
 
 			card.appendChild(cardHeader);
 
@@ -341,14 +397,121 @@ export class ProviderViewPane extends ViewPane {
 				}
 			};
 
-			// Auto-expand if not configured, or if this is the default provider
-			const defaultProvider = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING) || 'auto';
-			if (!isConfigured || provider.id === defaultProvider) {
-				card.classList.add('provider-card-expanded');
-			}
-
+			// Default: all collapsed
 			this.listContainer.appendChild(card);
 		}
+	}
+
+	private _showAddProviderForm(): void {
+		// Remove existing form if any
+		const existingForm = this.listContainer.querySelector('.provider-add-form');
+		if (existingForm) {
+			existingForm.remove();
+			return;
+		}
+
+		const formCard = $('div.provider-add-form');
+
+		const formTitle = $('div.provider-add-form-title');
+		formTitle.textContent = '添加自定义 Provider';
+		formCard.appendChild(formTitle);
+
+		const fields: { id: string; label: string; placeholder: string; required?: boolean }[] = [
+			{ id: 'add-provider-id', label: 'Provider ID', placeholder: '如：my-provider', required: true },
+			{ id: 'add-provider-name', label: '显示名称', placeholder: '如：My Provider', required: true },
+			{ id: 'add-provider-baseurl', label: 'Base URL', placeholder: 'https://api.example.com/v1' },
+			{ id: 'add-provider-desc', label: '描述', placeholder: '可选描述' },
+		];
+
+		for (const field of fields) {
+			const row = $('div.provider-field');
+			const label = $('label.provider-field-label');
+			label.textContent = field.label;
+			row.appendChild(label);
+
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.id = field.id;
+			input.className = 'provider-field-input';
+			input.placeholder = field.placeholder;
+			if (field.required) {
+				input.required = true;
+			}
+			row.appendChild(input);
+			formCard.appendChild(row);
+		}
+
+		const actionsRow = $('div.provider-card-actions');
+
+		const saveBtn = $('button.provider-card-btn.provider-card-btn-primary');
+		saveBtn.textContent = '保存';
+		saveBtn.onclick = () => {
+			const idInput = document.getElementById('add-provider-id') as HTMLInputElement;
+			const nameInput = document.getElementById('add-provider-name') as HTMLInputElement;
+			const baseUrlInput = document.getElementById('add-provider-baseurl') as HTMLInputElement;
+			const descInput = document.getElementById('add-provider-desc') as HTMLInputElement;
+
+			const id = idInput.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+			const name = nameInput.value.trim();
+			if (!id || !name) {
+				this.statusMessage = '⚠️ 请填写 Provider ID 和名称';
+				this._renderProviders();
+				return;
+			}
+
+			// Check for duplicates
+			const allProviders = this._getAllProviders();
+			if (allProviders.some(p => p.id === id)) {
+				this.statusMessage = `⚠️ Provider "${id}" 已存在`;
+				this._renderProviders();
+				return;
+			}
+
+			const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
+			customProviders.push({
+				id,
+				name,
+				apiKey: '',
+				baseUrl: baseUrlInput.value.trim(),
+				description: descInput.value.trim(),
+			});
+			this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
+
+			this.statusMessage = `✅ Provider "${name}" 已添加`;
+			setTimeout(() => {
+				this.statusMessage = '';
+				this._renderProviders();
+			}, 2000);
+			this._renderProviders();
+		};
+		actionsRow.appendChild(saveBtn);
+
+		const cancelBtn = $('button.provider-card-btn.provider-card-btn-secondary');
+		cancelBtn.textContent = '取消';
+		cancelBtn.onclick = () => {
+			formCard.remove();
+		};
+		actionsRow.appendChild(cancelBtn);
+
+		formCard.appendChild(actionsRow);
+		this.listContainer.appendChild(formCard);
+	}
+
+	private _deleteCustomProvider(id: string): void {
+		const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
+		const filtered = customProviders.filter(cp => cp.id !== id);
+		this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, filtered);
+
+		// Also clear any stored apiKey/baseUrl for this provider
+		this.configurationService.updateValue(`sessions.agentStudio.provider.${id}.apiKey`, undefined);
+		this.configurationService.updateValue(`sessions.agentStudio.provider.${id}.baseUrl`, undefined);
+
+		this.statusMessage = `✅ Provider 已删除`;
+		setTimeout(() => {
+			this.statusMessage = '';
+			this._renderProviders();
+		}, 2000);
+		this._renderProviders();
 	}
 
 	private async _testConnection(provider: ProviderDefinition): Promise<void> {
