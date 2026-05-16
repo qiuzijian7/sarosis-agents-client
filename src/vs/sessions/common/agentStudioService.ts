@@ -7,7 +7,7 @@ import { createDecorator } from '../../platform/instantiation/common/instantiati
 import { Event } from '../../base/common/event.js';
 import type { Employee, Workspace, Delegation, ChatMessage, AgentStudioSession, Connection, WorkspaceLayout, TaskBoardRecord, TaskBoardStatus, AgentExportData } from './agentStudioTypes.js';
 
-// ─── Agent Studio Service ───────────────────────────────────────────────────────
+// --- Agent Studio Service ---
 
 export const IAgentStudioService = createDecorator<IAgentStudioService>('agentStudioService');
 
@@ -58,7 +58,7 @@ export interface IAgentStudioService {
 	importEmployee(data: AgentExportData, workspaceId?: string): Promise<Employee>;
 }
 
-// ─── Agent Chat Service ─────────────────────────────────────────────────────────
+// --- Agent Chat Service ---
 
 export const IAgentChatService = createDecorator<IAgentChatService>('agentChatService');
 
@@ -74,7 +74,7 @@ export interface IChatStreamDelta {
 
 export interface IChatSendOptions {
 	readonly model?: string;
-	readonly agentId?: string;       // 选中的 Agent ID（如 Knot Agent）
+	readonly agentId?: string;       // selected Agent ID (e.g. Knot Agent)
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
 	readonly workspaceId?: string;
@@ -95,7 +95,7 @@ export interface IAgentChatService {
 	cancelStream(employeeId: string): void;
 }
 
-// ─── Agent Delegation Service ───────────────────────────────────────────────────
+// --- Agent Delegation Service ---
 
 export const IAgentDelegationService = createDecorator<IAgentDelegationService>('agentDelegationService');
 
@@ -119,7 +119,7 @@ export interface IAgentDelegationService {
 	executePlan(goal: string, workspaceId: string): Promise<IAutoPlanResult>;
 }
 
-// ─── Agent Task Board Service ───────────────────────────────────────────────────
+// --- Agent Task Board Service ---
 
 export const IAgentTaskBoardService = createDecorator<IAgentTaskBoardService>('agentTaskBoardService');
 

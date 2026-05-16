@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// ─── Shared Types for Agent Studio ───────────────────────────────────────
+// --- Shared Types for Agent Studio ---
 
 export const enum EmployeeStatus {
 	Idle = 'idle',

@@ -251,6 +251,11 @@ function createGitIndexVinyls(paths: string[]): Promise<VinylFile[]> {
 					return e(err);
 				}
 
+				// skip submodules (mode 160000) — git show cannot read them as blobs
+				if (stat.isDirectory()) {
+					return c(null);
+				}
+
 				cp.exec(
 					process.platform === 'win32' ? `git show :${relativePath}` : `git show ':${relativePath}'`,
 					{ maxBuffer: Math.max(stat.size * 2, 1024 * 1024), encoding: 'buffer' },
