@@ -12,6 +12,12 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import {
+	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
+	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
+	AGENT_STUDIO_DEFAULT_AGENT_SETTING,
+} from '../common/constants.js';
 
 export class ModelSelectorService extends Disposable implements IModelSelectorService {
 	declare readonly _serviceBrand: undefined;
@@ -30,6 +36,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 	private readonly _logService: ILogService;
 	private readonly _quickInputService: IQuickInputService;
 	private readonly _commandService: ICommandService;
+	private readonly _configurationService: IConfigurationService;
 	private _currentSelection: IModelSelection | undefined;
 	private _selectedAgentId: string | undefined;
 	private _cachedModelItems: IModelSelectorItem[] = [];
@@ -47,6 +54,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 		@ILogService logService: ILogService,
 		@IQuickInputService quickInputService: IQuickInputService,
 		@ICommandService commandService: ICommandService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
 		this._agentOSService = agentOSService;
@@ -54,6 +62,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 		this._logService = logService;
 		this._quickInputService = quickInputService;
 		this._commandService = commandService;
+		this._configurationService = configurationService;
 
 		// 监听 Model Provider 注册/卸载
 		this._register(this._agentOSService.onDidChangeModelProviders(() => {
@@ -383,9 +392,18 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			return;
 		}
 		try {
+			// 保存到 storageService（快速访问）
 			const key = 'agent-studio.model-selection';
 			const value = JSON.stringify(this._currentSelection);
 			this._storageService.store(key, value, StorageScope.APPLICATION, StorageTarget.MACHINE);
+			
+			// 同时保存到 configurationService（持久化到 settings.json）
+			// 这样重启后配置仍然存在
+			this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, this._currentSelection.providerId);
+			this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_MODEL_SETTING, this._currentSelection.modelId);
+			if (this._currentSelection.agentId) {
+				this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_AGENT_SETTING, this._currentSelection.agentId);
+			}
 		} catch (error) {
 			this._logService.error('[ModelSelector] Failed to save selection', error);
 		}
@@ -393,12 +411,27 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 
 	private _loadSelection(): void {
 		try {
+			// 优先从 configurationService 读取（持久化配置）
+			const providerId = this._configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING);
+			const modelId = this._configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_MODEL_SETTING);
+			
+			if (providerId && modelId) {
+				this._currentSelection = {
+					providerId,
+					modelId,
+					agentId: this._configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || undefined,
+				};
+				this._logService.info(`[ModelSelector] Loaded selection from config: ${this._currentSelection.providerId}/${this._currentSelection.modelId}`);
+				return;
+			}
+			
+			// 回退：从 storageService 读取（兼容旧版本）
 			const key = 'agent-studio.model-selection';
 			const value = this._storageService.get(key, StorageScope.APPLICATION);
 			if (value) {
 				this._currentSelection = JSON.parse(value);
 				if (this._currentSelection) {
-					this._logService.info(`[ModelSelector] Loaded selection: ${this._currentSelection.providerId}/${this._currentSelection.modelId}`);
+					this._logService.info(`[ModelSelector] Loaded selection from storage: ${this._currentSelection.providerId}/${this._currentSelection.modelId}`);
 				}
 			}
 		} catch (error) {

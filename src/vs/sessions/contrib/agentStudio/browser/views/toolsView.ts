@@ -14,6 +14,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { $ } from '../../../../../base/browser/dom.js';
+import { IAgentOSService } from '../../common/agentOS.js';
 
 interface ToolDefinition {
 	id: string;
@@ -25,28 +26,38 @@ interface ToolDefinition {
 	provider?: string;
 }
 
-const AVAILABLE_TOOLS: ToolDefinition[] = [
-	{ id: 'read_file', name: 'Read File', category: 'builtin', description: 'Read contents of a file', icon: '📄', enabled: true },
-	{ id: 'write_file', name: 'Write File', category: 'builtin', description: 'Create or overwrite a file', icon: '✏️', enabled: true },
-	{ id: 'search_files', name: 'Search Files', category: 'builtin', description: 'Search for files by pattern', icon: '🔍', enabled: true },
-	{ id: 'run_command', name: 'Run Command', category: 'builtin', description: 'Execute shell commands', icon: '⌨️', enabled: true },
-	{ id: 'web_search', name: 'Web Search', category: 'builtin', description: 'Search the internet', icon: '🌐', enabled: true },
-	{ id: 'web_fetch', name: 'Web Fetch', category: 'builtin', description: 'Fetch content from URLs', icon: '📡', enabled: true },
-	{ id: 'git_operations', name: 'Git Operations', category: 'builtin', description: 'Git version control operations', icon: '🔀', enabled: true },
-	{ id: 'mcp_filesystem', name: 'Filesystem MCP', category: 'mcp', description: 'File system access via MCP', icon: '💾', enabled: false, provider: 'filesystem-server' },
-	{ id: 'mcp_github', name: 'GitHub MCP', category: 'mcp', description: 'GitHub API integration via MCP', icon: '🐙', enabled: false, provider: 'github-server' },
-	{ id: 'mcp_database', name: 'Database MCP', category: 'mcp', description: 'Database operations via MCP', icon: '🗄️', enabled: false, provider: 'database-server' },
-	{ id: 'mcp_browser', name: 'Browser MCP', category: 'mcp', description: 'Browser automation via MCP', icon: '🌍', enabled: false, provider: 'puppeteer-server' },
-];
+/**
+ * 把 `IToolDefinition` (来自 IAgentOSService 的 ActiveToolProvider) 适配成
+ * UI 用的 `ToolDefinition` —— 仅在 view 内部使用。
+ */
+function categorize(category: string | undefined): 'builtin' | 'mcp' | 'custom' {
+	if (!category) { return 'builtin'; }
+	if (category.startsWith('mcp:') || category.startsWith('mcp-') || category === 'mcp') { return 'mcp'; }
+	if (category === 'utility' || category === 'filesystem' || category === 'web' || category === 'shell') { return 'builtin'; }
+	return 'custom';
+}
+
+function categoryIcon(c: 'builtin' | 'mcp' | 'custom', toolCategory: string | undefined): string {
+	if (c === 'mcp') { return '🔌'; }
+	if (c === 'custom') { return '🧩'; }
+	switch (toolCategory) {
+		case 'filesystem': return '📁';
+		case 'web': return '🌐';
+		case 'shell': return '⌨️';
+		case 'utility': return '🛠️';
+		default: return '🔧';
+	}
+}
 
 /**
  * Tools View - 工具管理面板
- * 功能：查看可用工具、MCP服务器管理、工具启用/禁用、自定义工具
+ * 数据源：IAgentOSService.getActiveToolProvider() —— 同时覆盖内置工具与 MCP 工具，
+ * 由 BuiltinToolProvider / McpToolProvider 注入到 IAgentOSService 的 slot 中。
  */
 export class ToolsViewPane extends ViewPane {
 
 	private listContainer!: HTMLElement;
-	private tools: ToolDefinition[] = [...AVAILABLE_TOOLS];
+	private tools: ToolDefinition[] = [];
 	private activeTab = 'all';
 
 	constructor(
@@ -60,6 +71,7 @@ export class ToolsViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -74,11 +86,11 @@ export class ToolsViewPane extends ViewPane {
 		title.textContent = '🔧 Tools & MCP';
 		header.appendChild(title);
 
-		const addMcpBtn = $('button.tools-add-btn');
-		addMcpBtn.textContent = '+ Add MCP';
-		addMcpBtn.title = 'Connect a new MCP server';
-		addMcpBtn.onclick = () => this._addMcpServer();
-		header.appendChild(addMcpBtn);
+		const refreshBtn = $('button.tools-add-btn');
+		refreshBtn.textContent = '↻ Refresh';
+		refreshBtn.title = 'Reload tools from active provider';
+		refreshBtn.onclick = () => { void this._reload(); };
+		header.appendChild(refreshBtn);
 		container.appendChild(header);
 
 		// Tabs
@@ -103,15 +115,37 @@ export class ToolsViewPane extends ViewPane {
 		}
 		container.appendChild(tabs);
 
-		// MCP status
-		const mcpStatus = $('div.mcp-status');
-		mcpStatus.innerHTML = `<span class="mcp-dot connected"></span> MCP: 0 servers connected`;
-		container.appendChild(mcpStatus);
-
 		// Tools list
 		this.listContainer = $('div.tools-list');
-		this._renderTools();
 		container.appendChild(this.listContainer);
+		void this._reload();
+	}
+
+	private async _reload(): Promise<void> {
+		const next: ToolDefinition[] = [];
+		const provider = this.agentOSService.getActiveToolProvider();
+		if (provider) {
+			try {
+				// agentId is opaque to the provider for read-only listing.
+				const defs = await provider.listTools('viewer');
+				for (const d of defs) {
+					const cat = categorize(d.category);
+					next.push({
+						id: d.name,
+						name: d.name,
+						category: cat,
+						description: d.description ?? '',
+						icon: categoryIcon(cat, d.category),
+						enabled: true,
+						provider: d.source ?? provider.id,
+					});
+				}
+			} catch {
+				// ignore — provider not ready
+			}
+		}
+		this.tools = next;
+		this._renderTools();
 	}
 
 	private _renderTools(): void {
@@ -122,7 +156,7 @@ export class ToolsViewPane extends ViewPane {
 
 		if (filtered.length === 0) {
 			const empty = $('div.tools-empty');
-			empty.innerHTML = '<p>No tools in this category</p>';
+			empty.innerHTML = '<p>No tools available. Try refreshing or installing an MCP server.</p>';
 			this.listContainer.appendChild(empty);
 			return;
 		}
@@ -158,34 +192,8 @@ export class ToolsViewPane extends ViewPane {
 			}
 			item.appendChild(info);
 
-			// Toggle
-			const toggle = $('label.tool-toggle');
-			const checkbox = document.createElement('input');
-			checkbox.type = 'checkbox';
-			checkbox.checked = tool.enabled;
-			checkbox.onchange = () => { tool.enabled = checkbox.checked; item.classList.toggle('tool-enabled', tool.enabled); };
-			toggle.appendChild(checkbox);
-			const slider = $('span.toggle-slider');
-			toggle.appendChild(slider);
-			item.appendChild(toggle);
-
 			this.listContainer.appendChild(item);
 		}
-	}
-
-	private _addMcpServer(): void {
-		// TODO: Open MCP server connection dialog
-		const newTool: ToolDefinition = {
-			id: `mcp-custom-${Date.now()}`,
-			name: 'New MCP Server',
-			category: 'mcp',
-			description: 'Custom MCP server tool',
-			icon: '🔌',
-			enabled: false,
-			provider: 'custom-server',
-		};
-		this.tools.push(newTool);
-		this._renderTools();
 	}
 
 	protected override layoutBody(height: number, width: number): void {
@@ -195,3 +203,4 @@ export class ToolsViewPane extends ViewPane {
 		}
 	}
 }
+

@@ -19,6 +19,11 @@
 	],
 	"main": "./out/extension",
 	"contributes": {
+		"chatPlugins": [
+			{
+				"path": "./plugin"
+			}
+		],
 		"languageModelChatProviders": [
 			{
 				"vendor": "knot",

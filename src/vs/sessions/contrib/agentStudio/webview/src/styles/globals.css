@@ -1773,7 +1773,7 @@ html, body, #root {
   outline: none;
   resize: none;
   line-height: 1.5;
-  min-height: 24px;
+  min-height: 52px;
   max-height: 120px;
   border-radius: 16px 16px 0 0;
   font-family: inherit;

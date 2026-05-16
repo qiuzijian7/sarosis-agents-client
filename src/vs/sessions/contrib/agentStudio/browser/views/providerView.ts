@@ -207,7 +207,8 @@ export class ProviderViewPane extends ViewPane {
 			option.selected = opt.value === currentProvider;
 			this.defaultProviderSelect.appendChild(option);
 		}
-		this.defaultProviderSelect.onchange = () => {
+		// 使用 oninput 确保选择改变时立即保存
+		this.defaultProviderSelect.oninput = () => {
 			this.configurationService.updateValue(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, this.defaultProviderSelect.value);
 		};
 		providerRow.appendChild(this.defaultProviderSelect);
@@ -227,7 +228,8 @@ export class ProviderViewPane extends ViewPane {
 		this.defaultModelInput.placeholder = '留空使用系统默认';
 		const currentModel = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_MODEL_SETTING) || '';
 		this.defaultModelInput.value = currentModel;
-		this.defaultModelInput.onchange = () => {
+		// 使用 oninput 而不是 onchange，确保每次输入都能立即保存，避免关闭窗口时丢失
+		this.defaultModelInput.oninput = () => {
 			this.configurationService.updateValue(AGENT_STUDIO_DEFAULT_MODEL_SETTING, this.defaultModelInput.value);
 		};
 		modelRow.appendChild(this.defaultModelInput);
@@ -356,12 +358,16 @@ export class ProviderViewPane extends ViewPane {
 			apiKeyInput.id = `provider-apikey-${provider.id}`;
 			apiKeyInput.className = 'provider-field-input';
 			apiKeyInput.placeholder = `粘贴你的 ${provider.name} API Key`;
-			apiKeyInput.value = this.configurationService.getValue<string>(provider.apiKeySetting) || '';
-			apiKeyInput.onchange = () => {
+		apiKeyInput.value = this.configurationService.getValue<string>(provider.apiKeySetting) || '';
+		// 保存并重新渲染（更新"已配置"徽章）
+		const saveApiKey = () => {
 				this.configurationService.updateValue(provider.apiKeySetting, apiKeyInput.value);
 				this.expandedProviderId = provider.id;
 				this._renderProviders();
 			};
+		apiKeyInput.onchange = saveApiKey;
+		// onblur 作为备份，确保失去焦点时保存
+		apiKeyInput.onblur = saveApiKey;
 			apiKeyRow.appendChild(apiKeyInput);
 			cardBody.appendChild(apiKeyRow);
 
@@ -377,10 +383,13 @@ export class ProviderViewPane extends ViewPane {
 			baseUrlInput.id = `provider-baseurl-${provider.id}`;
 			baseUrlInput.className = 'provider-field-input';
 			baseUrlInput.placeholder = provider.defaultBaseUrl || '自定义端点地址';
-			baseUrlInput.value = this.configurationService.getValue<string>(provider.baseUrlSetting) || '';
-			baseUrlInput.onchange = () => {
+		baseUrlInput.value = this.configurationService.getValue<string>(provider.baseUrlSetting) || '';
+		// 使用 oninput 实时保存，onblur 作为备份
+		const saveBaseUrl = () => {
 				this.configurationService.updateValue(provider.baseUrlSetting, baseUrlInput.value);
 			};
+		baseUrlInput.oninput = saveBaseUrl;
+		baseUrlInput.onblur = saveBaseUrl;
 			baseUrlRow.appendChild(baseUrlInput);
 			cardBody.appendChild(baseUrlRow);
 

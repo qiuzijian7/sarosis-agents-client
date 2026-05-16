@@ -14,39 +14,25 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { $ } from '../../../../../base/browser/dom.js';
-
-interface SkillDefinition {
-	id: string;
-	name: string;
-	category: string;
-	description: string;
-	icon: string;
-	enabled: boolean;
-}
-
-const AVAILABLE_SKILLS: SkillDefinition[] = [
-	{ id: 'code-gen', name: 'Code Generation', category: 'Development', description: 'Generate code from natural language', icon: '💻', enabled: true },
-	{ id: 'code-review', name: 'Code Review', category: 'Development', description: 'Analyze and review code quality', icon: '🔍', enabled: true },
-	{ id: 'refactor', name: 'Refactoring', category: 'Development', description: 'Restructure and improve code', icon: '🔄', enabled: true },
-	{ id: 'testing', name: 'Testing', category: 'Development', description: 'Write and run tests', icon: '🧪', enabled: false },
-	{ id: 'web-search', name: 'Web Search', category: 'Research', description: 'Search the web for information', icon: '🌐', enabled: true },
-	{ id: 'summarize', name: 'Summarization', category: 'Research', description: 'Summarize documents and content', icon: '📝', enabled: true },
-	{ id: 'file-ops', name: 'File Operations', category: 'System', description: 'Read, write, and manage files', icon: '📁', enabled: true },
-	{ id: 'terminal', name: 'Terminal', category: 'System', description: 'Execute shell commands', icon: '⌨️', enabled: false },
-	{ id: 'deploy', name: 'Deployment', category: 'DevOps', description: 'Deploy applications and services', icon: '🚀', enabled: false },
-	{ id: 'data-analysis', name: 'Data Analysis', category: 'Analytics', description: 'Analyze datasets and generate insights', icon: '📊', enabled: false },
-	{ id: 'image-gen', name: 'Image Generation', category: 'Creative', description: 'Generate images from descriptions', icon: '🎨', enabled: false },
-	{ id: 'planning', name: 'Task Planning', category: 'Management', description: 'Break down goals into actionable tasks', icon: '📋', enabled: true },
-];
+import { ISkillRegistry, ISkillDefinition } from '../../common/skills.js';
 
 /**
- * Skills View - 技能管理面板
- * 功能：浏览可用技能、启用/禁用、分类筛选、技能详情
+ * Skills View —— 从 ISkillRegistry 拉取真实 skill 列表。
+ *
+ * 数据来源：
+ *   - 内置 skill (硬编码常量数组，随产品发布)
+ *   - 用户全局目录 `<userRoamingDataHome>/sarosis/skills/<id>/SKILL.md`
+ *   - 工作区目录 `<workspaceFolder>/.sarosis/skills/<id>/SKILL.md`
+ *   - 扩展通过 ISkillRegistry.registerSkill 运行时注册
+ *
+ * UI 责任仅限于"展示 + 触发激活" —— 真正的 skill 注入由 ExecutionProvider
+ * 在每轮 turn 调用 `resolveActivations()` 完成；此 view 不直接修改对话。
  */
 export class SkillsViewPane extends ViewPane {
 
 	private listContainer!: HTMLElement;
-	private skills: SkillDefinition[] = [...AVAILABLE_SKILLS];
+	private countBadge!: HTMLElement;
+	private skills: ISkillDefinition[] = [];
 	private activeCategory = 'All';
 
 	constructor(
@@ -60,8 +46,10 @@ export class SkillsViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		this._register(this.skillRegistry.onDidChangeSkills(() => this._refresh()));
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -74,18 +62,54 @@ export class SkillsViewPane extends ViewPane {
 		title.textContent = '💡 Skills Library';
 		header.appendChild(title);
 
-		const countBadge = $('span.skills-count');
-		countBadge.textContent = `${this.skills.filter(s => s.enabled).length}/${this.skills.length} active`;
-		header.appendChild(countBadge);
+		this.countBadge = $('span.skills-count');
+		header.appendChild(this.countBadge);
 		container.appendChild(header);
 
-		// Category filters
-		const categories = ['All', ...new Set(this.skills.map(s => s.category))];
+		// Filter container (rebuilt on each refresh because categories are dynamic)
 		const filterRow = $('div.skills-filters');
+		filterRow.id = 'skills-filter-row';
+		container.appendChild(filterRow);
+
+		// Skills list
+		this.listContainer = $('div.skills-list');
+		container.appendChild(this.listContainer);
+
+		// Initial refresh - make sure SkillRegistry is ready
+		// Use setTimeout to ensure this runs after the DOM is fully rendered
+		setTimeout(() => this._refresh(), 0);
+	}
+
+	override setVisible(visible: boolean): void {
+		super.setVisible(visible);
+		if (visible) {
+			// Force refresh when the view becomes visible
+			this._refresh();
+		}
+	}
+
+	private _refresh(): void {
+		this.skills = [...this.skillRegistry.getSkills()];
+		this._updateCount();
+		this._renderFilters();
+		this._renderSkills();
+	}
+
+	private _updateCount(): void {
+		const total = this.skills.length;
+		const active = this.skills.filter(s => s.activation === 'always' || s.activation === 'auto').length;
+		this.countBadge.textContent = `${active}/${total} auto-activate`;
+	}
+
+	private _renderFilters(): void {
+		const filterRow = this.element?.querySelector('#skills-filter-row') as HTMLElement | null;
+		if (!filterRow) { return; }
+		filterRow.innerHTML = '';
+		const categories = ['All', ...Array.from(new Set(this.skills.map(s => s.category ?? 'misc')))];
 		for (const cat of categories) {
 			const btn = $('button.skill-filter-btn');
 			btn.textContent = cat;
-			if (cat === 'All') { btn.classList.add('active'); }
+			if (cat === this.activeCategory) { btn.classList.add('active'); }
 			btn.onclick = () => {
 				filterRow.querySelectorAll('.skill-filter-btn').forEach(b => b.classList.remove('active'));
 				btn.classList.add('active');
@@ -94,26 +118,29 @@ export class SkillsViewPane extends ViewPane {
 			};
 			filterRow.appendChild(btn);
 		}
-		container.appendChild(filterRow);
-
-		// Skills list
-		this.listContainer = $('div.skills-list');
-		this._renderSkills();
-		container.appendChild(this.listContainer);
 	}
 
 	private _renderSkills(): void {
-		this.listContainer.innerHTML = '';
+		const listContainer = this.element?.querySelector('.skills-list') as HTMLElement | null;
+		if (!listContainer) { return; }
+		listContainer.innerHTML = '';
 		const filtered = this.activeCategory === 'All'
 			? this.skills
-			: this.skills.filter(s => s.category === this.activeCategory);
+			: this.skills.filter(s => (s.category ?? 'misc') === this.activeCategory);
+
+		if (filtered.length === 0) {
+			const empty = $('div.skills-empty');
+			empty.innerHTML = '<p>No skills in this category. Drop a SKILL.md into <code>.sarosis/skills/&lt;id&gt;/</code>.</p>';
+			listContainer.appendChild(empty);
+			return;
+		}
 
 		for (const skill of filtered) {
 			const item = $('div.skill-item');
-			item.classList.toggle('skill-enabled', skill.enabled);
+			item.classList.toggle('skill-enabled', skill.activation !== 'manual');
 
 			const iconEl = $('span.skill-icon');
-			iconEl.textContent = skill.icon;
+			iconEl.textContent = this._iconFor(skill);
 			item.appendChild(iconEl);
 
 			const info = $('div.skill-info');
@@ -123,39 +150,35 @@ export class SkillsViewPane extends ViewPane {
 			nameRow.appendChild(nameEl);
 
 			const catBadge = $('span.skill-category-badge');
-			catBadge.textContent = skill.category;
+			catBadge.textContent = skill.category ?? 'misc';
 			nameRow.appendChild(catBadge);
+
+			const activationBadge = $('span.skill-category-badge');
+			activationBadge.textContent = skill.activation;
+			activationBadge.classList.add(`skill-activation-${skill.activation}`);
+			nameRow.appendChild(activationBadge);
+
+			const sourceBadge = $('span.skill-category-badge');
+			sourceBadge.textContent = skill.source;
+			nameRow.appendChild(sourceBadge);
 			info.appendChild(nameRow);
 
 			const descEl = $('div.skill-desc');
-			descEl.textContent = skill.description;
+			descEl.textContent = skill.description || '(no description)';
 			info.appendChild(descEl);
 			item.appendChild(info);
 
-			// Toggle switch
-			const toggle = $('label.skill-toggle');
-			const checkbox = document.createElement('input');
-			checkbox.type = 'checkbox';
-			checkbox.checked = skill.enabled;
-			checkbox.onchange = () => this._toggleSkill(skill.id, checkbox.checked);
-			toggle.appendChild(checkbox);
-			const slider = $('span.toggle-slider');
-			toggle.appendChild(slider);
-			item.appendChild(toggle);
-
-			this.listContainer.appendChild(item);
+			listContainer.appendChild(item);
 		}
 	}
 
-	private _toggleSkill(id: string, enabled: boolean): void {
-		const skill = this.skills.find(s => s.id === id);
-		if (skill) {
-			skill.enabled = enabled;
-			// Update count badge
-			const badge = this.element?.querySelector('.skills-count');
-			if (badge) {
-				badge.textContent = `${this.skills.filter(s => s.enabled).length}/${this.skills.length} active`;
-			}
+	private _iconFor(s: ISkillDefinition): string {
+		switch (s.category) {
+			case 'code': return '💻';
+			case 'git': return '🔀';
+			case 'meta': return '🧠';
+			case 'docs': return '📝';
+			default: return '💡';
 		}
 	}
 

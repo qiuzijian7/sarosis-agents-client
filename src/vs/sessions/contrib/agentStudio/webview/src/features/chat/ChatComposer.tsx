@@ -58,14 +58,26 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 	const agentDisplay = selectedAgent?.name || selection?.agentId || 'Agent';
 
 	// Model 显示：当 supportsAgents 时显示选中 agent 对应的 model，否则显示普通 model
-	const modelDisplay = selection?.modelId || activeEmployee?.model || 'Model';
+	// selection?.modelId 是 provider 内部 id（可能是 qualified id 形如 "vendor/.../model"）。
+	// 优先从 currentProvider.models 查找它对应的友好显示名，避免下拉/已选状态出现 qualified id。
+	const modelDisplay = useMemo(() => {
+		const id = selection?.modelId;
+		if (!id) { return activeEmployee?.model || 'Model'; }
+		const meta = currentProvider?.models.find(m => m.id === id);
+		return meta?.name || id;
+	}, [selection?.modelId, currentProvider?.models, activeEmployee?.model]);
 
 	// 当前 agent 支持的 models（用于 model 下拉菜单过滤）
 	const availableModels = useMemo(() => {
 		if (!currentProvider) { return []; }
 		if (supportsAgents && selectedAgent?.models) {
-			// Agent 模式：显示当前 agent 支持的 models
-			return selectedAgent.models.map(m => ({ id: m, name: m }));
+			// Agent 模式：从 agent 声明的 model id 列表中映射回 currentProvider.models 里的友好名。
+			// 如果 agent 给出的字符串恰好不在 provider.models 中（少见），就回退用字符串本身做兜底。
+			const byId = new Map(currentProvider.models.map(m => [m.id, m.name]));
+			return selectedAgent.models.map(modelId => ({
+				id: modelId,
+				name: byId.get(modelId) || modelId,
+			}));
 		}
 		return currentProvider.models;
 	}, [currentProvider, supportsAgents, selectedAgent]);

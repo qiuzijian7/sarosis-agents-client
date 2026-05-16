@@ -511,6 +511,84 @@ registerWorkbenchContribution2(BYOKProviderContribution.ID, BYOKProviderContribu
 import { LanguageModelsToAgentOSBridge } from './languageModelsBridge.js';
 registerWorkbenchContribution2(LanguageModelsToAgentOSBridge.ID, LanguageModelsToAgentOSBridge, WorkbenchPhase.AfterRestored);
 
+// --- Built-in Capability Providers (Skill / Tool / MCP / Memory) ----------------
+// 把"四件套"内置 Provider 一次性注入 IAgentOSService。
+// 每一项都可独立失败而不影响其他能力 —— 我们对每个 Provider 用 try/catch 兜底。
+import { ISkillRegistry } from '../common/skills.js';
+import { SkillRegistry } from './skillRegistryService.js';
+import { BuiltinToolProvider } from './providers/tool/builtinToolProvider.js';
+import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
+import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
+
+registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
+
+class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.builtinCapabilities';
+
+	constructor(
+		@IConfigurationService configurationService: IConfigurationService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@ILogService private readonly logService: ILogService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IFileService private readonly fileService: IFileService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IMcpService private readonly mcpService: IMcpService,
+		// Touch ISkillRegistry so the singleton is created and starts its filesystem
+		// scan early — `_skillRegistry` is otherwise unused here, but the service
+		// becomes addressable through DI everywhere else (slash commands, UI,
+		// PlanningProvider) once it has been instantiated at least once.
+		@ISkillRegistry _skillRegistry: ISkillRegistry,
+	) {
+		super();
+
+		if (!configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
+			return;
+		}
+
+		this._registerBuiltinTools();
+		this._registerMcpTools();
+		this._registerSessionMemory();
+	}
+
+	private _registerBuiltinTools(): void {
+		try {
+			const provider = this._register(this.instantiationService.createInstance(BuiltinToolProvider));
+			// priority 50 — 让运行时由扩展注入的 ToolProvider（typically priority 100+）能覆盖。
+			this._register(this.agentOSService.registerToolProvider(provider, 50));
+			this.logService.info('[BuiltinCapability] BuiltinToolProvider registered');
+		} catch (err) {
+			this.logService.error('[BuiltinCapability] BuiltinToolProvider registration failed', err);
+		}
+	}
+
+	private _registerMcpTools(): void {
+		try {
+			const provider = this._register(new McpToolProvider(this.mcpService, this.logService));
+			// priority 70 — MCP 工具普遍是用户主动配置的，应该优先于内置。
+			this._register(this.agentOSService.registerToolProvider(provider, 70));
+			this.logService.info('[BuiltinCapability] McpToolProvider registered');
+		} catch (err) {
+			this.logService.error('[BuiltinCapability] McpToolProvider registration failed', err);
+		}
+	}
+
+	private _registerSessionMemory(): void {
+		try {
+			const provider = new SessionMemoryProvider(this.fileService, this.environmentService, this.logService);
+			this._register(provider);
+			this._register(this.agentOSService.registerMemoryProvider(provider, 50));
+			this.logService.info('[BuiltinCapability] SessionMemoryProvider registered');
+		} catch (err) {
+			this.logService.error('[BuiltinCapability] SessionMemoryProvider registration failed', err);
+		}
+	}
+}
+
+registerWorkbenchContribution2(BuiltinCapabilityContribution.ID, BuiltinCapabilityContribution, WorkbenchPhase.AfterRestored);
+
 // --- Agent Capability Plugin Activation ------------------------------------------
 // Discovers and activates IAgentCapabilityPlugin extensions from TWO sources:
 //

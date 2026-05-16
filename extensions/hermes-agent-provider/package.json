@@ -1,7 +1,7 @@
 {
 	"name": "hermes-agent-provider",
-	"displayName": "Hermes Agent Provider",
-	"description": "Contributes a third-party LLM Chat Provider that bridges the Hermes Python backend (hermes-webui-studio) into the chat box via vscode.lm.registerLanguageModelChatProvider.",
+	"displayName": "Hermes Agent Provider (sample, disabled)",
+	"description": "Sample/reference VS Code chat-provider extension wired to the Hermes Python backend. Kept in the tree as documentation only — no longer registered as a chat-box model provider.",
 	"version": "0.1.0",
 	"publisher": "sarosis",
 	"license": "MIT",
@@ -14,32 +14,19 @@
 			"supported": true
 		}
 	},
-	"enabledApiProposals": [
-		"chatProvider"
-	],
-	"activationEvents": [
-		"onStartupFinished"
-	],
-	"main": "./out/extension",
 	"contributes": {
-		"languageModelChatProviders": [
-			{
-				"vendor": "hermes",
-				"displayName": "Hermes"
-			}
-		],
 		"configuration": {
 			"title": "Hermes Agent Provider",
 			"properties": {
 				"hermes.provider.endpoint": {
 					"type": "string",
 					"default": "http://127.0.0.1:8765",
-					"description": "Base URL of the hermes-webui-studio HTTP API."
+					"description": "Base URL of the hermes-webui-studio HTTP API. Reserved for the (currently disabled) sample chat-provider extension."
 				},
 				"hermes.provider.apiKey": {
 					"type": "string",
 					"default": "",
-					"description": "Optional bearer token for the hermes backend."
+					"description": "Optional bearer token for the hermes backend. Reserved for the (currently disabled) sample chat-provider extension."
 				}
 			}
 		}

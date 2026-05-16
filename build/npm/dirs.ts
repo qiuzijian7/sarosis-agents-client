@@ -48,6 +48,7 @@ export const dirs = [
 	'extensions/simple-browser',
 	'extensions/agent-studio',
 	'extensions/hermes-agent-provider',
+	'extensions/knot-agui',
 	'extensions/tunnel-forwarding',
 	'extensions/terminal-suggest',
 	'extensions/typescript-language-features',

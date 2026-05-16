@@ -18,6 +18,7 @@ export const AGENT_STUDIO_LANGUAGE_SETTING = 'sessions.agentStudio.preferences.l
 export const AGENT_STUDIO_SEND_KEY_SETTING = 'sessions.agentStudio.preferences.sendKey';
 export const AGENT_STUDIO_DEFAULT_PROVIDER_SETTING = 'sessions.agentStudio.preferences.defaultProvider';
 export const AGENT_STUDIO_DEFAULT_MODEL_SETTING = 'sessions.agentStudio.preferences.defaultModel';
+export const AGENT_STUDIO_DEFAULT_AGENT_SETTING = 'sessions.agentStudio.preferences.defaultAgent';
 export const AGENT_STUDIO_BOT_NAME_SETTING = 'sessions.agentStudio.preferences.botName';
 export const AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING = 'sessions.agentStudio.preferences.showTokenUsage';
 export const AGENT_STUDIO_NOTIFICATION_SOUND_SETTING = 'sessions.agentStudio.preferences.notificationSound';

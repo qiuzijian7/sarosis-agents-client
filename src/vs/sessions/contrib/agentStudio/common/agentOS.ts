@@ -36,32 +36,32 @@ export interface IAgentOSService {
 	/**
 	 * 注册 Memory Provider（优先级自动选择活跃 Provider）
 	 */
-	registerMemoryProvider(provider: IMemoryProvider): IDisposable;
+	registerMemoryProvider(provider: IMemoryProvider, priority?: number): IDisposable;
 
 	/**
 	 * 注册 Tool Provider
 	 */
-	registerToolProvider(provider: IToolProvider): IDisposable;
+	registerToolProvider(provider: IToolProvider, priority?: number): IDisposable;
 
 	/**
 	 * 注册 Planning Provider
 	 */
-	registerPlanningProvider(provider: IPlanningProvider): IDisposable;
+	registerPlanningProvider(provider: IPlanningProvider, priority?: number): IDisposable;
 
 	/**
 	 * 注册 Execution Provider
 	 */
-	registerExecutionProvider(provider: IExecutionProvider): IDisposable;
+	registerExecutionProvider(provider: IExecutionProvider, priority?: number): IDisposable;
 
 	/**
 	 * 注册 Retrieval (RAG) Provider
 	 */
-	registerRetrievalProvider(provider: IRetrievalProvider): IDisposable;
+	registerRetrievalProvider(provider: IRetrievalProvider, priority?: number): IDisposable;
 
 	/**
 	 * 注册 Kanban Provider
 	 */
-	registerKanbanProvider(provider: IKanbanProvider): IDisposable;
+	registerKanbanProvider(provider: IKanbanProvider, priority?: number): IDisposable;
 
 	// ─── Model Provider 管理（多 Provider 多模型）────────────────────
 
