@@ -39,6 +39,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		super();
 		this._logService = logService;
 		this._slotRegistry = this._register(new SlotRegistry(logService));
+
+		// Bridge the OS-level ModelProvider list and active selection
+		// into the SlotRegistry so that ExecutionProviders can access them
+		// via slots.getActiveModelProvider() / slots.getActiveModelSelection()
+		this._slotRegistry.setModelProviderBridge({
+			getModelProviders: () => this._modelProviders,
+			getActiveModelSelection: () => this._activeSelection,
+		});
 	}
 
 	// ─── 能力槽注册 ─────────────────────────────────────────────────
@@ -178,14 +186,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * 执行一次 Agent 对话轮次
 	 *
 	 * 完整实现 — 包含错误恢复和 Fallback 机制
+	 *
+	 * 路径选择逻辑：
+	 * 1. 如果有活跃的 ModelSelection 且对应的 ModelProvider 已注册
+	 *    → 优先走直通模式（直接调用选中的 ModelProvider），确保用户在 UI
+	 *      中选择的 Provider/Model 生效。
+	 * 2. 否则尝试 ExecutionProvider（完整 Agent Loop）。
+	 * 3. 最终退化为直接 Model Provider 调用（带 Fallback）。
 	 */
 	async *executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		this._logService.info(`[AgentOS] executeAgentTurn: agentId=${request.agentId}, messages=${request.messages.length}`);
 
-		// ─── 编排流程 ───────────────────────────────────────
-		// 优先使用 ExecutionProvider（完整 Agent Loop）
-		// 若无，则退化为直接 Model Provider 调用（带 Fallback）
+		// ─── Path 1: 用户明确选择了 Model → 直通模式 ───────────────
+		// 当用户在聊天框中显式选择了 Provider/Model 时，应直接使用该 Provider
+		// 的 chat() 方法，而不是走 ExecutionProvider（它可能是 example stub）。
+		const activeModelProvider = this._getActiveModelProvider();
+		if (activeModelProvider && this._activeSelection?.modelId) {
+			this._logService.info(
+				`[AgentOS] Active model selection detected (${this._activeSelection.providerId}/${this._activeSelection.modelId}), `
+				+ `using direct model call instead of ExecutionProvider`,
+			);
+			yield* this._executeWithFallbackDirectly(request);
+			return;
+		}
 
+		// ─── Path 2: 使用 ExecutionProvider（完整 Agent Loop）────────
 		const executionProvider = this.getActiveExecutionProvider();
 		if (executionProvider) {
 			this._logService.info(`[AgentOS] Using ExecutionProvider: ${executionProvider.id}`);
@@ -205,7 +230,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return;
 		}
 
-		// ─── 退化模式：直接调用 Model Provider（带 Fallback）─────────────────
+		// ─── Path 3: 退化模式：直接调用 Model Provider（带 Fallback）──
 		yield* this._executeWithFallbackDirectly(request);
 	}
 

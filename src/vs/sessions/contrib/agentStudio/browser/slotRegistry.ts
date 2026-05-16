@@ -6,7 +6,7 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import {
-	IModelProvider, IMemoryProvider, IToolProvider,
+	IModelProvider, IModelSelection, IMemoryProvider, IToolProvider,
 	IPlanningProvider, IExecutionProvider, IRetrievalProvider, IKanbanProvider,
 	ISlotRegistry,
 } from '../common/providers.js';
@@ -22,6 +22,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
  *
  * 注意：Model Slot 由 IAgentOSService 单独管理（支持多 Provider 多模型），
  * 此处 SlotRegistry 仅管理其他 6 个能力槽。
+ * AgentOSService 可以通过 setModelProviderBridge() 让 SlotRegistry 能感知
+ * AgentOS 管理的 Model Providers 和当前活跃选择。
  */
 export class SlotRegistry extends Disposable implements ISlotRegistry {
 
@@ -35,9 +37,30 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 	private readonly _retrievalProviders: { provider: IRetrievalProvider; priority: number }[] = [];
 	private readonly _kanbanProviders: { provider: IKanbanProvider; priority: number }[] = [];
 
+	/**
+	 * Bridge callbacks set by AgentOSService so that SlotRegistry can query
+	 * the OS-level ModelProvider list and active selection.
+	 */
+	private _modelProviderBridge?: {
+		getModelProviders: () => IModelProvider[];
+		getActiveModelSelection: () => IModelSelection | undefined;
+	};
+
 	constructor(logService: ILogService) {
 		super();
 		this._logService = logService;
+	}
+
+	/**
+	 * Set by AgentOSService to let the SlotRegistry resolve the active
+	 * ModelProvider from the OS-level registry (which is separate from
+	 * the SlotRegistry's own _modelProviders list).
+	 */
+	setModelProviderBridge(bridge: {
+		getModelProviders: () => IModelProvider[];
+		getActiveModelSelection: () => IModelSelection | undefined;
+	}): void {
+		this._modelProviderBridge = bridge;
 	}
 
 	// ── Events ───────────────────────────────────────────────────────
@@ -203,9 +226,28 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 	// ── ISlotRegistry 实现（供 ExecutionProvider 回调）────────
 
 	getActiveModelProvider(): IModelProvider | undefined {
-		// Model Slot：返回当前选中的 Provider（由 IAgentOSService 管理）
-		// 此处返回第一个注册的 Model Provider 作为 fallback
+		// Prefer the AgentOS-level active selection bridge (which knows
+		// which provider the user chose in the chat bar)
+		if (this._modelProviderBridge) {
+			const selection = this._modelProviderBridge.getActiveModelSelection();
+			if (selection) {
+				const provider = this._modelProviderBridge.getModelProviders()
+					.find(p => p.id === selection.providerId);
+				if (provider) {
+					return provider;
+				}
+			}
+			// Fall through if bridge has no valid selection
+		}
+		// Fallback: use the SlotRegistry's own model provider list
 		return this._modelProviders.length > 0 ? this._modelProviders[0] : undefined;
+	}
+
+	getActiveModelSelection(): IModelSelection | undefined {
+		if (this._modelProviderBridge) {
+			return this._modelProviderBridge.getActiveModelSelection();
+		}
+		return undefined;
 	}
 
 	// ── 清理 ──────────────────────────────────────────────────

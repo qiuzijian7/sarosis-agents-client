@@ -64,14 +64,30 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			);
 			set({ providers, isLoading: false });
 
-			// 从 Host 获取已保存的 selection（用户上次选择的 provider/model）
+			// Try to restore selection from the active employee's agent.yaml first,
+			// then fall back to the global selection saved in settings.json
+			const activeEmployeeId = useChatStore.getState().activeEmployeeId;
 			try {
-				const savedSelection = await sendRequest<unknown, { providerId: string; modelId: string; agentId?: string } | null>(
-					'providers.getSelection',
-					{}
-				);
+				let savedSelection: { providerId: string; modelId: string; agentId?: string } | null = null;
+
+				if (activeEmployeeId) {
+					// Prefer employee-specific selection from agent.yaml
+					savedSelection = await sendRequest<{ employeeId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
+						'providers.getSelectionForEmployee',
+						{ employeeId: activeEmployeeId }
+					);
+				}
+
+				if (!savedSelection) {
+					// Fall back to global selection
+					savedSelection = await sendRequest<unknown, { providerId: string; modelId: string; agentId?: string } | null>(
+						'providers.getSelection',
+						{}
+					);
+				}
+
 				if (savedSelection) {
-					const provider = (providers || []).find(p => p.id === savedSelection.providerId);
+					const provider = (providers || []).find(p => p.id === savedSelection!.providerId);
 					if (provider && provider.authStatus === 'authenticated') {
 						set({
 							selection: {
@@ -130,12 +146,14 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			},
 		});
 
-		// Notify host to persist the selection
-		postMessage('providers.select', { providerId, modelId, agentId });
+		// Include the active employeeId so that the host can persist to agent.yaml
+		const activeEmployeeId = useChatStore.getState().activeEmployeeId;
+
+		// Notify host to persist the selection (both global + agent.yaml)
+		postMessage('providers.select', { providerId, modelId, agentId, employeeId: activeEmployeeId });
 
 		// Sync the active employee's model/provider fields so that
 		// EmployeeCard and chat header update in real-time
-		const activeEmployeeId = useChatStore.getState().activeEmployeeId;
 		if (activeEmployeeId) {
 			useEmployeeStore.setState(state => ({
 				employees: state.employees.map(e =>

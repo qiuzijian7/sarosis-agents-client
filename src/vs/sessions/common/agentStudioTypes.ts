@@ -27,6 +27,48 @@ export const enum DelegationStatus {
 	Cancelled = 'cancelled',
 }
 
+/**
+ * Portable export format for an agent instance.
+ * Contains the employee metadata and all bootstrap/config files from the agent directory.
+ * Used for import/export across workspaces.
+ */
+export interface AgentExportData {
+	/** Export format version for forward compatibility */
+	readonly version: 1;
+	/** Timestamp of the export */
+	readonly exportedAt: string;
+	/** Employee record (sensitive fields like id/workspaceId stripped) */
+	readonly employee: Omit<Employee, 'id' | 'workspaceId' | 'agentDir' | 'bootstrapTemplates' | 'status' | 'tokenUsage' | 'position'>;
+	/** agent.yaml content (JSON object) */
+	readonly agentConfig: Record<string, unknown>;
+	/** Bootstrap file contents */
+	readonly files: {
+		readonly agentsMd?: string;
+		readonly soulMd?: string;
+		readonly identityMd?: string;
+		readonly toolsMd?: string;
+		readonly memoryMd?: string;
+	};
+}
+
+/**
+ * Bootstrap file templates for agent instance directory.
+ * When creating an agent from a preset, these templates are used to populate
+ * the Markdown bootstrap files (AGENTS.md, SOUL.md, etc.) with preset-specific content.
+ */
+export interface AgentBootstrapTemplates {
+	/** AGENTS.md — Operational instructions and workspace rules */
+	agentsMd?: string;
+	/** SOUL.md — Core personality, values, and boundaries */
+	soulMd?: string;
+	/** IDENTITY.md — Identity record (name, emoji, notes) */
+	identityMd?: string;
+	/** TOOLS.md — Local environment tool notes */
+	toolsMd?: string;
+	/** MEMORY.md — Initial long-term memory */
+	memoryMd?: string;
+}
+
 export interface Employee {
 	readonly id: string;
 	name: string;
@@ -35,6 +77,7 @@ export interface Employee {
 	avatar?: string;
 	presetId?: string;
 	model?: string;
+	provider?: string;
 	customPrompt?: string;
 	skills?: EmployeeSkill[];
 	status: EmployeeStatus;
@@ -42,6 +85,13 @@ export interface Employee {
 	workspaceId?: string;
 	position?: { x: number; y: number };
 	tokenUsage?: number;
+	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
+	agentDir?: string;
+	/**
+	 * Bootstrap templates from a preset, used when creating the agent instance directory.
+	 * Not persisted to employees.json — only used during creation.
+	 */
+	bootstrapTemplates?: AgentBootstrapTemplates;
 	createdAt: string;
 	updatedAt: string;
 }

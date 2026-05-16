@@ -24,6 +24,8 @@ export type RequestType =
 	| 'employees.update'
 	| 'employees.delete'
 	| 'employees.selected'
+	| 'employees.export'
+	| 'employees.import'
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
@@ -55,6 +57,7 @@ export type RequestType =
 	| 'providers.list'
 	| 'providers.select'
 	| 'providers.getSelection'
+	| 'providers.getSelectionForEmployee'
 	| 'providers.openSettings';
 
 // Event types (Host → WebView, unsolicited)
@@ -146,6 +149,14 @@ export interface IEmployeeCreatePayload {
 	readonly model?: string;
 	readonly customPrompt?: string;
 	readonly workspaceId?: string;
+	/** Bootstrap templates for agent instance directory files (transient, not persisted) */
+	readonly bootstrapTemplates?: {
+		readonly agentsMd?: string;
+		readonly soulMd?: string;
+		readonly identityMd?: string;
+		readonly toolsMd?: string;
+		readonly memoryMd?: string;
+	};
 }
 
 export interface IEmployeeUpdatePayload {
@@ -171,6 +182,19 @@ export interface IConnectionPayload {
 export interface IAutoPlanPayload {
 	readonly goal: string;
 	readonly workspaceId: string;
+}
+
+// ─── Import / Export Payloads ───────────────────────────────────────────────────
+
+export interface IEmployeeExportPayload {
+	readonly id: string;
+}
+
+export interface IEmployeeImportPayload {
+	/** The full AgentExportData JSON object */
+	readonly exportData: Record<string, unknown>;
+	/** Target workspace to import into */
+	readonly workspaceId?: string;
 }
 
 // ─── Union types for type-safe dispatch ─────────────────────────────────────────
@@ -204,4 +228,6 @@ export interface IProviderSelectPayload {
 	readonly providerId: string;
 	readonly modelId: string;
 	readonly agentId?: string;
+	/** The active employee whose agent.yaml should be updated with the selection */
+	readonly employeeId?: string;
 }

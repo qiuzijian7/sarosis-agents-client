@@ -11,6 +11,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService } from '../common/agentStudio.js';
 import type { IChatStreamDelta } from '../common/agentStudio.js';
+import type { AgentExportData } from '../../../common/agentStudioTypes.js';
 import { IEnvironmentService, type INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import type { RequestType, IResponseMessage, IEventMessage } from './messageProtocol.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
@@ -18,7 +19,7 @@ import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { AGENT_STUDIO_THEME_SETTING } from '../common/constants.js';
-import type { IProviderInfo, IProviderSelectPayload } from './messageProtocol.js';
+import type { IProviderInfo, IProviderSelectPayload, IEmployeeExportPayload, IEmployeeImportPayload } from './messageProtocol.js';
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -214,6 +215,13 @@ export class AgentStudioWebviewController extends Disposable {
 			case 'employees.selected':
 				this.agentStudioService.fireSelectEmployee((p as Record<string, unknown>).employeeId as string | null ?? null);
 				return undefined;
+			case 'employees.export':
+				return this.agentStudioService.exportEmployee((p as unknown as IEmployeeExportPayload).id);
+			case 'employees.import':
+				return this.agentStudioService.importEmployee(
+					(p as unknown as IEmployeeImportPayload).exportData as unknown as AgentExportData,
+					(p as unknown as IEmployeeImportPayload).workspaceId,
+				);
 
 		// ─── Workspaces ─────────────────────────────────────────
 		case 'workspace.list':
@@ -300,6 +308,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleProvidersSelect(p as unknown as IProviderSelectPayload);
 			case 'providers.getSelection':
 				return this._handleProvidersGetSelection();
+			case 'providers.getSelectionForEmployee':
+				return this._handleProvidersGetSelectionForEmployee(p.employeeId as string);
 			case 'providers.openSettings':
 				return this._handleProvidersOpenSettings(p as { providerId?: string });
 
@@ -532,6 +542,27 @@ export class AgentStudioWebviewController extends Disposable {
 		if (payload.agentId) {
 			this.modelSelectorService.setSelectedAgentId(payload.agentId);
 		}
+
+		// Persist provider/model/agent selection to the active employee's agent.yaml
+		// and update the employee record in employees.json so it survives window reload
+		if (payload.employeeId) {
+			// 1) Write to agent.yaml
+			this.agentStudioService.updateEmployeeModelConfig(payload.employeeId, {
+				providerId: payload.providerId,
+				modelId: payload.modelId,
+				agentId: payload.agentId,
+			}).catch(err => {
+				this.logService.error('[AgentStudio] Failed to persist model config to agent.yaml', err);
+			});
+
+			// 2) Update the employee record (provider + model fields in employees.json)
+			this.agentStudioService.updateEmployee(payload.employeeId, {
+				provider: payload.providerId,
+				model: payload.modelId,
+			}).catch(err => {
+				this.logService.error('[AgentStudio] Failed to update employee provider/model', err);
+			});
+		}
 	}
 
 	private _handleProvidersGetSelection(): IProviderSelectPayload | null {
@@ -544,6 +575,37 @@ export class AgentStudioWebviewController extends Disposable {
 			modelId: selection.modelId,
 			agentId: selection.agentId,
 		};
+	}
+
+	/**
+	 * Read provider/model/agent selection from the employee's agent.yaml.
+	 * Falls back to the global ModelSelectorService selection if agent.yaml
+	 * doesn't have valid model config.
+	 */
+	private async _handleProvidersGetSelectionForEmployee(employeeId: string): Promise<IProviderSelectPayload | null> {
+		if (!employeeId) {
+			return this._handleProvidersGetSelection();
+		}
+
+		try {
+			const config = await this.agentStudioService.getEmployeeModelConfig(employeeId);
+			if (config && config.providerId && config.modelId) {
+				this.logService.info(
+					`[AgentStudio] Restored model selection from agent.yaml for employee ${employeeId}: `
+					+ `${config.providerId}/${config.modelId}${config.agentId ? ` [agent: ${config.agentId}]` : ''}`,
+				);
+				return {
+					providerId: config.providerId,
+					modelId: config.modelId,
+					agentId: config.agentId,
+				};
+			}
+		} catch (err) {
+			this.logService.debug('[AgentStudio] Could not read model config from agent.yaml, falling back to global', err);
+		}
+
+		// Fallback to global selection
+		return this._handleProvidersGetSelection();
 	}
 
 	private _handleProvidersOpenSettings(payload: { providerId?: string }): void {

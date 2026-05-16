@@ -430,6 +430,7 @@ export interface IKanbanBoardChangeEvent {
  */
 export interface ISlotRegistry {
 	getActiveModelProvider(): IModelProvider | undefined;
+	getActiveModelSelection(): IModelSelection | undefined;
 	getActiveMemoryProvider(): IMemoryProvider | undefined;
 	getActiveToolProvider(): IToolProvider | undefined;
 	getActivePlanningProvider(): IPlanningProvider | undefined;

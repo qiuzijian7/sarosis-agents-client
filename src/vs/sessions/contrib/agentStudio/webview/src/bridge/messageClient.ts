@@ -43,7 +43,11 @@ export type RequestType =
 	| 'session.delete'
 	| 'providers.list'
 	| 'providers.select'
-	| 'providers.getSelection';
+	| 'providers.getSelection'
+	| 'providers.getSelectionForEmployee'
+	| 'providers.openSettings'
+	| 'employees.export'
+	| 'employees.import';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;

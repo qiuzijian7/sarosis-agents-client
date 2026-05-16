@@ -11,6 +11,7 @@ import { IAgentGalleryService } from '../common/agentInstance.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE } from '../common/constants.js';
 
 // ─── Agent Instance Service Implementation ─────────────────────────
 
@@ -58,12 +59,13 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 			throw new Error(`Template not found: ${templateId}`);
 		}
 
+		const instanceId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 		const instance: AgentInstance = {
-			id: `agent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+			id: instanceId,
 			name: template.name,
 			templateId,
 			workspaceId,
-			configPath: `.sarosis/agents/${templateId}/${Date.now()}/agent.yaml`,
+			configPath: `${WORKSPACE_DATA_DIR}/${AGENTS_DIR}/${instanceId}/${AGENT_CONFIG_FILE}`,
 			createdAt: new Date().toISOString(),
 			updatedAt: new Date().toISOString(),
 			status: AgentInstanceStatus.Active,
@@ -78,12 +80,13 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 	}
 
 	async createInstance(config: Partial<AgentInstance>): Promise<AgentInstance> {
+		const instanceId = config.id || `agent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 		const instance: AgentInstance = {
-			id: config.id || `agent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+			id: instanceId,
 			name: config.name || 'New Agent',
 			templateId: config.templateId,
 			workspaceId: config.workspaceId || '',
-			configPath: config.configPath || `.sarosis/agents/untitled/${Date.now()}/agent.yaml`,
+			configPath: config.configPath || `${WORKSPACE_DATA_DIR}/${AGENTS_DIR}/${instanceId}/${AGENT_CONFIG_FILE}`,
 			createdAt: new Date().toISOString(),
 			updatedAt: new Date().toISOString(),
 			status: AgentInstanceStatus.Active,
@@ -126,7 +129,7 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 		}
 
 		try {
-			const instanceDir = URI.from({ scheme: 'file', path: `.sarosis/agents/${instanceId}` });
+			const instanceDir = URI.from({ scheme: 'file', path: `${WORKSPACE_DATA_DIR}/${AGENTS_DIR}/${instanceId}` });
 			await this._fileService.del(instanceDir, { recursive: true });
 			this._logService.info(`[AgentInstance] Cleaned up files for instance: ${instanceId}`);
 		} catch (error) {
@@ -140,7 +143,7 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 		}
 
 		try {
-			const agentsDir = URI.from({ scheme: 'file', path: '.sarosis/agents' });
+			const agentsDir = URI.from({ scheme: 'file', path: `${WORKSPACE_DATA_DIR}/${AGENTS_DIR}` });
 			const children = await this._fileService.resolve(agentsDir);
 
 			if (children.children) {
@@ -216,8 +219,8 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 		}
 
 		try {
-			// 确保目录存在
-			const configDir = URI.from({ scheme: 'file', path: `.sarosis/agents/${instance.id}` });
+			// Ensure directory exists
+			const configDir = URI.from({ scheme: 'file', path: `${WORKSPACE_DATA_DIR}/${AGENTS_DIR}/${instance.id}` });
 			await this._fileService.createFolder(configDir);
 
 			// 构建配置文件内容

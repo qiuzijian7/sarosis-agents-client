@@ -115,3 +115,14 @@ export const DATA_FILE_SESSIONS = 'sessions.json';
 
 // Workspace-local data directory name (stored inside the workspace folder)
 export const WORKSPACE_DATA_DIR = '.sarosisworkspace';
+
+// Agent instance directory name (stored inside .sarosisworkspace/)
+export const AGENTS_DIR = 'agents';
+
+// Agent instance bootstrap file names (inspired by OpenClaw workspace structure)
+export const AGENT_CONFIG_FILE = 'agent.yaml';
+export const AGENT_AGENTS_MD = 'AGENTS.md';
+export const AGENT_SOUL_MD = 'SOUL.md';
+export const AGENT_IDENTITY_MD = 'IDENTITY.md';
+export const AGENT_TOOLS_MD = 'TOOLS.md';
+export const AGENT_MEMORY_MD = 'MEMORY.md';

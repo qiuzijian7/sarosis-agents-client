@@ -29,6 +29,34 @@ export interface Employee {
 	category?: string;
 	temperature?: number;
 	maxTokens?: number;
+	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
+	agentDir?: string;
+	/**
+	 * Bootstrap templates from a preset, used when creating the agent instance directory.
+	 * Transient — only used during creation, not persisted.
+	 */
+	bootstrapTemplates?: {
+		agentsMd?: string;
+		soulMd?: string;
+		identityMd?: string;
+		toolsMd?: string;
+		memoryMd?: string;
+	};
+}
+
+/** Portable export format for an agent instance */
+export interface AgentExportData {
+	readonly version: 1;
+	readonly exportedAt: string;
+	readonly employee: Partial<Employee>;
+	readonly agentConfig: Record<string, unknown>;
+	readonly files: {
+		readonly agentsMd?: string;
+		readonly soulMd?: string;
+		readonly identityMd?: string;
+		readonly toolsMd?: string;
+		readonly memoryMd?: string;
+	};
 }
 
 interface EmployeeState {
@@ -44,6 +72,8 @@ interface EmployeeState {
 	createEmployee: (data: Partial<Employee>) => Promise<Employee>;
 	updateEmployee: (id: string, data: Partial<Employee>) => Promise<void>;
 	deleteEmployee: (id: string) => Promise<void>;
+	exportEmployee: (id: string) => Promise<AgentExportData>;
+	importEmployee: (data: AgentExportData, workspaceId?: string) => Promise<Employee>;
 
 	// Computed
 	filteredEmployees: () => Employee[];
@@ -96,6 +126,20 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 			employees: state.employees.filter(e => e.id !== id),
 			selectedEmployeeId: state.selectedEmployeeId === id ? null : state.selectedEmployeeId,
 		}));
+	},
+
+	exportEmployee: async (id) => {
+		const exportData = await sendRequest<{ id: string }, AgentExportData>('employees.export', { id });
+		return exportData;
+	},
+
+	importEmployee: async (data, workspaceId) => {
+		const employee = await sendRequest<{ exportData: AgentExportData; workspaceId?: string }, Employee>(
+			'employees.import',
+			{ exportData: data, workspaceId },
+		);
+		set(state => ({ employees: [...state.employees, employee] }));
+		return employee;
 	},
 
 	filteredEmployees: () => {

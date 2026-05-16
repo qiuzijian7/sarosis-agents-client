@@ -12,7 +12,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import {
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
@@ -396,13 +396,13 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			const key = 'agent-studio.model-selection';
 			const value = JSON.stringify(this._currentSelection);
 			this._storageService.store(key, value, StorageScope.APPLICATION, StorageTarget.MACHINE);
-			
+
 			// 同时保存到 configurationService（持久化到 settings.json）
-			// 这样重启后配置仍然存在
-			this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, this._currentSelection.providerId);
-			this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_MODEL_SETTING, this._currentSelection.modelId);
+			// 必须传 ConfigurationTarget.USER，否则只存在内存中不写入文件
+			this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, this._currentSelection.providerId, ConfigurationTarget.USER);
+			this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_MODEL_SETTING, this._currentSelection.modelId, ConfigurationTarget.USER);
 			if (this._currentSelection.agentId) {
-				this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_AGENT_SETTING, this._currentSelection.agentId);
+				this._configurationService.updateValue(AGENT_STUDIO_DEFAULT_AGENT_SETTING, this._currentSelection.agentId, ConfigurationTarget.USER);
 			}
 		} catch (error) {
 			this._logService.error('[ModelSelector] Failed to save selection', error);

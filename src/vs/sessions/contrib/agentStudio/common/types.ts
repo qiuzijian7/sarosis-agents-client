@@ -17,6 +17,8 @@ export {
 
 // Type-only exports (interfaces) - erased at runtime, must use 'export type'
 export type {
+	AgentBootstrapTemplates,
+	AgentExportData,
 	ChatMessage,
 	Connection,
 	Delegation,

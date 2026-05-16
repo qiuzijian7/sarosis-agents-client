@@ -5,7 +5,7 @@
 
 import { createDecorator } from '../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../base/common/event.js';
-import type { Employee, Workspace, Delegation, ChatMessage, AgentStudioSession, Connection, WorkspaceLayout, TaskBoardRecord, TaskBoardStatus } from './agentStudioTypes.js';
+import type { Employee, Workspace, Delegation, ChatMessage, AgentStudioSession, Connection, WorkspaceLayout, TaskBoardRecord, TaskBoardStatus, AgentExportData } from './agentStudioTypes.js';
 
 // ─── Agent Studio Service ───────────────────────────────────────────────────────
 
@@ -48,6 +48,14 @@ export interface IAgentStudioService {
 	getSession(id: string): Promise<AgentStudioSession | undefined>;
 	createSession(data: Partial<AgentStudioSession>): Promise<AgentStudioSession>;
 	deleteSession(id: string): Promise<void>;
+
+	// Agent Model Config — persist provider/model/agent selection to agent.yaml
+	updateEmployeeModelConfig(employeeId: string, config: { providerId: string; modelId: string; agentId?: string }): Promise<void>;
+	getEmployeeModelConfig(employeeId: string): Promise<{ providerId: string; modelId: string; agentId?: string } | undefined>;
+
+	// Import / Export — portable agent instance bundles
+	exportEmployee(id: string): Promise<AgentExportData>;
+	importEmployee(data: AgentExportData, workspaceId?: string): Promise<Employee>;
 }
 
 // ─── Agent Chat Service ─────────────────────────────────────────────────────────

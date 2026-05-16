@@ -301,8 +301,14 @@ export class ExecutionProvider implements IExecutionProvider {
 	 * 获取当前活跃的模型 ID
 	 */
 	private _getModelId(slots: ISlotRegistry): string {
-		// 从 AgentOS 获取活跃选择
-		// 这里需要访问 AgentOS 服务，暂时返回默认值
-		return 'gpt-4o'; // TODO: 从配置中获取
+		// Query the active model selection from the SlotRegistry bridge
+		const selection = slots.getActiveModelSelection();
+		if (selection?.modelId) {
+			this._logService.debug(`[ExecutionProvider] Using model from active selection: ${selection.modelId}`);
+			return selection.modelId;
+		}
+		// Fallback: try the default model from the first provider
+		this._logService.warn('[ExecutionProvider] No active model selection found, falling back to gpt-4o');
+		return 'gpt-4o';
 	}
 }

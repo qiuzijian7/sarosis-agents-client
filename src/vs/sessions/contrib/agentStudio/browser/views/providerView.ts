@@ -7,7 +7,7 @@ import { IViewPaneOptions, ViewPane } from '../../../../../workbench/browser/par
 import { IViewDescriptorService } from '../../../../../workbench/common/views.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService, ConfigurationTarget } from '../../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
@@ -209,7 +209,7 @@ export class ProviderViewPane extends ViewPane {
 		}
 		// 使用 oninput 确保选择改变时立即保存
 		this.defaultProviderSelect.oninput = () => {
-			this.configurationService.updateValue(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, this.defaultProviderSelect.value);
+			this.configurationService.updateValue(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, this.defaultProviderSelect.value, ConfigurationTarget.USER);
 		};
 		providerRow.appendChild(this.defaultProviderSelect);
 		defaultSection.appendChild(providerRow);
@@ -230,7 +230,7 @@ export class ProviderViewPane extends ViewPane {
 		this.defaultModelInput.value = currentModel;
 		// 使用 oninput 而不是 onchange，确保每次输入都能立即保存，避免关闭窗口时丢失
 		this.defaultModelInput.oninput = () => {
-			this.configurationService.updateValue(AGENT_STUDIO_DEFAULT_MODEL_SETTING, this.defaultModelInput.value);
+			this.configurationService.updateValue(AGENT_STUDIO_DEFAULT_MODEL_SETTING, this.defaultModelInput.value, ConfigurationTarget.USER);
 		};
 		modelRow.appendChild(this.defaultModelInput);
 		defaultSection.appendChild(modelRow);
