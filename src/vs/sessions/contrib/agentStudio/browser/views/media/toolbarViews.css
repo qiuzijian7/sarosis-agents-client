@@ -16,7 +16,8 @@
 .search-view,
 .plugins-view,
 .personal-view,
-.settings-view {
+.settings-view,
+.provider-view {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -34,7 +35,8 @@
 .tools-header,
 .changes-header,
 .plugins-header,
-.settings-header {
+.settings-header,
+.provider-header {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -114,7 +116,8 @@ button.primary:hover,
 .changes-list,
 .search-results,
 .plugins-list,
-.settings-content {
+.settings-content,
+.provider-list {
 	overflow-y: auto;
 	flex: 1;
 }
@@ -961,7 +964,8 @@ button.primary:hover,
 .changes-list::-webkit-scrollbar,
 .search-results::-webkit-scrollbar,
 .plugins-list::-webkit-scrollbar,
-.settings-content::-webkit-scrollbar {
+.settings-content::-webkit-scrollbar,
+.provider-list::-webkit-scrollbar {
 	width: 6px;
 	height: 6px;
 }
@@ -977,7 +981,8 @@ button.primary:hover,
 .changes-list::-webkit-scrollbar-track,
 .search-results::-webkit-scrollbar-track,
 .plugins-list::-webkit-scrollbar-track,
-.settings-content::-webkit-scrollbar-track {
+.settings-content::-webkit-scrollbar-track,
+.provider-list::-webkit-scrollbar-track {
 	background: transparent;
 }
 
@@ -992,7 +997,8 @@ button.primary:hover,
 .changes-list::-webkit-scrollbar-thumb,
 .search-results::-webkit-scrollbar-thumb,
 .plugins-list::-webkit-scrollbar-thumb,
-.settings-content::-webkit-scrollbar-thumb {
+.settings-content::-webkit-scrollbar-thumb,
+.provider-list::-webkit-scrollbar-thumb {
 	background: var(--vscode-scrollbarSlider-background);
 	border-radius: 3px;
 }
@@ -1008,7 +1014,8 @@ button.primary:hover,
 .changes-list::-webkit-scrollbar-thumb:hover,
 .search-results::-webkit-scrollbar-thumb:hover,
 .plugins-list::-webkit-scrollbar-thumb:hover,
-.settings-content::-webkit-scrollbar-thumb:hover {
+.settings-content::-webkit-scrollbar-thumb:hover,
+.provider-list::-webkit-scrollbar-thumb:hover {
 	background: var(--vscode-scrollbarSlider-hoverBackground);
 }
 
@@ -1023,7 +1030,8 @@ button.primary:hover,
 .changes-list::-webkit-scrollbar-thumb:active,
 .search-results::-webkit-scrollbar-thumb:active,
 .plugins-list::-webkit-scrollbar-thumb:active,
-.settings-content::-webkit-scrollbar-thumb:active {
+.settings-content::-webkit-scrollbar-thumb:active,
+.provider-list::-webkit-scrollbar-thumb:active {
 	background: var(--vscode-scrollbarSlider-activeBackground);
 }
 
@@ -2704,4 +2712,232 @@ button.primary:hover,
 .setting-status.error {
 	background: var(--vscode-diffEditor-removedTextBackground, rgba(255 0 0 / 0.1));
 	color: var(--vscode-errorForeground);
+}
+
+/* ─── 13. Provider ───────────────────────────────────────────────────────────── */
+
+.provider-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.provider-title {
+	margin: 0;
+	font-size: 14px;
+}
+
+/* Default Provider/Model section */
+.provider-default-section {
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.provider-default-header {
+	font-weight: 600;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+}
+
+.provider-default-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.provider-default-row:last-child {
+	margin-bottom: 0;
+}
+
+.provider-default-label {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	min-width: 80px;
+	flex-shrink: 0;
+}
+
+.provider-default-select,
+.provider-default-input {
+	flex: 1;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	box-sizing: border-box;
+}
+
+.provider-default-select:focus,
+.provider-default-input:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.provider-default-input {
+	min-width: 0;
+}
+
+/* Provider cards */
+.provider-card {
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.provider-card-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	cursor: pointer;
+	transition: background 0.1s;
+}
+
+.provider-card-header:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.provider-card-icon {
+	font-size: 20px;
+	flex-shrink: 0;
+}
+
+.provider-card-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.provider-card-name-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.provider-card-name {
+	font-weight: 600;
+	font-size: 13px;
+	color: var(--vscode-editor-foreground);
+}
+
+.provider-card-status {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	white-space: nowrap;
+}
+
+.provider-card-status.configured {
+	background: rgba(76, 175, 80, 0.15);
+	color: #4caf50;
+}
+
+.provider-card-status.not-configured {
+	background: var(--vscode-input-background);
+	color: var(--vscode-descriptionForeground);
+}
+
+.provider-card-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+/* Card body (collapsed by default) */
+.provider-card-body {
+	display: none;
+	padding: 0 12px 12px 42px;
+}
+
+.provider-card-expanded .provider-card-body {
+	display: block;
+}
+
+/* Provider fields */
+.provider-field {
+	margin-bottom: 8px;
+}
+
+.provider-field:last-of-type {
+	margin-bottom: 0;
+}
+
+.provider-field-label {
+	display: block;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 3px;
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+}
+
+.provider-field-input {
+	width: 100%;
+	padding: 5px 8px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	box-sizing: border-box;
+	font-family: inherit;
+}
+
+.provider-field-input:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+/* Provider card actions */
+.provider-card-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 10px;
+}
+
+.provider-card-btn {
+	padding: 4px 10px;
+	border-radius: 4px;
+	font-size: 11px;
+	cursor: pointer;
+	border: none;
+}
+
+.provider-card-btn-secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.provider-card-btn-secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.provider-card-btn-danger {
+	background: transparent;
+	color: var(--vscode-errorForeground);
+	border: 1px solid var(--vscode-errorForeground);
+}
+
+.provider-card-btn-danger:hover {
+	background: var(--vscode-errorBackground, rgba(255 0 0 / 0.1));
+}
+
+/* Provider status message */
+.provider-status-message {
+	padding: 8px 12px;
+	font-size: 12px;
+	border-radius: 4px;
+	margin: 4px 12px;
+}
+
+.provider-status-message:empty {
+	display: none;
 }

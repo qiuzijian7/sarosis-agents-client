@@ -43,6 +43,10 @@ import '../workbench/services/actions/common/menusExtensionPoint.js';
 import '../workbench/api/common/configurationExtensionPoint.js';
 import '../workbench/api/browser/viewsExtensionPoint.js';
 
+// Agent Studio: register `contributes.agentCapabilities` extension point
+// so third-party installed extensions can declare agent capability providers.
+import './contrib/agentStudio/browser/agentCapabilitiesExtensionPoint.js';
+
 //#endregion
 
 

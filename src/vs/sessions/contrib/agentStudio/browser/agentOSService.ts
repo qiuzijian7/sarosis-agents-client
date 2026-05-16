@@ -220,10 +220,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return;
 		}
 
-		this._logService.info(`[AgentOS] Using ModelProvider directly: ${modelProvider.id}`);
 		const selection = this.getActiveModelSelection();
+		this._logService.info(`[AgentOS] Using ModelProvider directly: ${modelProvider.id}, modelId=${selection?.modelId}`);
+
+		if (!selection || !selection.modelId) {
+			this._logService.error('[AgentOS] No active model selection or modelId is empty');
+			yield { type: 'error', content: 'No model selected. Please select a model from the toolbar.' };
+			return;
+		}
+
 		const messages = request.messages as any[];
-		const options = request.options as any;
+		const options = request.options || {};
 
 		// 可选：加载 Memory 上下文（如果有 Memory Provider）
 		const memoryProvider = this.getActiveMemoryProvider();
@@ -237,17 +244,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}
 
 		// 调用 Model Provider（带 Fallback）
-		const primaryIterable: AsyncIterable<IChatStreamDelta> = async function* (this: AgentOSService) {
+		const logService = this._logService;
+		const self = this;
+		const primaryIterable: AsyncIterable<IChatStreamDelta> = async function* () {
 			// 传递 context（包含 agentId）给 provider
 			const context: { agentId?: string } = {};
 			if (request.agentId) {
 				context.agentId = request.agentId;
 			}
-			const stream = await modelProvider.chat(selection.modelId, messages, options, context);
+			logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length})`);
+			const stream = modelProvider.chat(selection.modelId, messages, options as any, context);
+			let deltaCount = 0;
 			for await (const delta of stream) {
-				yield this._adaptModelDelta(delta);
+				deltaCount++;
+				logService.info(`[AgentOS] ModelProvider delta #${deltaCount}: type=${delta.type}, contentLen=${(delta as any).content?.length ?? (delta as any).error?.length ?? 0}`);
+				yield self._adaptModelDelta(delta);
 			}
-		}.bind(this)();
+			logService.info(`[AgentOS] ModelProvider stream ended, total deltas=${deltaCount}`);
+		}();
 		yield* this._executeWithFallback(
 			() => primaryIterable,
 			request,

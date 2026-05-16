@@ -17,7 +17,8 @@ import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
 import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
-import { IEditorGroupsService, GroupDirection } from '../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroupsService, IEditorGroup, GroupDirection } from '../../workbench/services/editor/common/editorGroupsService.js';
+import { MainEditorPart as SessionsMainEditorPart } from './parts/editorPart.js';
 import { IEditorService } from '../../workbench/services/editor/common/editorService.js';
 import { IPaneCompositePartService } from '../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../workbench/common/views.js';
@@ -41,7 +42,7 @@ import { setHoverDelegateFactory } from '../../base/browser/ui/hover/hoverDelega
 import { setBaseLayerHoverDelegate } from '../../base/browser/ui/hover/hoverDelegate2.js';
 import { Registry } from '../../platform/registry/common/platform.js';
 import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from '../../workbench/common/contributions.js';
-import { IEditorFactoryRegistry, EditorExtensions } from '../../workbench/common/editor.js';
+import { IEditorFactoryRegistry, EditorExtensions, GroupModelChangeKind } from '../../workbench/common/editor.js';
 import { setARIAContainer } from '../../base/browser/ui/aria/aria.js';
 import { FontMeasurements } from '../../editor/browser/config/fontMeasurements.js';
 import { createBareFontInfoFromRawSettings } from '../../editor/common/config/fontInfoFromSettings.js';
@@ -864,97 +865,312 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}
 		}
 
-		// [Sarosis] Open Agent Studio EditorPanes in the right editor group.
-		// The editor area is split into two groups:
-		//   Left group: regular file editors (locked to prevent agent studio tabs)
-		//   Right group: Agent Studio panels (Chat, TaskBoard, Canvas) - uncloseable
+		// [Sarosis] Open Agent Studio EditorPanes — dual-zone model.
+		// The editor area is split horizontally into two top-level zones:
+		//   - Left  → file zone (regular file editors)
+		//   - Right → agent-studio zone (AgentStudioEditorInput tabs)
+		// Inside each zone, users can freely split / dock / merge / resize
+		// sub-groups, but cross-zone moves are blocked by the upstream
+		// drop interceptors that consult __sarosisIsAgentStudioGroup__.
 		this._openAgentStudioEditors();
 	}
 
 	private _openAgentStudioEditors(): void {
-		const mainGroup = this.editorGroupService.activeGroup;
+		// ── Retrieve the two pre-built zones ────────────────────────────
+		// The sessions EditorPart (MainEditorPart) overrides
+		// doCreateGridControl() to build a grid with two BranchNode
+		// children — each zone has its own split-view-container in the
+		// DOM, enabling truly independent drag/dock/resize within zones.
+		// We just look up the groups by the IDs the EditorPart recorded.
+		const editorPart = this.getPart(Parts.EDITOR_PART) as SessionsMainEditorPart;
+		const fileRootGroupId = editorPart.fileZoneRootGroupId;
+		const agentRootGroupId = editorPart.agentZoneRootGroupId;
 
-		// Create a right-side editor group for Agent Studio
-		const agentStudioGroup = this.editorGroupService.addGroup(mainGroup, GroupDirection.RIGHT);
+		const fileRootGroup = this.editorGroupService.getGroup(fileRootGroupId) ?? this.editorGroupService.activeGroup;
+		const agentRootGroup = this.editorGroupService.getGroup(agentRootGroupId)
+			?? this.editorGroupService.groups.find(g => g.id !== fileRootGroup.id)
+			?? fileRootGroup;
 
-		// Lock the Agent Studio group so normal file editors don't open in it
-		agentStudioGroup.lock(true);
+		// Lock the agent-studio root group so file editors cannot land
+		// here through "open to side" / `editor.action.openSide` or other
+		// implicit routing.
+		agentRootGroup.lock(true);
 
-		// Open Agent Chat, Task Board, and Canvas in the right group as pinned + sticky
+		// ── Zone membership tracking ─────────────────────────────────────
+		// Keep two sets that together cover *every* known editor group.
+		const fileZoneGroupIds = new Set<number>();
+		const agentStudioGroupIds = new Set<number>();
+		fileZoneGroupIds.add(fileRootGroup.id);
+		agentStudioGroupIds.add(agentRootGroup.id);
+		for (const g of this.editorGroupService.groups) {
+			if (g.id === fileRootGroup.id || g.id === agentRootGroup.id) {
+				continue;
+			}
+			// Unknown pre-existing group — default to file zone.
+			fileZoneGroupIds.add(g.id);
+		}
+
+		// ── Global zone API ─────────────────────────────────────────────
+		// Expose a single, unified drag-gate predicate that upstream VS Code
+		// workbench code (editorDropTarget, multiEditorTabsControl) can call
+		// without importing anything from `sessions/`.
+		//
+		// API surface (globalThis):
+		//   __sarosisIsAgentStudioGroup__(groupId)  → boolean
+		//     True if the group belongs to the agent-studio zone (right).
+		//
+		//   __sarosisCrossZoneDragBlocked__(sourceGroupId, targetGroupId)
+		//     True if a drag from source → target crosses the zone boundary.
+		//     Returns false (= allowed) for same-zone operations, unknown
+		//     groups, or when the predicate is not installed.
+		//
+		// Zone-internal drags (same zone, any direction / dock position) are
+		// ALWAYS allowed — the upstream code only needs to call the gate on
+		// cross-group operations and skip the drag when it returns true.
+
+		const agentStudioKey = '__sarosisIsAgentStudioGroup__';
+		const crossZoneKey = '__sarosisCrossZoneDragBlocked__';
+
+		(globalThis as any)[agentStudioKey] = (groupId: number | undefined): boolean => {
+			return typeof groupId === 'number' && agentStudioGroupIds.has(groupId);
+		};
+
+		(globalThis as any)[crossZoneKey] = (sourceGroupId: number | undefined, targetGroupId: number | undefined): boolean => {
+			if (typeof sourceGroupId !== 'number' || typeof targetGroupId !== 'number') {
+				return false; // unknown → allow
+			}
+			const sourceInAgent = agentStudioGroupIds.has(sourceGroupId);
+			const targetInAgent = agentStudioGroupIds.has(targetGroupId);
+			// Same zone → allow; cross zone → block
+			return sourceInAgent !== targetInAgent;
+		};
+
+		this._register({
+			dispose: () => {
+				delete (globalThis as any)[agentStudioKey];
+				delete (globalThis as any)[crossZoneKey];
+			}
+		});
+
+		// ── Workspace Toolbar (zone-level, above the entire agent zone) ──
+		// MUST be installed BEFORE any addGroup() calls, because addGroup
+		// restructures the DOM inside the zone BranchNode, making the
+		// walk-up from groupElement unreliable after splits.
+		const TOOLBAR_HEIGHT = 32;
+		const groupElement = (agentRootGroup as unknown as ISerializableView).element;
+
+		// Walk up from groupElement to the zone-level split-view-view.
+		let zoneWrapper: HTMLElement | null = null;
+		let zoneBranchNode: HTMLElement | null = null;
+		let splitViewViewCount = 0;
+		let cursor: HTMLElement | null = groupElement;
+		while (cursor && splitViewViewCount < 2) {
+			cursor = cursor.parentElement;
+			if (cursor?.classList.contains('split-view-view')) {
+				splitViewViewCount++;
+				if (splitViewViewCount === 2) {
+					zoneWrapper = cursor;
+					zoneBranchNode = cursor.querySelector(':scope > .monaco-grid-branch-node') as HTMLElement | null;
+				}
+			}
+			if (cursor?.classList.contains('content') || cursor?.classList.contains('part')) {
+				break;
+			}
+		}
+
+		if (zoneWrapper && zoneWrapper.classList.contains('split-view-view')) {
+			const toolbar = new AgentStudioWorkspaceToolbar(zoneWrapper);
+			this._register(toolbar);
+			toolbar.element.style.position = 'absolute';
+			toolbar.element.style.top = '0';
+			toolbar.element.style.left = '0';
+			toolbar.element.style.right = '0';
+			toolbar.element.style.zIndex = '10';
+
+			if (zoneBranchNode) {
+				const adjustBranchLayout = () => {
+					zoneBranchNode!.style.position = 'absolute';
+					zoneBranchNode!.style.top = `${TOOLBAR_HEIGHT}px`;
+					zoneBranchNode!.style.left = '0';
+					zoneBranchNode!.style.width = '100%';
+					zoneBranchNode!.style.height = `calc(100% - ${TOOLBAR_HEIGHT}px)`;
+				};
+				adjustBranchLayout();
+				const observer = new MutationObserver(adjustBranchLayout);
+				observer.observe(zoneBranchNode, { attributes: true, attributeFilter: ['style'] });
+				this._register({ dispose: () => observer.disconnect() });
+			}
+
+			console.log('[workbench] Toolbar mounted at zone-level');
+
+			const connectService = () => {
+				try {
+					const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
+					toolbar.connectService(agentStudioService);
+				} catch {
+					setTimeout(connectService, 2000);
+				}
+			};
+			connectService();
+
+			const connectFileDialog = () => {
+				try {
+					const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
+					toolbar.connectFileDialogService(fileDialogService);
+				} catch {
+					setTimeout(connectFileDialog, 2000);
+				}
+			};
+			connectFileDialog();
+		} else {
+			console.warn('[workbench] Could not find agent zone wrapper for toolbar.');
+		}
+
+		// ── Open Agent Studio editors in the default layout ──────────────
+		// Default layout:
+		//   ┌──────────────────┬──────────────┐
+		//   │ Workspace Canvas │  Agent Chat   │
+		//   ├──────────────────┤  (full height)│
+		//   │ Task Board       │              │
+		//   └──────────────────┴──────────────┘
 		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
 		const taskboardInput = AgentStudioEditorInput.getOrCreate('taskboard');
 		const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
 
-		this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, agentStudioGroup.id);
-		this.editorService.openEditor(taskboardInput, { pinned: true, sticky: true }, agentStudioGroup.id);
-		this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentStudioGroup.id);
+		// Open Canvas in the agent root group (left-top)
+		this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentRootGroup.id);
 
-		// [Sarosis] Inject global Workspace Toolbar above the tab bar
-		// EditorGroupView.layout() uses absolute pixel heights for titleControl and
-		// editorContainer. It does not know about our toolbar, so we monkey-patch
-		// the layout method on the group's ISerializableView to subtract the toolbar
-		// height before delegating to the original layout.
-		const TOOLBAR_HEIGHT = 32;
-		const groupView = agentStudioGroup as unknown as ISerializableView;
-		const groupElement = groupView.element;
+		// Split right → Chat group (right, full height)
+		const chatGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.RIGHT);
+		this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, chatGroup.id);
+		agentStudioGroupIds.add(chatGroup.id);
 
-		// 1. Create toolbar DOM immediately (no service dependency)
-		console.log('[workbench] Creating workspace toolbar, groupElement:',
-			groupElement, 'parent:', groupElement.parentElement);
-		const toolbar = new AgentStudioWorkspaceToolbar(groupElement);
-		this._register(toolbar);
+		// Split down from Canvas → TaskBoard group (left-bottom)
+		const taskboardGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.DOWN);
+		this.editorService.openEditor(taskboardInput, { pinned: true, sticky: true }, taskboardGroup.id);
+		agentStudioGroupIds.add(taskboardGroup.id);
 
-		// 2. Monkey-patch layout so the toolbar's height is accounted for.
-		const originalLayout = groupView.layout.bind(groupView);
-		groupView.layout = (width: number, height: number, top: number, left: number) => {
-			const adjustedHeight = Math.max(0, height - TOOLBAR_HEIGHT);
-			originalLayout(width, adjustedHeight, top + TOOLBAR_HEIGHT, left);
-			// Fix lastLayout so that relayout() stores the full outer height.
-			const gv = groupView as any;
-			if (gv.lastLayout) {
-				gv.lastLayout = { width, height, top, left };
+		// Focus back to chat
+		chatGroup.focus();
+
+		// ── Close-guard for the three Agent Studio panels ────────────────
+		// Prevent the *last* AgentStudioEditorInput of any panelType in
+		// the entire agent-studio zone from disappearing — re-open it
+		// immediately. Closing a copy that exists in another sub-group of
+		// the same zone is fine (the editor is just being moved within
+		// the zone).
+		const reopenIfLastInZone = (panelType: string) => {
+			const stillExists = this.editorGroupService.groups.some(g =>
+				agentStudioGroupIds.has(g.id) &&
+				g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
+			);
+			if (stillExists) {
+				return;
 			}
+			// Re-open in the agent-zone root if it still exists; otherwise
+			// pick any agent-studio group as a fallback target.
+			const target = this.editorGroupService.getGroup(agentRootGroup.id)
+				?? this.editorGroupService.groups.find(g => agentStudioGroupIds.has(g.id))
+				?? agentRootGroup;
+			const input = AgentStudioEditorInput.getOrCreate(panelType as any);
+			this.editorService.openEditor(input, { pinned: true, sticky: true }, target.id);
 		};
 
-		// 3. Asynchronously connect the service (may be delayed)
-		const connectService = () => {
-			try {
-				const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
-				toolbar.connectService(agentStudioService);
-			} catch {
-				// Service not available yet — retry after a delay
-				setTimeout(connectService, 2000);
-			}
+		const installCloseGuard = (group: IEditorGroup) => {
+			this._register(group.onDidCloseEditor(e => {
+				if (e.editor instanceof AgentStudioEditorInput) {
+					// Defer so that any in-flight moveEditor (close-then-open
+					// across groups within the zone) can settle before we
+					// decide whether to re-open.
+					const panelType = e.editor.panelType;
+					queueMicrotask(() => reopenIfLastInZone(panelType));
+				}
+			}));
 		};
-		connectService();
+		installCloseGuard(agentRootGroup);
+		installCloseGuard(chatGroup);
+		installCloseGuard(taskboardGroup);
 
-		// 4. Connect IFileDialogService for folder browsing in workspace creation
-		const connectFileDialog = () => {
-			try {
-				const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
-				toolbar.connectFileDialogService(fileDialogService);
-			} catch {
-				// Service not available yet — retry after a delay
-				setTimeout(connectFileDialog, 2000);
-			}
+		// ── Cross-zone editor relocation guard ──────────────────────────
+		// If editors somehow end up in the wrong zone (extension, command,
+		// edge-case drop), move them back. The drop-target interceptors
+		// already block most cases at drag time, but state restoration
+		// and programmatic API calls can bypass them, so we double-check
+		// at the model level.
+		const installRelocationGuard = (group: IEditorGroup) => {
+			this._register(group.onDidModelChange(e => {
+				if (e.kind !== GroupModelChangeKind.EDITOR_OPEN && e.kind !== GroupModelChangeKind.EDITOR_MOVE) {
+					return;
+				}
+				const editor = e.editor;
+				if (!editor) {
+					return;
+				}
+				const isAgentStudioEditor = editor instanceof AgentStudioEditorInput;
+				const inAgentZone = agentStudioGroupIds.has(group.id);
+				const inFileZone = fileZoneGroupIds.has(group.id);
+
+				// Foreign editor in agent-studio zone → relocate to file root.
+				if (inAgentZone && !isAgentStudioEditor) {
+					queueMicrotask(() => {
+						if (!group.editors.includes(editor)) {
+							return;
+						}
+						const target = this.editorGroupService.getGroup(fileRootGroup.id) ?? fileRootGroup;
+						if (target.id === group.id) {
+							return;
+						}
+						group.moveEditor(editor, target);
+					});
+					return;
+				}
+
+				// AgentStudioEditorInput in file zone → relocate back to agent root.
+				if (inFileZone && isAgentStudioEditor) {
+					queueMicrotask(() => {
+						if (!group.editors.includes(editor)) {
+							return;
+						}
+						const target = this.editorGroupService.getGroup(agentRootGroup.id) ?? agentRootGroup;
+						if (target.id === group.id) {
+							return;
+						}
+						group.moveEditor(editor, target);
+					});
+					return;
+				}
+			}));
 		};
-		connectFileDialog();
+		installRelocationGuard(fileRootGroup);
+		installRelocationGuard(agentRootGroup);
+		installRelocationGuard(chatGroup);
+		installRelocationGuard(taskboardGroup);
 
-		// Prevent closing Agent Studio editors - re-open immediately if closed
-		this._register(agentStudioGroup.onDidCloseEditor(e => {
-			if (e.editor instanceof AgentStudioEditorInput) {
-				// Re-open the editor that was just closed
-				const input = AgentStudioEditorInput.getOrCreate(e.editor.panelType);
-				this.editorService.openEditor(input, { pinned: true, sticky: true }, agentStudioGroup.id);
+		// ── Track newly-created groups (split / drag) ────────────────────
+		// Inherit zone membership from the *active* group at the moment
+		// the new group appears. The active group is the source of the
+		// split (focus moves to it before the split fires) for both drag
+		// and command-driven splits, so this gives correct membership in
+		// all observed paths.
+		this._register(this.editorGroupService.onDidAddGroup(newGroup => {
+			if (agentStudioGroupIds.has(newGroup.id) || fileZoneGroupIds.has(newGroup.id)) {
+				return; // already tracked
 			}
+			const source = this.editorGroupService.activeGroup;
+			if (source && agentStudioGroupIds.has(source.id)) {
+				agentStudioGroupIds.add(newGroup.id);
+			} else {
+				// Default everything else to the file zone.
+				fileZoneGroupIds.add(newGroup.id);
+			}
+			installCloseGuard(newGroup);
+			installRelocationGuard(newGroup);
 		}));
 
-		// Prevent removing either editor group - both are permanent
-		this._register(this.editorGroupService.onDidRemoveGroup(() => {
-			// If less than 2 groups remain, the layout is broken - recreate
-			if (this.editorGroupService.groups.length < 2) {
-				this._openAgentStudioEditors();
-			}
+		// Track group disposal — drop the id from whichever set held it.
+		this._register(this.editorGroupService.onDidRemoveGroup(removed => {
+			fileZoneGroupIds.delete(removed.id);
+			agentStudioGroupIds.delete(removed.id);
 		}));
 	}
 

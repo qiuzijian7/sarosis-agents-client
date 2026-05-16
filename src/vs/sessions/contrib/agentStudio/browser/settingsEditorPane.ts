@@ -21,25 +21,11 @@ import {
 	AGENT_STUDIO_THEME_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
-	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
-	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
 	AGENT_STUDIO_BOT_NAME_SETTING,
 	AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING,
 	AGENT_STUDIO_NOTIFICATION_SOUND_SETTING,
 	AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING,
 	AGENT_STUDIO_CHECK_UPDATES_SETTING,
-	AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY,
-	AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL,
-	AGENT_STUDIO_PROVIDER_NOUS_API_KEY,
-	AGENT_STUDIO_PROVIDER_NOUS_BASE_URL,
-	AGENT_STUDIO_PROVIDER_GEMINI_API_KEY,
-	AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL,
-	AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY,
-	AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL,
-	AGENT_STUDIO_PROVIDER_MAIN_API_KEY,
-	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
-	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
-	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
 	AGENT_STUDIO_AUX_VISION_PROVIDER,
 	AGENT_STUDIO_AUX_VISION_MODEL,
 	AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER,
@@ -95,6 +81,7 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 		description: '主题、语言和基本偏好',
 		defaultCollapsed: false,
 		fields: [
+			// Theme is rendered as a special card picker, not a select dropdown
 			{ key: AGENT_STUDIO_THEME_SETTING, label: '主题', description: 'Agent Studio 颜色主题', type: 'select', default: 'dark', options: [
 				{ value: 'dark', label: 'Dark（默认）' },
 				{ value: 'light', label: 'Light' },
@@ -113,17 +100,7 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 				{ value: 'enter', label: 'Enter 发送，Shift+Enter 换行' },
 				{ value: 'ctrl+enter', label: 'Ctrl+Enter 发送，Enter 换行' },
 			] },
-			{ key: AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, label: '默认 Provider', description: '新对话使用的默认 AI Provider，留空使用自动选择', type: 'select', default: 'auto', options: [
-				{ value: 'auto', label: 'Auto（自动选择）' },
-				{ value: 'openrouter', label: 'OpenRouter' },
-				{ value: 'nous', label: 'Nous' },
-				{ value: 'gemini', label: 'Gemini' },
-				{ value: 'anthropic', label: 'Anthropic' },
-				{ value: 'main', label: 'Main' },
-				{ value: 'knot', label: 'Knot' },
-				{ value: 'custom', label: 'Custom' },
-			] },
-			{ key: AGENT_STUDIO_DEFAULT_MODEL_SETTING, label: '默认模型', description: '新对话使用的默认 AI 模型，留空使用系统默认', type: 'string', default: '', placeholder: '如 claude-sonnet-4-20250514' },
+			// Default Provider and Model settings have been moved to the dedicated Provider view
 			{ key: AGENT_STUDIO_BOT_NAME_SETTING, label: '助手名称', description: 'AI 助手在界面中的显示名称', type: 'string', default: 'Sarosis', placeholder: 'Sarosis' },
 		],
 	},
@@ -177,29 +154,9 @@ const AUX_SECTIONS: SettingSection[] = [
 ];
 
 // ─── Provider Sections ───────────────────────────────────────────────
-
-function makeProviderBlock(key: string, apiKeyKey: string, baseUrlKey: string, label: string, icon: string, defaultBaseUrl: string): SettingSection {
-	return {
-		id: `provider-${key}`,
-		label,
-		icon,
-		description: `${label} API 连接配置`,
-		defaultCollapsed: true,
-		fields: [
-			{ key: apiKeyKey, label: 'API Key', description: `${label} API 密钥`, type: 'password', default: '', placeholder: `粘贴你的 ${label} API Key` },
-			{ key: baseUrlKey, label: 'Base URL', description: `${label} API 端点地址，留空使用默认`, type: 'string', default: defaultBaseUrl, placeholder: defaultBaseUrl },
-		],
-	};
-}
-
-const PROVIDER_SECTIONS: SettingSection[] = [
-	makeProviderBlock('openrouter', AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY, AGENT_STUDIO_PROVIDER_OPENROUTER_BASE_URL, 'OpenRouter', '🔀', 'https://openrouter.ai/api/v1'),
-	makeProviderBlock('nous', AGENT_STUDIO_PROVIDER_NOUS_API_KEY, AGENT_STUDIO_PROVIDER_NOUS_BASE_URL, 'Nous', '🧠', 'https://api.nous.com/v1'),
-	makeProviderBlock('gemini', AGENT_STUDIO_PROVIDER_GEMINI_API_KEY, AGENT_STUDIO_PROVIDER_GEMINI_BASE_URL, 'Gemini', '💎', 'https://generativelanguage.googleapis.com'),
-	makeProviderBlock('anthropic', AGENT_STUDIO_PROVIDER_ANTHROPIC_API_KEY, AGENT_STUDIO_PROVIDER_ANTHROPIC_BASE_URL, 'Anthropic', '🅰️', 'https://api.anthropic.com'),
-	makeProviderBlock('main', AGENT_STUDIO_PROVIDER_MAIN_API_KEY, AGENT_STUDIO_PROVIDER_MAIN_BASE_URL, 'Main', '🏠', ''),
-	makeProviderBlock('custom', AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY, AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL, 'Custom', '⚙️', ''),
-];
+// Provider configuration (API Key, Base URL, Default Provider/Model) has
+// been moved to the dedicated Provider sidebar view (ProviderViewPane).
+// The TOC entry still shows "Provider 配置" but renders a redirect notice.
 
 const CLI_SECTION: SettingSection = {
 	id: 'cli',
@@ -237,7 +194,7 @@ interface TocEntry {
 
 const TOC_ENTRIES: TocEntry[] = [
 	{ id: 'preferences', label: '通用设置', icon: '⚙️', sections: PREFERENCES_SECTIONS },
-	{ id: 'provider', label: 'Provider 配置', icon: '🔌', sections: PROVIDER_SECTIONS },
+	{ id: 'provider', label: 'Provider 配置', icon: '🔌', sections: [] },
 	{ id: 'auxiliary', label: '辅助模型', icon: '🧠', sections: AUX_SECTIONS },
 	{ id: 'cli', label: 'CLI 设置', icon: '💻', sections: [CLI_SECTION, DATA_SECTION] },
 ];
@@ -401,6 +358,24 @@ export class SettingsEditorPane extends EditorPane {
 		const entry = TOC_ENTRIES.find(e => e.id === this._activeTocId);
 		if (!entry) { return; }
 
+		// Special case: Provider config has moved to its own sidebar view
+		if (entry.id === 'provider') {
+			const redirectNotice = $('div.as-provider-redirect');
+			const redirectIcon = $('span.as-provider-redirect-icon');
+			redirectIcon.textContent = '🔌';
+			redirectNotice.appendChild(redirectIcon);
+			const redirectText = $('div.as-provider-redirect-text');
+			const redirectTitle = $('div.as-provider-redirect-title');
+			redirectTitle.textContent = 'Provider 配置已移至独立面板';
+			redirectText.appendChild(redirectTitle);
+			const redirectDesc = $('div.as-provider-redirect-desc');
+			redirectDesc.textContent = '点击左侧活动栏中的 Provider 图标 (🔌) 即可管理 API Key 和 Base URL 配置。';
+			redirectText.appendChild(redirectDesc);
+			redirectNotice.appendChild(redirectText);
+			this._contentContainer.appendChild(redirectNotice);
+			return;
+		}
+
 		// Render sections for this TOC entry
 		this._renderCollapsibleSections(entry.sections);
 
@@ -480,6 +455,11 @@ export class SettingsEditorPane extends EditorPane {
 	}
 
 	private _renderFieldRow(field: SettingField): HTMLElement {
+		// ─── Special: Theme Picker (visual card grid) ──────────────────
+		if (field.key === AGENT_STUDIO_THEME_SETTING) {
+			return this._renderThemePickerRow(field);
+		}
+
 		const row = $('div.as-field-row');
 		const labelWrap = $('div.as-field-label-wrap');
 		const labelEl = $('label.as-field-label');
@@ -594,6 +574,120 @@ export class SettingsEditorPane extends EditorPane {
 		return row;
 	}
 
+	// ─── Theme Picker (Visual Card Grid) ──────────────────────────────────
+
+	/** Theme color definitions for the preview cards */
+	private static readonly THEME_COLORS: Record<string, { bg: string; sidebar: string; accent: string; fg: string; border: string }> = {
+		dark:       { bg: '#1e1e1e', sidebar: '#252526', accent: '#3794ff', fg: '#cccccc', border: '#3c3c3c' },
+		light:      { bg: '#ffffff', sidebar: '#f5f5f5', accent: '#0078d4', fg: '#1e1e1e', border: '#e0e0e0' },
+		slate:      { bg: '#1a1d23', sidebar: '#21252b', accent: '#61afef', fg: '#abb2bf', border: '#2c313a' },
+		solarized:  { bg: '#002b36', sidebar: '#073642', accent: '#268bd2', fg: '#839496', border: '#0a4050' },
+		monokai:    { bg: '#272822', sidebar: '#2e2f28', accent: '#66d9ef', fg: '#f8f8f2', border: '#3e3d32' },
+		nord:       { bg: '#2e3440', sidebar: '#3b4252', accent: '#88c0d0', fg: '#d8dee9', border: '#434c5e' },
+		oled:       { bg: '#000000', sidebar: '#0a0a0a', accent: '#3b82f6', fg: '#e0e0e0', border: '#161616' },
+	};
+
+	private _renderThemePickerRow(field: SettingField): HTMLElement {
+		const container = $('div.as-theme-picker-container');
+
+		// Label + description
+		const labelWrap = $('div.as-field-label-wrap');
+		const labelEl = $('label.as-field-label');
+		labelEl.textContent = field.label;
+		labelWrap.appendChild(labelEl);
+		if (field.description) {
+			const descEl = $('div.as-field-desc');
+			descEl.textContent = field.description;
+			labelWrap.appendChild(descEl);
+		}
+		container.appendChild(labelWrap);
+
+		// Theme cards grid
+		const grid = $('div.as-theme-grid');
+		const currentValue = String(this._getConfigValue(field) || 'dark');
+
+		for (const option of field.options || []) {
+			const card = document.createElement('button');
+			card.className = 'as-theme-card';
+			card.type = 'button';
+			card.dataset.themeValue = option.value;
+			if (option.value === currentValue) {
+				card.classList.add('as-theme-card-active');
+			}
+
+			const colors = SettingsEditorPane.THEME_COLORS[option.value] || SettingsEditorPane.THEME_COLORS['dark'];
+
+			// Mini preview
+			const preview = $('div.as-theme-preview');
+			preview.style.backgroundColor = colors.bg;
+			preview.style.border = `1px solid ${colors.border}`;
+
+			// Sidebar strip
+			const sidebarStrip = $('div.as-theme-preview-sidebar');
+			sidebarStrip.style.backgroundColor = colors.sidebar;
+
+			// Content area
+			const content = $('div.as-theme-preview-content');
+
+			// Title bar
+			const titleBar = $('div.as-theme-preview-titlebar');
+			titleBar.style.backgroundColor = colors.sidebar;
+			// Dots
+			for (const dotColor of ['#ff5f57', '#febc2e', '#28c840']) {
+				const dot = $('span.as-theme-preview-dot');
+				dot.style.backgroundColor = dotColor;
+				titleBar.appendChild(dot);
+			}
+			content.appendChild(titleBar);
+
+			// Text lines
+			for (let i = 0; i < 3; i++) {
+				const line = $('div.as-theme-preview-line');
+				line.style.backgroundColor = i === 0 ? colors.accent : colors.fg;
+				line.style.opacity = i === 0 ? '0.8' : '0.25';
+				line.style.width = i === 0 ? '60%' : i === 1 ? '85%' : '45%';
+				content.appendChild(line);
+			}
+
+			preview.appendChild(sidebarStrip);
+			preview.appendChild(content);
+			card.appendChild(preview);
+
+			// Label
+			const cardLabel = $('span.as-theme-card-label');
+			cardLabel.textContent = option.label;
+			card.appendChild(cardLabel);
+
+			// Active check mark
+			if (option.value === currentValue) {
+				const checkMark = $('span.as-theme-card-check');
+				checkMark.textContent = '✓';
+				card.appendChild(checkMark);
+			}
+
+			// Click handler
+			card.onclick = () => {
+				this.configurationService.updateValue(field.key, option.value);
+				// Update active state visually
+				grid.querySelectorAll('.as-theme-card').forEach(c => {
+					c.classList.remove('as-theme-card-active');
+					const oldCheck = c.querySelector('.as-theme-card-check');
+					if (oldCheck) { oldCheck.remove(); }
+				});
+				card.classList.add('as-theme-card-active');
+				const newCheck = $('span.as-theme-card-check');
+				newCheck.textContent = '✓';
+				card.appendChild(newCheck);
+			};
+
+			grid.appendChild(card);
+		}
+
+		container.appendChild(grid);
+		return container;
+	}
+
+
 	private _getConfigValue(field: SettingField): any {
 		const configValue = this.configurationService.getValue(field.key);
 		if (configValue !== undefined && configValue !== null) {
@@ -627,7 +721,6 @@ export class SettingsEditorPane extends EditorPane {
 		this._contentContainer.replaceChildren();
 		const allSections = [
 			...PREFERENCES_SECTIONS,
-			...PROVIDER_SECTIONS,
 			...AUX_SECTIONS,
 			CLI_SECTION,
 			DATA_SECTION,
@@ -655,7 +748,7 @@ export class SettingsEditorPane extends EditorPane {
 	// ─── Reset ──────────────────────────────────────────────────────
 
 	private _resetAll(): void {
-		const allSections = [...PREFERENCES_SECTIONS, ...PROVIDER_SECTIONS, ...AUX_SECTIONS, CLI_SECTION, DATA_SECTION];
+		const allSections = [...PREFERENCES_SECTIONS, ...AUX_SECTIONS, CLI_SECTION, DATA_SECTION];
 		for (const section of allSections) {
 			for (const field of section.fields) {
 				this.configurationService.updateValue(field.key, field.default);

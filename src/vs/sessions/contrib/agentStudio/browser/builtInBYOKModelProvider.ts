@@ -254,11 +254,13 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		const baseUrl = this._getBaseUrl();
 
 		if (!apiKey) {
+			this._logService.error(`[BYOK:${this.id}] _streamChat: API key not configured`);
 			yield { type: 'error', error: `${this.name}: API key not configured` };
 			return;
 		}
 
 		const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+		this._logService.info(`[BYOK:${this.id}] _streamChat: url=${url}, model=${modelId}, messages=${messages.length}`);
 
 		const body: Record<string, unknown> = {
 			model: modelId,
@@ -284,6 +286,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		let response: Response;
 		try {
+			this._logService.info(`[BYOK:${this.id}] _streamChat: sending fetch request...`);
 			response = await fetch(url, {
 				method: 'POST',
 				headers: {
@@ -292,30 +295,38 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				},
 				body: JSON.stringify(body),
 			});
+			this._logService.info(`[BYOK:${this.id}] _streamChat: response status=${response.status} ${response.statusText}`);
 		} catch (err) {
+			this._logService.error(`[BYOK:${this.id}] _streamChat: fetch error:`, err);
 			yield { type: 'error', error: `${this.name}: Network error — ${err}` };
 			return;
 		}
 
 		if (!response.ok) {
 			const text = await response.text().catch(() => '');
+			this._logService.error(`[BYOK:${this.id}] _streamChat: HTTP error: ${response.status} — ${text.slice(0, 500)}`);
 			yield { type: 'error', error: `${this.name}: ${response.status} ${response.statusText} — ${text.slice(0, 500)}` };
 			return;
 		}
 
 		const reader = response.body?.getReader();
 		if (!reader) {
+			this._logService.error(`[BYOK:${this.id}] _streamChat: No response body`);
 			yield { type: 'error', error: `${this.name}: No response body` };
 			return;
 		}
 
 		const decoder = new TextDecoder();
 		let buffer = '';
+		let yieldCount = 0;
 
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
-				if (done) break;
+				if (done) {
+					this._logService.info(`[BYOK:${this.id}] _streamChat: reader done, total yields=${yieldCount}`);
+					break;
+				}
 
 				buffer += decoder.decode(value, { stream: true });
 				const lines = buffer.split('\n');
@@ -323,21 +334,33 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 				for (const line of lines) {
 					const trimmed = line.trim();
-					if (!trimmed.startsWith('data: ')) continue;
+					if (!trimmed.startsWith('data: ')) { continue; }
 					const data = trimmed.slice(6);
-					if (data === '[DONE]') continue;
+					if (data === '[DONE]') {
+						this._logService.info(`[BYOK:${this.id}] _streamChat: received [DONE]`);
+						continue;
+					}
 
 					try {
 						const parsed = JSON.parse(data);
 						const delta = parsed.choices?.[0]?.delta;
-						if (!delta) continue;
+						if (!delta) {
+							// Log if finish_reason is present (no delta but stream continues)
+							const finishReason = parsed.choices?.[0]?.finish_reason;
+							if (finishReason) {
+								this._logService.info(`[BYOK:${this.id}] _streamChat: finish_reason=${finishReason}`);
+							}
+							continue;
+						}
 
 						if (delta.content) {
+							yieldCount++;
 							yield { type: 'text', content: delta.content };
 						}
 						if (delta.tool_calls) {
 							for (const tc of delta.tool_calls) {
 								if (tc.function) {
+									yieldCount++;
 									yield {
 										type: 'tool_call',
 										toolCall: {
@@ -354,7 +377,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					}
 				}
 			}
+		} catch (streamErr) {
+			this._logService.error(`[BYOK:${this.id}] _streamChat: stream read error:`, streamErr);
+			yield { type: 'error', error: `${this.name}: Stream error — ${streamErr}` };
 		} finally {
+			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done`);
 			yield { type: 'done' };
 		}
 	}

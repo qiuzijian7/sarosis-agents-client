@@ -6,7 +6,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 export interface StreamChunk {
-	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result';
+	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done';
 	content?: string;
 	toolCallId?: string;
 	toolName?: string;
@@ -19,6 +19,7 @@ export interface StreamState {
 	textBuffer: string;
 	thinkingBuffer: string;
 	toolCalls: ToolCallState[];
+	errorMessage: string | null;
 }
 
 export interface ToolCallState {
@@ -42,6 +43,7 @@ function createInitialState(): StreamState {
 		textBuffer: '',
 		thinkingBuffer: '',
 		toolCalls: [],
+		errorMessage: null,
 	};
 }
 
@@ -122,6 +124,15 @@ export function handleStreamDelta(data: {
 				}
 				break;
 			}
+			case 'error':
+				currentState = {
+					...currentState,
+					errorMessage: chunk.content || 'Unknown error',
+				};
+				break;
+			case 'done':
+				// Stream finished — no action needed, completion is handled by handleStreamComplete
+				break;
 		}
 	}
 
@@ -155,6 +166,7 @@ export function handleStreamError(data: {
 	currentState = {
 		...currentState,
 		isStreaming: false,
+		errorMessage: data.error || 'Unknown stream error',
 	};
 	notify();
 	console.error(`[AgentStudio] Stream error for ${data.employeeId}: ${data.error}`);

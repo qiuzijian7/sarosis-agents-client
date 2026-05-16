@@ -157,9 +157,9 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 
 	private centeredLayoutWidget!: CenteredViewLayout;
 
-	private gridWidget!: SerializableGrid<IEditorGroupView>;
+	protected gridWidget!: SerializableGrid<IEditorGroupView>;
 	private readonly gridWidgetDisposables = this._register(new DisposableStore());
-	private readonly gridWidgetView = this._register(new GridWidgetView<IEditorGroupView>());
+	protected readonly gridWidgetView = this._register(new GridWidgetView<IEditorGroupView>());
 
 	constructor(
 		protected readonly editorPartsView: IEditorPartsView,
@@ -274,7 +274,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		return !!this.workspaceMemento[EditorPart.EDITOR_PART_UI_STATE_STORAGE_KEY];
 	}
 
-	private _willRestoreState = false;
+	protected _willRestoreState = false;
 	get willRestoreState(): boolean { return this._willRestoreState; }
 
 	getGroups(order = GroupsOrder.CREATION_TIME): IEditorGroupView[] {
@@ -593,6 +593,10 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 				this.getSplitSizingStyle(),
 				locationView,
 				this.toGridViewDirection(direction),
+				// [Sarosis] Containment hook — subclasses may force a parallel-axis
+				// nested branch instead of a sibling, to keep the new view inside
+				// a logical "zone" rooted at locationView. Defaults to false.
+				this.shouldForceSameOrientation(locationView, direction),
 			);
 
 			// Update container
@@ -636,7 +640,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		}
 	}
 
-	private doCreateGroupView(from?: IEditorGroupView | ISerializedEditorGroupModel | null, options?: IEditorGroupViewOptions): IEditorGroupView {
+	protected doCreateGroupView(from?: IEditorGroupView | ISerializedEditorGroupModel | null, options?: IEditorGroupViewOptions): IEditorGroupView {
 
 		// Create group view
 		let groupView: IEditorGroupView;
@@ -689,7 +693,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		return groupView;
 	}
 
-	private doSetGroupActive(group: IEditorGroupView, reason = GroupActivationReason.DEFAULT): void {
+	protected doSetGroupActive(group: IEditorGroupView, reason = GroupActivationReason.DEFAULT): void {
 		if (this._activeGroup !== group) {
 			const previousActiveGroup = this._activeGroup;
 			this._activeGroup = group;
@@ -844,7 +848,15 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 
 		// Same groups view: move via grid widget API
 		if (sourceView.groupsView === targetView.groupsView) {
-			this.gridWidget.moveView(sourceView, this.getSplitSizingStyle(), targetView, this.toGridViewDirection(direction));
+			this.gridWidget.moveView(
+				sourceView,
+				this.getSplitSizingStyle(),
+				targetView,
+				this.toGridViewDirection(direction),
+				// [Sarosis] Same containment hook for moves between groups
+				// living in this groups view.
+				this.shouldForceSameOrientation(targetView, direction),
+			);
 			movedView = sourceView;
 		}
 
@@ -975,6 +987,21 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		return groupView;
 	}
 
+	/**
+	 * [Sarosis] Hook used by {@link addGroup} and {@link moveGroup} to
+	 * decide whether the new view should be inserted as a *parallel-axis
+	 * nested branch* under `locationView` instead of as a sibling of
+	 * `locationView` in its parent.
+	 *
+	 * The default behaviour is `false` — meaning the standard Grid
+	 * sibling-or-orthogonal-nest semantics apply. Subclasses can override
+	 * this to enforce containment guarantees (e.g. keeping splits inside a
+	 * specific zone of the editor area).
+	 */
+	protected shouldForceSameOrientation(_locationView: IEditorGroupView, _direction: GroupDirection): boolean {
+		return false;
+	}
+
 	createEditorDropTarget(container: unknown, delegate: IEditorDropTargetDelegate): IDisposable {
 		assertType(isHTMLElement(container));
 
@@ -994,7 +1021,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 	override get onDidChange(): Event<IViewSize | undefined> { return Event.any(this.centeredLayoutWidget.onDidChange, this.onDidSetGridWidget.event); }
 	readonly priority: LayoutPriority = LayoutPriority.High;
 
-	private get gridSeparatorBorder(): Color {
+	protected get gridSeparatorBorder(): Color {
 		return this.theme.getColor(EDITOR_GROUP_BORDER) || this.theme.getColor(contrastBorder) || Color.transparent;
 	}
 
@@ -1212,7 +1239,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		return false;
 	}
 
-	private doCreateGridControl(): void {
+	protected doCreateGridControl(): void {
 
 		// Grid Widget (with previous UI state)
 		let restoreError = false;
@@ -1308,7 +1335,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		this.doSetGridWidget(gridWidget);
 	}
 
-	private doSetGridWidget(gridWidget: SerializableGrid<IEditorGroupView>): void {
+	protected doSetGridWidget(gridWidget: SerializableGrid<IEditorGroupView>): void {
 		let boundarySashes: IBoundarySashes = {};
 
 		if (this.gridWidget) {
@@ -1328,11 +1355,11 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		this.onDidSetGridWidget.fire(undefined);
 	}
 
-	private updateContainer(): void {
+	protected updateContainer(): void {
 		this.container.classList.toggle('empty', this.isEmpty);
 	}
 
-	private notifyGroupIndexChange(): void {
+	protected notifyGroupIndexChange(): void {
 		this.getGroups(GroupsOrder.GRID_APPEARANCE).forEach((group, index) => group.notifyIndexChanged(index));
 	}
 

@@ -18,9 +18,15 @@ import { AgentStudioWebviewController } from './agentStudioWebviewController.js'
 import * as DOM from '../../../../base/browser/dom.js';
 
 /**
- * EditorPane for Agent Studio panels (Canvas, TaskBoard).
+ * EditorPane for Agent Studio panels (Canvas, TaskBoard, Chat).
  * Renders the WebView-based React UI inside the editor area,
  * supporting free drag-and-drop split layout like regular file editors.
+ *
+ * IMPORTANT: Each time `setInput()` is called (including when the editor
+ * is moved to a new group), a fresh WebviewController is created. This
+ * is necessary because IWebviewElement iframes are destroyed by the
+ * browser when their DOM parent changes, so reusing an old controller
+ * after a move would show a blank pane.
  */
 export class AgentStudioEditorPane extends EditorPane {
 
@@ -28,7 +34,6 @@ export class AgentStudioEditorPane extends EditorPane {
 
 	private _container: HTMLElement | undefined;
 	private _webviewController: AgentStudioWebviewController | undefined;
-	private _currentPanelType: string | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -57,27 +62,17 @@ export class AgentStudioEditorPane extends EditorPane {
 
 		const panelType = input.panelType;
 
-		// If we already have the correct webview, just layout
-		if (this._currentPanelType === panelType && this._webviewController) {
-			return;
-		}
+		// Always recreate the webview controller.
+		// When an editor is moved to a new group, VS Code creates a new
+		// EditorPane instance with a fresh DOM container. Even if panelType
+		// hasn't changed, we need a new IWebviewElement mounted into the
+		// new container — reusing an old one is impossible because iframe
+		// content is destroyed by the browser on DOM re-parenting.
+		this._disposeWebview();
 
-		// Dispose previous webview controller if panel type changed
-		if (this._webviewController) {
-			this._webviewController.dispose();
-			this._webviewController = undefined;
-		}
-
-		// Clear container
 		if (this._container) {
-			DOM.clearNode(this._container);
-		}
-
-		// Create new webview controller for this panel type
-		this._currentPanelType = panelType;
-		if (this._container) {
-			this._webviewController = this._register(
-				this.instantiationService.createInstance(AgentStudioWebviewController, this._container, panelType)
+			this._webviewController = this.instantiationService.createInstance(
+				AgentStudioWebviewController, this._container, panelType
 			);
 		}
 	}
@@ -90,11 +85,18 @@ export class AgentStudioEditorPane extends EditorPane {
 		this._webviewController?.layout(dimension.width, dimension.height);
 	}
 
-	override dispose(): void {
+	private _disposeWebview(): void {
 		if (this._webviewController) {
 			this._webviewController.dispose();
 			this._webviewController = undefined;
 		}
+		if (this._container) {
+			DOM.clearNode(this._container);
+		}
+	}
+
+	override dispose(): void {
+		this._disposeWebview();
 		super.dispose();
 	}
 }

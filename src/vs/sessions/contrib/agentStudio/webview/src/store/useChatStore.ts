@@ -87,8 +87,22 @@ export const useChatStore = create<ChatState>((set, get) => {
 					message,
 				});
 
-				// After completion, add the assistant message from stream buffer
+				// After completion, check for errors first
 				const { streamState } = get();
+
+				if (streamState.errorMessage) {
+					// API returned an error — show it as a system error message
+					const errorMessage: ChatMessage = {
+						id: `error_${Date.now()}`,
+						role: 'system',
+						content: `⚠️ ${streamState.errorMessage}`,
+						timestamp: new Date().toISOString(),
+					};
+					set(state => ({ messages: [...state.messages, errorMessage] }));
+					resetStream();
+					return;
+				}
+
 				if (streamState.textBuffer) {
 					const assistantMessage: ChatMessage = {
 						id: `asst_${Date.now()}`,
@@ -106,9 +120,23 @@ export const useChatStore = create<ChatState>((set, get) => {
 					};
 					set(state => ({ messages: [...state.messages, assistantMessage] }));
 					resetStream();
+				} else {
+					// No text and no error — the stream completed without any content
+					// This can happen if the model returned an empty response
+					resetStream();
 				}
 			} catch (err) {
 				console.error('[ChatStore] Failed to send message:', err);
+				// Show the error in the chat
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				const errorMessage: ChatMessage = {
+					id: `error_${Date.now()}`,
+					role: 'system',
+					content: `⚠️ 发送失败: ${errorMsg}`,
+					timestamp: new Date().toISOString(),
+				};
+				set(state => ({ messages: [...state.messages, errorMessage] }));
+				resetStream();
 			}
 		},
 

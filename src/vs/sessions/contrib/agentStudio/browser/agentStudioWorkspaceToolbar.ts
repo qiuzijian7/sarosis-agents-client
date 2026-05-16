@@ -44,6 +44,10 @@ function _svgIcon(width: number, height: number, paths: string[], cls?: string):
 export class AgentStudioWorkspaceToolbar extends Disposable {
 
 	private readonly _element: HTMLElement;
+
+	/** The root DOM element of the toolbar. */
+	get element(): HTMLElement { return this._element; }
+
 	private readonly _selectButton: HTMLElement;
 	private readonly _dropdownContainer: HTMLElement;
 	private readonly _listElement: HTMLElement;

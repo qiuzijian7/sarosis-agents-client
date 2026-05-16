@@ -42,6 +42,7 @@ interface ProviderState {
 	loadProviders: () => Promise<void>;
 	selectProvider: (providerId: string, modelId: string, agentId?: string) => void;
 	updateProviders: (providers: ProviderInfo[]) => void;
+	openProviderSettings: (providerId?: string) => void;
 
 	// Computed
 	authenticatedProviders: () => ProviderInfo[];
@@ -105,6 +106,11 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
 		// Notify host to persist the selection
 		postMessage('providers.select', { providerId, modelId, agentId });
+	},
+
+	openProviderSettings: (providerId?: string) => {
+		// Ask the host to open provider-specific settings
+		postMessage('providers.openSettings', { providerId });
 	},
 
 	updateProviders: (providers: ProviderInfo[]) => {

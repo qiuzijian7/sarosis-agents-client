@@ -16,6 +16,8 @@ import type { RequestType, IResponseMessage, IEventMessage } from './messageProt
 import type { AgentStudioPanelType } from '../common/constants.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { AGENT_STUDIO_THEME_SETTING } from '../common/constants.js';
 import type { IProviderInfo, IProviderSelectPayload } from './messageProtocol.js';
 
 interface IIncomingMessage {
@@ -49,6 +51,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IAgentTaskBoardService private readonly agentTaskBoardService: IAgentTaskBoardService,
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this._createWebview();
@@ -100,8 +103,10 @@ export class AgentStudioWebviewController extends Disposable {
 		const scriptUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.js'));
 		const styleUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.css'));
 
+		const initialTheme = this.configurationService.getValue<string>(AGENT_STUDIO_THEME_SETTING) || 'dark';
+
 		return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="${initialTheme}">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -109,7 +114,7 @@ export class AgentStudioWebviewController extends Disposable {
 	<title>Agent Studio</title>
 	<link rel="stylesheet" nonce="${nonce}" href="${styleUri}">
 	<style nonce="${nonce}">
-		body { margin: 0; padding: 0; overflow: hidden; height: 100vh; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
+		body { margin: 0; padding: 0; overflow: hidden; height: 100vh; background: var(--as-bg-primary, var(--vscode-editor-background)); color: var(--as-fg-primary, var(--vscode-foreground)); font-family: var(--vscode-font-family); }
 		#root { width: 100%; height: 100%; }
 	</style>
 </head>
@@ -118,6 +123,8 @@ export class AgentStudioWebviewController extends Disposable {
 	<script nonce="${nonce}">
 		// Tell the React app which panel to render
 		window.__AGENT_STUDIO_PANEL_TYPE__ = ${this.panelType ? `'${this.panelType}'` : 'undefined'};
+		// Initial theme from configuration
+		window.__AGENT_STUDIO_INITIAL_THEME__ = '${initialTheme}';
 	</script>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -264,6 +271,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleProvidersList();
 			case 'providers.select':
 				return this._handleProvidersSelect(p as unknown as IProviderSelectPayload);
+			case 'providers.openSettings':
+				return this._handleProvidersOpenSettings(p as { providerId?: string });
 
 			default:
 				throw new Error(`Unknown message type: ${type}`);
@@ -274,33 +283,54 @@ export class AgentStudioWebviewController extends Disposable {
 		const employeeId = payload.employeeId as string;
 		const message = payload.message as string;
 
-		// Stream deltas will be sent as events to WebView
-		const chatMessage = await this.agentChatService.sendMessage(
-			employeeId,
-			message,
-			{
-				model: payload.model as string | undefined,
-				systemPrompt: payload.systemPrompt as string | undefined,
-				temperature: payload.temperature as number | undefined,
-				workspaceId: payload.workspaceId as string | undefined,
-			},
-			(delta: IChatStreamDelta) => {
-				this._sendEvent('chat.stream.delta', {
-					employeeId,
-					sessionId: '',
-					chunks: [delta],
-				});
-			},
-		);
+		try {
+			// Stream deltas will be sent as events to WebView
+			const chatMessage = await this.agentChatService.sendMessage(
+				employeeId,
+				message,
+				{
+					model: payload.model as string | undefined,
+					systemPrompt: payload.systemPrompt as string | undefined,
+					temperature: payload.temperature as number | undefined,
+					workspaceId: payload.workspaceId as string | undefined,
+				},
+				(delta: IChatStreamDelta) => {
+					this._sendEvent('chat.stream.delta', {
+						employeeId,
+						sessionId: '',
+						chunks: [delta],
+					});
+				},
+			);
 
-		// Send completion event
-		this._sendEvent('chat.stream.complete', {
-			employeeId,
-			sessionId: '',
-			message: chatMessage,
-		});
+			// Send completion event
+			this._sendEvent('chat.stream.complete', {
+				employeeId,
+				sessionId: '',
+				message: chatMessage,
+			});
 
-		return chatMessage;
+			return chatMessage;
+		} catch (error) {
+			const errMsg = error instanceof Error ? error.message : String(error);
+			this.logService.error(`[AgentStudio] _handleChatSend error for ${employeeId}:`, error);
+
+			// Send stream error event so the webview can display the error
+			this._sendEvent('chat.stream.error', {
+				employeeId,
+				sessionId: '',
+				error: errMsg,
+			});
+
+			// Also send a completion event so streaming state is properly reset
+			this._sendEvent('chat.stream.complete', {
+				employeeId,
+				sessionId: '',
+				message: { content: '', error: errMsg },
+			});
+
+			throw error;
+		}
 	}
 
 	// ─── Outgoing Messages ──────────────────────────────────────────────────────
@@ -378,6 +408,15 @@ export class AgentStudioWebviewController extends Disposable {
 				this.logService.error('[AgentStudio] Failed to get providers for event', err);
 			});
 		}));
+
+		// Listen for theme configuration changes — push to WebView immediately
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(AGENT_STUDIO_THEME_SETTING)) {
+				const theme = this.configurationService.getValue<string>(AGENT_STUDIO_THEME_SETTING) || 'dark';
+				this.logService.info(`[AgentStudio] Theme changed to "${theme}", notifying webview`);
+				this._sendEvent('theme.changed', { theme });
+			}
+		}));
 	}
 
 	// ─── Provider Handlers ─────────────────────────────────────────────────────
@@ -429,6 +468,10 @@ export class AgentStudioWebviewController extends Disposable {
 		if (payload.agentId) {
 			this.modelSelectorService.setSelectedAgentId(payload.agentId);
 		}
+	}
+
+	private _handleProvidersOpenSettings(payload: { providerId?: string }): void {
+		this.modelSelectorService.openSettings(payload.providerId);
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

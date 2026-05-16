@@ -86,6 +86,7 @@ export const AGENT_STUDIO_SEARCH_VIEW_ID = 'agentStudio.searchView';
 export const AGENT_STUDIO_PLUGINS_VIEW_ID = 'agentStudio.pluginsView';
 export const AGENT_STUDIO_PERSONAL_VIEW_ID = 'agentStudio.personalView';
 export const AGENT_STUDIO_SETTINGS_VIEW_ID = 'agentStudio.settingsView';
+export const AGENT_STUDIO_PROVIDER_VIEW_ID = 'agentStudio.providerView';
 export const AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID = 'agentStudio.healthMonitorView';
 export const AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID = 'agentStudio.workspaceTemplateView';
 export const AGENT_STUDIO_CREW_TEAM_VIEW_ID = 'agentStudio.crewTeamView';

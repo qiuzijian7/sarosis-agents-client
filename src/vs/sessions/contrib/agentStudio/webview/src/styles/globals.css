@@ -22,8 +22,8 @@ html, body, #root {
   overflow: hidden;
   font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
   font-size: var(--vscode-font-size, 13px);
-  color: var(--vscode-foreground);
-  background-color: var(--vscode-editor-background);
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  background-color: var(--as-bg-primary, var(--vscode-editor-background));
 }
 
 /* ═══ App Root: Vertical flex (title → main → taskboard) ═════════════════════ */
@@ -44,8 +44,8 @@ html, body, #root {
   padding: 4px 12px;
   height: 35px;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-  background-color: var(--vscode-editorGroupHeader-tabsBackground);
+  border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  background-color: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground));
   position: relative;
   z-index: 100;
 }
@@ -60,7 +60,7 @@ html, body, #root {
 .toolbar-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--vscode-foreground);
+  color: var(--as-fg-primary, var(--vscode-foreground));
   white-space: nowrap;
   opacity: 0.8;
 }
@@ -82,7 +82,7 @@ html, body, #root {
   padding: 0 6px;
   border: none;
   background: transparent;
-  color: var(--vscode-foreground);
+  color: var(--as-fg-primary, var(--vscode-foreground));
   border-radius: 4px;
   cursor: pointer;
   opacity: 0.7;
@@ -467,7 +467,7 @@ html, body, #root {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  border-right: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
   display: flex;
   flex-direction: column;
 }
@@ -501,7 +501,7 @@ html, body, #root {
 }
 
 .workspace-canvas {
-  background: var(--vscode-editor-background) !important;
+  background: var(--as-bg-primary, var(--vscode-editor-background)) !important;
 }
 
 /* Canvas Controls (zoom +/-) */
@@ -589,7 +589,7 @@ html, body, #root {
   min-width: 220px;
   max-width: 280px;
   border-radius: 12px;
-  border: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  border: 2px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
   position: relative;
   cursor: grab;
   transition: border-color 200ms, box-shadow 200ms, transform 200ms;
@@ -674,7 +674,7 @@ html, body, #root {
   font-weight: 700;
   font-size: 18px;
   color: white;
-  background: linear-gradient(135deg, var(--vscode-textLink-foreground, #3b82f6), #7c3aed);
+  background: linear-gradient(135deg, var(--as-node-gradient-start, var(--vscode-textLink-foreground, #3b82f6)), var(--as-node-gradient-end, #7c3aed));
 }
 
 /* Status dot on avatar */
@@ -699,7 +699,7 @@ html, body, #root {
 .employee-card-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--vscode-foreground);
+  color: var(--as-fg-primary, var(--vscode-foreground));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1049,8 +1049,8 @@ html, body, #root {
 
 .task-board-panel {
   flex-shrink: 0;
-  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-  background-color: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  border-top: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  background-color: var(--as-bg-secondary, var(--vscode-sideBar-background, var(--vscode-editor-background)));
   display: flex;
   flex-direction: column;
   max-height: 40%;
@@ -1174,16 +1174,16 @@ html, body, #root {
 .task-card {
   padding: 6px 8px;
   border-radius: 4px;
-  background-color: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+  background-color: var(--as-bg-primary, var(--vscode-editor-background));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.15)));
   cursor: grab;
   transition: transform 100ms, box-shadow 100ms, opacity 100ms;
   font-size: 11px;
 }
 
 .task-card:hover {
-  border-color: var(--vscode-focusBorder);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  border-color: var(--as-border-focus, var(--vscode-focusBorder));
+  box-shadow: 0 1px 4px var(--as-shadow, rgba(0, 0, 0, 0.12));
 }
 
 .task-card.dragging {
@@ -1328,7 +1328,7 @@ html, body, #root {
   flex-direction: column;
   height: 100%;
   width: 100%;
-  background-color: var(--vscode-editor-background);
+  background-color: var(--as-bg-primary, var(--vscode-editor-background));
 }
 
 /* ─── Empty State ─────────────────────────────────────────────────────────── */
@@ -1376,9 +1376,9 @@ html, body, #root {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
   flex-shrink: 0;
-  background-color: var(--vscode-editorGroupHeader-tabsBackground);
+  background-color: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground));
 }
 
 /* Provider icon (⚡) */
@@ -1516,9 +1516,9 @@ html, body, #root {
   gap: 6px;
   padding: 4px 12px;
   font-size: 10px;
-  color: var(--vscode-descriptionForeground);
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.1));
-  background-color: var(--vscode-editorGroupHeader-tabsBackground);
+  color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+  border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.1)));
+  background-color: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground));
   flex-shrink: 0;
 }
 
@@ -1578,17 +1578,34 @@ html, body, #root {
 
 /* Message bubble */
 .chat-message.user .message-content {
-  background-color: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+  background-color: var(--as-user-bubble, var(--vscode-button-background));
+  color: var(--as-user-bubble-fg, var(--vscode-button-foreground));
   border-radius: 12px 12px 4px 12px;
   padding: 8px 12px;
 }
 
 .chat-message.assistant .message-content {
-  background-color: var(--vscode-input-background);
+  background-color: var(--as-assistant-bubble, var(--vscode-input-background));
   border-radius: 12px 12px 12px 4px;
   padding: 8px 12px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.1));
+  border: 1px solid var(--as-assistant-bubble-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.1)));
+}
+
+.chat-message.system {
+  align-self: center;
+  align-items: center;
+  max-width: 95%;
+}
+
+.chat-message.system .message-content {
+  background-color: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.1));
+  border: 1px solid var(--vscode-inputValidation-errorBorder, rgba(255, 80, 80, 0.4));
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--vscode-errorForeground, #f48771);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .message-content.message-streaming {
@@ -1623,18 +1640,18 @@ html, body, #root {
 
 .thinking-block {
   font-size: 11px;
-  color: var(--vscode-descriptionForeground);
+  color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
   margin-bottom: 6px;
   padding: 4px 8px;
-  border-left: 2px solid rgba(234, 179, 8, 0.4);
+  border-left: 2px solid var(--as-warning, rgba(234, 179, 8, 0.4));
   border-radius: 0 4px 4px 0;
-  background-color: rgba(234, 179, 8, 0.05);
+  background-color: var(--as-warning-bg, rgba(234, 179, 8, 0.05));
 }
 
 .thinking-summary {
   cursor: pointer;
   font-size: 11px;
-  color: var(--vscode-textLink-foreground, #eab308);
+  color: var(--as-warning, var(--vscode-textLink-foreground, #eab308));
   font-weight: 500;
   user-select: none;
 }
@@ -1658,9 +1675,9 @@ html, body, #root {
 .tool-call-block {
   font-size: 11px;
   padding: 4px 8px;
-  background-color: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
+  background-color: var(--as-bg-tertiary, var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1)));
   border-radius: 4px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.1));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.1)));
 }
 
 .tool-call-name {
@@ -1678,9 +1695,9 @@ html, body, #root {
   font-weight: 600;
 }
 
-.tool-status.running { background-color: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.tool-status.done { background-color: rgba(74, 222, 128, 0.15); color: #4ade80; }
-.tool-status.error { background-color: rgba(239, 68, 68, 0.15); color: #ef4444; }
+.tool-status.running { background-color: var(--as-accent-bg, rgba(59, 130, 246, 0.15)); color: var(--as-accent, #3b82f6); }
+.tool-status.done { background-color: var(--as-success-bg, rgba(74, 222, 128, 0.15)); color: var(--as-success, #4ade80); }
+.tool-status.error { background-color: var(--as-error-bg, rgba(239, 68, 68, 0.15)); color: var(--as-error, #ef4444); }
 
 .tool-args, .tool-result {
   font-size: 10px;
@@ -1750,16 +1767,16 @@ html, body, #root {
 
 .chat-input-area {
   padding: 10px 14px;
-  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+  border-top: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  background: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)));
   flex-shrink: 0;
   position: relative;
 }
 
 /* 组合输入框容器 — 圆角卡片包裹 textarea + toolbar */
 .chat-composer-box {
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  background: var(--as-bg-tertiary, var(--vscode-input-background));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
   border-radius: 16px;
   overflow: visible;
   transition: border-color 0.2s;
@@ -1769,7 +1786,7 @@ html, body, #root {
 }
 
 .chat-composer-box:focus-within {
-  border-color: rgba(124, 185, 255, 0.4);
+  border-color: var(--as-border-focus, rgba(124, 185, 255, 0.4));
 }
 
 /* 文本输入区 */
@@ -1777,7 +1794,7 @@ html, body, #root {
   width: 100%;
   padding: 12px 16px 6px;
   background: transparent;
-  color: var(--vscode-input-foreground);
+  color: var(--as-fg-primary, var(--vscode-input-foreground));
   font-size: 14px;
   border: none;
   outline: none;
@@ -1862,7 +1879,8 @@ html, body, #root {
 
 /* Provider/Model 标签按钮 */
 .chat-toolbar-btn.provider-tag,
-.chat-toolbar-btn.model-tag {
+.chat-toolbar-btn.model-tag,
+.chat-toolbar-btn.agent-tag {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   border-radius: 6px;
   padding: 4px 8px;
@@ -1870,10 +1888,23 @@ html, body, #root {
 }
 
 .chat-toolbar-btn.provider-tag:hover,
-.chat-toolbar-btn.model-tag:hover {
+.chat-toolbar-btn.model-tag:hover,
+.chat-toolbar-btn.agent-tag:hover {
   border-color: rgba(124, 185, 255, 0.3);
   background: rgba(124, 185, 255, 0.06);
   color: var(--vscode-textLink-foreground, #60a5fa);
+}
+
+/* Agent 标签特殊高亮 */
+.chat-toolbar-btn.agent-tag {
+  border-color: rgba(168, 85, 247, 0.3);
+  background: rgba(168, 85, 247, 0.06);
+}
+
+.chat-toolbar-btn.agent-tag:hover {
+  border-color: rgba(168, 85, 247, 0.5);
+  background: rgba(168, 85, 247, 0.1);
+  color: #c084fc;
 }
 
 /* Provider/Model chip 容器 */
@@ -1890,12 +1921,12 @@ html, body, #root {
   min-width: 200px;
   max-height: 260px;
   overflow-y: auto;
-  background: var(--vscode-dropdown-background, #1e1e1e);
-  border: 1px solid var(--vscode-dropdown-border, rgba(128, 128, 128, 0.35));
+  background: var(--as-bg-elevated, var(--vscode-dropdown-background, #1e1e1e));
+  border: 1px solid var(--as-border, var(--vscode-dropdown-border, rgba(128, 128, 128, 0.35)));
   border-radius: 8px;
   padding: 4px;
   z-index: 100;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 16px var(--as-shadow-heavy, rgba(0, 0, 0, 0.3));
   animation: provider-dropdown-in 0.12s ease-out;
 }
 
@@ -1957,6 +1988,67 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* Agent 下拉菜单增强样式 */
+.agent-dropdown {
+  min-width: 240px;
+}
+
+.agent-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 4px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.agent-dropdown-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.agent-dropdown-count {
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background-color: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.agent-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-item-models {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.4));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-item-check {
+  flex-shrink: 0;
+  color: #c084fc;
+}
+
+.provider-dropdown-empty {
+  padding: 12px 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.6;
+}
+
 /* 分隔线 */
 .chat-toolbar-divider {
   width: 1px;
@@ -1974,8 +2066,8 @@ html, body, #root {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+  background: var(--as-user-bubble, var(--vscode-button-background));
+  color: var(--as-user-bubble-fg, var(--vscode-button-foreground));
   border: none;
   cursor: pointer;
   transition: all 0.15s;
@@ -2304,12 +2396,12 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: var(--vscode-scrollbarSlider-background);
+  background-color: var(--as-scrollbar, var(--vscode-scrollbarSlider-background));
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--vscode-scrollbarSlider-hoverBackground);
+  background-color: var(--as-scrollbar-hover, var(--vscode-scrollbarSlider-hoverBackground));
 }
 
 ::-webkit-scrollbar-thumb:active {
@@ -2385,10 +2477,10 @@ html, body, #root {
 }
 
 .create-agent-modal {
-  background-color: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  background-color: var(--as-bg-primary, var(--vscode-editor-background));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.3)));
   border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 32px var(--as-shadow-heavy, rgba(0, 0, 0, 0.4));
   width: 100%;
   max-width: 600px;
   max-height: 85vh;

@@ -17,3 +17,4 @@ export { AgentStudioSearchViewPane } from './searchView.js';
 export { PluginsViewPane } from './pluginsView.js';
 export { PersonalViewPane } from './personalView.js';
 export { SettingsViewPane } from './settingsView.js';
+export { ProviderViewPane } from './providerView.js';

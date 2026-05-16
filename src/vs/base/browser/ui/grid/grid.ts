@@ -385,7 +385,7 @@ export class Grid<T extends IView = IView> extends Disposable {
 	 * @param referenceView Another view to place this new view next to.
 	 * @param direction The direction the new view should be placed next to the reference view.
 	 */
-	addView(newView: T, size: number | Sizing, referenceView: T, direction: Direction): void {
+	addView(newView: T, size: number | Sizing, referenceView: T, direction: Direction, forceSameOrientation: boolean = false): void {
 		if (this.views.has(newView)) {
 			throw new Error('Can\'t add same view twice');
 		}
@@ -397,7 +397,15 @@ export class Grid<T extends IView = IView> extends Disposable {
 		}
 
 		const referenceLocation = this.getViewLocation(referenceView);
-		const location = getRelativeLocation(this.gridview.orientation, referenceLocation, direction);
+		// [Sarosis] When forceSameOrientation is requested, override the
+		// computed location so it lands *on* the reference leaf (instead of
+		// next to it as a sibling). This forces the cross-axis path inside
+		// `gridview.addView`, which combined with `forceSameOrientation`
+		// produces a parallel-axis nested branch — keeping the new view
+		// nested under the reference instead of escaping to its parent.
+		const location = forceSameOrientation
+			? this._sameOrientationLocation(referenceLocation, direction)
+			: this._getRelativeLocationByActualOrientation(referenceLocation, direction);
 
 		let viewSize: number | GridViewSizing;
 
@@ -415,7 +423,70 @@ export class Grid<T extends IView = IView> extends Disposable {
 			viewSize = size;
 		}
 
-		this._addView(newView, viewSize, location);
+		this._addView(newView, viewSize, location, forceSameOrientation);
+	}
+
+	/**
+	 * [Sarosis] Compute a location that lands on the reference leaf (so the
+	 * cross-axis branch-creation path runs inside `gridview.addView`), with
+	 * the trailing index chosen to put the new view on the requested side.
+	 *
+	 * - LEFT / UP   → index 0 (new view becomes the first child)
+	 * - RIGHT / DOWN → index 1 (new view becomes the second child)
+	 */
+	private _sameOrientationLocation(referenceLocation: GridLocation, direction: Direction): GridLocation {
+		const trailingIndex = (direction === Direction.Right || direction === Direction.Down) ? 1 : 0;
+		return [...referenceLocation, trailingIndex];
+	}
+
+	/**
+	 * [Sarosis] Compute the target grid location for a split, based on the
+	 * **actual orientation** of the reference leaf's parent `BranchNode`
+	 * (read from the live grid tree) — not on the alternating-axis
+	 * inference used by the standalone `getRelativeLocation` helper.
+	 *
+	 * This matters whenever `forceSameOrientation` has been used elsewhere
+	 * in the tree, breaking the strict alternating-axis invariant. In that
+	 * case the depth-based inference can disagree with reality and produce
+	 * a wrong split direction. Reading the actual orientation keeps both
+	 * the standard and forced paths self-consistent.
+	 *
+	 * Falls back to the original {@link getRelativeLocation} helper when
+	 * the actual orientation cannot be determined (e.g. the reference is
+	 * the root view and its location is empty).
+	 */
+	private _getRelativeLocationByActualOrientation(referenceLocation: GridLocation, direction: Direction): GridLocation {
+		if (referenceLocation.length === 0) {
+			return getRelativeLocation(this.gridview.orientation, referenceLocation, direction);
+		}
+
+		// The leaf's parent BranchNode lives at the location prefix.
+		const [parentLocation] = tail(referenceLocation);
+
+		let parentOrientation: Orientation;
+		try {
+			parentOrientation = this.gridview.getOrientationAt(parentLocation);
+		} catch {
+			// Parent is not a BranchNode (shouldn't normally happen for a
+			// resolved leaf reference, but stay defensive). Fall back.
+			return getRelativeLocation(this.gridview.orientation, referenceLocation, direction);
+		}
+
+		const directionOrientation = getDirectionOrientation(direction);
+
+		if (parentOrientation === directionOrientation) {
+			// Same axis as the leaf's parent → sibling insert next to leaf.
+			let [rest, index] = tail(referenceLocation);
+			if (direction === Direction.Right || direction === Direction.Down) {
+				index += 1;
+			}
+			return [...rest, index];
+		} else {
+			// Cross axis → wrap the leaf in a new BranchNode and place the
+			// new view inside it. (`gridview.addView` handles the wrap.)
+			const trailingIndex = (direction === Direction.Right || direction === Direction.Down) ? 1 : 0;
+			return [...referenceLocation, trailingIndex];
+		}
 	}
 
 	private addViewAt(newView: T, size: number | DistributeSizing | InvisibleSizing, location: GridLocation): void {
@@ -436,9 +507,49 @@ export class Grid<T extends IView = IView> extends Disposable {
 		this._addView(newView, viewSize, location);
 	}
 
-	protected _addView(newView: T, size: number | GridViewSizing, location: GridLocation): void {
+	/**
+	 * [Sarosis] Add a view at a specific {@link GridLocation location}, with
+	 * optional control over the orientation of any wrapping `BranchNode` that
+	 * has to be created.
+	 *
+	 * Use this when the caller needs precise containment guarantees that the
+	 * standard `addView(view, size, refView, direction)` API cannot express.
+	 * Specifically, when the target location lands on a leaf and a new
+	 * wrapping branch must be created, `forceSameOrientation = true` makes
+	 * that branch run along the *grandparent's* axis (instead of the leaf's
+	 * orthogonal axis). This is required to express splits that stay nested
+	 * inside an existing zone instead of escaping to the root level.
+	 *
+	 * @param newView The view to add.
+	 * @param size A fixed size or a {@link Sizing} strategy.
+	 * @param location The {@link GridLocation location} to insert the view on.
+	 * @param forceSameOrientation Force a parallel-axis wrapping branch on leaf splits.
+	 */
+	addViewAtLocation(newView: T, size: number | Sizing, location: GridLocation, forceSameOrientation: boolean = false): void {
+		if (this.views.has(newView)) {
+			throw new Error('Can\'t add same view twice');
+		}
+
+		let viewSize: number | GridViewSizing;
+
+		if (typeof size === 'number') {
+			viewSize = size;
+		} else if (size.type === 'split') {
+			viewSize = GridViewSizing.Split(0);
+		} else if (size.type === 'distribute') {
+			viewSize = GridViewSizing.Distribute;
+		} else if (size.type === 'auto') {
+			viewSize = GridViewSizing.Auto(0);
+		} else {
+			viewSize = size;
+		}
+
+		this._addView(newView, viewSize, location, forceSameOrientation);
+	}
+
+	protected _addView(newView: T, size: number | GridViewSizing, location: GridLocation, forceSameOrientation: boolean = false): void {
 		this.views.set(newView, newView.element);
-		this.gridview.addView(newView, size, location);
+		this.gridview.addView(newView, size, location, forceSameOrientation);
 	}
 
 	/**
@@ -477,19 +588,27 @@ export class Grid<T extends IView = IView> extends Disposable {
 	 * @param referenceView Another view to place the view next to.
 	 * @param direction The direction the view should be placed next to the reference view.
 	 */
-	moveView(view: T, sizing: number | Sizing, referenceView: T, direction: Direction): void {
+	moveView(view: T, sizing: number | Sizing, referenceView: T, direction: Direction, forceSameOrientation: boolean = false): void {
 		const sourceLocation = this.getViewLocation(view);
 		const [sourceParentLocation, from] = tail(sourceLocation);
 
 		const referenceLocation = this.getViewLocation(referenceView);
-		const targetLocation = getRelativeLocation(this.gridview.orientation, referenceLocation, direction);
+		const targetLocation = forceSameOrientation
+			? this._sameOrientationLocation(referenceLocation, direction)
+			: this._getRelativeLocationByActualOrientation(referenceLocation, direction);
 		const [targetParentLocation, to] = tail(targetLocation);
 
-		if (equals(sourceParentLocation, targetParentLocation)) {
+		// [Sarosis] When forceSameOrientation is requested, the desired result
+		// is a parallel-axis nested branch under the reference leaf. The base
+		// "same parent" optimization (a simple reorder) cannot produce that
+		// shape — it can only re-index siblings. So we fall through to the
+		// remove + addView path, which goes through `gridview.addView` and
+		// honours `forceSameOrientation`.
+		if (!forceSameOrientation && equals(sourceParentLocation, targetParentLocation)) {
 			this.gridview.moveView(sourceParentLocation, from, to);
 		} else {
 			this.removeView(view, typeof sizing === 'number' ? undefined : sizing);
-			this.addView(view, sizing, referenceView, direction);
+			this.addView(view, sizing, referenceView, direction, forceSameOrientation);
 		}
 	}
 
@@ -661,6 +780,60 @@ export class Grid<T extends IView = IView> extends Disposable {
 	 */
 	getViews(): GridBranchNode<T> {
 		return this.gridview.getView() as GridBranchNode<T>;
+	}
+
+	/**
+	 * [Sarosis] Return information about the BranchNode that directly
+	 * contains the given leaf view in the live grid tree.
+	 *
+	 * Returns:
+	 *   - `orientation`  : the actual {@link Orientation} of the parent
+	 *                      BranchNode (read from the real tree, not inferred
+	 *                      from depth — handles parallel-axis nested
+	 *                      branches correctly).
+	 *   - `leaves`       : every leaf view contained anywhere under that
+	 *                      parent BranchNode (including the source view
+	 *                      itself). Useful for "is the parent zone-pure?"
+	 *                      style containment checks.
+	 *
+	 * Returns `undefined` when:
+	 *   - the view is not part of the grid, or
+	 *   - the view is the grid root (single-leaf grid; no parent branch).
+	 */
+	getParentSubtreeInfo(view: T): { orientation: Orientation; leaves: T[] } | undefined {
+		if (!this.views.has(view)) {
+			return undefined;
+		}
+		const location = this.getViewLocation(view);
+		if (location.length === 0) {
+			return undefined; // view is the grid root, no parent branch
+		}
+		const [parentLocation] = tail(location);
+
+		let orientation: Orientation;
+		try {
+			orientation = this.gridview.getOrientationAt(parentLocation);
+		} catch {
+			return undefined;
+		}
+
+		// Walk the descriptor tree to the parent subtree, then collect leaves.
+		const root = this.getViews();
+		const parentNode = getGridNode<T>(root, parentLocation);
+
+		const leaves: T[] = [];
+		const collect = (node: GridNode<T>): void => {
+			if (isGridBranchNode(node)) {
+				for (const child of node.children) {
+					collect(child);
+				}
+			} else {
+				leaves.push((node as GridLeafNode<T>).view);
+			}
+		};
+		collect(parentNode);
+
+		return { orientation, leaves };
 	}
 
 	/**

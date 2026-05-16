@@ -53,7 +53,8 @@ export type RequestType =
 	| 'session.create'
 	| 'session.delete'
 	| 'providers.list'
-	| 'providers.select';
+	| 'providers.select'
+	| 'providers.openSettings';
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -107,7 +108,7 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;

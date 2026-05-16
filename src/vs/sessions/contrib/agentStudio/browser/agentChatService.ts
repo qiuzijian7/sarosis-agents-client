@@ -53,11 +53,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 		try {
 			// Delegate to Driver Service
+			this.logService.info(`[AgentChatService] Delegating to driverService.executeFromChatOptions, employeeId=${employeeId}`);
 			const stream = this.driverService.executeFromChatOptions(employeeId, message, options);
 
+			let deltaCount = 0;
 			for await (const delta of stream) {
+				deltaCount++;
+				this.logService.info(`[AgentChatService] Received delta #${deltaCount}: type=${delta.type}, contentLen=${delta.content?.length ?? 0}`);
+
 				// Check cancellation
 				if (controller.signal.aborted) {
+					this.logService.info(`[AgentChatService] Stream aborted at delta #${deltaCount}`);
 					break;
 				}
 
@@ -72,6 +78,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				// Forward delta to UI
 				onDelta(delta);
 			}
+			this.logService.info(`[AgentChatService] Stream ended, totalDeltas=${deltaCount}, contentLen=${fullContent.length}`);
 
 			// Build final ChatMessage
 			const chatMessage: ChatMessage = {

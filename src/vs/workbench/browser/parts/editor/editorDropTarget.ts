@@ -151,6 +151,33 @@ class DropOverlay extends Themable {
 				const isDraggingGroup = this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype);
 				const isDraggingEditor = this.editorTransfer.hasData(DraggedEditorIdentifier.prototype);
 
+				// ── [Sarosis] Two-zone layout enforcement ──────────────────────
+				// The Sessions window splits the editor area into two independent
+				// zones (file zone left, agent-studio zone right). Cross-zone
+				// drags are blocked; any operation within the same zone is fully
+				// allowed (split, dock, merge, reorder — all directions).
+				const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+
+				if (isDraggingEditor && typeof crossZoneBlocked === 'function') {
+					const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+					if (Array.isArray(data) && data.length > 0) {
+						if (crossZoneBlocked(data[0].identifier.groupId, this.groupView.id)) {
+							this.hideOverlay();
+							return;
+						}
+					}
+				}
+
+				if (isDraggingGroup && typeof crossZoneBlocked === 'function') {
+					const sourceGroupView = this.findSourceGroupView();
+					if (sourceGroupView && sourceGroupView !== this.groupView) {
+						if (crossZoneBlocked(sourceGroupView.id, this.groupView.id)) {
+							this.hideOverlay();
+							return;
+						}
+					}
+				}
+
 				// Update the dropEffect to "copy" if there is no local data to be dragged because
 				// in that case we can only copy the data into and not move it from its source
 				if (!isDraggingEditor && !isDraggingGroup && e.dataTransfer) {
@@ -181,6 +208,10 @@ class DropOverlay extends Themable {
 				// Position overlay and conditionally enable or disable
 				// editor group splitting support based on setting and
 				// keymodifiers used.
+				//
+				// [Sarosis] Cross-zone splits are not reachable because we
+				// already returned above. Same-zone splits, docks, merges, and
+				// tab reordering are all fully allowed within each zone.
 				let splitOnDragAndDrop = !!this.groupView.groupsView.partOptions.splitOnDragAndDrop;
 				if (this.isToggleSplitOperation(e)) {
 					splitOnDragAndDrop = !splitOnDragAndDrop;
@@ -249,6 +280,32 @@ class DropOverlay extends Themable {
 	}
 
 	private async handleDrop(event: DragEvent, splitDirection?: GroupDirection): Promise<void> {
+
+		// ── [Sarosis] Safety-net: enforce two-zone layout ──────────────────
+		// Even if onDragOver was bypassed somehow, block cross-zone drops.
+		// Same-zone operations (split, dock, merge) are fully allowed.
+		const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+		if (typeof crossZoneBlocked === 'function') {
+			if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
+				const edData = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+				if (Array.isArray(edData) && edData.length > 0) {
+					if (crossZoneBlocked(edData[0].identifier.groupId, this.groupView.id)) {
+						this.editorTransfer.clearData(DraggedEditorIdentifier.prototype);
+						return;
+					}
+				}
+			}
+			if (this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype)) {
+				const grpData = this.groupTransfer.getData(DraggedEditorGroupIdentifier.prototype);
+				if (Array.isArray(grpData) && grpData.length > 0) {
+					if (crossZoneBlocked(grpData[0].identifier, this.groupView.id)) {
+						this.groupTransfer.clearData(DraggedEditorGroupIdentifier.prototype);
+						return;
+					}
+				}
+			}
+		}
+		// ── End Sarosis safety-net ─────────────────────────────────────────
 
 		// Determine target group
 		const ensureTargetGroup = () => {
@@ -468,6 +525,17 @@ class DropOverlay extends Themable {
 			}
 		}
 
+		// ── [Sarosis] Zone-aware direction adjustment ──────────────
+		// (Removed.) Direction translation used to live here, but split
+		// containment is now enforced at the grid layer via the
+		// `forceSameOrientation` hook on `IEditorPart.shouldForceSameOrientation`.
+		// This means the user can dock in any direction (LEFT / RIGHT /
+		// UP / DOWN) inside a zone and the result matches the visual
+		// preview shown by the overlay — no remapping required.
+		// ── End Sarosis ─────────────────────────────────────────────
+
+
+
 		// Draw overlay based on split direction
 		switch (splitDirection) {
 			case GroupDirection.UP:
@@ -521,14 +589,24 @@ class DropOverlay extends Themable {
 	}
 
 	private getOverlayOffsetHeight(): number {
+		let offset = 0;
+
+		// [Sarosis] Account for the Agent Studio workspace toolbar (32px)
+		// that is prepended inside the group element. Without this, the
+		// drop overlay's coordinate space is shifted and the split-direction
+		// hitzone calculation misidentifies RIGHT as DOWN.
+		const toolbarEl = this.groupView.element.querySelector('.agent-studio-workspace-toolbar');
+		if (toolbarEl instanceof HTMLElement) {
+			offset += toolbarEl.offsetHeight;
+		}
 
 		// With tabs and opened editors: use the area below tabs as drop target
 		if (!this.groupView.isEmpty && this.groupView.groupsView.partOptions.showTabs === 'multiple') {
-			return this.groupView.titleHeight.offset;
+			return offset + this.groupView.titleHeight.offset;
 		}
 
 		// Without tabs or empty group: use entire editor area as drop target
-		return 0;
+		return offset;
 	}
 
 	private hideOverlay(): void {

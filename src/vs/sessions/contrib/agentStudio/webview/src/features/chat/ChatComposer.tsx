@@ -2,11 +2,11 @@
  *  Agent Studio WebView - Chat Composer
  *  Mirrors sarosis-webui EmployeeChat layout exactly:
  *  - chat-composer-box (rounded container, textarea on top, toolbar below)
- *  - chat-toolbar-left: attachment / voice / web-search / divider / provider-tag / model-tag
+ *  - chat-toolbar-left: attachment / voice / web-search / divider / provider-tag / agent-tag / model-tag
  *  - chat-send-circle (round send button on the right)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useRef, useCallback, KeyboardEvent, useEffect } from 'react';
+import React, { useState, useRef, useCallback, KeyboardEvent, useEffect, useMemo } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
@@ -22,27 +22,59 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 	const [input, setInput] = useState('');
 	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
 	const [showProviderDropdown, setShowProviderDropdown] = useState(false);
+	const [showAgentDropdown, setShowAgentDropdown] = useState(false);
 	const [showModelDropdown, setShowModelDropdown] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const providerDropdownRef = useRef<HTMLDivElement>(null);
+	const agentDropdownRef = useRef<HTMLDivElement>(null);
 	const modelDropdownRef = useRef<HTMLDivElement>(null);
 	const { activeEmployeeId } = useChatStore();
 	const { employees } = useEmployeeStore();
-	const { providers, selection, selectProvider } = useProviderStore();
+	const { providers, selection, selectProvider, openProviderSettings } = useProviderStore();
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
 
 	// 从 provider store 获取当前选中的 Provider/Model 名称
 	const authenticatedProviders = providers.filter(p => p.authStatus === 'authenticated');
-	const providerDisplay = selection?.providerName || activeEmployee?.provider || 'Provider';
+	const providerDisplay = selection?.providerName || activeEmployee?.provider;
+
+	// 获取当前选中 Provider 的可用模型/Agent 列表
+	const currentProvider = selection
+		? authenticatedProviders.find(p => p.id === selection.providerId)
+		: null;
+
+	// 判断当前 provider 是否支持 agents
+	const supportsAgents = !!(currentProvider?.supportsAgents && currentProvider.agents && currentProvider.agents.length > 0);
+
+	// Agent 显示名称
+	const selectedAgent = useMemo(() => {
+		if (!supportsAgents || !selection?.agentId || !currentProvider?.agents) { return null; }
+		return currentProvider.agents.find(a => a.id === selection.agentId) || null;
+	}, [supportsAgents, selection?.agentId, currentProvider?.agents]);
+	const agentDisplay = selectedAgent?.name || selection?.agentId || 'Agent';
+
+	// Model 显示：当 supportsAgents 时显示选中 agent 对应的 model，否则显示普通 model
 	const modelDisplay = selection?.modelId || activeEmployee?.model || 'Model';
+
+	// 当前 agent 支持的 models（用于 model 下拉菜单过滤）
+	const availableModels = useMemo(() => {
+		if (!currentProvider) { return []; }
+		if (supportsAgents && selectedAgent?.models) {
+			// Agent 模式：显示当前 agent 支持的 models
+			return selectedAgent.models.map(m => ({ id: m, name: m }));
+		}
+		return currentProvider.models;
+	}, [currentProvider, supportsAgents, selectedAgent]);
 
 	// 点击外部关闭下拉菜单
 	useEffect(() => {
 		const handleClickOutside = (e: MouseEvent) => {
 			if (providerDropdownRef.current && !providerDropdownRef.current.contains(e.target as Node)) {
 				setShowProviderDropdown(false);
+			}
+			if (agentDropdownRef.current && !agentDropdownRef.current.contains(e.target as Node)) {
+				setShowAgentDropdown(false);
 			}
 			if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
 				setShowModelDropdown(false);
@@ -52,26 +84,42 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 		return () => document.removeEventListener('mousedown', handleClickOutside);
 	}, []);
 
+	const closeAllDropdowns = useCallback(() => {
+		setShowProviderDropdown(false);
+		setShowAgentDropdown(false);
+		setShowModelDropdown(false);
+	}, []);
+
 	const handleProviderSelect = useCallback((provider: ProviderInfo) => {
+		if (provider.authStatus !== 'authenticated') {
+			// 未认证的 Provider → 打开其设置页面引导用户配置
+			openProviderSettings(provider.id);
+			setShowProviderDropdown(false);
+			return;
+		}
 		const firstModel = provider.models[0];
 		const firstAgent = provider.agents?.[0];
 		if (firstModel) {
 			selectProvider(provider.id, firstModel.id, firstAgent?.id);
 		}
 		setShowProviderDropdown(false);
-	}, [selectProvider]);
+	}, [selectProvider, openProviderSettings]);
 
-	const handleModelSelect = useCallback((modelId: string, agentId?: string) => {
+	const handleAgentSelect = useCallback((agentId: string) => {
+		if (!selection || !currentProvider) { return; }
+		// 选择 agent 后，自动选中该 agent 支持的第一个 model
+		const agent = currentProvider.agents?.find(a => a.id === agentId);
+		const firstModel = agent?.models?.[0] || selection.modelId;
+		selectProvider(selection.providerId, firstModel, agentId);
+		setShowAgentDropdown(false);
+	}, [selection, currentProvider, selectProvider]);
+
+	const handleModelSelect = useCallback((modelId: string) => {
 		if (selection) {
-			selectProvider(selection.providerId, modelId, agentId);
+			selectProvider(selection.providerId, modelId, selection.agentId);
 		}
 		setShowModelDropdown(false);
 	}, [selection, selectProvider]);
-
-	// 获取当前选中 Provider 的可用模型/Agent 列表
-	const currentProvider = selection
-		? authenticatedProviders.find(p => p.id === selection.providerId)
-		: null;
 
 	const handleSend = useCallback(() => {
 		if (!input.trim() || isLoading) return;
@@ -157,8 +205,9 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 							className="chat-toolbar-btn has-label provider-tag"
 							title="选择 Provider"
 							onClick={() => {
-								setShowProviderDropdown(!showProviderDropdown);
-								setShowModelDropdown(false);
+								const wasOpen = showProviderDropdown;
+								closeAllDropdowns();
+								if (!wasOpen) { setShowProviderDropdown(true); }
 							}}
 						>
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -171,25 +220,88 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 								<path d="M6 9l6 6 6-6" />
 							</svg>
 						</button>
-						{showProviderDropdown && authenticatedProviders.length > 0 && (
+						{showProviderDropdown && providers.length > 0 && (
 							<div className="provider-dropdown">
-								{authenticatedProviders.map(p => (
-									<button
-										key={p.id}
-										className={`provider-dropdown-item ${selection?.providerId === p.id ? 'active' : ''}`}
-										onClick={() => handleProviderSelect(p)}
-									>
-										<span className="provider-dropdown-name">{p.name}</span>
-										<span className="provider-dropdown-detail">
-											{p.supportsAgents
-												? `${p.agents?.length || 0} agents`
-												: `${p.models.length} models`}
-										</span>
-									</button>
-								))}
+								{providers.map(p => {
+									const isAuthenticated = p.authStatus === 'authenticated';
+									const isActive = selection?.providerId === p.id;
+									return (
+										<button
+											key={p.id}
+											className={`provider-dropdown-item ${isActive ? 'active' : ''} ${!isAuthenticated ? 'not-configured' : ''}`}
+											onClick={() => handleProviderSelect(p)}
+										>
+											<span className="provider-dropdown-name">{p.name}</span>
+											<span className="provider-dropdown-detail">
+												{!isAuthenticated
+													? '⚙️ 点击配置'
+													: p.supportsAgents
+														? `${p.agents?.length || 0} agents`
+														: `${p.models.length} models`}
+											</span>
+										</button>
+									);
+								})}
 							</div>
 						)}
 					</div>
+
+					{/* Agent 选择器（仅当 provider 支持 agents 时显示） */}
+					{supportsAgents && (
+						<div className="provider-model-chip-wrap" ref={agentDropdownRef}>
+							<button
+								className="chat-toolbar-btn has-label agent-tag"
+								title="选择 Agent"
+								onClick={() => {
+									const wasOpen = showAgentDropdown;
+									closeAllDropdowns();
+									if (!wasOpen) { setShowAgentDropdown(true); }
+								}}
+							>
+								{/* Agent 机器人图标 */}
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<rect x="3" y="11" width="18" height="10" rx="2" />
+									<circle cx="12" cy="5" r="2" />
+									<path d="M12 7v4" />
+									<line x1="8" y1="16" x2="8" y2="16" />
+									<line x1="16" y1="16" x2="16" y2="16" />
+								</svg>
+								<span className="toolbar-btn-label">{agentDisplay}</span>
+								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+									<path d="M6 9l6 6 6-6" />
+								</svg>
+							</button>
+							{showAgentDropdown && currentProvider?.agents && (
+								<div className="provider-dropdown agent-dropdown">
+									<div className="agent-dropdown-header">
+										<span className="agent-dropdown-title">选择 Agent</span>
+										<span className="agent-dropdown-count">{currentProvider.agents.length}</span>
+									</div>
+									{currentProvider.agents.map(a => (
+										<button
+											key={a.id}
+											className={`provider-dropdown-item ${selection?.agentId === a.id ? 'active' : ''}`}
+											onClick={() => handleAgentSelect(a.id)}
+										>
+											<div className="agent-item-info">
+												<span className="provider-dropdown-name">{a.name}</span>
+												{a.models && a.models.length > 0 && (
+													<span className="agent-item-models">
+														{a.models.join(', ')}
+													</span>
+												)}
+											</div>
+											{selection?.agentId === a.id && (
+												<svg className="agent-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+													<polyline points="20 6 9 17 4 12" />
+												</svg>
+											)}
+										</button>
+									))}
+								</div>
+							)}
+						</div>
+					)}
 
 					{/* Model 选择器 */}
 					<div className="provider-model-chip-wrap" ref={modelDropdownRef}>
@@ -197,8 +309,9 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 							className="chat-toolbar-btn has-label model-tag"
 							title="选择模型"
 							onClick={() => {
-								setShowModelDropdown(!showModelDropdown);
-								setShowProviderDropdown(false);
+								const wasOpen = showModelDropdown;
+								closeAllDropdowns();
+								if (!wasOpen) { setShowModelDropdown(true); }
 							}}
 						>
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -212,30 +325,18 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 						</button>
 						{showModelDropdown && currentProvider && (
 							<div className="provider-dropdown">
-								{currentProvider.supportsAgents && currentProvider.agents
-									? currentProvider.agents.map(a => (
-										<button
-											key={a.id}
-											className={`provider-dropdown-item ${selection?.agentId === a.id ? 'active' : ''}`}
-											onClick={() => handleModelSelect(a.id, a.id)}
-										>
-											<span className="provider-dropdown-name">{a.name}</span>
-											{a.models && (
-												<span className="provider-dropdown-detail">
-													{a.models.join(', ')}
-												</span>
-											)}
-										</button>
-									))
-									: currentProvider.models.map(m => (
-										<button
-											key={m.id}
-											className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
-											onClick={() => handleModelSelect(m.id)}
-										>
-											<span className="provider-dropdown-name">{m.name}</span>
-										</button>
-									))}
+								{availableModels.map(m => (
+									<button
+										key={m.id}
+										className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
+										onClick={() => handleModelSelect(m.id)}
+									>
+										<span className="provider-dropdown-name">{m.name}</span>
+									</button>
+								))}
+								{availableModels.length === 0 && (
+									<div className="provider-dropdown-empty">无可用模型</div>
+								)}
 							</div>
 						)}
 					</div>

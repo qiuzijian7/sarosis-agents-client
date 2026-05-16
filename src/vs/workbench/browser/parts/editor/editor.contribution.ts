@@ -581,7 +581,9 @@ appendEditorToolItem(
 	CLOSE_ORDER - 1, // immediately to the left of close action
 );
 
-// Unlock Group: only when group is locked
+// Unlock Group: only when group is locked AND not in a Sessions window
+// (Agent Studio groups are always locked — hide the lock icon so users
+//  don't accidentally unlock them or think the area is non-interactive)
 appendEditorToolItem(
 	{
 		id: UNLOCK_GROUP_COMMAND_ID,
@@ -589,7 +591,7 @@ appendEditorToolItem(
 		icon: Codicon.lock,
 		toggled: ContextKeyExpr.true()
 	},
-	ActiveEditorGroupLockedContext,
+	ContextKeyExpr.and(ActiveEditorGroupLockedContext, IsSessionsWindowContext.negate()),
 	CLOSE_ORDER - 1, // immediately to the left of close action
 );
 

@@ -1215,12 +1215,26 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				if (group.identifier === this.groupView.id) {
 					return false; // groups cannot be dropped on group it originates from
 				}
+
+				// [Sarosis] Block cross-zone group merges; same-zone = allowed.
+				const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+				if (typeof crossZoneBlocked === 'function' && crossZoneBlocked(group.identifier, this.groupView.id)) {
+					return false;
+				}
 			}
 
 			return true;
 		}
 
 		if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
+			// [Sarosis] Block cross-zone editor tab drags; same-zone = allowed.
+			const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+			if (Array.isArray(data) && data.length > 0) {
+				const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+				if (typeof crossZoneBlocked === 'function' && crossZoneBlocked(data[0].identifier.groupId, this.groupView.id)) {
+					return false;
+				}
+			}
 			return true; // (local) editors can always be dropped
 		}
 
@@ -2227,6 +2241,29 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 		this.updateDropFeedback(tabsContainer, false, e, targetTabIndex);
 		tabsContainer.classList.remove('scroll');
+
+		// [Sarosis] Block cross-zone drops; same-zone operations are fully allowed.
+		const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+		if (typeof crossZoneBlocked === 'function') {
+			if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
+				const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
+				if (Array.isArray(data) && data.length > 0) {
+					if (crossZoneBlocked(data[0].identifier.groupId, this.groupView.id)) {
+						this.editorTransfer.clearData(DraggedEditorIdentifier.prototype);
+						return;
+					}
+				}
+			}
+			if (this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype)) {
+				const data = this.groupTransfer.getData(DraggedEditorGroupIdentifier.prototype);
+				if (Array.isArray(data) && data.length > 0) {
+					if (crossZoneBlocked(data[0].identifier, this.groupView.id)) {
+						this.groupTransfer.clearData(DraggedEditorGroupIdentifier.prototype);
+						return;
+					}
+				}
+			}
+		}
 
 		let targetEditorIndex = this.tabsModel instanceof UnstickyEditorGroupModel ? targetTabIndex + this.groupView.stickyCount : targetTabIndex;
 		const options: IEditorOptions = {

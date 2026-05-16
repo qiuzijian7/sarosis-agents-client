@@ -6,14 +6,39 @@
 import { URI } from '../../../../base/common/uri.js';
 import { EditorInputCapabilities, GroupIdentifier } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
 
 /**
- * EditorInput for Agent Studio panels (Canvas, TaskBoard, Chat).
+ * EditorInput for Agent Studio panels (Canvas, TaskBoard, Chat, Settings).
  * Each panel type uses a singleton instance so the same editor tab is reused.
- * These panels are opened in the right editor group (unlocked for free docking).
- * Zone protection in editorGroupFinder.ts prevents non-agent-studio editors from
- * being routed into groups containing agent-studio editors.
+ *
+ * Layout rules (Sessions window):
+ *   - The editor area is permanently split into exactly TWO zones:
+ *     Left = file editors, Right = Agent Studio panels.
+ *   - Within each zone, the user may freely split to create sub-groups
+ *     (e.g. split Agent Chat left/right or top/bottom inside the
+ *     agent-studio zone). New sub-groups are tracked automatically by
+ *     `sessions/browser/workbench.ts` (`onDidAddGroup`).
+ *   - Agent Studio editors CANNOT be dragged to the left (file) zone.
+ *   - File editors CANNOT be dragged to the right (Agent Studio) zone.
+ *   - Within a group, tabs can be freely reordered.
+ *
+ * Enforcement layers:
+ *   - `editorDropTarget.ts` (drop overlay + drop handler) blocks
+ *     cross-zone drops. Same-zone splits are allowed.
+ *   - `sessions/browser/parts/editorPart.ts` overrides `addGroup` to
+ *     convert split directions that would escape either zone into
+ *     orthogonal directions (e.g. RIGHT→DOWN) when a zone group is
+ *     a direct root leaf. Both the file zone and agent-studio zone
+ *     share the same containment strategy.
+ *   - The Sessions workbench installs a relocation guard that moves
+ *     any agent-studio editor back into the zone if it somehow lands
+ *     outside (e.g. via API calls bypassing the drop target).
+ *   - This file therefore intentionally does NOT veto moves at the
+ *     EditorInput layer: returning a string from `canMove()` would
+ *     surface a modal dialog via `editorGroupView`, which is exactly
+ *     what we want to avoid.
  */
 export class AgentStudioEditorInput extends EditorInput {
 
@@ -76,11 +101,48 @@ export class AgentStudioEditorInput extends EditorInput {
 	}
 
 	/**
-	 * Allow Agent Studio panels to be freely docked between right-side agent-studio groups.
-	 * Cross-zone protection (preventing move to/from non-agent-studio groups) is in doMoveOrCopyEditorAcrossGroups.
+	 * Always permit the move at the EditorInput layer. The two-zone
+	 * layout is enforced by:
+	 *   1. `editorDropTarget.ts` — blocks cross-zone drag-and-drop.
+	 *      Same-zone splits are allowed so the user can freely
+	 *      rearrange sub-groups within the agent-studio zone.
+	 *   2. The Sessions workbench relocation guard
+	 *      (`installRelocationGuard` in `sessions/browser/workbench.ts`)
+	 *      — moves any agent-studio editor that ends up in the file
+	 *      zone back into the agent-studio zone.
+	 *
+	 * Returning a string here would surface a modal dialog via
+	 * `editorGroupView.doMoveOrCopyEditorAcrossGroups`, which is exactly
+	 * what we want to avoid. The veto layers above already guarantee the
+	 * editor cannot escape the zone.
 	 */
 	override canMove(_sourceGroup: GroupIdentifier, _targetGroup: GroupIdentifier): true | string {
 		return true;
+	}
+
+	// ─── Static helpers for drag-drop guards ───────────────────────────
+
+	/**
+	 * Check whether a dragged editor is an Agent Studio editor
+	 * (uses the `agent-studio` URI scheme).
+	 */
+	static isAgentStudioScheme(editor: { resource?: URI }): boolean {
+		return editor.resource?.scheme === 'agent-studio';
+	}
+
+	/**
+	 * Check whether a given editor group contains at least one
+	 * Agent Studio editor. Used by drag-drop guards to identify
+	 * the right-side Agent Studio zone.
+	 */
+	static isAgentStudioGroup(groupId: GroupIdentifier, editorGroupsService?: IEditorGroupsService): boolean {
+		if (editorGroupsService) {
+			const group = editorGroupsService.getGroup(groupId);
+			if (group) {
+				return group.editors.some(e => e instanceof AgentStudioEditorInput);
+			}
+		}
+		return false;
 	}
 
 	override matches(otherInput: EditorInput | unknown): boolean {

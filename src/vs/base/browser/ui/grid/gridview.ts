@@ -1205,8 +1205,16 @@ export class GridView implements IDisposable {
 	 * @param view The view to add.
 	 * @param size Either a fixed size, or a dynamic {@link Sizing} strategy.
 	 * @param location The {@link GridLocation location} to insert the view on.
+	 * @param forceSameOrientation [Sarosis] When the target location lands on a
+	 *   `LeafNode`, the new wrapping `BranchNode` is normally created with the
+	 *   leaf's own orientation (which is orthogonal to its grandparent — i.e.
+	 *   the standard "alternating axis" rule). When `forceSameOrientation` is
+	 *   `true`, the new wrapping `BranchNode` is created with the *grandparent's*
+	 *   orientation instead, so the resulting nested branch runs along the
+	 *   same axis as its grandparent. This enables containment-aware splits
+	 *   (e.g. zone-internal LEFT/RIGHT splits inside a HORIZONTAL root).
 	 */
-	addView(view: IView, size: number | Sizing, location: GridLocation): void {
+	addView(view: IView, size: number | Sizing, location: GridLocation, forceSameOrientation: boolean = false): void {
 		if (this.hasMaximizedView()) {
 			this.exitMaximizedView();
 		}
@@ -1240,17 +1248,25 @@ export class GridView implements IDisposable {
 			const oldChild = grandParent.removeChild(parentIndex);
 			oldChild.dispose();
 
-			const newParent = new BranchNode(parent.orientation, parent.layoutController, this.styles, this.proportionalLayout, parent.size, parent.orthogonalSize, grandParent.edgeSnapping);
+			// [Sarosis] When forceSameOrientation is true, the wrapping branch
+			// adopts the grandparent's orientation (instead of the leaf's own
+			// orthogonal orientation). The new sibling/leaf then take the
+			// leaf's original orientation so the alternating-axis invariant
+			// is preserved one level deeper in the tree.
+			const newParentOrientation = forceSameOrientation ? grandParent.orientation : parent.orientation;
+			const newChildOrientation = forceSameOrientation ? parent.orientation : grandParent.orientation;
+
+			const newParent = new BranchNode(newParentOrientation, parent.layoutController, this.styles, this.proportionalLayout, parent.size, parent.orthogonalSize, grandParent.edgeSnapping);
 			grandParent.addChild(newParent, parent.size, parentIndex);
 
-			const newSibling = new LeafNode(parent.view, grandParent.orientation, this.layoutController, parent.size);
+			const newSibling = new LeafNode(parent.view, newChildOrientation, this.layoutController, parent.size);
 			newParent.addChild(newSibling, newSiblingSize, 0);
 
 			if (typeof size !== 'number' && size.type === 'split') {
 				size = Sizing.Split(0);
 			}
 
-			const node = new LeafNode(view, grandParent.orientation, this.layoutController, parent.size);
+			const node = new LeafNode(view, newChildOrientation, this.layoutController, parent.size);
 			newParent.addChild(node, size, index);
 		}
 
@@ -1697,6 +1713,29 @@ export class GridView implements IDisposable {
 	getView(location?: GridLocation): GridNode {
 		const node = location ? this.getNode(location)[1] : this._root;
 		return this._getViews(node, this.orientation);
+	}
+
+	/**
+	 * [Sarosis] Return the actual `Orientation` of the `BranchNode` that
+	 * sits at the given location. Falls back to the root orientation when
+	 * the path is empty.
+	 *
+	 * Unlike alternating-axis inference (`location.length % 2`), this
+	 * reflects the *real* tree structure — which can diverge from the
+	 * standard alternation when callers construct parallel-axis nested
+	 * branches (see `GridView.addView` with `forceSameOrientation`).
+	 *
+	 * Throws if the location does not resolve to a `BranchNode`.
+	 */
+	getOrientationAt(location: GridLocation): Orientation {
+		if (location.length === 0) {
+			return this.root.orientation;
+		}
+		const [, node] = this.getNode(location);
+		if (!(node instanceof BranchNode)) {
+			throw new Error('Location does not point to a BranchNode');
+		}
+		return node.orientation;
 	}
 
 	/**

@@ -36,6 +36,10 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 	private _modelCacheValid = false;
 	// Track auth status listeners per provider id to avoid duplicates
 	private _authListenerDisposables = new Map<string, IDisposable>();
+	// Track agent-change listeners per provider id
+	private _agentListenerDisposables = new Map<string, IDisposable>();
+	// Track model-list-change listeners per provider id
+	private _modelsListenerDisposables = new Map<string, IDisposable>();
 
 	constructor(
 		@IAgentOSService agentOSService: IAgentOSService,
@@ -80,23 +84,66 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 				this._authListenerDisposables.delete(id);
 			}
 		}
+		for (const [id, disposable] of this._agentListenerDisposables) {
+			if (!currentIds.has(id)) {
+				disposable.dispose();
+				this._agentListenerDisposables.delete(id);
+			}
+		}
+		for (const [id, disposable] of this._modelsListenerDisposables) {
+			if (!currentIds.has(id)) {
+				disposable.dispose();
+				this._modelsListenerDisposables.delete(id);
+			}
+		}
 
 		// 为新 Provider 注册监听器
 		for (const provider of this._agentOSService.getModelProviders()) {
-			if (this._authListenerDisposables.has(provider.id)) {
-				continue;
-			}
-			try {
-				const disposable = provider.onDidChangeAuthStatus?.(() => {
-					this._logService.info(`[ModelSelector] Auth status changed for ${provider.id}: ${provider.getAuthStatus()}`);
-					this._modelCacheValid = false;
-					this._onDidChangeAvailableModels.fire();
-				});
-				if (disposable) {
-					this._authListenerDisposables.set(provider.id, this._register(disposable));
+			// Auth status listener
+			if (!this._authListenerDisposables.has(provider.id)) {
+				try {
+					const disposable = provider.onDidChangeAuthStatus?.(() => {
+						this._logService.info(`[ModelSelector] Auth status changed for ${provider.id}: ${provider.getAuthStatus()}`);
+						this._modelCacheValid = false;
+						this._onDidChangeAvailableModels.fire();
+					});
+					if (disposable) {
+						this._authListenerDisposables.set(provider.id, this._register(disposable));
+					}
+				} catch (e) {
+					// ignore providers that don't support auth status tracking
 				}
-			} catch (e) {
-				// ignore providers that don't support auth status tracking
+			}
+
+			// Agent list change listener — fires when provider.listAgents() returns new data
+			if (!this._agentListenerDisposables.has(provider.id) && provider.supportsAgents && provider.onDidChangeAgents) {
+				try {
+					const disposable = provider.onDidChangeAgents(() => {
+						this._logService.info(`[ModelSelector] Agent list changed for ${provider.id}`);
+						this._modelCacheValid = false;
+						this._onDidChangeAvailableModels.fire();
+					});
+					this._agentListenerDisposables.set(provider.id, this._register(disposable));
+				} catch (e) {
+					// ignore
+				}
+			}
+
+			// Model list change listener — fires when provider.listModels() returns
+			// new data without an auth-status transition (e.g. token already valid
+			// but the remote agent list grew). Without this, the chat composer's
+			// provider dropdown would not pick up newly fetched Knot agents.
+			if (!this._modelsListenerDisposables.has(provider.id) && provider.onDidChangeModels) {
+				try {
+					const disposable = provider.onDidChangeModels(() => {
+						this._logService.info(`[ModelSelector] Model list changed for ${provider.id}`);
+						this._modelCacheValid = false;
+						this._onDidChangeAvailableModels.fire();
+					});
+					this._modelsListenerDisposables.set(provider.id, this._register(disposable));
+				} catch (e) {
+					// ignore providers that don't expose onDidChangeModels
+				}
 			}
 		}
 	}

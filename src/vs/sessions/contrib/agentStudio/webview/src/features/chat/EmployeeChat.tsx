@@ -11,6 +11,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useProviderStore } from '../../store/useProviderStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { StreamingText } from './StreamingText';
 import { ChatComposer } from './ChatComposer';
@@ -18,6 +19,7 @@ import { ChatComposer } from './ChatComposer';
 export function EmployeeChat(): React.ReactElement {
 	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee } = useChatStore();
 	const { employees, selectedEmployeeId } = useEmployeeStore();
+	const { selection } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 
 	// Sync selected employee with chat
@@ -77,7 +79,7 @@ export function EmployeeChat(): React.ReactElement {
 			{/* Chat Header */}
 			<div className="chat-header">
 				{/* Provider icon */}
-				<div className="chat-header-provider" title={`Provider: ${activeEmployee.provider || 'Knot AG-UI'}`}>
+				<div className="chat-header-provider" title={activeEmployee.provider || selection?.providerName ? `Provider: ${activeEmployee.provider || selection?.providerName}` : undefined}>
 					<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
 					</svg>
@@ -142,7 +144,12 @@ export function EmployeeChat(): React.ReactElement {
 									<StreamingText text={streamState.textBuffer} />
 								</div>
 							)}
-							{!streamState.textBuffer && !streamState.thinkingBuffer && (
+							{streamState.errorMessage && (
+								<div className="message-text" style={{ color: 'var(--vscode-errorForeground, #f48771)' }}>
+									⚠️ {streamState.errorMessage}
+								</div>
+							)}
+							{!streamState.textBuffer && !streamState.thinkingBuffer && !streamState.errorMessage && (
 								<div className="typing-indicator">
 									<span className="typing-dot">●</span>
 									<span className="typing-dot">●</span>
