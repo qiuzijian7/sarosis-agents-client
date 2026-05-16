@@ -51,29 +51,35 @@ export class AgentStudioEditorPane extends EditorPane {
 		this._container.style.width = '100%';
 		this._container.style.height = '100%';
 		parent.appendChild(this._container);
+		console.log('[AgentStudioEditorPane] createEditor called, container:', this._container, 'parent:', parent);
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
 
 		if (!(input instanceof AgentStudioEditorInput)) {
+			console.warn('[AgentStudioEditorPane] setInput: not an AgentStudioEditorInput, skipping');
+			return;
+		}
+
+		if (token.isCancellationRequested) {
+			console.warn('[AgentStudioEditorPane] setInput: cancelled');
 			return;
 		}
 
 		const panelType = input.panelType;
+		console.log('[AgentStudioEditorPane] setInput:', panelType, 'container:', this._container, 'containerInDOM:', this._container?.isConnected);
 
 		// Always recreate the webview controller.
-		// When an editor is moved to a new group, VS Code creates a new
-		// EditorPane instance with a fresh DOM container. Even if panelType
-		// hasn't changed, we need a new IWebviewElement mounted into the
-		// new container — reusing an old one is impossible because iframe
-		// content is destroyed by the browser on DOM re-parenting.
 		this._disposeWebview();
 
 		if (this._container) {
 			this._webviewController = this.instantiationService.createInstance(
 				AgentStudioWebviewController, this._container, panelType
 			);
+			console.log('[AgentStudioEditorPane] WebviewController created for', panelType);
+		} else {
+			console.error('[AgentStudioEditorPane] setInput: _container is null!');
 		}
 	}
 

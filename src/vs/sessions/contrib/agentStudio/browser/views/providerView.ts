@@ -221,6 +221,9 @@ export class ProviderViewPane extends ViewPane {
 		for (const provider of PROVIDER_DEFINITIONS) {
 			const card = $('div.provider-card');
 			const isConfigured = !!this.configurationService.getValue<string>(provider.apiKeySetting);
+			if (isConfigured) {
+				card.classList.add('configured-highlight');
+			}
 
 			// Card header
 			const cardHeader = $('div.provider-card-header');
@@ -250,6 +253,11 @@ export class ProviderViewPane extends ViewPane {
 			descEl.textContent = provider.description;
 			infoEl.appendChild(descEl);
 			cardHeader.appendChild(infoEl);
+
+			// Chevron indicator
+			const chevronEl = $('span.provider-card-chevron');
+			chevronEl.textContent = '▸';
+			cardHeader.appendChild(chevronEl);
 
 			card.appendChild(cardHeader);
 
@@ -325,12 +333,17 @@ export class ProviderViewPane extends ViewPane {
 				if (isExpanded) {
 					card.classList.remove('provider-card-expanded');
 				} else {
+					// Collapse all other cards first (accordion behavior)
+					for (const otherCard of this.listContainer.children) {
+						otherCard.classList.remove('provider-card-expanded');
+					}
 					card.classList.add('provider-card-expanded');
 				}
 			};
 
-			// Auto-expand if not configured
-			if (!isConfigured) {
+			// Auto-expand if not configured, or if this is the default provider
+			const defaultProvider = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING) || 'auto';
+			if (!isConfigured || provider.id === defaultProvider) {
 				card.classList.add('provider-card-expanded');
 			}
 

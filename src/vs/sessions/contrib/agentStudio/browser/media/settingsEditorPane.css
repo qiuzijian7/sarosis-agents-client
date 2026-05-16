@@ -602,37 +602,4 @@
 	}
 }
 
-/* ─── Provider Redirect Notice ───────────────────────────────────────── */
 
-.as-provider-redirect {
-	display: flex;
-	align-items: flex-start;
-	gap: 16px;
-	padding: 32px 24px;
-	margin: 24px;
-	border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-	border-radius: 10px;
-	background: var(--vscode-editor-inactiveSelectionBackground, rgba(50 50 255 / 0.04));
-}
-
-.as-provider-redirect-icon {
-	font-size: 32px;
-	flex-shrink: 0;
-}
-
-.as-provider-redirect-text {
-	flex: 1;
-}
-
-.as-provider-redirect-title {
-	font-size: 15px;
-	font-weight: 600;
-	color: var(--vscode-foreground);
-	margin-bottom: 8px;
-}
-
-.as-provider-redirect-desc {
-	font-size: 13px;
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.5;
-}

@@ -25,6 +25,8 @@ export class MainEditorPart extends MainEditorPartBase {
 	get fileZoneRootGroupId(): number { return this._fileZoneRootGroupId; }
 	get agentZoneRootGroupId(): number { return this._agentZoneRootGroupId; }
 
+	static readonly TOOLBAR_HEIGHT = 32;
+
 	override layout(width: number, height: number, top: number, left: number): void {
 		if (!this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
 			return;
@@ -35,9 +37,9 @@ export class MainEditorPart extends MainEditorPartBase {
 			? 0
 			: MainEditorPart.MARGIN_LEFT;
 		const adjustedWidth = width - adjustedMargin - 2 /* border width */;
-		const adjustedHeight = height - MainEditorPart.MARGIN_TOP - MainEditorPart.MARGIN_BOTTOM - 2 /* border width */;
+		const adjustedHeight = height - MainEditorPart.MARGIN_TOP - MainEditorPart.MARGIN_BOTTOM - 2 /* border width */ - MainEditorPart.TOOLBAR_HEIGHT;
 
-		super.layout(adjustedWidth, adjustedHeight, top, left);
+		super.layout(adjustedWidth, adjustedHeight, top + MainEditorPart.TOOLBAR_HEIGHT, left);
 	}
 
 	/**

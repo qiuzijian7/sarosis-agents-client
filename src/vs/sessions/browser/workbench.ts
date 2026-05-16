@@ -952,64 +952,45 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}
 		});
 
-		// ── Workspace Toolbar (zone-level, above the entire agent zone) ──
-		// MUST be installed BEFORE any addGroup() calls, because addGroup
-		// restructures the DOM inside the zone BranchNode, making the
-		// walk-up from groupElement unreliable after splits.
-		const TOOLBAR_HEIGHT = 32;
-		const groupElement = (agentRootGroup as unknown as ISerializableView).element;
+		// ── Workspace Toolbar ──────────────────────────────────────────
+		// The editor part's layout() reserves 32px at the top (by adding
+		// TOOLBAR_HEIGHT to `top` and subtracting from `height`). The
+		// toolbar is placed in that reserved space as an absolute overlay
+		// on mainContainer. It tracks the agent zone's horizontal position
+		// via the editor part's getBoundingClientRect(). Zero layout
+		// interference — the editor part handles its own offset.
+		const TOOLBAR_HEIGHT = SessionsMainEditorPart.TOOLBAR_HEIGHT;
+		const editorPartContainer = this.getPart(Parts.EDITOR_PART).getContainer();
 
-		// Walk up from groupElement to the zone-level split-view-view.
-		let zoneWrapper: HTMLElement | null = null;
-		let zoneBranchNode: HTMLElement | null = null;
-		let splitViewViewCount = 0;
-		let cursor: HTMLElement | null = groupElement;
-		while (cursor && splitViewViewCount < 2) {
-			cursor = cursor.parentElement;
-			if (cursor?.classList.contains('split-view-view')) {
-				splitViewViewCount++;
-				if (splitViewViewCount === 2) {
-					zoneWrapper = cursor;
-					zoneBranchNode = cursor.querySelector(':scope > .monaco-grid-branch-node') as HTMLElement | null;
-				}
-			}
-			if (cursor?.classList.contains('content') || cursor?.classList.contains('part')) {
-				break;
-			}
-		}
-
-		if (zoneWrapper && zoneWrapper.classList.contains('split-view-view')) {
-			const toolbar = new AgentStudioWorkspaceToolbar(zoneWrapper);
+		if (editorPartContainer) {
+			const toolbar = new AgentStudioWorkspaceToolbar(this.mainContainer);
 			this._register(toolbar);
 			toolbar.element.style.position = 'absolute';
-			toolbar.element.style.top = '0';
-			toolbar.element.style.left = '0';
-			toolbar.element.style.right = '0';
-			toolbar.element.style.zIndex = '10';
+			toolbar.element.style.height = `${TOOLBAR_HEIGHT}px`;
+			toolbar.element.style.zIndex = '15';
 
-			if (zoneBranchNode) {
-				const adjustBranchLayout = () => {
-					zoneBranchNode!.style.position = 'absolute';
-					zoneBranchNode!.style.top = `${TOOLBAR_HEIGHT}px`;
-					zoneBranchNode!.style.left = '0';
-					zoneBranchNode!.style.width = '100%';
-					zoneBranchNode!.style.height = `calc(100% - ${TOOLBAR_HEIGHT}px)`;
-				};
-				adjustBranchLayout();
-				const observer = new MutationObserver(adjustBranchLayout);
-				observer.observe(zoneBranchNode, { attributes: true, attributeFilter: ['style'] });
-				this._register({ dispose: () => observer.disconnect() });
-			}
+			const updateToolbarPosition = () => {
+				const mainRect = this.mainContainer.getBoundingClientRect();
+				const partRect = editorPartContainer.getBoundingClientRect();
+				// Toolbar sits in the reserved space above the editor part,
+				// spanning from the editor part's left edge to the right edge.
+				toolbar.element.style.left = `${partRect.left - mainRect.left}px`;
+				toolbar.element.style.top = `${partRect.top - mainRect.top - TOOLBAR_HEIGHT}px`;
+				toolbar.element.style.width = `${partRect.width}px`;
+			};
+			updateToolbarPosition();
 
-			console.log('[workbench] Toolbar mounted at zone-level');
+			const ro = new ResizeObserver(updateToolbarPosition);
+			ro.observe(editorPartContainer);
+			this._register({ dispose: () => ro.disconnect() });
+
+			console.log('[workbench] Toolbar mounted in reserved space above editor part');
 
 			const connectService = () => {
 				try {
 					const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
 					toolbar.connectService(agentStudioService);
-				} catch {
-					setTimeout(connectService, 2000);
-				}
+				} catch { setTimeout(connectService, 2000); }
 			};
 			connectService();
 
@@ -1017,13 +998,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				try {
 					const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
 					toolbar.connectFileDialogService(fileDialogService);
-				} catch {
-					setTimeout(connectFileDialog, 2000);
-				}
+				} catch { setTimeout(connectFileDialog, 2000); }
 			};
 			connectFileDialog();
-		} else {
-			console.warn('[workbench] Could not find agent zone wrapper for toolbar.');
 		}
 
 		// ── Open Agent Studio editors in the default layout ──────────────

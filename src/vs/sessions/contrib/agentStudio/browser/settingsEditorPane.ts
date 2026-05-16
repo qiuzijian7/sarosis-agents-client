@@ -194,7 +194,6 @@ interface TocEntry {
 
 const TOC_ENTRIES: TocEntry[] = [
 	{ id: 'preferences', label: '通用设置', icon: '⚙️', sections: PREFERENCES_SECTIONS },
-	{ id: 'provider', label: 'Provider 配置', icon: '🔌', sections: [] },
 	{ id: 'auxiliary', label: '辅助模型', icon: '🧠', sections: AUX_SECTIONS },
 	{ id: 'cli', label: 'CLI 设置', icon: '💻', sections: [CLI_SECTION, DATA_SECTION] },
 ];
@@ -357,24 +356,6 @@ export class SettingsEditorPane extends EditorPane {
 
 		const entry = TOC_ENTRIES.find(e => e.id === this._activeTocId);
 		if (!entry) { return; }
-
-		// Special case: Provider config has moved to its own sidebar view
-		if (entry.id === 'provider') {
-			const redirectNotice = $('div.as-provider-redirect');
-			const redirectIcon = $('span.as-provider-redirect-icon');
-			redirectIcon.textContent = '🔌';
-			redirectNotice.appendChild(redirectIcon);
-			const redirectText = $('div.as-provider-redirect-text');
-			const redirectTitle = $('div.as-provider-redirect-title');
-			redirectTitle.textContent = 'Provider 配置已移至独立面板';
-			redirectText.appendChild(redirectTitle);
-			const redirectDesc = $('div.as-provider-redirect-desc');
-			redirectDesc.textContent = '点击左侧活动栏中的 Provider 图标 (🔌) 即可管理 API Key 和 Base URL 配置。';
-			redirectText.appendChild(redirectDesc);
-			redirectNotice.appendChild(redirectText);
-			this._contentContainer.appendChild(redirectNotice);
-			return;
-		}
 
 		// Render sections for this TOC entry
 		this._renderCollapsibleSections(entry.sections);
