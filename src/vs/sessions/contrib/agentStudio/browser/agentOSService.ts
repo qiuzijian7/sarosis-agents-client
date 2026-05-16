@@ -371,11 +371,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (delta.type === 'thinking') {
 			return { type: 'thinking', content: delta.content };
 		}
+		if (delta.type === 'tool_call' && delta.toolCall) {
+			// Adapt tool_call delta to tool_start/tool_args chunks
+			if (delta.toolCall.name) {
+				return { type: 'tool_start' as any, content: '', toolCallId: delta.toolCall.id, toolName: delta.toolCall.name };
+			}
+			return { type: 'tool_args' as any, content: delta.toolCall.arguments || '', toolCallId: delta.toolCall.id };
+		}
 		if (delta.type === 'done') {
 			return { type: 'done' };
 		}
 		if (delta.type === 'error') {
-			return { type: 'error', content: delta.error };
+			return { type: 'error', content: delta.error || delta.content || 'Unknown error' };
 		}
 		return { type: 'text', content: '' };
 	}

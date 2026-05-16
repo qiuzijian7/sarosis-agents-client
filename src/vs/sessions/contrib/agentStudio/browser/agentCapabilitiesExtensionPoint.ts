@@ -8,6 +8,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import type { IJSONSchema } from '../../../../base/common/jsonSchema.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -136,6 +137,10 @@ export class AgentCapabilitiesExtensionPointRegistry extends Disposable {
 
 	private _registerHandler(): void {
 		this._register(agentCapabilitiesExtensionPoint.setHandler((extensions, delta) => {
+			this.logService.info(
+				`[AgentCapabilities ExtPoint][Diag] setHandler fired: `
+				+ `current=${extensions.length} added=${delta.added.length} removed=${delta.removed.length}`,
+			);
 			const added: IResolvedCapabilityPlugin[] = [];
 			const removed: IResolvedCapabilityPlugin[] = [];
 
@@ -152,13 +157,25 @@ export class AgentCapabilitiesExtensionPointRegistry extends Disposable {
 
 			// Process added extensions
 			for (const ext of delta.added) {
+				const extId = ext.description.identifier.value;
+				this.logService.info(
+					`[AgentCapabilities ExtPoint][Diag] Resolving extension contribution: ${extId} `
+					+ `main=${ext.description.main ?? '<none>'} browser=${ext.description.browser ?? '<none>'} `
+					+ `location=${ext.description.extensionLocation.toString()}`,
+				);
 				const resolved = this._resolveExtension(ext);
 				if (resolved) {
 					this._plugins.set(resolved.extensionId, resolved);
 					added.push(resolved);
 					this.logService.info(
 						`[AgentCapabilities ExtPoint] Discovered: ${resolved.extensionId} `
-						+ `(${resolved.capabilities.map(c => c.capability).join(', ')})`
+						+ `(${resolved.capabilities.map(c => c.capability).join(', ')}) `
+						+ `mainModule=${resolved.mainModule || '<empty>'}`
+					);
+				} else {
+					this.logService.warn(
+						`[AgentCapabilities ExtPoint][Diag] Resolution returned null for ${extId} `
+						+ `-- contribution invalid (see warnings above)`,
 					);
 				}
 			}
@@ -213,8 +230,13 @@ export class AgentCapabilitiesExtensionPointRegistry extends Disposable {
 		if (rawMain) {
 			try {
 				const mainUri = URI.joinPath(desc.extensionLocation, rawMain);
-				// Prefer the URI string form (works for file:// and vscode-remote:// schemes)
-				resolvedMain = mainUri.toString();
+				// In the renderer process, Electron forbids `file://` for
+				// security reasons -- dynamic import() would fail with
+				// "Not allowed to load local resource". Convert any local
+				// `file://` URI into the browser-safe `vscode-file://vscode-app/...`
+				// scheme via FileAccess. Remote URIs (vscode-remote://) are
+				// passed through and rewritten by FileAccess as needed.
+				resolvedMain = FileAccess.uriToBrowserUri(mainUri).toString(true);
 			} catch {
 				// Fallback to the raw value; activator will warn if it cannot resolve it.
 				resolvedMain = rawMain;

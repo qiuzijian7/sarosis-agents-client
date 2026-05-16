@@ -282,18 +282,30 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 		}
 
 		const providers = this._agentOSService.getModelProviders();
+		this._logService.info(
+			`[ModelSelector][Diag] getAvailableModels(): ${providers.length} provider(s) registered `
+			+ `[ids=${providers.map(p => p.id).join(',') || '<none>'}]`,
+		);
 		const items: IModelSelectorItem[] = [];
 
 		for (const provider of providers) {
+			const authStatus = provider.getAuthStatus();
 			const providerInfo: IModelSelectorProviderInfo = {
 				id: provider.id,
 				name: provider.name,
 				icon: provider.icon?.toString(),
-				authStatus: provider.getAuthStatus(),
+				authStatus,
 			};
 
 			try {
 				const models = await provider.listModels();
+				this._logService.info(
+					`[ModelSelector][Diag]   provider=${provider.id} name="${provider.name}" `
+					+ `auth=${authStatus} models=${models.length}`
+					+ (models.length === 0
+						? ' (will NOT appear in selector -- empty model list)'
+						: ` [${models.slice(0, 5).map(m => m.id).join(',')}${models.length > 5 ? ',...' : ''}]`),
+				);
 				for (const model of models) {
 					items.push({
 						provider: providerInfo,
@@ -305,6 +317,9 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			}
 		}
 
+		this._logService.info(
+			`[ModelSelector][Diag] getAvailableModels() result: ${items.length} item(s) total`,
+		);
 		this._cachedModelItems = items;
 		this._modelCacheValid = true;
 		return items;

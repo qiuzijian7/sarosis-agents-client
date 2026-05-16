@@ -156,6 +156,11 @@
 			"GitHub.copilot-chat"
 		]
 	},
+	"extensionEnabledApiProposals": {
+		"sarosis.hermes-agent-provider": [
+			"chatProvider"
+		]
+	},
 	"onboardingKeymaps": [
 		{
 			"id": "vscode",

@@ -1,31 +1,17 @@
 {
+	"extends": "../tsconfig.base.json",
 	"compilerOptions": {
-		"module": "nodenext",
-		"moduleResolution": "nodenext",
-		"moduleDetection": "legacy",
-		"experimentalDecorators": true,
-		"noImplicitReturns": true,
-		"noImplicitOverride": true,
-		"noUnusedLocals": true,
-		"allowUnreachableCode": false,
-		"strict": true,
-		"target": "ES2024",
-		"useDefineForClassFields": false,
-		"esModuleInterop": true,
-		"resolveJsonModule": true,
-		"allowJs": true,
-		"skipLibCheck": true,
-		"outDir": "../../out/vs/extensions/knot-agui",
-		"rootDir": ".",
-		"paths": {
-			"*": ["../../src/*"]
-		}
+		"rootDir": "./src",
+		"outDir": "./out",
+		"types": [
+			"node"
+		],
+		"typeRoots": [
+			"./node_modules/@types"
+		]
 	},
 	"include": [
-		"**/*.ts"
-	],
-	"exclude": [
-		"**/node_modules",
-		"**/out"
+		"src/**/*",
+		"../../src/vscode-dts/vscode.d.ts"
 	]
 }

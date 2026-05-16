@@ -54,6 +54,7 @@ export type RequestType =
 	| 'session.delete'
 	| 'providers.list'
 	| 'providers.select'
+	| 'providers.getSelection'
 	| 'providers.openSettings';
 
 // Event types (Host → WebView, unsolicited)

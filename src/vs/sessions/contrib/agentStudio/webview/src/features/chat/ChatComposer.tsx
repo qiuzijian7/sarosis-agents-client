@@ -14,16 +14,19 @@ import type { ProviderInfo } from '../../store/useProviderStore';
 
 interface ChatComposerProps {
 	onSend: (message: string) => void;
+	onCancel?: () => void;
 	isLoading?: boolean;
 	placeholder?: string;
 }
 
-export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatComposerProps): React.ReactElement {
+export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
 	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
 	const [showProviderDropdown, setShowProviderDropdown] = useState(false);
 	const [showAgentDropdown, setShowAgentDropdown] = useState(false);
 	const [showModelDropdown, setShowModelDropdown] = useState(false);
+	const [modelSearchQuery, setModelSearchQuery] = useState('');
+	const modelSearchInputRef = useRef<HTMLInputElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const providerDropdownRef = useRef<HTMLDivElement>(null);
 	const agentDropdownRef = useRef<HTMLDivElement>(null);
@@ -78,16 +81,42 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 			}
 			if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
 				setShowModelDropdown(false);
+				setModelSearchQuery('');
 			}
 		};
 		document.addEventListener('mousedown', handleClickOutside);
 		return () => document.removeEventListener('mousedown', handleClickOutside);
 	}, []);
 
+	// Model dropdown 打开时自动聚焦搜索框
+	useEffect(() => {
+		if (showModelDropdown && modelSearchInputRef.current) {
+			// 延迟聚焦以确保 DOM 已渲染
+			requestAnimationFrame(() => {
+				modelSearchInputRef.current?.focus();
+			});
+		}
+		if (!showModelDropdown) {
+			setModelSearchQuery('');
+		}
+	}, [showModelDropdown]);
+
+	// 根据搜索过滤模型列表
+	const filteredModels = useMemo(() => {
+		if (!modelSearchQuery.trim()) {
+			return availableModels;
+		}
+		const query = modelSearchQuery.toLowerCase().trim();
+		return availableModels.filter(m =>
+			m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query)
+		);
+	}, [availableModels, modelSearchQuery]);
+
 	const closeAllDropdowns = useCallback(() => {
 		setShowProviderDropdown(false);
 		setShowAgentDropdown(false);
 		setShowModelDropdown(false);
+		setModelSearchQuery('');
 	}, []);
 
 	const handleProviderSelect = useCallback((provider: ProviderInfo) => {
@@ -220,30 +249,27 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 								<path d="M6 9l6 6 6-6" />
 							</svg>
 						</button>
-						{showProviderDropdown && providers.length > 0 && (
-							<div className="provider-dropdown">
-								{providers.map(p => {
-									const isAuthenticated = p.authStatus === 'authenticated';
-									const isActive = selection?.providerId === p.id;
-									return (
-										<button
-											key={p.id}
-											className={`provider-dropdown-item ${isActive ? 'active' : ''} ${!isAuthenticated ? 'not-configured' : ''}`}
-											onClick={() => handleProviderSelect(p)}
-										>
-											<span className="provider-dropdown-name">{p.name}</span>
-											<span className="provider-dropdown-detail">
-												{!isAuthenticated
-													? '⚙️ 点击配置'
-													: p.supportsAgents
-														? `${p.agents?.length || 0} agents`
-														: `${p.models.length} models`}
-											</span>
-										</button>
-									);
-								})}
-							</div>
-						)}
+					{showProviderDropdown && authenticatedProviders.length > 0 && (
+						<div className="provider-dropdown">
+							{authenticatedProviders.map(p => {
+								const isActive = selection?.providerId === p.id;
+								return (
+									<button
+										key={p.id}
+										className={`provider-dropdown-item ${isActive ? 'active' : ''}`}
+										onClick={() => handleProviderSelect(p)}
+									>
+										<span className="provider-dropdown-name">{p.name}</span>
+										<span className="provider-dropdown-detail">
+											{p.supportsAgents
+												? `${p.agents?.length || 0} agents`
+												: `${p.models.length} models`}
+										</span>
+									</button>
+								);
+							})}
+						</div>
+					)}
 					</div>
 
 					{/* Agent 选择器（仅当 provider 支持 agents 时显示） */}
@@ -324,31 +350,80 @@ export function ChatComposer({ onSend, isLoading = false, placeholder }: ChatCom
 							</svg>
 						</button>
 						{showModelDropdown && currentProvider && (
-							<div className="provider-dropdown">
-								{availableModels.map(m => (
-									<button
-										key={m.id}
-										className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
-										onClick={() => handleModelSelect(m.id)}
-									>
-										<span className="provider-dropdown-name">{m.name}</span>
-									</button>
-								))}
-								{availableModels.length === 0 && (
-									<div className="provider-dropdown-empty">无可用模型</div>
-								)}
+							<div className="provider-dropdown model-dropdown-searchable">
+								{/* 搜索框 */}
+								<div className="model-search-wrap">
+									<svg className="model-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+										<circle cx="11" cy="11" r="8" />
+										<line x1="21" y1="21" x2="16.65" y2="16.65" />
+									</svg>
+									<input
+										ref={modelSearchInputRef}
+										type="text"
+										className="model-search-input"
+										placeholder="搜索模型..."
+										value={modelSearchQuery}
+										onChange={(e) => setModelSearchQuery(e.target.value)}
+										onKeyDown={(e) => {
+											// 阻止 Enter 触发发送消息
+											e.stopPropagation();
+											if (e.key === 'Escape') {
+												setShowModelDropdown(false);
+												setModelSearchQuery('');
+											}
+											// Enter 选择第一个匹配结果
+											if (e.key === 'Enter' && filteredModels.length > 0) {
+												handleModelSelect(filteredModels[0].id);
+												setModelSearchQuery('');
+											}
+										}}
+									/>
+									{modelSearchQuery && (
+										<button
+											className="model-search-clear"
+											onClick={() => setModelSearchQuery('')}
+											title="清除搜索"
+										>
+											<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+												<line x1="18" y1="6" x2="6" y2="18" />
+												<line x1="6" y1="6" x2="18" y2="18" />
+											</svg>
+										</button>
+									)}
+								</div>
+								{/* 模型列表 */}
+								<div className="model-dropdown-list">
+									{filteredModels.map(m => (
+										<button
+											key={m.id}
+											className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
+											onClick={() => {
+												handleModelSelect(m.id);
+												setModelSearchQuery('');
+											}}
+										>
+											<span className="provider-dropdown-name">{m.name}</span>
+										</button>
+									))}
+									{filteredModels.length === 0 && modelSearchQuery && (
+										<div className="provider-dropdown-empty">无匹配模型 "{modelSearchQuery}"</div>
+									)}
+									{filteredModels.length === 0 && !modelSearchQuery && (
+										<div className="provider-dropdown-empty">无可用模型</div>
+									)}
+								</div>
 							</div>
 						)}
 					</div>
 					</div>
 
-					{/* 右侧发送/取消按钮 */}
-					<button
-						onClick={isLoading ? undefined : handleSend}
-						disabled={!input.trim() && !isLoading}
-						className={`chat-send-circle ${isLoading ? 'chat-cancel-circle' : ''}`}
-						title={isLoading ? '取消执行' : '发送 (Enter)'}
-					>
+				{/* 右侧发送/取消按钮 */}
+				<button
+					onClick={isLoading ? onCancel : handleSend}
+					disabled={!input.trim() && !isLoading}
+					className={`chat-send-circle ${isLoading ? 'chat-cancel-circle' : ''}`}
+					title={isLoading ? '停止生成' : '发送 (Enter)'}
+				>
 						{isLoading ? (
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
 								<rect x="6" y="6" width="12" height="12" rx="2" />

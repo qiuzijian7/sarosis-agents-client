@@ -185,18 +185,12 @@ export function EmployeeChat(): React.ReactElement {
 				<div ref={messagesEndRef} />
 			</div>
 
-			{/* Composer */}
-			<ChatComposer
-				onSend={handleSend}
-				isLoading={streamState.isStreaming}
-			/>
-
-			{/* Cancel button overlay (when streaming) */}
-			{streamState.isStreaming && (
-				<button className="chat-cancel-btn" onClick={cancelStream} title="停止生成">
-					■ 停止生成
-				</button>
-			)}
+		{/* Composer */}
+		<ChatComposer
+			onSend={handleSend}
+			onCancel={cancelStream}
+			isLoading={streamState.isStreaming}
+		/>
 		</div>
 	);
 }

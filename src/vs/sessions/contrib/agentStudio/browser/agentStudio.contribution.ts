@@ -190,7 +190,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_DEFAULT_PROVIDER_SETTING]: {
 			type: 'string',
 			default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.preferences.defaultProvider', "Default AI Provider for new conversations. 'auto' selects the first available authenticated provider."),
 		},
 		[AGENT_STUDIO_DEFAULT_MODEL_SETTING]: {
@@ -279,7 +279,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.aux.vision.provider', "Provider for Vision (image analysis)."),
 		},
 		[AGENT_STUDIO_AUX_VISION_MODEL]: {
@@ -288,7 +288,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.aux.webExtract.provider', "Provider for Web Extract (page summarization)."),
 		},
 		[AGENT_STUDIO_AUX_WEB_EXTRACT_MODEL]: {
@@ -297,7 +297,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_SESSION_SEARCH_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.aux.sessionSearch.provider', "Provider for Session Search (history summarizing)."),
 		},
 		[AGENT_STUDIO_AUX_SESSION_SEARCH_MODEL]: {
@@ -306,7 +306,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_COMPRESSION_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.aux.compression.provider', "Provider for Compression (context compression)."),
 		},
 		[AGENT_STUDIO_AUX_COMPRESSION_MODEL]: {
@@ -315,7 +315,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.aux.goalJudge.provider', "Provider for Goal Judge (goals feature)."),
 		},
 		[AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL]: {
@@ -324,7 +324,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_AUX_CURATOR_PROVIDER]: {
 			type: 'string', default: 'auto',
-			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'knot', 'custom'],
+			enum: ['auto', 'openrouter', 'nous', 'gemini', 'anthropic', 'ollama', 'main', 'knot', 'custom'],
 			description: localize('agentStudio.aux.curator.provider', "Provider for Curator (code review)."),
 		},
 		[AGENT_STUDIO_AUX_CURATOR_MODEL]: {
@@ -502,6 +502,15 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 
 registerWorkbenchContribution2(BYOKProviderContribution.ID, BYOKProviderContribution, WorkbenchPhase.AfterRestored);
 
+// --- LanguageModels → IAgentOSService Bridge -------------------------------------
+// Bridges the upstream `vscode.lm.registerLanguageModelChatProvider` proposed API
+// into IAgentOSService.registerModelProvider, so any 3rd-party extension that
+// declares `enabledApiProposals: ["chatProvider"]` and registers a provider via
+// the standard VS Code extension API will appear in the chat box's provider picker
+// without any main-repo import or rebuild.
+import { LanguageModelsToAgentOSBridge } from './languageModelsBridge.js';
+registerWorkbenchContribution2(LanguageModelsToAgentOSBridge.ID, LanguageModelsToAgentOSBridge, WorkbenchPhase.AfterRestored);
+
 // --- Agent Capability Plugin Activation ------------------------------------------
 // Discovers and activates IAgentCapabilityPlugin extensions from TWO sources:
 //
@@ -515,6 +524,7 @@ registerWorkbenchContribution2(BYOKProviderContribution.ID, BYOKProviderContribu
 import { IAgentOSPluginContext, IAgentCapabilityPlugin } from '../common/adapters.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { AgentCapabilitiesExtensionPointRegistry, IResolvedCapabilityPlugin } from './agentCapabilitiesExtensionPoint.js';
+import { FileAccess, type AppResourcePath } from '../../../../base/common/network.js';
 
 /**
  * Shape of each entry in the build-generated capability-plugins.js manifest.
@@ -527,6 +537,16 @@ interface ICapabilityPluginManifestEntry {
 	module: string;
 	capabilities: Array<{ capability: string; provider: string; priority?: number }>;
 	exportClass?: string;
+	/**
+	 * Optional fallback resource path (relative to the app root, in the
+	 * `AppResourcePath` shape understood by `FileAccess.asBrowserUri`).
+	 * When the primary `module` import fails -- typically because
+	 * `npm run transpile-client` has not produced `out/vs/extensions/...` --
+	 * the activator imports this resource instead. The path must point at a
+	 * file that already exists on disk (e.g. an extension-local
+	 * `dist/extension.js` built by the extension's own `tsc`).
+	 */
+	appResource?: AppResourcePath;
 }
 
 /**
@@ -583,6 +603,15 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	 * Add new built-in capability plugins here whenever they are dropped into
 	 * `extensions/<name>/`; the build pipeline still owns the canonical
 	 * manifest, this list only ensures dev-mode parity.
+	 *
+	 * NOTE: every fallback also declares `appResource` -- the path to a
+	 * pre-built artifact that already exists on disk under the app root
+	 * (e.g. `extensions/<id>/dist/extension.js` produced by the extension's
+	 * own `tsc` step). When the manifest-relative `module` import fails
+	 * because `out/vs/extensions/<id>/...` was not generated yet, the
+	 * activator falls back to importing the `appResource` via
+	 * `FileAccess.asBrowserUri` -- this works in renderer because the
+	 * resulting `vscode-file://vscode-app/...` URL is allowed by Electron's CSP.
 	 */
 	private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
 		{
@@ -590,6 +619,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			name: 'Knot AG-UI Model Provider',
 			version: '1.0.0',
 			module: '../../../../extensions/knot-agui/src/extension.js',
+			appResource: 'vs/../../extensions/knot-agui/dist/extension.js',
 			capabilities: [{ capability: 'model', provider: 'knot-agui', priority: 100 }],
 		},
 		{
@@ -597,6 +627,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			name: 'Hermes Agent',
 			version: '1.0.0',
 			module: '../../../../extensions/hermes-agent/src/extension.js',
+			appResource: 'vs/../../extensions/hermes-agent/dist/extension.js',
 			capabilities: [
 				{ capability: 'model', provider: 'hermes-agent', priority: 50 },
 				{ capability: 'execution', provider: 'hermes-agent', priority: 80 },
@@ -609,11 +640,19 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	// --- Source 1: Built-in plugins (build-time manifest) -------------------
 
 	private async _activateBuiltInPlugins(): Promise<void> {
+		this.logService.info(
+			`[AgentCapabilityPlugins][Diag] _activateBuiltInPlugins() start; manifestModule=${AgentCapabilityPluginContribution.MANIFEST_MODULE}`,
+		);
 		let manifest: ICapabilityPluginManifestEntry[] = [];
+		let manifestLoaded = false;
 		try {
 			const manifestModule = await import(AgentCapabilityPluginContribution.MANIFEST_MODULE);
 			manifest = manifestModule.plugins ?? [];
-			this.logService.info(`[AgentCapabilityPlugins] Built-in manifest: ${manifest.length} plugin(s)`);
+			manifestLoaded = true;
+			this.logService.info(
+				`[AgentCapabilityPlugins] Built-in manifest loaded: ${manifest.length} plugin(s) `
+				+ `[ids=${manifest.map(p => p.id).join(',') || '<none>'}]`,
+			);
 		} catch (err) {
 			this.logService.warn(
 				'[AgentCapabilityPlugins] Failed to load capability-plugins.js manifest. '
@@ -628,32 +667,107 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		// without re-running the full build still surfaces it in the chat
 		// provider selector during development.
 		const knownIds = new Set(manifest.map(m => m.id));
+		const injected: string[] = [];
 		for (const fallback of AgentCapabilityPluginContribution.BUILTIN_FALLBACK_MANIFEST) {
 			if (!knownIds.has(fallback.id)) {
 				manifest.push(fallback);
+				injected.push(fallback.id);
 			}
 		}
+		if (injected.length > 0) {
+			this.logService.info(
+				`[AgentCapabilityPlugins][Diag] Fallback injected (manifestLoaded=${manifestLoaded}): ${injected.join(', ')}`,
+			);
+		}
 
+		this.logService.info(
+			`[AgentCapabilityPlugins][Diag] Final manifest size=${manifest.length}; about to activate each entry`,
+		);
 		for (const entry of manifest) {
 			if (this._activatedPlugins.has(entry.id)) {
-				continue; // already activated (e.g. via extension point)
+				this.logService.info(`[AgentCapabilityPlugins][Diag] ${entry.id} already activated -- skip`);
+				continue;
 			}
 			await this._activateFromManifestEntry(entry);
 		}
+		this.logService.info(
+			`[AgentCapabilityPlugins][Diag] _activateBuiltInPlugins() done; activated ids=`
+			+ `${Array.from(this._activatedPlugins.keys()).join(',') || '<none>'}`,
+		);
 	}
 
 	private async _activateFromManifestEntry(entry: ICapabilityPluginManifestEntry): Promise<void> {
+		this.logService.info(
+			`[AgentCapabilityPlugins][Diag] activating "${entry.id}" -- import("${entry.module}")`,
+		);
+		let pluginModule: any;
+		let importedFrom = entry.module;
 		try {
-			const pluginModule = await import(entry.module);
+			pluginModule = await import(entry.module);
+		} catch (err) {
+			const e = err as any;
+			this.logService.warn(
+				`[AgentCapabilityPlugins][Diag] Primary import() failed for ${entry.id} (module=${entry.module}). `
+				+ `Error: ${e?.message ?? String(err)}`,
+			);
+
+			// Fallback: try the app-resource path (extensions/<id>/dist/extension.js)
+			// converted to a vscode-file:// URL via FileAccess. This works in dev
+			// mode without `npm run transpile-client`.
+			if (entry.appResource) {
+				try {
+					const browserUri = FileAccess.asBrowserUri(entry.appResource);
+					const fallbackUrl = browserUri.toString(true);
+					this.logService.info(
+						`[AgentCapabilityPlugins][Diag] Trying appResource fallback for ${entry.id}: ${fallbackUrl}`,
+					);
+					pluginModule = await import(fallbackUrl);
+					importedFrom = fallbackUrl;
+				} catch (err2) {
+					const e2 = err2 as any;
+					this.logService.warn(
+						`[AgentCapabilityPlugins][Diag] Fallback import() also failed for ${entry.id} `
+						+ `(appResource=${entry.appResource}). `
+						+ `Error: ${e2?.message ?? String(err2)}\nStack: ${e2?.stack ?? '<no stack>'}\n`
+						+ `Hint: ensure either "npm run transpile-client" was run (produces out/vs/extensions/${entry.id}/src/extension.js) `
+						+ `or the extension itself has been built (produces extensions/${entry.id}/dist/extension.js).`,
+					);
+					return;
+				}
+			} else {
+				this.logService.warn(
+					`[AgentCapabilityPlugins][Diag] No appResource fallback declared for ${entry.id}. `
+					+ `Run "npm run transpile-client" to generate the manifest artifact, or add an appResource path to the fallback manifest.\n`
+					+ `Stack: ${e?.stack ?? '<no stack>'}`,
+				);
+				return;
+			}
+		}
+
+		try {
+			const exportedKeys = Object.keys(pluginModule || {});
+			this.logService.info(
+				`[AgentCapabilityPlugins][Diag] ${entry.id} module loaded from ${importedFrom}; `
+				+ `exports=[${exportedKeys.join(', ') || '<empty>'}] exportClass=${entry.exportClass ?? '<auto>'}`,
+			);
 			const PluginClass = this._resolvePluginClass(pluginModule, entry.exportClass);
 
 			if (!PluginClass) {
-				this.logService.warn(`[AgentCapabilityPlugins] No plugin class found in ${entry.id} (module: ${entry.module})`);
+				this.logService.warn(
+					`[AgentCapabilityPlugins] No plugin class found in ${entry.id} (importedFrom: ${importedFrom}). `
+					+ `Module exports: [${exportedKeys.join(', ') || '<empty>'}]. `
+					+ `Expected a class whose name ends with "Plugin", a "default" export, `
+					+ `or an explicit \`exportClass\` field in the manifest entry.`,
+				);
 				return;
 			}
 
 			const context = this._createPluginContext('');
-			const plugin = new PluginClass();
+			// Use the InstantiationService so that plugins which declare DI
+			// constructor parameters (e.g. `@IAgentOSService`) get their
+			// dependencies wired up. Plugins with a no-arg constructor (like
+			// KnotAguiPlugin) work exactly the same way through this path.
+			const plugin = this.instantiationService.createInstance(PluginClass as any);
 			await plugin.activate(context);
 			this._activatedPlugins.set(entry.id, plugin);
 			this.logService.info(
@@ -661,7 +775,11 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 				+ ' -- capabilities: ' + entry.capabilities.map(c => c.capability).join(', '),
 			);
 		} catch (err) {
-			this.logService.warn(`[AgentCapabilityPlugins] Built-in ${entry.id} activation failed:`, err);
+			const e = err as any;
+			this.logService.warn(
+				`[AgentCapabilityPlugins] Built-in ${entry.id} activation failed: `
+				+ `${e?.message ?? String(err)}\nStack: ${e?.stack ?? '<no stack>'}`,
+			);
 		}
 	}
 
@@ -709,22 +827,49 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	}
 
 	private async _activateFromExtensionPoint(resolved: IResolvedCapabilityPlugin): Promise<void> {
+		this.logService.info(
+			`[AgentCapabilityPlugins][Diag] ExtensionPoint activate -- id=${resolved.extensionId} `
+			+ `path=${resolved.extensionPath} mainModule=${resolved.mainModule || '<empty>'}`,
+		);
 		if (!resolved.mainModule) {
 			this.logService.warn(`[AgentCapabilityPlugins] Extension ${resolved.extensionId} has no main module -- skipping`);
 			return;
 		}
 
+		let pluginModule: any;
 		try {
-			const pluginModule = await import(resolved.mainModule);
+			pluginModule = await import(resolved.mainModule);
+		} catch (err) {
+			const e = err as any;
+			this.logService.warn(
+				`[AgentCapabilityPlugins][Diag] import() failed for extension ${resolved.extensionId} `
+				+ `(mainModule=${resolved.mainModule}). `
+				+ `Error: ${e?.message ?? String(err)}\nStack: ${e?.stack ?? '<no stack>'}`,
+			);
+			return;
+		}
+
+		try {
+			const exportedKeys = Object.keys(pluginModule || {});
+			this.logService.info(
+				`[AgentCapabilityPlugins][Diag] ${resolved.extensionId} module loaded; `
+				+ `exports=[${exportedKeys.join(', ') || '<empty>'}]`,
+			);
 			const PluginClass = this._resolvePluginClass(pluginModule, undefined);
 
 			if (!PluginClass) {
-				this.logService.warn(`[AgentCapabilityPlugins] No plugin class found in extension ${resolved.extensionId}`);
+				this.logService.warn(
+					`[AgentCapabilityPlugins] No plugin class found in extension ${resolved.extensionId}. `
+					+ `Module exports: [${exportedKeys.join(', ') || '<empty>'}]. `
+					+ `Hint: dist/extension.js must export a class whose name ends with "Plugin" `
+					+ `(e.g. KnotAguiPlugin), or a default export.`,
+				);
 				return;
 			}
 
 			const context = this._createPluginContext(resolved.extensionPath);
-			const plugin = new PluginClass();
+			// Use createInstance so DI-constructor plugins resolve correctly.
+			const plugin = this.instantiationService.createInstance(PluginClass as any);
 			await plugin.activate(context);
 			this._activatedPlugins.set(resolved.extensionId, plugin);
 
@@ -734,7 +879,11 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 				+ ` -- capabilities: ${resolved.capabilities.map(c => c.capability).join(', ')}`,
 			);
 		} catch (err) {
-			this.logService.warn(`[AgentCapabilityPlugins] Third-party ${resolved.extensionId} activation failed:`, err);
+			const e = err as any;
+			this.logService.warn(
+				`[AgentCapabilityPlugins] Third-party ${resolved.extensionId} activation failed: `
+				+ `${e?.message ?? String(err)}\nStack: ${e?.stack ?? '<no stack>'}`,
+			);
 		}
 	}
 

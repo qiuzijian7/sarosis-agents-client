@@ -5,6 +5,8 @@
 
 import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
+import { useEmployeeStore } from './useEmployeeStore';
+import { useChatStore } from './useChatStore';
 
 export interface ProviderModelInfo {
 	id: string;
@@ -62,7 +64,31 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			);
 			set({ providers, isLoading: false });
 
-			// 如果还没有选择，且有已认证的 Provider，自动选中第一个
+			// 从 Host 获取已保存的 selection（用户上次选择的 provider/model）
+			try {
+				const savedSelection = await sendRequest<unknown, { providerId: string; modelId: string; agentId?: string } | null>(
+					'providers.getSelection',
+					{}
+				);
+				if (savedSelection) {
+					const provider = (providers || []).find(p => p.id === savedSelection.providerId);
+					if (provider && provider.authStatus === 'authenticated') {
+						set({
+							selection: {
+								providerId: savedSelection.providerId,
+								providerName: provider.name,
+								modelId: savedSelection.modelId,
+								agentId: savedSelection.agentId,
+							},
+						});
+						return; // 成功恢复了保存的选择，不再自动选中
+					}
+				}
+			} catch {
+				// ignore — fallback to auto-select below
+			}
+
+			// 如果没有保存的选择（或已不可用），自动选中第一个已认证的 Provider
 			const { selection } = get();
 			if (!selection) {
 				const authenticated = (providers || []).filter(
@@ -106,6 +132,19 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
 		// Notify host to persist the selection
 		postMessage('providers.select', { providerId, modelId, agentId });
+
+		// Sync the active employee's model/provider fields so that
+		// EmployeeCard and chat header update in real-time
+		const activeEmployeeId = useChatStore.getState().activeEmployeeId;
+		if (activeEmployeeId) {
+			useEmployeeStore.setState(state => ({
+				employees: state.employees.map(e =>
+					e.id === activeEmployeeId
+						? { ...e, provider: provider.name, model: modelId }
+						: e
+				),
+			}));
+		}
 	},
 
 	openProviderSettings: (providerId?: string) => {

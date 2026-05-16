@@ -110,10 +110,16 @@ export class KnotAGUIModelProvider implements IModelProvider {
 	}
 
 	private async _validateAndLoadModels(): Promise<void> {
+		const log = this._options.logService;
 		const token = this._options.configurationService.getValue(KNOT_TOKEN_SETTING) as string;
+		log?.info?.(
+			`[Knot-AGUI][Diag] _validateAndLoadModels start; tokenPresent=${!!token} `
+			+ `tokenLen=${token ? token.length : 0}`,
+		);
 		if (!token) {
 			this._authStatus = ModelAuthStatus.NotConfigured;
 			this._onDidChangeAuthStatus.fire(this._authStatus);
+			log?.info?.('[Knot-AGUI][Diag] No token configured -- authStatus=NotConfigured, skipping fetch');
 			return;
 		}
 
@@ -122,7 +128,8 @@ export class KnotAGUIModelProvider implements IModelProvider {
 
 		try {
 			const agents = await this._fetchAvailableAgents(token);
-			
+			log?.info?.(`[Knot-AGUI][Diag] Fetched ${agents.length} agent(s) from Knot API`);
+
 			// 转换为 IModelInfo（用于 listModels）
 			this._agents = agents.map(agent => ({
 				id: agent.id,
@@ -131,7 +138,7 @@ export class KnotAGUIModelProvider implements IModelProvider {
 				contextWindow: agent.contextWindow,
 				capabilities: agent.capabilities,
 			}));
-			
+
 			// 保存完整的 Agent 信息（用于 listAgents）
 			this._agentsList = agents.map(agent => ({
 				id: agent.id,
@@ -139,23 +146,28 @@ export class KnotAGUIModelProvider implements IModelProvider {
 				description: agent.description,
 				models: agent.models,
 			}));
-			
+
 			this._authStatus = ModelAuthStatus.Authenticated;
+			log?.info?.(
+				`[Knot-AGUI][Diag] authStatus=Authenticated; firing onDidChangeModels + onDidChangeAgents `
+				+ `(models=${this._agents.length}, agents=${this._agentsList.length})`,
+			);
 			this._onDidChangeModels.fire();
 			this._onDidChangeAgents.fire(); // 通知 Agent 列表变化
 		} catch (err) {
 			this._authStatus = ModelAuthStatus.Failed;
-			this._options.logService.error('[Knot-AGUI] Failed to load agents:', err);
+			log?.error?.('[Knot-AGUI] Failed to load agents:', err);
 		}
 		this._onDidChangeAuthStatus.fire(this._authStatus);
 	}
 
 	private async _fetchAvailableAgents(token: string): Promise<any[]> {
+		const log = this._options.logService;
 		const configApiUrl = this._options.configurationService.getValue(KNOT_API_URL_SETTING) as string || '';
 		const baseUrl = configApiUrl || this._options.endpoint || 'https://knot.woa.com';
 		const apiUrl = `${baseUrl}/apigw/api/v1/agents`;
 		const user = this._options.configurationService.getValue('sessions.agentStudio.knot.user') as string || '';
-		
+
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 			'x-knot-api-token': token,
@@ -163,15 +175,33 @@ export class KnotAGUIModelProvider implements IModelProvider {
 		if (user) {
 			headers['x-knot-api-user'] = user;
 		}
-		
-		const response = await fetch(apiUrl, {
-			method: 'GET',
-			headers,
-		});
-		
-		if (!response.ok) throw new Error(`Failed to fetch agents: ${response.status}`);
+
+		log?.info?.(
+			`[Knot-AGUI][Diag] GET ${apiUrl} (user=${user || '<none>'}, tokenLen=${token.length})`,
+		);
+
+		let response: Response;
+		try {
+			response = await fetch(apiUrl, { method: 'GET', headers });
+		} catch (e) {
+			log?.error?.(`[Knot-AGUI][Diag] Network error fetching ${apiUrl}:`, e);
+			throw e;
+		}
+
+		log?.info?.(
+			`[Knot-AGUI][Diag] Knot agents endpoint response: status=${response.status} ok=${response.ok}`,
+		);
+		if (!response.ok) {
+			const text = await response.text().catch(() => '');
+			log?.warn?.(`[Knot-AGUI][Diag] Non-OK body (truncated 500 chars): ${text.slice(0, 500)}`);
+			throw new Error(`Failed to fetch agents: ${response.status}`);
+		}
 		const data = await response.json();
-		return data.agents || [];
+		const list = data.agents || [];
+		log?.info?.(
+			`[Knot-AGUI][Diag] Parsed ${Array.isArray(list) ? list.length : 0} agent(s) from response payload`,
+		);
+		return list;
 	}
 
 	private async *_createStreamGenerator(agentId: string, opts: any): AsyncGenerator<IModelDelta> {

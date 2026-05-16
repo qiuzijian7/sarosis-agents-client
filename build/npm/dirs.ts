@@ -47,6 +47,7 @@ export const dirs = [
 	'extensions/search-result',
 	'extensions/simple-browser',
 	'extensions/agent-studio',
+	'extensions/hermes-agent-provider',
 	'extensions/tunnel-forwarding',
 	'extensions/terminal-suggest',
 	'extensions/typescript-language-features',

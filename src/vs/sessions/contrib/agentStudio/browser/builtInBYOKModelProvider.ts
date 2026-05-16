@@ -34,8 +34,10 @@ export interface IBYOKProviderDefinition {
 	readonly staticModels?: IModelInfo[];
 	/** Optional: whether the provider uses OpenAI-compatible API */
 	readonly openAICompatible?: boolean;
-	/** Whether an API key is required. Defaults to true. Set false for local providers like Ollama. */
-	readonly requiresApiKey?: boolean;
+	/** Optional: if true, the provider can work without an API key (e.g. Ollama local) */
+	readonly apiKeyOptional?: boolean;
+	/** Optional: chat completions endpoint path (default: 'chat/completions'). E.g. Ollama uses 'v1/chat/completions'. */
+	readonly chatEndpointPath?: string;
 }
 
 // ─── Built-in BYOK Model Provider ──────────────────────────────────────────
@@ -130,21 +132,17 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		return configured || this._definition.defaultBaseUrl;
 	}
 
-	private _getAuthHeaders(): Record<string, string> {
-		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		const apiKey = this._getApiKey();
-		if (apiKey) {
-			headers['Authorization'] = `Bearer ${apiKey}`;
-		}
-		return headers;
-	}
-
 	private _checkAuth(): void {
 		const apiKey = this._getApiKey();
+		const baseUrl = this._getBaseUrl();
 		const oldStatus = this._authStatus;
-		const needsKey = this._definition.requiresApiKey !== false;
 
-		if (needsKey && !apiKey) {
+		// For providers with apiKeyOptional (e.g. Ollama), only a base URL is required.
+		const isAuthenticated = this._definition.apiKeyOptional
+			? !!baseUrl
+			: !!apiKey;
+
+		if (!isAuthenticated) {
 			this._authStatus = ModelAuthStatus.NotConfigured;
 			this._models = [];
 			this._modelsFetched = false;
@@ -170,7 +168,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		const apiKey = this._getApiKey();
 		const baseUrl = this._getBaseUrl();
 
-		if (!apiKey || !baseUrl) {
+		if (!baseUrl) {
+			return;
+		}
+		// For non-optional-key providers, require API key
+		if (!this._definition.apiKeyOptional && !apiKey) {
 			return;
 		}
 
@@ -188,9 +190,15 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		try {
 			this._logService.info(`[BYOK:${this.id}] Fetching models from ${modelsUrl}`);
+			const headers: Record<string, string> = {
+				'Content-Type': 'application/json',
+			};
+			if (apiKey) {
+				headers['Authorization'] = `Bearer ${apiKey}`;
+			}
 			const response = await fetch(modelsUrl, {
 				method: 'GET',
-				headers: this._getAuthHeaders(),
+				headers,
 				signal: AbortSignal.timeout(15000),
 			});
 
@@ -208,10 +216,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			const rawModels: any[] = data.data || data.models || [];
 
 			this._models = rawModels
-				.filter((m: any) => m.id)
+				.filter((m: any) => m.id || m.name)
 				.slice(0, 200) // Cap to avoid huge lists
 				.map((m: any) => ({
-					id: m.id,
+					id: m.id || m.name,
 					name: m.name || m.id,
 					description: m.description || undefined,
 					contextWindow: m.context_length || m.context_window || undefined,
@@ -262,13 +270,15 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		const apiKey = this._getApiKey();
 		const baseUrl = this._getBaseUrl();
 
-		if (!apiKey) {
+		if (!this._definition.apiKeyOptional && !apiKey) {
 			this._logService.error(`[BYOK:${this.id}] _streamChat: API key not configured`);
 			yield { type: 'error', error: `${this.name}: API key not configured` };
 			return;
 		}
 
-		const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+		const chatPath = this._definition.chatEndpointPath || 'chat/completions';
+		const url = `${baseUrl.replace(/\/+$/, '')}/${chatPath.replace(/^\/+/, '')}`;
+
 		this._logService.info(`[BYOK:${this.id}] _streamChat: url=${url}, model=${modelId}, messages=${messages.length}`);
 
 		const body: Record<string, unknown> = {
@@ -296,9 +306,15 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		let response: Response;
 		try {
 			this._logService.info(`[BYOK:${this.id}] _streamChat: sending fetch request...`);
+			const headers: Record<string, string> = {
+				'Content-Type': 'application/json',
+			};
+			if (apiKey) {
+				headers['Authorization'] = `Bearer ${apiKey}`;
+			}
 			response = await fetch(url, {
 				method: 'POST',
-				headers: this._getAuthHeaders(),
+				headers,
 				body: JSON.stringify(body),
 			});
 			this._logService.info(`[BYOK:${this.id}] _streamChat: response status=${response.status} ${response.statusText}`);
@@ -357,6 +373,13 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 								this._logService.info(`[BYOK:${this.id}] _streamChat: finish_reason=${finishReason}`);
 							}
 							continue;
+						}
+
+						// Handle reasoning/thinking content (e.g. Qwen3, DeepSeek-R1, o1-like models)
+						const reasoningContent = delta.reasoning_content ?? delta.thinking ?? delta.reasoning;
+						if (reasoningContent) {
+							yieldCount++;
+							yield { type: 'thinking', content: reasoningContent };
 						}
 
 						if (delta.content) {
@@ -478,6 +501,18 @@ export const BUILTIN_BYOK_PROVIDERS: IBYOKProviderDefinition[] = [
 		openAICompatible: true,
 	},
 	{
+		id: 'ollama',
+		name: 'Ollama',
+		apiKeyConfigKey: AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
+		baseUrlConfigKey: AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
+		defaultBaseUrl: 'http://localhost:11434',
+		priority: 65,
+		modelsEndpointPath: 'api/tags',
+		chatEndpointPath: 'v1/chat/completions',
+		openAICompatible: true,
+		apiKeyOptional: true,
+	},
+	{
 		id: 'custom',
 		name: 'Custom',
 		apiKeyConfigKey: AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
@@ -486,16 +521,5 @@ export const BUILTIN_BYOK_PROVIDERS: IBYOKProviderDefinition[] = [
 		priority: 50,
 		modelsEndpointPath: 'models',
 		openAICompatible: true,
-	},
-	{
-		id: 'ollama',
-		name: 'Ollama',
-		apiKeyConfigKey: AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
-		baseUrlConfigKey: AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
-		defaultBaseUrl: 'http://localhost:11434/v1',
-		priority: 90,
-		modelsEndpointPath: 'models',
-		openAICompatible: true,
-		requiresApiKey: false,
 	},
 ];

@@ -2,6 +2,10 @@
  *  Agent Studio WebView - Entry Point
  *--------------------------------------------------------------------------------------------*/
 
+// Mark bundle as loaded for early diagnostics
+(window as any).__AS_BUNDLE_LOADED__ = true;
+console.log('[AS-BUNDLE] index.tsx: module execution started');
+
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
@@ -19,12 +23,23 @@ initMessageClient((type, data) => {
 		case 'chat.stream.delta':
 			handleStreamDelta(data as Parameters<typeof handleStreamDelta>[0]);
 			break;
-		case 'chat.stream.complete':
-			handleStreamComplete(data as Parameters<typeof handleStreamComplete>[0]);
+		case 'chat.stream.complete': {
+			const completeData = data as Parameters<typeof handleStreamComplete>[0];
+			const msg = completeData.message as Record<string, unknown> | undefined;
+			console.log(`[AgentStudio] Routing chat.stream.complete → handleStreamComplete, ` +
+				`employeeId=${completeData.employeeId}, ` +
+				`hostMsg.contentLen=${typeof msg?.content === 'string' ? msg.content.length : 'N/A'}, ` +
+				`hostMsg.error=${msg?.error ?? 'none'}`);
+			handleStreamComplete(completeData);
 			break;
-		case 'chat.stream.error':
-			handleStreamError(data as Parameters<typeof handleStreamError>[0]);
+		}
+		case 'chat.stream.error': {
+			const errData = data as Parameters<typeof handleStreamError>[0];
+			console.error(`[AgentStudio] Routing chat.stream.error → handleStreamError, ` +
+				`employeeId=${errData.employeeId}, error="${errData.error}"`);
+			handleStreamError(errData);
 			break;
+		}
 		case 'employee.selected': {
 			const { employeeId } = (data as { employeeId: string | null }) ?? {};
 			console.log(`[AgentStudio] received 'employee.selected' event: employeeId=${employeeId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);

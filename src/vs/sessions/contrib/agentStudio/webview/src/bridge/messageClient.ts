@@ -42,12 +42,13 @@ export type RequestType =
 	| 'session.create'
 	| 'session.delete'
 	| 'providers.list'
-	| 'providers.select';
+	| 'providers.select'
+	| 'providers.getSelection';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;
 	reject: (error: Error) => void;
-	timer: ReturnType<typeof setTimeout>;
+	timer?: ReturnType<typeof setTimeout>;
 }
 
 const DEFAULT_TIMEOUT = 30_000; // 30s timeout for requests
@@ -59,19 +60,26 @@ const vscode = acquireVsCodeApi();
 
 /**
  * Send a request to the Host and wait for a response.
+ *
+ * Pass `timeout = 0` to disable the timeout entirely (useful for long-running
+ * streamed operations such as `chat.send`, where the actual user-visible result
+ * arrives via `chat.stream.*` events; cancellation should be done explicitly
+ * via a paired cancel request like `chat.cancel`).
  */
 export function sendRequest<TPayload = unknown, TResponse = unknown>(
 	type: RequestType,
 	payload: TPayload,
-	timeout = DEFAULT_TIMEOUT,
+	timeout: number = DEFAULT_TIMEOUT,
 ): Promise<TResponse> {
 	return new Promise<TResponse>((resolve, reject) => {
 		const id = `req_${++requestIdCounter}_${Date.now()}`;
 
-		const timer = setTimeout(() => {
-			pendingRequests.delete(id);
-			reject(new Error(`Request ${type} timed out after ${timeout}ms`));
-		}, timeout);
+		const timer: ReturnType<typeof setTimeout> | undefined = timeout > 0
+			? setTimeout(() => {
+				pendingRequests.delete(id);
+				reject(new Error(`Request ${type} timed out after ${timeout}ms`));
+			}, timeout)
+			: undefined;
 
 		pendingRequests.set(id, {
 			resolve: resolve as (data: unknown) => void,
@@ -105,7 +113,9 @@ export function initMessageClient(onEvent: (type: string, data: unknown) => void
 				const pending = pendingRequests.get(message.id);
 				if (pending) {
 					pendingRequests.delete(message.id);
-					clearTimeout(pending.timer);
+					if (pending.timer) {
+						clearTimeout(pending.timer);
+					}
 
 					if (message.error) {
 						pending.reject(new Error(message.error.message || 'Unknown error'));
@@ -117,6 +127,10 @@ export function initMessageClient(onEvent: (type: string, data: unknown) => void
 			}
 
 			// Otherwise it's an event (unsolicited push from Host)
+			// Log stream-related events for debugging
+			if (message.type?.startsWith('chat.stream')) {
+				console.log(`[MessageClient] Event received: type=${message.type}, dataKeys=${Object.keys(message.data || {}).join(',')}`);
+			}
 			onEvent(message.type, message.data);
 		}
 	});

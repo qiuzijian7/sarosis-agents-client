@@ -125,8 +125,35 @@ export class AgentStudioWebviewController extends Disposable {
 		window.__AGENT_STUDIO_PANEL_TYPE__ = ${this.panelType ? `'${this.panelType}'` : 'undefined'};
 		// Initial theme from configuration
 		window.__AGENT_STUDIO_INITIAL_THEME__ = '${initialTheme}';
+
+		// ── Early diagnostics: catch ALL messages and errors before React loads ──
+		window.__AS_MSG_LOG__ = [];
+		window.addEventListener('message', function(e) {
+			var d = e.data;
+			if (d && d.direction === 'toWebview') {
+				window.__AS_MSG_LOG__.push(d.type);
+				console.log('[AS-EARLY] postMessage received: type=' + d.type);
+			}
+		});
+		window.addEventListener('error', function(e) {
+			console.error('[AS-EARLY] Script error:', e.message, e.filename, e.lineno);
+		});
+		console.log('[AS-EARLY] Inline script executed, panelType=' + window.__AGENT_STUDIO_PANEL_TYPE__);
+		// Track whether the bundle script fires
+		window.__AS_BUNDLE_LOADED__ = false;
 	</script>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
+	<script nonce="${nonce}">
+		// ── Post-bundle diagnostics ──
+		if (window.__AS_BUNDLE_LOADED__) {
+			console.log('[AS-EARLY] webview.js bundle executed successfully');
+		} else {
+			console.error('[AS-EARLY] webview.js bundle DID NOT execute — likely a load error (CSP? 404? syntax?)');
+			console.error('[AS-EARLY] scriptUri was: ${scriptUri}');
+		}
+		// Also check if acquireVsCodeApi exists
+		console.log('[AS-EARLY] acquireVsCodeApi exists:', typeof acquireVsCodeApi);
+	</script>
 </body>
 </html>`;
 	}
@@ -271,6 +298,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleProvidersList();
 			case 'providers.select':
 				return this._handleProvidersSelect(p as unknown as IProviderSelectPayload);
+			case 'providers.getSelection':
+				return this._handleProvidersGetSelection();
 			case 'providers.openSettings':
 				return this._handleProvidersOpenSettings(p as { providerId?: string });
 
@@ -279,12 +308,24 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 	}
 
-	private async _handleChatSend(payload: Record<string, unknown>): Promise<unknown> {
+	private _handleChatSend(payload: Record<string, unknown>): { status: string; employeeId: string } {
 		const employeeId = payload.employeeId as string;
 		const message = payload.message as string;
 
+		// Return an acknowledgement immediately so the webview sendRequest()
+		// resolves right away (no 30-second timeout).  The actual content is
+		// delivered via chat.stream.delta / chat.stream.complete events.
+		this._runChatStream(employeeId, message, payload);
+
+		return { status: 'streaming', employeeId };
+	}
+
+	/**
+	 * Run the chat stream in the background. This is fire-and-forget from
+	 * the webview's perspective — all results flow through events.
+	 */
+	private async _runChatStream(employeeId: string, message: string, payload: Record<string, unknown>): Promise<void> {
 		try {
-			// Stream deltas will be sent as events to WebView
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
 				message,
@@ -303,17 +344,15 @@ export class AgentStudioWebviewController extends Disposable {
 				},
 			);
 
-			// Send completion event
+			// Send completion event with the full assembled message
 			this._sendEvent('chat.stream.complete', {
 				employeeId,
 				sessionId: '',
 				message: chatMessage,
 			});
-
-			return chatMessage;
 		} catch (error) {
 			const errMsg = error instanceof Error ? error.message : String(error);
-			this.logService.error(`[AgentStudio] _handleChatSend error for ${employeeId}:`, error);
+			this.logService.error(`[AgentStudio] _runChatStream error for ${employeeId}:`, error);
 
 			// Send stream error event so the webview can display the error
 			this._sendEvent('chat.stream.error', {
@@ -328,8 +367,6 @@ export class AgentStudioWebviewController extends Disposable {
 				sessionId: '',
 				message: { content: '', error: errMsg },
 			});
-
-			throw error;
 		}
 	}
 
@@ -342,7 +379,20 @@ export class AgentStudioWebviewController extends Disposable {
 			type: `${type}.response` as `${RequestType}.response`,
 			data,
 		};
-		this._webview?.postMessage(response);
+		if (this._webview) {
+			this._webview.postMessage(response).then(
+				(delivered) => {
+					if (!delivered) {
+						this.logService.warn(`[AgentStudio] _sendResponse FAILED to deliver: type=${type}.response, id=${id}`);
+					}
+				},
+				(err) => {
+					this.logService.error(`[AgentStudio] _sendResponse REJECTED: type=${type}.response`, err);
+				}
+			);
+		} else {
+			this.logService.warn(`[AgentStudio] _sendResponse: no webview for type=${type}.response, id=${id}`);
+		}
 	}
 
 	private _sendError(id: string, type: RequestType, message: string): void {
@@ -362,7 +412,21 @@ export class AgentStudioWebviewController extends Disposable {
 			data,
 		};
 		this.logService.info(`[AgentStudio] _sendEvent: type=${type}, hasWebview=${!!this._webview}, panelType=${this.panelType}`);
-		this._webview?.postMessage(event);
+		if (this._webview) {
+			const result = this._webview.postMessage(event);
+			if (type.startsWith('chat.stream')) {
+				result.then(
+					(delivered) => {
+						if (!delivered) {
+							this.logService.warn(`[AgentStudio] postMessage FAILED to deliver: type=${type} — webview iframe not ready or missing`);
+						}
+					},
+					(err) => {
+						this.logService.error(`[AgentStudio] postMessage REJECTED: type=${type}`, err);
+					}
+				);
+			}
+		}
 	}
 
 	// ─── Service Event Listeners (push changes to WebView) ──────────────────────
@@ -468,6 +532,18 @@ export class AgentStudioWebviewController extends Disposable {
 		if (payload.agentId) {
 			this.modelSelectorService.setSelectedAgentId(payload.agentId);
 		}
+	}
+
+	private _handleProvidersGetSelection(): IProviderSelectPayload | null {
+		const selection = this.modelSelectorService.getSelection();
+		if (!selection) {
+			return null;
+		}
+		return {
+			providerId: selection.providerId,
+			modelId: selection.modelId,
+			agentId: selection.agentId,
+		};
 	}
 
 	private _handleProvidersOpenSettings(payload: { providerId?: string }): void {

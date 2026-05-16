@@ -9,10 +9,8 @@ import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
 import { IAgentTurnRequest, IMemoryContext } from '../common/providers.js';
 import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import { IAgentChatService } from '../common/agentStudio.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -30,7 +28,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	constructor(
 		@IAgentOSService private readonly _agentOS: IAgentOSService,
 		@ILogService logService: ILogService,
-		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 		this._logService = logService;
@@ -146,9 +143,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			controller.abort();
 			this._activeTurns.delete(turnId);
 		}
-		// 同时取消 agentChatService 中的流（兼容旧代码）
-		const chatService = this._instantiationService.invokeFunction(accessor => accessor.get(IAgentChatService)) as IAgentChatService;
-		chatService.cancelStream(turnId);
+		// NOTE: Do NOT call chatService.cancelStream() here.
+		// AgentChatService.sendMessage() already cancels old streams on entry (line 46).
+		// Calling cancelStream() here would abort the *new* controller that sendMessage()
+		// just created, causing the stream to be killed after the first delta.
 	}
 
 	// ─── 查询轮次状态 ─────────────────────────────────

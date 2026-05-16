@@ -27,6 +27,8 @@ import {
 	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
 	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
 	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
+	AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
+	AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
 } from '../../common/constants.js';
@@ -91,6 +93,17 @@ const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
 		isBuiltin: true,
 	},
 	{
+		id: 'ollama',
+		name: 'Ollama',
+		icon: '🦙',
+		iconColor: '#6B4F3D',
+		apiKeySetting: AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY,
+		baseUrlSetting: AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL,
+		defaultBaseUrl: 'http://localhost:11434',
+		description: 'Local AI models via Ollama',
+		isBuiltin: true,
+	},
+	{
 		id: 'main',
 		name: 'Main',
 		icon: 'M',
@@ -135,9 +148,11 @@ interface CustomProviderData {
 export class ProviderViewPane extends ViewPane {
 
 	private listContainer!: HTMLElement;
+	private statusMessageEl!: HTMLElement;
 	private defaultProviderSelect!: HTMLSelectElement;
 	private defaultModelInput!: HTMLInputElement;
 	private statusMessage: string = '';
+	private expandedProviderId: string | null = null;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -198,6 +213,8 @@ export class ProviderViewPane extends ViewPane {
 		providerRow.appendChild(this.defaultProviderSelect);
 		defaultSection.appendChild(providerRow);
 
+
+
 		// Default Model
 		const modelRow = $('div.provider-default-row');
 		const modelLabel = $('label.provider-default-label');
@@ -231,12 +248,15 @@ export class ProviderViewPane extends ViewPane {
 		addBtnRow.appendChild(addBtn);
 		container.appendChild(addBtnRow);
 
-		// Status message
-		if (this.statusMessage) {
-			const statusEl = $('div.provider-status-message');
-			statusEl.textContent = this.statusMessage;
-			container.appendChild(statusEl);
-		}
+		// Status message (persistent element, updated dynamically)
+		this.statusMessageEl = $('div.provider-status-message');
+		this._updateStatusMessage();
+		container.appendChild(this.statusMessageEl);
+	}
+
+	private _updateStatusMessage(): void {
+		this.statusMessageEl.textContent = this.statusMessage;
+		this.statusMessageEl.style.display = this.statusMessage ? 'block' : 'none';
 	}
 
 	private _getAllProviders(): ProviderDefinition[] {
@@ -263,7 +283,11 @@ export class ProviderViewPane extends ViewPane {
 
 		for (const provider of this._getAllProviders()) {
 			const card = $('div.provider-card');
-			const isConfigured = !!this.configurationService.getValue<string>(provider.apiKeySetting);
+			// Ollama and similar local providers don't need API key — just a base URL
+			const isApiKeyOptionalProvider = provider.id === 'ollama';
+			const hasApiKey = !!this.configurationService.getValue<string>(provider.apiKeySetting);
+			const hasBaseUrl = !!(this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl);
+			const isConfigured = isApiKeyOptionalProvider ? hasBaseUrl : hasApiKey;
 			if (isConfigured) {
 				card.classList.add('configured-highlight');
 			}
@@ -335,6 +359,7 @@ export class ProviderViewPane extends ViewPane {
 			apiKeyInput.value = this.configurationService.getValue<string>(provider.apiKeySetting) || '';
 			apiKeyInput.onchange = () => {
 				this.configurationService.updateValue(provider.apiKeySetting, apiKeyInput.value);
+				this.expandedProviderId = provider.id;
 				this._renderProviders();
 			};
 			apiKeyRow.appendChild(apiKeyInput);
@@ -375,6 +400,7 @@ export class ProviderViewPane extends ViewPane {
 				clearBtn.onclick = () => {
 					this.configurationService.updateValue(provider.apiKeySetting, '');
 					this.configurationService.updateValue(provider.baseUrlSetting, provider.defaultBaseUrl);
+					this.expandedProviderId = provider.id;
 					this._renderProviders();
 				};
 				actionsRow.appendChild(clearBtn);
@@ -388,16 +414,22 @@ export class ProviderViewPane extends ViewPane {
 				const isExpanded = card.classList.contains('provider-card-expanded');
 				if (isExpanded) {
 					card.classList.remove('provider-card-expanded');
+					this.expandedProviderId = null;
 				} else {
 					// Collapse all other cards first (accordion behavior)
 					for (const otherCard of this.listContainer.children) {
 						otherCard.classList.remove('provider-card-expanded');
 					}
 					card.classList.add('provider-card-expanded');
+					this.expandedProviderId = provider.id;
 				}
 			};
 
-			// Default: all collapsed
+			// Restore expanded state from previous render
+			if (this.expandedProviderId === provider.id) {
+				card.classList.add('provider-card-expanded');
+			}
+
 			this.listContainer.appendChild(card);
 		}
 	}
@@ -455,7 +487,7 @@ export class ProviderViewPane extends ViewPane {
 			const name = nameInput.value.trim();
 			if (!id || !name) {
 				this.statusMessage = '⚠️ 请填写 Provider ID 和名称';
-				this._renderProviders();
+				this._updateStatusMessage();
 				return;
 			}
 
@@ -463,7 +495,7 @@ export class ProviderViewPane extends ViewPane {
 			const allProviders = this._getAllProviders();
 			if (allProviders.some(p => p.id === id)) {
 				this.statusMessage = `⚠️ Provider "${id}" 已存在`;
-				this._renderProviders();
+				this._updateStatusMessage();
 				return;
 			}
 
@@ -478,11 +510,13 @@ export class ProviderViewPane extends ViewPane {
 			this.configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
 
 			this.statusMessage = `✅ Provider "${name}" 已添加`;
+			this._renderProviders();
+			this._refreshDefaultProviderSelect();
+			this._updateStatusMessage();
 			setTimeout(() => {
 				this.statusMessage = '';
-				this._renderProviders();
+				this._updateStatusMessage();
 			}, 2000);
-			this._renderProviders();
 		};
 		actionsRow.appendChild(saveBtn);
 
@@ -507,37 +541,56 @@ export class ProviderViewPane extends ViewPane {
 		this.configurationService.updateValue(`sessions.agentStudio.provider.${id}.baseUrl`, undefined);
 
 		this.statusMessage = `✅ Provider 已删除`;
+		this._renderProviders();
+		this._refreshDefaultProviderSelect();
+		this._updateStatusMessage();
 		setTimeout(() => {
 			this.statusMessage = '';
-			this._renderProviders();
+			this._updateStatusMessage();
 		}, 2000);
-		this._renderProviders();
+	}
+
+	private _refreshDefaultProviderSelect(): void {
+		while (this.defaultProviderSelect.firstChild) {
+			this.defaultProviderSelect.removeChild(this.defaultProviderSelect.firstChild);
+		}
+		const allProviders = this._getAllProviders();
+		const providerOptions = [
+			{ value: 'auto', label: 'Auto（自动选择）' },
+			...allProviders.map(p => ({ value: p.id, label: p.name })),
+		];
+		const currentProvider = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING) || 'auto';
+		for (const opt of providerOptions) {
+			const option = document.createElement('option');
+			option.value = opt.value;
+			option.textContent = opt.label;
+			option.selected = opt.value === currentProvider;
+			this.defaultProviderSelect.appendChild(option);
+		}
 	}
 
 	private async _testConnection(provider: ProviderDefinition): Promise<void> {
 		const apiKey = this.configurationService.getValue<string>(provider.apiKeySetting);
-		if (!apiKey) {
-			this.statusMessage = '⚠️ 请先填写 API Key';
-			this._renderProviders();
+		const baseUrl = this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
+
+		if (!baseUrl) {
+			this.statusMessage = '❌ 请配置 Base URL';
+			this._updateStatusMessage();
 			return;
 		}
 
 		this.statusMessage = `🔄 正在测试 ${provider.name} 连接...`;
-		this._renderProviders();
+		this._updateStatusMessage();
 
 		try {
-			const baseUrl = this.configurationService.getValue<string>(provider.baseUrlSetting) || provider.defaultBaseUrl;
-			if (!baseUrl) {
-				this.statusMessage = '❌ 请配置 Base URL';
-				this._renderProviders();
-				return;
+			// Ollama uses /api/tags instead of /models
+			const isOllama = provider.id === 'ollama';
+			const testPath = isOllama ? '/api/tags' : '/models';
+			const testUrl = `${baseUrl.replace(/\/$/, '')}${testPath}`;
+			const headers: Record<string, string> = {};
+			if (apiKey) {
+				headers['Authorization'] = `Bearer ${apiKey}`;
 			}
-
-			const testUrl = `${baseUrl.replace(/\/$/, '')}/models`;
-			const headers: Record<string, string> = {
-				'Content-Type': 'application/json',
-				'Authorization': `Bearer ${apiKey}`,
-			};
 
 			const response = await fetch(testUrl, { method: 'GET', headers });
 			if (response.ok) {
@@ -550,10 +603,10 @@ export class ProviderViewPane extends ViewPane {
 			this.statusMessage = `❌ ${provider.name} 连接失败: ${error}`;
 		}
 
-		this._renderProviders();
+		this._updateStatusMessage();
 		setTimeout(() => {
 			this.statusMessage = '';
-			this._renderProviders();
+			this._updateStatusMessage();
 		}, 5000);
 	}
 

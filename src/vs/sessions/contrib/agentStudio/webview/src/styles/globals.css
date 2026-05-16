@@ -1734,34 +1734,7 @@ html, body, #root {
   40% { opacity: 1; transform: scale(1.2); }
 }
 
-/* ─── Cancel Button ───────────────────────────────────────────────────────── */
 
-.chat-cancel-btn {
-  position: absolute;
-  bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 16px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
-  border-radius: 20px;
-  background-color: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  color: var(--vscode-errorForeground, #ef4444);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  transition: background-color 100ms, box-shadow 100ms;
-  z-index: 10;
-  font-family: inherit;
-}
-
-.chat-cancel-btn:hover {
-  background-color: rgba(239, 68, 68, 0.1);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
 
 /* ═══ Chat Composer — mirrors sarosis-webui exactly ═══════════════════════════ */
 
@@ -2047,6 +2020,100 @@ html, body, #root {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
   opacity: 0.6;
+}
+
+/* ─── Model Dropdown 搜索功能 ─────────────────────────────────────────────── */
+
+.model-dropdown-searchable {
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  max-height: 320px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.model-search-wrap {
+  position: relative;
+  padding: 8px 8px 6px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.model-search-icon {
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--vscode-descriptionForeground);
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.model-search-input {
+  width: 100%;
+  padding: 5px 28px 5px 30px;
+  border-radius: 5px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 150ms;
+}
+
+.model-search-input:focus {
+  border-color: var(--vscode-focusBorder, #3b82f6);
+}
+
+.model-search-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, rgba(128, 128, 128, 0.5));
+  opacity: 0.7;
+}
+
+.model-search-clear {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 100ms, background-color 100ms;
+}
+
+.model-search-clear:hover {
+  opacity: 1;
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.model-dropdown-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.model-dropdown-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.model-dropdown-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.model-dropdown-list::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 3px;
 }
 
 /* 分隔线 */

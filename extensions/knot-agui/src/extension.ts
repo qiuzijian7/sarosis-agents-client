@@ -50,27 +50,48 @@ export class KnotAguiPlugin implements IAgentCapabilityPlugin {
 
 	async activate(context: IAgentOSPluginContext): Promise<void> {
 		const os = context.agentOSService;
+		const log = context.logService;
+
+		log.info('[Knot-AGUI][Diag] KnotAguiPlugin.activate() called');
 
 		// 从 Settings 读取配置（与 package.json 中的配置键保持一致）
 		const config = context.configurationService;
 		const token = config.getValue<string>('sessions.agentStudio.knot.token');
 		const apiUrl = config.getValue<string>('sessions.agentStudio.knot.apiUrl') || '';
 		const endpoint = apiUrl || 'https://knot.woa.com';
+		log.info(
+			`[Knot-AGUI][Diag] settings: tokenPresent=${!!token} tokenLen=${token ? String(token).length : 0} `
+			+ `apiUrl=${apiUrl || '<default>'} endpoint=${endpoint}`,
+		);
+
 		// 创建 Model Provider（支持多 Agent/模型）
 		this._provider = new KnotAGUIModelProvider({
-			token,
+			token: token || '',
 			endpoint,
 			configurationService: config,
-			logService: context.logService,
+			logService: log,
 		});
 
 		// 注册到 OS 中间层
-		this._disposables.push(os.registerModelProvider(this._provider));
+		const registration = os.registerModelProvider(this._provider);
+		this._disposables.push(registration);
+
+		// Sanity-check that the provider really showed up in the OS registry.
+		try {
+			const providers = (os as any).getModelProviders?.() ?? [];
+			log.info(
+				`[Knot-AGUI][Diag] After registerModelProvider: agentOS now has `
+				+ `${providers.length} provider(s) [ids=${providers.map((p: any) => p.id).join(',') || '<none>'}]`,
+			);
+		} catch (e) {
+			log.warn('[Knot-AGUI][Diag] Could not enumerate providers post-register:', e);
+		}
 
 		// 监听配置变化（用户在 Settings 中修改 token/endpoint 时热重载）
 		this._disposables.push(
 			config.onDidChangeConfiguration(e => {
 				if (e.affectsConfiguration('sessions.agentStudio.knot') || e.affectsConfiguration('knot')) {
+					log.info('[Knot-AGUI][Diag] Config change detected (knot.*) -- reloading provider');
 					this._provider?.reloadConfiguration();
 				}
 			}),
@@ -82,7 +103,7 @@ export class KnotAguiPlugin implements IAgentCapabilityPlugin {
 		// Register the openSettings command handler via agentOS
 		this._registerOpenSettingsCommand(context);
 
-		context.logService.info('[Knot-AGUI] Plugin activated, provider registered. Settings pane available via knot.openSettings.');
+		log.info('[Knot-AGUI] Plugin activated, provider registered. Settings pane available via knot.openSettings.');
 	}
 
 	/**
