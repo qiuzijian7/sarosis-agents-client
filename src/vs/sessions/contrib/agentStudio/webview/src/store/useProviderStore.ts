@@ -158,7 +158,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			useEmployeeStore.setState(state => ({
 				employees: state.employees.map(e =>
 					e.id === activeEmployeeId
-						? { ...e, provider: provider.name, model: modelId }
+						? { ...e, provider: providerId, model: modelId }
 						: e
 				),
 			}));

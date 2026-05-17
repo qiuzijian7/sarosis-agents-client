@@ -79,7 +79,7 @@ export function EmployeeChat(): React.ReactElement {
 			{/* Chat Header */}
 			<div className="chat-header">
 				{/* Provider icon */}
-				<div className="chat-header-provider" title={activeEmployee.provider || selection?.providerName ? `Provider: ${activeEmployee.provider || selection?.providerName}` : undefined}>
+				<div className="chat-header-provider" title={selection?.providerName || activeEmployee.provider ? `Provider: ${selection?.providerName || activeEmployee.provider}` : undefined}>
 					<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
 					</svg>

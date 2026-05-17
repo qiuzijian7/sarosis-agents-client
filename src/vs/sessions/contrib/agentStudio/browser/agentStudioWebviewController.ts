@@ -534,6 +534,11 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	private _handleProvidersSelect(payload: IProviderSelectPayload): void {
+		this.logService.info(
+			`[AgentStudio] _handleProvidersSelect: providerId=${payload.providerId}, modelId=${payload.modelId}, `
+			+ `agentId=${payload.agentId}, employeeId=${payload.employeeId}, panelType=${this.panelType}`
+		);
+
 		this.modelSelectorService.setSelection({
 			providerId: payload.providerId,
 			modelId: payload.modelId,
@@ -546,22 +551,43 @@ export class AgentStudioWebviewController extends Disposable {
 		// Persist provider/model/agent selection to the active employee's agent.yaml
 		// and update the employee record in employees.json so it survives window reload
 		if (payload.employeeId) {
-			// 1) Write to agent.yaml
-			this.agentStudioService.updateEmployeeModelConfig(payload.employeeId, {
-				providerId: payload.providerId,
-				modelId: payload.modelId,
-				agentId: payload.agentId,
-			}).catch(err => {
-				this.logService.error('[AgentStudio] Failed to persist model config to agent.yaml', err);
+			this._persistProviderSelection(payload).catch(err => {
+				this.logService.error('[AgentStudio] _persistProviderSelection failed', err);
 			});
+		} else {
+			this.logService.warn('[AgentStudio] _handleProvidersSelect: no employeeId — skipping persistence');
+		}
+	}
 
-			// 2) Update the employee record (provider + model fields in employees.json)
-			this.agentStudioService.updateEmployee(payload.employeeId, {
-				provider: payload.providerId,
-				model: payload.modelId,
-			}).catch(err => {
-				this.logService.error('[AgentStudio] Failed to update employee provider/model', err);
+	/**
+	 * Persist provider selection to both agent.yaml and employees.json.
+	 * Runs sequentially to avoid race conditions between file writes and
+	 * the employees.changed event that triggers a UI reload.
+	 */
+	private async _persistProviderSelection(payload: IProviderSelectPayload): Promise<void> {
+		const { employeeId, providerId, modelId, agentId } = payload;
+
+		// 1) Write to agent.yaml first (does NOT fire employees.changed)
+		try {
+			await this.agentStudioService.updateEmployeeModelConfig(employeeId!, {
+				providerId,
+				modelId,
+				agentId,
 			});
+			this.logService.info(`[AgentStudio] agent.yaml updated for employee ${employeeId}`);
+		} catch (err) {
+			this.logService.error('[AgentStudio] Failed to persist model config to agent.yaml', err);
+		}
+
+		// 2) Update employees.json (fires employees.changed → triggers UI reload)
+		try {
+			await this.agentStudioService.updateEmployee(employeeId!, {
+				provider: providerId,
+				model: modelId,
+			});
+			this.logService.info(`[AgentStudio] employees.json updated for employee ${employeeId}: provider=${providerId}, model=${modelId}`);
+		} catch (err) {
+			this.logService.error('[AgentStudio] Failed to update employee provider/model', err);
 		}
 	}
 

@@ -225,13 +225,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	async updateEmployee(id: string, data: Partial<Employee>): Promise<Employee> {
+		this.logService.info(`[AgentStudio] updateEmployee: id=${id}, data=${JSON.stringify(data)}`);
+
 		// First, locate the employee across all known storage locations
 		// so that we write to the correct directory even when data.workspaceId is absent.
 		const locateResult = await this._locateEmployee(id);
 		if (!locateResult) {
+			this.logService.error(`[AgentStudio] updateEmployee: Employee not found across all storage locations: ${id}`);
 			throw new Error(`Employee not found: ${id}`);
 		}
 		const { dirUri, employees, index } = locateResult;
+
+		this.logService.info(`[AgentStudio] updateEmployee: found at dirUri=${dirUri.toString()}, index=${index}, name=${employees[index].name}`);
 
 		employees[index] = {
 			...employees[index],
@@ -240,6 +245,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			updatedAt: new Date().toISOString(),
 		};
 		await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
+		this.logService.info(`[AgentStudio] updateEmployee: wrote employees.json, firing onDidChangeEmployees`);
 		this._onDidChangeEmployees.fire();
 		return employees[index];
 	}
@@ -251,10 +257,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private async _locateEmployee(id: string): Promise<{ dirUri: URI; employees: Employee[]; index: number } | undefined> {
 		// 1. Search across all workspaces
 		const workspaces = await this.getWorkspaces();
+		this.logService.debug(`[AgentStudio] _locateEmployee(${id}): searching ${workspaces.length} workspace(s)`);
 		for (const ws of workspaces) {
 			const dirUri = await this._getWorkspaceDataUri(ws.id);
 			const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
 			const index = employees.findIndex(e => e.id === id);
+			this.logService.debug(`[AgentStudio] _locateEmployee: workspace ${ws.id} (${dirUri.toString()}) has ${employees.length} employees, match=${index !== -1}`);
 			if (index !== -1) {
 				return { dirUri, employees, index };
 			}
@@ -265,17 +273,22 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			const localDirUri = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
 			const localEmployees = await this._readJsonFile<Employee>(localDirUri, DATA_FILE_EMPLOYEES);
 			const localIndex = localEmployees.findIndex(e => e.id === id);
+			this.logService.debug(`[AgentStudio] _locateEmployee: VS Code folder (${localDirUri.toString()}) has ${localEmployees.length} employees, match=${localIndex !== -1}`);
 			if (localIndex !== -1) {
 				return { dirUri: localDirUri, employees: localEmployees, index: localIndex };
 			}
+		} else {
+			this.logService.debug(`[AgentStudio] _locateEmployee: no VS Code workspace folder`);
 		}
 		// 3. Fallback: global directory
 		const globalDirUri = this._getGlobalDataUri();
 		const globalEmployees = await this._readJsonFile<Employee>(globalDirUri, DATA_FILE_EMPLOYEES);
 		const globalIndex = globalEmployees.findIndex(e => e.id === id);
+		this.logService.debug(`[AgentStudio] _locateEmployee: global (${globalDirUri.toString()}) has ${globalEmployees.length} employees, match=${globalIndex !== -1}`);
 		if (globalIndex !== -1) {
 			return { dirUri: globalDirUri, employees: globalEmployees, index: globalIndex };
 		}
+		this.logService.warn(`[AgentStudio] _locateEmployee: employee ${id} not found in any location`);
 		return undefined;
 	}
 
@@ -586,15 +599,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		employeeId: string,
 		config: { providerId: string; modelId: string; agentId?: string },
 	): Promise<void> {
+		this.logService.info(`[AgentStudio] updateEmployeeModelConfig: employeeId=${employeeId}, config=${JSON.stringify(config)}`);
+
 		const employee = await this.getEmployee(employeeId);
 		if (!employee || !employee.agentDir) {
-			this.logService.warn(`[AgentStudio] updateEmployeeModelConfig: employee not found or no agentDir (id=${employeeId})`);
+			this.logService.warn(`[AgentStudio] updateEmployeeModelConfig: employee not found or no agentDir (id=${employeeId}, found=${!!employee}, agentDir=${employee?.agentDir})`);
 			return;
 		}
 
 		const workspaceId = employee.workspaceId;
 		const dirUri = await this._resolveDataUri(workspaceId);
 		const configFileUri = URI.joinPath(dirUri, AGENTS_DIR, employee.agentDir, AGENT_CONFIG_FILE);
+		this.logService.info(`[AgentStudio] updateEmployeeModelConfig: configFileUri=${configFileUri.toString()}`);
 
 		try {
 			// Read existing config
@@ -625,7 +641,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				+ `${config.providerId}/${config.modelId}${config.agentId ? ` [agent: ${config.agentId}]` : ''}`,
 			);
 		} catch (err) {
-			this.logService.error(`[AgentStudio] Failed to update agent.yaml for employee ${employeeId}`, err);
+			this.logService.error(`[AgentStudio] Failed to update agent.yaml for employee ${employeeId} at ${configFileUri.toString()}`, err);
 		}
 	}
 
