@@ -117,11 +117,11 @@ export class MainEditorPart extends MainEditorPartBase {
 		// Each branch child is VERTICAL (orthogonal), giving each zone
 		// its own split-view-container where UP/DOWN splits nest naturally.
 		//
-		// Initial widths: 50% each (using a nominal 1000px — the grid
-		// will proportionally rescale on the first real layout call).
+		// Initial widths: 30% file zone, 70% agent zone (using a nominal
+		// 1000px — the grid will proportionally rescale on the first real layout call).
 		const nominalWidth = 1000;
 		const nominalHeight = 800;
-		const fileZoneWidth = Math.round(nominalWidth * 0.5);
+		const fileZoneWidth = Math.round(nominalWidth * 0.3);
 		const agentZoneWidth = nominalWidth - fileZoneWidth;
 
 		const fileLeaf: ISerializedLeafNode = {

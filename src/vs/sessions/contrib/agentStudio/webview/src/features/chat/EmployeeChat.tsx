@@ -23,7 +23,7 @@ import { ToolCallCard } from './ToolCallCard';
 export function EmployeeChat(): React.ReactElement {
 	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee } = useChatStore();
 	const { employees, selectedEmployeeId } = useEmployeeStore();
-	const { selection } = useProviderStore();
+	const { selection, loadSelectionForEmployee } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 
 	// Sync selected employee with chat
@@ -32,6 +32,13 @@ export function EmployeeChat(): React.ReactElement {
 			setActiveEmployee(selectedEmployeeId);
 		}
 	}, [selectedEmployeeId, activeEmployeeId, setActiveEmployee]);
+
+	// When activeEmployeeId changes, load the provider/model selection from agent.yaml
+	useEffect(() => {
+		if (activeEmployeeId) {
+			loadSelectionForEmployee(activeEmployeeId);
+		}
+	}, [activeEmployeeId, loadSelectionForEmployee]);
 
 	// Auto-scroll to bottom on new messages or streaming updates
 	useEffect(() => {

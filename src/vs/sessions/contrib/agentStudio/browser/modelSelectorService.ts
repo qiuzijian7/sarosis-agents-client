@@ -421,6 +421,11 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 					modelId,
 					agentId: this._configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || undefined,
 				};
+				// ── Sync to AgentOSService so executeAgentTurn picks up the
+				//    restored selection immediately, rather than triggering
+				//    _autoSelectDefault which may asynchronously overwrite a
+				//    later employee-level selection.
+				this._agentOSService.setActiveModelSelection(this._currentSelection);
 				this._logService.info(`[ModelSelector] Loaded selection from config: ${this._currentSelection.providerId}/${this._currentSelection.modelId}`);
 				return;
 			}
@@ -431,6 +436,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			if (value) {
 				this._currentSelection = JSON.parse(value);
 				if (this._currentSelection) {
+					this._agentOSService.setActiveModelSelection(this._currentSelection);
 					this._logService.info(`[ModelSelector] Loaded selection from storage: ${this._currentSelection.providerId}/${this._currentSelection.modelId}`);
 				}
 			}

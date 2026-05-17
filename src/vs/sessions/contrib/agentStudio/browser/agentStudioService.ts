@@ -662,10 +662,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			const agentConfig = JSON.parse(raw.value.toString());
 			const model = agentConfig.model;
 
-			if (model && model.providerId && model.modelId) {
+			// Treat legacy placeholder values ('default', 'gpt-4o' written by
+			// older versions) as "no real config" so that callers fall back to
+			// the global selection / auto-pick logic instead of trying to
+			// resolve a non-existent provider id.
+			const providerId = model?.providerId;
+			const modelId = model?.modelId;
+			const isPlaceholder = providerId === 'default' || !providerId || !modelId;
+
+			if (model && !isPlaceholder) {
 				return {
-					providerId: model.providerId,
-					modelId: model.modelId,
+					providerId: providerId,
+					modelId: modelId,
 					agentId: model.agentId,
 				};
 			}
@@ -901,17 +909,28 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			await this._ensureDir(agentDirUri);
 
 			// 1) Write agent.yaml (JSON config)
+			// Only write providerId/modelId when they are real values.
+			// Avoid the placeholder 'default'/'gpt-4o' — those break the
+			// webview's "restore selection from agent.yaml" path because
+			// 'default' is not a real provider id and the lookup silently
+			// falls back to the global selection (which can be a totally
+			// unrelated provider/model the user picked elsewhere).
+			const modelSection: Record<string, unknown> = {
+				temperature: 0.7,
+				maxTokens: 4096,
+			};
+			if (employee.provider) {
+				modelSection.providerId = employee.provider;
+			}
+			if (employee.model) {
+				modelSection.modelId = employee.model;
+			}
 			const agentConfig = {
 				id: employee.id,
 				name: employee.name,
 				role: employee.role,
 				slug: employee.agentDir,
-				model: {
-					providerId: employee.provider || 'default',
-					modelId: employee.model || 'gpt-4o',
-					temperature: 0.7,
-					maxTokens: 4096,
-				},
+				model: modelSection,
 				customPrompt: employee.customPrompt || '',
 				skills: (employee.skills || []).map(s => s.name),
 				presetId: employee.presetId,

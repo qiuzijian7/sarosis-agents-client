@@ -135,10 +135,26 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const selected = authenticated.sort((a, b) => b.priority - a.priority)[0];
 			selected.listModels?.().then(models => {
 				if (models && models.length > 0) {
+					// ── Guard: do NOT overwrite an explicit selection ──
+					// The async .then() can resolve after the webview has
+					// already synced an employee-level selection (e.g. Knot)
+					// via providers.select → setActiveModelSelection().
+					// Blindly overwriting here would snap the selection back
+					// to a different provider (e.g. OpenRouter).
+					if (this._activeSelection) {
+						this._logService.info(
+							`[AgentOS] _autoSelectDefault: skipping — explicit selection already set `
+							+ `(${this._activeSelection.providerId}/${this._activeSelection.modelId})`,
+						);
+						return;
+					}
 					this._activeSelection = {
 						providerId: selected.id,
 						modelId: models[0].id,
 					};
+					this._logService.info(
+						`[AgentOS] _autoSelectDefault: auto-selected ${selected.id}/${models[0].id}`,
+					);
 				}
 			});
 		}

@@ -204,7 +204,29 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		options: IModelOptions,
 		context?: IChatContext,
 	): AsyncIterable<IModelDelta> {
-		const meta = this._lmService.lookupLanguageModel(modelId);
+		let meta = this._lmService.lookupLanguageModel(modelId);
+
+		// ── Reverse-resolve bare model IDs ──
+		// When a selection is persisted (agent.yaml / settings.json), the model ID
+		// is normalised to a bare name (e.g. "deepseek-v3.1") by stripping the
+		// qualified prefix ("knot/<agentId>::deepseek-v3.1").  At runtime, however,
+		// the language-model cache keys use the full qualified identifier.
+		// If the direct lookup fails, scan this vendor's models for a suffix match.
+		if (!meta) {
+			for (const entry of this._collectVendorModels()) {
+				const sep = entry.id.indexOf('::');
+				const tail = sep > -1 ? entry.id.slice(sep + 2) : entry.id;
+				if (tail === modelId) {
+					this._logService.info(
+						`[LMBridge] Resolved bare modelId "${modelId}" → qualified "${entry.id}"`,
+					);
+					modelId = entry.id;
+					meta = entry.metadata;
+					break;
+				}
+			}
+		}
+
 		if (!meta) {
 			yield { type: 'error', error: `Model ${modelId} not found in vendor ${this.vendor}` };
 			return;
