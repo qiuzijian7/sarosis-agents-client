@@ -953,12 +953,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		});
 
 		// ── Workspace Toolbar ──────────────────────────────────────────
-		// The editor part's layout() reserves 32px at the top (by adding
-		// TOOLBAR_HEIGHT to `top` and subtracting from `height`). The
-		// toolbar is placed in that reserved space as an absolute overlay
-		// on mainContainer. It tracks the agent zone's horizontal position
-		// via the editor part's getBoundingClientRect(). Zero layout
-		// interference — the editor part handles its own offset.
+		// The toolbar is placed as an absolute overlay on mainContainer,
+		// positioned above the editor part (overlapping the titlebar area).
+		// It tracks the agent zone's horizontal position via the editor
+		// part's getBoundingClientRect(). The editor part no longer reserves
+		// space for the toolbar — it fills its full grid-allocated area.
 		const TOOLBAR_HEIGHT = SessionsMainEditorPart.TOOLBAR_HEIGHT;
 		const editorPartContainer = this.getPart(Parts.EDITOR_PART).getContainer();
 

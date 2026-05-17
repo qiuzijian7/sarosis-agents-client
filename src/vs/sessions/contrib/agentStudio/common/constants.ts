@@ -112,12 +112,16 @@ export const DATA_FILE_EMPLOYEES = 'employees.json';
 export const DATA_FILE_WORKSPACES = 'workspaces.json';
 export const DATA_FILE_DELEGATIONS = 'delegations.json';
 export const DATA_FILE_SESSIONS = 'sessions.json';
+export const DATA_FILE_CHAT_HISTORY = 'chat-history.json';
 
 // Workspace-local data directory name (stored inside the workspace folder)
 export const WORKSPACE_DATA_DIR = '.sarosisworkspace';
 
 // Agent instance directory name (stored inside .sarosisworkspace/)
 export const AGENTS_DIR = 'agents';
+
+// Workspace Sessions (Forks) directory name (stored inside .sarosisworkspace/)
+export const WORKSPACE_SESSIONS_DIR = 'workspace_sessions';
 
 // Agent instance bootstrap file names (inspired by OpenClaw workspace structure)
 export const AGENT_CONFIG_FILE = 'agent.yaml';

@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
+import { useWorkspaceStore } from './useWorkspaceStore';
 
 export interface Employee {
 	id: string;
@@ -108,12 +109,18 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 	setSearchQuery: (query) => set({ searchQuery: query }),
 
 	createEmployee: async (data) => {
+		if (useWorkspaceStore.getState().isReadOnly) {
+			throw new Error('Fork 模式下不可创建 Agent');
+		}
 		const employee = await sendRequest<Partial<Employee>, Employee>('employees.create', data);
 		set(state => ({ employees: [...state.employees, employee] }));
 		return employee;
 	},
 
 	updateEmployee: async (id, data) => {
+		if (useWorkspaceStore.getState().isReadOnly) {
+			throw new Error('Fork 模式下不可修改 Agent 配置');
+		}
 		await sendRequest('employees.update', { id, data });
 		set(state => ({
 			employees: state.employees.map(e => e.id === id ? { ...e, ...data } : e),
@@ -121,6 +128,9 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 	},
 
 	deleteEmployee: async (id) => {
+		if (useWorkspaceStore.getState().isReadOnly) {
+			throw new Error('Fork 模式下不可删除 Agent');
+		}
 		await sendRequest('employees.delete', { id });
 		set(state => ({
 			employees: state.employees.filter(e => e.id !== id),

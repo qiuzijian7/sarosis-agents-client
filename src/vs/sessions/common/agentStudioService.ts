@@ -78,6 +78,8 @@ export interface IChatSendOptions {
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
 	readonly workspaceId?: string;
+	/** Fork-scoped Agent session ID (undefined = Root default session) */
+	readonly agentSessionId?: string;
 }
 
 export interface IAgentChatService {
@@ -93,6 +95,9 @@ export interface IAgentChatService {
 	getHistory(employeeId: string, sessionId?: string): Promise<ChatMessage[]>;
 	clearHistory(employeeId: string, sessionId?: string): Promise<void>;
 	cancelStream(employeeId: string): void;
+
+	/** Append a message to the chat history for an employee and persist. */
+	appendMessage(employeeId: string, message: ChatMessage): Promise<void>;
 }
 
 // --- Agent Delegation Service ---

@@ -3005,3 +3005,245 @@ html, body, #root {
   width: 14px;
   height: 14px;
 }
+
+/* ═══ Session Switcher ═══════════════════════════════════════════════════════ */
+
+.session-switcher {
+  position: relative;
+}
+
+.session-switcher-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  background: var(--as-bg-secondary, var(--vscode-sideBar-background));
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: background-color 100ms, border-color 100ms;
+  white-space: nowrap;
+}
+
+.session-switcher-trigger.fork-mode {
+  border-color: var(--vscode-inputValidation-warningBorder, #f59e0b);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.session-switcher-trigger:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.session-switcher-icon {
+  font-size: 12px;
+}
+
+.session-switcher-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-switcher-arrow {
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.session-switcher-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--as-bg-primary, var(--vscode-editor-background));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.3)));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px var(--as-shadow-heavy, rgba(0, 0, 0, 0.3));
+  z-index: 100;
+  padding: 4px;
+}
+
+.session-switcher-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  transition: background-color 100ms;
+}
+
+.session-switcher-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.session-switcher-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.session-item-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.session-item-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.session-item-date {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.session-item-check {
+  font-size: 11px;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  flex-shrink: 0;
+}
+
+.session-item-delete {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 100ms;
+}
+
+.session-switcher-item:hover .session-item-delete {
+  opacity: 0.6;
+}
+
+.session-item-delete:hover {
+  opacity: 1 !important;
+  color: #ef4444;
+}
+
+.session-switcher-divider {
+  height: 1px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  margin: 4px 0;
+}
+
+.session-create-btn {
+  color: var(--vscode-textLink-foreground, #3b82f6) !important;
+}
+
+.session-create-dialog {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-create-input {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.session-create-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.session-create-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.session-create-confirm,
+.session-create-cancel {
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: none;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.session-create-confirm {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.session-create-cancel {
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ═══ Fork Read-Only Banner ══════════════════════════════════════════════════ */
+
+.fork-readonly-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.05));
+  border-bottom: 1px solid rgba(245, 158, 11, 0.3);
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.fork-readonly-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fork-readonly-banner-icon {
+  font-size: 13px;
+}
+
+.fork-readonly-banner-text {
+  font-size: 12px;
+  color: var(--as-fg-primary, var(--vscode-foreground));
+}
+
+.fork-readonly-banner-status {
+  opacity: 0.7;
+}
+
+.fork-readonly-banner-btn {
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-textLink-foreground, #3b82f6);
+  background: transparent;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 100ms;
+}
+
+.fork-readonly-banner-btn:hover {
+  background: rgba(59, 130, 246, 0.1);
+}

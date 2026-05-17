@@ -58,7 +58,15 @@ export type RequestType =
 	| 'providers.select'
 	| 'providers.getSelection'
 	| 'providers.getSelectionForEmployee'
-	| 'providers.openSettings';
+	| 'providers.openSettings'
+	| 'workspaceSession.list'
+	| 'workspaceSession.get'
+	| 'workspaceSession.create'
+	| 'workspaceSession.delete'
+	| 'workspaceSession.archive'
+	| 'workspaceSession.switch'
+	| 'workspaceSession.switchRoot'
+	| 'workspaceSession.updateStatus';
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -73,7 +81,11 @@ export type EventType =
 	| 'taskBoard.changed'
 	| 'session.activated'
 	| 'theme.changed'
-	| 'providers.changed';
+	| 'providers.changed'
+	| 'workspace.sessionCreated'
+	| 'workspace.sessionChanged'
+	| 'workspace.sessionUpdated'
+	| 'workspace.modeChanged';
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -139,6 +151,8 @@ export interface IChatSendPayload {
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
 	readonly workspaceId?: string;
+	/** Fork-scoped Agent session ID */
+	readonly agentSessionId?: string;
 }
 
 export interface IEmployeeCreatePayload {
@@ -230,4 +244,24 @@ export interface IProviderSelectPayload {
 	readonly agentId?: string;
 	/** The active employee whose agent.yaml should be updated with the selection */
 	readonly employeeId?: string;
+}
+
+// ─── Workspace Session (Fork) Payloads ──────────────────────────────────────
+
+export interface IWorkspaceSessionCreatePayload {
+	readonly workspaceId: string;
+	readonly name: string;
+	readonly source: 'scheduled_task' | 'manual';
+	readonly scheduledTaskId?: string;
+	readonly idempotencyKey?: string;
+}
+
+export interface IWorkspaceSessionSwitchPayload {
+	readonly sessionId: string;
+}
+
+export interface IWorkspaceSessionStatusPayload {
+	readonly sessionId: string;
+	readonly status: string;
+	readonly error?: string;
 }

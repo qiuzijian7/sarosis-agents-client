@@ -34,8 +34,11 @@ import { EmployeeNode } from './EmployeeNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { EmployeeListView } from './EmployeeListView';
 import { CreateAgentModal } from '../employees/CreateAgentModal';
+import { SessionSwitcher } from './SessionSwitcher';
+import { ForkReadOnlyBanner } from './ForkReadOnlyBanner';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
+import { useWorkspaceSessionStore } from '../../store/useWorkspaceSessionStore';
 import { sendRequest } from '../../bridge/messageClient';
 
 type ViewMode = 'canvas' | 'list';
@@ -49,8 +52,9 @@ const edgeTypes: EdgeTypes = {
 };
 
 export function WorkspaceCanvas(): React.ReactElement {
-	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, saveLayout } = useWorkspaceStore();
+	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, saveLayout, isReadOnly } = useWorkspaceStore();
 	const { employees, selectEmployee, deleteEmployee, loadEmployees } = useEmployeeStore();
+	const { mode } = useWorkspaceSessionStore();
 	const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
 
 	// Create agent modal state
@@ -141,7 +145,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	// Connection handlers
 	const onConnect = useCallback(async (params: Connection) => {
-		if (!activeWorkspaceId || !params.source || !params.target) { return; }
+		if (!activeWorkspaceId || !params.source || !params.target || isReadOnly) { return; }
 		setEdges((eds) => addEdge({
 			...params,
 			type: 'connection',
@@ -162,6 +166,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 	}, [activeWorkspaceId, setEdges]);
 
 	const onNodeDragStop = useCallback((_event: React.MouseEvent, node: Node) => {
+		if (isReadOnly) { return; } // Don't persist layout changes in fork mode
 		updateNodes(
 			nodes.map(n => ({
 				id: n.id,
@@ -171,7 +176,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 			}))
 		);
 		saveLayout();
-	}, [nodes, updateNodes, saveLayout]);
+	}, [nodes, updateNodes, saveLayout, isReadOnly]);
 
 	const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
 		console.warn(`[WorkspaceCanvas] onNodeClick: node.id=${node.id}`);
@@ -281,22 +286,34 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	return (
 		<div className="canvas-container">
+			{/* Fork read-only banner */}
+			<ForkReadOnlyBanner />
+
 			{/* Canvas mode */}
 			{displayMode === 'canvas' && (
 				<div className="canvas-flow-area" ref={reactFlowWrapper}>
 					{/* Floating action bar (top-right corner of canvas) */}
 					<div className="canvas-view-toggle">
-						<button
-							className="canvas-add-agent-btn"
-							onClick={() => setShowCreateModal(true)}
-							title="添加 Agent"
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-							</svg>
-							<span className="canvas-add-agent-label">添加 Agent</span>
-						</button>
+						{/* Session Switcher */}
+						<SessionSwitcher />
 						<div className="canvas-toggle-divider" />
+
+						{/* Conditionally show "Add Agent" button only in Root mode */}
+						{!isReadOnly && (
+							<>
+								<button
+									className="canvas-add-agent-btn"
+									onClick={() => setShowCreateModal(true)}
+									title="添加 Agent"
+								>
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+									</svg>
+									<span className="canvas-add-agent-label">添加 Agent</span>
+								</button>
+								<div className="canvas-toggle-divider" />
+							</>
+						)}
 						<button
 							className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
 							onClick={() => handleViewModeChange('canvas')}
@@ -331,7 +348,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 						nodeTypes={nodeTypes}
 						edgeTypes={edgeTypes}
 						nodesDraggable={true}
-						nodesConnectable={true}
+						nodesConnectable={!isReadOnly}
 						elementsSelectable={true}
 						fitView
 						fitViewOptions={{ padding: 0.2 }}
@@ -388,17 +405,23 @@ export function WorkspaceCanvas(): React.ReactElement {
 				>
 					{/* Floating action bar (top-right corner of list) */}
 					<div className="canvas-view-toggle">
-						<button
-							className="canvas-add-agent-btn"
-							onClick={() => setShowCreateModal(true)}
-							title="添加 Agent"
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-							</svg>
-							<span className="canvas-add-agent-label">添加 Agent</span>
-						</button>
+						<SessionSwitcher />
 						<div className="canvas-toggle-divider" />
+						{!isReadOnly && (
+							<>
+								<button
+									className="canvas-add-agent-btn"
+									onClick={() => setShowCreateModal(true)}
+									title="添加 Agent"
+								>
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+									</svg>
+									<span className="canvas-add-agent-label">添加 Agent</span>
+								</button>
+								<div className="canvas-toggle-divider" />
+							</>
+						)}
 						<button
 							className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
 							onClick={() => handleViewModeChange('canvas')}

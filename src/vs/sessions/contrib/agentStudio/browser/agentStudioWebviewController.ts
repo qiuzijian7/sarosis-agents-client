@@ -18,7 +18,9 @@ import type { AgentStudioPanelType } from '../common/constants.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IWorkbenchThemeService } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
-import type { IProviderInfo, IProviderSelectPayload, IEmployeeExportPayload, IEmployeeImportPayload } from './messageProtocol.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import type { IProviderInfo, IProviderSelectPayload, IEmployeeExportPayload, IEmployeeImportPayload, IWorkspaceSessionCreatePayload } from './messageProtocol.js';
+import { WorkspaceSessionService, type IWorkspaceSessionService } from './workspaceSessionService.js';
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -38,6 +40,7 @@ interface IIncomingMessage {
 export class AgentStudioWebviewController extends Disposable {
 
 	private _webview: IWebviewElement | undefined;
+	private readonly _sessionService: IWorkspaceSessionService;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -52,8 +55,10 @@ export class AgentStudioWebviewController extends Disposable {
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
+		this._sessionService = new WorkspaceSessionService(logService, fileService, agentStudioService);
 		this._createWebview();
 		this._registerServiceListeners();
 	}
@@ -312,6 +317,29 @@ export class AgentStudioWebviewController extends Disposable {
 			case 'providers.openSettings':
 				return this._handleProvidersOpenSettings(p as { providerId?: string });
 
+		// ─── Workspace Sessions (Fork) ─────────────────────────
+			case 'workspaceSession.list':
+				return this._sessionService.getSessions(p.workspaceId as string);
+			case 'workspaceSession.get':
+				return this._sessionService.getSession(p.workspaceId as string, p.sessionId as string);
+			case 'workspaceSession.create':
+				return this._sessionService.createSession(p as unknown as IWorkspaceSessionCreatePayload);
+			case 'workspaceSession.delete':
+				return this._sessionService.deleteSession(p.workspaceId as string, p.sessionId as string);
+			case 'workspaceSession.archive':
+				return this._sessionService.archiveSession(p.workspaceId as string, p.sessionId as string);
+			case 'workspaceSession.switch':
+				return this._sessionService.setActiveSession(p.workspaceId as string, p.sessionId as string);
+			case 'workspaceSession.switchRoot':
+				return this._sessionService.setActiveSession(p.workspaceId as string, null);
+			case 'workspaceSession.updateStatus':
+				return this._sessionService.updateSessionStatus(
+					p.workspaceId as string,
+					p.sessionId as string,
+					p.status as any,
+					p.error as string | undefined,
+				);
+
 			default:
 				throw new Error(`Unknown message type: ${type}`);
 		}
@@ -320,10 +348,21 @@ export class AgentStudioWebviewController extends Disposable {
 	private _handleChatSend(payload: Record<string, unknown>): { status: string; employeeId: string } {
 		const employeeId = payload.employeeId as string;
 		const message = payload.message as string;
+		const agentSessionId = payload.agentSessionId as string | undefined;
 
-		// Return an acknowledgement immediately so the webview sendRequest()
-		// resolves right away (no 30-second timeout).  The actual content is
-		// delivered via chat.stream.delta / chat.stream.complete events.
+		// Persist the user message to chat history so it survives refreshes.
+		const userMessage: import('../../../common/agentStudioTypes').ChatMessage = {
+			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+			role: 'user',
+			content: message,
+			employeeId,
+			agentSessionId,
+			timestamp: new Date().toISOString(),
+		};
+		this.agentChatService.appendMessage(employeeId, userMessage).catch(err =>
+			this.logService.error('[AgentStudio] Failed to persist user message:', err),
+		);
+
 		this._runChatStream(employeeId, message, payload);
 
 		return { status: 'streaming', employeeId };
@@ -334,6 +373,8 @@ export class AgentStudioWebviewController extends Disposable {
 	 * the webview's perspective — all results flow through events.
 	 */
 	private async _runChatStream(employeeId: string, message: string, payload: Record<string, unknown>): Promise<void> {
+		const agentSessionId = payload.agentSessionId as string | undefined;
+		const sessionIdForEvent = agentSessionId || '';
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
@@ -343,37 +384,35 @@ export class AgentStudioWebviewController extends Disposable {
 					systemPrompt: payload.systemPrompt as string | undefined,
 					temperature: payload.temperature as number | undefined,
 					workspaceId: payload.workspaceId as string | undefined,
+					agentSessionId,
 				},
 				(delta: IChatStreamDelta) => {
 					this._sendEvent('chat.stream.delta', {
 						employeeId,
-						sessionId: '',
+						sessionId: sessionIdForEvent,
 						chunks: [delta],
 					});
 				},
 			);
 
-			// Send completion event with the full assembled message
 			this._sendEvent('chat.stream.complete', {
 				employeeId,
-				sessionId: '',
+				sessionId: sessionIdForEvent,
 				message: chatMessage,
 			});
 		} catch (error) {
 			const errMsg = error instanceof Error ? error.message : String(error);
 			this.logService.error(`[AgentStudio] _runChatStream error for ${employeeId}:`, error);
 
-			// Send stream error event so the webview can display the error
 			this._sendEvent('chat.stream.error', {
 				employeeId,
-				sessionId: '',
+				sessionId: sessionIdForEvent,
 				error: errMsg,
 			});
 
-			// Also send a completion event so streaming state is properly reset
 			this._sendEvent('chat.stream.complete', {
 				employeeId,
-				sessionId: '',
+				sessionId: sessionIdForEvent,
 				message: { content: '', error: errMsg },
 			});
 		}
@@ -487,6 +526,11 @@ export class AgentStudioWebviewController extends Disposable {
 			const theme = newTheme.settingsId || newTheme.label;
 			this.logService.info(`[AgentStudio] VS Code theme changed to "${theme}", notifying webview`);
 			this._sendEvent('theme.changed', { theme });
+		}));
+
+		// Listen for Workspace Session changes (Fork CRUD)
+		this._register(this._sessionService.onDidChangeWorkspaceSessions((workspaceId: string) => {
+			this._sendEvent('workspace.sessionUpdated', { workspaceId });
 		}));
 	}
 

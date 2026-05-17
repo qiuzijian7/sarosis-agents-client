@@ -23,10 +23,14 @@ interface ChatState {
 	inputValue: string;
 	isLoading: boolean;
 	activeEmployeeId: string | null;
+	/** Fork-scoped agent session ID (null = Root default) */
+	activeAgentSessionId: string | null;
 
 	// Actions
 	setActiveEmployee: (employeeId: string) => void;
 	loadHistory: (employeeId: string) => Promise<void>;
+	/** Load history for a specific agentSessionId (used by session switching) */
+	loadHistoryForSession: (employeeId: string, agentSessionId?: string) => Promise<void>;
 	sendMessage: (message: string) => Promise<void>;
 	cancelStream: () => void;
 	setInputValue: (value: string) => void;
@@ -164,6 +168,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		inputValue: '',
 		isLoading: false,
 		activeEmployeeId: null,
+		activeAgentSessionId: null,
 
 		setActiveEmployee: (employeeId: string) => {
 			const current = get().activeEmployeeId;
@@ -172,36 +177,47 @@ export const useChatStore = create<ChatState>((set, get) => {
 				console.log('[ChatStore] setActiveEmployee: same employee, skipping');
 				return; // Don't reset when already active
 			}
+
+			// Resolve the fork's agentSessionId for this employee
+			let agentSessionId: string | null = null;
+			try {
+				const { useWorkspaceSessionStore } = require('./useWorkspaceSessionStore');
+				agentSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(employeeId);
+			} catch { /* store not available yet */ }
+
 			resetStream();
-			set({ activeEmployeeId: employeeId, messages: [], inputValue: '' });
-			get().loadHistory(employeeId);
+			set({ activeEmployeeId: employeeId, activeAgentSessionId: agentSessionId, messages: [], inputValue: '' });
+			get().loadHistoryForSession(employeeId, agentSessionId ?? undefined);
 		},
 
 		loadHistory: async (employeeId: string) => {
-			console.log(`[ChatStore] loadHistory: employeeId=${employeeId}`);
-			set({ isLoading: true });
+			return get().loadHistoryForSession(employeeId, get().activeAgentSessionId ?? undefined);
+		},
+
+		loadHistoryForSession: async (employeeId: string, agentSessionId?: string) => {
+			console.log(`[ChatStore] loadHistoryForSession: employeeId=${employeeId}, agentSessionId=${agentSessionId}`);
+			set({ isLoading: true, activeAgentSessionId: agentSessionId ?? null });
 			try {
-				const messages = await sendRequest<{ employeeId: string }, ChatMessage[]>(
+				const messages = await sendRequest<{ employeeId: string; sessionId?: string }, ChatMessage[]>(
 					'chat.history',
-					{ employeeId }
+					{ employeeId, sessionId: agentSessionId }
 				);
 				// Guard: don't overwrite messages if the active employee has changed
 				const currentActive = get().activeEmployeeId;
 				if (currentActive !== employeeId) {
-					console.warn(`[ChatStore] loadHistory: active employee changed (${currentActive} vs ${employeeId}), discarding stale history`);
+					console.warn(`[ChatStore] loadHistoryForSession: active employee changed (${currentActive} vs ${employeeId}), discarding stale history`);
 					set({ isLoading: false });
 					return;
 				}
 				// Guard: don't overwrite messages if streaming is in progress
-				// (the response arrived after the user already started a conversation)
 				const currentMessages = get().messages;
 				const { isStreaming } = getStreamState();
 				if (isStreaming || currentMessages.length > 0) {
-					console.warn(`[ChatStore] loadHistory: skipping — streaming=${isStreaming}, existingMessages=${currentMessages.length}`);
+					console.warn(`[ChatStore] loadHistoryForSession: skipping — streaming=${isStreaming}, existingMessages=${currentMessages.length}`);
 					set({ isLoading: false });
 					return;
 				}
-				console.log(`[ChatStore] loadHistory: received ${messages?.length ?? 0} messages for ${employeeId}`);
+				console.log(`[ChatStore] loadHistoryForSession: received ${messages?.length ?? 0} messages for ${employeeId}`);
 				set({ messages: messages || [], isLoading: false });
 			} catch (err) {
 				console.error('[ChatStore] Failed to load history:', err);
@@ -210,7 +226,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		sendMessage: async (message: string) => {
-			const { activeEmployeeId } = get();
+			const { activeEmployeeId, activeAgentSessionId } = get();
 			if (!activeEmployeeId || !message.trim()) { return; }
 
 			// Add user message optimistically
@@ -228,13 +244,11 @@ export const useChatStore = create<ChatState>((set, get) => {
 				};
 			});
 
-			// Send to host — returns immediately with { status: 'streaming' }.
-			// The actual content arrives via chat.stream.delta / chat.stream.complete events
-			// which are handled by streamHandler and the subscribeStream listener below.
 			try {
 				await sendRequest('chat.send', {
 					employeeId: activeEmployeeId,
 					message,
+					agentSessionId: activeAgentSessionId ?? undefined,
 				});
 			} catch (err) {
 				console.error('[ChatStore] Failed to send message:', err);

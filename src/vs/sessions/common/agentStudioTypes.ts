@@ -113,6 +113,8 @@ export interface Workspace {
 	layout?: WorkspaceLayout;
 	createdAt: string;
 	updatedAt: string;
+	/** Root/Fork management info */
+	rootInfo?: WorkspaceRootInfo;
 }
 
 export interface WorkspaceLayout {
@@ -166,7 +168,10 @@ export interface ChatMessage {
 	role: 'user' | 'assistant' | 'tool' | 'system';
 	content: string;
 	employeeId: string;
+	/** Workspace Session (Fork) ID */
 	sessionId?: string;
+	/** Agent-level session ID within a Fork */
+	agentSessionId?: string;
 	toolCalls?: ToolCall[];
 	thinking?: string;
 	timestamp: string;
@@ -236,4 +241,110 @@ export interface TaskBoardRecord {
 	createdAt: string;
 	updatedAt: string;
 	completedAt?: string;
+}
+
+// ─── Workspace Session (Fork) ───────────────────────────────────────────────
+
+/**
+ * Workspace mode
+ * - root: Original workspace, canvas is fully editable
+ * - fork: Branch created by scheduled task or manually, canvas is read-only
+ */
+export const enum WorkspaceMode {
+	Root = 'root',
+	Fork = 'fork',
+}
+
+/**
+ * Source of a Fork
+ */
+export const enum WorkspaceSessionSource {
+	/** Created automatically by a scheduled task */
+	ScheduledTask = 'scheduled_task',
+	/** Created manually by the user */
+	Manual = 'manual',
+}
+
+/**
+ * Runtime status of a Fork
+ */
+export const enum WorkspaceSessionStatus {
+	/** Created, waiting for execution */
+	Pending = 'pending',
+	/** Running */
+	Running = 'running',
+	/** Completed */
+	Completed = 'completed',
+	/** Error during execution */
+	Error = 'error',
+	/** Archived */
+	Archived = 'archived',
+}
+
+/**
+ * An Agent's session entry within a Fork.
+ * Lazily created — only materialised when the Agent is actually invoked in this Fork.
+ */
+export interface AgentSessionEntry {
+	/** Agent instance ID (matches Employee.id) */
+	readonly agentId: string;
+	/** This Agent's session ID within this Fork */
+	readonly sessionId: string;
+	/** Session creation time */
+	readonly createdAt: string;
+	/** Session last active time */
+	updatedAt: string;
+	/** Message count in this session */
+	messageCount: number;
+	/** Session status */
+	status: 'active' | 'idle' | 'completed' | 'error';
+}
+
+/**
+ * WorkspaceSession — a Fork instance of a Workspace.
+ * Each scheduled task creates a Fork containing independent sessions for participating Agents.
+ */
+export interface WorkspaceSession {
+	/** Unique ID, format: workspace_session_{shortId} */
+	readonly id: string;
+	/** Owning Workspace ID */
+	readonly workspaceId: string;
+	/** Display name (e.g. "Scheduled Task #3 - 2026-05-17") */
+	name: string;
+	/** Fork source */
+	source: WorkspaceSessionSource;
+	/** Associated scheduled task ID (if source = ScheduledTask) */
+	scheduledTaskId?: string;
+	/** Idempotency key to prevent duplicate forks on retry */
+	idempotencyKey?: string;
+	/** Fork runtime status */
+	status: WorkspaceSessionStatus;
+	/**
+	 * Agent session entries in this Fork.
+	 * Lazily populated — starts empty; entries added when an Agent is first invoked.
+	 */
+	agentSessions: AgentSessionEntry[];
+	/**
+	 * Snapshot of Agent IDs at Fork-creation time.
+	 * Even if Root later adds/removes Agents, the Fork retains this snapshot.
+	 */
+	readonly snapshotAgentIds: string[];
+	/** Creation time */
+	readonly createdAt: string;
+	/** Last update time */
+	updatedAt: string;
+	/** Completion time */
+	completedAt?: string;
+	/** Error message */
+	error?: string;
+}
+
+/**
+ * Root/Fork management info, attached to each Workspace.
+ */
+export interface WorkspaceRootInfo {
+	/** Currently active Fork session ID, null = Root mode */
+	activeSessionId: string | null;
+	/** Current mode */
+	mode: WorkspaceMode;
 }

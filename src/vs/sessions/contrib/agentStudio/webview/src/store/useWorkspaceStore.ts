@@ -33,6 +33,8 @@ interface WorkspaceState {
 	edges: WorkspaceEdge[];
 	viewport: { x: number; y: number; zoom: number };
 	isLoading: boolean;
+	/** True when in Fork (read-only) mode — canvas editing is disabled */
+	isReadOnly: boolean;
 
 	// Actions
 	loadWorkspaces: () => Promise<void>;
@@ -42,6 +44,7 @@ interface WorkspaceState {
 	updateEdges: (edges: WorkspaceEdge[]) => void;
 	updateViewport: (viewport: { x: number; y: number; zoom: number }) => void;
 	saveLayout: () => Promise<void>;
+	setReadOnly: (readOnly: boolean) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -51,6 +54,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 	edges: [],
 	viewport: { x: 0, y: 0, zoom: 1 },
 	isLoading: false,
+	isReadOnly: false,
 
 	loadWorkspaces: async () => {
 		set({ isLoading: true });
@@ -100,8 +104,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 	updateViewport: (viewport) => set({ viewport }),
 
 	saveLayout: async () => {
-		const { activeWorkspaceId, nodes, edges, viewport } = get();
-		if (!activeWorkspaceId) { return; }
+		const { activeWorkspaceId, nodes, edges, viewport, isReadOnly } = get();
+		if (!activeWorkspaceId || isReadOnly) { return; }
 		try {
 			await sendRequest('workspace.updateLayout', {
 				workspaceId: activeWorkspaceId,
@@ -113,4 +117,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 			console.error('[WorkspaceStore] Failed to save layout:', err);
 		}
 	},
+
+	setReadOnly: (readOnly: boolean) => set({ isReadOnly: readOnly }),
 }));

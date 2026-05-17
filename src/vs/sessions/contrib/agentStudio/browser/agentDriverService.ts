@@ -36,7 +36,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	// ─── 统一执行入口 ─────────────────────────────────────
 
 	async *executeTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
-		const turnId = request.agentId;
+		// Composite turnId: session-scoped to prevent cross-fork cancellation
+		const turnId = request.sessionId ? `${request.sessionId}::${request.agentId}` : request.agentId;
 
 		// 如果已有同 ID 的轮次在运行，先取消
 		this.cancelTurn(turnId);
@@ -173,6 +174,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	): AsyncIterable<IChatStreamDelta> {
 		const request: IAgentTurnRequest = {
 			agentId: employeeId,
+			sessionId: options.agentSessionId,
 			messages: [{ role: 'user', content: message }],
 			systemPrompt: options.systemPrompt,
 			options: {

@@ -14,7 +14,7 @@ import { ISerializedGrid, Orientation, SerializableGrid, ISerializedBranchNode, 
 export class MainEditorPart extends MainEditorPartBase {
 	static readonly MARGIN_TOP = 0;
 	static readonly MARGIN_LEFT = 10;
-	static readonly MARGIN_BOTTOM = 10;
+	static readonly MARGIN_BOTTOM = 0;
 
 	// ── Zone root group IDs ─────────────────────────────────────────
 	// Set during doCreateGridControl() and consumed by the workbench
@@ -25,6 +25,12 @@ export class MainEditorPart extends MainEditorPartBase {
 	get fileZoneRootGroupId(): number { return this._fileZoneRootGroupId; }
 	get agentZoneRootGroupId(): number { return this._agentZoneRootGroupId; }
 
+	/**
+	 * Height reserved for the workspace toolbar that overlays the titlebar.
+	 * Used by workbench.ts to position the toolbar, NOT subtracted from the
+	 * editor part content — the toolbar is absolutely positioned outside the
+	 * editor part element.
+	 */
 	static readonly TOOLBAR_HEIGHT = 32;
 
 	override layout(width: number, height: number, top: number, left: number): void {
@@ -37,9 +43,9 @@ export class MainEditorPart extends MainEditorPartBase {
 			? 0
 			: MainEditorPart.MARGIN_LEFT;
 		const adjustedWidth = width - adjustedMargin - 2 /* border width */;
-		const adjustedHeight = height - MainEditorPart.MARGIN_TOP - MainEditorPart.MARGIN_BOTTOM - 2 /* border width */ - MainEditorPart.TOOLBAR_HEIGHT;
+		const adjustedHeight = height - MainEditorPart.MARGIN_TOP - MainEditorPart.MARGIN_BOTTOM - 2 /* border width */;
 
-		super.layout(adjustedWidth, adjustedHeight, top + MainEditorPart.TOOLBAR_HEIGHT, left);
+		super.layout(adjustedWidth, adjustedHeight, top, left);
 	}
 
 	/**
