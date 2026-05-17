@@ -137,11 +137,14 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		const provider = providers.find(p => p.id === providerId);
 		if (!provider) return;
 
+		// Normalize modelId: strip knot-style prefix "knot/<uuid>::" → bare model name
+		const bareModelId = modelId.includes('::') ? modelId.split('::').pop()! : modelId;
+
 		set({
 			selection: {
 				providerId,
 				providerName: provider.name,
-				modelId,
+				modelId: bareModelId,
 				agentId,
 			},
 		});
@@ -158,7 +161,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			useEmployeeStore.setState(state => ({
 				employees: state.employees.map(e =>
 					e.id === activeEmployeeId
-						? { ...e, provider: providerId, model: modelId }
+						? { ...e, provider: providerId, model: bareModelId }
 						: e
 				),
 			}));

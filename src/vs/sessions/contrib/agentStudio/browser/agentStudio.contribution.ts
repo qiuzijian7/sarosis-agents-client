@@ -71,7 +71,6 @@ import {
 	AGENT_STUDIO_CREW_TEAM_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
-	AGENT_STUDIO_THEME_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
@@ -169,12 +168,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			description: localize('agentStudio.enabled', "Enable Agent Studio multi-agent workspace in the Sessions window."),
 		},
 		// --- Preferences ---
-		[AGENT_STUDIO_THEME_SETTING]: {
-			type: 'string',
-			default: 'dark',
-			enum: ['dark', 'light', 'slate', 'solarized', 'monokai', 'nord', 'oled'],
-			description: localize('agentStudio.preferences.theme', "UI color theme."),
-		},
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
 			type: 'string',
 			default: 'en',

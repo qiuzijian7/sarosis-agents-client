@@ -450,10 +450,41 @@
 	margin-bottom: 12px;
 }
 
+/* ─── Theme Group Header ──────────────────────────────────────────── */
+
+.as-theme-group-header {
+	display: flex;
+	align-items: center;
+	padding: 8px 0 4px;
+	margin-top: 12px;
+}
+
+.as-theme-group-header:first-of-type {
+	margin-top: 4px;
+}
+
+.as-theme-group-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+}
+
+/* ─── Theme Loading State ─────────────────────────────────────────── */
+
+.as-theme-loading {
+	padding: 20px 0;
+	text-align: center;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
 .as-theme-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-	gap: 10px;
+	grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+	gap: 8px;
+	margin-bottom: 8px;
 }
 
 .as-theme-card {

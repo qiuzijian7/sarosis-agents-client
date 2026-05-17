@@ -17,8 +17,7 @@ import type { RequestType, IResponseMessage, IEventMessage } from './messageProt
 import type { AgentStudioPanelType } from '../common/constants.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { AGENT_STUDIO_THEME_SETTING } from '../common/constants.js';
+import { IWorkbenchThemeService } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
 import type { IProviderInfo, IProviderSelectPayload, IEmployeeExportPayload, IEmployeeImportPayload } from './messageProtocol.js';
 
 interface IIncomingMessage {
@@ -52,7 +51,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IAgentTaskBoardService private readonly agentTaskBoardService: IAgentTaskBoardService,
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
 	) {
 		super();
 		this._createWebview();
@@ -104,10 +103,10 @@ export class AgentStudioWebviewController extends Disposable {
 		const scriptUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.js'));
 		const styleUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.css'));
 
-		const initialTheme = this.configurationService.getValue<string>(AGENT_STUDIO_THEME_SETTING) || 'dark';
+		const initialTheme = this.workbenchThemeService.getColorTheme().settingsId || '';
 
 		return `<!DOCTYPE html>
-<html lang="en" data-theme="${initialTheme}">
+<html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -483,13 +482,11 @@ export class AgentStudioWebviewController extends Disposable {
 			});
 		}));
 
-		// Listen for theme configuration changes — push to WebView immediately
-		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(AGENT_STUDIO_THEME_SETTING)) {
-				const theme = this.configurationService.getValue<string>(AGENT_STUDIO_THEME_SETTING) || 'dark';
-				this.logService.info(`[AgentStudio] Theme changed to "${theme}", notifying webview`);
-				this._sendEvent('theme.changed', { theme });
-			}
+		// Listen for VS Code native theme changes — push to WebView immediately
+		this._register(this.workbenchThemeService.onDidColorThemeChange((newTheme) => {
+			const theme = newTheme.settingsId || newTheme.label;
+			this.logService.info(`[AgentStudio] VS Code theme changed to "${theme}", notifying webview`);
+			this._sendEvent('theme.changed', { theme });
 		}));
 	}
 
@@ -565,7 +562,16 @@ export class AgentStudioWebviewController extends Disposable {
 	 * the employees.changed event that triggers a UI reload.
 	 */
 	private async _persistProviderSelection(payload: IProviderSelectPayload): Promise<void> {
-		const { employeeId, providerId, modelId, agentId } = payload;
+		const { employeeId, providerId, agentId } = payload;
+		let { modelId } = payload;
+
+		// Normalize modelId: strip knot-style prefix like "knot/<uuid>::" so that
+		// only the bare model name (e.g. "deepseek-v3.1") is persisted.
+		if (modelId && modelId.includes('::')) {
+			const bare = modelId.split('::').pop()!;
+			this.logService.info(`[AgentStudio] Normalizing modelId: "${modelId}" → "${bare}"`);
+			modelId = bare;
+		}
 
 		// 1) Write to agent.yaml first (does NOT fire employees.changed)
 		try {

@@ -1,41 +1,29 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Theme Store (Zustand)
- *  Manages the current theme and applies it to the DOM via data-theme attribute.
- *  Listens for 'agentStudio:theme-changed' CustomEvents dispatched by index.tsx.
+ *  Now delegates to VS Code's native theme system.
+ *  The --vscode-* CSS variables are automatically updated by VS Code when the theme changes,
+ *  so our --as-* aliases in themes.css follow suit without any DOM attribute manipulation.
+ *
+ *  This store is kept for backward compatibility but is intentionally minimal.
+ *  The 'agentStudio:theme-changed' event is still dispatched for any components that listen.
  *--------------------------------------------------------------------------------------------*/
 
 import { create } from 'zustand';
 
-export type AgentStudioTheme = 'dark' | 'light' | 'slate' | 'solarized' | 'monokai' | 'nord' | 'oled';
-
-const VALID_THEMES: ReadonlySet<string> = new Set<AgentStudioTheme>([
-	'dark', 'light', 'slate', 'solarized', 'monokai', 'nord', 'oled',
-]);
+export type AgentStudioTheme = string;
 
 interface ThemeState {
-	/** Current active theme name */
-	theme: AgentStudioTheme;
-	/** Apply a new theme — updates both the store and the DOM */
-	setTheme: (theme: AgentStudioTheme) => void;
-}
-
-/** Apply theme to the document root element */
-function applyThemeToDOM(theme: AgentStudioTheme): void {
-	const html = document.documentElement;
-	// Always set the attribute so that html[data-theme] selectors match for every theme,
-	// including "dark".  Previously dark removed the attribute, which prevented the
-	// --as-* CSS overrides from taking effect.
-	html.setAttribute('data-theme', theme);
+	/** Current active theme identifier (VS Code theme settingsId) */
+	theme: string;
+	/** Notify the store that the theme has changed (called from index.tsx on host events) */
+	setTheme: (theme: string) => void;
 }
 
 export const useThemeStore = create<ThemeState>((set) => ({
-	theme: 'dark',
-	setTheme: (theme: AgentStudioTheme) => {
-		if (!VALID_THEMES.has(theme)) {
-			console.warn(`[ThemeStore] Invalid theme "${theme}", ignoring.`);
-			return;
-		}
-		applyThemeToDOM(theme);
+	theme: '',
+	setTheme: (theme: string) => {
+		// VS Code handles the actual theme application via --vscode-* CSS variables.
+		// We just track the current theme name in the store for reference.
 		set({ theme });
 	},
 }));
@@ -47,10 +35,8 @@ export const useThemeStore = create<ThemeState>((set) => ({
 function handleThemeChanged(e: Event): void {
 	const detail = (e as CustomEvent).detail;
 	const newTheme = detail?.theme as string;
-	if (newTheme && VALID_THEMES.has(newTheme)) {
-		useThemeStore.getState().setTheme(newTheme as AgentStudioTheme);
-	} else {
-		console.warn(`[ThemeStore] Received theme.changed with invalid theme:`, detail);
+	if (newTheme) {
+		useThemeStore.getState().setTheme(newTheme);
 	}
 }
 

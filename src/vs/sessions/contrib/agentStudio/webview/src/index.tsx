@@ -13,9 +13,10 @@ import { initMessageClient } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError } from './bridge/streamHandler.js';
 import { useEmployeeStore } from './store/useEmployeeStore.js';
 import { useProviderStore } from './store/useProviderStore.js';
-import { useThemeStore, type AgentStudioTheme } from './store/useThemeStore.js';
+import { useThemeStore } from './store/useThemeStore.js';
 import './styles/globals.css';
 import './styles/themes.css';
+import './styles/chat-enhanced.css';
 
 // Initialize the message bridge (must happen before React mounts)
 initMessageClient((type, data) => {
@@ -73,7 +74,7 @@ initMessageClient((type, data) => {
 		case 'theme.changed': {
 			const { theme } = (data as { theme: string }) ?? {};
 			if (theme) {
-				useThemeStore.getState().setTheme(theme as AgentStudioTheme);
+				useThemeStore.getState().setTheme(theme);
 			}
 			window.dispatchEvent(new CustomEvent('agentStudio:theme-changed', { detail: data }));
 			break;
@@ -93,9 +94,9 @@ initMessageClient((type, data) => {
 // Mount React application
 const container = document.getElementById('root');
 if (container) {
-	// Apply initial theme from Host before first render (always, including 'dark')
+	// Apply initial theme from Host before first render
 	const initialTheme = (window as any).__AGENT_STUDIO_INITIAL_THEME__ as string | undefined;
-	useThemeStore.getState().setTheme((initialTheme || 'dark') as AgentStudioTheme);
+	useThemeStore.getState().setTheme(initialTheme || '');
 
 	const root = createRoot(container);
 	root.render(React.createElement(App));

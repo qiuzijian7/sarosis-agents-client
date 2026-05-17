@@ -17,8 +17,10 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
+import { IWorkbenchThemeService, IWorkbenchColorTheme } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
+import { ColorScheme } from '../../../../platform/theme/common/theme.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import {
-	AGENT_STUDIO_THEME_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
 	AGENT_STUDIO_BOT_NAME_SETTING,
@@ -53,7 +55,7 @@ interface SettingField {
 	key: string;
 	label: string;
 	description: string;
-	type: 'boolean' | 'string' | 'number' | 'select' | 'password' | 'json' | 'textarea';
+	type: 'boolean' | 'string' | 'number' | 'select' | 'password' | 'json' | 'textarea' | 'vscode-theme';
 	default: any;
 	options?: { value: string; label: string }[];
 	placeholder?: string;
@@ -81,16 +83,8 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 		description: '主题、语言和基本偏好',
 		defaultCollapsed: false,
 		fields: [
-			// Theme is rendered as a special card picker, not a select dropdown
-			{ key: AGENT_STUDIO_THEME_SETTING, label: '主题', description: 'Agent Studio 颜色主题', type: 'select', default: 'dark', options: [
-				{ value: 'dark', label: 'Dark（默认）' },
-				{ value: 'light', label: 'Light' },
-				{ value: 'slate', label: '炭灰' },
-				{ value: 'solarized', label: 'Solarized Dark' },
-				{ value: 'monokai', label: 'Monokai' },
-				{ value: 'nord', label: 'Nord' },
-				{ value: 'oled', label: 'OLED' },
-			] },
+			// Theme is rendered as a VSCode-native theme picker using IWorkbenchThemeService
+			{ key: 'workbench.colorTheme', label: '颜色主题', description: '选择 VS Code 颜色主题，应用于整个编辑器界面', type: 'vscode-theme' as any, default: '' },
 			{ key: AGENT_STUDIO_LANGUAGE_SETTING, label: '语言', description: '显示语言', type: 'select', default: 'en', options: [
 				{ value: 'en', label: 'English' },
 				{ value: 'zh-CN', label: '简体中文' },
@@ -212,6 +206,7 @@ export class SettingsEditorPane extends EditorPane {
 	private _activeTocId: string = 'preferences';
 	private _statusMessage: string = '';
 	private _initialized = false;
+	private readonly _disposables = new DisposableStore();
 
 	/** Track collapsed state by section id */
 	private _collapsedState = new Map<string, boolean>();
@@ -222,6 +217,7 @@ export class SettingsEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
 	) {
 		super(SettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -436,9 +432,9 @@ export class SettingsEditorPane extends EditorPane {
 	}
 
 	private _renderFieldRow(field: SettingField): HTMLElement {
-		// ─── Special: Theme Picker (visual card grid) ──────────────────
-		if (field.key === AGENT_STUDIO_THEME_SETTING) {
-			return this._renderThemePickerRow(field);
+		// ─── Special: VSCode Native Theme Picker ──────────────────
+		if (field.type === 'vscode-theme') {
+			return this._renderVscodeThemePickerRow(field);
 		}
 
 		const row = $('div.as-field-row');
@@ -555,20 +551,24 @@ export class SettingsEditorPane extends EditorPane {
 		return row;
 	}
 
-	// ─── Theme Picker (Visual Card Grid) ──────────────────────────────────
+	// ─── VSCode Native Theme Picker ──────────────────────────────────
 
-	/** Theme color definitions for the preview cards */
-	private static readonly THEME_COLORS: Record<string, { bg: string; sidebar: string; accent: string; fg: string; border: string }> = {
-		dark:       { bg: '#1e1e1e', sidebar: '#252526', accent: '#3794ff', fg: '#cccccc', border: '#3c3c3c' },
-		light:      { bg: '#ffffff', sidebar: '#f5f5f5', accent: '#0078d4', fg: '#1e1e1e', border: '#e0e0e0' },
-		slate:      { bg: '#1a1d23', sidebar: '#21252b', accent: '#61afef', fg: '#abb2bf', border: '#2c313a' },
-		solarized:  { bg: '#002b36', sidebar: '#073642', accent: '#268bd2', fg: '#839496', border: '#0a4050' },
-		monokai:    { bg: '#272822', sidebar: '#2e2f28', accent: '#66d9ef', fg: '#f8f8f2', border: '#3e3d32' },
-		nord:       { bg: '#2e3440', sidebar: '#3b4252', accent: '#88c0d0', fg: '#d8dee9', border: '#434c5e' },
-		oled:       { bg: '#000000', sidebar: '#0a0a0a', accent: '#3b82f6', fg: '#e0e0e0', border: '#161616' },
+	/** Color palette for theme type groups */
+	private static readonly THEME_GROUP_COLORS: Record<string, { bg: string; sidebar: string; accent: string; fg: string; border: string }> = {
+		[ColorScheme.DARK]:                 { bg: '#1e1e1e', sidebar: '#252526', accent: '#3794ff', fg: '#cccccc', border: '#3c3c3c' },
+		[ColorScheme.LIGHT]:                { bg: '#ffffff', sidebar: '#f5f5f5', accent: '#0078d4', fg: '#1e1e1e', border: '#e0e0e0' },
+		[ColorScheme.HIGH_CONTRAST_DARK]:   { bg: '#000000', sidebar: '#0a0a0a', accent: '#ffff00', fg: '#ffffff', border: '#6fc3df' },
+		[ColorScheme.HIGH_CONTRAST_LIGHT]:  { bg: '#ffffff', sidebar: '#f5f5f5', accent: '#0f4a85', fg: '#000000', border: '#0f4a85' },
 	};
 
-	private _renderThemePickerRow(field: SettingField): HTMLElement {
+	private static readonly THEME_GROUP_LABELS: Record<string, string> = {
+		[ColorScheme.DARK]: '深色主题',
+		[ColorScheme.LIGHT]: '浅色主题',
+		[ColorScheme.HIGH_CONTRAST_DARK]: '高对比度深色',
+		[ColorScheme.HIGH_CONTRAST_LIGHT]: '高对比度浅色',
+	};
+
+	private _renderVscodeThemePickerRow(field: SettingField): HTMLElement {
 		const container = $('div.as-theme-picker-container');
 
 		// Label + description
@@ -583,89 +583,177 @@ export class SettingsEditorPane extends EditorPane {
 		}
 		container.appendChild(labelWrap);
 
-		// Theme cards grid
-		const grid = $('div.as-theme-grid');
-		const currentValue = String(this._getConfigValue(field) || 'dark');
+		// Loading placeholder
+		const loadingEl = $('div.as-theme-loading');
+		loadingEl.textContent = '加载主题列表...';
+		container.appendChild(loadingEl);
 
-		for (const option of field.options || []) {
-			const card = document.createElement('button');
-			card.className = 'as-theme-card';
-			card.type = 'button';
-			card.dataset.themeValue = option.value;
-			if (option.value === currentValue) {
-				card.classList.add('as-theme-card-active');
+		// Async: Load themes and render cards
+		this._loadAndRenderThemes(container, loadingEl);
+
+		return container;
+	}
+
+	private async _loadAndRenderThemes(container: HTMLElement, loadingEl: HTMLElement): Promise<void> {
+		try {
+			const allThemes = await this.workbenchThemeService.getColorThemes();
+			const currentTheme = this.workbenchThemeService.getColorTheme();
+
+			// Remove loading indicator
+			loadingEl.remove();
+
+			// Group themes by ColorScheme type
+			const groups = new Map<ColorScheme, IWorkbenchColorTheme[]>();
+			for (const theme of allThemes) {
+				const type = theme.type as ColorScheme;
+				if (!groups.has(type)) {
+					groups.set(type, []);
+				}
+				groups.get(type)!.push(theme);
 			}
 
-			const colors = SettingsEditorPane.THEME_COLORS[option.value] || SettingsEditorPane.THEME_COLORS['dark'];
-
-			// Mini preview
-			const preview = $('div.as-theme-preview');
-			preview.style.backgroundColor = colors.bg;
-			preview.style.border = `1px solid ${colors.border}`;
-
-			// Sidebar strip
-			const sidebarStrip = $('div.as-theme-preview-sidebar');
-			sidebarStrip.style.backgroundColor = colors.sidebar;
-
-			// Content area
-			const content = $('div.as-theme-preview-content');
-
-			// Title bar
-			const titleBar = $('div.as-theme-preview-titlebar');
-			titleBar.style.backgroundColor = colors.sidebar;
-			// Dots
-			for (const dotColor of ['#ff5f57', '#febc2e', '#28c840']) {
-				const dot = $('span.as-theme-preview-dot');
-				dot.style.backgroundColor = dotColor;
-				titleBar.appendChild(dot);
-			}
-			content.appendChild(titleBar);
-
-			// Text lines
-			for (let i = 0; i < 3; i++) {
-				const line = $('div.as-theme-preview-line');
-				line.style.backgroundColor = i === 0 ? colors.accent : colors.fg;
-				line.style.opacity = i === 0 ? '0.8' : '0.25';
-				line.style.width = i === 0 ? '60%' : i === 1 ? '85%' : '45%';
-				content.appendChild(line);
+			// Sort each group by label
+			for (const [, themes] of groups) {
+				themes.sort((a, b) => a.label.localeCompare(b.label));
 			}
 
-			preview.appendChild(sidebarStrip);
-			preview.appendChild(content);
-			card.appendChild(preview);
+			// Render groups in order: Dark, Light, HC Dark, HC Light
+			const groupOrder: ColorScheme[] = [
+				ColorScheme.DARK,
+				ColorScheme.LIGHT,
+				ColorScheme.HIGH_CONTRAST_DARK,
+				ColorScheme.HIGH_CONTRAST_LIGHT,
+			];
 
-			// Label
-			const cardLabel = $('span.as-theme-card-label');
-			cardLabel.textContent = option.label;
-			card.appendChild(cardLabel);
+			for (const schemeType of groupOrder) {
+				const themes = groups.get(schemeType);
+				if (!themes || themes.length === 0) {
+					continue;
+				}
 
-			// Active check mark
-			if (option.value === currentValue) {
-				const checkMark = $('span.as-theme-card-check');
-				checkMark.textContent = '✓';
-				card.appendChild(checkMark);
+				const groupLabel = SettingsEditorPane.THEME_GROUP_LABELS[schemeType] || schemeType;
+
+				// Group header
+				const groupHeader = $('div.as-theme-group-header');
+				const groupTitle = $('span.as-theme-group-title');
+				groupTitle.textContent = `${groupLabel}（${themes.length}）`;
+				groupHeader.appendChild(groupTitle);
+				container.appendChild(groupHeader);
+
+				// Theme cards grid
+				const grid = $('div.as-theme-grid');
+
+				for (const theme of themes) {
+					const card = this._createThemeCard(theme, currentTheme, grid);
+					grid.appendChild(card);
+				}
+
+				container.appendChild(grid);
 			}
 
-			// Click handler
-			card.onclick = () => {
-				this.configurationService.updateValue(field.key, option.value);
-				// Update active state visually
-				grid.querySelectorAll('.as-theme-card').forEach(c => {
-					c.classList.remove('as-theme-card-active');
-					const oldCheck = c.querySelector('.as-theme-card-check');
-					if (oldCheck) { oldCheck.remove(); }
-				});
-				card.classList.add('as-theme-card-active');
-				const newCheck = $('span.as-theme-card-check');
-				newCheck.textContent = '✓';
-				card.appendChild(newCheck);
-			};
+			// Listen for theme changes to update active state
+			this._disposables.add(
+				this.workbenchThemeService.onDidColorThemeChange((newTheme) => {
+					this._updateActiveThemeCard(container, newTheme);
+				})
+			);
+		} catch (e) {
+			loadingEl.textContent = '加载主题列表失败';
+			console.error('[SettingsEditorPane] Failed to load themes:', e);
+		}
+	}
 
-			grid.appendChild(card);
+	private _createThemeCard(
+		theme: IWorkbenchColorTheme,
+		currentTheme: IWorkbenchColorTheme,
+		grid: HTMLElement,
+	): HTMLElement {
+		const card = document.createElement('button');
+		card.className = 'as-theme-card';
+		card.type = 'button';
+		card.dataset.themeId = theme.id;
+		card.title = theme.settingsId || theme.label;
+		if (theme.id === currentTheme.id) {
+			card.classList.add('as-theme-card-active');
 		}
 
-		container.appendChild(grid);
-		return container;
+		const schemeType = theme.type as ColorScheme;
+		const colors = SettingsEditorPane.THEME_GROUP_COLORS[schemeType]
+			|| SettingsEditorPane.THEME_GROUP_COLORS[ColorScheme.DARK];
+
+		// Mini preview
+		const preview = $('div.as-theme-preview');
+		preview.style.backgroundColor = colors.bg;
+		preview.style.border = `1px solid ${colors.border}`;
+
+		// Sidebar strip
+		const sidebarStrip = $('div.as-theme-preview-sidebar');
+		sidebarStrip.style.backgroundColor = colors.sidebar;
+
+		// Content area
+		const content = $('div.as-theme-preview-content');
+
+		// Title bar
+		const titleBar = $('div.as-theme-preview-titlebar');
+		titleBar.style.backgroundColor = colors.sidebar;
+		for (const dotColor of ['#ff5f57', '#febc2e', '#28c840']) {
+			const dot = $('span.as-theme-preview-dot');
+			dot.style.backgroundColor = dotColor;
+			titleBar.appendChild(dot);
+		}
+		content.appendChild(titleBar);
+
+		// Text lines
+		for (let i = 0; i < 3; i++) {
+			const line = $('div.as-theme-preview-line');
+			line.style.backgroundColor = i === 0 ? colors.accent : colors.fg;
+			line.style.opacity = i === 0 ? '0.8' : '0.25';
+			line.style.width = i === 0 ? '60%' : i === 1 ? '85%' : '45%';
+			content.appendChild(line);
+		}
+
+		preview.appendChild(sidebarStrip);
+		preview.appendChild(content);
+		card.appendChild(preview);
+
+		// Label
+		const cardLabel = $('span.as-theme-card-label');
+		cardLabel.textContent = theme.label;
+		card.appendChild(cardLabel);
+
+		// Active check mark
+		if (theme.id === currentTheme.id) {
+			const checkMark = $('span.as-theme-card-check');
+			checkMark.textContent = '✓';
+			card.appendChild(checkMark);
+		}
+
+		// Click handler - use VS Code native theme service
+		card.onclick = () => {
+			this.workbenchThemeService.setColorTheme(theme.id, 'auto');
+		};
+
+		return card;
+	}
+
+	/** Update which card shows the active check mark after a theme change */
+	private _updateActiveThemeCard(container: HTMLElement, newTheme: IWorkbenchColorTheme): void {
+		container.querySelectorAll('.as-theme-card').forEach(c => {
+			const el = c as HTMLElement;
+			const isActive = el.dataset.themeId === newTheme.id;
+			el.classList.toggle('as-theme-card-active', isActive);
+
+			// Remove old check marks
+			const oldCheck = el.querySelector('.as-theme-card-check');
+			if (oldCheck) { oldCheck.remove(); }
+
+			// Add check mark to newly active card
+			if (isActive) {
+				const newCheck = $('span.as-theme-card-check');
+				newCheck.textContent = '✓';
+				el.appendChild(newCheck);
+			}
+		});
 	}
 
 
@@ -777,6 +865,7 @@ export class SettingsEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._disposables.dispose();
 		super.dispose();
 	}
 }

@@ -1,11 +1,14 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Employee Chat Panel
- *  Matches sarosis-webui layout:
- *  - Chat header with ⚡ provider + avatar + name + status
+ *
+ *  Full-featured chat panel supporting:
+ *  - Chat header with provider icon + avatar + name + status
  *  - Session info bar (PM / members / tasks)
  *  - Message list with auto-scroll
- *  - Streaming indicator
+ *  - Enhanced streaming indicator with thinking card, tool calls, streaming text
  *  - Full Composer with provider/model pill
+ *
+ *  Ref: sarosis-webui EmployeeChat.tsx main chat layout
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useRef } from 'react';
@@ -15,6 +18,7 @@ import { useProviderStore } from '../../store/useProviderStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { StreamingText } from './StreamingText';
 import { ChatComposer } from './ChatComposer';
+import { ToolCallCard } from './ToolCallCard';
 
 export function EmployeeChat(): React.ReactElement {
 	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee } = useChatStore();
@@ -32,7 +36,7 @@ export function EmployeeChat(): React.ReactElement {
 	// Auto-scroll to bottom on new messages or streaming updates
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-	}, [messages, streamState.textBuffer]);
+	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls]);
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 
@@ -127,50 +131,58 @@ export function EmployeeChat(): React.ReactElement {
 					<ChatMessageComponent key={msg.id} message={msg} />
 				))}
 
-				{/* Streaming indicator */}
+				{/* ── Streaming indicator (enhanced) ────────── */}
 				{streamState.isStreaming && (
 					<div className="chat-message assistant">
 						<div className="message-content message-streaming">
+
+							{/* Thinking card — active with spinner */}
 							{streamState.thinkingBuffer && (
-								<details className="thinking-block" open>
-									<summary className="thinking-summary">思考中...</summary>
-									<div className="thinking-content">
+								<div className="thinking-card active">
+									<div className="thinking-card-header">
+										<span className="thinking-card-icon">
+											<svg className="thinking-spinner" width="14" height="14" viewBox="0 0 24 24"
+												fill="none" stroke="currentColor" strokeWidth="2">
+												<path d="M21 12a9 9 0 11-6.219-8.56" />
+											</svg>
+										</span>
+										<span className="thinking-card-title">思考中...</span>
+									</div>
+									<div className="thinking-card-body">
 										<StreamingText text={streamState.thinkingBuffer} />
 									</div>
-								</details>
+								</div>
 							)}
+
+							{/* Streaming tool calls */}
+							{streamState.toolCalls.length > 0 && (
+								<div className="tool-calls-section">
+									{streamState.toolCalls.map((tc) => (
+										<ToolCallCard key={tc.id} toolCall={tc} />
+									))}
+								</div>
+							)}
+
+							{/* Streaming text content */}
 							{streamState.textBuffer && (
 								<div className="message-text">
 									<StreamingText text={streamState.textBuffer} />
 								</div>
 							)}
+
+							{/* Error message */}
 							{streamState.errorMessage && (
-								<div className="message-text" style={{ color: 'var(--vscode-errorForeground, #f48771)' }}>
+								<div className="message-text stream-error">
 									⚠️ {streamState.errorMessage}
 								</div>
 							)}
-							{!streamState.textBuffer && !streamState.thinkingBuffer && !streamState.errorMessage && (
+
+							{/* Typing dots — only when nothing else is showing */}
+							{!streamState.textBuffer && !streamState.thinkingBuffer && !streamState.errorMessage && streamState.toolCalls.length === 0 && (
 								<div className="typing-indicator">
 									<span className="typing-dot">●</span>
 									<span className="typing-dot">●</span>
 									<span className="typing-dot">●</span>
-								</div>
-							)}
-							{/* Streaming tool calls */}
-							{streamState.toolCalls.length > 0 && (
-								<div className="tool-calls">
-									{streamState.toolCalls.map((tc) => (
-										<details key={tc.id} className="tool-call-block" open={tc.status === 'running'}>
-											<summary className="tool-call-name">
-												🔧 {tc.name}
-												<span className={`tool-status ${tc.status === 'done' ? 'done' : 'running'}`}>
-													{tc.status === 'done' ? '完成' : '运行中'}
-												</span>
-											</summary>
-											{tc.arguments && <pre className="tool-args">{tc.arguments}</pre>}
-											{tc.result && <pre className="tool-result">{tc.result}</pre>}
-										</details>
-									))}
 								</div>
 							)}
 						</div>

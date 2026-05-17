@@ -4,9 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { DatabaseSync } from 'node:sqlite';
-import { SessionStore } from '../common/sessionStore.js';
-import { ISessionStore } from '../common/sessionStore.js';
-import { IEnhancedSessionStore, IMemoryEntry, IMemoryFilter, IEnhancedSearchResult, ICompressionLogEntry } from '../../../../../src/vs/platform/agentHost/common/enhancedSessionStore.js';
+import { SessionStore } from './sessionStore.js';
+import type { IEnhancedSessionStore, IMemoryEntry, IMemoryFilter, ISearchOptions, IEnhancedSearchResult, ICompressionLogEntry } from '../common/enhancedSessionStore.js';
 
 // ── Schema Version (bumped to 4 for memories and compression_log tables) ───
 
@@ -25,17 +24,19 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 
 	// ── Constructor ──────────────────────────────────────────────────────
 
+	private _enhancedSchemaReady = false;
+
 	constructor(dbPath: string) {
 		super(dbPath);
 	}
 
-	// ── Schema Migration (override parent to add v4 migration) ─────────────
+	// ── Schema Migration (add v4 migration on top of parent) ─────────────
 
-	protected override ensureSchema(): void {
-		// Call parent schema creation first
-		super.ensureSchema();
-
-		const db = this.ensureDb();
+	private ensureEnhancedSchema(db: DatabaseSync): void {
+		if (this._enhancedSchemaReady) {
+			return;
+		}
+		this._enhancedSchemaReady = true;
 
 		// Check current schema version
 		const versionRow = (() => {
@@ -102,8 +103,12 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 	// ── Private Helpers ──────────────────────────────────────────────────
 
 	private ensureDb(): DatabaseSync {
-		// Access parent's private db field via type assertion
-		return (this as unknown as { ensureDb(): DatabaseSync }).ensureDb();
+		// Access parent's private ensureDb() via prototype to avoid infinite recursion
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const db = (SessionStore.prototype as any).ensureDb.call(this) as DatabaseSync;
+		// Run v4 migration (memories + compression_log) on first access
+		this.ensureEnhancedSchema(db);
+		return db;
 	}
 
 	private generateId(): string {
@@ -152,7 +157,7 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 		const now = new Date().toISOString();
 
 		const sets: string[] = [];
-		const values: unknown[] = [];
+		const values: (string | number | null)[] = [];
 
 		if (updates.category !== undefined) { sets.push('category = ?'); values.push(updates.category); }
 		if (updates.content !== undefined) { sets.push('content = ?'); values.push(updates.content); }
@@ -201,7 +206,7 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 		const db = this.ensureDb();
 
 		let sql = 'SELECT * FROM memories WHERE 1=1';
-		const params: unknown[] = [];
+		const params: (string | number | null)[] = [];
 
 		if (filter?.category) {
 			sql += ' AND category = ?';
@@ -299,7 +304,7 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 
 		// WHERE clause
 		sql += ` WHERE search_index MATCH ?`;
-		const params: unknown[] = [query];
+		const params: (string | number | null)[] = [query];
 
 		if (options?.sourceTypes) {
 			const placeholders = options.sourceTypes.map(() => '?').join(',');
@@ -388,7 +393,7 @@ export class EnhancedSessionStore extends SessionStore implements IEnhancedSessi
 
 	// ── IDisposable ─────────────────────────────────────────────────────
 
-	override dispose(): void {
-		this.close();
+	dispose(): void {
+		super.close();
 	}
 }

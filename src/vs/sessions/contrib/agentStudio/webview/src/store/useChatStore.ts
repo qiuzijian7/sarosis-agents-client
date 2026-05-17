@@ -13,6 +13,7 @@ export interface ChatMessage {
 	content: string;
 	thinking?: string;
 	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string }[];
+	tokenUsage?: { input: number; output: number; total: number };
 	timestamp: string;
 }
 

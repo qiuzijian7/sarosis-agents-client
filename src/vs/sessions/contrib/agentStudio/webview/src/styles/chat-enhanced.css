@@ -1,0 +1,363 @@
+/*---------------------------------------------------------------------------------------------
+ *  Agent Studio WebView - Chat Enhanced Styles
+ *
+ *  Styles for Markdown rendering, ThinkingCard, ToolCallCard, code blocks, etc.
+ *  Ref: sarosis-webui EmployeeChat.tsx styles
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── Markdown body (assistant messages) ────────────────────────── */
+.markdown-body {
+	font-size: 13px;
+	line-height: 1.7;
+	word-break: break-word;
+	color: inherit;
+}
+
+.markdown-body p {
+	margin: 0 0 8px;
+}
+
+.markdown-body p:last-child {
+	margin-bottom: 0;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+	margin: 12px 0 6px;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+.markdown-body h1 { font-size: 1.3em; }
+.markdown-body h2 { font-size: 1.15em; }
+.markdown-body h3 { font-size: 1.05em; }
+
+.markdown-body ul, .markdown-body ol {
+	margin: 4px 0 8px;
+	padding-left: 20px;
+}
+
+.markdown-body li {
+	margin: 2px 0;
+	line-height: 1.6;
+}
+
+.markdown-body li > p {
+	margin: 0;
+}
+
+.markdown-body blockquote {
+	margin: 6px 0;
+	padding: 4px 12px;
+	border-left: 3px solid var(--as-accent, var(--vscode-textLink-foreground, #3b82f6));
+	background-color: var(--as-accent-bg, rgba(59, 130, 246, 0.06));
+	border-radius: 0 4px 4px 0;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+}
+
+.markdown-body hr {
+	border: none;
+	border-top: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+	margin: 10px 0;
+}
+
+.markdown-body a {
+	color: var(--as-accent, var(--vscode-textLink-foreground, #3b82f6));
+	text-decoration: none;
+}
+
+.markdown-body a:hover {
+	text-decoration: underline;
+}
+
+.markdown-body strong {
+	font-weight: 600;
+}
+
+.markdown-body img {
+	max-width: 100%;
+	border-radius: 6px;
+}
+
+/* Inline code */
+.inline-code {
+	padding: 1px 5px;
+	border-radius: 3px;
+	font-size: 0.9em;
+	font-family: var(--vscode-editor-font-family, 'Fira Code', 'Consolas', monospace);
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.15));
+	color: var(--as-accent, var(--vscode-textLink-foreground, #e06c75));
+}
+
+/* ── Code block wrapper ────────────────────────────────────────── */
+.code-block-wrapper {
+	margin: 8px 0;
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.15)));
+}
+
+.code-block-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 4px 10px;
+	font-size: 10px;
+	font-weight: 500;
+	background-color: rgba(128, 128, 128, 0.08);
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+}
+
+.code-block-lang {
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+}
+
+.code-block-copy {
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	font-size: 12px;
+	padding: 2px 4px;
+	border-radius: 3px;
+	opacity: 0.5;
+	transition: opacity 0.1s, background-color 0.1s;
+}
+
+.code-block-copy:hover {
+	opacity: 1;
+	background-color: rgba(128, 128, 128, 0.15);
+}
+
+/* ── Table wrapper ─────────────────────────────────────────────── */
+.table-wrapper {
+	overflow-x: auto;
+	margin: 8px 0;
+}
+
+.table-wrapper table {
+	border-collapse: collapse;
+	width: 100%;
+	font-size: 12px;
+}
+
+.table-wrapper th, .table-wrapper td {
+	padding: 5px 10px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	text-align: left;
+}
+
+.table-wrapper th {
+	font-weight: 600;
+	background-color: rgba(128, 128, 128, 0.06);
+}
+
+.table-wrapper tr:nth-child(even) {
+	background-color: rgba(128, 128, 128, 0.03);
+}
+
+/* ── Thinking card (new design) ────────────────────────────────── */
+.thinking-card {
+	margin-bottom: 8px;
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid var(--as-warning, rgba(234, 179, 8, 0.25));
+	background-color: var(--as-warning-bg, rgba(234, 179, 8, 0.05));
+}
+
+.thinking-card.active {
+	border-color: var(--as-warning, rgba(234, 179, 8, 0.4));
+	animation: thinking-glow 2s ease-in-out infinite;
+}
+
+@keyframes thinking-glow {
+	0%, 100% { box-shadow: 0 0 0 0 transparent; }
+	50% { box-shadow: 0 0 6px rgba(234, 179, 8, 0.15); }
+}
+
+.thinking-card-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	cursor: pointer;
+	user-select: none;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--as-warning, #eab308);
+}
+
+.thinking-card-header:hover {
+	background-color: rgba(234, 179, 8, 0.06);
+}
+
+.thinking-card-icon {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+}
+
+.thinking-card-title {
+	flex: 1;
+}
+
+.thinking-card-toggle {
+	font-size: 10px;
+	transition: transform 0.2s;
+	opacity: 0.6;
+}
+
+.thinking-card-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.thinking-card-body {
+	padding: 4px 10px 8px;
+	font-size: 11px;
+	line-height: 1.6;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	font-style: italic;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+.thinking-spinner {
+	animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+/* ── Tool call card (new design) ───────────────────────────────── */
+.tool-calls-section {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 6px;
+}
+
+.tool-call-card {
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
+	background-color: var(--as-bg-tertiary, var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.08)));
+	font-size: 11px;
+}
+
+.tool-call-card.running {
+	border-color: var(--as-accent, rgba(59, 130, 246, 0.3));
+}
+
+.tool-call-card.completed {
+	border-color: var(--as-success, rgba(74, 222, 128, 0.2));
+}
+
+.tool-call-card-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 10px;
+	cursor: pointer;
+	user-select: none;
+	transition: background-color 0.1s;
+}
+
+.tool-call-card-header:hover {
+	background-color: rgba(128, 128, 128, 0.06);
+}
+
+.tool-call-icon {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+}
+
+.tool-call-icon svg {
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+}
+
+.tool-call-card.running .tool-call-icon svg {
+	color: var(--as-accent, #3b82f6);
+}
+
+.tool-call-card.completed .tool-call-icon svg {
+	color: var(--as-success, #4ade80);
+}
+
+.tool-spinner {
+	animation: spin 1s linear infinite;
+}
+
+.tool-call-card-name {
+	flex: 1;
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tool-call-card-toggle {
+	font-size: 9px;
+	opacity: 0.5;
+	transition: transform 0.2s;
+}
+
+.tool-call-card-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.tool-call-card-body {
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+}
+
+.tool-call-section {
+	padding: 6px 10px;
+}
+
+.tool-call-section + .tool-call-section {
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.08));
+}
+
+.tool-call-section-title {
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	margin-bottom: 4px;
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+}
+
+.tool-call-code {
+	font-size: 10px;
+	line-height: 1.5;
+	padding: 6px 8px;
+	border-radius: 4px;
+	background-color: var(--vscode-editor-background, rgba(0, 0, 0, 0.15));
+	font-family: var(--vscode-editor-font-family, 'Fira Code', 'Consolas', monospace);
+	overflow-x: auto;
+	max-height: 150px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+	margin: 0;
+}
+
+/* ── Streaming text content ────────────────────────────────────── */
+.streaming-text-content {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.stream-error {
+	color: var(--vscode-errorForeground, #f48771) !important;
+}
+
+/* ── Message text override for markdown mode ───────────────────── */
+.message-text .markdown-body {
+	white-space: normal;
+}
