@@ -19,6 +19,8 @@ import { ChatMessageComponent } from './ChatMessage';
 import { StreamingText } from './StreamingText';
 import { ChatComposer } from './ChatComposer';
 import { ToolCallCard } from './ToolCallCard';
+import { AgentSessionSwitcher } from './AgentSessionSwitcher';
+import { ConfigMDPanel } from '../configmd/ConfigMDPanel';
 
 export function EmployeeChat(): React.ReactElement {
 	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee } = useChatStore();
@@ -85,8 +87,54 @@ export function EmployeeChat(): React.ReactElement {
 		: activeEmployee.status === 'error' ? 'status-error'
 		: 'status-offline';
 
+	// ─── ConfigMD integration ────────────────────────────────────────────────
+	const configMd = (activeEmployee as any).configMd as {
+		mdPath?: string;
+		parserPath?: string;
+		stylesPath?: string;
+		displayMode?: 'side' | 'replace' | 'tab';
+		defaultView?: 'preview' | 'source' | 'split';
+		editable?: boolean;
+		sandboxLevel?: 'strict' | 'standard' | 'permissive';
+		autoShow?: boolean;
+		syncDebounceMs?: number;
+		capabilities?: string[];
+	} | undefined;
+
+	const hasConfigMd = !!configMd;
+	const configMdDisplayMode = configMd?.displayMode || 'side';
+
+	// If displayMode is 'replace', render only the ConfigMD panel
+	if (hasConfigMd && configMdDisplayMode === 'replace') {
+		return (
+			<div className="employee-chat configmd-replace-mode">
+				{/* Chat Header (kept for context) */}
+				<div className="chat-header">
+					<img
+						src={activeEmployee.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeEmployee.id}`}
+						alt={activeEmployee.name}
+						className="chat-header-avatar"
+					/>
+					<div className="chat-header-info">
+						<span className="chat-header-name">{activeEmployee.name}</span>
+						<span className="chat-header-role">
+							{activeEmployee.role}
+							<span className={`chat-header-status ${statusClass}`}>{statusText}</span>
+						</span>
+					</div>
+				</div>
+				<ConfigMDPanel
+					employeeId={activeEmployee.id}
+					config={configMd!}
+					className="configmd-fullpanel"
+				/>
+			</div>
+		);
+	}
+
 	return (
-		<div className="employee-chat">
+		<>
+		<div className={`employee-chat ${hasConfigMd && configMdDisplayMode === 'side' ? 'with-configmd-side' : ''}`}>
 			{/* Chat Header */}
 			<div className="chat-header">
 				{/* Provider icon */}
@@ -109,6 +157,7 @@ export function EmployeeChat(): React.ReactElement {
 					</span>
 				</div>
 				<div className="chat-header-actions">
+					<AgentSessionSwitcher />
 					<button className="chat-header-btn" title="编辑 Agent">
 						<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -211,5 +260,17 @@ export function EmployeeChat(): React.ReactElement {
 			isLoading={streamState.isStreaming}
 		/>
 		</div>
+
+		{/* ConfigMD Side Panel */}
+		{hasConfigMd && configMdDisplayMode === 'side' && (
+			<div className="configmd-side-container">
+				<ConfigMDPanel
+					employeeId={activeEmployee.id}
+					config={configMd!}
+					className="configmd-side-panel"
+				/>
+			</div>
+		)}
+		</>
 	);
 }

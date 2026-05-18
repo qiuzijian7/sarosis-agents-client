@@ -26,7 +26,7 @@ import { EditorExtensions } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
 
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
-import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService } from '../common/agentStudio.js';
+import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
@@ -46,11 +46,14 @@ import { IAgentSchedulerService } from '../common/agentScheduler.js';
 import { AgentSchedulerService } from './agentSchedulerService.js';
 import { IHealthMonitorService } from '../common/healthMonitor.js';
 import { HealthMonitorService } from './healthMonitorService.js';
-import { IWorkspaceTemplateService } from '../common/workspaceTemplate.js';
-import { WorkspaceTemplateService } from './workspaceTemplateService.js';
 import { ICrewTeamService } from '../common/crewTeam.js';
 import { CrewTeamService } from './crewTeamService.js';
 import { IEventBridgeService, EventBridgeService } from '../common/eventBridge.js';
+import { TaskOrchestrationService } from './taskOrchestrationService.js';
+import { IWorkspaceLifecycleService } from '../common/workspaceLifecycle.js';
+import { WorkspaceLifecycleService } from './workspaceLifecycleService.js';
+import { ISkillLifecycleService } from '../common/skillLifecycle.js';
+import { SkillLifecycleService } from './skillLifecycleService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
@@ -63,12 +66,13 @@ import {
 	AGENT_STUDIO_TASKS_VIEW_ID,
 	AGENT_STUDIO_SCHEDULE_VIEW_ID,
 	AGENT_STUDIO_TOOLS_VIEW_ID,
+	AGENT_STUDIO_MCP_VIEW_ID,
 	AGENT_STUDIO_CHANGES_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_PROVIDER_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
-	AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID,
-	AGENT_STUDIO_CREW_TEAM_VIEW_ID,
+	AGENT_STUDIO_EVOLUTION_VIEW_ID,
+	AGENT_STUDIO_CHANNEL_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
@@ -121,6 +125,7 @@ import { SettingsEditorInput } from './settingsEditorInput.js';
 import { PluginDetailEditorPane } from './pluginDetailEditorPane.js';
 import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import './views/media/toolbarViews.css';
+import './views/media/toolsToggle.css';
 import { ClawChatViewPane } from './views/clawChatView.js';
 import { WorkspaceViewPane } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
@@ -134,8 +139,19 @@ import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
 import { ProviderViewPane } from './views/providerView.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
-import { WorkspaceTemplateViewPane } from './views/workspaceTemplateView.js';
-import { CrewTeamViewPane } from './views/crewTeamView.js';
+import { McpViewPane } from './views/mcpView.js';
+import { EvolutionViewPane } from './views/evolutionView.js';
+import { EvolutionDetailEditorPane } from './evolutionDetailEditorPane.js';
+import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
+import { ChannelEditorPane } from './channelEditorPane.js';
+import { ChannelEditorInput } from './channelEditorInput.js';
+import { ChannelViewPane } from './views/channelView.js';
+import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
+import { TaskOverviewEditorInput } from './taskOverviewEditorInput.js';
+import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
+import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
+import { ISelfEvolutionService } from '../common/selfEvolution.js';
+import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -152,10 +168,13 @@ const skillsIcon = registerIcon('agent-studio-skills', Codicon.lightbulb, locali
 const tasksIcon = registerIcon('agent-studio-tasks', Codicon.tasklist, localize('tasksIcon', "Tasks"));
 const scheduleIcon = registerIcon('agent-studio-schedule', Codicon.calendar, localize('scheduleIcon', "Schedule"));
 const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('toolsIcon', "Tools"));
+const mcpIcon = registerIcon('agent-studio-mcp', Codicon.plug, localize('mcpIcon', "MCP"));
 const changesIcon = registerIcon('agent-studio-changes', Codicon.diff, localize('changesIcon', "Changes"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
 const providerIcon = registerIcon('agent-studio-provider', Codicon.plug, localize('providerIcon', "Provider"));
+const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
+const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
 
 // --- Configuration ---------------------------------------------------------------
 
@@ -365,13 +384,25 @@ registerSingleton(IAgentGalleryService, AgentGalleryService, InstantiationType.D
 registerSingleton(IGitCommitService, GitCommitService, InstantiationType.Delayed);
 registerSingleton(IAgentSchedulerService, AgentSchedulerService, InstantiationType.Delayed);
 registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType.Delayed);
-registerSingleton(IWorkspaceTemplateService, WorkspaceTemplateService, InstantiationType.Delayed);
 registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
 registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
+registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, InstantiationType.Delayed);
+// Workspace lifecycle event bus — generic, decoupled hook system used by
+// CLI/provider extensions (e.g. knot-agui) to react to workspace mutations
+// without any main-repo hardcoding. Eager so its extension-facing commands
+// (`agentStudio.workspaceLifecycle.register/unregister/list`) are available
+// before any extension is activated.
+registerSingleton(IWorkspaceLifecycleService, WorkspaceLifecycleService, InstantiationType.Eager);
+// Skill lifecycle event bus — generic, decoupled hook system used by
+// CLI/provider extensions (e.g. knot-agui) to react to skill mutations
+// (add / remove / batch sync) on agent instances. Eager so its
+// extension-facing commands are available before any extension is activated.
+registerSingleton(ISkillLifecycleService, SkillLifecycleService, InstantiationType.Eager);
 // ISettingsTabRegistry is still registered for the legacy SettingsViewPane (sidebar).
 // Plugin-specific settings (like Knot) now open as independent EditorPanes
 // rather than appearing as tabs in the Settings page.
 registerSingleton(ISettingsTabRegistry, SettingsTabRegistry, InstantiationType.Delayed);
+registerSingleton(ISelfEvolutionService, SelfEvolutionService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -411,6 +442,56 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(PluginDetailEditorInput)
+	]
+);
+
+// Register EvolutionDetailEditorPane so that evolution records open in the editor area.
+// Clicking a record in the Evolution sidebar view opens the detail in the editor area.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		EvolutionDetailEditorPane,
+		EvolutionDetailEditorPane.ID,
+		localize('evolutionDetailEditor', "Evolution Detail"),
+	),
+	[
+		new SyncDescriptor(EvolutionDetailEditorInput)
+	]
+);
+
+// Register ChannelEditorPane so that channel configuration pages open in the editor area.
+// Clicking a channel in the Channel sidebar view opens its config in the editor area.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		ChannelEditorPane,
+		ChannelEditorPane.ID,
+		localize('channelEditor', "Channel Configuration"),
+	),
+	[
+		new SyncDescriptor(ChannelEditorInput)
+	]
+);
+
+// Register TaskOverviewEditorPane — Kanban board overview in the editor area.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		TaskOverviewEditorPane,
+		TaskOverviewEditorPane.ID,
+		localize('taskOverviewEditor', "Task Overview"),
+	),
+	[
+		new SyncDescriptor(TaskOverviewEditorInput)
+	]
+);
+
+// Register TaskDetailEditorPane — single task detail page in the editor area.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		TaskDetailEditorPane,
+		TaskDetailEditorPane.ID,
+		localize('taskDetailEditor', "Task Detail"),
+	),
+	[
+		new SyncDescriptor(TaskDetailEditorInput)
 	]
 );
 
@@ -509,6 +590,8 @@ registerWorkbenchContribution2(LanguageModelsToAgentOSBridge.ID, LanguageModelsT
 // 每一项都可独立失败而不影响其他能力 —— 我们对每个 Provider 用 try/catch 兜底。
 import { ISkillRegistry } from '../common/skills.js';
 import { SkillRegistry } from './skillRegistryService.js';
+import { ISkillInstallService } from '../common/skillHubTypes.js';
+import { SkillInstallService } from './skillInstallService.js';
 import { BuiltinToolProvider } from './providers/tool/builtinToolProvider.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
 import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.js';
@@ -517,6 +600,7 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
+registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';
@@ -1178,6 +1262,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: ToolsViewPane,
 		});
 
+		// 7.5 MCP (order: 65)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.mcp',
+			title: localize2('agentStudio.mcp.title', "MCP"),
+			icon: mcpIcon,
+			viewId: AGENT_STUDIO_MCP_VIEW_ID,
+			order: 65,
+			viewCtor: McpViewPane,
+		});
+
 		// 8. Changes (order: 70)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.changes',
@@ -1186,6 +1280,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_CHANGES_VIEW_ID,
 			order: 70,
 			viewCtor: ChangesViewPane,
+		});
+
+		// 8.5 Channel (order: 75)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.channel',
+			title: localize2('agentStudio.channel.title', "Channel"),
+			icon: channelIcon,
+			viewId: AGENT_STUDIO_CHANNEL_VIEW_ID,
+			order: 75,
+			viewCtor: ChannelViewPane,
 		});
 
 		// 9. Search (order: 80) - [Sarosis] Reuse native VSCode SearchView with workspace selector
@@ -1228,24 +1332,14 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: HealthMonitorViewPane,
 		});
 
-		// 10.6 Workspace Template (order: 87)
+		// 11. Self-Evolution (order: 92)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.workspaceTemplate',
-			title: localize2('agentStudio.workspaceTemplate.title', "Workspace Templates"),
-			icon: Codicon.repo,
-			viewId: AGENT_STUDIO_WORKSPACE_TEMPLATE_VIEW_ID,
-			order: 87,
-			viewCtor: WorkspaceTemplateViewPane,
-		});
-
-		// 10.7 Crew/Team (order: 89)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.crewTeam',
-			title: localize2('agentStudio.crewTeam.title', "Crew/Team"),
-			icon: Codicon.organization,
-			viewId: AGENT_STUDIO_CREW_TEAM_VIEW_ID,
-			order: 89,
-			viewCtor: CrewTeamViewPane,
+			id: 'agentStudio.evolution',
+			title: localize2('agentStudio.evolution.title', "Self-Evolution"),
+			icon: evolutionIcon,
+			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
+			order: 92,
+			viewCtor: EvolutionViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //

@@ -135,6 +135,10 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 		return this._toolProviders.length > 0 ? this._toolProviders[0].provider : undefined;
 	}
 
+	getToolProviders(): IToolProvider[] {
+		return this._toolProviders.map(p => p.provider);
+	}
+
 	// ── Planning Providers ───────────────────────────────────────
 
 	registerPlanningProvider(provider: IPlanningProvider, priority: number = 0): IDisposable {

@@ -81,7 +81,12 @@
 		},
 		"commands": [
 			{ "command": "knot.openSettings", "title": "Knot: Open Settings" },
-			{ "command": "knot.refreshAgents", "title": "Knot: Refresh Agent List" }
+			{ "command": "knot.refreshAgents", "title": "Knot: Refresh Agent List" },
+			{ "command": "knot.checkCli", "title": "Knot: Check CLI Status" },
+			{ "command": "knot.installCli", "title": "Knot: Install CLI" },
+			{ "command": "knot.workspace.list", "title": "Knot: List CLI Workspaces" },
+			{ "command": "knot.workspace.add", "title": "Knot: Add CLI Workspace" },
+			{ "command": "knot.workspace.remove", "title": "Knot: Remove CLI Workspace" }
 		]
 	},
 	"scripts": {

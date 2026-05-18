@@ -36,9 +36,11 @@ import { EmployeeListView } from './EmployeeListView';
 import { CreateAgentModal } from '../employees/CreateAgentModal';
 import { SessionSwitcher } from './SessionSwitcher';
 import { ForkReadOnlyBanner } from './ForkReadOnlyBanner';
+import { OrchestrationPlanDialog } from '../orchestration/OrchestrationPlanDialog';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useWorkspaceSessionStore } from '../../store/useWorkspaceSessionStore';
+import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { sendRequest } from '../../bridge/messageClient';
 
 type ViewMode = 'canvas' | 'list';
@@ -52,9 +54,10 @@ const edgeTypes: EdgeTypes = {
 };
 
 export function WorkspaceCanvas(): React.ReactElement {
-	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, saveLayout, isReadOnly } = useWorkspaceStore();
+	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, updateEdges, saveLayout, isReadOnly } = useWorkspaceStore();
 	const { employees, selectEmployee, deleteEmployee, loadEmployees } = useEmployeeStore();
 	const { mode } = useWorkspaceSessionStore();
+	const { isPlanDialogOpen, openPlanDialog, closePlanDialog } = useOrchestrationStore();
 	const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
 
 	// Create agent modal state
@@ -79,16 +82,103 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
 	// Build ReactFlow nodes from employees + stored positions
+	// ─── Node overlap constants ────────────────────────────────────────
+	// NODE_WIDTH / NODE_HEIGHT define the bounding box used for overlap detection.
+	// They must match (or slightly exceed) the CSS-rendered card size.
+	const NODE_WIDTH = 280;
+	const NODE_HEIGHT = 180;
+
+	// Helper: check if two rectangles overlap
+	const rectsOverlap = useCallback(
+		(a: { x: number; y: number }, b: { x: number; y: number }) =>
+			Math.abs(a.x - b.x) < NODE_WIDTH && Math.abs(a.y - b.y) < NODE_HEIGHT,
+		[]
+	);
+
+	// Helper: find a position on the grid that doesn't overlap existing positions
+	const findNonOverlappingPosition = useCallback(
+		(occupied: Array<{ x: number; y: number }>) => {
+			const ORIGIN_X = 100;
+			const ORIGIN_Y = 100;
+			const COL_WIDTH = NODE_WIDTH + 20;   // card width + gap
+			const ROW_HEIGHT = NODE_HEIGHT + 20;  // card height + gap
+			const MAX_COLS = 4;
+
+			for (let cell = 0; cell < 100; cell++) {
+				const cx = ORIGIN_X + (cell % MAX_COLS) * COL_WIDTH;
+				const cy = ORIGIN_Y + Math.floor(cell / MAX_COLS) * ROW_HEIGHT;
+				const overlaps = occupied.some(p => rectsOverlap({ x: cx, y: cy }, p));
+				if (!overlaps) { return { x: cx, y: cy }; }
+			}
+			const maxY = occupied.reduce((m, p) => Math.max(m, p.y), 0);
+			return { x: ORIGIN_X, y: maxY + ROW_HEIGHT + 20 };
+		},
+		[rectsOverlap]
+	);
+
+	/**
+	 * Check whether `candidate` overlaps any node other than `nodeId`.
+	 */
+	const isPositionOverlapping = useCallback(
+		(candidate: { x: number; y: number }, nodeId: string, allNodes: Node[]): boolean => {
+			return allNodes.some(n => n.id !== nodeId && rectsOverlap(candidate, n.position));
+		},
+		[rectsOverlap]
+	);
+
+	/**
+	 * Resolve a candidate position so it does not overlap any other node.
+	 * Spiral search; used for sidebar drop (new node creation), where there
+	 * is no "previous valid position" to fall back to.
+	 */
+	const resolveNonOverlappingPosition = useCallback(
+		(candidate: { x: number; y: number }, nodeId: string, allNodes: Node[]): { x: number; y: number } => {
+			const others = allNodes.filter(n => n.id !== nodeId).map(n => n.position);
+			if (!others.some(p => rectsOverlap(candidate, p))) {
+				return candidate;
+			}
+			const STEP_X = NODE_WIDTH + 20;
+			const STEP_Y = NODE_HEIGHT + 20;
+			for (let ring = 1; ring <= 20; ring++) {
+				const offsets: Array<{ x: number; y: number }> = [];
+				for (let i = -ring; i <= ring; i++) {
+					offsets.push({ x: i * STEP_X, y: -ring * STEP_Y });
+					offsets.push({ x: i * STEP_X, y: ring * STEP_Y });
+					if (i !== -ring && i !== ring) {
+						offsets.push({ x: -ring * STEP_X, y: i * STEP_Y });
+						offsets.push({ x: ring * STEP_X, y: i * STEP_Y });
+					}
+				}
+				for (const off of offsets) {
+					const pos = { x: candidate.x + off.x, y: candidate.y + off.y };
+					if (!others.some(p => rectsOverlap(pos, p))) {
+						return pos;
+					}
+				}
+			}
+			const maxY = others.reduce((m, p) => Math.max(m, p.y), 0);
+			return { x: candidate.x, y: maxY + NODE_HEIGHT + 20 };
+		},
+		[rectsOverlap]
+	);
+
+	// ─── Drag state: last valid (non-overlapping) position during a drag ──
+	// Tracks the most recent position visited during a drag where the node
+	// did NOT overlap any other node. On drag stop, if the release point
+	// overlaps, we revert to this remembered position instead of jumping
+	// elsewhere (e.g. the original start) or running a spiral search.
+	const lastValidDragPosRef = useRef<{ nodeId: string; position: { x: number; y: number } } | null>(null);
+
 	const initialNodes = useMemo<Node[]>(() => {
-		return employees.map((emp, index) => {
+		const assignedPositions: Array<{ x: number; y: number }> = [];
+		return employees.map((emp) => {
 			const storedNode = storeNodes.find(n => n.id === emp.id);
+			const pos = storedNode?.position || emp.position || findNonOverlappingPosition(assignedPositions);
+			assignedPositions.push(pos);
 			return {
 				id: emp.id,
 				type: 'employee',
-				position: storedNode?.position || emp.position || {
-					x: 100 + (index % 4) * 280,
-					y: 100 + Math.floor(index / 4) * 200,
-				},
+				position: pos,
 				draggable: true,
 				selectable: true,
 				data: {
@@ -99,7 +189,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 				},
 			};
 		});
-	}, [employees, storeNodes, selectEmployee]);
+	}, [employees, storeNodes, selectEmployee, findNonOverlappingPosition]);
 
 	const initialEdges = useMemo<Edge[]>(() => {
 		return storeEdges.map((e) => ({
@@ -116,19 +206,59 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
 	const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-	// Sync nodes when employees change (preserve current positions from drag)
+	// Keep a ref to the latest `nodes` so that drag callbacks (which may be
+	// cached by ReactFlow during an active drag gesture) can always read the
+	// most up-to-date node positions for overlap detection.
+	const nodesRef = useRef(nodes);
+	nodesRef.current = nodes;
+
+	// Sync nodes when employees change (add/remove agents).
+	//
+	// IMPORTANT: We deliberately depend ONLY on `employees` (not `storeNodes`)
+	// to avoid a race condition during drag-and-drop:
+	//   1. User drags node A onto node B (overlap).
+	//   2. `onNodeDragStop` calls `setNodes` with the resolved (non-overlap)
+	//      position AND `updateNodes` to write into zustand store.
+	//   3. The zustand `storeNodes` reference change would otherwise re-trigger
+	//      this effect, which then rebuilds nodes from `prevNodes` (whose A
+	//      may still hold the overlap position depending on commit timing),
+	//      visually snapping the card back.
+	// By dropping `storeNodes` from deps, drag-stop becomes the single source
+	// of truth for visual position updates; `storeNodes` is only used for
+	// INITIAL placement of brand-new employees (read inline below).
 	useEffect(() => {
 		setNodes(prevNodes => {
-			const builtNodes = employees.map((emp, index) => {
-				const storedNode = storeNodes.find(n => n.id === emp.id);
+			const assignedPositions: Array<{ x: number; y: number }> = [];
+			// Collect positions of all existing (already-rendered) nodes first
+			for (const n of prevNodes) { assignedPositions.push(n.position); }
+
+			// Read the current store snapshot lazily — we only need it to
+			// initialize positions of newly-added employees, not to override
+			// existing ones that the user may have just dragged.
+			const currentStoreNodes = useWorkspaceStore.getState().nodes;
+
+			const builtNodes = employees.map((emp) => {
 				const existingNode = prevNodes.find(n => n.id === emp.id);
+				const storedNode = currentStoreNodes.find(n => n.id === emp.id);
+
+				let pos: { x: number; y: number };
+				if (existingNode) {
+					// Already on canvas – keep current position (user may have dragged it)
+					pos = existingNode.position;
+				} else if (storedNode?.position) {
+					pos = storedNode.position;
+				} else if (emp.position) {
+					pos = emp.position;
+				} else {
+					// Brand new node – find a spot that doesn't overlap
+					pos = findNonOverlappingPosition(assignedPositions);
+				}
+				assignedPositions.push(pos);
+
 				return {
 					id: emp.id,
 					type: 'employee' as const,
-					position: existingNode?.position || storedNode?.position || emp.position || {
-						x: 100 + (index % 4) * 280,
-						y: 100 + Math.floor(index / 4) * 200,
-					},
+					position: pos,
 					draggable: true,
 					selectable: true,
 					data: {
@@ -141,18 +271,25 @@ export function WorkspaceCanvas(): React.ReactElement {
 			});
 			return builtNodes;
 		});
-	}, [employees, storeNodes, selectEmployee, setNodes]);
+	}, [employees, selectEmployee, setNodes, findNonOverlappingPosition]);
 
 	// Connection handlers
 	const onConnect = useCallback(async (params: Connection) => {
 		if (!activeWorkspaceId || !params.source || !params.target || isReadOnly) { return; }
-		setEdges((eds) => addEdge({
-			...params,
-			type: 'connection',
-			animated: true,
-			style: { stroke: 'var(--vscode-textLink-foreground, #3b82f6)', strokeWidth: 2 },
-		}, eds));
 
+		// 1. Update local ReactFlow state (optimistic UI)
+		let updatedEdges: Edge[] = [];
+		setEdges((eds) => {
+			updatedEdges = addEdge({
+				...params,
+				type: 'connection',
+				animated: true,
+				style: { stroke: 'var(--vscode-textLink-foreground, #3b82f6)', strokeWidth: 2 },
+			}, eds);
+			return updatedEdges;
+		});
+
+		// 2. Persist connection via dedicated connections API
 		try {
 			await sendRequest('workspace.connections.add', {
 				workspaceId: activeWorkspaceId,
@@ -163,20 +300,157 @@ export function WorkspaceCanvas(): React.ReactElement {
 		} catch (err) {
 			console.error('Failed to add connection:', err);
 		}
-	}, [activeWorkspaceId, setEdges]);
 
-	const onNodeDragStop = useCallback((_event: React.MouseEvent, node: Node) => {
-		if (isReadOnly) { return; } // Don't persist layout changes in fork mode
+		// 3. Sync edges to store and persist layout so edges survive reload
+		updateEdges(updatedEdges.map(e => ({
+			id: e.id,
+			source: e.source,
+			target: e.target,
+			type: e.type,
+			data: e.data,
+		})));
+		try {
+			await saveLayout();
+		} catch (err) {
+			console.error('[WorkspaceCanvas] Failed to save layout after connect:', err);
+		}
+	}, [activeWorkspaceId, setEdges, updateEdges, saveLayout, isReadOnly]);
+
+	// ─── Drag lifecycle handlers ──────────────────────────────────────
+	// During a drag we continuously remember the last position where the
+	// node was NOT overlapping any other node. If the user releases on top
+	// of another node, we snap back to that remembered position instead of
+	// jumping back to where the drag started.
+	const onNodeDragStart = useCallback((_event: React.MouseEvent, node: Node) => {
+		// Initialize "last valid" with the node's starting position — that
+		// position is, by definition, non-overlapping (the canvas guarantees
+		// no two nodes overlap at rest).
+		lastValidDragPosRef.current = {
+			nodeId: node.id,
+			position: { x: node.position.x, y: node.position.y },
+		};
+	}, []);
+
+	const onNodeDrag = useCallback((_event: React.MouseEvent, node: Node) => {
+		// Update "last valid" only when the current dragged position does
+		// NOT overlap any other node. Use nodesRef to always read the latest
+		// node positions, even if ReactFlow caches this callback during drag.
+		if (!isPositionOverlapping(node.position, node.id, nodesRef.current)) {
+			lastValidDragPosRef.current = {
+				nodeId: node.id,
+				position: { x: node.position.x, y: node.position.y },
+			};
+		}
+	}, [isPositionOverlapping]);
+
+	const onNodeDragStop = useCallback(async (_event: React.MouseEvent, node: Node) => {
+		if (isReadOnly) {
+			lastValidDragPosRef.current = null;
+			return; // Don't persist layout changes in fork mode
+		}
+
+		// Resolve the final position. Strategy when the release point
+		// (C in user's terms) overlaps another node:
+		//
+		//   1. PRIMARY: walk back from C toward the drag-start A along
+		//      the straight line C→A and pick the first sample that is
+		//      free. This always lands "on the path the user dragged",
+		//      which is what the user perceives as "position B".
+		//   2. FALLBACK: if for some reason C→A path is fully blocked
+		//      (shouldn't happen since A itself is free), use the last
+		//      non-overlapping position recorded during onNodeDrag.
+		//   3. LAST RESORT: stay at A (the drag-start).
+		const currentNodes = nodesRef.current;
+		const releaseOverlaps = isPositionOverlapping(node.position, node.id, currentNodes);
+
+		let resolvedPos = node.position;
+		if (releaseOverlaps) {
+			const start = lastValidDragPosRef.current?.nodeId === node.id
+				? lastValidDragPosRef.current.position
+				: null;
+
+			// Step (1): retrace C → A and pick first free position.
+			if (start) {
+				const dx = start.x - node.position.x;
+				const dy = start.y - node.position.y;
+				const dist = Math.hypot(dx, dy);
+				if (dist > 0) {
+					// Sample every ~10px along the line, max 200 samples.
+					const STEP = 10;
+					const steps = Math.min(200, Math.max(1, Math.ceil(dist / STEP)));
+					for (let i = 1; i <= steps; i++) {
+						const t = i / steps;
+						const candidate = {
+							x: node.position.x + dx * t,
+							y: node.position.y + dy * t,
+						};
+						if (!isPositionOverlapping(candidate, node.id, currentNodes)) {
+							resolvedPos = candidate;
+							break;
+						}
+					}
+				}
+			}
+
+			// Step (2): if still overlapping, use sampled fallback (B from drag).
+			if (resolvedPos === node.position) {
+				const fallback = lastValidDragPosRef.current;
+				if (fallback && fallback.nodeId === node.id) {
+					resolvedPos = fallback.position;
+				}
+			}
+		}
+
+		const positionChanged = resolvedPos.x !== node.position.x || resolvedPos.y !== node.position.y;
+
+		// Clear drag state
+		lastValidDragPosRef.current = null;
+
+		// If position was adjusted, update the ReactFlow node visually
+		if (positionChanged) {
+			setNodes(nds => nds.map(n => n.id === node.id ? { ...n, position: resolvedPos } : n));
+		}
+
+		console.log('[WorkspaceCanvas] onNodeDragStop:', {
+			id: node.id,
+			rawPos: node.position,
+			resolvedPos,
+			revertedDueToOverlap: releaseOverlaps,
+			workspaceId: activeWorkspaceId,
+		});
+
+		// Update zustand store (serializable only — no callbacks)
 		updateNodes(
-			nodes.map(n => ({
+			currentNodes.map(n => ({
 				id: n.id,
 				type: n.type || 'employee',
-				position: n.id === node.id ? node.position : n.position,
-				data: n.data as Record<string, unknown>,
+				position: n.id === node.id ? resolvedPos : n.position,
+				data: {},
 			}))
 		);
-		saveLayout();
-	}, [nodes, updateNodes, saveLayout, isReadOnly]);
+
+		// 1) Persist directly to employees.json via the proven `employees.update`
+		//    pathway. This is the SOURCE OF TRUTH for individual agent positions
+		//    and is what survives a window reload (since canvas reconstructs
+		//    positions from `emp.position` when no layout exists).
+		try {
+			await sendRequest('employees.update', {
+				id: node.id,
+				data: { position: resolvedPos },
+			});
+			console.log('[WorkspaceCanvas] employees.update OK for', node.id);
+		} catch (err) {
+			console.error('[WorkspaceCanvas] employees.update FAILED:', err);
+		}
+
+		// 2) Also persist layout to workspaces.json (best-effort double-write).
+		try {
+			await saveLayout();
+			console.log('[WorkspaceCanvas] saveLayout OK');
+		} catch (err) {
+			console.error('[WorkspaceCanvas] saveLayout FAILED:', err);
+		}
+	}, [updateNodes, saveLayout, isReadOnly, isPositionOverlapping, setNodes, activeWorkspaceId]);
 
 	const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
 		console.warn(`[WorkspaceCanvas] onNodeClick: node.id=${node.id}`);
@@ -201,7 +475,22 @@ export function WorkspaceCanvas(): React.ReactElement {
 				console.error('Failed to delete connection:', err);
 			}
 		}
-	}, [activeWorkspaceId]);
+		// Sync remaining edges to store and persist layout
+		const deletedIds = new Set(edgesToDelete.map(e => e.id));
+		const remainingEdges = edges.filter(e => !deletedIds.has(e.id));
+		updateEdges(remainingEdges.map(e => ({
+			id: e.id,
+			source: e.source,
+			target: e.target,
+			type: e.type,
+			data: e.data,
+		})));
+		try {
+			await saveLayout();
+		} catch (err) {
+			console.error('[WorkspaceCanvas] Failed to save layout after edge delete:', err);
+		}
+	}, [activeWorkspaceId, edges, updateEdges, saveLayout]);
 
 	// Handle edge changes (including removal)
 	const handleEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
@@ -226,10 +515,14 @@ export function WorkspaceCanvas(): React.ReactElement {
 		if (!employeeData || !reactFlowInstance.current) { return; }
 
 		const employee: Employee = JSON.parse(employeeData);
-		const position = reactFlowInstance.current.screenToFlowPosition({
+		const rawPosition = reactFlowInstance.current.screenToFlowPosition({
 			x: event.clientX,
 			y: event.clientY,
 		});
+
+		// Resolve overlaps with existing nodes
+		const currentNodes = reactFlowInstance.current.getNodes();
+		const position = resolveNonOverlappingPosition(rawPosition, employee.id, currentNodes);
 
 		const newNode: Node = {
 			id: employee.id,
@@ -251,7 +544,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 				data: { position, workspaceId: activeWorkspaceId },
 			});
 		}
-	}, [activeWorkspaceId, setNodes, selectEmployee]);
+	}, [activeWorkspaceId, setNodes, selectEmployee, resolveNonOverlappingPosition]);
 
 	// List mode drop (no canvas coordinates needed)
 	const onListDrop = useCallback(async (event: React.DragEvent) => {
@@ -311,6 +604,13 @@ export function WorkspaceCanvas(): React.ReactElement {
 									</svg>
 									<span className="canvas-add-agent-label">添加 Agent</span>
 								</button>
+								<button
+									className="task-board-orchestrate-btn"
+									onClick={() => openPlanDialog()}
+									title="任务编排 - AI 自动拆分任务、创建 Agent"
+								>
+									🎯 任务编排
+								</button>
 								<div className="canvas-toggle-divider" />
 							</>
 						)}
@@ -340,6 +640,8 @@ export function WorkspaceCanvas(): React.ReactElement {
 						onNodesChange={onNodesChange}
 						onEdgesChange={handleEdgesChange}
 						onConnect={onConnect}
+						onNodeDragStart={onNodeDragStart}
+						onNodeDrag={onNodeDrag}
 						onNodeDragStop={onNodeDragStop}
 						onNodeClick={onNodeClick}
 						onInit={onInit}
@@ -419,6 +721,13 @@ export function WorkspaceCanvas(): React.ReactElement {
 									</svg>
 									<span className="canvas-add-agent-label">添加 Agent</span>
 								</button>
+								<button
+									className="task-board-orchestrate-btn"
+									onClick={() => openPlanDialog()}
+									title="任务编排 - AI 自动拆分任务、创建 Agent"
+								>
+									🎯 任务编排
+								</button>
 								<div className="canvas-toggle-divider" />
 							</>
 						)}
@@ -462,6 +771,11 @@ export function WorkspaceCanvas(): React.ReactElement {
 				}}
 				workspaceId={activeWorkspaceId || undefined}
 			/>
+
+			{/* Orchestration Plan Dialog */}
+			{isPlanDialogOpen && (
+				<OrchestrationPlanDialog onClose={closePlanDialog} />
+			)}
 		</div>
 	);
 }

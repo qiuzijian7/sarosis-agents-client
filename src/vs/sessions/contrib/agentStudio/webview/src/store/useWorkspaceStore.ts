@@ -105,14 +105,31 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
 	saveLayout: async () => {
 		const { activeWorkspaceId, nodes, edges, viewport, isReadOnly } = get();
-		if (!activeWorkspaceId || isReadOnly) { return; }
+		if (!activeWorkspaceId || isReadOnly) {
+			console.warn('[WorkspaceStore] saveLayout skipped:', { activeWorkspaceId, isReadOnly });
+			return;
+		}
 		try {
+			// Strip non-serializable data (e.g. onSelect/onDelete callbacks)
+			// from nodes before sending via postMessage (structured clone).
+			const serializableNodes = nodes.map(n => ({
+				id: n.id,
+				type: n.type,
+				position: n.position,
+				data: {},
+			}));
+			console.log('[WorkspaceStore] saveLayout sending:', {
+				workspaceId: activeWorkspaceId,
+				nodeCount: serializableNodes.length,
+				positions: serializableNodes.map(n => ({ id: n.id, pos: n.position })),
+			});
 			await sendRequest('workspace.updateLayout', {
 				workspaceId: activeWorkspaceId,
-				nodes,
+				nodes: serializableNodes,
 				edges,
 				viewport,
 			});
+			console.log('[WorkspaceStore] saveLayout response received');
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to save layout:', err);
 		}

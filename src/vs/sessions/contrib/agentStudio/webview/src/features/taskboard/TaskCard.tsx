@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Task Card (individual kanban card)
- *  Displays task info, supports drag, status actions
+ *  Displays task info, supports drag, status actions, dependencies, retry/pause/cancel
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback } from 'react';
@@ -65,6 +65,18 @@ export function TaskCard({
 			{/* Title */}
 			<div className="task-card-title">{task.title || task.description || 'Untitled'}</div>
 
+			{/* Dependencies display */}
+			{task.dependencies && task.dependencies.length > 0 && (
+				<div className="task-card-dependencies">
+					<span className="task-card-deps-label">依赖:</span>
+					{task.dependencies.map((depId, index) => (
+						<span key={depId} className="task-card-dep-tag">
+							#{depId.slice(-6)}{index < task.dependencies!.length - 1 ? '' : ''}
+						</span>
+					))}
+				</div>
+			)}
+
 			{/* Delegation route */}
 			{fromEmp && assignee && (
 				<div className="task-card-route">
@@ -75,8 +87,16 @@ export function TaskCard({
 			)}
 			{!fromEmp && assignee && (
 				<div className="task-card-assignee">
-					<span className="task-card-assignee-label">→</span>
-					<span>{assignee.name}</span>
+					<span className="task-card-assignee-icon">🤖</span>
+					<span className="task-card-assignee-name">{assignee.name}</span>
+					{assignee.role && <span className="task-card-assignee-role"> · {assignee.role}</span>}
+				</div>
+			)}
+			{/* Show assigneeName even if not found in employees list (e.g. auto-created) */}
+			{!assignee && task.assigneeName && (
+				<div className="task-card-assignee">
+					<span className="task-card-assignee-icon">🤖</span>
+					<span className="task-card-assignee-name">{task.assigneeName}</span>
 				</div>
 			)}
 
@@ -84,32 +104,52 @@ export function TaskCard({
 			<div className="task-card-footer">
 				<span className="task-card-time">{timeStr}</span>
 				<div className="task-card-actions">
-					{task.status === 'todo' && (
+					{/* Retry: for done(error) / cancelled tasks */}
+					{(task.status === 'cancelled' || task.error) && (
+						<button
+							className="task-card-action retry"
+							onClick={() => onStatusChange(task.id, 'todo', task.source)}
+							title="重做"
+						>🔄</button>
+					)}
+					{/* Pause: for running tasks */}
+					{task.status === 'running' && (
+						<button
+							className="task-card-action pause"
+							onClick={() => onStatusChange(task.id, 'todo', task.source)}
+							title="暂停"
+						>⏸</button>
+					)}
+					{/* Cancel: for todo/running tasks */}
+					{(task.status === 'todo' || task.status === 'running') && (
 						<button
 							className="task-card-action"
 							onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
-							title="Cancel"
+							title="取消"
 						>✕</button>
 					)}
+					{/* Archive: for done tasks */}
 					{task.status === 'done' && (
 						<button
 							className="task-card-action"
 							onClick={() => onArchive(task.id, task.source)}
-							title="Archive"
+							title="归档"
 						>📦</button>
 					)}
-					{(task.status === 'cancelled' || task.status === 'archived') && (
+					{/* Restore: for archived tasks */}
+					{task.status === 'archived' && (
 						<button
 							className="task-card-action"
 							onClick={() => onStatusChange(task.id, 'todo', task.source)}
-							title="Restore"
+							title="恢复"
 						>↩</button>
 					)}
+					{/* Delete: for standalone (non-delegation) non-running tasks */}
 					{task.source === 'task-board' && task.status !== 'running' && (
 						<button
 							className="task-card-action delete"
 							onClick={() => onDelete(task.id, task.source)}
-							title="Delete"
+							title="删除"
 						>🗑</button>
 					)}
 				</div>

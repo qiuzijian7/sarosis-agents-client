@@ -204,6 +204,9 @@ export class MainEditorPart extends MainEditorPartBase {
 			'file zone group:', this._fileZoneRootGroupId,
 			'agent zone group:', this._agentZoneRootGroupId,
 			'total groups:', this.groups.length);
+
+		// Install collapse button after DOM is ready
+		queueMicrotask(() => this.installFileZoneCollapseButton());
 	}
 
 	/**
@@ -227,5 +230,74 @@ export class MainEditorPart extends MainEditorPartBase {
 	 */
 	protected override shouldForceSameOrientation(_locationView: IEditorGroupView, _direction: GroupDirection): boolean {
 		return false;
+	}
+
+	// ── File Zone Collapse/Expand Button ─────────────────────────
+
+	private fileZoneCollapseBtn: HTMLElement | undefined;
+
+	private installFileZoneCollapseButton(): void {
+		const fileRootGroup = this.getGroup(this._fileZoneRootGroupId);
+		if (!fileRootGroup?.element) {
+			setTimeout(() => this.installFileZoneCollapseButton(), 50);
+			return;
+		}
+
+		// Find the editor-actions toolbar container in the file zone title bar
+		const actionsContainer = fileRootGroup.element.querySelector<HTMLElement>('.title .editor-actions');
+		if (!actionsContainer) {
+			setTimeout(() => this.installFileZoneCollapseButton(), 50);
+			return;
+		}
+
+		// Remove existing button
+		this.fileZoneCollapseBtn?.remove();
+
+		// Create the collapse/expand button
+		const btn = document.createElement('div');
+		btn.className = 'file-zone-collapse-btn';
+
+		const icon = document.createElement('a');
+		icon.className = 'action-label codicon codicon-chevron-left';
+		icon.title = 'Collapse File Zone';
+		icon.tabIndex = 0;
+		icon.role = 'button';
+		btn.appendChild(icon);
+
+		btn.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.toggleFileZoneCollapse();
+		});
+
+		// Insert the button into the editor-actions container
+		actionsContainer.appendChild(btn);
+		this.fileZoneCollapseBtn = btn;
+
+		this.updateCollapseButtonIcon();
+
+		// Listen for maximize state changes to update the icon
+		this._register(this.onDidChangeGroupMaximized(() => this.updateCollapseButtonIcon()));
+	}
+
+	private toggleFileZoneCollapse(): void {
+		const agentGroup = this.getGroup(this._agentZoneRootGroupId);
+		if (!agentGroup) return;
+
+		this.toggleMaximizeGroup(agentGroup);
+	}
+
+	private updateCollapseButtonIcon(): void {
+		const btn = this.fileZoneCollapseBtn;
+		if (!btn) return;
+
+		const icon = btn.querySelector<HTMLElement>('.codicon');
+		if (!icon) return;
+
+		const isCollapsed = this.hasMaximizedGroup();
+
+		icon.classList.remove('codicon-chevron-left', 'codicon-chevron-right');
+		icon.classList.add(isCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-left');
+		icon.title = isCollapsed ? 'Expand File Zone' : 'Collapse File Zone';
 	}
 }

@@ -9,7 +9,7 @@ import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webvi
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { URI } from '../../../../base/common/uri.js';
 import { mainWindow } from '../../../../base/browser/window.js';
-import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService } from '../common/agentStudio.js';
+import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
 import type { IChatStreamDelta } from '../common/agentStudio.js';
 import type { AgentExportData } from '../../../common/agentStudioTypes.js';
 import { IEnvironmentService, type INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -19,8 +19,21 @@ import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IWorkbenchThemeService } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import type { IProviderInfo, IProviderSelectPayload, IEmployeeExportPayload, IEmployeeImportPayload, IWorkspaceSessionCreatePayload } from './messageProtocol.js';
+import type {
+	IProviderInfo,
+	IProviderSelectPayload,
+	IEmployeeExportPayload,
+	IEmployeeImportPayload,
+	IWorkspaceSessionCreatePayload,
+	IOrchestrationTaskActionPayload,
+	IConfigMdEventPayload,
+	IConfigMdChatSendPayload,
+	IConfigMdWriteSourcePayload,
+	IConfigMdApplyPatchPayload,
+	IConfigMdRenderHtmlPayload,
+} from './messageProtocol.js';
 import { WorkspaceSessionService, type IWorkspaceSessionService } from './workspaceSessionService.js';
+import { ConfigMdService } from './configMdService.js';
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -41,6 +54,7 @@ export class AgentStudioWebviewController extends Disposable {
 
 	private _webview: IWebviewElement | undefined;
 	private readonly _sessionService: IWorkspaceSessionService;
+	private readonly _configMdService: ConfigMdService;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -52,13 +66,16 @@ export class AgentStudioWebviewController extends Disposable {
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentDelegationService private readonly agentDelegationService: IAgentDelegationService,
 		@IAgentTaskBoardService private readonly agentTaskBoardService: IAgentTaskBoardService,
-		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
-		@IAgentOSService private readonly agentOSService: IAgentOSService,
-		@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
-		@IFileService private readonly fileService: IFileService,
+	@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
+	@IAgentOSService private readonly agentOSService: IAgentOSService,
+	@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
+	@IFileService private readonly fileService: IFileService,
+	@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
 	) {
 		super();
-		this._sessionService = new WorkspaceSessionService(logService, fileService, agentStudioService);
+		this._sessionService = new WorkspaceSessionService(logService, this.fileService, agentStudioService);
+		this._configMdService = new ConfigMdService(logService, this.fileService, agentStudioService, agentChatService);
+		this._register(this._configMdService);
 		this._createWebview();
 		this._registerServiceListeners();
 	}
@@ -226,6 +243,19 @@ export class AgentStudioWebviewController extends Disposable {
 					(p as unknown as IEmployeeImportPayload).exportData as unknown as AgentExportData,
 					(p as unknown as IEmployeeImportPayload).workspaceId,
 				);
+			case 'employees.syncPositions': {
+				// Sync multiple agent positions to agent.yaml + employees.json
+				const positions = p.positions as Array<{ id: string; position: { x: number; y: number } }>;
+				if (positions && Array.isArray(positions)) {
+					const promises = positions.map(({ id, position }) =>
+						this.agentStudioService.updateEmployeePosition(id, position).catch(err =>
+							this.logService.debug(`[AgentStudio] syncPositions: failed for ${id}`, err),
+						),
+					);
+					await Promise.all(promises);
+				}
+				return undefined;
+			}
 
 		// ─── Workspaces ─────────────────────────────────────────
 		case 'workspace.list':
@@ -322,8 +352,10 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._sessionService.getSessions(p.workspaceId as string);
 			case 'workspaceSession.get':
 				return this._sessionService.getSession(p.workspaceId as string, p.sessionId as string);
-			case 'workspaceSession.create':
-				return this._sessionService.createSession(p as unknown as IWorkspaceSessionCreatePayload);
+			case 'workspaceSession.create': {
+				const { workspaceId, name, source, scheduledTaskId, idempotencyKey } = p as unknown as IWorkspaceSessionCreatePayload;
+				return this._sessionService.createSession({ workspaceId, name, source: source as any, scheduledTaskId, idempotencyKey });
+			}
 			case 'workspaceSession.delete':
 				return this._sessionService.deleteSession(p.workspaceId as string, p.sessionId as string);
 			case 'workspaceSession.archive':
@@ -340,6 +372,76 @@ export class AgentStudioWebviewController extends Disposable {
 					p.error as string | undefined,
 				);
 
+		// ─── Agent Sessions (per-agent, Root mode) ─────────────
+			case 'agentSession.list':
+				return (this.agentChatService as any).listAgentSessions(p.employeeId as string);
+			case 'agentSession.create':
+				return (this.agentChatService as any).createAgentSession(p.employeeId as string, p.name as string | undefined);
+			case 'agentSession.rename':
+				return (this.agentChatService as any).renameAgentSession(p.employeeId as string, p.sessionId as string, p.name as string);
+			case 'agentSession.delete':
+				return (this.agentChatService as any).deleteAgentSession(p.employeeId as string, p.sessionId as string);
+			case 'agentSession.getActive':
+				return (this.agentChatService as any).getOrCreateActiveSession(p.employeeId as string, p.name as string | undefined);
+
+		// ─── Orchestration ─────────────────────────────────────
+			case 'orchestration.plan':
+				return this.taskOrchestrationService.createPlan(p.goal as string, p.workspaceId as string, p.plannerId as string);
+			case 'orchestration.approve':
+				return this.taskOrchestrationService.approvePlan(p.planId as string);
+			case 'orchestration.reject':
+				return this.taskOrchestrationService.rejectPlan(p.planId as string);
+			case 'orchestration.getPlan':
+				return this.taskOrchestrationService.getPlan(p.planId as string);
+			case 'orchestration.listPlans':
+				return this.taskOrchestrationService.listPlans(p.workspaceId as string | undefined);
+			case 'orchestration.taskAction': {
+				const actionPayload = p as unknown as IOrchestrationTaskActionPayload;
+				return this.taskOrchestrationService.taskAction(actionPayload.planId, actionPayload.taskId, actionPayload.action);
+			}
+
+		// ─── ConfigMD ─────────────────────────────────────────
+			case 'configmd.getResource':
+				return this._configMdService.resolveState(p.employeeId as string);
+			case 'configmd.readSource':
+				return this._configMdService.readSource(p.employeeId as string);
+			case 'configmd.writeSource': {
+				const wp = p as unknown as IConfigMdWriteSourcePayload;
+				return this._configMdService.writeSource(wp.employeeId, wp.markdown, {
+					origin: wp.origin,
+					baseVersion: wp.baseVersion,
+				});
+			}
+			case 'configmd.applyPatch': {
+				const ap = p as unknown as IConfigMdApplyPatchPayload;
+				return this._configMdService.applyPatch(ap.employeeId, ap.patches, {
+					origin: ap.origin,
+					baseVersion: ap.baseVersion,
+				});
+			}
+			case 'configmd.renderHtml': {
+				const rp = p as unknown as IConfigMdRenderHtmlPayload;
+				return this._configMdService.renderHtml(rp.employeeId, rp.markdown);
+			}
+			case 'confightml.event':
+			case 'configmd.event': {
+				const ep = p as unknown as IConfigMdEventPayload;
+				return this._configMdService.handleHtmlEvent(ep.employeeId, ep.eventName, ep.payload, ep.agentSessionId);
+			}
+			case 'configmd.chatSend': {
+				const cp = p as unknown as IConfigMdChatSendPayload;
+				return this._configMdService.handleChatSend(cp.employeeId, cp.message, {
+					context: cp.context,
+					showInChat: cp.showInChat,
+					agentSessionId: cp.agentSessionId,
+				});
+			}
+			case 'configmd.chatHistory':
+				return this.agentChatService.getHistory(p.employeeId as string, p.sessionId as string | undefined);
+			case 'configmd.notify':
+				this.logService.info(`[ConfigMD] Notification from ${p.employeeId}: ${p.message} [${p.level || 'info'}]`);
+				return undefined;
+
 			default:
 				throw new Error(`Unknown message type: ${type}`);
 		}
@@ -348,10 +450,18 @@ export class AgentStudioWebviewController extends Disposable {
 	private _handleChatSend(payload: Record<string, unknown>): { status: string; employeeId: string } {
 		const employeeId = payload.employeeId as string;
 		const message = payload.message as string;
-		const agentSessionId = payload.agentSessionId as string | undefined;
+		let agentSessionId = payload.agentSessionId as string | undefined;
+		const workspaceSessionId = payload.workspaceSessionId as string | undefined;
+		const workspaceId = payload.workspaceId as string | undefined;
+
+		// If we're in a Fork but no agentSessionId was provided, lazily create one
+		if (workspaceId && workspaceSessionId && !agentSessionId) {
+			this._ensureAgentSessionAndSend(employeeId, message, workspaceId, workspaceSessionId, payload);
+			return { status: 'streaming', employeeId };
+		}
 
 		// Persist the user message to chat history so it survives refreshes.
-		const userMessage: import('../../../common/agentStudioTypes').ChatMessage = {
+		const userMessage: import('../../../common/agentStudioTypes.js').ChatMessage = {
 			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
 			role: 'user',
 			content: message,
@@ -369,12 +479,63 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
+	 * Lazily create an AgentSession entry in the Fork, then proceed with the chat.
+	 * This is called when the webview sends a message in Fork mode but hasn't been
+	 * assigned an agentSessionId yet (first message for this Agent in this Fork).
+	 */
+	private async _ensureAgentSessionAndSend(
+		employeeId: string,
+		message: string,
+		workspaceId: string,
+		workspaceSessionId: string,
+		payload: Record<string, unknown>,
+	): Promise<void> {
+		try {
+			const entry = await this._sessionService.ensureAgentSession(workspaceId, workspaceSessionId, employeeId);
+			const agentSessionId = entry.sessionId;
+
+			// Persist the user message with the resolved agentSessionId
+			const userMessage: import('../../../common/agentStudioTypes.js').ChatMessage = {
+				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+				role: 'user',
+				content: message,
+				employeeId,
+				agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
+			this.agentChatService.appendMessage(employeeId, userMessage).catch(err =>
+				this.logService.error('[AgentStudio] Failed to persist user message:', err),
+			);
+
+			// Notify webview of the newly assigned agentSessionId
+			this._sendEvent('workspace.sessionUpdated', {
+				workspaceId,
+				sessionId: workspaceSessionId,
+				agentId: employeeId,
+				agentSessionId,
+			});
+
+			// Run the chat stream with the resolved agentSessionId
+			const enrichedPayload = { ...payload, agentSessionId };
+			this._runChatStream(employeeId, message, enrichedPayload);
+		} catch (err) {
+			this.logService.error('[AgentStudio] _ensureAgentSessionAndSend failed:', err);
+			this._sendEvent('chat.stream.error', {
+				employeeId,
+				sessionId: '',
+				error: `Failed to create agent session: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
+	}
+
+	/**
 	 * Run the chat stream in the background. This is fire-and-forget from
 	 * the webview's perspective — all results flow through events.
 	 */
 	private async _runChatStream(employeeId: string, message: string, payload: Record<string, unknown>): Promise<void> {
 		const agentSessionId = payload.agentSessionId as string | undefined;
 		const sessionIdForEvent = agentSessionId || '';
+		let capturedProviderSessionId: string | undefined;
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
@@ -387,6 +548,15 @@ export class AgentStudioWebviewController extends Disposable {
 					agentSessionId,
 				},
 				(delta: IChatStreamDelta) => {
+					// Capture provider session ID from metadata (e.g. Knot AG-UI threadId)
+					if (!capturedProviderSessionId && delta.metadata) {
+						const psid = (delta.metadata as Record<string, unknown>).sessionId
+							|| (delta.metadata as Record<string, unknown>).threadId
+							|| (delta.metadata as Record<string, unknown>).thread_id;
+						if (typeof psid === 'string' && psid) {
+							capturedProviderSessionId = psid;
+						}
+					}
 					this._sendEvent('chat.stream.delta', {
 						employeeId,
 						sessionId: sessionIdForEvent,
@@ -394,6 +564,15 @@ export class AgentStudioWebviewController extends Disposable {
 					});
 				},
 			);
+
+			// If we captured a provider session ID, persist it to the session index
+			if (capturedProviderSessionId && agentSessionId) {
+				(this.agentChatService as any).updateProviderSessionId(
+					employeeId, agentSessionId, capturedProviderSessionId,
+				).catch((err: unknown) =>
+					this.logService.error('[AgentStudio] Failed to store providerSessionId:', err),
+				);
+			}
 
 			this._sendEvent('chat.stream.complete', {
 				employeeId,
@@ -531,6 +710,25 @@ export class AgentStudioWebviewController extends Disposable {
 		// Listen for Workspace Session changes (Fork CRUD)
 		this._register(this._sessionService.onDidChangeWorkspaceSessions((workspaceId: string) => {
 			this._sendEvent('workspace.sessionUpdated', { workspaceId });
+		}));
+
+		// Listen for Orchestration plan/task changes
+		this._register(this.taskOrchestrationService.onDidChangePlan((plan) => {
+			this._sendEvent('orchestration.planUpdated', plan);
+		}));
+		this._register(this.taskOrchestrationService.onDidChangeTask(({ planId, task }) => {
+			this._sendEvent('orchestration.taskUpdated', { planId, task });
+		}));
+
+		// Listen for ConfigMD source / html / command events to push to WebView
+		this._register(this._configMdService.onDidChangeSource(({ employeeId, markdown, version, origin }) => {
+			this._sendEvent('configmd.sourceChanged', { employeeId, markdown, version, origin });
+		}));
+		this._register(this._configMdService.onDidRenderHtml(({ employeeId, html, version, stylesContent }) => {
+			this._sendEvent('configmd.htmlRendered', { employeeId, html, version, stylesContent });
+		}));
+		this._register(this._configMdService.onDidEmitCommand(({ employeeId, command }) => {
+			this._sendEvent('configmd.command', { employeeId, command });
 		}));
 	}
 

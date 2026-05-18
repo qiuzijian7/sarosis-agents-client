@@ -1,0 +1,335 @@
+/*---------------------------------------------------------------------------------------------
+ *  Channel Editor Pane Styles — configuration form in editor area
+ *--------------------------------------------------------------------------------------------*/
+
+.channel-editor {
+	width: 100%;
+	height: 100%;
+	overflow-y: auto;
+	overflow-x: hidden;
+	display: flex;
+	flex-direction: column;
+	font-size: 13px;
+}
+
+.channel-editor::-webkit-scrollbar {
+	width: 6px;
+}
+
+.channel-editor::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.channel-editor::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background);
+	border-radius: 3px;
+}
+
+.channel-editor::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+/* ─── Header ──────────────────────────────────────────────────────────── */
+
+.channel-editor-header {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 20px 24px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.channel-editor-header-icon {
+	font-size: 36px;
+	width: 56px;
+	height: 56px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 12px;
+	background: var(--vscode-input-background);
+	flex-shrink: 0;
+}
+
+.channel-editor-header-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.channel-editor-title {
+	margin: 0;
+	font-size: 20px;
+	font-weight: 700;
+	color: var(--vscode-editor-foreground);
+}
+
+.channel-editor-desc {
+	margin-top: 4px;
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.channel-editor-status-badge {
+	padding: 4px 12px;
+	border-radius: 12px;
+	font-size: 11px;
+	font-weight: 600;
+	flex-shrink: 0;
+}
+
+.channel-editor-status-badge.enabled {
+	background: rgba(76, 175, 80, 0.15);
+	color: #4caf50;
+}
+
+.channel-editor-status-badge.disabled {
+	background: var(--vscode-input-background);
+	color: var(--vscode-descriptionForeground);
+}
+
+.channel-editor-empty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 100%;
+	color: var(--vscode-descriptionForeground);
+	font-size: 14px;
+}
+
+/* ─── Form ────────────────────────────────────────────────────────────── */
+
+.channel-editor-form {
+	padding: 16px 24px;
+	flex: 1;
+}
+
+/* ─── Field Row ───────────────────────────────────────────────────────── */
+
+.channel-field-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	padding: 12px 0;
+	gap: 16px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.channel-field-row:last-of-type {
+	border-bottom: none;
+}
+
+.channel-field-row:hover {
+	background: var(--vscode-list-hoverBackground);
+	margin: 0 -8px;
+	padding: 12px 8px;
+	border-radius: 6px;
+}
+
+.channel-field-label-wrap {
+	flex: 1;
+	min-width: 0;
+}
+
+.channel-field-label {
+	font-weight: 600;
+	font-size: 13px;
+	color: var(--vscode-editor-foreground);
+	display: block;
+}
+
+.channel-field-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	line-height: 1.4;
+}
+
+.channel-field-control {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	min-width: 240px;
+}
+
+/* ─── Input Controls ──────────────────────────────────────────────────── */
+
+.channel-input,
+.channel-select {
+	width: 100%;
+	padding: 6px 10px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 13px;
+	font-family: inherit;
+	box-sizing: border-box;
+}
+
+.channel-input:focus,
+.channel-select:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.channel-input::placeholder {
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.6;
+}
+
+.channel-input-number {
+	width: 120px;
+}
+
+.channel-textarea {
+	width: 100%;
+	padding: 6px 10px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	font-family: monospace;
+	box-sizing: border-box;
+	resize: vertical;
+	min-height: 60px;
+	line-height: 1.5;
+}
+
+.channel-textarea:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.channel-textarea::placeholder {
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.6;
+}
+
+/* ─── Toggle Switch ───────────────────────────────────────────────────── */
+
+.channel-toggle {
+	position: relative;
+	display: inline-block;
+	width: 40px;
+	height: 22px;
+	cursor: pointer;
+}
+
+.channel-toggle input {
+	opacity: 0;
+	width: 0;
+	height: 0;
+}
+
+.channel-toggle-slider {
+	position: absolute;
+	cursor: pointer;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 11px;
+	transition: 0.2s;
+}
+
+.channel-toggle-slider:before {
+	content: '';
+	position: absolute;
+	height: 16px;
+	width: 16px;
+	left: 2px;
+	bottom: 2px;
+	background-color: var(--vscode-foreground);
+	border-radius: 50%;
+	transition: 0.2s;
+}
+
+.channel-toggle input:checked + .channel-toggle-slider {
+	background-color: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+
+.channel-toggle input:checked + .channel-toggle-slider:before {
+	transform: translateX(18px);
+	background-color: var(--vscode-button-foreground);
+}
+
+/* ─── Actions ─────────────────────────────────────────────────────────── */
+
+.channel-editor-actions {
+	display: flex;
+	gap: 10px;
+	padding: 20px 0;
+	border-top: 1px solid var(--vscode-panel-border);
+	margin-top: 8px;
+}
+
+.channel-editor-btn {
+	padding: 8px 20px;
+	border-radius: 6px;
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	border: none;
+	transition: background 0.15s;
+	font-family: inherit;
+}
+
+.channel-editor-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.channel-editor-btn-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.channel-editor-btn-secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.channel-editor-btn-secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.channel-editor-btn-danger {
+	background: transparent;
+	color: var(--vscode-errorForeground);
+	border: 1px solid var(--vscode-errorForeground);
+}
+
+.channel-editor-btn-danger:hover {
+	background: var(--vscode-errorBackground, rgba(255 0 0 / 0.1));
+}
+
+/* ─── Status Bar ──────────────────────────────────────────────────────── */
+
+.channel-editor-statusbar {
+	padding: 0 24px;
+	font-size: 12px;
+	min-height: 32px;
+	display: flex;
+	align-items: center;
+	transition: all 0.2s;
+}
+
+.channel-editor-statusbar:empty {
+	display: none;
+}
+
+.channel-status-success {
+	color: #4caf50;
+}
+
+.channel-status-error {
+	color: var(--vscode-errorForeground);
+}
+
+.channel-status-info {
+	color: var(--vscode-descriptionForeground);
+}

@@ -120,6 +120,14 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 				</button>
 			</div>
 
+			{/* ConfigMD indicator */}
+			{(employee as any).configMd && (
+				<div className="employee-node-configmd" title="ConfigMD 面板">
+					<span className="employee-node-configmd-icon">📝</span>
+					<span>MD Panel</span>
+				</div>
+			)}
+
 			{/* Bottom tags bar - Skills / Token */}
 			{(enabledSkills.length > 0 || totalTokens > 0) && (
 				<div className="employee-node-tags">

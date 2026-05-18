@@ -559,3 +559,106 @@
 	color: var(--vscode-foreground);
 	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
 }
+
+/* ─── Knot CLI Status Card ───────────────────────────── */
+
+.plugin-detail-cli-card {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px 14px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, #424242));
+	border-radius: 6px;
+	background: var(--vscode-editor-background);
+	max-width: 720px;
+}
+
+.plugin-detail-cli-status-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.plugin-detail-cli-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 10px;
+	border-radius: 12px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.2px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	flex-shrink: 0;
+}
+
+.plugin-detail-cli-badge.checking {
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.plugin-detail-cli-badge.installed {
+	background: var(--vscode-charts-green, #89D185);
+	color: #000;
+}
+
+.plugin-detail-cli-badge.missing {
+	background: var(--vscode-charts-yellow, #DCDCAA);
+	color: #000;
+}
+
+.plugin-detail-cli-badge.error {
+	background: var(--vscode-errorForeground, #f48771);
+	color: #fff;
+}
+
+.plugin-detail-cli-summary {
+	font-size: 13px;
+	color: var(--vscode-foreground);
+	flex: 1;
+	min-width: 0;
+}
+
+.plugin-detail-cli-detail {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-editor-font-family, monospace);
+	word-break: break-all;
+	min-height: 0;
+}
+
+.plugin-detail-cli-detail:empty {
+	display: none;
+}
+
+.plugin-detail-cli-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.5;
+}
+
+.plugin-detail-cli-actions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.plugin-detail-cli-msg {
+	font-size: 12px;
+	min-height: 16px;
+	color: var(--vscode-foreground);
+}
+
+.plugin-detail-cli-msg.success {
+	color: var(--vscode-charts-green, #89D185);
+}
+
+.plugin-detail-cli-msg.error {
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.plugin-detail-cli-msg.info {
+	color: var(--vscode-descriptionForeground);
+}
+

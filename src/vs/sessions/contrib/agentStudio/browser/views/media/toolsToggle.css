@@ -1,0 +1,265 @@
+/* ─── Tool Toggle Switch ───────────────────────────────────── */
+
+.tool-toggle {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+}
+
+.tool-toggle-input {
+	appearance: none;
+	-webkit-appearance: none;
+	width: 36px;
+	height: 20px;
+	background: var(--vscode-toggle-background, #555);
+	border-radius: 10px;
+	position: relative;
+	cursor: pointer;
+	transition: background 0.2s ease;
+	outline: none;
+	border: none;
+	margin: 0;
+	padding: 0;
+}
+
+.tool-toggle-input::before {
+	content: '';
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 16px;
+	height: 16px;
+	background: var(--vscode-toggle-slider-background, #fff);
+	border-radius: 50%;
+	transition: left 0.2s ease;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.tool-toggle-input:checked {
+	background: var(--vscode-toggle-active-background, #0066cc);
+}
+
+.tool-toggle-input:checked::before {
+	left: 18px;
+}
+
+.tool-toggle-input:hover {
+	opacity: 0.9;
+}
+
+.tool-toggle-input:focus {
+	outline: 1px solid var(--vscode-focusBorder, #007fd4);
+	outline-offset: 2px;
+}
+
+/* Disabled tool styling */
+.tool-item:not(.tool-enabled) {
+	opacity: 0.5;
+}
+
+.tool-item:not(.tool-enabled) .tool-name {
+	text-decoration: line-through;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ─── MCP View Styles ─────────────────────────────────────── */
+
+.mcp-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+	font-size: 13px;
+}
+
+.mcp-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.mcp-title {
+	font-size: 13px;
+	font-weight: 600;
+	margin: 0;
+}
+
+.mcp-add-btn {
+	cursor: pointer;
+	border: none;
+	border-radius: 4px;
+	padding: 4px 8px;
+	font-size: 11px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	transition: background 0.15s;
+}
+
+.mcp-add-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.mcp-tabs {
+	display: flex;
+	gap: 4px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.mcp-tab {
+	padding: 4px 10px;
+	font-size: 11px;
+	border-radius: 12px;
+	white-space: nowrap;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	border: 1px solid transparent;
+}
+
+.mcp-tab.active {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.mcp-tab:hover:not(.active) {
+	background: var(--vscode-button-secondaryBackground);
+}
+
+.mcp-list {
+	overflow-y: auto;
+	flex: 1;
+}
+
+.mcp-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Server items */
+.mcp-server-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	transition: background 0.15s;
+}
+
+.mcp-server-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.mcp-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.mcp-status-dot.status-connected {
+	background: var(--vscode-testing-iconPassed, #89d185);
+}
+
+.mcp-status-dot.status-disconnected {
+	background: var(--vscode-testing-iconFailed, #f14c4c);
+}
+
+.mcp-status-dot.status-error {
+	background: var(--vscode-testing-iconSkipped, #cca700);
+}
+
+.mcp-server-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.mcp-server-name {
+	font-size: 12px;
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mcp-server-tools {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.mcp-server-actions {
+	flex-shrink: 0;
+}
+
+.mcp-remove-btn {
+	cursor: pointer;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 14px;
+	padding: 2px 6px;
+	border-radius: 4px;
+}
+
+.mcp-remove-btn:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-errorForeground, #f14c4c);
+}
+
+/* MCP tool items */
+.mcp-tool-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	transition: background 0.15s;
+}
+
+.mcp-tool-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.mcp-tool-item:not(.tool-enabled) {
+	opacity: 0.5;
+}
+
+.mcp-tool-item:not(.tool-enabled) .mcp-tool-name {
+	text-decoration: line-through;
+	color: var(--vscode-descriptionForeground);
+}
+
+.mcp-tool-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.mcp-tool-name {
+	font-size: 12px;
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mcp-tool-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mcp-tool-server {
+	font-size: 10px;
+	color: var(--vscode-textLink-foreground, #3794ff);
+}

@@ -15,6 +15,7 @@ import { IKeybindingService } from '../../../../../platform/keybinding/common/ke
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import type { Employee, AgentBootstrapTemplates } from '../../../../common/agentStudioTypes.js';
 
@@ -806,6 +807,13 @@ export class PresetAgentViewPane extends ViewPane {
 	/** Dialog overlay elements */
 	private dialogOverlay: HTMLElement | null = null;
 
+	/**
+	 * Tracks the active workspace ID from the Canvas toolbar's
+	 * `agent-studio:active-workspace-changed` custom event so that
+	 * _deployPreset writes into the correct workspace directory.
+	 */
+	private _activeWorkspaceId: string | undefined;
+
 	constructor(
 		options: IViewPaneOptions,
 		@IKeybindingService keybindingService: IKeybindingService,
@@ -819,9 +827,62 @@ export class PresetAgentViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._loadCustomPresets();
+		this._listenActiveWorkspace();
+	}
+
+	/**
+	 * Listen for the global `agent-studio:active-workspace-changed` event
+	 * fired by AgentStudioWorkspaceToolbar so we always know which workspace
+	 * is selected in the Canvas.
+	 */
+	private _listenActiveWorkspace(): void {
+		const handler = (e: Event) => {
+			const detail = (e as CustomEvent).detail;
+			if (detail?.workspaceId) {
+				this._activeWorkspaceId = detail.workspaceId;
+			}
+		};
+		document.addEventListener('agent-studio:active-workspace-changed', handler);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:active-workspace-changed', handler) });
+
+		// Also try to initialise from existing workspaces so that deploy
+		// works even before the user manually switches workspace.
+		this._initActiveWorkspaceId();
+	}
+
+	/**
+	 * Eagerly resolve the active workspace ID by matching the current VS Code
+	 * folder against known workspaces. If only one workspace exists we use it
+	 * unconditionally.
+	 */
+	private async _initActiveWorkspaceId(): Promise<void> {
+		try {
+			const workspaces = await this.agentStudioService.getWorkspaces();
+			if (workspaces.length === 0) { return; }
+
+			// If there's exactly one workspace, just use it
+			if (workspaces.length === 1) {
+				this._activeWorkspaceId = workspaces[0].id;
+				return;
+			}
+
+			// Otherwise try path-matching
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) { return; }
+			const folderPath = folders[0].uri.fsPath;
+			const match = workspaces.find(ws =>
+				ws.path && ws.path.toLowerCase() === folderPath.toLowerCase()
+			);
+			if (match) {
+				this._activeWorkspaceId = match.id;
+			}
+		} catch {
+			// best-effort
+		}
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -1152,6 +1213,10 @@ export class PresetAgentViewPane extends ViewPane {
 		this.isDeploying = true;
 
 		try {
+			// Use the tracked activeWorkspaceId (kept in sync via the
+			// agent-studio:active-workspace-changed event from the toolbar).
+			const workspaceId = this._activeWorkspaceId;
+
 			const employeeData: Partial<Employee> = {
 				name: preset.name,
 				role: preset.role,
@@ -1160,6 +1225,7 @@ export class PresetAgentViewPane extends ViewPane {
 				customPrompt: preset.systemPrompt,
 				skills: preset.skills.map(s => ({ id: s, name: s, enabled: true })),
 				bootstrapTemplates: preset.bootstrapTemplates,
+				workspaceId,
 			};
 			const employee = await this.agentStudioService.createEmployee(employeeData);
 			this.notificationService.info(

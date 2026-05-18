@@ -13,20 +13,34 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
-import { IAgentTaskBoardService } from '../../common/agentStudio.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IAgentTaskBoardService, IAgentStudioService } from '../../common/agentStudio.js';
 import { $ } from '../../../../../base/browser/dom.js';
-import { TaskBoardStatus, type TaskBoardRecord } from '../../common/types.js';
+import { TaskBoardStatus, type TaskBoardRecord, type Workspace } from '../../common/types.js';
+import { TaskOverviewEditorInput } from '../taskOverviewEditorInput.js';
+import { TaskDetailEditorInput } from '../taskDetailEditorInput.js';
 
 /**
- * Tasks View - 任务管理面板
- * 功能：任务列表、状态筛选、创建任务、看板视图切换
+ * Tasks View - 任务管理面板 (ActivityBar Sidebar)
+ *
+ * 特性：
+ * - 垂直方向完全铺满
+ * - 顶部搜索框
+ * - Workspace/All 过滤切换
+ * - Overview 按钮（打开看板 EditorPane）
+ * - 任务列表（点击打开详情 EditorPane）
  */
 export class TasksViewPane extends ViewPane {
 
-	private listContainer!: HTMLElement;
-	private tasks: TaskBoardRecord[] = [];
-	private activeFilter: TaskBoardStatus | 'all' = 'all';
-	private viewMode: 'list' | 'board' = 'list';
+	private _root!: HTMLElement;
+	private _searchInput!: HTMLInputElement;
+	private _listContainer!: HTMLElement;
+	private _wsSelector!: HTMLSelectElement;
+	private _tasks: TaskBoardRecord[] = [];
+	private _workspaces: Workspace[] = [];
+	private _searchQuery = '';
+	private _selectedWorkspaceId: string | undefined; // undefined = All
+	private _statusFilter: TaskBoardStatus | 'all' = 'all';
 
 	constructor(
 		options: IViewPaneOptions,
@@ -40,202 +54,200 @@ export class TasksViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@IEditorService private readonly editorService: IEditorService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
 
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
-		container.classList.add('tasks-view');
 
-		// Toolbar
+		this._root = $('div.tasks-view-root');
+		container.appendChild(this._root);
+
+		// ─── Toolbar: Overview + Workspace selector ──────────────────
 		const toolbar = $('div.tasks-toolbar');
 
-		const addBtn = $('button.tasks-action-btn');
-		addBtn.textContent = '+ New Task';
-		addBtn.onclick = () => this._createTask();
-		toolbar.appendChild(addBtn);
+		const overviewBtn = $('button.tasks-overview-btn');
+		overviewBtn.textContent = '📋 Overview';
+		overviewBtn.title = '打开任务看板总览 (EditorPane)';
+		overviewBtn.onclick = () => this._openOverview();
+		toolbar.appendChild(overviewBtn);
 
-		const viewToggle = $('div.tasks-view-toggle');
-		const listBtn = $('button.view-mode-btn.active');
-		listBtn.textContent = '☰';
-		listBtn.title = 'List view';
-		listBtn.onclick = () => { this.viewMode = 'list'; this._updateViewMode(viewToggle); this._renderTasks(); };
-		viewToggle.appendChild(listBtn);
+		// Workspace selector dropdown
+		this._wsSelector = document.createElement('select');
+		this._wsSelector.className = 'tasks-ws-selector';
+		this._wsSelector.onchange = () => {
+			this._selectedWorkspaceId = this._wsSelector.value || undefined;
+			this._loadTasks();
+		};
+		toolbar.appendChild(this._wsSelector);
 
-		const boardBtn = $('button.view-mode-btn');
-		boardBtn.textContent = '▦';
-		boardBtn.title = 'Board view';
-		boardBtn.onclick = () => { this.viewMode = 'board'; this._updateViewMode(viewToggle); this._renderTasks(); };
-		viewToggle.appendChild(boardBtn);
-		toolbar.appendChild(viewToggle);
-		container.appendChild(toolbar);
+		this._root.appendChild(toolbar);
 
-		// Status filters
-		const filters = $('div.tasks-filters');
+		// Load workspaces for the selector
+		this._loadWorkspaces();
+
+		// ─── Search bar ───────────────────────────────────────────
+		const searchWrap = $('div.tasks-search');
+		const searchIcon = $('span.tasks-search-icon');
+		searchIcon.textContent = '🔍';
+		searchWrap.appendChild(searchIcon);
+
+		this._searchInput = document.createElement('input');
+		this._searchInput.type = 'text';
+		this._searchInput.placeholder = '搜索任务...';
+		this._searchInput.className = 'tasks-search-input';
+		this._searchInput.oninput = () => { this._searchQuery = this._searchInput.value; this._renderTasks(); };
+		searchWrap.appendChild(this._searchInput);
+		this._root.appendChild(searchWrap);
+
+		// ─── Status filters ───────────────────────────────────────
+		const filters = $('div.tasks-status-filters');
 		const statuses: Array<{ label: string; value: TaskBoardStatus | 'all'; icon: string }> = [
 			{ label: 'All', value: 'all', icon: '📋' },
 			{ label: 'Todo', value: TaskBoardStatus.Todo, icon: '⬜' },
-			{ label: 'Running', value: TaskBoardStatus.Running, icon: '🔄' },
+			{ label: 'Running', value: TaskBoardStatus.Running, icon: '⚡' },
 			{ label: 'Done', value: TaskBoardStatus.Done, icon: '✅' },
 			{ label: 'Cancelled', value: TaskBoardStatus.Cancelled, icon: '❌' },
 		];
 		for (const s of statuses) {
-			const btn = $('button.task-filter-btn');
+			const btn = $('button.task-filter-chip');
 			btn.textContent = `${s.icon} ${s.label}`;
 			if (s.value === 'all') { btn.classList.add('active'); }
 			btn.onclick = () => {
-				filters.querySelectorAll('.task-filter-btn').forEach(b => b.classList.remove('active'));
+				filters.querySelectorAll('.task-filter-chip').forEach(b => b.classList.remove('active'));
 				btn.classList.add('active');
-				this.activeFilter = s.value;
+				this._statusFilter = s.value;
 				this._renderTasks();
 			};
 			filters.appendChild(btn);
 		}
-		container.appendChild(filters);
+		this._root.appendChild(filters);
 
-		// Task list/board container
-		this.listContainer = $('div.tasks-content');
-		container.appendChild(this.listContainer);
+		// ─── Task list (fills remaining height) ───────────────────
+		this._listContainer = $('div.tasks-list-scroll');
+		this._root.appendChild(this._listContainer);
 
+		// Load & subscribe
 		this._loadTasks();
 		this._register(this.taskBoardService.onDidChangeTaskBoard(() => this._loadTasks()));
 	}
 
-	private _updateViewMode(toggle: HTMLElement): void {
-		const btns = toggle.querySelectorAll('.view-mode-btn');
-		btns.forEach((b, i) => {
-			b.classList.toggle('active', (i === 0 && this.viewMode === 'list') || (i === 1 && this.viewMode === 'board'));
-		});
+	private async _loadWorkspaces(): Promise<void> {
+		try {
+			this._workspaces = await this.agentStudioService.getWorkspaces();
+			this._rebuildWorkspaceSelector();
+		} catch { /* ignore */ }
+	}
+
+	private _rebuildWorkspaceSelector(): void {
+		if (!this._wsSelector) { return; }
+		this._wsSelector.innerHTML = '';
+
+		const allOpt = document.createElement('option');
+		allOpt.value = '';
+		allOpt.textContent = '🌍 All Workspaces';
+		this._wsSelector.appendChild(allOpt);
+
+		for (const ws of this._workspaces) {
+			const opt = document.createElement('option');
+			opt.value = ws.id;
+			opt.textContent = `🏠 ${ws.name}`;
+			if (ws.id === this._selectedWorkspaceId) { opt.selected = true; }
+			this._wsSelector.appendChild(opt);
+		}
 	}
 
 	private async _loadTasks(): Promise<void> {
 		try {
-			this.tasks = await this.taskBoardService.getTasks();
+			this._tasks = await this.taskBoardService.getTasks(this._selectedWorkspaceId);
 			this._renderTasks();
 		} catch {
-			this.listContainer.innerHTML = '<div class="tasks-error">⚠️ Failed to load tasks</div>';
+			this._listContainer.innerHTML = '<div class="tasks-empty">⚠️ Failed to load tasks</div>';
 		}
+	}
+
+	private _getFilteredTasks(): TaskBoardRecord[] {
+		let tasks = this._tasks;
+
+		// Status filter
+		if (this._statusFilter !== 'all') {
+			tasks = tasks.filter(t => t.status === this._statusFilter);
+		}
+
+		// Search filter
+		if (this._searchQuery) {
+			const q = this._searchQuery.toLowerCase();
+			tasks = tasks.filter(t =>
+				t.title.toLowerCase().includes(q) ||
+				(t.description || '').toLowerCase().includes(q) ||
+				(t.assigneeName || '').toLowerCase().includes(q)
+			);
+		}
+
+		return tasks;
 	}
 
 	private _renderTasks(): void {
-		const filtered = this.activeFilter === 'all'
-			? this.tasks
-			: this.tasks.filter(t => t.status === this.activeFilter);
-
-		if (this.viewMode === 'list') {
-			this._renderListView(filtered);
-		} else {
-			this._renderBoardView(filtered);
-		}
-	}
-
-	private _renderListView(tasks: TaskBoardRecord[]): void {
-		this.listContainer.innerHTML = '';
-		this.listContainer.className = 'tasks-content tasks-list-view';
+		this._listContainer.replaceChildren();
+		const tasks = this._getFilteredTasks();
 
 		if (tasks.length === 0) {
 			const empty = $('div.tasks-empty');
-			empty.innerHTML = '<p>No tasks found</p>';
-			this.listContainer.appendChild(empty);
+			empty.innerHTML = this._searchQuery ? '🔍 没有匹配的任务' : '📭 暂无任务';
+			this._listContainer.appendChild(empty);
 			return;
 		}
 
+		// Count header
+		const countEl = $('div.tasks-count');
+		countEl.textContent = `共 ${tasks.length} 个任务`;
+		this._listContainer.appendChild(countEl);
+
 		for (const task of tasks) {
-			const item = $('div.task-item');
-			item.classList.add(`task-${task.status}`);
+			const item = $('div.task-list-item');
+			item.classList.add(`status-${task.status}`);
+			item.onclick = () => this._openTaskDetail(task);
 
-			const statusIcon = $('span.task-status-icon');
-			statusIcon.textContent = this._getStatusIcon(task.status);
-			item.appendChild(statusIcon);
+			// Status dot
+			const dot = $('span.task-dot');
+			dot.textContent = this._getStatusIcon(task.status);
+			item.appendChild(dot);
 
-			const info = $('div.task-info');
-			const titleEl = $('div.task-title');
-			titleEl.textContent = task.title;
-			info.appendChild(titleEl);
+			// Content
+			const content = $('div.task-item-content');
 
-			if (task.description) {
-				const descEl = $('div.task-desc');
-				descEl.textContent = task.description;
-				info.appendChild(descEl);
-			}
+			const title = $('div.task-item-title');
+			title.textContent = task.title;
+			content.appendChild(title);
 
-			const metaEl = $('div.task-meta');
+			const meta = $('div.task-item-meta');
 			const parts: string[] = [];
-			if (task.assigneeName) { parts.push(`👤 ${task.assigneeName}`); }
-			if (task.priority) { parts.push(`🔥 ${task.priority}`); }
-			parts.push(`📅 ${new Date(task.createdAt).toLocaleDateString()}`);
-			metaEl.textContent = parts.join(' • ');
-			info.appendChild(metaEl);
-			item.appendChild(info);
+			if (task.assigneeName) { parts.push(`🤖 ${task.assigneeName}`); }
+			if (task.priority) { parts.push(`${task.priority}`); }
+			parts.push(new Date(task.createdAt).toLocaleDateString('zh-CN'));
+			meta.textContent = parts.join(' · ');
+			content.appendChild(meta);
 
-			const actions = $('div.task-actions');
-			if (task.status === TaskBoardStatus.Todo) {
-				const startBtn = $('button.task-action');
-				startBtn.textContent = '▶';
-				startBtn.title = 'Start task';
-				startBtn.onclick = () => this._updateStatus(task.id, TaskBoardStatus.Running);
-				actions.appendChild(startBtn);
+			item.appendChild(content);
+
+			// Priority indicator
+			if (task.priority === 'high') {
+				const pri = $('span.task-priority-high');
+				pri.textContent = '🔥';
+				item.appendChild(pri);
 			}
-			if (task.status === TaskBoardStatus.Running) {
-				const doneBtn = $('button.task-action');
-				doneBtn.textContent = '✓';
-				doneBtn.title = 'Complete task';
-				doneBtn.onclick = () => this._updateStatus(task.id, TaskBoardStatus.Done);
-				actions.appendChild(doneBtn);
-			}
-			const deleteBtn = $('button.task-action');
-			deleteBtn.textContent = '🗑️';
-			deleteBtn.onclick = () => this._deleteTask(task.id);
-			actions.appendChild(deleteBtn);
-			item.appendChild(actions);
 
-			this.listContainer.appendChild(item);
-		}
-	}
-
-	private _renderBoardView(_tasks: TaskBoardRecord[]): void {
-		this.listContainer.innerHTML = '';
-		this.listContainer.className = 'tasks-content tasks-board-view';
-
-		const columns: Array<{ status: TaskBoardStatus; label: string; icon: string }> = [
-			{ status: TaskBoardStatus.Todo, label: 'Todo', icon: '⬜' },
-			{ status: TaskBoardStatus.Running, label: 'In Progress', icon: '🔄' },
-			{ status: TaskBoardStatus.Done, label: 'Done', icon: '✅' },
-		];
-
-		for (const col of columns) {
-			const column = $('div.board-column');
-			const colHeader = $('div.board-column-header');
-			colHeader.textContent = `${col.icon} ${col.label}`;
-			const colTasks = this.tasks.filter(t => t.status === col.status);
-			const countBadge = $('span.board-count');
-			countBadge.textContent = ` (${colTasks.length})`;
-			colHeader.appendChild(countBadge);
-			column.appendChild(colHeader);
-
-			const colBody = $('div.board-column-body');
-			for (const task of colTasks) {
-				const card = $('div.board-card');
-				const cardTitle = $('div.board-card-title');
-				cardTitle.textContent = task.title;
-				card.appendChild(cardTitle);
-				if (task.assigneeName) {
-					const assignee = $('div.board-card-assignee');
-					assignee.textContent = `👤 ${task.assigneeName}`;
-					card.appendChild(assignee);
-				}
-				colBody.appendChild(card);
-			}
-			column.appendChild(colBody);
-			this.listContainer.appendChild(column);
+			this._listContainer.appendChild(item);
 		}
 	}
 
 	private _getStatusIcon(status: TaskBoardStatus): string {
 		switch (status) {
 			case TaskBoardStatus.Todo: return '⬜';
-			case TaskBoardStatus.Running: return '🔄';
+			case TaskBoardStatus.Running: return '⚡';
 			case TaskBoardStatus.Done: return '✅';
 			case TaskBoardStatus.Cancelled: return '❌';
 			case TaskBoardStatus.Archived: return '📦';
@@ -243,32 +255,24 @@ export class TasksViewPane extends ViewPane {
 		}
 	}
 
-	private async _createTask(): Promise<void> {
-		try {
-			await this.taskBoardService.createTask({
-				title: 'New Task',
-				status: TaskBoardStatus.Todo,
-				workspaceId: 'default',
-			});
-		} catch { /* ignore */ }
+	// ─── EditorPane integration ───────────────────────────────────
+
+	private _openOverview(): void {
+		const input = TaskOverviewEditorInput.getOrCreate();
+		this.editorService.openEditor(input, { pinned: true });
 	}
 
-	private async _updateStatus(id: string, status: TaskBoardStatus): Promise<void> {
-		try {
-			await this.taskBoardService.updateTaskStatus(id, status);
-		} catch { /* ignore */ }
+	private _openTaskDetail(task: TaskBoardRecord): void {
+		const input = TaskDetailEditorInput.getOrCreate(task.id, task.title);
+		this.editorService.openEditor(input, { pinned: false });
 	}
 
-	private async _deleteTask(id: string): Promise<void> {
-		try {
-			await this.taskBoardService.deleteTask(id);
-		} catch { /* ignore */ }
-	}
+	// ─── Layout ───────────────────────────────────────────────────
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		if (this.listContainer) {
-			this.listContainer.style.height = `${height - 90}px`;
+		if (this._root) {
+			this._root.style.height = `${height}px`;
 		}
 	}
 }

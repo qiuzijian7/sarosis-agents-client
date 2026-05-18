@@ -16,6 +16,9 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
 import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
 import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
+import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
+import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
+import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
@@ -46,8 +49,94 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
+		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
+		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
 	) {
 		super();
+	}
+
+	// ─── Workspace lifecycle helpers ─────────────────────────────────────────────
+
+	/**
+	 * Build a small, transport-safe snapshot of a workspace and fire the
+	 * generic IWorkspaceLifecycleService event. We deliberately keep this
+	 * shape minimal (id, name, path, timestamp) so the lifecycle layer stays
+	 * decoupled from the full Workspace object — third-party hooks (knot CLI,
+	 * future provider CLIs, …) only get what they actually need to react.
+	 */
+	private _fireWorkspaceLifecycle(event: WorkspaceLifecycleEvent, ws: Workspace): void {
+		const payload: IWorkspaceLifecyclePayload = {
+			id: ws.id,
+			name: ws.name,
+			path: ws.path,
+			timestamp: new Date().toISOString(),
+		};
+		// Fire-and-forget — hook failures must never break a workspace mutation.
+		void this.workspaceLifecycleService.fire(event, payload).catch(err => {
+			this.logService.warn(
+				`[AgentStudioService] workspace lifecycle "${event}" hook propagation failed for ${ws.id}: `
+				+ `${err instanceof Error ? err.message : String(err)}`,
+			);
+		});
+	}
+
+	// ─── Skill lifecycle helpers ──────────────────────────────────────────────
+
+	/**
+	 * Fire a skill-lifecycle event for a single skill change (add / remove).
+	 * Requires enough context to build the payload (workspace + employee + skill).
+	 * Fire-and-forget — hook failures must never break a skill mutation.
+	 */
+	private _fireSkillLifecycle(event: SkillLifecycleEvent.Added | SkillLifecycleEvent.Removed, employee: Employee, skillId: string, skillName?: string): void {
+		const wsPath = employee.workspaceId
+			? (async () => { try { const ws = await this.getWorkspace(employee.workspaceId!); return ws?.path; } catch { return undefined; } })()
+			: Promise.resolve(undefined);
+
+		void wsPath.then(workspacePath => {
+			const payload: ISkillLifecyclePayload = {
+				workspaceId: employee.workspaceId,
+				workspacePath,
+				agentId: employee.id,
+				agentDir: employee.agentDir,
+				skillId,
+				skillName,
+				timestamp: new Date().toISOString(),
+			};
+			void this.skillLifecycleService.fireSkillEvent(event, payload).catch(err => {
+				this.logService.warn(
+					`[AgentStudioService] skill lifecycle "${event}" hook failed for agent=${employee.id} skill=${skillId}: `
+					+ `${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		});
+	}
+
+	/**
+	 * Fire a batch skill-sync event after all skills for an agent have been
+	 * written to disk (e.g. on agent creation).
+	 */
+	private _fireSkillBatchLifecycle(employee: Employee, skillIds: readonly string[]): void {
+		const wsPath = employee.workspaceId
+			? (async () => { try { const ws = await this.getWorkspace(employee.workspaceId!); return ws?.path; } catch { return undefined; } })()
+			: Promise.resolve(undefined);
+
+		void wsPath.then(workspacePath => {
+			const payload: ISkillBatchLifecyclePayload = {
+				workspaceId: employee.workspaceId,
+				workspacePath,
+				agentId: employee.id,
+				agentDir: employee.agentDir,
+				skillIds,
+				timestamp: new Date().toISOString(),
+			};
+			void this.skillLifecycleService.fireBatchEvent(payload).catch(err => {
+				this.logService.warn(
+					`[AgentStudioService] skill batch lifecycle hook failed for agent=${employee.id}: `
+					+ `${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		});
 	}
 
 	// ─── VS Code Workspace Folder Helpers ────────────────────────────────────────
@@ -150,6 +239,48 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 	}
 
+	/**
+	 * Compute an initial position for a new node that does not overlap existing
+	 * employees on the canvas.  Uses a grid strategy: columns of width
+	 * `COL_WIDTH` (280 px), rows of height `ROW_HEIGHT` (200 px), up to
+	 * `MAX_COLS` columns per row.  For every candidate cell we check whether any
+	 * existing employee is "too close" (within half a cell size) and skip to the
+	 * next cell if so.
+	 */
+	private _computeNonOverlappingPosition(existingEmployees: Employee[]): { x: number; y: number } {
+		const ORIGIN_X = 100;
+		const ORIGIN_Y = 100;
+		const COL_WIDTH = 280;
+		const ROW_HEIGHT = 200;
+		const MAX_COLS = 4;
+		const OVERLAP_THRESHOLD_X = COL_WIDTH / 2;   // 140
+		const OVERLAP_THRESHOLD_Y = ROW_HEIGHT / 2;   // 100
+
+		const occupied = existingEmployees
+			.map(e => e.position)
+			.filter((p): p is { x: number; y: number } => !!p);
+
+		// Iterate grid cells until we find one that doesn't overlap
+		for (let cell = 0; cell < 100; cell++) {   // 100 cells max (safety)
+			const col = cell % MAX_COLS;
+			const row = Math.floor(cell / MAX_COLS);
+			const candidateX = ORIGIN_X + col * COL_WIDTH;
+			const candidateY = ORIGIN_Y + row * ROW_HEIGHT;
+
+			const overlaps = occupied.some(p =>
+				Math.abs(p.x - candidateX) < OVERLAP_THRESHOLD_X &&
+				Math.abs(p.y - candidateY) < OVERLAP_THRESHOLD_Y
+			);
+			if (!overlaps) {
+				return { x: candidateX, y: candidateY };
+			}
+		}
+
+		// Fallback: place below all existing nodes
+		const maxY = occupied.reduce((max, p) => Math.max(max, p.y), 0);
+		return { x: ORIGIN_X, y: maxY + ROW_HEIGHT };
+	}
+
 	// ─── Employees ──────────────────────────────────────────────────────────────
 
 	async getEmployees(workspaceId?: string): Promise<Employee[]> {
@@ -185,6 +316,17 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const filename = DATA_FILE_EMPLOYEES;
 
 		const employees = await this._readJsonFile<Employee>(dirUri, filename);
+
+		// PM uniqueness check: only one PM per workspace
+		if (data.agentType === EmployeeStatus.Idle as unknown || false) { /* never */ }
+		const incomingType = (data as Record<string, unknown>).agentType as string | undefined;
+		if (incomingType === 'pm') {
+			const existingPM = employees.find(e => (e as unknown as Record<string, unknown>).agentType === 'pm');
+			if (existingPM) {
+				throw new Error(`此 Workspace 已有 PM "${existingPM.name}"，仅允许 1 个 PM。请先移除现有 PM 再创建新的。`);
+			}
+		}
+
 		const now = new Date().toISOString();
 		const id = this._generateId();
 
@@ -205,9 +347,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			customPrompt: data.customPrompt,
 			skills: data.skills || [],
 			status: EmployeeStatus.Idle,
+			agentType: (data as Record<string, unknown>).agentType as Employee['agentType'],
 			teamId: data.teamId,
 			workspaceId: data.workspaceId,
-			position: data.position || { x: 100, y: 100 },
+			position: data.position || this._computeNonOverlappingPosition(employees),
 			tokenUsage: 0,
 			agentDir: slug,
 			createdAt: now,
@@ -238,6 +381,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		this.logService.info(`[AgentStudio] updateEmployee: found at dirUri=${dirUri.toString()}, index=${index}, name=${employees[index].name}`);
 
+		const oldSkills = employees[index].skills ?? [];
+		const oldSkillIds = new Set(oldSkills.map(s => s.id));
+
 		employees[index] = {
 			...employees[index],
 			...data,
@@ -245,6 +391,33 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			updatedAt: new Date().toISOString(),
 		};
 		await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
+
+		// ─── Skills directory sync ───────────────────────────────────────
+		// If the update includes a skills change, sync the skills directory
+		// on disk and fire skill-lifecycle events.
+		const updated = employees[index];
+		if (data.skills !== undefined) {
+			const newSkills = updated.skills ?? [];
+			const newSkillIds = new Set(newSkills.map(s => s.id));
+
+			// Sync skills directory on disk (add missing, leave extras)
+			if (updated.agentDir) {
+				await this._syncAgentSkillsDir(dirUri, updated, newSkills);
+			}
+
+			// Fire lifecycle events for added / removed skills
+			for (const skill of newSkills) {
+				if (!oldSkillIds.has(skill.id)) {
+					this._fireSkillLifecycle(SkillLifecycleEvent.Added, updated, skill.id, skill.name);
+				}
+			}
+			for (const skill of oldSkills) {
+				if (!newSkillIds.has(skill.id)) {
+					this._fireSkillLifecycle(SkillLifecycleEvent.Removed, updated, skill.id, skill.name);
+				}
+			}
+		}
+
 		this.logService.info(`[AgentStudio] updateEmployee: wrote employees.json, firing onDidChangeEmployees`);
 		this._onDidChangeEmployees.fire();
 		return employees[index];
@@ -400,6 +573,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 
 		this._onDidChangeWorkspace.fire(newWorkspace.id);
+		this._fireWorkspaceLifecycle(WorkspaceLifecycleEvent.Created, newWorkspace);
 		return newWorkspace;
 	}
 
@@ -428,6 +602,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 
 		this._onDidChangeWorkspace.fire(id);
+		this._fireWorkspaceLifecycle(WorkspaceLifecycleEvent.Updated, workspaces[index]);
 		return workspaces[index];
 	}
 
@@ -444,6 +619,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 
 		this._onDidChangeWorkspace.fire(id);
+		if (target) {
+			this._fireWorkspaceLifecycle(WorkspaceLifecycleEvent.Deleted, target);
+		}
 	}
 
 	async updateWorkspaceLayout(id: string, layout: WorkspaceLayout): Promise<void> {
@@ -466,6 +644,14 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			} catch (err) {
 				this.logService.debug('[AgentStudio] Could not save layout to workspace dir', err);
 			}
+		}
+
+		// Sync positions to employees.json BEFORE firing the change event,
+		// so that any listeners re-reading employees get the updated positions.
+		try {
+			await this._syncPositionsToEmployees(id, layout);
+		} catch (err) {
+			this.logService.debug('[AgentStudio] _syncPositionsToEmployees failed', err);
 		}
 
 		this._onDidChangeWorkspace.fire(id);
@@ -502,6 +688,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			}
 		}
 
+		// Sync connections to employees.json
+		this._syncConnectionsToEmployees(workspaceId).catch(err => {
+			this.logService.debug('[AgentStudio] _syncConnectionsToEmployees failed after addConnection', err);
+		});
+
 		this._onDidChangeWorkspace.fire(workspaceId);
 		return newConnection;
 	}
@@ -525,6 +716,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				this.logService.debug('[AgentStudio] Could not update connections in workspace dir', err);
 			}
 		}
+
+		// Sync connections to employees.json
+		this._syncConnectionsToEmployees(workspaceId).catch(err => {
+			this.logService.debug('[AgentStudio] _syncConnectionsToEmployees failed after removeConnection', err);
+		});
 
 		this._onDidChangeWorkspace.fire(workspaceId);
 	}
@@ -642,6 +838,130 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			);
 		} catch (err) {
 			this.logService.error(`[AgentStudio] Failed to update agent.yaml for employee ${employeeId} at ${configFileUri.toString()}`, err);
+		}
+	}
+
+	// ─── Agent Position & Connection Persistence (employees.json) ───────────────
+
+	/**
+	 * Persist position to employees.json so that canvas layout survives a window reload.
+	 */
+	async updateEmployeePosition(
+		employeeId: string,
+		position: { x: number; y: number },
+	): Promise<void> {
+		this.logService.info(`[AgentStudio] updateEmployeePosition: employeeId=${employeeId}, pos=(${position.x}, ${position.y})`);
+
+		const locateResult = await this._locateEmployee(employeeId);
+		if (locateResult) {
+			const { dirUri, employees, index } = locateResult;
+			employees[index] = {
+				...employees[index],
+				position,
+				updatedAt: new Date().toISOString(),
+			};
+			await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
+		}
+	}
+
+	/**
+	 * Read position from employees.json.
+	 */
+	async getEmployeePosition(
+		employeeId: string,
+	): Promise<{ x: number; y: number } | undefined> {
+		const employee = await this.getEmployee(employeeId);
+		return employee?.position;
+	}
+
+	/**
+	 * Persist connections (edges) involving an employee to employees.json.
+	 * Each agent stores the connections it participates in (as source or target).
+	 */
+	async updateEmployeeConnections(
+		employeeId: string,
+		connections: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>,
+	): Promise<void> {
+		this.logService.info(`[AgentStudio] updateEmployeeConnections: employeeId=${employeeId}, count=${connections.length}`);
+
+		const locateResult = await this._locateEmployee(employeeId);
+		if (locateResult) {
+			const { dirUri, employees, index } = locateResult;
+			employees[index] = {
+				...employees[index],
+				connections,
+				updatedAt: new Date().toISOString(),
+			};
+			await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
+		}
+	}
+
+	/**
+	 * Persist all positions from the canvas layout to employees.json.
+	 * Called by updateWorkspaceLayout.
+	 */
+	private async _syncPositionsToEmployees(workspaceId: string, layout: WorkspaceLayout): Promise<void> {
+		if (!layout.nodes || layout.nodes.length === 0) { return; }
+
+		const dirUri = await this._resolveDataUri(workspaceId);
+		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+		let changed = false;
+
+		for (const node of layout.nodes) {
+			if (node.position) {
+				const idx = employees.findIndex(e => e.id === node.id);
+				if (idx !== -1) {
+					employees[idx] = {
+						...employees[idx],
+						position: node.position,
+						updatedAt: new Date().toISOString(),
+					};
+					changed = true;
+				}
+			}
+		}
+
+		if (changed) {
+			await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
+		}
+	}
+
+	/**
+	 * Persist all connections to each participating agent in employees.json.
+	 * Called by addConnection / removeConnection.
+	 */
+	private async _syncConnectionsToEmployees(workspaceId: string): Promise<void> {
+		const workspace = await this.getWorkspace(workspaceId);
+		if (!workspace) { return; }
+
+		const connections = workspace.connections || [];
+		const dirUri = await this._resolveDataUri(workspaceId);
+		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+		let changed = false;
+
+		// Build per-agent connection lists
+		const agentConnections = new Map<string, Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>>();
+		for (const emp of employees) {
+			agentConnections.set(emp.id, []);
+		}
+		for (const conn of connections) {
+			const connData = { id: conn.id, sourceId: conn.sourceId, targetId: conn.targetId, type: conn.type, label: conn.label };
+			if (agentConnections.has(conn.sourceId)) { agentConnections.get(conn.sourceId)!.push(connData); }
+			if (agentConnections.has(conn.targetId)) { agentConnections.get(conn.targetId)!.push(connData); }
+		}
+
+		for (let i = 0; i < employees.length; i++) {
+			const conns = agentConnections.get(employees[i].id) || [];
+			employees[i] = {
+				...employees[i],
+				connections: conns,
+				updatedAt: new Date().toISOString(),
+			};
+			changed = true;
+		}
+
+		if (changed) {
+			await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
 		}
 	}
 
@@ -777,7 +1097,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			skills: data.employee.skills || [],
 			status: EmployeeStatus.Idle,
 			workspaceId,
-			position: { x: 100, y: 100 },
+			position: this._computeNonOverlappingPosition(existingEmployees),
 			tokenUsage: 0,
 			agentDir: slug,
 			createdAt: now,
@@ -964,6 +1284,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			const sessionsDir = URI.joinPath(agentDirUri, 'sessions');
 			await this._ensureDir(sessionsDir);
 
+			// 4) Create skills subdirectory and populate with SKILL.md files
+			await this._createAgentSkillsDir(agentDirUri, employee);
+
 			this.logService.info(`[AgentStudio] Created agent instance directory: ${agentDirUri.toString()}`);
 		} catch (err) {
 			this.logService.error(`[AgentStudio] Failed to create agent instance directory for: ${employee.agentDir}`, err);
@@ -984,6 +1307,163 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			// File doesn't exist — write it
 			await this.fileService.writeFile(fileUri, VSBuffer.fromString(content));
 		}
+	}
+
+	/**
+	 * Create the `skills/` subdirectory inside the agent instance dir and
+	 * populate it with one `<skill-id>/SKILL.md` per configured skill.
+	 *
+	 * For each skill on the employee:
+	 *   1. Look up the full `ISkillDefinition` from the SkillRegistry.
+	 *   2. If found, serialise it as a standard SKILL.md (YAML frontmatter + prompt body).
+	 *   3. If the skill is not in the registry (e.g. a custom tag), write a
+	 *      minimal placeholder SKILL.md so the folder is still useful.
+	 *
+	 * Existing SKILL.md files are **not overwritten** (same policy as bootstrap files).
+	 */
+	private async _createAgentSkillsDir(agentDirUri: URI, employee: Employee): Promise<void> {
+		const skills = employee.skills;
+		if (!skills || skills.length === 0) { return; }
+
+		const skillsDirUri = URI.joinPath(agentDirUri, 'skills');
+		await this._ensureDir(skillsDirUri);
+
+		for (const empSkill of skills) {
+			const skillId = empSkill.id;
+			// Sanitise id for use as a directory name
+			const dirName = skillId.replace(/[^a-zA-Z0-9_-]/g, '-');
+			const skillSubDir = URI.joinPath(skillsDirUri, dirName);
+			await this._ensureDir(skillSubDir);
+
+			// Look up the full definition from the registry
+			const definition = this.skillRegistry.getSkill(skillId);
+			const content = definition
+				? this._renderSkillMd(definition)
+				: this._renderSkillMdFromRef(empSkill);
+
+			// Write SKILL.md (don't overwrite existing)
+			await this._writeBootstrapFile(skillSubDir, 'SKILL.md', content);
+		}
+
+		this.logService.info(`[AgentStudio] Created skills directory with ${skills.length} skill(s) for agent: ${employee.agentDir}`);
+
+		// Fire batch skill-sync lifecycle event
+		this._fireSkillBatchLifecycle(employee, skills.map(s => s.id));
+	}
+
+	/**
+	 * Sync the `skills/` subdirectory when an employee's skill list is updated.
+	 *
+	 * Unlike `_createAgentSkillsDir` (which is called once on agent creation and
+	 * never overwrites), this method:
+	 *   - Creates SKILL.md for any **new** skills that are missing on disk.
+	 *   - Removes skill subdirectories for skills that are **no longer** in the
+	 *     employee's skill list (the SKILL.md file is deleted; the folder is
+	 *     deleted only if it contains nothing else).
+	 *   - Overwrites existing SKILL.md files if the registry definition has
+	 *     changed (ensures the on-disk content stays in sync with the registry).
+	 */
+	private async _syncAgentSkillsDir(dataDirUri: URI, employee: Employee, newSkills: readonly import('../../../common/agentStudioTypes.js').EmployeeSkill[]): Promise<void> {
+		if (!employee.agentDir) { return; }
+
+		const agentDirUri = URI.joinPath(dataDirUri, AGENTS_DIR, employee.agentDir);
+		const skillsDirUri = URI.joinPath(agentDirUri, 'skills');
+
+		// Ensure the skills directory exists
+		await this._ensureDir(skillsDirUri);
+
+		const newSkillIds = new Set(newSkills.map(s => s.id));
+
+		// 1) Add / update skills present in the new list
+		for (const empSkill of newSkills) {
+			const dirName = empSkill.id.replace(/[^a-zA-Z0-9_-]/g, '-');
+			const skillSubDir = URI.joinPath(skillsDirUri, dirName);
+			await this._ensureDir(skillSubDir);
+
+			const definition = this.skillRegistry.getSkill(empSkill.id);
+			const content = definition
+				? this._renderSkillMd(definition)
+				: this._renderSkillMdFromRef(empSkill);
+
+			// Always write (update) — unlike _createAgentSkillsDir which doesn't overwrite,
+			// this ensures on-disk stays in sync after an explicit skill update.
+			const skillFile = URI.joinPath(skillSubDir, 'SKILL.md');
+			await this.fileService.writeFile(skillFile, VSBuffer.fromString(content));
+		}
+
+		// 2) Remove skill subdirectories that are no longer in the employee's list
+		try {
+			const stat = await this.fileService.resolve(skillsDirUri);
+			if (stat.children) {
+				for (const child of stat.children) {
+					if (!child.isDirectory) { continue; }
+					// Derive skill id from directory name (same sanitization)
+					const dirSkillId = child.name;
+					if (!newSkillIds.has(dirSkillId)) {
+						// Delete the skill subdirectory (recursive)
+						try {
+							await this.fileService.del(child.resource, { recursive: true, useTrash: false });
+							this.logService.info(`[AgentStudio] Removed skill directory: ${dirSkillId} for agent: ${employee.agentDir}`);
+						} catch (err) {
+							this.logService.warn(`[AgentStudio] Failed to remove skill directory ${dirSkillId}: ${err instanceof Error ? err.message : String(err)}`);
+						}
+					}
+				}
+			}
+		} catch (err) {
+			this.logService.debug(`[AgentStudio] Could not scan skills dir for cleanup: ${err instanceof Error ? err.message : String(err)}`);
+		}
+
+		this.logService.info(`[AgentStudio] Synced skills directory for agent: ${employee.agentDir} (${newSkills.length} skill(s))`);
+	}
+
+	/**
+	 * Render a full `SKILL.md` from an `ISkillDefinition` (registry lookup).
+	 * Format matches the standard hermes / sarosis SKILL.md convention:
+	 *   - YAML frontmatter (name, description, activation, match, category, recommended_tools)
+	 *   - Markdown body (the prompt)
+	 */
+	private _renderSkillMd(def: ISkillDefinition): string {
+		const lines: string[] = ['---'];
+		lines.push(`name: ${def.name}`);
+		if (def.description) {
+			lines.push(`description: ${def.description}`);
+		}
+		lines.push(`activation: ${def.activation}`);
+		if (def.match && def.match.length > 0) {
+			lines.push(`match: [${def.match.join(', ')}]`);
+		}
+		if (def.category) {
+			lines.push(`category: ${def.category}`);
+		}
+		if (def.recommendedTools && def.recommendedTools.length > 0) {
+			lines.push(`recommended_tools: [${def.recommendedTools.join(', ')}]`);
+		}
+		lines.push('---');
+		lines.push('');
+		lines.push(def.prompt);
+		lines.push('');
+		return lines.join('\n');
+	}
+
+	/**
+	 * Render a minimal `SKILL.md` placeholder when the skill is not found in
+	 * the registry (e.g. a tag-only skill assigned via the preset UI).
+	 */
+	private _renderSkillMdFromRef(ref: { id: string; name: string; description?: string }): string {
+		const lines: string[] = ['---'];
+		lines.push(`name: ${ref.name}`);
+		if (ref.description) {
+			lines.push(`description: ${ref.description}`);
+		}
+		lines.push('activation: manual');
+		lines.push('---');
+		lines.push('');
+		lines.push(`# ${ref.name}`);
+		lines.push('');
+		lines.push('<!-- TODO: Add skill instructions here -->');
+		lines.push('');
+		return lines.join('\n');
 	}
 
 	/**

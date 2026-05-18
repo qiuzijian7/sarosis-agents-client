@@ -6,6 +6,8 @@ import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
 import { useWorkspaceStore } from './useWorkspaceStore';
 
+export type AgentType = 'planner' | 'pm' | 'worker';
+
 export interface Employee {
 	id: string;
 	name: string;
@@ -20,6 +22,10 @@ export interface Employee {
 	customPrompt?: string;
 	skills?: { id: string; name: string; enabled: boolean }[];
 	status: 'idle' | 'working' | 'thinking' | 'error' | 'offline';
+	/**
+	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
+	 */
+	agentType?: AgentType;
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
@@ -78,6 +84,14 @@ interface EmployeeState {
 
 	// Computed
 	filteredEmployees: () => Employee[];
+	/** Get all planners in the workspace */
+	getPlanners: () => Employee[];
+	/** Get the workspace PM (at most one) */
+	getPM: () => Employee | undefined;
+	/** Check if the selected employee is a planner */
+	isSelectedPlanner: () => boolean;
+	/** Check if the selected employee is the PM */
+	isSelectedPM: () => boolean;
 }
 
 export const useEmployeeStore = create<EmployeeState>((set, get) => ({
@@ -160,5 +174,27 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 			e.name.toLowerCase().includes(q) ||
 			e.role.toLowerCase().includes(q)
 		);
+	},
+
+	getPlanners: () => {
+		return get().employees.filter(e => e.agentType === 'planner');
+	},
+
+	getPM: () => {
+		return get().employees.find(e => e.agentType === 'pm');
+	},
+
+	isSelectedPlanner: () => {
+		const { employees, selectedEmployeeId } = get();
+		if (!selectedEmployeeId) { return false; }
+		const emp = employees.find(e => e.id === selectedEmployeeId);
+		return emp?.agentType === 'planner';
+	},
+
+	isSelectedPM: () => {
+		const { employees, selectedEmployeeId } = get();
+		if (!selectedEmployeeId) { return false; }
+		const emp = employees.find(e => e.id === selectedEmployeeId);
+		return emp?.agentType === 'pm';
 	},
 }));

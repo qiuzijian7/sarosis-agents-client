@@ -1006,25 +1006,18 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Default layout:
 		//   ┌──────────────────┬──────────────┐
 		//   │ Workspace Canvas │  Agent Chat   │
-		//   ├──────────────────┤  (full height)│
-		//   │ Task Board       │              │
+		//   │  (full height)   │  (full height)│
 		//   └──────────────────┴──────────────┘
 		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-		const taskboardInput = AgentStudioEditorInput.getOrCreate('taskboard');
 		const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
 
-		// Open Canvas in the agent root group (left-top)
+		// Open Canvas in the agent root group (left)
 		this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentRootGroup.id);
 
 		// Split right → Chat group (right, full height)
 		const chatGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.RIGHT);
 		this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, chatGroup.id);
 		agentStudioGroupIds.add(chatGroup.id);
-
-		// Split down from Canvas → TaskBoard group (left-bottom)
-		const taskboardGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.DOWN);
-		this.editorService.openEditor(taskboardInput, { pinned: true, sticky: true }, taskboardGroup.id);
-		agentStudioGroupIds.add(taskboardGroup.id);
 
 		// Focus back to chat
 		chatGroup.focus();
@@ -1036,11 +1029,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// the same zone is fine (the editor is just being moved within
 		// the zone).
 		const reopenIfLastInZone = (panelType: string) => {
-			const stillExists = this.editorGroupService.groups.some(g =>
-				agentStudioGroupIds.has(g.id) &&
+			// Check ALL groups (including modal editor parts, auxiliary
+			// windows, etc.). When the user clicks "Open in Modal Editor",
+			// the editor is moved out of the agent zone into a modal part —
+			// that must not trigger a re-open.
+			const stillExistsAnywhere = this.editorGroupService.groups.some(g =>
 				g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
 			);
-			if (stillExists) {
+			if (stillExistsAnywhere) {
 				return;
 			}
 			// Re-open in the agent-zone root if it still exists; otherwise
@@ -1065,7 +1061,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		};
 		installCloseGuard(agentRootGroup);
 		installCloseGuard(chatGroup);
-		installCloseGuard(taskboardGroup);
 
 		// ── Cross-zone editor relocation guard ──────────────────────────
 		// If editors somehow end up in the wrong zone (extension, command,
@@ -1120,7 +1115,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		installRelocationGuard(fileRootGroup);
 		installRelocationGuard(agentRootGroup);
 		installRelocationGuard(chatGroup);
-		installRelocationGuard(taskboardGroup);
 
 		// ── Track newly-created groups (split / drag) ────────────────────
 		// Inherit zone membership from the *active* group at the moment
@@ -1132,6 +1126,17 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			if (agentStudioGroupIds.has(newGroup.id) || fileZoneGroupIds.has(newGroup.id)) {
 				return; // already tracked
 			}
+
+			// Ignore groups created inside modal editor parts — they are
+			// not part of the main dual-zone layout and should not be
+			// tracked, guarded, or receive close/relocation guards.
+			const isInModalPart = this.editorGroupService.activeModalEditorPart?.groups.some(
+				g => g.id === newGroup.id
+			);
+			if (isInModalPart) {
+				return;
+			}
+
 			const source = this.editorGroupService.activeGroup;
 			if (source && agentStudioGroupIds.has(source.id)) {
 				agentStudioGroupIds.add(newGroup.id);

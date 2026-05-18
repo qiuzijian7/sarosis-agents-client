@@ -8,8 +8,10 @@
  *
  * 加载策略：
  *   1. `_loadBuiltins()`        —— 内置 skill 模块（产品自带，硬编码常量数组）
+ *      1a. `BUILTIN_SKILLS`     —— Sarosis 原生核心 skill（4 个，始终加载）
+ *      1b. `BUNDLED_SKILLS`     —— 从 Hermes-Agent 迁移的打包 skill（87 个，始终加载）
  *   2. `_scanFolder(roaming)`   —— 全局用户目录 `<userRoamingDataHome>/sarosis/skills/`
- *   3. `_scanFolder(workspace)` —— 工作区目录 `<workspaceFolder>/.sarosis/skills/`
+ *   3. `_scanAgentSkills(...)`  —— 工作区目录 `<workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/`
  *   4. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
  *
  * 后注册的同名 skill 覆盖前者（运行时注入 > 工作区 > 用户 > 内置），
@@ -31,14 +33,20 @@
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IAgentStudioService } from '../../../common/agentStudioService.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
 	SkillActivation,
 } from '../common/skills.js';
+import { BUNDLED_SKILLS } from '../common/bundled-skills/bundledSkills.js';
+import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
 
 interface IRawFrontmatter {
 	name?: unknown;
@@ -50,7 +58,7 @@ interface IRawFrontmatter {
 	recommendedTools?: unknown;
 }
 
-const SKILL_DIR_NAME = '.sarosis/skills';
+const SKILL_DIR_NAME = 'skills';
 
 /**
  * 一组随产品发布的内置 skill。
@@ -67,6 +75,7 @@ const BUILTIN_SKILLS: ISkillDefinition[] = [
 		category: 'code',
 		recommendedTools: ['file_read', 'shell_exec'],
 		source: 'builtin',
+		enabled: true,
 		prompt: [
 			'You are running the **code-review** skill.',
 			'',
@@ -89,6 +98,7 @@ const BUILTIN_SKILLS: ISkillDefinition[] = [
 		category: 'git',
 		recommendedTools: ['shell_exec'],
 		source: 'builtin',
+			enabled: true,
 		prompt: [
 			'You are running the **commit-message** skill.',
 			'',
@@ -108,6 +118,7 @@ const BUILTIN_SKILLS: ISkillDefinition[] = [
 		activation: 'always',
 		category: 'meta',
 		source: 'builtin',
+		enabled: true,
 		prompt: [
 			'Behavioral guidance: keep replies short. Prefer bullet lists over paragraphs.',
 			'Cut filler such as "I will now…", "Let me…", "Sure!". Do not restate the question.',
@@ -121,6 +132,7 @@ const BUILTIN_SKILLS: ISkillDefinition[] = [
 		match: ['refactor', 'rewrite', 'migrate', 'redesign', '架构', '重构'],
 		category: 'meta',
 		source: 'builtin',
+		enabled: true,
 		prompt: [
 			'You are running the **plan-then-act** skill.',
 			'',
@@ -221,20 +233,34 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private readonly _onDidChangeSkills = this._register(new Emitter<void>());
 	readonly onDidChangeSkills: Event<void> = this._onDidChangeSkills.event;
 
+	/** 懒加载 IAgentStudioService —— 避免构造时循环依赖 */
+	private _studioService: IAgentStudioService | undefined;
+	private get studioService(): IAgentStudioService {
+		if (!this._studioService) {
+			this._studioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
+		}
+		return this._studioService;
+	}
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ILogService private readonly logService: ILogService,
+		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
 	) {
 		super();
+		this.logService.info('[SkillRegistry] constructor called');
 		// 立即填充内置 skill，使 UI 在文件扫描完成前已可显示。
 		this._loadBuiltins();
+		this.logService.info(`[SkillRegistry] after _loadBuiltins in ctor: ${this._skills.size} skills available synchronously`);
 		// 异步扫描磁盘 skill —— 失败不影响内置 skill 可用性。
 		this.reload().catch(err => this.logService.warn('[SkillRegistry] initial reload failed', err));
 	}
 
 	getSkills(): readonly ISkillDefinition[] {
+		this.logService.trace(`[SkillRegistry] getSkills() called, returning ${this._skills.size} skills`);
 		return [...this._skills.values()];
 	}
 
@@ -255,12 +281,18 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		});
 	}
 
-	resolveActivations(context: ISkillActivationContext): readonly ISkillInjection[] {
+	resolveActivations(context: ISkillActivationContext): Promise<readonly ISkillInjection[]> {
 		const out: ISkillInjection[] = [];
 		const explicit = new Set((context.explicit ?? []).map(s => s.toLowerCase()));
 		const userMsg = context.userMessage.toLowerCase();
+		const autoSkill = context.autoSkill !== false; // 默认 true
+
+		const matchedNonWorkspace: ISkillDefinition[] = [];
 
 		for (const skill of this._skills.values()) {
+			// 首先检查 skill 是否启用
+			if (skill.enabled === false) { continue; }
+
 			let take = false;
 			if (skill.activation === 'always') {
 				take = true;
@@ -271,35 +303,142 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			}
 			if (!take) { continue; }
 
+			// autoSkill 关闭时，仅允许 workspace source
+			if (!autoSkill && skill.source !== 'workspace') { continue; }
+
 			out.push({
 				skill,
 				// 与 hermes 一致：以独立 user message 注入，避免 system prompt 失效缓存。
 				placement: skill.activation === 'always' ? 'system' : 'user',
 				content: this._renderInjection(skill),
 			});
+
+			// 记录非 workspace 的匹配 skill，后续自动采纳
+			if (autoSkill && skill.source !== 'workspace') {
+				matchedNonWorkspace.push(skill);
+			}
 		}
-		return out;
+
+		// 异步采纳匹配到的非 workspace skill 到 agent 实例目录
+		if (matchedNonWorkspace.length > 0 && context.agentId) {
+			this._adoptMatchedSkills(context.agentId, matchedNonWorkspace).catch(err =>
+				this.logService.warn('[SkillRegistry] auto-adopt failed', err),
+			);
+		}
+
+		return Promise.resolve(out);
 	}
 
-	async reload(): Promise<void> {
+	/**
+	 * 自动将匹配到的非 workspace skill 采纳到 agent 实例的 skills 目录。
+	 * 仅在 autoSkill 开启时调用。不阻塞 resolveActivations 返回。
+	 */
+	private async _adoptMatchedSkills(agentId: string, skills: ISkillDefinition[]): Promise<void> {
+		for (const skill of skills) {
+			try {
+				await this.adoptSkillToAgent(agentId, skill.id);
+			} catch (err) {
+				this.logService.debug(`[SkillRegistry] auto-adopt skill ${skill.id} skipped`, err);
+			}
+		}
+	}
+
+	/** 将一个 skill 采纳到指定 agent 实例的 skills 目录 */
+	async adoptSkillToAgent(agentId: string, skillId: string): Promise<void> {
+		const skill = this._skills.get(skillId);
+		if (!skill) { return; }
+
+		const employee = await this.studioService.getEmployee(agentId);
+		if (!employee?.agentDir || !employee.workspaceId) { return; }
+
+		const workspace = await this.studioService.getWorkspace(employee.workspaceId);
+		if (!workspace?.path) { return; }
+
+		const dirName = skillId.replace(/[^a-zA-Z0-9_-]/g, '-');
+		const skillSubDir = URI.joinPath(
+			URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir, SKILL_DIR_NAME, dirName,
+		);
+
+		// 检查是否已存在
+		const skillFile = URI.joinPath(skillSubDir, 'SKILL.md');
+		if (await this.fileService.exists(skillFile)) {
+			this.logService.debug(`[SkillRegistry] skill ${skillId} already exists in agent dir, skip adopt`);
+			return;
+		}
+
+		// 创建目录并写入 SKILL.md
+		await this.fileService.createFolder(skillSubDir);
+		const content = this._renderSkillMdContent(skill);
+		await this.fileService.writeFile(skillFile, VSBuffer.fromString(content));
+
+		this.logService.info(`[SkillRegistry] skill ${skillId} adopted to agent ${employee.agentDir}`);
+
+		// Fire skill-added lifecycle event (fire-and-forget)
+		const payload: ISkillLifecyclePayload = {
+			workspaceId: employee.workspaceId,
+			workspacePath: workspace.path,
+			agentId: employee.id,
+			agentDir: employee.agentDir,
+			skillId,
+			skillName: skill.name,
+			timestamp: new Date().toISOString(),
+		};
+		void this.skillLifecycleService.fireSkillEvent(SkillLifecycleEvent.Added, payload).catch(err => {
+			this.logService.debug(`[SkillRegistry] skill lifecycle event failed for ${skillId}: ${err instanceof Error ? err.message : String(err)}`);
+		});
+	}
+
+	/** 启用指定 skill */
+	enableSkill(id: string): void {
+		const skill = this._skills.get(id);
+		if (skill) {
+			// 由于 ISkillDefinition.enabled 不是 readonly，我们可以直接修改
+			(skill as { enabled: boolean }).enabled = true;
+			this.logService.info(`[SkillRegistry] skill enabled: ${id}`);
+			this._onDidChangeSkills.fire();
+		}
+	}
+
+	/** 禁用指定 skill */
+	disableSkill(id: string): void {
+		const skill = this._skills.get(id);
+		if (skill) {
+			(skill as { enabled: boolean }).enabled = false;
+			this.logService.info(`[SkillRegistry] skill disabled: ${id}`);
+			this._onDidChangeSkills.fire();
+		}
+	}
+
+	async reload(agentId?: string): Promise<void> {
+		this.logService.info(`[SkillRegistry] reload() called, agentId=${agentId ?? '(all)'}`);
 		this._skills.clear();
 		this._loadBuiltins();
+		this.logService.info(`[SkillRegistry] after _loadBuiltins: ${this._skills.size} skills`);
 
 		// 用户全局目录
 		try {
 			const userDir = URI.joinPath(this.environmentService.userRoamingDataHome, 'sarosis', 'skills');
+			this.logService.info(`[SkillRegistry] scanning user dir: ${userDir.toString()}`);
 			await this._scanFolder(userDir, 'user');
+			this.logService.info(`[SkillRegistry] after user scan: ${this._skills.size} skills`);
 		} catch (err) {
 			this.logService.debug('[SkillRegistry] no user skills dir', err);
 		}
 
-		// 工作区目录（多 root 取第一个）
+		// 工作区目录 — 每个 agent 实例独立 skills 目录
 		try {
 			const wsFolders = this.workspaceService.getWorkspace().folders;
+			this.logService.info(`[SkillRegistry] workspace folders count: ${wsFolders.length}`);
 			for (const f of wsFolders) {
-				const dir = URI.joinPath(f.uri, SKILL_DIR_NAME);
-				await this._scanFolder(dir, 'workspace');
+				if (agentId) {
+					// 指定 agent 时，只加载该 agent 的 skills
+					await this._scanAgentSkills(f.uri, agentId);
+				} else {
+					// 不指定 agent 时，加载所有 agent 的 skills
+					await this._scanAllAgentSkills(f.uri);
+				}
 			}
+			this.logService.info(`[SkillRegistry] after workspace scan: ${this._skills.size} skills`);
 		} catch (err) {
 			this.logService.debug('[SkillRegistry] no workspace skills', err);
 		}
@@ -308,16 +447,31 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		for (const [id, skill] of this._runtimeSkills) {
 			this._skills.set(id, skill);
 		}
+		if (this._runtimeSkills.size > 0) {
+			this.logService.info(`[SkillRegistry] runtime skills merged: ${this._runtimeSkills.size}`);
+		}
 
+		this.logService.info(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
 		this._onDidChangeSkills.fire();
 	}
 
 	// ─── 内部 ────────────────────────────────────────────────
 
 	private _loadBuiltins(): void {
+		// 1a. Sarosis 原生核心 skill — 优先加载，ID 不会被覆盖
 		for (const s of BUILTIN_SKILLS) {
-			this._skills.set(s.id, s);
+			this._skills.set(s.id, { ...s, enabled: true });
 		}
+		this.logService.info(`[SkillRegistry] _loadBuiltins: ${BUILTIN_SKILLS.length} core skills loaded`);
+		// 1b. 从 Hermes-Agent 迁移的打包 skill — 同名 ID 不覆盖原生 skill
+		let bundledCount = 0;
+		for (const s of BUNDLED_SKILLS) {
+			if (!this._skills.has(s.id)) {
+				this._skills.set(s.id, { ...s, enabled: true });
+				bundledCount++;
+			}
+		}
+		this.logService.info(`[SkillRegistry] _loadBuiltins: ${bundledCount}/${BUNDLED_SKILLS.length} bundled skills loaded (${BUNDLED_SKILLS.length - bundledCount} skipped as duplicates)`);
 	}
 
 	private async _scanFolder(dir: URI, source: 'user' | 'workspace'): Promise<void> {
@@ -325,10 +479,16 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		try {
 			stat = await this.fileService.resolve(dir);
 		} catch {
+			this.logService.debug(`[SkillRegistry] _scanFolder: dir not found: ${dir.toString()}`);
 			return; // 目录不存在
 		}
-		if (!stat.isDirectory || !stat.children) { return; }
+		if (!stat.isDirectory || !stat.children) {
+			this.logService.debug(`[SkillRegistry] _scanFolder: not a dir or no children: ${dir.toString()}`);
+			return;
+		}
 
+		this.logService.info(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
+		let loaded = 0;
 		for (const child of stat.children) {
 			if (!child.isDirectory) { continue; }
 			const skillFile = URI.joinPath(child.resource, 'SKILL.md');
@@ -338,10 +498,53 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				const skill = this._parseSkillFile(child.resource, text, source);
 				if (skill) {
 					this._skills.set(skill.id, skill);
+					loaded++;
+				} else {
+					this.logService.warn(`[SkillRegistry] _scanFolder: parse returned null for ${skillFile.toString()}`);
 				}
 			} catch {
 				// SKILL.md 可缺失，忽略
 			}
+		}
+		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
+	}
+
+	/**
+	 * 扫描指定 agent 实例目录下的 skills：
+	 * `<workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/<id>/SKILL.md`
+	 */
+	private async _scanAgentSkills(workspaceUri: URI, targetAgentId: string): Promise<void> {
+		// 从 IAgentStudioService 获取 Employee 信息，解析 agentDir
+		const employee = await this.studioService.getEmployee(targetAgentId);
+		if (!employee?.agentDir || !employee.workspaceId) { return; }
+
+		const workspace = await this.studioService.getWorkspace(employee.workspaceId);
+		if (!workspace?.path) { return; }
+
+		const skillsDir = URI.joinPath(
+			URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir, SKILL_DIR_NAME,
+		);
+		await this._scanFolder(skillsDir, 'workspace');
+	}
+
+	/**
+	 * 扫描工作区中所有 agent 实例的 skills 目录。
+	 * 遍历 `.sarosisworkspace/agents/` 下每个子目录的 `skills/` 子目录。
+	 */
+	private async _scanAllAgentSkills(workspaceUri: URI): Promise<void> {
+		const agentsDir = URI.joinPath(workspaceUri, WORKSPACE_DATA_DIR, AGENTS_DIR);
+		let agentsStat: IFileStat;
+		try {
+			agentsStat = await this.fileService.resolve(agentsDir);
+		} catch {
+			return; // .sarosisworkspace/agents/ 不存在
+		}
+		if (!agentsStat.isDirectory || !agentsStat.children) { return; }
+
+		for (const agentEntry of agentsStat.children) {
+			if (!agentEntry.isDirectory) { continue; }
+			const skillsDir = URI.joinPath(agentEntry.resource, SKILL_DIR_NAME);
+			await this._scanFolder(skillsDir, 'workspace');
 		}
 	}
 
@@ -365,6 +568,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			prompt: body.trim(),
 			source,
 			resource: folder,
+			enabled: true, // 默认启用
 		};
 	}
 
@@ -377,5 +581,32 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			'',
 			skill.prompt,
 		].filter(Boolean).join('\n');
+	}
+
+	/**
+	 * 将 ISkillDefinition 序列化为标准 SKILL.md 格式（YAML frontmatter + body），
+	 * 用于采纳到 agent 实例目录。
+	 */
+	private _renderSkillMdContent(def: ISkillDefinition): string {
+		const lines: string[] = ['---'];
+		lines.push(`name: ${def.name}`);
+		if (def.description) {
+			lines.push(`description: ${def.description}`);
+		}
+		lines.push(`activation: ${def.activation}`);
+		if (def.match && def.match.length > 0) {
+			lines.push(`match: [${def.match.join(', ')}]`);
+		}
+		if (def.category) {
+			lines.push(`category: ${def.category}`);
+		}
+		if (def.recommendedTools && def.recommendedTools.length > 0) {
+			lines.push(`recommended_tools: [${def.recommendedTools.join(', ')}]`);
+		}
+		lines.push('---');
+		lines.push('');
+		lines.push(def.prompt);
+		lines.push('');
+		return lines.join('\n');
 	}
 }

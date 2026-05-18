@@ -15,11 +15,12 @@ import { IKeybindingService } from '../../../../../platform/keybinding/common/ke
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { IAgentOSService } from '../../common/agentOS.js';
+import { IToolDefinition } from '../../common/providers.js';
 
-interface ToolDefinition {
+interface ToolDefinitionUI {
 	id: string;
 	name: string;
-	category: 'builtin' | 'mcp' | 'custom';
+	category: 'builtin' | 'custom';
 	description: string;
 	icon: string;
 	enabled: boolean;
@@ -27,38 +28,36 @@ interface ToolDefinition {
 }
 
 /**
- * 把 `IToolDefinition` (来自 IAgentOSService 的 ActiveToolProvider) 适配成
- * UI 用的 `ToolDefinition` —— 仅在 view 内部使用。
+ * 把 `IToolDefinition` 适配成 UI 用的 `ToolDefinitionUI`
  */
-function categorize(category: string | undefined): 'builtin' | 'mcp' | 'custom' {
+function categorize(category: string | undefined): 'builtin' | 'custom' {
 	if (!category) { return 'builtin'; }
-	if (category.startsWith('mcp:') || category.startsWith('mcp-') || category === 'mcp') { return 'mcp'; }
 	if (category === 'utility' || category === 'filesystem' || category === 'web' || category === 'shell') { return 'builtin'; }
 	return 'custom';
 }
 
-function categoryIcon(c: 'builtin' | 'mcp' | 'custom', toolCategory: string | undefined): string {
-	if (c === 'mcp') { return '🔌'; }
+function categoryIcon(c: 'builtin' | 'custom'): string {
 	if (c === 'custom') { return '🧩'; }
-	switch (toolCategory) {
-		case 'filesystem': return '📁';
-		case 'web': return '🌐';
-		case 'shell': return '⌨️';
-		case 'utility': return '🛠️';
+	switch (c) {
+		case 'builtin':
 		default: return '🔧';
 	}
 }
 
 /**
- * Tools View - 工具管理面板
- * 数据源：IAgentOSService.getActiveToolProvider() —— 同时覆盖内置工具与 MCP 工具，
- * 由 BuiltinToolProvider / McpToolProvider 注入到 IAgentOSService 的 slot 中。
+ * Tools View - 内置工具管理面板
+ * 功能：
+ * 1. 显示所有内置工具（包括已禁用的）
+ * 2. 每个工具旁边有启用/禁用开关
+ * 3. 按类别过滤（All / Built-in / Custom）
  */
 export class ToolsViewPane extends ViewPane {
 
 	private listContainer!: HTMLElement;
-	private tools: ToolDefinition[] = [];
+	private tools: ToolDefinitionUI[] = [];
 	private activeTab = 'all';
+	private retryCount = 0;
+	private readonly maxRetries = 10;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -83,7 +82,7 @@ export class ToolsViewPane extends ViewPane {
 		// Header
 		const header = $('div.tools-header');
 		const title = $('h3.tools-title');
-		title.textContent = '🔧 Tools & MCP';
+		title.textContent = '🔧 Built-in Tools';
 		header.appendChild(title);
 
 		const refreshBtn = $('button.tools-add-btn');
@@ -98,7 +97,6 @@ export class ToolsViewPane extends ViewPane {
 		const tabDefs = [
 			{ id: 'all', label: 'All' },
 			{ id: 'builtin', label: 'Built-in' },
-			{ id: 'mcp', label: 'MCP' },
 			{ id: 'custom', label: 'Custom' },
 		];
 		for (const tab of tabDefs) {
@@ -121,33 +119,57 @@ export class ToolsViewPane extends ViewPane {
 		void this._reload();
 	}
 
+	/**
+	 * 从 IAgentOSService 重新加载工具列表（包括已禁用的）
+	 */
 	private async _reload(): Promise<void> {
-		const next: ToolDefinition[] = [];
-		const provider = this.agentOSService.getActiveToolProvider();
-		if (provider) {
-			try {
-				// agentId is opaque to the provider for read-only listing.
-				const defs = await provider.listTools('viewer');
-				for (const d of defs) {
-					const cat = categorize(d.category);
-					next.push({
-						id: d.name,
-						name: d.name,
-						category: cat,
-						description: d.description ?? '',
-						icon: categoryIcon(cat, d.category),
-						enabled: true,
-						provider: d.source ?? provider.id,
-					});
-				}
-			} catch {
-				// ignore — provider not ready
+		const next: ToolDefinitionUI[] = [];
+
+		try {
+			// 使用 listAllToolsWithState() 获取所有工具及其启用状态
+			const toolsWithState = await this.agentOSService.listAllToolsWithState('viewer');
+
+			for (const tool of toolsWithState) {
+				const cat = categorize(tool.category);
+				next.push({
+					id: tool.name,
+					name: tool.name,
+					category: cat,
+					description: tool.description ?? '',
+					icon: categoryIcon(cat),
+					enabled: tool.enabled ?? true,
+					provider: (tool as IToolDefinition).source ?? 'unknown',
+				});
+			}
+
+			// 如果返回空且未超过最大重试次数，则延迟重试（provider 可能尚未注册）
+			if (next.length === 0 && this.retryCount < this.maxRetries) {
+				this.retryCount++;
+				setTimeout(() => { void this._reload(); }, 2000);
+				return;
+			}
+
+			// 成功获取到工具后重置重试计数
+			if (next.length > 0) {
+				this.retryCount = 0;
+			}
+		} catch (err) {
+			console.warn('[ToolsView] Failed to load tools:', err);
+			// provider 未就绪时延迟重试
+			if (this.retryCount < this.maxRetries) {
+				this.retryCount++;
+				setTimeout(() => { void this._reload(); }, 2000);
+				return;
 			}
 		}
+
 		this.tools = next;
 		this._renderTools();
 	}
 
+	/**
+	 * 渲染工具列表
+	 */
 	private _renderTools(): void {
 		this.listContainer.innerHTML = '';
 		const filtered = this.activeTab === 'all'
@@ -156,7 +178,7 @@ export class ToolsViewPane extends ViewPane {
 
 		if (filtered.length === 0) {
 			const empty = $('div.tools-empty');
-			empty.innerHTML = '<p>No tools available. Try refreshing or installing an MCP server.</p>';
+			empty.innerHTML = '<p>No tools available. Try refreshing to see built-in tools.</p>';
 			this.listContainer.appendChild(empty);
 			return;
 		}
@@ -164,6 +186,31 @@ export class ToolsViewPane extends ViewPane {
 		for (const tool of filtered) {
 			const item = $('div.tool-item');
 			item.classList.toggle('tool-enabled', tool.enabled);
+
+			// 启用/禁用开关
+			const toggleContainer = $('div.tool-toggle');
+			const toggle = $('input.tool-toggle-input') as HTMLInputElement;
+			toggle.type = 'checkbox';
+			toggle.checked = tool.enabled;
+			toggle.title = tool.enabled ? 'Disable this tool' : 'Enable this tool';
+			toggle.onchange = async () => {
+				try {
+					if (toggle.checked) {
+						await this.agentOSService.enableTool('viewer', tool.id);
+					} else {
+						await this.agentOSService.disableTool('viewer', tool.id);
+					}
+					// 更新本地状态
+					tool.enabled = toggle.checked;
+					item.classList.toggle('tool-enabled', tool.enabled);
+				} catch (err) {
+					console.error('[ToolsView] Failed to toggle tool:', err);
+					// 回滚 UI 状态
+					toggle.checked = !toggle.checked;
+				}
+			};
+			toggleContainer.appendChild(toggle);
+			item.appendChild(toggleContainer);
 
 			const iconEl = $('span.tool-icon');
 			iconEl.textContent = tool.icon;
@@ -203,4 +250,3 @@ export class ToolsViewPane extends ViewPane {
 		}
 	}
 }
-

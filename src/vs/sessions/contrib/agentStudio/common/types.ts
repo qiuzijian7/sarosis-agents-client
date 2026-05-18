@@ -8,11 +8,14 @@
 // Value exports (enums, classes) - these exist at runtime
 export {
 	AgentStudioSession,
+	AgentType,
 	ConnectionType,
 	DelegationStatus,
 	EmployeeStatus,
 	TaskBoardStatus,
 	TaskSource,
+	OrchestrationPlanStatus,
+	PlanTaskStatus,
 } from '../../../common/agentStudioTypes.js';
 
 // Type-only exports (interfaces) - erased at runtime, must use 'export type'
@@ -30,4 +33,6 @@ export type {
 	WorkspaceEdge,
 	WorkspaceLayout,
 	WorkspaceNode,
+	OrchestrationPlan,
+	PlanTask,
 } from '../../../common/agentStudioTypes.js';

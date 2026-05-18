@@ -589,6 +589,7 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 	// Custom form state
 	const [name, setName] = useState('');
 	const [role, setRole] = useState('frontend-engineer');
+	const [agentType, setAgentType] = useState<'worker' | 'planner' | 'pm'>('worker');
 	const [model, setModel] = useState('gpt-4o');
 	const [provider, setProvider] = useState('');
 	const [customPrompt, setCustomPrompt] = useState('');
@@ -603,6 +604,7 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 			setSearchQuery('');
 			setName('');
 			setRole('frontend-engineer');
+			setAgentType('worker');
 			setModel('gpt-4o');
 			setProvider('');
 			setCustomPrompt('');
@@ -653,6 +655,7 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 				model,
 				provider: provider.trim() || undefined,
 				customPrompt: customPrompt.trim() || undefined,
+				agentType: agentType || 'worker',
 				temperature,
 				maxTokens,
 				workspaceId,
@@ -674,7 +677,7 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 		} finally {
 			setIsSubmitting(false);
 		}
-	}, [name, role, model, provider, customPrompt, temperature, maxTokens, workspaceId, isSubmitting, createEmployee, onClose, selectedPreset]);
+	}, [name, role, agentType, model, provider, customPrompt, temperature, maxTokens, workspaceId, isSubmitting, createEmployee, onClose, selectedPreset]);
 
 	// Filter presets by search
 	const filteredPresets = AGENT_PRESETS.filter(p => {
@@ -806,6 +809,40 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 											<option key={r} value={r}>{r}</option>
 										))}
 									</select>
+								</div>
+							</div>
+
+							{/* Agent Type selector */}
+							<div className="form-field">
+								<label>Agent 类型</label>
+								<div className="agent-type-selector">
+									<button
+										type="button"
+										className={`agent-type-option ${agentType === 'worker' ? 'selected' : ''}`}
+										onClick={() => setAgentType('worker')}
+									>
+										<span className="agent-type-icon">🔧</span>
+										<span className="agent-type-label">Worker</span>
+										<span className="agent-type-desc">执行任务</span>
+									</button>
+									<button
+										type="button"
+										className={`agent-type-option ${agentType === 'planner' ? 'selected' : ''}`}
+										onClick={() => setAgentType('planner')}
+									>
+										<span className="agent-type-icon">📐</span>
+										<span className="agent-type-label">Planner</span>
+										<span className="agent-type-desc">拆分编排任务</span>
+									</button>
+									<button
+										type="button"
+										className={`agent-type-option ${agentType === 'pm' ? 'selected' : ''}`}
+										onClick={() => setAgentType('pm')}
+									>
+										<span className="agent-type-icon">👔</span>
+										<span className="agent-type-label">PM</span>
+										<span className="agent-type-desc">调度任务 (仅1个)</span>
+									</button>
 								</div>
 							</div>
 

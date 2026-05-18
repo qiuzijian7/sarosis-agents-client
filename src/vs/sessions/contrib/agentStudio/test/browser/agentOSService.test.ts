@@ -70,6 +70,7 @@ suite('AgentOS Service (Phase 1)', () => {
 	class MockToolProvider implements IToolProvider {
 		readonly id: string;
 		readonly name: string;
+		private disabledTools: Set<string> = new Set();
 
 		constructor(id: string, name: string) {
 			this.id = id;
@@ -88,6 +89,32 @@ suite('AgentOS Service (Phase 1)', () => {
 				content: 'Mock tool result',
 				isError: false,
 			};
+		}
+
+		async enableTool(agentId: string, toolName: string): Promise<void> {
+			this.disabledTools.delete(toolName);
+		}
+
+		async disableTool(agentId: string, toolName: string): Promise<void> {
+			this.disabledTools.add(toolName);
+		}
+
+		async isToolEnabled(agentId: string, toolName: string): Promise<boolean> {
+			return !this.disabledTools.has(toolName);
+		}
+
+		async getToolsEnabledState(agentId: string): Promise<Record<string, boolean>> {
+			return { 'test_tool': true };
+		}
+
+		async setToolsEnabledState(agentId: string, state: Record<string, boolean>): Promise<void> {
+			for (const [name, enabled] of Object.entries(state)) {
+				if (enabled) {
+					this.disabledTools.delete(name);
+				} else {
+					this.disabledTools.add(name);
+				}
+			}
 		}
 	}
 

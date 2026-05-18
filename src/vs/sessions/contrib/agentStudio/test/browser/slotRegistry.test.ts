@@ -178,6 +178,11 @@ suite('SlotRegistry (Phase 1)', () => {
 			id: 'tool-1', name: 'Tool 1',
 			listTools: async () => [],
 			executeTool: async () => ({ toolCallId: '', success: true, content: [] }),
+			enableTool: async () => {},
+			disableTool: async () => {},
+			isToolEnabled: async () => true,
+			getToolsEnabledState: async () => ({}),
+			setToolsEnabledState: async () => {},
 		};
 
 		const d = registry.registerToolProvider(provider, 5);
@@ -188,8 +193,20 @@ suite('SlotRegistry (Phase 1)', () => {
 
 	test('registerToolProvider - priority ordering', () => {
 		const registry = createSlotRegistry();
-		const low: IToolProvider = { id: 'tool-low', name: 'Low', listTools: async () => [], executeTool: async () => ({ toolCallId: '', success: true, content: [] }) };
-		const high: IToolProvider = { id: 'tool-high', name: 'High', listTools: async () => [], executeTool: async () => ({ toolCallId: '', success: true, content: [] }) };
+		const low: IToolProvider = {
+			id: 'tool-low', name: 'Low',
+			listTools: async () => [], executeTool: async () => ({ toolCallId: '', success: true, content: [] }),
+			enableTool: async () => {}, disableTool: async () => {},
+			isToolEnabled: async () => true, getToolsEnabledState: async () => ({}),
+			setToolsEnabledState: async () => {},
+		};
+		const high: IToolProvider = {
+			id: 'tool-high', name: 'High',
+			listTools: async () => [], executeTool: async () => ({ toolCallId: '', success: true, content: [] }),
+			enableTool: async () => {}, disableTool: async () => {},
+			isToolEnabled: async () => true, getToolsEnabledState: async () => ({}),
+			setToolsEnabledState: async () => {},
+		};
 
 		registry.registerToolProvider(low, 1);
 		registry.registerToolProvider(high, 50);

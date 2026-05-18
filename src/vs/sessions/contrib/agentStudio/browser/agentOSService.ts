@@ -11,6 +11,7 @@ import {
 	IMemoryProvider, IToolProvider, IPlanningProvider,
 	IExecutionProvider, IRetrievalProvider, IKanbanProvider,
 	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
+	IToolDefinition,
 } from '../common/providers.js';
 import { SlotRegistry } from './slotRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -190,6 +191,84 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	getSlotRegistry(): ISlotRegistry {
 		return this._slotRegistry;
+	}
+
+	// ─── 工具启用/禁用管理 ─────────────────────────────────────
+
+	async enableTool(agentId: string, toolName: string): Promise<void> {
+		const provider = this.getActiveToolProvider();
+		if (provider) {
+			await provider.enableTool(agentId, toolName);
+			this._logService.info(`[AgentOS] Enabled tool: ${toolName}`);
+		}
+	}
+
+	async disableTool(agentId: string, toolName: string): Promise<void> {
+		const provider = this.getActiveToolProvider();
+		if (provider) {
+			await provider.disableTool(agentId, toolName);
+			this._logService.info(`[AgentOS] Disabled tool: ${toolName}`);
+		}
+	}
+
+	async isToolEnabled(agentId: string, toolName: string): Promise<boolean> {
+		const provider = this.getActiveToolProvider();
+		if (!provider) { return true; }
+		return await provider.isToolEnabled(agentId, toolName);
+	}
+
+	async getToolsEnabledState(agentId: string): Promise<Record<string, boolean>> {
+		const provider = this.getActiveToolProvider();
+		if (!provider) { return {}; }
+		return await provider.getToolsEnabledState(agentId);
+	}
+
+	async setToolsEnabledState(agentId: string, state: Record<string, boolean>): Promise<void> {
+		const provider = this.getActiveToolProvider();
+		if (provider) {
+			await provider.setToolsEnabledState(agentId, state);
+		}
+	}
+
+	async listAllToolsWithState(agentId: string): Promise<(IToolDefinition & { enabled: boolean })[]> {
+		// 获取所有已注册的 tool provider，而不仅是 active provider
+		const allProviders = this._slotRegistry.getToolProviders?.() ??
+			(this.getActiveToolProvider() ? [this.getActiveToolProvider()!] : []);
+
+		if (allProviders.length === 0) { return []; }
+
+		const allTools: IToolDefinition[] = [];
+		for (const provider of allProviders) {
+			if (!provider) { continue; }
+			if ('getAllToolDefinitions' in provider && typeof (provider as any).getAllToolDefinitions === 'function') {
+				allTools.push(...await (provider as any).getAllToolDefinitions(agentId));
+			} else {
+				allTools.push(...await provider.listTools(agentId));
+			}
+		}
+
+		// 去重：同名工具只保留第一个
+		const seen = new Set<string>();
+		const uniqueTools = allTools.filter(tool => {
+			if (seen.has(tool.name)) { return false; }
+			seen.add(tool.name);
+			return true;
+		});
+
+		// 收集所有 provider 的启用状态
+		const enabledState: Record<string, boolean> = {};
+		for (const provider of allProviders) {
+			if (!provider) { continue; }
+			try {
+				const state = await provider.getToolsEnabledState(agentId);
+				Object.assign(enabledState, state);
+			} catch { /* ignore */ }
+		}
+
+		return uniqueTools.map(tool => ({
+			...tool,
+			enabled: enabledState[tool.name] ?? true,
+		}));
 	}
 
 	// ─── Fallback 配置 ─────────────────────────────────────────

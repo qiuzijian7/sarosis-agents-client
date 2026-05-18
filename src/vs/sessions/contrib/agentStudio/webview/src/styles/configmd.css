@@ -1,0 +1,206 @@
+/*---------------------------------------------------------------------------------------------
+ *  ConfigMD Panel styles — split MD source + HTML preview view.
+ *--------------------------------------------------------------------------------------------*/
+
+.configmd-panel {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	background: var(--vscode-editor-background, #1e1e1e);
+	border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.18)));
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+/* Header */
+.configmd-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 6px 10px;
+	background: var(--vscode-sideBar-background, rgba(255, 255, 255, 0.02));
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+	flex-shrink: 0;
+	font-size: 12px;
+}
+
+.configmd-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--vscode-foreground);
+	font-weight: 500;
+}
+
+.configmd-icon { font-size: 14px; }
+
+.configmd-dirty-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: #f0a020;
+	display: inline-block;
+}
+
+.configmd-err {
+	color: #f04848;
+	font-size: 13px;
+}
+
+.configmd-view-toggle {
+	display: flex;
+	gap: 2px;
+	background: rgba(127, 127, 127, 0.10);
+	border-radius: 4px;
+	padding: 2px;
+}
+
+.configmd-view-toggle button {
+	background: transparent;
+	border: none;
+	padding: 2px 8px;
+	border-radius: 3px;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.configmd-view-toggle button:hover {
+	background: rgba(127, 127, 127, 0.15);
+}
+
+.configmd-view-toggle button.active {
+	background: var(--vscode-button-background, #0078d4);
+	color: var(--vscode-button-foreground, #fff);
+}
+
+/* Body */
+.configmd-body {
+	flex: 1;
+	display: flex;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.configmd-body.view-split > .configmd-source {
+	flex: 1;
+	border-right: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+}
+
+.configmd-body.view-split > .configmd-preview {
+	flex: 1;
+}
+
+.configmd-body.view-source > .configmd-source { flex: 1; }
+.configmd-body.view-preview > .configmd-preview { flex: 1; }
+
+/* Source editor */
+.configmd-source {
+	display: flex;
+	min-width: 0;
+	min-height: 0;
+}
+
+.configmd-source textarea {
+	flex: 1;
+	width: 100%;
+	height: 100%;
+	resize: none;
+	border: none;
+	outline: none;
+	padding: 12px 14px;
+	font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+	font-size: 13px;
+	line-height: 1.55;
+	color: var(--vscode-editor-foreground, #d4d4d4);
+	background: var(--vscode-editor-background, #1e1e1e);
+	tab-size: 2;
+	white-space: pre;
+}
+
+/* Preview iframe */
+.configmd-preview {
+	display: flex;
+	min-width: 0;
+	min-height: 0;
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.configmd-preview iframe {
+	flex: 1;
+	width: 100%;
+	height: 100%;
+	border: none;
+	background: transparent;
+}
+
+/* Status displays */
+.configmd-loading,
+.configmd-error {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	padding: 24px;
+	color: var(--vscode-descriptionForeground, #888);
+	font-size: 12px;
+	text-align: center;
+}
+
+.configmd-error pre {
+	max-width: 90%;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: 11px;
+	color: #f04848;
+	background: rgba(240, 72, 72, 0.06);
+	padding: 6px 10px;
+	border-radius: 4px;
+	margin-top: 4px;
+}
+
+/* Layout integration with chat */
+.employee-chat.with-configmd-side {
+	flex-direction: row !important;
+}
+
+.employee-chat.with-configmd-side > .configmd-side-container {
+	width: 50%;
+	min-width: 320px;
+	border-left: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+	display: flex;
+	flex-direction: column;
+}
+
+.configmd-side-panel {
+	height: 100%;
+	border-radius: 0;
+	border: none;
+	border-left: none;
+}
+
+.configmd-fullpanel {
+	flex: 1;
+	border-radius: 0;
+	border: none;
+}
+
+/* EmployeeNode indicator */
+.employee-node-configmd {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin: 4px 0;
+	padding: 2px 8px;
+	font-size: 10px;
+	color: var(--vscode-foreground, #ccc);
+	background: linear-gradient(90deg, rgba(78, 161, 255, 0.18), rgba(78, 161, 255, 0.08));
+	border-radius: 3px;
+	width: fit-content;
+}
+
+.employee-node-configmd-icon { font-size: 11px; }

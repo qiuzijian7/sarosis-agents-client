@@ -171,6 +171,42 @@ export interface IToolProvider {
 
 	listTools(agentId: string): Promise<IToolDefinition[]>;
 	executeTool(agentId: string, toolCall: IToolCall): Promise<IToolResult>;
+
+	/**
+	 * 启用一个工具
+	 * @param _agentId Agent ID（保留供未来按 Agent 配置）
+	 * @param toolName 工具名称
+	 */
+	enableTool(_agentId: string, toolName: string): Promise<void>;
+
+	/**
+	 * 禁用一个工具
+	 * @param _agentId Agent ID（保留供未来按 Agent 配置）
+	 * @param toolName 工具名称
+	 */
+	disableTool(_agentId: string, toolName: string): Promise<void>;
+
+	/**
+	 * 检查工具是否已启用
+	 * @param _agentId Agent ID（保留供未来按 Agent 配置）
+	 * @param toolName 工具名称
+	 * @returns 是否已启用
+	 */
+	isToolEnabled(_agentId: string, toolName: string): Promise<boolean>;
+
+	/**
+	 * 获取所有工具的启用状态 Map
+	 * @param _agentId Agent ID（保留供未来按 Agent 配置）
+	 * @returns 工具名称 -> 是否启用的 Map
+	 */
+	getToolsEnabledState(_agentId: string): Promise<Record<string, boolean>>;
+
+	/**
+	 * 批量设置工具的启用状态
+	 * @param _agentId Agent ID（保留供未来按 Agent 配置）
+	 * @param state 工具名称 -> 是否启用的 Map
+	 */
+	setToolsEnabledState(_agentId: string, state: Record<string, boolean>): Promise<void>;
 }
 
 export interface IToolDefinition {
@@ -433,6 +469,7 @@ export interface ISlotRegistry {
 	getActiveModelSelection(): IModelSelection | undefined;
 	getActiveMemoryProvider(): IMemoryProvider | undefined;
 	getActiveToolProvider(): IToolProvider | undefined;
+	getToolProviders(): IToolProvider[];
 	getActivePlanningProvider(): IPlanningProvider | undefined;
 	getActiveRetrievalProvider(): IRetrievalProvider | undefined;
 	getActiveKanbanProvider(): IKanbanProvider | undefined;

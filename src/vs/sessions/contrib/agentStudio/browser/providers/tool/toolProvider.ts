@@ -32,6 +32,9 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	/** 注册的工具处理器 */
 	private readonly _toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<IToolResultContent[]>>();
 
+	/** 被禁用的工具集合 */
+	private readonly _disabledTools = new Set<string>();
+
 	constructor(
 		@ILogService logService: ILogService,
 	) {
@@ -73,7 +76,81 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	}
 
 	async listTools(_agentId: string): Promise<IToolDefinition[]> {
+		const out: IToolDefinition[] = [];
+		for (const [name, def] of this._toolDefinitions) {
+			if (this._disabledTools.has(name)) { continue; }
+			out.push(def);
+		}
+		return out;
+	}
+
+	/**
+	 * 获取所有工具定义（包括被禁用的，供 UI 显示）
+	 */
+	async getAllToolDefinitions(_agentId: string): Promise<IToolDefinition[]> {
 		return Array.from(this._toolDefinitions.values());
+	}
+
+	/**
+	 * 启用工具
+	 */
+	async enableTool(_agentId: string, toolName: string): Promise<void> {
+		if (this._disabledTools.has(toolName)) {
+			this._disabledTools.delete(toolName);
+			this._onDidChangeTools.fire();
+			this._logService.info(`[ToolProvider] Enabled tool: ${toolName}`);
+		}
+	}
+
+	/**
+	 * 禁用工具
+	 */
+	async disableTool(_agentId: string, toolName: string): Promise<void> {
+		if (this._toolDefinitions.has(toolName) && !this._disabledTools.has(toolName)) {
+			this._disabledTools.add(toolName);
+			this._onDidChangeTools.fire();
+			this._logService.info(`[ToolProvider] Disabled tool: ${toolName}`);
+		}
+	}
+
+	/**
+	 * 检查工具是否已启用
+	 */
+	async isToolEnabled(_agentId: string, toolName: string): Promise<boolean> {
+		return !this._disabledTools.has(toolName);
+	}
+
+	/**
+	 * 获取所有工具的启用状态
+	 */
+	async getToolsEnabledState(_agentId: string): Promise<Record<string, boolean>> {
+		const state: Record<string, boolean> = {};
+		for (const name of this._toolDefinitions.keys()) {
+			state[name] = !this._disabledTools.has(name);
+		}
+		return state;
+	}
+
+	/**
+	 * 批量设置工具的启用状态
+	 */
+	async setToolsEnabledState(_agentId: string, state: Record<string, boolean>): Promise<void> {
+		let changed = false;
+		for (const [name, enabled] of Object.entries(state)) {
+			if (!this._toolDefinitions.has(name)) { continue; }
+			const currentlyEnabled = !this._disabledTools.has(name);
+			if (enabled && !currentlyEnabled) {
+				this._disabledTools.delete(name);
+				changed = true;
+			} else if (!enabled && currentlyEnabled) {
+				this._disabledTools.add(name);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this._onDidChangeTools.fire();
+			this._logService.info(`[ToolProvider] Batch updated tool enabled state`);
+		}
 	}
 
 	async executeTool(_agentId: string, toolCall: IToolCall): Promise<IToolResult> {

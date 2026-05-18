@@ -9,7 +9,9 @@ import { useTaskBoardStore, type TaskBoardStatus, type TaskSource } from '../../
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
+import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { TaskCard } from './TaskCard';
+import { OrchestrationPlanDialog } from '../orchestration/OrchestrationPlanDialog';
 
 // Column configuration
 const COLUMNS: { status: TaskBoardStatus; label: string; icon: string; color: string }[] = [
@@ -32,6 +34,7 @@ export function TaskBoardPanel(): React.ReactElement {
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();
+	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans } = useOrchestrationStore();
 
 	const [dragOverColumn, setDragOverColumn] = useState<TaskBoardStatus | null>(null);
 	const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -42,8 +45,9 @@ export function TaskBoardPanel(): React.ReactElement {
 			loadDelegations(activeWorkspaceId).then(() => {
 				loadTasks(activeWorkspaceId);
 			});
+			loadPlans(activeWorkspaceId);
 		}
-	}, [activeWorkspaceId, loadDelegations, loadTasks]);
+	}, [activeWorkspaceId, loadDelegations, loadTasks, loadPlans]);
 
 	// Listen for task-board changes from host
 	useEffect(() => {
@@ -118,7 +122,16 @@ export function TaskBoardPanel(): React.ReactElement {
 					<span className="task-board-title">任务看板</span>
 					{totalTasks > 0 && <span className="task-board-count">{totalTasks}</span>}
 				</div>
-				{isLoading && <span className="task-board-loading">Loading...</span>}
+				<div className="task-board-header-right">
+					<button
+						className="task-board-orchestrate-btn"
+						onClick={(e) => { e.stopPropagation(); openPlanDialog(); }}
+						title="任务编排 - AI 自动拆分任务、创建 Agent"
+					>
+						🎯 任务编排
+					</button>
+					{isLoading && <span className="task-board-loading">Loading...</span>}
+				</div>
 			</div>
 
 			{/* Kanban columns */}
@@ -168,6 +181,11 @@ export function TaskBoardPanel(): React.ReactElement {
 						);
 					})}
 				</div>
+			)}
+
+			{/* Orchestration Plan Dialog */}
+			{isPlanDialogOpen && (
+				<OrchestrationPlanDialog onClose={closePlanDialog} />
 			)}
 		</div>
 	);

@@ -465,19 +465,21 @@ const SPLIT_ORDER = 100000;  // towards the end
 const CLOSE_ORDER = 1000000; // towards the far end
 
 // Editor Title Menu: Split Editor
+// [Sarosis] Only show split button when editor has CanSplitInGroup capability
 appendEditorToolItem(
 	{
 		id: SPLIT_EDITOR,
 		title: localize('splitEditorRight', "Split Editor Right"),
 		icon: Codicon.splitHorizontal
 	},
-	SplitEditorsVertically.negate(),
+	ContextKeyExpr.and(SplitEditorsVertically.negate(), ActiveEditorCanSplitInGroupContext),
 	SPLIT_ORDER,
 	{
 		id: SPLIT_EDITOR_DOWN,
 		title: localize('splitEditorDown', "Split Editor Down"),
 		icon: Codicon.splitVertical
-	}
+	},
+	ActiveEditorCanSplitInGroupContext
 );
 
 appendEditorToolItem(
@@ -486,13 +488,14 @@ appendEditorToolItem(
 		title: localize('splitEditorDown', "Split Editor Down"),
 		icon: Codicon.splitVertical
 	},
-	SplitEditorsVertically,
+	ContextKeyExpr.and(SplitEditorsVertically, ActiveEditorCanSplitInGroupContext),
 	SPLIT_ORDER,
 	{
 		id: SPLIT_EDITOR_RIGHT,
 		title: localize('splitEditorRight', "Split Editor Right"),
 		icon: Codicon.splitHorizontal
-	}
+	},
+	ActiveEditorCanSplitInGroupContext
 );
 
 // Side by side: layout

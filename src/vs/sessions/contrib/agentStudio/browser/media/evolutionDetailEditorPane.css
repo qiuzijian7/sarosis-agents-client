@@ -1,0 +1,395 @@
+/*---------------------------------------------------------------------------------------------
+ *  Evolution Detail EditorPane Styles — Renders in the editor area
+ *--------------------------------------------------------------------------------------------*/
+
+.evolution-detail-editor {
+	background: var(--vscode-editor-background, #1e1e1e);
+	color: var(--vscode-foreground, #ccc);
+	font-family: var(--vscode-font-family, system-ui, -apple-system, sans-serif);
+}
+
+.evolution-detail-scroll {
+	width: 100%;
+	height: 100%;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 24px;
+	box-sizing: border-box;
+}
+
+/* --- Header --- */
+
+.evolution-detail-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	margin-bottom: 16px;
+}
+
+.evolution-detail-header-left {
+	display: flex;
+	align-items: flex-start;
+	gap: 16px;
+	flex: 1;
+}
+
+.evolution-detail-icon {
+	width: 52px;
+	height: 52px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 32px;
+	border-radius: 10px;
+	background: var(--vscode-button-secondaryBackground, #3a3d41);
+	flex-shrink: 0;
+}
+
+.evolution-detail-title-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.evolution-detail-name {
+	margin: 0 0 4px;
+	font-size: 18px;
+	font-weight: 700;
+	color: var(--vscode-foreground);
+	line-height: 1.2;
+}
+
+.evolution-detail-workspace {
+	margin: 0 0 8px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+}
+
+.evolution-detail-badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.evolution-detail-badge {
+	display: inline-flex;
+	align-items: center;
+	font-size: 11px;
+	padding: 2px 8px;
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
+.evolution-detail-badge.trigger {
+	background: var(--vscode-badge-background, #4d4d4d);
+	color: var(--vscode-badge-foreground, #fff);
+}
+
+.evolution-detail-badge.action {
+	background: rgba(0, 122, 204, 0.2);
+	color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.evolution-detail-badge.duration,
+.evolution-detail-badge.tokens {
+	background: rgba(128, 128, 128, 0.15);
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+}
+
+.evolution-detail-header-right {
+	flex-shrink: 0;
+	text-align: right;
+}
+
+.evolution-detail-time {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+}
+
+/* --- Separator --- */
+
+.evolution-detail-separator {
+	height: 1px;
+	background: var(--vscode-widget-border, #303030);
+	margin: 16px 0;
+}
+
+/* --- Sections --- */
+
+.evolution-detail-section {
+	margin-bottom: 24px;
+}
+
+.evolution-detail-section-title {
+	margin: 0 0 12px;
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+/* --- Context Box --- */
+
+.evolution-detail-context-box {
+	background: var(--vscode-textBlockQuote-background, #222);
+	border: 1px solid var(--vscode-widget-border, #303030);
+	border-radius: 8px;
+	padding: 16px;
+}
+
+.evolution-detail-label {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	margin-bottom: 6px;
+	margin-top: 12px;
+}
+
+.evolution-detail-label:first-child {
+	margin-top: 0;
+}
+
+.evolution-detail-context-content {
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--vscode-foreground);
+}
+
+.evolution-detail-context-detail {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-foreground);
+	opacity: 0.85;
+}
+
+.evolution-detail-summary-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin-top: 14px;
+	padding-top: 12px;
+	border-top: 1px solid var(--vscode-widget-border, #303030);
+}
+
+.evolution-detail-summary-icon {
+	font-size: 16px;
+	flex-shrink: 0;
+	margin-top: 1px;
+}
+
+.evolution-detail-summary-text {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	line-height: 1.4;
+}
+
+/* --- File Diffs --- */
+
+.evolution-detail-diff-card {
+	background: var(--vscode-textBlockQuote-background, #222);
+	border: 1px solid var(--vscode-widget-border, #303030);
+	border-radius: 6px;
+	padding: 12px;
+	margin-bottom: 8px;
+}
+
+.evolution-detail-diff-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.evolution-detail-diff-icon {
+	font-size: 14px;
+	flex-shrink: 0;
+}
+
+.evolution-detail-diff-path {
+	font-size: 12px;
+	font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+	color: var(--vscode-foreground);
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.evolution-detail-diff-type {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+
+.evolution-detail-diff-type.created {
+	background: rgba(76, 175, 80, 0.2);
+	color: #4caf50;
+}
+
+.evolution-detail-diff-type.modified {
+	background: rgba(255, 193, 7, 0.2);
+	color: #ffc107;
+}
+
+.evolution-detail-diff-type.deleted {
+	background: rgba(244, 67, 54, 0.2);
+	color: #f44336;
+}
+
+.evolution-detail-diff-stats {
+	display: flex;
+	gap: 10px;
+	font-size: 11px;
+	margin-bottom: 8px;
+}
+
+.evolution-detail-diff-added {
+	color: #4caf50;
+	font-weight: 600;
+}
+
+.evolution-detail-diff-removed {
+	color: #f44336;
+	font-weight: 600;
+}
+
+.evolution-detail-diff-content {
+	margin-top: 8px;
+}
+
+.evolution-detail-diff-block {
+	margin-bottom: 8px;
+}
+
+.evolution-detail-diff-block-label {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+	margin-bottom: 4px;
+}
+
+.evolution-detail-diff-block.before .evolution-detail-diff-block-label {
+	color: #f44336;
+}
+
+.evolution-detail-diff-block.after .evolution-detail-diff-block-label {
+	color: #4caf50;
+}
+
+.evolution-detail-diff-code {
+	background: var(--vscode-textCodeBlock-background, #1a1a1a);
+	border: 1px solid var(--vscode-widget-border, #303030);
+	border-radius: 4px;
+	padding: 10px;
+	overflow-x: auto;
+	font-size: 12px;
+	font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+	line-height: 1.5;
+	margin: 0;
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.evolution-detail-diff-block.before .evolution-detail-diff-code {
+	border-left: 3px solid #f44336;
+}
+
+.evolution-detail-diff-block.after .evolution-detail-diff-code {
+	border-left: 3px solid #4caf50;
+}
+
+/* --- Skill Cards --- */
+
+.evolution-detail-skill-card {
+	background: var(--vscode-textBlockQuote-background, #222);
+	border: 1px solid var(--vscode-widget-border, #303030);
+	border-radius: 6px;
+	padding: 12px;
+	margin-bottom: 8px;
+}
+
+.evolution-detail-skill-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.evolution-detail-skill-action {
+	font-size: 16px;
+	flex-shrink: 0;
+}
+
+.evolution-detail-skill-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	flex: 1;
+}
+
+.evolution-detail-skill-action-badge {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+
+.evolution-detail-skill-action-badge.created {
+	background: rgba(76, 175, 80, 0.2);
+	color: #4caf50;
+}
+
+.evolution-detail-skill-action-badge.updated {
+	background: rgba(33, 150, 243, 0.2);
+	color: #2196f3;
+}
+
+.evolution-detail-skill-action-badge.merged {
+	background: rgba(156, 39, 176, 0.2);
+	color: #9c27b0;
+}
+
+.evolution-detail-skill-action-badge.archived {
+	background: rgba(128, 128, 128, 0.2);
+	color: #888;
+}
+
+.evolution-detail-skill-info {
+	margin-top: 8px;
+}
+
+/* --- Info Grid / Rows --- */
+
+.evolution-detail-info-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.evolution-detail-info-row {
+	display: flex;
+	align-items: baseline;
+	padding: 4px 0;
+	gap: 12px;
+}
+
+.evolution-detail-info-label {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+	min-width: 100px;
+	flex-shrink: 0;
+}
+
+.evolution-detail-info-value {
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	word-break: break-all;
+}

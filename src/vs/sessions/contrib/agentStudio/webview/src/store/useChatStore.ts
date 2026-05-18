@@ -17,14 +17,26 @@ export interface ChatMessage {
 	timestamp: string;
 }
 
+export interface AgentSessionInfo {
+	id: string;
+	name: string;
+	messageCount: number;
+	createdAt: string;
+	updatedAt: string;
+	/** External provider session ID (e.g. Knot threadId) */
+	providerSessionId?: string;
+}
+
 interface ChatState {
 	messages: ChatMessage[];
 	streamState: StreamState;
 	inputValue: string;
 	isLoading: boolean;
 	activeEmployeeId: string | null;
-	/** Fork-scoped agent session ID (null = Root default) */
+	/** Current agent session ID (null = 'default') */
 	activeAgentSessionId: string | null;
+	/** List of sessions for the current agent (Root mode) */
+	agentSessions: AgentSessionInfo[];
 
 	// Actions
 	setActiveEmployee: (employeeId: string) => void;
@@ -35,6 +47,16 @@ interface ChatState {
 	cancelStream: () => void;
 	setInputValue: (value: string) => void;
 	clearMessages: () => void;
+	/** Load all sessions for the current agent */
+	loadAgentSessions: (employeeId: string) => Promise<void>;
+	/** Create a new session for the current agent and switch to it */
+	createAgentSession: () => Promise<void>;
+	/** Switch to a different session for the current agent */
+	switchAgentSession: (sessionId: string) => Promise<void>;
+	/** Rename an agent session */
+	renameAgentSession: (sessionId: string, newName: string) => Promise<void>;
+	/** Delete an agent session */
+	deleteAgentSession: (sessionId: string) => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -169,25 +191,48 @@ export const useChatStore = create<ChatState>((set, get) => {
 		isLoading: false,
 		activeEmployeeId: null,
 		activeAgentSessionId: null,
+		agentSessions: [],
 
 		setActiveEmployee: (employeeId: string) => {
 			const current = get().activeEmployeeId;
 			console.log(`[ChatStore] setActiveEmployee: ${current} → ${employeeId}`);
 			if (current === employeeId) {
-				console.log('[ChatStore] setActiveEmployee: same employee, skipping');
-				return; // Don't reset when already active
+				return;
 			}
 
-			// Resolve the fork's agentSessionId for this employee
-			let agentSessionId: string | null = null;
+			// Check if in Fork mode — use fork's agentSessionId
+			let forkSessionId: string | null = null;
 			try {
 				const { useWorkspaceSessionStore } = require('./useWorkspaceSessionStore');
-				agentSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(employeeId);
-			} catch { /* store not available yet */ }
+				forkSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(employeeId);
+			} catch { /* store not available */ }
 
 			resetStream();
-			set({ activeEmployeeId: employeeId, activeAgentSessionId: agentSessionId, messages: [], inputValue: '' });
-			get().loadHistoryForSession(employeeId, agentSessionId ?? undefined);
+			set({ activeEmployeeId: employeeId, activeAgentSessionId: forkSessionId, messages: [], inputValue: '', agentSessions: [] });
+
+			if (forkSessionId) {
+				// Fork mode: directly load fork session
+				get().loadHistoryForSession(employeeId, forkSessionId);
+			} else {
+				// Root mode: load existing sessions list, pick the most recent one if any.
+				// Do NOT auto-create here — let sendMessage create with the first message as name.
+				sendRequest<{ employeeId: string }, AgentSessionInfo[]>(
+					'agentSession.list',
+					{ employeeId },
+				).then(sessions => {
+					if (get().activeEmployeeId !== employeeId) { return; }
+					set({ agentSessions: sessions || [] });
+					if (sessions && sessions.length > 0) {
+						const latest = sessions[0]; // already sorted by updatedAt desc from host
+						set({ activeAgentSessionId: latest.id });
+						get().loadHistoryForSession(employeeId, latest.id);
+					}
+					// If no sessions exist, leave activeAgentSessionId null.
+					// sendMessage will auto-create on first message.
+				}).catch(err => {
+					console.error('[ChatStore] Failed to load agent sessions:', err);
+				});
+			}
 		},
 
 		loadHistory: async (employeeId: string) => {
@@ -226,8 +271,45 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		sendMessage: async (message: string) => {
-			const { activeEmployeeId, activeAgentSessionId } = get();
+			let { activeEmployeeId, activeAgentSessionId } = get();
 			if (!activeEmployeeId || !message.trim()) { return; }
+
+			const sessionName = message.trim().substring(0, 30);
+
+			// If no session assigned yet, auto-create one with message as name
+			if (!activeAgentSessionId) {
+				try {
+					const meta = await sendRequest<{ employeeId: string; name?: string }, AgentSessionInfo>(
+						'agentSession.getActive',
+						{ employeeId: activeEmployeeId, name: sessionName },
+					);
+					if (meta?.id) {
+						activeAgentSessionId = meta.id;
+						set({ activeAgentSessionId: meta.id });
+						get().loadAgentSessions(activeEmployeeId);
+					}
+				} catch (err) {
+					console.error('[ChatStore] Failed to auto-create session before send:', err);
+				}
+			} else {
+				// Session exists — if this is the first message (no messages yet),
+				// rename the session to the user's first message
+				const currentMessages = get().messages;
+				if (currentMessages.length === 0 && sessionName) {
+					get().renameAgentSession(activeAgentSessionId, sessionName);
+				}
+			}
+
+			// Resolve Fork context
+			let workspaceSessionId: string | undefined;
+			let workspaceId: string | undefined;
+			try {
+				const { useWorkspaceSessionStore } = require('./useWorkspaceSessionStore');
+				const sessionState = useWorkspaceSessionStore.getState();
+				workspaceSessionId = sessionState.activeSessionId ?? undefined;
+				const { useWorkspaceStore: wsStore } = require('./useWorkspaceStore');
+				workspaceId = wsStore.getState().activeWorkspaceId ?? undefined;
+			} catch { /* store not available */ }
 
 			// Add user message optimistically
 			const userMessage: ChatMessage = {
@@ -236,20 +318,21 @@ export const useChatStore = create<ChatState>((set, get) => {
 				content: message,
 				timestamp: new Date().toISOString(),
 			};
-			set(state => {
-				console.log(`[ChatStore] sendMessage: adding user message, current count=${state.messages.length}`);
-				return {
-					messages: [...state.messages, userMessage],
-					inputValue: '',
-				};
-			});
+			set(state => ({
+				messages: [...state.messages, userMessage],
+				inputValue: '',
+			}));
 
 			try {
 				await sendRequest('chat.send', {
 					employeeId: activeEmployeeId,
 					message,
 					agentSessionId: activeAgentSessionId ?? undefined,
+					workspaceSessionId,
+					workspaceId,
 				});
+				// After send completes, refresh session list to update messageCount
+				get().loadAgentSessions(activeEmployeeId!);
 			} catch (err) {
 				console.error('[ChatStore] Failed to send message:', err);
 				const errorMsg = err instanceof Error ? err.message : String(err);
@@ -279,6 +362,88 @@ export const useChatStore = create<ChatState>((set, get) => {
 			console.log('[ChatStore] clearMessages called');
 			resetStream();
 			set({ messages: [] });
+		},
+
+		// ─── Agent Session Management (Root mode) ───
+
+		loadAgentSessions: async (employeeId: string) => {
+			try {
+				const sessions = await sendRequest<{ employeeId: string }, AgentSessionInfo[]>(
+					'agentSession.list',
+					{ employeeId },
+				);
+				set({ agentSessions: sessions || [] });
+			} catch (err) {
+				console.error('[ChatStore] Failed to load agent sessions:', err);
+			}
+		},
+
+		createAgentSession: async () => {
+			const { activeEmployeeId } = get();
+			if (!activeEmployeeId) { return; }
+			try {
+				const meta = await sendRequest<{ employeeId: string }, AgentSessionInfo>(
+					'agentSession.create',
+					{ employeeId: activeEmployeeId },
+				);
+				if (meta?.id) {
+					resetStream();
+					set({ activeAgentSessionId: meta.id, messages: [] });
+					get().loadHistoryForSession(activeEmployeeId, meta.id);
+					get().loadAgentSessions(activeEmployeeId);
+				}
+			} catch (err) {
+				console.error('[ChatStore] Failed to create agent session:', err);
+			}
+		},
+
+		switchAgentSession: async (sessionId: string) => {
+			const { activeEmployeeId } = get();
+			if (!activeEmployeeId) { return; }
+			resetStream();
+			set({ activeAgentSessionId: sessionId, messages: [] });
+			get().loadHistoryForSession(activeEmployeeId, sessionId);
+		},
+
+		renameAgentSession: async (sessionId: string, newName: string) => {
+			const { activeEmployeeId } = get();
+			if (!activeEmployeeId) { return; }
+			try {
+				await sendRequest('agentSession.rename', {
+					employeeId: activeEmployeeId,
+					sessionId,
+					name: newName,
+				});
+				// Update local list
+				set(state => ({
+					agentSessions: state.agentSessions.map(s =>
+						s.id === sessionId ? { ...s, name: newName } : s,
+					),
+				}));
+			} catch (err) {
+				console.error('[ChatStore] Failed to rename session:', err);
+			}
+		},
+
+		deleteAgentSession: async (sessionId: string) => {
+			const { activeEmployeeId, activeAgentSessionId } = get();
+			if (!activeEmployeeId) { return; }
+			try {
+				await sendRequest('agentSession.delete', {
+					employeeId: activeEmployeeId,
+					sessionId,
+				});
+				// If we deleted the active session, switch back to default
+				if (activeAgentSessionId === sessionId) {
+					resetStream();
+					set({ activeAgentSessionId: null, messages: [] });
+					get().loadHistoryForSession(activeEmployeeId, undefined);
+				}
+				// Reload session list
+				get().loadAgentSessions(activeEmployeeId);
+			} catch (err) {
+				console.error('[ChatStore] Failed to delete agent session:', err);
+			}
 		},
 	};
 });

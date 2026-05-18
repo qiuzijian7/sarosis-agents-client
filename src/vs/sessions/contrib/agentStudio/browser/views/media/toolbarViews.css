@@ -17,7 +17,8 @@
 .plugins-view,
 .personal-view,
 .settings-view,
-.provider-view {
+.provider-view,
+.evolution-view {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -36,7 +37,8 @@
 .changes-header,
 .plugins-header,
 .settings-header,
-.provider-header {
+.provider-header,
+.evolution-header {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -1394,6 +1396,79 @@ button.primary:hover,
 
 /* ─── 4. Skills ──────────────────────────────────────────────────────────────── */
 
+.skills-view {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.skills-header {
+	flex-shrink: 0;
+	padding: 8px 12px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.skills-filters {
+	flex-shrink: 0;
+	padding: 4px 12px;
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.skills-search-row {
+	flex-shrink: 0;
+	padding: 4px 12px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.skills-search-input {
+	flex: 1;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border-radius: 4px;
+	font-size: 12px;
+	outline: none;
+	min-width: 0;
+}
+
+.skills-search-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.skills-search-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.skills-search-clear-btn {
+	flex-shrink: 0;
+	background: none;
+	border: none;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-size: 12px;
+	padding: 4px 6px;
+	border-radius: 4px;
+	line-height: 1;
+}
+
+.skills-search-clear-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-editor-foreground);
+}
+
+.skills-list {
+	flex: 1;
+	overflow-y: auto;
+}
+
 .skills-title {
 	margin: 0;
 	font-size: 14px;
@@ -1444,6 +1519,360 @@ button.primary:hover,
 .skill-desc {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
+}
+
+/* Skill item disabled state */
+.skill-item:not(.skill-enabled) .skill-name {
+	opacity: 0.5;
+}
+
+.skill-item:not(.skill-enabled) .skill-icon {
+	opacity: 0.4;
+}
+
+/* ─── Skill Install UI ──────────────────────────────────────────────────────── */
+
+.skills-install-btn {
+	font-size: 11px;
+	padding: 2px 8px;
+	margin-left: auto;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: 3px;
+}
+
+.skills-install-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.skill-uninstall-btn {
+	font-size: 10px;
+	padding: 2px 6px;
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	opacity: 0;
+	transition: opacity 0.15s;
+	flex-shrink: 0;
+}
+
+.skill-item:hover .skill-uninstall-btn {
+	opacity: 1;
+}
+
+.skill-uninstall-btn:hover {
+	color: var(--vscode-errorForeground);
+	background: var(--vscode-inputValidation-errorBackground, rgba(255,0,0,0.1));
+}
+
+/* Install panel */
+.skill-install-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	padding: 12px;
+}
+
+.skill-install-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.skill-install-title {
+	margin: 0;
+	font-size: 14px;
+}
+
+.skill-install-back-btn {
+	font-size: 12px;
+	margin-left: auto;
+}
+
+.skill-install-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.skill-install-section-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+}
+
+.skill-install-section-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Hub grid */
+.skill-hub-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 8px;
+}
+
+.skill-hub-card {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+}
+
+.skill-hub-card:hover {
+	background: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.skill-hub-card-official {
+	border-left: 3px solid var(--vscode-button-background);
+}
+
+.skill-hub-icon {
+	font-size: 24px;
+	flex-shrink: 0;
+}
+
+.skill-hub-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.skill-hub-name {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.skill-hub-official-badge {
+	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 8px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.skill-hub-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.skill-hub-type {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+}
+
+/* Hub entries */
+.skill-hub-loading {
+	text-align: center;
+	padding: 24px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.skill-hub-entries-empty {
+	text-align: center;
+	padding: 24px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.skill-hub-refresh-btn {
+	font-size: 11px;
+}
+
+.skill-hub-entry {
+	display: flex;
+	align-items: center;
+	padding: 8px 12px;
+	gap: 8px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.skill-hub-entry-installed {
+	opacity: 0.7;
+}
+
+.skill-hub-entry-icon {
+	font-size: 18px;
+	flex-shrink: 0;
+}
+
+.skill-hub-entry-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.skill-hub-entry-name-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.skill-hub-entry-name {
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	font-size: 12px;
+}
+
+.skill-hub-entry-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.skill-hub-entry-installed-badge {
+	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 8px;
+	background: var(--vscode-testing-iconPassed, #4caf50);
+	color: #fff;
+	font-weight: 600;
+}
+
+.skill-hub-entry-install-btn {
+	font-size: 11px;
+	padding: 2px 10px;
+	flex-shrink: 0;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: 3px;
+}
+
+.skill-hub-entry-install-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.skill-hub-entry-install-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+/* Local file install */
+.skill-install-local-actions {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.skill-install-browse-btn,
+.skill-install-paste-btn {
+	font-size: 11px;
+	padding: 4px 12px;
+}
+
+.skill-file-input {
+	display: none;
+}
+
+/* URL install */
+.skill-install-url-row {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+
+.skill-url-input {
+	flex: 1;
+	padding: 4px 8px;
+	font-size: 12px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	outline: none;
+}
+
+.skill-url-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.skill-install-url-btn {
+	font-size: 11px;
+	padding: 4px 12px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: 3px;
+}
+
+.skill-install-url-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+/* Paste dialog overlay */
+.skill-paste-overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.4);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 1000;
+}
+
+.skill-paste-dialog {
+	background: var(--vscode-editor-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	padding: 16px;
+	width: 90%;
+	max-width: 500px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.skill-paste-dialog h4 {
+	margin: 0;
+	font-size: 14px;
+}
+
+.skill-paste-textarea {
+	width: 100%;
+	min-height: 200px;
+	padding: 8px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 12px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	resize: vertical;
+	outline: none;
+}
+
+.skill-paste-textarea:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.skill-paste-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
 }
 
 /* ─── 5. Tasks ───────────────────────────────────────────────────────────────── */

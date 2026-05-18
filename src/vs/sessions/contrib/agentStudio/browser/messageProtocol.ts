@@ -26,6 +26,7 @@ export type RequestType =
 	| 'employees.selected'
 	| 'employees.export'
 	| 'employees.import'
+	| 'employees.syncPositions'
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
@@ -66,7 +67,28 @@ export type RequestType =
 	| 'workspaceSession.archive'
 	| 'workspaceSession.switch'
 	| 'workspaceSession.switchRoot'
-	| 'workspaceSession.updateStatus';
+	| 'workspaceSession.updateStatus'
+	| 'agentSession.list'
+	| 'agentSession.create'
+	| 'agentSession.rename'
+	| 'agentSession.delete'
+	| 'agentSession.getActive'
+	| 'orchestration.plan'
+	| 'orchestration.approve'
+	| 'orchestration.reject'
+	| 'orchestration.getPlan'
+	| 'orchestration.listPlans'
+	| 'orchestration.taskAction'
+	| 'confightml.event'  // legacy: redirected to configmd.event
+	| 'configmd.getResource'      // resolve { md, html, parserScript, stylesContent }
+	| 'configmd.readSource'       // read raw MD content
+	| 'configmd.writeSource'      // overwrite MD content (from MD editor)
+	| 'configmd.applyPatch'       // apply structured patch (from HTML view)
+	| 'configmd.renderHtml'       // (re)render HTML from current MD
+	| 'configmd.event'            // forward HTML event to agent/model
+	| 'configmd.chatSend'         // send message to model (capability: chat.send)
+	| 'configmd.chatHistory'      // read chat history
+	| 'configmd.notify';          // show notification
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -85,7 +107,15 @@ export type EventType =
 	| 'workspace.sessionCreated'
 	| 'workspace.sessionChanged'
 	| 'workspace.sessionUpdated'
-	| 'workspace.modeChanged';
+	| 'workspace.modeChanged'
+	| 'orchestration.planCreated'
+	| 'orchestration.planUpdated'
+	| 'orchestration.taskUpdated'
+	| 'configmd.sourceChanged'    // MD content updated (file watcher / external edit)
+	| 'configmd.htmlRendered'     // new HTML rendered (push to preview)
+	| 'configmd.command'          // model-issued command for HTML view
+	| 'configmd.message'          // model-issued message for HTML view
+	| 'configmd.error';           // sync/render error
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -264,4 +294,137 @@ export interface IWorkspaceSessionStatusPayload {
 	readonly sessionId: string;
 	readonly status: string;
 	readonly error?: string;
+}
+
+// ─── Orchestration Payloads ─────────────────────────────────────────────────
+
+export interface IOrchestrationPlanPayload {
+	readonly goal: string;
+	readonly workspaceId: string;
+	/** The planner agent creating this plan (must have agentType='planner') */
+	readonly plannerId: string;
+}
+
+export interface IOrchestrationApprovePayload {
+	readonly planId: string;
+}
+
+export interface IOrchestrationRejectPayload {
+	readonly planId: string;
+}
+
+export interface IOrchestrationGetPlanPayload {
+	readonly planId: string;
+}
+
+export interface IOrchestrationListPlansPayload {
+	readonly workspaceId?: string;
+}
+
+/** Actions a user can perform on a single orchestration task */
+export type OrchestrationTaskAction = 'retry' | 'pause' | 'resume' | 'cancel';
+
+export interface IOrchestrationTaskActionPayload {
+	readonly planId: string;
+	readonly taskId: string;
+	readonly action: OrchestrationTaskAction;
+}
+
+// ─── ConfigMD Payloads ──────────────────────────────────────────────────────
+
+export interface IConfigMdResourcePayload {
+	readonly employeeId: string;
+}
+
+export interface IConfigMdReadSourcePayload {
+	readonly employeeId: string;
+}
+
+export interface IConfigMdWriteSourcePayload {
+	readonly employeeId: string;
+	readonly markdown: string;
+	/** Origin of the change to suppress echo loops */
+	readonly origin?: 'editor' | 'html' | 'model' | 'external';
+	/** Monotonic version supplied by client; rejected if stale (optimistic concurrency) */
+	readonly baseVersion?: number;
+}
+
+/**
+ * Patch operations on the canonical MD file.
+ * - replace-anchor: replace the body of an `<!-- agent-state:NAME --> ... <!-- /agent-state:NAME -->` block
+ * - replace-bind: replace inline `<!-- agent-bind:NAME -->X<!-- /agent-bind:NAME -->`
+ * - append: append text at the end of the document
+ * - prepend: prepend text at the beginning
+ * - replace-section: replace a heading-anchored section by heading text
+ * - replace-all: overwrite the whole file (last resort)
+ */
+export interface IConfigMdPatchOp {
+	readonly op:
+		| 'replace-anchor'
+		| 'replace-bind'
+		| 'append'
+		| 'prepend'
+		| 'replace-section'
+		| 'replace-all';
+	readonly anchor?: string;
+	readonly heading?: string;
+	readonly content: string;
+}
+
+export interface IConfigMdApplyPatchPayload {
+	readonly employeeId: string;
+	readonly patches: IConfigMdPatchOp[];
+	readonly origin?: 'editor' | 'html' | 'model' | 'external';
+	readonly baseVersion?: number;
+}
+
+export interface IConfigMdRenderHtmlPayload {
+	readonly employeeId: string;
+	readonly markdown?: string;  // optional override; defaults to current file
+}
+
+export interface IConfigMdEventPayload {
+	readonly employeeId: string;
+	readonly eventName: string;
+	readonly payload?: unknown;
+	readonly agentSessionId?: string;
+}
+
+export interface IConfigMdChatSendPayload {
+	readonly employeeId: string;
+	readonly message: string;
+	readonly context?: string;
+	readonly showInChat?: boolean;
+	readonly agentSessionId?: string;
+}
+
+export interface IConfigMdNotifyPayload {
+	readonly employeeId: string;
+	readonly message: string;
+	readonly level?: 'info' | 'success' | 'warning' | 'error';
+}
+
+// ─── ConfigMD Event Payloads (Host → WebView) ───────────────────────────────
+
+export interface IConfigMdSourceChangedPayload {
+	readonly employeeId: string;
+	readonly markdown: string;
+	readonly version: number;
+	readonly origin: 'editor' | 'html' | 'model' | 'external';
+}
+
+export interface IConfigMdHtmlRenderedPayload {
+	readonly employeeId: string;
+	readonly html: string;
+	readonly version: number;
+	readonly stylesContent?: string;
+}
+
+export interface IConfigMdCommandPayload {
+	readonly employeeId: string;
+	readonly command: {
+		readonly name: string;
+		readonly params: Record<string, unknown>;
+		readonly id: string;
+	};
 }

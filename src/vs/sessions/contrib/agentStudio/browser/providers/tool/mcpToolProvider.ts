@@ -40,6 +40,7 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	readonly name: string = 'MCP Tools';
 
 	private readonly _routes = new Map<string, IRoutedTool>();
+	private readonly _disabledTools = new Set<string>();
 	private readonly _onDidChangeTools = this._register(new Emitter<void>());
 	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
@@ -54,9 +55,84 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	async listTools(_agentId: string): Promise<IToolDefinition[]> {
 		const out: IToolDefinition[] = [];
 		for (const [routedName, { server, tool }] of this._routes) {
+			// 跳过被用户禁用的工具
+			if (this._disabledTools.has(routedName)) { continue; }
 			out.push(this._toDefinition(routedName, server, tool));
 		}
 		return out;
+	}
+
+	/**
+	 * 获取所有工具定义（包括被禁用的，供 UI 显示）
+	 */
+	async getAllToolDefinitions(_agentId: string): Promise<IToolDefinition[]> {
+		const out: IToolDefinition[] = [];
+		for (const [routedName, { server, tool }] of this._routes) {
+			out.push(this._toDefinition(routedName, server, tool));
+		}
+		return out;
+	}
+
+	/**
+	 * 检查工具是否已启用
+	 */
+	async isToolEnabled(_agentId: string, toolName: string): Promise<boolean> {
+		return !this._disabledTools.has(toolName);
+	}
+
+	/**
+	 * 启用工具
+	 */
+	async enableTool(_agentId: string, toolName: string): Promise<void> {
+		if (this._disabledTools.has(toolName)) {
+			this._disabledTools.delete(toolName);
+			this._onDidChangeTools.fire();
+			this.logService.info(`[McpToolProvider] Enabled tool: ${toolName}`);
+		}
+	}
+
+	/**
+	 * 禁用工具
+	 */
+	async disableTool(_agentId: string, toolName: string): Promise<void> {
+		if (this._routes.has(toolName) && !this._disabledTools.has(toolName)) {
+			this._disabledTools.add(toolName);
+			this._onDidChangeTools.fire();
+			this.logService.info(`[McpToolProvider] Disabled tool: ${toolName}`);
+		}
+	}
+
+	/**
+	 * 获取所有工具的启用状态
+	 */
+	async getToolsEnabledState(_agentId: string): Promise<Record<string, boolean>> {
+		const state: Record<string, boolean> = {};
+		for (const name of this._routes.keys()) {
+			state[name] = !this._disabledTools.has(name);
+		}
+		return state;
+	}
+
+	/**
+	 * 批量设置工具的启用状态
+	 */
+	async setToolsEnabledState(_agentId: string, state: Record<string, boolean>): Promise<void> {
+		let changed = false;
+		for (const [name, enabled] of Object.entries(state)) {
+			if (!this._routes.has(name)) { continue; }
+			const currentlyEnabled = !this._disabledTools.has(name);
+			if (enabled && !currentlyEnabled) {
+				this._disabledTools.delete(name);
+				changed = true;
+			} else if (!enabled && currentlyEnabled) {
+				this._disabledTools.add(name);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this._onDidChangeTools.fire();
+			this.logService.info(`[McpToolProvider] Batch updated tool enabled state`);
+		}
 	}
 
 	async executeTool(_agentId: string, call: IToolCall): Promise<IToolResult> {

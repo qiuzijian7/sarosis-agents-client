@@ -593,7 +593,7 @@ html, body, #root {
   position: relative;
   cursor: grab;
   transition: border-color 200ms, box-shadow 200ms, transform 200ms;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .employee-node:active {
@@ -637,6 +637,8 @@ html, body, #root {
   padding: 12px;
   gap: 6px;
   position: relative;
+  overflow: hidden;
+  border-radius: 10px;
 }
 
 /* Avatar area */
@@ -1321,6 +1323,536 @@ html, body, #root {
   word-break: break-word;
 }
 
+/* ─── Task Card Enhancements: dependencies, agent name, action buttons ──── */
+
+.task-card-dependencies {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+.task-card-deps-label {
+  color: var(--vscode-descriptionForeground);
+  font-weight: 500;
+}
+
+.task-card-dep-tag {
+  background: rgba(139, 92, 246, 0.12);
+  color: #8b5cf6;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.task-card-assignee-icon {
+  font-size: 11px;
+}
+
+.task-card-assignee-name {
+  font-weight: 500;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.task-card-assignee-role {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.task-card-action.retry {
+  color: #f59e0b;
+}
+
+.task-card-action.pause {
+  color: #8b5cf6;
+}
+
+/* ─── Task Board Header: orchestrate button ──────────────────────────────── */
+
+.task-board-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-board-orchestrate-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--vscode-textLink-foreground, #3b82f6);
+  border-radius: 3px;
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background-color 100ms;
+  white-space: nowrap;
+}
+
+.task-board-orchestrate-btn:hover {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+/* ═══ Orchestration Plan Dialog ══════════════════════════════════════════════ */
+
+.orch-plan-dialog {
+  animation: slideUp 200ms ease-out;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.orch-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.orch-dialog-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.orch-dialog-hint {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.orch-plan-status-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.orch-error-banner {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 12px;
+}
+
+/* Plan Summary */
+.orch-plan-summary {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.08));
+  border-left: 3px solid var(--vscode-textLink-foreground, #3b82f6);
+  margin-bottom: 12px;
+}
+
+.orch-plan-goal {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.orch-plan-desc {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 6px;
+}
+
+.orch-plan-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.orch-stat {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* View mode toggle */
+.orch-view-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.orch-view-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 100ms;
+}
+
+.orch-view-btn.active {
+  background: var(--vscode-textLink-foreground, #3b82f6);
+  color: white;
+  border-color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+/* Task list */
+.orch-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.orch-task-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--as-bg-secondary, var(--vscode-sideBar-background, rgba(128, 128, 128, 0.05)));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+  transition: border-color 100ms;
+}
+
+.orch-task-item:hover {
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.orch-task-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.orch-task-status-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.orch-task-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orch-task-status-badge {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.orch-task-desc {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.orch-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.orch-task-agent {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.orch-task-agent-name {
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  font-weight: 500;
+}
+
+.orch-task-agent-role {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
+.orch-task-deps {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.orch-task-deps-label {
+  color: var(--vscode-descriptionForeground);
+}
+
+.orch-task-dep-badge {
+  padding: 0px 5px;
+  border-radius: 3px;
+  background: rgba(139, 92, 246, 0.1);
+  color: #8b5cf6;
+  font-size: 10px;
+}
+
+.orch-task-retry-badge,
+.orch-task-timeout-badge {
+  padding: 0px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.orch-task-retry-badge {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+
+.orch-task-timeout-badge {
+  background: rgba(139, 92, 246, 0.1);
+  color: #8b5cf6;
+}
+
+.orch-task-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #ef4444;
+}
+
+.orch-task-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.orch-task-action-btn {
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  background: transparent;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 100ms;
+  white-space: nowrap;
+}
+
+.orch-task-action-btn.retry {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.orch-task-action-btn.retry:hover {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.orch-task-action-btn.pause {
+  color: #8b5cf6;
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.orch-task-action-btn.pause:hover {
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.orch-task-action-btn.resume {
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.orch-task-action-btn.resume:hover {
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.orch-task-action-btn.cancel {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.orch-task-action-btn.cancel:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* ─── Dependency Graph Visualization ─────────────────────────────────────── */
+
+.orch-dep-graph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.orch-dep-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.orch-dep-connectors {
+  display: flex;
+  gap: 40px;
+  font-size: 14px;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  opacity: 0.6;
+}
+
+.orch-dep-nodes {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.orch-dep-node {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 2px solid;
+  background: var(--as-bg-secondary, var(--vscode-sideBar-background, rgba(128, 128, 128, 0.06)));
+  font-size: 11px;
+  font-weight: 500;
+  min-width: 80px;
+  justify-content: center;
+}
+
+.orch-dep-node-icon {
+  font-size: 13px;
+}
+
+.orch-dep-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+}
+
+/* ─── Orchestration Role Indicators ──────────────────────────────────────── */
+
+.orch-role-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.orch-role-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.orch-role-badge.ok {
+  background: rgba(16, 185, 129, 0.08);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.orch-role-badge.missing {
+  background: rgba(245, 158, 11, 0.08);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.orch-plan-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  margin-bottom: 4px;
+}
+
+.orch-role-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.orch-role-tag.planner {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.orch-role-tag.pm {
+  background: rgba(139, 92, 246, 0.1);
+  color: #8b5cf6;
+}
+
+.orch-role-tag.pm.missing {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+
+/* ─── Agent Type Selector (CreateAgentModal) ─────────────────────────────── */
+
+.agent-type-selector {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-type-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 120ms;
+}
+
+.agent-type-option:hover {
+  border-color: var(--vscode-textLink-foreground, #3b82f6);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.agent-type-option.selected {
+  border-color: var(--vscode-textLink-foreground, #3b82f6);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.agent-type-icon {
+  font-size: 18px;
+}
+
+.agent-type-label {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-type-desc {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 /* ═══ ④ Employee Chat ════════════════════════════════════════════════════════ */
 
 .employee-chat {
@@ -1744,6 +2276,10 @@ html, body, #root {
   background: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)));
   flex-shrink: 0;
   position: relative;
+  /* Ensure the composer never collapses below a usable height when the
+     VS Code panel is resized. 130px ≈ textarea-min(52) + toolbar(~36) +
+     hint(~16) + padding/margins. */
+  min-height: 130px;
 }
 
 /* 组合输入框容器 — 圆角卡片包裹 textarea + toolbar */
@@ -3246,4 +3782,184 @@ html, body, #root {
 
 .fork-readonly-banner-btn:hover {
   background: rgba(59, 130, 246, 0.1);
+}
+
+/* ═══ Agent Session Switcher (Chat Header) ═══════════════════════════════════ */
+
+.agent-session-switcher {
+  position: relative;
+}
+
+.agent-session-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  background: transparent;
+  color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: background-color 100ms, border-color 100ms, color 100ms;
+  white-space: nowrap;
+}
+
+.agent-session-trigger:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.5));
+}
+
+.agent-session-label {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-session-count {
+  background: var(--vscode-badge-background, rgba(59, 130, 246, 0.2));
+  color: var(--vscode-badge-foreground, var(--vscode-textLink-foreground, #3b82f6));
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 8px;
+  min-width: 14px;
+  text-align: center;
+}
+
+.agent-session-arrow {
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.agent-session-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--as-bg-primary, var(--vscode-editor-background));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.3)));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px var(--as-shadow-heavy, rgba(0, 0, 0, 0.3));
+  z-index: 200;
+  padding: 4px;
+}
+
+.agent-session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  text-align: left;
+  transition: background-color 100ms;
+}
+
+.agent-session-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.agent-session-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.agent-session-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-session-item-meta {
+  font-size: 10px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.agent-session-item-delete {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 1px;
+  opacity: 0;
+  transition: opacity 100ms;
+  line-height: 1;
+}
+
+.agent-session-item:hover .agent-session-item-delete {
+  opacity: 0.5;
+}
+
+.agent-session-item-delete:hover {
+  opacity: 1 !important;
+  color: #ef4444;
+}
+
+.agent-session-divider {
+  height: 1px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  margin: 3px 0;
+}
+
+.agent-session-create {
+  color: var(--vscode-textLink-foreground, #3b82f6) !important;
+  gap: 4px;
+}
+
+.agent-session-create svg {
+  flex-shrink: 0;
+}
+
+.agent-session-item-action {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  padding: 1px 2px;
+  opacity: 0;
+  transition: opacity 100ms;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.agent-session-item:hover .agent-session-item-action {
+  opacity: 0.5;
+}
+
+.agent-session-item-action:hover {
+  opacity: 1 !important;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
+.agent-session-item-action.agent-session-item-delete:hover {
+  color: #ef4444;
+}
+
+.agent-session-rename-input {
+  flex: 1;
+  padding: 2px 4px;
+  border: 1px solid var(--vscode-focusBorder, #3b82f6);
+  border-radius: 2px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
 }

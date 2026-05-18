@@ -28,6 +28,21 @@ export const enum DelegationStatus {
 }
 
 /**
+ * Agent type determines capabilities within a workspace.
+ * - planner: Can decompose goals into tasks (orchestration). Multiple allowed per workspace.
+ * - pm: Can dispatch/schedule tasks to agents. Only ONE allowed per workspace.
+ * - worker: Executes assigned tasks. No orchestration or dispatch capabilities.
+ */
+export const enum AgentType {
+	/** Can decompose goals into sub-tasks. Multiple planners allowed per workspace. */
+	Planner = 'planner',
+	/** Project Manager — dispatches tasks. Only ONE PM allowed per workspace. */
+	PM = 'pm',
+	/** Regular worker agent — executes tasks. */
+	Worker = 'worker',
+}
+
+/**
  * Portable export format for an agent instance.
  * Contains the employee metadata and all bootstrap/config files from the agent directory.
  * Used for import/export across workspaces.
@@ -81,9 +96,25 @@ export interface Employee {
 	customPrompt?: string;
 	skills?: EmployeeSkill[];
 	status: EmployeeStatus;
+	/**
+	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
+	 * Defaults to 'worker' if unset.
+	 */
+	agentType?: AgentType;
+	/**
+	 * 技能自动匹配开关（默认 true）：
+	 * - true: agent 可从内置和全局 skill 中搜索匹配的技能，自动复制到 agent 实例的 skills 目录
+	 * - false: 仅允许使用 agent 实例 skills 目录下已有的技能
+	 */
+	autoSkill?: boolean;
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
+	/**
+	 * Connections (edges) this agent participates in (as source or target).
+	 * Persisted to employees.json so hierarchy survives window reload.
+	 */
+	connections?: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>;
 	tokenUsage?: number;
 	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
 	agentDir?: string;
@@ -92,8 +123,113 @@ export interface Employee {
 	 * Not persisted to employees.json — only used during creation.
 	 */
 	bootstrapTemplates?: AgentBootstrapTemplates;
+	/**
+	 * ConfigMD — Markdown file as the canonical data source, rendered as HTML.
+	 * The MD file is the single source of truth; the HTML view is computed from it.
+	 * HTML interactions (clicks, form edits) are translated into patches that mutate
+	 * the MD file, which then triggers re-rendering. Supports custom parser per agent.
+	 */
+	configMd?: AgentConfigMd;
 	createdAt: string;
 	updatedAt: string;
+}
+
+// ─── ConfigMD (Markdown ↔ HTML bidirectional sync) ────────────────────────────
+
+/**
+ * Capability tokens that a ConfigMD-rendered HTML view can request.
+ * Only capabilities listed in the agent's `configMd.capabilities` are allowed.
+ */
+export type ConfigMdCapability =
+	| 'md.read'             // Read the MD file content
+	| 'md.write'            // Apply patches that mutate the MD file
+	| 'chat.send'           // Trigger sending a message to the model
+	| 'chat.history'        // Read chat history
+	| 'agent.status'        // Read agent status
+	| 'agent.config'        // Read agent configuration (read-only)
+	| 'notification'        // Show notifications in the Agent Studio UI
+	| 'clipboard';          // Access clipboard (read/write)
+
+/**
+ * Agent's ConfigMD configuration.
+ * The agent maintains a Markdown file (`mdPath`) which is parsed (by built-in or
+ * custom parser) into HTML. The MD↔HTML sync is bidirectional and real-time.
+ */
+export interface AgentConfigMd {
+	/**
+	 * Path to the Markdown source file, relative to agentDir.
+	 * E.g. "config.md", "ui/dashboard.md".
+	 * Defaults to "config.md" if omitted.
+	 */
+	mdPath: string;
+
+	/**
+	 * Optional path to a custom MD→HTML parser script, relative to agentDir.
+	 * The script must export an object with a `parse(markdown, ctx)` function
+	 * (and optionally `applyHtmlPatch`, `directives`).
+	 * If omitted, the built-in parser (marked + DOMPurify + anchor handling) is used.
+	 * E.g. "ui/parser.js".
+	 */
+	parserPath?: string;
+
+	/**
+	 * Optional path to a custom CSS file injected into the HTML preview, relative to agentDir.
+	 * E.g. "ui/styles.css".
+	 */
+	stylesPath?: string;
+
+	/**
+	 * Panel display mode.
+	 * - 'side': Show alongside the chat panel (split view)
+	 * - 'replace': Replace the default chat panel entirely
+	 * - 'tab': Show in an independent tab panel
+	 */
+	displayMode: 'side' | 'replace' | 'tab';
+
+	/**
+	 * Default view when the panel opens.
+	 * - 'preview': Show only the HTML preview
+	 * - 'source': Show only the MD source editor
+	 * - 'split': Show MD editor and HTML preview side-by-side
+	 */
+	defaultView?: 'preview' | 'source' | 'split';
+
+	/** Whether the user can edit MD source directly in the panel. Default: true. */
+	editable?: boolean;
+
+	/**
+	 * Panel size configuration.
+	 */
+	size?: {
+		width?: string;
+		height?: string;
+		minWidth?: string;
+		minHeight?: string;
+		resizable?: boolean;
+	};
+
+	/**
+	 * iframe sandbox security level for the rendered HTML preview.
+	 * - 'strict': sandbox="allow-scripts" (default)
+	 * - 'standard': sandbox="allow-scripts allow-forms allow-popups"
+	 * - 'permissive': sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+	 */
+	sandboxLevel?: 'strict' | 'standard' | 'permissive';
+
+	/** Whether to auto-show the ConfigMD panel when the agent is selected. Default: true. */
+	autoShow?: boolean;
+
+	/**
+	 * Debounce delay (ms) for MD edits before triggering re-render and file write.
+	 * Default: 300.
+	 */
+	syncDebounceMs?: number;
+
+	/**
+	 * Capability whitelist — only listed capabilities can be invoked by the HTML.
+	 * Requests for unlisted capabilities are rejected.
+	 */
+	capabilities?: ConfigMdCapability[];
 }
 
 export interface EmployeeSkill {
@@ -347,4 +483,117 @@ export interface WorkspaceRootInfo {
 	activeSessionId: string | null;
 	/** Current mode */
 	mode: WorkspaceMode;
+}
+
+// ─── Task Orchestration ─────────────────────────────────────────────────────
+
+/**
+ * Status of an orchestration plan (the overall plan lifecycle).
+ */
+export const enum OrchestrationPlanStatus {
+	/** Planner generated the plan, waiting for user approval */
+	PendingApproval = 'pending_approval',
+	/** User approved, executing agent creation & task dispatch */
+	Approved = 'approved',
+	/** Plan is being executed (agents created, tasks running) */
+	Executing = 'executing',
+	/** All tasks completed */
+	Completed = 'completed',
+	/** User rejected the plan */
+	Rejected = 'rejected',
+	/** Execution encountered an error */
+	Error = 'error',
+}
+
+/**
+ * Status of an individual planned task within an orchestration.
+ */
+export const enum PlanTaskStatus {
+	/** Waiting for dependencies or approval */
+	Pending = 'pending',
+	/** Actively running */
+	Running = 'running',
+	/** Paused by user */
+	Paused = 'paused',
+	/** Completed successfully */
+	Done = 'done',
+	/** Cancelled by user */
+	Cancelled = 'cancelled',
+	/** Error during execution */
+	Error = 'error',
+}
+
+/**
+ * A single task within an orchestration plan.
+ * Each task has a unique ID, may depend on other tasks, and is assigned to an agent.
+ */
+export interface PlanTask {
+	/** Unique task ID, format: orch_task_{shortId} */
+	readonly id: string;
+	/** Human-readable task name */
+	title: string;
+	/** Detailed description of what the agent should do */
+	description?: string;
+	/** Current task status */
+	status: PlanTaskStatus;
+	/** IDs of tasks that must complete before this one can start */
+	dependencies: string[];
+	/** The agent (employee) assigned to this task — may be auto-created */
+	assigneeId?: string;
+	/** Display name of the assigned agent */
+	assigneeName?: string;
+	/** Role of the agent (used for auto-creation) */
+	assigneeRole?: string;
+	/** Whether the agent needs to be auto-created (doesn't exist yet) */
+	autoCreateAgent: boolean;
+	/** Priority: 'critical'=0, 'high'=1, 'medium'=2, 'low'=3 */
+	priority: number;
+	/** Depth level in the dependency tree (computed by topological sort, 0 = root) */
+	depth: number;
+	/** Number of times this task has been retried after failure */
+	retryCount: number;
+	/** Maximum retry attempts before permanent failure (default: 3) */
+	maxRetries: number;
+	/** Timeout in ms; running tasks exceeding this are marked as error (default: 300000 = 5min) */
+	timeoutMs: number;
+	/** Result message on completion */
+	result?: string;
+	/** Error message if failed */
+	error?: string;
+	/** Timestamps */
+	createdAt: string;
+	startedAt?: string;
+	completedAt?: string;
+}
+
+/**
+ * An orchestration plan generated by the planner.
+ * Contains all tasks, their dependency graph, and the plan status.
+ */
+export interface OrchestrationPlan {
+	/** Unique plan ID, format: orch_plan_{shortId} */
+	readonly id: string;
+	/** The original user goal that triggered this plan */
+	goal: string;
+	/** Summary of what the planner decided */
+	summary: string;
+	/** Overall plan status */
+	status: OrchestrationPlanStatus;
+	/** All tasks in this plan */
+	tasks: PlanTask[];
+	/** Workspace this plan belongs to */
+	workspaceId: string;
+	/** The planner agent (Employee) who created this plan */
+	plannerId: string;
+	/** The PM agent (Employee) who will dispatch/schedule the tasks. Only the PM can approve. */
+	pmId?: string;
+	/** Max number of tasks running concurrently (default: 3) */
+	maxConcurrency: number;
+	/** Timestamps */
+	createdAt: string;
+	updatedAt: string;
+	/** Approval timestamp */
+	approvedAt?: string;
+	/** Completion timestamp */
+	completedAt?: string;
 }

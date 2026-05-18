@@ -21,6 +21,10 @@
  *   filesystem: file_read, file_write, file_list, file_search
  *   shell     : shell_exec (仅 desktop)
  *   web       : http_get, web_search (web_search 需要外部 provider，未配置则降级)
+ *
+ *   另外，从 Hermes-Agent 迁移了 69 个 bundled tool 定义（schema-only）。
+ *   这些工具只有 schema，handler 为存根，返回"未实现"提示。
+ *   实际执行需通过 MCP 服务器或后续实现的 Provider。
  */
 
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -32,6 +36,7 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent } from '../../../common/providers.js';
+import { BUNDLED_TOOL_DEFINITIONS } from '../../../common/bundled-tools/bundledTools.js';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<IToolResultContent[]>;
 
@@ -54,6 +59,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	readonly name: string = 'Sarosis Built-in Tools';
 
 	private readonly _tools = new Map<string, IToolDescriptor>();
+	private readonly _disabledTools = new Set<string>();
 	private readonly _onDidChangeTools = this._register(new Emitter<void>());
 	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
@@ -64,17 +70,95 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	) {
 		super();
 		this._registerCoreTools();
+		this._registerBundledTools();
 	}
 
 	// ─── IToolProvider 实现 ─────────────────────────────────────────────
 
 	async listTools(_agentId: string): Promise<IToolDefinition[]> {
 		const out: IToolDefinition[] = [];
+		for (const [name, t] of this._tools) {
+			// 检查环境可用性
+			if (t.available && !t.available()) { continue; }
+			// 检查用户是否禁用了该工具
+			if (this._disabledTools.has(name)) { continue; }
+			out.push(t.definition);
+		}
+		return out;
+	}
+
+	/**
+	 * 获取所有工具定义（包括被禁用的，供 UI 显示）
+	 */
+	async getAllToolDefinitions(_agentId: string): Promise<IToolDefinition[]> {
+		const out: IToolDefinition[] = [];
 		for (const t of this._tools.values()) {
 			if (t.available && !t.available()) { continue; }
 			out.push(t.definition);
 		}
 		return out;
+	}
+
+	/**
+	 * 获取工具的启用状态
+	 */
+	async isToolEnabled(_agentId: string, toolName: string): Promise<boolean> {
+		return !this._disabledTools.has(toolName);
+	}
+
+	/**
+	 * 启用工具
+	 */
+	async enableTool(_agentId: string, toolName: string): Promise<void> {
+		if (this._disabledTools.has(toolName)) {
+			this._disabledTools.delete(toolName);
+			this._onDidChangeTools.fire();
+			this.logService.info(`[BuiltinTools] Enabled tool: ${toolName}`);
+		}
+	}
+
+	/**
+	 * 禁用工具
+	 */
+	async disableTool(_agentId: string, toolName: string): Promise<void> {
+		if (this._tools.has(toolName) && !this._disabledTools.has(toolName)) {
+			this._disabledTools.add(toolName);
+			this._onDidChangeTools.fire();
+			this.logService.info(`[BuiltinTools] Disabled tool: ${toolName}`);
+		}
+	}
+
+	/**
+	 * 获取所有工具的启用状态
+	 */
+	async getToolsEnabledState(_agentId: string): Promise<Record<string, boolean>> {
+		const state: Record<string, boolean> = {};
+		for (const name of this._tools.keys()) {
+			state[name] = !this._disabledTools.has(name);
+		}
+		return state;
+	}
+
+	/**
+	 * 批量设置工具的启用状态
+	 */
+	async setToolsEnabledState(_agentId: string, state: Record<string, boolean>): Promise<void> {
+		let changed = false;
+		for (const [name, enabled] of Object.entries(state)) {
+			if (!this._tools.has(name)) { continue; }
+			const currentlyEnabled = !this._disabledTools.has(name);
+			if (enabled && !currentlyEnabled) {
+				this._disabledTools.delete(name);
+				changed = true;
+			} else if (!enabled && currentlyEnabled) {
+				this._disabledTools.add(name);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this._onDidChangeTools.fire();
+			this.logService.info(`[BuiltinTools] Batch updated tool enabled state`);
+		}
 	}
 
 	async executeTool(_agentId: string, toolCall: IToolCall): Promise<IToolResult> {
@@ -312,6 +396,29 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				return text(`HTTP ${ctx.res.statusCode}\n\n${body.slice(0, 1024 * 1024)}`);
 			},
 		});
+	}
+
+	/**
+	 * 加载从 Hermes-Agent 迁移的打包工具定义。
+	 * 这些工具只有 schema，handler 为存根，引导用户配置 MCP 服务器。
+	 * 同名工具（已有原生 handler）不会被覆盖。
+	 */
+	private _registerBundledTools(): void {
+		for (const def of BUNDLED_TOOL_DEFINITIONS) {
+			if (this._tools.has(def.name)) {
+				// 原生工具优先，不覆盖
+				continue;
+			}
+			this.register({
+				definition: { ...def, source: this.id },
+				handler: async () => [{
+					type: 'text' as const,
+					text: `Tool "${def.name}" is defined but not yet implemented natively. ` +
+						`Configure an MCP server that provides this tool, or it will be available ` +
+						`when a matching provider is registered.`,
+				}],
+			});
+		}
 	}
 
 	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number): Promise<void> {

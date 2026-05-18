@@ -1,0 +1,196 @@
+/*---------------------------------------------------------------------------------------------
+ *  Evolution View Styles — Activity Bar sidebar panel
+ *--------------------------------------------------------------------------------------------*/
+
+.evolution-view {
+	font-family: var(--vscode-font-family, system-ui, -apple-system, sans-serif);
+	color: var(--vscode-foreground);
+}
+
+/* --- Header --- */
+
+.evolution-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 14px 6px;
+	flex-shrink: 0;
+}
+
+.evolution-title {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.evolution-count {
+	background: var(--vscode-badge-background, #4d4d4d);
+	color: var(--vscode-badge-foreground, #fff);
+	padding: 1px 7px;
+	border-radius: 10px;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+/* --- Action Bar --- */
+
+.evolution-actions {
+	display: flex;
+	padding: 0 14px 8px;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.evolution-action-btn {
+	background: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, #ccc);
+	border: none;
+	border-radius: 4px;
+	padding: 3px 10px;
+	font-size: 11px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.evolution-action-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, #45484d);
+}
+
+/* --- Empty State --- */
+
+.evolution-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 40px 20px;
+	text-align: center;
+	flex: 1;
+}
+
+.evolution-empty .empty-icon {
+	font-size: 36px;
+	margin-bottom: 12px;
+	opacity: 0.5;
+}
+
+.evolution-empty .empty-text {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	margin-bottom: 6px;
+}
+
+.evolution-empty .empty-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+	max-width: 200px;
+	line-height: 1.5;
+}
+
+/* --- List --- */
+
+.evolution-list {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 0 8px 8px;
+	min-height: 0;
+}
+
+/* --- List Item --- */
+
+.evolution-item {
+	padding: 10px 12px;
+	margin-bottom: 6px;
+	border-radius: 6px;
+	background: var(--vscode-editor-background, #1e1e1e);
+	border: 1px solid var(--vscode-widget-border, #303030);
+	cursor: pointer;
+	transition: border-color 0.15s, background 0.15s;
+}
+
+.evolution-item:hover {
+	border-color: var(--vscode-focusBorder, #007acc);
+	background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+
+.evolution-item-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 4px;
+}
+
+.evolution-agent {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.evolution-time {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+}
+
+.evolution-item-summary {
+	font-size: 11px;
+	color: var(--vscode-foreground);
+	line-height: 1.4;
+	margin-bottom: 6px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+}
+
+/* --- Tags --- */
+
+.evolution-item-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-bottom: 4px;
+}
+
+.evolution-tag {
+	display: inline-flex;
+	align-items: center;
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	white-space: nowrap;
+}
+
+.evolution-tag.trigger {
+	background: var(--vscode-badge-background, #4d4d4d);
+	color: var(--vscode-badge-foreground, #fff);
+}
+
+.evolution-tag.action {
+	background: rgba(0, 122, 204, 0.2);
+	color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.evolution-tag.files {
+	background: rgba(255, 165, 0, 0.15);
+	color: #e8a82e;
+}
+
+.evolution-tag.skills {
+	background: rgba(76, 175, 80, 0.15);
+	color: #4caf50;
+}
+
+/* --- Workspace Label --- */
+
+.evolution-item-workspace {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #8b8b8b);
+	margin-top: 2px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

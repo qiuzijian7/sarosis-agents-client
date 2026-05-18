@@ -10,6 +10,7 @@ import {
 	IModelProvider, IModelSelection,
 	IMemoryProvider, IToolProvider, IPlanningProvider, IExecutionProvider, IRetrievalProvider, IKanbanProvider,
 	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
+	IToolDefinition,
 } from './providers.js';
 
 // ─── Agent OS Service ───────────────────────────────────────────────────────
@@ -93,4 +94,49 @@ export interface IAgentOSService {
 	 * 内部编排：Planning → Memory → Execution(Tool) → Memory → 返回流
 	 */
 	executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta>;
+
+	// ─── Tool 启用/禁用管理 ─────────────────────────────────────
+
+	/**
+	 * 启用工具
+	 * @param agentId Agent ID
+	 * @param toolName 工具名称
+	 */
+	enableTool(agentId: string, toolName: string): Promise<void>;
+
+	/**
+	 * 禁用工具
+	 * @param agentId Agent ID
+	 * @param toolName 工具名称
+	 */
+	disableTool(agentId: string, toolName: string): Promise<void>;
+
+	/**
+	 * 检查工具是否已启用
+	 * @param agentId Agent ID
+	 * @param toolName 工具名称
+	 * @returns 是否已启用
+	 */
+	isToolEnabled(agentId: string, toolName: string): Promise<boolean>;
+
+	/**
+	 * 获取所有工具的启用状态
+	 * @param agentId Agent ID
+	 * @returns 工具名称 -> 是否启用的 Map
+	 */
+	getToolsEnabledState(agentId: string): Promise<Record<string, boolean>>;
+
+	/**
+	 * 批量设置工具的启用状态
+	 * @param agentId Agent ID
+	 * @param state 工具名称 -> 是否启用的 Map
+	 */
+	setToolsEnabledState(agentId: string, state: Record<string, boolean>): Promise<void>;
+
+	/**
+	 * 获取所有工具定义（包括被禁用的，带 enabled 状态）
+	 * @param agentId Agent ID
+	 * @returns 工具定义数组（包含 enabled 字段）
+	 */
+	listAllToolsWithState(agentId: string): Promise<(IToolDefinition & { enabled: boolean })[]>;
 }

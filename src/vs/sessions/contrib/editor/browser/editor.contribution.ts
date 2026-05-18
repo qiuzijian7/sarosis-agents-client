@@ -9,12 +9,13 @@ import { ServicesAccessor } from '../../../../editor/browser/editorExtensions.js
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { EditorPartModalContext, IsSessionsWindowContext, IsTopRightEditorGroupContext } from '../../../../workbench/common/contextkeys.js';
+import { ActiveEditorContext, EditorPartModalContext, IsSessionsWindowContext, IsTopRightEditorGroupContext } from '../../../../workbench/common/contextkeys.js';
 import { IAgentWorkbenchLayoutService } from '../../../browser/workbench.js';
 import { EditorMaximizedContext } from '../../../common/contextkeys.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorCommandsContext, isEditorCommandsContext } from '../../../../workbench/common/editor.js';
 import { MultiDiffEditorInput } from '../../../../workbench/contrib/multiDiffEditor/browser/multiDiffEditorInput.js';
 import { CHANGES_VIEW_ID } from '../../changes/common/changes.js';
 import { ChangesViewPane } from '../../changes/browser/changesView.js';
@@ -22,6 +23,8 @@ import { prepareMoveCopyEditors } from '../../../../workbench/browser/parts/edit
 import { Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { MOVE_MODAL_EDITOR_TO_MAIN_COMMAND_ID } from '../../../../workbench/browser/parts/editor/editorCommands.js';
 import { TERMINAL_VIEW_ID } from '../../../../workbench/contrib/terminal/common/terminal.js';
+import { AgentStudioEditorInput } from '../../agentStudio/browser/agentStudioEditorInput.js';
+import { AgentStudioEditorPane } from '../../agentStudio/browser/agentStudioEditorPane.js';
 
 const terminalPanelHiddenForMaximizedEditor = new WeakSet<IAgentWorkbenchLayoutService>();
 
@@ -119,13 +122,27 @@ class OpenEditorInModalEditorAction extends Action2 {
 				group: 'navigation',
 				order: 1,
 				when: ContextKeyExpr.and(
-					IsSessionsWindowContext
+					IsSessionsWindowContext,
+					// Hide for the Agent Studio EditorPane (which hosts
+					// Canvas / Chat / Task Board) — they are singleton
+					// editors bound to the agent-studio zone and must not
+					// be moved into a modal editor part.
+					//
+					// NOTE: `ActiveEditorContext` is set from
+					// `activeEditorPane.getId()` (see editorGroupView.ts),
+					// which for ALL three Agent Studio panels resolves to
+					// the same shared pane id `workbench.editor.agentStudio`.
+					// Earlier code mistakenly checked the EditorInput's
+					// editorId (`agentStudio.canvas` etc.), which never
+					// matched and caused the button to show on Agent
+					// Studio groups.
+					ActiveEditorContext.notEqualsTo(AgentStudioEditorPane.ID)
 				)
 			}
 		});
 	}
 
-	async run(accessor: ServicesAccessor): Promise<void> {
+	async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
 		const viewsService = accessor.get(IViewsService);
 		const layoutService = accessor.get(IAgentWorkbenchLayoutService);
 		const configurationService = accessor.get(IConfigurationService);
@@ -133,29 +150,87 @@ class OpenEditorInModalEditorAction extends Action2 {
 
 		const isMaximized = layoutService.isEditorMaximized();
 
+		// Resolve the target editor group from the args passed by the
+		// EditorCommandsContextActionRunner. Because the menu is created
+		// with `shouldForwardArgs: true` AND a preset `arg` (the resource
+		// URI), the actual call signature is:
+		//   run(accessor, resourceUri, IEditorCommandsContext)
+		// So we must scan all args for the `IEditorCommandsContext` shape
+		// instead of assuming it is the first parameter.
+		const commandsContext = args.find(isEditorCommandsContext) as IEditorCommandsContext | undefined;
+
+		console.log('[OpenEditorInModalEditor] run invoked', {
+			argsLength: args.length,
+			argTypes: args.map(a => a === null ? 'null' : typeof a),
+			commandsContext,
+			activeGroupId: editorGroupsService.mainPart.activeGroup.id,
+		});
+
+		const targetGroup = commandsContext?.groupId !== undefined
+			? editorGroupsService.mainPart.getGroup(commandsContext.groupId) ?? editorGroupsService.mainPart.activeGroup
+			: editorGroupsService.mainPart.activeGroup;
+
+		const targetGroupEditors = targetGroup.editors.map(e => ({
+			typeId: e.typeId,
+			editorId: e.editorId,
+			isAgentStudio: e instanceof AgentStudioEditorInput,
+			isMultiDiff: e instanceof MultiDiffEditorInput,
+		}));
+
+		console.log('[OpenEditorInModalEditor] target group resolved', {
+			targetGroupId: targetGroup.id,
+			editorCount: targetGroup.editors.length,
+			activeEditorPaneId: targetGroup.activeEditorPane?.getId(),
+			editors: targetGroupEditors,
+		});
+
+		// Filter out AgentStudioEditorInput editors — they are singleton
+		// editors bound to the agent-studio zone and must not be moved
+		// into a modal part (doing so breaks the dual-zone layout).
+		const movableEditors = targetGroup.editors.filter(
+			editor => !(editor instanceof AgentStudioEditorInput)
+		);
+
+		if (movableEditors.length === 0) {
+			console.warn('[OpenEditorInModalEditor] aborted: no movable editors in target group (all are AgentStudio editors). Button should not have been visible — check `when` clause.');
+			return; // nothing to move — all editors are agent-studio editors
+		}
+
 		// Set the `workbench.editor.useModal` setting to 'all'
 		await configurationService.updateValue('workbench.editor.useModal', 'all');
 
-		// Move all editors from the active group to the modal editor
-		const activeGroup = editorGroupsService.mainPart.activeGroup;
-
 		// Check for multi-file diff editor
-		const multiFileDiffEditor = activeGroup.editors
+		const multiFileDiffEditor = movableEditors
 			.find(editor => editor instanceof MultiDiffEditorInput);
 
 		if (multiFileDiffEditor) {
+			console.log('[OpenEditorInModalEditor] reopening multi-file diff via ChangesView');
 			// Reopen multi-file diff editor as the first editor in the modal editor
 			const view = viewsService.getViewWithId<ChangesViewPane>(CHANGES_VIEW_ID);
 			await view?.openChanges();
 
 			// Close the multi-file diff editor
-			await activeGroup.closeEditor(multiFileDiffEditor);
+			await targetGroup.closeEditor(multiFileDiffEditor);
 		}
 
-		// Move all remaining editors to the modal editor
+		// Recompute movable editors after possible multi-diff close
+		const editorsAfterClose = targetGroup.editors.filter(
+			editor => !(editor instanceof AgentStudioEditorInput) && !(editor instanceof MultiDiffEditorInput)
+		);
+
+		if (editorsAfterClose.length === 0) {
+			console.log('[OpenEditorInModalEditor] aborted: no editors left after multi-diff handling');
+			return; // nothing left to move
+		}
+
+		// Move all remaining non-agent-studio editors to the modal editor
 		const modalPart = await editorGroupsService.createModalEditorPart();
-		const editorsToMove = prepareMoveCopyEditors(activeGroup, activeGroup.editors.slice(), true);
-		activeGroup.moveEditors(editorsToMove, modalPart.activeGroup);
+		const editorsToMove = prepareMoveCopyEditors(targetGroup, editorsAfterClose, true);
+		console.log('[OpenEditorInModalEditor] moving editors to modal part', {
+			modalPartId: modalPart.activeGroup.id,
+			moveCount: editorsToMove.length,
+		});
+		targetGroup.moveEditors(editorsToMove, modalPart.activeGroup);
 
 		// Maximize
 		if (isMaximized && !modalPart.maximized) {
@@ -164,6 +239,7 @@ class OpenEditorInModalEditorAction extends Action2 {
 
 		// Focus
 		modalPart.activeGroup.focus();
+		console.log('[OpenEditorInModalEditor] done');
 	}
 }
 

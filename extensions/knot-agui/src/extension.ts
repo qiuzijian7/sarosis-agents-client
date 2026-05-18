@@ -17,6 +17,10 @@
  */
 
 import * as vscode from 'vscode';
+import * as cp from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 
 const VENDOR = 'knot';
 const OUTPUT_NAME = 'Knot AG-UI';
@@ -380,9 +384,603 @@ export function activate(context: vscode.ExtensionContext): void {
 		void vscode.window.showInformationMessage('Knot agent list refreshed.');
 	}));
 
+	// ─── CLI lifecycle commands ──────────────────────────────────────────
+	context.subscriptions.push(vscode.commands.registerCommand('knot.checkCli', async (): Promise<KnotCliStatus> => {
+		const status = await detectKnotCli(output);
+		output.appendLine(`[Knot] knot.checkCli -> installed=${status.installed} version="${status.version ?? ''}" path="${status.path ?? ''}"`);
+		return status;
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('knot.installCli', async (rawToken?: unknown): Promise<KnotInstallResult> => {
+		const token = typeof rawToken === 'string' && rawToken.trim().length > 0
+			? rawToken.trim()
+			: (vscode.workspace.getConfiguration('knot').get<string>('token') ?? '').trim();
+		if (!token) {
+			const msg = 'Knot token is empty. 请先在 Configuration 中填写并保存 Token，再点击安装。';
+			void vscode.window.showErrorMessage(msg);
+			return { ok: false, message: msg };
+		}
+		try {
+			await runKnotCliInstall(token, output);
+			return { ok: true, message: 'Install command sent to terminal. 请在终端中查看进度。' };
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			output.appendLine(`[Knot] install failed: ${msg}`);
+			return { ok: false, message: msg };
+		}
+	}));
+
+	// ─── Workspace lifecycle bridge ──────────────────────────────────────
+	// Two halves:
+	//   1) Public commands `knot.workspace.add` / `knot.workspace.remove` /
+	//      `knot.workspace.list` — direct CLI operations callable by anyone.
+	//   2) Hidden commands `knot.workspaceSync` / `knot.workspaceUnsync` —
+	//      consumed by the host's IWorkspaceLifecycleService when an Agent
+	//      Studio workspace is created / deleted. They merely guard on
+	//      "token configured + CLI installed" before delegating to (1).
+
+	context.subscriptions.push(vscode.commands.registerCommand('knot.workspace.list', async (): Promise<KnotWorkspaceCliResult> => {
+		return runKnotWorkspaceCli(['workspace', '--action', 'list'], output);
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('knot.workspace.add', async (workspacePath?: unknown): Promise<KnotWorkspaceCliResult> => {
+		const p = normalizeWorkspacePath(workspacePath);
+		if (!p) {
+			return { ok: false, message: 'workspace path is empty' };
+		}
+		return runKnotWorkspaceCli(['workspace', '--action', 'add', '--path', p], output);
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('knot.workspace.remove', async (workspacePath?: unknown): Promise<KnotWorkspaceCliResult> => {
+		const p = normalizeWorkspacePath(workspacePath);
+		if (!p) {
+			return { ok: false, message: 'workspace path is empty' };
+		}
+		return runKnotWorkspaceCli(['workspace', '--action', 'remove', '--path', p], output);
+	}));
+
+	// Bridge command for IWorkspaceLifecycleService (Created event).
+	// Payload shape comes from src/vs/sessions/contrib/agentStudio/common/workspaceLifecycle.ts:
+	//   { id, name, path?, timestamp }
+	// We only act if (a) token is set, (b) CLI is installed, and (c) path is non-empty.
+	context.subscriptions.push(vscode.commands.registerCommand('knot.workspaceSync', async (payload?: unknown): Promise<KnotWorkspaceCliResult> => {
+		const ws = payload as { id?: string; name?: string; path?: string } | undefined;
+		const wsPath = normalizeWorkspacePath(ws?.path);
+		if (!wsPath) {
+			output.appendLine(`[Knot] workspaceSync skipped: empty path (workspace=${ws?.id ?? '?'} name=${ws?.name ?? '?'})`);
+			return { ok: false, skipped: true, message: 'workspace has no filesystem path' };
+		}
+		if (!isKnotConfigured()) {
+			output.appendLine(`[Knot] workspaceSync skipped: knot.token is empty`);
+			return { ok: false, skipped: true, message: 'knot.token is not configured' };
+		}
+		const cliStatus = await detectKnotCli(output);
+		if (!cliStatus.installed) {
+			output.appendLine(`[Knot] workspaceSync skipped: knot-cli is not installed`);
+			return { ok: false, skipped: true, message: 'knot-cli is not installed' };
+		}
+		output.appendLine(`[Knot] workspaceSync -> add path="${wsPath}" (workspace=${ws?.id ?? '?'} name=${ws?.name ?? '?'})`);
+		return runKnotWorkspaceCli(['workspace', '--action', 'add', '--path', wsPath], output);
+	}));
+
+	// Bridge command for IWorkspaceLifecycleService (Deleted event).
+	context.subscriptions.push(vscode.commands.registerCommand('knot.workspaceUnsync', async (payload?: unknown): Promise<KnotWorkspaceCliResult> => {
+		const ws = payload as { id?: string; name?: string; path?: string } | undefined;
+		const wsPath = normalizeWorkspacePath(ws?.path);
+		if (!wsPath) {
+			output.appendLine(`[Knot] workspaceUnsync skipped: empty path (workspace=${ws?.id ?? '?'})`);
+			return { ok: false, skipped: true, message: 'workspace has no filesystem path' };
+		}
+		if (!isKnotConfigured()) {
+			output.appendLine(`[Knot] workspaceUnsync skipped: knot.token is empty`);
+			return { ok: false, skipped: true, message: 'knot.token is not configured' };
+		}
+		const cliStatus = await detectKnotCli(output);
+		if (!cliStatus.installed) {
+			output.appendLine(`[Knot] workspaceUnsync skipped: knot-cli is not installed`);
+			return { ok: false, skipped: true, message: 'knot-cli is not installed' };
+		}
+		output.appendLine(`[Knot] workspaceUnsync -> remove path="${wsPath}" (workspace=${ws?.id ?? '?'})`);
+		return runKnotWorkspaceCli(['workspace', '--action', 'remove', '--path', wsPath], output);
+	}));
+
+	// Self-register into the host's lifecycle bus. Best-effort: silently no-op
+	// when the host command is not available (e.g. running inside vanilla VS Code
+	// without the agentStudio contribution).
+	void registerWorkspaceLifecycleHook(output);
+
+	// ─── Skill lifecycle bridge ──────────────────────────────────────────
+	// When knot is configured (token + CLI), agent skill changes trigger a
+	// sync of all workspace skills to the `.agents/skills/` directory so that
+	// knot-cli can discover them (knot uses `.agents/` as its skill root,
+	// whereas the host uses `.sarosisworkspace/agents/<dir>/skills/`).
+
+	context.subscriptions.push(vscode.commands.registerCommand('knot.skillSync', async (payload?: unknown): Promise<KnotSkillSyncResult> => {
+		return runKnotSkillSync(payload, output);
+	}));
+
+	// Register the skill lifecycle hook so the host's ISkillLifecycleService
+	// routes skill events to `knot.skillSync`.
+	void registerSkillLifecycleHook(output);
+
+	// Auto-check CLI on activation (best-effort, fire-and-forget).
+	void detectKnotCli(output).then(status => {
+		output.appendLine(`[Knot] auto-check on activate -> installed=${status.installed} version="${status.version ?? ''}"`);
+	});
+
 	output.appendLine(`[Knot] activate() — registered chat provider, vendor="${VENDOR}"`);
 }
 
 export function deactivate(): void {
-	// nothing — context.subscriptions disposes resources
+	// Best-effort: unregister our lifecycle hooks so the host doesn't keep
+	// dispatching events to a dead command. Safe to no-op when the host bus
+	// is unavailable. We can't await here per VS Code API contract, so we
+	// just kick off the calls.
+	try {
+		void vscode.commands.executeCommand('agentStudio.workspaceLifecycle.unregister', 'knot-agui');
+	} catch {
+		// ignore — host may already be torn down
+	}
+	try {
+		void vscode.commands.executeCommand('agentStudio.skillLifecycle.unregister', 'knot-agui-skill');
+	} catch {
+		// ignore
+	}
+	// context.subscriptions disposes the rest of our resources (output, terminal, commands).
+}
+
+// ─── Knot CLI: detection & install helpers ─────────────────────────────────
+
+interface KnotCliStatus {
+	readonly installed: boolean;
+	readonly version?: string;
+	readonly path?: string;
+	readonly error?: string;
+}
+
+interface KnotInstallResult {
+	readonly ok: boolean;
+	readonly message: string;
+}
+
+/**
+ * Detect whether `knot-cli` is available. Strategy:
+ *   1. `knot-cli --version` on PATH (works if user already opened a fresh shell after install).
+ *   2. Fall back to common install locations (`~/.knot/bin/knot-cli[.exe]`, `/usr/local/bin/knot-cli`).
+ */
+async function detectKnotCli(output: vscode.OutputChannel): Promise<KnotCliStatus> {
+	// 1) PATH lookup
+	const onPath = await tryRunVersion('knot-cli');
+	if (onPath.installed) {
+		return onPath;
+	}
+
+	// 2) Common locations
+	const candidates = getCommonCliCandidates();
+	for (const candidate of candidates) {
+		try {
+			if (!fs.existsSync(candidate)) { continue; }
+			const result = await tryRunVersion(candidate);
+			if (result.installed) {
+				return { ...result, path: candidate };
+			}
+		} catch {
+			// ignore individual candidate errors
+		}
+	}
+
+	output.appendLine(`[Knot] detectKnotCli: not found. Candidates checked: ${candidates.join(', ')}`);
+	return { installed: false, error: onPath.error };
+}
+
+function getCommonCliCandidates(): string[] {
+	const home = os.homedir();
+	const list: string[] = [];
+	if (process.platform === 'win32') {
+		list.push(path.join(home, '.knot', 'bin', 'knot-cli.exe'));
+		list.push(path.join(home, '.knot', 'bin', 'knot-cli'));
+	} else {
+		list.push(path.join(home, '.knot', 'bin', 'knot-cli'));
+		list.push('/usr/local/bin/knot-cli');
+		list.push('/opt/homebrew/bin/knot-cli');
+	}
+	return list;
+}
+
+function tryRunVersion(executable: string): Promise<KnotCliStatus> {
+	return new Promise<KnotCliStatus>(resolve => {
+		try {
+			const child = cp.spawn(executable, ['--version'], {
+				windowsHide: true,
+				shell: false,
+			});
+			let stdout = '';
+			let stderr = '';
+			let settled = false;
+			const timer = setTimeout(() => {
+				if (settled) { return; }
+				settled = true;
+				try { child.kill(); } catch { /* noop */ }
+				resolve({ installed: false, error: 'timeout' });
+			}, 5000);
+
+			child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+			child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+			child.on('error', err => {
+				if (settled) { return; }
+				settled = true;
+				clearTimeout(timer);
+				resolve({ installed: false, error: err.message });
+			});
+
+			child.on('close', code => {
+				if (settled) { return; }
+				settled = true;
+				clearTimeout(timer);
+				if (code === 0) {
+					const text = (stdout || stderr).trim();
+					const version = text.split(/\r?\n/)[0]?.trim();
+					resolve({ installed: true, version, path: executable });
+				} else {
+					resolve({ installed: false, error: stderr.trim() || `exit code ${code}` });
+				}
+			});
+		} catch (err) {
+			resolve({ installed: false, error: err instanceof Error ? err.message : String(err) });
+		}
+	});
+}
+
+/**
+ * Run the official Knot CLI install script in an integrated terminal so the user can
+ * watch progress and react to prompts. The script is documented at
+ * https://knot.woa.com/settings/token.
+ *
+ *   curl -v -L 'https://mirrors.tencent.com/repository/generic/knot-cli/install.sh' \
+ *     | bash -s -- --token <token> --origin knot
+ *
+ * On Windows we route through `bash` (git-bash). If `bash` is not available the user
+ * sees a clear error in the terminal and we surface a hint via a notification.
+ */
+async function runKnotCliInstall(token: string, output: vscode.OutputChannel): Promise<void> {
+	const installCmd =
+		`curl -fsSL 'https://mirrors.tencent.com/repository/generic/knot-cli/install.sh' ` +
+		`| bash -s -- --token ${shellQuote(token)} --origin knot`;
+
+	const isWindows = process.platform === 'win32';
+	let shellPath: string | undefined;
+	let shellArgs: string[] | undefined;
+
+	if (isWindows) {
+		const bash = findGitBash();
+		if (!bash) {
+			const msg = '未找到 Git Bash。请安装 Git for Windows（https://git-scm.com/download/win）后重试。';
+			void vscode.window.showErrorMessage(msg);
+			throw new Error(msg);
+		}
+		shellPath = bash;
+		// `-l -c "<cmd>"`: login shell so that ~/.bashrc / ~/.bash_profile sources work.
+		shellArgs = ['-l', '-c', installCmd];
+	}
+
+	const terminal = vscode.window.createTerminal({
+		name: 'Knot CLI Install',
+		shellPath,
+		shellArgs,
+		// On non-Windows, we let the user's default shell run; we then send the install command.
+	});
+
+	terminal.show(true);
+
+	if (!isWindows) {
+		// Send the install command to the user's default shell (bash/zsh).
+		terminal.sendText(installCmd, true);
+		// Also remind to source ~/.bashrc to take effect in a brand-new shell.
+		terminal.sendText('echo ""', true);
+		terminal.sendText('echo "[Knot] 如安装成功，请执行: source ~/.bashrc 或新开终端使用 knot-cli。"', true);
+	}
+
+	output.appendLine(`[Knot] runKnotCliInstall: launched in terminal (platform=${process.platform})`);
+
+	// Re-detect after a short delay so the UI can reflect status updates.
+	setTimeout(() => { void vscode.commands.executeCommand('knot.checkCli'); }, 8000);
+}
+
+function shellQuote(value: string): string {
+	// Single-quote and escape any embedded single quotes for POSIX shell.
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function findGitBash(): string | undefined {
+	const candidates: string[] = [];
+	const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+	const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+	candidates.push(path.join(programFiles, 'Git', 'bin', 'bash.exe'));
+	candidates.push(path.join(programFiles, 'Git', 'usr', 'bin', 'bash.exe'));
+	candidates.push(path.join(programFilesX86, 'Git', 'bin', 'bash.exe'));
+	const localAppData = process.env['LOCALAPPDATA'];
+	if (localAppData) {
+		candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'));
+	}
+	for (const c of candidates) {
+		try { if (fs.existsSync(c)) { return c; } } catch { /* ignore */ }
+	}
+	return undefined;
+}
+
+// ─── Knot CLI: workspace sub-command helpers ───────────────────────────────
+
+interface KnotWorkspaceCliResult {
+	readonly ok: boolean;
+	/** True when the call deliberately did nothing (e.g. token missing, CLI absent). */
+	readonly skipped?: boolean;
+	readonly stdout?: string;
+	readonly stderr?: string;
+	readonly exitCode?: number;
+	readonly message?: string;
+}
+
+function isKnotConfigured(): boolean {
+	const cfg = vscode.workspace.getConfiguration('knot');
+	const token = (cfg.get<string>('token') ?? '').trim();
+	return token.length > 0;
+}
+
+function normalizeWorkspacePath(raw: unknown): string {
+	if (typeof raw !== 'string') { return ''; }
+	const trimmed = raw.trim();
+	if (!trimmed) { return ''; }
+	// Best-effort normalization — keep absolute paths as-is. We do NOT resolve
+	// relative paths because the CLI itself accepts them and the host has
+	// already canonicalized via VS Code workspace folder.
+	return trimmed;
+}
+
+/**
+ * Run `knot-cli <args...>` non-interactively and capture stdout/stderr.
+ * Used by `knot.workspace.{list,add,remove}` and the lifecycle bridge.
+ *
+ * The executable is located via the same strategy as `detectKnotCli` so the
+ * sub-commands work even if `knot-cli` was just installed and is not yet on
+ * PATH (e.g. before the user runs `source ~/.bashrc`).
+ */
+async function runKnotWorkspaceCli(args: string[], output: vscode.OutputChannel): Promise<KnotWorkspaceCliResult> {
+	const cliStatus = await detectKnotCli(output);
+	if (!cliStatus.installed) {
+		return { ok: false, skipped: true, message: 'knot-cli is not installed' };
+	}
+	const executable = cliStatus.path ?? 'knot-cli';
+	output.appendLine(`[Knot] runKnotWorkspaceCli: ${executable} ${args.join(' ')}`);
+
+	return new Promise<KnotWorkspaceCliResult>(resolve => {
+		try {
+			// Inherit env so the CLI picks up KNOT_TOKEN / config file like a
+			// normal shell invocation. We also forward HOME / USERPROFILE
+			// implicitly through `process.env`.
+			const child = cp.spawn(executable, args, {
+				windowsHide: true,
+				shell: false,
+				env: process.env,
+			});
+
+			let stdout = '';
+			let stderr = '';
+			let settled = false;
+			const timer = setTimeout(() => {
+				if (settled) { return; }
+				settled = true;
+				try { child.kill(); } catch { /* noop */ }
+				resolve({ ok: false, message: 'knot-cli call timed out after 30s', stdout, stderr });
+			}, 30_000);
+
+			child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+			child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+			child.on('error', err => {
+				if (settled) { return; }
+				settled = true;
+				clearTimeout(timer);
+				output.appendLine(`[Knot] runKnotWorkspaceCli error: ${err.message}`);
+				resolve({ ok: false, message: err.message, stdout, stderr });
+			});
+
+			child.on('close', code => {
+				if (settled) { return; }
+				settled = true;
+				clearTimeout(timer);
+				const ok = code === 0;
+				output.appendLine(`[Knot] runKnotWorkspaceCli exit=${code} stdout_len=${stdout.length} stderr_len=${stderr.length}`);
+				if (!ok && stderr.trim()) {
+					output.appendLine(`[Knot] runKnotWorkspaceCli stderr: ${stderr.trim()}`);
+				}
+				resolve({
+					ok,
+					exitCode: code ?? undefined,
+					stdout,
+					stderr,
+					message: ok ? undefined : (stderr.trim() || `knot-cli exited with code ${code}`),
+				});
+			});
+		} catch (err) {
+			resolve({ ok: false, message: err instanceof Error ? err.message : String(err) });
+		}
+	});
+}
+
+/**
+ * Subscribe this extension's `knot.workspaceSync` / `knot.workspaceUnsync`
+ * commands to the host's IWorkspaceLifecycleService (registered by the
+ * agentStudio contribution).
+ *
+ * The host exposes the registration as a plain VS Code command, so we are
+ * not coupled to any internal host type. If the command is unavailable
+ * (e.g. running on stock VS Code), we silently no-op — the chat provider
+ * still works, only the CLI workspace mirroring is disabled.
+ */
+async function registerWorkspaceLifecycleHook(output: vscode.OutputChannel): Promise<void> {
+	try {
+		const allCommands = await vscode.commands.getCommands(true);
+		if (!allCommands.includes('agentStudio.workspaceLifecycle.register')) {
+			output.appendLine('[Knot] workspace lifecycle bus not available — skipping hook registration.');
+			return;
+		}
+		await vscode.commands.executeCommand('agentStudio.workspaceLifecycle.register', {
+			id: 'knot-agui',
+			onCreated: 'knot.workspaceSync',
+			onDeleted: 'knot.workspaceUnsync',
+		});
+		output.appendLine('[Knot] registered workspace lifecycle hook (id=knot-agui, onCreated=knot.workspaceSync, onDeleted=knot.workspaceUnsync)');
+	} catch (err) {
+		output.appendLine(`[Knot] registerWorkspaceLifecycleHook failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+// ─── Knot: Skill sync (.agents/skills/) ──────────────────────────────────
+
+interface KnotSkillSyncResult {
+	readonly ok: boolean;
+	readonly syncedCount?: number;
+	readonly removedCount?: number;
+	readonly message?: string;
+}
+
+/**
+ * Sync all agent skills from the sarosis workspace agent directories
+ * to the knot-compatible `.agents/skills/` directory.
+ *
+ * Knot CLI discovers skills from `.agents/skills/` (flat structure), while
+ * the host stores them per-agent under the sarosis workspace agents directory.
+ * This function mirrors the union of all agents' skills into the flat directory.
+ *
+ * Idempotent: removes stale entries that no longer correspond to any agent skill.
+ */
+async function runKnotSkillSync(payload: unknown, output: vscode.OutputChannel): Promise<KnotSkillSyncResult> {
+	// Guard: only sync when knot is configured
+	if (!isKnotConfigured()) {
+		output.appendLine('[Knot] skillSync skipped: knot.token is empty');
+		return { ok: false, message: 'knot.token is not configured' };
+	}
+
+	// Extract workspace path from the payload (sent by ISkillLifecycleService)
+	const p = payload as { workspacePath?: string; workspaceId?: string; agentId?: string; agentDir?: string; skillIds?: string[]; skillId?: string } | undefined;
+	let workspacePath = p?.workspacePath?.trim();
+
+	// Fallback: try to infer from VS Code workspace folders
+	if (!workspacePath) {
+		const folders = vscode.workspace.workspaceFolders;
+		if (folders && folders.length > 0) {
+			workspacePath = folders[0].uri.fsPath;
+		}
+	}
+
+	if (!workspacePath) {
+		output.appendLine('[Knot] skillSync skipped: cannot determine workspace path');
+		return { ok: false, message: 'cannot determine workspace path' };
+	}
+
+	output.appendLine(`[Knot] skillSync: workspace="${workspacePath}" trigger=${p?.skillId ?? 'batch'}`);
+
+	try {
+		const sarosisSkillsDir = path.join(workspacePath, '.sarosisworkspace', 'agents');
+		const agentsSkillsDir = path.join(workspacePath, '.agents', 'skills');
+
+		// 1) Collect all unique skills across all agent instances
+		const skillMap = new Map<string, string>(); // skillDirName -> absolute path to SKILL.md
+
+		if (fs.existsSync(sarosisSkillsDir)) {
+			const agentDirs = fs.readdirSync(sarosisSkillsDir, { withFileTypes: true })
+				.filter(d => d.isDirectory());
+
+			for (const agentDir of agentDirs) {
+				const agentSkillsPath = path.join(sarosisSkillsDir, agentDir.name, 'skills');
+				if (!fs.existsSync(agentSkillsPath)) { continue; }
+
+				const skillDirs = fs.readdirSync(agentSkillsPath, { withFileTypes: true })
+					.filter(d => d.isDirectory());
+
+				for (const skillDir of skillDirs) {
+					const skillMdPath = path.join(agentSkillsPath, skillDir.name, 'SKILL.md');
+					if (fs.existsSync(skillMdPath)) {
+						// Later agents' skills overwrite earlier (same merge policy as the host)
+						skillMap.set(skillDir.name, skillMdPath);
+					}
+				}
+			}
+		}
+
+		// 2) Ensure .agents/skills/ directory exists
+		fs.mkdirSync(agentsSkillsDir, { recursive: true });
+
+		// 3) Write all discovered skills to .agents/skills/<id>/SKILL.md
+		let syncedCount = 0;
+		for (const [dirName, srcPath] of skillMap) {
+			const targetDir = path.join(agentsSkillsDir, dirName);
+			const targetFile = path.join(targetDir, 'SKILL.md');
+
+			fs.mkdirSync(targetDir, { recursive: true });
+
+			try {
+				const content = fs.readFileSync(srcPath, 'utf-8');
+				fs.writeFileSync(targetFile, content, 'utf-8');
+				syncedCount++;
+			} catch (err) {
+				output.appendLine(`[Knot] skillSync: failed to copy ${srcPath} -> ${targetFile}: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+
+		// 4) Remove stale entries in .agents/skills/ that are not in skillMap
+		let removedCount = 0;
+		try {
+			const existingDirs = fs.readdirSync(agentsSkillsDir, { withFileTypes: true })
+				.filter(d => d.isDirectory());
+
+			for (const existing of existingDirs) {
+				if (!skillMap.has(existing.name)) {
+					const staleDir = path.join(agentsSkillsDir, existing.name);
+					try {
+						fs.rmSync(staleDir, { recursive: true, force: true });
+						removedCount++;
+						output.appendLine(`[Knot] skillSync: removed stale skill dir: ${existing.name}`);
+					} catch (err) {
+						output.appendLine(`[Knot] skillSync: failed to remove stale dir ${existing.name}: ${err instanceof Error ? err.message : String(err)}`);
+					}
+				}
+			}
+		} catch (err) {
+			output.appendLine(`[Knot] skillSync: failed to scan .agents/skills/ for cleanup: ${err instanceof Error ? err.message : String(err)}`);
+		}
+
+		output.appendLine(`[Knot] skillSync: done — synced=${syncedCount} removed=${removedCount}`);
+		return { ok: true, syncedCount, removedCount };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		output.appendLine(`[Knot] skillSync failed: ${msg}`);
+		return { ok: false, message: msg };
+	}
+}
+
+/**
+ * Register the `knot.skillSync` command as a skill lifecycle hook with the
+ * host's `ISkillLifecycleService`. This allows the host to route skill
+ * add/remove/sync events to our sync command, which mirrors skills to
+ * `.agents/skills/` for knot-cli discovery.
+ */
+async function registerSkillLifecycleHook(output: vscode.OutputChannel): Promise<void> {
+	try {
+		const allCommands = await vscode.commands.getCommands(true);
+		if (!allCommands.includes('agentStudio.skillLifecycle.register')) {
+			output.appendLine('[Knot] skill lifecycle bus not available — skipping hook registration.');
+			return;
+		}
+		await vscode.commands.executeCommand('agentStudio.skillLifecycle.register', {
+			id: 'knot-agui-skill',
+			onAdded: 'knot.skillSync',
+			onRemoved: 'knot.skillSync',
+			onSynced: 'knot.skillSync',
+		});
+		output.appendLine('[Knot] registered skill lifecycle hook (id=knot-agui-skill, all events -> knot.skillSync)');
+	} catch (err) {
+		output.appendLine(`[Knot] registerSkillLifecycleHook failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }

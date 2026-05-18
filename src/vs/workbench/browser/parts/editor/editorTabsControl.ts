@@ -333,7 +333,13 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.editorActionsDisposables.add(editorActions.onDidChange(() => this.updateEditorActionsToolbar()));
 
 		const editorActionsToolbar = assertReturnsDefined(this.editorActionsToolbar);
-		const { primary, secondary } = this.prepareEditorActions(editorActions.actions);
+		let { primary, secondary } = this.prepareEditorActions(editorActions.actions);
+
+		// [Sarosis] Hide overflow "..." menu button for Agent Studio editors
+		if (this.groupView.activeEditor?.typeId === 'workbench.editors.agentStudioInput') {
+			secondary = [];
+		}
+
 		editorActionsToolbar.setActions(prepareActions(primary), prepareActions(secondary));
 
 		this.updateEditorLayoutActionsToolbar();

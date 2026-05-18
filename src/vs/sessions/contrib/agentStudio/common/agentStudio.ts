@@ -11,6 +11,8 @@ export {
 	IAgentChatService,
 	IAgentDelegationService,
 	IAgentTaskBoardService,
+	ITaskOrchestrationService,
+	IConfigMdService,
 } from '../../../common/agentStudioService.js';
 
 // Type-only exports (interfaces)
@@ -18,4 +20,9 @@ export type {
 	IChatStreamDelta,
 	IChatSendOptions,
 	IAutoPlanResult,
+	OrchestrationTaskAction,
+	IConfigMdCommand,
+	IConfigMdPatchOp,
+	IConfigMdState,
+	ConfigMdChangeOrigin,
 } from '../../../common/agentStudioService.js';

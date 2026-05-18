@@ -5,7 +5,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IAgentChatService } from '../common/agentStudio.js';
+import { IAgentChatService, IAgentStudioService } from '../common/agentStudio.js';
 import type { IChatStreamDelta, IChatSendOptions } from '../common/agentStudio.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import type { ChatMessage } from '../common/types.js';
@@ -14,17 +14,36 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { AGENT_STUDIO_DATA_PATH_SETTING, DATA_FILE_CHAT_HISTORY } from '../common/constants.js';
+import { AGENT_STUDIO_DATA_PATH_SETTING, DATA_FILE_CHAT_HISTORY, WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
+
+// ─── Agent Session Index ────────────────────────────────────────────────────
 
 /**
- * AgentChatService implements Knot AG-UI protocol translation with 16ms frame throttling.
- * Migrated from sarosis-webui's /api/chat/knot/route.ts
+ * Metadata for one agent-level session.
+ * Stored in agents/{slug}/sessions.json as an array.
+ */
+export interface AgentSessionMeta {
+	id: string;
+	name: string;
+	createdAt: string;
+	updatedAt: string;
+	messageCount: number;
+	/** External provider session ID (e.g. Knot AG-UI threadId). Captured from stream metadata. */
+	providerSessionId?: string;
+}
+
+// ─── Service ────────────────────────────────────────────────────────────────
+
+/**
+ * AgentChatService — chat history persistence + agent session management.
  *
- * Phase 2: Refactored to delegate to AgentDriverService.
- * sendMessage() now delegates to driverService.executeFromChatOptions().
+ * Storage layout (simplified, per-agent):
+ *   agents/{slug}/sessions.json          ← session index (array of AgentSessionMeta)
+ *   agents/{slug}/sessions/default.json  ← messages for default session
+ *   agents/{slug}/sessions/{id}.json     ← messages for other sessions
  *
- * Chat history is persisted to disk (chat-history.json) and also cached in memory
- * for fast lookups without repeated file I/O.
+ * Global fallback (for agents without workspace path):
+ *   {userRoamingDataHome}/agent-studio/chat-history.json
  */
 export class AgentChatService extends Disposable implements IAgentChatService {
 	declare readonly _serviceBrand: undefined;
@@ -35,12 +54,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private readonly fileService: IFileService;
 	private readonly environmentService: IEnvironmentService;
 	private readonly configurationService: IConfigurationService;
+	private readonly studioService: IAgentStudioService;
 
-	/** In-memory cache: compositeKey (employeeId or employeeId::sessionId) → messages */
+	/** In-memory cache: compositeKey → messages */
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
-	/** Whether the history file has been loaded from disk */
 	private _historyLoaded = false;
-	/** Global data URI (lazy) */
 	private _globalDataUri: URI | undefined;
 
 	constructor(
@@ -49,6 +67,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		@IFileService fileService: IFileService,
 		@IEnvironmentService environmentService: IEnvironmentService,
 		@IConfigurationService configurationService: IConfigurationService,
+		@IAgentStudioService studioService: IAgentStudioService,
 	) {
 		super();
 		this.logService = logService;
@@ -56,18 +75,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		this.fileService = fileService;
 		this.environmentService = environmentService;
 		this.configurationService = configurationService;
+		this.studioService = studioService;
 	}
 
-	// ─── Data Directory ─────────────────────────────────────────────────────
+	// ─── Path helpers ────────────────────────────────────────────────────────
 
 	private _getGlobalDataUri(): URI {
 		if (!this._globalDataUri) {
 			const customPath = this.configurationService.getValue<string>(AGENT_STUDIO_DATA_PATH_SETTING);
-			if (customPath) {
-				this._globalDataUri = URI.file(customPath);
-			} else {
-				this._globalDataUri = URI.joinPath(this.environmentService.userRoamingDataHome, 'agent-studio');
-			}
+			this._globalDataUri = customPath
+				? URI.file(customPath)
+				: URI.joinPath(this.environmentService.userRoamingDataHome, 'agent-studio');
 		}
 		return this._globalDataUri;
 	}
@@ -76,53 +94,145 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		return URI.joinPath(this._getGlobalDataUri(), DATA_FILE_CHAT_HISTORY);
 	}
 
-	// ─── Persistence ────────────────────────────────────────────────────────
-
-	private async _ensureHistoryLoaded(): Promise<void> {
-		if (this._historyLoaded) {
-			return;
-		}
-		this._historyLoaded = true;
-		try {
-			const uri = this._getHistoryFileUri();
-			const exists = await this.fileService.exists(uri);
-			if (!exists) {
-				this.logService.debug('[AgentChatService] No history file found, starting fresh');
-				return;
-			}
-			const content = await this.fileService.readFile(uri);
-			const data = JSON.parse(content.value.toString()) as Record<string, ChatMessage[]>;
-			for (const [employeeId, messages] of Object.entries(data)) {
-				this._historyCache.set(employeeId, messages);
-			}
-			const totalMessages = [...this._historyCache.values()].reduce((sum, m) => sum + m.length, 0);
-			this.logService.info(`[AgentChatService] Loaded chat history: ${this._historyCache.size} employees, ${totalMessages} messages`);
-		} catch (err) {
-			this.logService.error('[AgentChatService] Failed to load chat history:', err);
-			// Non-fatal — start with empty cache
-		}
+	/**
+	 * Resolve agent's sessions directory URI + sessions.json index URI.
+	 * Returns null if agent/workspace has no disk path.
+	 */
+	private async _resolveAgentPaths(employeeId: string): Promise<{
+		sessionsDirUri: URI;
+		indexUri: URI;
+	} | null> {
+		const employee = await this.studioService.getEmployee(employeeId);
+		if (!employee?.agentDir || !employee.workspaceId) { return null; }
+		const workspace = await this.studioService.getWorkspace(employee.workspaceId);
+		if (!workspace?.path) { return null; }
+		const agentUri = URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir);
+		return {
+			sessionsDirUri: URI.joinPath(agentUri, 'sessions'),
+			indexUri: URI.joinPath(agentUri, 'sessions.json'),
+		};
 	}
 
-	private async _persistHistory(): Promise<void> {
-		try {
-			const uri = this._getHistoryFileUri();
-			const data: Record<string, ChatMessage[]> = {};
-			for (const [employeeId, messages] of this._historyCache) {
-				data[employeeId] = messages;
-			}
-			const content = VSBuffer.fromString(JSON.stringify(data, null, 2));
-			await this.fileService.writeFile(uri, content);
-		} catch (err) {
-			this.logService.error('[AgentChatService] Failed to persist chat history:', err);
-		}
+	private _sessionFileUri(sessionsDirUri: URI, sessionId: string): URI {
+		return URI.joinPath(sessionsDirUri, `${sessionId}.json`);
 	}
 
-	/** Build the composite cache key for history lookups. */
 	private _cacheKey(employeeId: string, sessionId?: string): string {
 		return sessionId ? `${employeeId}::${sessionId}` : employeeId;
 	}
 
-	/** Append a message to the history for the given employee and persist. */
+	// ─── Global history (fallback) ───────────────────────────────────────────
+
+	private async _ensureHistoryLoaded(): Promise<void> {
+		if (this._historyLoaded) { return; }
+		this._historyLoaded = true;
+		try {
+			const uri = this._getHistoryFileUri();
+			if (!await this.fileService.exists(uri)) { return; }
+			const content = await this.fileService.readFile(uri);
+			const data = JSON.parse(content.value.toString()) as Record<string, ChatMessage[]>;
+			for (const [key, messages] of Object.entries(data)) {
+				this._historyCache.set(key, messages);
+			}
+			this.logService.info(`[AgentChatService] Loaded global history: ${this._historyCache.size} keys`);
+		} catch (err) {
+			this.logService.error('[AgentChatService] Failed to load global history:', err);
+		}
+	}
+
+	private async _persistGlobalHistory(): Promise<void> {
+		try {
+			const dirUri = this._getGlobalDataUri();
+			if (!await this.fileService.exists(dirUri)) {
+				await this.fileService.createFolder(dirUri);
+			}
+			const data: Record<string, ChatMessage[]> = {};
+			for (const [key, messages] of this._historyCache) { data[key] = messages; }
+			await this.fileService.writeFile(this._getHistoryFileUri(), VSBuffer.fromString(JSON.stringify(data, null, 2)));
+		} catch (err) {
+			this.logService.error('[AgentChatService] Failed to persist global history:', err);
+		}
+	}
+
+	// ─── Per-agent session file persistence ──────────────────────────────────
+
+	private async _persistToSessionFile(employeeId: string, sessionId: string | undefined, messages: ChatMessage[]): Promise<void> {
+		if (!sessionId) { return; } // No session assigned yet — skip per-file persist
+		try {
+			const paths = await this._resolveAgentPaths(employeeId);
+			if (!paths) { return; }
+			const { sessionsDirUri } = paths;
+			if (!await this.fileService.exists(sessionsDirUri)) {
+				await this.fileService.createFolder(sessionsDirUri);
+			}
+			const fileUri = this._sessionFileUri(sessionsDirUri, sessionId);
+			await this.fileService.writeFile(fileUri, VSBuffer.fromString(JSON.stringify(messages, null, 2)));
+			await this._updateSessionIndex(employeeId, sessionId, messages.length);
+		} catch (err) {
+			this.logService.error('[AgentChatService] _persistToSessionFile failed:', err);
+		}
+	}
+
+	private async _loadFromSessionFile(employeeId: string, sessionId?: string): Promise<ChatMessage[]> {
+		if (!sessionId) { return []; } // No session specified — nothing to load
+		try {
+			const paths = await this._resolveAgentPaths(employeeId);
+			if (!paths) { return []; }
+			const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+			if (!await this.fileService.exists(fileUri)) { return []; }
+			const content = await this.fileService.readFile(fileUri);
+			return JSON.parse(content.value.toString()) as ChatMessage[];
+		} catch { return []; }
+	}
+
+	// ─── Session Index (sessions.json) ───────────────────────────────────────
+
+	private async _readSessionIndex(employeeId: string): Promise<AgentSessionMeta[]> {
+		try {
+			const paths = await this._resolveAgentPaths(employeeId);
+			if (!paths) { return []; }
+			if (!await this.fileService.exists(paths.indexUri)) { return []; }
+			const content = await this.fileService.readFile(paths.indexUri);
+			return JSON.parse(content.value.toString()) as AgentSessionMeta[];
+		} catch { return []; }
+	}
+
+	private async _writeSessionIndex(employeeId: string, index: AgentSessionMeta[]): Promise<void> {
+		try {
+			const paths = await this._resolveAgentPaths(employeeId);
+			if (!paths) { return; }
+			await this.fileService.writeFile(paths.indexUri, VSBuffer.fromString(JSON.stringify(index, null, 2)));
+		} catch (err) {
+			this.logService.error('[AgentChatService] Failed to write session index:', err);
+		}
+	}
+
+	/**
+	 * Ensure a session exists in the index; update messageCount + updatedAt.
+	 * If the session doesn't exist yet, auto-create it (supports first-message auto-create).
+	 */
+	private async _updateSessionIndex(employeeId: string, sessionId: string, messageCount: number): Promise<void> {
+		const index = await this._readSessionIndex(employeeId);
+		const now = new Date().toISOString();
+		let entry = index.find(s => s.id === sessionId);
+		if (!entry) {
+			entry = {
+				id: sessionId,
+				name: `新对话`,
+				createdAt: now,
+				updatedAt: now,
+				messageCount,
+			};
+			index.push(entry);
+		} else {
+			entry.messageCount = messageCount;
+			entry.updatedAt = now;
+		}
+		await this._writeSessionIndex(employeeId, index);
+	}
+
+	// ─── Public: appendMessage ───────────────────────────────────────────────
+
 	async appendMessage(employeeId: string, message: ChatMessage): Promise<void> {
 		await this._ensureHistoryLoaded();
 		const key = this._cacheKey(employeeId, message.agentSessionId);
@@ -132,13 +242,51 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this._historyCache.set(key, messages);
 		}
 		messages.push(message);
-		// Fire-and-forget persistence
-		this._persistHistory().catch(err =>
-			this.logService.error('[AgentChatService] Background persist failed:', err),
-		);
+
+		// Dual-write: global fallback + per-agent session file
+		this._persistGlobalHistory().catch(err =>
+			this.logService.error('[AgentChatService] Global persist failed:', err));
+		this._persistToSessionFile(employeeId, message.agentSessionId, messages).catch(err =>
+			this.logService.error('[AgentChatService] Session file persist failed:', err));
 	}
 
-	// ─── Chat ───────────────────────────────────────────────────────────────
+	// ─── Public: getHistory / clearHistory ────────────────────────────────────
+
+	async getHistory(employeeId: string, sessionId?: string): Promise<ChatMessage[]> {
+		await this._ensureHistoryLoaded();
+		const key = this._cacheKey(employeeId, sessionId);
+		let messages = this._historyCache.get(key);
+
+		if (!messages || messages.length === 0) {
+			messages = await this._loadFromSessionFile(employeeId, sessionId);
+			if (messages.length > 0) {
+				this._historyCache.set(key, messages);
+			}
+		}
+
+		this.logService.info(`[AgentChatService] getHistory: ${(messages || []).length} msgs for ${key}`);
+		return messages || [];
+	}
+
+	async clearHistory(employeeId: string, sessionId?: string): Promise<void> {
+		await this._ensureHistoryLoaded();
+		const key = this._cacheKey(employeeId, sessionId);
+		this._historyCache.delete(key);
+		await this._persistGlobalHistory();
+		if (sessionId) {
+			try {
+				const paths = await this._resolveAgentPaths(employeeId);
+				if (paths) {
+					const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+					if (await this.fileService.exists(fileUri)) {
+						await this.fileService.writeFile(fileUri, VSBuffer.fromString('[]'));
+					}
+				}
+			} catch { /* ignore */ }
+		}
+	}
+
+	// ─── Public: sendMessage ─────────────────────────────────────────────────
 
 	async sendMessage(
 		employeeId: string,
@@ -146,10 +294,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		options: IChatSendOptions,
 		onDelta: (delta: IChatStreamDelta) => void,
 	): Promise<ChatMessage> {
-		// Build composite stream key for cancellation (session-safe)
 		const streamKey = options.agentSessionId ? `${employeeId}::${options.agentSessionId}` : employeeId;
-
-		// Cancel any existing stream for this employee+session
 		this.cancelStream(streamKey);
 
 		const controller = new AbortController();
@@ -160,48 +305,26 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let toolCalls: ChatMessage['toolCalls'];
 
 		try {
-			// Delegate to Driver Service
-			this.logService.info(`[AgentChatService] Delegating to driverService.executeFromChatOptions, employeeId=${employeeId}`);
 			const stream = this.driverService.executeFromChatOptions(employeeId, message, options);
-
-			let deltaCount = 0;
 			for await (const delta of stream) {
-				deltaCount++;
-				this.logService.info(`[AgentChatService] Received delta #${deltaCount}: type=${delta.type}, contentLen=${delta.content?.length ?? 0}`);
-
-				// Check cancellation
-				if (controller.signal.aborted) {
-					this.logService.info(`[AgentChatService] Stream aborted at delta #${deltaCount}`);
-					break;
-				}
-
-				// Accumulate content for final ChatMessage
-				if (delta.type === 'text' && delta.content) {
-					fullContent += delta.content;
-				}
-				if (delta.type === 'thinking' && delta.content) {
-					fullThinking += delta.content;
-				}
-				// Accumulate tool calls
+				if (controller.signal.aborted) { break; }
+				if (delta.type === 'text' && delta.content) { fullContent += delta.content; }
+				if (delta.type === 'thinking' && delta.content) { fullThinking += delta.content; }
 				if (delta.type === 'tool_start' && delta.toolCallId && delta.toolName) {
 					if (!toolCalls) { toolCalls = []; }
 					toolCalls.push({ id: delta.toolCallId, name: delta.toolName, arguments: '', result: undefined });
 				}
 				if (delta.type === 'tool_args' && delta.toolCallId && delta.content && toolCalls) {
 					const tc = toolCalls.find(t => t.id === delta.toolCallId);
-					if (tc) { tc.arguments += delta.content!; }
+					if (tc) { tc.arguments += delta.content; }
 				}
 				if (delta.type === 'tool_result' && delta.toolCallId && toolCalls) {
 					const tc = toolCalls.find(t => t.id === delta.toolCallId);
 					if (tc) { tc.result = delta.content; }
 				}
-
-				// Forward delta to UI
 				onDelta(delta);
 			}
-			this.logService.info(`[AgentChatService] Stream ended, totalDeltas=${deltaCount}, contentLen=${fullContent.length}`);
 
-			// Build final ChatMessage
 			const chatMessage: ChatMessage = {
 				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 				role: 'assistant',
@@ -213,13 +336,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				timestamp: new Date().toISOString(),
 			};
 
-			// Persist the assistant message
 			this.appendMessage(employeeId, chatMessage).catch(err =>
-				this.logService.error('[AgentChatService] Failed to persist assistant message:', err),
-			);
+				this.logService.error('[AgentChatService] Failed to persist assistant message:', err));
 
 			return chatMessage;
-
 		} catch (error) {
 			this.logService.error(`[AgentChatService] sendMessage failed for ${employeeId}:`, error);
 			onDelta({ type: 'error', content: String(error) });
@@ -229,27 +349,120 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 	}
 
-	async getHistory(employeeId: string, sessionId?: string): Promise<ChatMessage[]> {
-		await this._ensureHistoryLoaded();
-		const key = this._cacheKey(employeeId, sessionId);
-		const messages = this._historyCache.get(key) || [];
-		this.logService.info(`[AgentChatService] getHistory: ${messages.length} messages for key ${key}`);
-		return messages;
-	}
-
-	async clearHistory(employeeId: string, sessionId?: string): Promise<void> {
-		await this._ensureHistoryLoaded();
-		const key = this._cacheKey(employeeId, sessionId);
-		this._historyCache.delete(key);
-		await this._persistHistory();
-		this.logService.info(`[AgentChatService] clearHistory: cleared for key ${key}`);
-	}
-
 	cancelStream(employeeId: string): void {
 		const controller = this._activeStreams.get(employeeId);
 		if (controller) {
 			controller.abort();
 			this._activeStreams.delete(employeeId);
 		}
+	}
+
+	// ─── Agent Session CRUD (Root mode) ──────────────────────────────────────
+
+	/**
+	 * List all sessions for an agent.
+	 * Reads from sessions.json index (fast, no file scanning).
+	 */
+	async listAgentSessions(employeeId: string): Promise<AgentSessionMeta[]> {
+		const index = await this._readSessionIndex(employeeId);
+		index.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+		return index;
+	}
+
+	/**
+	 * Create a new session. Returns the full AgentSessionMeta.
+	 */
+	async createAgentSession(employeeId: string, name?: string): Promise<AgentSessionMeta> {
+		const paths = await this._resolveAgentPaths(employeeId);
+		if (!paths) { throw new Error('Agent has no workspace directory'); }
+
+		const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+		const now = new Date().toISOString();
+		const meta: AgentSessionMeta = {
+			id: sessionId,
+			name: name || '新对话',
+			createdAt: now,
+			updatedAt: now,
+			messageCount: 0,
+		};
+
+		if (!await this.fileService.exists(paths.sessionsDirUri)) {
+			await this.fileService.createFolder(paths.sessionsDirUri);
+		}
+		await this.fileService.writeFile(
+			this._sessionFileUri(paths.sessionsDirUri, sessionId),
+			VSBuffer.fromString('[]'),
+		);
+
+		const index = await this._readSessionIndex(employeeId);
+		index.push(meta);
+		await this._writeSessionIndex(employeeId, index);
+
+		this.logService.info(`[AgentChatService] Created session ${sessionId} for ${employeeId}`);
+		return meta;
+	}
+
+	/**
+	 * Rename a session.
+	 */
+	async renameAgentSession(employeeId: string, sessionId: string, newName: string): Promise<void> {
+		const index = await this._readSessionIndex(employeeId);
+		const entry = index.find(s => s.id === sessionId);
+		if (!entry) { throw new Error(`Session ${sessionId} not found`); }
+		entry.name = newName;
+		entry.updatedAt = new Date().toISOString();
+		await this._writeSessionIndex(employeeId, index);
+	}
+
+	/**
+	 * Delete a session. If it's the last one, it can still be deleted
+	 * (user will get a new session auto-created on next message).
+	 */
+	async deleteAgentSession(employeeId: string, sessionId: string): Promise<void> {
+		const paths = await this._resolveAgentPaths(employeeId);
+		if (paths) {
+			const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+			try { await this.fileService.del(fileUri); } catch { /* ignore */ }
+		}
+
+		const index = await this._readSessionIndex(employeeId);
+		const filtered = index.filter(s => s.id !== sessionId);
+		await this._writeSessionIndex(employeeId, filtered);
+
+		// Remove from memory cache
+		const key = this._cacheKey(employeeId, sessionId);
+		this._historyCache.delete(key);
+		await this._persistGlobalHistory();
+
+		this.logService.info(`[AgentChatService] Deleted session ${sessionId} for ${employeeId}`);
+	}
+
+	/**
+	 * Get the most recently active session for an agent.
+	 * If no sessions exist, auto-create one (first conversation).
+	 * Returns the AgentSessionMeta of the active session.
+	 */
+	async getOrCreateActiveSession(employeeId: string, name?: string): Promise<AgentSessionMeta> {
+		const index = await this._readSessionIndex(employeeId);
+		if (index.length > 0) {
+			index.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+			return index[0];
+		}
+		return this.createAgentSession(employeeId, name || '新对话');
+	}
+
+	/**
+	 * Store the external provider's session ID (e.g. Knot AG-UI threadId)
+	 * into the agent session metadata so it can be sent on subsequent requests.
+	 */
+	async updateProviderSessionId(employeeId: string, sessionId: string, providerSessionId: string): Promise<void> {
+		const index = await this._readSessionIndex(employeeId);
+		const entry = index.find(s => s.id === sessionId);
+		if (!entry) { return; }
+		if (entry.providerSessionId === providerSessionId) { return; }
+		entry.providerSessionId = providerSessionId;
+		entry.updatedAt = new Date().toISOString();
+		await this._writeSessionIndex(employeeId, index);
+		this.logService.info(`[AgentChatService] Stored providerSessionId=${providerSessionId} for session ${sessionId}`);
 	}
 }
