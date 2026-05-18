@@ -353,6 +353,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			position: data.position || this._computeNonOverlappingPosition(employees),
 			tokenUsage: 0,
 			agentDir: slug,
+			temperature: (data as Record<string, unknown>).temperature as number | undefined,
+			maxTokens: (data as Record<string, unknown>).maxTokens as number | undefined,
 			createdAt: now,
 			updatedAt: now,
 		};

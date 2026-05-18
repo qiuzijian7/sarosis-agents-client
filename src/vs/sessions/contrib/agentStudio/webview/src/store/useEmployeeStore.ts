@@ -29,13 +29,15 @@ export interface Employee {
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
+	/** LLM temperature (0-2) */
+	temperature?: number;
+	/** Max tokens for LLM response */
+	maxTokens?: number;
 	tokenUsage?: number | { input: number; output: number; total: number };
 	isPM?: boolean;
 	sortOrder?: number;
 	subagentOf?: string | null;
 	category?: string;
-	temperature?: number;
-	maxTokens?: number;
 	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
 	agentDir?: string;
 	/**
@@ -49,6 +51,78 @@ export interface Employee {
 		toolsMd?: string;
 		memoryMd?: string;
 	};
+	/** Memory configuration for the agent */
+	memoryConfig?: MemoryConfig;
+	/** Knowledge base configuration for the agent */
+	knowledgeConfig?: KnowledgeConfig;
+	/**
+	 * ConfigMD configuration — Markdown file as canonical data source rendered as HTML.
+	 * Mirrors AgentConfigMd in src/vs/sessions/common/agentStudioTypes.ts.
+	 */
+	configMd?: {
+		mdPath: string;
+		parserPath?: string;
+		stylesPath?: string;
+		displayMode: 'side' | 'replace' | 'tab';
+		defaultView?: 'preview' | 'source' | 'split';
+		editable?: boolean;
+		size?: { width?: string; height?: string; minWidth?: string; minHeight?: string; resizable?: boolean };
+		sandboxLevel?: 'strict' | 'standard' | 'permissive';
+		autoShow?: boolean;
+		syncDebounceMs?: number;
+		capabilities?: string[];
+	};
+}
+
+/** Memory entry persisted across sessions */
+export interface MemoryEntry {
+	id: string;
+	key: string;
+	value: string;
+	category?: string;
+	createdAt?: string;
+	updatedAt?: string;
+}
+
+/** Memory configuration */
+export interface MemoryConfig {
+	/** Whether memory is enabled */
+	enabled: boolean;
+	/** Maximum number of memory entries */
+	maxEntries: number;
+	/** Memory strategy: 'sliding_window' | 'summary' | 'full' */
+	strategy: 'sliding_window' | 'summary' | 'full';
+	/** Sliding window size (for sliding_window strategy) */
+	windowSize?: number;
+	/** Custom memory entries */
+	entries: MemoryEntry[];
+}
+
+/** Knowledge base source */
+export interface KnowledgeSource {
+	id: string;
+	name: string;
+	type: 'file' | 'url' | 'text' | 'vector_store';
+	/** Source path/URL/text content */
+	source: string;
+	/** Whether this source is enabled */
+	enabled: boolean;
+	/** Optional description */
+	description?: string;
+	/** Optional tags */
+	tags?: string[];
+}
+
+/** Knowledge base configuration */
+export interface KnowledgeConfig {
+	/** Whether knowledge base is enabled */
+	enabled: boolean;
+	/** Retrieval strategy: 'keyword' | 'semantic' | 'hybrid' */
+	retrievalStrategy: 'keyword' | 'semantic' | 'hybrid';
+	/** Maximum number of results to retrieve */
+	maxResults: number;
+	/** Knowledge sources */
+	sources: KnowledgeSource[];
 }
 
 /** Portable export format for an agent instance */

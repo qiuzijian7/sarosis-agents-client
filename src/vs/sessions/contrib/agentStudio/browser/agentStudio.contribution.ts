@@ -22,8 +22,10 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 
-import { EditorExtensions } from '../../../../workbench/common/editor.js';
+import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
+import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import type { AgentStudioPanelType } from '../common/constants.js';
 
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
 import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
@@ -517,6 +519,44 @@ registerAction2(class extends Action2 {
 		}
 	}
 });
+
+// --- EditorInput Serializers ----------------------------------------------------
+// EditorPart persists the grid layout (groups + sashes) on shutdown and
+// restores it on startup. Each editor in a group is round-tripped via its
+// registered IEditorSerializer; an editor with NO serializer is silently
+// dropped during save -> restore. That causes ghost (empty) groups to appear
+// after split-and-restart, and the Sessions workbench's safety net then
+// collapses them back to the default dual-tab layout — making it look like
+// the split was never saved.
+//
+// Registering a serializer for every Agent Studio EditorInput keeps the
+// user's split layout intact across reloads.
+
+class AgentStudioEditorInputSerializer implements IEditorSerializer {
+	canSerialize(_editorInput: EditorInput): boolean {
+		return true;
+	}
+	serialize(editorInput: EditorInput): string | undefined {
+		if (!(editorInput instanceof AgentStudioEditorInput)) {
+			return undefined;
+		}
+		return JSON.stringify({ panelType: editorInput.panelType });
+	}
+	deserialize(_instantiationService: IInstantiationService, serialized: string): EditorInput | undefined {
+		try {
+			const data = JSON.parse(serialized) as { panelType?: AgentStudioPanelType };
+			if (!data.panelType) {
+				return undefined;
+			}
+			return AgentStudioEditorInput.getOrCreate(data.panelType);
+		} catch {
+			return undefined;
+		}
+	}
+}
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
+	.registerEditorSerializer(AgentStudioEditorInput.TypeID, AgentStudioEditorInputSerializer);
 
 // --- Provider Contribution -------------------------------------------------------
 

@@ -189,6 +189,61 @@ function sanitizeHtml(html: string): string {
 	return s;
 }
 
+/**
+ * Wrap rendered HTML into a complete, self-contained document suitable for
+ * writing to disk and opening in the host editor. The document includes
+ * default preview styles plus any user-provided stylesContent.
+ */
+function buildStandalonePreviewDoc(html: string, stylesContent?: string): string {
+	const baseStyles = `
+:root { color-scheme: light dark; }
+body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+	font-size: 14px;
+	line-height: 1.65;
+	color: #d4d4d4;
+	background: #1e1e1e;
+	margin: 0;
+	padding: 22px 28px 40px;
+	max-width: 920px;
+}
+h1,h2,h3,h4,h5,h6 { line-height: 1.25; margin: 18px 0 8px; }
+h1 { font-size: 1.7em; }
+h2 { font-size: 1.4em; padding-bottom: 6px; border-bottom: 1px solid rgba(127,127,127,0.25); }
+h3 { font-size: 1.18em; }
+p { margin: 8px 0; }
+a { color: #4ea1ff; }
+ul, ol { padding-left: 1.5em; }
+li { margin: 3px 0; }
+code { background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 3px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
+pre { background: #252526; padding: 12px 14px; border-radius: 6px; overflow-x: auto; border: 1px solid rgba(127,127,127,0.22); }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 3px solid #4ea1ff; background: rgba(78,161,255,0.10); margin: 10px 0; padding: 8px 12px; border-radius: 0 4px 4px 0; }
+hr { border: 0; border-top: 1px dashed rgba(127,127,127,0.30); margin: 24px 0; }
+input[type="checkbox"] { margin-right: 6px; }
+[data-agent-bind] { background: rgba(78,161,255,0.12); padding: 0 4px; border-radius: 2px; }
+[data-agent-state] { padding: 2px 4px; border-left: 2px solid rgba(127,127,127,0.30); margin: 6px 0; }
+@media (prefers-color-scheme: light) {
+	body { color: #1e1e1e; background: #ffffff; }
+	pre { background: #f5f5f5; border-color: rgba(127,127,127,0.22); }
+}
+`;
+	return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>ConfigMD Preview</title>
+<style>${baseStyles}
+${stylesContent || ''}
+</style>
+</head>
+<body>
+${html}
+</body>
+</html>
+`;
+}
+
 // ─── Patch application ───────────────────────────────────────────────────────
 
 function applyPatchOps(markdown: string, patches: IConfigMdPatchOp[]): string {
@@ -559,6 +614,39 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		return { html, version: st.version };
 	}
 
+	/**
+	 * Render the current MD into a complete standalone HTML document and write
+	 * it to `<agentDir>/.preview.html`. Returns the absolute filesystem path so
+	 * the caller can open it in the host editor.
+	 *
+	 * The generated file is self-contained: it inlines stylesContent (if any)
+	 * and a small set of default styles. It is regenerated on every call.
+	 */
+	async previewToFile(employeeId: string): Promise<{ path: string; version: number }> {
+		const employee = await this.agentStudioService.getEmployee(employeeId);
+		if (!employee?.agentDir) {
+			throw new Error(`Agent directory not found for ${employeeId}`);
+		}
+		const st = await this._ensureState(employeeId);
+		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
+
+		// Always re-render from current markdown to reflect the latest edits
+		// through the active parser (custom or built-in).
+		const html = this._renderInternal(st.markdown, st.customParser, employeeId);
+		st.html = html;
+
+		const doc = buildStandalonePreviewDoc(html, st.stylesContent);
+		const previewUri = URI.joinPath(URI.file(employee.agentDir), '.preview.html');
+		try {
+			await this.fileService.writeFile(previewUri, VSBuffer.fromString(doc));
+		} catch (err) {
+			this.logService.error(`[ConfigMD] Failed to write preview ${previewUri.fsPath}:`, err);
+			throw err;
+		}
+		this.logService.info(`[ConfigMD] Wrote preview to ${previewUri.fsPath}`);
+		return { path: previewUri.fsPath, version: st.version };
+	}
+
 	// ─── HTML Event Handling ───────────────────────────────────────────────
 
 	async handleHtmlEvent(
@@ -627,6 +715,99 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 
 	sendCommandToHtml(employeeId: string, command: IConfigMdCommand): void {
 		this._onDidEmitCommand.fire({ employeeId, command });
+	}
+
+	// ─── Custom Parser / Styles Management ────────────────────────────────
+
+	async uploadParser(employeeId: string, content: string, fileName?: string): Promise<{ parserPath: string }> {
+		const employee = await this.agentStudioService.getEmployee(employeeId);
+		if (!employee?.agentDir) {
+			throw new Error(`Agent directory not found for ${employeeId}`);
+		}
+		const safeName = (fileName || 'parser.js').replace(/[^\w.\-]/g, '_');
+		const relPath = `ui/${safeName.endsWith('.js') ? safeName : safeName + '.js'}`;
+		const targetUri = URI.joinPath(URI.file(employee.agentDir), relPath);
+
+		// Validate the script can be loaded
+		const candidate = this._loadParserScript(content, employeeId);
+		if (!candidate) {
+			throw new Error('解析器脚本无效：必须导出包含 parse(markdown, ctx) 的对象');
+		}
+
+		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
+
+		// Persist parserPath to employee record
+		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
+		cfg.parserPath = relPath;
+		await this.agentStudioService.updateEmployee(employeeId, { configMd: cfg });
+
+		// Update in-memory state and re-render
+		const st = this._agents.get(employeeId);
+		if (st) {
+			st.customParser = candidate;
+			st.html = this._renderInternal(st.markdown, st.customParser, employeeId);
+			st.version++;
+			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+		}
+
+		this.logService.info(`[ConfigMD] Uploaded custom parser to ${relPath} for ${employeeId}`);
+		return { parserPath: relPath };
+	}
+
+	async uploadStyles(employeeId: string, content: string, fileName?: string): Promise<{ stylesPath: string }> {
+		const employee = await this.agentStudioService.getEmployee(employeeId);
+		if (!employee?.agentDir) {
+			throw new Error(`Agent directory not found for ${employeeId}`);
+		}
+		const safeName = (fileName || 'styles.css').replace(/[^\w.\-]/g, '_');
+		const relPath = `ui/${safeName.endsWith('.css') ? safeName : safeName + '.css'}`;
+		const targetUri = URI.joinPath(URI.file(employee.agentDir), relPath);
+
+		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
+
+		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
+		cfg.stylesPath = relPath;
+		await this.agentStudioService.updateEmployee(employeeId, { configMd: cfg });
+
+		const st = this._agents.get(employeeId);
+		if (st) {
+			st.stylesContent = content;
+			st.version++;
+			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+		}
+
+		this.logService.info(`[ConfigMD] Uploaded custom styles to ${relPath} for ${employeeId}`);
+		return { stylesPath: relPath };
+	}
+
+	async removeParser(employeeId: string): Promise<void> {
+		const employee = await this.agentStudioService.getEmployee(employeeId);
+		if (!employee?.configMd) { return; }
+		const cfg = { ...employee.configMd };
+		delete cfg.parserPath;
+		await this.agentStudioService.updateEmployee(employeeId, { configMd: cfg });
+
+		const st = this._agents.get(employeeId);
+		if (st) {
+			st.customParser = undefined;
+			st.html = this._renderInternal(st.markdown, undefined, employeeId);
+			st.version++;
+			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+		}
+		this.logService.info(`[ConfigMD] Removed custom parser for ${employeeId}, fallback to built-in`);
+	}
+
+	async getInfo(employeeId: string): Promise<{ parserSource: 'builtin' | 'custom'; parserPath?: string; stylesPath?: string; hasStyles: boolean }> {
+		const employee = await this.agentStudioService.getEmployee(employeeId);
+		const cfg = employee?.configMd;
+		const st = this._agents.get(employeeId);
+		const parserSource: 'builtin' | 'custom' = st?.customParser ? 'custom' : (cfg?.parserPath ? 'custom' : 'builtin');
+		return {
+			parserSource,
+			parserPath: cfg?.parserPath,
+			stylesPath: cfg?.stylesPath,
+			hasStyles: !!(st?.stylesContent),
+		};
 	}
 
 	// ─── Model Output Parsing ──────────────────────────────────────────────

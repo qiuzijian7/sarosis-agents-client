@@ -13,6 +13,7 @@
 import React, { useState, useCallback } from 'react';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { sendRequest } from '../../bridge/messageClient';
+import { previewAgentConfigMd } from '../../bridge/fileBridge';
 
 // Status configuration matching sarosis-webui STATUS_MAP
 const STATUS_MAP: Record<string, { label: string; dot: string; color: string; animated: boolean }> = {
@@ -295,6 +296,25 @@ const EmployeeListItem: React.FC<EmployeeListItemProps> = ({
 				<span className={`emp-status-dot ${statusInfo.animated ? 'emp-dot-animated' : ''}`} style={{ background: statusInfo.dot }} />
 				<span className="emp-status-label" style={{ color: statusInfo.color }}>{statusInfo.label}</span>
 			</div>
+
+			{/* Open ConfigMD button - shown only when configMd is configured */}
+			{(employee as any).configMd && (
+				<button
+					className="emp-list-action-btn"
+					title="预览 ConfigMD（渲染为 HTML 后在编辑器中打开）"
+					onClick={(e) => {
+						e.stopPropagation();
+						void previewAgentConfigMd(employee.id).catch((err) => {
+							console.error('[EmployeeListView] preview configMd failed:', err);
+						});
+					}}
+				>
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+						<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+						<circle cx="12" cy="12" r="3" />
+					</svg>
+				</button>
+			)}
 
 			{/* Menu button */}
 			<button

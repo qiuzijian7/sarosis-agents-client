@@ -54,6 +54,12 @@ export interface ISkillDefinition {
 	readonly source: 'builtin' | 'user' | 'workspace' | 'extension' | 'memory';
 	/** Skill 文件 URI（可选，用于「在编辑器中打开」） */
 	readonly resource?: URI;
+	/**
+	 * 内容指纹 —— 基于 skill 正文（prompt）的哈希值。
+	 * 用于跨目录去重：相同 name 且相同 contentHash 的技能视为完全重复，仅保留高优先级来源。
+	 * 相同 name 但不同 contentHash 的技能视为不同版本，在 UI 中均保留并标注来源。
+	 */
+	readonly contentHash?: string;
 	/** 是否启用该 skill（可通过 UI 开关控制） */
 	enabled: boolean;
 }

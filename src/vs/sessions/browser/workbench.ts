@@ -285,6 +285,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private _editorMaximized = false;
 	private _editorLastNonMaximizedVisibility: IPartVisibilityState | undefined;
 
+	/**
+	 * Last user-resized width of the expanded sidebar content panel.
+	 * Persisted across restarts via storageService — see
+	 * `restoreLayoutPreferences()` / `storeLayoutPreferences()`.
+	 * Default kept at 250 to match the original hard-coded value.
+	 */
+	private _sidebarExpandedWidth = 250;
+
 	private readonly restoredPromise = new DeferredPromise<void>();
 	readonly whenRestored = this.restoredPromise.p;
 	private restored = false;
@@ -546,6 +554,16 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			this._register(lifecycleService.onWillShutdown(() => this.storeFontInfo(storageService)));
 		}
 
+		// [Sarosis] Layout preferences (sidebar expanded width, sidebar
+		// visibility, editor-maximized state). Saved on every shutdown
+		// AND on storage flush so values survive crashes too.
+		this._register(storageService.onWillSaveState(e => {
+			if (e.reason === WillSaveStateReason.SHUTDOWN) {
+				this.storeLayoutPreferences(storageService);
+			}
+		}));
+		this._register(lifecycleService.onWillShutdown(() => this.storeLayoutPreferences(storageService)));
+
 		// Lifecycle
 		this._register(lifecycleService.onWillShutdown(event => this._onWillShutdown.fire(event)));
 		this._register(lifecycleService.onDidShutdown(() => {
@@ -619,6 +637,140 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	//#endregion
 
+	//#region Layout Preferences Persistence
+
+	// Storage keys for per-workspace layout preferences. Scope is
+	// WORKSPACE (not PROFILE / APPLICATION) because the dual-zone
+	// editor grid state — which these complement — is also
+	// workspace-scoped (see editorPart.ts: SESSIONS_ZONE_STATE_STORAGE_KEY
+	// and the upstream EDITOR_PART_UI_STATE_STORAGE_KEY).
+	private static readonly LAYOUT_SIDEBAR_VISIBLE_KEY = 'sessions.layout.sidebarVisible';
+	private static readonly LAYOUT_SIDEBAR_EXPANDED_WIDTH_KEY = 'sessions.layout.sidebarExpandedWidth';
+	private static readonly LAYOUT_EDITOR_MAXIMIZED_KEY = 'sessions.layout.editorMaximized';
+
+	/**
+	 * Read persisted layout preferences into in-memory fields.
+	 * Called early during startup so that `createDesktopGridDescriptor()`
+	 * sees the restored values when building the initial grid.
+	 *
+	 * NOTE: We do NOT apply effects here (e.g. expand/collapse the
+	 * sidebar) — the grid is not yet built. Effects are applied later
+	 * in `applyRestoredLayoutPreferences()` once all parts and the grid
+	 * are wired up.
+	 */
+	private restoreLayoutPreferences(storageService: IStorageService): void {
+		// Sidebar expanded width — clamp to a sensible range so a
+		// corrupted value cannot wedge the layout.
+		const widthRaw = storageService.getNumber(Workbench.LAYOUT_SIDEBAR_EXPANDED_WIDTH_KEY, StorageScope.WORKSPACE);
+		if (typeof widthRaw === 'number' && Number.isFinite(widthRaw)) {
+			this._sidebarExpandedWidth = Math.max(120, Math.min(800, Math.round(widthRaw)));
+		}
+
+		// Sidebar visibility (only honoured on desktop layouts —
+		// the layout policy still wins on phone).
+		const sidebarVisibleRaw = storageService.getBoolean(Workbench.LAYOUT_SIDEBAR_VISIBLE_KEY, StorageScope.WORKSPACE);
+		if (typeof sidebarVisibleRaw === 'boolean') {
+			// Only override if the layout policy did not force a value
+			// for the current viewport class. We check `isPhone`
+			// indirectly via the previously-applied default.
+			if (this.layoutPolicy.viewportClass.get() !== 'phone') {
+				this.partVisibility.sidebar = sidebarVisibleRaw;
+			}
+		}
+
+		// Editor maximized — applied in applyRestoredLayoutPreferences()
+		// because setEditorMaximized(true) needs the sidebar part to
+		// already be in the grid.
+		const editorMax = storageService.getBoolean(Workbench.LAYOUT_EDITOR_MAXIMIZED_KEY, StorageScope.WORKSPACE);
+		if (typeof editorMax === 'boolean') {
+			this._pendingEditorMaximized = editorMax;
+		}
+	}
+
+	private _pendingEditorMaximized: boolean | undefined;
+
+	/**
+	 * Apply restored preferences that need a fully-built layout — call
+	 * once the grid has been created and the sidebar part is wired up.
+	 */
+	private applyRestoredLayoutPreferences(): void {
+		const sideBarPart = this.parts.get(Parts.SIDEBAR_PART);
+
+		// Synchronise the sidebar content panel with the persisted
+		// expanded/collapsed flag. By default a fresh SidebarPart has
+		// _contentCollapsed=true, so if the user previously had the
+		// panel expanded we must explicitly expand it now.
+		if (sideBarPart instanceof SidebarPart) {
+			const wantExpanded = this.partVisibility.sidebar;
+			if (sideBarPart.contentCollapsed === wantExpanded) {
+				// state mismatch — flip
+				sideBarPart.setContentCollapsed(!wantExpanded);
+			}
+		}
+
+		// Resize the sidebar view to the persisted expanded width if
+		// the content panel ended up expanded. If it's collapsed
+		// the width takes effect the next time the user expands it
+		// (handleSidebarContentCollapsed reads `_sidebarExpandedWidth`).
+		if (sideBarPart instanceof SidebarPart && !sideBarPart.contentCollapsed) {
+			try {
+				this.workbenchGrid.resizeView(this.sideBarPartView, {
+					width: this._sidebarExpandedWidth,
+					height: 1000
+				});
+			} catch {
+				// Grid not ready / view detached — silently ignore.
+			}
+		}
+
+		if (this._pendingEditorMaximized) {
+			// setEditorMaximized() is idempotent w.r.t. the current
+			// state and emits onDidChangeEditorMaximized when it does
+			// flip — we want that event so the toolbar/icons update.
+			this.setEditorMaximized(true);
+			this._pendingEditorMaximized = undefined;
+		}
+	}
+
+	private storeLayoutPreferences(storageService: IStorageService): void {
+		// Capture the latest expanded width from the grid before saving.
+		// On desktop the user can drag the sash, which changes the view
+		// size without going through setSize() — so we read the live
+		// dimension here.
+		const sideBarPart = this.parts.get(Parts.SIDEBAR_PART);
+		if (sideBarPart instanceof SidebarPart && !sideBarPart.contentCollapsed) {
+			try {
+				const liveWidth = this.workbenchGrid.getViewSize(this.sideBarPartView).width;
+				if (Number.isFinite(liveWidth) && liveWidth >= 120) {
+					this._sidebarExpandedWidth = Math.round(liveWidth);
+				}
+			} catch {
+				// Grid disposed — fall back to the in-memory value.
+			}
+		}
+
+		storageService.store(
+			Workbench.LAYOUT_SIDEBAR_EXPANDED_WIDTH_KEY,
+			this._sidebarExpandedWidth,
+			StorageScope.WORKSPACE,
+			StorageTarget.USER
+		);
+		storageService.store(
+			Workbench.LAYOUT_SIDEBAR_VISIBLE_KEY,
+			this.partVisibility.sidebar,
+			StorageScope.WORKSPACE,
+			StorageTarget.USER
+		);
+		storageService.store(
+			Workbench.LAYOUT_EDITOR_MAXIMIZED_KEY,
+			this._editorMaximized,
+			StorageScope.WORKSPACE,
+			StorageTarget.USER
+		);
+	}
+
+	//#endregion
+
 	private renderWorkbench(instantiationService: IInstantiationService, notificationService: NotificationService, storageService: IStorageService, configurationService: IConfigurationService): void {
 		// ARIA & Signals
 		setARIAContainer(this.mainContainer);
@@ -658,6 +810,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		// Warm up font cache information before building up too many dom elements
 		this.restoreFontInfo(storageService, configurationService);
+
+		// [Sarosis] Restore persisted layout preferences (sidebar width /
+		// visibility / editor maximized) BEFORE the grid is built so the
+		// initial grid dimensions reflect the previous session.
+		this.restoreLayoutPreferences(storageService);
 
 		// Create Parts (only Titlebar and Sidebar; Editor created separately below)
 		for (const { id, role, classes } of [
@@ -829,7 +986,13 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		editorPartContainer.setAttribute('role', 'main');
 
 		mark('code/willCreatePart/workbench.parts.editor');
-		this.getPart(Parts.EDITOR_PART).create(editorPartContainer, { restorePreviousState: false });
+		// [Sarosis] Enable upstream state restoration so that the editor
+		// part recreates the previously persisted grid (groups, sash
+		// positions, active group, MRU). The sessions MainEditorPart
+		// override checks `hasRestorableState` itself and falls back to
+		// the default dual-zone build when no state exists or the saved
+		// zone-root ids are missing.
+		this.getPart(Parts.EDITOR_PART).create(editorPartContainer, { restorePreviousState: true });
 		mark('code/didCreatePart/workbench.parts.editor');
 
 		this.mainContainer.appendChild(editorPartContainer);
@@ -873,6 +1036,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// sub-groups, but cross-zone moves are blocked by the upstream
 		// drop interceptors that consult __sarosisIsAgentStudioGroup__.
 		this._openAgentStudioEditors();
+
+		// [Sarosis] Now that every part is wired up and the editor grid
+		// has been (re)built, apply persisted layout preferences that
+		// require a fully-formed layout.
+		this.applyRestoredLayoutPreferences();
 	}
 
 	private _openAgentStudioEditors(): void {
@@ -1002,26 +1170,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			connectFileDialog();
 		}
 
-		// ── Open Agent Studio editors in the default layout ──────────────
-		// Default layout:
-		//   ┌──────────────────┬──────────────┐
-		//   │ Workspace Canvas │  Agent Chat   │
-		//   │  (full height)   │  (full height)│
-		//   └──────────────────┴──────────────┘
-		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-		const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
-
-		// Open Canvas in the agent root group (left)
-		this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentRootGroup.id);
-
-		// Split right → Chat group (right, full height)
-		const chatGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.RIGHT);
-		this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, chatGroup.id);
-		agentStudioGroupIds.add(chatGroup.id);
-
-		// Focus back to chat
-		chatGroup.focus();
-
 		// ── Close-guard for the three Agent Studio panels ────────────────
 		// Prevent the *last* AgentStudioEditorInput of any panelType in
 		// the entire agent-studio zone from disappearing — re-open it
@@ -1059,8 +1207,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				}
 			}));
 		};
-		installCloseGuard(agentRootGroup);
-		installCloseGuard(chatGroup);
 
 		// ── Cross-zone editor relocation guard ──────────────────────────
 		// If editors somehow end up in the wrong zone (extension, command,
@@ -1112,9 +1258,109 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				}
 			}));
 		};
+
+		// Always guard the two zone roots. Sub-groups (chat group on first
+		// launch, restored sub-groups on subsequent launches) are guarded
+		// in the branches below.
+		installCloseGuard(agentRootGroup);
 		installRelocationGuard(fileRootGroup);
 		installRelocationGuard(agentRootGroup);
-		installRelocationGuard(chatGroup);
+
+		// ── Open Agent Studio editors in the default layout ──────────────
+		// Default layout (used only on first launch / when persisted state
+		// is missing or invalid):
+		//   ┌──────────────────┬──────────────┐
+		//   │ Workspace Canvas │  Agent Chat   │
+		//   │  (full height)   │  (full height)│
+		//   └──────────────────┴──────────────┘
+		//
+		// When the editor part has been restored from a previous session
+		// (zonesRestoredFromState === true) we MUST NOT re-create the
+		// default split — the upstream EditorPart.applyState() already
+		// recreated every group with the user's chosen sizes / splits,
+		// and the editor inputs themselves are restored by
+		// EditorPart.restoreEditors(). Re-running the default layout
+		// here would duplicate the chat group and re-open Canvas/Chat
+		// in the wrong groups.
+		if (!editorPart.zonesRestoredFromState) {
+			const chatInput = AgentStudioEditorInput.getOrCreate('chat');
+			const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
+
+			// Open Canvas in the agent root group (left)
+			this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentRootGroup.id);
+
+			// Split right → Chat group (right, full height)
+			const chatGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.RIGHT);
+			this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, chatGroup.id);
+			agentStudioGroupIds.add(chatGroup.id);
+
+			// Focus back to chat
+			chatGroup.focus();
+
+			installCloseGuard(chatGroup);
+			installRelocationGuard(chatGroup);
+		} else {
+			// Restored path — every group that survived the save/restore
+			// round-trip already exists. We need to:
+			//   0. Drop empty non-root sub-groups left over from the
+			//      previous session. They appear when a group's only
+			//      editors failed to deserialize (input factory missing,
+			//      transient editor, etc.) — without this cleanup we
+			//      end up showing ghost editor groups with no tabs.
+			//   1. Classify every remaining restored group as belonging
+			//      to the file zone or the agent zone (membership of
+			//      the two zone roots was established above; here we
+			//      extend that to every other group).
+			//   2. Install the close-guard on each non-root group so
+			//      closing the last copy of a panel type re-opens it.
+			//   3. Install the relocation-guard on each non-root group.
+			//
+			// Heuristic for membership: a group that contains any
+			// AgentStudioEditorInput belongs to the agent zone; every
+			// other group belongs to the file zone. This matches the
+			// cross-zone relocation guard's invariant.
+
+			// Step 0: remove ghost (empty, non-root) groups. The
+			// `removeGroup()` override on MainEditorPart already
+			// protects the two zone roots, but we double-check the id
+			// here defensively.
+			for (const g of [...this.editorGroupService.groups]) {
+				if (g.id === fileRootGroup.id || g.id === agentRootGroup.id) {
+					continue;
+				}
+				if (g.count === 0) {
+					this.editorGroupService.removeGroup(g);
+				}
+			}
+
+			for (const g of this.editorGroupService.groups) {
+				if (g.id === fileRootGroup.id || g.id === agentRootGroup.id) {
+					continue; // already classified above
+				}
+				const hasAgentEditor = g.editors.some(ed => ed instanceof AgentStudioEditorInput);
+				if (hasAgentEditor) {
+					agentStudioGroupIds.add(g.id);
+					fileZoneGroupIds.delete(g.id); // override the earlier default-to-file
+				} else {
+					fileZoneGroupIds.add(g.id);
+				}
+				installCloseGuard(g);
+				installRelocationGuard(g);
+			}
+
+			// Safety net: ensure each panel type still has at least one
+			// open instance somewhere. If a previous session lost one
+			// (e.g. crash mid-restore) reopen it in the agent root.
+			for (const panelType of ['canvas', 'chat'] as const) {
+				const stillExists = this.editorGroupService.groups.some(g =>
+					g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
+				);
+				if (!stillExists) {
+					const input = AgentStudioEditorInput.getOrCreate(panelType);
+					this.editorService.openEditor(input, { pinned: true, sticky: true }, agentRootGroup.id);
+				}
+			}
+		}
 
 		// ── Track newly-created groups (split / drag) ────────────────────
 		// Inherit zone membership from the *active* group at the moment
@@ -1325,9 +1571,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 */
 	private createDesktopGridDescriptor(width: number, height: number): ISerializedGrid {
 
-			// [Sarosis] Sidebar starts collapsed (48px icon strip only).
-		// When content is expanded, it resizes via handleSidebarContentCollapsed().
-		const sideBarSize = 48;
+		// [Sarosis] Sidebar width is dynamic:
+		//   - When the persisted sidebar visibility says "expanded", build
+		//     the grid with the previously-resized width (`_sidebarExpandedWidth`).
+		//   - Otherwise start collapsed at the 48px icon strip and let
+		//     `handleSidebarContentCollapsed()` resize when the user
+		//     expands it (it reads the same `_sidebarExpandedWidth`).
+		const sideBarSize = this.partVisibility.sidebar
+			? this._sidebarExpandedWidth
+			: 48;
 		const titleBarHeight = this.titleBarPartView?.minimumHeight ?? 30;
 
 		// Calculate main content area dimensions
@@ -1691,10 +1943,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	/**
 	 * Handle sidebar content collapse/expand by resizing the grid view.
 	 * The activity bar icon strip always stays at 48px; only the content panel changes.
+	 *
+	 * The expanded width is the persisted, user-resized value (see
+	 * `_sidebarExpandedWidth`). This means a previously-dragged width
+	 * is honoured both when the user toggles the panel back open and
+	 * across full restarts (via `restoreLayoutPreferences()`).
 	 */
 	private handleSidebarContentCollapsed(collapsed: boolean): void {
-		const expandedWidth = 250; // Default expanded width
-		const targetWidth = collapsed ? 48 : expandedWidth;
+		const targetWidth = collapsed ? 48 : this._sidebarExpandedWidth;
 		try {
 			// IViewSize requires both width and height; use a large default for height
 			this.workbenchGrid.resizeView(this.sideBarPartView, { width: targetWidth, height: 1000 });

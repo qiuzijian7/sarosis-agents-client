@@ -77,7 +77,14 @@ export type RequestType =
 	| 'configmd.event'
 	| 'configmd.chatSend'
 	| 'configmd.chatHistory'
-	| 'configmd.notify';
+	| 'configmd.notify'
+	| 'configmd.uploadParser'
+	| 'configmd.uploadStyles'
+	| 'configmd.removeParser'
+	| 'configmd.getInfo'
+	| 'configmd.previewToFile'
+	| 'files.open'
+	| 'files.openHtmlPreview';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;

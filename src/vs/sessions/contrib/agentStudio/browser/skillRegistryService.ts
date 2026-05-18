@@ -41,12 +41,23 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
+import { stringHash } from '../../../../base/common/hash.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
 	SkillActivation,
 } from '../common/skills.js';
 import { BUNDLED_SKILLS } from '../common/bundled-skills/bundledSkills.js';
-import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
+import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
+
+/**
+ * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
+ * 用于判断不同目录下同名 skill 是否内容完全一致。
+ */
+function computeSkillContentHash(prompt: string): string {
+	const h = stringHash(prompt.trim(), 0);
+	// 转为无符号 32 位整数后输出 8 位十六进制
+	return (h >>> 0).toString(16).padStart(8, '0');
+}
 
 interface IRawFrontmatter {
 	name?: unknown;
@@ -270,8 +281,13 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	registerSkill(skill: ISkillDefinition): IDisposable {
 		const id = skill.id;
-		this._runtimeSkills.set(id, { ...skill, source: skill.source ?? 'memory' });
-		this._skills.set(id, this._runtimeSkills.get(id)!);
+		const registered: ISkillDefinition = {
+			...skill,
+			source: skill.source ?? 'memory',
+			contentHash: skill.contentHash ?? computeSkillContentHash(skill.prompt),
+		};
+		this._runtimeSkills.set(id, registered);
+		this._skills.set(id, registered);
 		this._onDidChangeSkills.fire();
 		this.logService.info(`[SkillRegistry] runtime skill registered: ${id}`);
 		return toDisposable(() => {
@@ -453,6 +469,37 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 		this.logService.info(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
 		this._onDidChangeSkills.fire();
+
+		// Fire a batch Synced event so external consumers (e.g. knot-agui) can
+		// re-sync their local skill mirrors after any reload (install, uninstall,
+		// filesystem changes, etc.).
+		this._fireBatchSyncedEvent();
+	}
+
+	/**
+	 * Fire a batch synced event with all current workspace skill IDs.
+	 * This triggers external consumers (like knot-cli sync) to do a full
+	 * reconciliation of their skill mirror directories.
+	 */
+	private _fireBatchSyncedEvent(): void {
+		const wsFolders = this.workspaceService.getWorkspace().folders;
+		if (wsFolders.length === 0) { return; }
+
+		const workspacePath = wsFolders[0].uri.fsPath;
+		const workspaceSkillIds = [...this._skills.values()]
+			.filter(s => s.source === 'workspace')
+			.map(s => s.id);
+
+		const payload: ISkillBatchLifecyclePayload = {
+			workspacePath,
+			agentId: '',
+			skillIds: workspaceSkillIds,
+			timestamp: new Date().toISOString(),
+		};
+
+		void this.skillLifecycleService.fireBatchEvent(payload).catch(err => {
+			this.logService.debug(`[SkillRegistry] batch synced event failed: ${err instanceof Error ? err.message : String(err)}`);
+		});
 	}
 
 	// ─── 内部 ────────────────────────────────────────────────
@@ -460,14 +507,14 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private _loadBuiltins(): void {
 		// 1a. Sarosis 原生核心 skill — 优先加载，ID 不会被覆盖
 		for (const s of BUILTIN_SKILLS) {
-			this._skills.set(s.id, { ...s, enabled: true });
+			this._skills.set(s.id, { ...s, contentHash: computeSkillContentHash(s.prompt), enabled: true });
 		}
 		this.logService.info(`[SkillRegistry] _loadBuiltins: ${BUILTIN_SKILLS.length} core skills loaded`);
 		// 1b. 从 Hermes-Agent 迁移的打包 skill — 同名 ID 不覆盖原生 skill
 		let bundledCount = 0;
 		for (const s of BUNDLED_SKILLS) {
 			if (!this._skills.has(s.id)) {
-				this._skills.set(s.id, { ...s, enabled: true });
+				this._skills.set(s.id, { ...s, contentHash: computeSkillContentHash(s.prompt), enabled: true });
 				bundledCount++;
 			}
 		}
@@ -557,6 +604,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		}
 		const description = typeof meta.description === 'string' ? meta.description : '';
 		const id = name.toLowerCase().replace(/\s+/g, '-');
+		const prompt = body.trim();
 		return {
 			id,
 			name,
@@ -565,9 +613,10 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			match: asStringArray(meta.match),
 			category: typeof meta.category === 'string' ? meta.category : undefined,
 			recommendedTools: asStringArray(meta.recommended_tools) ?? asStringArray(meta.recommendedTools),
-			prompt: body.trim(),
+			prompt,
 			source,
 			resource: folder,
+			contentHash: computeSkillContentHash(prompt),
 			enabled: true, // 默认启用
 		};
 	}

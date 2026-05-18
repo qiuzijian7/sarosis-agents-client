@@ -14,6 +14,7 @@ import React, { useEffect, useCallback, useState } from 'react';
 import { WorkspaceToolbar } from './features/title/WorkspaceToolbar';
 import { WorkspaceCanvas } from './features/canvas/WorkspaceCanvas';
 import { EmployeeChat } from './features/chat/EmployeeChat';
+import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
 import { CreateAgentModal } from './features/employees/CreateAgentModal';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
@@ -32,13 +33,14 @@ function CanvasPanel(): React.ReactElement {
 	const { loadEmployees } = useEmployeeStore();
 
 	useEffect(() => {
+		// Only load workspaces here; employees will be loaded once activeWorkspaceId is set
+		// (avoids redundant employees.list call without workspaceId).
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
 				store.setActiveWorkspace(store.workspaces[0].id);
 			}
 		});
-		loadEmployees();
 	}, []);
 
 	useEffect(() => {
@@ -48,7 +50,12 @@ function CanvasPanel(): React.ReactElement {
 	}, [activeWorkspaceId, loadEmployees]);
 
 	useEffect(() => {
-		const onEmployeesChanged = () => { loadEmployees(activeWorkspaceId || undefined); };
+		const onEmployeesChanged = () => {
+			// Skip if no active workspace yet — initial load will be handled by the effect above
+			if (activeWorkspaceId) {
+				loadEmployees(activeWorkspaceId);
+			}
+		};
 		const onWorkspaceChanged = () => { loadWorkspaces(); };
 		const onActiveWorkspaceChanged = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
@@ -80,14 +87,36 @@ function ChatPanel(): React.ReactElement {
 	const { loadEmployees } = useEmployeeStore();
 	const { loadProviders } = useProviderStore();
 
+	// Editor pane state for standalone chat panel mode
+	const [editorPaneOpen, setEditorPaneOpen] = useState(false);
+	const [editorPaneEmployeeId, setEditorPaneEmployeeId] = useState<string | null>(null);
+
+	const handleOpenEditorPane = useCallback((employeeId: string) => {
+		setEditorPaneEmployeeId(employeeId);
+		setEditorPaneOpen(true);
+	}, []);
+
+	const handleCloseEditorPane = useCallback(() => {
+		setEditorPaneOpen(false);
+		setEditorPaneEmployeeId(null);
+	}, []);
+
+	// Listen for direct close event from AgentEditorPane
 	useEffect(() => {
+		const handler = () => handleCloseEditorPane();
+		window.addEventListener('agentStudio:close-editor-pane', handler);
+		return () => window.removeEventListener('agentStudio:close-editor-pane', handler);
+	}, [handleCloseEditorPane]);
+
+	useEffect(() => {
+		// Load workspaces and providers; employees will be loaded once activeWorkspaceId is set
+		// (avoids redundant employees.list call without workspaceId).
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
 				store.setActiveWorkspace(store.workspaces[0].id);
 			}
 		});
-		loadEmployees();
 		loadProviders();
 	}, []);
 
@@ -98,7 +127,11 @@ function ChatPanel(): React.ReactElement {
 	}, [activeWorkspaceId, loadEmployees]);
 
 	useEffect(() => {
-		const onEmployeesChanged = () => { loadEmployees(activeWorkspaceId || undefined); };
+		const onEmployeesChanged = () => {
+			if (activeWorkspaceId) {
+				loadEmployees(activeWorkspaceId);
+			}
+		};
 		const onActiveWorkspaceChanged = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
 			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
@@ -115,7 +148,14 @@ function ChatPanel(): React.ReactElement {
 
 	return (
 		<div className="panel-standalone">
-			<EmployeeChat />
+			{editorPaneOpen && editorPaneEmployeeId ? (
+				<AgentEditorPane
+					employeeId={editorPaneEmployeeId}
+					onClose={handleCloseEditorPane}
+				/>
+			) : (
+				<EmployeeChat onOpenEditorPane={handleOpenEditorPane} />
+			)}
 		</div>
 	);
 }
@@ -129,15 +169,37 @@ function FullLayout(): React.ReactElement {
 	const { loadEmployees } = useEmployeeStore();
 	const { loadProviders } = useProviderStore();
 
+	// Editor pane state: when open, left panel shows AgentEditorPane instead of WorkspaceCanvas
+	const [editorPaneOpen, setEditorPaneOpen] = useState(false);
+	const [editorPaneEmployeeId, setEditorPaneEmployeeId] = useState<string | null>(null);
+
+	const handleOpenEditorPane = useCallback((employeeId: string) => {
+		setEditorPaneEmployeeId(employeeId);
+		setEditorPaneOpen(true);
+	}, []);
+
+	const handleCloseEditorPane = useCallback(() => {
+		setEditorPaneOpen(false);
+		setEditorPaneEmployeeId(null);
+	}, []);
+
+	// Listen for direct close event from AgentEditorPane
+	useEffect(() => {
+		const handler = () => handleCloseEditorPane();
+		window.addEventListener('agentStudio:close-editor-pane', handler);
+		return () => window.removeEventListener('agentStudio:close-editor-pane', handler);
+	}, [handleCloseEditorPane]);
+
 	// Initialize on mount
 	useEffect(() => {
+		// Load workspaces and providers; employees will be loaded once activeWorkspaceId is set
+		// (avoids redundant employees.list call without workspaceId).
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
 				store.setActiveWorkspace(store.workspaces[0].id);
 			}
 		});
-		loadEmployees();
 		loadProviders();
 	}, []);
 
@@ -150,7 +212,11 @@ function FullLayout(): React.ReactElement {
 
 	// Listen for host events
 	useEffect(() => {
-		const onEmployeesChanged = () => { loadEmployees(activeWorkspaceId || undefined); };
+		const onEmployeesChanged = () => {
+			if (activeWorkspaceId) {
+				loadEmployees(activeWorkspaceId);
+			}
+		};
 		const onWorkspaceChanged = () => { loadWorkspaces(); };
 
 		window.addEventListener('agentStudio:employees-changed', onEmployeesChanged);
@@ -185,14 +251,21 @@ function FullLayout(): React.ReactElement {
 
 			{/* Main content area: canvas + chat */}
 			<div className="main-content">
-				{/* ② Left: Workspace Canvas or Employee List */}
+				{/* ② Left: WorkspaceCanvas or AgentEditorPane */}
 				<div className="workspace-panel">
-					<WorkspaceCanvas />
+					{editorPaneOpen && editorPaneEmployeeId ? (
+						<AgentEditorPane
+							employeeId={editorPaneEmployeeId}
+							onClose={handleCloseEditorPane}
+						/>
+					) : (
+						<WorkspaceCanvas />
+					)}
 				</div>
 
 				{/* ③ Right: Employee Chat */}
 				<div className="chat-panel">
-					<EmployeeChat />
+					<EmployeeChat onOpenEditorPane={handleOpenEditorPane} />
 				</div>
 			</div>
 

@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  ConfigMD Panel styles — split MD source + HTML preview view.
+ *  ConfigMD Panel + MarkdownEditor + Settings styles.
  *--------------------------------------------------------------------------------------------*/
 
 .configmd-panel {
@@ -11,9 +11,10 @@
 	border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.18)));
 	border-radius: 8px;
 	overflow: hidden;
+	position: relative;
 }
 
-/* Header */
+/* ─── Header ────────────────────────────────────────────────────────── */
 .configmd-header {
 	display: flex;
 	align-items: center;
@@ -48,35 +49,75 @@
 	font-size: 13px;
 }
 
-.configmd-view-toggle {
+/* ─── Toolbar (only Preview + Settings) ────────────────────────────── */
+.configmd-toolbar {
 	display: flex;
-	gap: 2px;
-	background: rgba(127, 127, 127, 0.10);
-	border-radius: 4px;
-	padding: 2px;
+	align-items: center;
+	gap: 4px;
 }
 
-.configmd-view-toggle button {
+.configmd-toolbar-left,
+.configmd-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.configmd-icon-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 	background: transparent;
-	border: none;
-	padding: 2px 8px;
-	border-radius: 3px;
-	color: var(--vscode-foreground);
-	font-size: 11px;
+	border: 1px solid transparent;
+	color: var(--vscode-foreground, #ccc);
+	padding: 4px 8px;
+	border-radius: 4px;
 	cursor: pointer;
-	transition: background 0.15s;
+	font-size: 11px;
+	line-height: 1;
+	transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.configmd-view-toggle button:hover {
+.configmd-icon-btn svg {
+	flex-shrink: 0;
+}
+
+.configmd-icon-btn:hover {
 	background: rgba(127, 127, 127, 0.15);
 }
 
-.configmd-view-toggle button.active {
+.configmd-icon-btn.active {
 	background: var(--vscode-button-background, #0078d4);
 	color: var(--vscode-button-foreground, #fff);
+	border-color: var(--vscode-button-background, #0078d4);
 }
 
-/* Body */
+.configmd-icon-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.configmd-icon-btn.demo-armed {
+	background: rgba(240, 160, 32, 0.20);
+	border-color: rgba(240, 160, 32, 0.55);
+	color: #f0a020;
+	animation: configmd-demo-armed-pulse 1s ease-in-out infinite;
+}
+
+.configmd-icon-btn.demo-armed:hover {
+	background: rgba(240, 160, 32, 0.32);
+}
+
+@keyframes configmd-demo-armed-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(240, 160, 32, 0.0); }
+	50%      { box-shadow: 0 0 0 3px rgba(240, 160, 32, 0.32); }
+}
+
+.configmd-icon-btn-text {
+	font-size: 11px;
+}
+
+/* ─── Body ──────────────────────────────────────────────────────────── */
 .configmd-body {
 	flex: 1;
 	display: flex;
@@ -87,41 +128,31 @@
 .configmd-body.view-split > .configmd-source {
 	flex: 1;
 	border-right: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+	min-width: 0;
 }
 
 .configmd-body.view-split > .configmd-preview {
 	flex: 1;
+	min-width: 0;
 }
 
-.configmd-body.view-source > .configmd-source { flex: 1; }
-.configmd-body.view-preview > .configmd-preview { flex: 1; }
+.configmd-body.view-preview > .configmd-preview {
+	flex: 1;
+}
 
-/* Source editor */
+/* Source pane — used inside both `.configmd-body` (chat panel) and
+   `.configmd-editor-body` (settings dialog tab). */
 .configmd-source {
+	flex: 1 1 0;
 	display: flex;
 	min-width: 0;
 	min-height: 0;
-}
-
-.configmd-source textarea {
-	flex: 1;
-	width: 100%;
-	height: 100%;
-	resize: none;
-	border: none;
-	outline: none;
-	padding: 12px 14px;
-	font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
-	font-size: 13px;
-	line-height: 1.55;
-	color: var(--vscode-editor-foreground, #d4d4d4);
-	background: var(--vscode-editor-background, #1e1e1e);
-	tab-size: 2;
-	white-space: pre;
+	overflow: hidden;
 }
 
 /* Preview iframe */
 .configmd-preview {
+	flex: 1 1 0;
 	display: flex;
 	min-width: 0;
 	min-height: 0;
@@ -136,7 +167,7 @@
 	background: transparent;
 }
 
-/* Status displays */
+/* ─── Status displays ───────────────────────────────────────────────── */
 .configmd-loading,
 .configmd-error {
 	flex: 1;
@@ -163,17 +194,23 @@
 	margin-top: 4px;
 }
 
-/* Layout integration with chat */
-.employee-chat.with-configmd-side {
-	flex-direction: row !important;
-}
+/* ─── Layout integration with chat ─────────────────────────────────── */
 
-.employee-chat.with-configmd-side > .configmd-side-container {
-	width: 50%;
-	min-width: 320px;
-	border-left: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+/* ConfigMD is no longer rendered inside the chat panel.
+   The chat panel keeps its standard column layout. */
+.employee-chat-root {
 	display: flex;
 	flex-direction: column;
+	height: 100%;
+	width: 100%;
+	min-height: 0;
+	min-width: 0;
+}
+
+.employee-chat-root > .employee-chat {
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
 }
 
 .configmd-side-panel {
@@ -189,7 +226,7 @@
 	border: none;
 }
 
-/* EmployeeNode indicator */
+/* ─── EmployeeNode indicator ───────────────────────────────────────── */
 .employee-node-configmd {
 	display: flex;
 	align-items: center;
@@ -201,6 +238,380 @@
 	background: linear-gradient(90deg, rgba(78, 161, 255, 0.18), rgba(78, 161, 255, 0.08));
 	border-radius: 3px;
 	width: fit-content;
+	cursor: pointer;
+	transition: background 0.15s, transform 0.1s;
+}
+
+.employee-node-configmd:hover {
+	background: linear-gradient(90deg, rgba(78, 161, 255, 0.32), rgba(78, 161, 255, 0.18));
+}
+
+.employee-node-configmd:active {
+	transform: scale(0.96);
 }
 
 .employee-node-configmd-icon { font-size: 11px; }
+
+/* ─── EmployeeNode "Open ConfigMD" button (top-right, next to delete) ─ */
+.employee-node-open-md {
+	position: absolute;
+	top: 6px;
+	right: 32px; /* delete is at right:6px width:22px → leave 4px gap */
+	width: 22px;
+	height: 22px;
+	padding: 3px;
+	border-radius: 4px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-textLink-foreground, #4ea1ff);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 150ms, background-color 150ms;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.employee-node-open-md svg {
+	width: 12px;
+	height: 12px;
+}
+
+.employee-node:hover .employee-node-open-md {
+	opacity: 0.7;
+}
+
+.employee-node-open-md:hover {
+	opacity: 1 !important;
+	background-color: rgba(78, 161, 255, 0.18);
+}
+
+/* ─── EmployeeListView "Open ConfigMD" button ───────────────────────── */
+.emp-list-action-btn {
+	flex-shrink: 0;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border-radius: 4px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--vscode-textLink-foreground, #4ea1ff);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.15s, border-color 0.15s;
+	margin-right: 2px;
+}
+
+.emp-list-action-btn:hover {
+	background: rgba(78, 161, 255, 0.15);
+	border-color: rgba(78, 161, 255, 0.30);
+}
+
+.emp-list-action-btn:active {
+	background: rgba(78, 161, 255, 0.25);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ *  MarkdownEditor — VSCode-style editor with line numbers and highlight
+ * ────────────────────────────────────────────────────────────────────── */
+
+.md-editor {
+	display: flex;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	min-width: 0;
+	background: var(--vscode-editor-background, #1e1e1e);
+	font-family: var(--vscode-editor-font-family, "Menlo", "Consolas", "Courier New", monospace);
+	font-size: var(--vscode-editor-font-size, 13px);
+	line-height: 1.55;
+	color: var(--vscode-editor-foreground, #d4d4d4);
+	overflow: hidden;
+	tab-size: 2;
+}
+
+.md-editor-gutter {
+	flex-shrink: 0;
+	box-sizing: border-box;
+	padding: 8px 8px 8px 12px;
+	min-width: calc(var(--md-gutter-width, 2ch) + 24px);
+	background: var(--vscode-editorGutter-background, var(--vscode-editor-background, #1e1e1e));
+	color: var(--vscode-editorLineNumber-foreground, #858585);
+	user-select: none;
+	overflow: hidden;
+	text-align: right;
+	border-right: 1px solid var(--as-border, rgba(128, 128, 128, 0.10));
+	pointer-events: none;
+}
+
+.md-editor-lineno {
+	font-variant-numeric: tabular-nums;
+	font-size: inherit;
+	line-height: 1.55;
+	white-space: pre;
+}
+
+.md-editor-content {
+	flex: 1;
+	position: relative;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.md-editor-highlight,
+.md-editor-textarea {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	margin: 0;
+	padding: 8px 12px;
+	font-family: inherit;
+	font-size: inherit;
+	line-height: inherit;
+	white-space: pre;
+	tab-size: inherit;
+	overflow: auto;
+	border: 0;
+	box-sizing: border-box;
+}
+
+.md-editor-highlight {
+	pointer-events: none;
+	color: var(--vscode-editor-foreground, #d4d4d4);
+	background: transparent;
+	overflow: hidden;
+}
+
+.md-editor-line {
+	min-height: 1.55em;
+}
+
+.md-editor-textarea {
+	color: transparent;
+	background: transparent;
+	caret-color: var(--vscode-editorCursor-foreground, #aeafad);
+	resize: none;
+	outline: none;
+	-webkit-text-fill-color: transparent;
+	overflow: auto;
+}
+
+.md-editor-textarea::selection {
+	background: var(--vscode-editor-selectionBackground, rgba(56, 109, 163, 0.5));
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+}
+
+.md-editor-textarea::placeholder {
+	color: var(--vscode-input-placeholderForeground, #6f6f6f);
+	-webkit-text-fill-color: var(--vscode-input-placeholderForeground, #6f6f6f);
+}
+
+/* ─── Markdown token colors (VSCode-like) ──────────────────────────── */
+.md-tk-heading-mark { color: #c586c0; font-weight: bold; }
+.md-tk-heading       { color: #569cd6; font-weight: 600; }
+.md-tk-bold          { color: #ce9178; font-weight: bold; }
+.md-tk-italic        { color: #ce9178; font-style: italic; }
+.md-tk-code-inline   { color: #d7ba7d; }
+.md-tk-fence         { color: #6a9955; }
+.md-tk-code          { color: #ce9178; }
+.md-tk-quote-mark    { color: #608b4e; }
+.md-tk-list          { color: #d7ba7d; }
+.md-tk-task          { color: #4ec9b0; font-weight: bold; }
+.md-tk-link-text     { color: #4fc1ff; }
+.md-tk-link-url      { color: #ce9178; }
+.md-tk-anchor        { color: #608b4e; font-style: italic; }
+.md-tk-hr            { color: #808080; }
+
+/* Light theme overrides */
+.vs .md-tk-heading-mark, body[data-theme-kind="light"] .md-tk-heading-mark { color: #af00db; }
+.vs .md-tk-heading,      body[data-theme-kind="light"] .md-tk-heading      { color: #0070c1; }
+.vs .md-tk-bold,         body[data-theme-kind="light"] .md-tk-bold         { color: #a31515; }
+.vs .md-tk-italic,       body[data-theme-kind="light"] .md-tk-italic       { color: #a31515; }
+.vs .md-tk-code-inline,  body[data-theme-kind="light"] .md-tk-code-inline  { color: #a31515; }
+.vs .md-tk-fence,        body[data-theme-kind="light"] .md-tk-fence        { color: #008000; }
+.vs .md-tk-code,         body[data-theme-kind="light"] .md-tk-code         { color: #a31515; }
+.vs .md-tk-quote-mark,   body[data-theme-kind="light"] .md-tk-quote-mark   { color: #008000; }
+.vs .md-tk-list,         body[data-theme-kind="light"] .md-tk-list         { color: #795e26; }
+.vs .md-tk-task,         body[data-theme-kind="light"] .md-tk-task         { color: #267f99; }
+.vs .md-tk-link-text,    body[data-theme-kind="light"] .md-tk-link-text    { color: #0451a5; }
+.vs .md-tk-link-url,     body[data-theme-kind="light"] .md-tk-link-url     { color: #a31515; }
+.vs .md-tk-anchor,       body[data-theme-kind="light"] .md-tk-anchor       { color: #008000; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ *  ConfigMD Settings popover
+ * ────────────────────────────────────────────────────────────────────── */
+
+.configmd-settings-overlay {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.45);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 100;
+	padding: 16px;
+	backdrop-filter: blur(2px);
+}
+
+.configmd-settings-panel {
+	width: 100%;
+	max-width: 480px;
+	background: var(--vscode-editorWidget-background, #252526);
+	color: var(--vscode-foreground, #ccc);
+	border: 1px solid var(--as-border, var(--vscode-widget-border, rgba(128,128,128,0.25)));
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+	overflow: hidden;
+}
+
+.configmd-settings-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 14px;
+	background: var(--vscode-sideBar-background, rgba(255,255,255,0.02));
+	border-bottom: 1px solid var(--as-border, rgba(128,128,128,0.18));
+}
+
+.configmd-settings-title {
+	font-weight: 500;
+	font-size: 13px;
+}
+
+.configmd-settings-close {
+	background: transparent;
+	border: none;
+	color: var(--vscode-foreground, #ccc);
+	font-size: 18px;
+	line-height: 1;
+	width: 22px;
+	height: 22px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+
+.configmd-settings-close:hover {
+	background: rgba(127, 127, 127, 0.15);
+}
+
+.configmd-settings-body {
+	padding: 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.configmd-settings-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.configmd-settings-section-title {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-foreground, #ccc);
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+	opacity: 0.85;
+}
+
+.configmd-settings-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+}
+
+.configmd-settings-label {
+	color: var(--vscode-descriptionForeground, #888);
+}
+
+.configmd-settings-value {
+	color: var(--vscode-foreground, #ccc);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11px;
+}
+
+.configmd-settings-value.is-custom {
+	color: #4ec9b0;
+}
+
+.configmd-settings-actions {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.configmd-settings-btn {
+	padding: 5px 12px;
+	border-radius: 4px;
+	border: 1px solid transparent;
+	font-size: 12px;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+}
+
+.configmd-settings-btn.primary {
+	background: var(--vscode-button-background, #0078d4);
+	color: var(--vscode-button-foreground, #fff);
+}
+
+.configmd-settings-btn.primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground, #1a8cff);
+}
+
+.configmd-settings-btn.secondary {
+	background: transparent;
+	color: var(--vscode-foreground, #ccc);
+	border-color: var(--as-border, rgba(127, 127, 127, 0.35));
+}
+
+.configmd-settings-btn.secondary:hover:not(:disabled) {
+	background: rgba(127, 127, 127, 0.15);
+}
+
+.configmd-settings-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.configmd-settings-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #888);
+	line-height: 1.5;
+}
+
+.configmd-settings-hint code {
+	background: rgba(127, 127, 127, 0.18);
+	padding: 1px 4px;
+	border-radius: 2px;
+	font-size: 10.5px;
+}
+
+.configmd-settings-status {
+	font-size: 11.5px;
+	padding: 6px 10px;
+	border-radius: 4px;
+}
+
+.configmd-settings-status.busy {
+	background: rgba(127, 127, 127, 0.10);
+	color: var(--vscode-descriptionForeground, #888);
+}
+
+.configmd-settings-status.error {
+	background: rgba(240, 72, 72, 0.10);
+	color: #f04848;
+}
+
+.configmd-settings-status.ok {
+	background: rgba(78, 201, 176, 0.10);
+	color: #4ec9b0;
+}

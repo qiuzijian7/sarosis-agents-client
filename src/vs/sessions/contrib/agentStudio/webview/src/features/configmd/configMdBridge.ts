@@ -148,6 +148,16 @@ export async function renderHtml(employeeId: string, markdown?: string): Promise
 	return r as any;
 }
 
+/**
+ * Render the current MD into a complete standalone HTML document, write it to
+ * `<agentDir>/.preview.html` on disk, and return the absolute path so the
+ * caller can open it in the host editor.
+ */
+export async function previewToFile(employeeId: string): Promise<{ path: string; version: number }> {
+	const r = await sendRequest('configmd.previewToFile', { employeeId });
+	return r as { path: string; version: number };
+}
+
 export async function fireHtmlEvent(
 	employeeId: string,
 	eventName: string,
@@ -163,6 +173,40 @@ export async function chatSend(
 	options?: { context?: string; showInChat?: boolean; agentSessionId?: string },
 ): Promise<unknown> {
 	return sendRequest('configmd.chatSend', { employeeId, message, ...options }, 0);
+}
+
+export interface ConfigMdInfo {
+	parserSource: 'builtin' | 'custom';
+	parserPath?: string;
+	stylesPath?: string;
+	hasStyles: boolean;
+}
+
+export async function getInfo(employeeId: string): Promise<ConfigMdInfo> {
+	const r = await sendRequest('configmd.getInfo', { employeeId });
+	return r as ConfigMdInfo;
+}
+
+export async function uploadParser(
+	employeeId: string,
+	content: string,
+	fileName?: string,
+): Promise<{ parserPath: string }> {
+	const r = await sendRequest('configmd.uploadParser', { employeeId, content, fileName });
+	return r as { parserPath: string };
+}
+
+export async function uploadStyles(
+	employeeId: string,
+	content: string,
+	fileName?: string,
+): Promise<{ stylesPath: string }> {
+	const r = await sendRequest('configmd.uploadStyles', { employeeId, content, fileName });
+	return r as { stylesPath: string };
+}
+
+export async function removeParser(employeeId: string): Promise<void> {
+	await sendRequest('configmd.removeParser', { employeeId });
 }
 
 // ─── iframe ↔ panel postMessage relay ────────────────────────────────────────

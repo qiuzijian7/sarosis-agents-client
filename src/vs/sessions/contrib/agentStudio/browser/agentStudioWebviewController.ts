@@ -6,6 +6,9 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
+import { WebviewInput } from '../../../../workbench/contrib/webviewPanel/browser/webviewEditorInput.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { URI } from '../../../../base/common/uri.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -19,6 +22,8 @@ import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IWorkbenchThemeService } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { GroupsOrder, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import type {
 	IProviderInfo,
 	IProviderSelectPayload,
@@ -31,6 +36,7 @@ import type {
 	IConfigMdWriteSourcePayload,
 	IConfigMdApplyPatchPayload,
 	IConfigMdRenderHtmlPayload,
+	IFileOpenPayload,
 } from './messageProtocol.js';
 import { WorkspaceSessionService, type IWorkspaceSessionService } from './workspaceSessionService.js';
 import { ConfigMdService } from './configMdService.js';
@@ -71,6 +77,10 @@ export class AgentStudioWebviewController extends Disposable {
 	@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
 	@IFileService private readonly fileService: IFileService,
 	@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
+	@IEditorService private readonly editorService: IEditorService,
+	@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+	@IInstantiationService private readonly instantiationService: IInstantiationService,
+	@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(logService, this.fileService, agentStudioService);
@@ -441,6 +451,29 @@ export class AgentStudioWebviewController extends Disposable {
 			case 'configmd.notify':
 				this.logService.info(`[ConfigMD] Notification from ${p.employeeId}: ${p.message} [${p.level || 'info'}]`);
 				return undefined;
+			case 'configmd.uploadParser':
+				return this._configMdService.uploadParser(p.employeeId as string, p.content as string, p.fileName as string | undefined);
+			case 'configmd.uploadStyles':
+				return this._configMdService.uploadStyles(p.employeeId as string, p.content as string, p.fileName as string | undefined);
+			case 'configmd.removeParser':
+				return this._configMdService.removeParser(p.employeeId as string);
+			case 'configmd.getInfo':
+				return this._configMdService.getInfo(p.employeeId as string);
+			case 'configmd.previewToFile':
+				return this._configMdService.previewToFile(p.employeeId as string);
+
+
+		// ─── Files ────────────────────────────────────────────
+			case 'files.open': {
+				const fp = p as unknown as IFileOpenPayload;
+				return this._handleOpenFile(fp);
+			}
+			case 'files.openHtmlPreview': {
+				const fp = p as unknown as IFileOpenPayload;
+				return this._handleOpenHtmlPreview(fp);
+			}
+
+
 
 			default:
 				throw new Error(`Unknown message type: ${type}`);
@@ -657,6 +690,161 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	// ─── Service Event Listeners (push changes to WebView) ──────────────────────
+
+	/**
+	 * Resolve a IFileOpenPayload into an absolute filesystem path and open it
+	 * in the host's center editor area (first/leftmost editor group).
+	 *
+	 * Agent Studio uses a two-column layout: the Agent Studio panels live in a
+	 * locked editor group; we must open files in the first (center) group, or
+	 * create a side group when only one exists.
+	 */
+	private async _handleOpenFile(payload: IFileOpenPayload): Promise<void> {
+		let absPath: string | undefined = payload.path;
+
+		if (!absPath && payload.employeeId) {
+			const employee = await this.agentStudioService.getEmployee(payload.employeeId);
+			if (!employee) {
+				throw new Error(`Employee '${payload.employeeId}' not found`);
+			}
+			if (!employee.agentDir) {
+				throw new Error(`Agent '${employee.name}' has no agentDir`);
+			}
+			const cfg = employee.configMd;
+			let rel: string | undefined;
+			switch (payload.kind || 'configMd') {
+				case 'configMd':
+					rel = cfg?.mdPath || 'config.md';
+					break;
+				case 'configMdParser':
+					rel = cfg?.parserPath;
+					break;
+				case 'configMdStyles':
+					rel = cfg?.stylesPath;
+					break;
+			}
+			if (!rel) {
+				throw new Error(`No file configured for kind='${payload.kind}'`);
+			}
+			absPath = URI.joinPath(URI.file(employee.agentDir), rel).fsPath;
+		}
+
+		if (!absPath) {
+			throw new Error('files.open requires path or employeeId');
+		}
+
+		const resource = URI.file(absPath);
+		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+
+		this.logService.info(`[AgentStudioWebviewController] files.open → ${resource.toString()}`);
+		await this.editorService.openEditor(
+			{
+				resource,
+				options: {
+					preserveFocus: payload.preserveFocus ?? false,
+					pinned: payload.pinned ?? false,
+				},
+			},
+			targetGroup,
+		);
+	}
+
+	/**
+	 * Resolve an HTML file path and render it as a webview preview in the host's
+	 * center editor area (browser-like view rather than text source).
+	 *
+	 * Strategy:
+	 *  1) Read the HTML file content.
+	 *  2) Create an IOverlayWebview, set its HTML content, allow local resource
+	 *     access for the file's parent directory.
+	 *  3) Wrap in a WebviewInput and open it via IEditorService into the
+	 *     center editor group.
+	 *  4) On any failure, fall back to the simple-browser extension via the
+	 *     `simpleBrowser.show` command (if registered).
+	 */
+	private async _handleOpenHtmlPreview(payload: IFileOpenPayload): Promise<void> {
+		// Reuse _handleOpenFile's path-resolution logic (path or employeeId+kind)
+		let absPath: string | undefined = payload.path;
+		if (!absPath && payload.employeeId) {
+			const employee = await this.agentStudioService.getEmployee(payload.employeeId);
+			if (!employee?.agentDir) {
+				throw new Error(`Agent '${payload.employeeId}' has no agentDir`);
+			}
+			const cfg = employee.configMd;
+			let rel: string | undefined;
+			switch (payload.kind || 'configMd') {
+				case 'configMd': rel = cfg?.mdPath || 'config.md'; break;
+				case 'configMdParser': rel = cfg?.parserPath; break;
+				case 'configMdStyles': rel = cfg?.stylesPath; break;
+			}
+			if (!rel) {
+				throw new Error(`No file configured for kind='${payload.kind}'`);
+			}
+			absPath = URI.joinPath(URI.file(employee.agentDir), rel).fsPath;
+		}
+		if (!absPath) {
+			throw new Error('files.openHtmlPreview requires path or employeeId');
+		}
+
+		const fileUri = URI.file(absPath);
+		const dirUri = URI.file(absPath.replace(/[\\/][^\\/]+$/, ''));
+
+		// Read the HTML content and render via an in-editor webview.
+		try {
+			const buf = await this.fileService.readFile(fileUri);
+			const html = buf.value.toString();
+
+			const overlay = this.webviewService.createWebviewOverlay({
+				title: this._titleForPath(absPath),
+				options: { retainContextWhenHidden: true, enableFindWidget: true },
+				contentOptions: {
+					allowScripts: true,
+					allowForms: true,
+					localResourceRoots: [dirUri],
+				},
+				extension: undefined,
+				providedViewType: 'agentStudio.htmlPreview',
+			});
+			overlay.setHtml(html);
+
+			const input = this.instantiationService.createInstance(
+				WebviewInput,
+				{
+					viewType: 'agentStudio.htmlPreview',
+					providedId: undefined,
+					name: this._titleForPath(absPath),
+					iconPath: undefined,
+				},
+				overlay,
+			);
+
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			this.logService.info(`[AgentStudioWebviewController] openHtmlPreview → ${fileUri.toString()}`);
+			await this.editorService.openEditor(
+				input,
+				{ preserveFocus: payload.preserveFocus ?? false, pinned: payload.pinned ?? true },
+				targetGroup,
+			);
+			return;
+		} catch (err) {
+			this.logService.warn(`[AgentStudioWebviewController] in-editor webview preview failed; trying simpleBrowser:`, err);
+		}
+
+		// Fallback: use the bundled simple-browser extension if available.
+		try {
+			await this.commandService.executeCommand('simpleBrowser.show', fileUri.toString());
+		} catch (err) {
+			this.logService.error(`[AgentStudioWebviewController] simpleBrowser fallback failed:`, err);
+			throw err;
+		}
+	}
+
+	private _titleForPath(absPath: string): string {
+		const m = /[\\/]([^\\/]+)$/.exec(absPath);
+		return m ? `预览：${m[1]}` : '预览';
+	}
 
 	private _registerServiceListeners(): void {
 		this._register(this.agentStudioService.onDidChangeEmployees(() => {

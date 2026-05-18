@@ -633,80 +633,99 @@ function tryRunVersion(executable: string): Promise<KnotCliStatus> {
 }
 
 /**
- * Run the official Knot CLI install script in an integrated terminal so the user can
- * watch progress and react to prompts. The script is documented at
- * https://knot.woa.com/settings/token.
+ * Derive the IDE application install directory.
  *
- *   curl -v -L 'https://mirrors.tencent.com/repository/generic/knot-cli/install.sh' \
- *     | bash -s -- --token <token> --origin knot
+ * `process.execPath` points to the electron binary (e.g.
+ *   - Windows: `C:\Users\x\AppData\Local\Programs\SarosisIDE\sarosis.exe`
+ *   - macOS:   `/Applications/SarosisIDE.app/Contents/MacOS/Electron`
+ *   - Linux:   `/opt/sarosis/sarosis`
+ * )
+ * We walk up to the application root directory (the folder that contains
+ * the executable or `.app` bundle) and use that as the `--workspace` value
+ * for the knot install script, so that knot stores its agent data alongside
+ * the running IDE installation.
+ */
+function getAppInstallDir(): string {
+	const execDir = path.dirname(process.execPath);
+	if (process.platform === 'darwin') {
+		// On macOS the execPath is inside Foo.app/Contents/MacOS/ — go up 3 levels
+		// to reach the directory *containing* the .app bundle.
+		const contentsIdx = execDir.indexOf('.app/Contents');
+		if (contentsIdx !== -1) {
+			return path.dirname(execDir.substring(0, contentsIdx + '.app'.length));
+		}
+	}
+	// Windows / Linux: the executable sits at the top-level install dir.
+	return execDir;
+}
+
+/**
+ * Run the official Knot CLI install script in an integrated terminal so the
+ * user can watch progress and react to prompts.
  *
- * On Windows we route through `bash` (git-bash). If `bash` is not available the user
- * sees a clear error in the terminal and we surface a hint via a notification.
+ * Platform strategy:
+ *   - **Windows**: uses the PowerShell install script (`install.ps1`).
+ *   - **macOS/Linux**: uses the Bash install script (`install.sh` via curl).
+ *
+ * The `--workspace` parameter points to the IDE application install directory
+ * (derived from `process.execPath`) so knot stores agent data relative to
+ * the running IDE instance rather than `$HOME`.
  */
 async function runKnotCliInstall(token: string, output: vscode.OutputChannel): Promise<void> {
-	const installCmd =
-		`curl -fsSL 'https://mirrors.tencent.com/repository/generic/knot-cli/install.sh' ` +
-		`| bash -s -- --token ${shellQuote(token)} --origin knot`;
-
 	const isWindows = process.platform === 'win32';
-	let shellPath: string | undefined;
-	let shellArgs: string[] | undefined;
+	const workspaceDir = getAppInstallDir();
+
+	output.appendLine(`[Knot] runKnotCliInstall: platform=${process.platform} workspace="${workspaceDir}"`);
 
 	if (isWindows) {
-		const bash = findGitBash();
-		if (!bash) {
-			const msg = '未找到 Git Bash。请安装 Git for Windows（https://git-scm.com/download/win）后重试。';
-			void vscode.window.showErrorMessage(msg);
-			throw new Error(msg);
-		}
-		shellPath = bash;
-		// `-l -c "<cmd>"`: login shell so that ~/.bashrc / ~/.bash_profile sources work.
-		shellArgs = ['-l', '-c', installCmd];
-	}
+		// PowerShell-based install (no Git Bash dependency).
+		// Command breakdown:
+		//   1. Download install.ps1 to $env:TEMP
+		//   2. Unblock the downloaded file
+		//   3. Execute with -ExecutionPolicy Bypass
+		const psCmd = [
+			`Invoke-WebRequest -Uri 'https://mirrors.tencent.com/repository/generic/knot-cli/install.ps1' -OutFile "$env:TEMP\\install-agent.ps1"`,
+			`Unblock-File "$env:TEMP\\install-agent.ps1"`,
+			`PowerShell -ExecutionPolicy Bypass -File "$env:TEMP\\install-agent.ps1" --token ${psQuote(token)} --origin knot --workspace ${psQuote(workspaceDir)}`,
+		].join('; ');
 
-	const terminal = vscode.window.createTerminal({
-		name: 'Knot CLI Install',
-		shellPath,
-		shellArgs,
-		// On non-Windows, we let the user's default shell run; we then send the install command.
-	});
+		const terminal = vscode.window.createTerminal({
+			name: 'Knot CLI Install',
+			shellPath: 'powershell.exe',
+			// Use -NoExit so the terminal stays open after the install finishes
+			// allowing the user to see results.
+		});
+		terminal.show(true);
+		terminal.sendText(psCmd, true);
+	} else {
+		// Bash-based install (macOS / Linux).
+		const installCmd =
+			`curl -fsSL 'https://mirrors.tencent.com/repository/generic/knot-cli/install.sh' ` +
+			`| bash -s -- --token ${shellQuote(token)} --origin knot --workspace ${shellQuote(workspaceDir)}`;
 
-	terminal.show(true);
-
-	if (!isWindows) {
-		// Send the install command to the user's default shell (bash/zsh).
+		const terminal = vscode.window.createTerminal({ name: 'Knot CLI Install' });
+		terminal.show(true);
 		terminal.sendText(installCmd, true);
-		// Also remind to source ~/.bashrc to take effect in a brand-new shell.
 		terminal.sendText('echo ""', true);
 		terminal.sendText('echo "[Knot] 如安装成功，请执行: source ~/.bashrc 或新开终端使用 knot-cli。"', true);
 	}
 
-	output.appendLine(`[Knot] runKnotCliInstall: launched in terminal (platform=${process.platform})`);
+	output.appendLine(`[Knot] runKnotCliInstall: launched in terminal`);
 
 	// Re-detect after a short delay so the UI can reflect status updates.
 	setTimeout(() => { void vscode.commands.executeCommand('knot.checkCli'); }, 8000);
 }
 
+/**
+ * Quote a value for PowerShell — wraps in single quotes, escaping embedded single quotes.
+ */
+function psQuote(value: string): string {
+	return `'${value.replace(/'/g, "''")}'`;
+}
+
 function shellQuote(value: string): string {
 	// Single-quote and escape any embedded single quotes for POSIX shell.
 	return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function findGitBash(): string | undefined {
-	const candidates: string[] = [];
-	const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
-	const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-	candidates.push(path.join(programFiles, 'Git', 'bin', 'bash.exe'));
-	candidates.push(path.join(programFiles, 'Git', 'usr', 'bin', 'bash.exe'));
-	candidates.push(path.join(programFilesX86, 'Git', 'bin', 'bash.exe'));
-	const localAppData = process.env['LOCALAPPDATA'];
-	if (localAppData) {
-		candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'));
-	}
-	for (const c of candidates) {
-		try { if (fs.existsSync(c)) { return c; } } catch { /* ignore */ }
-	}
-	return undefined;
 }
 
 // ─── Knot CLI: workspace sub-command helpers ───────────────────────────────

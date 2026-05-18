@@ -88,7 +88,14 @@ export type RequestType =
 	| 'configmd.event'            // forward HTML event to agent/model
 	| 'configmd.chatSend'         // send message to model (capability: chat.send)
 	| 'configmd.chatHistory'      // read chat history
-	| 'configmd.notify';          // show notification
+	| 'configmd.notify'           // show notification
+	| 'configmd.uploadParser'     // upload custom MD→HTML parser script
+	| 'configmd.uploadStyles'     // upload custom CSS for preview
+	| 'configmd.removeParser'     // restore built-in parser
+	| 'configmd.getInfo'          // get parser/styles info
+	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
+	| 'files.open'                // open a file in the host editor as text
+	| 'files.openHtmlPreview';    // open an HTML file as a rendered webview preview
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -427,4 +434,50 @@ export interface IConfigMdCommandPayload {
 		readonly params: Record<string, unknown>;
 		readonly id: string;
 	};
+}
+
+export interface IConfigMdUploadParserPayload {
+	readonly employeeId: string;
+	readonly content: string;
+	readonly fileName?: string;
+}
+
+export interface IConfigMdUploadStylesPayload {
+	readonly employeeId: string;
+	readonly content: string;
+	readonly fileName?: string;
+}
+
+export interface IConfigMdRemoveParserPayload {
+	readonly employeeId: string;
+}
+
+export interface IConfigMdInfoPayload {
+	readonly employeeId: string;
+}
+
+export interface IConfigMdInfo {
+	readonly parserSource: 'builtin' | 'custom';
+	readonly parserPath?: string;
+	readonly stylesPath?: string;
+	readonly hasStyles: boolean;
+}
+
+// ─── Files Payloads ────────────────────────────────────────────────────────
+
+/**
+ * Open a file in the host's center editor area.
+ * Either an absolute filesystem path or an employee-relative reference may be supplied.
+ */
+export interface IFileOpenPayload {
+	/** Absolute filesystem path (preferred). */
+	readonly path?: string;
+	/** Alternative: employee id + relative kind, resolved by host. */
+	readonly employeeId?: string;
+	/** Which configMd-related file to open (only used when employeeId is present). */
+	readonly kind?: 'configMd' | 'configMdParser' | 'configMdStyles';
+	/** Whether to keep focus on the current view. Default: false. */
+	readonly preserveFocus?: boolean;
+	/** Whether to open as a pinned (non-preview) editor. Default: false. */
+	readonly pinned?: boolean;
 }

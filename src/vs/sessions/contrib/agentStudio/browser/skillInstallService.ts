@@ -26,6 +26,8 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../platform/request/common/request.js';
 import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
+import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
 import {
 	ISkillInstallService,
@@ -64,6 +66,8 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 		@ILogService private readonly logService: ILogService,
 		@IRequestService private readonly requestService: IRequestService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
+		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
+		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 	) {
 		super();
 	}
@@ -218,6 +222,23 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 
 			this.logService.info(`[SkillInstall] Skill "${skillId}" uninstalled`);
 			await this.skillRegistry.reload();
+
+			// Fire skill-removed lifecycle event so external consumers (e.g. knot-cli sync)
+			// can remove stale entries from their own skill directories.
+			const workspacePath = this._getFirstWorkspacePath();
+			if (workspacePath) {
+				const payload: ISkillLifecyclePayload = {
+					workspacePath,
+					agentId: '',
+					skillId,
+					skillName: skill.name,
+					timestamp: new Date().toISOString(),
+				};
+				void this.skillLifecycleService.fireSkillEvent(SkillLifecycleEvent.Removed, payload).catch(err => {
+					this.logService.debug(`[SkillInstall] lifecycle Removed event failed for ${skillId}: ${err instanceof Error ? err.message : String(err)}`);
+				});
+			}
+
 			return true;
 		} catch (err) {
 			this.logService.error(`[SkillInstall] Failed to uninstall skill "${skillId}":`, err);
@@ -230,6 +251,11 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 	}
 
 	// ─── 内部 ────────────────────────────────────────────────
+
+	private _getFirstWorkspacePath(): string | undefined {
+		const folders = this.workspaceService.getWorkspace().folders;
+		return folders.length > 0 ? folders[0].uri.fsPath : undefined;
+	}
 
 	private _getInstalledSkillIds(): Set<string> {
 		return new Set(this.skillRegistry.getSkills().map((s: ISkillDefinition) => s.id));

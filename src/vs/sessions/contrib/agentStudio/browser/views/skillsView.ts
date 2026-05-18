@@ -16,6 +16,8 @@ import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { $, clearNode } from '../../../../../base/browser/dom.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ISkillRegistry, ISkillDefinition } from '../../common/skills.js';
 import { ISkillInstallService, ISkillHubEntry } from '../../common/skillHubTypes.js';
 
@@ -60,6 +62,7 @@ export class SkillsViewPane extends ViewPane {
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
 		@IDialogService private readonly dialogService: IDialogService,
+		@IEditorService private readonly editorService: IEditorService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -154,8 +157,34 @@ export class SkillsViewPane extends ViewPane {
 
 	private _refresh(): void {
 		this.viewMode = 'list';
-		this.skills = [...this.skillRegistry.getSkills()];
-		this.logService.info(`[SkillsView] _refresh: total skills = ${this.skills.length}`);
+		const allSkills = [...this.skillRegistry.getSkills()];
+
+		// 去重逻辑：
+		// - 同 id + 同 contentHash → 完全相同的技能副本，保留高优先级来源
+		// - 同 id + 不同 contentHash → 同名但内容不同的版本，均保留（附加来源后缀区分）
+		const sourcePriority: Record<string, number> = { workspace: 4, user: 3, extension: 2, memory: 1, builtin: 0 };
+		const deduped = new Map<string, ISkillDefinition>();
+
+		for (const s of allSkills) {
+			const baseKey = s.id; // id 已由 name 生成（name.toLowerCase().replace(/\s+/g, '-')）
+			const contentKey = `${baseKey}::${s.contentHash ?? 'no-hash'}`;
+
+			// 先检查是否有相同内容的重复
+			const existingSameContent = deduped.get(contentKey);
+			if (existingSameContent) {
+				// 同名 + 同内容 → 保留高优先级来源
+				const existingPri = sourcePriority[existingSameContent.source] ?? 0;
+				const newPri = sourcePriority[s.source] ?? 0;
+				if (newPri > existingPri) {
+					deduped.set(contentKey, s);
+				}
+			} else {
+				deduped.set(contentKey, s);
+			}
+		}
+		this.skills = [...deduped.values()];
+
+		this.logService.info(`[SkillsView] _refresh: total skills = ${this.skills.length} (before dedup: ${allSkills.length})`);
 		if (this.skills.length === 0) {
 			this.logService.warn('[SkillsView] _refresh: NO SKILLS returned from registry!');
 		} else {
@@ -338,6 +367,26 @@ export class SkillsViewPane extends ViewPane {
 				};
 				item.appendChild(uninstallBtn);
 			}
+
+			// 点击 skill item 在编辑器中打开对应的 SKILL.md 文件
+			item.style.cursor = skill.resource ? 'pointer' : 'default';
+			item.onclick = (e) => {
+				// 避免按钮点击（如 toggle、uninstall）冒泡触发打开
+				const target = e.target as HTMLElement;
+				if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.closest('button')) {
+					return;
+				}
+				if (skill.resource) {
+					// skill.resource 是技能文件夹 URI，需要拼接 SKILL.md
+					const skillFileUri = URI.joinPath(skill.resource, 'SKILL.md');
+					this.editorService.openEditor({
+						resource: skillFileUri,
+						options: { pinned: false, preserveFocus: false },
+					});
+				} else {
+					this.logService.info(`[SkillsView] skill "${skill.name}" has no resource URI (source: ${skill.source}), cannot open file.`);
+				}
+			};
 
 			this.listContainer.appendChild(item);
 		}

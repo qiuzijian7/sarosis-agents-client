@@ -183,24 +183,6 @@ export class PluginDetailEditorPane extends EditorPane {
 		// Right: Action Button
 		const headerRight = $$('div.plugin-detail-header-right');
 
-		// Config button (only for knot-agui plugin)
-		if (plugin.label === 'knot-agui') {
-			const configBtn = $$('button.plugin-detail-config-btn');
-			configBtn.textContent = localize('configure', 'Configure');
-			configBtn.title = 'Open Knot AG-UI Settings';
-			configBtn.onclick = () => {
-				this.commandService.executeCommand('knot.openSettings').catch((err: Error) => {
-					console.warn('[PluginDetailEditorPane] Failed to open Knot settings:', err);
-					// Fallback: try global function
-					const openFn = (globalThis as any).__knotOpenSettings;
-					if (typeof openFn === 'function') {
-						openFn();
-					}
-				});
-			};
-			headerRight.appendChild(configBtn);
-		}
-
 		const actionBtn = $$('button.plugin-detail-action-btn');
 		if (isEnabled) {
 			actionBtn.textContent = localize('disable', 'Disable');
@@ -282,79 +264,59 @@ export class PluginDetailEditorPane extends EditorPane {
 
 		scrollContainer.appendChild(infoGrid);
 
-		// ─── Skills Section ────────────────────────────────────
-		if (skills.length > 0) {
+		// ─── Contributions (compact grid) ──────────────────────
+		const hasSkills = skills.length > 0;
+		const hasCommands = commands.length > 0;
+		const hasAgents = agents.length > 0;
+		const hasMcp = mcpServers.length > 0;
+		if (hasSkills || hasCommands || hasAgents || hasMcp) {
 			const section = $$('div.plugin-detail-section');
 			const sectionTitle = $$('h2.plugin-detail-section-title');
-			sectionTitle.textContent = localize('skills', 'Skills ({0})', skills.length);
+			sectionTitle.textContent = localize('contributions', 'Contributions');
 			section.appendChild(sectionTitle);
 
-			const skillList = $$('ul.plugin-detail-list');
-			for (const skill of skills) {
-				const li = $$('li.plugin-detail-list-item');
-				const skillName = $$('span.plugin-detail-skill-name');
-				skillName.textContent = skill.name || 'Unknown skill';
-				li.appendChild(skillName);
-				skillList.appendChild(li);
+			const grid = $$('div.plugin-detail-info-grid');
+			if (hasSkills) {
+				const row = $$('div.plugin-detail-info-row');
+				const label = $$('span.plugin-detail-info-label');
+				label.textContent = localize('skills', 'Skills');
+				row.appendChild(label);
+				const value = $$('span.plugin-detail-info-value');
+				value.textContent = skills.map(s => s.name || 'Unknown skill').join(', ');
+				row.appendChild(value);
+				grid.appendChild(row);
 			}
-			section.appendChild(skillList);
-			scrollContainer.appendChild(section);
-		}
-
-		// ─── Commands Section ──────────────────────────────────
-		if (commands.length > 0) {
-			const section = $$('div.plugin-detail-section');
-			const sectionTitle = $$('h2.plugin-detail-section-title');
-			sectionTitle.textContent = localize('commands', 'Commands ({0})', commands.length);
-			section.appendChild(sectionTitle);
-
-			const cmdList = $$('ul.plugin-detail-list');
-			for (const cmd of commands) {
-				const li = $$('li.plugin-detail-list-item');
-				const cmdName = $$('span.plugin-detail-cmd-name');
-				cmdName.textContent = cmd.name || 'Unknown command';
-				li.appendChild(cmdName);
-				cmdList.appendChild(li);
+			if (hasCommands) {
+				const row = $$('div.plugin-detail-info-row');
+				const label = $$('span.plugin-detail-info-label');
+				label.textContent = localize('commands', 'Commands');
+				row.appendChild(label);
+				const value = $$('span.plugin-detail-info-value');
+				value.textContent = commands.map(c => c.name || 'Unknown command').join(', ');
+				row.appendChild(value);
+				grid.appendChild(row);
 			}
-			section.appendChild(cmdList);
-			scrollContainer.appendChild(section);
-		}
-
-		// ─── Agents Section ───────────────────────────────────
-		if (agents.length > 0) {
-			const section = $$('div.plugin-detail-section');
-			const sectionTitle = $$('h2.plugin-detail-section-title');
-			sectionTitle.textContent = localize('agents', 'Agents ({0})', agents.length);
-			section.appendChild(sectionTitle);
-
-			const agentList = $$('ul.plugin-detail-list');
-			for (const agent of agents) {
-				const li = $$('li.plugin-detail-list-item');
-				const agentName = $$('span.plugin-detail-agent-name');
-				agentName.textContent = agent.name || 'Unknown agent';
-				li.appendChild(agentName);
-				agentList.appendChild(li);
+			if (hasAgents) {
+				const row = $$('div.plugin-detail-info-row');
+				const label = $$('span.plugin-detail-info-label');
+				label.textContent = localize('agents', 'Agents');
+				row.appendChild(label);
+				const value = $$('span.plugin-detail-info-value');
+				value.textContent = agents.map(a => a.name || 'Unknown agent').join(', ');
+				row.appendChild(value);
+				grid.appendChild(row);
 			}
-			section.appendChild(agentList);
-			scrollContainer.appendChild(section);
-		}
-
-		// ─── MCP Servers Section ──────────────────────────────
-		if (mcpServers.length > 0) {
-			const section = $$('div.plugin-detail-section');
-			const sectionTitle = $$('h2.plugin-detail-section-title');
-			sectionTitle.textContent = localize('mcpServers', 'MCP Servers ({0})', mcpServers.length);
-			section.appendChild(sectionTitle);
-
-			const mcpList = $$('ul.plugin-detail-list');
-			for (const mcp of mcpServers) {
-				const li = $$('li.plugin-detail-list-item');
-				const mcpName = $$('span.plugin-detail-mcp-name');
-				mcpName.textContent = mcp.name || 'Unknown MCP server';
-				li.appendChild(mcpName);
-				mcpList.appendChild(li);
+			if (hasMcp) {
+				const row = $$('div.plugin-detail-info-row');
+				const label = $$('span.plugin-detail-info-label');
+				label.textContent = localize('mcpServers', 'MCP Servers');
+				row.appendChild(label);
+				const value = $$('span.plugin-detail-info-value');
+				value.textContent = mcpServers.map(m => m.name || 'Unknown MCP server').join(', ');
+				row.appendChild(value);
+				grid.appendChild(row);
 			}
-			section.appendChild(mcpList);
+			section.appendChild(grid);
 			scrollContainer.appendChild(section);
 		}
 
@@ -394,20 +356,11 @@ export class PluginDetailEditorPane extends EditorPane {
 
 			section.appendChild(configContainer);
 
-			// ─── Action Buttons ──────────────────────────────────
-			const actionsRow = $$('div.plugin-detail-config-actions');
+		// ─── Action Buttons ──────────────────────────────────
+		const actionsRow = $$('div.plugin-detail-config-actions');
 
-			// Test Connection button (if token field exists)
-			const hasToken = configProperties.some(p => p.key.includes('token'));
-			if (hasToken) {
-				const testBtn = $$('button.plugin-detail-config-save-btn.secondary');
-				testBtn.textContent = localize('testConnection', '测试连接');
-				testBtn.onclick = () => this._handleTestConnection(configProperties, testBtn);
-				actionsRow.appendChild(testBtn);
-			}
-
-			// Save button
-			const saveBtn = $$('button.plugin-detail-config-save-btn');
+		// Save button
+		const saveBtn = $$('button.plugin-detail-config-save-btn');
 			saveBtn.textContent = localize('saveSettings', '保存设置');
 			saveBtn.onclick = () => this._saveConfigFields(configProperties, saveBtn);
 			actionsRow.appendChild(saveBtn);
@@ -829,73 +782,6 @@ export class PluginDetailEditorPane extends EditorPane {
 		setTimeout(() => { saveBtn.textContent = originalText; }, 2000);
 	}
 
-	/**
-	 * Test connection using the plugin's API configuration.
-	 */
-	private async _handleTestConnection(configProperties: IPluginConfigProperty[], testBtn: HTMLElement): Promise<void> {
-		const statusEl = this._container?.querySelector('#plugin-config-status') as HTMLElement | null;
-
-		const tokenProp = configProperties.find(p => p.key.includes('token'));
-		const baseUrlProp = configProperties.find(p => p.key.includes('baseUrl') || p.key.includes('endpoint'));
-		const userProp = configProperties.find(p => p.key.includes('.user') && !p.key.includes('timeout'));
-
-		const token = tokenProp ? String(this._configFieldValues.get(tokenProp.key) || '') : '';
-		if (!token) {
-			if (statusEl) {
-				statusEl.textContent = '⚠️ 请先填写 API Token';
-				statusEl.className = 'plugin-detail-config-status error';
-			}
-			return;
-		}
-
-		testBtn.textContent = '🔄 测试中...';
-		if (statusEl) {
-			statusEl.textContent = '🔄 正在测试连接...';
-			statusEl.className = 'plugin-detail-config-status';
-		}
-
-		try {
-			const baseUrl = baseUrlProp
-				? String(this._configFieldValues.get(baseUrlProp.key) || baseUrlProp.default || 'https://knot.woa.com')
-				: 'https://knot.woa.com';
-			const apiUrl = `${baseUrl}/apigw/api/v1/agents`;
-			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-
-			headers['x-knot-api-token'] = token;
-			if (userProp) {
-				const user = String(this._configFieldValues.get(userProp.key) || '');
-				if (user) { headers['x-knot-api-user'] = user; }
-			}
-
-			const response = await fetch(apiUrl, { method: 'GET', headers });
-			if (response.ok) {
-				if (statusEl) {
-					statusEl.textContent = '✅ 连接成功！';
-					statusEl.className = 'plugin-detail-config-status success';
-				}
-			} else {
-				const errorText = await response.text().catch(() => '');
-				if (statusEl) {
-					statusEl.textContent = `❌ 连接失败 (${response.status}): ${errorText.slice(0, 100)}`;
-					statusEl.className = 'plugin-detail-config-status error';
-				}
-			}
-		} catch (error) {
-			if (statusEl) {
-				statusEl.textContent = `❌ 连接失败: ${error}`;
-				statusEl.className = 'plugin-detail-config-status error';
-			}
-		}
-
-		testBtn.textContent = localize('testConnection', '测试连接');
-		setTimeout(() => {
-			if (statusEl) {
-				statusEl.textContent = '';
-				statusEl.className = 'plugin-detail-config-status';
-			}
-		}, 5000);
-	}
-
 	// ─── Knot CLI status ───────────────────────────────────────
 
 	/**
@@ -935,12 +821,12 @@ export class PluginDetailEditorPane extends EditorPane {
 		)));
 		const docLink = document.createElement('a');
 		docLink.className = 'plugin-detail-config-link';
-		docLink.textContent = 'knot.woa.com/settings/token';
-		docLink.href = 'https://knot.woa.com/settings/token';
-		docLink.title = 'https://knot.woa.com/settings/token';
+		docLink.textContent = 'iwiki.woa.com/p/4016884620';
+		docLink.href = 'https://iwiki.woa.com/p/4016884620';
+		docLink.title = 'https://iwiki.woa.com/p/4016884620';
 		docLink.onclick = (e) => {
 			e.preventDefault();
-			window.open('https://knot.woa.com/settings/token', '_blank', 'noopener');
+			window.open('https://iwiki.woa.com/p/4016884620', '_blank', 'noopener');
 		};
 		desc.appendChild(docLink);
 		desc.appendChild(document.createTextNode('。'));

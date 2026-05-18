@@ -110,6 +110,10 @@ export interface Employee {
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
+	/** LLM temperature (0-2), persisted per agent */
+	temperature?: number;
+	/** Max tokens for LLM response, persisted per agent */
+	maxTokens?: number;
 	/**
 	 * Connections (edges) this agent participates in (as source or target).
 	 * Persisted to employees.json so hierarchy survives window reload.

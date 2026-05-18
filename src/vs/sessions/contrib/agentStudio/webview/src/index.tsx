@@ -22,6 +22,7 @@ import './styles/globals.css';
 import './styles/themes.css';
 import './styles/chat-enhanced.css';
 import './styles/configmd.css';
+import './styles/agent-editor.css';
 
 // Initialize the message bridge (must happen before React mounts)
 initMessageClient((type, data) => {

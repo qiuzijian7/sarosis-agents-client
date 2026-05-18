@@ -322,6 +322,13 @@ export interface IConfigMdService {
 	 */
 	renderHtml(employeeId: string, markdown?: string): Promise<{ html: string; version: number }>;
 
+	/**
+	 * Render the current MD into a complete standalone HTML document and write
+	 * it to `<agentDir>/.preview.html`. Returns the absolute filesystem path
+	 * so callers can open the file in the host editor.
+	 */
+	previewToFile(employeeId: string): Promise<{ path: string; version: number }>;
+
 	// ─── HTML Event Handling ──────────────────────────────────────────────
 
 	/**
@@ -350,6 +357,35 @@ export interface IConfigMdService {
 	// ─── Capability Check ─────────────────────────────────────────────────
 
 	checkCapability(employeeId: string, capability: ConfigMdCapability): Promise<void>;
+
+	// ─── Custom Parser / Styles Management ────────────────────────────────
+
+	/**
+	 * Upload a custom MD→HTML parser script. Persists to agentDir/ui/parser.js,
+	 * updates agent.yaml.configMd.parserPath, and triggers a re-render.
+	 */
+	uploadParser(employeeId: string, content: string, fileName?: string): Promise<{ parserPath: string }>;
+
+	/**
+	 * Upload a custom CSS file. Persists to agentDir/ui/styles.css,
+	 * updates agent.yaml.configMd.stylesPath, and triggers a re-render.
+	 */
+	uploadStyles(employeeId: string, content: string, fileName?: string): Promise<{ stylesPath: string }>;
+
+	/**
+	 * Remove the custom parser, fall back to built-in parser, and trigger re-render.
+	 */
+	removeParser(employeeId: string): Promise<void>;
+
+	/**
+	 * Get current parser/styles info for the agent.
+	 */
+	getInfo(employeeId: string): Promise<{
+		parserSource: 'builtin' | 'custom';
+		parserPath?: string;
+		stylesPath?: string;
+		hasStyles: boolean;
+	}>;
 
 	// ─── Model Output Parsing ─────────────────────────────────────────────
 

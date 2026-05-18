@@ -10,11 +10,32 @@ import { IEditorGroupView } from '../../../workbench/browser/parts/editor/editor
 import { GroupIdentifier } from '../../../workbench/common/editor.js';
 import { GroupDirection } from '../../../workbench/services/editor/common/editorGroupsService.js';
 import { ISerializedGrid, Orientation, SerializableGrid, ISerializedBranchNode, ISerializedLeafNode } from '../../../base/browser/ui/grid/grid.js';
+import { StorageScope, StorageTarget } from '../../../platform/storage/common/storage.js';
+
+/**
+ * Sessions-specific augmentation of the editor part UI state: in addition
+ * to the upstream grid state (which already covers all groups, sash
+ * positions and the active group id), we record the two zone-root group
+ * IDs so the workbench bootstrap can recognise which restored group
+ * belongs to which zone.
+ */
+interface ISessionsEditorPartUIState {
+	readonly fileZoneRootGroupId: GroupIdentifier;
+	readonly agentZoneRootGroupId: GroupIdentifier;
+}
 
 export class MainEditorPart extends MainEditorPartBase {
 	static readonly MARGIN_TOP = 0;
 	static readonly MARGIN_LEFT = 10;
 	static readonly MARGIN_BOTTOM = 0;
+
+	private static readonly SESSIONS_ZONE_STATE_STORAGE_KEY = 'sessionsEditorPart.zoneState';
+
+	// The upstream `getMemento()` is typed as `Partial<IEditorPartMemento>`
+	// because the base class only persists its own grid-state field there.
+	// We piggy-back on the same memento bag for our zone-state field, so
+	// widen the type to a generic record to allow the extra key.
+	private readonly sessionsWorkspaceMemento = this.getMemento(StorageScope.WORKSPACE, StorageTarget.USER) as Record<string, unknown>;
 
 	// ── Zone root group IDs ─────────────────────────────────────────
 	// Set during doCreateGridControl() and consumed by the workbench
@@ -24,6 +45,15 @@ export class MainEditorPart extends MainEditorPartBase {
 
 	get fileZoneRootGroupId(): number { return this._fileZoneRootGroupId; }
 	get agentZoneRootGroupId(): number { return this._agentZoneRootGroupId; }
+
+	/**
+	 * True when `doCreateGridControl()` resolved the grid from a previously
+	 * persisted state instead of building the default dual-zone layout.
+	 * The workbench bootstrap consults this to decide whether to re-open
+	 * the default Canvas/Chat layout or trust the restored state.
+	 */
+	private _zonesRestoredFromState = false;
+	get zonesRestoredFromState(): boolean { return this._zonesRestoredFromState; }
 
 	/**
 	 * Height reserved for the workspace toolbar that overlays the titlebar.
@@ -98,14 +128,46 @@ export class MainEditorPart extends MainEditorPartBase {
 	 * horizontal splits at the zone-root level nest instead of escaping.
 	 */
 	protected override doCreateGridControl(): void {
-		// Skip state restoration — sessions workbench always starts fresh
-		// (createEditorPart passes { restorePreviousState: false }).
-		// If for some reason willRestoreState is true, fall back to the
-		// base implementation.
-		if (this._willRestoreState) {
-			console.warn('[SessionsEditorPart] willRestoreState=true, falling back to base grid creation');
-			super.doCreateGridControl();
-			return;
+		// ── Attempt to restore from previously persisted state ──────────
+		// We take the upstream restore path when ALL of the following hold:
+		//   1. willRestoreState is true (caller asked us to restore — see
+		//      Workbench.createEditorPart()).
+		//   2. The upstream EditorPart memento contains a saved grid.
+		//   3. Our own sessions-scoped memento records the two zone root
+		//      group ids — without those we cannot recognise which group
+		//      is the file zone and which is the agent zone after restore.
+		// Any failure quietly falls back to the default dual-zone build
+		// so a corrupted state can never wedge the workbench.
+		if (this._willRestoreState && this.hasRestorableState) {
+			const sessionsState = this.sessionsWorkspaceMemento[MainEditorPart.SESSIONS_ZONE_STATE_STORAGE_KEY] as ISessionsEditorPartUIState | undefined;
+			if (sessionsState
+				&& typeof sessionsState.fileZoneRootGroupId === 'number'
+				&& typeof sessionsState.agentZoneRootGroupId === 'number') {
+				try {
+					console.log('[SessionsEditorPart] Restoring grid from persisted state', sessionsState);
+					super.doCreateGridControl();
+
+					// Verify the two zone roots actually exist in the
+					// restored grid. If the user manually corrupted the
+					// state or the upstream grid serializer dropped a
+					// group, we fall through to the default layout.
+					const fileGroup = this.getGroup(sessionsState.fileZoneRootGroupId);
+					const agentGroup = this.getGroup(sessionsState.agentZoneRootGroupId);
+					if (fileGroup && agentGroup) {
+						this._fileZoneRootGroupId = sessionsState.fileZoneRootGroupId;
+						this._agentZoneRootGroupId = sessionsState.agentZoneRootGroupId;
+						this._zonesRestoredFromState = true;
+
+						// Install collapse button after DOM is ready
+						queueMicrotask(() => this.installFileZoneCollapseButton());
+						console.log('[SessionsEditorPart] Restored zones — file:', this._fileZoneRootGroupId, 'agent:', this._agentZoneRootGroupId);
+						return;
+					}
+					console.warn('[SessionsEditorPart] Persisted zone ids missing in restored grid, rebuilding default layout');
+				} catch (err) {
+					console.warn('[SessionsEditorPart] Failed to restore grid from persisted state, rebuilding default layout', err);
+				}
+			}
 		}
 
 		console.log('[SessionsEditorPart] Creating dual-branch grid (file zone + agent zone)');
@@ -299,5 +361,36 @@ export class MainEditorPart extends MainEditorPartBase {
 		icon.classList.remove('codicon-chevron-left', 'codicon-chevron-right');
 		icon.classList.add(isCollapsed ? 'codicon-chevron-right' : 'codicon-chevron-left');
 		icon.title = isCollapsed ? 'Expand File Zone' : 'Collapse File Zone';
+	}
+
+	// ── Persistence ─────────────────────────────────────────────────
+	//
+	// The upstream EditorPart already persists the full grid (including
+	// every group, every sash position, the active group and the MRU
+	// order) via its own saveState() / createState() / loadState() trio.
+	// We piggy-back on that and additionally persist the two zone-root
+	// group ids so the workbench bootstrap can recognise which restored
+	// group hosts which zone.
+	//
+	// Storage scope: WORKSPACE — layout is per-workspace just like the
+	// upstream editor part state.
+
+	protected override saveState(): void {
+		// Persist the upstream grid first (this writes the editorpart.state key
+		// — or deletes it when the part is empty).
+		super.saveState();
+
+		// Then mirror the zone-root group ids into our sessions-scoped key.
+		// Keep both writes within the same `onWillSaveState` flush so they
+		// either both land on disk or both don't (Memento.saveMemento() runs
+		// right after every saveState() in Component).
+		if (this._fileZoneRootGroupId !== -1 && this._agentZoneRootGroupId !== -1) {
+			this.sessionsWorkspaceMemento[MainEditorPart.SESSIONS_ZONE_STATE_STORAGE_KEY] = {
+				fileZoneRootGroupId: this._fileZoneRootGroupId,
+				agentZoneRootGroupId: this._agentZoneRootGroupId,
+			} satisfies ISessionsEditorPartUIState;
+		} else {
+			delete this.sessionsWorkspaceMemento[MainEditorPart.SESSIONS_ZONE_STATE_STORAGE_KEY];
+		}
 	}
 }

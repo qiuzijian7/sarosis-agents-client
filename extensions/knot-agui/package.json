@@ -1,7 +1,7 @@
 {
 	"name": "sarosis-knot-agui",
-	"displayName": "Knot AG-UI Model Provider",
-	"description": "Contributes Knot AG-UI remote agents as a VS Code chat model provider via vscode.lm.registerLanguageModelChatProvider.",
+	"displayName": "KnotBot（原KnotClaw）",
+	"description": "KnotBot（原KnotClaw）是基于 Knot 提供的【智能体】+【工作区】能力而实现的，具备打通消息端（企微机器人、微信），和你的 Anydev 容器、个人 Mac/Win/Linux 等设备这条链路。KnotBot（原KnotClaw）就是基于 Knot 的自有能力来实现你的「个人数字助理」这个场景，实现通过"消息端发送自然语言"来"远程控制你的工作设备"的过程。",
 	"version": "1.0.0",
 	"publisher": "sarosis",
 	"license": "MIT",

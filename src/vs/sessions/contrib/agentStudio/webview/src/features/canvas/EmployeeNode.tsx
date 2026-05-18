@@ -7,6 +7,7 @@
 import React, { memo, useState } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
+import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
 
 interface EmployeeNodeData {
 	employee: Employee;
@@ -105,6 +106,25 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 					)}
 				</div>
 
+				{/* Open ConfigMD file button - shown only when configMd is configured */}
+				{(employee as any).configMd && (
+					<button
+						onClick={(e) => {
+							e.stopPropagation();
+							void previewAgentConfigMd(employee.id).catch((err) => {
+								console.error('[EmployeeNode] preview configMd failed:', err);
+							});
+						}}
+						className="employee-node-open-md"
+						title="预览 ConfigMD（渲染为 HTML 后在编辑器中打开）"
+					>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+							<circle cx="12" cy="12" r="3" strokeWidth={2} />
+						</svg>
+					</button>
+				)}
+
 				{/* Delete button - top right */}
 				<button
 					onClick={(e) => {
@@ -120,9 +140,19 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 				</button>
 			</div>
 
-			{/* ConfigMD indicator */}
+			{/* ConfigMD indicator - clickable to open the MD source file */}
 			{(employee as any).configMd && (
-				<div className="employee-node-configmd" title="ConfigMD 面板">
+				<div
+					className="employee-node-configmd"
+					title="点击在编辑器中打开 ConfigMD 源文件"
+					role="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						void openAgentConfigMd(employee.id).catch((err) => {
+							console.error('[EmployeeNode] open configMd failed:', err);
+						});
+					}}
+				>
 					<span className="employee-node-configmd-icon">📝</span>
 					<span>MD Panel</span>
 				</div>
