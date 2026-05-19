@@ -152,6 +152,8 @@ import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
 import { TaskOverviewEditorInput } from './taskOverviewEditorInput.js';
 import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
+import { HtmlPreviewEditorPane } from './htmlPreviewEditorPane.js';
+import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { ISelfEvolutionService } from '../common/selfEvolution.js';
 import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
@@ -494,6 +496,21 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(TaskDetailEditorInput)
+	]
+);
+
+// Register HtmlPreviewEditorPane — renders standalone HTML files (e.g.
+// ConfigMD's `.preview.html`) inside the editor area using a directly
+// DOM-mounted webview iframe, bypassing the OverlayWebview path which
+// fails to render on this fork's Chromium build.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		HtmlPreviewEditorPane,
+		HtmlPreviewEditorPane.ID,
+		localize('htmlPreviewEditor', "HTML Preview"),
+	),
+	[
+		new SyncDescriptor(HtmlPreviewEditorInput)
 	]
 );
 

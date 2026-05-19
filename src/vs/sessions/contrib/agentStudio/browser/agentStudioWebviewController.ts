@@ -7,6 +7,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { WebviewInput } from '../../../../workbench/contrib/webviewPanel/browser/webviewEditorInput.js';
+import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -18,10 +19,12 @@ import type { AgentExportData } from '../../../common/agentStudioTypes.js';
 import { IEnvironmentService, type INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import type { RequestType, IResponseMessage, IEventMessage } from './messageProtocol.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
+import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IWorkbenchThemeService } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { GroupsOrder, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import type {
@@ -40,6 +43,7 @@ import type {
 } from './messageProtocol.js';
 import { WorkspaceSessionService, type IWorkspaceSessionService } from './workspaceSessionService.js';
 import { ConfigMdService } from './configMdService.js';
+import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -81,6 +85,8 @@ export class AgentStudioWebviewController extends Disposable {
 	@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	@IInstantiationService private readonly instantiationService: IInstantiationService,
 	@ICommandService private readonly commandService: ICommandService,
+	@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
+	@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(logService, this.fileService, agentStudioService);
@@ -710,6 +716,10 @@ export class AgentStudioWebviewController extends Disposable {
 			if (!employee.agentDir) {
 				throw new Error(`Agent '${employee.name}' has no agentDir`);
 			}
+			const agentDirUri = await this._resolveAgentDirUri(employee.workspaceId, employee.agentDir);
+			if (!agentDirUri) {
+				throw new Error(`Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);
+			}
 			const cfg = employee.configMd;
 			let rel: string | undefined;
 			switch (payload.kind || 'configMd') {
@@ -726,7 +736,7 @@ export class AgentStudioWebviewController extends Disposable {
 			if (!rel) {
 				throw new Error(`No file configured for kind='${payload.kind}'`);
 			}
-			absPath = URI.joinPath(URI.file(employee.agentDir), rel).fsPath;
+			absPath = URI.joinPath(agentDirUri, rel).fsPath;
 		}
 
 		if (!absPath) {
@@ -771,6 +781,10 @@ export class AgentStudioWebviewController extends Disposable {
 			if (!employee?.agentDir) {
 				throw new Error(`Agent '${payload.employeeId}' has no agentDir`);
 			}
+			const agentDirUri = await this._resolveAgentDirUri(employee.workspaceId, employee.agentDir);
+			if (!agentDirUri) {
+				throw new Error(`Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);
+			}
 			const cfg = employee.configMd;
 			let rel: string | undefined;
 			switch (payload.kind || 'configMd') {
@@ -781,58 +795,59 @@ export class AgentStudioWebviewController extends Disposable {
 			if (!rel) {
 				throw new Error(`No file configured for kind='${payload.kind}'`);
 			}
-			absPath = URI.joinPath(URI.file(employee.agentDir), rel).fsPath;
+			absPath = URI.joinPath(agentDirUri, rel).fsPath;
 		}
 		if (!absPath) {
 			throw new Error('files.openHtmlPreview requires path or employeeId');
 		}
 
 		const fileUri = URI.file(absPath);
-		const dirUri = URI.file(absPath.replace(/[\\/][^\\/]+$/, ''));
 
-		// Read the HTML content and render via an in-editor webview.
+		// Open the rendered HTML inside the workbench editor area using a
+		// custom EditorPane (HtmlPreviewEditorPane) that mounts an
+		// IWebviewElement directly into its own DOM container.
+		//
+		// We DO NOT use `IWebviewWorkbenchService.openWebview` /
+		// `WebviewInput` here, because that path uses an `IOverlayWebview`
+		// whose iframe is positioned via CSS anchor-positioning. On this
+		// fork's Chromium build that path produces an invisible iframe and
+		// the editor tab content area stays blank black.
+		//
+		// Falling back to the system browser (via IOpenerService) is kept
+		// as a safety net — the in-editor render is the primary route.
 		try {
-			const buf = await this.fileService.readFile(fileUri);
-			const html = buf.value.toString();
-
-			const overlay = this.webviewService.createWebviewOverlay({
-				title: this._titleForPath(absPath),
-				options: { retainContextWhenHidden: true, enableFindWidget: true },
-				contentOptions: {
-					allowScripts: true,
-					allowForms: true,
-					localResourceRoots: [dirUri],
-				},
-				extension: undefined,
-				providedViewType: 'agentStudio.htmlPreview',
-			});
-			overlay.setHtml(html);
-
-			const input = this.instantiationService.createInstance(
-				WebviewInput,
-				{
-					viewType: 'agentStudio.htmlPreview',
-					providedId: undefined,
-					name: this._titleForPath(absPath),
-					iconPath: undefined,
-				},
-				overlay,
-			);
-
+			this.logService.info(`[AgentStudioWebviewController] openHtmlPreview → ${fileUri.toString()} (in-editor pane)`);
 			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-			this.logService.info(`[AgentStudioWebviewController] openHtmlPreview → ${fileUri.toString()}`);
+
+			const previewInput = this.instantiationService.createInstance(
+				HtmlPreviewEditorInput,
+				fileUri,
+				this._titleForPath(absPath),
+			);
 			await this.editorService.openEditor(
-				input,
+				previewInput,
 				{ preserveFocus: payload.preserveFocus ?? false, pinned: payload.pinned ?? true },
 				targetGroup,
 			);
+			this.logService.info(`[AgentStudioWebviewController] openHtmlPreview opened in-editor OK`);
 			return;
 		} catch (err) {
-			this.logService.warn(`[AgentStudioWebviewController] in-editor webview preview failed; trying simpleBrowser:`, err);
+			this.logService.warn(`[AgentStudioWebviewController] in-editor preview failed; falling back to external browser:`, err);
 		}
 
-		// Fallback: use the bundled simple-browser extension if available.
+		// Fallback 1: open in the user's default system browser.
+		try {
+			const ok = await this.openerService.open(fileUri, { openExternal: true });
+			if (ok) {
+				this.logService.info(`[AgentStudioWebviewController] openHtmlPreview opened externally OK`);
+				return;
+			}
+		} catch (err) {
+			this.logService.warn(`[AgentStudioWebviewController] openExternal failed; trying simpleBrowser:`, err);
+		}
+
+		// Fallback 2: bundled simple-browser extension command.
 		try {
 			await this.commandService.executeCommand('simpleBrowser.show', fileUri.toString());
 		} catch (err) {
@@ -844,6 +859,60 @@ export class AgentStudioWebviewController extends Disposable {
 	private _titleForPath(absPath: string): string {
 		const m = /[\\/]([^\\/]+)$/.exec(absPath);
 		return m ? `预览：${m[1]}` : '预览';
+	}
+
+	/**
+	 * Resolve the absolute filesystem URI for an employee's agent directory.
+	 *
+	 * `agentDir` stored on `Employee` is just the leaf folder name (e.g.
+	 * `researcher-nlmniq3`), NOT an absolute path. The actual location is
+	 *   `<workspace.path>/<WORKSPACE_DATA_DIR>/<AGENTS_DIR>/<agentDir>/`
+	 *
+	 * Returns `undefined` when the workspace has no `path` (e.g. global/in-memory
+	 * workspaces). Callers must handle this case (typically by throwing a clear
+	 * error since the on-disk preview file cannot be located).
+	 */
+	private async _resolveAgentDirUri(workspaceId: string, agentDir: string): Promise<URI | undefined> {
+		if (!agentDir) { return undefined; }
+		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
+		if (!workspace?.path) { return undefined; }
+		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, agentDir);
+	}
+
+	/**
+	 * Wrap an HTML document for rendering inside a VS Code webview.
+	 *
+	 * VS Code webviews enforce a strict default CSP that blocks inline
+	 * <style>, inline <script>, and several other features. To render an
+	 * arbitrary self-contained HTML file we must explicitly opt in via a
+	 * <meta http-equiv="Content-Security-Policy"> tag. We also inject a
+	 * minimal default body style so that documents which omit a body
+	 * background do not appear black against the editor backdrop.
+	 */
+	private _wrapHtmlForWebview(html: string): string {
+		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource:; img-src 'self' data: https: vscode-resource: vscode-webview-resource:; font-src data: https: vscode-resource: vscode-webview-resource:; connect-src https: vscode-resource: vscode-webview-resource:; frame-src https:;">`;
+		const baseStyle = `<style>html,body{margin:0;padding:0;}body{background:#ffffff;color:#1e1e1e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;}@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4;}}</style>`;
+
+		const lower = html.toLowerCase();
+		const headIdx = lower.indexOf('<head>');
+		if (headIdx >= 0) {
+			// Inject our CSP & base style at the very start of <head> so they
+			// appear before any user-defined style tags.
+			const insertPos = headIdx + '<head>'.length;
+			return html.slice(0, insertPos) + csp + baseStyle + html.slice(insertPos);
+		}
+
+		const htmlIdx = lower.indexOf('<html');
+		if (htmlIdx >= 0) {
+			// Document has <html> but no <head>: insert a synthetic head.
+			const closeBracket = html.indexOf('>', htmlIdx);
+			if (closeBracket >= 0) {
+				return html.slice(0, closeBracket + 1) + `<head>${csp}${baseStyle}</head>` + html.slice(closeBracket + 1);
+			}
+		}
+
+		// Fragment: wrap into a full document.
+		return `<!doctype html><html><head>${csp}${baseStyle}</head><body>${html}</body></html>`;
 	}
 
 	private _registerServiceListeners(): void {

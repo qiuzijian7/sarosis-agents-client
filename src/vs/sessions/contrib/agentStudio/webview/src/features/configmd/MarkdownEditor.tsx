@@ -107,7 +107,15 @@ function highlightInline(text: string): string {
 	const parts: string[] = [];
 	let i = 0;
 	const len = text.length;
+	// Hard safety guard: bail out if we somehow fail to advance `i` on an
+	// iteration. Without this, a malformed input (e.g. an unclosed backtick
+	// or `**` token) used to cause `parts.push(...)` to run forever, which
+	// eventually overflowed the array and threw `RangeError: Invalid array
+	// length` — taking down the entire ConfigMD tab. We log loudly when this
+	// happens so it can be diagnosed instead of silently freezing the UI.
+	let watchdog = 0;
 	while (i < len) {
+		const before = i;
 		const ch = text[i];
 		// Inline code `xxx`
 		if (ch === '`') {
@@ -148,11 +156,24 @@ function highlightInline(text: string): string {
 				continue;
 			}
 		}
-		// Default: accumulate plain run
-		let j = i;
+		// Default: accumulate plain run. We start at i+1 (not i) so that the
+		// special trigger char (`, *, [) is consumed verbatim when it doesn't
+		// open a valid token — guaranteeing forward progress on every loop.
+		let j = i + 1;
 		while (j < len && !'`*['.includes(text[j])) { j++; }
 		parts.push(escapeHtml(text.slice(i, j)));
 		i = j;
+		// Watchdog: should never fire, but if it does we abort cleanly.
+		if (i === before) {
+			// eslint-disable-next-line no-console
+			console.warn(`[MarkdownEditor] highlightInline failed to advance at i=${i}; aborting to avoid infinite loop`);
+			break;
+		}
+		if (++watchdog > len * 4 + 100) {
+			// eslint-disable-next-line no-console
+			console.warn(`[MarkdownEditor] highlightInline watchdog tripped (len=${len}, parts=${parts.length}); aborting`);
+			break;
+		}
 	}
 	return parts.join('');
 }

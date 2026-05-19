@@ -604,6 +604,66 @@ function KnowledgeConfigPanel({ employeeId, config, onUpdate }: KnowledgeConfigP
 }
 
 /* ═════════════════════════════════════════════════════════════════════
+ *  TabErrorBoundary
+ *
+ *  A minimal class-component error boundary used to prevent a single
+ *  misbehaving tab body from taking down the entire AgentEditorPane.
+ *  Without this, a render-time exception inside ConfigMD's editor would
+ *  freeze the surrounding chat/settings panel, since React unmounts the
+ *  whole subtree and any subsequent setState attempts throw.
+ * ═════════════════════════════════════════════════════════════════════ */
+interface TabErrorBoundaryProps {
+	label: string;
+	children: React.ReactNode;
+}
+interface TabErrorBoundaryState {
+	error: Error | null;
+}
+class TabErrorBoundary extends React.Component<TabErrorBoundaryProps, TabErrorBoundaryState> {
+	constructor(props: TabErrorBoundaryProps) {
+		super(props);
+		this.state = { error: null };
+	}
+	static getDerivedStateFromError(error: Error): TabErrorBoundaryState {
+		return { error };
+	}
+	componentDidCatch(error: Error, info: React.ErrorInfo): void {
+		// eslint-disable-next-line no-console
+		console.error(`[AgentEditorPane] Render error in tab '${this.props.label}':`, error, info?.componentStack);
+	}
+	render(): React.ReactNode {
+		if (this.state.error) {
+			return (
+				<div style={{ padding: 16, color: 'var(--vscode-errorForeground, #f48771)' }}>
+					<div style={{ fontWeight: 600, marginBottom: 8 }}>
+						⚠ {this.props.label} 渲染失败
+					</div>
+					<div style={{ fontSize: 12, opacity: 0.8, whiteSpace: 'pre-wrap', userSelect: 'text' }}>
+						{this.state.error.message}
+					</div>
+					<button
+						type="button"
+						style={{
+							marginTop: 12,
+							padding: '4px 12px',
+							background: 'var(--vscode-button-background)',
+							color: 'var(--vscode-button-foreground)',
+							border: 'none',
+							borderRadius: 2,
+							cursor: 'pointer',
+						}}
+						onClick={() => this.setState({ error: null })}
+					>
+						重试
+					</button>
+				</div>
+			);
+		}
+		return this.props.children;
+	}
+}
+
+/* ═════════════════════════════════════════════════════════════════════
  *  AgentEditorPane Component
  * ═════════════════════════════════════════════════════════════════════ */
 export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): React.ReactElement {
@@ -660,8 +720,25 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			return;
 		}
 		let cancelled = false;
-		fetchState(employeeId).then((s) => {
+		let done = false;
+		const t0 = Date.now();
+		console.log(`[AgentEditorPane] fetchState start: employeeId=${employeeId}`);
+		// 8s safety timeout — if the host hangs we still surface a clear error
+		// instead of leaving the user with a frozen-looking blank panel.
+		// Note: we track `done` separately from `cancelled` so a successful
+		// fetchState that completes before 8s suppresses the timeout warning
+		// even when the effect is still mounted.
+		const timeoutPromise = new Promise<null>((resolve) => {
+			window.setTimeout(() => {
+				if (cancelled || done) { return; }
+				console.warn(`[AgentEditorPane] fetchState timeout after 8s for ${employeeId}`);
+				resolve(null);
+			}, 8000);
+		});
+		Promise.race([fetchState(employeeId), timeoutPromise]).then((s) => {
+			done = true;
 			if (cancelled) return;
+			console.log(`[AgentEditorPane] fetchState done: employeeId=${employeeId}, hasState=${!!s}, took=${Date.now() - t0}ms`);
 			if (s) {
 				setMdState(employeeId, {
 					markdown: s.markdown,
@@ -672,7 +749,10 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 					dirty: false,
 				});
 			}
-		}).catch(() => {});
+		}).catch((err) => {
+			done = true;
+			console.error(`[AgentEditorPane] fetchState failed for ${employeeId}:`, err);
+		});
 		return () => { cancelled = true; };
 	}, [employeeId, !!employee?.configMd, setMdState]);
 
@@ -769,7 +849,10 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 					<button
 						key={tab.id}
 						className={`agent-editor-tab ${activeTab === tab.id ? 'active' : ''}`}
-						onClick={() => setActiveTab(tab.id)}
+						onClick={() => {
+							console.log(`[AgentEditorPane] tab click: ${activeTab} → ${tab.id} (employeeId=${employeeId}, hasConfigMd=${!!employee?.configMd})`);
+							setActiveTab(tab.id);
+						}}
 					>
 						<span className="tab-icon">{tab.icon}</span>
 						<span className="tab-label">{tab.label}</span>
@@ -854,6 +937,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 
 				{/* ── Tab: ConfigMD ───────────────────────────── */}
 				{activeTab === 'configmd' && (
+					<TabErrorBoundary label="ConfigMD">
 					<div className="editor-tab-body configmd-tab-body">
 						{!employee?.configMd ? (
 							<div className="configmd-empty-state">
@@ -1020,6 +1104,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 						</>
 						)}
 					</div>
+					</TabErrorBoundary>
 				)}
 
 				{/* ── Tab: Tools (placeholder) ─────────────────── */}

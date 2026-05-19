@@ -18,7 +18,8 @@ import type {
 	IAgentStudioService,
 	IAgentChatService,
 } from '../common/agentStudio.js';
-import type { ConfigMdCapability, ChatMessage } from '../../../common/agentStudioTypes.js';
+import type { ConfigMdCapability, ChatMessage, Employee } from '../../../common/agentStudioTypes.js';
+import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
 
 /** Regex for `configmd-patch` JSON code blocks. */
 const PATCH_BLOCK_REGEX = /```configmd-patch\s*\n([\s\S]*?)\n```/g;
@@ -391,6 +392,26 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 
 	// ─── State Resolution ──────────────────────────────────────────────────
 
+	/**
+	 * Resolve the absolute filesystem URI for an employee's agent directory.
+	 *
+	 * `employee.agentDir` is just the leaf folder name (e.g. `researcher-nlmniq3`),
+	 * NOT an absolute path. The actual location is
+	 *   `<workspace.path>/<WORKSPACE_DATA_DIR>/<AGENTS_DIR>/<employee.agentDir>/`
+	 *
+	 * Returns `undefined` when the employee has no `agentDir` or the workspace
+	 * has no `path` (e.g. global/in-memory workspaces).
+	 */
+	private async _resolveAgentDirUri(employee: Employee): Promise<URI | undefined> {
+		if (!employee.agentDir) { return undefined; }
+		const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
+		if (!workspace?.path) {
+			this.logService.warn(`[ConfigMD] Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);
+			return undefined;
+		}
+		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir);
+	}
+
 	private async _ensureState(employeeId: string): Promise<IAgentMdState | null> {
 		const existing = this._agents.get(employeeId);
 		if (existing) { return existing; }
@@ -400,9 +421,12 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 			return null;
 		}
 
+		const agentDirUri = await this._resolveAgentDirUri(employee);
+		if (!agentDirUri) { return null; }
+
 		const cfg = employee.configMd;
 		const mdRel = cfg.mdPath || 'config.md';
-		const mdUri = URI.joinPath(URI.file(employee.agentDir), mdRel);
+		const mdUri = URI.joinPath(agentDirUri, mdRel);
 
 		// Read MD (create empty file if missing)
 		let markdown = '';
@@ -423,7 +447,7 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		let stylesContent: string | undefined;
 		if (cfg.stylesPath) {
 			try {
-				const sUri = URI.joinPath(URI.file(employee.agentDir), cfg.stylesPath);
+				const sUri = URI.joinPath(agentDirUri, cfg.stylesPath);
 				const sBuf = await this.fileService.readFile(sUri);
 				stylesContent = sBuf.value.toString();
 			} catch (err) {
@@ -435,7 +459,7 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		let customParser: IMdParser | undefined;
 		if (cfg.parserPath) {
 			try {
-				const pUri = URI.joinPath(URI.file(employee.agentDir), cfg.parserPath);
+				const pUri = URI.joinPath(agentDirUri, cfg.parserPath);
 				const pBuf = await this.fileService.readFile(pUri);
 				customParser = this._loadParserScript(pBuf.value.toString(), employeeId);
 			} catch (err) {
@@ -627,6 +651,10 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		if (!employee?.agentDir) {
 			throw new Error(`Agent directory not found for ${employeeId}`);
 		}
+		const agentDirUri = await this._resolveAgentDirUri(employee);
+		if (!agentDirUri) {
+			throw new Error(`Cannot resolve agent directory for ${employeeId} (workspace has no path)`);
+		}
 		const st = await this._ensureState(employeeId);
 		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
 
@@ -636,7 +664,7 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		st.html = html;
 
 		const doc = buildStandalonePreviewDoc(html, st.stylesContent);
-		const previewUri = URI.joinPath(URI.file(employee.agentDir), '.preview.html');
+		const previewUri = URI.joinPath(agentDirUri, '.preview.html');
 		try {
 			await this.fileService.writeFile(previewUri, VSBuffer.fromString(doc));
 		} catch (err) {
@@ -724,9 +752,13 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		if (!employee?.agentDir) {
 			throw new Error(`Agent directory not found for ${employeeId}`);
 		}
+		const agentDirUri = await this._resolveAgentDirUri(employee);
+		if (!agentDirUri) {
+			throw new Error(`Cannot resolve agent directory for ${employeeId} (workspace has no path)`);
+		}
 		const safeName = (fileName || 'parser.js').replace(/[^\w.\-]/g, '_');
 		const relPath = `ui/${safeName.endsWith('.js') ? safeName : safeName + '.js'}`;
-		const targetUri = URI.joinPath(URI.file(employee.agentDir), relPath);
+		const targetUri = URI.joinPath(agentDirUri, relPath);
 
 		// Validate the script can be loaded
 		const candidate = this._loadParserScript(content, employeeId);
@@ -759,9 +791,13 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		if (!employee?.agentDir) {
 			throw new Error(`Agent directory not found for ${employeeId}`);
 		}
+		const agentDirUri = await this._resolveAgentDirUri(employee);
+		if (!agentDirUri) {
+			throw new Error(`Cannot resolve agent directory for ${employeeId} (workspace has no path)`);
+		}
 		const safeName = (fileName || 'styles.css').replace(/[^\w.\-]/g, '_');
 		const relPath = `ui/${safeName.endsWith('.css') ? safeName : safeName + '.css'}`;
-		const targetUri = URI.joinPath(URI.file(employee.agentDir), relPath);
+		const targetUri = URI.joinPath(agentDirUri, relPath);
 
 		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
 
