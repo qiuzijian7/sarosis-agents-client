@@ -147,7 +147,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					))}
 
 					{/* ── Streaming indicator (enhanced) ────────── */}
-					{streamState.isStreaming && (
+					{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
 						<div className="chat-message assistant">
 							<div className="message-content message-streaming">
 

@@ -448,6 +448,10 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 	 */
 	private async _resolveAgentDirUri(employee: Employee): Promise<URI | undefined> {
 		if (!employee.agentDir) { return undefined; }
+		if (!employee.workspaceId) {
+			this.logService.warn(`[ConfigMD] Employee '${employee.id}' has no workspaceId; cannot resolve agent dir`);
+			return undefined;
+		}
 		const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
 		if (!workspace?.path) {
 			this.logService.warn(`[ConfigMD] Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);

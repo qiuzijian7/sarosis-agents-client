@@ -97,7 +97,16 @@ export function handleStreamDelta(data: {
 	sessionId: string;
 	chunks: StreamChunk[];
 }): void {
-	if (!currentState.isStreaming) {
+	// If a stream is already active, discard deltas that don't match
+	// the current stream's employeeId/sessionId (e.g. stale deltas
+	// from a previous chat that arrived after the user switched).
+	if (currentState.isStreaming) {
+		if (data.employeeId !== currentState.employeeId || data.sessionId !== currentState.sessionId) {
+			console.warn(`[StreamHandler] Discarding stale delta for employee=${data.employeeId}, sessionId=${data.sessionId} ` +
+				`(current: employee=${currentState.employeeId}, sessionId=${currentState.sessionId})`);
+			return;
+		}
+	} else {
 		deltaEventCount = 0;
 		currentState = {
 			...createInitialState(),

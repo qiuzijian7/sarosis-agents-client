@@ -41,8 +41,6 @@ export class HtmlPreviewEditorPane extends EditorPane {
 
 	private _container: HTMLElement | undefined;
 	private _webview: IWebviewElement | undefined;
-	/** Ensures we don't `mountTo` again for an unchanged input (which would destroy the iframe). */
-	private _mountedResource: string | undefined;
 	/** Resolved at setInput time; used to filter inbound imgui command pushes. */
 	private _currentEmployeeId: string | undefined;
 	/**
@@ -197,7 +195,6 @@ export class HtmlPreviewEditorPane extends EditorPane {
 			// Chromium build, identical to how the chat panel mounts itself.
 			this._webview.mountTo(this._container, mainWindow);
 			this._webview.setHtml(wrappedHtml);
-			this._mountedResource = resourceKey;
 			this._logService.info(`[HtmlPreviewEditorPane] mounted preview for ${resourceKey} (${wrappedHtml.length} chars)`);
 
 			// Push initial ctx to the SDK so any client-side logic can
@@ -238,7 +235,6 @@ export class HtmlPreviewEditorPane extends EditorPane {
 
 	override clearInput(): void {
 		this._disposeWebview();
-		this._mountedResource = undefined;
 		this._currentEmployeeId = undefined;
 		this._currentWorkspaceId = undefined;
 		this._currentWorkspaceSessionId = undefined;

@@ -11,6 +11,7 @@ import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { ISkillRegistry } from '../common/skills.js';
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -27,6 +28,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 	constructor(
 		@IAgentOSService private readonly _agentOS: IAgentOSService,
+		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@ILogService logService: ILogService,
 	) {
 		super();
@@ -90,8 +92,87 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 
-			// Step 3: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
-			const osStream = this._agentOS.executeAgentTurn(request);
+			// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
+			const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
+			let enrichedRequest = request;
+
+			try {
+				// 3a. 生成已安装技能清单（让模型知道有哪些技能）
+				const allSkills = [...this._skillRegistry.getSkills()].filter(s => s.enabled !== false);
+				let mergedSystemPrompt = request.systemPrompt || '';
+
+				if (allSkills.length > 0) {
+					const skillListSection = [
+						'',
+						'## Installed Skills',
+						'',
+						'The following skills are installed and available:',
+						'',
+						...allSkills.map(s => `- **${s.name}**${s.description ? `: ${s.description}` : ''} [${s.activation}] (source: ${s.source})`),
+						'',
+					].join('\n');
+					mergedSystemPrompt = mergedSystemPrompt + skillListSection;
+				}
+
+				// 3b. 解析本轮激活的技能内容并注入
+				let mergedMessages = [...request.messages];
+
+				if (lastUserMessage) {
+					const injections = await this._skillRegistry.resolveActivations({
+						userMessage: lastUserMessage.content,
+						agentId: request.agentId,
+						sessionId: request.sessionId,
+					});
+
+					if (injections.length > 0) {
+						// 分离 system 和 user 注入
+						const systemInjections = injections.filter(inj => inj.placement === 'system');
+						const userInjections = injections.filter(inj => inj.placement === 'user');
+
+						// 将 system 类型的 skill 注入追加到 systemPrompt
+						if (systemInjections.length > 0) {
+							const activeSection = [
+								'',
+								'## Active Skills (this turn)',
+								'',
+								...systemInjections.map(inj => inj.content),
+							].join('\n');
+							mergedSystemPrompt = mergedSystemPrompt + activeSection;
+						}
+
+						// 将 user 类型的 skill 注入插入为 user message（在实际用户消息之前）
+						if (userInjections.length > 0) {
+							const skillMessages = userInjections.map(inj => ({
+								role: 'user' as const,
+								content: inj.content,
+							}));
+							// 插入到最后一条用户消息之前
+							const lastIdx = mergedMessages.length - 1;
+							mergedMessages = [
+								...mergedMessages.slice(0, lastIdx),
+								...skillMessages,
+								mergedMessages[lastIdx],
+							];
+						}
+
+						this._logService.info(`[AgentDriver] Injected ${injections.length} skills (system: ${systemInjections.length}, user: ${userInjections.length})`);
+					}
+				}
+
+				enrichedRequest = {
+					...request,
+					systemPrompt: mergedSystemPrompt,
+					messages: mergedMessages,
+				};
+
+				this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills available`);
+			} catch (error) {
+				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
+				// Skill 解析失败不阻塞主流程
+			}
+
+			// Step 4: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
+			const osStream = this._agentOS.executeAgentTurn(enrichedRequest);
 
 			for await (const delta of osStream) {
 				// 检查取消
@@ -102,7 +183,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				yield delta;
 			}
 
-			// Step 4: 写回记忆（如果有 Memory Provider）
+			// Step 5: 写回记忆（如果有 Memory Provider）
 			if (memoryProvider) {
 				try {
 					const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');

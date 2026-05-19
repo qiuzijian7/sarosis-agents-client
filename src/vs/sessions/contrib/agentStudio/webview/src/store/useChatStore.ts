@@ -84,6 +84,22 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 	// Subscribe to stream state updates (live streaming indicator)
 	subscribeStream((streamState) => {
+		// Ignore stream updates that don't belong to the currently active employee/session.
+		// This prevents stale deltas from a previous chat from leaking into the
+		// currently displayed chat after the user switches employees.
+		const { activeEmployeeId, activeAgentSessionId } = get();
+		if (streamState.isStreaming && streamState.employeeId && streamState.employeeId !== activeEmployeeId) {
+			console.warn(`[ChatStore] subscribeStream: discarding streamState for different employee ` +
+				`(streamEmployee=${streamState.employeeId}, activeEmployee=${activeEmployeeId})`);
+			return;
+		}
+		if (streamState.isStreaming && streamState.sessionId && activeAgentSessionId &&
+			streamState.sessionId !== activeAgentSessionId) {
+			console.warn(`[ChatStore] subscribeStream: discarding streamState for different session ` +
+				`(streamSession=${streamState.sessionId}, activeSession=${activeAgentSessionId})`);
+			return;
+		}
+
 		set({ streamState });
 
 		// Sync employee status based on streaming state
@@ -118,6 +134,27 @@ export const useChatStore = create<ChatState>((set, get) => {
 				error: hostMessage.error,
 			} : null,
 		});
+
+		// Guard: discard completion events for a different employee/session
+		// than the one currently active. This can happen when a stream
+		// from a previous chat finishes after the user has switched.
+		const { activeEmployeeId, activeAgentSessionId } = get();
+		if (finalState.employeeId && finalState.employeeId !== activeEmployeeId) {
+			console.warn(`[ChatStore] onStreamComplete: discarding message for different employee ` +
+				`(streamEmployee=${finalState.employeeId}, activeEmployee=${activeEmployeeId})`);
+			resetStreamSilent();
+			set({ streamState: getStreamState() });
+			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+			return;
+		}
+		if (finalState.sessionId && activeAgentSessionId && finalState.sessionId !== activeAgentSessionId) {
+			console.warn(`[ChatStore] onStreamComplete: discarding message for different session ` +
+				`(streamSession=${finalState.sessionId}, activeSession=${activeAgentSessionId})`);
+			resetStreamSilent();
+			set({ streamState: getStreamState() });
+			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+			return;
+		}
 
 		if (finalState.errorMessage) {
 			// API returned an error — show it as a system error message

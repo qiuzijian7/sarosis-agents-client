@@ -6,8 +6,6 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
-import { WebviewInput } from '../../../../workbench/contrib/webviewPanel/browser/webviewEditorInput.js';
-import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -66,19 +64,16 @@ export class AgentStudioWebviewController extends Disposable {
 	private readonly _sessionService: IWorkspaceSessionService;
 
 	/**
-	 * The (employeeId, agentSessionId) pair this chat panel is currently
-	 * showing. Updated by the webview via `chat.activeSessionChanged`
-	 * whenever the user picks a different employee or switches session.
-	 *
-	 * Used (a) to filter `onDidRequestChatSend` events so only the chat
-	 * panel actually showing the target employee handles imgui submits,
-	 * preventing duplicate sends across multiple chat panels, and
-	 * (b) to register into `IConfigMdService.setActiveAgentSession` so
-	 * the preview pane can route imgui submits into the correct Fork
-	 * session.
+	 * The employee currently shown by this chat panel, updated by the
+	 * webview via `chat.activeSessionChanged`. Used to filter
+	 * `onDidRequestChatSend` events so only the chat panel actually
+	 * displaying the target employee handles imgui submits, preventing
+	 * duplicate sends when multiple chat panels are open. The active
+	 * `agentSessionId` itself isn't cached here — it's pushed straight
+	 * into `IConfigMdService.setActiveAgentSession` which is the single
+	 * source of truth across panes.
 	 */
 	private _activeChatEmployeeId: string | undefined;
-	private _activeChatAgentSessionId: string | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -99,7 +94,6 @@ export class AgentStudioWebviewController extends Disposable {
 	@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	@IInstantiationService private readonly instantiationService: IInstantiationService,
 	@ICommandService private readonly commandService: ICommandService,
-	@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 	@IOpenerService private readonly openerService: IOpenerService,
 	@IConfigMdService private readonly _configMdService: IConfigMdService,
 	) {
@@ -525,7 +519,6 @@ export class AgentStudioWebviewController extends Disposable {
 		const employeeId = (payload.employeeId as string | null | undefined) || undefined;
 		const agentSessionId = (payload.agentSessionId as string | null | undefined) || undefined;
 		this._activeChatEmployeeId = employeeId;
-		this._activeChatAgentSessionId = agentSessionId;
 		this.logService.info(
 			`[AgentStudio] chat.activeSessionChanged: employeeId=${employeeId || '<none>'} `
 			+ `agentSessionId=${agentSessionId || '<none>'} (panelType=${this.panelType})`
@@ -621,9 +614,6 @@ export class AgentStudioWebviewController extends Disposable {
 			// so subsequent imgui submits (and the post-reload history load)
 			// aim at the same session.
 			this._configMdService.setActiveAgentSession(employeeId, agentSessionId);
-			if (this._activeChatEmployeeId === employeeId) {
-				this._activeChatAgentSessionId = agentSessionId;
-			}
 			this._sendEvent('workspace.sessionUpdated', {
 				agentId: employeeId,
 				agentSessionId,
@@ -878,6 +868,9 @@ export class AgentStudioWebviewController extends Disposable {
 			if (!employee.agentDir) {
 				throw new Error(`Agent '${employee.name}' has no agentDir`);
 			}
+			if (!employee.workspaceId) {
+				throw new Error(`Agent '${employee.name}' has no workspaceId`);
+			}
 			const agentDirUri = await this._resolveAgentDirUri(employee.workspaceId, employee.agentDir);
 			if (!agentDirUri) {
 				throw new Error(`Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);
@@ -992,6 +985,9 @@ export class AgentStudioWebviewController extends Disposable {
 			if (!employee?.agentDir) {
 				throw new Error(`Agent '${payload.employeeId}' has no agentDir`);
 			}
+			if (!employee.workspaceId) {
+				throw new Error(`Agent '${payload.employeeId}' has no workspaceId`);
+			}
 			const agentDirUri = await this._resolveAgentDirUri(employee.workspaceId, employee.agentDir);
 			if (!agentDirUri) {
 				throw new Error(`Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);
@@ -1092,42 +1088,6 @@ export class AgentStudioWebviewController extends Disposable {
 		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
 		if (!workspace?.path) { return undefined; }
 		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, agentDir);
-	}
-
-	/**
-	 * Wrap an HTML document for rendering inside a VS Code webview.
-	 *
-	 * VS Code webviews enforce a strict default CSP that blocks inline
-	 * <style>, inline <script>, and several other features. To render an
-	 * arbitrary self-contained HTML file we must explicitly opt in via a
-	 * <meta http-equiv="Content-Security-Policy"> tag. We also inject a
-	 * minimal default body style so that documents which omit a body
-	 * background do not appear black against the editor backdrop.
-	 */
-	private _wrapHtmlForWebview(html: string): string {
-		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource:; img-src 'self' data: https: vscode-resource: vscode-webview-resource:; font-src data: https: vscode-resource: vscode-webview-resource:; connect-src https: vscode-resource: vscode-webview-resource:; frame-src https:;">`;
-		const baseStyle = `<style>html,body{margin:0;padding:0;}body{background:#ffffff;color:#1e1e1e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;}@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4;}}</style>`;
-
-		const lower = html.toLowerCase();
-		const headIdx = lower.indexOf('<head>');
-		if (headIdx >= 0) {
-			// Inject our CSP & base style at the very start of <head> so they
-			// appear before any user-defined style tags.
-			const insertPos = headIdx + '<head>'.length;
-			return html.slice(0, insertPos) + csp + baseStyle + html.slice(insertPos);
-		}
-
-		const htmlIdx = lower.indexOf('<html');
-		if (htmlIdx >= 0) {
-			// Document has <html> but no <head>: insert a synthetic head.
-			const closeBracket = html.indexOf('>', htmlIdx);
-			if (closeBracket >= 0) {
-				return html.slice(0, closeBracket + 1) + `<head>${csp}${baseStyle}</head>` + html.slice(closeBracket + 1);
-			}
-		}
-
-		// Fragment: wrap into a full document.
-		return `<!doctype html><html><head>${csp}${baseStyle}</head><body>${html}</body></html>`;
 	}
 
 	private _registerServiceListeners(): void {
