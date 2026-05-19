@@ -64,16 +64,19 @@ export class AgentStudioWebviewController extends Disposable {
 	private readonly _sessionService: IWorkspaceSessionService;
 
 	/**
-	 * The employee currently shown by this chat panel, updated by the
-	 * webview via `chat.activeSessionChanged`. Used to filter
-	 * `onDidRequestChatSend` events so only the chat panel actually
-	 * displaying the target employee handles imgui submits, preventing
-	 * duplicate sends when multiple chat panels are open. The active
-	 * `agentSessionId` itself isn't cached here — it's pushed straight
-	 * into `IConfigMdService.setActiveAgentSession` which is the single
-	 * source of truth across panes.
+	 * The (employeeId, agentSessionId) pair this chat panel is currently
+	 * showing. Updated by the webview via `chat.activeSessionChanged`
+	 * whenever the user picks a different employee or switches session.
+	 *
+	 * Used (a) to filter `onDidRequestChatSend` events so only the chat
+	 * panel actually showing the target employee handles imgui submits,
+	 * preventing duplicate sends across multiple chat panels, and
+	 * (b) to register into `IConfigMdService.setActiveAgentSession` so
+	 * the preview pane can route imgui submits into the correct Fork
+	 * session.
 	 */
 	private _activeChatEmployeeId: string | undefined;
+	private _activeChatAgentSessionId: string | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -519,6 +522,7 @@ export class AgentStudioWebviewController extends Disposable {
 		const employeeId = (payload.employeeId as string | null | undefined) || undefined;
 		const agentSessionId = (payload.agentSessionId as string | null | undefined) || undefined;
 		this._activeChatEmployeeId = employeeId;
+		this._activeChatAgentSessionId = agentSessionId;
 		this.logService.info(
 			`[AgentStudio] chat.activeSessionChanged: employeeId=${employeeId || '<none>'} `
 			+ `agentSessionId=${agentSessionId || '<none>'} (panelType=${this.panelType})`
@@ -614,6 +618,9 @@ export class AgentStudioWebviewController extends Disposable {
 			// so subsequent imgui submits (and the post-reload history load)
 			// aim at the same session.
 			this._configMdService.setActiveAgentSession(employeeId, agentSessionId);
+			if (this._activeChatEmployeeId === employeeId) {
+				this._activeChatAgentSessionId = agentSessionId;
+			}
 			this._sendEvent('workspace.sessionUpdated', {
 				agentId: employeeId,
 				agentSessionId,
