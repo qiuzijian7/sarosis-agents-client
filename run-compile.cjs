@@ -1,5 +1,5 @@
 const { execSync } = require('child_process');
-const cwd = 'G:\\CustomWorkspaces\\AIProjects\\sarosis-agents-client';
+const cwd = __dirname;
 let output = '';
 try {
     output = execSync('npm run compile', { cwd, encoding: 'utf8', timeout: 300000 });

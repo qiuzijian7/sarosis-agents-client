@@ -6,7 +6,8 @@ REM CodeBuddy IDE 自动化开发工作流
 REM 功能: 自动编译 → 自动启动调试 → 自动验证
 REM ============================================
 
-set PROJECT_ROOT=G:\CustomWorkspaces\AIProjects\sarosis-agents-client
+set PROJECT_ROOT=%~dp0..
+set PROJECT_ROOT=%PROJECT_ROOT:~0,-1%
 set LOG_FILE=%PROJECT_ROOT%\.workbuddy\logs\auto-dev-%date:~0,4%%date:~5,2%%date:~8,2%.log
 
 echo ============================================

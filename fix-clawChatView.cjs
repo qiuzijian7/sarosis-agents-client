@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const filePath = 'g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/sessions/contrib/agentStudio/browser/views/clawChatView.ts';
+const filePath = path.join(__dirname, 'src/vs/sessions/contrib/agentStudio/browser/views/clawChatView.ts');
 
 let content = fs.readFileSync(filePath, 'utf8');
 

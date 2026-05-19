@@ -1,5 +1,5 @@
 @echo on
-cd /d g:\CustomWorkspaces\AIProjects\sarosis-agents-client
+cd /d "%~dp0"
 
 echo ============================================
 echo Step 1: Production compile (with mangling)
