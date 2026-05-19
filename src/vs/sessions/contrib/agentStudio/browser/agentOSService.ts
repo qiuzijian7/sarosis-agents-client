@@ -349,7 +349,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return;
 		}
 
-		const messages = request.messages as any[];
+		// 将 systemPrompt 注入到 messages 最前面作为 system message
+		let messages: any[];
+		if (request.systemPrompt) {
+			messages = [
+				{ role: 'system', content: request.systemPrompt },
+				...request.messages,
+			];
+			this._logService.info(`[AgentOS] Prepended systemPrompt (${request.systemPrompt.length} chars) as system message`);
+		} else {
+			messages = request.messages as any[];
+		}
 		const options = request.options || {};
 
 		// 可选：加载 Memory 上下文（如果有 Memory Provider）
@@ -436,7 +446,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					content: `\n[System: Switching to fallback model: ${fallbackModel}]\n`,
 				};
 
-				const messages = request.messages as any[];
+				// 将 systemPrompt 注入到 messages 最前面作为 system message
+				let messages: any[];
+				if (request.systemPrompt) {
+					messages = [
+						{ role: 'system', content: request.systemPrompt },
+						...request.messages,
+					];
+				} else {
+					messages = request.messages as any[];
+				}
 				const options = request.options as any;
 				// 传递 context（包含 agentId）给 provider
 				const context: { agentId?: string } = {};

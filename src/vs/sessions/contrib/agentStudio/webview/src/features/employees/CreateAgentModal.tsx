@@ -30,7 +30,27 @@ interface Preset {
 	customPrompt: string;
 	/** Bootstrap templates for agent instance directory files */
 	bootstrapTemplates?: BootstrapTemplates;
+	/**
+	 * Skill ids this preset bundles in addition to the global defaults
+	 * applied by the host (currently `configmd`). Use this only for
+	 * preset-specific extras (e.g. a `coder` preset might bundle
+	 * `code-review`). The host de-duplicates against its own defaults so
+	 * presets can safely re-list `configmd` if they want to be explicit.
+	 */
+	skills?: string[];
 }
+
+/**
+ * Skill ids every preset includes. We surface them here (rather than only
+ * relying on the host-side defaults) so preset-driven creation matches
+ * what the user expects to see — and so future per-preset tooling that
+ * inspects `selectedPreset.skills` doesn't miss the default skills.
+ *
+ * Keep this list aligned with `AgentStudioService.DEFAULT_AGENT_SKILL_IDS`
+ * on the host. The host applies the same defaults on top of whatever we
+ * send, so duplicating here is a UX concern only — not correctness.
+ */
+const PRESET_DEFAULT_SKILL_IDS: readonly string[] = ['configmd'];
 
 const AGENT_PRESETS: Preset[] = [
 	{
@@ -649,6 +669,21 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 
 		setIsSubmitting(true);
 		try {
+			// Build the skill list this agent should ship with.
+			// Order: explicit preset skills first, then global preset
+			// defaults (configmd, …). De-dupe by id. The host applies the
+			// same default-skill merge on its end as a safety net, so any
+			// missing entry will be filled in there too.
+			const seen = new Set<string>();
+			const skills: { id: string; name: string; enabled: boolean }[] = [];
+			const pushSkill = (id: string) => {
+				if (!id || seen.has(id)) { return; }
+				seen.add(id);
+				skills.push({ id, name: id, enabled: true });
+			};
+			selectedPreset?.skills?.forEach(pushSkill);
+			PRESET_DEFAULT_SKILL_IDS.forEach(pushSkill);
+
 			const data: Partial<Employee> = {
 				name: name.trim(),
 				role: role.trim(),
@@ -660,6 +695,7 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 				maxTokens,
 				workspaceId,
 				status: 'idle',
+				skills,
 				// Pass preset info for agent instance directory bootstrap files
 				presetId: selectedPreset?.id,
 			};

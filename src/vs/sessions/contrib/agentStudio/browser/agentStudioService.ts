@@ -43,6 +43,14 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	private _globalDataUri: URI | undefined;
 
+	/**
+	 * Tracks `_resolveDataUri` results we've already migrated through
+	 * {@link _ensureDefaultSkillsInDir}. Keyed by `URI.toString()` so the
+	 * same workspace dir is migrated at most once per session, regardless
+	 * of how many `getEmployees` callers race in.
+	 */
+	private readonly _migratedDefaultSkillsDirs = new Set<string>();
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
@@ -285,7 +293,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	async getEmployees(workspaceId?: string): Promise<Employee[]> {
 		const dirUri = await this._resolveDataUri(workspaceId);
-		return this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+		// Lazy migration: backfill default skills (e.g. `configmd`) onto
+		// existing agents that pre-date the default-skill bundling. Runs
+		// at most once per dataDir per session.
+		const migrated = await this._ensureDefaultSkillsInDir(dirUri, employees);
+		return migrated || employees;
 	}
 
 	async getEmployee(id: string): Promise<Employee | undefined> {
@@ -294,7 +307,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		for (const ws of workspaces) {
 			const dirUri = await this._getWorkspaceDataUri(ws.id);
 			const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
-			const found = employees.find(e => e.id === id);
+			const migrated = await this._ensureDefaultSkillsInDir(dirUri, employees);
+			const list = migrated || employees;
+			const found = list.find(e => e.id === id);
 			if (found) { return found; }
 		}
 		// Try the VS Code workspace folder (may have employees without a workspace record)
@@ -302,12 +317,102 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		if (folderUri) {
 			const localDirUri = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
 			const localEmployees = await this._readJsonFile<Employee>(localDirUri, DATA_FILE_EMPLOYEES);
-			const found = localEmployees.find(e => e.id === id);
+			const migrated = await this._ensureDefaultSkillsInDir(localDirUri, localEmployees);
+			const list = migrated || localEmployees;
+			const found = list.find(e => e.id === id);
 			if (found) { return found; }
 		}
 		// Fallback: search global
 		const globalEmployees = await this._readJsonFile<Employee>(this._getGlobalDataUri(), DATA_FILE_EMPLOYEES);
-		return globalEmployees.find(e => e.id === id);
+		const migrated = await this._ensureDefaultSkillsInDir(this._getGlobalDataUri(), globalEmployees);
+		const list = migrated || globalEmployees;
+		return list.find(e => e.id === id);
+	}
+
+	/**
+	 * Backfill default skills (currently just `configmd`) onto employees that
+	 * pre-date the default-skill bundling. We:
+	 *
+	 *   1. Skip immediately if this `dataDir` has already been migrated this
+	 *      session (`_migratedDefaultSkillsDirs`) — prevents reentrancy and
+	 *      avoids re-writing employees.json on every `getEmployees` call.
+	 *   2. Detect employees missing any of `DEFAULT_AGENT_SKILL_IDS`. If
+	 *      everything is already present, return `null` so the caller uses
+	 *      the original list.
+	 *   3. Otherwise: build new entries via the live `SkillRegistry`,
+	 *      persist the updated employees.json, and materialise the
+	 *      corresponding `<agentDir>/skills/<id>/SKILL.md` files (without
+	 *      overwriting existing ones).
+	 *
+	 * Errors are swallowed (logged at warn level) — a failed migration
+	 * must NEVER prevent the original employee list from being returned,
+	 * otherwise the whole UI breaks.
+	 */
+	private async _ensureDefaultSkillsInDir(
+		dataDirUri: URI,
+		employees: Employee[],
+	): Promise<Employee[] | null> {
+		const key = dataDirUri.toString();
+		if (this._migratedDefaultSkillsDirs.has(key)) {
+			return null;
+		}
+		// Mark *before* doing async work so concurrent callers don't both
+		// execute the migration. Worst case on failure: we skip migration
+		// for this session, which is exactly what we want — re-trying every
+		// getEmployees would spam the disk.
+		this._migratedDefaultSkillsDirs.add(key);
+
+		try {
+			const defaults = AgentStudioService.DEFAULT_AGENT_SKILL_IDS;
+			const needsMigration = employees.some(e => {
+				const have = new Set((e.skills || []).map(s => s.id));
+				return defaults.some(id => !have.has(id));
+			});
+			if (!needsMigration) {
+				return null;
+			}
+
+			const updated: Employee[] = employees.map(e => {
+				const have = new Set((e.skills || []).map(s => s.id));
+				const missing = defaults.filter(id => !have.has(id));
+				if (missing.length === 0) { return e; }
+				const newEntries = missing.map(id => {
+					const def = this.skillRegistry.getSkill(id);
+					return {
+						id,
+						name: def?.name ?? id,
+						enabled: true,
+						description: def?.description,
+					};
+				});
+				return { ...e, skills: [...(e.skills || []), ...newEntries] };
+			});
+
+			await this._writeJsonFile(dataDirUri, DATA_FILE_EMPLOYEES, updated);
+			this.logService.info(
+				`[AgentStudio] Backfilled default skills [${defaults.join(', ')}] into ${updated.length} employee(s) in ${key}`
+			);
+
+			// Also materialise SKILL.md for the newly-added skills on disk so
+			// `_scanAgentSkills` picks them up next time SkillRegistry reloads.
+			for (const employee of updated) {
+				if (!employee.agentDir) { continue; }
+				try {
+					await this._syncAgentSkillsDir(dataDirUri, employee, employee.skills || []);
+				} catch (err) {
+					this.logService.debug(`[AgentStudio] backfill SKILL.md failed for ${employee.agentDir}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+
+			// Notify the UI so it re-fetches the employee list with the new
+			// skill entries (the previously-cached zustand state is otherwise
+			// stale for the rest of the session).
+			this._onDidChangeEmployees.fire();
+			return updated;
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] _ensureDefaultSkillsInDir failed for ${key}: ${err instanceof Error ? err.message : String(err)}`);
+			return null;
+		}
 	}
 
 	async createEmployee(data: Partial<Employee>): Promise<Employee> {

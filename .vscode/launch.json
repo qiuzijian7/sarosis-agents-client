@@ -815,22 +815,21 @@
 			}
 		},
 		{
-			"name": "Re	{
-		"name": "Renderer and Main processes",
-		"stopAll": true,
-		"configurations": [
-			"Launch VS Code Internal",
-			"Attach to Main Process"
-		]
-	},
-	{
-		"name": "Renderer and Agent Host processes",
-		"stopAll": true,
-		"configurations": [
-			"Launch VS Code Internal",
-			"Attach to Main Process",
-			"Attach to Agent Host Process"
-		]
-	},
+			"name": "Renderer and Main processes",
+			"stopAll": true,
+			"configurations": [
+				"Launch VS Code Internal",
+				"Attach to Main Process"
+			]
+		},
+		{
+			"name": "Renderer and Agent Host processes",
+			"stopAll": true,
+			"configurations": [
+				"Launch VS Code Internal",
+				"Attach to Main Process",
+				"Attach to Agent Host Process"
+			]
+		},
 	]
 }

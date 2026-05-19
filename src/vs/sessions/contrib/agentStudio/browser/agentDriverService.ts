@@ -159,13 +159,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					}
 				}
 
-				enrichedRequest = {
-					...request,
-					systemPrompt: mergedSystemPrompt,
-					messages: mergedMessages,
-				};
+			enrichedRequest = {
+				...request,
+				systemPrompt: mergedSystemPrompt,
+				messages: mergedMessages,
+			};
 
-				this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills available`);
+			this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills available, systemPrompt length: ${mergedSystemPrompt.length}`);
+			this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 200)}...`);
 			} catch (error) {
 				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
 				// Skill 解析失败不阻塞主流程
