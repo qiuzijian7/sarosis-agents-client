@@ -84,7 +84,8 @@ export type RequestType =
 	| 'configmd.getInfo'
 	| 'configmd.previewToFile'
 	| 'files.open'
-	| 'files.openHtmlPreview';
+	| 'files.openHtmlPreview'
+	| 'files.openUntitledText';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;

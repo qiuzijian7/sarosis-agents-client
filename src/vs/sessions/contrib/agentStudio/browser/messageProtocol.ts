@@ -40,6 +40,7 @@ export type RequestType =
 	| 'chat.history'
 	| 'chat.clear'
 	| 'chat.cancel'
+	| 'chat.activeSessionChanged'  // webview tells host which (employeeId,agentSessionId) is currently visible
 	| 'delegation.list'
 	| 'delegation.get'
 	| 'delegation.create'
@@ -95,7 +96,8 @@ export type RequestType =
 	| 'configmd.getInfo'          // get parser/styles info
 	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
 	| 'files.open'                // open a file in the host editor as text
-	| 'files.openHtmlPreview';    // open an HTML file as a rendered webview preview
+	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
+	| 'files.openUntitledText';   // open an in-memory text buffer as an untitled editor
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -479,5 +481,49 @@ export interface IFileOpenPayload {
 	/** Whether to keep focus on the current view. Default: false. */
 	readonly preserveFocus?: boolean;
 	/** Whether to open as a pinned (non-preview) editor. Default: false. */
+	readonly pinned?: boolean;
+	/**
+	 * Optional workspace context captured at the moment the preview is
+	 * opened. Forwarded into the HTML preview's imgui SDK so form submits
+	 * carry the right (workspace, session) tuple even after the chat panel
+	 * changes selection. Only used by `files.openHtmlPreview`.
+	 */
+	readonly workspaceId?: string;
+	/**
+	 * Optional Fork (workspace) session id captured alongside `workspaceId`.
+	 * Lets the host re-enter the Fork-mode lazy-create branch when an imgui
+	 * submit arrives but no `agentSessionId` exists yet for that Fork.
+	 */
+	readonly workspaceSessionId?: string;
+	/** Optional agent session id captured alongside `workspaceId`. */
+	readonly agentSessionId?: string;
+}
+
+/**
+ * Payload for `files.openUntitledText` — opens an in-memory text buffer as an
+ * untitled editor in the host's center editor area. Unlike `files.open`,
+ * nothing is read from / written to disk, and there is no risk of
+ * overwriting an existing agent file.
+ *
+ * Used by the ConfigMD "Demo" button, which loads a sample DSL into a
+ * throwaway editor for the user to inspect / copy from, rather than
+ * mutating the agent's real config.md.
+ */
+export interface IFileOpenUntitledTextPayload {
+	/** Required: the text content to display. */
+	readonly contents: string;
+	/**
+	 * Optional language id used by the editor for syntax highlighting
+	 * (e.g. "markdown", "plaintext", "json"). Defaults to "plaintext".
+	 */
+	readonly languageId?: string;
+	/**
+	 * Optional human-readable title shown on the tab. The host will
+	 * synthesise a unique untitled URI; the title is purely cosmetic.
+	 */
+	readonly title?: string;
+	/** Whether to keep focus on the current view. Default: false. */
+	readonly preserveFocus?: boolean;
+	/** Whether to open as a pinned (non-preview) editor. Default: true. */
 	readonly pinned?: boolean;
 }

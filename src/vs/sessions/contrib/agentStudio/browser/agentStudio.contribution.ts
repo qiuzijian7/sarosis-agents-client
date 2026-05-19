@@ -28,7 +28,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import type { AgentStudioPanelType } from '../common/constants.js';
 
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
-import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
+import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService, IConfigMdService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
@@ -36,6 +36,7 @@ import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { IAgentInstanceService, IAgentGalleryService } from '../common/agentInstance.js';
 import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
+import { ConfigMdService } from './configMdService.js';
 import { AgentOSService } from './agentOSService.js';
 import { AgentDriverService } from './agentDriverService.js';
 import { ModelSelectorService } from './modelSelectorService.js';
@@ -391,6 +392,11 @@ registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType
 registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
 registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
 registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, InstantiationType.Delayed);
+// ConfigMD service: shared across all webview controllers (chat panels) and
+// the HtmlPreviewEditorPane. Keeping a single instance avoids duplicating
+// the per-employee state cache and lets the preview pane forward webview
+// imgui.submit messages back through the same dispatcher.
+registerSingleton(IConfigMdService, ConfigMdService, InstantiationType.Delayed);
 // Workspace lifecycle event bus — generic, decoupled hook system used by
 // CLI/provider extensions (e.g. knot-agui) to react to workspace mutations
 // without any main-repo hardcoding. Eager so its extension-facing commands

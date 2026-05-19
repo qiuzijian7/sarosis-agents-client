@@ -284,6 +284,26 @@ export interface IConfigMdService {
 		payload: unknown;
 	}>;
 
+	/**
+	 * Fired when an imgui button requests a chat send. The host's webview
+	 * controller listens to this event and routes the message through the
+	 * full `chat.send` pipeline (creating a user message, persisting it,
+	 * and streaming deltas back to the chat panel UI). Subscribers must
+	 * not double-send — only the controller that owns the chat webview
+	 * should react.
+	 *
+	 * `workspaceId` is carried so the controller can pick the Fork-mode
+	 * lazy-create path when it should — without it, a Fork-context submit
+	 * would silently be persisted to the wrong (Root) session.
+	 */
+	readonly onDidRequestChatSend: Event<{
+		employeeId: string;
+		message: string;
+		agentSessionId?: string;
+		workspaceId?: string;
+		workspaceSessionId?: string;
+	}>;
+
 	// ─── Resource & State ─────────────────────────────────────────────────
 
 	/**
@@ -353,6 +373,30 @@ export interface IConfigMdService {
 	// ─── Push to HTML view ────────────────────────────────────────────────
 
 	sendCommandToHtml(employeeId: string, command: IConfigMdCommand): void;
+
+	// ─── Active Agent Session Registry ────────────────────────────────────
+
+	/**
+	 * Register the agent session a chat panel is currently showing for a
+	 * given employee. The HtmlPreviewEditorPane uses this when forwarding
+	 * `imgui.submit` so the message lands in the same Fork session the user
+	 * is looking at, instead of falling back to the default session.
+	 *
+	 * Pass `agentSessionId = undefined` to clear the registration when the
+	 * panel is closed or the user switches to "default" session.
+	 *
+	 * Multiple chat panels can exist (e.g. multiple Forks open) — the last
+	 * one to update wins. Webview panels race each other only if the user
+	 * is rapidly toggling, which is harmless: imgui submits will follow the
+	 * most recently focused panel.
+	 */
+	setActiveAgentSession(employeeId: string, agentSessionId: string | undefined): void;
+
+	/**
+	 * Read the currently registered active agent session for an employee,
+	 * or `undefined` if no chat panel has registered one.
+	 */
+	getActiveAgentSession(employeeId: string): string | undefined;
 
 	// ─── Capability Check ─────────────────────────────────────────────────
 

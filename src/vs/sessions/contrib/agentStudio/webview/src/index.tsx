@@ -47,6 +47,22 @@ initMessageClient((type, data) => {
 			handleStreamError(errData);
 			break;
 		}
+		case 'chat.userMessageAppended': {
+			// Mirrors `useChatStore.sendMessage`'s optimistic local append for
+			// messages that originated outside the chat input (currently only
+			// imgui form submits routed via the host controller).
+			const detail = data as {
+				employeeId: string;
+				agentSessionId?: string;
+				message: { id: string; role: 'user'; content: string; timestamp: string };
+			} | undefined;
+			if (detail?.employeeId && detail.message) {
+				console.log(`[AgentStudio] Routing chat.userMessageAppended → store: ` +
+					`employeeId=${detail.employeeId}, id=${detail.message.id}, len=${detail.message.content.length}`);
+				useChatStore.getState().appendExternalUserMessage(detail.employeeId, detail.message);
+			}
+			break;
+		}
 		case 'employee.selected': {
 			const { employeeId } = (data as { employeeId: string | null }) ?? {};
 			console.log(`[AgentStudio] received 'employee.selected' event: employeeId=${employeeId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
@@ -94,12 +110,31 @@ initMessageClient((type, data) => {
 		}
 		case 'workspace.sessionUpdated': {
 			const detail = data as { workspaceId?: string; agentId?: string; agentSessionId?: string };
-			// If host assigned a new agentSessionId, update the session store and chat store
+			// If host assigned a new agentSessionId, update the chat store
+			// regardless of whether a Fork active session exists. This is
+			// important for Root-mode imgui submits: the host lazily creates
+			// an agent session and emits this event, and the webview must
+			// pick it up so the next history reload aims at the same session.
 			if (detail.agentId && detail.agentSessionId) {
+				const chatStore = useChatStore.getState();
+				if (chatStore.activeEmployeeId === detail.agentId) {
+					if (chatStore.activeAgentSessionId !== detail.agentSessionId) {
+						console.log(
+							`[AgentStudio] workspace.sessionUpdated → chatStore.activeAgentSessionId = ${detail.agentSessionId} ` +
+							`(was ${chatStore.activeAgentSessionId})`
+						);
+						useChatStore.setState({ activeAgentSessionId: detail.agentSessionId });
+						// Refresh the session list so the new session shows up
+						// in the session picker (Root mode).
+						chatStore.loadAgentSessions(detail.agentId);
+					}
+				}
+
+				// Fork-mode bookkeeping: if the agent belongs to the active
+				// Fork session, mirror the new agentSessionId there too.
 				const sessionStore = useWorkspaceSessionStore.getState();
 				const activeSession = sessionStore.getActiveSession();
 				if (activeSession) {
-					// Update the agentSessions array in the active session
 					const existing = activeSession.agentSessions.find(a => a.agentId === detail.agentId);
 					if (!existing) {
 						activeSession.agentSessions.push({
@@ -114,11 +149,6 @@ initMessageClient((type, data) => {
 						useWorkspaceSessionStore.setState(state => ({
 							sessions: [...state.sessions],
 						}));
-					}
-					// Update the chatStore's active agentSessionId if it's the same agent
-					const chatStore = useChatStore.getState();
-					if (chatStore.activeEmployeeId === detail.agentId) {
-						useChatStore.setState({ activeAgentSessionId: detail.agentSessionId });
 					}
 				}
 			}

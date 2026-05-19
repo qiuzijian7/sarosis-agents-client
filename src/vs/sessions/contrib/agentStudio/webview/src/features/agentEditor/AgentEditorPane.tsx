@@ -18,7 +18,7 @@ import {
 	renderHtml,
 	previewToFile,
 } from '../configmd/configMdBridge';
-import { openHtmlPreview } from '../../bridge/fileBridge';
+import { openHtmlPreview, openUntitledText } from '../../bridge/fileBridge';
 import { MarkdownEditor } from '../configmd/MarkdownEditor';
 import { ConfigMdSettings } from '../configmd/ConfigMdSettings';
 import { CONFIG_MD_DEMO } from '../configmd/configMdDemo';
@@ -696,9 +696,6 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 	const setMdState = useConfigMdStore((s) => s.setState);
 	const updateMdLocal = useConfigMdStore((s) => s.updateMarkdownLocal);
 	const [showMdConfig, setShowMdConfig] = useState(false);
-	/** Two-step confirmation for the Demo button: first click arms, second click loads. */
-	const [demoArmed, setDemoArmed] = useState(false);
-	const demoArmTimer = useRef<number | null>(null);
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const debounceRef = useRef<number | null>(null);
 
@@ -997,34 +994,24 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 									</svg>
 								</button>
 								<button
-									className={`configmd-icon-btn ${demoArmed ? 'demo-armed' : ''}`}
+									className="configmd-icon-btn"
 									onClick={() => {
-										const cur = useConfigMdStore.getState().byAgent[employeeId];
-										const hasContent = !!(cur?.markdown && cur.markdown.trim().length > 0);
-										if (hasContent && !demoArmed) {
-											// First click — arm; second click within 5s confirms.
-											setDemoArmed(true);
-											if (demoArmTimer.current) {
-												window.clearTimeout(demoArmTimer.current);
-											}
-											demoArmTimer.current = window.setTimeout(() => {
-												setDemoArmed(false);
-											}, 5000);
-											return;
-										}
-										// Either no content, or already armed — load demo now.
-										if (demoArmTimer.current) {
-											window.clearTimeout(demoArmTimer.current);
-											demoArmTimer.current = null;
-										}
-										setDemoArmed(false);
-										handleConfigMdChange(CONFIG_MD_DEMO);
+										// Open the demo source in an untitled markdown editor
+										// in the host's center editor area, so the user can
+										// inspect / copy from it without overwriting the
+										// agent's real ConfigMD. This was previously a
+										// destructive "load into agent" action gated by a
+										// two-step confirm; now it's purely read-only.
+										void openUntitledText(CONFIG_MD_DEMO, {
+											languageId: 'markdown',
+											title: 'ConfigMD Demo',
+											preserveFocus: false,
+											pinned: true,
+										}).catch((err) => {
+											console.error('[ConfigMD] open demo failed:', err);
+										});
 									}}
-									title={
-										demoArmed
-											? '再次点击确认覆盖当前 Markdown'
-											: '加载内置示例 Markdown（默认解析器即可完整渲染）'
-									}
+									title="打开内置示例 Markdown（独立的只读编辑器，不会覆盖当前 Agent 的 ConfigMD）"
 									aria-label="示例"
 								>
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1032,9 +1019,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 										<path d="M14 2v6h6" />
 										<path d="M16 13H8M16 17H8M10 9H8" />
 									</svg>
-									<span className="configmd-icon-btn-text">
-										{demoArmed ? '⚠ 确认覆盖？' : 'Demo'}
-									</span>
+									<span className="configmd-icon-btn-text">Demo</span>
 								</button>
 							</div>
 							<div className="configmd-toolbar-right">

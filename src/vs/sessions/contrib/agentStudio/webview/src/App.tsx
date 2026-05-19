@@ -19,6 +19,8 @@ import { CreateAgentModal } from './features/employees/CreateAgentModal';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
 import { useProviderStore } from './store/useProviderStore';
+import { useChatStore } from './store/useChatStore';
+import { sendRequest } from './bridge/messageClient';
 
 // Read the panel type injected by the VS Code host
 type PanelType = 'canvas' | 'chat' | undefined;
@@ -145,6 +147,50 @@ function ChatPanel(): React.ReactElement {
 			window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
 		};
 	}, [loadEmployees, activeWorkspaceId, setActiveWorkspace]);
+
+	// Phase 3: register the (employeeId, agentSessionId) currently visible
+	// in this chat panel with the host. The host needs this so that imgui
+	// form submits originating in a separate ConfigMD preview pane can be
+	// routed back into the same Fork session the user is looking at, and
+	// so that multiple chat panels don't double-handle the same submit.
+	//
+	// We use zustand's plain `subscribe` (no selector middleware required)
+	// and dedupe by comparing previous values. The initial state is also
+	// flushed once on mount so the host learns about the currently selected
+	// employee even if the user never switches.
+	useEffect(() => {
+		let prevEmployeeId: string | null | undefined = undefined;
+		let prevAgentSessionId: string | null | undefined = undefined;
+		const flush = (employeeId: string | null, agentSessionId: string | null) => {
+			if (employeeId === prevEmployeeId && agentSessionId === prevAgentSessionId) {
+				return;
+			}
+			prevEmployeeId = employeeId;
+			prevAgentSessionId = agentSessionId;
+			console.log(`[ChatPanel] notify host chat.activeSessionChanged: employeeId=${employeeId} agentSessionId=${agentSessionId}`);
+			sendRequest('chat.activeSessionChanged', {
+				employeeId,
+				agentSessionId,
+			}).catch((err: unknown) =>
+				console.warn('[ChatPanel] chat.activeSessionChanged failed:', err)
+			);
+		};
+		// Flush initial state.
+		const initial = useChatStore.getState();
+		flush(initial.activeEmployeeId, initial.activeAgentSessionId);
+		// Subscribe to subsequent changes.
+		const unsubscribe = useChatStore.subscribe((state) => {
+			flush(state.activeEmployeeId, state.activeAgentSessionId);
+		});
+		return () => {
+			unsubscribe();
+			// On unmount (panel closed), clear the registration.
+			sendRequest('chat.activeSessionChanged', {
+				employeeId: null,
+				agentSessionId: null,
+			}).catch(() => { /* shutting down */ });
+		};
+	}, []);
 
 	return (
 		<div className="panel-standalone">

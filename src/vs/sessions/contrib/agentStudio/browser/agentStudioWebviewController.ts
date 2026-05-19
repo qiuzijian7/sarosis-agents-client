@@ -13,7 +13,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { URI } from '../../../../base/common/uri.js';
 import { mainWindow } from '../../../../base/browser/window.js';
-import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
+import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService, IConfigMdService } from '../common/agentStudio.js';
 import type { IChatStreamDelta } from '../common/agentStudio.js';
 import type { AgentExportData } from '../../../common/agentStudioTypes.js';
 import { IEnvironmentService, type INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -40,9 +40,9 @@ import type {
 	IConfigMdApplyPatchPayload,
 	IConfigMdRenderHtmlPayload,
 	IFileOpenPayload,
+	IFileOpenUntitledTextPayload,
 } from './messageProtocol.js';
 import { WorkspaceSessionService, type IWorkspaceSessionService } from './workspaceSessionService.js';
-import { ConfigMdService } from './configMdService.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 
 interface IIncomingMessage {
@@ -64,7 +64,21 @@ export class AgentStudioWebviewController extends Disposable {
 
 	private _webview: IWebviewElement | undefined;
 	private readonly _sessionService: IWorkspaceSessionService;
-	private readonly _configMdService: ConfigMdService;
+
+	/**
+	 * The (employeeId, agentSessionId) pair this chat panel is currently
+	 * showing. Updated by the webview via `chat.activeSessionChanged`
+	 * whenever the user picks a different employee or switches session.
+	 *
+	 * Used (a) to filter `onDidRequestChatSend` events so only the chat
+	 * panel actually showing the target employee handles imgui submits,
+	 * preventing duplicate sends across multiple chat panels, and
+	 * (b) to register into `IConfigMdService.setActiveAgentSession` so
+	 * the preview pane can route imgui submits into the correct Fork
+	 * session.
+	 */
+	private _activeChatEmployeeId: string | undefined;
+	private _activeChatAgentSessionId: string | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -87,11 +101,10 @@ export class AgentStudioWebviewController extends Disposable {
 	@ICommandService private readonly commandService: ICommandService,
 	@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 	@IOpenerService private readonly openerService: IOpenerService,
+	@IConfigMdService private readonly _configMdService: IConfigMdService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(logService, this.fileService, agentStudioService);
-		this._configMdService = new ConfigMdService(logService, this.fileService, agentStudioService, agentChatService);
-		this._register(this._configMdService);
 		this._createWebview();
 		this._registerServiceListeners();
 	}
@@ -314,6 +327,8 @@ export class AgentStudioWebviewController extends Disposable {
 			case 'chat.cancel':
 				this.agentChatService.cancelStream(p.employeeId as string);
 				return undefined;
+			case 'chat.activeSessionChanged':
+				return this._handleChatActiveSessionChanged(p);
 
 			// ─── Delegations ────────────────────────────────────────
 			case 'delegation.list':
@@ -478,11 +493,51 @@ export class AgentStudioWebviewController extends Disposable {
 				const fp = p as unknown as IFileOpenPayload;
 				return this._handleOpenHtmlPreview(fp);
 			}
+			case 'files.openUntitledText': {
+				const fp = p as unknown as IFileOpenUntitledTextPayload;
+				return this._handleOpenUntitledText(fp);
+			}
 
 
 
 			default:
 				throw new Error(`Unknown message type: ${type}`);
+		}
+	}
+
+	/**
+	 * Webview tells us which (employeeId, agentSessionId) is currently
+	 * displayed in this chat panel. We update local state and register
+	 * with `IConfigMdService` so imgui form submits originating in a
+	 * preview pane can be routed back to the right session.
+	 *
+	 * We also use this to filter `onDidRequestChatSend` events: when
+	 * multiple chat panels are open (different Forks), only the one
+	 * whose registered employeeId matches will respond — otherwise the
+	 * same imgui submit would be sent twice.
+	 */
+	private _handleChatActiveSessionChanged(payload: Record<string, unknown>): void {
+		if (this.panelType !== 'chat') {
+			// Non-chat panels don't own a chat session.
+			return;
+		}
+		const prevEmployeeId = this._activeChatEmployeeId;
+		const employeeId = (payload.employeeId as string | null | undefined) || undefined;
+		const agentSessionId = (payload.agentSessionId as string | null | undefined) || undefined;
+		this._activeChatEmployeeId = employeeId;
+		this._activeChatAgentSessionId = agentSessionId;
+		this.logService.info(
+			`[AgentStudio] chat.activeSessionChanged: employeeId=${employeeId || '<none>'} `
+			+ `agentSessionId=${agentSessionId || '<none>'} (panelType=${this.panelType})`
+		);
+		// Clear the previous registration if the employee changed,
+		// otherwise the registry would keep pointing at a stale session
+		// for the prior employee.
+		if (prevEmployeeId && prevEmployeeId !== employeeId) {
+			this._configMdService.setActiveAgentSession(prevEmployeeId, undefined);
+		}
+		if (employeeId) {
+			this._configMdService.setActiveAgentSession(employeeId, agentSessionId);
 		}
 	}
 
@@ -496,6 +551,20 @@ export class AgentStudioWebviewController extends Disposable {
 		// If we're in a Fork but no agentSessionId was provided, lazily create one
 		if (workspaceId && workspaceSessionId && !agentSessionId) {
 			this._ensureAgentSessionAndSend(employeeId, message, workspaceId, workspaceSessionId, payload);
+			return { status: 'streaming', employeeId };
+		}
+
+		// Root mode without an agentSessionId: lazily create one. This path
+		// is normally avoided because the chat input front-end (`useChatStore.
+		// sendMessage`) calls `agentSession.getActive` BEFORE invoking us, but
+		// imgui-form submits arrive here directly via `onDidRequestChatSend`
+		// and may carry no sessionId at all when the user has never sent a
+		// message yet. Without this branch, the user message would be
+		// persisted under cache key `employeeId` (no session suffix) and
+		// `_persistToSessionFile` would skip writing to disk entirely —
+		// causing the message to vanish on the next reload.
+		if (!agentSessionId) {
+			this._ensureRootSessionAndSend(employeeId, message, payload);
 			return { status: 'streaming', employeeId };
 		}
 
@@ -515,6 +584,75 @@ export class AgentStudioWebviewController extends Disposable {
 		this._runChatStream(employeeId, message, payload);
 
 		return { status: 'streaming', employeeId };
+	}
+
+	/**
+	 * Root-mode equivalent of `_ensureAgentSessionAndSend`: when a message
+	 * arrives with no agentSessionId AND no Fork context (i.e. an imgui
+	 * submit on a fresh chat panel), call into AgentChatService to either
+	 * pick the most-recent session or auto-create one, then forward the
+	 * message through the normal persist + stream pipeline.
+	 *
+	 * We also update the chat panel's registered session via
+	 * `setActiveAgentSession` and broadcast `workspace.sessionUpdated` so
+	 * the webview's `useChatStore.activeAgentSessionId` follows along —
+	 * otherwise the next reload would still default-load against `null`
+	 * and miss the message we just persisted.
+	 */
+	private async _ensureRootSessionAndSend(
+		employeeId: string,
+		message: string,
+		payload: Record<string, unknown>,
+	): Promise<void> {
+		try {
+			const sessionName = message.trim().substring(0, 30) || '新对话';
+			const meta = await (this.agentChatService as any).getOrCreateActiveSession(
+				employeeId, sessionName,
+			);
+			const agentSessionId = meta?.id as string | undefined;
+			if (!agentSessionId) {
+				throw new Error('getOrCreateActiveSession returned no id');
+			}
+			this.logService.info(
+				`[AgentStudio] _ensureRootSessionAndSend: ensured session ${agentSessionId} for ${employeeId}`
+			);
+
+			// Mirror chat-input flow: keep the registry & webview in sync
+			// so subsequent imgui submits (and the post-reload history load)
+			// aim at the same session.
+			this._configMdService.setActiveAgentSession(employeeId, agentSessionId);
+			if (this._activeChatEmployeeId === employeeId) {
+				this._activeChatAgentSessionId = agentSessionId;
+			}
+			this._sendEvent('workspace.sessionUpdated', {
+				agentId: employeeId,
+				agentSessionId,
+			});
+
+			// Persist the user message under the resolved session.
+			const userMessage: import('../../../common/agentStudioTypes.js').ChatMessage = {
+				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+				role: 'user',
+				content: message,
+				employeeId,
+				agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
+			this.agentChatService.appendMessage(employeeId, userMessage).catch(err =>
+				this.logService.error('[AgentStudio] Failed to persist user message:', err),
+			);
+
+			// Run the chat stream with the resolved agentSessionId.
+			const enrichedPayload = { ...payload, agentSessionId };
+			this._runChatStream(employeeId, message, enrichedPayload);
+		} catch (err) {
+			this.logService.error('[AgentStudio] _ensureRootSessionAndSend failed:', err);
+			this._sendEvent('chat.stream.error', {
+				employeeId,
+				sessionId: '',
+				error: `Failed to ensure agent session: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
 	}
 
 	/**
@@ -611,6 +749,30 @@ export class AgentStudioWebviewController extends Disposable {
 				).catch((err: unknown) =>
 					this.logService.error('[AgentStudio] Failed to store providerSessionId:', err),
 				);
+			}
+
+			// Phase 3: parse `configmd-patch` and `configmd-command` blocks
+			// out of the assistant reply so the agent can drive imgui forms
+			// from the conversation (e.g. `imgui.set_one`, `imgui.toast`)
+			// without needing a separate "tool call" path. Errors here are
+			// non-fatal — the user-visible chat stream has already completed.
+			if (chatMessage?.content) {
+				try {
+					const { patches, commands } = this._configMdService.parseModelOutput(chatMessage.content);
+					if (patches.length > 0) {
+						this.logService.info(`[AgentStudio] Applying ${patches.length} configmd-patch op(s) from assistant reply`);
+						this._configMdService.applyPatch(employeeId, patches, { origin: 'model' })
+							.catch((err: unknown) =>
+								this.logService.warn(`[AgentStudio] applyPatch from model failed:`, err)
+							);
+					}
+					for (const cmd of commands) {
+						this.logService.info(`[AgentStudio] Pushing configmd-command '${cmd.name}' from assistant reply`);
+						this._configMdService.sendCommandToHtml(employeeId, cmd);
+					}
+				} catch (err) {
+					this.logService.warn('[AgentStudio] parseModelOutput failed:', err);
+				}
 			}
 
 			this._sendEvent('chat.stream.complete', {
@@ -761,6 +923,55 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
+	 * Open an in-memory text buffer as an *untitled* editor in the host's
+	 * center editor area. No file is read or written; the buffer lives only
+	 * in the editor model and is discarded on close.
+	 *
+	 * Used by the ConfigMD "Demo" button so users can inspect the sample
+	 * DSL without overwriting their agent's real config.md.
+	 *
+	 * Implementation note: VS Code's `editorService.openEditor` accepts an
+	 * `IUntitledTextResourceEditorInput` shape with `resource` set to a
+	 * `untitled:` URI (or undefined to auto-generate one) plus `contents`
+	 * and `languageId`. We synthesise a unique URI per call so multiple
+	 * Demo clicks open distinct tabs instead of re-using the same dirty
+	 * buffer.
+	 */
+	private async _handleOpenUntitledText(payload: IFileOpenUntitledTextPayload): Promise<void> {
+		const contents = payload.contents ?? '';
+		const languageId = payload.languageId || 'plaintext';
+		// Synthesise an untitled URI. Including the title (if any) makes the
+		// tab label readable; appending a counter avoids collisions when the
+		// user clicks the same Demo button repeatedly.
+		const safeTitle = (payload.title || 'Untitled')
+			.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+			.slice(0, 64) || 'Untitled';
+		const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+		const resource = URI.from({ scheme: 'untitled', path: `/${safeTitle}-${id}` });
+
+		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+
+		this.logService.info(
+			`[AgentStudioWebviewController] files.openUntitledText → ${resource.toString()} `
+			+ `(${contents.length} chars, languageId=${languageId})`
+		);
+
+		await this.editorService.openEditor(
+			{
+				resource,
+				contents,
+				languageId,
+				options: {
+					preserveFocus: payload.preserveFocus ?? false,
+					pinned: payload.pinned ?? true,
+				},
+			},
+			targetGroup,
+		);
+	}
+
+	/**
 	 * Resolve an HTML file path and render it as a webview preview in the host's
 	 * center editor area (browser-like view rather than text source).
 	 *
@@ -824,6 +1035,10 @@ export class AgentStudioWebviewController extends Disposable {
 				HtmlPreviewEditorInput,
 				fileUri,
 				this._titleForPath(absPath),
+				payload.employeeId,
+				payload.workspaceId,
+				payload.workspaceSessionId,
+				payload.agentSessionId,
 			);
 			await this.editorService.openEditor(
 				previewInput,
@@ -986,6 +1201,69 @@ export class AgentStudioWebviewController extends Disposable {
 		}));
 		this._register(this._configMdService.onDidEmitCommand(({ employeeId, command }) => {
 			this._sendEvent('configmd.command', { employeeId, command });
+		}));
+
+		// Forward imgui-originated chat sends through this controller's own
+		// chat.send pipeline (creates a user message, persists, streams
+		// deltas back to the webview UI). Only the chat panel controller
+		// needs to react — canvas/taskboard panels would double-send.
+		//
+		// IMPORTANT: when the user types in the chat input, the webview's
+		// `useChatStore.sendMessage` does an *optimistic* append of the user
+		// message to its local `messages[]` state BEFORE invoking `chat.send`.
+		// imgui submissions bypass that store entirely (they originate inside
+		// a separate preview iframe and arrive at the host directly), so the
+		// chat panel webview never sees the user-side bubble — it only sees
+		// the assistant stream that follows. We compensate by firing an
+		// explicit `chat.userMessageAppended` event so the webview can mirror
+		// the same optimistic append the chat input would have done.
+		this._register(this._configMdService.onDidRequestChatSend(({ employeeId, message, agentSessionId, workspaceId, workspaceSessionId }) => {
+			if (this.panelType !== 'chat') {
+				return;
+			}
+			// Avoid duplicate sends when multiple chat panels are open: only
+			// the panel currently displaying this employee should respond.
+			// If no panel has registered yet (fresh open, before the webview
+			// has finished sending its first `chat.activeSessionChanged`),
+			// fall through and handle the message — losing it would feel
+			// broken for the very first imgui submit after open.
+			if (this._activeChatEmployeeId && this._activeChatEmployeeId !== employeeId) {
+				this.logService.info(
+					`[AgentStudioWebviewController] imgui→chat.send for ${employeeId} ignored by panel `
+					+ `showing ${this._activeChatEmployeeId}`
+				);
+				return;
+			}
+			this.logService.info(
+				`[AgentStudioWebviewController] imgui→chat.send ${employeeId} `
+				+ `(workspaceId=${workspaceId || '<none>'}, sessionId=${agentSessionId || '<none>'})`
+			);
+			// 1) Notify webview UI to append the user bubble (mirrors what
+			//    the chat input would have done before sending).
+			this._sendEvent('chat.userMessageAppended', {
+				employeeId,
+				agentSessionId,
+				message: {
+					id: `msg_${Date.now()}_user_imgui_${Math.random().toString(36).substring(2, 9)}`,
+					role: 'user',
+					content: message,
+					timestamp: new Date().toISOString(),
+				},
+			});
+			// 2) Run the actual chat send pipeline (persist + stream).
+			//    workspaceId is forwarded so the Fork-mode lazy-create path
+			//    fires when needed — i.e. the preview was opened from a
+			//    Fork chat panel even though the user has never sent a
+			//    message there. Without it the message would be persisted
+			//    against the Root default session and "vanish" relative to
+			//    the Fork's view.
+			void this._handleChatSend({
+				employeeId,
+				message,
+				agentSessionId,
+				workspaceId,
+				workspaceSessionId,
+			});
 		}));
 	}
 

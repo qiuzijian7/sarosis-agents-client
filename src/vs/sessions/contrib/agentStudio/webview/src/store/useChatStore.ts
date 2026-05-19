@@ -47,6 +47,17 @@ interface ChatState {
 	cancelStream: () => void;
 	setInputValue: (value: string) => void;
 	clearMessages: () => void;
+	/**
+	 * Append a user message that originated *outside* the chat input
+	 * (e.g. an imgui form submitted from a ConfigMD preview pane).
+	 *
+	 * The host-side controller has already persisted this message and
+	 * kicked off a `chat.stream.*` cycle; this method just mirrors the
+	 * optimistic local append that `sendMessage` performs for typed input,
+	 * so the user sees a bubble for what they sent. Scoped by
+	 * `employeeId`: ignored if it doesn't match the active employee.
+	 */
+	appendExternalUserMessage: (employeeId: string, message: ChatMessage) => void;
 	/** Load all sessions for the current agent */
 	loadAgentSessions: (employeeId: string) => Promise<void>;
 	/** Create a new session for the current agent and switch to it */
@@ -362,6 +373,24 @@ export const useChatStore = create<ChatState>((set, get) => {
 			console.log('[ChatStore] clearMessages called');
 			resetStream();
 			set({ messages: [] });
+		},
+
+		appendExternalUserMessage: (employeeId, message) => {
+			const { activeEmployeeId, messages } = get();
+			// Only mirror the bubble if it belongs to the currently visible
+			// employee — otherwise the user would see a phantom message in
+			// an unrelated chat pane.
+			if (activeEmployeeId !== employeeId) {
+				console.log(`[ChatStore] appendExternalUserMessage skipped: target=${employeeId} active=${activeEmployeeId}`);
+				return;
+			}
+			// De-dupe by id in case the same event arrives twice (e.g. fast
+			// double-click on an imgui submit button).
+			if (messages.some(m => m.id === message.id)) {
+				return;
+			}
+			console.log(`[ChatStore] appendExternalUserMessage: ${employeeId} id=${message.id} len=${message.content.length}`);
+			set(state => ({ messages: [...state.messages, message] }));
 		},
 
 		// ─── Agent Session Management (Root mode) ───

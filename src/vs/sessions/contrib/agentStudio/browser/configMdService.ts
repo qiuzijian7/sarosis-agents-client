@@ -9,17 +9,20 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService, FileChangeType } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import type {
+import {
 	IConfigMdService,
+	IAgentStudioService,
+	IAgentChatService,
+} from '../common/agentStudio.js';
+import type {
 	IConfigMdCommand,
 	IConfigMdPatchOp,
 	IConfigMdState,
 	ConfigMdChangeOrigin,
-	IAgentStudioService,
-	IAgentChatService,
 } from '../common/agentStudio.js';
 import type { ConfigMdCapability, ChatMessage, Employee } from '../../../common/agentStudioTypes.js';
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
+import { postProcessImguiBlocks, IMGUI_SDK_SCRIPT, IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 
 /** Regex for `configmd-patch` JSON code blocks. */
 const PATCH_BLOCK_REGEX = /```configmd-patch\s*\n([\s\S]*?)\n```/g;
@@ -228,7 +231,12 @@ input[type="checkbox"] { margin-right: 6px; }
 	body { color: #1e1e1e; background: #ffffff; }
 	pre { background: #f5f5f5; border-color: rgba(127,127,127,0.22); }
 }
+${IMGUI_SDK_STYLES}
 `;
+	// IMPORTANT: The imgui SDK <script> is appended OUTSIDE of the rendered
+	// markdown HTML (which has been passed through `sanitizeHtml`, stripping
+	// scripts). It runs in the standalone preview document only, where the
+	// host fully controls the source.
 	return `<!doctype html>
 <html>
 <head>
@@ -240,6 +248,7 @@ ${stylesContent || ''}
 </head>
 <body>
 ${html}
+<script>${IMGUI_SDK_SCRIPT}</script>
 </body>
 </html>
 `;
@@ -326,14 +335,30 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 	private readonly _onDidReceiveHtmlEvent = this._register(new Emitter<{ employeeId: string; eventName: string; payload: unknown }>());
 	readonly onDidReceiveHtmlEvent: Event<{ employeeId: string; eventName: string; payload: unknown }> = this._onDidReceiveHtmlEvent.event;
 
+	private readonly _onDidRequestChatSend = this._register(new Emitter<{ employeeId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }>());
+	readonly onDidRequestChatSend: Event<{ employeeId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }> = this._onDidRequestChatSend.event;
+
 	private readonly _agents = new Map<string, IAgentMdState>();
 	private readonly _rateLimits = new Map<string, { count: number; resetAt: number }>();
+
+	/**
+	 * `employeeId → agentSessionId` for the agent session currently visible
+	 * in a chat panel. Populated by chat panel controllers via
+	 * {@link setActiveAgentSession}; consumed by `_handleImguiSubmit` so that
+	 * imgui form submits land in the same Fork session the user is looking
+	 * at instead of dropping into the default session.
+	 *
+	 * `undefined` (i.e. no entry) means: no chat panel has registered, so
+	 * imgui submits will fall through to the default-session behaviour
+	 * (matching the pre-Phase-3 path).
+	 */
+	private readonly _activeAgentSessions = new Map<string, string>();
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IFileService private readonly fileService: IFileService,
-		private readonly agentStudioService: IAgentStudioService,
-		private readonly agentChatService: IAgentChatService,
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@IAgentChatService private readonly agentChatService: IAgentChatService,
 	) {
 		super();
 	}
@@ -351,6 +376,25 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 			st.disposables.dispose();
 			this._agents.delete(employeeId);
 		}
+	}
+
+	// ─── Active Agent Session Registry ─────────────────────────────────────
+
+	setActiveAgentSession(employeeId: string, agentSessionId: string | undefined): void {
+		if (!employeeId) { return; }
+		const prev = this._activeAgentSessions.get(employeeId);
+		if (agentSessionId) {
+			if (prev === agentSessionId) { return; }
+			this._activeAgentSessions.set(employeeId, agentSessionId);
+		} else {
+			if (prev === undefined) { return; }
+			this._activeAgentSessions.delete(employeeId);
+		}
+		this.logService.info(`[ConfigMD] active session: ${employeeId} ${prev || '<none>'} → ${agentSessionId || '<none>'}`);
+	}
+
+	getActiveAgentSession(employeeId: string): string | undefined {
+		return this._activeAgentSessions.get(employeeId);
 	}
 
 	// ─── Capability Check ──────────────────────────────────────────────────
@@ -532,15 +576,25 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 	}
 
 	private _renderInternal(markdown: string, parser: IMdParser | undefined, employeeId: string): string {
+		let rendered: string;
 		try {
 			if (parser) {
-				const html = parser.parse(markdown, { employeeId });
-				return sanitizeHtml(html);
+				rendered = parser.parse(markdown, { employeeId });
+			} else {
+				rendered = builtInRenderMarkdown(markdown);
 			}
 		} catch (err) {
 			this.logService.warn(`[ConfigMD] Custom parser threw, falling back to built-in:`, err);
+			rendered = builtInRenderMarkdown(markdown);
 		}
-		return sanitizeHtml(builtInRenderMarkdown(markdown));
+		// Post-process: replace ` ```imgui ` code blocks rendered as
+		// `<pre><code class="lang-imgui">...</code></pre>` (built-in renderer)
+		// or `<pre><code class="language-imgui">...</code></pre>` (most third-
+		// party parsers) with the actual interactive <form> markup. This is
+		// done AFTER the markdown step so we don't interfere with the parser
+		// (which would otherwise escape the angle brackets).
+		const sanitized = sanitizeHtml(rendered);
+		return postProcessImguiBlocks(sanitized);
 	}
 
 	private async _onExternalChange(employeeId: string): Promise<void> {
@@ -687,6 +741,13 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		this._checkRateLimit(employeeId);
 		this._onDidReceiveHtmlEvent.fire({ employeeId, eventName, payload });
 
+		// imgui.submit: a button in an `imgui` block was clicked. Route by
+		// `payload.action` instead of wrapping the event blindly.
+		if (eventName === 'imgui.submit') {
+			await this._handleImguiSubmit(employeeId, payload, agentSessionId);
+			return;
+		}
+
 		const wrapped = `[ConfigMD HTML Event: ${eventName}]\n${JSON.stringify(payload, null, 2)}`;
 		try {
 			const employee = await this.agentStudioService.getEmployee(employeeId);
@@ -702,6 +763,233 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		} catch (err) {
 			this.logService.error(`[ConfigMD] handleHtmlEvent failed for ${employeeId}:`, err);
 		}
+	}
+
+	/**
+	 * Handle an `imgui.submit` event posted by the SDK in the preview HTML.
+	 *
+	 * Phase 2 supports the following actions. Unknown actions are logged
+	 * and ignored. The SDK contract is fixed (the `payload` shape is the
+	 * same across actions); each handler picks out the fields it needs.
+	 *
+	 *   send_to_chat — send `payload.message` (already template-rendered) as
+	 *                  a chat message in the agent's active session.
+	 *
+	 *   run_skill    — send a chat message that begins with a skill hint,
+	 *                  e.g. `[skill:web-search] {message}`. The model is
+	 *                  expected to interpret the hint and call the skill.
+	 *                  Button must declare `skill="..."`.
+	 *
+	 *   set_state    — atomically replace an `<!-- agent-state:NAME -->`
+	 *                  block in the markdown source with `payload.message`
+	 *                  (template-rendered content). Button must declare
+	 *                  `anchor="..."`. Equivalent to a `replace-anchor`
+	 *                  patch op but more ergonomic for simple updates.
+	 *
+	 *   patch        — apply an arbitrary list of patch operations supplied
+	 *                  in `payload.payload` (parsed by the SDK as JSON). The
+	 *                  full IConfigMdPatchOp[] schema is accepted, mirroring
+	 *                  what the model itself would emit via a configmd-patch
+	 *                  code block.
+	 *
+	 *   clear_chat   — clear the agent's chat history for the active session.
+	 *
+	 *   noop         — do nothing on the host side; useful when a button
+	 *                  exists purely to trigger client-side behaviour the
+	 *                  SDK already handled (currently unused, reserved).
+	 */
+	private async _handleImguiSubmit(
+		employeeId: string,
+		payload: unknown,
+		agentSessionId?: string,
+	): Promise<void> {
+		const p = (payload || {}) as {
+			formId?: string;
+			buttonId?: string;
+			action?: string;
+			template?: string;
+			message?: string;
+			values?: Record<string, unknown>;
+			anchor?: string;
+			skill?: string;
+			stateAnchor?: string;
+			payload?: unknown;
+			/** Trusted ctx re-attached by the host pane (preferred). */
+			_ctx?: { employeeId?: string; workspaceId?: string; workspaceSessionId?: string; agentSessionId?: string };
+			/** Untrusted ctx echoed by the SDK. Fallback only. */
+			ctx?: { employeeId?: string; workspaceId?: string; workspaceSessionId?: string; agentSessionId?: string };
+		};
+		const action = p.action || 'send_to_chat';
+
+		// Resolve routing context. Priority order:
+		//   1. `_ctx` re-attached by HtmlPreviewEditorPane on the host side
+		//      (trusted: comes from EditorInput captured at preview-open).
+		//   2. The explicit `agentSessionId` argument (e.g. handleHtmlEvent
+		//      caller-supplied — currently unused for imgui but kept for
+		//      forward compat).
+		//   3. `ctx` echoed by the SDK from the inbound `imgui.ctx`. This
+		//      is technically attacker-controlled if the preview HTML were
+		//      ever sourced from outside the host, but in practice it
+		//      always matches `_ctx` and gives us a sanity-check log.
+		//   4. The active-session registry (chat panel currently showing
+		//      this employee). Last resort.
+		const ctxTrusted = p._ctx || {};
+		const ctxEcho = p.ctx || {};
+		const resolvedSessionId =
+			ctxTrusted.agentSessionId
+			|| agentSessionId
+			|| ctxEcho.agentSessionId
+			|| this._activeAgentSessions.get(employeeId);
+		const resolvedWorkspaceId = ctxTrusted.workspaceId || ctxEcho.workspaceId;
+		const resolvedWorkspaceSessionId = ctxTrusted.workspaceSessionId || ctxEcho.workspaceSessionId;
+
+		this.logService.info(
+			`[ConfigMD] imgui.submit ${employeeId} form=${p.formId} button=${p.buttonId} action=${action} `
+			+ `→ ws=${resolvedWorkspaceId || '<none>'} forkSession=${resolvedWorkspaceSessionId || '<none>'} `
+			+ `agentSession=${resolvedSessionId || '<none>'}`
+		);
+		if (ctxTrusted.agentSessionId && ctxEcho.agentSessionId
+			&& ctxTrusted.agentSessionId !== ctxEcho.agentSessionId) {
+			this.logService.warn(
+				`[ConfigMD] imgui.submit ctx mismatch: trusted=${ctxTrusted.agentSessionId} echoed=${ctxEcho.agentSessionId} `
+				+ `— honoring the trusted (host-attached) value`
+			);
+		}
+
+		// Phase 3: state snapshot. If the button declared `state="<anchor>"`,
+		// persist the form's current values into agent.md at that anchor as
+		// a JSON code block, BEFORE running the main action. The agent can
+		// then read the form state in any later prompt by referencing the
+		// anchor (or by reading the whole agent.md). We swallow errors here
+		// so a misnamed anchor doesn't block the user's primary intent.
+		const stateAnchor = (p.stateAnchor || '').trim();
+		if (stateAnchor && p.values) {
+			const snapshot = '```json\n' + JSON.stringify(p.values, null, 2) + '\n```';
+			try {
+				await this.applyPatch(
+					employeeId,
+					[{ op: 'replace-anchor', anchor: stateAnchor, content: snapshot }],
+					{ origin: 'html' },
+				);
+				this.logService.info(`[ConfigMD] imgui state snapshot → anchor='${stateAnchor}' (form=${p.formId})`);
+			} catch (err) {
+				this.logService.warn(`[ConfigMD] imgui state snapshot failed for anchor='${stateAnchor}':`, err);
+			}
+		}
+
+		switch (action) {
+			case 'send_to_chat': {
+				const message = (p.message || '').trim();
+				if (!message) {
+					this.logService.warn(`[ConfigMD] imgui send_to_chat: empty message (button has no template?), dropping`);
+					return;
+				}
+				this._sendChatMessage(employeeId, message, resolvedSessionId, resolvedWorkspaceId, resolvedWorkspaceSessionId);
+				return;
+			}
+			case 'run_skill': {
+				const skill = (p.skill || '').trim();
+				if (!skill) {
+					this.logService.warn(`[ConfigMD] imgui run_skill: missing 'skill' attribute on button, dropping`);
+					return;
+				}
+				const body = (p.message || '').trim();
+				const message = body
+					? `[skill:${skill}] ${body}`
+					: `[skill:${skill}] 请使用此 skill 完成相关任务。`;
+				this._sendChatMessage(employeeId, message, resolvedSessionId, resolvedWorkspaceId, resolvedWorkspaceSessionId);
+				return;
+			}
+			case 'set_state': {
+				const anchor = (p.anchor || '').trim();
+				if (!anchor) {
+					this.logService.warn(`[ConfigMD] imgui set_state: missing 'anchor' attribute on button, dropping`);
+					return;
+				}
+				const content = p.message || '';
+				try {
+					await this.applyPatch(
+						employeeId,
+						[{ op: 'replace-anchor', anchor, content }],
+						{ origin: 'html' },
+					);
+				} catch (err) {
+					this.logService.error(`[ConfigMD] imgui set_state failed for ${employeeId} anchor=${anchor}:`, err);
+				}
+				return;
+			}
+			case 'patch': {
+				// Accept patches via either `payload.payload` (parsed JSON) or
+				// the rendered template (in case authors use template= for it).
+				let ops: unknown = p.payload;
+				if (ops === undefined) {
+					try { ops = JSON.parse(p.message || ''); } catch { ops = undefined; }
+				}
+				if (!Array.isArray(ops)) {
+					this.logService.warn(`[ConfigMD] imgui patch: payload is not an array of ops`);
+					return;
+				}
+				try {
+					await this.applyPatch(employeeId, ops as IConfigMdPatchOp[], { origin: 'html' });
+				} catch (err) {
+					this.logService.error(`[ConfigMD] imgui patch failed for ${employeeId}:`, err);
+				}
+				return;
+			}
+			case 'clear_chat': {
+				try {
+					await this.agentChatService.clearHistory(employeeId, resolvedSessionId);
+				} catch (err) {
+					this.logService.error(`[ConfigMD] imgui clear_chat failed for ${employeeId}:`, err);
+				}
+				return;
+			}
+			case 'noop':
+				return;
+			default:
+				this.logService.warn(`[ConfigMD] Unknown imgui action '${action}' (Phase 2 supports send_to_chat / run_skill / set_state / patch / clear_chat / noop)`);
+				return;
+		}
+	}
+
+	/**
+	 * Internal helper: route an imgui-originated chat message through the
+	 * webview controller's full chat.send pipeline.
+	 *
+	 * We DO NOT call `agentChatService.sendMessage` directly here, because
+	 * that path bypasses two essential responsibilities of the controller:
+	 *   1. Persisting the user message to chat history (so the chat UI
+	 *      shows the message the user "sent" via the imgui button).
+	 *   2. Streaming `chat.stream.delta` events to the chat panel webview
+	 *      so the in-flight thinking/text is visible.
+	 *
+	 * Instead we fire `onDidRequestChatSend`, which the controller listens
+	 * to and forwards into its existing `_handleChatSend` flow — making
+	 * imgui submits behaviorally identical to typing in the chat input.
+	 *
+	 * Phase 3: if the caller didn't supply an `agentSessionId` (the common
+	 * case — preview pane doesn't track sessions), fall back to the active
+	 * session registered by the chat panel controller. This makes imgui
+	 * submits land in the Fork session the user is actually looking at.
+	 */
+	private _sendChatMessage(
+		employeeId: string,
+		message: string,
+		agentSessionId?: string,
+		workspaceId?: string,
+		workspaceSessionId?: string,
+	): void {
+		const resolvedSessionId = agentSessionId || this._activeAgentSessions.get(employeeId);
+		if (!agentSessionId && resolvedSessionId) {
+			this.logService.info(`[ConfigMD] _sendChatMessage: resolved sessionId from registry: ${employeeId} → ${resolvedSessionId}`);
+		}
+		this._onDidRequestChatSend.fire({
+			employeeId,
+			message,
+			agentSessionId: resolvedSessionId,
+			workspaceId,
+			workspaceSessionId,
+		});
 	}
 
 	async handleChatSend(

@@ -336,6 +336,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// Extract bootstrapTemplates — used for agent dir creation but NOT persisted to employees.json
 		const bootstrapTemplates = data.bootstrapTemplates;
 
+		// Merge caller-provided skills with the default skill set every new
+		// agent should ship with (e.g. `configmd` so the agent knows how to
+		// drive its own ConfigMD panel from day one). Caller-supplied skills
+		// take precedence on id collision so explicit overrides win.
+		const mergedSkills = this._mergeWithDefaultSkills(data.skills);
+
 		const newEmployee: Employee = {
 			id,
 			name: data.name || 'New Employee',
@@ -345,7 +351,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			presetId: data.presetId,
 			model: data.model,
 			customPrompt: data.customPrompt,
-			skills: data.skills || [],
+			skills: mergedSkills,
 			status: EmployeeStatus.Idle,
 			agentType: (data as Record<string, unknown>).agentType as Employee['agentType'],
 			teamId: data.teamId,
@@ -1096,7 +1102,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			model: data.employee.model,
 			provider: data.employee.provider,
 			customPrompt: data.employee.customPrompt,
-			skills: data.employee.skills || [],
+			skills: this._mergeWithDefaultSkills(data.employee.skills),
 			status: EmployeeStatus.Idle,
 			workspaceId,
 			position: this._computeNonOverlappingPosition(existingEmployees),
@@ -1189,6 +1195,56 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * Generate a unique, filesystem-safe slug for the agent directory.
 	 * Format: `<lowercase-name>-<shortId>` (e.g. "coder-xk4mq9b")
 	 */
+	/**
+	 * Skill IDs that every freshly-created (or imported) agent should have
+	 * by default. Each id MUST exist in the SkillRegistry's BUILTIN_SKILLS
+	 * (or be available via another source) — otherwise we fall back to a
+	 * minimal placeholder SKILL.md when materialising the skills folder.
+	 *
+	 * `configmd` ships with the skill prompt that teaches the agent how to
+	 * read / patch / push to its own ConfigMD panel. Bundling it by default
+	 * means a brand-new agent can drive its panel UI from the very first
+	 * conversation without the user manually wiring anything up.
+	 */
+	private static readonly DEFAULT_AGENT_SKILL_IDS: readonly string[] = [
+		'configmd',
+	];
+
+	/**
+	 * Combine `provided` with {@link DEFAULT_AGENT_SKILL_IDS}, de-duplicating
+	 * by skill id and giving caller-supplied entries priority on collision.
+	 *
+	 * The default skill is materialised from the live SkillRegistry so the
+	 * EmployeeSkill carries the registry's current name/description; if the
+	 * id is missing from the registry (very unusual — would mean someone
+	 * removed it from BUILTIN_SKILLS), we synthesise a minimal placeholder
+	 * so `_createAgentSkillsDir` still has something to write.
+	 */
+	private _mergeWithDefaultSkills(
+		provided: readonly import('../../../common/agentStudioTypes.js').EmployeeSkill[] | undefined,
+	): import('../../../common/agentStudioTypes.js').EmployeeSkill[] {
+		const seen = new Set<string>();
+		const out: import('../../../common/agentStudioTypes.js').EmployeeSkill[] = [];
+		for (const s of provided || []) {
+			if (s?.id && !seen.has(s.id)) {
+				seen.add(s.id);
+				out.push(s);
+			}
+		}
+		for (const id of AgentStudioService.DEFAULT_AGENT_SKILL_IDS) {
+			if (seen.has(id)) { continue; }
+			seen.add(id);
+			const def = this.skillRegistry.getSkill(id);
+			out.push({
+				id,
+				name: def?.name ?? id,
+				enabled: true,
+				description: def?.description,
+			});
+		}
+		return out;
+	}
+
 	private _generateAgentSlug(name: string, id: string): string {
 		const sanitised = name
 			.toLowerCase()
