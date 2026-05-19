@@ -209,6 +209,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	// ─── 内置工具集 ─────────────────────────────────────────────────────
 
 	private _registerCoreTools(): void {
+		this.logService.info('[BuiltinTools] _registerCoreTools: starting to register core tools');
 		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 
 		// ── utility ─────────────────────────────────────────────────────
@@ -404,6 +405,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 同名工具（已有原生 handler）不会被覆盖。
 	 */
 	private _registerBundledTools(): void {
+		this.logService.info(`[BuiltinTools] _registerBundledTools: loading ${BUNDLED_TOOL_DEFINITIONS.length} bundled tool definitions`);
 		for (const def of BUNDLED_TOOL_DEFINITIONS) {
 			if (this._tools.has(def.name)) {
 				// 原生工具优先，不覆盖

@@ -232,10 +232,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	async listAllToolsWithState(agentId: string): Promise<(IToolDefinition & { enabled: boolean })[]> {
 		// 获取所有已注册的 tool provider，而不仅是 active provider
-		const allProviders = this._slotRegistry.getToolProviders?.() ??
-			(this.getActiveToolProvider() ? [this.getActiveToolProvider()!] : []);
+		// 注意：不使用可选链，因为 getToolProviders 在 ISlotRegistry 接口中是必需方法
+		let allProviders: IToolProvider[];
+		try {
+			allProviders = this._slotRegistry.getToolProviders();
+		} catch (err) {
+			this._logService.warn('[AgentOS] listAllToolsWithState: getToolProviders() failed, falling back to active provider', err);
+			allProviders = this.getActiveToolProvider() ? [this.getActiveToolProvider()!] : [];
+		}
 
-		if (allProviders.length === 0) { return []; }
+		this._logService.info(`[AgentOS] listAllToolsWithState: found ${allProviders.length} tool providers`);
+		for (const p of allProviders) {
+			this._logService.info(`[AgentOS] listAllToolsWithState: provider ${p.id}`);
+		}
+
+		if (allProviders.length === 0) {
+			this._logService.warn('[AgentOS] listAllToolsWithState: no tool providers registered!');
+			return [];
+		}
 
 		const allTools: IToolDefinition[] = [];
 		for (const provider of allProviders) {

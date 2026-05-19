@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
-import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, type StreamState } from '../bridge/streamHandler';
+import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
 export interface ChatMessage {
@@ -89,14 +89,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 		// currently displayed chat after the user switches employees.
 		const { activeEmployeeId, activeAgentSessionId } = get();
 		if (streamState.isStreaming && streamState.employeeId && streamState.employeeId !== activeEmployeeId) {
-			console.warn(`[ChatStore] subscribeStream: discarding streamState for different employee ` +
-				`(streamEmployee=${streamState.employeeId}, activeEmployee=${activeEmployeeId})`);
 			return;
 		}
 		if (streamState.isStreaming && streamState.sessionId && activeAgentSessionId &&
 			streamState.sessionId !== activeAgentSessionId) {
-			console.warn(`[ChatStore] subscribeStream: discarding streamState for different session ` +
-				`(streamSession=${streamState.sessionId}, activeSession=${activeAgentSessionId})`);
 			return;
 		}
 
@@ -176,19 +172,30 @@ export const useChatStore = create<ChatState>((set, get) => {
 			return;
 		}
 
-		// Use buffers if available, otherwise fallback to host-assembled message.
-		// This fallback is critical when:
-		// 1. Stream was very fast and complete arrived before any delta
-		// 2. handleStreamError reset the buffers but complete still has the full message
-		const textContent = finalState.textBuffer || (hostMessage?.content as string) || '';
-		const thinkingContent = finalState.thinkingBuffer || (hostMessage?.thinking as string) || '';
+		// Prefer the host-assembled message (hostMessage) as the authoritative source
+		// because it accumulates ALL deltas server-side without any risk of missing
+		// chunks due to RAF cancellation, background-stream switching, or other
+		// webview-side timing issues. Fall back to the webview-side buffers only
+		// when the host didn't provide the field.
+		// Additionally, as a defensive measure, always pick the LONGER of the two
+		// sources — this guards against any scenario where the webview buffer is
+		// truncated (e.g. switch-related timing) or the hostMessage is unexpectedly
+		// incomplete (e.g. error mid-stream where host still sends partial content).
+		const hostText = (hostMessage?.content as string) || '';
+		const hostThinking = (hostMessage?.thinking as string) || '';
+		const textContent = hostText.length >= finalState.textBuffer.length ? hostText : finalState.textBuffer;
+		const thinkingContent = hostThinking.length >= finalState.thinkingBuffer.length ? hostThinking : finalState.thinkingBuffer;
 
 		console.log('[ChatStore] Building assistant message:', {
 			textContentLen: textContent.length,
 			textContentPreview: textContent.substring(0, 80),
 			thinkingContentLen: thinkingContent.length,
-			usedBuffer: !!finalState.textBuffer,
-			usedHostFallback: !finalState.textBuffer && !!hostMessage?.content,
+			usedHostText: textContent === hostText,
+			usedHostThinking: thinkingContent === hostThinking,
+			hostTextLen: hostText.length,
+			hostThinkingLen: hostThinking.length,
+			bufferTextLen: finalState.textBuffer.length,
+			bufferThinkingLen: finalState.thinkingBuffer.length,
 		});
 
 		// Reset silently (no notify → no intermediate subscribeStream callback)
@@ -255,8 +262,18 @@ export const useChatStore = create<ChatState>((set, get) => {
 				forkSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(employeeId);
 			} catch { /* store not available */ }
 
-			resetStream();
-			set({ activeEmployeeId: employeeId, activeAgentSessionId: forkSessionId, messages: [], inputValue: '', agentSessions: [] });
+			// Save current stream to background and restore any saved stream for the new employee.
+			// Must be done atomically with updating activeEmployeeId so subscribeStream
+			// doesn't discard the restored stream due to stale activeEmployeeId.
+			const newStreamState = switchActiveStream(employeeId, forkSessionId);
+			set({
+				activeEmployeeId: employeeId,
+				activeAgentSessionId: forkSessionId,
+				messages: [],
+				inputValue: '',
+				agentSessions: [],
+				streamState: newStreamState,
+			});
 
 			if (forkSessionId) {
 				// Fork mode: directly load fork session
@@ -302,11 +319,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 					set({ isLoading: false });
 					return;
 				}
-				// Guard: don't overwrite messages if streaming is in progress
+				// Guard: don't overwrite messages if local messages already exist
+				// (e.g. user typed something during the await, or a background
+				// stream completion already appended an assistant message). We
+				// must NOT guard on `isStreaming` here — when the user switches
+				// back to an employee whose stream is still running, we restored
+				// its background streamState and need the historical messages
+				// to render alongside the live streaming bubble. Skipping here
+				// would leave the chat panel empty (only the streaming bubble).
 				const currentMessages = get().messages;
-				const { isStreaming } = getStreamState();
-				if (isStreaming || currentMessages.length > 0) {
-					console.warn(`[ChatStore] loadHistoryForSession: skipping — streaming=${isStreaming}, existingMessages=${currentMessages.length}`);
+				if (currentMessages.length > 0) {
+					console.warn(`[ChatStore] loadHistoryForSession: skipping — existingMessages=${currentMessages.length}`);
 					set({ isLoading: false });
 					return;
 				}
@@ -453,8 +476,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 					{ employeeId: activeEmployeeId },
 				);
 				if (meta?.id) {
-					resetStream();
-					set({ activeAgentSessionId: meta.id, messages: [] });
+					const newStreamState = switchActiveStream(activeEmployeeId, meta.id);
+					set({ activeAgentSessionId: meta.id, messages: [], streamState: newStreamState });
 					get().loadHistoryForSession(activeEmployeeId, meta.id);
 					get().loadAgentSessions(activeEmployeeId);
 				}
@@ -466,8 +489,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 		switchAgentSession: async (sessionId: string) => {
 			const { activeEmployeeId } = get();
 			if (!activeEmployeeId) { return; }
-			resetStream();
-			set({ activeAgentSessionId: sessionId, messages: [] });
+			const newStreamState = switchActiveStream(activeEmployeeId, sessionId);
+			set({ activeAgentSessionId: sessionId, messages: [], streamState: newStreamState });
 			get().loadHistoryForSession(activeEmployeeId, sessionId);
 		},
 
@@ -501,8 +524,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 				});
 				// If we deleted the active session, switch back to default
 				if (activeAgentSessionId === sessionId) {
-					resetStream();
-					set({ activeAgentSessionId: null, messages: [] });
+					const newStreamState = switchActiveStream(activeEmployeeId, null);
+					set({ activeAgentSessionId: null, messages: [], streamState: newStreamState });
 					get().loadHistoryForSession(activeEmployeeId, undefined);
 				}
 				// Reload session list

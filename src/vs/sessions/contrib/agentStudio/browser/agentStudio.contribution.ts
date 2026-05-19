@@ -695,10 +695,12 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 
 	private _registerBuiltinTools(): void {
 		try {
+			this.logService.info('[BuiltinCapability] _registerBuiltinTools: creating BuiltinToolProvider instance...');
 			const provider = this._register(this.instantiationService.createInstance(BuiltinToolProvider));
+			this.logService.info('[BuiltinCapability] _registerBuiltinTools: BuiltinToolProvider instance created, registering to AgentOS...');
 			// priority 50 — 让运行时由扩展注入的 ToolProvider（typically priority 100+）能覆盖。
 			this._register(this.agentOSService.registerToolProvider(provider, 50));
-			this.logService.info('[BuiltinCapability] BuiltinToolProvider registered');
+			this.logService.info('[BuiltinCapability] BuiltinToolProvider registered successfully');
 		} catch (err) {
 			this.logService.error('[BuiltinCapability] BuiltinToolProvider registration failed', err);
 		}

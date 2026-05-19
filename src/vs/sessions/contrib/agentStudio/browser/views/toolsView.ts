@@ -126,8 +126,10 @@ export class ToolsViewPane extends ViewPane {
 		const next: ToolDefinitionUI[] = [];
 
 		try {
+			console.log('[ToolsView] _reload: calling listAllToolsWithState...');
 			// 使用 listAllToolsWithState() 获取所有工具及其启用状态
 			const toolsWithState = await this.agentOSService.listAllToolsWithState('viewer');
+			console.log(`[ToolsView] _reload: listAllToolsWithState returned ${toolsWithState.length} tools`);
 
 			for (const tool of toolsWithState) {
 				const cat = categorize(tool.category);
@@ -145,6 +147,7 @@ export class ToolsViewPane extends ViewPane {
 			// 如果返回空且未超过最大重试次数，则延迟重试（provider 可能尚未注册）
 			if (next.length === 0 && this.retryCount < this.maxRetries) {
 				this.retryCount++;
+				console.log(`[ToolsView] _reload: empty result, retry ${this.retryCount}/${this.maxRetries}`);
 				setTimeout(() => { void this._reload(); }, 2000);
 				return;
 			}
@@ -154,15 +157,17 @@ export class ToolsViewPane extends ViewPane {
 				this.retryCount = 0;
 			}
 		} catch (err) {
-			console.warn('[ToolsView] Failed to load tools:', err);
+			console.error('[ToolsView] _reload: Failed to load tools:', err);
 			// provider 未就绪时延迟重试
 			if (this.retryCount < this.maxRetries) {
 				this.retryCount++;
+				console.log(`[ToolsView] _reload: error, retry ${this.retryCount}/${this.maxRetries}`);
 				setTimeout(() => { void this._reload(); }, 2000);
 				return;
 			}
 		}
 
+		console.log(`[ToolsView] _reload: setting this.tools to ${next.length} tools, rendering`);
 		this.tools = next;
 		this._renderTools();
 	}

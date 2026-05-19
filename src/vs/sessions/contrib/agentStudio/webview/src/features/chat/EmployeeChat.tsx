@@ -11,7 +11,7 @@
  *  Ref: sarosis-webui EmployeeChat.tsx main chat layout
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
@@ -28,10 +28,13 @@ interface EmployeeChatProps {
 }
 
 export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.ReactElement {
-	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee } = useChatStore();
+	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee, isLoading } = useChatStore();
 	const { employees, selectedEmployeeId } = useEmployeeStore();
 	const { selection, loadSelectionForEmployee } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	/** Track whether we just loaded history (vs. a new message arriving).
+	 *  When history loads we want instant scroll; for new messages we use smooth. */
+	const wasLoadingRef = useRef(false);
 
 	// Sync selected employee with chat
 	useEffect(() => {
@@ -47,9 +50,18 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		}
 	}, [activeEmployeeId, loadSelectionForEmployee]);
 
-	// Auto-scroll to bottom on new messages or streaming updates
+	// Track loading state for scroll behavior
 	useEffect(() => {
-		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+		if (isLoading) {
+			wasLoadingRef.current = true;
+		}
+	}, [isLoading]);
+
+	// Auto-scroll to bottom: instant after history load, smooth for new messages/streaming
+	useLayoutEffect(() => {
+		const behavior = wasLoadingRef.current ? 'instant' : 'smooth';
+		wasLoadingRef.current = false;
+		messagesEndRef.current?.scrollIntoView({ behavior });
 	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls]);
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
