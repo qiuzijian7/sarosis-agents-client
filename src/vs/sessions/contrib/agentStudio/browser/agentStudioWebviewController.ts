@@ -1201,6 +1201,16 @@ export class AgentStudioWebviewController extends Disposable {
 				);
 				return;
 			}
+			// Also avoid duplicate sends when multiple sessions for the same
+			// employee are open: only the panel with the matching agent session
+			// should respond.
+			if (this._activeChatAgentSessionId && this._activeChatAgentSessionId !== agentSessionId) {
+				this.logService.info(
+					`[AgentStudioWebviewController] imgui→chat.send for ${employeeId}/${agentSessionId} ignored by panel `
+					+ `with session ${this._activeChatAgentSessionId}`
+				);
+				return;
+			}
 			this.logService.info(
 				`[AgentStudioWebviewController] imgui→chat.send ${employeeId} `
 				+ `(workspaceId=${workspaceId || '<none>'}, sessionId=${agentSessionId || '<none>'})`
