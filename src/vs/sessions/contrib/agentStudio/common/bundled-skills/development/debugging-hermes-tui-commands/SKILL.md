@@ -1,4 +1,4 @@
----
+﻿---
 name: debugging-hermes-tui-commands
 description: Debug Hermes TUI slash commands: Python, gateway, Ink UI.
 activation: auto
@@ -48,7 +48,7 @@ Command definitions must be registered consistently across Python and TypeScript
 
 2. **Examine the TUI command definition:**
    ```bash
-   read_file ui-tui/src/app/slash/commands/core.ts
+   file_read ui-tui/src/app/slash/commands/core.ts
    # If not there:
    search_files --pattern "commandname" --path ui-tui/src/app/slash/commands --target files
    ```
@@ -143,7 +143,7 @@ After fixing:
 
 4. Execute the command and confirm:
    - Expected behavior fires
-   - Any persisted config updates correctly (`read_file ~/.hermes/config.yaml`)
+   - Any persisted config updates correctly (`file_read ~/.hermes/config.yaml`)
    - Live UI state reflects the change immediately (not just after restart)
 
 5. If the command is also gateway-available, test it from at least one messaging platform (or run the gateway tests: `scripts/run_tests.sh tests/gateway/`).

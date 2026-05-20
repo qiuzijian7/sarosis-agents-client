@@ -1,4 +1,4 @@
----
+﻿---
 name: plan
 description: Plan mode: write markdown plan to .hermes/plans/, no exec.
 activation: auto
@@ -39,7 +39,7 @@ If the task is code-related, include exact file paths, likely test targets, and 
 
 ## Save location
 
-Save the plan with `write_file` under:
+Save the plan with `file_write` under:
 - `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md`
 
 Treat that as relative to the active working directory / backend workspace. Hermes file tools are backend-aware, so using this relative path keeps the plan with the workspace on local, docker, ssh, modal, and daytona backends.

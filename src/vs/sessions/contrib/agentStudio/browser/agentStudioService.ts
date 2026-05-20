@@ -496,6 +496,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		const oldSkills = employees[index].skills ?? [];
 		const oldSkillIds = new Set(oldSkills.map(s => s.id));
+		const oldName = employees[index].name;
 
 		employees[index] = {
 			...employees[index],
@@ -532,6 +533,84 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 
 		this.logService.info(`[AgentStudio] updateEmployee: wrote employees.json, firing onDidChangeEmployees`);
+
+		// ─── Name change sync ───────────────────────────────────────────
+		// When the employee's name changes, propagate to agent.yaml, IDENTITY.md,
+		// and SOUL.md so that all files stay in sync.
+		if (data.name !== undefined && updated.agentDir) {
+			try {
+				const agentDirUri = URI.joinPath(dirUri, AGENTS_DIR, updated.agentDir);
+
+				// 1) Update agent.yaml — overwrite name and updatedAt fields
+				const configUri = URI.joinPath(agentDirUri, AGENT_CONFIG_FILE);
+				try {
+					const raw = await this.fileService.readFile(configUri);
+					const agentConfig = JSON.parse(raw.value.toString());
+					agentConfig.name = updated.name;
+					agentConfig.updatedAt = updated.updatedAt;
+					await this.fileService.writeFile(
+						configUri,
+						VSBuffer.fromString(JSON.stringify(agentConfig, null, 2)),
+					);
+					this.logService.info(`[AgentStudio] updateEmployee: synced name to agent.yaml`);
+				} catch (err) {
+					this.logService.debug(`[AgentStudio] updateEmployee: could not update agent.yaml name`, err);
+				}
+
+				// 2) Update IDENTITY.md — replace the Name section
+				try {
+					const identityUri = URI.joinPath(agentDirUri, AGENT_IDENTITY_MD);
+					const identityContent = await this.fileService.readFile(identityUri);
+					let text = identityContent.value.toString();
+					// Replace the line after "## Name" with the new name
+					text = text.replace(/(^## Name\s*\n)(.*(?:\n|$))/m, `$1${updated.name}\n`);
+					await this.fileService.writeFile(identityUri, VSBuffer.fromString(text));
+					this.logService.info(`[AgentStudio] updateEmployee: synced name to IDENTITY.md`);
+				} catch (err) {
+					this.logService.debug(`[AgentStudio] updateEmployee: could not update IDENTITY.md name`, err);
+				}
+
+				// 3) Update SOUL.md — replace the "You are **OldName**" pattern
+				try {
+					const soulUri = URI.joinPath(agentDirUri, AGENT_SOUL_MD);
+					const soulContent = await this.fileService.readFile(soulUri);
+					let text = soulContent.value.toString();
+					// The template writes: "You are **OldName**, a Role."
+					text = text.replace(
+						new RegExp(`You are \\*\\*${escapeRegExp(oldName)}\\*\\*`, 'g'),
+						`You are **${updated.name}**`,
+					);
+					// Also update the title line: "# SOUL.md - Who You Are" has no name, but user may have edited it
+					text = text.replace(
+						new RegExp(`^(# SOUL\\.md - ).*$`, 'm'),
+						`$1${updated.name}`,
+					);
+					await this.fileService.writeFile(soulUri, VSBuffer.fromString(text));
+					this.logService.info(`[AgentStudio] updateEmployee: synced name to SOUL.md`);
+				} catch (err) {
+					this.logService.debug(`[AgentStudio] updateEmployee: could not update SOUL.md name`, err);
+				}
+
+				// 4) Update AGENTS.md — replace the title "# AGENTS.md - OldName"
+				try {
+					const agentsUri = URI.joinPath(agentDirUri, AGENT_AGENTS_MD);
+					const agentsContent = await this.fileService.readFile(agentsUri);
+					let text = agentsContent.value.toString();
+					// The template writes: "# AGENTS.md - OldName"
+					text = text.replace(
+						new RegExp(`^(# AGENTS\\.md - )${escapeRegExp(oldName)}`, 'm'),
+						`$1${updated.name}`,
+					);
+					await this.fileService.writeFile(agentsUri, VSBuffer.fromString(text));
+					this.logService.info(`[AgentStudio] updateEmployee: synced name to AGENTS.md`);
+				} catch (err) {
+					this.logService.debug(`[AgentStudio] updateEmployee: could not update AGENTS.md name`, err);
+				}
+			} catch (err) {
+				this.logService.warn(`[AgentStudio] updateEmployee: failed to sync name to agent files`, err);
+			}
+		}
+
 		this._onDidChangeEmployees.fire();
 		return employees[index];
 	}
@@ -1751,4 +1830,9 @@ ${employee.role}
 <!-- Current tasks and their status -->
 `;
 	}
+}
+
+/** Escape special regex characters in a string for use in RegExp constructor. */
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

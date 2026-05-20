@@ -25,6 +25,10 @@ export const AGENT_STUDIO_NOTIFICATION_SOUND_SETTING = 'sessions.agentStudio.pre
 export const AGENT_STUDIO_BROWSER_NOTIFICATIONS_SETTING = 'sessions.agentStudio.preferences.browserNotifications';
 export const AGENT_STUDIO_CHECK_UPDATES_SETTING = 'sessions.agentStudio.preferences.checkUpdates';
 
+// Configuration keys — Skill Budget Limits
+export const AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING = 'sessions.agentStudio.skills.maxSkillsInPrompt';
+export const AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING = 'sessions.agentStudio.skills.maxSkillsPromptChars';
+
 // Configuration keys — Auxiliary Models
 export const AGENT_STUDIO_AUX_VISION_PROVIDER = 'sessions.agentStudio.aux.vision.provider';
 export const AGENT_STUDIO_AUX_VISION_MODEL = 'sessions.agentStudio.aux.vision.model';

@@ -176,14 +176,20 @@ export class ToolsViewPane extends ViewPane {
 	 * 渲染工具列表
 	 */
 	private _renderTools(): void {
-		this.listContainer.innerHTML = '';
+		// 安全地清空容器 - 不使用 innerHTML（CSP 限制）
+		while (this.listContainer.firstChild) {
+			this.listContainer.removeChild(this.listContainer.firstChild);
+		}
+		
 		const filtered = this.activeTab === 'all'
 			? this.tools
 			: this.tools.filter(t => t.category === this.activeTab);
 
 		if (filtered.length === 0) {
 			const empty = $('div.tools-empty');
-			empty.innerHTML = '<p>No tools available. Try refreshing to see built-in tools.</p>';
+			const p = $('p');
+			p.textContent = 'No tools available. Try refreshing to see built-in tools.';
+			empty.appendChild(p);
 			this.listContainer.appendChild(empty);
 			return;
 		}

@@ -1,4 +1,4 @@
----
+﻿---
 name: popular-web-designs
 description: 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
 activation: manual
@@ -33,7 +33,7 @@ system, shadows, responsive behavior, and practical agent prompts with exact CSS
 Each template includes a **Hermes Implementation Notes** block at the top with:
 - CDN font substitute and Google Fonts `<link>` tag (ready to paste)
 - CSS font-family stacks for primary and monospace
-- Reminders to use `write_file` for HTML creation and `browser_vision` for verification
+- Reminders to use `file_write` for HTML creation and `browser_vision` for verification
 
 ## HTML Generation Pattern
 
@@ -71,7 +71,7 @@ Each template includes a **Hermes Implementation Notes** block at the top with:
 </html>
 ```
 
-Write the file with `write_file`, serve with the `generative-widgets` workflow (cloudflared tunnel),
+Write the file with `file_write`, serve with the `generative-widgets` workflow (cloudflared tunnel),
 and verify the result with `browser_vision` to confirm visual accuracy.
 
 ## Font Substitution Reference

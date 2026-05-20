@@ -69,14 +69,14 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		source: 'hermes-bundled',
 	},
 	{
-		name: "read_file",
+		name: "file_read",
 		description: "Read a file and return its content. Supports reading specific line ranges.",
 		inputSchema: {"type":"object","properties":{"path":{"type":"string","description":"Absolute or relative file path"},"start_line":{"type":"number","description":"Start line number (1-based, optional)"},"end_line":{"type":"number","description":"End line number (inclusive, optional)"}},"required":["path"]},
 		category: "file",
 		source: 'hermes-bundled',
 	},
 	{
-		name: "write_file",
+		name: "file_write",
 		description: "Write content to a file. Creates the file and parent directories if they don't exist.",
 		inputSchema: {"type":"object","properties":{"path":{"type":"string","description":"File path to write"},"content":{"type":"string","description":"Content to write"}},"required":["path","content"]},
 		category: "file",
@@ -84,7 +84,7 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 	},
 	{
 		name: "patch",
-		description: "Apply a fuzzy-matched patch to a file. Finds the best match for the search text and replaces it. Safer than write_file for targeted edits.",
+		description: "Apply a fuzzy-matched patch to a file. Finds the best match for the search text and replaces it. Safer than file_write for targeted edits.",
 		inputSchema: {"type":"object","properties":{"path":{"type":"string","description":"File path to patch"},"search":{"type":"string","description":"Text to search for (fuzzy matched)"},"replace":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace all occurrences (default: false)"}},"required":["path","search","replace"]},
 		category: "file",
 		source: 'hermes-bundled',
@@ -547,7 +547,7 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 	},
 	"file": {
 		description: "File manipulation",
-		tools: ["read_file","write_file","patch","search_files"],
+		tools: ["file_read","file_write","patch","search_files"],
 		includes: [],
 	},
 	"browser": {

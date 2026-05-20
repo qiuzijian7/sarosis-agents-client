@@ -1,4 +1,4 @@
----
+﻿---
 name: macos-computer-use
 activation: manual
 match: [macos-computer-use, macos computer use, computer-use, desktop, gui]
@@ -146,7 +146,7 @@ target that app's frontmost window automatically.
 When the user is on a messaging platform (Telegram, Discord, etc.) and you
 took a screenshot they should see, save it somewhere durable and use
 `MEDIA:/absolute/path.png` in your reply. cua-driver's screenshots are
-PNG bytes; write them out with `write_file` or the terminal (`base64 -d`).
+PNG bytes; write them out with `file_write` or the terminal (`base64 -d`).
 
 On CLI, you can just describe what you see — the screenshot data stays in
 your conversation context.
@@ -188,6 +188,6 @@ your conversation context.
   browser. Reach for `computer_use` specifically when the task needs the
   user's actual Mac apps (native Mail, Messages, Finder, Figma, Logic,
   games, anything non-web).
-- File edits — use `read_file` / `write_file` / `patch`, not `type` into
+- File edits — use `file_read` / `file_write` / `patch`, not `type` into
   an editor window.
 - Shell commands — use `terminal`, not `type` into Terminal.app.

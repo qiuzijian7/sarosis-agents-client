@@ -1,4 +1,4 @@
----
+﻿---
 name: writing-plans
 description: Write implementation plans: bite-sized tasks, paths, code.
 activation: auto
@@ -151,7 +151,7 @@ search_files("similar_pattern", path="src/", file_glob="*.py")
 search_files("*.py", target="files", path="tests/")
 
 # Read key files
-read_file("src/app.py")
+file_read("src/app.py")
 ```
 
 ### Step 3: Design Approach

@@ -1,4 +1,4 @@
----
+﻿---
 name: spike
 description: Throwaway experiments to validate an idea before build.
 activation: auto
@@ -79,7 +79,7 @@ Use Hermes tools for the research step:
 - `web_extract(urls=["https://websockets.readthedocs.io/..."])` — read the actual docs (returns markdown)
 - `terminal("pip show websockets | grep Version")` — check what's installed in the project's venv
 
-For libraries without docs pages, clone and read their `README.md` / `examples/` via `read_file`. Context7 MCP (if the user has it configured) is also a good source — `mcp_*_resolve-library-id` then `mcp_*_query-docs`.
+For libraries without docs pages, clone and read their `README.md` / `examples/` via `file_read`. Context7 MCP (if the user has it configured) is also a good source — `mcp_*_resolve-library-id` then `mcp_*_query-docs`.
 
 ### 4. Build
 
@@ -113,8 +113,8 @@ spikes/
 
 ```
 terminal("mkdir -p spikes/001-websocket-streaming")
-write_file("spikes/001-websocket-streaming/README.md", "# 001: websocket-streaming\n\n...")
-write_file("spikes/001-websocket-streaming/main.py", "...")
+file_write("spikes/001-websocket-streaming/README.md", "# 001: websocket-streaming\n\n...")
+file_write("spikes/001-websocket-streaming/main.py", "...")
 terminal("cd spikes/001-websocket-streaming && python3 main.py")
 # Observe output, iterate.
 ```

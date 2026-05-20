@@ -1,4 +1,4 @@
----
+﻿---
 name: systematic-debugging
 description: 4-phase root cause debugging: understand bugs before fixing.
 activation: auto
@@ -65,7 +65,7 @@ You MUST complete each phase before proceeding to the next.
 - Read stack traces completely
 - Note line numbers, file paths, error codes
 
-**Action:** Use `read_file` on the relevant source files. Use `search_files` to find the error string in the codebase.
+**Action:** Use `file_read` on the relevant source files. Use `search_files` to find the error string in the codebase.
 
 ### 2. Reproduce Consistently
 
@@ -319,7 +319,7 @@ If you catch yourself thinking:
 Use these Hermes tools during Phase 1:
 
 - **`search_files`** — Find error strings, trace function calls, locate patterns
-- **`read_file`** — Read source code with line numbers for precise analysis
+- **`file_read`** — Read source code with line numbers for precise analysis
 - **`terminal`** — Run tests, check git history, reproduce bugs
 - **`web_search`/`web_extract`** — Research error messages, library docs
 

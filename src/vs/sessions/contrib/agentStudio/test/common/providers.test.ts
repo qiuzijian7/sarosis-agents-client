@@ -63,7 +63,7 @@ suite('Agent Studio - Provider Interface Definitions (Phase 1/5)', () => {
 			runAgentLoop: async function* (request: any, slots: any) {
 				yield { type: 'text', content: 'Step 1' };
 				yield { type: 'thinking', content: 'Planning...' };
-				yield { type: 'tool_start', toolCallId: 'call-1', toolName: 'read_file' };
+				yield { type: 'tool_start', toolCallId: 'call-1', toolName: 'file_read' };
 				yield { type: 'tool_result', toolCallId: 'call-1' };
 				yield { type: 'done' };
 			},
@@ -343,13 +343,13 @@ suite('Agent Studio - Provider Interface Definitions (Phase 1/5)', () => {
 			role: 'assistant' as const,
 			content: '',
 			toolCalls: [
-				{ id: 'call-1', name: 'read_file', arguments: '{"path":"test.ts"}' },
+				{ id: 'call-1', name: 'file_read', arguments: '{"path":"test.ts"}' },
 			],
 		};
 
 		assert.strictEqual(message.role, 'assistant');
 		assert.strictEqual(message.toolCalls!.length, 1);
-		assert.strictEqual(message.toolCalls![0].name, 'read_file');
+		assert.strictEqual(message.toolCalls![0].name, 'file_read');
 	});
 
 	test('IChatMessage - tool role with toolCallId', () => {

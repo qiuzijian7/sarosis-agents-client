@@ -283,7 +283,23 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		const body: Record<string, unknown> = {
 			model: modelId,
-			messages: messages.map(m => ({ role: m.role, content: m.content })),
+			messages: messages.map(m => {
+				const base: Record<string, unknown> = { role: m.role, content: m.content };
+				if (m.role === 'tool' && (m as any).toolCallId) {
+					base.tool_call_id = (m as any).toolCallId;
+				}
+				if (m.role === 'assistant' && (m as any).toolCalls) {
+					base.tool_calls = (m as any).toolCalls.map((tc: any) => ({
+						id: tc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+						type: 'function',
+						function: {
+							name: tc.name,
+							arguments: tc.arguments || '{}',
+						},
+					}));
+				}
+				return base;
+			}),
 			stream: true,
 		};
 		if (options.temperature !== undefined) {
@@ -301,6 +317,9 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					parameters: t.inputSchema,
 				},
 			}));
+			// 鼓励模型在需要时主动使用工具
+			body.tool_choice = 'auto';
+			this._logService.info(`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools with tool_choice=auto`);
 		}
 
 		let response: Response;
@@ -312,11 +331,20 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			if (apiKey) {
 				headers['Authorization'] = `Bearer ${apiKey}`;
 			}
-			response = await fetch(url, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(body),
-			});
+			// Use a generous timeout for local models (5 minutes) — they can be slow
+			// on large prompts with many tools
+			const controller = new AbortController();
+			const timeoutId = setTimeout(() => controller.abort(), 300_000);
+			try {
+				response = await fetch(url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify(body),
+					signal: controller.signal,
+				});
+			} finally {
+				clearTimeout(timeoutId);
+			}
 			this._logService.info(`[BYOK:${this.id}] _streamChat: response status=${response.status} ${response.statusText}`);
 		} catch (err) {
 			this._logService.error(`[BYOK:${this.id}] _streamChat: fetch error:`, err);
@@ -341,33 +369,63 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		const decoder = new TextDecoder();
 		let buffer = '';
 		let yieldCount = 0;
+		let sseDataFound = false;
+		let fullBodyForFallback = '';
+		let chunkCount = 0;
 
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
-					this._logService.info(`[BYOK:${this.id}] _streamChat: reader done, total yields=${yieldCount}`);
+					this._logService.info(`[BYOK:${this.id}] _streamChat: reader done, total yields=${yieldCount}, sseFound=${sseDataFound}, chunks=${chunkCount}`);
 					break;
 				}
 
-				buffer += decoder.decode(value, { stream: true });
+				const chunk = decoder.decode(value, { stream: true });
+				chunkCount++;
+				// Log first 3 chunks for debugging format
+				if (chunkCount <= 3) {
+					this._logService.info(`[BYOK:${this.id}] _streamChat: chunk[${chunkCount}] (${chunk.length} bytes): ${JSON.stringify(chunk.slice(0, 300))}`);
+				}
+				buffer += chunk;
+				fullBodyForFallback += chunk;
+
 				const lines = buffer.split('\n');
 				buffer = lines.pop() || '';
 
 				for (const line of lines) {
 					const trimmed = line.trim();
-					if (!trimmed.startsWith('data: ')) { continue; }
-					const data = trimmed.slice(6);
-					if (data === '[DONE]') {
-						this._logService.info(`[BYOK:${this.id}] _streamChat: received [DONE]`);
+					if (!trimmed) { continue; }
+
+					// Determine the JSON payload from this line
+					let jsonPayload: string | null = null;
+
+					if (trimmed.startsWith('data:')) {
+						// SSE format: "data: {...}" or "data:{...}"
+						jsonPayload = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
+						if (jsonPayload === '[DONE]') {
+							sseDataFound = true;
+							this._logService.info(`[BYOK:${this.id}] _streamChat: received [DONE]`);
+							continue;
+						}
+					} else if (trimmed.startsWith('{')) {
+						// NDJSON format: bare JSON objects (one per line)
+						jsonPayload = trimmed;
+					} else {
+						// Skip unrecognized lines (e.g. "event:" or empty SSE comments)
 						continue;
 					}
 
 					try {
-						const parsed = JSON.parse(data);
+						const parsed = JSON.parse(jsonPayload);
+						sseDataFound = true;
+
+						// Handle both streaming delta format and non-streaming message format
 						const delta = parsed.choices?.[0]?.delta;
-						if (!delta) {
-							// Log if finish_reason is present (no delta but stream continues)
+						const message = parsed.choices?.[0]?.message;
+						const content = delta || message;
+
+						if (!content) {
 							const finishReason = parsed.choices?.[0]?.finish_reason;
 							if (finishReason) {
 								this._logService.info(`[BYOK:${this.id}] _streamChat: finish_reason=${finishReason}`);
@@ -375,19 +433,159 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 							continue;
 						}
 
-						// Handle reasoning/thinking content (e.g. Qwen3, DeepSeek-R1, o1-like models)
-						const reasoningContent = delta.reasoning_content ?? delta.thinking ?? delta.reasoning;
+						// Handle reasoning/thinking content
+						// Some models (e.g. qwen via Ollama) wrap thinking in <think>...</think> tags inside content
+						let reasoningContent = content.reasoning_content ?? content.thinking ?? content.reasoning;
+						let actualContent = content.content;
+
+						// Parse <think> tags from content (DeepSeek/QwQ/qwen style via Ollama)
+						if (actualContent && typeof actualContent === 'string') {
+							const thinkMatch = /<(think|thinking)>([\s\S]*?)<\/\1>/i.exec(actualContent);
+							if (thinkMatch) {
+								reasoningContent = reasoningContent || thinkMatch[2].trim();
+								actualContent = actualContent.replace(thinkMatch[0], '').trim();
+							}
+						}
+
 						if (reasoningContent) {
 							yieldCount++;
 							yield { type: 'thinking', content: reasoningContent };
 						}
 
-						if (delta.content) {
+						if (actualContent) {
 							yieldCount++;
-							yield { type: 'text', content: delta.content };
+							yield { type: 'text', content: actualContent };
 						}
-						if (delta.tool_calls) {
-							for (const tc of delta.tool_calls) {
+
+						// Handle tool calls — support multiple formats:
+						// 1. OpenAI standard: tool_calls[].function.{name, arguments}
+						// 2. Anthropic via proxy: tool_calls[].{name, input/arguments}
+						// 3. Some proxies: tool_calls[].{id, name, arguments} (flat)
+						if (content.tool_calls) {
+							for (const tc of content.tool_calls) {
+								let toolId = tc.id || '';
+								let toolName = '';
+								let toolArgs = '';
+
+								if (tc.function) {
+									// Standard OpenAI format
+									toolName = tc.function.name || '';
+									toolArgs = tc.function.arguments || '';
+								} else if (tc.name) {
+									// Anthropic / flat format: name at top level
+									toolName = tc.name;
+									// Arguments can be in: arguments, input, args
+									const rawArgs = tc.arguments ?? tc.input ?? tc.args;
+									toolArgs = typeof rawArgs === 'string' ? rawArgs
+										: typeof rawArgs === 'object' ? JSON.stringify(rawArgs)
+										: '';
+									// Anthropic uses tool_use_id
+									if (!toolId) { toolId = tc.tool_use_id || tc.toolUseId || ''; }
+								}
+
+								if (toolName || toolArgs) {
+									yieldCount++;
+									yield {
+										type: 'tool_call',
+										toolCall: { id: toolId, name: toolName, arguments: toolArgs },
+									};
+								}
+							}
+						}
+					} catch {
+						this._logService.warn(`[BYOK:${this.id}] _streamChat: malformed JSON line: ${jsonPayload.slice(0, 200)}`);
+					}
+				}
+			}
+
+			// Process remaining buffer
+			if (buffer.trim()) {
+				const trimmed = buffer.trim();
+				let jsonPayload: string | null = null;
+				if (trimmed.startsWith('data:')) {
+					jsonPayload = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
+				} else if (trimmed.startsWith('{')) {
+					jsonPayload = trimmed;
+				}
+				if (jsonPayload && jsonPayload !== '[DONE]') {
+					try {
+						const parsed = JSON.parse(jsonPayload);
+						sseDataFound = true;
+						const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
+						let reasoningContent = content?.reasoning_content ?? content?.thinking ?? content?.reasoning;
+						let actualContent = content?.content;
+						if (actualContent && typeof actualContent === 'string') {
+							const thinkMatch = /<(think|thinking)>([\s\S]*?)<\/\1>/i.exec(actualContent);
+							if (thinkMatch) {
+								reasoningContent = reasoningContent || thinkMatch[2].trim();
+								actualContent = actualContent.replace(thinkMatch[0], '').trim();
+							}
+						}
+						if (actualContent) {
+							yieldCount++;
+							yield { type: 'text', content: actualContent };
+						}
+						if (reasoningContent) {
+							yieldCount++;
+							yield { type: 'thinking', content: reasoningContent };
+						}
+						if (content?.tool_calls) {
+							for (const tc of content.tool_calls) {
+								let toolId = tc.id || '';
+								let toolName = '';
+								let toolArgs = '';
+								if (tc.function) {
+									toolName = tc.function.name || '';
+									toolArgs = tc.function.arguments || '';
+								} else if (tc.name) {
+									toolName = tc.name;
+									const rawArgs = tc.arguments ?? tc.input ?? tc.args;
+									toolArgs = typeof rawArgs === 'string' ? rawArgs
+										: typeof rawArgs === 'object' ? JSON.stringify(rawArgs)
+										: '';
+									if (!toolId) { toolId = tc.tool_use_id || tc.toolUseId || ''; }
+								}
+								if (toolName || toolArgs) {
+									yieldCount++;
+									yield {
+										type: 'tool_call',
+										toolCall: { id: toolId, name: toolName, arguments: toolArgs },
+									};
+								}
+							}
+						}
+					} catch {
+						// Ignore trailing partial
+					}
+				}
+			}
+
+			// Fallback: if no SSE/NDJSON data was found, try to parse the entire body as a single JSON response
+			if (!sseDataFound && fullBodyForFallback.trim()) {
+				this._logService.info(`[BYOK:${this.id}] _streamChat: no streaming data found, trying full JSON fallback (bodyLen=${fullBodyForFallback.length})`);
+				try {
+					const parsed = JSON.parse(fullBodyForFallback);
+					const message = parsed.choices?.[0]?.message;
+					if (message) {
+						let reasoningContent = message.reasoning_content ?? message.thinking;
+						let actualContent = message.content;
+						if (actualContent && typeof actualContent === 'string') {
+							const thinkMatch = /<(think|thinking)>([\s\S]*?)<\/\1>/i.exec(actualContent);
+							if (thinkMatch) {
+								reasoningContent = reasoningContent || thinkMatch[2].trim();
+								actualContent = actualContent.replace(thinkMatch[0], '').trim();
+							}
+						}
+						if (reasoningContent) {
+							yieldCount++;
+							yield { type: 'thinking', content: reasoningContent };
+						}
+						if (actualContent) {
+							yieldCount++;
+							yield { type: 'text', content: actualContent };
+						}
+						if (message.tool_calls) {
+							for (const tc of message.tool_calls) {
 								if (tc.function) {
 									yieldCount++;
 									yield {
@@ -395,14 +593,20 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 										toolCall: {
 											id: tc.id || '',
 											name: tc.function.name || '',
-											arguments: tc.function.arguments || '',
+											arguments: typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments || {}),
 										},
 									};
 								}
 							}
 						}
-					} catch {
-						// Skip malformed JSON
+					}
+				} catch (parseErr) {
+					this._logService.warn(`[BYOK:${this.id}] _streamChat: JSON fallback parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+					// Last resort: if it looks like plain text content, yield it
+					const rawTrimmed = fullBodyForFallback.trim();
+					if (rawTrimmed.length > 0 && rawTrimmed.length < 100000 && !rawTrimmed.startsWith('<')) {
+						yieldCount++;
+						yield { type: 'text', content: rawTrimmed };
 					}
 				}
 			}
@@ -410,7 +614,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			this._logService.error(`[BYOK:${this.id}] _streamChat: stream read error:`, streamErr);
 			yield { type: 'error', error: `${this.name}: Stream error — ${streamErr}` };
 		} finally {
-			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done`);
+			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done (yields=${yieldCount})`);
 			yield { type: 'done' };
 		}
 	}

@@ -1,4 +1,4 @@
----
+﻿---
 name: nano-pdf
 description: Edit PDF text/typos/titles via nano-pdf CLI (NL prompts).
 activation: manual
@@ -43,6 +43,6 @@ nano-pdf edit contract.pdf 2 "Change the client name from 'Acme Corp' to 'Acme I
 ## Notes
 
 - Page numbers may be 0-based or 1-based depending on version — if the edit hits the wrong page, retry with ±1
-- Always verify the output PDF after editing (use `read_file` to check file size, or open it)
+- Always verify the output PDF after editing (use `file_read` to check file size, or open it)
 - The tool uses an LLM under the hood — requires an API key (check `nano-pdf --help` for config)
 - Works well for text changes; complex layout modifications may need a different approach

@@ -1,4 +1,4 @@
----
+﻿---
 name: humanizer
 description: Humanize text: strip AI-isms and add real voice.
 activation: manual
@@ -28,7 +28,7 @@ Also apply this skill to **your own** output when writing user-facing prose — 
 
 The text usually arrives one of three ways:
 1. **Inline** — user pastes the text directly into the message. Work on it in-place, reply with the rewrite.
-2. **File** — user points at a file. Use `read_file` to load it, then `patch` or `write_file` to apply edits. For markdown docs in a repo, a targeted `patch` per section is cleaner than rewriting the whole file.
+2. **File** — user points at a file. Use `file_read` to load it, then `patch` or `file_write` to apply edits. For markdown docs in a repo, a targeted `patch` per section is cleaner than rewriting the whole file.
 3. **Voice calibration sample** — user provides an additional sample of their own writing (inline or by file path) and asks you to match it. Read the sample first, then rewrite. See the Voice Calibration section below.
 
 Always show the rewrite to the user. For file edits, show a diff or the changed section — don't silently overwrite.
@@ -475,7 +475,7 @@ Avoiding AI patterns is only half the job. Sterile, voiceless writing is just as
 
 ## Process
 
-1. Read the input text carefully (use `read_file` if it's a file).
+1. Read the input text carefully (use `file_read` if it's a file).
 2. Identify all instances of the patterns above.
 3. Rewrite each problematic section.
 4. Ensure the revised text:
@@ -489,7 +489,7 @@ Avoiding AI patterns is only half the job. Sterile, voiceless writing is just as
 7. Answer briefly with the remaining tells (if any).
 8. Prompt yourself: "Now make it not obviously AI generated."
 9. Present the final version (revised after the audit).
-10. If the text came from a file, apply the edit with `patch` (targeted) or `write_file` (full rewrite) and show the user what changed.
+10. If the text came from a file, apply the edit with `patch` (targeted) or `file_write` (full rewrite) and show the user what changed.
 
 ## Output Format
 
@@ -567,6 +567,6 @@ Provide:
 
 This skill is ported from [blader/humanizer](https://github.com/blader/humanizer) (MIT licensed), which is itself based on [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), maintained by WikiProject AI Cleanup. The patterns documented there come from observations of thousands of instances of AI-generated text on Wikipedia.
 
-Original author: Siqi Chen ([@blader](https://github.com/blader)). Original repo: https://github.com/blader/humanizer (version 2.5.1). Ported to Hermes Agent with Hermes-native tool references (`read_file`, `patch`, `write_file`) and guidance for when to load the skill; the 29 patterns, personality/soul section, and full worked example are preserved verbatim from the source. Original MIT license preserved in the `LICENSE` file alongside this `SKILL.md`.
+Original author: Siqi Chen ([@blader](https://github.com/blader)). Original repo: https://github.com/blader/humanizer (version 2.5.1). Ported to Hermes Agent with Hermes-native tool references (`file_read`, `patch`, `file_write`) and guidance for when to load the skill; the 29 patterns, personality/soul section, and full worked example are preserved verbatim from the source. Original MIT license preserved in the `LICENSE` file alongside this `SKILL.md`.
 
 Key insight from Wikipedia: "LLMs use statistical algorithms to guess what should come next. The result tends toward the most statistically likely result that applies to the widest variety of cases."

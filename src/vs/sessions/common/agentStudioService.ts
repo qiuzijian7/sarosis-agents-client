@@ -3,13 +3,28 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createDecorator } from '../../platform/instantiation/common/instantiation.js';
-import { Event } from '../../base/common/event.js';
-import type { Employee, Workspace, Delegation, ChatMessage, AgentStudioSession, Connection, WorkspaceLayout, TaskBoardRecord, TaskBoardStatus, AgentExportData, OrchestrationPlan, PlanTask, ConfigMdCapability } from './agentStudioTypes.js';
+import { createDecorator } from "../../platform/instantiation/common/instantiation.js";
+import { Event } from "../../base/common/event.js";
+import type {
+	Employee,
+	Workspace,
+	Delegation,
+	ChatMessage,
+	AgentStudioSession,
+	Connection,
+	WorkspaceLayout,
+	TaskBoardRecord,
+	TaskBoardStatus,
+	AgentExportData,
+	OrchestrationPlan,
+	PlanTask,
+	ConfigMdCapability,
+} from "./agentStudioTypes.js";
 
 // --- Agent Studio Service ---
 
-export const IAgentStudioService = createDecorator<IAgentStudioService>('agentStudioService');
+export const IAgentStudioService =
+	createDecorator<IAgentStudioService>("agentStudioService");
 
 export interface IAgentStudioService {
 	readonly _serviceBrand: undefined;
@@ -40,7 +55,10 @@ export interface IAgentStudioService {
 
 	// Connections
 	getConnections(workspaceId: string): Promise<Connection[]>;
-	addConnection(workspaceId: string, connection: Omit<Connection, 'id'>): Promise<Connection>;
+	addConnection(
+		workspaceId: string,
+		connection: Omit<Connection, "id">,
+	): Promise<Connection>;
 	removeConnection(workspaceId: string, connectionId: string): Promise<void>;
 
 	// Sessions
@@ -50,25 +68,60 @@ export interface IAgentStudioService {
 	deleteSession(id: string): Promise<void>;
 
 	// Agent Model Config — persist provider/model/agent selection to agent.yaml
-	updateEmployeeModelConfig(employeeId: string, config: { providerId: string; modelId: string; agentId?: string }): Promise<void>;
-	getEmployeeModelConfig(employeeId: string): Promise<{ providerId: string; modelId: string; agentId?: string } | undefined>;
+	updateEmployeeModelConfig(
+		employeeId: string,
+		config: { providerId: string; modelId: string; agentId?: string },
+	): Promise<void>;
+	getEmployeeModelConfig(
+		employeeId: string,
+	): Promise<
+		{ providerId: string; modelId: string; agentId?: string } | undefined
+	>;
 
 	// Agent Canvas Position & Connections — persist to agent.yaml for reload survival
-	updateEmployeePosition(employeeId: string, position: { x: number; y: number }): Promise<void>;
-	getEmployeePosition(employeeId: string): Promise<{ x: number; y: number } | undefined>;
-	updateEmployeeConnections(employeeId: string, connections: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>): Promise<void>;
+	updateEmployeePosition(
+		employeeId: string,
+		position: { x: number; y: number },
+	): Promise<void>;
+	getEmployeePosition(
+		employeeId: string,
+	): Promise<{ x: number; y: number } | undefined>;
+	updateEmployeeConnections(
+		employeeId: string,
+		connections: Array<{
+			id: string;
+			sourceId: string;
+			targetId: string;
+			type: string;
+			label?: string;
+		}>,
+	): Promise<void>;
 
 	// Import / Export — portable agent instance bundles
 	exportEmployee(id: string): Promise<AgentExportData>;
-	importEmployee(data: AgentExportData, workspaceId?: string): Promise<Employee>;
+	importEmployee(
+		data: AgentExportData,
+		workspaceId?: string,
+	): Promise<Employee>;
 }
 
 // --- Agent Chat Service ---
 
-export const IAgentChatService = createDecorator<IAgentChatService>('agentChatService');
+export const IAgentChatService =
+	createDecorator<IAgentChatService>("agentChatService");
 
 export interface IChatStreamDelta {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'tool_progress' | 'done' | 'error';
+	readonly type:
+		| "text"
+		| "thinking"
+		| "tool_start"
+		| "tool_args"
+		| "tool_end"
+		| "tool_result"
+		| "tool_progress"
+		| "done"
+		| "error"
+		| "content_replace";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -79,7 +132,7 @@ export interface IChatStreamDelta {
 
 export interface IChatSendOptions {
 	readonly model?: string;
-	readonly agentId?: string;       // selected Agent ID (e.g. Knot Agent)
+	readonly agentId?: string; // selected Agent ID (e.g. Knot Agent)
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
 	readonly workspaceId?: string;
@@ -107,7 +160,9 @@ export interface IAgentChatService {
 
 // --- Agent Delegation Service ---
 
-export const IAgentDelegationService = createDecorator<IAgentDelegationService>('agentDelegationService');
+export const IAgentDelegationService = createDecorator<IAgentDelegationService>(
+	"agentDelegationService",
+);
 
 export interface IAutoPlanResult {
 	readonly delegations: Delegation[];
@@ -131,7 +186,9 @@ export interface IAgentDelegationService {
 
 // --- Agent Task Board Service ---
 
-export const IAgentTaskBoardService = createDecorator<IAgentTaskBoardService>('agentTaskBoardService');
+export const IAgentTaskBoardService = createDecorator<IAgentTaskBoardService>(
+	"agentTaskBoardService",
+);
 
 export interface IAgentTaskBoardService {
 	readonly _serviceBrand: undefined;
@@ -141,17 +198,24 @@ export interface IAgentTaskBoardService {
 	getTasks(workspaceId?: string): Promise<TaskBoardRecord[]>;
 	getTask(id: string): Promise<TaskBoardRecord | undefined>;
 	createTask(data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord>;
-	updateTask(id: string, data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord>;
-	updateTaskStatus(id: string, status: TaskBoardStatus): Promise<TaskBoardRecord>;
+	updateTask(
+		id: string,
+		data: Partial<TaskBoardRecord>,
+	): Promise<TaskBoardRecord>;
+	updateTaskStatus(
+		id: string,
+		status: TaskBoardStatus,
+	): Promise<TaskBoardRecord>;
 	deleteTask(id: string): Promise<void>;
 	archiveTask(id: string): Promise<TaskBoardRecord>;
 }
 
 // --- Task Orchestration Service ---
 
-export const ITaskOrchestrationService = createDecorator<ITaskOrchestrationService>('taskOrchestrationService');
+export const ITaskOrchestrationService =
+	createDecorator<ITaskOrchestrationService>("taskOrchestrationService");
 
-export type OrchestrationTaskAction = 'retry' | 'pause' | 'resume' | 'cancel';
+export type OrchestrationTaskAction = "retry" | "pause" | "resume" | "cancel";
 
 export interface ITaskOrchestrationService {
 	readonly _serviceBrand: undefined;
@@ -164,7 +228,11 @@ export interface ITaskOrchestrationService {
 	 * Only agents with agentType='planner' may call this.
 	 * Returns a plan in PendingApproval status — PM must approve before execution.
 	 */
-	createPlan(goal: string, workspaceId: string, plannerId: string): Promise<OrchestrationPlan>;
+	createPlan(
+		goal: string,
+		workspaceId: string,
+		plannerId: string,
+	): Promise<OrchestrationPlan>;
 
 	/**
 	 * PM approves the plan: auto-create agents, connections, task board items, then execute.
@@ -191,12 +259,17 @@ export interface ITaskOrchestrationService {
 	 * Perform an action on a specific task within a plan.
 	 * Only the PM can perform task actions (dispatch control).
 	 */
-	taskAction(planId: string, taskId: string, action: OrchestrationTaskAction): Promise<PlanTask>;
+	taskAction(
+		planId: string,
+		taskId: string,
+		action: OrchestrationTaskAction,
+	): Promise<PlanTask>;
 }
 
 // --- ConfigMD Service ---
 
-export const IConfigMdService = createDecorator<IConfigMdService>('configMdService');
+export const IConfigMdService =
+	createDecorator<IConfigMdService>("configMdService");
 
 /**
  * A patch operation against the canonical MD file.
@@ -204,12 +277,12 @@ export const IConfigMdService = createDecorator<IConfigMdService>('configMdServi
  */
 export interface IConfigMdPatchOp {
 	readonly op:
-		| 'replace-anchor'
-		| 'replace-bind'
-		| 'append'
-		| 'prepend'
-		| 'replace-section'
-		| 'replace-all';
+		| "replace-anchor"
+		| "replace-bind"
+		| "append"
+		| "prepend"
+		| "replace-section"
+		| "replace-all";
 	readonly anchor?: string;
 	readonly heading?: string;
 	readonly content: string;
@@ -238,13 +311,13 @@ export interface IConfigMdState {
 	/** Optional injected CSS */
 	readonly stylesContent?: string;
 	/** Whether a custom parser script was used */
-	readonly parserSource?: 'builtin' | 'custom';
+	readonly parserSource?: "builtin" | "custom";
 }
 
 /**
  * Origin of an MD change — used to suppress echo loops.
  */
-export type ConfigMdChangeOrigin = 'editor' | 'html' | 'model' | 'external';
+export type ConfigMdChangeOrigin = "editor" | "html" | "model" | "external";
 
 export interface IConfigMdService {
 	readonly _serviceBrand: undefined;
@@ -273,7 +346,10 @@ export interface IConfigMdService {
 	/**
 	 * Fired when a model-issued command should be pushed to the HTML view.
 	 */
-	readonly onDidEmitCommand: Event<{ employeeId: string; command: IConfigMdCommand }>;
+	readonly onDidEmitCommand: Event<{
+		employeeId: string;
+		command: IConfigMdCommand;
+	}>;
 
 	/**
 	 * Fired when an HTML view sends a custom event back to the agent.
@@ -304,7 +380,7 @@ export interface IConfigMdService {
 		workspaceSessionId?: string;
 	}>;
 
-	// ─── Resource & State ─────────────────────────────────────────────────
+	// --- Resource & State --------------------------------------------------
 
 	/**
 	 * Resolve and load the ConfigMD state for an agent (reads MD file, parser, styles).
@@ -315,7 +391,9 @@ export interface IConfigMdService {
 	/**
 	 * Read the raw MD source for an agent.
 	 */
-	readSource(employeeId: string): Promise<{ markdown: string; version: number }>;
+	readSource(
+		employeeId: string,
+	): Promise<{ markdown: string; version: number }>;
 
 	/**
 	 * Overwrite the MD source. Triggers re-render & onDidChangeSource.
@@ -340,7 +418,10 @@ export interface IConfigMdService {
 	 * Render (or re-render) the HTML for an agent's current MD content.
 	 * If `markdown` provided, render it without persisting.
 	 */
-	renderHtml(employeeId: string, markdown?: string): Promise<{ html: string; version: number }>;
+	renderHtml(
+		employeeId: string,
+		markdown?: string,
+	): Promise<{ html: string; version: number }>;
 
 	/**
 	 * Render the current MD into a complete standalone HTML document and write
@@ -349,7 +430,7 @@ export interface IConfigMdService {
 	 */
 	previewToFile(employeeId: string): Promise<{ path: string; version: number }>;
 
-	// ─── HTML Event Handling ──────────────────────────────────────────────
+	// --- HTML Event Handling ---------------------------------------------
 
 	/**
 	 * Forward a custom HTML event to the agent's chat (and parse model commands).
@@ -367,14 +448,18 @@ export interface IConfigMdService {
 	handleChatSend(
 		employeeId: string,
 		message: string,
-		options?: { context?: string; showInChat?: boolean; agentSessionId?: string },
+		options?: {
+			context?: string;
+			showInChat?: boolean;
+			agentSessionId?: string;
+		},
 	): Promise<ChatMessage>;
 
-	// ─── Push to HTML view ────────────────────────────────────────────────
+	// --- Push to HTML view ----------------------------------------------
 
 	sendCommandToHtml(employeeId: string, command: IConfigMdCommand): void;
 
-	// ─── Active Agent Session Registry ────────────────────────────────────
+	// --- Active Agent Session Registry -----------------------------------
 
 	/**
 	 * Register the agent session a chat panel is currently showing for a
@@ -390,7 +475,10 @@ export interface IConfigMdService {
 	 * is rapidly toggling, which is harmless: imgui submits will follow the
 	 * most recently focused panel.
 	 */
-	setActiveAgentSession(employeeId: string, agentSessionId: string | undefined): void;
+	setActiveAgentSession(
+		employeeId: string,
+		agentSessionId: string | undefined,
+	): void;
 
 	/**
 	 * Read the currently registered active agent session for an employee,
@@ -398,23 +486,34 @@ export interface IConfigMdService {
 	 */
 	getActiveAgentSession(employeeId: string): string | undefined;
 
-	// ─── Capability Check ─────────────────────────────────────────────────
+	// --- Capability Check -----------------------------------------------
 
-	checkCapability(employeeId: string, capability: ConfigMdCapability): Promise<void>;
+	checkCapability(
+		employeeId: string,
+		capability: ConfigMdCapability,
+	): Promise<void>;
 
-	// ─── Custom Parser / Styles Management ────────────────────────────────
+	// --- Custom Parser / Styles Management -------------------------------
 
 	/**
 	 * Upload a custom MD→HTML parser script. Persists to agentDir/ui/parser.js,
 	 * updates agent.yaml.configMd.parserPath, and triggers a re-render.
 	 */
-	uploadParser(employeeId: string, content: string, fileName?: string): Promise<{ parserPath: string }>;
+	uploadParser(
+		employeeId: string,
+		content: string,
+		fileName?: string,
+	): Promise<{ parserPath: string }>;
 
 	/**
 	 * Upload a custom CSS file. Persists to agentDir/ui/styles.css,
 	 * updates agent.yaml.configMd.stylesPath, and triggers a re-render.
 	 */
-	uploadStyles(employeeId: string, content: string, fileName?: string): Promise<{ stylesPath: string }>;
+	uploadStyles(
+		employeeId: string,
+		content: string,
+		fileName?: string,
+	): Promise<{ stylesPath: string }>;
 
 	/**
 	 * Remove the custom parser, fall back to built-in parser, and trigger re-render.
@@ -425,13 +524,13 @@ export interface IConfigMdService {
 	 * Get current parser/styles info for the agent.
 	 */
 	getInfo(employeeId: string): Promise<{
-		parserSource: 'builtin' | 'custom';
+		parserSource: "builtin" | "custom";
 		parserPath?: string;
 		stylesPath?: string;
 		hasStyles: boolean;
 	}>;
 
-	// ─── Model Output Parsing ─────────────────────────────────────────────
+	// --- Model Output Parsing -------------------------------------------
 
 	/**
 	 * Parse `configmd-patch` and `configmd-command` blocks from model output.

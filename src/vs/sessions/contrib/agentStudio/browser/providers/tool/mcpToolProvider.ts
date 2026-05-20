@@ -135,10 +135,14 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		}
 	}
 
-	async executeTool(_agentId: string, call: IToolCall): Promise<IToolResult> {
+	async executeTool(_agentId: string, call: IToolCall, signal?: AbortSignal): Promise<IToolResult> {
 		const routed = this._routes.get(call.name);
 		if (!routed) {
 			return { toolCallId: call.id, success: false, content: [], error: `Unknown MCP tool: ${call.name}` };
+		}
+		// 检查是否已被取消
+		if (signal?.aborted) {
+			return { toolCallId: call.id, success: false, content: [], error: 'Tool execution was cancelled', metadata: { timedOut: true, retryable: true } };
 		}
 		// 等待 server 启动到 Running 状态
 		const state = routed.server.connectionState.get();
@@ -150,6 +154,7 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 				return { toolCallId: call.id, success: false, content: [], error: `MCP server start failed: ${msg}` };
 			}
 		}
+		const startTime = Date.now();
 		try {
 			const res = await routed.tool.call(call.arguments ?? {}, undefined, CancellationToken.None);
 			return {
@@ -157,11 +162,12 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 				success: !res.isError,
 				content: this._adaptContent(res.content),
 				error: res.isError ? this._extractErrorText(res.content) : undefined,
+				metadata: { executionTimeMs: Date.now() - startTime, mcpServer: routed.server.definition.id },
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logService.warn(`[McpToolProvider] ${call.name} failed: ${msg}`);
-			return { toolCallId: call.id, success: false, content: [], error: msg };
+			return { toolCallId: call.id, success: false, content: [], error: msg, metadata: { executionTimeMs: Date.now() - startTime, retryable: true } };
 		}
 	}
 

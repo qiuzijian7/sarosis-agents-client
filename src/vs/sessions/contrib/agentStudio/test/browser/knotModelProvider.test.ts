@@ -172,7 +172,7 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 				type: 'tool_call', 
 				toolCall: { 
 					id: 'call-1', 
-					name: 'read_file', 
+					name: 'file_read', 
 					arguments: '{"path": "test.ts"}' 
 				} 
 			};
@@ -192,7 +192,7 @@ suite('Knot AG-UI Model Provider (Phase 3)', () => {
 		assert.strictEqual(deltas[1].type, 'text');
 		assert.strictEqual(deltas[1].content, ' world');
 		assert.strictEqual(deltas[2].type, 'tool_call');
-		assert.strictEqual(deltas[2].toolCall.name, 'read_file');
+		assert.strictEqual(deltas[2].toolCall.name, 'file_read');
 		assert.strictEqual(deltas[3].type, 'done');
 	});
 

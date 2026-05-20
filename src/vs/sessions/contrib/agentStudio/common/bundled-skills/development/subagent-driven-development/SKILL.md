@@ -1,4 +1,4 @@
----
+﻿---
 name: subagent-driven-development
 description: Execute plans via delegate_task subagents (2-stage review).
 activation: auto
@@ -38,7 +38,7 @@ Read the plan file. Extract ALL tasks with their full text and context upfront. 
 
 ```python
 # Read the plan
-read_file("docs/plans/feature-plan.md")
+file_read("docs/plans/feature-plan.md")
 
 # Create todo list with all tasks
 todo([

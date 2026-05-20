@@ -6,10 +6,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 export interface StreamChunk {
-	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done';
+	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace';
 	content?: string;
 	toolCallId?: string;
 	toolName?: string;
+	success?: boolean;
 }
 
 export interface StreamState {
@@ -135,6 +136,12 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 		case 'thinking':
 			state.thinkingBuffer += chunk.content ?? '';
 			break;
+		case 'content_replace':
+			// Replace the entire text buffer with the new content.
+			// Used when tool calls are extracted from text and the original
+			// JSON content should no longer be displayed.
+			state.textBuffer = chunk.content ?? '';
+			break;
 		case 'tool_start':
 			state.toolCalls.push({
 				id: chunk.toolCallId ?? '',
@@ -153,7 +160,7 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 		case 'tool_end': {
 			const endCall = state.toolCalls.find(tc => tc.id === chunk.toolCallId);
 			if (endCall) {
-				endCall.status = 'done';
+				endCall.status = chunk.success === false ? 'error' : 'done';
 			}
 			break;
 		}

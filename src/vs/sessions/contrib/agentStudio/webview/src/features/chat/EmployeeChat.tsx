@@ -11,7 +11,7 @@
  *  Ref: sarosis-webui EmployeeChat.tsx main chat layout
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
@@ -20,6 +20,7 @@ import { StreamingText } from './StreamingText';
 import { ChatComposer } from './ChatComposer';
 import { ToolCallCard } from './ToolCallCard';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
+import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
 
 
 /* ── Props ───────────────────────────────────────────────────── */
@@ -32,9 +33,14 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	const { employees, selectedEmployeeId } = useEmployeeStore();
 	const { selection, loadSelectionForEmployee } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const chatMessagesRef = useRef<HTMLDivElement>(null);
 	/** Track whether we just loaded history (vs. a new message arriving).
 	 *  When history loads we want instant scroll; for new messages we use smooth. */
 	const wasLoadingRef = useRef(false);
+	/** Show "scroll to bottom" button when user has scrolled up. */
+	const [showScrollBottom, setShowScrollBottom] = useState(false);
+	/** Whether auto-scroll should follow new content (user is at the bottom). */
+	const isAtBottomRef = useRef(true);
 
 	// Sync selected employee with chat
 	useEffect(() => {
@@ -57,14 +63,79 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		}
 	}, [isLoading]);
 
-	// Auto-scroll to bottom: instant after history load, smooth for new messages/streaming
+	// Auto-scroll to bottom: instant after history load, smooth for new messages/streaming.
+	// Only auto-scroll if user is already at (or near) the bottom.
 	useLayoutEffect(() => {
+		if (!isAtBottomRef.current) { return; }
 		const behavior = wasLoadingRef.current ? 'instant' : 'smooth';
 		wasLoadingRef.current = false;
 		messagesEndRef.current?.scrollIntoView({ behavior });
 	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls]);
 
+	// Listen to scroll events on the message list to detect "at bottom" vs "scrolled up"
+	useEffect(() => {
+		const el = chatMessagesRef.current;
+		if (!el) { return; }
+		const THRESHOLD = 80; // px from bottom to consider "at bottom"
+		const handleScroll = () => {
+			const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+			const atBottom = distFromBottom < THRESHOLD;
+			isAtBottomRef.current = atBottom;
+			setShowScrollBottom(!atBottom);
+		};
+		el.addEventListener('scroll', handleScroll, { passive: true });
+		return () => { el.removeEventListener('scroll', handleScroll); };
+	}, []);
+
+	// Scroll to bottom handler
+	const handleScrollToBottom = useCallback(() => {
+		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+		isAtBottomRef.current = true;
+		setShowScrollBottom(false);
+	}, []);
+
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
+
+	// Rename state for chat header
+	const [isEditingChatName, setIsEditingChatName] = useState(false);
+	const [editChatName, setEditChatName] = useState('');
+	const chatNameInputRef = useRef<HTMLInputElement>(null);
+
+	useEffect(() => {
+		if (isEditingChatName && chatNameInputRef.current) {
+			chatNameInputRef.current.focus();
+			chatNameInputRef.current.select();
+		}
+	}, [isEditingChatName]);
+
+	const handleChatNameDoubleClick = useCallback(() => {
+		if (!activeEmployee) { return; }
+		setEditChatName(activeEmployee.name);
+		setIsEditingChatName(true);
+	}, [activeEmployee]);
+
+	const handleChatNameCommit = useCallback(async () => {
+		const trimmed = editChatName.trim();
+		if (activeEmployee && trimmed && trimmed !== activeEmployee.name) {
+			try {
+				await useEmployeeStore.getState().updateEmployee(activeEmployee.id, { name: trimmed });
+			} catch (err) {
+				console.error('[EmployeeChat] rename failed:', err);
+				setEditChatName(activeEmployee.name);
+			}
+		}
+		setIsEditingChatName(false);
+	}, [activeEmployee, editChatName]);
+
+	const handleChatNameKeyDown = useCallback((e: React.KeyboardEvent) => {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			handleChatNameCommit();
+		} else if (e.key === 'Escape') {
+			setEditChatName(activeEmployee?.name || '');
+			setIsEditingChatName(false);
+		}
+	}, [handleChatNameCommit, activeEmployee]);
 
 	const handleSend = useCallback((content: string) => {
 		if (content.trim()) {
@@ -126,7 +197,19 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						className="chat-header-avatar"
 					/>
 					<div className="chat-header-info">
-						<span className="chat-header-name">{activeEmployee.name}</span>
+						{isEditingChatName ? (
+							<input
+								ref={chatNameInputRef}
+								className="chat-header-name-input"
+								value={editChatName}
+								onChange={(e) => setEditChatName(e.target.value)}
+								onBlur={handleChatNameCommit}
+								onKeyDown={handleChatNameKeyDown}
+								maxLength={50}
+							/>
+						) : (
+							<span className="chat-header-name" onDoubleClick={handleChatNameDoubleClick} title="双击重命名">{activeEmployee.name}</span>
+						)}
 						<span className="chat-header-role">
 							{activeEmployee.role}
 							<span className={`chat-header-status ${statusClass}`}>{statusText}</span>
@@ -153,77 +236,94 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				</div>
 
 				{/* Message List */}
-				<div className="chat-messages">
+				<div className="chat-messages" ref={chatMessagesRef}>
 					{messages.map((msg) => (
 						<ChatMessageComponent key={msg.id} message={msg} />
 					))}
 
-					{/* ── Streaming indicator (enhanced) ────────── */}
-					{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
-						<div className="chat-message assistant">
-							<div className="message-content message-streaming">
+				{/* ── Streaming indicator (enhanced — OpenClaw-inspired) ────── */}
+				{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
+					<div className="chat-message assistant">
+						<div className="message-content message-streaming">
 
-								{/* Thinking card — active with spinner */}
-								{streamState.thinkingBuffer && (
-									<div className="thinking-card active">
-										<div className="thinking-card-header">
-											<span className="thinking-card-icon">
-												<svg className="thinking-spinner" width="14" height="14" viewBox="0 0 24 24"
-													fill="none" stroke="currentColor" strokeWidth="2">
-													<path d="M21 12a9 9 0 11-6.219-8.56" />
-												</svg>
-											</span>
-											<span className="thinking-card-title">思考中...</span>
-										</div>
-										<div className="thinking-card-body">
-											<StreamingText text={streamState.thinkingBuffer} />
-										</div>
+							{/* Thinking card — active with spinner */}
+							{streamState.thinkingBuffer && (
+								<div className="thinking-card active">
+									<div className="thinking-card-header">
+										<span className="thinking-card-icon">
+											<svg className="thinking-spinner" width="14" height="14" viewBox="0 0 24 24"
+												fill="none" stroke="currentColor" strokeWidth="2">
+												<path d="M21 12a9 9 0 11-6.219-8.56" />
+											</svg>
+										</span>
+										<span className="thinking-card-title">思考中...</span>
 									</div>
-								)}
-
-								{/* Streaming tool calls */}
-								{streamState.toolCalls.length > 0 && (
-									<div className="tool-calls-section">
-										{streamState.toolCalls.map((tc) => (
-											<ToolCallCard key={tc.id} toolCall={tc} />
-										))}
+									<div className="thinking-card-body">
+										<StreamingText text={streamState.thinkingBuffer} showCursor={false} className="thinking-stream" />
 									</div>
-								)}
+								</div>
+							)}
 
-								{/* Streaming text content */}
-								{streamState.textBuffer && (
-									<div className="message-text">
-										<StreamingText text={streamState.textBuffer} />
-									</div>
-								)}
+							{/* Streaming tool calls */}
+							{streamState.toolCalls.length > 0 && (
+								<div className="tool-calls-section">
+									{streamState.toolCalls.map((tc) => (
+										<ToolCallCard key={tc.id} toolCall={{
+											...tc,
+											// Sanitize tool results to strip reasoning tags and other artifacts
+											result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
+										}} />
+									))}
+								</div>
+							)}
 
-								{/* Error message */}
-								{streamState.errorMessage && (
-									<div className="message-text stream-error">
-										⚠️ {streamState.errorMessage}
-									</div>
-								)}
+							{/* Streaming text content — sanitized to strip tool-call artifacts */}
+							{streamState.textBuffer && (
+								<div className="message-text">
+									<StreamingText text={sanitizeStreamingText(streamState.textBuffer)} />
+								</div>
+							)}
 
-								{/* Typing dots — only when nothing else is showing */}
-								{!streamState.textBuffer && !streamState.thinkingBuffer && !streamState.errorMessage && streamState.toolCalls.length === 0 && (
-									<div className="typing-indicator">
-										<span className="typing-dot">●</span>
-										<span className="typing-dot">●</span>
-										<span className="typing-dot">●</span>
-									</div>
-								)}
+							{/* Error message */}
+							{streamState.errorMessage && (
+								<div className="message-text stream-error">
+									⚠️ {streamState.errorMessage}
+								</div>
+							)}
 
-							</div>
-							<div className="message-footer">
-								<span className="message-time">
-									{new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-								</span>
-							</div>
+							{/* Typing dots — only when nothing else is showing */}
+							{!streamState.textBuffer && !streamState.thinkingBuffer && !streamState.errorMessage && streamState.toolCalls.length === 0 && (
+								<div className="typing-indicator">
+									<span className="typing-dot">●</span>
+									<span className="typing-dot">●</span>
+									<span className="typing-dot">●</span>
+								</div>
+							)}
+
 						</div>
-					)}
+						<div className="message-footer">
+							<span className="message-time">
+								{new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+							</span>
+						</div>
+					</div>
+				)}
 
 					<div ref={messagesEndRef} />
 				</div>
+
+				{/* Scroll-to-bottom button: floats on the right side above the composer */}
+				{showScrollBottom && (
+					<button
+						className="chat-scroll-bottom-btn"
+						onClick={handleScrollToBottom}
+						title="滚动到底部"
+					>
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="6 9 12 15 18 9" />
+						</svg>
+					</button>
+				)}
 
 				{/* Composer */}
 				<ChatComposer

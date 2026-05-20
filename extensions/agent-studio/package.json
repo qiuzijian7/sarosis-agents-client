@@ -25,6 +25,20 @@
           "type": "boolean",
           "default": false,
           "description": "Open Agent Studio automatically on startup (disabled: native Agent Studio ViewPane replaces this)"
+        },
+        "agentStudio.skills.maxSkillsInPrompt": {
+          "type": "number",
+          "default": 150,
+          "description": "Maximum number of skills to include in the system prompt (0-500)",
+          "minimum": 0,
+          "maximum": 500
+        },
+        "agentStudio.skills.maxSkillsPromptChars": {
+          "type": "number",
+          "default": 18000,
+          "description": "Maximum characters for the skills section in system prompt (1000-100000)",
+          "minimum": 1000,
+          "maximum": 100000
         }
       }
     },

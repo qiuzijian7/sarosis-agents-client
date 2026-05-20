@@ -19,6 +19,11 @@ interface ChatComposerProps {
 	placeholder?: string;
 }
 
+// 输入框高度上下限（px）。最低值保证至少能完整显示一行+padding，最高值避免遮挡消息列表。
+const TEXTAREA_MIN_HEIGHT = 60;
+const TEXTAREA_MAX_HEIGHT = 300;
+const TEXTAREA_DEFAULT_HEIGHT = 60;
+
 export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
 	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -28,6 +33,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 	const [modelSearchQuery, setModelSearchQuery] = useState('');
 	const modelSearchInputRef = useRef<HTMLInputElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	// 用户通过拖动条手动设置过的高度。一旦设置，自动撑高将以其为下限（内容更多时可继续撑大到 MAX）。
+	const userResizedHeightRef = useRef<number | null>(null);
+	// 拖动状态
+	const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null);
 	const providerDropdownRef = useRef<HTMLDivElement>(null);
 	const agentDropdownRef = useRef<HTMLDivElement>(null);
 	const modelDropdownRef = useRef<HTMLDivElement>(null);
@@ -167,7 +176,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 		onSend(input.trim());
 		setInput('');
 		if (textareaRef.current) {
-			textareaRef.current.style.height = 'auto';
+			// 发送后清空内容：若用户手动调整过则保留其偏好高度，否则回到默认。
+			const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
+			textareaRef.current.style.height = `${preferred}px`;
 		}
 	}, [input, isLoading, onSend]);
 
@@ -181,14 +192,66 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
 		if (textarea) {
+			// 自动撑高：以用户偏好高度（若有）为下限，MAX 为上限。
+			const minBase = userResizedHeightRef.current ?? TEXTAREA_MIN_HEIGHT;
 			textarea.style.height = 'auto';
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
+			const next = Math.min(
+				Math.max(textarea.scrollHeight, minBase),
+				TEXTAREA_MAX_HEIGHT,
+			);
+			textarea.style.height = `${next}px`;
 		}
+	}, []);
+
+	// 拖动条：用户按住向上/向下拖动改变 textarea 高度
+	const handleResizerMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+		const textarea = textareaRef.current;
+		if (!textarea) { return; }
+		e.preventDefault();
+		dragStateRef.current = {
+			startY: e.clientY,
+			startHeight: textarea.offsetHeight,
+		};
+		document.body.style.cursor = 'ns-resize';
+		document.body.style.userSelect = 'none';
+
+		const handleMove = (ev: MouseEvent) => {
+			const ds = dragStateRef.current;
+			if (!ds || !textareaRef.current) { return; }
+			// resizer 在 textarea 上方：向上拖（clientY 减小）→ 高度增加
+			const delta = ds.startY - ev.clientY;
+			const next = Math.min(
+				Math.max(ds.startHeight + delta, TEXTAREA_MIN_HEIGHT),
+				TEXTAREA_MAX_HEIGHT,
+			);
+			textareaRef.current.style.height = `${next}px`;
+			userResizedHeightRef.current = next;
+		};
+		const handleUp = () => {
+			dragStateRef.current = null;
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+			document.removeEventListener('mousemove', handleMove);
+			document.removeEventListener('mouseup', handleUp);
+		};
+		document.addEventListener('mousemove', handleMove);
+		document.addEventListener('mouseup', handleUp);
 	}, []);
 
 	return (
 		<div className="chat-input-area">
 			<div className="chat-composer-box">
+				{/* 顶部拖动条：手动调整 textarea 高度（最低 60px / 最高 300px） */}
+				<div
+					className="chat-composer-resizer"
+					onMouseDown={handleResizerMouseDown}
+					title="拖动调整输入框高度"
+					role="separator"
+					aria-orientation="horizontal"
+				>
+					<span className="chat-composer-resizer-grip" />
+				</div>
+
 				{/* 上方：文本输入 */}
 				<textarea
 					ref={textareaRef}

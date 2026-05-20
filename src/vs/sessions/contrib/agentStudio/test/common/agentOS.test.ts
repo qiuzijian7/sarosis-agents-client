@@ -109,13 +109,13 @@ suite('Agent OS - Interface Definitions (Phase 1)', () => {
 			content: '',
 			toolCall: {
 				id: 'call-1',
-				name: 'read_file',
+				name: 'file_read',
 				arguments: '{"path": "test.ts"}',
 			},
 		};
 
 		assert.strictEqual(delta.type, 'tool_call');
-		assert.strictEqual(delta.toolCall?.name, 'read_file');
+		assert.strictEqual(delta.toolCall?.name, 'file_read');
 	});
 
 	test('IChatStreamDelta interface - done', () => {

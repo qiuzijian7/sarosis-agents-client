@@ -705,6 +705,25 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: default;
+}
+
+.employee-card-name:hover {
+  cursor: text;
+}
+
+.employee-card-name-input {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  background: var(--vscode-input-background, rgba(255,255,255,0.05));
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 3px;
+  padding: 1px 4px;
+  outline: none;
+  width: 100%;
+  font-family: inherit;
+  box-sizing: border-box;
 }
 
 .employee-card-role {
@@ -1861,6 +1880,7 @@ html, body, #root {
   height: 100%;
   width: 100%;
   background-color: var(--as-bg-primary, var(--vscode-editor-background));
+  position: relative;
 }
 
 /* ─── Empty State ─────────────────────────────────────────────────────────── */
@@ -1952,6 +1972,25 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: default;
+}
+
+.chat-header-name:hover {
+  cursor: text;
+}
+
+.chat-header-name-input {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  background: var(--vscode-input-background, rgba(255,255,255,0.05));
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 3px;
+  padding: 1px 4px;
+  outline: none;
+  width: 100%;
+  font-family: inherit;
+  box-sizing: border-box;
 }
 
 .chat-header-role {
@@ -2067,6 +2106,33 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* Scroll-to-bottom button: floats above the composer on the right side */
+.chat-scroll-bottom-btn {
+  position: absolute;
+  bottom: 80px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--as-border, rgba(128, 128, 128, 0.25));
+  background: var(--as-bg-tertiary, var(--vscode-input-background));
+  color: var(--as-fg-secondary, var(--vscode-input-foreground));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  z-index: 10;
+  transition: background-color 0.15s ease, transform 0.15s ease, opacity 0.2s ease;
+  opacity: 0.85;
+}
+
+.chat-scroll-bottom-btn:hover {
+  background: var(--as-bg-secondary, rgba(60, 60, 60, 0.95));
+  opacity: 1;
+  transform: scale(1.1);
 }
 
 /* ─── Single Message ──────────────────────────────────────────────────────── */
@@ -2309,10 +2375,47 @@ html, body, #root {
   outline: none;
   resize: none;
   line-height: 1.5;
-  min-height: 52px;
-  max-height: 120px;
+  /* 高度由 JS 控制（拖动条 / 自动撑高），上下限同步：min 60px / max 300px */
+  min-height: 60px;
+  max-height: 300px;
+  height: 60px;
   border-radius: 16px 16px 0 0;
   font-family: inherit;
+}
+
+/* 顶部高度拖动条 */
+.chat-composer-resizer {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px 16px 0 0;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease;
+}
+
+.chat-composer-resizer:hover,
+.chat-composer-resizer:active {
+  background: var(--as-border-focus, rgba(124, 185, 255, 0.18));
+}
+
+.chat-composer-resizer-grip {
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  opacity: 0.5;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+  pointer-events: none;
+}
+
+.chat-composer-resizer:hover .chat-composer-resizer-grip,
+.chat-composer-resizer:active .chat-composer-resizer-grip {
+  opacity: 1;
+  background: var(--as-border-focus, rgba(124, 185, 255, 0.7));
 }
 
 .chat-composer-textarea::placeholder {

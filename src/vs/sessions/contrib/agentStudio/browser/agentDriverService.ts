@@ -11,7 +11,10 @@ import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISkillRegistry } from '../common/skills.js';
+import { IAgentStudioService } from '../common/agentStudio.js';
+import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING } from '../common/constants.js';
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -30,6 +33,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		@IAgentOSService private readonly _agentOS: IAgentOSService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@ILogService logService: ILogService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 	) {
 		super();
 		this._logService = logService;
@@ -92,29 +97,122 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 
-			// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
-			const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
-			let enrichedRequest = request;
+		// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
+		const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
+		let enrichedRequest = request;
 
+		try {
+			// 3a. 生成已安装技能清单 —— 借鉴 OpenClaw 轻量目录模式
+			// 只在 systemPrompt 中放 name + description + id，让模型通过 read_skill 工具按需读取全文
+			const allSkills = [...this._skillRegistry.getSkills()].filter(s => s.enabled !== false);
+			let mergedSystemPrompt = request.systemPrompt || '';
+
+			// 注入工作区上下文，让模型始终知晓当前工作区信息
+			const workspaceContext = await this._buildWorkspaceContext(request.agentId);
+			if (workspaceContext) {
+				mergedSystemPrompt = mergedSystemPrompt + '\n\n' + workspaceContext;
+			}
+
+		if (allSkills.length > 0) {
+			// 预算控制：从配置中读取，失败时使用默认值
+			const MAX_SKILLS_IN_PROMPT = this._configurationService.getValue<number>(AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING) ?? 150;
+			const MAX_SKILLS_PROMPT_CHARS = this._configurationService.getValue<number>(AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING) ?? 18000;
+
+			// 分离 always 类型（必须展示）和其他类型
+			const alwaysSkills = allSkills.filter(s => s.activation === 'always');
+			const onDemandSkills = allSkills.filter(s => s.activation !== 'always');
+
+			// 构建 OpenClaw 风格的 XML 目录
+			const buildSkillEntry = (s: typeof allSkills[0], compact: boolean): string => {
+				const lines = ['  <skill>'];
+				lines.push(`    <name>${s.name}</name>`);
+				if (!compact && s.description) {
+					lines.push(`    <description>${s.description}</description>`);
+				}
+				lines.push(`    <id>${s.id}</id>`);
+				lines.push(`    <activation>${s.activation}</activation>`);
+				lines.push('  </skill>');
+				return lines.join('\n');
+			};
+
+			// 策略：先尝试完整格式，超预算则降级为 compact（去 description）
+			let skillsToInclude = [...alwaysSkills, ...onDemandSkills].slice(0, MAX_SKILLS_IN_PROMPT);
+			let compact = false;
+			let skillsXml = skillsToInclude.map(s => buildSkillEntry(s, false)).join('\n');
+			if (skillsXml.length > MAX_SKILLS_PROMPT_CHARS) {
+				// 降级为 compact 模式
+				compact = true;
+				skillsXml = skillsToInclude.map(s => buildSkillEntry(s, true)).join('\n');
+				// 如果仍超限，二分截断
+				if (skillsXml.length > MAX_SKILLS_PROMPT_CHARS) {
+					let lo = 0, hi = skillsToInclude.length;
+					while (lo < hi) {
+						const mid = Math.floor((lo + hi + 1) / 2);
+						const candidate = skillsToInclude.slice(0, mid).map(s => buildSkillEntry(s, true)).join('\n');
+						if (candidate.length <= MAX_SKILLS_PROMPT_CHARS) { lo = mid; } else { hi = mid - 1; }
+					}
+					skillsToInclude = skillsToInclude.slice(0, lo);
+					skillsXml = skillsToInclude.map(s => buildSkillEntry(s, true)).join('\n');
+				}
+			}
+
+			const skillListSection = [
+				'',
+				'## Skills',
+				'',
+				'Scan <available_skills> below. If one clearly applies to the user\'s task, use the `read_skill` tool with the skill id to load its full instructions, then follow them.',
+				'If several apply, choose the most specific. If none clearly apply, read none.',
+				'One skill at a time max. Never guess/fabricate skill content.',
+				'',
+				'<available_skills>',
+				skillsXml,
+				'</available_skills>',
+				'',
+				compact ? `(${allSkills.length} skills total, showing ${skillsToInclude.length} in compact mode)` : `(${allSkills.length} skills total)`,
+				'',
+			].join('\n');
+			mergedSystemPrompt = mergedSystemPrompt + skillListSection;
+		}
+
+			// 3a-2. 注入已启用工具的使用指引（让模型知道有工具可用）
 			try {
-				// 3a. 生成已安装技能清单（让模型知道有哪些技能）
-				const allSkills = [...this._skillRegistry.getSkills()].filter(s => s.enabled !== false);
-				let mergedSystemPrompt = request.systemPrompt || '';
-
-				if (allSkills.length > 0) {
-					const skillListSection = [
+				const allTools = await this._agentOS.listAllToolsWithState(request.agentId);
+				const enabledTools = allTools.filter(t => t.enabled);
+				if (enabledTools.length > 0) {
+					const toolSection = [
 						'',
-						'## Installed Skills',
+						'## Available Tools',
 						'',
-						'The following skills are installed and available:',
+						'You have access to the following tools. When a user asks you to perform an action that requires interacting with the filesystem, executing commands, searching the web, or any other external system, you MUST use the appropriate tool instead of explaining that you cannot do it.',
 						'',
-						...allSkills.map(s => `- **${s.name}**${s.description ? `: ${s.description}` : ''} [${s.activation}] (source: ${s.source})`),
+						'CRITICAL: You MUST ONLY use the exact tool names listed below. Do NOT invent or guess tool names (e.g., do NOT use "os.getcwd", "read_file", etc.). Use ONLY the names from this list.',
+						'',
+						'Available tools:',
+						'',
+						...enabledTools.map(t => `- ${t.name}: ${t.description || 'No description'}`),
+						'',
+						'Usage rules:',
+						'- To execute a shell command (e.g., "print current directory", "list files"), use: **terminal** with {"command": "<your command>"}',
+						'- To read a file, use: **file_read** with {"path": "<file path>"}',
+						'- To write a file, use: **file_write** with {"path": "<file path>", "content": "<content>"}',
+						'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
+						'',
+						'When you need to use a tool, respond with a function call using the exact tool name and required arguments.',
+						'',
+						'IMPORTANT: When you need to use a tool, you MUST use the exact tool name from the list above and provide the required arguments.',
+						'If your model supports function calling, use the native function_call format.',
+						'If your model does NOT support function calling, output a JSON object in this exact format: {"name": "<tool_name>", "arguments": {<args>}}.',
+						'Never output tool calls as plain text explanations or code blocks without the proper format.',
 						'',
 					].join('\n');
-					mergedSystemPrompt = mergedSystemPrompt + skillListSection;
+					mergedSystemPrompt = mergedSystemPrompt + toolSection;
+					this._logService.info(`[AgentDriver] Injected ${enabledTools.length} enabled tools into systemPrompt`);
 				}
+			} catch (error) {
+				this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
+			}
 
-				// 3b. 解析本轮激活的技能内容并注入
+			// 3b. 解析本轮激活的技能内容并注入
 				let mergedMessages = [...request.messages];
 
 				if (lastUserMessage) {
@@ -130,12 +228,28 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						const userInjections = injections.filter(inj => inj.placement === 'user');
 
 						// 将 system 类型的 skill 注入追加到 systemPrompt
+						// 借鉴 OpenClaw：短 skill（<500 chars）直接注入，长 skill 只放摘要
+						const ALWAYS_SKILL_INLINE_THRESHOLD = 500;
 						if (systemInjections.length > 0) {
+							const activeParts: string[] = [];
+							for (const inj of systemInjections) {
+								if (inj.skill.prompt.length <= ALWAYS_SKILL_INLINE_THRESHOLD) {
+									// 短 skill：直接内联注入全文
+									activeParts.push(inj.content);
+								} else {
+									// 长 skill：只放摘要，引导模型使用 read_skill
+									activeParts.push([
+										`### Skill: ${inj.skill.name}`,
+										inj.skill.description ? `_${inj.skill.description}_` : '',
+										`(Full instructions: use \`read_skill\` tool with skill_id="${inj.skill.id}")`,
+									].filter(Boolean).join('\n'));
+								}
+							}
 							const activeSection = [
 								'',
 								'## Active Skills (this turn)',
 								'',
-								...systemInjections.map(inj => inj.content),
+								...activeParts,
 							].join('\n');
 							mergedSystemPrompt = mergedSystemPrompt + activeSection;
 						}
@@ -165,8 +279,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				messages: mergedMessages,
 			};
 
-			this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills available, systemPrompt length: ${mergedSystemPrompt.length}`);
-			this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 200)}...`);
+		this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills (lightweight XML catalog injected), systemPrompt length: ${mergedSystemPrompt.length}`);
+		this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 300)}...`);
 			} catch (error) {
 				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
 				// Skill 解析失败不阻塞主流程
@@ -241,6 +355,48 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	private _updateTurnStatus(turnId: string, status: AgentTurnStatus): void {
 		this._turnStatusMap.set(turnId, status);
 		this._onDidChangeTurnStatus.fire(status);
+	}
+
+	/**
+	 * Build a workspace context section for the system prompt.
+	 * Resolves the Sarosis workspace that owns the given agent and injects
+	 * its path so the model knows exactly what "workspace" means.
+	 *
+	 * Also includes a sandbox rule: the agent may ONLY operate within the
+	 * current workspace directory tree.
+	 */
+	private async _buildWorkspaceContext(agentId: string): Promise<string | undefined> {
+		try {
+			const employee = await this._agentStudioService.getEmployee(agentId);
+			if (!employee?.workspaceId) {
+				return undefined;
+			}
+
+			const workspace = await this._agentStudioService.getWorkspace(employee.workspaceId);
+			if (!workspace?.path) {
+				return undefined;
+			}
+
+			const lines: string[] = [
+				'## Workspace Context',
+				'',
+				`You are operating inside the Sarosis workspace "${workspace.name}".`,
+				`The workspace root directory is: ${workspace.path}`,
+				'',
+				'When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,',
+				`they mean this directory: ${workspace.path}`,
+				'',
+				'### Security Sandbox',
+				'',
+				`You are ONLY permitted to read, write, search, and execute commands within the workspace directory and its subdirectories.`,
+				`You MUST NOT access, modify, or reference any files or directories outside of: ${workspace.path}`,
+				'If a user asks you to operate on a path outside this workspace, refuse and explain that you are sandboxed to the current workspace.',
+			];
+
+			return lines.join('\n');
+		} catch {
+			return undefined;
+		}
 	}
 
 	// ─── 兼容层：将旧 IChatSendOptions 适配为 IAgentTurnRequest ──

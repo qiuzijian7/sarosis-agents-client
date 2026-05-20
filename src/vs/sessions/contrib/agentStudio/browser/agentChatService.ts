@@ -310,6 +310,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (controller.signal.aborted) { break; }
 				if (delta.type === 'text' && delta.content) { fullContent += delta.content; }
 				if (delta.type === 'thinking' && delta.content) { fullThinking += delta.content; }
+				// content_replace: upstream extracted tool calls from text and wants
+				// to replace the accumulated fullContent with the cleaned version.
+				if (delta.type === 'content_replace') { fullContent = delta.content ?? ''; }
 				if (delta.type === 'tool_start' && delta.toolCallId && delta.toolName) {
 					if (!toolCalls) { toolCalls = []; }
 					toolCalls.push({ id: delta.toolCallId, name: delta.toolName, arguments: '', result: undefined });

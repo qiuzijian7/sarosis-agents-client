@@ -163,6 +163,78 @@ export interface IDocumentRef {
 	readonly score: number;
 }
 
+// ─── Tool Security Level (OpenClaw-inspired) ─────────────────────────────────
+
+/**
+ * 工具安全等级 — 决定执行前是否需要用户审批。
+ * 参考 OpenClaw 的 before_tool_call hook + exec.approval 两阶段审批。
+ */
+export const enum ToolSecurityLevel {
+	/** 安全工具：读取类操作，无需确认 */
+	Safe = 'safe',
+	/** 谨慎工具：可能有轻微副作用，首次使用时提示 */
+	Cautious = 'cautious',
+	/** 危险工具：文件写入、命令执行等破坏性操作，每次确认 */
+	Dangerous = 'dangerous',
+}
+
+// ─── Tool Availability (OpenClaw-inspired) ───────────────────────────────────
+
+/**
+ * 声明式可用性条件 — 参考 OpenClaw 的 ToolAvailabilityExpression。
+ * 允许工具声明自己在何种条件下可用，运行时自动评估。
+ */
+export interface IToolAvailability {
+	/** 条件类型 */
+	readonly type: 'always' | 'config' | 'env' | 'platform' | 'custom';
+	/**
+	 * 条件值：
+	 * - config: 配置项键名（非空即满足）
+	 * - env: 环境变量名（非空即满足）
+	 * - platform: 'desktop' | 'web' | 'node'
+	 * - custom: 自定义条件标识符（由 provider 实现评估）
+	 */
+	readonly condition?: string;
+	/** 是否取反（例如 "非 web 环境" = { type: 'platform', condition: 'web', negate: true }） */
+	readonly negate?: boolean;
+}
+
+// ─── Tool Approval (OpenClaw-inspired) ──────────────────────────────────────
+
+/**
+ * 工具审批请求 — 发送给 UI 层，等待用户决策。
+ */
+export interface IToolApprovalRequest {
+	readonly toolCallId: string;
+	readonly toolName: string;
+	readonly arguments: Record<string, unknown>;
+	readonly securityLevel: ToolSecurityLevel;
+	readonly reason?: string; // 说明为什么需要审批
+}
+
+/**
+ * 工具审批决策
+ */
+export const enum ToolApprovalDecision {
+	/** 允许本次执行 */
+	AllowOnce = 'allow-once',
+	/** 允许本次执行，且后续同名工具不再询问（本次会话内） */
+	AllowAlways = 'allow-always',
+	/** 拒绝执行 */
+	Deny = 'deny',
+}
+
+/**
+ * 工具审批回调接口 — AgentOS 注册到 UI 层
+ */
+export interface IToolApprovalHandler {
+	/**
+	 * 请求用户审批。
+	 * @returns 用户的审批决策
+	 */
+	requestApproval(request: IToolApprovalRequest): Promise<ToolApprovalDecision>;
+}
+
 // ─── Tool Provider Interface ──────────────────────────────────────────────────
 
 export interface IToolProvider {
@@ -170,7 +242,7 @@ export interface IToolProvider {
 	readonly name: string;
 
 	listTools(agentId: string): Promise<IToolDefinition[]>;
-	executeTool(agentId: string, toolCall: IToolCall): Promise<IToolResult>;
+	executeTool(agentId: string, toolCall: IToolCall, signal?: AbortSignal): Promise<IToolResult>;
 
 	/**
 	 * 启用一个工具
@@ -215,6 +287,10 @@ export interface IToolDefinition {
 	readonly inputSchema: Record<string, unknown>; // JSON Schema
 	readonly category?: string;  // e.g. 'filesystem', 'browser', 'search'
 	readonly source?: string;      // provider id
+	/** 安全等级 — 决定是否需要用户审批（默认 safe） */
+	readonly securityLevel?: ToolSecurityLevel;
+	/** 声明式可用性条件列表（所有条件需同时满足） */
+	readonly availability?: IToolAvailability[];
 }
 
 export interface IToolCall {
@@ -228,6 +304,26 @@ export interface IToolResult {
 	readonly success: boolean;
 	readonly content: IToolResultContent[];
 	readonly error?: string;
+	/** 结构化执行元数据 — 参考 OpenClaw 的 AgentToolResult.details */
+	readonly metadata?: IToolResultMetadata;
+}
+
+/**
+ * 工具执行结果的结构化元数据
+ */
+export interface IToolResultMetadata {
+	/** 执行耗时（毫秒） */
+	readonly executionTimeMs?: number;
+	/** 结果是否被截断 */
+	readonly truncated?: boolean;
+	/** 结构化内容（可选，供下游精确使用） */
+	readonly structuredContent?: unknown;
+	/** MCP 来源服务器名 */
+	readonly mcpServer?: string;
+	/** 是否可重试 */
+	readonly retryable?: boolean;
+	/** 是否因超时而终止 */
+	readonly timedOut?: boolean;
 }
 
 export interface IToolResultContent {
@@ -292,13 +388,14 @@ export interface IAgentTurnRequest {
 }
 
 export interface IChatStreamDelta {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
 	readonly metadata?: Record<string, unknown>;
 	readonly progress?: number; // 0-100 进度百分比（用于 tool_progress 类型）
 	readonly stage?: string; // 当前阶段描述（用于 tool_progress 类型）
+	readonly success?: boolean; // tool_end 时表示工具是否执行成功
 }
 
 /**

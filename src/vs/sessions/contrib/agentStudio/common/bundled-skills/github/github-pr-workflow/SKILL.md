@@ -1,4 +1,4 @@
----
+﻿---
 name: github-pr-workflow
 description: GitHub PR lifecycle: branch, commit, open, CI, merge.
 activation: manual
@@ -73,7 +73,7 @@ Branch naming conventions:
 
 ## 2. Making Commits
 
-Use the agent's file tools (`write_file`, `patch`) to make changes, then commit:
+Use the agent's file tools (`file_write`, `patch`) to make changes, then commit:
 
 ```bash
 # Stage specific files
@@ -247,7 +247,7 @@ cd /tmp && unzip -o ci-logs.zip -d ci-logs && cat ci-logs/*.txt
 
 ### Step 2: Fix and Push
 
-After identifying the issue, use file tools (`patch`, `write_file`) to fix it:
+After identifying the issue, use file tools (`patch`, `file_write`) to fix it:
 
 ```bash
 git add <fixed_files>
@@ -265,7 +265,7 @@ When asked to auto-fix CI, follow this loop:
 
 1. Check CI status → identify failures
 2. Read failure logs → understand the error
-3. Use `read_file` + `patch`/`write_file` → fix the code
+3. Use `file_read` + `patch`/`file_write` → fix the code
 4. `git add . && git commit -m "fix: ..." && git push`
 5. Wait for CI → re-check status
 6. Repeat if still failing (up to 3 attempts, then ask the user)

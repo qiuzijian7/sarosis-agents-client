@@ -1,4 +1,4 @@
----
+﻿---
 name: github-code-review
 description: Review PRs: diffs, inline comments via gh or REST.
 activation: auto
@@ -69,7 +69,7 @@ git diff main...HEAD --stat
 git log main..HEAD --oneline
 ```
 
-2. **Review file by file** — use `read_file` on changed files for full context, and the diff to see what changed:
+2. **Review file by file** — use `file_read` on changed files for full context, and the diff to see what changed:
 
 ```bash
 git diff main...HEAD -- src/auth/login.py
@@ -317,7 +317,7 @@ When the user asks you to "review the code" or "check before pushing":
 
 1. `git diff main...HEAD --stat` — see scope of changes
 2. `git diff main...HEAD` — read the full diff
-3. For each changed file, use `read_file` if you need more context
+3. For each changed file, use `file_read` if you need more context
 4. Apply the checklist above
 5. Present findings in the structured format (Critical / Warnings / Suggestions / Looks Good)
 6. If critical issues found, offer to fix them before the user pushes
@@ -361,7 +361,7 @@ curl -s -H "Authorization: token $GITHUB_TOKEN" \
 
 ### Step 3: Check out the PR locally
 
-This gives you full access to `read_file`, `search_files`, and the ability to run tests.
+This gives you full access to `file_read`, `search_files`, and the ability to run tests.
 
 ```bash
 git fetch origin pull/$PR_NUMBER/head:pr-$PR_NUMBER
@@ -380,7 +380,7 @@ git diff main...HEAD --name-only
 git diff main...HEAD -- path/to/file.py
 ```
 
-For each changed file, use `read_file` to see full context around the changes — diffs alone can miss issues visible only with surrounding code.
+For each changed file, use `file_read` to see full context around the changes — diffs alone can miss issues visible only with surrounding code.
 
 ### Step 5: Run automated checks locally (if applicable)
 

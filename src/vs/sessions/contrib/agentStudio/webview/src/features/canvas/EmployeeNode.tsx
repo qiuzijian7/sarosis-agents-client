@@ -4,9 +4,10 @@
  *  Avatar (top) → Name + Role → Model badge → Skills/Token tags (bottom)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { memo, useState } from 'react';
+import React, { memo, useState, useRef, useEffect } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
+import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
 
 interface EmployeeNodeData {
@@ -28,7 +29,56 @@ const STATUS_MAP: Record<string, { label: string; color: string; bg: string; dot
 function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData }): React.ReactElement {
 	const { employee, isSelected, onSelect, onDelete } = data;
 	const [imgError, setImgError] = useState(false);
+	const [isEditingName, setIsEditingName] = useState(false);
+	const [editName, setEditName] = useState(employee.name);
+	const nameInputRef = useRef<HTMLInputElement>(null);
 	const statusInfo = STATUS_MAP[employee.status] || STATUS_MAP.idle;
+
+	// Focus input when entering edit mode
+	useEffect(() => {
+		if (isEditingName && nameInputRef.current) {
+			nameInputRef.current.focus();
+			nameInputRef.current.select();
+		}
+	}, [isEditingName]);
+
+	// Sync editName when employee.name changes externally
+	useEffect(() => {
+		if (!isEditingName) {
+			setEditName(employee.name);
+		}
+	}, [employee.name, isEditingName]);
+
+	const handleNameDoubleClick = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		setEditName(employee.name);
+		setIsEditingName(true);
+	};
+
+	const handleNameCommit = async () => {
+		const trimmed = editName.trim();
+		if (trimmed && trimmed !== employee.name) {
+			try {
+				await useEmployeeStore.getState().updateEmployee(employee.id, { name: trimmed });
+			} catch (err) {
+				console.error('[EmployeeNode] rename failed:', err);
+				setEditName(employee.name); // revert on error
+			}
+		} else {
+			setEditName(employee.name); // revert if empty or unchanged
+		}
+		setIsEditingName(false);
+	};
+
+	const handleNameKeyDown = (e: React.KeyboardEvent) => {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			handleNameCommit();
+		} else if (e.key === 'Escape') {
+			setEditName(employee.name);
+			setIsEditingName(false);
+		}
+	};
 
 	const avatarUrl = employee.avatar
 		|| (employee.avatarStyle && employee.avatarSeed
@@ -89,7 +139,20 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 
 				{/* Info area */}
 				<div className="employee-node-info">
-					<div className="employee-card-name">{employee.name}</div>
+					{isEditingName ? (
+						<input
+							ref={nameInputRef}
+							className="employee-card-name-input"
+							value={editName}
+							onChange={(e) => setEditName(e.target.value)}
+							onBlur={handleNameCommit}
+							onKeyDown={handleNameKeyDown}
+							onClick={(e) => e.stopPropagation()}
+							maxLength={50}
+						/>
+					) : (
+						<div className="employee-card-name" onDoubleClick={handleNameDoubleClick} title="双击重命名">{employee.name}</div>
+					)}
 					<div className="employee-card-role">
 						<span>{employee.role}</span>
 					</div>

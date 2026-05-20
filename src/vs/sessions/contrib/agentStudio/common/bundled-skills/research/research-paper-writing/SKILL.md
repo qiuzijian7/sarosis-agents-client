@@ -1,4 +1,4 @@
----
+﻿---
 name: research-paper-writing
 description: Write ML papers for NeurIPS/ICML/ICLR: design→submit.
 activation: manual
@@ -2132,7 +2132,7 @@ Compose this skill with other Hermes skills for specific phases:
 | **`terminal`** | LaTeX compilation (`latexmk -pdf`), git operations, launching experiments (`nohup python run.py &`), process checks |
 | **`process`** | Background experiment management: `process("start", ...)`, `process("poll", pid)`, `process("log", pid)`, `process("kill", pid)` |
 | **`execute_code`** | Run Python for citation verification, statistical analysis, data aggregation. Has tool access via RPC. |
-| **`read_file`** / **`write_file`** / **`patch`** | Paper editing, experiment scripts, result files. Use `patch` for targeted edits to large .tex files. |
+| **`file_read`** / **`file_write`** / **`patch`** | Paper editing, experiment scripts, result files. Use `patch` for targeted edits to large .tex files. |
 | **`web_search`** | Literature discovery: `web_search("transformer attention mechanism 2024")` |
 | **`web_extract`** | Fetch paper content, verify citations: `web_extract("https://arxiv.org/abs/2303.17651")` |
 | **`delegate_task`** | **Parallel section drafting** — spawn isolated subagents for each section. Also for concurrent citation verification. |

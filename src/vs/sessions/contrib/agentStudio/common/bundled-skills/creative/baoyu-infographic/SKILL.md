@@ -1,4 +1,4 @@
----
+﻿---
 name: baoyu-infographic
 description: Infographics: 21 layouts x 21 styles (信息图, 可视化).
 activation: manual
@@ -142,7 +142,7 @@ Slug: 2-4 words kebab-case from topic. Conflict: append `-YYYYMMDD-HHMMSS`.
 
 **Load references**: Read `references/analysis-framework.md` from this skill.
 
-1. Save source content (file path or paste → `source.md` using `write_file`)
+1. Save source content (file path or paste → `source.md` using `file_write`)
    - **Backup rule**: If `source.md` exists, rename to `source-backup-YYYYMMDD-HHMMSS.md`
 2. Analyze: topic, data type, complexity, tone, audience
 3. Detect source language and user language
@@ -201,7 +201,7 @@ Combine:
 - Named presets → ratio string: landscape→`16:9`, portrait→`9:16`, square→`1:1`
 - Custom W:H ratios → use as-is (e.g., `3:4`, `4:3`, `2.35:1`)
 
-Save the assembled prompt to `prompts/infographic.md` using `write_file`.
+Save the assembled prompt to `prompts/infographic.md` using `file_write`.
 
 ### Step 6: Generate Image
 

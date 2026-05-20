@@ -1,4 +1,4 @@
----
+﻿---
 name: sketch
 description: Throwaway HTML mockups: 2-3 design variants to compare.
 activation: manual
@@ -201,8 +201,8 @@ Propose 2-4 named candidates. Let the user pick.
 
 ```
 terminal("mkdir -p sketches/001-calm-editorial")
-write_file("sketches/001-calm-editorial/index.html", "<!doctype html>...")
-write_file("sketches/001-calm-editorial/README.md", "## Variant: Calm editorial\n...")
+file_write("sketches/001-calm-editorial/index.html", "<!doctype html>...")
+file_write("sketches/001-calm-editorial/README.md", "## Variant: Calm editorial\n...")
 browser_navigate(url="file://$(pwd)/sketches/001-calm-editorial/index.html")
 browser_vision(question="How does this look? Any obvious layout issues?")
 ```

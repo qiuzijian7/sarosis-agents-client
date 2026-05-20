@@ -25,7 +25,7 @@
  *   activation: auto
  *   match: [review, refactor, lint]
  *   category: code
- *   recommended_tools: [file_read, shell_exec]
+ *   recommended_tools: [file_read, terminal]
  *   ---
  *   <skill body in markdown>
  */
@@ -84,7 +84,7 @@ const BUILTIN_SKILLS: ISkillDefinition[] = [
 		activation: 'auto',
 		match: ['review', 'code review', '评审', '审查代码', 'code-review'],
 		category: 'code',
-		recommendedTools: ['file_read', 'shell_exec'],
+		recommendedTools: ['file_read', 'terminal'],
 		source: 'builtin',
 		enabled: true,
 		prompt: [

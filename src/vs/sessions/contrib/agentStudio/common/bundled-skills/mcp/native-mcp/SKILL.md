@@ -1,4 +1,4 @@
----
+﻿---
 name: native-mcp
 description: MCP client: connect servers, register tools (stdio/HTTP).
 activation: manual
@@ -9,7 +9,7 @@ version: 1.0.0
 
 # Native MCP Client
 
-Hermes Agent has a built-in MCP client that connects to MCP servers at startup, discovers their tools, and makes them available as first-class tools the agent can call directly. No bridge CLI needed -- tools from MCP servers appear alongside built-in tools like `terminal`, `read_file`, etc.
+Hermes Agent has a built-in MCP client that connects to MCP servers at startup, discovers their tools, and makes them available as first-class tools the agent can call directly. No bridge CLI needed -- tools from MCP servers appear alongside built-in tools like `terminal`, `file_read`, etc.
 
 ## When to Use
 
@@ -120,7 +120,7 @@ mcp_{server_name}_{tool_name}
 Hyphens and dots in names are replaced with underscores for LLM API compatibility.
 
 Examples:
-- Server `filesystem`, tool `read_file` → `mcp_filesystem_read_file`
+- Server `filesystem`, tool `file_read` → `mcp_filesystem_read_file`
 - Server `github`, tool `list-issues` → `mcp_github_list_issues`
 - Server `my-api`, tool `fetch.data` → `mcp_my_api_fetch_data`
 

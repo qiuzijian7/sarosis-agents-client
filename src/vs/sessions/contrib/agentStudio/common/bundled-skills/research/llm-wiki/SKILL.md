@@ -1,4 +1,4 @@
----
+﻿---
 name: llm-wiki
 description: Karpathy's LLM Wiki: build/query interlinked markdown KB.
 activation: manual
@@ -75,9 +75,9 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ```bash
 WIKI="${WIKI_PATH:-$HOME/wiki}"
 # Orientation reads at session start
-read_file "$WIKI/SCHEMA.md"
-read_file "$WIKI/index.md"
-read_file "$WIKI/log.md" offset=<last 30 lines>
+file_read "$WIKI/SCHEMA.md"
+file_read "$WIKI/index.md"
+file_read "$WIKI/log.md" offset=<last 30 lines>
 ```
 
 Only after orientation should you ingest, query, or lint. This prevents:
@@ -302,7 +302,7 @@ When the user asks a question about the wiki's domain:
 ① **Read `index.md`** to identify relevant pages.
 ② **For wikis with 100+ pages**, also `search_files` across all `.md` files
    for key terms — the index alone may miss relevant content.
-③ **Read the relevant pages** using `read_file`.
+③ **Read the relevant pages** using `file_read`.
 ④ **Synthesize an answer** from the compiled knowledge. Cite the wiki pages
    you drew from: "Based on [[page-a]] and [[page-b]]..."
 ⑤ **File valuable answers back** — if the answer is a substantial comparison,
@@ -375,7 +375,7 @@ search_files "*.md" target="files" path="$WIKI"
 search_files "tags:.*alignment" path="$WIKI" file_glob="*.md"
 
 # Recent activity
-read_file "$WIKI/log.md" offset=<last 20 lines>
+file_read "$WIKI/log.md" offset=<last 20 lines>
 ```
 
 ### Bulk Ingest

@@ -2,7 +2,15 @@
  *  Agent Studio WebView - Chat Enhanced Styles
  *
  *  Styles for Markdown rendering, ThinkingCard, ToolCallCard, code blocks, etc.
- *  Ref: sarosis-webui EmployeeChat.tsx styles
+ *  Enhanced with OpenClaw-inspired patterns:
+ *  - JSON auto-collapse in code blocks
+ *  - Large code block toggle
+ *  - Tool card input/output sections with copy buttons
+ *  - Tool card error state
+ *  - Thinking card with markdown rendering
+ *  - Streaming text formatting
+ *
+ *  Ref: OpenClaw ui/src/ui/chat/tool-cards.ts + grouped-render.ts + markdown.ts
  *--------------------------------------------------------------------------------------------*/
 
 /* ── Markdown body (assistant messages) ────────────────────────── */
@@ -79,6 +87,16 @@
 	border-radius: 6px;
 }
 
+/* Task list items (OpenClaw: markdown-it-task-lists) */
+.markdown-body .task-list-item {
+	list-style: none;
+	margin-left: -20px;
+}
+
+.markdown-body .task-list-item input[type="checkbox"] {
+	margin-right: 6px;
+}
+
 /* Inline code */
 .inline-code {
 	padding: 1px 5px;
@@ -89,7 +107,7 @@
 	color: var(--as-accent, var(--vscode-textLink-foreground, #e06c75));
 }
 
-/* ── Code block wrapper ────────────────────────────────────────── */
+/* ── Code block wrapper (Enhanced with collapse support) ───────── */
 .code-block-wrapper {
 	margin: 8px 0;
 	border-radius: 6px;
@@ -97,10 +115,14 @@
 	border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.15)));
 }
 
+.code-block-wrapper.collapsed {
+	/* When collapsed, only show the header */
+}
+
 .code-block-header {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
+	gap: 8px;
 	padding: 4px 10px;
 	font-size: 10px;
 	font-weight: 500;
@@ -114,20 +136,45 @@
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
 }
 
-.code-block-copy {
+.code-block-toggle {
 	border: none;
 	background: transparent;
 	cursor: pointer;
-	font-size: 12px;
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 3px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	opacity: 0.7;
+	transition: opacity 0.1s, background-color 0.1s;
+}
+
+.code-block-toggle:hover {
+	opacity: 1;
+	background-color: rgba(128, 128, 128, 0.15);
+}
+
+.code-block-copy {
+	margin-left: auto;
+	border: none;
+	background: transparent;
+	cursor: pointer;
 	padding: 2px 4px;
 	border-radius: 3px;
 	opacity: 0.5;
 	transition: opacity 0.1s, background-color 0.1s;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	display: flex;
+	align-items: center;
 }
 
 .code-block-copy:hover {
 	opacity: 1;
 	background-color: rgba(128, 128, 128, 0.15);
+}
+
+.code-block-copy svg {
+	width: 14px;
+	height: 14px;
 }
 
 /* ── Table wrapper ─────────────────────────────────────────────── */
@@ -157,7 +204,7 @@
 	background-color: rgba(128, 128, 128, 0.03);
 }
 
-/* ── Thinking card (new design) ────────────────────────────────── */
+/* ── Thinking card (Enhanced — collapsed by default, Markdown rendered) ─── */
 .thinking-card {
 	margin-bottom: 8px;
 	border-radius: 6px;
@@ -186,6 +233,7 @@
 	font-size: 11px;
 	font-weight: 500;
 	color: var(--as-warning, #eab308);
+	transition: background-color 0.1s;
 }
 
 .thinking-card-header:hover {
@@ -198,12 +246,17 @@
 	flex-shrink: 0;
 }
 
+.thinking-card-icon svg {
+	color: var(--as-warning, #eab308);
+}
+
 .thinking-card-title {
 	flex: 1;
 }
 
 .thinking-card-toggle {
-	font-size: 10px;
+	display: flex;
+	align-items: center;
 	transition: transform 0.2s;
 	opacity: 0.6;
 }
@@ -217,11 +270,26 @@
 	font-size: 11px;
 	line-height: 1.6;
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
-	font-style: italic;
-	white-space: pre-wrap;
+	white-space: normal;
 	word-break: break-word;
-	max-height: 200px;
+	max-height: 300px;
 	overflow-y: auto;
+	border-top: 1px solid rgba(234, 179, 8, 0.1);
+}
+
+/* Thinking markdown — slightly smaller, muted styling */
+.thinking-markdown {
+	font-style: italic;
+	opacity: 0.85;
+}
+
+.thinking-markdown .markdown-body {
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+.thinking-markdown .code-block-wrapper {
+	margin: 4px 0;
 }
 
 .thinking-spinner {
@@ -233,7 +301,7 @@
 	to { transform: rotate(360deg); }
 }
 
-/* ── Tool call card (new design) ───────────────────────────────── */
+/* ── Tool call card (Enhanced — OpenClaw-inspired) ─────────────── */
 .tool-calls-section {
 	display: flex;
 	flex-direction: column;
@@ -247,6 +315,7 @@
 	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
 	background-color: var(--as-bg-tertiary, var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.08)));
 	font-size: 11px;
+	transition: border-color 0.2s;
 }
 
 .tool-call-card.running {
@@ -257,11 +326,15 @@
 	border-color: var(--as-success, rgba(74, 222, 128, 0.2));
 }
 
+.tool-call-card.error {
+	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.3));
+}
+
 .tool-call-card-header {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	padding: 5px 10px;
+	padding: 6px 10px;
 	cursor: pointer;
 	user-select: none;
 	transition: background-color 0.1s;
@@ -289,22 +362,57 @@
 	color: var(--as-success, #4ade80);
 }
 
+.tool-call-card.error .tool-call-icon svg {
+	color: var(--vscode-errorForeground, #f48771);
+}
+
 .tool-spinner {
 	animation: spin 1s linear infinite;
 }
 
 .tool-call-card-name {
-	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: 4px;
 	font-weight: 500;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.tool-call-card-toggle {
+.tool-call-emoji {
+	font-size: 12px;
+	flex-shrink: 0;
+}
+
+/* Args summary in collapsed view (OpenClaw pattern) */
+.tool-call-card-summary {
+	flex: 1;
+	font-size: 10px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	opacity: 0.7;
+	margin-left: 4px;
+}
+
+/* Duration badge */
+.tool-call-duration {
 	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	background-color: rgba(128, 128, 128, 0.1);
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	flex-shrink: 0;
+}
+
+.tool-call-card-toggle {
+	display: flex;
+	align-items: center;
 	opacity: 0.5;
 	transition: transform 0.2s;
+	flex-shrink: 0;
 }
 
 .tool-call-card-toggle.collapsed {
@@ -323,13 +431,36 @@
 	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.08));
 }
 
+/* Section header with title + copy button */
+.tool-call-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 4px;
+}
+
 .tool-call-section-title {
 	font-size: 10px;
 	font-weight: 600;
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
-	margin-bottom: 4px;
 	text-transform: uppercase;
 	letter-spacing: 0.3px;
+}
+
+.tool-call-copy-btn {
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	font-size: 11px;
+	padding: 1px 4px;
+	border-radius: 3px;
+	opacity: 0.4;
+	transition: opacity 0.1s, background-color 0.1s;
+}
+
+.tool-call-copy-btn:hover {
+	opacity: 1;
+	background-color: rgba(128, 128, 128, 0.15);
 }
 
 .tool-call-code {
@@ -340,14 +471,136 @@
 	background-color: var(--vscode-editor-background, rgba(0, 0, 0, 0.15));
 	font-family: var(--vscode-editor-font-family, 'Fira Code', 'Consolas', monospace);
 	overflow-x: auto;
-	max-height: 150px;
+	max-height: 200px;
 	overflow-y: auto;
 	white-space: pre-wrap;
 	word-break: break-all;
 	margin: 0;
 }
 
+.tool-call-code.error-output {
+	color: var(--vscode-errorForeground, #f48771);
+	border: 1px solid rgba(244, 135, 113, 0.15);
+}
+
+/* Show more/less toggle for long results */
+.tool-call-show-more {
+	display: block;
+	width: 100%;
+	padding: 4px 0;
+	margin-top: 4px;
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	font-size: 10px;
+	color: var(--as-accent, var(--vscode-textLink-foreground, #3b82f6));
+	text-align: center;
+	opacity: 0.8;
+	transition: opacity 0.1s;
+}
+
+.tool-call-show-more:hover {
+	opacity: 1;
+}
+
+/* Running indicator with dots */
+.tool-call-running-indicator {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+}
+
+.tool-call-running-dots {
+	display: flex;
+	gap: 3px;
+}
+
+.tool-call-running-text {
+	font-size: 10px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+	opacity: 0.7;
+}
+
+/* ── JSON content block (pure JSON detection — OpenClaw pattern) ── */
+.json-content-block {
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
+	background-color: rgba(128, 128, 128, 0.04);
+}
+
+.json-content-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	cursor: pointer;
+	user-select: none;
+	font-size: 11px;
+	transition: background-color 0.1s;
+}
+
+.json-content-header:hover {
+	background-color: rgba(128, 128, 128, 0.06);
+}
+
+.json-content-icon {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 12px;
+	opacity: 0.6;
+}
+
+.json-content-label {
+	font-weight: 500;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+}
+
+.json-content-toggle {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	transition: transform 0.2s;
+	opacity: 0.5;
+}
+
+.json-content-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.json-content-body {
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+}
+
+/* ── Plain text fallback for very long messages ──────────────────── */
+.message-plain-text {
+	font-size: 12px;
+	line-height: 1.6;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--vscode-editor-font-family, monospace);
+	padding: 8px;
+	border-radius: 4px;
+	background-color: var(--vscode-editor-background, rgba(0, 0, 0, 0.1));
+	max-height: 500px;
+	overflow-y: auto;
+}
+
 /* ── Streaming text content ────────────────────────────────────── */
+.streaming-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+	line-height: 1.6;
+}
+
+.streaming-text .inline-code {
+	padding: 1px 4px;
+	border-radius: 3px;
+	font-size: 0.9em;
+	font-family: var(--vscode-editor-font-family, monospace);
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.15));
+}
+
 .streaming-text-content {
 	white-space: pre-wrap;
 	word-break: break-word;

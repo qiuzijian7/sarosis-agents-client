@@ -12,7 +12,7 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
  * Tool Provider 实现
  *
  * 管理工具注册和执行。支持：
- * 1. 内置工具注册（如 file_read, file_write, shell_exec）
+ * 1. 内置工具注册（如 file_read, file_write, terminal）
  * 2. MCP Gateway 工具发现（后续实现）
  * 3. 插件注册的工具
  */
@@ -153,7 +153,7 @@ export class ToolProvider extends Disposable implements IToolProvider {
 		}
 	}
 
-	async executeTool(_agentId: string, toolCall: IToolCall): Promise<IToolResult> {
+	async executeTool(_agentId: string, toolCall: IToolCall, signal?: AbortSignal): Promise<IToolResult> {
 		const handler = this._toolHandlers.get(toolCall.name);
 		if (!handler) {
 			this._logService.warn(`[ToolProvider] No handler for tool: ${toolCall.name}`);
@@ -165,6 +165,17 @@ export class ToolProvider extends Disposable implements IToolProvider {
 			};
 		}
 
+		if (signal?.aborted) {
+			return {
+				toolCallId: toolCall.id,
+				success: false,
+				content: [],
+				error: 'Tool execution was cancelled',
+				metadata: { timedOut: true, retryable: true },
+			};
+		}
+
+		const startTime = Date.now();
 		try {
 			this._logService.debug(`[ToolProvider] Executing tool: ${toolCall.name}`);
 			const content = await handler(toolCall.arguments);
@@ -172,6 +183,7 @@ export class ToolProvider extends Disposable implements IToolProvider {
 				toolCallId: toolCall.id,
 				success: true,
 				content,
+				metadata: { executionTimeMs: Date.now() - startTime },
 			};
 		} catch (error) {
 			this._logService.error(`[ToolProvider] Tool ${toolCall.name} failed:`, error);
@@ -180,6 +192,7 @@ export class ToolProvider extends Disposable implements IToolProvider {
 				success: false,
 				content: [],
 				error: error instanceof Error ? error.message : String(error),
+				metadata: { executionTimeMs: Date.now() - startTime, retryable: true },
 			};
 		}
 	}
