@@ -1,8 +1,22 @@
 @echo on
 REM Run this from "x64 Native Tools Command Prompt for VS 2022"
 REM REQUIRES: VS Installer -> Individual components -> Spectre mitigated libs (Latest)
+REM
+REM Usage:
+REM   install-deps.bat                  -> 默认 x64，会执行 npm rebuild + 下载 Electron
+REM   install-deps.bat arm64            -> 指定其他架构
+REM   install-deps.bat x64 --skip-electron  -> 跳过 Step 2 (Electron 下载)，节省时间
 
 cd /d "%~dp0"
+
+REM 解析参数：%1 = arch（默认 x64），%2 = --skip-electron 时跳过 Step 2
+set ARCH=%1
+if "%ARCH%"=="" set ARCH=x64
+if /I "%ARCH%"=="--skip-electron" (
+    set ARCH=x64
+    set SKIP_ELECTRON=1
+)
+if /I "%2"=="--skip-electron" set SKIP_ELECTRON=1
 
 set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
@@ -116,4 +130,41 @@ if exist "node_modules\kerberos\build\Release\kerberos.node" (
 echo.
 echo --- Last 40 lines of install.log ---
 powershell -NoProfile -Command "Get-Content install.log | Select-Object -Last 40"
+echo.
+
+echo === Step 2: Download / Extract Electron binary (arch=%ARCH%) ===
+if defined SKIP_ELECTRON (
+    echo Skipped: --skip-electron specified.
+    goto :after_electron
+)
+echo This will rimraf .build\electron\ and re-download Electron via @vscode/gulp-electron.
+echo Mirror: %ELECTRON_MIRROR%
+echo Output goes to electron-download.log
+echo.
+
+call node build/lib/electron.ts %ARCH% > electron-download.log 2>&1
+set ELECTRON_EXIT=%ERRORLEVEL%
+echo === Electron download exit code: %ELECTRON_EXIT% ===
+echo.
+echo --- Electron download errors (if any) ---
+powershell -NoProfile -Command "Get-Content electron-download.log | Select-String -Pattern 'Error|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|404|403|HTTPError' | Select-Object -First 20 LineNumber,Line | Format-Table -AutoSize -Wrap"
+echo.
+echo --- Electron binary status ---
+if exist ".build\electron\Code - OSS.exe" (
+    for %%I in (".build\electron\Code - OSS.exe") do echo [OK]      .build\electron\Code - OSS.exe ^(size: %%~zI bytes^)
+) else (
+    echo [MISSING] .build\electron\Code - OSS.exe
+)
+if exist ".build\electron\version" (
+    echo [INFO]    Electron version:
+    type ".build\electron\version"
+    echo.
+)
+echo.
+echo --- Last 30 lines of electron-download.log ---
+powershell -NoProfile -Command "Get-Content electron-download.log | Select-Object -Last 30"
+
+:after_electron
+echo.
+echo === All done ===
 pause
