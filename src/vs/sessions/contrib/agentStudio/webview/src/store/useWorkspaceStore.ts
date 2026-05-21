@@ -39,6 +39,7 @@ interface WorkspaceState {
 	// Actions
 	loadWorkspaces: () => Promise<void>;
 	createWorkspace: (name: string, description?: string) => Promise<string | null>;
+	deleteWorkspace: (id: string) => Promise<boolean>;
 	setActiveWorkspace: (id: string) => Promise<void>;
 	updateNodes: (nodes: WorkspaceNode[]) => void;
 	updateEdges: (edges: WorkspaceEdge[]) => void;
@@ -80,6 +81,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to create workspace:', err);
 			return null;
+		}
+	},
+
+	deleteWorkspace: async (id: string) => {
+		try {
+			await sendRequest<{ id: string }, void>('workspace.delete', { id });
+			const workspaces = await sendRequest<unknown, Workspace[]>('workspace.list', {});
+			const { activeWorkspaceId } = get();
+			// If the deleted workspace was active, clear the selection
+			const newActiveId = activeWorkspaceId === id
+				? (workspaces[0]?.id ?? null)
+				: activeWorkspaceId;
+			set({ workspaces, activeWorkspaceId: newActiveId });
+			return true;
+		} catch (err) {
+			console.error('[WorkspaceStore] Failed to delete workspace:', err);
+			return false;
 		}
 	},
 

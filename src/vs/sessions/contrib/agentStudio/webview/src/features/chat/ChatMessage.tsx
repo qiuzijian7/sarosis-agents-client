@@ -14,13 +14,11 @@
  *  Ref: OpenClaw grouped-render.ts + markdown.ts patterns
  *--------------------------------------------------------------------------------------------*/
 
-import React, { memo, useCallback, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import React, { memo, useMemo, useState } from 'react';
 import type { ChatMessage } from '../../store/useChatStore';
+import { useChatStore } from '../../store/useChatStore';
 import { ToolCallCard } from './ToolCallCard';
+import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
 
 interface ChatMessageProps {
@@ -28,10 +26,7 @@ interface ChatMessageProps {
 	isStreaming?: boolean;
 }
 
-/** Maximum text length before we skip full Markdown rendering for performance */
-const MAX_MARKDOWN_LENGTH = 40_000;
-/** Code blocks larger than this are collapsed by default */
-const LARGE_CODE_THRESHOLD = 30;
+
 
 /**
  * Detect if the message content is pure JSON (for display as collapsible block).
@@ -66,6 +61,7 @@ function formatJsonForDisplay(text: string): string {
 
 function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): React.ReactElement {
 	const isUser = message.role === 'user';
+	const isSystemError = message.role === 'system' && message.id.startsWith('error_');
 	const [thinkingCollapsed, setThinkingCollapsed] = useState(true); // Collapsed by default (OpenClaw pattern)
 	const [jsonExpanded, setJsonExpanded] = useState(false);
 
@@ -92,77 +88,17 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 		if (!message.content) { return ''; }
 		if (isUser) { return message.content; }
 		const sanitized = sanitizeAssistantContent(message.content);
+		// DEBUG: Log completed message content for consistency diagnosis
+		console.log('[ChatMessage] displayContent computed:', {
+			rawLen: message.content.length,
+			sanitizedLen: sanitized.length,
+			first200: sanitized.substring(0, 200),
+			// Check if ## headings have space already (should have after host processing)
+			headingsRaw: (message.content.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
+			headingsSanitized: (sanitized.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
+		});
 		return sanitized;
 	}, [message.content, isUser]);
-
-	// Render markdown content for assistant messages
-	// Enhanced with OpenClaw patterns: auto-collapse JSON, large code blocks, copy button
-	const renderMarkdown = useCallback((content: string) => {
-		// Performance guard: very long messages get plain-text rendering (OpenClaw pattern)
-		if (content.length > MAX_MARKDOWN_LENGTH) {
-			return (
-				<pre className="message-plain-text">{content.substring(0, MAX_MARKDOWN_LENGTH)}
-					{'\n\n... [内容过长，已截断显示]'}
-				</pre>
-			);
-		}
-
-		return (
-			<ReactMarkdown
-				remarkPlugins={[remarkGfm]}
-				components={{
-					code({ className, children, ...props }: any) {
-						const match = /language-(\w+)/.exec(className || '');
-						const codeStr = String(children).replace(/\n$/, '');
-						const lineCount = codeStr.split('\n').length;
-						const isJson = match?.[1]?.toLowerCase() === 'json';
-						const isLarge = lineCount > LARGE_CODE_THRESHOLD;
-
-						if (match) {
-							return (
-								<CodeBlockWithCollapse
-									code={codeStr}
-									language={match[1]}
-									isJson={isJson}
-									isLarge={isLarge}
-								/>
-							);
-						}
-						return (
-							<code className={`inline-code ${className || ''}`} {...props}>
-								{children}
-							</code>
-						);
-					},
-					// Links open in new tab
-					a({ href, children, ...props }: any) {
-						return (
-							<a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-								{children}
-							</a>
-						);
-					},
-					// Tables with proper styling
-					table({ children, ...props }: any) {
-						return (
-							<div className="table-wrapper">
-								<table {...props}>{children}</table>
-							</div>
-						);
-					},
-					// Task list support (OpenClaw uses markdown-it-task-lists)
-					li({ children, className, ...props }: any) {
-						if (className === 'task-list-item') {
-							return <li className="task-list-item" {...props}>{children}</li>;
-						}
-						return <li {...props}>{children}</li>;
-					},
-				}}
-			>
-				{content}
-			</ReactMarkdown>
-		);
-	}, []);
 
 	return (
 		<div className={`chat-message ${message.role}`}>
@@ -200,9 +136,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 						{!thinkingCollapsed && (
 							<div className="thinking-card-body">
 								{/* Render thinking as markdown too (OpenClaw: formatReasoningMarkdown) */}
-								<div className="thinking-markdown">
-									{renderMarkdown(message.thinking)}
-								</div>
+								<MarkdownRenderer content={message.thinking} className="thinking-markdown" />
 							</div>
 						)}
 					</div>
@@ -220,9 +154,9 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				{/* ── Main content ──────────────────────────── */}
 				{displayContent && (
 					<div className="message-text">
-						{isStreaming && !isUser ? (
-							// During streaming: plain text + cursor
-							<span className="streaming-text-content">{displayContent}<span className="cursor-blink">▊</span></span>
+					{isStreaming && !isUser ? (
+						// During streaming: live markdown rendering (OpenClaw pattern)
+						<MarkdownRenderer content={displayContent} showCursor />
 						) : isPureJson ? (
 							// Pure JSON content: render as collapsible code block (OpenClaw pattern)
 							<div className="json-content-block">
@@ -254,9 +188,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							</div>
 						) : !isUser ? (
 							// Completed assistant messages: full Markdown rendering
-							<div className="markdown-body">
-								{renderMarkdown(displayContent)}
-							</div>
+							<MarkdownRenderer content={displayContent} />
 						) : (
 							// User messages: plain text
 							displayContent
@@ -265,9 +197,44 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				)}
 			</div>
 
-			{/* ── Footer: time + token count ────────────── */}
+			{/* ── Retry button for retryable errors (VS Code Copilot Chat pattern) ── */}
+			{isSystemError && message.error?.retryable && (
+				<div className="message-error-actions">
+					<button
+						className="message-retry-btn"
+						onClick={() => {
+							// Find the last user message and resend it
+							const { messages, sendMessage } = useChatStore.getState();
+							const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+							if (lastUserMsg && lastUserMsg.content.trim()) {
+								sendMessage(lastUserMsg.content);
+							}
+						}}
+						title="重试上一条消息"
+					>
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="1 4 1 10 7 10" />
+							<path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
+						</svg>
+						重试
+					</button>
+					{message.error.isRateLimited && (
+						<span className="message-error-hint">请求频率过高，稍后重试</span>
+					)}
+				</div>
+			)}
+
+			{/* ── Footer: time + token count + cancelled badge ────────────── */}
 			<div className="message-footer">
 				<span className="message-time">{formatTime(message.timestamp)}</span>
+				{!isUser && message.id.startsWith('cancelled_') && (
+					<span className="message-cancelled-badge" title="用户手动停止了生成">
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+							<rect x="6" y="6" width="12" height="12" rx="2" />
+						</svg>
+						已停止
+					</span>
+				)}
 				{!isUser && message.tokenUsage && message.tokenUsage.total > 0 && (
 					<span className="message-tokens"
 						title={`输入: ${message.tokenUsage.input} / 输出: ${message.tokenUsage.output}`}
@@ -280,87 +247,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	);
 }
 
-/**
- * Code block with collapse functionality.
- * Inspired by OpenClaw's markdown.ts which auto-collapses JSON blocks
- * and provides copy buttons + language labels.
- */
-function CodeBlockWithCollapse({
-	code,
-	language,
-	isJson,
-	isLarge,
-	defaultExpanded,
-}: {
-	code: string;
-	language: string;
-	isJson: boolean;
-	isLarge: boolean;
-	defaultExpanded?: boolean;
-}): React.ReactElement {
-	// JSON blocks and large blocks are collapsed by default (OpenClaw pattern)
-	const [expanded, setExpanded] = useState(defaultExpanded ?? !(isJson || isLarge));
-	const [copied, setCopied] = useState(false);
 
-	const handleCopy = useCallback(() => {
-		navigator.clipboard?.writeText(code).then(() => {
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		}).catch(() => { });
-	}, [code]);
-
-	const lineCount = code.split('\n').length;
-
-	return (
-		<div className={`code-block-wrapper ${!expanded ? 'collapsed' : ''}`}>
-			<div className="code-block-header">
-				<span className="code-block-lang">{language}</span>
-				{(isJson || isLarge) && (
-					<button
-						className="code-block-toggle"
-						onClick={() => setExpanded(!expanded)}
-						title={expanded ? '折叠' : `展开 (${lineCount} 行)`}
-					>
-						{expanded ? '▼ 折叠' : `▶ 展开 (${lineCount} 行)`}
-					</button>
-				)}
-				<button
-					className="code-block-copy"
-					onClick={handleCopy}
-					title={copied ? '已复制!' : '复制代码'}
-				>
-					{copied ? (
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-							<polyline points="20 6 9 17 4 12" />
-						</svg>
-					) : (
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-							<rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-							<path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-						</svg>
-					)}
-				</button>
-			</div>
-			{expanded && (
-				<SyntaxHighlighter
-					style={oneDark}
-					language={language}
-					PreTag="div"
-					customStyle={{
-						margin: 0,
-						borderRadius: '0 0 6px 6px',
-						fontSize: '12px',
-						lineHeight: '1.5',
-					}}
-					showLineNumbers={lineCount > 10}
-					wrapLongLines={true}
-				>
-					{code}
-				</SyntaxHighlighter>
-			)}
-		</div>
-	);
-}
 
 export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 	// Custom shallow compare: only re-render when content actually changes

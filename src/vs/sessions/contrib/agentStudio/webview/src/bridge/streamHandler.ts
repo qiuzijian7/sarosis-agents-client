@@ -13,6 +13,24 @@ export interface StreamChunk {
 	success?: boolean;
 }
 
+/**
+ * Structured error details (inspired by VS Code Copilot Chat's IChatResponseErrorDetails).
+ * Allows the UI to render different error presentations based on level and type.
+ */
+export interface StreamError {
+	message: string;
+	/** Error severity — affects UI color/icon */
+	level: 'info' | 'warning' | 'error';
+	/** Whether this error is retryable (shows a retry button) */
+	retryable?: boolean;
+	/** Whether this is a rate-limiting error */
+	isRateLimited?: boolean;
+	/** Whether this is a quota/billing error */
+	isQuotaExceeded?: boolean;
+	/** Raw error code from the provider (for diagnostics) */
+	code?: string;
+}
+
 export interface StreamState {
 	isStreaming: boolean;
 	employeeId: string | null;
@@ -20,7 +38,10 @@ export interface StreamState {
 	textBuffer: string;
 	thinkingBuffer: string;
 	toolCalls: ToolCallState[];
+	/** @deprecated Use `error` instead for structured error info */
 	errorMessage: string | null;
+	/** Structured error details (VS Code Copilot Chat pattern) */
+	error: StreamError | null;
 }
 
 export interface ToolCallState {
@@ -29,6 +50,8 @@ export interface ToolCallState {
 	arguments: string;
 	result?: string;
 	status: 'running' | 'done' | 'error';
+	/** Whether to show this tool call card in the chat UI. Default true. */
+	defaultShow?: boolean;
 }
 
 type StreamListener = (state: StreamState) => void;
@@ -64,6 +87,35 @@ function createInitialState(): StreamState {
 		thinkingBuffer: '',
 		toolCalls: [],
 		errorMessage: null,
+		error: null,
+	};
+}
+
+/**
+ * Parse an error string into a structured StreamError.
+ * Detects rate-limiting, quota, and network errors to set appropriate flags.
+ * (VS Code Copilot Chat pattern: IChatResponseErrorDetails)
+ */
+function parseStreamError(errorStr: string): StreamError {
+	const lower = errorStr.toLowerCase();
+	const isRateLimited = lower.includes('rate limit') || lower.includes('429') || lower.includes('too many requests');
+	const isQuotaExceeded = lower.includes('quota') || lower.includes('billing') || lower.includes('insufficient') || lower.includes('exceeded');
+	const isNetwork = lower.includes('network') || lower.includes('timeout') || lower.includes('econnrefused') || lower.includes('fetch failed');
+	const isAuthError = lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden');
+
+	// Determine level
+	let level: StreamError['level'] = 'error';
+	if (isRateLimited) { level = 'warning'; }
+
+	// Retryable: network errors, rate limits, and server errors are retryable
+	const retryable = isNetwork || isRateLimited || lower.includes('500') || lower.includes('502') || lower.includes('503');
+
+	return {
+		message: errorStr,
+		level,
+		retryable: retryable && !isAuthError,
+		isRateLimited,
+		isQuotaExceeded,
 	};
 }
 
@@ -173,6 +225,7 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 		}
 		case 'error':
 			state.errorMessage = chunk.content || 'Unknown error';
+			state.error = parseStreamError(chunk.content || 'Unknown error');
 			break;
 		case 'done':
 			// Stream finished — no action needed, completion is handled by handleStreamComplete
@@ -277,7 +330,10 @@ export function handleStreamDelta(data: {
 	for (const chunk of data.chunks) {
 		accumulateChunk(currentState, chunk);
 	}
-	scheduleNotify();
+	// IMPORTANT: For the FIRST delta, notify synchronously so React sees
+	// isStreaming=true before a potential handleStreamComplete in the same
+	// event loop tick (which would cancel the RAF).
+	notify();
 }
 
 /** Schedule a RAF-batched notify to listeners. */
@@ -415,6 +471,7 @@ export function handleStreamError(data: {
 		...currentState,
 		isStreaming: false,
 		errorMessage: data.error || 'Unknown stream error',
+		error: parseStreamError(data.error || 'Unknown stream error'),
 	};
 
 	// Fire completion callbacks — same atomic pattern as handleStreamComplete
@@ -428,7 +485,7 @@ export function handleStreamError(data: {
 
 	// Defensive: if no callback reset the stream, do it now
 	if (currentState.isStreaming) {
-		currentState = { ...currentState, isStreaming: false, errorMessage: data.error || 'Unknown stream error' };
+		currentState = { ...currentState, isStreaming: false, errorMessage: data.error || 'Unknown stream error', error: parseStreamError(data.error || 'Unknown stream error') };
 		notify();
 	}
 }

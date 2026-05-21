@@ -614,3 +614,13 @@
 .message-text .markdown-body {
 	white-space: normal;
 }
+
+/* Ensure consistent list rendering: prevent loose-list extra spacing
+   that occurs when <p> tags wrap list item content during streaming */
+.message-text .markdown-body li > p {
+	margin: 0;
+}
+
+.message-text .markdown-body li > p + p {
+	margin-top: 4px;
+}

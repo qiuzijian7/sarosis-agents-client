@@ -22,7 +22,7 @@
  *  - Streaming tool call argument assembly
  */
 
-import type { IToolCallInfo, IToolDefinition } from '../common/providers.js';
+import type { IToolCallInfo, IToolDefinition } from "../common/providers.js";
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -52,20 +52,28 @@ export const MAX_POST_TOOL_CALL_BUFFER_BYTES = 256 * 1024;
  *
  * @see OpenClaw's `isToolCallContentType` in `src/chat/tool-content.ts`
  */
-export function isToolCallContentType(value: string | undefined | null): boolean {
-	if (!value) { return false; }
-	const normalized = value.toLowerCase().replace(/[_-]/g, '');
-	return normalized === 'toolcall' || normalized === 'tooluse';
+export function isToolCallContentType(
+	value: string | undefined | null,
+): boolean {
+	if (!value) {
+		return false;
+	}
+	const normalized = value.toLowerCase().replace(/[_-]/g, "");
+	return normalized === "toolcall" || normalized === "tooluse";
 }
 
 /**
  * Check if a type string represents a tool result content block.
  * Supports: "tool_result", "toolresult"
  */
-export function isToolResultContentType(value: string | undefined | null): boolean {
-	if (!value) { return false; }
-	const normalized = value.toLowerCase().replace(/[_-]/g, '');
-	return normalized === 'toolresult';
+export function isToolResultContentType(
+	value: string | undefined | null,
+): boolean {
+	if (!value) {
+		return false;
+	}
+	const normalized = value.toLowerCase().replace(/[_-]/g, "");
+	return normalized === "toolresult";
 }
 
 /**
@@ -84,8 +92,15 @@ export function resolveToolBlockArgs(block: Record<string, unknown>): unknown {
  *
  * @see OpenClaw's `resolveToolUseId`
  */
-export function resolveToolUseId(block: Record<string, unknown>): string | undefined {
-	const id = block.id ?? block.tool_use_id ?? block.toolUseId ?? block.tool_call_id ?? block.toolCallId;
+export function resolveToolUseId(
+	block: Record<string, unknown>,
+): string | undefined {
+	const id =
+		block.id ??
+		block.tool_use_id ??
+		block.toolUseId ??
+		block.tool_call_id ??
+		block.toolCallId;
 	return id ? String(id) : undefined;
 }
 
@@ -100,25 +115,35 @@ export function resolveToolUseId(block: Record<string, unknown>): string | undef
  *
  * This ensures downstream code always receives a consistent object type.
  */
-export function coerceToolCallArguments(argumentsValue: unknown): Record<string, unknown> {
+export function coerceToolCallArguments(
+	argumentsValue: unknown,
+): Record<string, unknown> {
 	if (argumentsValue === null || argumentsValue === undefined) {
 		return {};
 	}
-	if (typeof argumentsValue === 'object' && !Array.isArray(argumentsValue)) {
+	if (typeof argumentsValue === "object" && !Array.isArray(argumentsValue)) {
 		return argumentsValue as Record<string, unknown>;
 	}
-	if (typeof argumentsValue === 'string') {
+	if (typeof argumentsValue === "string") {
 		const trimmed = argumentsValue.trim();
-		if (!trimmed) { return {}; }
+		if (!trimmed) {
+			return {};
+		}
 		try {
 			const parsed = JSON.parse(trimmed);
-			if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+			if (
+				typeof parsed === "object" &&
+				parsed !== null &&
+				!Array.isArray(parsed)
+			) {
 				return parsed;
 			}
 		} catch {
 			// Try repair before giving up
 			const repaired = repairToolArguments(trimmed);
-			if (repaired) { return repaired; }
+			if (repaired) {
+				return repaired;
+			}
 		}
 	}
 	return {};
@@ -131,7 +156,10 @@ export function coerceToolCallArguments(argumentsValue: unknown): Record<string,
  */
 export function sanitizePayloadText(text: string): string {
 	// Remove lone surrogates (high surrogates not followed by low, or lone low surrogates)
-	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+	return text.replace(
+		/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+		"\uFFFD",
+	);
 }
 
 // ─── Tool Name Repair ───────────────────────────────────────────────
@@ -142,47 +170,55 @@ export function sanitizePayloadText(text: string): string {
  */
 const FUZZY_NAME_MAP: Record<string, string> = {
 	// Python stdlib hallucinations
-	'os.getcwd': 'terminal',
-	'os_getcwd': 'terminal',
-	'os.path': 'terminal',
-	'getcwd': 'terminal',
-	'os.listdir': 'terminal',
-	'os.makedirs': 'terminal',
-	'os.remove': 'terminal',
+	"os.getcwd": "terminal",
+	os_getcwd: "terminal",
+	"os.path": "terminal",
+	getcwd: "terminal",
+	"os.listdir": "terminal",
+	"os.makedirs": "terminal",
+	"os.remove": "terminal",
 
 	// Unix command hallucinations
-	'pwd': 'terminal',
-	'ls': 'terminal',
-	'cat': 'file_read',
-	'mkdir': 'terminal',
-	'rm': 'terminal',
-	'cp': 'terminal',
-	'mv': 'terminal',
-	'grep': 'search_files',
-	'find': 'search_files',
+	pwd: "terminal",
+	ls: "terminal",
+	cat: "file_read",
+	mkdir: "terminal",
+	rm: "terminal",
+	cp: "terminal",
+	mv: "terminal",
+	grep: "search_files",
+	find: "search_files",
+
+	// Task/planning hallucinations (models confuse tool-set description "Task planning" with tool name)
+	task_planning: "todo",
+	taskplanning: "todo",
+	plan_task: "todo",
+	plan_tasks: "todo",
+	task_plan: "todo",
+	planning: "todo",
 
 	// Semantic misnamings
-	'read_file': 'file_read',
-	'write_file': 'file_write',
-	'file_search': 'search_files',
-	'execute_command': 'terminal',
-	'run_command': 'terminal',
-	'shell': 'terminal',
-	'bash': 'terminal',
-	'command_line': 'terminal',
-	'cli': 'terminal',
-	'write_to_file': 'file_write',
-	'read_from_file': 'file_read',
-	'list_directory': 'terminal',
-	'create_file': 'file_write',
-	'delete_file': 'terminal',
-	'web_search': 'search_files',
-	'internet_search': 'search_files',
-	'code_search': 'search_files',
-	'open_file': 'file_read',
-	'save_file': 'file_write',
-	'edit_file': 'file_write',
-	'append_file': 'file_write',
+	read_file: "file_read",
+	write_file: "file_write",
+	file_search: "search_files",
+	execute_command: "terminal",
+	run_command: "terminal",
+	shell: "terminal",
+	bash: "terminal",
+	command_line: "terminal",
+	cli: "terminal",
+	write_to_file: "file_write",
+	read_from_file: "file_read",
+	list_directory: "terminal",
+	create_file: "file_write",
+	delete_file: "terminal",
+	web_search: "search_files",
+	internet_search: "search_files",
+	code_search: "search_files",
+	open_file: "file_read",
+	save_file: "file_write",
+	edit_file: "file_write",
+	append_file: "file_write",
 };
 
 /**
@@ -208,7 +244,7 @@ export function repairToolName(
 
 	// 2. Case-insensitive exact match
 	const lowerName = rawName.toLowerCase();
-	const ciMatch = validNames.find(n => n.toLowerCase() === lowerName);
+	const ciMatch = validNames.find((n) => n.toLowerCase() === lowerName);
 	if (ciMatch) {
 		return ciMatch;
 	}
@@ -221,22 +257,28 @@ export function repairToolName(
 
 	// 4. Normalization: lowercase, hyphens → underscores, strip suffixes
 	const normalized = lowerName
-		.replace(/-/g, '_')
-		.replace(/_tool$/, '')
-		.replace(/_function$/, '')
-		.replace(/_action$/, '')
-		.replace(/^tool_/, '');
-	const normMatch = validNames.find(n => n.toLowerCase().replace(/-/g, '_') === normalized);
+		.replace(/-/g, "_")
+		.replace(/_tool$/, "")
+		.replace(/_function$/, "")
+		.replace(/_action$/, "")
+		.replace(/^tool_/, "");
+	const normMatch = validNames.find(
+		(n) => n.toLowerCase().replace(/-/g, "_") === normalized,
+	);
 	if (normMatch) {
 		return normMatch;
 	}
 
 	// 5. Substring containment — only if exactly one candidate matches
-	const containedBy = validNames.filter(n => n.toLowerCase().includes(lowerName));
+	const containedBy = validNames.filter((n) =>
+		n.toLowerCase().includes(lowerName),
+	);
 	if (containedBy.length === 1) {
 		return containedBy[0];
 	}
-	const contains = validNames.filter(n => lowerName.includes(n.toLowerCase()));
+	const contains = validNames.filter((n) =>
+		lowerName.includes(n.toLowerCase()),
+	);
 	if (contains.length === 1) {
 		return contains[0];
 	}
@@ -259,7 +301,9 @@ export function coerceToolArgs(
 	args: Record<string, unknown>,
 	schema: Record<string, unknown>,
 ): Record<string, unknown> {
-	const props = schema.properties as Record<string, Record<string, unknown>> | undefined;
+	const props = schema.properties as
+		| Record<string, Record<string, unknown>>
+		| undefined;
 	if (!props) {
 		return args;
 	}
@@ -273,23 +317,23 @@ export function coerceToolArgs(
 		const value = result[key];
 		const expectedType = propSchema.type as string | undefined;
 
-		if (expectedType === 'integer' || expectedType === 'number') {
-			if (typeof value === 'string') {
+		if (expectedType === "integer" || expectedType === "number") {
+			if (typeof value === "string") {
 				const num = Number(value);
 				if (!isNaN(num)) {
 					result[key] = num;
 				}
 			}
-		} else if (expectedType === 'boolean') {
-			if (typeof value === 'string') {
-				if (value.toLowerCase() === 'true') {
+		} else if (expectedType === "boolean") {
+			if (typeof value === "string") {
+				if (value.toLowerCase() === "true") {
 					result[key] = true;
-				} else if (value.toLowerCase() === 'false') {
+				} else if (value.toLowerCase() === "false") {
 					result[key] = false;
 				}
 			}
-		} else if (expectedType === 'array') {
-			if (typeof value === 'string') {
+		} else if (expectedType === "array") {
+			if (typeof value === "string") {
 				try {
 					const parsed = JSON.parse(value);
 					if (Array.isArray(parsed)) {
@@ -299,14 +343,22 @@ export function coerceToolArgs(
 					// Not valid JSON array string — wrap as single-element array
 					result[key] = [value];
 				}
-			} else if (value !== null && value !== undefined && !Array.isArray(value)) {
+			} else if (
+				value !== null &&
+				value !== undefined &&
+				!Array.isArray(value)
+			) {
 				result[key] = [value];
 			}
-		} else if (expectedType === 'object') {
-			if (typeof value === 'string') {
+		} else if (expectedType === "object") {
+			if (typeof value === "string") {
 				try {
 					const parsed = JSON.parse(value);
-					if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+					if (
+						typeof parsed === "object" &&
+						parsed !== null &&
+						!Array.isArray(parsed)
+					) {
 						result[key] = parsed;
 					}
 				} catch {
@@ -333,7 +385,9 @@ export function coerceToolArgs(
  *
  * Returns the parsed object or undefined if unrepairable.
  */
-export function repairToolArguments(raw: string): Record<string, unknown> | undefined {
+export function repairToolArguments(
+	raw: string,
+): Record<string, unknown> | undefined {
 	// Empty/whitespace
 	const trimmed = raw.trim();
 	if (!trimmed) {
@@ -343,7 +397,7 @@ export function repairToolArguments(raw: string): Record<string, unknown> | unde
 	// Quick valid parse
 	try {
 		const parsed = JSON.parse(trimmed);
-		if (typeof parsed === 'object' && parsed !== null) {
+		if (typeof parsed === "object" && parsed !== null) {
 			return parsed;
 		}
 		return undefined;
@@ -352,23 +406,34 @@ export function repairToolArguments(raw: string): Record<string, unknown> | unde
 	}
 
 	// Truncation detection: if the string doesn't end with } or ], it's likely truncated
-	if (!trimmed.endsWith('}') && !trimmed.endsWith(']')) {
+	if (!trimmed.endsWith("}") && !trimmed.endsWith("]")) {
 		// Try to auto-close — simple heuristic: count open/close brackets
 		let openBraces = 0;
 		let openBrackets = 0;
 		for (const ch of trimmed) {
-			if (ch === '{') { openBraces++; }
-			else if (ch === '}') { openBraces--; }
-			else if (ch === '[') { openBrackets++; }
-			else if (ch === ']') { openBrackets--; }
+			if (ch === "{") {
+				openBraces++;
+			} else if (ch === "}") {
+				openBraces--;
+			} else if (ch === "[") {
+				openBrackets++;
+			} else if (ch === "]") {
+				openBrackets--;
+			}
 		}
 		let repaired = trimmed;
-		while (openBrackets > 0) { repaired += ']'; openBrackets--; }
-		while (openBraces > 0) { repaired += '}'; openBraces--; }
+		while (openBrackets > 0) {
+			repaired += "]";
+			openBrackets--;
+		}
+		while (openBraces > 0) {
+			repaired += "}";
+			openBraces--;
+		}
 
 		try {
 			const parsed = JSON.parse(repaired);
-			if (typeof parsed === 'object' && parsed !== null) {
+			if (typeof parsed === "object" && parsed !== null) {
 				return parsed;
 			}
 		} catch {
@@ -379,15 +444,15 @@ export function repairToolArguments(raw: string): Record<string, unknown> | unde
 
 	// Python-style fixes
 	let fixed = trimmed
-		.replace(/,\s*([}\]])/g, '$1')           // trailing commas
-		.replace(/'/g, '"')                        // single → double quotes
-		.replace(/\bNone\b/g, 'null')              // Python None
-		.replace(/\bTrue\b/g, 'true')              // Python True
-		.replace(/\bFalse\b/g, 'false');           // Python False
+		.replace(/,\s*([}\]])/g, "$1") // trailing commas
+		.replace(/'/g, '"') // single → double quotes
+		.replace(/\bNone\b/g, "null") // Python None
+		.replace(/\bTrue\b/g, "true") // Python True
+		.replace(/\bFalse\b/g, "false"); // Python False
 
 	try {
 		const parsed = JSON.parse(fixed);
-		if (typeof parsed === 'object' && parsed !== null) {
+		if (typeof parsed === "object" && parsed !== null) {
 			return parsed;
 		}
 	} catch {
@@ -395,12 +460,12 @@ export function repairToolArguments(raw: string): Record<string, unknown> | unde
 	}
 
 	// Last resort: try to find the outermost { } block
-	const startIdx = fixed.indexOf('{');
-	const endIdx = fixed.lastIndexOf('}');
+	const startIdx = fixed.indexOf("{");
+	const endIdx = fixed.lastIndexOf("}");
 	if (startIdx !== -1 && endIdx > startIdx) {
 		try {
 			const parsed = JSON.parse(fixed.substring(startIdx, endIdx + 1));
-			if (typeof parsed === 'object' && parsed !== null) {
+			if (typeof parsed === "object" && parsed !== null) {
 				return parsed;
 			}
 		} catch {
@@ -414,16 +479,20 @@ export function repairToolArguments(raw: string): Record<string, unknown> | unde
 // ─── Error Sanitization ─────────────────────────────────────────────
 
 /** Patterns to strip from error messages before feeding back to the model */
-const ERROR_SANITIZE_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
-	// XML role tags that could pollute model context
-	{ pattern: /<\/?(?:assistant|user|system|tool)>/gi, replacement: '' },
-	// Excessive stack traces — keep first 3 lines
-	{ pattern: /(\n\s+at .+){3,}/g, replacement: '\n  ...' },
-	// File system paths with user home
-	{ pattern: /(C:\\Users\\|\/home\/|\/Users\/)[^\s"'`]+/gi, replacement: '<path>' },
-	// Long hex strings (hashes, IDs)
-	{ pattern: /[0-9a-f]{32,}/gi, replacement: '<hash>' },
-];
+const ERROR_SANITIZE_PATTERNS: Array<{ pattern: RegExp; replacement: string }> =
+	[
+		// XML role tags that could pollute model context
+		{ pattern: /<\/?(?:assistant|user|system|tool)>/gi, replacement: "" },
+		// Excessive stack traces — keep first 3 lines
+		{ pattern: /(\n\s+at .+){3,}/g, replacement: "\n  ..." },
+		// File system paths with user home
+		{
+			pattern: /(C:\\Users\\|\/home\/|\/Users\/)[^\s"'`]+/gi,
+			replacement: "<path>",
+		},
+		// Long hex strings (hashes, IDs)
+		{ pattern: /[0-9a-f]{32,}/gi, replacement: "<hash>" },
+	];
 
 /**
  * Sanitize a tool error message before returning it to the model context.
@@ -437,7 +506,7 @@ export function sanitizeToolError(error: unknown): string {
 
 	// Truncate if too long
 	if (msg.length > 4000) {
-		msg = msg.substring(0, 3900) + '\n... [truncated]';
+		msg = msg.substring(0, 3900) + "\n... [truncated]";
 	}
 
 	for (const { pattern, replacement } of ERROR_SANITIZE_PATTERNS) {
@@ -456,7 +525,7 @@ export function sanitizeToolError(error: unknown): string {
  */
 export function deduplicateToolCalls(calls: IToolCallInfo[]): IToolCallInfo[] {
 	const seen = new Set<string>();
-	return calls.filter(tc => {
+	return calls.filter((tc) => {
 		const key = `${tc.name}::${tc.arguments}`;
 		if (seen.has(key)) {
 			return false;
@@ -480,10 +549,12 @@ export function limitToolResultSize(
 		return content;
 	}
 	const truncated = content.substring(0, maxChars);
-	const lastNewline = truncated.lastIndexOf('\n');
+	const lastNewline = truncated.lastIndexOf("\n");
 	const cutPoint = lastNewline > maxChars * 0.8 ? lastNewline : maxChars;
-	return content.substring(0, cutPoint)
-		+ `\n\n... [Result truncated: ${content.length} → ${cutPoint} chars]`;
+	return (
+		content.substring(0, cutPoint) +
+		`\n\n... [Result truncated: ${content.length} → ${cutPoint} chars]`
+	);
 }
 
 // ─── Tool Result Formatting ─────────────────────────────────────────
@@ -502,7 +573,8 @@ export function formatToolErrorResult(
 	};
 	if (availableTools && availableTools.length > 0) {
 		result.available_tools = availableTools;
-		result.suggestion = 'Please use one of the available tool names listed above.';
+		result.suggestion =
+			"Please use one of the available tool names listed above.";
 	}
 	return result;
 }
@@ -517,10 +589,10 @@ export function formatToolNotFoundResult(
 ): Record<string, unknown> {
 	const repairNote = attemptedRepair
 		? ` (also tried repaired name "${attemptedRepair}")`
-		: '';
+		: "";
 	return {
-		error: `Tool "${requestedName}" does not exist${repairNote}. Available tools: ${availableTools.join(', ')}.`,
-		suggestion: 'Please use one of the available tool names listed above.',
+		error: `Tool "${requestedName}" does not exist${repairNote}. Available tools: ${availableTools.join(", ")}.`,
+		suggestion: "Please use one of the available tool names listed above.",
 	};
 }
 
@@ -530,13 +602,15 @@ export function formatToolNotFoundResult(
  * Check whether a tool call's arguments string is valid JSON (or repairable).
  * Returns a classification for retry decision-making.
  */
-export function classifyArgumentValidity(raw: string): 'valid' | 'empty' | 'repairable' | 'truncated' | 'invalid' {
+export function classifyArgumentValidity(
+	raw: string,
+): "valid" | "empty" | "repairable" | "truncated" | "invalid" {
 	if (!raw || !raw.trim()) {
-		return 'empty';
+		return "empty";
 	}
 	try {
 		JSON.parse(raw.trim());
-		return 'valid';
+		return "valid";
 	} catch {
 		// Continue classification
 	}
@@ -544,30 +618,36 @@ export function classifyArgumentValidity(raw: string): 'valid' | 'empty' | 'repa
 	const trimmed = raw.trim();
 
 	// Truncation: doesn't end with } or ] and looks like it started an object
-	if (trimmed.startsWith('{') && !trimmed.endsWith('}') && !trimmed.endsWith(']')) {
-		return 'truncated';
+	if (
+		trimmed.startsWith("{") &&
+		!trimmed.endsWith("}") &&
+		!trimmed.endsWith("]")
+	) {
+		return "truncated";
 	}
 
 	// Try repair
 	const repaired = repairToolArguments(raw);
 	if (repaired !== undefined) {
-		return 'repairable';
+		return "repairable";
 	}
 
-	return 'invalid';
+	return "invalid";
 }
 
 /**
  * Build a lookup set of valid tool names from tool definitions.
  */
 export function buildValidToolNameSet(tools: IToolDefinition[]): Set<string> {
-	return new Set(tools.map(t => t.name));
+	return new Set(tools.map((t) => t.name));
 }
 
 /**
  * Build a name → schema map for argument coercion.
  */
-export function buildToolSchemaMap(tools: IToolDefinition[]): Map<string, Record<string, unknown>> {
+export function buildToolSchemaMap(
+	tools: IToolDefinition[],
+): Map<string, Record<string, unknown>> {
 	const map = new Map<string, Record<string, unknown>>();
 	for (const t of tools) {
 		map.set(t.name, t.inputSchema);
@@ -585,7 +665,10 @@ export const MAX_TOOL_WORKERS = 8;
  * or have side effects that depend on conversation state.
  */
 const NEVER_PARALLEL_TOOLS = new Set([
-	'clarify', 'delegate_task', 'memory', 'todo',
+	"clarify",
+	"delegate_task",
+	"memory",
+	"todo",
 ]);
 
 /**
@@ -611,17 +694,29 @@ export function shouldParallelizeToolBatch(calls: IToolCallInfo[]): boolean {
 	}
 
 	// Check for write-like tools — if any two write to overlapping paths, serial
-	const writeLikeNames = new Set(['file_write', 'edit_file', 'patch', 'create_file', 'delete_file']);
-	const writeCalls = calls.filter(tc => writeLikeNames.has(tc.name));
+	const writeLikeNames = new Set([
+		"file_write",
+		"edit_file",
+		"patch",
+		"create_file",
+		"delete_file",
+	]);
+	const writeCalls = calls.filter((tc) => writeLikeNames.has(tc.name));
 	if (writeCalls.length > 1) {
 		// Extract paths from arguments and check for overlap
 		const paths: string[] = [];
 		for (const tc of writeCalls) {
 			try {
-				const args = JSON.parse(tc.arguments || '{}');
-				if (args.path) { paths.push(String(args.path)); }
-				if (args.file) { paths.push(String(args.file)); }
-			} catch { /* ignore */ }
+				const args = JSON.parse(tc.arguments || "{}");
+				if (args.path) {
+					paths.push(String(args.path));
+				}
+				if (args.file) {
+					paths.push(String(args.file));
+				}
+			} catch {
+				/* ignore */
+			}
 		}
 		// If any two paths overlap (one is a prefix of the other), go serial
 		for (let i = 0; i < paths.length; i++) {
@@ -650,15 +745,23 @@ export function shouldParallelizeToolBatch(calls: IToolCallInfo[]): boolean {
  *  - Graceful finalization with fallback
  */
 export class StreamingToolCallAssembler {
-	private _id = '';
-	private _name = '';
-	private _argsBuffer = '';
+	private _id = "";
+	private _name = "";
+	private _argsBuffer = "";
 	private _finalized = false;
 
-	get id(): string { return this._id; }
-	get name(): string { return this._name; }
-	get partialArgs(): string { return this._argsBuffer; }
-	get isFinalized(): boolean { return this._finalized; }
+	get id(): string {
+		return this._id;
+	}
+	get name(): string {
+		return this._name;
+	}
+	get partialArgs(): string {
+		return this._argsBuffer;
+	}
+	get isFinalized(): boolean {
+		return this._finalized;
+	}
 
 	/**
 	 * Start a new tool call. Resets internal state.
@@ -666,7 +769,7 @@ export class StreamingToolCallAssembler {
 	start(id: string, name: string, initialArgs?: string): void {
 		this._id = id;
 		this._name = name;
-		this._argsBuffer = initialArgs || '';
+		this._argsBuffer = initialArgs || "";
 		this._finalized = false;
 	}
 
@@ -674,8 +777,13 @@ export class StreamingToolCallAssembler {
 	 * Append an argument chunk. Returns false if buffer limit exceeded.
 	 */
 	appendArgs(chunk: string): boolean {
-		if (this._finalized) { return false; }
-		if (this._argsBuffer.length + chunk.length > MAX_TOOL_CALL_ARGUMENT_BUFFER_BYTES) {
+		if (this._finalized) {
+			return false;
+		}
+		if (
+			this._argsBuffer.length + chunk.length >
+			MAX_TOOL_CALL_ARGUMENT_BUFFER_BYTES
+		) {
 			return false; // Buffer overflow — reject
 		}
 		this._argsBuffer += chunk;
@@ -687,7 +795,9 @@ export class StreamingToolCallAssembler {
 	 * Uses best-effort partial parsing (auto-close brackets).
 	 */
 	tryParsePartial(): Record<string, unknown> | null {
-		if (!this._argsBuffer.trim()) { return null; }
+		if (!this._argsBuffer.trim()) {
+			return null;
+		}
 		return parsePartialJson(this._argsBuffer);
 	}
 
@@ -729,9 +839,9 @@ export class StreamingToolCallAssembler {
 	 * Reset to empty state.
 	 */
 	reset(): void {
-		this._id = '';
-		this._name = '';
-		this._argsBuffer = '';
+		this._id = "";
+		this._name = "";
+		this._argsBuffer = "";
 		this._finalized = false;
 	}
 }
@@ -745,14 +855,22 @@ export class StreamingToolCallAssembler {
  * This allows the UI to show partial tool call arguments while the model
  * is still streaming them. Returns null if the string is too malformed.
  */
-export function parsePartialJson(partial: string): Record<string, unknown> | null {
+export function parsePartialJson(
+	partial: string,
+): Record<string, unknown> | null {
 	const trimmed = partial.trim();
-	if (!trimmed) { return null; }
+	if (!trimmed) {
+		return null;
+	}
 
 	// Already valid?
 	try {
 		const parsed = JSON.parse(trimmed);
-		if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed)
+		) {
 			return parsed;
 		}
 		return null;
@@ -761,19 +879,26 @@ export function parsePartialJson(partial: string): Record<string, unknown> | nul
 	}
 
 	// Must start with { to be an object
-	if (!trimmed.startsWith('{')) { return null; }
+	if (!trimmed.startsWith("{")) {
+		return null;
+	}
 
 	// Strategy: progressively try to close the JSON
 	// 1. Remove trailing comma if any
-	let candidate = trimmed.replace(/,\s*$/, '');
+	let candidate = trimmed.replace(/,\s*$/, "");
 
 	// 2. If we're in the middle of a string value, try to close it
 	//    Count unescaped quotes
 	let inString = false;
 	for (let i = 0; i < candidate.length; i++) {
 		const ch = candidate[i];
-		if (ch === '\\' && inString) { i++; continue; } // skip escaped
-		if (ch === '"') { inString = !inString; }
+		if (ch === "\\" && inString) {
+			i++;
+			continue;
+		} // skip escaped
+		if (ch === '"') {
+			inString = !inString;
+		}
 	}
 
 	// If we ended inside a string, close it
@@ -787,24 +912,47 @@ export function parsePartialJson(partial: string): Record<string, unknown> | nul
 	let inStr = false;
 	for (let i = 0; i < candidate.length; i++) {
 		const ch = candidate[i];
-		if (ch === '\\' && inStr) { i++; continue; }
-		if (ch === '"') { inStr = !inStr; continue; }
-		if (inStr) { continue; }
-		if (ch === '{') { openBraces++; }
-		else if (ch === '}') { openBraces--; }
-		else if (ch === '[') { openBrackets++; }
-		else if (ch === ']') { openBrackets--; }
+		if (ch === "\\" && inStr) {
+			i++;
+			continue;
+		}
+		if (ch === '"') {
+			inStr = !inStr;
+			continue;
+		}
+		if (inStr) {
+			continue;
+		}
+		if (ch === "{") {
+			openBraces++;
+		} else if (ch === "}") {
+			openBraces--;
+		} else if (ch === "[") {
+			openBrackets++;
+		} else if (ch === "]") {
+			openBrackets--;
+		}
 	}
 
 	// Remove trailing colon or comma (incomplete key-value)
-	candidate = candidate.replace(/[,:]\s*$/, '');
+	candidate = candidate.replace(/[,:]\s*$/, "");
 
-	while (openBrackets > 0) { candidate += ']'; openBrackets--; }
-	while (openBraces > 0) { candidate += '}'; openBraces--; }
+	while (openBrackets > 0) {
+		candidate += "]";
+		openBrackets--;
+	}
+	while (openBraces > 0) {
+		candidate += "}";
+		openBraces--;
+	}
 
 	try {
 		const parsed = JSON.parse(candidate);
-		if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed)
+		) {
 			return parsed;
 		}
 	} catch {
@@ -825,15 +973,22 @@ export const MAX_TOOL_OUTPUT_DISPLAY_CHARS = 120_000;
  *
  * Inspired by OpenClaw's `formatToolOutput` in `app-tool-stream.ts`.
  */
-export function formatToolOutputForDisplay(output: string, maxChars: number = MAX_TOOL_OUTPUT_DISPLAY_CHARS): string {
-	if (!output) { return '(no output)'; }
+export function formatToolOutputForDisplay(
+	output: string,
+	maxChars: number = MAX_TOOL_OUTPUT_DISPLAY_CHARS,
+): string {
+	if (!output) {
+		return "(no output)";
+	}
 
 	let formatted = output;
 
 	// Try to pretty-print if it looks like JSON
 	const trimmed = output.trim();
-	if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-		(trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+	if (
+		(trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+		(trimmed.startsWith("[") && trimmed.endsWith("]"))
+	) {
 		try {
 			const parsed = JSON.parse(trimmed);
 			formatted = JSON.stringify(parsed, null, 2);
@@ -844,7 +999,7 @@ export function formatToolOutputForDisplay(output: string, maxChars: number = MA
 
 	// Truncate if needed
 	if (formatted.length > maxChars) {
-		formatted = formatted.substring(0, maxChars) + '\n\n... [output truncated]';
+		formatted = formatted.substring(0, maxChars) + "\n\n... [output truncated]";
 	}
 
 	return formatted;

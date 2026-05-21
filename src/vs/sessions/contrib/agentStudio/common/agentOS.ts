@@ -3,19 +3,28 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { Event } from '../../../../base/common/event.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { createDecorator } from "../../../../platform/instantiation/common/instantiation.js";
+import { Event } from "../../../../base/common/event.js";
+import { IDisposable } from "../../../../base/common/lifecycle.js";
 import {
-	IModelProvider, IModelSelection,
-	IMemoryProvider, IToolProvider, IPlanningProvider, IExecutionProvider, IRetrievalProvider, IKanbanProvider,
-	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
+	IModelProvider,
+	IModelSelection,
+	IMemoryProvider,
+	IToolProvider,
+	IPlanningProvider,
+	IExecutionProvider,
+	IRetrievalProvider,
+	IKanbanProvider,
+	IAgentTurnRequest,
+	IChatStreamDelta,
+	ISlotRegistry,
 	IToolDefinition,
-} from './providers.js';
+} from "./providers.js";
 
 // ─── Agent OS Service ───────────────────────────────────────────────────────
 
-export const IAgentOSService = createDecorator<IAgentOSService>('agentOSService');
+export const IAgentOSService =
+	createDecorator<IAgentOSService>("agentOSService");
 
 /**
  * Agent OS 中间层核心服务
@@ -37,7 +46,10 @@ export interface IAgentOSService {
 	/**
 	 * 注册 Memory Provider（优先级自动选择活跃 Provider）
 	 */
-	registerMemoryProvider(provider: IMemoryProvider, priority?: number): IDisposable;
+	registerMemoryProvider(
+		provider: IMemoryProvider,
+		priority?: number,
+	): IDisposable;
 
 	/**
 	 * 注册 Tool Provider
@@ -47,22 +59,34 @@ export interface IAgentOSService {
 	/**
 	 * 注册 Planning Provider
 	 */
-	registerPlanningProvider(provider: IPlanningProvider, priority?: number): IDisposable;
+	registerPlanningProvider(
+		provider: IPlanningProvider,
+		priority?: number,
+	): IDisposable;
 
 	/**
 	 * 注册 Execution Provider
 	 */
-	registerExecutionProvider(provider: IExecutionProvider, priority?: number): IDisposable;
+	registerExecutionProvider(
+		provider: IExecutionProvider,
+		priority?: number,
+	): IDisposable;
 
 	/**
 	 * 注册 Retrieval (RAG) Provider
 	 */
-	registerRetrievalProvider(provider: IRetrievalProvider, priority?: number): IDisposable;
+	registerRetrievalProvider(
+		provider: IRetrievalProvider,
+		priority?: number,
+	): IDisposable;
 
 	/**
 	 * 注册 Kanban Provider
 	 */
-	registerKanbanProvider(provider: IKanbanProvider, priority?: number): IDisposable;
+	registerKanbanProvider(
+		provider: IKanbanProvider,
+		priority?: number,
+	): IDisposable;
 
 	// ─── Model Provider 管理（多 Provider 多模型）────────────────────
 
@@ -94,6 +118,13 @@ export interface IAgentOSService {
 	 * 内部编排：Planning → Memory → Execution(Tool) → Memory → 返回流
 	 */
 	executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta>;
+
+	// ─── Agent Loop 控制 ───────────────────────────────────────
+
+	/**
+	 * 取消当前活跃的 Agent Loop（中断所有工具执行）
+	 */
+	cancelAgentLoop(): void;
 
 	// ─── Tool 启用/禁用管理 ─────────────────────────────────────
 
@@ -131,12 +162,17 @@ export interface IAgentOSService {
 	 * @param agentId Agent ID
 	 * @param state 工具名称 -> 是否启用的 Map
 	 */
-	setToolsEnabledState(agentId: string, state: Record<string, boolean>): Promise<void>;
+	setToolsEnabledState(
+		agentId: string,
+		state: Record<string, boolean>,
+	): Promise<void>;
 
 	/**
 	 * 获取所有工具定义（包括被禁用的，带 enabled 状态）
 	 * @param agentId Agent ID
 	 * @returns 工具定义数组（包含 enabled 字段）
 	 */
-	listAllToolsWithState(agentId: string): Promise<(IToolDefinition & { enabled: boolean })[]>;
+	listAllToolsWithState(
+		agentId: string,
+	): Promise<(IToolDefinition & { enabled: boolean })[]>;
 }

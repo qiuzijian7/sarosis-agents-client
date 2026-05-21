@@ -172,7 +172,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 	}, [selection, selectProvider]);
 
 	const handleSend = useCallback(() => {
-		if (!input.trim() || isLoading) return;
+		if (!input.trim()) return;
 		onSend(input.trim());
 		setInput('');
 		if (textareaRef.current) {
@@ -180,14 +180,22 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 			const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
 			textareaRef.current.style.height = `${preferred}px`;
 		}
-	}, [input, isLoading, onSend]);
+	}, [input, onSend]);
 
 	const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
+			// During streaming: Enter with content sends new message (auto-cancels stream)
+			// During streaming: Enter without content does nothing
+			if (isLoading && !input.trim()) { return; }
 			handleSend();
 		}
-	}, [handleSend]);
+		// Escape to cancel streaming (VS Code Copilot Chat pattern: Ctrl+Escape / Escape)
+		if (e.key === 'Escape' && isLoading && onCancel) {
+			e.preventDefault();
+			onCancel();
+		}
+	}, [handleSend, isLoading, onCancel, input]);
 
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
@@ -260,7 +268,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 					onKeyDown={handleKeyDown}
 					onInput={handleInput}
 					placeholder={composerPlaceholder}
-					disabled={isLoading}
 					rows={1}
 					className="chat-composer-textarea"
 				/>
@@ -494,12 +501,12 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 
 				{/* 右侧发送/取消按钮 */}
 				<button
-					onClick={isLoading ? onCancel : handleSend}
+					onClick={isLoading ? (input.trim() ? handleSend : onCancel) : handleSend}
 					disabled={!input.trim() && !isLoading}
-					className={`chat-send-circle ${isLoading ? 'chat-cancel-circle' : ''}`}
-					title={isLoading ? '停止生成' : '发送 (Enter)'}
+					className={`chat-send-circle ${isLoading && !input.trim() ? 'chat-cancel-circle' : ''}`}
+					title={isLoading ? (input.trim() ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)'}
 				>
-						{isLoading ? (
+						{isLoading && !input.trim() ? (
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
 								<rect x="6" y="6" width="12" height="12" rx="2" />
 							</svg>
@@ -515,7 +522,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 
 			{/* 快捷键提示 */}
 			<div className="composer-hint">
-				Enter 发送，Shift + Enter 换行
+				Enter 发送，Shift + Enter 换行{isLoading ? '，Escape 停止' : ''}
 			</div>
 		</div>
 	);

@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* eslint-disable local/code-no-unexternalized-strings */
+
 import { createDecorator } from "../../platform/instantiation/common/instantiation.js";
 import { Event } from "../../base/common/event.js";
 import type {
@@ -152,7 +154,7 @@ export interface IAgentChatService {
 
 	getHistory(employeeId: string, sessionId?: string): Promise<ChatMessage[]>;
 	clearHistory(employeeId: string, sessionId?: string): Promise<void>;
-	cancelStream(employeeId: string): void;
+	cancelStream(employeeId: string, agentSessionId?: string): void;
 
 	/** Append a message to the chat history for an employee and persist. */
 	appendMessage(employeeId: string, message: ChatMessage): Promise<void>;

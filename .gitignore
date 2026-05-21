@@ -166,3 +166,12 @@ exitcode.txt
 stderr2.txt
 stdout2.txt
 check-tsc.ps1
+current-errors.txt
+hygiene-errors.txt
+hygiene-output2.txt
+hygiene-output3.txt
+hygiene-after-eslint-fix.txt
+hygiene-after-indent-fix.txt
+hygiene-after-prettier.txt
+hygiene-after-prettier2.txt
+current-hygiene-errors.txt

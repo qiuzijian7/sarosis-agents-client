@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
-import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState } from '../bridge/streamHandler';
+import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState, type StreamError } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
 export interface ChatMessage {
@@ -12,9 +12,11 @@ export interface ChatMessage {
 	role: 'user' | 'assistant' | 'tool' | 'system';
 	content: string;
 	thinking?: string;
-	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string }[];
+	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean }[];
 	tokenUsage?: { input: number; output: number; total: number };
 	timestamp: string;
+	/** Structured error info for system error messages (VS Code Copilot Chat pattern) */
+	error?: StreamError;
 }
 
 export interface AgentSessionInfo {
@@ -152,13 +154,30 @@ export const useChatStore = create<ChatState>((set, get) => {
 			return;
 		}
 
+		// Guard: if the user already cancelled this stream (via cancelStream()),
+		// the partial content has been committed as a `cancelled_*` message.
+		// The host-side abort still triggers a `chat.stream.complete` event —
+		// discard it to avoid duplicate messages (VS Code Copilot Chat pattern).
+		const { messages } = get();
+		const lastMsg = messages[messages.length - 1];
+		if (lastMsg && lastMsg.id.startsWith('cancelled_')) {
+			console.log('[ChatStore] onStreamComplete: discarding — stream was already cancelled by user');
+			resetStreamSilent();
+			set({ streamState: getStreamState() });
+			return;
+		}
+
 		if (finalState.errorMessage) {
 			// API returned an error — show it as a system error message
+			// Use structured error info if available (VS Code Copilot Chat pattern)
+			const structuredError = finalState.error || { message: finalState.errorMessage, level: 'error' as const };
+			const errorIcon = structuredError.level === 'warning' ? '⚠️' : structuredError.level === 'info' ? 'ℹ️' : '❌';
 			const errorMessage: ChatMessage = {
 				id: `error_${Date.now()}`,
 				role: 'system',
-				content: `⚠️ ${finalState.errorMessage}`,
+				content: `${errorIcon} ${finalState.errorMessage}`,
 				timestamp: new Date().toISOString(),
+				error: structuredError,
 			};
 			// Reset silently (no notify) then atomically commit error + streamState
 			resetStreamSilent();
@@ -168,7 +187,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}));
 			// Restore employee status AFTER messages are committed
 			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
-			console.log('[ChatStore] Error message committed');
+			console.log('[ChatStore] Error message committed', { level: structuredError.level, retryable: structuredError.retryable });
 			return;
 		}
 
@@ -198,6 +217,19 @@ export const useChatStore = create<ChatState>((set, get) => {
 			bufferThinkingLen: finalState.thinkingBuffer.length,
 		});
 
+		// DEBUG: Detect content mismatch between streaming buffer and host message
+		if (hostText && finalState.textBuffer && hostText !== finalState.textBuffer) {
+			console.warn('[ChatStore] ⚠️ CONTENT MISMATCH between stream buffer and host message!', {
+				bufferFirst100: finalState.textBuffer.substring(0, 100),
+				hostFirst100: hostText.substring(0, 100),
+				bufferLast100: finalState.textBuffer.substring(Math.max(0, finalState.textBuffer.length - 100)),
+				hostLast100: hostText.substring(Math.max(0, hostText.length - 100)),
+				// Check heading normalization difference
+				bufferHeadings: (finalState.textBuffer.match(/^#{1,6}.{0,30}/gm) || []).slice(0, 5),
+				hostHeadings: (hostText.match(/^#{1,6}.{0,30}/gm) || []).slice(0, 5),
+			});
+		}
+
 		// Reset silently (no notify → no intermediate subscribeStream callback)
 		// so we can atomically commit messages + streamState in a single set().
 		resetStreamSilent();
@@ -214,6 +246,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					arguments: tc.arguments,
 					result: tc.result,
 					status: tc.status,
+					defaultShow: tc.defaultShow,
 				})),
 				timestamp: new Date().toISOString(),
 			};
@@ -342,8 +375,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		sendMessage: async (message: string) => {
-			let { activeEmployeeId, activeAgentSessionId } = get();
-			if (!activeEmployeeId || !message.trim()) { return; }
+			// Guard: never send empty or whitespace-only messages to the LLM
+			if (!message || !message.trim()) { return; }
+			let { activeEmployeeId, activeAgentSessionId, streamState } = get();
+			if (!activeEmployeeId) { return; }
+
+			// ── Auto-cancel current stream if still running (VS Code Copilot Chat
+			// "steering" pattern: sending a new message interrupts the current one) ──
+			if (streamState.isStreaming) {
+				console.log('[ChatStore] sendMessage: auto-cancelling active stream before sending new message');
+				get().cancelStream();
+			}
 
 			const sessionName = message.trim().substring(0, 30);
 
@@ -418,14 +460,47 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}
 		},
 
-		cancelStream: () => {
-			const { activeEmployeeId } = get();
-			console.log(`[ChatStore] cancelStream: activeEmployeeId=${activeEmployeeId}`);
-			if (activeEmployeeId) {
-				sendRequest('chat.cancel', { employeeId: activeEmployeeId }).catch(() => {});
-			}
-			resetStream();
-		},
+	cancelStream: () => {
+		const { activeEmployeeId, activeAgentSessionId, streamState } = get();
+		console.log(`[ChatStore] cancelStream: activeEmployeeId=${activeEmployeeId}, activeAgentSessionId=${activeAgentSessionId}`);
+
+		// ── Preserve already-generated content (VS Code Copilot Chat pattern) ──
+		// Instead of discarding everything, commit partial content as a cancelled message.
+		const partialText = streamState.textBuffer || '';
+		const partialThinking = streamState.thinkingBuffer || '';
+
+		// Reset the stream state first (stops the streaming bubble)
+		resetStreamSilent();
+
+		if (partialText || partialThinking) {
+			// Commit partial content as a cancelled assistant message
+			const cancelledMessage: ChatMessage = {
+				id: `cancelled_${Date.now()}`,
+				role: 'assistant',
+				content: partialText || '(已停止生成)',
+				thinking: partialThinking || undefined,
+				timestamp: new Date().toISOString(),
+			};
+			set(state => ({
+				messages: [...state.messages, cancelledMessage],
+				streamState: getStreamState(),
+			}));
+			console.log('[ChatStore] cancelStream: committed partial content as cancelled message', {
+				textLen: partialText.length,
+				thinkingLen: partialThinking.length,
+			});
+		} else {
+			set({ streamState: getStreamState() });
+		}
+
+		// Notify host to abort the upstream stream
+		if (activeEmployeeId) {
+			sendRequest('chat.cancel', { employeeId: activeEmployeeId, agentSessionId: activeAgentSessionId ?? undefined }).catch(() => {});
+		}
+
+		// Restore employee status
+		try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+	},
 
 		setInputValue: (value) => set({ inputValue: value }),
 

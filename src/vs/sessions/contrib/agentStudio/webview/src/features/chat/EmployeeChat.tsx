@@ -11,17 +11,130 @@
  *  Ref: sarosis-webui EmployeeChat.tsx main chat layout
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
 import { ChatMessageComponent } from './ChatMessage';
-import { StreamingText } from './StreamingText';
 import { ChatComposer } from './ChatComposer';
 import { ToolCallCard } from './ToolCallCard';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
+import type { StreamError } from '../../bridge/streamHandler';
 
+
+/* ── Streaming Bubble Component (VS Code pattern: separate memoized component) ── */
+
+/**
+ * Extracted streaming message bubble.
+ * Inspired by VS Code's ChatMarkdownContentPart + IncrementalDOMMorpher:
+ * - Independently memoized so parent list doesn't re-render on each delta
+ * - Only re-renders when its specific props (textBuffer, thinkingBuffer, etc.) change
+ * - Tool calls are individually memoized via ToolCallCard's own memo wrapper
+ */
+const StreamingBubble = memo(function StreamingBubble({
+	textBuffer,
+	thinkingBuffer,
+	toolCalls,
+	errorMessage,
+	streamError,
+}: {
+	textBuffer: string;
+	thinkingBuffer: string;
+	toolCalls: Array<{ id: string; name: string; arguments: string; result?: string; status: string }>;
+	errorMessage: string | null;
+	streamError: StreamError | null;
+}): React.ReactElement {
+	// Memoize sanitized text to avoid re-running sanitizer when buffer hasn't changed
+	const sanitizedText = useMemo(
+		() => {
+			if (!textBuffer) { return ''; }
+			const result = sanitizeStreamingText(textBuffer);
+			// DEBUG: Log streaming content for consistency diagnosis
+			console.log('[StreamingBubble] sanitizedText update:', {
+				rawLen: textBuffer.length,
+				sanitizedLen: result.length,
+				// Show first few lines to check normalization
+				first200: result.substring(0, 200),
+				// Show if ## headings have space
+				headingsRaw: (textBuffer.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
+				headingsSanitized: (result.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
+			});
+			return result;
+		},
+		[textBuffer]
+	);
+
+	return (
+		<div className="chat-message assistant">
+			<div className="message-content message-streaming">
+
+				{/* Thinking card — active with spinner */}
+				{thinkingBuffer && (
+					<div className="thinking-card active">
+						<div className="thinking-card-header">
+							<span className="thinking-card-icon">
+								<svg className="thinking-spinner" width="14" height="14" viewBox="0 0 24 24"
+									fill="none" stroke="currentColor" strokeWidth="2">
+									<path d="M21 12a9 9 0 11-6.219-8.56" />
+								</svg>
+							</span>
+							<span className="thinking-card-title">思考中...</span>
+						</div>
+						<div className="thinking-card-body">
+							<MarkdownRenderer content={thinkingBuffer} className="thinking-stream markdown-body" />
+						</div>
+					</div>
+				)}
+
+				{/* Streaming tool calls */}
+				{toolCalls.length > 0 && (
+					<div className="tool-calls-section">
+						{toolCalls.map((tc) => (
+							<ToolCallCard key={tc.id} toolCall={{
+								...tc,
+								result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
+							}} />
+						))}
+					</div>
+				)}
+
+				{/* Streaming text content — live markdown rendering */}
+				{sanitizedText && (
+					<div className="message-text">
+						<MarkdownRenderer
+							content={sanitizedText}
+							showCursor
+						/>
+					</div>
+				)}
+
+				{/* Error message */}
+				{errorMessage && (
+					<div className={`message-text stream-error ${streamError?.level === 'warning' ? 'stream-error-warning' : ''}`}>
+						{streamError?.level === 'warning' ? '⚠️' : '❌'} {errorMessage}
+					</div>
+				)}
+
+				{/* Typing dots — only when nothing else is showing */}
+				{!textBuffer && !thinkingBuffer && !errorMessage && toolCalls.length === 0 && (
+					<div className="typing-indicator">
+						<span className="typing-dot">●</span>
+						<span className="typing-dot">●</span>
+						<span className="typing-dot">●</span>
+					</div>
+				)}
+
+			</div>
+			<div className="message-footer">
+				<span className="message-time">
+					{new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+				</span>
+			</div>
+		</div>
+	);
+});
 
 /* ── Props ───────────────────────────────────────────────────── */
 interface EmployeeChatProps {
@@ -241,72 +354,26 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						<ChatMessageComponent key={msg.id} message={msg} />
 					))}
 
-				{/* ── Streaming indicator (enhanced — OpenClaw-inspired) ────── */}
+				{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
+				{/* DEBUG: Always log streaming condition on every render */}
+				{(() => {
+					console.log('[EmployeeChat] render check:', {
+						isStreaming: streamState.isStreaming,
+						streamEmployeeId: streamState.employeeId,
+						activeEmployeeId,
+						textBufferLen: streamState.textBuffer.length,
+						willRenderBubble: streamState.isStreaming && streamState.employeeId === activeEmployeeId,
+					});
+					return null;
+				})()}
 				{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
-					<div className="chat-message assistant">
-						<div className="message-content message-streaming">
-
-							{/* Thinking card — active with spinner */}
-							{streamState.thinkingBuffer && (
-								<div className="thinking-card active">
-									<div className="thinking-card-header">
-										<span className="thinking-card-icon">
-											<svg className="thinking-spinner" width="14" height="14" viewBox="0 0 24 24"
-												fill="none" stroke="currentColor" strokeWidth="2">
-												<path d="M21 12a9 9 0 11-6.219-8.56" />
-											</svg>
-										</span>
-										<span className="thinking-card-title">思考中...</span>
-									</div>
-									<div className="thinking-card-body">
-										<StreamingText text={streamState.thinkingBuffer} showCursor={false} className="thinking-stream" />
-									</div>
-								</div>
-							)}
-
-							{/* Streaming tool calls */}
-							{streamState.toolCalls.length > 0 && (
-								<div className="tool-calls-section">
-									{streamState.toolCalls.map((tc) => (
-										<ToolCallCard key={tc.id} toolCall={{
-											...tc,
-											// Sanitize tool results to strip reasoning tags and other artifacts
-											result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
-										}} />
-									))}
-								</div>
-							)}
-
-							{/* Streaming text content — sanitized to strip tool-call artifacts */}
-							{streamState.textBuffer && (
-								<div className="message-text">
-									<StreamingText text={sanitizeStreamingText(streamState.textBuffer)} />
-								</div>
-							)}
-
-							{/* Error message */}
-							{streamState.errorMessage && (
-								<div className="message-text stream-error">
-									⚠️ {streamState.errorMessage}
-								</div>
-							)}
-
-							{/* Typing dots — only when nothing else is showing */}
-							{!streamState.textBuffer && !streamState.thinkingBuffer && !streamState.errorMessage && streamState.toolCalls.length === 0 && (
-								<div className="typing-indicator">
-									<span className="typing-dot">●</span>
-									<span className="typing-dot">●</span>
-									<span className="typing-dot">●</span>
-								</div>
-							)}
-
-						</div>
-						<div className="message-footer">
-							<span className="message-time">
-								{new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-							</span>
-						</div>
-					</div>
+					<StreamingBubble
+						textBuffer={streamState.textBuffer}
+						thinkingBuffer={streamState.thinkingBuffer}
+						toolCalls={streamState.toolCalls}
+						errorMessage={streamState.errorMessage}
+						streamError={streamState.error}
+					/>
 				)}
 
 					<div ref={messagesEndRef} />

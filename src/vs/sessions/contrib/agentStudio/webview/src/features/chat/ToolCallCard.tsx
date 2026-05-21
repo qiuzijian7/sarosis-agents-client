@@ -26,6 +26,8 @@ export interface ToolCallData {
 	duration?: number;
 	/** Error message (if failed) */
 	error?: string;
+	/** Whether to show this tool call card in the chat UI. Default true. */
+	defaultShow?: boolean;
 }
 
 interface ToolCallCardProps {
@@ -83,7 +85,12 @@ function formatDuration(ms: number): string {
 	return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
 }
 
-function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement {
+function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | null {
+	// If defaultShow is false, don't render this tool call card
+	if (toolCall.defaultShow === false) {
+		return null;
+	}
+	
 	const [expanded, setExpanded] = useState(false);
 	const [showFullResult, setShowFullResult] = useState(false);
 	const [copiedField, setCopiedField] = useState<string | null>(null);

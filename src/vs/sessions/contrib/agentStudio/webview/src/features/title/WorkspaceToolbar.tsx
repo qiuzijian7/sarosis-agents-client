@@ -21,13 +21,14 @@ export function WorkspaceToolbar({
 	onExport,
 	onImport,
 }: WorkspaceToolbarProps): React.ReactElement {
-	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace } = useWorkspaceStore();
+	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, deleteWorkspace } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 	const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
 	const [isCreating, setIsCreating] = useState(false);
 	const [newWorkspaceName, setNewWorkspaceName] = useState('');
 	const [isSubmitting, setIsSubmitting] = useState(false);
+	const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
 	const dropdownRef = useRef<HTMLDivElement>(null);
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -137,6 +138,18 @@ export function WorkspaceToolbar({
 		}
 	}, [handleSubmitCreate, handleCancelCreate]);
 
+	const handleDeleteWorkspace = useCallback(async (id: string, name: string) => {
+		if (!confirm(`确定要删除工作区 "${name}" 吗？此操作不可撤销。`)) {
+			return;
+		}
+		setIsDeletingId(id);
+		try {
+			await deleteWorkspace(id);
+		} finally {
+			setIsDeletingId(null);
+		}
+	}, [deleteWorkspace]);
+
 	return (
 		<div className="workspace-toolbar">
 			{/* Left: workspace selector */}
@@ -195,16 +208,37 @@ export function WorkspaceToolbar({
 								<div
 									key={ws.id}
 									className={`toolbar-ws-dd-opt ${ws.id === activeWorkspaceId ? 'active' : ''}`}
-									onClick={() => handleSelectWorkspace(ws.id)}
 								>
-									<div className="toolbar-ws-dd-opt-info">
+									<div
+										className="toolbar-ws-dd-opt-info"
+										onClick={() => handleSelectWorkspace(ws.id)}
+									>
 										<span className="toolbar-ws-dd-opt-name">{ws.name}</span>
 									</div>
-									{ws.id === activeWorkspaceId && (
-										<svg className="toolbar-ws-dd-opt-check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-										</svg>
-									)}
+									<div className="toolbar-ws-dd-opt-actions">
+										{ws.id === activeWorkspaceId && (
+											<svg className="toolbar-ws-dd-opt-check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+												<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+											</svg>
+										)}
+										<button
+											className="toolbar-ws-dd-opt-delete"
+											onClick={(e) => {
+												e.stopPropagation();
+												handleDeleteWorkspace(ws.id, ws.name);
+											}}
+											disabled={isDeletingId === ws.id}
+											title="删除工作区"
+										>
+											{isDeletingId === ws.id ? (
+												<span className="toolbar-ws-dd-spinner" />
+											) : (
+												<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+													<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+												</svg>
+											)}
+										</button>
+									</div>
 								</div>
 							))}
 						</div>

@@ -165,7 +165,7 @@ function stripJsonToolCalls(text: string): string {
  * Strip ```json code blocks that contain tool call JSON.
  */
 function stripJsonCodeBlocks(text: string): string {
-	if (!text) { return text; }
+	if (!text || !text.includes('```')) { return text; }
 
 	const fenceRe = /```(?:json|JSON|tool|tool_call|function_call)?[^\n\r]*[\r\n]([\s\S]*?)```/gi;
 	const toRemove: Array<{ start: number; end: number }> = [];
@@ -271,6 +271,11 @@ function stripReasoningTags(text: string): string {
  *
  * Use this when the message has tool calls and you want to clean
  * any residual tool-call text from the content.
+ *
+ * NOTE: Markdown normalization (heading spacing, bullet conversion, table
+ * formatting, blank-line collapsing) is intentionally NOT done here.
+ * It is handled uniformly by MarkdownRenderer for both streaming and
+ * completed content, ensuring rendering consistency between the two phases.
  */
 export function sanitizeAssistantContent(text: string): string {
 	if (!text) { return ''; }
@@ -287,22 +292,29 @@ export function sanitizeAssistantContent(text: string): string {
 }
 
 /**
- * Lightweight streaming sanitizer — only strips the most common
- * tool-call artifacts that would be visually jarring during streaming.
- * Avoids expensive balanced-JSON parsing for performance.
+ * Streaming sanitizer — applies the SAME pipeline as sanitizeAssistantContent
+ * to ensure rendering consistency between streaming and completed states.
+ *
+ * OpenClaw pattern: use the exact same processing for both streaming and final
+ * content so there is zero visual difference when a stream completes.
+ *
+ * NOTE: Markdown normalization is intentionally NOT done here.
+ * It is handled uniformly by MarkdownRenderer for both streaming and
+ * completed content, ensuring rendering consistency between the two phases.
  */
 export function sanitizeStreamingText(text: string): string {
 	if (!text) { return ''; }
 
 	let cleaned = text;
-	// Strip reasoning tags (common during streaming from thinking models)
-	cleaned = stripReasoningTags(cleaned);
-	// Strip XML tool call tags (cheap regex)
+	// Apply the full sanitization pipeline (same as sanitizeAssistantContent)
+	cleaned = stripJsonCodeBlocks(cleaned);
+	cleaned = stripJsonToolCalls(cleaned);
 	cleaned = stripXmlToolCallTags(cleaned);
-	// Strip bracket blocks (cheap regex)
 	cleaned = stripBracketToolCallBlocks(cleaned);
+	cleaned = stripDowngradedToolCallText(cleaned);
+	cleaned = stripReasoningTags(cleaned);
 
-	return cleaned;
+	return cleaned.trim();
 }
 
 /**
