@@ -3,8 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-/* eslint-disable local/code-no-unexternalized-strings */
-/* eslint-disable no-restricted-syntax */
+/* eslint-disable local/code-no-unexternalized-strings, no-restricted-syntax */
 
 import { onUnexpectedError } from "../common/errors.js";
 import {
@@ -346,7 +345,6 @@ export function renderMarkdown(
 
 	// Signal size changes for image tags
 	if (options.asyncRenderCallback) {
-		// eslint-disable-next-line no-restricted-syntax
 		for (const img of outElement.getElementsByTagName("img")) {
 			const listener = disposables.add(
 				DOM.addDisposableListener(img, "load", () => {
@@ -384,7 +382,6 @@ export function renderMarkdown(
 	}
 
 	// Remove/disable inputs
-	// eslint-disable-next-line no-restricted-syntax
 	for (const input of [...outElement.getElementsByTagName("input")]) {
 		if (input.attributes.getNamedItem("type")?.value === "checkbox") {
 			input.setAttribute("disabled", "");
@@ -416,7 +413,6 @@ function rewriteRenderedLinks(
 	options: MarkdownRenderOptions,
 	root: HTMLElement,
 ) {
-	// eslint-disable-next-line no-restricted-syntax
 	for (const el of root.querySelectorAll("img, audio, video, source")) {
 		const src = el.getAttribute("src"); // Get the raw 'src' attribute value as text, not the resolved 'src'
 		if (src) {
@@ -443,7 +439,6 @@ function rewriteRenderedLinks(
 		}
 	}
 
-	// eslint-disable-next-line no-restricted-syntax
 	for (const el of root.querySelectorAll("a")) {
 		const href = el.getAttribute("href"); // Get the raw 'href' attribute value as text, not the resolved 'href'
 		el.setAttribute("href", ""); // Clear out href. We use the `data-href` for handling clicks instead
