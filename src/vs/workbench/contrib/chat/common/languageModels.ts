@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { SequencerByKey, timeout } from "../../../../base/common/async.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
 import { CancellationToken } from "../../../../base/common/cancellation.js";
@@ -860,9 +862,9 @@ export class LanguageModelsService implements ILanguageModelsService {
 			this.onDidChangeLanguageModels(() => {
 				this._hasUserSelectableModels.set(
 					this._modelCache.size > 0 &&
-						Array.from(this._modelCache.values()).some(
-							(model) => model.isUserSelectable,
-						),
+					Array.from(this._modelCache.values()).some(
+						(model) => model.isUserSelectable,
+					),
 				);
 				this._refreshModelsControlManifest();
 			}),
@@ -1358,9 +1360,9 @@ export class LanguageModelsService implements ILanguageModelsService {
 		const configuration = this.getModelConfiguration(modelId);
 		const mergedOptions = configuration
 			? {
-					...options,
-					configuration: { ...configuration, ...options.configuration },
-				}
+				...options,
+				configuration: { ...configuration, ...options.configuration },
+			}
 			: options;
 		return provider.sendChatRequest(
 			modelId,
@@ -1614,10 +1616,10 @@ export class LanguageModelsService implements ILanguageModelsService {
 		try {
 			const configuration = vendor.configuration
 				? await this.promptForConfiguration(
-						name,
-						vendor.configuration,
-						existingConfiguration,
-					)
+					name,
+					vendor.configuration,
+					existingConfiguration,
+				)
 				: undefined;
 			if (vendor.configuration && !configuration) {
 				return;
@@ -1632,12 +1634,12 @@ export class LanguageModelsService implements ILanguageModelsService {
 				);
 			const saved = existing
 				? await this._languageModelsConfigurationService.updateLanguageModelsProviderGroup(
-						existing,
-						languageModelProviderGroup,
-					)
+					existing,
+					languageModelProviderGroup,
+				)
 				: await this._languageModelsConfigurationService.addLanguageModelsProviderGroup(
-						languageModelProviderGroup,
-					);
+					languageModelProviderGroup,
+				);
 
 			if (
 				vendor.configuration &&

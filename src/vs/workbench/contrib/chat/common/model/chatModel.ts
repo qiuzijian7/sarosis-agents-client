@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { asArray } from "../../../../../base/common/arrays.js";
 import { softAssertNever } from "../../../../../base/common/assert.js";
 import {
@@ -907,16 +909,16 @@ class AbstractResponse implements IResponse {
 			if (resultDetails && "input" in resultDetails) {
 				const resultPrefix =
 					toolInvocation.kind === "toolInvocationSerialized" ||
-					IChatToolInvocation.isComplete(toolInvocation)
+						IChatToolInvocation.isComplete(toolInvocation)
 						? "Completed"
 						: "Errored";
 				const resultInput =
 					toolInvocation.toolSpecificData?.kind === "terminal"
 						? getTerminalDisplayInput(
-								migrateLegacyTerminalToolSpecificData(
-									toolInvocation.toolSpecificData,
-								),
-							)
+							migrateLegacyTerminalToolSpecificData(
+								toolInvocation.toolSpecificData,
+							),
+						)
 						: resultDetails.input;
 				text += `\n${resultPrefix} with input: ${resultInput}`;
 			}
@@ -974,9 +976,9 @@ export class Response extends AbstractResponse implements IDisposable {
 					? v
 					: isMarkdownString(v)
 						? ({
-								content: v,
-								kind: "markdownContent",
-							} satisfies IChatMarkdownContent)
+							content: v,
+							kind: "markdownContent",
+						} satisfies IChatMarkdownContent)
 						: { kind: "treeData", treeData: v },
 			),
 		);
@@ -1363,17 +1365,16 @@ export type ResponseModelStateT =
 	| { value: ResponseModelState.Pending }
 	| { value: ResponseModelState.NeedsInput }
 	| {
-			value:
-				| ResponseModelState.Complete
-				| ResponseModelState.Cancelled
-				| ResponseModelState.Failed;
-			completedAt: number;
-	  };
+		value:
+		| ResponseModelState.Complete
+		| ResponseModelState.Cancelled
+		| ResponseModelState.Failed;
+		completedAt: number;
+	};
 
 export class ChatResponseModel
 	extends Disposable
-	implements IChatResponseModel
-{
+	implements IChatResponseModel {
 	private readonly _onDidChange = this._register(
 		new Emitter<ChatResponseModelChangeReason>(),
 	);
@@ -1843,7 +1844,7 @@ export class ChatResponseModel
 		// Canceled sessions can be considered 'Complete'
 		const state =
 			!!this._result?.errorDetails &&
-			this._result.errorDetails.code !== "canceled"
+				this._result.errorDetails.code !== "canceled"
 				? ResponseModelState.Failed
 				: ResponseModelState.Complete;
 		this._modelState.set({ value: state, completedAt: Date.now() }, undefined);
@@ -1929,7 +1930,7 @@ export class ChatResponseModel
 			followups: this.followups,
 			modelState:
 				modelState.value === ResponseModelState.Pending ||
-				modelState.value === ResponseModelState.NeedsInput
+					modelState.value === ResponseModelState.NeedsInput
 					? { value: ResponseModelState.Cancelled, completedAt: Date.now() }
 					: modelState,
 			vote: this.vote,
@@ -1947,9 +1948,9 @@ export class ChatResponseModel
 				this.elapsedMs ??
 				(this.completedAt
 					? Math.max(
-							0,
-							this.completedAt - this.confirmationAdjustedTimestamp.get(),
-						)
+						0,
+						this.completedAt - this.confirmationAdjustedTimestamp.get(),
+					)
 					: undefined),
 		} satisfies WithDefinedProps<ISerializableChatResponseData>;
 	}
@@ -2162,12 +2163,12 @@ export interface IExportableRepoData {
 	 * - `notCaptured`: Diffs not captured (default/undefined case)
 	 */
 	diffsStatus?:
-		| "included"
-		| "tooManyChanges"
-		| "tooLarge"
-		| "trimmedForStorage"
-		| "noChanges"
-		| "notCaptured";
+	| "included"
+	| "tooManyChanges"
+	| "tooLarge"
+	| "trimmedForStorage"
+	| "noChanges"
+	| "notCaptured";
 
 	/**
 	 * Number of changed files detected, even if diffs were not included.
@@ -2294,11 +2295,11 @@ export interface ISerializableChatModelInputState {
 		kind: ChatModeKind | undefined;
 	};
 	selectedModel:
-		| {
-				identifier: string;
-				metadata: ILanguageModelChatMetadata;
-		  }
-		| undefined;
+	| {
+		identifier: string;
+		metadata: ILanguageModelChatMetadata;
+	}
+	| undefined;
 	inputText: string;
 	selections: ISelection[];
 	permissionLevel?: ChatPermissionLevel;
@@ -2553,9 +2554,9 @@ class InputModel implements IInputModel {
 			mode: value.mode,
 			selectedModel: value.selectedModel
 				? {
-						identifier: value.selectedModel.identifier,
-						metadata: value.selectedModel.metadata,
-					}
+					identifier: value.selectedModel.identifier,
+					metadata: value.selectedModel.metadata,
+				}
 				: undefined,
 			inputText: value.inputText,
 			selections: value.selections,
@@ -2619,10 +2620,10 @@ export class ChatModel extends Disposable implements IChatModel {
 					existing.kind === kind
 						? existing
 						: {
-								request: existing.request,
-								kind,
-								sendOptions: existing.sendOptions,
-							},
+							request: existing.request,
+							kind,
+							sendOptions: existing.sendOptions,
+						},
 				);
 			}
 		}
@@ -2996,9 +2997,9 @@ export class ChatModel extends Disposable implements IChatModel {
 		const session = (this._editingSession ??= this._register(
 			transferFromSession
 				? this.chatEditingService.transferEditingSession(
-						this,
-						transferFromSession,
-					)
+					this,
+					transferFromSession,
+				)
 				: isGlobalEditingSession
 					? this.chatEditingService.startOrContinueGlobalEditingSession(this)
 					: this.chatEditingService.createEditingSession(this),
@@ -3052,7 +3053,7 @@ export class ChatModel extends Disposable implements IChatModel {
 		if (
 			!this.currentEditedFileEvents.has(action.uri) ||
 			this.currentEditedFileEvents.get(action.uri)?.eventKind ===
-				ChatRequestEditedFileEventKind.Keep
+			ChatRequestEditedFileEventKind.Keep
 		) {
 			this.currentEditedFileEvents.set(action.uri, {
 				eventKind: state,
@@ -3122,7 +3123,7 @@ export class ChatModel extends Disposable implements IChatModel {
 			const result =
 				"responseErrorDetails" in raw
 					? // eslint-disable-next-line local/code-no-dangerous-type-assertions
-						({ errorDetails: raw.responseErrorDetails } as IChatAgentResult)
+					({ errorDetails: raw.responseErrorDetails } as IChatAgentResult)
 					: raw.result;
 			let modelState = raw.modelState || {
 				value: raw.isCanceled
@@ -3546,16 +3547,16 @@ export class ChatModel extends Disposable implements IChatModel {
 					variableData: IChatRequestVariableData.toExport(r.variableData),
 					response: r.response
 						? r.response.entireResponse.value.map((item) => {
-								// Keeping the shape of the persisted data the same for back compat
-								if (item.kind === "treeData") {
-									return item.treeData;
-								} else if (item.kind === "markdownContent") {
-									return item.content;
-								} else {
-									// eslint-disable-next-line local/code-no-any-casts, @typescript-eslint/no-explicit-any
-									return item as any; // TODO
-								}
-							})
+							// Keeping the shape of the persisted data the same for back compat
+							if (item.kind === "treeData") {
+								return item.treeData;
+							} else if (item.kind === "markdownContent") {
+								return item.content;
+							} else {
+								// eslint-disable-next-line local/code-no-any-casts, @typescript-eslint/no-explicit-any
+								return item as any; // TODO
+							}
+						})
 						: undefined,
 					shouldBeRemovedOnSend: r.shouldBeRemovedOnSend,
 					agent: agentJson,
@@ -3669,15 +3670,15 @@ export function getCodeCitationsMessage(
 	const label =
 		licenseTypes.size === 1
 			? localize(
-					"codeCitation",
-					"Similar code found with 1 license type",
-					licenseTypes.size,
-				)
+				"codeCitation",
+				"Similar code found with 1 license type",
+				licenseTypes.size,
+			)
 			: localize(
-					"codeCitations",
-					"Similar code found with {0} license types",
-					licenseTypes.size,
-				);
+				"codeCitations",
+				"Similar code found with {0} license types",
+				licenseTypes.size,
+			);
 	return label;
 }
 

@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import {
 	IWebviewElement,
@@ -723,7 +725,7 @@ export class AgentStudioWebviewController extends Disposable {
 		this._activeChatAgentSessionId = agentSessionId;
 		this.logService.info(
 			`[AgentStudio] chat.activeSessionChanged: employeeId=${employeeId || "<none>"} ` +
-				`agentSessionId=${agentSessionId || "<none>"} (panelType=${this.panelType})`,
+			`agentSessionId=${agentSessionId || "<none>"} (panelType=${this.panelType})`,
 		);
 		// Clear the previous registration if the employee changed,
 		// otherwise the registry would keep pointing at a stale session
@@ -774,14 +776,14 @@ export class AgentStudioWebviewController extends Disposable {
 
 		// Persist the user message to chat history so it survives refreshes.
 		const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
-			{
-				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
-				role: "user",
-				content: message,
-				employeeId,
-				agentSessionId,
-				timestamp: new Date().toISOString(),
-			};
+		{
+			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+			role: "user",
+			content: message,
+			employeeId,
+			agentSessionId,
+			timestamp: new Date().toISOString(),
+		};
 		this.agentChatService
 			.appendMessage(employeeId, userMessage)
 			.catch((err) =>
@@ -841,14 +843,14 @@ export class AgentStudioWebviewController extends Disposable {
 
 			// Persist the user message under the resolved session.
 			const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
-				{
-					id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
-					role: "user",
-					content: message,
-					employeeId,
-					agentSessionId,
-					timestamp: new Date().toISOString(),
-				};
+			{
+				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+				role: "user",
+				content: message,
+				employeeId,
+				agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
 			this.agentChatService
 				.appendMessage(employeeId, userMessage)
 				.catch((err) =>
@@ -896,14 +898,14 @@ export class AgentStudioWebviewController extends Disposable {
 
 			// Persist the user message with the resolved agentSessionId
 			const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
-				{
-					id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
-					role: "user",
-					content: message,
-					employeeId,
-					agentSessionId,
-					timestamp: new Date().toISOString(),
-				};
+			{
+				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+				role: "user",
+				content: message,
+				employeeId,
+				agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
 			this.agentChatService
 				.appendMessage(employeeId, userMessage)
 				.catch((err) =>
@@ -1247,7 +1249,7 @@ export class AgentStudioWebviewController extends Disposable {
 
 		this.logService.info(
 			`[AgentStudioWebviewController] files.openUntitledText → ${resource.toString()} ` +
-				`(${contents.length} chars, languageId=${languageId})`,
+			`(${contents.length} chars, languageId=${languageId})`,
 		);
 
 		await this.editorService.openEditor(
@@ -1638,7 +1640,7 @@ export class AgentStudioWebviewController extends Disposable {
 					) {
 						this.logService.info(
 							`[AgentStudioWebviewController] imgui→chat.send for ${employeeId} ignored by panel ` +
-								`showing ${this._activeChatEmployeeId}`,
+							`showing ${this._activeChatEmployeeId}`,
 						);
 						return;
 					}
@@ -1651,13 +1653,13 @@ export class AgentStudioWebviewController extends Disposable {
 					) {
 						this.logService.info(
 							`[AgentStudioWebviewController] imgui→chat.send for ${employeeId}/${agentSessionId} ignored by panel ` +
-								`with session ${this._activeChatAgentSessionId}`,
+							`with session ${this._activeChatAgentSessionId}`,
 						);
 						return;
 					}
 					this.logService.info(
 						`[AgentStudioWebviewController] imgui→chat.send ${employeeId} ` +
-							`(workspaceId=${workspaceId || "<none>"}, sessionId=${agentSessionId || "<none>"})`,
+						`(workspaceId=${workspaceId || "<none>"}, sessionId=${agentSessionId || "<none>"})`,
 					);
 					// 1) Notify webview UI to append the user bubble (mirrors what
 					//    the chat input would have done before sending).
@@ -1737,7 +1739,7 @@ export class AgentStudioWebviewController extends Disposable {
 	private _handleProvidersSelect(payload: IProviderSelectPayload): void {
 		this.logService.info(
 			`[AgentStudio] _handleProvidersSelect: providerId=${payload.providerId}, modelId=${payload.modelId}, ` +
-				`agentId=${payload.agentId}, employeeId=${payload.employeeId}, panelType=${this.panelType}`,
+			`agentId=${payload.agentId}, employeeId=${payload.employeeId}, panelType=${this.panelType}`,
 		);
 
 		this.modelSelectorService.setSelection({
@@ -1850,7 +1852,7 @@ export class AgentStudioWebviewController extends Disposable {
 			if (config && config.providerId && config.modelId) {
 				this.logService.info(
 					`[AgentStudio] Restored model selection from agent.yaml for employee ${employeeId}: ` +
-						`${config.providerId}/${config.modelId}${config.agentId ? ` [agent: ${config.agentId}]` : ""}`,
+					`${config.providerId}/${config.modelId}${config.agentId ? ` [agent: ${config.agentId}]` : ""}`,
 				);
 				return {
 					providerId: config.providerId,

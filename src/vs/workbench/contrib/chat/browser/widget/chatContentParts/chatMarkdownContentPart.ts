@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings, no-restricted-syntax */
 import * as dom from "../../../../../../base/browser/dom.js";
 import {
 	allowedMarkdownHtmlAttributes,
@@ -131,8 +133,7 @@ interface IMarkdownPartCodeBlockInfo extends IChatCodeBlockInfo {
 
 export class ChatMarkdownContentPart
 	extends Disposable
-	implements IChatContentPart
-{
+	implements IChatContentPart {
 	private static ID_POOL = 0;
 
 	readonly codeblocksPartId = String(++ChatMarkdownContentPart.ID_POOL);
@@ -280,10 +281,10 @@ export class ChatMarkdownContentPart
 			// TODO: Move katex support into chatMarkdownRenderer
 			const markedExtensions = enableMath
 				? coalesce([
-						MarkedKatexSupport.getExtension(dom.getWindow(context.container), {
-							throwOnError: false,
-						}),
-					])
+					MarkedKatexSupport.getExtension(dom.getWindow(context.container), {
+						throwOnError: false,
+					}),
+				])
 				: [];
 
 			// Enables github-flavored-markdown + line breaks with single newlines
@@ -502,7 +503,6 @@ export class ChatMarkdownContentPart
 			});
 
 			// Make katex blocks horizontally scrollable
-			// eslint-disable-next-line no-restricted-syntax
 			for (const katexBlock of this.domNode.querySelectorAll(
 				".katex-display",
 			)) {
@@ -946,10 +946,10 @@ export class CollapsedCodeBlock extends Disposable {
 							rwRatio === 0 || !rwRatio
 								? localize("chat.codeblock.generating", "Generating edits...")
 								: localize(
-										"chat.codeblock.applyingPercentage",
-										"({0}%)...",
-										rwRatio,
-									);
+									"chat.codeblock.applyingPercentage",
+									"({0}%)...",
+									rwRatio,
+								);
 					}
 				} else {
 					const statusCodeicon = Codicon.check;
@@ -984,11 +984,9 @@ export class CollapsedCodeBlock extends Disposable {
 					return;
 				}
 
-				// eslint-disable-next-line no-restricted-syntax
 				const labelAdded =
 					this.pillElement.querySelector(".label-added") ??
 					this.pillElement.appendChild(dom.$("span.label-added"));
-				// eslint-disable-next-line no-restricted-syntax
 				const labelRemoved =
 					this.pillElement.querySelector(".label-removed") ??
 					this.pillElement.appendChild(dom.$("span.label-removed"));
@@ -1001,18 +999,18 @@ export class CollapsedCodeBlock extends Disposable {
 						changes.added === 1
 							? localize("chat.codeblock.insertions.one", "1 insertion")
 							: localize(
-									"chat.codeblock.insertions",
-									"{0} insertions",
-									changes.added,
-								);
+								"chat.codeblock.insertions",
+								"{0} insertions",
+								changes.added,
+							);
 					const deletionsFragment =
 						changes.removed === 1
 							? localize("chat.codeblock.deletions.one", "1 deletion")
 							: localize(
-									"chat.codeblock.deletions",
-									"{0} deletions",
-									changes.removed,
-								);
+								"chat.codeblock.deletions",
+								"{0} deletions",
+								changes.removed,
+							);
 					const summary = localize(
 						"summary",
 						"Edited {0}, {1}, {2}",

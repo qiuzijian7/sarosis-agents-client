@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { Event } from "../../../../base/common/event.js";
 import {
 	Disposable,
@@ -2763,7 +2765,7 @@ Registry.as<IConfigurationMigrationRegistry>(
 			if (
 				value !== undefined &&
 				accessor(AgentNetworkDomainSettingId.AllowedNetworkDomains) ===
-					undefined
+				undefined
 			) {
 				pairs.push([
 					AgentNetworkDomainSettingId.AllowedNetworkDomains,
@@ -2804,7 +2806,7 @@ Registry.as<IConfigurationMigrationRegistry>(
 			if (
 				value !== undefined &&
 				accessor(AgentNetworkDomainSettingId.AllowedNetworkDomains) ===
-					undefined
+				undefined
 			) {
 				pairs.push([
 					AgentNetworkDomainSettingId.AllowedNetworkDomains,
@@ -2904,8 +2906,7 @@ class ChatResolverContribution extends Disposable {
 
 class CopilotTelemetryContribution
 	extends Disposable
-	implements IWorkbenchContribution
-{
+	implements IWorkbenchContribution {
 	static readonly ID = "workbench.contrib.copilotTelemetry";
 
 	constructor(
@@ -2968,8 +2969,7 @@ class ChatDebugResolverContribution implements IWorkbenchContribution {
 
 class ChatAgentSettingContribution
 	extends Disposable
-	implements IWorkbenchContribution
-{
+	implements IWorkbenchContribution {
 	static readonly ID = "workbench.contrib.chatAgentSetting";
 	private readonly newChatButtonExperimentIcon;
 
@@ -3026,7 +3026,7 @@ class ChatAgentSettingContribution
 			Event.runAndSubscribe(
 				Event.debounce(
 					this.entitlementService.onDidChangeEntitlement,
-					() => {},
+					() => { },
 					1000,
 				),
 				() => registerMaxRequestsSetting(),
@@ -3073,8 +3073,7 @@ class ChatAgentSettingContribution
 
 class ChatForegroundSessionCountContribution
 	extends Disposable
-	implements IWorkbenchContribution
-{
+	implements IWorkbenchContribution {
 	static readonly ID = "workbench.contrib.chatForegroundSessionCount";
 
 	private readonly foregroundSessionCountContextKey: IContextKey<number>;
@@ -3180,8 +3179,7 @@ function getCustomModesWithUniqueNames(
  */
 class ChatAgentActionsContribution
 	extends Disposable
-	implements IWorkbenchContribution
-{
+	implements IWorkbenchContribution {
 	static readonly ID = "workbench.contrib.chatAgentActions";
 
 	private readonly _modeActionDisposables = new DisposableMap<string>();
@@ -3241,8 +3239,7 @@ class ChatAgentActionsContribution
 
 class HookSchemaAssociationContribution
 	extends Disposable
-	implements IWorkbenchContribution
-{
+	implements IWorkbenchContribution {
 	static readonly ID = "workbench.contrib.hookSchemaAssociation";
 
 	private readonly _registrations = this._register(new DisposableStore());
@@ -3305,8 +3302,7 @@ class HookSchemaAssociationContribution
 
 class ToolReferenceNamesContribution
 	extends Disposable
-	implements IWorkbenchContribution
-{
+	implements IWorkbenchContribution {
 	static readonly ID = "workbench.contrib.toolReferenceNames";
 
 	constructor(

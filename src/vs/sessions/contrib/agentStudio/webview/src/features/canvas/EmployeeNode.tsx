@@ -92,7 +92,7 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 		? employee.tokenUsage.total
 		: employee.tokenUsage || 0;
 
-	const enabledSkills = (employee.skills || []).filter(s => s.enabled);
+	const skillIds = (employee.skills || []);
 
 	return (
 		<div

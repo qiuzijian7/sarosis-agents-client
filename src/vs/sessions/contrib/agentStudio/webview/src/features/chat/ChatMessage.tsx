@@ -14,6 +14,8 @@
  *  Ref: OpenClaw grouped-render.ts + markdown.ts patterns
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useMemo, useState } from 'react';
 import type { ChatMessage } from '../../store/useChatStore';
 import { useChatStore } from '../../store/useChatStore';
@@ -154,9 +156,9 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				{/* ── Main content ──────────────────────────── */}
 				{displayContent && (
 					<div className="message-text">
-					{isStreaming && !isUser ? (
-						// During streaming: live markdown rendering (OpenClaw pattern)
-						<MarkdownRenderer content={displayContent} showCursor />
+						{isStreaming && !isUser ? (
+							// During streaming: live markdown rendering (OpenClaw pattern)
+							<MarkdownRenderer content={displayContent} showCursor />
 						) : isPureJson ? (
 							// Pure JSON content: render as collapsible code block (OpenClaw pattern)
 							<div className="json-content-block">

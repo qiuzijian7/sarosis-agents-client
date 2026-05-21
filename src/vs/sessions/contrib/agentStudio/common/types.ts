@@ -26,7 +26,6 @@ export type {
 	Connection,
 	Delegation,
 	Employee,
-	EmployeeSkill,
 	TaskBoardRecord,
 	ToolCall,
 	Workspace,

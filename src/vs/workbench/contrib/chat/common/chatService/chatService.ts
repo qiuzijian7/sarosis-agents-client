@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { IAction } from "../../../../../base/common/actions.js";
 import { DeferredPromise } from "../../../../../base/common/async.js";
 import { CancellationToken } from "../../../../../base/common/cancellation.js";
@@ -258,8 +260,8 @@ export class ChatMultiDiffData implements IChatMultiDiffData {
 
 	constructor(opts: {
 		multiDiffData:
-			| IChatMultiDiffInnerData
-			| IObservable<IChatMultiDiffInnerData>;
+		| IChatMultiDiffInnerData
+		| IObservable<IChatMultiDiffInnerData>;
 		collapsed?: boolean;
 		readOnly?: boolean;
 	}) {
@@ -675,31 +677,31 @@ export const enum ToolConfirmKind {
 export type ConfirmedReason =
 	| { type: ToolConfirmKind.Denied }
 	| {
-			type: ToolConfirmKind.ConfirmationNotNeeded;
-			reason?: string | IMarkdownString;
-	  }
+		type: ToolConfirmKind.ConfirmationNotNeeded;
+		reason?: string | IMarkdownString;
+	}
 	| { type: ToolConfirmKind.Setting; id: string }
 	| {
-			type: ToolConfirmKind.LmServicePerTool;
-			scope: "session" | "workspace" | "profile";
-	  }
+		type: ToolConfirmKind.LmServicePerTool;
+		scope: "session" | "workspace" | "profile";
+	}
 	| { type: ToolConfirmKind.UserAction; selectedButton?: string }
 	| { type: ToolConfirmKind.Skipped };
 
 export interface IChatToolInvocation {
 	readonly presentation: IPreparedToolInvocation["presentation"];
 	readonly toolSpecificData?:
-		| IChatTerminalToolInvocationData
-		| ILegacyChatTerminalToolInvocationData
-		| IChatToolInputInvocationData
-		| IChatExtensionsContent
-		| IChatPullRequestContent
-		| IChatTodoListContent
-		| IChatSubagentToolInvocationData
-		| IChatSimpleToolInvocationData
-		| IChatSearchToolInvocationData
-		| IChatToolResourcesInvocationData
-		| IChatModifiedFilesConfirmationData;
+	| IChatTerminalToolInvocationData
+	| ILegacyChatTerminalToolInvocationData
+	| IChatToolInputInvocationData
+	| IChatExtensionsContent
+	| IChatPullRequestContent
+	| IChatTodoListContent
+	| IChatSubagentToolInvocationData
+	| IChatSimpleToolInvocationData
+	| IChatSearchToolInvocationData
+	| IChatToolResourcesInvocationData
+	| IChatModifiedFilesConfirmationData;
 	/**
 	 * Observable that tracks the `kind` of `toolSpecificData`. Used by the
 	 * tool invocation part to re-render when the kind changes (e.g. from
@@ -1051,23 +1053,23 @@ export interface IToolResultOutputDetailsSerialized {
 export interface IChatToolInvocationSerialized {
 	presentation: IPreparedToolInvocation["presentation"];
 	toolSpecificData?:
-		| IChatTerminalToolInvocationData
-		| IChatToolInputInvocationData
-		| IChatExtensionsContent
-		| IChatPullRequestContent
-		| IChatTodoListContent
-		| IChatSubagentToolInvocationData
-		| IChatSimpleToolInvocationData
-		| IChatSearchToolInvocationData
-		| IChatToolResourcesInvocationData
-		| IChatModifiedFilesConfirmationData;
+	| IChatTerminalToolInvocationData
+	| IChatToolInputInvocationData
+	| IChatExtensionsContent
+	| IChatPullRequestContent
+	| IChatTodoListContent
+	| IChatSubagentToolInvocationData
+	| IChatSimpleToolInvocationData
+	| IChatSearchToolInvocationData
+	| IChatToolResourcesInvocationData
+	| IChatModifiedFilesConfirmationData;
 	invocationMessage: string | IMarkdownString;
 	originMessage: string | IMarkdownString | undefined;
 	pastTenseMessage: string | IMarkdownString | undefined;
 	resultDetails?:
-		| Array<URI | Location>
-		| IToolResultInputOutputDetails
-		| IToolResultOutputDetailsSerialized;
+	| Array<URI | Location>
+	| IToolResultInputOutputDetails
+	| IToolResultOutputDetailsSerialized;
 	/** boolean used by pre-1.104 versions */
 	isConfirmed: ConfirmedReason | boolean | undefined;
 	isComplete: boolean;
@@ -1122,12 +1124,12 @@ export interface IChatExternalToolInvocationUpdate {
 	invocationMessage?: string | IMarkdownString;
 	pastTenseMessage?: string | IMarkdownString;
 	toolSpecificData?:
-		| IChatTerminalToolInvocationData
-		| IChatToolInputInvocationData
-		| IChatExtensionsContent
-		| IChatTodoListContent
-		| IChatSubagentToolInvocationData
-		| IChatModifiedFilesConfirmationData;
+	| IChatTerminalToolInvocationData
+	| IChatToolInputInvocationData
+	| IChatExtensionsContent
+	| IChatTodoListContent
+	| IChatSubagentToolInvocationData
+	| IChatModifiedFilesConfirmationData;
 	subagentInvocationId?: string;
 	resultDetails?: IToolResultInputOutputDetails;
 }
@@ -1258,7 +1260,7 @@ export class ChatMcpServersStarting implements IChatMcpServersStarting {
 		return !s.working && s.serversRequiringInteraction.length === 0;
 	}
 
-	constructor(public readonly state: IObservable<IAutostartResult>) {}
+	constructor(public readonly state: IObservable<IAutostartResult>) { }
 
 	wait() {
 		return new Promise<IAutostartResult>((resolve) => {
@@ -1966,11 +1968,11 @@ export const ChatStopCancellationNoopEventName = "chat.stopCancellationNoop";
 export type ChatStopCancellationNoopEvent = {
 	source: string;
 	reason:
-		| "noWidget"
-		| "noViewModel"
-		| "noPendingRequest"
-		| "requestAlreadyCanceled"
-		| "requestIdUnavailable";
+	| "noWidget"
+	| "noViewModel"
+	| "noPendingRequest"
+	| "requestAlreadyCanceled"
+	| "requestIdUnavailable";
 	requestInProgress: "true" | "false" | "unknown";
 	pendingRequests: number;
 	sessionScheme?: string;

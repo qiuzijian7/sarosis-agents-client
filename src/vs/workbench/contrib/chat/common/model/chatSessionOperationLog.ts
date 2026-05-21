@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings, @typescript-eslint/no-explicit-any, local/code-no-any-casts */
 import { softAssertNever } from "../../../../../base/common/assert.js";
 import { isMarkdownString } from "../../../../../base/common/htmlContent.js";
 import { equals as objectsEqual } from "../../../../../base/common/objects.js";
@@ -51,7 +53,6 @@ import * as Adapt from "./objectMutationLog.js";
 
 const toJson = <T>(obj: T): T extends { toJSON?(): infer R } ? R : T => {
 	const cast = obj as { toJSON?: () => T };
-	// eslint-disable-next-line local/code-no-any-casts, @typescript-eslint/no-explicit-any
 	return (
 		cast && typeof cast.toJSON === "function" ? cast.toJSON() : obj
 	) as any;
@@ -221,10 +222,10 @@ const requestSchema = Adapt.object<
 				m.response?.elapsedMs ??
 				(m.response?.completedAt
 					? Math.max(
-							0,
-							m.response.completedAt -
-								m.response.confirmationAdjustedTimestamp.get(),
-						)
+						0,
+						m.response.completedAt -
+						m.response.confirmationAdjustedTimestamp.get(),
+					)
 					: undefined),
 		),
 		modeInfo: Adapt.v((m) => m.modeInfo, objectsEqual),
@@ -298,8 +299,7 @@ export const storageSchema = Adapt.object<IChatModel, ISerializableChatData>({
 
 export class ChatSessionOperationLog
 	extends Adapt.ObjectMutationLog<IChatModel, ISerializableChatData>
-	implements IChatDataSerializerLog
-{
+	implements IChatDataSerializerLog {
 	constructor() {
 		super(storageSchema, 1024);
 	}

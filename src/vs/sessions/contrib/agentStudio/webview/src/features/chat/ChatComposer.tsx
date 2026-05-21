@@ -6,6 +6,8 @@
  *  - chat-send-circle (round send button on the right)
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import React, { useState, useRef, useCallback, KeyboardEvent, useEffect, useMemo } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
@@ -307,205 +309,205 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 							<span className="toolbar-btn-label">联网</span>
 						</button>
 
-					{/* 分隔线 */}
-					<div className="chat-toolbar-divider" />
+						{/* 分隔线 */}
+						<div className="chat-toolbar-divider" />
 
-					{/* Provider 选择器 */}
-					<div className="provider-model-chip-wrap" ref={providerDropdownRef}>
-						<button
-							className="chat-toolbar-btn has-label provider-tag"
-							title="选择 Provider"
-							onClick={() => {
-								const wasOpen = showProviderDropdown;
-								closeAllDropdowns();
-								if (!wasOpen) { setShowProviderDropdown(true); }
-							}}
-						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-								<rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-								<line x1="8" y1="21" x2="16" y2="21" />
-								<line x1="12" y1="17" x2="12" y2="21" />
-							</svg>
-							<span className="toolbar-btn-label">{providerDisplay}</span>
-							<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-								<path d="M6 9l6 6 6-6" />
-							</svg>
-						</button>
-					{showProviderDropdown && authenticatedProviders.length > 0 && (
-						<div className="provider-dropdown">
-							{authenticatedProviders.map(p => {
-								const isActive = selection?.providerId === p.id;
-								return (
-									<button
-										key={p.id}
-										className={`provider-dropdown-item ${isActive ? 'active' : ''}`}
-										onClick={() => handleProviderSelect(p)}
-									>
-										<span className="provider-dropdown-name">{p.name}</span>
-										<span className="provider-dropdown-detail">
-											{p.supportsAgents
-												? `${p.agents?.length || 0} agents`
-												: `${p.models.length} models`}
-										</span>
-									</button>
-								);
-							})}
-						</div>
-					)}
-					</div>
-
-					{/* Agent 选择器（仅当 provider 支持 agents 时显示） */}
-					{supportsAgents && (
-						<div className="provider-model-chip-wrap" ref={agentDropdownRef}>
+						{/* Provider 选择器 */}
+						<div className="provider-model-chip-wrap" ref={providerDropdownRef}>
 							<button
-								className="chat-toolbar-btn has-label agent-tag"
-								title="选择 Agent"
+								className="chat-toolbar-btn has-label provider-tag"
+								title="选择 Provider"
 								onClick={() => {
-									const wasOpen = showAgentDropdown;
+									const wasOpen = showProviderDropdown;
 									closeAllDropdowns();
-									if (!wasOpen) { setShowAgentDropdown(true); }
+									if (!wasOpen) { setShowProviderDropdown(true); }
 								}}
 							>
-								{/* Agent 机器人图标 */}
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-									<rect x="3" y="11" width="18" height="10" rx="2" />
-									<circle cx="12" cy="5" r="2" />
-									<path d="M12 7v4" />
-									<line x1="8" y1="16" x2="8" y2="16" />
-									<line x1="16" y1="16" x2="16" y2="16" />
+									<rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+									<line x1="8" y1="21" x2="16" y2="21" />
+									<line x1="12" y1="17" x2="12" y2="21" />
 								</svg>
-								<span className="toolbar-btn-label">{agentDisplay}</span>
+								<span className="toolbar-btn-label">{providerDisplay}</span>
 								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
 									<path d="M6 9l6 6 6-6" />
 								</svg>
 							</button>
-							{showAgentDropdown && currentProvider?.agents && (
-								<div className="provider-dropdown agent-dropdown">
-									<div className="agent-dropdown-header">
-										<span className="agent-dropdown-title">选择 Agent</span>
-										<span className="agent-dropdown-count">{currentProvider.agents.length}</span>
-									</div>
-									{currentProvider.agents.map(a => (
-										<button
-											key={a.id}
-											className={`provider-dropdown-item ${selection?.agentId === a.id ? 'active' : ''}`}
-											onClick={() => handleAgentSelect(a.id)}
-										>
-											<div className="agent-item-info">
-												<span className="provider-dropdown-name">{a.name}</span>
-												{a.models && a.models.length > 0 && (
-													<span className="agent-item-models">
-														{a.models.join(', ')}
-													</span>
-												)}
-											</div>
-											{selection?.agentId === a.id && (
-												<svg className="agent-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-													<polyline points="20 6 9 17 4 12" />
-												</svg>
-											)}
-										</button>
-									))}
+							{showProviderDropdown && authenticatedProviders.length > 0 && (
+								<div className="provider-dropdown">
+									{authenticatedProviders.map(p => {
+										const isActive = selection?.providerId === p.id;
+										return (
+											<button
+												key={p.id}
+												className={`provider-dropdown-item ${isActive ? 'active' : ''}`}
+												onClick={() => handleProviderSelect(p)}
+											>
+												<span className="provider-dropdown-name">{p.name}</span>
+												<span className="provider-dropdown-detail">
+													{p.supportsAgents
+														? `${p.agents?.length || 0} agents`
+														: `${p.models.length} models`}
+												</span>
+											</button>
+										);
+									})}
 								</div>
 							)}
 						</div>
-					)}
 
-					{/* Model 选择器 */}
-					<div className="provider-model-chip-wrap" ref={modelDropdownRef}>
-						<button
-							className="chat-toolbar-btn has-label model-tag"
-							title="选择模型"
-							onClick={() => {
-								const wasOpen = showModelDropdown;
-								closeAllDropdowns();
-								if (!wasOpen) { setShowModelDropdown(true); }
-							}}
-						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-								<polyline points="4 17 10 11 4 5" />
-								<line x1="12" y1="19" x2="20" y2="19" />
-							</svg>
-							<span className="toolbar-btn-label">{modelDisplay}</span>
-							<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-								<path d="M6 9l6 6 6-6" />
-							</svg>
-						</button>
-						{showModelDropdown && currentProvider && (
-							<div className="provider-dropdown model-dropdown-searchable">
-								{/* 搜索框 */}
-								<div className="model-search-wrap">
-									<svg className="model-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-										<circle cx="11" cy="11" r="8" />
-										<line x1="21" y1="21" x2="16.65" y2="16.65" />
+						{/* Agent 选择器（仅当 provider 支持 agents 时显示） */}
+						{supportsAgents && (
+							<div className="provider-model-chip-wrap" ref={agentDropdownRef}>
+								<button
+									className="chat-toolbar-btn has-label agent-tag"
+									title="选择 Agent"
+									onClick={() => {
+										const wasOpen = showAgentDropdown;
+										closeAllDropdowns();
+										if (!wasOpen) { setShowAgentDropdown(true); }
+									}}
+								>
+									{/* Agent 机器人图标 */}
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+										<rect x="3" y="11" width="18" height="10" rx="2" />
+										<circle cx="12" cy="5" r="2" />
+										<path d="M12 7v4" />
+										<line x1="8" y1="16" x2="8" y2="16" />
+										<line x1="16" y1="16" x2="16" y2="16" />
 									</svg>
-									<input
-										ref={modelSearchInputRef}
-										type="text"
-										className="model-search-input"
-										placeholder="搜索模型..."
-										value={modelSearchQuery}
-										onChange={(e) => setModelSearchQuery(e.target.value)}
-										onKeyDown={(e) => {
-											// 阻止 Enter 触发发送消息
-											e.stopPropagation();
-											if (e.key === 'Escape') {
-												setShowModelDropdown(false);
-												setModelSearchQuery('');
-											}
-											// Enter 选择第一个匹配结果
-											if (e.key === 'Enter' && filteredModels.length > 0) {
-												handleModelSelect(filteredModels[0].id);
-												setModelSearchQuery('');
-											}
-										}}
-									/>
-									{modelSearchQuery && (
-										<button
-											className="model-search-clear"
-											onClick={() => setModelSearchQuery('')}
-											title="清除搜索"
-										>
-											<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-												<line x1="18" y1="6" x2="6" y2="18" />
-												<line x1="6" y1="6" x2="18" y2="18" />
-											</svg>
-										</button>
-									)}
-								</div>
-								{/* 模型列表 */}
-								<div className="model-dropdown-list">
-									{filteredModels.map(m => (
-										<button
-											key={m.id}
-											className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
-											onClick={() => {
-												handleModelSelect(m.id);
-												setModelSearchQuery('');
-											}}
-										>
-											<span className="provider-dropdown-name">{m.name}</span>
-										</button>
-									))}
-									{filteredModels.length === 0 && modelSearchQuery && (
-										<div className="provider-dropdown-empty">无匹配模型 "{modelSearchQuery}"</div>
-									)}
-									{filteredModels.length === 0 && !modelSearchQuery && (
-										<div className="provider-dropdown-empty">无可用模型</div>
-									)}
-								</div>
+									<span className="toolbar-btn-label">{agentDisplay}</span>
+									<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+										<path d="M6 9l6 6 6-6" />
+									</svg>
+								</button>
+								{showAgentDropdown && currentProvider?.agents && (
+									<div className="provider-dropdown agent-dropdown">
+										<div className="agent-dropdown-header">
+											<span className="agent-dropdown-title">选择 Agent</span>
+											<span className="agent-dropdown-count">{currentProvider.agents.length}</span>
+										</div>
+										{currentProvider.agents.map(a => (
+											<button
+												key={a.id}
+												className={`provider-dropdown-item ${selection?.agentId === a.id ? 'active' : ''}`}
+												onClick={() => handleAgentSelect(a.id)}
+											>
+												<div className="agent-item-info">
+													<span className="provider-dropdown-name">{a.name}</span>
+													{a.models && a.models.length > 0 && (
+														<span className="agent-item-models">
+															{a.models.join(', ')}
+														</span>
+													)}
+												</div>
+												{selection?.agentId === a.id && (
+													<svg className="agent-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+														<polyline points="20 6 9 17 4 12" />
+													</svg>
+												)}
+											</button>
+										))}
+									</div>
+								)}
 							</div>
 						)}
-					</div>
+
+						{/* Model 选择器 */}
+						<div className="provider-model-chip-wrap" ref={modelDropdownRef}>
+							<button
+								className="chat-toolbar-btn has-label model-tag"
+								title="选择模型"
+								onClick={() => {
+									const wasOpen = showModelDropdown;
+									closeAllDropdowns();
+									if (!wasOpen) { setShowModelDropdown(true); }
+								}}
+							>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<polyline points="4 17 10 11 4 5" />
+									<line x1="12" y1="19" x2="20" y2="19" />
+								</svg>
+								<span className="toolbar-btn-label">{modelDisplay}</span>
+								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+									<path d="M6 9l6 6 6-6" />
+								</svg>
+							</button>
+							{showModelDropdown && currentProvider && (
+								<div className="provider-dropdown model-dropdown-searchable">
+									{/* 搜索框 */}
+									<div className="model-search-wrap">
+										<svg className="model-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+											<circle cx="11" cy="11" r="8" />
+											<line x1="21" y1="21" x2="16.65" y2="16.65" />
+										</svg>
+										<input
+											ref={modelSearchInputRef}
+											type="text"
+											className="model-search-input"
+											placeholder="搜索模型..."
+											value={modelSearchQuery}
+											onChange={(e) => setModelSearchQuery(e.target.value)}
+											onKeyDown={(e) => {
+												// 阻止 Enter 触发发送消息
+												e.stopPropagation();
+												if (e.key === 'Escape') {
+													setShowModelDropdown(false);
+													setModelSearchQuery('');
+												}
+												// Enter 选择第一个匹配结果
+												if (e.key === 'Enter' && filteredModels.length > 0) {
+													handleModelSelect(filteredModels[0].id);
+													setModelSearchQuery('');
+												}
+											}}
+										/>
+										{modelSearchQuery && (
+											<button
+												className="model-search-clear"
+												onClick={() => setModelSearchQuery('')}
+												title="清除搜索"
+											>
+												<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+													<line x1="18" y1="6" x2="6" y2="18" />
+													<line x1="6" y1="6" x2="18" y2="18" />
+												</svg>
+											</button>
+										)}
+									</div>
+									{/* 模型列表 */}
+									<div className="model-dropdown-list">
+										{filteredModels.map(m => (
+											<button
+												key={m.id}
+												className={`provider-dropdown-item ${selection?.modelId === m.id ? 'active' : ''}`}
+												onClick={() => {
+													handleModelSelect(m.id);
+													setModelSearchQuery('');
+												}}
+											>
+												<span className="provider-dropdown-name">{m.name}</span>
+											</button>
+										))}
+										{filteredModels.length === 0 && modelSearchQuery && (
+											<div className="provider-dropdown-empty">无匹配模型 "{modelSearchQuery}"</div>
+										)}
+										{filteredModels.length === 0 && !modelSearchQuery && (
+											<div className="provider-dropdown-empty">无可用模型</div>
+										)}
+									</div>
+								</div>
+							)}
+						</div>
 					</div>
 
-				{/* 右侧发送/取消按钮 */}
-				<button
-					onClick={isLoading ? (input.trim() ? handleSend : onCancel) : handleSend}
-					disabled={!input.trim() && !isLoading}
-					className={`chat-send-circle ${isLoading && !input.trim() ? 'chat-cancel-circle' : ''}`}
-					title={isLoading ? (input.trim() ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)'}
-				>
+					{/* 右侧发送/取消按钮 */}
+					<button
+						onClick={isLoading ? (input.trim() ? handleSend : onCancel) : handleSend}
+						disabled={!input.trim() && !isLoading}
+						className={`chat-send-circle ${isLoading && !input.trim() ? 'chat-cancel-circle' : ''}`}
+						title={isLoading ? (input.trim() ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)'}
+					>
 						{isLoading && !input.trim() ? (
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
 								<rect x="6" y="6" width="12" height="12" rx="2" />

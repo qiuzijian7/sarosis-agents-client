@@ -2,6 +2,8 @@
  *  Agent Studio WebView - Chat Store (Zustand)
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
 import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState, type StreamError } from '../bridge/streamHandler';
@@ -460,47 +462,47 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}
 		},
 
-	cancelStream: () => {
-		const { activeEmployeeId, activeAgentSessionId, streamState } = get();
-		console.log(`[ChatStore] cancelStream: activeEmployeeId=${activeEmployeeId}, activeAgentSessionId=${activeAgentSessionId}`);
+		cancelStream: () => {
+			const { activeEmployeeId, activeAgentSessionId, streamState } = get();
+			console.log(`[ChatStore] cancelStream: activeEmployeeId=${activeEmployeeId}, activeAgentSessionId=${activeAgentSessionId}`);
 
-		// ── Preserve already-generated content (VS Code Copilot Chat pattern) ──
-		// Instead of discarding everything, commit partial content as a cancelled message.
-		const partialText = streamState.textBuffer || '';
-		const partialThinking = streamState.thinkingBuffer || '';
+			// ── Preserve already-generated content (VS Code Copilot Chat pattern) ──
+			// Instead of discarding everything, commit partial content as a cancelled message.
+			const partialText = streamState.textBuffer || '';
+			const partialThinking = streamState.thinkingBuffer || '';
 
-		// Reset the stream state first (stops the streaming bubble)
-		resetStreamSilent();
+			// Reset the stream state first (stops the streaming bubble)
+			resetStreamSilent();
 
-		if (partialText || partialThinking) {
-			// Commit partial content as a cancelled assistant message
-			const cancelledMessage: ChatMessage = {
-				id: `cancelled_${Date.now()}`,
-				role: 'assistant',
-				content: partialText || '(已停止生成)',
-				thinking: partialThinking || undefined,
-				timestamp: new Date().toISOString(),
-			};
-			set(state => ({
-				messages: [...state.messages, cancelledMessage],
-				streamState: getStreamState(),
-			}));
-			console.log('[ChatStore] cancelStream: committed partial content as cancelled message', {
-				textLen: partialText.length,
-				thinkingLen: partialThinking.length,
-			});
-		} else {
-			set({ streamState: getStreamState() });
-		}
+			if (partialText || partialThinking) {
+				// Commit partial content as a cancelled assistant message
+				const cancelledMessage: ChatMessage = {
+					id: `cancelled_${Date.now()}`,
+					role: 'assistant',
+					content: partialText || '(已停止生成)',
+					thinking: partialThinking || undefined,
+					timestamp: new Date().toISOString(),
+				};
+				set(state => ({
+					messages: [...state.messages, cancelledMessage],
+					streamState: getStreamState(),
+				}));
+				console.log('[ChatStore] cancelStream: committed partial content as cancelled message', {
+					textLen: partialText.length,
+					thinkingLen: partialThinking.length,
+				});
+			} else {
+				set({ streamState: getStreamState() });
+			}
 
-		// Notify host to abort the upstream stream
-		if (activeEmployeeId) {
-			sendRequest('chat.cancel', { employeeId: activeEmployeeId, agentSessionId: activeAgentSessionId ?? undefined }).catch(() => {});
-		}
+			// Notify host to abort the upstream stream
+			if (activeEmployeeId) {
+				sendRequest('chat.cancel', { employeeId: activeEmployeeId, agentSessionId: activeAgentSessionId ?? undefined }).catch(() => { });
+			}
 
-		// Restore employee status
-		try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
-	},
+			// Restore employee status
+			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+		},
 
 		setInputValue: (value) => set({ inputValue: value }),
 

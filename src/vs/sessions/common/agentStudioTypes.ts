@@ -94,19 +94,18 @@ export interface Employee {
 	model?: string;
 	provider?: string;
 	customPrompt?: string;
-	skills?: EmployeeSkill[];
+	// allow-any-unicode-next-line
+	/** 技能 ID 列表 - agent 引用的技能 */
+	skills?: string[];
+	// allow-any-unicode-next-line
+	/** 技能版本记录 - 记录每个技能的版本号，用于检测更新 */
+	skillVersions?: Record<string, string>;
 	status: EmployeeStatus;
 	/**
 	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
 	 * Defaults to 'worker' if unset.
 	 */
 	agentType?: AgentType;
-	/**
-	 * 技能自动匹配开关（默认 true）：
-	 * - true: agent 可从内置和全局 skill 中搜索匹配的技能，自动复制到 agent 实例的 skills 目录
-	 * - false: 仅允许使用 agent 实例 skills 目录下已有的技能
-	 */
-	autoSkill?: boolean;
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
@@ -138,6 +137,7 @@ export interface Employee {
 	updatedAt: string;
 }
 
+// allow-any-unicode-next-line
 // ─── ConfigMD (Markdown ↔ HTML bidirectional sync) ────────────────────────────
 
 /**
@@ -234,13 +234,6 @@ export interface AgentConfigMd {
 	 * Requests for unlisted capabilities are rejected.
 	 */
 	capabilities?: ConfigMdCapability[];
-}
-
-export interface EmployeeSkill {
-	readonly id: string;
-	name: string;
-	enabled: boolean;
-	description?: string;
 }
 
 export interface Workspace {
@@ -383,6 +376,7 @@ export interface TaskBoardRecord {
 	completedAt?: string;
 }
 
+// allow-any-unicode-next-line
 // ─── Workspace Session (Fork) ───────────────────────────────────────────────
 
 /**
@@ -489,6 +483,7 @@ export interface WorkspaceRootInfo {
 	mode: WorkspaceMode;
 }
 
+// allow-any-unicode-next-line
 // ─── Task Orchestration ─────────────────────────────────────────────────────
 
 /**

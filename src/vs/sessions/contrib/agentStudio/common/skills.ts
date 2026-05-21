@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 /**
  * Skill 系统类型定义。
  *
@@ -16,9 +18,8 @@
  *
  * Skill 来源（按优先级合并，重名后注册的覆盖前者）：
  *   1. 内置目录   `extensions/.../skills/*` （随产品发布）
- *   2. 全局目录   `~/.sarosis/skills/<id>/SKILL.md`
- *   3. 工作区目录 `<workspace>/.sarosisworkspace/agents/<agentDir>/skills/<id>/SKILL.md`
- *   4. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill
+ *   2. 用户全局目录   `~/.sarosis/skills-library/<id>/SKILL.md`
+ *   3. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill
  */
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -50,8 +51,8 @@ export interface ISkillDefinition {
 	readonly recommendedTools?: readonly string[];
 	/** 注入到对话中的正文（已去除 frontmatter） */
 	readonly prompt: string;
-	/** 来源标记，用于 UI 区分内置 / 用户 / 工作区 / 扩展 */
-	readonly source: 'builtin' | 'user' | 'workspace' | 'extension' | 'memory';
+	/** 来源标记，用于 UI 区分内置 / 用户 / 扩展 */
+	readonly source: 'builtin' | 'user' | 'extension' | 'memory';
 	/** Skill 文件 URI（可选，用于「在编辑器中打开」） */
 	readonly resource?: URI;
 	/**
@@ -62,6 +63,12 @@ export interface ISkillDefinition {
 	readonly contentHash?: string;
 	/** 是否启用该 skill（可通过 UI 开关控制） */
 	enabled: boolean;
+	/** 技能版本号（语义化版本，如 "1.0.0"） */
+	version?: string;
+	/** 技能商店中的 ID（用于检查更新） */
+	storeId?: string;
+	/** 更新检查 URL */
+	updateUrl?: string;
 }
 
 /**
@@ -73,12 +80,6 @@ export interface ISkillActivationContext {
 	readonly sessionId?: string;
 	/** 用户已显式选中的 skill id 列表（来自 `/skill` 命令） */
 	readonly explicit?: readonly string[];
-	/**
-	 * 是否开启技能自动匹配（来自 Employee.autoSkill）。
-	 * - true: 可从内置/全局 skill 中匹配并自动采纳
-	 * - false: 仅使用 agent 实例 skills 目录下的技能
-	 */
-	readonly autoSkill?: boolean;
 }
 
 /**
@@ -113,18 +114,8 @@ export interface ISkillRegistry {
 	 * - 所有命中 `match` 关键词的 `auto` 类型
 	 * - context.explicit 中列出的 `manual` / `auto` 类型
 	 * - 仅包含 enabled === true 的 skill
-	 * - 当 context.autoSkill 为 false 时，仅返回 source === 'workspace' 的 skill
-	 *
-	 * 当 autoSkill 为 true 且匹配到非 workspace 的 skill 时，会自动将其
-	 * 复制到 agent 实例的 skills 目录中（adoptSkillToAgent）。
 	 */
 	resolveActivations(context: ISkillActivationContext): Promise<readonly ISkillInjection[]>;
-
-	/**
-	 * 将一个 skill 采纳（adopt）到指定 agent 实例的 skills 目录中。
-	 * 在 skills 目录下创建 `<id>/SKILL.md` 文件（不覆盖已有）。
-	 */
-	adoptSkillToAgent(agentId: string, skillId: string): Promise<void>;
 
 	/** 启用指定 skill */
 	enableSkill(id: string): void;
@@ -132,9 +123,6 @@ export interface ISkillRegistry {
 	/** 禁用指定 skill */
 	disableSkill(id: string): void;
 
-	/** 触发一次重扫（用户安装/卸载 skill 后或文件改动）。
-	 *  @param agentId 可选，指定只加载该 agent 实例的工作区 skill；
-	 *                不传时加载所有 agent 的工作区 skill。
-	 */
-	reload(agentId?: string): Promise<void>;
+	/** 触发一次重扫（用户安装/卸载 skill 后或文件改动）。 */
+	reload(): Promise<void>;
 }

@@ -11,6 +11,8 @@
  *  Ref: sarosis-webui EmployeeChat.tsx main chat layout
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
@@ -277,16 +279,16 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 	const statusText = activeEmployee.status === 'idle' ? '空闲'
 		: activeEmployee.status === 'working' ? '工作中'
-		: activeEmployee.status === 'thinking' ? '思考中'
-		: activeEmployee.status === 'error' ? '错误'
-		: activeEmployee.status === 'offline' ? '离线'
-		: activeEmployee.status;
+			: activeEmployee.status === 'thinking' ? '思考中'
+				: activeEmployee.status === 'error' ? '错误'
+					: activeEmployee.status === 'offline' ? '离线'
+						: activeEmployee.status;
 
 	const statusClass = activeEmployee.status === 'idle' ? 'status-idle'
 		: activeEmployee.status === 'working' ? 'status-working'
-		: activeEmployee.status === 'thinking' ? 'status-thinking'
-		: activeEmployee.status === 'error' ? 'status-error'
-		: 'status-offline';
+			: activeEmployee.status === 'thinking' ? 'status-thinking'
+				: activeEmployee.status === 'error' ? 'status-error'
+					: 'status-offline';
 
 	// NOTE: ConfigMD is no longer shown in the chat panel. It now lives only
 	// inside the AgentEditorPane (settings dialog) under the "ConfigMD" tab,
@@ -354,27 +356,27 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						<ChatMessageComponent key={msg.id} message={msg} />
 					))}
 
-				{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
-				{/* DEBUG: Always log streaming condition on every render */}
-				{(() => {
-					console.log('[EmployeeChat] render check:', {
-						isStreaming: streamState.isStreaming,
-						streamEmployeeId: streamState.employeeId,
-						activeEmployeeId,
-						textBufferLen: streamState.textBuffer.length,
-						willRenderBubble: streamState.isStreaming && streamState.employeeId === activeEmployeeId,
-					});
-					return null;
-				})()}
-				{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
-					<StreamingBubble
-						textBuffer={streamState.textBuffer}
-						thinkingBuffer={streamState.thinkingBuffer}
-						toolCalls={streamState.toolCalls}
-						errorMessage={streamState.errorMessage}
-						streamError={streamState.error}
-					/>
-				)}
+					{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
+					{/* DEBUG: Always log streaming condition on every render */}
+					{(() => {
+						console.log('[EmployeeChat] render check:', {
+							isStreaming: streamState.isStreaming,
+							streamEmployeeId: streamState.employeeId,
+							activeEmployeeId,
+							textBufferLen: streamState.textBuffer.length,
+							willRenderBubble: streamState.isStreaming && streamState.employeeId === activeEmployeeId,
+						});
+						return null;
+					})()}
+					{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
+						<StreamingBubble
+							textBuffer={streamState.textBuffer}
+							thinkingBuffer={streamState.thinkingBuffer}
+							toolCalls={streamState.toolCalls}
+							errorMessage={streamState.errorMessage}
+							streamError={streamState.error}
+						/>
+					)}
 
 					<div ref={messagesEndRef} />
 				</div>

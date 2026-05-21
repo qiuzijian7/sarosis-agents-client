@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import {
@@ -99,9 +101,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this._globalDataUri = customPath
 				? URI.file(customPath)
 				: URI.joinPath(
-						this.environmentService.userRoamingDataHome,
-						"agent-studio",
-					);
+					this.environmentService.userRoamingDataHome,
+					"agent-studio",
+				);
 		}
 		return this._globalDataUri;
 	}

@@ -3,19 +3,25 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 /**
  * Skill 注册表实现 —— 见 `common/skills.ts` 接口契约。
  *
- * 加载策略：
+ * 加载策略（重构后：统一技能库架构）：
  *   1. `_loadBuiltins()`        —— 内置 skill 模块（产品自带，硬编码常量数组）
  *      1a. `BUILTIN_SKILLS`     —— Sarosis 原生核心 skill（4 个，始终加载）
  *      1b. `BUNDLED_SKILLS`     —— 从 Hermes-Agent 迁移的打包 skill（87 个，始终加载）
- *   2. `_scanFolder(roaming)`   —— 全局用户目录 `<userRoamingDataHome>/sarosis/skills/`
- *   3. `_scanAgentSkills(...)`  —— 工作区目录 `<workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/`
- *   4. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
+ *   2. `_scanFolder(roaming)`   —— 用户全局技能库 `<userRoamingDataHome>/sarosis/skills-library/`
+ *   3. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
  *
- * 后注册的同名 skill 覆盖前者（运行时注入 > 工作区 > 用户 > 内置），
+ * 后注册的同名 skill 覆盖前者（运行时注入 > 用户 > 内置），
  * 这与 hermes 的 `optional-skills` < `skills` < `~/.hermes/skills` 优先级一致。
+ *
+ * 架构变更说明：
+ *   - 原架构：技能按 agent 实例隔离存储于 `.sarosisworkspace/agents/<agentDir>/skills/`
+ *   - 新架构：技能统一存储于用户全局技能库（`~/.sarosis/skills-library/`），agent 仅保存技能 ID 引用
+ *   - 好处：避免技能重复存储，便于版本管理和升级
  *
  * Skill 文件格式（仿 hermes 与 Claude SKILL.md 标准）：
  *
@@ -40,7 +46,6 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
 import { stringHash } from '../../../../base/common/hash.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
@@ -444,9 +449,6 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		const out: ISkillInjection[] = [];
 		const explicit = new Set((context.explicit ?? []).map(s => s.toLowerCase()));
 		const userMsg = context.userMessage.toLowerCase();
-		const autoSkill = context.autoSkill !== false; // 默认 true
-
-		const matchedNonWorkspace: ISkillDefinition[] = [];
 
 		for (const skill of this._skills.values()) {
 			// 首先检查 skill 是否启用
@@ -462,89 +464,15 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			}
 			if (!take) { continue; }
 
-			// autoSkill 关闭时，仅允许 workspace source
-			if (!autoSkill && skill.source !== 'workspace') { continue; }
-
 			out.push({
 				skill,
 				// 与 hermes 一致：以独立 user message 注入，避免 system prompt 失效缓存。
 				placement: skill.activation === 'always' ? 'system' : 'user',
 				content: this._renderInjection(skill),
 			});
-
-			// 记录非 workspace 的匹配 skill，后续自动采纳
-			if (autoSkill && skill.source !== 'workspace') {
-				matchedNonWorkspace.push(skill);
-			}
-		}
-
-		// 异步采纳匹配到的非 workspace skill 到 agent 实例目录
-		if (matchedNonWorkspace.length > 0 && context.agentId) {
-			this._adoptMatchedSkills(context.agentId, matchedNonWorkspace).catch(err =>
-				this.logService.warn('[SkillRegistry] auto-adopt failed', err),
-			);
 		}
 
 		return Promise.resolve(out);
-	}
-
-	/**
-	 * 自动将匹配到的非 workspace skill 采纳到 agent 实例的 skills 目录。
-	 * 仅在 autoSkill 开启时调用。不阻塞 resolveActivations 返回。
-	 */
-	private async _adoptMatchedSkills(agentId: string, skills: ISkillDefinition[]): Promise<void> {
-		for (const skill of skills) {
-			try {
-				await this.adoptSkillToAgent(agentId, skill.id);
-			} catch (err) {
-				this.logService.debug(`[SkillRegistry] auto-adopt skill ${skill.id} skipped`, err);
-			}
-		}
-	}
-
-	/** 将一个 skill 采纳到指定 agent 实例的 skills 目录 */
-	async adoptSkillToAgent(agentId: string, skillId: string): Promise<void> {
-		const skill = this._skills.get(skillId);
-		if (!skill) { return; }
-
-		const employee = await this.studioService.getEmployee(agentId);
-		if (!employee?.agentDir || !employee.workspaceId) { return; }
-
-		const workspace = await this.studioService.getWorkspace(employee.workspaceId);
-		if (!workspace?.path) { return; }
-
-		const dirName = skillId.replace(/[^a-zA-Z0-9_-]/g, '-');
-		const skillSubDir = URI.joinPath(
-			URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir, SKILL_DIR_NAME, dirName,
-		);
-
-		// 检查是否已存在
-		const skillFile = URI.joinPath(skillSubDir, 'SKILL.md');
-		if (await this.fileService.exists(skillFile)) {
-			this.logService.debug(`[SkillRegistry] skill ${skillId} already exists in agent dir, skip adopt`);
-			return;
-		}
-
-		// 创建目录并写入 SKILL.md
-		await this.fileService.createFolder(skillSubDir);
-		const content = this._renderSkillMdContent(skill);
-		await this.fileService.writeFile(skillFile, VSBuffer.fromString(content));
-
-		this.logService.info(`[SkillRegistry] skill ${skillId} adopted to agent ${employee.agentDir}`);
-
-		// Fire skill-added lifecycle event (fire-and-forget)
-		const payload: ISkillLifecyclePayload = {
-			workspaceId: employee.workspaceId,
-			workspacePath: workspace.path,
-			agentId: employee.id,
-			agentDir: employee.agentDir,
-			skillId,
-			skillName: skill.name,
-			timestamp: new Date().toISOString(),
-		};
-		void this.skillLifecycleService.fireSkillEvent(SkillLifecycleEvent.Added, payload).catch(err => {
-			this.logService.debug(`[SkillRegistry] skill lifecycle event failed for ${skillId}: ${err instanceof Error ? err.message : String(err)}`);
-		});
 	}
 
 	/** 启用指定 skill */
@@ -568,38 +496,20 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		}
 	}
 
-	async reload(agentId?: string): Promise<void> {
-		this.logService.info(`[SkillRegistry] reload() called, agentId=${agentId ?? '(all)'}`);
+	async reload(): Promise<void> {
+		this.logService.info(`[SkillRegistry] reload() called`);
 		this._skills.clear();
 		this._loadBuiltins();
 		this.logService.info(`[SkillRegistry] after _loadBuiltins: ${this._skills.size} skills`);
 
-		// 用户全局目录
+		// 用户全局技能库
 		try {
-			const userDir = URI.joinPath(this.environmentService.userRoamingDataHome, 'sarosis', 'skills');
-			this.logService.info(`[SkillRegistry] scanning user dir: ${userDir.toString()}`);
+			const userDir = URI.joinPath(this.environmentService.userRoamingDataHome, 'sarosis', 'skills-library');
+			this.logService.info(`[SkillRegistry] scanning user skills-library: ${userDir.toString()}`);
 			await this._scanFolder(userDir, 'user');
 			this.logService.info(`[SkillRegistry] after user scan: ${this._skills.size} skills`);
 		} catch (err) {
-			this.logService.debug('[SkillRegistry] no user skills dir', err);
-		}
-
-		// 工作区目录 — 每个 agent 实例独立 skills 目录
-		try {
-			const wsFolders = this.workspaceService.getWorkspace().folders;
-			this.logService.info(`[SkillRegistry] workspace folders count: ${wsFolders.length}`);
-			for (const f of wsFolders) {
-				if (agentId) {
-					// 指定 agent 时，只加载该 agent 的 skills
-					await this._scanAgentSkills(f.uri, agentId);
-				} else {
-					// 不指定 agent 时，加载所有 agent 的 skills
-					await this._scanAllAgentSkills(f.uri);
-				}
-			}
-			this.logService.info(`[SkillRegistry] after workspace scan: ${this._skills.size} skills`);
-		} catch (err) {
-			this.logService.debug('[SkillRegistry] no workspace skills', err);
+			this.logService.debug('[SkillRegistry] no user skills-library dir', err);
 		}
 
 		// 运行时注入的 skill 永远胜出
@@ -620,23 +530,25 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	}
 
 	/**
-	 * Fire a batch synced event with all current workspace skill IDs.
+	 * Fire a batch synced event with all current user skill IDs.
 	 * This triggers external consumers (like knot-cli sync) to do a full
 	 * reconciliation of their skill mirror directories.
+	 *
+	 * Note: Skills are now stored only in user global directory (~/.sarosis/skills-library/),
+	 * so we fire event with user skill IDs only.
 	 */
 	private _fireBatchSyncedEvent(): void {
-		const wsFolders = this.workspaceService.getWorkspace().folders;
-		if (wsFolders.length === 0) { return; }
-
-		const workspacePath = wsFolders[0].uri.fsPath;
-		const workspaceSkillIds = [...this._skills.values()]
-			.filter(s => s.source === 'workspace')
+		const userSkillIds = [...this._skills.values()]
+			.filter(s => s.source === 'user')
 			.map(s => s.id);
 
+		if (userSkillIds.length === 0) { return; }
+
+		// Use empty workspacePath to indicate this is a user-global event
 		const payload: ISkillBatchLifecyclePayload = {
-			workspacePath,
+			workspacePath: '',
 			agentId: '',
-			skillIds: workspaceSkillIds,
+			skillIds: userSkillIds,
 			timestamp: new Date().toISOString(),
 		};
 
@@ -664,7 +576,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		this.logService.info(`[SkillRegistry] _loadBuiltins: ${bundledCount}/${BUNDLED_SKILLS.length} bundled skills loaded (${BUNDLED_SKILLS.length - bundledCount} skipped as duplicates)`);
 	}
 
-	private async _scanFolder(dir: URI, source: 'user' | 'workspace'): Promise<void> {
+	private async _scanFolder(dir: URI, source: 'user'): Promise<void> {
 		let stat: IFileStat;
 		try {
 			stat = await this.fileService.resolve(dir);
@@ -699,46 +611,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
 	}
 
-	/**
-	 * 扫描指定 agent 实例目录下的 skills：
-	 * `<workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/<id>/SKILL.md`
-	 */
-	private async _scanAgentSkills(workspaceUri: URI, targetAgentId: string): Promise<void> {
-		// 从 IAgentStudioService 获取 Employee 信息，解析 agentDir
-		const employee = await this.studioService.getEmployee(targetAgentId);
-		if (!employee?.agentDir || !employee.workspaceId) { return; }
-
-		const workspace = await this.studioService.getWorkspace(employee.workspaceId);
-		if (!workspace?.path) { return; }
-
-		const skillsDir = URI.joinPath(
-			URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir, SKILL_DIR_NAME,
-		);
-		await this._scanFolder(skillsDir, 'workspace');
-	}
-
-	/**
-	 * 扫描工作区中所有 agent 实例的 skills 目录。
-	 * 遍历 `.sarosisworkspace/agents/` 下每个子目录的 `skills/` 子目录。
-	 */
-	private async _scanAllAgentSkills(workspaceUri: URI): Promise<void> {
-		const agentsDir = URI.joinPath(workspaceUri, WORKSPACE_DATA_DIR, AGENTS_DIR);
-		let agentsStat: IFileStat;
-		try {
-			agentsStat = await this.fileService.resolve(agentsDir);
-		} catch {
-			return; // .sarosisworkspace/agents/ 不存在
-		}
-		if (!agentsStat.isDirectory || !agentsStat.children) { return; }
-
-		for (const agentEntry of agentsStat.children) {
-			if (!agentEntry.isDirectory) { continue; }
-			const skillsDir = URI.joinPath(agentEntry.resource, SKILL_DIR_NAME);
-			await this._scanFolder(skillsDir, 'workspace');
-		}
-	}
-
-	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'workspace'): ISkillDefinition | undefined {
+	private _parseSkillFile(folder: URI, text: string, source: 'user'): ISkillDefinition | undefined {
 		const { meta, body } = parseFrontmatter(text);
 		const name = typeof meta.name === 'string' ? meta.name : undefined;
 		if (!name) {
@@ -773,32 +646,5 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			'',
 			skill.prompt,
 		].filter(Boolean).join('\n');
-	}
-
-	/**
-	 * 将 ISkillDefinition 序列化为标准 SKILL.md 格式（YAML frontmatter + body），
-	 * 用于采纳到 agent 实例目录。
-	 */
-	private _renderSkillMdContent(def: ISkillDefinition): string {
-		const lines: string[] = ['---'];
-		lines.push(`name: ${def.name}`);
-		if (def.description) {
-			lines.push(`description: ${def.description}`);
-		}
-		lines.push(`activation: ${def.activation}`);
-		if (def.match && def.match.length > 0) {
-			lines.push(`match: [${def.match.join(', ')}]`);
-		}
-		if (def.category) {
-			lines.push(`category: ${def.category}`);
-		}
-		if (def.recommendedTools && def.recommendedTools.length > 0) {
-			lines.push(`recommended_tools: [${def.recommendedTools.join(', ')}]`);
-		}
-		lines.push('---');
-		lines.push('');
-		lines.push(def.prompt);
-		lines.push('');
-		return lines.join('\n');
 	}
 }

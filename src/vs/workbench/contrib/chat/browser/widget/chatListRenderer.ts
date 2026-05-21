@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import * as dom from "../../../../../base/browser/dom.js";
 import { renderFormattedText } from "../../../../../base/browser/formattedTextRenderer.js";
 import { StandardKeyboardEvent } from "../../../../../base/browser/keyboardEvent.js";
@@ -302,8 +304,7 @@ function upvoteAnimationSettingToEnum(
 
 export class ChatListItemRenderer
 	extends Disposable
-	implements ITreeRenderer<ChatTreeItem, FuzzyScore, IChatListItemTemplate>
-{
+	implements ITreeRenderer<ChatTreeItem, FuzzyScore, IChatListItemTemplate> {
 	static readonly ID = "item";
 
 	private readonly codeBlocksByResponseId = new Map<
@@ -1150,7 +1151,7 @@ export class ChatListItemRenderer
 			.bindTo(templateData.contextKeyService)
 			.set(
 				isRequestVM(element) &&
-					this.viewModel?.model.getRequests()[0]?.id === element.id,
+				this.viewModel?.model.getRequests()[0]?.id === element.id,
 			);
 		ChatContextKeys.isPendingRequest
 			.bindTo(templateData.contextKeyService)
@@ -1222,15 +1223,15 @@ export class ChatListItemRenderer
 		templateData.rowContainer.classList.toggle(
 			"show-detail-progress",
 			isResponseVM(element) &&
-				!element.isComplete &&
-				!element.progressMessages.length &&
-				!progressMessageAtBottomOfResponse,
+			!element.isComplete &&
+			!element.progressMessages.length &&
+			!progressMessageAtBottomOfResponse,
 		);
 		templateData.rowContainer.classList.toggle(
 			"chat-progress-reservable",
 			isResponseVM(element) &&
-				!element.isComplete &&
-				!!progressMessageAtBottomOfResponse,
+			!element.isComplete &&
+			!!progressMessageAtBottomOfResponse,
 		);
 
 		// Toggle show-checkmarks class at the container level for the accessibility setting,
@@ -1266,14 +1267,14 @@ export class ChatListItemRenderer
 		templateData.username.classList.toggle(
 			"hidden",
 			element.username === COPILOT_USERNAME ||
-				this.environmentService.isSessionsWindow ||
-				isSystemInitiatedRequest,
+			this.environmentService.isSessionsWindow ||
+			isSystemInitiatedRequest,
 		);
 		templateData.avatarContainer.classList.toggle(
 			"hidden",
 			element.username === COPILOT_USERNAME ||
-				this.environmentService.isSessionsWindow ||
-				isSystemInitiatedRequest,
+			this.environmentService.isSessionsWindow ||
+			isSystemInitiatedRequest,
 		);
 
 		this.hoverHidden(templateData.requestHover);
@@ -1295,9 +1296,9 @@ export class ChatListItemRenderer
 		templateData.checkpointContainer.classList.toggle(
 			"hidden",
 			isResponseVM(element) ||
-				isPendingRequest ||
-				isSystemInitiatedRequest ||
-				!checkpointEnabled,
+			isPendingRequest ||
+			isSystemInitiatedRequest ||
+			!checkpointEnabled,
 		);
 
 		// Force toolbars to synchronously re-evaluate after context key changes
@@ -1384,9 +1385,9 @@ export class ChatListItemRenderer
 		templateData.requestHover.classList.toggle(
 			"hidden",
 			(!!this.viewModel?.editing && !editing) ||
-				isResponseVM(element) ||
-				!this.rendererOptions.editable ||
-				isSystemInitiatedRequest,
+			isResponseVM(element) ||
+			!this.rendererOptions.editable ||
+			isSystemInitiatedRequest,
 		);
 		templateData.requestHover.classList.toggle(
 			"expanded",
@@ -1581,10 +1582,10 @@ export class ChatListItemRenderer
 		if (element.agentOrSlashCommandDetected) {
 			const msg = element.slashCommand
 				? localize(
-						"usedAgentSlashCommand",
-						"used {0} [[(rerun without)]]",
-						`${chatSubcommandLeader}${element.slashCommand.name}`,
-					)
+					"usedAgentSlashCommand",
+					"used {0} [[(rerun without)]]",
+					`${chatSubcommandLeader}${element.slashCommand.name}`,
+				)
 				: localize("usedAgent", "[[(rerun without)]]");
 			dom.reset(
 				templateData.detail,
@@ -2175,7 +2176,7 @@ export class ChatListItemRenderer
 			if (sameKindCount > 1) {
 				const handle = dom.$(
 					".chat-pending-drag-handle" +
-						ThemeIcon.asCSSSelector(Codicon.gripper),
+					ThemeIcon.asCSSSelector(Codicon.gripper),
 				);
 				templateData.rowContainer.prepend(handle);
 				templateData.dragHandle = handle;
@@ -2219,9 +2220,9 @@ export class ChatListItemRenderer
 			const markdown = isChatFollowup(element.message)
 				? element.message.message
 				: this.markdownDecorationsRenderer.convertParsedRequestToMarkdown(
-						element.sessionResource,
-						element.message,
-					);
+					element.sessionResource,
+					element.message,
+				);
 			content = [
 				{ content: new MarkdownString(markdown), kind: "markdownContent" },
 			];
@@ -2901,8 +2902,8 @@ export class ChatListItemRenderer
 			renderData.lastRenderTime === 0
 				? 1
 				: renderData.renderedWordCount +
-					// Additional words to render beyond what's already rendered
-					Math.floor(((Date.now() - renderData.lastRenderTime) / 1000) * rate);
+				// Additional words to render beyond what's already rendered
+				Math.floor(((Date.now() - renderData.lastRenderTime) / 1000) * rate);
 
 		return {
 			numWordsToRender,
@@ -3596,7 +3597,7 @@ export class ChatListItemRenderer
 				ChatErrorLevel.Error,
 				new MarkdownString(
 					localize("renderFailMsg", "Failed to render content") +
-						`: ${toErrorMessage(err, false)}`,
+					`: ${toErrorMessage(err, false)}`,
 				),
 				content,
 				this.chatContentMarkdownRenderer,
@@ -3679,7 +3680,7 @@ export class ChatListItemRenderer
 		) => boolean,
 	): IChatContentPart {
 		return {
-			dispose: () => {},
+			dispose: () => { },
 			domNode: undefined,
 			hasSameContent: equals,
 		};
@@ -3964,10 +3965,10 @@ export class ChatListItemRenderer
 					return this.renderNoContent((other, followingContent, element) =>
 						lazilyCreatedPart
 							? lazilyCreatedPart.hasSameContent(
-									other,
-									followingContent,
-									element,
-								)
+								other,
+								followingContent,
+								element,
+							)
 							: toolInvocation.kind === other.kind,
 					);
 				}
@@ -4043,7 +4044,7 @@ export class ChatListItemRenderer
 								const state = toolInvocation.state.get();
 								if (
 									state.type ===
-										IChatToolInvocation.StateKind.WaitingForConfirmation &&
+									IChatToolInvocation.StateKind.WaitingForConfirmation &&
 									state.confirmationMessages?.title &&
 									toolInvocation.presentation !== "hidden" &&
 									toolInvocation.source.type !== "mcp" &&
@@ -4060,7 +4061,7 @@ export class ChatListItemRenderer
 						const state = toolInvocation.state.read(reader);
 						const isCarouselConfirmation =
 							state.type ===
-								IChatToolInvocation.StateKind.WaitingForConfirmation &&
+							IChatToolInvocation.StateKind.WaitingForConfirmation &&
 							!!state.confirmationMessages?.title &&
 							toolInvocation.presentation !== "hidden" &&
 							toolInvocation.source.type !== "mcp" &&
@@ -4186,7 +4187,7 @@ export class ChatListItemRenderer
 					const currentState = toolInvocation.state.read(reader);
 					if (
 						currentState.type ===
-							IChatToolInvocation.StateKind.WaitingForConfirmation &&
+						IChatToolInvocation.StateKind.WaitingForConfirmation &&
 						currentState.confirmationMessages?.title
 					) {
 						widget.inputPart.addToolToConfirmationCarousel(
@@ -4308,21 +4309,21 @@ export class ChatListItemRenderer
 			const hookTitle = hookPart.stopReason
 				? hookPart.toolDisplayName
 					? localize(
-							"hook.thinking.blocked",
-							"Blocked {0}",
-							hookPart.toolDisplayName,
-						)
+						"hook.thinking.blocked",
+						"Blocked {0}",
+						hookPart.toolDisplayName,
+					)
 					: localize("hook.thinking.blockedGeneric", "Blocked by hook")
 				: hookPart.toolDisplayName
 					? localize(
-							"hook.thinking.warning",
-							"Used {0}, but received a warning",
-							hookPart.toolDisplayName,
-						)
+						"hook.thinking.warning",
+						"Used {0}, but received a warning",
+						hookPart.toolDisplayName,
+					)
 					: localize(
-							"hook.thinking.warningGeneric",
-							"Tool call received a warning",
-						);
+						"hook.thinking.warningGeneric",
+						"Tool call received a warning",
+					);
 
 			let thinkingPart = this.getLastThinkingPart(templateData.renderedParts);
 			if (!thinkingPart) {
@@ -4465,8 +4466,8 @@ export class ChatListItemRenderer
 
 		const widget = isResponseVM(context.element)
 			? this.chatWidgetService.getWidgetBySessionResource(
-					context.element.sessionResource,
-				)
+				context.element.sessionResource,
+			)
 			: undefined;
 		const shouldAutoFocus = widget ? widget.getInput() === "" : true;
 		const responseId = isResponseVM(context.element)
@@ -4564,9 +4565,9 @@ export class ChatListItemRenderer
 		const part = isEditing
 			? undefined
 			: widget?.input.renderQuestionCarousel(carousel, context, {
-					shouldAutoFocus,
-					onSubmit: async (answers) => handleSubmit(answers, part!),
-				});
+				shouldAutoFocus,
+				onSubmit: async (answers) => handleSubmit(answers, part!),
+			});
 
 		// If we couldn't render in the input part, fall back to inline rendering
 		if (!part) {
@@ -4668,16 +4669,16 @@ export class ChatListItemRenderer
 		const alertMessage =
 			questionCount === 1
 				? localize(
-						"chat.questionCarouselAlertOne",
-						"Chat input required (1 question): {0}",
-						stringQuestion,
-					)
+					"chat.questionCarouselAlertOne",
+					"Chat input required (1 question): {0}",
+					stringQuestion,
+				)
 				: localize(
-						"chat.questionCarouselAlertMany",
-						"Chat input required ({0} questions): {1}",
-						questionCount,
-						stringQuestion,
-					);
+					"chat.questionCarouselAlertMany",
+					"Chat input required ({0} questions): {1}",
+					questionCount,
+					stringQuestion,
+				);
 		this.accessibilityService.alert(alertMessage);
 		if (stableKey) {
 			this._notifiedQuestionCarousels.add(stableKey);
@@ -4687,14 +4688,14 @@ export class ChatListItemRenderer
 		const signalMessage =
 			questionCount === 1
 				? localize(
-						"chat.questionCarouselSignalOne",
-						"Chat needs your input (1 question).",
-					)
+					"chat.questionCarouselSignalOne",
+					"Chat needs your input (1 question).",
+				)
 				: localize(
-						"chat.questionCarouselSignalMany",
-						"Chat needs your input ({0} questions).",
-						questionCount,
-					);
+					"chat.questionCarouselSignalMany",
+					"Chat needs your input ({0} questions).",
+					questionCount,
+				);
 		this.accessibilitySignalService.playSignal(
 			AccessibilitySignal.chatUserActionRequired,
 			{ allowManyInParallel: true, customAlertMessage: signalMessage },
@@ -4710,8 +4711,8 @@ export class ChatListItemRenderer
 	): IChatContentPart {
 		const widget = isResponseVM(context.element)
 			? this.chatWidgetService.getWidgetBySessionResource(
-					context.element.sessionResource,
-				)
+				context.element.sessionResource,
+			)
 			: undefined;
 		const responseId = isResponseVM(context.element)
 			? context.element.requestId
@@ -4839,8 +4840,8 @@ export class ChatListItemRenderer
 		const dockedPart = isEditing
 			? undefined
 			: widget?.input.renderPlanReview(review, context, {
-					onSubmit: handleSubmit,
-				});
+				onSubmit: handleSubmit,
+			});
 
 		// If we couldn't dock (no widget, editing, etc.), fall back to inline rendering.
 		if (!dockedPart) {
@@ -5199,7 +5200,7 @@ export class ChatListItemRenderer
 				if (item) {
 					const lastThinkingPart =
 						lastPart instanceof ChatThinkingContentPart &&
-						lastPart.getIsActive()
+							lastPart.getIsActive()
 							? lastPart
 							: undefined;
 					if (lastThinkingPart) {

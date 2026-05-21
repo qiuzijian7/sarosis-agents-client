@@ -393,16 +393,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				`[AgentStudio] Backfilled default skills [${defaults.join(', ')}] into ${updated.length} employee(s) in ${key}`
 			);
 
-			// Also materialise SKILL.md for the newly-added skills on disk so
-			// `_scanAgentSkills` picks them up next time SkillRegistry reloads.
-			for (const employee of updated) {
-				if (!employee.agentDir) { continue; }
-				try {
-					await this._syncAgentSkillsDir(dataDirUri, employee, employee.skills || []);
-				} catch (err) {
-					this.logService.debug(`[AgentStudio] backfill SKILL.md failed for ${employee.agentDir}: ${err instanceof Error ? err.message : String(err)}`);
-				}
-			}
 
 			// Notify the UI so it re-fetches the employee list with the new
 			// skill entries (the previously-cached zustand state is otherwise
@@ -507,17 +497,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
 
 		// ─── Skills directory sync ───────────────────────────────────────
-		// If the update includes a skills change, sync the skills directory
-		// on disk and fire skill-lifecycle events.
+		// If the update includes a skills change, fire skill-lifecycle events.
 		const updated = employees[index];
 		if (data.skills !== undefined) {
 			const newSkills = updated.skills ?? [];
 			const newSkillIds = new Set(newSkills.map(s => s.id));
-
-			// Sync skills directory on disk (add missing, leave extras)
-			if (updated.agentDir) {
-				await this._syncAgentSkillsDir(dirUri, updated, newSkills);
-			}
 
 			// Fire lifecycle events for added / removed skills
 			for (const skill of newSkills) {
@@ -1198,6 +1182,25 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	// ─── Agent Instance Import / Export ─────────────────────────────────────────
 
+	/**
+	 * 检查 agent 的技能依赖是否缺失。
+	 * @param employee Agent 实例
+	 * @returns 缺失的技能 ID 列表
+	 */
+	async checkSkillDependencies(employee: Employee): Promise<string[]> {
+		const missingSkills: string[] = [];
+		const skillIds = employee.skills || [];
+
+		for (const skillId of skillIds) {
+			const skill = this.skillRegistry.getSkill(skillId);
+			if (!skill) {
+				missingSkills.push(skillId);
+			}
+		}
+
+		return missingSkills;
+	}
+
 	async exportEmployee(id: string): Promise<AgentExportData> {
 		const employee = await this.getEmployee(id);
 		if (!employee) {
@@ -1494,7 +1497,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				slug: employee.agentDir,
 				model: modelSection,
 				customPrompt: employee.customPrompt || '',
-				skills: (employee.skills || []).map(s => s.name),
+				skills: (employee.skills || []),
 				presetId: employee.presetId,
 				memory: { enabled: true },
 				tools: ['filesystem', 'search'],
@@ -1526,9 +1529,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			const sessionsDir = URI.joinPath(agentDirUri, 'sessions');
 			await this._ensureDir(sessionsDir);
 
-			// 4) Create skills subdirectory and populate with SKILL.md files
-			await this._createAgentSkillsDir(agentDirUri, employee);
-
 			this.logService.info(`[AgentStudio] Created agent instance directory: ${agentDirUri.toString()}`);
 		} catch (err) {
 			this.logService.error(`[AgentStudio] Failed to create agent instance directory for: ${employee.agentDir}`, err);
@@ -1549,48 +1549,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			// File doesn't exist — write it
 			await this.fileService.writeFile(fileUri, VSBuffer.fromString(content));
 		}
-	}
-
-	/**
-	 * Create the `skills/` subdirectory inside the agent instance dir and
-	 * populate it with one `<skill-id>/SKILL.md` per configured skill.
-	 *
-	 * For each skill on the employee:
-	 *   1. Look up the full `ISkillDefinition` from the SkillRegistry.
-	 *   2. If found, serialise it as a standard SKILL.md (YAML frontmatter + prompt body).
-	 *   3. If the skill is not in the registry (e.g. a custom tag), write a
-	 *      minimal placeholder SKILL.md so the folder is still useful.
-	 *
-	 * Existing SKILL.md files are **not overwritten** (same policy as bootstrap files).
-	 */
-	private async _createAgentSkillsDir(agentDirUri: URI, employee: Employee): Promise<void> {
-		const skills = employee.skills;
-		if (!skills || skills.length === 0) { return; }
-
-		const skillsDirUri = URI.joinPath(agentDirUri, 'skills');
-		await this._ensureDir(skillsDirUri);
-
-		for (const empSkill of skills) {
-			const skillId = empSkill.id;
-			// Sanitise id for use as a directory name
-			const dirName = skillId.replace(/[^a-zA-Z0-9_-]/g, '-');
-			const skillSubDir = URI.joinPath(skillsDirUri, dirName);
-			await this._ensureDir(skillSubDir);
-
-			// Look up the full definition from the registry
-			const definition = this.skillRegistry.getSkill(skillId);
-			const content = definition
-				? this._renderSkillMd(definition)
-				: this._renderSkillMdFromRef(empSkill);
-
-			// Write SKILL.md (don't overwrite existing)
-			await this._writeBootstrapFile(skillSubDir, 'SKILL.md', content);
-		}
-
-		this.logService.info(`[AgentStudio] Created skills directory with ${skills.length} skill(s) for agent: ${employee.agentDir}`);
-
-		// Fire batch skill-sync lifecycle event
-		this._fireSkillBatchLifecycle(employee, skills.map(s => s.id));
 	}
 
 	/**

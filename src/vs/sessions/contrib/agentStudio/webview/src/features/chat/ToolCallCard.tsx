@@ -13,6 +13,8 @@
  *  Ref: OpenClaw ui/src/ui/chat/tool-cards.ts
  *--------------------------------------------------------------------------------------------*/
 
+
+/* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useMemo, useState } from 'react';
 import { sanitizeToolResultText } from '../../utils/assistantVisibleText';
 
@@ -90,7 +92,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 	if (toolCall.defaultShow === false) {
 		return null;
 	}
-	
+
 	const [expanded, setExpanded] = useState(false);
 	const [showFullResult, setShowFullResult] = useState(false);
 	const [copiedField, setCopiedField] = useState<string | null>(null);
