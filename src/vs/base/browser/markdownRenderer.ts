@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 /* eslint-disable local/code-no-unexternalized-strings */
+/* eslint-disable no-restricted-syntax */
 
 import { onUnexpectedError } from "../common/errors.js";
 import {
@@ -317,7 +318,6 @@ export function renderMarkdown(
 				return;
 			}
 			const renderedElements = new Map(tuples);
-			// eslint-disable-next-line no-restricted-syntax
 			const placeholderElements =
 				outElement.querySelectorAll<HTMLDivElement>(`div[data-code]`);
 			for (const placeholderElement of placeholderElements) {
@@ -332,7 +332,6 @@ export function renderMarkdown(
 		});
 	} else if (syncCodeBlocks.length > 0) {
 		const renderedElements = new Map(syncCodeBlocks);
-		// eslint-disable-next-line no-restricted-syntax
 		const placeholderElements =
 			outElement.querySelectorAll<HTMLDivElement>(`div[data-code]`);
 		for (const placeholderElement of placeholderElements) {
@@ -427,7 +426,7 @@ function rewriteRenderedLinks(
 					// absolute or relative local path, or file: uri
 					href = resolveWithBaseUri(URI.from(markdown.baseUri), href);
 				}
-			} catch (err) {}
+			} catch (err) { }
 
 			el.setAttribute("src", massageHref(markdown, href, true));
 
@@ -1277,3 +1276,4 @@ function completeTable(tokens: marked.Token[]): marked.Token[] | undefined {
 
 	return undefined;
 }
+
