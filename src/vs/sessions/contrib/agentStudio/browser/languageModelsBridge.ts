@@ -96,10 +96,28 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 	}
 
 	getAuthStatus(): ModelAuthStatus {
-		// Provider extensions own their own auth flow; if any model exists for this vendor,
-		// we consider it authenticated for selection purposes.
+		// LM vendors are registered by extensions via vscode.lm.registerLanguageModelChatProvider.
+		// Their model list is populated asynchronously (selectLanguageModels resolves after the
+		// extension activates).  During startup, _collectVendorModels() may return empty even
+		// though the vendor IS registered — it just hasn't resolved its models yet.
+		//
+		// Policy:
+		//   - If we have models → Authenticated (fully ready)
+		//   - If the vendor is known to ILanguageModelsService (either via extension point
+		//     declaration or because it was previously seen) → Validating (pending resolution)
+		//   - Only return NotConfigured if the vendor truly disappeared
 		const hasModels = this._collectVendorModels().length > 0;
-		return hasModels ? ModelAuthStatus.Authenticated : ModelAuthStatus.NotConfigured;
+		if (hasModels) {
+			return ModelAuthStatus.Authenticated;
+		}
+		// Check whether the vendor still exists in the LM service registry.
+		// If it does, the models are probably still being resolved asynchronously.
+		for (const v of this._lmService.getVendors()) {
+			if (v.vendor === this.vendor) {
+				return ModelAuthStatus.Validating;
+			}
+		}
+		return ModelAuthStatus.NotConfigured;
 	}
 
 	async listModels(): Promise<IModelInfo[]> {
@@ -231,6 +249,8 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			yield { type: 'error', error: `Model ${modelId} not found in vendor ${this.vendor}` };
 			return;
 		}
+
+		this._logService.info(`[LMBridge] chat() called — vendor=${this.vendor} model=${modelId}`);
 
 		const lmMessages = this._toLanguageModelMessages(messages, options);
 		const cts = new CancellationTokenSource();

@@ -16,21 +16,20 @@
  * picker shows "Knot" with one model per configured agent — no main-repo coupling.
  */
 
-import * as vscode from 'vscode';
-import * as cp from 'child_process';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
+import * as vscode from "vscode";
+import * as cp from "child_process";
+import * as os from "os";
+import * as path from "path";
+import * as fs from "fs";
 
-const VENDOR = 'knot';
-const OUTPUT_NAME = 'Knot AG-UI';
+const VENDOR = "knot";
 
 /**
  * Separator used inside `LanguageModelChatInformation.id` to encode (agentId, modelName) pairs.
  * Chosen because Knot agent ids are hex strings and Knot model names use only alphanumerics +
  * hyphens — `::` is collision-free for both.
  */
-const ID_SEP = '::';
+const ID_SEP = "::";
 
 interface KnotAgentConfig {
 	readonly id: string;
@@ -40,11 +39,12 @@ interface KnotAgentConfig {
 }
 
 class KnotChatProvider implements vscode.LanguageModelChatProvider {
-
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
 
-	constructor(private readonly _output: vscode.OutputChannel) { }
+	constructor(
+		private readonly _globalState: any, // vscode.GlobalState not available in this API version
+	) {}
 
 	dispose(): void {
 		this._onDidChange.dispose();
@@ -61,7 +61,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		const agents = this._getAgents();
 
 		if (agents.length === 0) {
-			this._output.appendLine('[Knot] provideLanguageModelChatInformation -> no agents configured. Run "Knot: Open Settings" and add at least one agent under "knot.agents".');
+			console.log(
+				'[Knot] provideLanguageModelChatInformation -> no agents configured. Run "Knot: Open Settings" and add at least one agent under "knot.agents".',
+			);
 			return [];
 		}
 
@@ -80,15 +82,15 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		for (const agent of agents) {
 			const agentName = agent.name?.trim() ? agent.name.trim() : agent.id;
 			const models = (Array.isArray(agent.models) ? agent.models : [])
-				.map(s => (typeof s === 'string' ? s.trim() : ''))
-				.filter(s => s.length > 0);
+				.map((s) => (typeof s === "string" ? s.trim() : ""))
+				.filter((s) => s.length > 0);
 
 			if (models.length === 0) {
 				result.push({
 					id: agent.id,
-					name: 'default',
+					name: "default",
 					family: agent.id,
-					version: '1',
+					version: "1",
 					maxInputTokens: 32_000,
 					maxOutputTokens: 4_096,
 					tooltip: agentName,
@@ -103,7 +105,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 					id: `${agent.id}${ID_SEP}${model}`,
 					name: model,
 					family: agent.id,
-					version: '1',
+					version: "1",
 					maxInputTokens: 32_000,
 					maxOutputTokens: 4_096,
 					tooltip: agentName,
@@ -113,7 +115,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			}
 		}
 
-		this._output.appendLine(`[Knot] provideLanguageModelChatInformation -> ${result.length} (agent×model) entries from ${agents.length} agent(s)`);
+		console.log(
+			`[Knot] provideLanguageModelChatInformation -> ${result.length} (agent×model) entries from ${agents.length} agent(s)`,
+		);
 		return result;
 	}
 
@@ -125,13 +129,15 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		token: vscode.CancellationToken,
 	): Promise<void> {
 		// 从 settings 读取配置（与 sarosis-webui 一致）
-		const config = vscode.workspace.getConfiguration('knot');
-		const endpoint = config.get<string>('endpoint') ?? 'https://knot.woa.com';
-		const token_ = config.get<string>('token') ?? '';
-		const user = config.get<string>('user') ?? '';
+		const config = vscode.workspace.getConfiguration("knot");
+		const endpoint = config.get<string>("endpoint") ?? "https://knot.woa.com";
+		const token_ = config.get<string>("token") ?? "";
+		const user = config.get<string>("user") ?? "";
 
 		if (!token_) {
-			throw new Error('Knot token is not configured. Run command "Knot: Open Settings" and set "knot.token".');
+			throw new Error(
+				'Knot token is not configured. Run command "Knot: Open Settings" and set "knot.token".',
+			);
 		}
 
 		// Decode the (agentId, modelName) tuple that provideLanguageModelChatInformation encoded.
@@ -139,47 +145,106 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		// is the model name selected by the user from the picker.
 		const agentId = model.family || model.id;
 		const sepIdx = model.id.indexOf(ID_SEP);
-		const selectedModel = sepIdx > -1 ? model.id.slice(sepIdx + ID_SEP.length) : undefined;
+		const selectedModel =
+			sepIdx > -1 ? model.id.slice(sepIdx + ID_SEP.length) : undefined;
+
+		console.log(
+			`[Knot] provideLanguageModelChatResponse: agentId=${agentId}, selectedModel=${selectedModel}`,
+		);
 
 		// 正确的 Knot AG-UI API URL（与 sarosis-webui 一致）
 		const url = `${endpoint}/apigw/api/v1/agents/agui/${encodeURIComponent(agentId)}`;
 
 		// 提取用户消息（取最后一条用户消息）
-		const lastUser = [...messages].reverse().find(m => m.role === vscode.LanguageModelChatMessageRole.User);
-		const userMessage = lastUser ? this._extractText(lastUser) : '';
+		const lastUser = [...messages]
+			.reverse()
+			.find((m) => m.role === vscode.LanguageModelChatMessageRole.User);
+		const userMessage = lastUser ? this._extractText(lastUser) : "";
 
-		// 提取系统提示（如有）
-		const systemMsgs: vscode.LanguageModelChatRequestMessage[] = [];
-		const systemPrompt = systemMsgs.map(m => this._extractText(m)).join('\n').trim() || undefined;
+		console.log(`[Knot] userMessage length=${userMessage.length}`);
+
+		// 提取系统提示（从 messages 中过滤系统角色消息）
+		// LanguageModelChatMessageRole.System = 3（在 proposed API languageModelSystem 中定义）
+		const systemMsgs = messages.filter((m) => (m.role as number) === 3);
+		const baseSystemPrompt =
+			systemMsgs
+				.map((m) => this._extractText(m))
+				.join("\n")
+				.trim() || undefined;
+
+		console.log(
+			`[Knot] baseSystemPrompt length=${baseSystemPrompt?.length ?? 0}`,
+		);
+
+		// 注入 agent 实例的技能清单到系统提示（让 knot agent 知道可用技能及其路径）
+		const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		console.log(`[Knot] workspacePath=${workspacePath ?? "null"}`);
+
+		let systemPrompt = baseSystemPrompt;
+		if (workspacePath && agentId) {
+			console.log(`[Knot] Calling _getAgentSkillsManifest...`);
+			const skillsManifest = await this._getAgentSkillsManifest(
+				workspacePath,
+				agentId,
+			);
+			console.log(
+				`[Knot] _getAgentSkillsManifest returned, length=${skillsManifest.length}`,
+			);
+			if (skillsManifest) {
+				systemPrompt = systemPrompt
+					? `${systemPrompt}\n\n---\n\n${skillsManifest}`
+					: skillsManifest;
+			}
+		} else {
+			console.log(
+				`[Knot] Skipped _getAgentSkillsManifest: workspacePath=${workspacePath}, agentId=${agentId}`,
+			);
+		}
 
 		// 构建正确的请求 body（与 sarosis-webui 的 knot_agui.py 一致）
+		// 获取 agent_client_uuid（仅从 knot-cli 获取真实 connection_uuid，不可用时省略该字段）
+		const agentClientUuid = await this._tryGetConnectionUuid();
+		const chatExtra: Record<string, unknown> = {};
+		if (agentClientUuid) {
+			chatExtra.agent_client_uuid = agentClientUuid;
+		}
+		console.log(
+			`[Knot] agent_client_uuid: ${agentClientUuid ?? "<not available>"}`,
+		);
 		const bodyObj: Record<string, unknown> = {
 			input: {
 				message: userMessage,
-				conversation_id: "",  // TODO: 从 session 中恢复 conversation_id
+				conversation_id: "", // TODO: 从 session 中恢复 conversation_id
 				stream: true,
 				enable_web_search: false,
-				chat_extra: {},
+				chat_extra: chatExtra,
 			},
 		};
 		if (selectedModel) {
 			(bodyObj.input as Record<string, unknown>).model = selectedModel;
 		}
 		if (systemPrompt) {
-			((bodyObj.input as Record<string, unknown>).chat_extra as Record<string, unknown>).system_prompt = systemPrompt;
+			(
+				(bodyObj.input as Record<string, unknown>).chat_extra as Record<
+					string,
+					unknown
+				>
+			).system_prompt = systemPrompt;
 		}
 		const body = JSON.stringify(bodyObj);
 
-		this._output.appendLine(`[Knot] -> ${url}  agent=${agentId}  model=${selectedModel ?? '<default>'}  msg_len=${userMessage.length}`);
+		console.log(
+			`[Knot] -> ${url}  agent=${agentId}  model=${selectedModel ?? "<default>"}  msg_len=${userMessage.length}`,
+		);
 
 		// 正确的 headers（与 sarosis-webui 一致）
 		const headers: Record<string, string> = {
-			'Content-Type': 'application/json',
-			'Accept': 'text/event-stream',
-			'x-knot-api-token': token_,
+			"Content-Type": "application/json",
+			Accept: "text/event-stream",
+			"x-knot-api-token": token_,
 		};
 		if (user) {
-			headers['x-knot-api-user'] = user;
+			headers["x-knot-api-user"] = user;
 		}
 
 		try {
@@ -188,7 +253,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			token.onCancellationRequested(() => controller.abort());
 
 			const response = await fetch(url, {
-				method: 'POST',
+				method: "POST",
 				headers,
 				body,
 				signal: controller.signal,
@@ -202,38 +267,46 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			// 解析 SSE 流（与 sarosis-webui 的 knot_agui.py 一致）
 			const reader = response.body?.getReader();
 			if (!reader) {
-				throw new Error('Knot response has no body stream');
+				throw new Error("Knot response has no body stream");
 			}
 
 			const decoder = new TextDecoder();
-			let buffer = '';
+			let buffer = "";
 
 			while (true) {
 				if (token.isCancellationRequested) {
 					break;
 				}
 				const { done, value } = await reader.read();
-				if (done) { break; }
-				
+				if (done) {
+					break;
+				}
+
 				buffer += decoder.decode(value, { stream: true });
 				let idx;
-				while ((idx = buffer.indexOf('\n')) !== -1) {
+				while ((idx = buffer.indexOf("\n")) !== -1) {
 					const line = buffer.slice(0, idx).trim();
 					buffer = buffer.slice(idx + 1);
 
-					if (!line || line.startsWith(':')) { continue; }
-					
+					if (!line || line.startsWith(":")) {
+						continue;
+					}
+
 					// 移除 "data:" 前缀（支持 "data:" 和 "data: "）
 					let rawData = line;
-					if (line.startsWith('data:')) {
+					if (line.startsWith("data:")) {
 						rawData = line.slice(5).trim();
 					}
-					if (line.startsWith('data: ')) {
+					if (line.startsWith("data: ")) {
 						rawData = line.slice(6).trim();
 					}
-					if (rawData === '[DONE]') { return; }
+					if (rawData === "[DONE]") {
+						return;
+					}
 
-					if (!rawData) { continue; }
+					if (!rawData) {
+						continue;
+					}
 
 					try {
 						const event = JSON.parse(rawData);
@@ -248,7 +321,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			}
 		} catch (err) {
 			if (token.isCancellationRequested) {
-				throw new Error('Cancelled');
+				throw new Error("Cancelled");
 			}
 			throw err instanceof Error ? err : new Error(String(err));
 		}
@@ -261,17 +334,51 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 	): Promise<number> {
 		// Heuristic fallback (~4 chars/token). Backends with proper tokenizer
 		// support can replace this with a real /tokenize call later.
-		const raw = typeof text === 'string' ? text : this._extractText(text);
+		const raw = typeof text === "string" ? text : this._extractText(text);
 		return Math.max(1, Math.ceil(raw.length / 4));
 	}
 
 	// ---- helpers -----------------------------------------------------------
 
+	/**
+	 * Try to obtain a real `connection_uuid` from knot-cli.
+	 * Returns `undefined` if knot-cli is not installed or the call fails —
+	 * in that case `agent_client_uuid` will NOT be sent, which is safe
+	 * because the backend only validates the UUID when it is present.
+	 */
+	private async _tryGetConnectionUuid(): Promise<string | undefined> {
+		// 1. Already have a real (non-local) value in globalState?
+		const existing = this._globalState.get("knot.connection_uuid") as
+			| string
+			| undefined;
+		if (existing && !existing.startsWith("local-")) {
+			return existing;
+		}
+
+		// 2. On-demand fetch from knot-cli
+		try {
+			const status = await getKnotClientStatus();
+			const uuid = status.connection_uuid;
+			await this._globalState.update("knot.connection_uuid", uuid);
+			console.log(`[Knot] on-demand fetch connection_uuid -> ${uuid}`);
+			return uuid;
+		} catch (err) {
+			console.log(
+				`[Knot] on-demand fetch connection_uuid failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+
+		// 3. No real UUID available — return undefined (agent_client_uuid will be omitted)
+		return undefined;
+	}
+
 	private _getAgents(): KnotAgentConfig[] {
-		const cfg = vscode.workspace.getConfiguration('knot');
-		const raw = cfg.get<KnotAgentConfig[]>('agents');
-		if (!Array.isArray(raw)) { return []; }
-		return raw.filter(a => a && typeof a.id === 'string' && a.id.length > 0);
+		const cfg = vscode.workspace.getConfiguration("knot");
+		const raw = cfg.get<KnotAgentConfig[]>("agents");
+		if (!Array.isArray(raw)) {
+			return [];
+		}
+		return raw.filter((a) => a && typeof a.id === "string" && a.id.length > 0);
 	}
 
 	private _extractText(msg: vscode.LanguageModelChatRequestMessage): string {
@@ -281,13 +388,17 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 				parts.push(part.value);
 			}
 		}
-		return parts.join('');
+		return parts.join("");
 	}
 
-	private _translateEvent(event: Record<string, unknown>): vscode.LanguageModelResponsePart | undefined {
-		const eventType = String(event.type ?? event.event_type ?? '');
+	private _translateEvent(
+		event: Record<string, unknown>,
+	): vscode.LanguageModelResponsePart | undefined {
+		const eventType = String(event.type ?? event.event_type ?? "");
 		if (!eventType) {
-			this._output.appendLine(`[Knot] _translateEvent: no type, keys=${Object.keys(event).join(',')}`);
+			console.log(
+				`[Knot] _translateEvent: no type, keys=${Object.keys(event).join(",")}`,
+			);
 			return undefined;
 		}
 
@@ -295,120 +406,284 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		const rawEvent = (event.rawEvent ?? {}) as Record<string, unknown>;
 
 		// 归一化事件类型：同时兼容 PascalCase 和 UPPER_SNAKE_CASE
-		const normalized = eventType.toUpperCase().replace(/-/g, '_');
+		const normalized = eventType.toUpperCase().replace(/-/g, "_");
 
 		// 从 rawEvent 中获取内容（AG-UI 协议标准位置）
-		let content: string = '';
+		let content: string = "";
 		if (rawEvent.content != null) {
 			content = String(rawEvent.content);
 		} else if (event.delta != null) {
 			content = String(event.delta);
 		}
 
-		this._output.appendLine(`[Knot] _translateEvent: type="${eventType}" normalized="${normalized}" content_len=${content.length}`);
-
 		switch (normalized) {
-			case 'TEXT_MESSAGE_CONTENT':
-			case 'TEXTMESSAGECONTENT':  // 防止 PascalCase 被意外处理
+			case "TEXT_MESSAGE_CONTENT":
+			case "TEXTMESSAGECONTENT": // 防止 PascalCase 被意外处理
 				if (content) {
 					return new vscode.LanguageModelTextPart(content);
 				}
 				return undefined;
-			case 'THINKING_TEXT_MESSAGE_CONTENT':
-			case 'THINKINGTEXTMESSAGECONTENT':
+			case "THINKING_TEXT_MESSAGE_CONTENT":
+			case "THINKINGTEXTMESSAGECONTENT":
 				// 思考内容：通过额外的标记返回（VS Code LM API 可能不支持思考事件）
 				// 暂时作为普通文本返回，前端会处理
 				if (content) {
 					return new vscode.LanguageModelTextPart(content);
 				}
 				return undefined;
-			case 'TOOL_CALL_START':
-			case 'TOOLCALLSTART':
+			case "TOOL_CALL_START":
+			case "TOOLCALLSTART":
 				// 工具调用开始：记录到日志，但不返回内容
-				const toolName = rawEvent.name ?? 'unknown_tool';
-				this._output.appendLine(`[Knot] Tool call started: ${toolName}`);
+				const toolName = rawEvent.name ?? "unknown_tool";
+				console.log(`[Knot] Tool call started: ${toolName}`);
 				return undefined;
-			case 'TOOL_CALL_ARGS':
-			case 'TOOLCALLARGS':
+			case "TOOL_CALL_ARGS":
+			case "TOOLCALLARGS":
 				// 工具参数：增量接收，不返回内容
 				return undefined;
-			case 'TOOL_CALL_END':
-			case 'TOOLCALLEND':
+			case "TOOL_CALL_END":
+			case "TOOLCALLEND":
 				// 工具调用结束
-				this._output.appendLine(`[Knot] Tool call ended`);
+				console.log(`[Knot] Tool call ended`);
 				return undefined;
-			case 'TEXT_MESSAGE_START':
-			case 'TEXTMESSAGESTART':
-			case 'TEXT_MESSAGE_END':
-			case 'TEXTMESSAGEEND':
-			case 'THINKING_TEXT_MESSAGE_START':
-			case 'THINKINGTEXTMESSAGESTART':
-			case 'THINKING_TEXT_MESSAGE_END':
-			case 'THINKINGTEXTMESSAGEEND':
+			case "TEXT_MESSAGE_START":
+			case "TEXTMESSAGESTART":
+			case "TEXT_MESSAGE_END":
+			case "TEXTMESSAGEEND":
+			case "THINKING_TEXT_MESSAGE_START":
+			case "THINKINGTEXTMESSAGESTART":
+			case "THINKING_TEXT_MESSAGE_END":
+			case "THINKINGTEXTMESSAGEEND":
 				// 生命周期事件：忽略
 				return undefined;
 			default:
-				this._output.appendLine(`[Knot] _translateEvent: unhandled type="${eventType}"`);
+				console.log(`[Knot] _translateEvent: unhandled type="${eventType}"`);
 				// 宽松处理：如果有 content 也尝试返回
-				if (content && content.length > 0 && content !== '{}') {
+				if (content && content.length > 0 && content !== "{}") {
 					return new vscode.LanguageModelTextPart(content);
 				}
 				return undefined;
 		}
 	}
+
+	/**
+	 * 读取 agent 实例配置的技能清单，生成注入到 system prompt 的文本。
+	 * 读取 `.sarosisworkspace/employees.json` 找到 agentDir，然后读取
+	 * `.sarosisworkspace/agents/<agentDir>/skills/` 目录下的技能。
+	 */
+	private async _getAgentSkillsManifest(
+		workspacePath: string,
+		agentId: string,
+	): Promise<string> {
+		try {
+			// 1. Read employees.json to find agentDir for agentId
+			const employeesPath = path.join(
+				workspacePath,
+				".sarosisworkspace",
+				"employees.json",
+			);
+			if (!fs.existsSync(employeesPath)) {
+				console.log(
+					`[Knot] _getAgentSkillsManifest: employees.json not found at ${employeesPath}`,
+				);
+				return "";
+			}
+
+			const employeesContent = fs.readFileSync(employeesPath, "utf-8");
+			const employees = JSON.parse(employeesContent) as Array<{
+				id: string;
+				agentDir: string;
+				[key: string]: unknown;
+			}>;
+			const employee = employees.find((e) => e.id === agentId);
+			if (!employee) {
+				console.log(
+					`[Knot] _getAgentSkillsManifest: agent ${agentId} not found in employees.json`,
+				);
+				return "";
+			}
+
+			const agentDir = employee.agentDir;
+			if (!agentDir) {
+				console.log(
+					`[Knot] _getAgentSkillsManifest: agent ${agentId} has no agentDir`,
+				);
+				return "";
+			}
+
+			// 2. Read .sarosisworkspace/agents/<agentDir>/skills/ to get skills
+			const skillsDir = path.join(
+				workspacePath,
+				".sarosisworkspace",
+				"agents",
+				agentDir,
+				"skills",
+			);
+			if (!fs.existsSync(skillsDir)) {
+				console.log(
+					`[Knot] _getAgentSkillsManifest: skills dir not found at ${skillsDir}`,
+				);
+				return "";
+			}
+
+			const skillDirs = fs
+				.readdirSync(skillsDir, { withFileTypes: true })
+				.filter((d) => d.isDirectory())
+				.map((d) => d.name);
+
+			if (skillDirs.length === 0) {
+				console.log(
+					`[Knot] _getAgentSkillsManifest: no skill directories found in ${skillsDir}`,
+				);
+				return "";
+			}
+
+			// 3. Format as <available_skills> with paths
+			const lines: string[] = [
+				"",
+				"## Skills",
+				"",
+				"Scan <available_skills> below. If one clearly applies to the user's task, use the `read_skill` tool with the skill id to load its full instructions, then follow them.",
+				"If several apply, choose the most specific. If none clearly apply, read none.",
+				"One skill at a time max. Never guess/fabricate skill content.",
+				"",
+				"<available_skills>",
+			];
+
+			for (const skillDir of skillDirs) {
+				const skillMdPath = path.join(skillsDir, skillDir, "SKILL.md");
+				let name = skillDir;
+				let description = "";
+				if (fs.existsSync(skillMdPath)) {
+					try {
+						const content = fs.readFileSync(skillMdPath, "utf-8");
+						// Extract frontmatter to get name and description
+						const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+						if (frontmatterMatch) {
+							const frontmatter = frontmatterMatch[1];
+							const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+							if (nameMatch) {
+								name = nameMatch[1].trim();
+							}
+							const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+							if (descMatch) {
+								description = descMatch[1].trim();
+							}
+						}
+					} catch {
+						// ignore
+					}
+				}
+
+				const skillPath = `.sarosisworkspace/agents/${agentDir}/skills/${skillDir}/`;
+				lines.push("  <skill>");
+				lines.push(`    <name>${name}</name>`);
+				lines.push(`    <description>${description}</description>`);
+				lines.push(`    <id>${skillDir}</id>`);
+				lines.push(`    <path>${skillPath}</path>`);
+				lines.push("  </skill>");
+			}
+
+			lines.push("</available_skills>");
+			lines.push("");
+			lines.push(`(${skillDirs.length} skills total)`);
+			lines.push("");
+
+			const result = lines.join("\n");
+			console.log(
+				`[Knot] _getAgentSkillsManifest: found ${skillDirs.length} skill(s), manifest length=${result.length}`,
+			);
+			return result;
+		} catch (err) {
+			console.log(
+				`[Knot] _getAgentSkillsManifest error: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return "";
+		}
+	}
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-	const output = vscode.window.createOutputChannel(OUTPUT_NAME);
-	context.subscriptions.push(output);
-
-	const provider = new KnotChatProvider(output);
+	const provider = new KnotChatProvider(context.globalState);
 	context.subscriptions.push(provider);
 
-	const registration = vscode.lm.registerLanguageModelChatProvider(VENDOR, provider);
+	const registration = vscode.lm.registerLanguageModelChatProvider(
+		VENDOR,
+		provider,
+	);
 	context.subscriptions.push(registration);
 
 	// Re-broadcast model list when the user edits knot.agents / token / endpoint.
-	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-		if (e.affectsConfiguration('knot')) {
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration("knot")) {
+				provider.notifyModelsChanged();
+			}
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("knot.openSettings", () => {
+			void vscode.commands.executeCommand(
+				"workbench.action.openSettings",
+				"@ext:sarosis.sarosis-knot-agui",
+			);
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand("knot.refreshAgents", () => {
 			provider.notifyModelsChanged();
-		}
-	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand('knot.openSettings', () => {
-		void vscode.commands.executeCommand('workbench.action.openSettings', '@ext:sarosis.sarosis-knot-agui');
-	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand('knot.refreshAgents', () => {
-		provider.notifyModelsChanged();
-		void vscode.window.showInformationMessage('Knot agent list refreshed.');
-	}));
+			void vscode.window.showInformationMessage("Knot agent list refreshed.");
+		}),
+	);
 
 	// ─── CLI lifecycle commands ──────────────────────────────────────────
-	context.subscriptions.push(vscode.commands.registerCommand('knot.checkCli', async (): Promise<KnotCliStatus> => {
-		const status = await detectKnotCli(output);
-		output.appendLine(`[Knot] knot.checkCli -> installed=${status.installed} version="${status.version ?? ''}" path="${status.path ?? ''}"`);
-		return status;
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.checkCli",
+			async (): Promise<KnotCliStatus> => {
+				const status = await detectKnotCli();
+				console.log(
+					`[Knot] knot.checkCli -> installed=${status.installed} version="${status.version ?? ""}" path="${status.path ?? ""}"`,
+				);
+				return status;
+			},
+		),
+	);
 
-	context.subscriptions.push(vscode.commands.registerCommand('knot.installCli', async (rawToken?: unknown): Promise<KnotInstallResult> => {
-		const token = typeof rawToken === 'string' && rawToken.trim().length > 0
-			? rawToken.trim()
-			: (vscode.workspace.getConfiguration('knot').get<string>('token') ?? '').trim();
-		if (!token) {
-			const msg = 'Knot token is empty. 请先在 Configuration 中填写并保存 Token，再点击安装。';
-			void vscode.window.showErrorMessage(msg);
-			return { ok: false, message: msg };
-		}
-		try {
-			await runKnotCliInstall(token, output);
-			return { ok: true, message: 'Install command sent to terminal. 请在终端中查看进度。' };
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			output.appendLine(`[Knot] install failed: ${msg}`);
-			return { ok: false, message: msg };
-		}
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.installCli",
+			async (rawToken?: unknown): Promise<KnotInstallResult> => {
+				const token =
+					typeof rawToken === "string" && rawToken.trim().length > 0
+						? rawToken.trim()
+						: (
+								vscode.workspace
+									.getConfiguration("knot")
+									.get<string>("token") ?? ""
+							).trim();
+				if (!token) {
+					const msg =
+						"Knot token is empty. 请先在 Configuration 中填写并保存 Token，再点击安装。";
+					void vscode.window.showErrorMessage(msg);
+					return { ok: false, message: msg };
+				}
+				try {
+					await runKnotCliInstall(token);
+					return {
+						ok: true,
+						message: "Install command sent to terminal. 请在终端中查看进度。",
+					};
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					console.log(`[Knot] install failed: ${msg}`);
+					return { ok: false, message: msg };
+				}
+			},
+		),
+	);
 
 	// ─── Workspace lifecycle bridge ──────────────────────────────────────
 	// Two halves:
@@ -419,96 +694,226 @@ export function activate(context: vscode.ExtensionContext): void {
 	//      Studio workspace is created / deleted. They merely guard on
 	//      "token configured + CLI installed" before delegating to (1).
 
-	context.subscriptions.push(vscode.commands.registerCommand('knot.workspace.list', async (): Promise<KnotWorkspaceCliResult> => {
-		return runKnotWorkspaceCli(['workspace', '--action', 'list'], output);
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.workspace.list",
+			async (): Promise<KnotWorkspaceCliResult> => {
+				return runKnotWorkspaceCli(["workspace", "--action", "list"]);
+			},
+		),
+	);
 
-	context.subscriptions.push(vscode.commands.registerCommand('knot.workspace.add', async (workspacePath?: unknown): Promise<KnotWorkspaceCliResult> => {
-		const p = normalizeWorkspacePath(workspacePath);
-		if (!p) {
-			return { ok: false, message: 'workspace path is empty' };
-		}
-		return runKnotWorkspaceCli(['workspace', '--action', 'add', '--path', p], output);
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.workspace.add",
+			async (workspacePath?: unknown): Promise<KnotWorkspaceCliResult> => {
+				const p = normalizeWorkspacePath(workspacePath);
+				if (!p) {
+					return { ok: false, message: "workspace path is empty" };
+				}
+				return runKnotWorkspaceCli([
+					"workspace",
+					"--action",
+					"add",
+					"--path",
+					p,
+				]);
+			},
+		),
+	);
 
-	context.subscriptions.push(vscode.commands.registerCommand('knot.workspace.remove', async (workspacePath?: unknown): Promise<KnotWorkspaceCliResult> => {
-		const p = normalizeWorkspacePath(workspacePath);
-		if (!p) {
-			return { ok: false, message: 'workspace path is empty' };
-		}
-		return runKnotWorkspaceCli(['workspace', '--action', 'remove', '--path', p], output);
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.workspace.remove",
+			async (workspacePath?: unknown): Promise<KnotWorkspaceCliResult> => {
+				const p = normalizeWorkspacePath(workspacePath);
+				if (!p) {
+					return { ok: false, message: "workspace path is empty" };
+				}
+				return runKnotWorkspaceCli([
+					"workspace",
+					"--action",
+					"remove",
+					"--path",
+					p,
+				]);
+			},
+		),
+	);
 
 	// Bridge command for IWorkspaceLifecycleService (Created event).
 	// Payload shape comes from src/vs/sessions/contrib/agentStudio/common/workspaceLifecycle.ts:
 	//   { id, name, path?, timestamp }
 	// We only act if (a) token is set, (b) CLI is installed, and (c) path is non-empty.
-	context.subscriptions.push(vscode.commands.registerCommand('knot.workspaceSync', async (payload?: unknown): Promise<KnotWorkspaceCliResult> => {
-		const ws = payload as { id?: string; name?: string; path?: string } | undefined;
-		const wsPath = normalizeWorkspacePath(ws?.path);
-		if (!wsPath) {
-			output.appendLine(`[Knot] workspaceSync skipped: empty path (workspace=${ws?.id ?? '?'} name=${ws?.name ?? '?'})`);
-			return { ok: false, skipped: true, message: 'workspace has no filesystem path' };
-		}
-		if (!isKnotConfigured()) {
-			output.appendLine(`[Knot] workspaceSync skipped: knot.token is empty`);
-			return { ok: false, skipped: true, message: 'knot.token is not configured' };
-		}
-		const cliStatus = await detectKnotCli(output);
-		if (!cliStatus.installed) {
-			output.appendLine(`[Knot] workspaceSync skipped: knot-cli is not installed`);
-			return { ok: false, skipped: true, message: 'knot-cli is not installed' };
-		}
-		output.appendLine(`[Knot] workspaceSync -> add path="${wsPath}" (workspace=${ws?.id ?? '?'} name=${ws?.name ?? '?'})`);
-		return runKnotWorkspaceCli(['workspace', '--action', 'add', '--path', wsPath], output);
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.workspaceSync",
+			async (payload?: unknown): Promise<KnotWorkspaceCliResult> => {
+				const ws = payload as
+					| { id?: string; name?: string; path?: string }
+					| undefined;
+				const wsPath = normalizeWorkspacePath(ws?.path);
+				if (!wsPath) {
+					console.log(
+						`[Knot] workspaceSync skipped: empty path (workspace=${ws?.id ?? "?"} name=${ws?.name ?? "?"})`,
+					);
+					return {
+						ok: false,
+						skipped: true,
+						message: "workspace has no filesystem path",
+					};
+				}
+				if (!isKnotConfigured()) {
+					console.log(`[Knot] workspaceSync skipped: knot.token is empty`);
+					return {
+						ok: false,
+						skipped: true,
+						message: "knot.token is not configured",
+					};
+				}
+				const cliStatus = await detectKnotCli();
+				if (!cliStatus.installed) {
+					console.log(
+						`[Knot] workspaceSync skipped: knot-cli is not installed`,
+					);
+					return {
+						ok: false,
+						skipped: true,
+						message: "knot-cli is not installed",
+					};
+				}
+				console.log(
+					`[Knot] workspaceSync -> add path="${wsPath}" (workspace=${ws?.id ?? "?"} name=${ws?.name ?? "?"})`,
+				);
+				const result = await runKnotWorkspaceCli([
+					"workspace",
+					"--action",
+					"add",
+					"--path",
+					wsPath,
+				]);
+				if (result.ok) {
+					// After successfully adding workspace, fetch connection_uuid
+					try {
+						const clientStatus = await getKnotClientStatus();
+						context.globalState.update(
+							"knot.connection_uuid",
+							clientStatus.connection_uuid,
+						);
+						console.log(
+							`[Knot] workspaceSync: updated connection_uuid=${clientStatus.connection_uuid}`,
+						);
+					} catch (err) {
+						console.log(
+							`[Knot] workspaceSync: failed to get connection_uuid: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				}
+				return result;
+			},
+		),
+	);
 
 	// Bridge command for IWorkspaceLifecycleService (Deleted event).
-	context.subscriptions.push(vscode.commands.registerCommand('knot.workspaceUnsync', async (payload?: unknown): Promise<KnotWorkspaceCliResult> => {
-		const ws = payload as { id?: string; name?: string; path?: string } | undefined;
-		const wsPath = normalizeWorkspacePath(ws?.path);
-		if (!wsPath) {
-			output.appendLine(`[Knot] workspaceUnsync skipped: empty path (workspace=${ws?.id ?? '?'})`);
-			return { ok: false, skipped: true, message: 'workspace has no filesystem path' };
-		}
-		if (!isKnotConfigured()) {
-			output.appendLine(`[Knot] workspaceUnsync skipped: knot.token is empty`);
-			return { ok: false, skipped: true, message: 'knot.token is not configured' };
-		}
-		const cliStatus = await detectKnotCli(output);
-		if (!cliStatus.installed) {
-			output.appendLine(`[Knot] workspaceUnsync skipped: knot-cli is not installed`);
-			return { ok: false, skipped: true, message: 'knot-cli is not installed' };
-		}
-		output.appendLine(`[Knot] workspaceUnsync -> remove path="${wsPath}" (workspace=${ws?.id ?? '?'})`);
-		return runKnotWorkspaceCli(['workspace', '--action', 'remove', '--path', wsPath], output);
-	}));
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			"knot.workspaceUnsync",
+			async (payload?: unknown): Promise<KnotWorkspaceCliResult> => {
+				const ws = payload as
+					| { id?: string; name?: string; path?: string }
+					| undefined;
+				const wsPath = normalizeWorkspacePath(ws?.path);
+				if (!wsPath) {
+					console.log(
+						`[Knot] workspaceUnsync skipped: empty path (workspace=${ws?.id ?? "?"})`,
+					);
+					return {
+						ok: false,
+						skipped: true,
+						message: "workspace has no filesystem path",
+					};
+				}
+				if (!isKnotConfigured()) {
+					console.log(`[Knot] workspaceUnsync skipped: knot.token is empty`);
+					return {
+						ok: false,
+						skipped: true,
+						message: "knot.token is not configured",
+					};
+				}
+				const cliStatus = await detectKnotCli();
+				if (!cliStatus.installed) {
+					console.log(
+						`[Knot] workspaceUnsync skipped: knot-cli is not installed`,
+					);
+					return {
+						ok: false,
+						skipped: true,
+						message: "knot-cli is not installed",
+					};
+				}
+				console.log(
+					`[Knot] workspaceUnsync -> remove path="${wsPath}" (workspace=${ws?.id ?? "?"})`,
+				);
+				return runKnotWorkspaceCli([
+					"workspace",
+					"--action",
+					"remove",
+					"--path",
+					wsPath,
+				]);
+			},
+		),
+	);
 
 	// Self-register into the host's lifecycle bus. Best-effort: silently no-op
 	// when the host command is not available (e.g. running inside vanilla VS Code
 	// without the agentStudio contribution).
-	void registerWorkspaceLifecycleHook(output);
-
-	// ─── Skill lifecycle bridge ──────────────────────────────────────────
-	// When knot is configured (token + CLI), agent skill changes trigger a
-	// sync of all workspace skills to the `.agents/skills/` directory so that
-	// knot-cli can discover them (knot uses `.agents/` as its skill root,
-	// whereas the host uses `.sarosisworkspace/agents/<dir>/skills/`).
-
-	context.subscriptions.push(vscode.commands.registerCommand('knot.skillSync', async (payload?: unknown): Promise<KnotSkillSyncResult> => {
-		return runKnotSkillSync(payload, output);
-	}));
-
-	// Register the skill lifecycle hook so the host's ISkillLifecycleService
-	// routes skill events to `knot.skillSync`.
-	void registerSkillLifecycleHook(output);
+	void registerWorkspaceLifecycleHook();
 
 	// Auto-check CLI on activation (best-effort, fire-and-forget).
-	void detectKnotCli(output).then(status => {
-		output.appendLine(`[Knot] auto-check on activate -> installed=${status.installed} version="${status.version ?? ''}"`);
+	void detectKnotCli().then((status) => {
+		console.log(
+			`[Knot] auto-check on activate -> installed=${status.installed} version="${status.version ?? ""}"`,
+		);
 	});
 
-	output.appendLine(`[Knot] activate() — registered chat provider, vendor="${VENDOR}"`);
+	// Clean up any stale `local-` prefixed UUIDs that were saved by a previous version.
+	// These are not valid Knot connection_uuids and cause 400 errors when sent to the backend.
+	const staleUuid = context.globalState.get("knot.connection_uuid") as
+		| string
+		| undefined;
+	if (staleUuid && staleUuid.startsWith("local-")) {
+		void context.globalState.update("knot.connection_uuid", undefined);
+		console.log(`[Knot] cleaned up stale local- prefixed UUID: ${staleUuid}`);
+	}
+
+	// Auto-fetch connection_uuid on activation (best-effort, fire-and-forget).
+	// This saves the connection_uuid to globalState so it can be used in chat_extra.agent_client_uuid.
+	// If knot-cli is not available, we simply skip — agent_client_uuid will be omitted from requests.
+	void getKnotClientStatus()
+		.then(async (clientStatus) => {
+			await context.globalState.update(
+				"knot.connection_uuid",
+				clientStatus.connection_uuid,
+			);
+			console.log(
+				`[Knot] auto-fetch connection_uuid on activate -> ${clientStatus.connection_uuid}`,
+			);
+			console.log(`[Knot] connection_uuid: ${clientStatus.connection_uuid}`);
+		})
+		.catch((err) => {
+			console.log(
+				`[Knot] auto-fetch connection_uuid failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			console.log(
+				`[Knot] connection_uuid: <not available> (${err instanceof Error ? err.message : String(err)})`,
+			);
+		});
+
+	console.log(
+		`[Knot] activate() — registered chat provider, vendor="${VENDOR}"`,
+	);
 }
 
 export function deactivate(): void {
@@ -517,16 +922,22 @@ export function deactivate(): void {
 	// is unavailable. We can't await here per VS Code API contract, so we
 	// just kick off the calls.
 	try {
-		void vscode.commands.executeCommand('agentStudio.workspaceLifecycle.unregister', 'knot-agui');
+		void vscode.commands.executeCommand(
+			"agentStudio.workspaceLifecycle.unregister",
+			"knot-agui",
+		);
 	} catch {
 		// ignore — host may already be torn down
 	}
 	try {
-		void vscode.commands.executeCommand('agentStudio.skillLifecycle.unregister', 'knot-agui-skill');
+		void vscode.commands.executeCommand(
+			"agentStudio.skillLifecycle.unregister",
+			"knot-agui-skill",
+		);
 	} catch {
 		// ignore
 	}
-	// context.subscriptions disposes the rest of our resources (output, terminal, commands).
+	// context.subscriptions disposes the rest of our resources (terminal, commands).
 }
 
 // ─── Knot CLI: detection & install helpers ─────────────────────────────────
@@ -548,9 +959,9 @@ interface KnotInstallResult {
  *   1. `knot-cli --version` on PATH (works if user already opened a fresh shell after install).
  *   2. Fall back to common install locations (`~/.knot/bin/knot-cli[.exe]`, `/usr/local/bin/knot-cli`).
  */
-async function detectKnotCli(output: vscode.OutputChannel): Promise<KnotCliStatus> {
+async function detectKnotCli(): Promise<KnotCliStatus> {
 	// 1) PATH lookup
-	const onPath = await tryRunVersion('knot-cli');
+	const onPath = await tryRunVersion("knot-cli");
 	if (onPath.installed) {
 		return onPath;
 	}
@@ -559,7 +970,9 @@ async function detectKnotCli(output: vscode.OutputChannel): Promise<KnotCliStatu
 	const candidates = getCommonCliCandidates();
 	for (const candidate of candidates) {
 		try {
-			if (!fs.existsSync(candidate)) { continue; }
+			if (!fs.existsSync(candidate)) {
+				continue;
+			}
 			const result = await tryRunVersion(candidate);
 			if (result.installed) {
 				return { ...result, path: candidate };
@@ -569,53 +982,69 @@ async function detectKnotCli(output: vscode.OutputChannel): Promise<KnotCliStatu
 		}
 	}
 
-	output.appendLine(`[Knot] detectKnotCli: not found. Candidates checked: ${candidates.join(', ')}`);
+	console.log(
+		`[Knot] detectKnotCli: not found. Candidates checked: ${candidates.join(", ")}`,
+	);
 	return { installed: false, error: onPath.error };
 }
 
 function getCommonCliCandidates(): string[] {
 	const home = os.homedir();
 	const list: string[] = [];
-	if (process.platform === 'win32') {
-		list.push(path.join(home, '.knot', 'bin', 'knot-cli.exe'));
-		list.push(path.join(home, '.knot', 'bin', 'knot-cli'));
+	if (process.platform === "win32") {
+		list.push(path.join(home, ".knot", "bin", "knot-cli.exe"));
+		list.push(path.join(home, ".knot", "bin", "knot-cli"));
 	} else {
-		list.push(path.join(home, '.knot', 'bin', 'knot-cli'));
-		list.push('/usr/local/bin/knot-cli');
-		list.push('/opt/homebrew/bin/knot-cli');
+		list.push(path.join(home, ".knot", "bin", "knot-cli"));
+		list.push("/usr/local/bin/knot-cli");
+		list.push("/opt/homebrew/bin/knot-cli");
 	}
 	return list;
 }
 
 function tryRunVersion(executable: string): Promise<KnotCliStatus> {
-	return new Promise<KnotCliStatus>(resolve => {
+	return new Promise<KnotCliStatus>((resolve) => {
 		try {
-			const child = cp.spawn(executable, ['--version'], {
+			const child = cp.spawn(executable, ["--version"], {
 				windowsHide: true,
 				shell: false,
 			});
-			let stdout = '';
-			let stderr = '';
+			let stdout = "";
+			let stderr = "";
 			let settled = false;
 			const timer = setTimeout(() => {
-				if (settled) { return; }
+				if (settled) {
+					return;
+				}
 				settled = true;
-				try { child.kill(); } catch { /* noop */ }
-				resolve({ installed: false, error: 'timeout' });
+				try {
+					child.kill();
+				} catch {
+					/* noop */
+				}
+				resolve({ installed: false, error: "timeout" });
 			}, 5000);
 
-			child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-			child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+			child.stdout.on("data", (d: Buffer) => {
+				stdout += d.toString();
+			});
+			child.stderr.on("data", (d: Buffer) => {
+				stderr += d.toString();
+			});
 
-			child.on('error', err => {
-				if (settled) { return; }
+			child.on("error", (err) => {
+				if (settled) {
+					return;
+				}
 				settled = true;
 				clearTimeout(timer);
 				resolve({ installed: false, error: err.message });
 			});
 
-			child.on('close', code => {
-				if (settled) { return; }
+			child.on("close", (code) => {
+				if (settled) {
+					return;
+				}
 				settled = true;
 				clearTimeout(timer);
 				if (code === 0) {
@@ -623,11 +1052,17 @@ function tryRunVersion(executable: string): Promise<KnotCliStatus> {
 					const version = text.split(/\r?\n/)[0]?.trim();
 					resolve({ installed: true, version, path: executable });
 				} else {
-					resolve({ installed: false, error: stderr.trim() || `exit code ${code}` });
+					resolve({
+						installed: false,
+						error: stderr.trim() || `exit code ${code}`,
+					});
 				}
 			});
 		} catch (err) {
-			resolve({ installed: false, error: err instanceof Error ? err.message : String(err) });
+			resolve({
+				installed: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 	});
 }
@@ -647,12 +1082,12 @@ function tryRunVersion(executable: string): Promise<KnotCliStatus> {
  */
 function getAppInstallDir(): string {
 	const execDir = path.dirname(process.execPath);
-	if (process.platform === 'darwin') {
+	if (process.platform === "darwin") {
 		// On macOS the execPath is inside Foo.app/Contents/MacOS/ — go up 3 levels
 		// to reach the directory *containing* the .app bundle.
-		const contentsIdx = execDir.indexOf('.app/Contents');
+		const contentsIdx = execDir.indexOf(".app/Contents");
 		if (contentsIdx !== -1) {
-			return path.dirname(execDir.substring(0, contentsIdx + '.app'.length));
+			return path.dirname(execDir.substring(0, contentsIdx + ".app".length));
 		}
 	}
 	// Windows / Linux: the executable sits at the top-level install dir.
@@ -671,11 +1106,13 @@ function getAppInstallDir(): string {
  * (derived from `process.execPath`) so knot stores agent data relative to
  * the running IDE instance rather than `$HOME`.
  */
-async function runKnotCliInstall(token: string, output: vscode.OutputChannel): Promise<void> {
-	const isWindows = process.platform === 'win32';
+async function runKnotCliInstall(token: string): Promise<void> {
+	const isWindows = process.platform === "win32";
 	const workspaceDir = getAppInstallDir();
 
-	output.appendLine(`[Knot] runKnotCliInstall: platform=${process.platform} workspace="${workspaceDir}"`);
+	console.log(
+		`[Knot] runKnotCliInstall: platform=${process.platform} workspace="${workspaceDir}"`,
+	);
 
 	if (isWindows) {
 		// PowerShell-based install (no Git Bash dependency).
@@ -687,11 +1124,11 @@ async function runKnotCliInstall(token: string, output: vscode.OutputChannel): P
 			`Invoke-WebRequest -Uri 'https://mirrors.tencent.com/repository/generic/knot-cli/install.ps1' -OutFile "$env:TEMP\\install-agent.ps1"`,
 			`Unblock-File "$env:TEMP\\install-agent.ps1"`,
 			`PowerShell -ExecutionPolicy Bypass -File "$env:TEMP\\install-agent.ps1" --token ${psQuote(token)} --origin knot --workspace ${psQuote(workspaceDir)}`,
-		].join('; ');
+		].join("; ");
 
 		const terminal = vscode.window.createTerminal({
-			name: 'Knot CLI Install',
-			shellPath: 'powershell.exe',
+			name: "Knot CLI Install",
+			shellPath: "powershell.exe",
 			// Use -NoExit so the terminal stays open after the install finishes
 			// allowing the user to see results.
 		});
@@ -703,17 +1140,22 @@ async function runKnotCliInstall(token: string, output: vscode.OutputChannel): P
 			`curl -fsSL 'https://mirrors.tencent.com/repository/generic/knot-cli/install.sh' ` +
 			`| bash -s -- --token ${shellQuote(token)} --origin knot --workspace ${shellQuote(workspaceDir)}`;
 
-		const terminal = vscode.window.createTerminal({ name: 'Knot CLI Install' });
+		const terminal = vscode.window.createTerminal({ name: "Knot CLI Install" });
 		terminal.show(true);
 		terminal.sendText(installCmd, true);
 		terminal.sendText('echo ""', true);
-		terminal.sendText('echo "[Knot] 如安装成功，请执行: source ~/.bashrc 或新开终端使用 knot-cli。"', true);
+		terminal.sendText(
+			'echo "[Knot] 如安装成功，请执行: source ~/.bashrc 或新开终端使用 knot-cli。"',
+			true,
+		);
 	}
 
-	output.appendLine(`[Knot] runKnotCliInstall: launched in terminal`);
+	console.log(`[Knot] runKnotCliInstall: launched in terminal`);
 
 	// Re-detect after a short delay so the UI can reflect status updates.
-	setTimeout(() => { void vscode.commands.executeCommand('knot.checkCli'); }, 8000);
+	setTimeout(() => {
+		void vscode.commands.executeCommand("knot.checkCli");
+	}, 8000);
 }
 
 /**
@@ -740,16 +1182,44 @@ interface KnotWorkspaceCliResult {
 	readonly message?: string;
 }
 
+/** Knot CLI client-status 命令的输出格式 */
+interface KnotClientStatus {
+	readonly arch: string;
+	readonly branch: string;
+	readonly command: string;
+	readonly commit: string;
+	readonly connection_uuid: string;
+	readonly host_user: string;
+	readonly host_user_group: string;
+	readonly instance_id: string;
+	readonly ip: string;
+	readonly last_active_time: string;
+	readonly last_ask_time: string;
+	readonly origin: string;
+	readonly os: string;
+	readonly path: readonly string[];
+	readonly pid: number;
+	readonly server_port: number;
+	readonly status: string;
+	readonly user: string;
+	readonly uuid: string;
+	readonly version: string;
+}
+
 function isKnotConfigured(): boolean {
-	const cfg = vscode.workspace.getConfiguration('knot');
-	const token = (cfg.get<string>('token') ?? '').trim();
+	const cfg = vscode.workspace.getConfiguration("knot");
+	const token = (cfg.get<string>("token") ?? "").trim();
 	return token.length > 0;
 }
 
 function normalizeWorkspacePath(raw: unknown): string {
-	if (typeof raw !== 'string') { return ''; }
+	if (typeof raw !== "string") {
+		return "";
+	}
 	const trimmed = raw.trim();
-	if (!trimmed) { return ''; }
+	if (!trimmed) {
+		return "";
+	}
 	// Best-effort normalization — keep absolute paths as-is. We do NOT resolve
 	// relative paths because the CLI itself accepts them and the host has
 	// already canonicalized via VS Code workspace folder.
@@ -764,15 +1234,17 @@ function normalizeWorkspacePath(raw: unknown): string {
  * sub-commands work even if `knot-cli` was just installed and is not yet on
  * PATH (e.g. before the user runs `source ~/.bashrc`).
  */
-async function runKnotWorkspaceCli(args: string[], output: vscode.OutputChannel): Promise<KnotWorkspaceCliResult> {
-	const cliStatus = await detectKnotCli(output);
+async function runKnotWorkspaceCli(
+	args: string[],
+): Promise<KnotWorkspaceCliResult> {
+	const cliStatus = await detectKnotCli();
 	if (!cliStatus.installed) {
-		return { ok: false, skipped: true, message: 'knot-cli is not installed' };
+		return { ok: false, skipped: true, message: "knot-cli is not installed" };
 	}
-	const executable = cliStatus.path ?? 'knot-cli';
-	output.appendLine(`[Knot] runKnotWorkspaceCli: ${executable} ${args.join(' ')}`);
+	const executable = cliStatus.path ?? "knot-cli";
+	console.log(`[Knot] runKnotWorkspaceCli: ${executable} ${args.join(" ")}`);
 
-	return new Promise<KnotWorkspaceCliResult>(resolve => {
+	return new Promise<KnotWorkspaceCliResult>((resolve) => {
 		try {
 			// Inherit env so the CLI picks up KNOT_TOKEN / config file like a
 			// normal shell invocation. We also forward HOME / USERPROFILE
@@ -783,46 +1255,176 @@ async function runKnotWorkspaceCli(args: string[], output: vscode.OutputChannel)
 				env: process.env,
 			});
 
-			let stdout = '';
-			let stderr = '';
+			let stdout = "";
+			let stderr = "";
 			let settled = false;
 			const timer = setTimeout(() => {
-				if (settled) { return; }
+				if (settled) {
+					return;
+				}
 				settled = true;
-				try { child.kill(); } catch { /* noop */ }
-				resolve({ ok: false, message: 'knot-cli call timed out after 30s', stdout, stderr });
+				try {
+					child.kill();
+				} catch {
+					/* noop */
+				}
+				resolve({
+					ok: false,
+					message: "knot-cli call timed out after 30s",
+					stdout,
+					stderr,
+				});
 			}, 30_000);
 
-			child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-			child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+			child.stdout.on("data", (d: Buffer) => {
+				stdout += d.toString();
+			});
+			child.stderr.on("data", (d: Buffer) => {
+				stderr += d.toString();
+			});
 
-			child.on('error', err => {
-				if (settled) { return; }
+			child.on("error", (err) => {
+				if (settled) {
+					return;
+				}
 				settled = true;
 				clearTimeout(timer);
-				output.appendLine(`[Knot] runKnotWorkspaceCli error: ${err.message}`);
+				console.log(`[Knot] runKnotWorkspaceCli error: ${err.message}`);
 				resolve({ ok: false, message: err.message, stdout, stderr });
 			});
 
-			child.on('close', code => {
-				if (settled) { return; }
+			child.on("close", (code) => {
+				if (settled) {
+					return;
+				}
 				settled = true;
 				clearTimeout(timer);
 				const ok = code === 0;
-				output.appendLine(`[Knot] runKnotWorkspaceCli exit=${code} stdout_len=${stdout.length} stderr_len=${stderr.length}`);
+				console.log(
+					`[Knot] runKnotWorkspaceCli exit=${code} stdout_len=${stdout.length} stderr_len=${stderr.length}`,
+				);
 				if (!ok && stderr.trim()) {
-					output.appendLine(`[Knot] runKnotWorkspaceCli stderr: ${stderr.trim()}`);
+					console.log(`[Knot] runKnotWorkspaceCli stderr: ${stderr.trim()}`);
 				}
 				resolve({
 					ok,
 					exitCode: code ?? undefined,
 					stdout,
 					stderr,
-					message: ok ? undefined : (stderr.trim() || `knot-cli exited with code ${code}`),
+					message: ok
+						? undefined
+						: stderr.trim() || `knot-cli exited with code ${code}`,
 				});
 			});
 		} catch (err) {
-			resolve({ ok: false, message: err instanceof Error ? err.message : String(err) });
+			resolve({
+				ok: false,
+				message: err instanceof Error ? err.message : String(err),
+			});
+		}
+	});
+}
+
+/**
+ * Run `knot-cli client-status` and parse the JSON output to get connection_uuid.
+ * Returns the parsed KnotClientStatus or throws an error.
+ */
+async function getKnotClientStatus(): Promise<KnotClientStatus> {
+	const cliStatus = await detectKnotCli();
+	if (!cliStatus.installed) {
+		throw new Error("knot-cli is not installed");
+	}
+	const executable = cliStatus.path ?? "knot-cli";
+	console.log(`[Knot] getKnotClientStatus: ${executable} client-status`);
+
+	return new Promise<KnotClientStatus>((resolve, reject) => {
+		try {
+			const child = cp.spawn(executable, ["client-status"], {
+				windowsHide: true,
+				shell: false,
+				env: process.env,
+			});
+
+			let stdout = "";
+			let stderr = "";
+			let settled = false;
+
+			const timer = setTimeout(() => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				try {
+					child.kill();
+				} catch {
+					/* noop */
+				}
+				reject(new Error(`knot-cli client-status timed out after 30s`));
+			}, 30_000);
+
+			child.stdout.on("data", (d: Buffer) => {
+				stdout += d.toString();
+			});
+			child.stderr.on("data", (d: Buffer) => {
+				stderr += d.toString();
+			});
+
+			child.on("error", (err) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timer);
+				reject(err);
+			});
+
+			child.on("close", (code) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timer);
+
+				if (code === 0) {
+					try {
+						// knot-cli may output a status prefix like "✅ success\n" before the JSON payload.
+						// Extract the JSON portion by finding the first '{' (or '[') and parsing from there.
+						const raw = stdout.trim();
+						const jsonStart = raw.indexOf("{");
+						const jsonStartAlt = raw.indexOf("[");
+						const firstJson =
+							jsonStart === -1
+								? jsonStartAlt
+								: jsonStartAlt === -1
+									? jsonStart
+									: Math.min(jsonStart, jsonStartAlt);
+						if (firstJson === -1) {
+							throw new Error(
+								`No JSON object found in output: ${raw.slice(0, 200)}`,
+							);
+						}
+						const status: KnotClientStatus = JSON.parse(raw.slice(firstJson));
+						console.log(
+							`[Knot] getKnotClientStatus: connection_uuid=${status.connection_uuid}`,
+						);
+						resolve(status);
+					} catch (parseErr) {
+						reject(
+							new Error(
+								`Failed to parse client-status output: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+							),
+						);
+					}
+				} else {
+					reject(
+						new Error(
+							`knot-cli client-status exited with code ${code}: ${stderr.trim()}`,
+						),
+					);
+				}
+			});
+		} catch (err) {
+			reject(err instanceof Error ? err : new Error(String(err)));
 		}
 	});
 }
@@ -837,169 +1439,29 @@ async function runKnotWorkspaceCli(args: string[], output: vscode.OutputChannel)
  * (e.g. running on stock VS Code), we silently no-op — the chat provider
  * still works, only the CLI workspace mirroring is disabled.
  */
-async function registerWorkspaceLifecycleHook(output: vscode.OutputChannel): Promise<void> {
+async function registerWorkspaceLifecycleHook(): Promise<void> {
 	try {
 		const allCommands = await vscode.commands.getCommands(true);
-		if (!allCommands.includes('agentStudio.workspaceLifecycle.register')) {
-			output.appendLine('[Knot] workspace lifecycle bus not available — skipping hook registration.');
+		if (!allCommands.includes("agentStudio.workspaceLifecycle.register")) {
+			console.log(
+				"[Knot] workspace lifecycle bus not available — skipping hook registration.",
+			);
 			return;
 		}
-		await vscode.commands.executeCommand('agentStudio.workspaceLifecycle.register', {
-			id: 'knot-agui',
-			onCreated: 'knot.workspaceSync',
-			onDeleted: 'knot.workspaceUnsync',
-		});
-		output.appendLine('[Knot] registered workspace lifecycle hook (id=knot-agui, onCreated=knot.workspaceSync, onDeleted=knot.workspaceUnsync)');
+		await vscode.commands.executeCommand(
+			"agentStudio.workspaceLifecycle.register",
+			{
+				id: "knot-agui",
+				onCreated: "knot.workspaceSync",
+				onDeleted: "knot.workspaceUnsync",
+			},
+		);
+		console.log(
+			"[Knot] registered workspace lifecycle hook (id=knot-agui, onCreated=knot.workspaceSync, onDeleted=knot.workspaceUnsync)",
+		);
 	} catch (err) {
-		output.appendLine(`[Knot] registerWorkspaceLifecycleHook failed: ${err instanceof Error ? err.message : String(err)}`);
-	}
-}
-
-// ─── Knot: Skill sync (.agents/skills/) ──────────────────────────────────
-
-interface KnotSkillSyncResult {
-	readonly ok: boolean;
-	readonly syncedCount?: number;
-	readonly removedCount?: number;
-	readonly message?: string;
-}
-
-/**
- * Sync all agent skills from the sarosis workspace agent directories
- * to the knot-compatible `.agents/skills/` directory.
- *
- * Knot CLI discovers skills from `.agents/skills/` (flat structure), while
- * the host stores them per-agent under the sarosis workspace agents directory.
- * This function mirrors the union of all agents' skills into the flat directory.
- *
- * Idempotent: removes stale entries that no longer correspond to any agent skill.
- */
-async function runKnotSkillSync(payload: unknown, output: vscode.OutputChannel): Promise<KnotSkillSyncResult> {
-	// Guard: only sync when knot is configured
-	if (!isKnotConfigured()) {
-		output.appendLine('[Knot] skillSync skipped: knot.token is empty');
-		return { ok: false, message: 'knot.token is not configured' };
-	}
-
-	// Extract workspace path from the payload (sent by ISkillLifecycleService)
-	const p = payload as { workspacePath?: string; workspaceId?: string; agentId?: string; agentDir?: string; skillIds?: string[]; skillId?: string } | undefined;
-	let workspacePath = p?.workspacePath?.trim();
-
-	// Fallback: try to infer from VS Code workspace folders
-	if (!workspacePath) {
-		const folders = vscode.workspace.workspaceFolders;
-		if (folders && folders.length > 0) {
-			workspacePath = folders[0].uri.fsPath;
-		}
-	}
-
-	if (!workspacePath) {
-		output.appendLine('[Knot] skillSync skipped: cannot determine workspace path');
-		return { ok: false, message: 'cannot determine workspace path' };
-	}
-
-	output.appendLine(`[Knot] skillSync: workspace="${workspacePath}" trigger=${p?.skillId ?? 'batch'}`);
-
-	try {
-		const sarosisSkillsDir = path.join(workspacePath, '.sarosisworkspace', 'agents');
-		const agentsSkillsDir = path.join(workspacePath, '.agents', 'skills');
-
-		// 1) Collect all unique skills across all agent instances
-		const skillMap = new Map<string, string>(); // skillDirName -> absolute path to SKILL.md
-
-		if (fs.existsSync(sarosisSkillsDir)) {
-			const agentDirs = fs.readdirSync(sarosisSkillsDir, { withFileTypes: true })
-				.filter(d => d.isDirectory());
-
-			for (const agentDir of agentDirs) {
-				const agentSkillsPath = path.join(sarosisSkillsDir, agentDir.name, 'skills');
-				if (!fs.existsSync(agentSkillsPath)) { continue; }
-
-				const skillDirs = fs.readdirSync(agentSkillsPath, { withFileTypes: true })
-					.filter(d => d.isDirectory());
-
-				for (const skillDir of skillDirs) {
-					const skillMdPath = path.join(agentSkillsPath, skillDir.name, 'SKILL.md');
-					if (fs.existsSync(skillMdPath)) {
-						// Later agents' skills overwrite earlier (same merge policy as the host)
-						skillMap.set(skillDir.name, skillMdPath);
-					}
-				}
-			}
-		}
-
-		// 2) Ensure .agents/skills/ directory exists
-		fs.mkdirSync(agentsSkillsDir, { recursive: true });
-
-		// 3) Write all discovered skills to .agents/skills/<id>/SKILL.md
-		let syncedCount = 0;
-		for (const [dirName, srcPath] of skillMap) {
-			const targetDir = path.join(agentsSkillsDir, dirName);
-			const targetFile = path.join(targetDir, 'SKILL.md');
-
-			fs.mkdirSync(targetDir, { recursive: true });
-
-			try {
-				const content = fs.readFileSync(srcPath, 'utf-8');
-				fs.writeFileSync(targetFile, content, 'utf-8');
-				syncedCount++;
-			} catch (err) {
-				output.appendLine(`[Knot] skillSync: failed to copy ${srcPath} -> ${targetFile}: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		}
-
-		// 4) Remove stale entries in .agents/skills/ that are not in skillMap
-		let removedCount = 0;
-		try {
-			const existingDirs = fs.readdirSync(agentsSkillsDir, { withFileTypes: true })
-				.filter(d => d.isDirectory());
-
-			for (const existing of existingDirs) {
-				if (!skillMap.has(existing.name)) {
-					const staleDir = path.join(agentsSkillsDir, existing.name);
-					try {
-						fs.rmSync(staleDir, { recursive: true, force: true });
-						removedCount++;
-						output.appendLine(`[Knot] skillSync: removed stale skill dir: ${existing.name}`);
-					} catch (err) {
-						output.appendLine(`[Knot] skillSync: failed to remove stale dir ${existing.name}: ${err instanceof Error ? err.message : String(err)}`);
-					}
-				}
-			}
-		} catch (err) {
-			output.appendLine(`[Knot] skillSync: failed to scan .agents/skills/ for cleanup: ${err instanceof Error ? err.message : String(err)}`);
-		}
-
-		output.appendLine(`[Knot] skillSync: done — synced=${syncedCount} removed=${removedCount}`);
-		return { ok: true, syncedCount, removedCount };
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		output.appendLine(`[Knot] skillSync failed: ${msg}`);
-		return { ok: false, message: msg };
-	}
-}
-
-/**
- * Register the `knot.skillSync` command as a skill lifecycle hook with the
- * host's `ISkillLifecycleService`. This allows the host to route skill
- * add/remove/sync events to our sync command, which mirrors skills to
- * `.agents/skills/` for knot-cli discovery.
- */
-async function registerSkillLifecycleHook(output: vscode.OutputChannel): Promise<void> {
-	try {
-		const allCommands = await vscode.commands.getCommands(true);
-		if (!allCommands.includes('agentStudio.skillLifecycle.register')) {
-			output.appendLine('[Knot] skill lifecycle bus not available — skipping hook registration.');
-			return;
-		}
-		await vscode.commands.executeCommand('agentStudio.skillLifecycle.register', {
-			id: 'knot-agui-skill',
-			onAdded: 'knot.skillSync',
-			onRemoved: 'knot.skillSync',
-			onSynced: 'knot.skillSync',
-		});
-		output.appendLine('[Knot] registered skill lifecycle hook (id=knot-agui-skill, all events -> knot.skillSync)');
-	} catch (err) {
-		output.appendLine(`[Knot] registerSkillLifecycleHook failed: ${err instanceof Error ? err.message : String(err)}`);
+		console.log(
+			`[Knot] registerWorkspaceLifecycleHook failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 }

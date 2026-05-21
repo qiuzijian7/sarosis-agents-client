@@ -839,7 +839,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			name: 'Knot AG-UI Model Provider',
 			version: '1.0.0',
 			module: '../../../../extensions/knot-agui/src/extension.js',
-			appResource: 'vs/../../extensions/knot-agui/dist/extension.js',
+			appResource: 'vs/../../extensions/knot-agui/out/extension.js',
 			capabilities: [{ capability: 'model', provider: 'knot-agui', priority: 100 }],
 		},
 		{

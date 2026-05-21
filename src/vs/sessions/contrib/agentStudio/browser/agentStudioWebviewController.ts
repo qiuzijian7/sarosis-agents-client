@@ -1130,14 +1130,29 @@ export class AgentStudioWebviewController extends Disposable {
 		this._register({ dispose: () => document.removeEventListener('agent-studio:active-workspace-changed', onActiveWorkspaceChanged) });
 
 		// Listen for Model Provider changes (auth status, model list, provider add/remove)
+		// Debounce: during startup, onDidChangeAvailableModels can fire many times
+		// in rapid succession as providers register, resolve models, and transition
+		// auth status.  Without a debounce, the webview may see a transient state
+		// where a registered provider (e.g. lm:knot) is temporarily absent from
+		// getModelProviders(), causing the ProviderStore to prematurely remove it
+		// and fall back to a different provider.  A short delay coalesces these
+		// rapid events so the webview only sees the stable final state.
+		let providersChangedTimer: ReturnType<typeof setTimeout> | undefined;
 		this._register(this.modelSelectorService.onDidChangeAvailableModels(() => {
 			this.logService.info('[AgentStudio] Model providers changed, notifying webview');
-			this._handleProvidersList().then(providers => {
-				this._sendEvent('providers.changed', { providers });
-			}).catch(err => {
-				this.logService.error('[AgentStudio] Failed to get providers for event', err);
-			});
+			if (providersChangedTimer) {
+				clearTimeout(providersChangedTimer);
+			}
+			providersChangedTimer = setTimeout(() => {
+				providersChangedTimer = undefined;
+				this._handleProvidersList().then(providers => {
+					this._sendEvent('providers.changed', { providers });
+				}).catch(err => {
+					this.logService.error('[AgentStudio] Failed to get providers for event', err);
+				});
+			}, 150);
 		}));
+		this._register({ dispose: () => { if (providersChangedTimer) { clearTimeout(providersChangedTimer); } } });
 
 		// Listen for VS Code native theme changes — push to WebView immediately
 		this._register(this.workbenchThemeService.onDidColorThemeChange((newTheme) => {

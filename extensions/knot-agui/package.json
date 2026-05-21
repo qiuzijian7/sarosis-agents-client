@@ -17,7 +17,7 @@
 	"activationEvents": [
 		"onStartupFinished"
 	],
-	"main": "./out/extension",
+	"main": "./out/extension.js",
 	"contributes": {
 		"chatPlugins": [
 			{
@@ -28,6 +28,13 @@
 			{
 				"vendor": "knot",
 				"displayName": "Knot"
+			}
+		],
+		"agentCapabilities": [
+			{
+				"capability": "model",
+				"provider": "knot-agui",
+				"priority": 100
 			}
 		],
 		"configuration": {
