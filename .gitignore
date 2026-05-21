@@ -175,3 +175,7 @@ hygiene-after-indent-fix.txt
 hygiene-after-prettier.txt
 hygiene-after-prettier2.txt
 current-hygiene-errors.txt
+hygiene-*.txt
+current-*.txt
+full-*-output.txt
+hygiene-check.txt
