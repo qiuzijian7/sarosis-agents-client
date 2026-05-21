@@ -39,20 +39,16 @@
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IAgentStudioService } from '../../../common/agentStudioService.js';
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { stringHash } from '../../../../base/common/hash.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
 	SkillActivation,
 } from '../common/skills.js';
 import { BUNDLED_SKILLS } from '../common/bundled-skills/bundledSkills.js';
-import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
+import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
 
 /**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
@@ -73,8 +69,6 @@ interface IRawFrontmatter {
 	recommended_tools?: unknown;
 	recommendedTools?: unknown;
 }
-
-const SKILL_DIR_NAME = 'skills';
 
 /**
  * 一组随产品发布的内置 skill。
@@ -392,20 +386,9 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private readonly _onDidChangeSkills = this._register(new Emitter<void>());
 	readonly onDidChangeSkills: Event<void> = this._onDidChangeSkills.event;
 
-	/** 懒加载 IAgentStudioService —— 避免构造时循环依赖 */
-	private _studioService: IAgentStudioService | undefined;
-	private get studioService(): IAgentStudioService {
-		if (!this._studioService) {
-			this._studioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
-		}
-		return this._studioService;
-	}
-
 	constructor(
 		@IFileService private readonly fileService: IFileService,
-		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
-		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ILogService private readonly logService: ILogService,
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
 	) {

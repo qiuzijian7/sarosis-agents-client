@@ -9,6 +9,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
+import { SkillMissingDialog } from '../agentEditor/SkillMissingDialog';
 
 interface EmployeeNodeData {
 	employee: Employee;
@@ -31,6 +32,7 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 	const [imgError, setImgError] = useState(false);
 	const [isEditingName, setIsEditingName] = useState(false);
 	const [editName, setEditName] = useState(employee.name);
+	const [showSkillMissingDialog, setShowSkillMissingDialog] = useState(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
 	const statusInfo = STATUS_MAP[employee.status] || STATUS_MAP.idle;
 
@@ -92,7 +94,7 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 		? employee.tokenUsage.total
 		: employee.tokenUsage || 0;
 
-	const skillIds = (employee.skills || []);
+		const skillIds = (employee.skills || []) as string[];
 
 	return (
 		<div
@@ -188,6 +190,24 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 					</button>
 				)}
 
+				{/* Skills status badge - top right */}
+				{employee.skillErrorCount !== undefined && employee.skillErrorCount > 0 && (
+					<div
+						className="employee-node-skill-error-badge"
+						title={`${employee.skillErrorCount} 个技能缺失 - 点击查看详情`}
+						onClick={(e) => {
+							e.stopPropagation();
+							setShowSkillMissingDialog(true);
+						}}
+						style={{ cursor: 'pointer' }}
+					>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+						</svg>
+						<span>{employee.skillErrorCount}</span>
+					</div>
+				)}
+
 				{/* Delete button - top right */}
 				<button
 					onClick={(e) => {
@@ -222,13 +242,13 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 			)}
 
 			{/* Bottom tags bar - Skills / Token */}
-			{(enabledSkills.length > 0 || totalTokens > 0) && (
+			{(skillIds.length > 0 || totalTokens > 0) && (
 				<div className="employee-node-tags">
-					{enabledSkills.slice(0, 2).map(skill => (
-						<span key={skill.id} className="employee-card-skill">{skill.name}</span>
+					{skillIds.slice(0, 2).map(skillId => (
+						<span key={skillId} className="employee-card-skill">{skillId}</span>
 					))}
-					{enabledSkills.length > 2 && (
-						<span className="employee-card-skill-more">+{enabledSkills.length - 2}</span>
+					{skillIds.length > 2 && (
+						<span className="employee-card-skill-more">+{skillIds.length - 2}</span>
 					)}
 					{totalTokens > 0 && (
 						<span className="employee-card-token">
@@ -239,6 +259,21 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 						</span>
 					)}
 				</div>
+			)}
+
+			{/* Skill Missing Dialog */}
+			{showSkillMissingDialog && employee.missingSkillIds && employee.missingSkillIds.length > 0 && (
+				<SkillMissingDialog
+					employeeId={employee.id}
+					missingSkillIds={employee.missingSkillIds}
+					onClose={() => setShowSkillMissingDialog(false)}
+					onIgnore={() => setShowSkillMissingDialog(false)}
+					onInstall={async (skillIds) => {
+						// TODO: Implement skill installation from library or marketplace
+						alert(`自动安装功能暂未实现。缺失的技能: ${skillIds.join(', ')}`);
+						throw new Error('自动安装功能暂未实现');
+					}}
+				/>
 			)}
 		</div>
 	);

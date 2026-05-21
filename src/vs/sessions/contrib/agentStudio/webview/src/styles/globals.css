@@ -841,6 +841,29 @@ html, body, #root {
   background-color: rgba(239, 68, 68, 0.15);
 }
 
+/* Skill error badge - top right */
+.employee-node-skill-error-badge {
+  position: absolute;
+  top: 6px;
+  right: 32px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.employee-node-skill-error-badge svg {
+  width: 12px;
+  height: 12px;
+}
+
 /* Tags bar at bottom */
 .employee-node-tags {
   display: flex;

@@ -677,7 +677,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 	const [promptDirty, setPromptDirty] = useState(false);
 
 	// ── Skills state (from employee.skills[]) ───────────────────────
-	const [skills, setSkills] = useState<{ id: string; name: string; enabled: boolean }[]>(
+	const [skills, setSkills] = useState<string[]>(
 		employee?.skills || [],
 	);
 

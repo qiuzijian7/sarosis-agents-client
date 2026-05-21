@@ -16,9 +16,9 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
 import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
 import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
-import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
+import { ISkillRegistry } from '../common/skills.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
-import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
+import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
@@ -114,33 +114,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			void this.skillLifecycleService.fireSkillEvent(event, payload).catch(err => {
 				this.logService.warn(
 					`[AgentStudioService] skill lifecycle "${event}" hook failed for agent=${employee.id} skill=${skillId}: `
-					+ `${err instanceof Error ? err.message : String(err)}`,
-				);
-			});
-		});
-	}
-
-	/**
-	 * Fire a batch skill-sync event after all skills for an agent have been
-	 * written to disk (e.g. on agent creation).
-	 */
-	private _fireSkillBatchLifecycle(employee: Employee, skillIds: readonly string[]): void {
-		const wsPath = employee.workspaceId
-			? (async () => { try { const ws = await this.getWorkspace(employee.workspaceId!); return ws?.path; } catch { return undefined; } })()
-			: Promise.resolve(undefined);
-
-		void wsPath.then(workspacePath => {
-			const payload: ISkillBatchLifecyclePayload = {
-				workspaceId: employee.workspaceId,
-				workspacePath,
-				agentId: employee.id,
-				agentDir: employee.agentDir,
-				skillIds,
-				timestamp: new Date().toISOString(),
-			};
-			void this.skillLifecycleService.fireBatchEvent(payload).catch(err => {
-				this.logService.warn(
-					`[AgentStudioService] skill batch lifecycle hook failed for agent=${employee.id}: `
 					+ `${err instanceof Error ? err.message : String(err)}`,
 				);
 			});
@@ -298,7 +271,34 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// existing agents that pre-date the default-skill bundling. Runs
 		// at most once per dataDir per session.
 		const migrated = await this._ensureDefaultSkillsInDir(dirUri, employees);
-		return migrated || employees;
+		const result = migrated || employees;
+		
+		// Calculate skillErrorCount and missingSkillIds for each employee
+		for (const emp of result) {
+			const { errorCount, missingSkillIds } = this._calculateSkillErrorInfo(emp);
+			emp.skillErrorCount = errorCount;
+			emp.missingSkillIds = missingSkillIds;
+		}
+		
+		return result;
+	}
+
+	/**
+	 * Calculate the number of skills that are missing from the skill registry
+	 * for a given employee, and return the list of missing skill IDs.
+	 */
+	private _calculateSkillErrorInfo(employee: Employee): { errorCount: number; missingSkillIds: string[] } {
+		const skillIds = employee.skills || [];
+		if (skillIds.length === 0) { return { errorCount: 0, missingSkillIds: [] }; }
+		
+		const missingSkillIds: string[] = [];
+		for (const skillId of skillIds) {
+			const skill = this.skillRegistry.getSkill(skillId);
+			if (!skill) {
+				missingSkillIds.push(skillId);
+			}
+		}
+		return { errorCount: missingSkillIds.length, missingSkillIds };
 	}
 
 	async getEmployee(id: string): Promise<Employee | undefined> {
@@ -339,10 +339,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 *   2. Detect employees missing any of `DEFAULT_AGENT_SKILL_IDS`. If
 	 *      everything is already present, return `null` so the caller uses
 	 *      the original list.
-	 *   3. Otherwise: build new entries via the live `SkillRegistry`,
-	 *      persist the updated employees.json, and materialise the
-	 *      corresponding `<agentDir>/skills/<id>/SKILL.md` files (without
-	 *      overwriting existing ones).
+	 *   3. Otherwise: add missing default skill IDs to the employee's skills array,
+	 *      persist the updated employees.json.
 	 *
 	 * Errors are swallowed (logged at warn level) — a failed migration
 	 * must NEVER prevent the original employee list from being returned,
@@ -365,7 +363,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		try {
 			const defaults = AgentStudioService.DEFAULT_AGENT_SKILL_IDS;
 			const needsMigration = employees.some(e => {
-				const have = new Set((e.skills || []).map(s => s.id));
+				const have = new Set(e.skills || []);
 				return defaults.some(id => !have.has(id));
 			});
 			if (!needsMigration) {
@@ -373,26 +371,16 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			}
 
 			const updated: Employee[] = employees.map(e => {
-				const have = new Set((e.skills || []).map(s => s.id));
+				const have = new Set(e.skills || []);
 				const missing = defaults.filter(id => !have.has(id));
 				if (missing.length === 0) { return e; }
-				const newEntries = missing.map(id => {
-					const def = this.skillRegistry.getSkill(id);
-					return {
-						id,
-						name: def?.name ?? id,
-						enabled: true,
-						description: def?.description,
-					};
-				});
-				return { ...e, skills: [...(e.skills || []), ...newEntries] };
+				return { ...e, skills: [...(e.skills || []), ...missing] };
 			});
 
 			await this._writeJsonFile(dataDirUri, DATA_FILE_EMPLOYEES, updated);
 			this.logService.info(
 				`[AgentStudio] Backfilled default skills [${defaults.join(', ')}] into ${updated.length} employee(s) in ${key}`
 			);
-
 
 			// Notify the UI so it re-fetches the employee list with the new
 			// skill entries (the previously-cached zustand state is otherwise
@@ -484,9 +472,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		this.logService.info(`[AgentStudio] updateEmployee: found at dirUri=${dirUri.toString()}, index=${index}, name=${employees[index].name}`);
 
-		const oldSkills = employees[index].skills ?? [];
-		const oldSkillIds = new Set(oldSkills.map(s => s.id));
 		const oldName = employees[index].name;
+		const oldSkills = employees[index].skills ?? [];
+		const oldSkillIds = new Set(oldSkills);
 
 		employees[index] = {
 			...employees[index],
@@ -501,17 +489,19 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const updated = employees[index];
 		if (data.skills !== undefined) {
 			const newSkills = updated.skills ?? [];
-			const newSkillIds = new Set(newSkills.map(s => s.id));
+			const newSkillIds = new Set(newSkills);
 
 			// Fire lifecycle events for added / removed skills
-			for (const skill of newSkills) {
-				if (!oldSkillIds.has(skill.id)) {
-					this._fireSkillLifecycle(SkillLifecycleEvent.Added, updated, skill.id, skill.name);
+			for (const skillId of newSkills) {
+				if (!oldSkillIds.has(skillId)) {
+					const skillDef = this.skillRegistry.getSkill(skillId);
+					this._fireSkillLifecycle(SkillLifecycleEvent.Added, updated, skillId, skillDef?.name ?? skillId);
 				}
 			}
-			for (const skill of oldSkills) {
-				if (!newSkillIds.has(skill.id)) {
-					this._fireSkillLifecycle(SkillLifecycleEvent.Removed, updated, skill.id, skill.name);
+			for (const skillId of oldSkills) {
+				if (!newSkillIds.has(skillId)) {
+					const skillDef = this.skillRegistry.getSkill(skillId);
+					this._fireSkillLifecycle(SkillLifecycleEvent.Removed, updated, skillId, skillDef?.name ?? skillId);
 				}
 			}
 		}
@@ -1400,34 +1390,22 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	/**
 	 * Combine `provided` with {@link DEFAULT_AGENT_SKILL_IDS}, de-duplicating
 	 * by skill id and giving caller-supplied entries priority on collision.
-	 *
-	 * The default skill is materialised from the live SkillRegistry so the
-	 * EmployeeSkill carries the registry's current name/description; if the
-	 * id is missing from the registry (very unusual — would mean someone
-	 * removed it from BUILTIN_SKILLS), we synthesise a minimal placeholder
-	 * so `_createAgentSkillsDir` still has something to write.
 	 */
 	private _mergeWithDefaultSkills(
-		provided: readonly import('../../../common/agentStudioTypes.js').EmployeeSkill[] | undefined,
-	): import('../../../common/agentStudioTypes.js').EmployeeSkill[] {
+		provided: readonly string[] | undefined,
+	): string[] {
 		const seen = new Set<string>();
-		const out: import('../../../common/agentStudioTypes.js').EmployeeSkill[] = [];
-		for (const s of provided || []) {
-			if (s?.id && !seen.has(s.id)) {
-				seen.add(s.id);
-				out.push(s);
+		const out: string[] = [];
+		for (const id of provided || []) {
+			if (!seen.has(id)) {
+				seen.add(id);
+				out.push(id);
 			}
 		}
 		for (const id of AgentStudioService.DEFAULT_AGENT_SKILL_IDS) {
 			if (seen.has(id)) { continue; }
 			seen.add(id);
-			const def = this.skillRegistry.getSkill(id);
-			out.push({
-				id,
-				name: def?.name ?? id,
-				enabled: true,
-				description: def?.description,
-			});
+			out.push(id);
 		}
 		return out;
 	}
@@ -1551,54 +1529,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 	}
 
-	/**
-	 * Render a full `SKILL.md` from an `ISkillDefinition` (registry lookup).
-	 * Format matches the standard hermes / sarosis SKILL.md convention:
-	 *   - YAML frontmatter (name, description, activation, match, category, recommended_tools)
-	 *   - Markdown body (the prompt)
-	 */
-	private _renderSkillMd(def: ISkillDefinition): string {
-		const lines: string[] = ['---'];
-		lines.push(`name: ${def.name}`);
-		if (def.description) {
-			lines.push(`description: ${def.description}`);
-		}
-		lines.push(`activation: ${def.activation}`);
-		if (def.match && def.match.length > 0) {
-			lines.push(`match: [${def.match.join(', ')}]`);
-		}
-		if (def.category) {
-			lines.push(`category: ${def.category}`);
-		}
-		if (def.recommendedTools && def.recommendedTools.length > 0) {
-			lines.push(`recommended_tools: [${def.recommendedTools.join(', ')}]`);
-		}
-		lines.push('---');
-		lines.push('');
-		lines.push(def.prompt);
-		lines.push('');
-		return lines.join('\n');
-	}
-
-	/**
-	 * Render a minimal `SKILL.md` placeholder when the skill is not found in
-	 * the registry (e.g. a tag-only skill assigned via the preset UI).
-	 */
-	private _renderSkillMdFromRef(ref: { id: string; name: string; description?: string }): string {
-		const lines: string[] = ['---'];
-		lines.push(`name: ${ref.name}`);
-		if (ref.description) {
-			lines.push(`description: ${ref.description}`);
-		}
-		lines.push('activation: manual');
-		lines.push('---');
-		lines.push('');
-		lines.push(`# ${ref.name}`);
-		lines.push('');
-		lines.push('<!-- TODO: Add skill instructions here -->');
-		lines.push('');
-		return lines.join('\n');
-	}
 
 	/**
 	 * Delete the agent instance directory when an employee is removed.

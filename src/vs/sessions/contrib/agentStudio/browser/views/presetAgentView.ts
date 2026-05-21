@@ -1223,7 +1223,7 @@ export class PresetAgentViewPane extends ViewPane {
 				presetId: preset.id,
 				model: preset.model,
 				customPrompt: preset.systemPrompt,
-				skills: preset.skills.map(s => ({ id: s, name: s, enabled: true })),
+				skills: [...preset.skills],
 				bootstrapTemplates: preset.bootstrapTemplates,
 				workspaceId,
 			};

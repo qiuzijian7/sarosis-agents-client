@@ -100,6 +100,12 @@ export interface Employee {
 	// allow-any-unicode-next-line
 	/** 技能版本记录 - 记录每个技能的版本号，用于检测更新 */
 	skillVersions?: Record<string, string>;
+	// allow-any-unicode-next-line
+	/** 缺失的技能数量（在技能库中找不到的技能） - 用于 UI 警告徽章 */
+	skillErrorCount?: number;
+	// allow-any-unicode-next-line
+	/** 缺失的技能 ID 列表 - 用于 UI 对话框显示 */
+	missingSkillIds?: string[];
 	status: EmployeeStatus;
 	/**
 	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).

@@ -20,7 +20,10 @@ export interface Employee {
 	model?: string;
 	provider?: string;
 	customPrompt?: string;
-	skills?: { id: string; name: string; enabled: boolean }[];
+	/** Skill IDs referenced by this agent (new architecture: skills stored in ~/.sarosis/skills-library/) */
+	skills?: string[];
+	/** Number of skills that are missing from the skill library (for UI warning badge) */
+	skillErrorCount?: number;
 	status: 'idle' | 'working' | 'thinking' | 'error' | 'offline';
 	/**
 	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
@@ -40,6 +43,10 @@ export interface Employee {
 	category?: string;
 	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
 	agentDir?: string;
+	/** Number of skills that are missing from the skill library (for UI warning badge) */
+	skillErrorCount?: number;
+	/** Missing skill IDs - for UI dialog display */
+	missingSkillIds?: string[];
 	/**
 	 * Bootstrap templates from a preset, used when creating the agent instance directory.
 	 * Transient — only used during creation, not persisted.
