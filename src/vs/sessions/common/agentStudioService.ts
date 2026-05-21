@@ -114,16 +114,16 @@ export const IAgentChatService =
 
 export interface IChatStreamDelta {
 	readonly type:
-		| "text"
-		| "thinking"
-		| "tool_start"
-		| "tool_args"
-		| "tool_end"
-		| "tool_result"
-		| "tool_progress"
-		| "done"
-		| "error"
-		| "content_replace";
+	| "text"
+	| "thinking"
+	| "tool_start"
+	| "tool_args"
+	| "tool_end"
+	| "tool_result"
+	| "tool_progress"
+	| "done"
+	| "error"
+	| "content_replace";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -279,12 +279,12 @@ export const IConfigMdService =
  */
 export interface IConfigMdPatchOp {
 	readonly op:
-		| "replace-anchor"
-		| "replace-bind"
-		| "append"
-		| "prepend"
-		| "replace-section"
-		| "replace-all";
+	| "replace-anchor"
+	| "replace-bind"
+	| "append"
+	| "prepend"
+	| "replace-section"
+	| "replace-all";
 	readonly anchor?: string;
 	readonly heading?: string;
 	readonly content: string;
@@ -549,3 +549,4 @@ export interface IConfigMdService {
 	 */
 	disposeAgent(employeeId: string): void;
 }
+
