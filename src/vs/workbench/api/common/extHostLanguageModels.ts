@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* eslint-disable local/code-no-unexternalized-strings */
+
 import type * as vscode from "vscode";
 import {
 	AsyncIterableProducer,
@@ -57,7 +59,7 @@ import * as typeConvert from "./extHostTypeConverters.js";
 import * as extHostTypes from "./extHostTypes.js";
 import { ChatAgentLocation } from "../../contrib/chat/common/constants.js";
 
-export interface IExtHostLanguageModels extends ExtHostLanguageModels {}
+export interface IExtHostLanguageModels extends ExtHostLanguageModels { }
 
 export const IExtHostLanguageModels = createDecorator<IExtHostLanguageModels>(
 	"IExtHostLanguageModels",
@@ -341,11 +343,11 @@ export class ExtHostLanguageModels implements ExtHostLanguageModelsShape {
 						modelPickerCategory: m.category ?? DEFAULT_MODEL_PICKER_CATEGORY,
 						capabilities: m.capabilities
 							? {
-									vision: m.capabilities.imageInput,
-									editTools: m.capabilities.editTools,
-									toolCalling: !!m.capabilities.toolCalling,
-									agentMode: !!m.capabilities.toolCalling,
-								}
+								vision: m.capabilities.imageInput,
+								editTools: m.capabilities.editTools,
+								toolCalling: !!m.capabilities.toolCalling,
+								agentMode: !!m.capabilities.toolCalling,
+							}
 							: undefined,
 					},
 					identifier: this.toModelIdentifier(vendor, options.group, m.id),
@@ -771,7 +773,7 @@ export class ExtHostLanguageModels implements ExtHostLanguageModelsShape {
 			// that the request has failed
 			data.res.reject(
 				extHostTypes.LanguageModelError.tryDeserialize(error) ??
-					transformErrorFromSerialization(error),
+				transformErrorFromSerialization(error),
 			);
 		} else {
 			data.res.resolve();
@@ -808,11 +810,11 @@ export class ExtHostLanguageModels implements ExtHostLanguageModelsShape {
 		try {
 			const detail = justification
 				? localize(
-						"chatAccessWithJustification",
-						"Justification: {1}",
-						to.displayName,
-						justification,
-					)
+					"chatAccessWithJustification",
+					"Justification: {1}",
+					to.displayName,
+					justification,
+				)
 				: undefined;
 			await this._extHostAuthentication.getSession(from, providerId, [], {
 				forceNewSession: { detail },
