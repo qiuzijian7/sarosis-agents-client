@@ -105,7 +105,8 @@ const vscodeResourceIncludes = [
 	'out-build/vs/sessions/contrib/welcome/browser/media/*.svg',
 	'out-build/vs/sessions/contrib/welcome/browser/media/themePreviews/*.svg',
 	'out-build/vs/sessions/prompts/*.prompt.md',
-	'out-build/vs/sessions/skills/**/SKILL.md',
+	'out-build/vs/sessions/skills/**/SKILL.md', // old path (deprecated, kept for backward compatibility)
+	'out-build/vs/sessions/contrib/agentStudio/browser/skills/**/SKILL.md', // new path (Hermes-Agent inspired)
 
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',

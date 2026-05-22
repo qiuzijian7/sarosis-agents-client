@@ -295,7 +295,8 @@ const desktopResourcePatterns = [
 
 	// Sessions - built-in prompts and skills
 	'vs/sessions/prompts/*.prompt.md',
-	'vs/sessions/skills/**/SKILL.md',
+	'vs/sessions/skills/**/SKILL.md', // old path (deprecated, kept for backward compatibility)
+	'vs/sessions/contrib/agentStudio/browser/skills/**/SKILL.md', // new path (Hermes-Agent inspired)
 ];
 
 // Resources for server target (minimal - no UI)

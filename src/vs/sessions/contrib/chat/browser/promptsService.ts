@@ -13,7 +13,8 @@ import { PromptsService } from '../../../../workbench/contrib/chat/common/prompt
 import { BUILTIN_STORAGE, IBuiltinPromptPath } from '../common/builtinPromptsStorage.js';
 
 /** URI root for built-in skills bundled with the Agents app. */
-export const BUILTIN_SKILLS_URI = FileAccess.asFileUri('vs/sessions/skills');
+// 参考 Hermes-Agent 模式：技能现在存储在 src/vs/sessions/contrib/agentStudio/browser/skills/
+export const BUILTIN_SKILLS_URI = FileAccess.asFileUri('vs/sessions/contrib/agentStudio/browser/skills');
 
 /**
  * Sessions-specific PromptsService that additionally discovers built-in skills

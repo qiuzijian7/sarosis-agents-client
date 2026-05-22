@@ -217,16 +217,16 @@ Hooks and other non-markdown detail views continue to open directly in their exi
 Sessions overrides `PromptsService` via `AgenticPromptsService` (in `promptsService.ts`):
 
 - **Discovery**: `AgenticPromptFilesLocator` scopes workspace folders to the active session's worktree
-- **Built-in skills**: Discovers bundled `SKILL.md` files from `vs/sessions/skills/{name}/` and surfaces them with `PromptsStorage.builtin` storage type
+- **Built-in skills**: Discovers bundled `SKILL.md` files from `vs/sessions/contrib/agentStudio/browser/skills/{name}/` and surfaces them with `PromptsStorage.builtin` storage type
 - **User override**: Built-in skills are omitted when a user or workspace skill with the same name exists
 - **Creation targets**: `getSourceFolders()` override replaces VS Code profile user roots with `~/.copilot/{subfolder}` for CLI compatibility
 - **Hook folders**: Falls back to `.github/hooks` in the active worktree
 
 ### Built-in Skills
 
-All built-in customizations bundled with the Sessions app are skills, living in `src/vs/sessions/skills/{name}/SKILL.md`. They are:
+All built-in customizations bundled with the Sessions app are skills, living in `src/vs/sessions/contrib/agentStudio/browser/skills/{name}/SKILL.md`. They are:
 
-- Discovered at runtime via `FileAccess.asFileUri('vs/sessions/skills')`
+- Discovered at runtime via `FileAccess.asFileUri('vs/sessions/contrib/agentStudio/browser/skills')`
 - Tagged with `PromptsStorage.builtin` storage type
 - Shown in a "Built-in" group in the AI Customization tree view and management editor
 - Filtered out when a user/workspace skill shares the same name (override behavior)
