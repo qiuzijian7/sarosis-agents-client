@@ -24,6 +24,7 @@ import {
 	ITaskOrchestrationService,
 	IConfigMdService,
 } from "../common/agentStudio.js";
+import { ISkillRegistry } from "../common/skills.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
 import type { AgentExportData } from "../../../common/agentStudioTypes.js";
 import {
@@ -135,6 +136,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@ICommandService private readonly commandService: ICommandService,
 		@IOpenerService private readonly openerService: IOpenerService,
 		@IConfigMdService private readonly _configMdService: IConfigMdService,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(
@@ -688,15 +690,19 @@ export class AgentStudioWebviewController extends Disposable {
 				const fp = p as unknown as IFileOpenPayload;
 				return this._handleOpenHtmlPreview(fp);
 			}
-			case "files.openUntitledText": {
-				const fp = p as unknown as IFileOpenUntitledTextPayload;
-				return this._handleOpenUntitledText(fp);
-			}
-
-			default:
-				throw new Error(`Unknown message type: ${type}`);
+		case "files.openUntitledText": {
+			const fp = p as unknown as IFileOpenUntitledTextPayload;
+			return this._handleOpenUntitledText(fp);
 		}
+
+		// ─── Skills ────────────────────────────────────────────
+		case "skills.list":
+			return this._handleSkillsList();
+
+		default:
+			throw new Error(`Unknown message type: ${type}`);
 	}
+}
 
 	/**
 	 * Webview tells us which (employeeId, agentSessionId) is currently
@@ -1873,6 +1879,23 @@ export class AgentStudioWebviewController extends Disposable {
 
 	private _handleProvidersOpenSettings(payload: { providerId?: string }): void {
 		this.modelSelectorService.openSettings(payload.providerId);
+	}
+
+	// ─── Skills ─────────────────────────────────────────────────────
+
+	/**
+	 * Handle `skills.list` message from webview.
+	 * Returns all registered skills in a format suitable for the webview.
+	 */
+	private _handleSkillsList(): Array<{ id: string; name: string; category: string; activation: string; description?: string }> {
+		const skills = this.skillRegistry.getSkills();
+		return skills.map(skill => ({
+			id: skill.id,
+			name: skill.name,
+			category: skill.category || 'uncategorized',
+			activation: skill.activation,
+			description: skill.description || undefined,
+		}));
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

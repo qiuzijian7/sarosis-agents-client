@@ -7,7 +7,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useEmployeeStore, type Employee, type MemoryConfig, type MemoryEntry, type KnowledgeConfig, type KnowledgeSource } from '../../store/useEmployeeStore';
 import { useConfigMdStore } from '../../store/useConfigMdStore';
-import { ALL_SKILLS, type GlobalSkill } from '../../data/allSkills';
 import {
 	bindIframeChannel,
 	fetchState,
@@ -22,6 +21,7 @@ import { openHtmlPreview, openUntitledText } from '../../bridge/fileBridge';
 import { MarkdownEditor } from '../configmd/MarkdownEditor';
 import { ConfigMdSettings } from '../configmd/ConfigMdSettings';
 import { CONFIG_MD_DEMO } from '../configmd/configMdDemo';
+import { sendRequest } from '../../bridge/messageClient';
 
 /* ── Tab definitions ─────────────────────────────────────────── */
 type TabId = 'prompt' | 'skills' | 'memory' | 'knowledge' | 'configmd' | 'tools' | 'mcp' | 'rules';
@@ -57,9 +57,10 @@ interface SkillsDragDropPanelProps {
 	employeeId: string;
 	agentSkills: { id: string; name: string; enabled: boolean }[];
 	onUpdateSkills: (skills: { id: string; name: string; enabled: boolean }[]) => void;
+	allSkills: Array<{ id: string; name: string; category: string; activation: string; description?: string }>;
 }
 
-function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills }: SkillsDragDropPanelProps): React.ReactElement {
+function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills, allSkills }: SkillsDragDropPanelProps): React.ReactElement {
 	const [leftFilter, setLeftFilter] = useState('');
 	const [rightFilter, setRightFilter] = useState('');
 	const [dragOverSide, setDragOverSide] = useState<'left' | 'right' | null>(null);
@@ -68,7 +69,7 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills }: Skills
 	const agentSkillIds = new Set(agentSkills.map(s => s.id));
 
 	// Left: all skills NOT installed on this agent
-	const availableSkills = ALL_SKILLS.filter(
+	const availableSkills = allSkills.filter(
 		s => !agentSkillIds.has(s.id) && s.name.toLowerCase().includes(leftFilter.toLowerCase()),
 	);
 
@@ -77,7 +78,7 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills }: Skills
 		s => s.name.toLowerCase().includes(rightFilter.toLowerCase()),
 	);
 
-	const handleDragStart = (e: React.DragEvent, skill: GlobalSkill | { id: string; name: string; enabled: boolean }, from: 'left' | 'right') => {
+	const handleDragStart = (e: React.DragEvent, skill: { id: string; name: string; category: string; activation: string; description?: string } | { id: string; name: string; enabled: boolean }, from: 'left' | 'right') => {
 		e.dataTransfer.setData('application/json', JSON.stringify({ skill, from }));
 		e.dataTransfer.effectAllowed = 'move';
 	};
@@ -96,7 +97,7 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills }: Skills
 		setDragOverSide(null);
 		const data = e.dataTransfer.getData('application/json');
 		if (!data) return;
-		const { skill, from } = JSON.parse(data) as { skill: GlobalSkill; from: 'left' | 'right' };
+		const { skill, from } = JSON.parse(data) as { skill: { id: string; name: string; category: string; activation: string }; from: 'left' | 'right' };
 
 		if (from === 'left' && targetSide === 'right') {
 			// Install skill
@@ -126,7 +127,7 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills }: Skills
 			>
 				<div className="skills-panel-header">
 					<h4>所有技能</h4>
-					<span className="skills-panel-count">{ALL_SKILLS.length - agentSkills.length}</span>
+					<span className="skills-panel-count">{allSkills.length - agentSkills.length}</span>
 				</div>
 				<input
 					type="text"
@@ -691,6 +692,11 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		employee?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] },
 	);
 
+	// ── All Skills state (loaded dynamically from host) ───────────────────────
+	const [allSkills, setAllSkills] = useState<Array<{ id: string; name: string; category: string; activation: string; description?: string }>>([]);
+	const [skillsLoading, setSkillsLoading] = useState(true);
+	const [skillsError, setSkillsError] = useState<string | null>(null);
+
 	// ── ConfigMD state (reuse configMdStore) ──────────────────────
 	const configMdState = useConfigMdStore((s) => s.byAgent[employeeId]);
 	const setMdState = useConfigMdStore((s) => s.setState);
@@ -709,6 +715,28 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			setKnowledgeConfig(employee.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
 		}
 	}, [employeeId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig]);
+
+	// ── Skills: load all skills from host ─────────────────────────────
+	useEffect(() => {
+		let cancelled = false;
+		setSkillsLoading(true);
+		setSkillsError(null);
+
+		sendRequest<unknown, Array<{ id: string; name: string; category: string; activation: string; description?: string }>>('skills.list', {})
+			.then((skills) => {
+				if (cancelled) return;
+				setAllSkills(skills);
+				setSkillsLoading(false);
+			})
+			.catch((err) => {
+				if (cancelled) return;
+				console.error('[AgentEditorPane] Failed to load skills:', err);
+				setSkillsError(err instanceof Error ? err.message : String(err));
+				setSkillsLoading(false);
+			});
+
+		return () => { cancelled = true; };
+	}, []);
 
 	// ── ConfigMD: load on mount / employeeId / configMd-enabled change ─
 	useEffect(() => {
@@ -886,17 +914,18 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 					</div>
 				)}
 
-				{/* ── Tab: Skills (drag & drop) ─────────────── */}
-				{activeTab === 'skills' && (
-					<SkillsDragDropPanel
-						employeeId={employeeId}
-						agentSkills={skills}
-						onUpdateSkills={(next) => {
-							setSkills(next);
-							updateEmployee(employeeId, { skills: next });
-						}}
-					/>
-				)}
+			{/* ── Tab: Skills (drag & drop) ─────────────── */}
+			{activeTab === 'skills' && (
+				<SkillsDragDropPanel
+					employeeId={employeeId}
+					agentSkills={skills}
+					allSkills={allSkills}
+					onUpdateSkills={(next) => {
+						setSkills(next);
+						updateEmployee(employeeId, { skills: next });
+					}}
+				/>
+			)}
 
 				{/* ── Tab: Memory ─────────────────────────────── */}
 				{activeTab === 'memory' && (
