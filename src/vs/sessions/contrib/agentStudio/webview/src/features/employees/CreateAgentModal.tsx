@@ -669,17 +669,17 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 
 		setIsSubmitting(true);
 		try {
-			// Build the skill list this agent should ship with.
+			// Build the skill id list this agent should ship with.
 			// Order: explicit preset skills first, then global preset
 			// defaults (configmd, …). De-dupe by id. The host applies the
 			// same default-skill merge on its end as a safety net, so any
 			// missing entry will be filled in there too.
 			const seen = new Set<string>();
-			const skills: { id: string; name: string; enabled: boolean }[] = [];
+			const skills: string[] = [];
 			const pushSkill = (id: string) => {
 				if (!id || seen.has(id)) { return; }
 				seen.add(id);
-				skills.push({ id, name: id, enabled: true });
+				skills.push(id);
 			};
 			selectedPreset?.skills?.forEach(pushSkill);
 			PRESET_DEFAULT_SKILL_IDS.forEach(pushSkill);

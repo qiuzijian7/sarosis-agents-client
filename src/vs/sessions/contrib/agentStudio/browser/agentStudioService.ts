@@ -19,6 +19,7 @@ import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, AGENT_ST
 import { ISkillRegistry } from '../common/skills.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
 import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
+import { IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
@@ -362,9 +363,19 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		try {
 			const defaults = AgentStudioService.DEFAULT_AGENT_SKILL_IDS;
+			const defaultConfigMd = (): NonNullable<Employee['configMd']> => ({
+				mdPath: 'config.md',
+				parserPath: 'ui/parser.js',
+				stylesPath: 'ui/styles.css',
+				displayMode: 'side',
+				defaultView: 'split',
+				editable: true,
+			});
 			const needsMigration = employees.some(e => {
 				const have = new Set(e.skills || []);
-				return defaults.some(id => !have.has(id));
+				const skillsMissing = defaults.some(id => !have.has(id));
+				const configMdMissing = !e.configMd;
+				return skillsMissing || configMdMissing;
 			});
 			if (!needsMigration) {
 				return null;
@@ -373,14 +384,32 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			const updated: Employee[] = employees.map(e => {
 				const have = new Set(e.skills || []);
 				const missing = defaults.filter(id => !have.has(id));
-				if (missing.length === 0) { return e; }
-				return { ...e, skills: [...(e.skills || []), ...missing] };
+				const next: Employee = { ...e };
+				if (missing.length > 0) {
+					next.skills = [...(e.skills || []), ...missing];
+				}
+				if (!next.configMd) {
+					// Backfill the ConfigMD binding so existing agents pick
+					// up panel rendering on the next reload. The actual
+					// `config.md` / `ui/*` files are created lazily by
+					// `_ensureState` (config.md scaffold) and on the next
+					// `_createAgentInstanceDir` call (ui/*). We don't write
+					// them here to keep the migration cheap.
+					next.configMd = defaultConfigMd();
+				}
+				return next;
 			});
 
 			await this._writeJsonFile(dataDirUri, DATA_FILE_EMPLOYEES, updated);
 			this.logService.info(
-				`[AgentStudio] Backfilled default skills [${defaults.join(', ')}] into ${updated.length} employee(s) in ${key}`
+				`[AgentStudio] Backfilled default skills [${defaults.join(', ')}] and configMd binding into ${updated.length} employee(s) in ${key}`
 			);
+
+			// Materialise the ConfigMD scaffold (config.md + ui/*.example) for
+			// any agent that didn't have it before. We run this as a
+			// fire-and-forget — failure on one agent shouldn't roll back
+			// the migration that's already on disk.
+			void this._materialiseConfigMdScaffoldsForExisting(dataDirUri, updated);
 
 			// Notify the UI so it re-fetches the employee list with the new
 			// skill entries (the previously-cached zustand state is otherwise
@@ -390,6 +419,37 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		} catch (err) {
 			this.logService.warn(`[AgentStudio] _ensureDefaultSkillsInDir failed for ${key}: ${err instanceof Error ? err.message : String(err)}`);
 			return null;
+		}
+	}
+
+	/**
+	 * For agents that pre-date the default `configMd` scaffold, ensure the
+	 * supporting files (`config.md`, `ui/parser.js.example`,
+	 * `ui/styles.css.example`) exist on disk. We never overwrite, so users
+	 * with hand-edited configurations are safe.
+	 */
+	private async _materialiseConfigMdScaffoldsForExisting(
+		dataDirUri: URI,
+		employees: Employee[],
+	): Promise<void> {
+		for (const employee of employees) {
+			if (!employee.agentDir) { continue; }
+			try {
+				const agentDirUri = URI.joinPath(dataDirUri, AGENTS_DIR, employee.agentDir);
+				// Skip silently if the agent dir itself doesn't exist —
+				// this can happen for orphaned employees.json entries.
+				try { await this.fileService.stat(agentDirUri); } catch { continue; }
+				await this._writeBootstrapFile(agentDirUri, 'config.md',
+					this._getConfigMdTemplate(employee));
+				const uiDirUri = URI.joinPath(agentDirUri, 'ui');
+				await this._ensureDir(uiDirUri);
+				await this._writeBootstrapFile(uiDirUri, 'parser.js.example',
+					this._getConfigMdParserExampleTemplate());
+				await this._writeBootstrapFile(uiDirUri, 'styles.css.example',
+					this._getConfigMdStylesExampleTemplate());
+			} catch (err) {
+				this.logService.debug(`[AgentStudio] backfill ConfigMD scaffold failed for ${employee.agentDir}: ${err instanceof Error ? err.message : String(err)}`);
+			}
 		}
 	}
 
@@ -444,6 +504,19 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			agentDir: slug,
 			temperature: (data as Record<string, unknown>).temperature as number | undefined,
 			maxTokens: (data as Record<string, unknown>).maxTokens as number | undefined,
+			// Every new agent ships with a ConfigMD panel scaffolded at
+			// <agentDir>/config.md plus optional parser/styles overrides at
+			// <agentDir>/ui/parser.js and <agentDir>/ui/styles.css. Without
+			// these overrides the panel renders via the project's built-in
+			// markdown parser + imgui SDK styles.
+			configMd: data.configMd || {
+				mdPath: 'config.md',
+				parserPath: 'ui/parser.js',
+				stylesPath: 'ui/styles.css',
+				displayMode: 'side',
+				defaultView: 'split',
+				editable: true,
+			},
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -485,7 +558,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
 
 		// ─── Skills directory sync ───────────────────────────────────────
-		// If the update includes a skills change, fire skill-lifecycle events.
+		// If the update includes a skills change, fire skill-lifecycle events AND
+		// propagate to agent.yaml so that the skill index is recorded in the
+		// agent instance folder (source of truth for skill references).
 		const updated = employees[index];
 		if (data.skills !== undefined) {
 			const newSkills = updated.skills ?? [];
@@ -502,6 +577,30 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				if (!newSkillIds.has(skillId)) {
 					const skillDef = this.skillRegistry.getSkill(skillId);
 					this._fireSkillLifecycle(SkillLifecycleEvent.Removed, updated, skillId, skillDef?.name ?? skillId);
+				}
+			}
+
+			// ─── Skills change sync to agent.yaml ───────────────────────
+			// When the employee's skills change, propagate to agent.yaml
+			if (updated.agentDir) {
+				try {
+					const agentDirUri = URI.joinPath(dirUri, AGENTS_DIR, updated.agentDir);
+					const configUri = URI.joinPath(agentDirUri, AGENT_CONFIG_FILE);
+					try {
+						const raw = await this.fileService.readFile(configUri);
+						const agentConfig = JSON.parse(raw.value.toString());
+						agentConfig.skills = updated.skills; // Update skills field
+						agentConfig.updatedAt = updated.updatedAt;
+						await this.fileService.writeFile(
+							configUri,
+							VSBuffer.fromString(JSON.stringify(agentConfig, null, 2)),
+						);
+						this.logService.info(`[AgentStudio] updateEmployee: synced skills to agent.yaml`);
+					} catch (err) {
+						this.logService.debug(`[AgentStudio] updateEmployee: could not update agent.yaml skills`, err);
+					}
+				} catch (err) {
+					this.logService.warn(`[AgentStudio] updateEmployee: failed to sync skills to agent.yaml`, err);
 				}
 			}
 		}
@@ -1481,6 +1580,19 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				tools: ['filesystem', 'search'],
 				planning: { enabled: true },
 				execution: { enabled: true, maxIterations: 10 },
+				// ConfigMD panel binding. Paths are resolved relative to this
+				// agent's directory. `parserPath` / `stylesPath` are optional
+				// — when absent the host uses its built-in markdown renderer
+				// and the bundled imgui SDK styles.  The user (or the agent
+				// via the `configmd` skill) can later create
+				// `<agentDir>/ui/parser.js` / `<agentDir>/ui/styles.css` and
+				// update this section to point at them.
+				configMd: employee.configMd || {
+					mdPath: 'config.md',
+					displayMode: 'side',
+					defaultView: 'split',
+					editable: true,
+				},
 				createdAt: employee.createdAt,
 				updatedAt: employee.updatedAt,
 				status: employee.status,
@@ -1502,6 +1614,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				bootstrapTemplates?.toolsMd || this._getToolsMdTemplate());
 			await this._writeBootstrapFile(agentDirUri, AGENT_MEMORY_MD,
 				bootstrapTemplates?.memoryMd || this._getMemoryMdTemplate());
+
+			// 2b) ConfigMD scaffold:
+			//   - config.md : starter panel with anchors so the agent and
+			//                 the imgui SDK have known targets.
+			await this._writeBootstrapFile(agentDirUri, 'config.md',
+				this._getConfigMdTemplate(employee));
 
 			// 3) Create sessions subdirectory for future session transcripts
 			const sessionsDir = URI.joinPath(agentDirUri, 'sessions');
@@ -1650,6 +1768,150 @@ ${employee.role}
 
 ## Ongoing Work
 <!-- Current tasks and their status -->
+`;
+	}
+
+	/**
+	 * Initial scaffold for the agent's `config.md` ConfigMD panel. We seed it
+	 * with the standard anchors (`agent-state` / `agent-bind`) and a small
+	 * imgui form so that:
+	 *   - the panel renders something useful immediately on first open;
+	 *   - the agent's `configmd` skill has known anchor names to target
+	 *     when the user later asks to edit progress / status / etc.
+	 *
+	 * Lines beginning with `>` near the top are operator notes — they don't
+	 * affect rendering but help users orient themselves the first time they
+	 * open the file.
+	 */
+	private _getConfigMdTemplate(employee: Employee): string {
+		const safeName = (employee.name || 'Agent').replace(/[<>]/g, '');
+		return `# ${safeName} 工作面板
+
+> 这是 **${safeName}** 的 ConfigMD 控制面板。该面板由
+> \`<agentDir>/config.md\` 渲染而成；锚点（agent-state / agent-bind）允许
+> agent 在对话中通过 \`configmd-patch\` / \`configmd-command\` 块对其进行
+> 增量更新。如需自定义解析器或样式，参考同目录下
+> \`ui/parser.js.example\` / \`ui/styles.css.example\`，将其复制为
+> \`parser.js\` / \`styles.css\` 即生效。
+
+---
+
+## 状态
+
+- 进度：<!-- agent-bind:progress -->0%<!-- /agent-bind:progress -->
+- 当前任务：<!-- agent-bind:status -->待启动<!-- /agent-bind:status -->
+
+## 任务清单
+
+<!-- agent-state:tasks -->
+- [ ] 在此处列出待办事项
+<!-- /agent-state:tasks -->
+
+## 与 Agent 对话
+
+\`\`\`imgui
+heading("快速指令")
+textarea(id="ask", label="问题 / 指令", rows=3, placeholder="想让 agent 做什么？")
+button(id="send", label="💬 发送", action="send_to_chat", variant="primary",
+       template="{ask}")
+\`\`\`
+
+## 表单状态快照
+
+> 当用户提交表单且按钮带 \`state="form_snapshot"\` 时，host 会把当前所有控件
+> 的值以 JSON 写入下方锚点，供 agent 在后续对话中读取。
+
+<!-- agent-state:form_snapshot -->
+\`\`\`json
+{ "note": "form has not been submitted yet" }
+\`\`\`
+<!-- /agent-state:form_snapshot -->
+`;
+	}
+
+	/**
+	 * Annotated example of a custom MD→HTML parser the user can drop into
+	 * `<agentDir>/ui/parser.js` to override the built-in renderer. The
+	 * scaffold only delegates to a simple identity transform; the comments
+	 * document the contract (`parse(markdown, ctx)` → HTML string) and how
+	 * to chain into the host's imgui post-processing if desired.
+	 *
+	 * Written to disk as `parser.js.example`. Renaming to `parser.js`
+	 * activates it on the next preview render. The host watches the file
+	 * via \`IFileService.watch\`, so no restart is needed.
+	 */
+	private _getConfigMdParserExampleTemplate(): string {
+		return `// ConfigMD custom parser — example.
+//
+// To activate: rename this file to "parser.js" (drop the .example suffix).
+// The host re-reads it on the next preview render.
+//
+// Contract:
+//   exports.parse(markdown, ctx) -> HTML string
+//
+// The returned HTML is passed through a host-side sanitizer (strips
+// <script>, on*= handlers, javascript:) and then through the imgui
+// post-processor (which converts \`\`\`imgui code blocks into interactive
+// <form> markup). You generally do NOT need to handle imgui yourself —
+// just emit standard markdown HTML and let the host take care of the rest.
+//
+// \`ctx\` includes:
+//   { employeeId: string }   // identifier of the agent owning this panel
+//
+// Failure mode:
+//   If \`parse\` throws or returns a non-string, the host falls back to its
+//   built-in markdown renderer and logs a warning. Never block on async
+//   work here — the function must be synchronous.
+
+module.exports = {
+	parse(markdown, _ctx) {
+		// Trivial example: pass through with a single heading wrapper.
+		// Replace this with your own renderer (e.g. \`marked\`, \`markdown-it\`).
+		const escape = (s) => s
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
+
+		const lines = markdown.split('\\n');
+		const out = [];
+		for (const line of lines) {
+			const h1 = /^# (.+)$/.exec(line);
+			if (h1) { out.push('<h1>' + escape(h1[1]) + '</h1>'); continue; }
+			const h2 = /^## (.+)$/.exec(line);
+			if (h2) { out.push('<h2>' + escape(h2[1]) + '</h2>'); continue; }
+			if (!line.trim()) { continue; }
+			out.push('<p>' + escape(line) + '</p>');
+		}
+		return out.join('\\n');
+	},
+};
+`;
+	}
+
+	/**
+	 * Copy of the host-bundled imgui SDK styles, dropped under
+	 * `<agentDir>/ui/styles.css.example` for users who want to tweak the
+	 * panel's appearance without forking the whole project. Renaming to
+	 * `styles.css` activates the override (host appends it after its own
+	 * built-in styles, so user rules win on specificity ties).
+	 *
+	 * We embed the live \`IMGUI_SDK_STYLES\` constant so this file always
+	 * reflects what the host is currently shipping — no risk of drift.
+	 */
+	private _getConfigMdStylesExampleTemplate(): string {
+		return `/*
+ * ConfigMD custom stylesheet — example.
+ *
+ * To activate: rename this file to "styles.css" (drop the .example suffix).
+ * The host injects it INTO the standalone preview document AFTER its own
+ * built-in imgui SDK styles, so any rule you redefine here will override
+ * the default thanks to source-order specificity.
+ *
+ * The block below is the verbatim copy of the host's bundled imgui SDK
+ * styles at the time this agent was created. Tweak freely; you can also
+ * delete most of it and only keep the rules you want to override.
+ */
+${IMGUI_SDK_STYLES}
 `;
 	}
 }
