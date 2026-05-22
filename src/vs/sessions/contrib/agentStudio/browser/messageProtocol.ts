@@ -97,7 +97,8 @@ export type RequestType =
 	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
-	| 'files.openUntitledText';   // open an in-memory text buffer as an untitled editor
+	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
+	| 'skills.list';              // list all registered skills
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
