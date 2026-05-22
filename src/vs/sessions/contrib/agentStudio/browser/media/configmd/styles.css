@@ -1,0 +1,158 @@
+/**
+ * Default ConfigMD styles — copy into <agentDir>/ui/styles.css and
+ * customise to change the appearance of your ConfigMD preview panel.
+ *
+ * These styles are injected into the preview iframe, so they can override
+ * the built-in imgui SDK styles or add completely new rules.
+ */
+
+/* ─── Base layout ─────────────────────────────────────────────────────────── */
+.configmd-root {
+	padding: 16px;
+	font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+	font-size: 14px;
+	line-height: 1.5;
+	color: #d4d4d4;
+	background: #1e1e1e;
+}
+
+/* ─── Headings ────────────────────────────────────────────────────────────── */
+.configmd-root h1,
+.configmd-root h2,
+.configmd-root h3,
+.configmd-root h4 {
+	margin-top: 16px;
+	margin-bottom: 8px;
+	font-weight: 600;
+	line-height: 1.25;
+}
+
+.configmd-root h1 { font-size: 2em; border-bottom: 1px solid #3e3e42; padding-bottom: 0.3em; }
+.configmd-root h2 { font-size: 1.5em; border-bottom: 1px solid #3e3e42; padding-bottom: 0.3em; }
+.configmd-root h3 { font-size: 1.25em; }
+.configmd-root h4 { font-size: 1em; }
+
+/* ─── Paragraphs & text ──────────────────────────────────────────────────── */
+.configmd-root p {
+	margin-top: 0;
+	margin-bottom: 10px;
+}
+
+.configmd-root a {
+	color: #4ea1ff;
+	text-decoration: none;
+}
+
+.configmd-root a:hover {
+	text-decoration: underline;
+}
+
+/* ─── Code ───────────────────────────────────────────────────────────────── */
+.configmd-root code {
+	padding: 0.2em 0.4em;
+	margin: 0;
+	font-size: 85%;
+	background: rgba(127, 127, 127, 0.15);
+	border-radius: 3px;
+	font-family: "Cascadia Code", Consolas, monospace;
+}
+
+.configmd-root pre {
+	padding: 12px;
+	overflow: auto;
+	font-size: 13px;
+	line-height: 1.45;
+	background: #252526;
+	border-radius: 6px;
+	margin-bottom: 12px;
+}
+
+.configmd-root pre code {
+	padding: 0;
+	background: transparent;
+	font-size: 100%;
+}
+
+/* ─── Lists ──────────────────────────────────────────────────────────────── */
+.configmd-root ul,
+.configmd-root ol {
+	padding-left: 2em;
+	margin-bottom: 10px;
+}
+
+.configmd-root li {
+	margin-bottom: 4px;
+}
+
+.configmd-root .cmd-tasklist {
+	list-style: none;
+	padding-left: 1.5em;
+}
+
+.configmd-root .cmd-tasklist input[type="checkbox"] {
+	margin-right: 6px;
+}
+
+/* ─── Blockquote ──────────────────────────────────────────────────────────── */
+.configmd-root blockquote {
+	margin: 0 0 12px 0;
+	padding: 4px 12px;
+	border-left: 4px solid #4ea1ff;
+	color: #9cdcfe;
+	background: rgba(78, 161, 255, 0.06);
+}
+
+/* ─── Table ──────────────────────────────────────────────────────────────── */
+.configmd-root table {
+	border-collapse: collapse;
+	margin-bottom: 12px;
+	width: 100%;
+}
+
+.configmd-root th,
+.configmd-root td {
+	padding: 6px 12px;
+	border: 1px solid #3e3e42;
+}
+
+.configmd-root th {
+	background: rgba(127, 127, 127, 0.1);
+	font-weight: 600;
+}
+
+/* ─── Agent state blocks ──────────────────────────────────────────────────── */
+.configmd-root [data-agent-state] {
+	margin: 8px 0;
+	padding: 8px 12px;
+	background: rgba(78, 161, 255, 0.04);
+	border-left: 3px solid #4ea1ff;
+	border-radius: 0 4px 4px 0;
+}
+
+/* ─── Agent bind spans ────────────────────────────────────────────────────── */
+.configmd-root [data-agent-bind] {
+	font-weight: 600;
+	color: #4ec9b0;
+}
+
+/* ─── imgui SDK overrides ────────────────────────────────────────────────── */
+.configmd-root .imgui-form {
+	background: rgba(127, 127, 127, 0.04);
+	border-color: rgba(127, 127, 127, 0.15);
+}
+
+.configmd-root .imgui-input,
+.configmd-root .imgui-select,
+.configmd-root .imgui-textarea {
+	background: rgba(127, 127, 127, 0.08);
+	border-color: rgba(127, 127, 127, 0.25);
+}
+
+.configmd-root .imgui-button-primary {
+	background: #4ea1ff;
+}
+
+.configmd-root .imgui-error {
+	background: rgba(214, 63, 63, 0.1);
+	border-left-color: #d63f3f;
+}

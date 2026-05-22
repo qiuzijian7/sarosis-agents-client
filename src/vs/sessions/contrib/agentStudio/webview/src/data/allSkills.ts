@@ -1,6 +1,11 @@
 /*---------------------------------------------------------------------------------------------
- *  All available skills (mirrored from common/bundled-skills/index.ts)
- *  Used as the global skill pool in the Agent Editor Pane.
+ *  All available skills (hardcoded list for Agent Editor Pane)
+ *  
+ *  NOTE: This file is a hardcoded snapshot. In the new architecture (refactored to match Hermes-Agent),
+ *  skills are loaded from `skills/` directory at runtime. This file should be updated to dynamically
+ *  fetch skills from ISkillRegistry service instead of maintaining a static list.
+ *  
+ *  TODO: Replace this static list with dynamic skill loading from ISkillRegistry.
  *--------------------------------------------------------------------------------------------*/
 
 export interface GlobalSkill {

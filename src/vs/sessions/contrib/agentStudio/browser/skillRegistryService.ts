@@ -47,8 +47,6 @@ import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
 	SkillActivation,
 } from '../common/skills.js';
-// BUNDLED_SKILLS 已移除 - 技能现在从 skills/ 目录文件加载
-// import { BUNDLED_SKILLS } from '../common/bundled-skills/bundledSkills.js';
 import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
 import * as path from 'path';
 
