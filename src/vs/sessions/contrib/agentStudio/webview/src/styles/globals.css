@@ -2355,6 +2355,7 @@ html, body, #root {
 .chat-messages {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
@@ -2391,12 +2392,13 @@ html, body, #root {
 .chat-message {
   display: flex;
   flex-direction: column;
-  max-width: 90%;
+  width: 100%;
 }
 
 .chat-message.user {
   align-self: flex-end;
   align-items: flex-end;
+  max-width: 90%;
 }
 
 .chat-message.assistant {
@@ -2493,6 +2495,9 @@ html, body, #root {
   border-radius: 12px 12px 12px 4px;
   padding: 8px 12px;
   border: 1px solid var(--as-assistant-bubble-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.1)));
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .chat-message.system {
@@ -2535,6 +2540,14 @@ html, body, #root {
 .message-text {
   font-size: 13px;
   line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Ensure pre blocks inside messages don't cause horizontal overflow */
+.message-content pre {
+  max-width: 100%;
+  overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }
