@@ -99,6 +99,9 @@ export interface ISkillRegistry {
 
 	readonly onDidChangeSkills: Event<void>;
 
+	/** 等待初始加载完成（技能目录扫描结束）。 */
+	whenReady(): Promise<void>;
+
 	/** 同步获取已加载的全部 skill。 */
 	getSkills(): readonly ISkillDefinition[];
 

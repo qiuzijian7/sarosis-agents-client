@@ -203,7 +203,7 @@ function stripXmlToolCallTags(text: string): string {
 		return text;
 	}
 
-	const tagNames = ['tool_call', 'tool_result', 'function_call', 'function_calls', 'function_response', 'function', 'tool_calls'];
+	const tagNames = ['tool_call', 'tool_result', 'function_call', 'function_calls', 'function_response', 'function', 'tool_calls', 'tool'];
 	let result = text;
 
 	for (const tagName of tagNames) {

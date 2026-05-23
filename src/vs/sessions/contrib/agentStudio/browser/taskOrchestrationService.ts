@@ -25,11 +25,12 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService } from '../common/agentStudio.js';
+import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService, IAgentChatService } from '../common/agentStudio.js';
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
-import type { OrchestrationPlan, PlanTask } from '../common/types.js';
+import type { OrchestrationPlan, PlanTask, Employee } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { TaskDecomposer } from './taskDecomposer.js';
 import { AgentFactory } from './agentFactory.js';
 import { CanvasLayoutEngine } from './canvasLayoutEngine.js';
@@ -69,8 +70,10 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
+		@IAgentChatService private readonly agentChatService: IAgentChatService,
 	) {
 		super();
 		this._decomposer = new TaskDecomposer();
@@ -92,8 +95,8 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			if (customPath) {
 				this._dataUri = URI.file(customPath);
 			} else {
-				this._dataUri = URI.file(process.env.HOME || process.env.USERPROFILE || '~')
-					.with({ path: `${process.env.HOME || process.env.USERPROFILE || '~'}/.agent-studio/data` });
+				// 默认：~/.agent-studio/data（跨平台兼容）
+				this._dataUri = URI.joinPath((this.environmentService as INativeEnvironmentService).userHome, '.agent-studio', 'data');
 			}
 		}
 		return this._dataUri;
@@ -284,6 +287,24 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 						this.logService.warn(`[Orchestration] Task ${task.id} timed out after ${elapsed}ms`);
 						this._failTask(plan, task, `Task timed out after ${Math.round(elapsed / 1000)}s`);
 						dirty = true;
+
+						// Send timeout message to agent's chat box
+						if (task.assigneeId) {
+							try {
+								const chatMessage = {
+									id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+									role: 'system' as const,
+									content: `⏱️ 任务执行超时: ${task.title}\n\n超时时间: ${Math.round(elapsed / 1000)}s\n任务ID: ${task.id}\n错误: ${task.error}`,
+									employeeId: task.assigneeId,
+									agentSessionId: undefined,
+									timestamp: new Date().toISOString(),
+								};
+								await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
+								this.logService.info(`[Orchestration] Sent timeout message to agent ${task.assigneeId} for task ${task.id}`);
+							} catch (err) {
+								this.logService.warn(`[Orchestration] Failed to send timeout message to agent ${task.assigneeId}:`, err);
+							}
+						}
 					}
 				}
 			}
@@ -344,13 +365,22 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 		const planner = await this.agentStudioService.getEmployee(plannerId);
 		if (!planner) { throw new Error(`Planner agent not found: ${plannerId}`); }
-		if (planner.agentType !== AgentType.Planner) {
+		const isPlanner = planner.agentType === AgentType.Planner
+			|| (planner as any).presetId === 'planner'
+			|| (planner as any).role?.toLowerCase().includes('planner')
+			|| planner.name?.toLowerCase() === 'planner';
+		if (!isPlanner) {
 			throw new Error(`Agent "${planner.name}" is not a planner (type: ${planner.agentType || 'worker'}).`);
 		}
 
 		const existingEmployees = await this.agentStudioService.getEmployees(workspaceId);
 		const existingNames = new Set(existingEmployees.map(e => e.name.toLowerCase()));
-		const pm = existingEmployees.find(e => e.agentType === AgentType.PM);
+		const pm = existingEmployees.find(e =>
+			e.agentType === AgentType.PM
+			|| (e as any).presetId === 'pm'
+			|| (e as any).role?.toLowerCase().includes('pm')
+			|| e.name?.toLowerCase() === 'pm'
+		);
 
 		// Delegate decomposition to TaskDecomposer
 		const tasks = this._decomposer.decomposeGoal(goal, existingNames);
@@ -388,11 +418,17 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			throw new Error(`Plan ${planId} is not pending approval (status: ${plan.status})`);
 		}
 
+		// PM is optional - if no PM exists, planner can approve and execute directly
 		const employees = await this.agentStudioService.getEmployees(plan.workspaceId);
-		const pms = employees.filter(e => e.agentType === AgentType.PM);
-		if (pms.length === 0) { throw new Error('此 Workspace 没有 PM。请先创建 PM 才能调度任务。'); }
+		const pms = employees.filter(e =>
+			e.agentType === AgentType.PM
+			|| (e as any).presetId === 'pm'
+			|| (e as any).role?.toLowerCase().includes('pm')
+			|| e.name?.toLowerCase() === 'pm'
+		);
+		// Only validate PM if PMs exist - allow 0 or 1 PM
 		if (pms.length > 1) { throw new Error(`此 Workspace 有 ${pms.length} 个 PM，仅允许 1 个。`); }
-		if (!plan.pmId) { plan.pmId = pms[0].id; }
+		if (!plan.pmId && pms.length === 1) { plan.pmId = pms[0].id; }
 
 		plan.status = OrchestrationPlanStatus.Approved;
 		plan.approvedAt = new Date().toISOString();
@@ -513,6 +549,24 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		task.completedAt = now;
 		plan.updatedAt = now;
 
+		// Send completion message to agent's chat box
+		if (task.assigneeId) {
+			try {
+				const chatMessage = {
+					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+					role: 'system' as const,
+					content: `✅ 任务执行完成: ${task.title}\n\n${result ? `执行结果: ${result}` : '任务已完成'}\n任务ID: ${task.id}`,
+					employeeId: task.assigneeId,
+					agentSessionId: undefined,
+					timestamp: new Date().toISOString(),
+				};
+				await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
+				this.logService.info(`[Orchestration] Sent completion message to agent ${task.assigneeId} for task ${task.id}`);
+			} catch (err) {
+				this.logService.warn(`[Orchestration] Failed to send completion message to agent ${task.assigneeId}:`, err);
+			}
+		}
+
 		// Unblock downstream dependents (core DAG propagation)
 		const promoted = this._unblockDependentTasks(plan, task.id);
 		for (const p of promoted) {
@@ -525,6 +579,146 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		this._onDidChangeTask.fire({ planId, task });
 		this._onDidChangePlan.fire(plan);
 		return task;
+	}
+
+	// ═══ Task Agent Assignment ═══════════════════════════════════════════════════
+
+	/**
+	 * Ensure a task has an agent assigned before execution.
+	 * Called when user clicks "approve" to start a task.
+	 *
+	 * Strategy:
+	 * 1. If task already has a valid assigneeId (agent still exists), keep it.
+	 * 2. If task has an assigneeName, try to find an existing agent by name.
+	 * 3. If task has a role, try scoring-based selection from existing agents.
+	 * 4. If no suitable agent found, auto-create one.
+	 *
+	 * NOTE: Does NOT update task board records — the caller is responsible for that.
+	 * Only updates the plan task if a corresponding one exists.
+	 */
+	async ensureTaskAgent(
+		workspaceId: string,
+		taskBoardRecordId: string,
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
+	): Promise<{ assigneeId: string; assigneeName: string } | undefined> {
+		this.logService.info(`[Orchestration] ensureTaskAgent: workspaceId=${workspaceId}, taskBoardRecordId=${taskBoardRecordId}`);
+
+		// Use provided task info or fall back to reading from task board
+		let taskTitle = taskInfo?.title || 'Unknown Task';
+		let currentAssigneeId = taskInfo?.assigneeId;
+		let currentAssigneeName = taskInfo?.assigneeName;
+		let sourceId = taskInfo?.sourceId;
+
+		if (!taskInfo) {
+			const boardTasks = await this.taskBoardService.getTasks(workspaceId);
+			const boardTask = boardTasks.find(t => t.id === taskBoardRecordId);
+			if (!boardTask) {
+				this.logService.warn(`[Orchestration] ensureTaskAgent: Task board record ${taskBoardRecordId} not found`);
+				return undefined;
+			}
+			taskTitle = boardTask.title;
+			currentAssigneeId = boardTask.assigneeId;
+			currentAssigneeName = boardTask.assigneeName;
+			sourceId = boardTask.sourceId;
+		}
+
+		// Strategy 0: Already has a valid assignee — verify it still exists
+		if (currentAssigneeId) {
+			const employees = await this.agentStudioService.getEmployees(workspaceId);
+			const existing = employees.find(e => e.id === currentAssigneeId);
+			if (existing) {
+				this.logService.info(`[Orchestration] ensureTaskAgent: Task "${taskTitle}" already has valid agent "${existing.name}" (${existing.id})`);
+				return { assigneeId: existing.id, assigneeName: existing.name };
+			}
+			this.logService.info(`[Orchestration] ensureTaskAgent: Assignee ${currentAssigneeId} no longer exists, re-assigning`);
+		}
+
+		// Find the corresponding plan task for role/assigneeName info
+		let planTask: PlanTask | undefined;
+		const plans = await this._readPlans();
+		for (const plan of plans) {
+			const found = plan.tasks.find(t => t.id === sourceId);
+			if (found) { planTask = found; break; }
+		}
+
+		const employees = await this.agentStudioService.getEmployees(workspaceId);
+		const existingByName = new Map(employees.map(e => [e.name.toLowerCase(), e]));
+		const taskRole = planTask?.assigneeRole || currentAssigneeName || 'Agent';
+		const taskAssigneeName = planTask?.assigneeName || currentAssigneeName;
+
+		// Strategy 1: Name match — reuse existing agent by name
+		if (taskAssigneeName) {
+			const existing = existingByName.get(taskAssigneeName.toLowerCase());
+			if (existing) {
+				this.logService.info(`[Orchestration] ensureTaskAgent: [Name match] Reused agent "${existing.name}" (${existing.id}) for task "${taskTitle}"`);
+				if (planTask) {
+					planTask.assigneeId = existing.id;
+					planTask.assigneeName = existing.name;
+					await this._writePlans(plans);
+				}
+				return { assigneeId: existing.id, assigneeName: existing.name };
+			}
+		}
+
+		// Strategy 2: Score-based selection from existing agents
+		const candidates = employees.filter(e =>
+			e.agentType !== AgentType.PM && e.status !== 'offline'
+		);
+		if (candidates.length > 0) {
+			let best: Employee | undefined;
+			let bestScore = -1;
+			for (const emp of candidates) {
+				const agentRole = (emp.role || '').toLowerCase();
+				const required = taskRole.toLowerCase().trim();
+				let score = 0.3;
+				if (required && agentRole === required) { score = 1.0; }
+				else if (required) {
+					const keywords = required.split(/[\s,/\\-]+/).filter(k => k.length > 2);
+					if (keywords.length > 0) {
+						const matched = keywords.filter(kw => agentRole.includes(kw)).length;
+						score = Math.max(0.1, matched / keywords.length);
+					}
+				}
+				if (emp.status === 'idle') { score += 0.3; }
+				else if (emp.status === 'working') { score += 0.1; }
+
+				if (score > bestScore) {
+					bestScore = score;
+					best = emp;
+				}
+			}
+			if (best && bestScore >= 0.1) {
+				this.logService.info(`[Orchestration] ensureTaskAgent: [Score match] Selected agent "${best.name}" (${best.id}, score=${bestScore.toFixed(3)}) for task "${taskTitle}"`);
+				if (planTask) {
+					planTask.assigneeId = best.id;
+					planTask.assigneeName = best.name;
+					await this._writePlans(plans);
+				}
+				return { assigneeId: best.id, assigneeName: best.name };
+			}
+		}
+
+		// Strategy 3: Auto-create agent
+		const agentName = taskAssigneeName || `Agent-${taskTitle.slice(0, 20)}`;
+		try {
+			this.logService.info(`[Orchestration] ensureTaskAgent: [Auto-create] Creating agent "${agentName}" for task "${taskTitle}"`);
+			const newEmp = await this.agentStudioService.createEmployee({
+				name: agentName,
+				role: taskRole || 'Agent',
+				agentType: AgentType.Worker,
+				workspaceId,
+			} as Partial<Employee>);
+			if (planTask) {
+				planTask.assigneeId = newEmp.id;
+				planTask.assigneeName = newEmp.name;
+				await this._writePlans(plans);
+			}
+			this.logService.info(`[Orchestration] ensureTaskAgent: Created agent "${newEmp.name}" (${newEmp.id}) for task "${taskTitle}"`);
+			return { assigneeId: newEmp.id, assigneeName: newEmp.name };
+		} catch (err) {
+			this.logService.error(`[Orchestration] ensureTaskAgent: Failed to create agent: ${err}`);
+			return undefined;
+		}
 	}
 
 	// ═══ Plan Execution ═════════════════════════════════════════════════════════
@@ -570,10 +764,12 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 						sourceId: task.id,
 						assigneeId: task.assigneeId,
 						assigneeName: task.assigneeName,
-						workspaceId: plan.workspaceId,
+						workspaceId: planRef.workspaceId,
 						priority: task.priority <= 1 ? 'high' : task.priority <= 3 ? 'medium' : 'low',
 					} as Record<string, unknown>);
-				} catch { /* ignore */ }
+				} catch (err) {
+					this.logService.warn(`[Orchestration] Failed to create task board item for task ${task.id}:`, err);
+				}
 			}
 		}
 
@@ -582,6 +778,24 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		for (const task of ready) {
 			task.status = PlanTaskStatus.Running;
 			task.startedAt = new Date().toISOString();
+
+			// Send message to agent's chat box to show execution process
+			if (task.assigneeId) {
+				try {
+					const chatMessage = {
+						id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+						role: 'system' as const,
+						content: `🚀 开始执行任务: ${task.title}\n\n任务描述: ${task.description || task.title}\n任务ID: ${task.id}\n依赖任务: ${task.dependencies.length > 0 ? task.dependencies.join(', ') : '无'}`,
+						employeeId: task.assigneeId,
+						agentSessionId: undefined,
+						timestamp: new Date().toISOString(),
+					};
+					await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
+					this.logService.info(`[Orchestration] Sent execution start message to agent ${task.assigneeId} for task ${task.id}`);
+				} catch (err) {
+					this.logService.warn(`[Orchestration] Failed to send execution message to agent ${task.assigneeId}:`, err);
+				}
+			}
 		}
 
 		planRef.updatedAt = new Date().toISOString();

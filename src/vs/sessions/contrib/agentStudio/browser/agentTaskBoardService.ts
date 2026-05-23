@@ -9,8 +9,10 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { IAgentTaskBoardService } from '../common/agentStudio.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IAgentTaskBoardService, ITaskOrchestrationService, IAgentChatService } from '../common/agentStudio.js';
 import type { TaskBoardRecord } from '../common/types.js';
 import { TaskBoardStatus, TaskSource } from '../common/types.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
@@ -25,12 +27,34 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 
 	private _dataUri: URI | undefined;
 
+	/** Lazy references to break cyclic dependency (agentTaskBoardService ↔ taskOrchestrationService) */
+	private _orchestrationService: ITaskOrchestrationService | undefined;
+	private _chatService: IAgentChatService | undefined;
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super();
+	}
+
+	/** Lazily resolve ITaskOrchestrationService to avoid constructor-time cyclic dependency */
+	private get orchestrationService(): ITaskOrchestrationService {
+		if (!this._orchestrationService) {
+			this._orchestrationService = this.instantiationService.invokeFunction(accessor => accessor.get(ITaskOrchestrationService));
+		}
+		return this._orchestrationService!;
+	}
+
+	/** Lazily resolve IAgentChatService to keep constructor clean */
+	private get chatService(): IAgentChatService {
+		if (!this._chatService) {
+			this._chatService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentChatService));
+		}
+		return this._chatService!;
 	}
 
 	private _getDataUri(): URI {
@@ -39,8 +63,9 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			if (customPath) {
 				this._dataUri = URI.file(customPath);
 			} else {
-				this._dataUri = URI.file(process.env.HOME || process.env.USERPROFILE || '~')
-					.with({ path: `${process.env.HOME || process.env.USERPROFILE || '~'}/.agent-studio/data` });
+				// 使用 environmentService.userHome 替代 process.env（浏览器环境无 process）
+				const homeUri = this.environmentService.userHome;
+				this._dataUri = URI.joinPath(homeUri, '.agent-studio', 'data');
 			}
 		}
 		return this._dataUri;
@@ -93,6 +118,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			assigneeName: data.assigneeName,
 			workspaceId: data.workspaceId || '',
 			priority: data.priority || 'medium',
+			dependencies: data.dependencies || [],
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -121,6 +147,49 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		// Set completedAt when transitioning to Done/Cancelled/Archived
 		if (data.status && [TaskBoardStatus.Done, TaskBoardStatus.Cancelled, TaskBoardStatus.Archived].includes(data.status)) {
 			updated.completedAt = now;
+		}
+
+		// When task transitions to Running, ensure an agent is assigned.
+		// If no agent exists, find or create one before executing.
+		if (data.status === TaskBoardStatus.Running && updated.workspaceId) {
+			try {
+				const result = await this.orchestrationService.ensureTaskAgent(
+					updated.workspaceId,
+					id,
+					{
+						title: updated.title,
+						description: updated.description,
+						assigneeId: updated.assigneeId,
+						assigneeName: updated.assigneeName,
+						sourceId: updated.sourceId,
+					},
+				);
+				if (result) {
+					updated.assigneeId = result.assigneeId;
+					updated.assigneeName = result.assigneeName;
+					this.logService.info(`[AgentStudio] TaskBoard: ensured agent "${result.assigneeName}" (${result.assigneeId}) for task ${id}`);
+
+					// Send system message to agent's chat box to notify task start
+					try {
+						const chatMessage = {
+							id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+							role: 'system' as const,
+							content: `🚀 开始执行任务: ${updated.title}\n\n任务描述: ${updated.description || updated.title}\n任务ID: ${updated.id}\n执行者: ${result.assigneeName}`,
+							employeeId: result.assigneeId,
+							agentSessionId: undefined,
+							timestamp: new Date().toISOString(),
+						};
+						await this.chatService.appendMessage(result.assigneeId, chatMessage);
+						this.logService.info(`[AgentStudio] TaskBoard: sent execution start message to agent ${result.assigneeId} for task ${id}`);
+					} catch (chatErr) {
+						this.logService.warn(`[AgentStudio] TaskBoard: failed to send chat message to agent ${result.assigneeId}:`, chatErr);
+					}
+				} else {
+					this.logService.warn(`[AgentStudio] TaskBoard: could not ensure agent for task ${id}, proceeding without assignment`);
+				}
+			} catch (err) {
+				this.logService.warn(`[AgentStudio] TaskBoard: ensureTaskAgent failed for task ${id}:`, err);
+			}
 		}
 
 		tasks[index] = updated;

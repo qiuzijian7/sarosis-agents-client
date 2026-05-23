@@ -40,11 +40,14 @@ export class AgenticPromptsService extends PromptsService {
 
 	private async discoverBuiltinSkills(): Promise<readonly IAgentSkill[]> {
 		try {
+			this.logger.info(`[AgenticPromptsService] discoverBuiltinSkills: resolving ${BUILTIN_SKILLS_URI}`);
 			const stat = await this.fileService.resolve(BUILTIN_SKILLS_URI);
 			if (!stat.children) {
+				this.logger.info(`[AgenticPromptsService] discoverBuiltinSkills: no children found`);
 				return [];
 			}
 
+			this.logger.info(`[AgenticPromptsService] discoverBuiltinSkills: found ${stat.children.length} children`);
 			const skills: IAgentSkill[] = [];
 			for (const child of stat.children) {
 				if (!child.isDirectory) {
@@ -56,12 +59,14 @@ export class AgenticPromptsService extends PromptsService {
 					const rawName = parsed.header?.name;
 					const rawDescription = parsed.header?.description;
 					if (!rawName || !rawDescription) {
+						this.logger.info(`[AgenticPromptsService] discoverBuiltinSkills: skill ${skillFileUri} missing name or description, skipping`);
 						continue;
 					}
 					const name = sanitizeSkillText(rawName, 64);
 					const description = sanitizeSkillText(rawDescription, 1024);
 					const folderName = basename(child.resource);
 					if (name !== folderName) {
+						this.logger.info(`[AgenticPromptsService] discoverBuiltinSkills: skill ${skillFileUri} name ${name} !== folderName ${folderName}, skipping`);
 						continue;
 					}
 					skills.push({
@@ -76,8 +81,10 @@ export class AgenticPromptsService extends PromptsService {
 					this.logger.warn(`[AgenticPromptsService] Failed to parse built-in skill: ${skillFileUri}`, e instanceof Error ? e.message : String(e));
 				}
 			}
+			this.logger.info(`[AgenticPromptsService] discoverBuiltinSkills: discovered ${skills.length} skills`);
 			return skills;
-		} catch {
+		} catch (e) {
+			this.logger.error(`[AgenticPromptsService] discoverBuiltinSkills: error`, e instanceof Error ? e.message : String(e));
 			return [];
 		}
 	}
@@ -119,14 +126,20 @@ export class AgenticPromptsService extends PromptsService {
 	}
 
 	public override async listPromptFiles(type: PromptsType, token: CancellationToken): Promise<readonly IPromptPath[]> {
+		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}) called`);
 		const baseResults = await super.listPromptFiles(type, token);
+		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}): baseResults count=${baseResults.length}`);
 
 		if (type !== PromptsType.skill) {
+			this.logger.info(`[AgenticPromptsService] listPromptFiles(type=${type}): not skill type, returning baseResults`);
 			return baseResults;
 		}
 
 		const builtinItems = await this.getBuiltinSkillPaths();
+		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=skill): builtinItems count=${builtinItems.length}`);
+
 		if (builtinItems.length === 0) {
+			this.logger.info(`[AgenticPromptsService] listPromptFiles(type=skill): no builtin items, returning baseResults`);
 			return baseResults;
 		}
 
@@ -138,10 +151,13 @@ export class AgenticPromptsService extends PromptsService {
 			}
 		}
 		const nonOverridden = builtinItems.filter(p => !overriddenNames.has(basename(dirname(p.uri))));
+		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=skill): nonOverridden builtin count=${nonOverridden.length}`);
 
 		// Built-in items use BUILTIN_STORAGE ('builtin') which is not in the core
 		// IPromptPath union but is handled by the sessions UI layer.
-		return [...baseResults, ...nonOverridden] as readonly IPromptPath[];
+		const result = [...baseResults, ...nonOverridden] as readonly IPromptPath[];
+		this.logger.info(`[AgenticPromptsService] listPromptFiles(type=skill): final result count=${result.length}`);
+		return result;
 	}
 
 	public override async listPromptFilesForStorage(type: PromptsType, storage: PromptsStorage, token: CancellationToken): Promise<readonly IPromptPath[]> {

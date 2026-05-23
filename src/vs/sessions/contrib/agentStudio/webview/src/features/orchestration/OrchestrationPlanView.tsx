@@ -1,7 +1,7 @@
 /*---------------------------------------------------------------------------------------------
- *  Agent Studio WebView - Orchestration Plan Dialog
+ *  Agent Studio WebView - Orchestration Plan View (Inline)
+ *  Embeddable version of the plan dialog for use inside TaskBoardPanel.
  *  Shows the planner's decomposition for user approval/rejection.
- *  Includes: goal input → plan preview → approve/reject
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
@@ -9,7 +9,6 @@ import {
 	useOrchestrationStore,
 	type OrchestrationPlan,
 	type PlanTask,
-	type PlanTaskStatus,
 } from '../../store/useOrchestrationStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
@@ -34,7 +33,7 @@ const PLAN_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 	error: { label: '执行错误', color: '#ef4444' },
 };
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
+// ─── Sub-components (copied from OrchestrationPlanDialog) ───────────────────
 
 function TaskDependencyBadge({ deps, allTasks }: { deps: string[]; allTasks: PlanTask[] }) {
 	if (deps.length === 0) { return null; }
@@ -132,10 +131,7 @@ function PlanTaskItem({
 	);
 }
 
-// ─── Dependency Graph Visualization (simple ASCII-like tree) ────────────────
-
 function DependencyGraph({ tasks }: { tasks: PlanTask[] }) {
-	// Group tasks by depth
 	const depthGroups = useMemo(() => {
 		const groups = new Map<number, PlanTask[]>();
 		for (const t of tasks) {
@@ -173,13 +169,13 @@ function DependencyGraph({ tasks }: { tasks: PlanTask[] }) {
 	);
 }
 
-// ─── Main Dialog ────────────────────────────────────────────────────────────
+// ─── Main Inline View ───────────────────────────────────────────────────────
 
-interface OrchestrationPlanDialogProps {
-	onClose: () => void;
+interface OrchestrationPlanViewProps {
+	onClose?: () => void;
 }
 
-export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProps): React.ReactElement {
+export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): React.ReactElement {
 	const {
 		activePlan,
 		isLoading,
@@ -199,38 +195,32 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	const isPendingApproval = activePlan?.status === 'pending_approval';
 	const isExecuting = activePlan?.status === 'executing' || activePlan?.status === 'approved';
 
-	// Available planners and PM
 	const planners = useMemo(() => getPlanners(), [employees]);
 	const pm = useMemo(() => getPM(), [employees]);
 	const hasPlanners = planners.length > 0;
 	const hasPM = !!pm;
 
-	// Auto-select the first planner if only one
 	useEffect(() => {
 		if (planners.length === 1 && !selectedPlannerId) {
 			setSelectedPlannerId(planners[0].id);
 		}
 	}, [planners, selectedPlannerId]);
 
-	// Create plan — requires a planner
 	const handleCreatePlan = useCallback(async () => {
 		if (!goal.trim() || !activeWorkspaceId || !selectedPlannerId) { return; }
 		await createPlan(goal, activeWorkspaceId, selectedPlannerId);
 	}, [goal, activeWorkspaceId, selectedPlannerId, createPlan]);
 
-	// Approve plan — planner or PM can do this (PM is optional)
 	const handleApprove = useCallback(async () => {
 		if (!activePlan) { return; }
 		await approvePlan(activePlan.id);
 	}, [activePlan, approvePlan]);
 
-	// Reject plan
 	const handleReject = useCallback(async () => {
 		if (!activePlan) { return; }
 		await rejectPlan(activePlan.id);
 	}, [activePlan, rejectPlan]);
 
-	// Task action — planner or PM can dispatch (PM is optional)
 	const handleTaskAction = useCallback(async (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel') => {
 		if (!activePlan) { return; }
 		await taskAction(activePlan.id, taskId, action);
@@ -238,7 +228,6 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 
 	const planStatusConfig = activePlan ? PLAN_STATUS_CONFIG[activePlan.status] : null;
 
-	// Find planner/PM names for display
 	const plannerName = activePlan
 		? employees.find(e => e.id === activePlan.plannerId)?.name || 'Unknown Planner'
 		: '';
@@ -246,7 +235,6 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 		? employees.find(e => e.id === activePlan.pmId)?.name || 'Unknown PM'
 		: '';
 
-	// Statistics
 	const stats = useMemo(() => {
 		if (!activePlan) { return null; }
 		const tasks = activePlan.tasks;
@@ -261,176 +249,169 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	}, [activePlan]);
 
 	return (
-		<div className="employee-form-overlay" onClick={onClose}>
-			<div
-				className="employee-form orch-plan-dialog"
-				onClick={(e) => e.stopPropagation()}
-				style={{ maxWidth: '700px', maxHeight: '80vh', overflow: 'auto' }}
-			>
-				{/* Header */}
-				<div className="orch-dialog-header">
-					<h3>任务编排</h3>
-					{activePlan && planStatusConfig && (
-						<span
-							className="orch-plan-status-badge"
-							style={{ backgroundColor: planStatusConfig.color + '20', color: planStatusConfig.color }}
-						>
-							{planStatusConfig.label}
-						</span>
-					)}
-				</div>
-
-				{/* Goal input (only if no active plan) */}
-				{!activePlan && (
-					<>
-						<p className="orch-dialog-hint">
-							描述你的目标，Planner 会自动拆分为子任务、创建 Agent、建立依赖关系和连线。PM 审批后开始调度执行。
-						</p>
-
-						{/* Role status indicators */}
-						<div className="orch-role-status">
-							<div className={`orch-role-badge ${hasPlanners ? 'ok' : 'missing'}`}>
-								{hasPlanners ? '✅' : '⚠️'} Planner: {hasPlanners ? `${planners.length} 个可用` : '未创建 — 请先创建一个 agentType=planner 的 Agent'}
-							</div>
-							<div className={`orch-role-badge ${hasPM ? 'ok' : 'optional'}`}>
-								{hasPM ? '✅' : 'ℹ️'} PM: {hasPM ? pm!.name : '可选 — PM 可审批计划（当前无 PM）'}
-							</div>
-						</div>
-
-						{/* Planner selector */}
-						{hasPlanners && (
-							<div className="form-field">
-								<label>选择 Planner</label>
-								<select
-									value={selectedPlannerId}
-									onChange={(e) => setSelectedPlannerId(e.target.value)}
-								>
-									<option value="">-- 选择 Planner Agent --</option>
-									{planners.map(p => (
-										<option key={p.id} value={p.id}>{p.name} ({p.role})</option>
-									))}
-								</select>
-							</div>
-						)}
-
-						<div className="form-field">
-							<label>目标描述</label>
-							<textarea
-								value={goal}
-								onChange={(e) => setGoal(e.target.value)}
-								rows={4}
-								placeholder="例如：设计一个用户认证系统，包含登录、注册、密码重置功能，然后编写单元测试，最后部署到生产环境..."
-								autoFocus
-								disabled={!hasPlanners}
-							/>
-						</div>
-
-						{error && (
-							<div className="orch-error-banner">❌ {error}</div>
-						)}
-
-						<div className="form-actions">
-							<button type="button" className="btn-secondary" onClick={onClose}>取消</button>
-							<button
-								type="button"
-								className="btn-primary"
-								onClick={handleCreatePlan}
-								disabled={isLoading || !goal.trim() || !activeWorkspaceId || !selectedPlannerId}
-							>
-								{isLoading ? '分析中...' : '生成计划'}
-							</button>
-						</div>
-					</>
+		<div className="orch-plan-inline">
+			{/* Header */}
+			<div className="orch-dialog-header">
+				<h3>任务编排</h3>
+				{activePlan && planStatusConfig && (
+					<span
+						className="orch-plan-status-badge"
+						style={{ backgroundColor: planStatusConfig.color + '20', color: planStatusConfig.color }}
+					>
+						{planStatusConfig.label}
+					</span>
 				)}
+				{onClose && !activePlan && (
+					<button className="orch-inline-close" onClick={onClose} title="关闭">✕</button>
+				)}
+			</div>
 
-				{/* Plan preview */}
-				{activePlan && (
-					<>
-						{/* Plan summary */}
-						<div className="orch-plan-summary">
-							<div className="orch-plan-goal">
-								<strong>目标:</strong> {activePlan.goal}
-							</div>
-							<div className="orch-plan-desc">{activePlan.summary}</div>
+			{/* Goal input (only if no active plan) */}
+			{!activePlan && (
+				<>
+					<p className="orch-dialog-hint">
+						描述你的目标，Planner 会自动拆分为子任务、创建 Agent、建立依赖关系和连线。PM 审批后开始调度执行。
+					</p>
 
-							{/* Role info */}
-							<div className="orch-plan-roles">
-								<span className="orch-role-tag planner">📐 Planner: {plannerName}</span>
-								{pmName ? (
-									<span className="orch-role-tag pm">👔 PM: {pmName}</span>
-								) : (
-									<span className="orch-role-tag pm missing">⚠️ PM: 未分配</span>
-								)}
-							</div>
+					<div className="orch-role-status">
+						<div className={`orch-role-badge ${hasPlanners ? 'ok' : 'missing'}`}>
+							{hasPlanners ? '✅' : '⚠️'} Planner: {hasPlanners ? `${planners.length} 个可用` : '未创建 — 请先创建一个 agentType=planner 的 Agent'}
+						</div>
+						<div className={`orch-role-badge ${hasPM ? 'ok' : 'optional'}`}>
+							{hasPM ? '✅' : 'ℹ️'} PM: {hasPM ? pm!.name : '可选 — PM 可审批计划（当前无 PM）'}
+						</div>
+					</div>
 
-							{stats && (
-								<div className="orch-plan-stats">
-									<span className="orch-stat">📋 {stats.total} 任务</span>
-									<span className="orch-stat">🤖 {stats.agents} Agent</span>
-									{stats.autoCreate > 0 && (
-										<span className="orch-stat">🆕 {stats.autoCreate} 新建</span>
-									)}
-									{stats.running > 0 && (
-										<span className="orch-stat">⚡ {stats.running} 执行中</span>
-									)}
-									{stats.done > 0 && (
-										<span className="orch-stat">✅ {stats.done} 完成</span>
-									)}
-								</div>
+					{hasPlanners && (
+						<div className="form-field">
+							<label>选择 Planner</label>
+							<select
+								value={selectedPlannerId}
+								onChange={(e) => setSelectedPlannerId(e.target.value)}
+							>
+								<option value="">-- 选择 Planner Agent --</option>
+								{planners.map(p => (
+									<option key={p.id} value={p.id}>{p.name} ({p.role})</option>
+								))}
+							</select>
+						</div>
+					)}
+
+					<div className="form-field">
+						<label>目标描述</label>
+						<textarea
+							value={goal}
+							onChange={(e) => setGoal(e.target.value)}
+							rows={3}
+							placeholder="例如：设计一个用户认证系统，包含登录、注册、密码重置功能..."
+							autoFocus
+							disabled={!hasPlanners}
+						/>
+					</div>
+
+					{error && (
+						<div className="orch-error-banner">❌ {error}</div>
+					)}
+
+					<div className="form-actions">
+						{onClose && (
+							<button type="button" className="btn-secondary" onClick={onClose}>取消</button>
+						)}
+						<button
+							type="button"
+							className="btn-primary"
+							onClick={handleCreatePlan}
+							disabled={isLoading || !goal.trim() || !activeWorkspaceId || !selectedPlannerId}
+						>
+							{isLoading ? '分析中...' : '生成计划'}
+						</button>
+					</div>
+				</>
+			)}
+
+			{/* Plan preview */}
+			{activePlan && (
+				<>
+					<div className="orch-plan-summary">
+						<div className="orch-plan-goal">
+							<strong>目标:</strong> {activePlan.goal}
+						</div>
+						<div className="orch-plan-desc">{activePlan.summary}</div>
+
+						<div className="orch-plan-roles">
+							<span className="orch-role-tag planner">📐 Planner: {plannerName}</span>
+							{pmName ? (
+								<span className="orch-role-tag pm">👔 PM: {pmName}</span>
+							) : (
+								<span className="orch-role-tag pm missing">⚠️ PM: 未分配</span>
 							)}
 						</div>
 
-						{/* View mode toggle */}
-						<div className="orch-view-toggle">
-							<button
-								className={`orch-view-btn ${viewMode === 'list' ? 'active' : ''}`}
-								onClick={() => setViewMode('list')}
-							>
-								列表视图
-							</button>
-							<button
-								className={`orch-view-btn ${viewMode === 'graph' ? 'active' : ''}`}
-								onClick={() => setViewMode('graph')}
-							>
-								依赖图
-							</button>
-						</div>
-
-						{/* Task list / graph */}
-						{viewMode === 'list' ? (
-							<div className="orch-task-list">
-								{activePlan.tasks
-									.sort((a, b) => a.depth - b.depth || a.priority - b.priority)
-									.map(task => (
-										<PlanTaskItem
-											key={task.id}
-											task={task}
-											allTasks={activePlan.tasks}
-											showActions={isExecuting}
-											onAction={handleTaskAction}
-										/>
-									))}
+						{stats && (
+							<div className="orch-plan-stats">
+								<span className="orch-stat">📋 {stats.total} 任务</span>
+								<span className="orch-stat">🤖 {stats.agents} Agent</span>
+								{stats.autoCreate > 0 && (
+									<span className="orch-stat">🆕 {stats.autoCreate} 新建</span>
+								)}
+								{stats.running > 0 && (
+									<span className="orch-stat">⚡ {stats.running} 执行中</span>
+								)}
+								{stats.done > 0 && (
+									<span className="orch-stat">✅ {stats.done} 完成</span>
+								)}
 							</div>
-						) : (
-							<DependencyGraph tasks={activePlan.tasks} />
 						)}
+					</div>
 
-						{error && (
-							<div className="orch-error-banner">❌ {error}</div>
-						)}
+					<div className="orch-view-toggle">
+						<button
+							className={`orch-view-btn ${viewMode === 'list' ? 'active' : ''}`}
+							onClick={() => setViewMode('list')}
+						>
+							列表视图
+						</button>
+						<button
+							className={`orch-view-btn ${viewMode === 'graph' ? 'active' : ''}`}
+							onClick={() => setViewMode('graph')}
+						>
+							依赖图
+						</button>
+					</div>
 
-						{/* Action buttons */}
-						<div className="form-actions">
-							{isPendingApproval && (
-								<>
-									<button
-										type="button"
-										className="btn-secondary"
-										onClick={handleReject}
-										disabled={isLoading}
-									>
-										❌ 拒绝计划
-									</button>
+					{viewMode === 'list' ? (
+						<div className="orch-task-list">
+							{activePlan.tasks
+								.sort((a, b) => a.depth - b.depth || a.priority - b.priority)
+								.map(task => (
+									<PlanTaskItem
+										key={task.id}
+										task={task}
+										allTasks={activePlan.tasks}
+										showActions={isExecuting}
+										onAction={handleTaskAction}
+									/>
+								))}
+						</div>
+					) : (
+						<DependencyGraph tasks={activePlan.tasks} />
+					)}
+
+					{error && (
+						<div className="orch-error-banner">❌ {error}</div>
+					)}
+
+					<div className="form-actions">
+						{isPendingApproval && (
+							<>
+								<button
+									type="button"
+									className="btn-secondary"
+									onClick={handleReject}
+									disabled={isLoading}
+								>
+									❌ 拒绝计划
+								</button>
 								<button
 									type="button"
 									className="btn-primary"
@@ -440,17 +421,16 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 								>
 									{isLoading ? '执行中...' : hasPM ? `✅ PM(${pm!.name}) 批准调度` : '✅ 批准并执行'}
 								</button>
-								</>
-							)}
-							{!isPendingApproval && (
-								<button type="button" className="btn-secondary" onClick={onClose}>
-									关闭
-								</button>
-							)}
-						</div>
-					</>
-				)}
-			</div>
+							</>
+						)}
+						{!isPendingApproval && onClose && (
+							<button type="button" className="btn-secondary" onClick={onClose}>
+								关闭
+							</button>
+						)}
+					</div>
+				</>
+			)}
 		</div>
 	);
 }

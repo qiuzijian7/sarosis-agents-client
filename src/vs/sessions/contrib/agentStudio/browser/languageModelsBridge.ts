@@ -29,7 +29,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
-import { ILanguageModelsService, IChatMessage, IChatResponsePart, ChatMessageRole, ILanguageModelChatMetadata } from '../../../../workbench/contrib/chat/common/languageModels.js';
+import { ILanguageModelsService, IChatMessage, IChatResponsePart, IChatResponseToolUsePart, ChatMessageRole, ILanguageModelChatMetadata } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import {
 	IModelProvider,
@@ -314,17 +314,44 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				return { type: 'text', content: part.value };
 			case 'thinking':
 				return { type: 'thinking', content: typeof (part as { value?: unknown }).value === 'string' ? (part as { value: string }).value : '' };
-			case 'tool_use':
+			case 'tool_use': {
+				const toolPart = part as IChatResponseToolUsePart;
+				const rawParams = toolPart.parameters;
+				let argsStr: string;
+				let displayName: string | undefined;
+				let renderType: string | undefined;
+				let defaultShow: boolean | undefined;
+
+				// Extract _meta from parameters if present (set by Knot AG-UI extension)
+				if (rawParams && typeof rawParams === 'object' && '_meta' in (rawParams as object)) {
+					const meta = (rawParams as { _meta?: Record<string, unknown> })._meta;
+					if (meta) {
+						displayName = meta.display_name as string | undefined;
+						renderType = meta.render_type as string | undefined;
+						defaultShow = meta.default_show as boolean | undefined;
+					}
+					// Strip _meta from the parameters before passing to tool
+					const cleanParams = { ...(rawParams as Record<string, unknown>) };
+					delete cleanParams._meta;
+					argsStr = JSON.stringify(cleanParams);
+				} else if (typeof rawParams === 'string') {
+					argsStr = rawParams;
+				} else {
+					argsStr = JSON.stringify(rawParams ?? {});
+				}
+
 				return {
 					type: 'tool_call',
 					toolCall: {
-						id: (part as { toolCallId: string }).toolCallId,
-						name: (part as { name: string }).name,
-						arguments: typeof (part as { parameters?: unknown }).parameters === 'string'
-							? (part as { parameters: string }).parameters
-							: JSON.stringify((part as { parameters?: unknown }).parameters ?? {}),
+						id: toolPart.toolCallId,
+						name: toolPart.name,
+						arguments: argsStr,
+						displayName,
+						renderType,
+						defaultShow,
 					},
 				};
+			}
 			default:
 				return undefined; // data parts and others — ignored for now
 		}

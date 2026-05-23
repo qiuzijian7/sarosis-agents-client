@@ -423,7 +423,7 @@ export function stripJsonCodeBlocks(text: string): string {
 export function stripXmlToolCallTags(text: string): string {
 	if (!text || !TOOL_CALL_XML_QUICK_RE.test(text)) { return text; }
 
-	const tagNames = ['tool_call', 'tool_result', 'function_call', 'function_calls', 'function_response', 'function', 'tool_calls'];
+	const tagNames = ['tool_call', 'tool_result', 'function_call', 'function_calls', 'function_response', 'function', 'tool_calls', 'tool'];
 	let result = text;
 
 	for (const tagName of tagNames) {

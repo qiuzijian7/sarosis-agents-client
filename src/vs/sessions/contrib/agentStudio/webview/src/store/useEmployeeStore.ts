@@ -258,7 +258,12 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 	},
 
 	getPlanners: () => {
-		return get().employees.filter(e => e.agentType === 'planner');
+		return get().employees.filter(e =>
+			e.agentType === 'planner'
+			|| e.presetId === 'planner'
+			|| e.role?.toLowerCase().includes('planner')
+			|| e.name?.toLowerCase() === 'planner'
+		);
 	},
 
 	getPM: () => {
@@ -269,7 +274,10 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 		const { employees, selectedEmployeeId } = get();
 		if (!selectedEmployeeId) { return false; }
 		const emp = employees.find(e => e.id === selectedEmployeeId);
-		return emp?.agentType === 'planner';
+		return emp?.agentType === 'planner'
+			|| emp?.presetId === 'planner'
+			|| emp?.role?.toLowerCase().includes('planner')
+			|| emp?.name?.toLowerCase() === 'planner';
 	},
 
 	isSelectedPM: () => {

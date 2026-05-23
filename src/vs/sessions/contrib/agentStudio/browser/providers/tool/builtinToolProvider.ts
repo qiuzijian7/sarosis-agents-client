@@ -50,6 +50,8 @@ interface IToolDescriptor {
 	readonly handler: ToolHandler;
 	/** 返回 false 表示当前环境不支持该工具，listTools 会跳过它。 */
 	readonly available?: () => boolean;
+	/** 标记为 stub — 只有 schema 定义，没有实际 handler 实现。listTools 会跳过这些工具，防止 LLM 看到后尝试调用导致 "not yet implemented" 错误。 */
+	readonly isStub?: boolean;
 }
 
 /**
@@ -152,6 +154,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			if (t.available && !t.available()) { continue; }
 			// 检查用户是否禁用了该工具
 			if (this._disabledTools.has(name)) { continue; }
+			// 跳过 stub 工具 — 它们只有 schema 定义，没有实际 handler 实现
+			// 暴露 stub 工具给 LLM 会导致 LLM 尝试调用，返回 "not yet implemented" 错误
+			if (t.isStub) { continue; }
 			out.push(t.definition);
 		}
 		return out;
@@ -838,11 +843,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			this.register({
 				definition: { ...def, source: this.id },
 				handler: async () => [{
+
 					type: 'text' as const,
 					text: `Tool "${def.name}" is defined but not yet implemented natively. ` +
 						`Configure an MCP server that provides this tool, or it will be available ` +
 						`when a matching provider is registered.`,
 				}],
+				isStub: true, // 标记为 stub — listTools 会跳过，防止 LLM 尝试调用
 			});
 		}
 	}

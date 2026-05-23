@@ -302,6 +302,11 @@ export interface Delegation {
 	completedAt?: string;
 }
 
+export interface ChatMessageMetadata {
+	type: 'orchestration_plan';
+	planId: string;
+}
+
 export interface ChatMessage {
 	readonly id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
@@ -315,6 +320,8 @@ export interface ChatMessage {
 	thinking?: string;
 	timestamp: string;
 	tokenUsage?: { input: number; output: number; total: number };
+	/** Metadata for special message types (e.g., orchestration_plan for inline plan approval) */
+	metadata?: ChatMessageMetadata;
 }
 
 export interface ToolCall {
@@ -377,6 +384,8 @@ export interface TaskBoardRecord {
 	assigneeName?: string;
 	workspaceId: string;
 	priority?: 'low' | 'medium' | 'high';
+	/** IDs of tasks that must complete before this one can start */
+	dependencies?: string[];
 	createdAt: string;
 	updatedAt: string;
 	completedAt?: string;

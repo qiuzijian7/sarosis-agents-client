@@ -9,16 +9,23 @@ import { sendRequest } from '../bridge/messageClient';
 import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState, type StreamError } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
+export interface ChatMessageMetadata {
+	type: 'orchestration_plan';
+	planId: string;
+}
+
 export interface ChatMessage {
 	id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
 	content: string;
 	thinking?: string;
-	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean }[];
+	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string }[];
 	tokenUsage?: { input: number; output: number; total: number };
 	timestamp: string;
 	/** Structured error info for system error messages (VS Code Copilot Chat pattern) */
 	error?: StreamError;
+	/** Metadata for special message types (e.g., orchestration_plan for inline plan approval) */
+	metadata?: ChatMessageMetadata;
 }
 
 export interface AgentSessionInfo {
@@ -369,7 +376,38 @@ export const useChatStore = create<ChatState>((set, get) => {
 					return;
 				}
 				console.log(`[ChatStore] loadHistoryForSession: received ${messages?.length ?? 0} messages for ${employeeId}`);
-				set({ messages: messages || [], isLoading: false });
+				
+				// ── Re-create orchestration_plan message if there's an active pending plan ──
+				let finalMessages = messages || [];
+				try {
+					const { useOrchestrationStore } = require('./useOrchestrationStore');
+					const { useWorkspaceStore } = require('./useWorkspaceStore');
+					const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+					
+					// Ensure plans are loaded before checking
+					if (workspaceId && useOrchestrationStore.getState().plans.length === 0) {
+						console.log('[ChatStore] Plans not loaded yet, loading plans first...');
+						await useOrchestrationStore.getState().loadPlans(workspaceId);
+					}
+					
+					const plans = useOrchestrationStore.getState().plans;
+					const activePlan = plans.find(p => p.status === 'pending_approval');
+					if (activePlan) {
+						console.log(`[ChatStore] Found active pending plan ${activePlan.id}, re-creating orchestration_plan message`);
+						const planMessage: ChatMessage = {
+							id: `plan_${activePlan.id}`,
+							role: 'system',
+							content: `✅ 任务计划已创建，请在下方面板中审批：`,
+							metadata: { type: 'orchestration_plan', planId: activePlan.id },
+							timestamp: new Date().toISOString(),
+						};
+						finalMessages = [...finalMessages, planMessage];
+					}
+				} catch (err) {
+					console.warn('[ChatStore] Failed to check for active plans:', err);
+				}
+				
+				set({ messages: finalMessages, isLoading: false });
 			} catch (err) {
 				console.error('[ChatStore] Failed to load history:', err);
 				set({ isLoading: false });
@@ -381,6 +419,19 @@ export const useChatStore = create<ChatState>((set, get) => {
 			if (!message || !message.trim()) { return; }
 			let { activeEmployeeId, activeAgentSessionId, streamState } = get();
 			if (!activeEmployeeId) { return; }
+
+			// ── 解析 /skill <id> 命令，提取显式激活的技能 ID ──
+			const explicitSkillIds: string[] = [];
+			const seenSkillIds = new Set<string>();
+			const skillPattern = /\/skill\s+(\S+)/g;
+			let match: RegExpExecArray | null;
+			while ((match = skillPattern.exec(message)) !== null) {
+				const id = match[1].toLowerCase();
+				if (!seenSkillIds.has(id)) {
+					seenSkillIds.add(id);
+					explicitSkillIds.push(id);
+				}
+			}
 
 			// ── Auto-cancel current stream if still running (VS Code Copilot Chat
 			// "steering" pattern: sending a new message interrupts the current one) ──
@@ -445,6 +496,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					agentSessionId: activeAgentSessionId ?? undefined,
 					workspaceSessionId,
 					workspaceId,
+					explicitSkillIds: explicitSkillIds.length > 0 ? explicitSkillIds : undefined,
 				});
 				// After send completes, refresh session list to update messageCount
 				get().loadAgentSessions(activeEmployeeId!);

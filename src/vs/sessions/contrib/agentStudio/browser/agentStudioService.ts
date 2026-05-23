@@ -36,6 +36,25 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidSelectEmployee = this._register(new Emitter<string | null>());
 	readonly onDidSelectEmployee: Event<string | null> = this._onDidSelectEmployee.event;
 
+	/**
+	 * 规范化 skills 格式：处理旧格式（对象数组）和新格式（字符串数组）的混合情况
+	 * 旧格式: [{id: "configmd", name: "ConfigMD", enabled: true}, ...]
+	 * 新格式: ["configmd", ...]
+	 */
+	private _normalizeSkillIds(skills: any[]): string[] {
+		if (!skills || !Array.isArray(skills)) {
+			return [];
+		}
+		return skills.map(s => {
+			if (typeof s === 'string') {
+				return s;
+			} else if (s && typeof s === 'object' && 'id' in s) {
+				return (s as { id: string }).id;
+			}
+			return '';
+		}).filter(Boolean);
+	}
+
 	/** Fire the employee-selected event (called by webview controller) */
 	fireSelectEmployee(employeeId: string | null): void {
 		this.logService.info(`[AgentStudioService] fireSelectEmployee(employeeId=${employeeId})`);
@@ -289,7 +308,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * for a given employee, and return the list of missing skill IDs.
 	 */
 	private _calculateSkillErrorInfo(employee: Employee): { errorCount: number; missingSkillIds: string[] } {
-		const skillIds = employee.skills || [];
+		const skillIds = this._normalizeSkillIds(employee.skills || []);
 		if (skillIds.length === 0) { return { errorCount: 0, missingSkillIds: [] }; }
 		
 		const missingSkillIds: string[] = [];
@@ -785,7 +804,39 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	// ─── Workspaces ─────────────────────────────────────────────────────────────
 
 	async getWorkspaces(): Promise<Workspace[]> {
-		return this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+		const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+
+		// Auto-discover: if the global workspace index is empty but the current
+		// VS Code folder already contains a .sarosisworkspace directory (e.g.
+		// user deleted workspaces.json or switched to a fresh VS Code profile),
+		// automatically create a workspace entry so that employees and layout
+		// are visible without manual workspace recreation.
+		if (workspaces.length === 0) {
+			const folderUri = this._getFirstWorkspaceFolderUri();
+			if (folderUri) {
+				const localDirUri = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
+				try {
+					await this.fileService.stat(localDirUri);
+					// Local data directory exists — auto-create a workspace entry
+					const ws: Workspace = {
+						id: this._generateId(),
+						name: folderUri.path.split('/').pop() || 'Workspace',
+						path: folderUri.fsPath,
+						employees: [],
+						connections: [],
+						createdAt: new Date().toISOString(),
+						updatedAt: new Date().toISOString(),
+					};
+					workspaces.push(ws);
+					await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
+					this.logService.info(`[AgentStudio] Auto-discovered workspace from ${folderUri.fsPath}`);
+				} catch {
+					// No local data — keep empty
+				}
+			}
+		}
+
+		return workspaces;
 	}
 
 	async getWorkspace(id: string): Promise<Workspace | undefined> {
@@ -1278,7 +1329,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 */
 	async checkSkillDependencies(employee: Employee): Promise<string[]> {
 		const missingSkills: string[] = [];
-		const skillIds = employee.skills || [];
+		const skillIds = this._normalizeSkillIds(employee.skills || []);
 
 		for (const skillId of skillIds) {
 			const skill = this.skillRegistry.getSkill(skillId);

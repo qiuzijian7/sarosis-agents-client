@@ -514,7 +514,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						if (toolCallAssembler.isActive) {
 							assistantToolCalls.push(toolCallAssembler.finalize());
 						}
-						toolCallAssembler.start(tc.id, tc.name, tc.arguments || '');
+						toolCallAssembler.start(tc.id, tc.name, tc.arguments || '', {
+							displayName: tc.displayName,
+							renderType: tc.renderType,
+							defaultShow: tc.defaultShow,
+						});
 					} else {
 						// Continuation chunk — append arguments with buffer size check
 						const appended = toolCallAssembler.appendArgs(tc.arguments || '');
@@ -582,6 +586,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					type: 'tool_start',
 					toolCallId: tc.id,
 					toolName: tc.name,
+					displayName: tc.displayName,
+					renderType: tc.renderType,
+					defaultShow: tc.defaultShow,
 				};
 			}
 		}
@@ -591,6 +598,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		effectiveToolCalls = deduplicateToolCalls(effectiveToolCalls);
 		if (effectiveToolCalls.length < assistantToolCalls.length) {
 			this._logService.info(`[AgentOS] Deduplicated: ${assistantToolCalls.length} → ${effectiveToolCalls.length}`);
+		}
+
+		// ─── Filter out phantom tool calls (render_type="None", default_show=false) ─────
+		// These are UI indicator tools (e.g., "task_planning" showing "任务规划中")
+		// that should NOT be executed as real tools. Executing them causes confusing
+		// "not yet implemented" errors that derail the conversation.
+		const realToolCalls = effectiveToolCalls.filter(tc => {
+			const isPhantom = tc.renderType === 'None' && tc.defaultShow === false;
+			if (isPhantom) {
+				this._logService.info(`[AgentOS] Skipping phantom tool call: ${tc.name} (render_type=None, default_show=false)`);
+			}
+			return !isPhantom;
+		});
+		if (realToolCalls.length < effectiveToolCalls.length) {
+			this._logService.info(`[AgentOS] Filtered phantom tool calls: ${effectiveToolCalls.length} → ${realToolCalls.length}`);
+			effectiveToolCalls = realToolCalls;
 		}
 
 		// 将助手消息添加到消息历史
@@ -1145,6 +1168,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		// 3. XML 格式: <tool_call>...</tool_call> 或 <function_call>...</function_call>
 		if (results.length === 0) {
+			// Log whether XML-like tags exist in text before attempting extraction
+			const hasXmlTags = /<(?:tool_call|function_call|tool_use|invoke|tool)[\s>]/i.test(text);
+			this._logService.info(`[AgentOS] _tryExtractToolCallsFromText: XML extraction attempt, hasXmlTags=${hasXmlTags}, textLen=${text.length}`);
 			const xmlResults = this._extractToolCallsFromXml(text);
 			if (xmlResults.length > 0) {
 				this._logService.info(`[AgentOS] _tryExtractToolCallsFromText: found ${xmlResults.length} tool call(s) in XML format`);
@@ -1222,13 +1248,21 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 */
 	private _extractToolCallsFromXml(text: string): IToolCallInfo[] {
 		const results: IToolCallInfo[] = [];
-		const xmlTags = ['tool_call', 'function_call', 'tool_use', 'invoke'];
+		const xmlTags = ['tool_call', 'function_call', 'tool_use', 'invoke', 'tool'];
 
 		for (const tag of xmlTags) {
 			const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
 			let match: RegExpExecArray | null;
 			while ((match = regex.exec(text)) !== null) {
 				const content = match[1].trim();
+				this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag, contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
+				// <tool> 标签使用 ▷{JSON} 头部 + <document> 子标签格式
+				if (tag === 'tool') {
+					const parsed = this._parseToolXMLFormat(content);
+					if (parsed) { results.push(parsed); }
+					else { this._logService.info(`[AgentOS] _extractToolCallsFromXml: _parseToolXMLFormat returned null for <tool> tag`); }
+					continue;
+				}
 				// XML 内部可能是 JSON
 				if (content.startsWith('{')) {
 					try {
@@ -1532,6 +1566,93 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		return results;
 	}
 
+	/**
+	 * 解析 <tool> 标签的特殊格式，支持两种变体：
+	 *
+	 * 格式 A（▷ 头部）：
+	 *   ▷{"tool_call_id":"...","name":"terminal","display_name":"...","render_type":"...","default_show":true}
+	 *   <document>{"command":"...","cwd":"...",...}</document>
+	 *
+	 * 格式 B（<tool_call> 子标签）：
+	 *   <tool_call>{"tool_call_id":"...","name":"web_preview","display_name":"...","render_type":"...","default_show":true}</tool_call>
+	 *   <document>{"url":"...",...}</document>
+	 */
+	private _parseToolXMLFormat(content: string): IToolCallInfo | null {
+		// 先尝试格式 B：<tool_call> 子标签
+		const toolCallMatch = content.match(/<tool_call>([\s\S]*?)<\/tool_call>/);
+		if (toolCallMatch) {
+			try {
+				const header = JSON.parse(toolCallMatch[1].trim());
+				const args = this._extractToolDocument(content);
+				this._logService.info(`[AgentOS] _parseToolXMLFormat format B (tool_call): name=${header.name}, default_show=${header.default_show} (type=${typeof header.default_show}), displayName=${header.display_name}, renderType=${header.render_type}`);
+				return {
+					id: header.tool_call_id || header.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+					name: header.name || header.tool_name || header.tool || '',
+					arguments: args ? JSON.stringify(args) : '{}',
+					displayName: header.display_name,
+					renderType: header.render_type,
+					defaultShow: header.default_show !== false,
+				};
+			} catch (e) {
+				this._logService.info(`[AgentOS] _parseToolXMLFormat format B parse error: ${e}`);
+				/* fall through to format A */
+			}
+		}
+
+		// 格式 A：提取 ▷ 后面的 JSON 头部
+		const headerMatch = content.match(/[▷►]\s*(\{[\s\S]*?\})\s*\n/);
+		if (!headerMatch) {
+			// 尝试无 ▷ 前缀的纯 JSON 格式（第一行 JSON）
+			const plainJsonMatch = content.match(/^(\{[^<]*?\})\s*\n/);
+			if (!plainJsonMatch) {
+				this._logService.info(`[AgentOS] _parseToolXMLFormat: no format matched, content preview=${content.substring(0, 120)}`);
+				return null;
+			}
+			try {
+				const header = JSON.parse(plainJsonMatch[1]);
+				const args = this._extractToolDocument(content);
+				this._logService.info(`[AgentOS] _parseToolXMLFormat format A (plain JSON): name=${header.name}, default_show=${header.default_show} (type=${typeof header.default_show}), displayName=${header.display_name}, renderType=${header.render_type}`);
+				return {
+					id: header.tool_call_id || header.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+					name: header.name || header.tool_name || header.tool || '',
+					arguments: args ? JSON.stringify(args) : '{}',
+					displayName: header.display_name,
+					renderType: header.render_type,
+					defaultShow: header.default_show !== false,
+				};
+			} catch { return null; }
+		}
+
+		try {
+			const header = JSON.parse(headerMatch[1]);
+			const args = this._extractToolDocument(content);
+			this._logService.info(`[AgentOS] _parseToolXMLFormat format A (▷ prefix): name=${header.name}, default_show=${header.default_show} (type=${typeof header.default_show}), displayName=${header.display_name}, renderType=${header.render_type}`);
+			return {
+				id: header.tool_call_id || header.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+				name: header.name || header.tool_name || header.tool || '',
+				arguments: args ? JSON.stringify(args) : '{}',
+				displayName: header.display_name,
+				renderType: header.render_type,
+				defaultShow: header.default_show !== false,
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 从 <tool> 内容中提取 <document> 子标签的 JSON 数据。
+	 */
+	private _extractToolDocument(content: string): Record<string, unknown> | null {
+		const docMatch = content.match(/<document>([\s\S]*?)<\/document>/);
+		if (!docMatch) { return null; }
+		try {
+			return JSON.parse(docMatch[1].trim());
+		} catch {
+			return null;
+		}
+	}
+
 
 	/**
 	 * 解析单个 JSON 对象为 IToolCallInfo
@@ -1746,7 +1867,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (delta.type === 'tool_call' && delta.toolCall) {
 			// Adapt tool_call delta to tool_start/tool_args chunks
 			if (delta.toolCall.name) {
-				return { type: 'tool_start' as any, content: '', toolCallId: delta.toolCall.id, toolName: delta.toolCall.name };
+				const result: any = { type: 'tool_start' as any, content: '', toolCallId: delta.toolCall.id, toolName: delta.toolCall.name };
+				// Forward display metadata if present
+				if (delta.toolCall.displayName !== undefined) { result.displayName = delta.toolCall.displayName; }
+				if (delta.toolCall.renderType !== undefined) { result.renderType = delta.toolCall.renderType; }
+				if (delta.toolCall.defaultShow !== undefined) { result.defaultShow = delta.toolCall.defaultShow; }
+				this._logService.info(`[AgentOS] _adaptModelDelta tool_start: name=${delta.toolCall.name}, defaultShow=${delta.toolCall.defaultShow}, displayName=${delta.toolCall.displayName}, renderType=${delta.toolCall.renderType}`);
+				return result;
 			}
 			return { type: 'tool_args' as any, content: delta.toolCall.arguments || '', toolCallId: delta.toolCall.id };
 		}

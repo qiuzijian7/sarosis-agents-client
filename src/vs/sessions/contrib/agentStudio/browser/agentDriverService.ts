@@ -15,6 +15,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING } from '../common/constants.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -35,6 +36,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		@ILogService logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		this._logService = logService;
@@ -104,7 +106,42 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		try {
 			// 3a. 生成已安装技能清单 —— 借鉴 OpenClaw 轻量目录模式
 			// 只在 systemPrompt 中放 name + description + id，让模型通过 read_skill 工具按需读取全文
-			const allSkills = [...this._skillRegistry.getSkills()].filter(s => s.enabled !== false);
+			
+			// 【关键修复】仅注入 agent 实例中配置的技能，未配置的不要注入
+			const employee = await this._agentStudioService.getEmployee(request.agentId);
+			
+			// 规范化 skills 格式：处理旧格式（对象数组）和新格式（字符串数组）的混合情况
+			const rawSkills = employee?.skills || [];
+			const agentSkillIds = new Set(
+				rawSkills.map(s => {
+					if (typeof s === 'string') {
+						return s;  // 新格式：字符串 ID
+					} else if (s && typeof s === 'object' && 'id' in s) {
+						return (s as { id: string }).id;  // 旧格式：对象，提取 id
+					}
+					return '';  // 无效格式
+				}).filter(Boolean)  // 过滤空字符串
+			);
+
+			// 将用户通过 /skill 命令显式选择的技能临时加入 agentSkillIds
+			const explicitSkillIds = request.explicitSkillIds || [];
+			const newExplicitIds: string[] = [];
+			for (const id of explicitSkillIds) {
+				if (agentSkillIds.has(id)) {
+					this._logService.info(`[AgentDriver] Skill '${id}' already in agent config, skipping duplicate`);
+				} else {
+					agentSkillIds.add(id);
+					newExplicitIds.push(id);
+				}
+			}
+			if (newExplicitIds.length > 0) {
+				this._logService.info(`[AgentDriver] Explicit skills added for this turn: ${newExplicitIds.join(', ')}`);
+			}
+			
+			const allSkills = [...this._skillRegistry.getSkills()]
+				.filter(s => s.enabled !== false)
+				.filter(s => agentSkillIds.has(s.id));  // 只保留 agent 配置的技能
+			
 			let mergedSystemPrompt = request.systemPrompt || '';
 
 			// 注入工作区上下文，让模型始终知晓当前工作区信息
@@ -220,12 +257,16 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						userMessage: lastUserMessage.content,
 						agentId: request.agentId,
 						sessionId: request.sessionId,
+						explicit: explicitSkillIds,
 					});
 
-					if (injections.length > 0) {
+					// 【关键修复】仅保留 agent 实例中配置的技能，未配置的不要注入
+					const filteredInjections = injections.filter(inj => agentSkillIds.has(inj.skill.id));
+
+					if (filteredInjections.length > 0) {
 						// 分离 system 和 user 注入
-						const systemInjections = injections.filter(inj => inj.placement === 'system');
-						const userInjections = injections.filter(inj => inj.placement === 'user');
+						const systemInjections = filteredInjections.filter(inj => inj.placement === 'system');
+						const userInjections = filteredInjections.filter(inj => inj.placement === 'user');
 
 						// 将 system 类型的 skill 注入追加到 systemPrompt
 						// 借鉴 OpenClaw：短 skill（<500 chars）直接注入，长 skill 只放摘要
@@ -269,7 +310,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							];
 						}
 
-						this._logService.info(`[AgentDriver] Injected ${injections.length} skills (system: ${systemInjections.length}, user: ${userInjections.length})`);
+						this._logService.info(`[AgentDriver] Injected ${filteredInjections.length} skills (system: ${systemInjections.length}, user: ${userInjections.length})`);
 					}
 				}
 
@@ -359,8 +400,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 	/**
 	 * Build a workspace context section for the system prompt.
-	 * Resolves the Sarosis workspace that owns the given agent and injects
-	 * its path so the model knows exactly what "workspace" means.
+	 *
+	 * Uses the Sarosis workspace path associated with the agent instance.
+	 * When the VS Code currently-open folder differs from the stored workspace
+	 * path, the workspace record is automatically updated so it stays in sync
+	 * with reality.
 	 *
 	 * Also includes a sandbox rule: the agent may ONLY operate within the
 	 * current workspace directory tree.
@@ -373,7 +417,30 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			}
 
 			const workspace = await this._agentStudioService.getWorkspace(employee.workspaceId);
-			if (!workspace?.path) {
+			if (!workspace) {
+				return undefined;
+			}
+
+			let workspaceRoot = workspace.path;
+
+			// Auto-sync: if the VS Code currently-open folder differs from the
+			// stored workspace path, update the workspace record to match.
+			const vsCodeFolders = this._workspaceContextService.getWorkspace().folders;
+			const vsCodeFolder = vsCodeFolders.length > 0 ? vsCodeFolders[0].uri.fsPath : undefined;
+
+			if (vsCodeFolder && workspaceRoot !== vsCodeFolder) {
+				this._logService.info(
+					`[AgentDriver] Syncing workspace path: "${workspaceRoot}" → "${vsCodeFolder}"`
+				);
+				try {
+					await this._agentStudioService.updateWorkspace(employee.workspaceId, { path: vsCodeFolder });
+				} catch (err) {
+					this._logService.warn('[AgentDriver] Failed to sync workspace path:', err);
+				}
+				workspaceRoot = vsCodeFolder;
+			}
+
+			if (!workspaceRoot) {
 				return undefined;
 			}
 
@@ -381,15 +448,15 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				'## Workspace Context',
 				'',
 				`You are operating inside the Sarosis workspace "${workspace.name}".`,
-				`The workspace root directory is: ${workspace.path}`,
+				`The workspace root directory is: ${workspaceRoot}`,
 				'',
 				'When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,',
-				`they mean this directory: ${workspace.path}`,
+				`they mean this directory: ${workspaceRoot}`,
 				'',
 				'### Security Sandbox',
 				'',
 				`You are ONLY permitted to read, write, search, and execute commands within the workspace directory and its subdirectories.`,
-				`You MUST NOT access, modify, or reference any files or directories outside of: ${workspace.path}`,
+				`You MUST NOT access, modify, or reference any files or directories outside of: ${workspaceRoot}`,
 				'If a user asks you to operate on a path outside this workspace, refuse and explain that you are sandboxed to the current workspace.',
 			];
 
@@ -415,6 +482,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			sessionId: options.agentSessionId,
 			messages: [{ role: 'user', content: message }],
 			systemPrompt: options.systemPrompt,
+			explicitSkillIds: options.explicitSkillIds,
 			options: {
 				temperature: options.temperature,
 			},

@@ -55,6 +55,8 @@ export class AgentFactory {
 		const existingEmployees = await this.agentStudioService.getEmployees(plan.workspaceId);
 		const existingByName = new Map(existingEmployees.map(e => [e.name.toLowerCase(), e]));
 
+		this.logService.info(`[AgentFactory] assignAgents: workspaceId=${plan.workspaceId}, tasks=${plan.tasks.length}, existingEmployees=${existingEmployees.length}, usedAgentIds=${this._usedAgentIds.size}`);
+
 		for (const task of plan.tasks) {
 			if (task.status === PlanTaskStatus.Done || task.status === PlanTaskStatus.Cancelled) {
 				continue;
@@ -63,36 +65,44 @@ export class AgentFactory {
 			// Already assigned
 			if (task.assigneeId) {
 				this._usedAgentIds.add(task.assigneeId);
+				this.logService.info(`[AgentFactory] Task "${task.title}" already assigned to agent ${task.assigneeId} (${task.assigneeName})`);
 				continue;
 			}
 
-			// Strategy 1: Name match (pool reuse)
+			// Strategy 1: Name match (pool reuse) - 优先使用名称匹配的已有agent
 			if (task.assigneeName) {
 				const existing = existingByName.get(task.assigneeName.toLowerCase());
 				if (existing) {
 					task.assigneeId = existing.id;
 					this._usedAgentIds.add(existing.id);
-					this.logService.info(`[AgentFactory] Reused agent "${existing.name}" for task "${task.title}"`);
+					this.logService.info(`[AgentFactory] [Strategy 1] Reused agent "${existing.name}" (id=${existing.id}) for task "${task.title}"`);
 					continue;
+				} else {
+					this.logService.info(`[AgentFactory] [Strategy 1] No name match for "${task.assigneeName}" in existing agents: [${existingEmployees.map(e => e.name).join(', ')}]`);
 				}
 			}
 
-			// Strategy 2: Score-based selection
+			// Strategy 2: Score-based selection - 从已有agent中选择评分最高的
 			const allEmps = await this.agentStudioService.getEmployees(plan.workspaceId);
 			const best = this._selectBestAgent(allEmps, task.assigneeRole || '', this._usedAgentIds);
 			if (best) {
 				task.assigneeId = best.id;
 				task.assigneeName = best.name;
 				this._usedAgentIds.add(best.id);
-				this.logService.info(`[AgentFactory] Score-matched agent "${best.name}" for task "${task.title}"`);
+				this.logService.info(`[AgentFactory] [Strategy 2] Score-matched agent "${best.name}" (id=${best.id}, role=${best.role}) for task "${task.title}" (role=${task.assigneeRole})`);
 				continue;
+			} else {
+				this.logService.info(`[AgentFactory] [Strategy 2] No suitable agent found via scoring. Candidates excluded: [${this._usedAgentIds.size} used], role=${task.assigneeRole}`);
 			}
 
-			// Strategy 3: Auto-create
-			if (task.autoCreateAgent) {
+			// Strategy 3: Auto-create - 只有当确实没有合适agent时才创建新的
+			const shouldCreate = task.autoCreateAgent || (task.assigneeName && !existingByName.has(task.assigneeName.toLowerCase()));
+			if (shouldCreate) {
 				try {
+					const agentName = task.assigneeName || `Agent-${task.title.slice(0, 20)}`;
+					this.logService.info(`[AgentFactory] [Strategy 3] Auto-creating agent "${agentName}" for task "${task.title}" (autoCreateAgent=${task.autoCreateAgent}, not found in existing=${!existingByName.has((task.assigneeName || '').toLowerCase())})`);
 					const newEmp = await this.agentStudioService.createEmployee({
-						name: task.assigneeName || `Agent-${task.title.slice(0, 20)}`,
+						name: agentName,
 						role: task.assigneeRole || 'Agent',
 						agentType: AgentType.Worker,
 						workspaceId: plan.workspaceId,
@@ -101,12 +111,14 @@ export class AgentFactory {
 					task.assigneeName = newEmp.name;
 					this._usedAgentIds.add(newEmp.id);
 					existingByName.set(newEmp.name.toLowerCase(), newEmp);
-					this.logService.info(`[AgentFactory] Created agent "${newEmp.name}" for task "${task.title}"`);
+					this.logService.info(`[AgentFactory] [Strategy 3] Created agent "${newEmp.name}" (id=${newEmp.id}) for task "${task.title}"`);
 				} catch (err) {
 					task.status = PlanTaskStatus.Error;
 					task.error = `Failed to create agent: ${String(err)}`;
-					this.logService.error(`[AgentFactory] Failed to create agent "${task.assigneeName}": ${err}`);
+					this.logService.error(`[AgentFactory] [Strategy 3] Failed to create agent "${task.assigneeName}": ${err}`);
 				}
+			} else {
+				this.logService.warn(`[AgentFactory] No suitable agent found for task "${task.title}" and auto-create not triggered (autoCreateAgent=${task.autoCreateAgent}, assigneeName=${task.assigneeName})`);
 			}
 		}
 	}
@@ -175,11 +187,15 @@ export class AgentFactory {
 				: agent.status === 'offline' ? 0.0
 					: 0.2;
 
-		return (
+		const totalScore = (
 			capabilityScore * SCORE_WEIGHT_CAPABILITY +
 			loadScore * SCORE_WEIGHT_LOAD +
 			availabilityScore * SCORE_WEIGHT_AVAILABILITY
 		);
+
+		this.logService.info(`[AgentFactory] _scoreAgent: agent="${agent.name}" (role=${agent.role}, status=${agent.status}), taskRole="${taskRole}", capability=${capabilityScore.toFixed(3)}, load=${loadScore}, availability=${availabilityScore}, total=${totalScore.toFixed(3)}`);
+
+		return totalScore;
 	}
 
 	/**
@@ -213,20 +229,33 @@ export class AgentFactory {
 			e.status !== 'offline'
 		);
 
-		if (candidates.length === 0) { return undefined; }
+		this.logService.info(`[AgentFactory] _selectBestAgent: taskRole=${taskRole}, total=${employees.length}, candidates=${candidates.length}, excluded=${excludeIds.size}`);
+
+		if (candidates.length === 0) {
+			this.logService.info(`[AgentFactory] _selectBestAgent: No candidates available. Excluded IDs: [${Array.from(excludeIds).join(', ')}]`);
+			return undefined;
+		}
 
 		let best: Employee | undefined;
 		let bestScore = -1;
 
 		for (const emp of candidates) {
 			const score = this._scoreAgent(emp, taskRole);
+			this.logService.info(`[AgentFactory] _selectBestAgent: candidate "${emp.name}" (id=${emp.id}, role=${emp.role}, status=${emp.status}) score=${score.toFixed(3)}`);
 			if (score > bestScore) {
 				bestScore = score;
 				best = emp;
 			}
 		}
 
-		// Only return if score meets minimum threshold
-		return bestScore >= 0.3 ? best : undefined;
+		// Only return if score meets minimum threshold (lowered to 0.1 to prefer existing agents over creating new ones)
+		const MIN_SCORE_THRESHOLD = 0.1;
+		if (bestScore >= MIN_SCORE_THRESHOLD) {
+			this.logService.info(`[AgentFactory] _selectBestAgent: Best candidate "${best?.name}" (score=${bestScore.toFixed(3)}) >= ${MIN_SCORE_THRESHOLD} threshold`);
+			return best;
+		} else {
+			this.logService.info(`[AgentFactory] _selectBestAgent: Best candidate "${best?.name}" (score=${bestScore.toFixed(3)}) < ${MIN_SCORE_THRESHOLD} threshold, returning undefined`);
+			return undefined;
+		}
 	}
 }

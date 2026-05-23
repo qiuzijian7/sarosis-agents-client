@@ -5,8 +5,35 @@
 
 import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
-import { useEmployeeStore } from './useEmployeeStore';
-import { useChatStore } from './useChatStore';
+
+// Lazy-loaded stores to avoid circular dependency
+let _employeeStore: { getState: () => any; setState: (updater: any) => void } | null = null;
+function getEmployeeStore() {
+	if (!_employeeStore) {
+		try {
+			const mod = require('./useEmployeeStore');
+			_employeeStore = mod.useEmployeeStore;
+		} catch (err) {
+			console.warn('[ProviderStore] Failed to load useEmployeeStore:', err);
+			return null;
+		}
+	}
+	return _employeeStore;
+}
+
+let _chatStore: { getState: () => any } | null = null;
+function getChatStore() {
+	if (!_chatStore) {
+		try {
+			const mod = require('./useChatStore');
+			_chatStore = mod.useChatStore;
+		} catch (err) {
+			console.warn('[ProviderStore] Failed to load useChatStore:', err);
+			return null;
+		}
+	}
+	return _chatStore;
+}
 
 export interface ProviderModelInfo {
 	id: string;
@@ -65,10 +92,10 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			);
 			set({ providers, isLoading: false });
 
-			// Try to restore selection from the active employee's agent.yaml first,
-			// then fall back to the global selection saved in settings.json
-			const activeEmployeeId = useChatStore.getState().activeEmployeeId;
-			console.log(`[ProviderStore] loadProviders: activeEmployeeId=${activeEmployeeId}`);
+		// Try to restore selection from the active employee's agent.yaml first,
+		// then fall back to the global selection saved in settings.json
+		const activeEmployeeId = getChatStore()?.getState()?.activeEmployeeId;
+		console.log(`[ProviderStore] loadProviders: activeEmployeeId=${activeEmployeeId}`);
 
 			try {
 				let savedSelection: { providerId: string; modelId: string; agentId?: string } | null = null;
@@ -225,7 +252,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 				employeeId,
 			});
 			// Also reflect on the employee card immediately
-			useEmployeeStore.setState(state => ({
+			getEmployeeStore()?.setState(state => ({
 				employees: state.employees.map(e =>
 					e.id === employeeId
 						? { ...e, provider: first.id, model: firstModel.id }
@@ -341,7 +368,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		});
 
 		// Include the active employeeId so that the host can persist to agent.yaml
-		const activeEmployeeId = useChatStore.getState().activeEmployeeId;
+		const activeEmployeeId = getChatStore()?.getState()?.activeEmployeeId;
 
 		// Notify host to persist the selection (both global + agent.yaml)
 		postMessage('providers.select', { providerId, modelId, agentId, employeeId: activeEmployeeId });
@@ -349,7 +376,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		// Sync the active employee's model/provider fields so that
 		// EmployeeCard and chat header update in real-time
 		if (activeEmployeeId) {
-			useEmployeeStore.setState(state => ({
+			getEmployeeStore()?.setState(state => ({
 				employees: state.employees.map(e =>
 					e.id === activeEmployeeId
 						? { ...e, provider: providerId, model: bareModelId }

@@ -30,6 +30,10 @@ export interface ToolCallData {
 	error?: string;
 	/** Whether to show this tool call card in the chat UI. Default true. */
 	defaultShow?: boolean;
+	/** UI 显示名称（来自模型的 display_name 字段） */
+	displayName?: string;
+	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
+	renderType?: string;
 }
 
 interface ToolCallCardProps {
@@ -192,7 +196,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 				</span>
 				<span className="tool-call-card-name">
 					<span className="tool-call-emoji">{getToolIcon(toolCall.name)}</span>
-					{getToolDisplayName(toolCall.name)}
+					{toolCall.displayName || getToolDisplayName(toolCall.name)}
 				</span>
 				{/* Args summary in collapsed view */}
 				{!expanded && argsSummary && (

@@ -584,8 +584,14 @@ export class PromptsService extends Disposable implements IPromptsService {
 	}
 
 	public async getPromptSlashCommands(token: CancellationToken): Promise<readonly IChatPromptSlashCommand[]> {
+		console.error(`[getPromptSlashCommands] start`);
 		const discoveryInfo = await this.cachedSlashCommands.get(token);
+		console.error(`[getPromptSlashCommands] discoveryInfo.files count=${discoveryInfo.files.length}`);
 		const result = this.slashCommandsFromDiscoveryInfo(discoveryInfo);
+		console.error(`[getPromptSlashCommands] result count=${result.length}`);
+		for (const cmd of result) {
+			console.error(`[getPromptSlashCommands] cmd: ${cmd.name} (source=${cmd.source}, type=${cmd.type})`);
+		}
 		return result;
 	}
 
@@ -594,14 +600,20 @@ export class PromptsService extends Disposable implements IPromptsService {
 	 */
 	private async computeSlashCommandDiscoveryInfo(token: CancellationToken): Promise<ISlashCommandDiscoveryInfo> {
 		const stopWatch = StopWatch.create(true);
+		console.error(`[computeSlashCommandDiscoveryInfo] start`);
 		const promptFiles = await this.listPromptFiles(PromptsType.prompt, token);
+		console.error(`[computeSlashCommandDiscoveryInfo] promptFiles count=${promptFiles.length}`);
 		const useAgentSkills = this.configurationService.getValue(PromptsConfig.USE_AGENT_SKILLS);
+		console.error(`[computeSlashCommandDiscoveryInfo] useAgentSkills=${useAgentSkills}`);
 		const skills = useAgentSkills ? await this.listPromptFiles(PromptsType.skill, token) : [];
+		console.error(`[computeSlashCommandDiscoveryInfo] skills count=${skills.length}`);
 		const disabledSkills = this.getDisabledPromptFiles(PromptsType.skill);
+		console.error(`[computeSlashCommandDiscoveryInfo] disabledSkills count=${disabledSkills.size}`);
 		const slashCommandFiles = [
 			...promptFiles,
 			...skills.filter(s => !disabledSkills.has(s.uri)),
 		];
+		console.error(`[computeSlashCommandDiscoveryInfo] slashCommandFiles count=${slashCommandFiles.length}`);
 
 		const parseResults = await Promise.all(slashCommandFiles.map(async promptPath => {
 			try {

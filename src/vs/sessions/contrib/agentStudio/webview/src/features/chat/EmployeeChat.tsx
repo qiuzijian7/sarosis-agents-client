@@ -1,3 +1,4 @@
+
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Employee Chat Panel
  *
@@ -14,9 +15,11 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useChatStore } from '../../store/useChatStore';
+import { useChatStore, type ChatMessage } from '../../store/useChatStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
+import { useOrchestrationStore } from '../../store/useOrchestrationStore';
+import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { ChatComposer } from './ChatComposer';
 import { ToolCallCard } from './ToolCallCard';
@@ -44,7 +47,7 @@ const StreamingBubble = memo(function StreamingBubble({
 }: {
 	textBuffer: string;
 	thinkingBuffer: string;
-	toolCalls: Array<{ id: string; name: string; arguments: string; result?: string; status: string }>;
+	toolCalls: Array<{ id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string }>;
 	errorMessage: string | null;
 	streamError: StreamError | null;
 }): React.ReactElement {
@@ -258,6 +261,63 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		}
 	}, [sendMessage]);
 
+	const handleCommand = useCallback(async (commandId: string, args: string) => {
+		if (commandId === 'plan') {
+			const goal = args || '默认目标';
+			const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+			const plannerId = activeEmployeeId;
+			if (!workspaceId) {
+				console.error('[EmployeeChat] No active workspace for plan command');
+				return;
+			}
+			if (!plannerId) {
+				console.error('[EmployeeChat] No active employee for plan command');
+				return;
+			}
+			
+			// Add user message to chat
+			const userMessage: ChatMessage = {
+				id: `user_${Date.now()}`,
+				role: 'user',
+				content: `/plan ${goal}`,
+				timestamp: new Date().toISOString(),
+			};
+			useChatStore.setState(state => ({
+				messages: [...state.messages, userMessage]
+			}));
+			
+			try {
+				const plan = await useOrchestrationStore.getState().createPlan(goal, workspaceId, plannerId);
+				
+				// Add orchestration plan message for inline approval
+				if (plan) {
+					const planMessage: ChatMessage = {
+						id: `plan_${Date.now()}`,
+						role: 'system',
+						content: `✅ 任务计划已创建，请在下方面板中审批：`,
+						metadata: { type: 'orchestration_plan', planId: plan.id },
+						timestamp: new Date().toISOString(),
+					};
+					useChatStore.setState(state => ({
+						messages: [...state.messages, planMessage]
+					}));
+				}
+			} catch (err) {
+				console.error('[EmployeeChat] Failed to create plan:', err);
+				// Add error message
+				const errorMessage: ChatMessage = {
+					id: `error_${Date.now()}`,
+					role: 'system',
+					content: `❌ 创建任务计划失败: ${err instanceof Error ? err.message : String(err)}`,
+					timestamp: new Date().toISOString(),
+				};
+				useChatStore.setState(state => ({
+					messages: [...state.messages, errorMessage]
+				}));
+			}
+		}
+	}, [activeEmployeeId]);
+
 	// Count team members and tasks
 	const teamMembers = activeEmployeeId
 		? employees.filter(e => e.teamId === activeEmployee?.teamId || e.id === activeEmployeeId).length
@@ -295,7 +355,8 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	// reachable via the ⚙ Settings button in the chat header.
 
 	return (
-		<div className="employee-chat-root">
+		<>
+			<div className="employee-chat-root">
 			<div className="employee-chat">
 				{/* Chat Header */}
 				<div className="chat-header">
@@ -338,6 +399,12 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
 							</svg>
 						</button>
+						{/* 兼容 agentType 字段缺失的情况 */}
+						{(activeEmployee?.agentType === 'planner' || activeEmployee?.presetId === 'planner' || activeEmployee?.role?.toLowerCase().includes('planner') || activeEmployee?.name?.toLowerCase() === 'planner') && (
+							<button className="chat-header-btn" title="任务编排" onClick={() => useOrchestrationStore.getState().openPlanDialog()}>
+								🎯
+							</button>
+						)}
 					</div>
 				</div>
 
@@ -395,12 +462,14 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				)}
 
 				{/* Composer */}
-				<ChatComposer
-					onSend={handleSend}
-					onCancel={cancelStream}
-					isLoading={streamState.isStreaming}
-				/>
-			</div>
+			<ChatComposer
+				onSend={handleSend}
+				onCancel={cancelStream}
+				isLoading={streamState.isStreaming}
+				onCommand={handleCommand}
+			/>
 		</div>
+	</div>
+	</>
 	);
 }

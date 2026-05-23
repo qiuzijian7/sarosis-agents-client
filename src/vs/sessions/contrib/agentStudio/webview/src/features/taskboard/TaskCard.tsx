@@ -56,9 +56,10 @@ export function TaskCard({
 			onDragStart={handleDragStart}
 			onDragEnd={onDragEnd}
 		>
-			{/* Card header: ID + source badge */}
+			{/* Card header: Task ID + source badge */}
 			<div className="task-card-header">
-				<span className="task-card-id">{shortId}</span>
+				<span className="task-card-id-label">ID</span>
+				<span className="task-card-id" title={`完整ID: ${task.id}`}>{shortId}</span>
 				{isDelegation && <span className="task-card-badge delegation">委派</span>}
 			</div>
 
@@ -66,14 +67,19 @@ export function TaskCard({
 			<div className="task-card-title">{task.title || task.description || 'Untitled'}</div>
 
 			{/* Dependencies display */}
-			{task.dependencies && task.dependencies.length > 0 && (
+			{task.dependencies && task.dependencies.length > 0 ? (
 				<div className="task-card-dependencies">
 					<span className="task-card-deps-label">依赖:</span>
-					{task.dependencies.map((depId, index) => (
-						<span key={depId} className="task-card-dep-tag">
-							#{depId.slice(-6)}{index < task.dependencies!.length - 1 ? '' : ''}
+					{task.dependencies.map((depId) => (
+						<span key={depId} className="task-card-dep-tag" title={`完整依赖ID: ${depId}`}>
+							#{depId.slice(-6)}
 						</span>
 					))}
+				</div>
+			) : (
+				<div className="task-card-dependencies">
+					<span className="task-card-deps-label">依赖:</span>
+					<span className="task-card-dep-none">无</span>
 				</div>
 			)}
 
@@ -104,53 +110,73 @@ export function TaskCard({
 			<div className="task-card-footer">
 				<span className="task-card-time">{timeStr}</span>
 				<div className="task-card-actions">
-					{/* Retry: for done(error) / cancelled tasks */}
-					{(task.status === 'cancelled' || task.error) && (
+					{/* Todo: 执行 + 取消 */}
+					{task.status === 'todo' && (
+						<>
+							<button
+								className="task-card-action execute"
+								onClick={() => onStatusChange(task.id, 'running', task.source)}
+								title="执行任务"
+							>▶ 执行</button>
+							<button
+								className="task-card-action cancel"
+								onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
+								title="取消任务"
+							>✕ 取消</button>
+						</>
+					)}
+					{/* Running: 暂停 + 取消 + 重试 */}
+					{task.status === 'running' && (
+						<>
+							<button
+								className="task-card-action pause"
+								onClick={() => onStatusChange(task.id, 'todo', task.source)}
+								title="暂停任务"
+							>⏸ 暂停</button>
+							<button
+								className="task-card-action cancel"
+								onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
+								title="取消任务"
+							>✕ 取消</button>
+							<button
+								className="task-card-action retry"
+								onClick={() => onStatusChange(task.id, 'todo', task.source)}
+								title="重试任务"
+							>🔄 重试</button>
+						</>
+					)}
+					{/* Done: 重试 */}
+					{task.status === 'done' && (
 						<button
 							className="task-card-action retry"
 							onClick={() => onStatusChange(task.id, 'todo', task.source)}
-							title="重做"
-						>🔄</button>
+							title="重试任务"
+						>🔄 重试</button>
 					)}
-					{/* Pause: for running tasks */}
-					{task.status === 'running' && (
-						<button
-							className="task-card-action pause"
-							onClick={() => onStatusChange(task.id, 'todo', task.source)}
-							title="暂停"
-						>⏸</button>
+					{/* Cancelled: 重试 + 删除 */}
+					{task.status === 'cancelled' && (
+						<>
+							<button
+								className="task-card-action retry"
+								onClick={() => onStatusChange(task.id, 'todo', task.source)}
+								title="重试任务"
+							>🔄 重试</button>
+							{task.source === 'task-board' && (
+								<button
+									className="task-card-action delete"
+									onClick={() => onDelete(task.id, task.source)}
+									title="删除任务"
+								>🗑 删除</button>
+							)}
+						</>
 					)}
-					{/* Cancel: for todo/running tasks */}
-					{(task.status === 'todo' || task.status === 'running') && (
-						<button
-							className="task-card-action"
-							onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
-							title="取消"
-						>✕</button>
-					)}
-					{/* Archive: for done tasks */}
-					{task.status === 'done' && (
-						<button
-							className="task-card-action"
-							onClick={() => onArchive(task.id, task.source)}
-							title="归档"
-						>📦</button>
-					)}
-					{/* Restore: for archived tasks */}
+					{/* Archived: 恢复 */}
 					{task.status === 'archived' && (
 						<button
-							className="task-card-action"
+							className="task-card-action restore"
 							onClick={() => onStatusChange(task.id, 'todo', task.source)}
-							title="恢复"
-						>↩</button>
-					)}
-					{/* Delete: for standalone (non-delegation) non-running tasks */}
-					{task.source === 'task-board' && task.status !== 'running' && (
-						<button
-							className="task-card-action delete"
-							onClick={() => onDelete(task.id, task.source)}
-							title="删除"
-						>🗑</button>
+							title="恢复任务"
+						>↩ 恢复</button>
 					)}
 				</div>
 			</div>

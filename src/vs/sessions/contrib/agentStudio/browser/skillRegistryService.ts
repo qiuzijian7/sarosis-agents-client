@@ -40,7 +40,7 @@ import { Disposable, IDisposable, toDisposable } from '../../../../base/common/l
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { stringHash } from '../../../../base/common/hash.js';
 import {
@@ -48,7 +48,7 @@ import {
 	SkillActivation,
 } from '../common/skills.js';
 import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
-import * as path from 'path';
+import { FileAccess } from '../../../../base/common/network.js';
 
 /**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
@@ -166,6 +166,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private readonly _runtimeSkills = new Map<string, ISkillDefinition>();
 	private readonly _onDidChangeSkills = this._register(new Emitter<void>());
 	readonly onDidChangeSkills: Event<void> = this._onDidChangeSkills.event;
+	private readonly _readyPromise: Promise<void>;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -179,7 +180,12 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		// 立即填充已移除 — UI 将在异步扫描完成后可显示
 		this.logService.info(`[SkillRegistry] no sync skills - will load async`);
 		// 异步扫描磁盘 skill —— 失败不影响内置 skill 可用性。
-		this.reload().catch(err => this.logService.warn('[SkillRegistry] initial reload failed', err));
+		this._readyPromise = this.reload().catch(err => this.logService.warn('[SkillRegistry] initial reload failed', err));
+	}
+
+	/** 等待初始加载完成 */
+	async whenReady(): Promise<void> {
+		await this._readyPromise;
 	}
 
 	getSkills(): readonly ISkillDefinition[] {
@@ -262,18 +268,98 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	async reload(): Promise<void> {
 		this.logService.info(`[SkillRegistry] reload() called`);
+		console.error(`[SkillRegistry] reload() called`);
+		// 调试信息：打印 _VSCODE_FILE_ROOT 和 appRoot 帮助诊断路径问题
+		try {
+			this.logService.info(`[SkillRegistry] _VSCODE_FILE_ROOT: ${(globalThis as any)._VSCODE_FILE_ROOT ?? 'undefined'}`);
+			console.error(`[SkillRegistry] _VSCODE_FILE_ROOT: ${(globalThis as any)._VSCODE_FILE_ROOT ?? 'undefined'}`);
+		} catch { /* ignore */ }
+		try {
+			this.logService.info(`[SkillRegistry] env.appRoot: ${(this.environmentService as INativeEnvironmentService).appRoot ?? 'undefined'}`);
+			console.error(`[SkillRegistry] env.appRoot: ${(this.environmentService as INativeEnvironmentService).appRoot ?? 'undefined'}`);
+		} catch { /* ignore */ }
 		this._skills.clear();
 		// 参考 Hermes-Agent 模式：技能从 skills/ 目录扫描加载，不再硬编码
 		// this._loadBuiltins(); // 已移除 - 技能现在从 skills/ 目录文件加载
 
-		// 内置技能目录（扩展安装目录下的 skills/）— 参考 Hermes-Agent 的 skills/ 项目目录模式
+		// 内置技能目录（产品自带的 skills/）
+		// 尝试多个候选路径以兼容不同运行环境（开发/打包、桌面/浏览器）
 		try {
-			const builtinDir = URI.file(path.join(__dirname, 'skills'));
-			this.logService.info(`[SkillRegistry] scanning builtin skills: ${builtinDir.toString()}`);
-			await this._scanFolder(builtinDir, 'builtin');
-			this.logService.info(`[SkillRegistry] after builtin scan: ${this._skills.size} skills`);
+			const candidates: URI[] = [];
+
+			// 候选1：通过 FileAccess.asFileUri 基于 _VSCODE_FILE_ROOT 解析路径
+			// 适用于大多数场景，_VSCODE_FILE_ROOT 通常指向 out/ 或 out-build/
+			try {
+				const uri1 = FileAccess.asFileUri('vs/sessions/contrib/agentStudio/browser/skills');
+				this.logService.info(`[SkillRegistry] candidate1 (FileAccess): ${uri1.toString()}`);
+				candidates.push(uri1);
+			} catch (e) {
+				this.logService.info(`[SkillRegistry] candidate1 failed: ${e}`);
+			}
+
+			// 候选2：通过 appRoot 拼接路径
+			// appRoot 是 JS 源码根目录（含 out/ 或 out-build/）
+			let appRoot: string | undefined;
+			try {
+				appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
+				this.logService.info(`[SkillRegistry] appRoot: ${appRoot}`);
+				if (appRoot) {
+					const uri2 = URI.joinPath(URI.file(appRoot), 'vs', 'sessions', 'contrib', 'agentStudio', 'browser', 'skills');
+					this.logService.info(`[SkillRegistry] candidate2 (appRoot): ${uri2.toString()}`);
+					candidates.push(uri2);
+				}
+			} catch (e) {
+				this.logService.info(`[SkillRegistry] candidate2 failed: ${e}`);
+			}
+
+			// 候选3：开发环境回退到 src/ 目录
+			// TypeScript 编译输出到 out/，但 SKILL.md 等非代码文件不会自动复制，
+			// 因此需要直接访问源码目录中的技能文件。
+			try {
+				if (appRoot) {
+					// 将路径中的 out/ 或 out-build/ 替换为 src/
+					const srcRoot = appRoot.replace(/[\\/]out-build[\\/]/, '/src/').replace(/[\\/]out[\\/]/, '/src/');
+					if (srcRoot !== appRoot) {
+						const uri3 = URI.joinPath(URI.file(srcRoot), 'vs', 'sessions', 'contrib', 'agentStudio', 'browser', 'skills');
+						this.logService.info(`[SkillRegistry] candidate3 (src fallback): ${uri3.toString()}`);
+						candidates.push(uri3);
+					}
+				}
+			} catch (e) {
+				this.logService.info(`[SkillRegistry] candidate3 failed: ${e}`);
+			}
+
+			// 去重（URI 字符串比较）
+			const uniqueCandidates = candidates.filter((c, i, arr) =>
+				arr.findIndex(c2 => c.toString() === c2.toString()) === i
+			);
+			this.logService.info(`[SkillRegistry] unique candidates: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
+
+			let scanned = false;
+			for (const builtinDir of uniqueCandidates) {
+				this.logService.info(`[SkillRegistry] trying builtin dir: ${builtinDir.toString()}`);
+				console.error(`[SkillRegistry] trying builtin dir: ${builtinDir.toString()}`);
+				try {
+					await this.fileService.stat(builtinDir);
+					this.logService.info(`[SkillRegistry] stat OK, scanning builtin skills: ${builtinDir.toString()}`);
+					console.error(`[SkillRegistry] stat OK, scanning builtin skills: ${builtinDir.toString()}`);
+					await this._scanFolder(builtinDir, 'builtin');
+					this.logService.info(`[SkillRegistry] after builtin scan: ${this._skills.size} skills`);
+					console.error(`[SkillRegistry] after builtin scan: ${this._skills.size} skills`);
+					scanned = true;
+					break;
+				} catch (e) {
+					this.logService.info(`[SkillRegistry] builtin dir not found or scan failed: ${builtinDir.toString()}, error: ${e}`);
+					console.error(`[SkillRegistry] builtin dir not found or scan failed: ${builtinDir.toString()}, error: ${e}`);
+				}
+			}
+			if (!scanned) {
+				this.logService.info(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
+				console.error(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
+			}
 		} catch (err) {
-			this.logService.debug('[SkillRegistry] no builtin skills dir', err);
+			this.logService.error('[SkillRegistry] builtin skills scan failed', err);
+			console.error('[SkillRegistry] builtin skills scan failed', err);
 		}
 
 		// 用户全局技能库
@@ -283,7 +369,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			await this._scanFolder(userDir, 'user');
 			this.logService.info(`[SkillRegistry] after user scan: ${this._skills.size} skills`);
 		} catch (err) {
-			this.logService.debug('[SkillRegistry] no user skills-library dir', err);
+			this.logService.info('[SkillRegistry] user skills-library scan failed or dir not found', err);
 		}
 
 		// 运行时注入的 skill 永远胜出
@@ -295,6 +381,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		}
 
 		this.logService.info(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
+		console.error(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
 		this._onDidChangeSkills.fire();
 
 		// Fire a batch Synced event so external consumers (e.g. knot-agui) can
@@ -349,25 +436,32 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		}
 
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
+		console.error(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
 		let loaded = 0;
 		for (const child of stat.children) {
 			if (!child.isDirectory) { continue; }
 			const skillFile = URI.joinPath(child.resource, 'SKILL.md');
+			console.error(`[SkillRegistry] _scanFolder: checking ${skillFile.toString()}`);
 			try {
 				const content = await this.fileService.readFile(skillFile);
 				const text = content.value.toString();
+				console.error(`[SkillRegistry] _scanFolder: read ${text.length} chars from ${skillFile.toString()}`);
 				const skill = this._parseSkillFile(child.resource, text, source);
 				if (skill) {
 					this._skills.set(skill.id, skill);
 					loaded++;
+					console.error(`[SkillRegistry] _scanFolder: loaded skill ${skill.id}`);
 				} else {
 					this.logService.warn(`[SkillRegistry] _scanFolder: parse returned null for ${skillFile.toString()}`);
+					console.error(`[SkillRegistry] _scanFolder: parse returned null for ${skillFile.toString()}`);
 				}
-			} catch {
+			} catch (e) {
 				// SKILL.md 可缺失，忽略
+				console.error(`[SkillRegistry] _scanFolder: readFile failed for ${skillFile.toString()}: ${e}`);
 			}
 		}
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
+		console.error(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
 	}
 
 	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin'): ISkillDefinition | undefined {

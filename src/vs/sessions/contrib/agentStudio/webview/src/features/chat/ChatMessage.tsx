@@ -22,6 +22,7 @@ import { useChatStore } from '../../store/useChatStore';
 import { ToolCallCard } from './ToolCallCard';
 import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
+import { OrchestrationPlanInline } from '../../features/orchestration/OrchestrationPlanInline';
 
 interface ChatMessageProps {
 	message: ChatMessage;
@@ -156,7 +157,10 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				{/* ── Main content ──────────────────────────── */}
 				{displayContent && (
 					<div className="message-text">
-						{isStreaming && !isUser ? (
+						{/* Orchestration plan inline (special message type) */}
+						{message.metadata?.type === 'orchestration_plan' ? (
+							<OrchestrationPlanInline planId={message.metadata.planId} />
+						) : isStreaming && !isUser ? (
 							// During streaming: live markdown rendering (OpenClaw pattern)
 							<MarkdownRenderer content={displayContent} showCursor />
 						) : isPureJson ? (
@@ -261,6 +265,7 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.thinking === nm.thinking &&
 		pm.toolCalls === nm.toolCalls &&
 		pm.tokenUsage === nm.tokenUsage &&
+		pm.metadata === nm.metadata &&
 		prev.isStreaming === next.isStreaming
 	);
 });

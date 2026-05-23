@@ -354,7 +354,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	 * blend with the editor instead of appearing fully black.
 	 */
 	private _wrapHtmlForWebview(html: string): string {
-		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource:; img-src 'self' data: https: vscode-resource: vscode-webview-resource:; font-src data: https: vscode-resource: vscode-webview-resource:; connect-src https: vscode-resource: vscode-webview-resource:; frame-src https:;">`;
+		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview:; connect-src https: vscode-resource: vscode-webview-resource: vscode-webview:; frame-src https: vscode-webview:;">`;
 		const baseStyle = `<style>html,body{margin:0;padding:0;}body{background:#ffffff;color:#1e1e1e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;}@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4;}}</style>`;
 
 		const lower = html.toLowerCase();

@@ -1289,6 +1289,16 @@ html, body, #root {
   margin-bottom: 3px;
 }
 
+.task-card-id-label {
+  font-size: 8px;
+  color: var(--vscode-descriptionForeground);
+  background: rgba(100, 116, 139, 0.15);
+  padding: 0 3px;
+  border-radius: 2px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
 .task-card-id {
   font-size: 9px;
   color: var(--vscode-descriptionForeground);
@@ -1356,22 +1366,41 @@ html, body, #root {
 }
 
 .task-card-action {
-  width: 18px;
-  height: 18px;
+  height: 20px;
+  padding: 0 6px;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 2px;
   border: none;
   background: transparent;
   border-radius: 3px;
   cursor: pointer;
   font-size: 10px;
+  white-space: nowrap;
   opacity: 0.7;
+  transition: background-color 100ms, opacity 100ms;
 }
 
 .task-card-action:hover {
   background-color: var(--vscode-list-hoverBackground);
   opacity: 1;
+}
+
+.task-card-action.execute {
+  color: #10b981;
+}
+
+.task-card-action.execute:hover {
+  background-color: rgba(16, 185, 129, 0.15);
+}
+
+.task-card-action.cancel {
+  color: #ef4444;
+}
+
+.task-card-action.cancel:hover {
+  background-color: rgba(239, 68, 68, 0.15);
 }
 
 .task-card-action.delete:hover {
@@ -1433,6 +1462,12 @@ html, body, #root {
   font-family: var(--vscode-editor-font-family, monospace);
 }
 
+.task-card-dep-none {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.5;
+  font-style: italic;
+}
+
 .task-card-assignee-icon {
   font-size: 11px;
 }
@@ -1451,8 +1486,24 @@ html, body, #root {
   color: #f59e0b;
 }
 
+.task-card-action.retry:hover {
+  background-color: rgba(245, 158, 11, 0.15);
+}
+
 .task-card-action.pause {
   color: #8b5cf6;
+}
+
+.task-card-action.pause:hover {
+  background-color: rgba(139, 92, 246, 0.15);
+}
+
+.task-card-action.restore {
+  color: #3b82f6;
+}
+
+.task-card-action.restore:hover {
+  background-color: rgba(59, 130, 246, 0.15);
 }
 
 /* ─── Task Board Header: orchestrate button ──────────────────────────────── */
@@ -1888,6 +1939,31 @@ html, body, #root {
 .orch-role-tag.pm.missing {
   background: rgba(245, 158, 11, 0.1);
   color: #f59e0b;
+}
+
+/* ─── Inline Plan View (inside TaskBoardPanel) ───────────────────────────── */
+
+.orch-plan-inline {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  background: var(--vscode-editor-background);
+  overflow-y: auto;
+  max-height: 50vh;
+}
+
+.orch-plan-inline .orch-inline-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.orch-plan-inline .orch-inline-close:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
 }
 
 /* ─── Agent Type Selector (CreateAgentModal) ─────────────────────────────── */

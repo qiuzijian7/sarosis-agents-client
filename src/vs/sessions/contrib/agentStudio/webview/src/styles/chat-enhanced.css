@@ -624,3 +624,268 @@
 .message-text .markdown-body li > p + p {
 	margin-top: 4px;
 }
+
+/* ── Command Menu & Skill Menu ───────────────────────────── */
+.command-menu, .skill-menu {
+	position: absolute;
+	bottom: 100%;
+	left: 0;
+	right: 0;
+	max-height: 300px;
+	overflow-y: auto;
+	background-color: var(--vscode-dropdown-background, #252526);
+	border: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+	border-radius: 6px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+	z-index: 1000;
+	margin-bottom: 4px;
+}
+
+.command-menu-header, .skill-menu-header {
+	padding: 8px 12px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #999);
+	border-bottom: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.skill-menu-header {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 6px;
+}
+
+.skill-menu-search {
+	width: 100%;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border-radius: 3px;
+	background-color: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #ccc);
+	font-size: 12px;
+}
+
+.skill-menu-search:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.command-menu-item, .skill-menu-item {
+	padding: 6px 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+}
+
+.command-menu-item:hover, .skill-menu-item:hover {
+	background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.command-menu-item.selected, .skill-menu-item.selected {
+	background-color: var(--vscode-list-activeSelectionBackground, #37373d);
+	color: var(--vscode-list-activeSelectionForeground, #fff);
+}
+
+.command-menu-icon {
+	font-size: 16px;
+	width: 24px;
+	text-align: center;
+}
+
+.command-menu-name {
+	font-weight: 500;
+	color: var(--vscode-foreground, #ccc);
+}
+
+.command-menu-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-left: auto;
+}
+
+.skill-menu-name {
+	font-weight: 500;
+	color: var(--vscode-foreground, #ccc);
+}
+
+.skill-menu-id {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-left: auto;
+	font-family: monospace;
+}
+
+.command-menu-empty, .skill-menu-empty {
+	padding: 12px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground, #999);
+	font-size: 12px;
+}
+
+/* Ensure the composer box is positioned relatively for absolute-positioned menus */
+.chat-composer-box {
+	position: relative;
+}
+
+/* ── Orchestration Plan Inline (Chat Message) ─────────────────────────── */
+.orch-plan-inline {
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 8px;
+	overflow: hidden;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+	margin: 8px 0;
+}
+
+.orch-plan-inline-not-found {
+	padding: 12px;
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.orch-plan-inline-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+}
+
+.orch-plan-inline-title {
+	font-weight: 600;
+	font-size: 13px;
+}
+
+.orch-plan-inline-header .orch-plan-status-badge {
+	margin-left: auto;
+}
+
+.orch-plan-inline-header .orch-inline-close {
+	margin-left: 8px;
+}
+
+.orch-plan-inline-summary {
+	padding: 10px 12px;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.orch-plan-inline-goal {
+	margin-bottom: 6px;
+}
+
+.orch-plan-inline-goal strong {
+	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
+}
+
+.orch-plan-inline-desc {
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	font-size: 11px;
+	margin-bottom: 8px;
+}
+
+.orch-plan-inline-roles {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-bottom: 8px;
+}
+
+.orch-role-tag {
+	font-size: 11px;
+	padding: 2px 8px;
+	border-radius: 4px;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.1));
+}
+
+.orch-role-tag.planner {
+	color: var(--as-accent, #3b82f6);
+}
+
+.orch-role-tag.pm {
+	color: var(--as-success, #10b981);
+}
+
+.orch-role-tag.pm.missing {
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.orch-plan-inline-stats {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.orch-stat {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.orch-plan-inline-tasks {
+	padding: 0 12px 8px;
+}
+
+.orch-plan-inline-task {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 0;
+	font-size: 12px;
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.05));
+}
+
+.orch-plan-inline-task:last-child {
+	border-bottom: none;
+}
+
+.orch-plan-inline-task-status {
+	font-size: 14px;
+}
+
+.orch-plan-inline-task-title {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.orch-plan-inline-task-agent {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.orch-plan-inline-more {
+	padding: 6px 0;
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	font-style: italic;
+}
+
+.orch-plan-inline-actions {
+	padding: 8px 12px;
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
+.orch-plan-inline-actions .btn-primary,
+.orch-plan-inline-actions .btn-secondary {
+	padding: 6px 16px;
+	font-size: 12px;
+}
+
+.orch-plan-inline-status-message {
+	font-size: 12px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}

@@ -11,6 +11,12 @@ export interface StreamChunk {
 	toolCallId?: string;
 	toolName?: string;
 	success?: boolean;
+	/** UI 显示名称（来自模型的 display_name 字段） */
+	displayName?: string;
+	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
+	renderType?: string;
+	/** 是否默认展开显示工具卡（默认 true） */
+	defaultShow?: boolean;
 }
 
 /**
@@ -52,6 +58,10 @@ export interface ToolCallState {
 	status: 'running' | 'done' | 'error';
 	/** Whether to show this tool call card in the chat UI. Default true. */
 	defaultShow?: boolean;
+	/** UI 显示名称（来自模型的 display_name 字段） */
+	displayName?: string;
+	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
+	renderType?: string;
 }
 
 type StreamListener = (state: StreamState) => void;
@@ -200,6 +210,9 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 				name: chunk.toolName ?? '',
 				arguments: '',
 				status: 'running',
+				defaultShow: chunk.defaultShow,
+				displayName: chunk.displayName,
+				renderType: chunk.renderType,
 			});
 			break;
 		case 'tool_args': {

@@ -6,8 +6,35 @@
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
 import { useWorkspaceStore } from './useWorkspaceStore';
-import { useChatStore } from './useChatStore';
-import { useEmployeeStore } from './useEmployeeStore';
+
+// Lazy-loaded stores to avoid circular dependency
+let _chatStore: { getState: () => any } | null = null;
+function getChatStore() {
+	if (!_chatStore) {
+		try {
+			const mod = require('./useChatStore');
+			_chatStore = mod.useChatStore;
+		} catch (err) {
+			console.warn('[WorkspaceSessionStore] Failed to load useChatStore:', err);
+			return null;
+		}
+	}
+	return _chatStore;
+}
+
+let _employeeStore: { getState: () => any; setState: (updater: any) => void } | null = null;
+function getEmployeeStore() {
+	if (!_employeeStore) {
+		try {
+			const mod = require('./useEmployeeStore');
+			_employeeStore = mod.useEmployeeStore;
+		} catch (err) {
+			console.warn('[WorkspaceSessionStore] Failed to load useEmployeeStore:', err);
+			return null;
+		}
+	}
+	return _employeeStore;
+}
 
 // ─── Types (mirroring host-side types for webview) ─────────────────────────
 
@@ -121,7 +148,7 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
 		}
 
 		// Cancel any active stream before switching
-		useChatStore.getState().cancelStream();
+		getChatStore()?.getState()?.cancelStream();
 
 		// Increment generation to discard stale deltas
 		set(state => ({
@@ -140,16 +167,16 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
 		}
 
 		// Reload chat for currently selected employee with fork's session
-		const selectedId = useEmployeeStore.getState().selectedEmployeeId;
+		const selectedId = getEmployeeStore()?.getState()?.selectedEmployeeId;
 		if (selectedId) {
 			const agentSessionId = get().getAgentSessionId(selectedId);
-			useChatStore.getState().loadHistoryForSession(selectedId, agentSessionId ?? undefined);
+			getChatStore()?.getState()?.loadHistoryForSession(selectedId, agentSessionId ?? undefined);
 		}
 	},
 
 	switchToRoot: async () => {
 		// Cancel any active stream before switching
-		useChatStore.getState().cancelStream();
+		getChatStore()?.getState()?.cancelStream();
 
 		set(state => ({
 			activeSessionId: null,
@@ -167,9 +194,9 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
 		}
 
 		// Reload chat for currently selected employee (default session)
-		const selectedId = useEmployeeStore.getState().selectedEmployeeId;
+		const selectedId = getEmployeeStore()?.getState()?.selectedEmployeeId;
 		if (selectedId) {
-			useChatStore.getState().loadHistoryForSession(selectedId, undefined);
+			getChatStore()?.getState()?.loadHistoryForSession(selectedId, undefined);
 		}
 	},
 

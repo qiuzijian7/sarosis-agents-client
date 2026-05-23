@@ -36,12 +36,12 @@ import { EmployeeListView } from './EmployeeListView';
 import { CreateAgentModal } from '../employees/CreateAgentModal';
 import { SessionSwitcher } from './SessionSwitcher';
 import { ForkReadOnlyBanner } from './ForkReadOnlyBanner';
-import { OrchestrationPlanDialog } from '../orchestration/OrchestrationPlanDialog';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useWorkspaceSessionStore } from '../../store/useWorkspaceSessionStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { sendRequest } from '../../bridge/messageClient';
+import { ErrorBoundary } from '../../components/ErrorBoundary';
 
 type ViewMode = 'canvas' | 'list';
 
@@ -57,7 +57,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, updateEdges, saveLayout, isReadOnly } = useWorkspaceStore();
 	const { employees, selectEmployee, deleteEmployee, loadEmployees } = useEmployeeStore();
 	const { mode } = useWorkspaceSessionStore();
-	const { isPlanDialogOpen, openPlanDialog, closePlanDialog } = useOrchestrationStore();
+	const { openPlanDialog } = useOrchestrationStore();
 	const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
 
 	// Create agent modal state
@@ -227,7 +227,9 @@ export function WorkspaceCanvas(): React.ReactElement {
 	// of truth for visual position updates; `storeNodes` is only used for
 	// INITIAL placement of brand-new employees (read inline below).
 	useEffect(() => {
+		console.log('[WorkspaceCanvas] employees changed, count:', employees.length, 'employees:', employees.map(e => e.name));
 		setNodes(prevNodes => {
+			console.log('[WorkspaceCanvas] rebuilding nodes, prevNodes:', prevNodes.length, 'employees:', employees.length);
 			const assignedPositions: Array<{ x: number; y: number }> = [];
 			// Collect positions of all existing (already-rendered) nodes first
 			for (const n of prevNodes) { assignedPositions.push(n.position); }
@@ -269,6 +271,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 					},
 				};
 			});
+			console.log('[WorkspaceCanvas] builtNodes:', builtNodes.length);
 			return builtNodes;
 		});
 	}, [employees, selectEmployee, setNodes, findNonOverlappingPosition]);
@@ -578,204 +581,201 @@ export function WorkspaceCanvas(): React.ReactElement {
 	}, [activeWorkspaceId, loadEmployees]);
 
 	return (
-		<div className="canvas-container">
-			{/* Fork read-only banner */}
-			<ForkReadOnlyBanner />
+		<ErrorBoundary name="WorkspaceCanvas">
+			<div className="canvas-container">
+				{/* Fork read-only banner */}
+				<ForkReadOnlyBanner />
 
-			{/* Canvas mode */}
-			{displayMode === 'canvas' && (
-				<div className="canvas-flow-area" ref={reactFlowWrapper}>
-					{/* Floating action bar (top-right corner of canvas) */}
-					<div className="canvas-view-toggle">
-						{/* Session Switcher */}
-						<SessionSwitcher />
-						<div className="canvas-toggle-divider" />
+				{/* Canvas mode */}
+				{displayMode === 'canvas' && (
+					<div className="canvas-flow-area" ref={reactFlowWrapper}>
+						{/* Floating action bar (top-right corner of canvas) */}
+						<div className="canvas-view-toggle">
+							{/* Session Switcher */}
+							<SessionSwitcher />
+							<div className="canvas-toggle-divider" />
 
-						{/* Conditionally show "Add Agent" button only in Root mode */}
-						{!isReadOnly && (
-							<>
-								<button
-									className="canvas-add-agent-btn"
-									onClick={() => setShowCreateModal(true)}
-									title="添加 Agent"
-								>
-									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-									</svg>
-									<span className="canvas-add-agent-label">添加 Agent</span>
-								</button>
-								<button
-									className="task-board-orchestrate-btn"
-									onClick={() => openPlanDialog()}
-									title="任务编排 - AI 自动拆分任务、创建 Agent"
-								>
-									🎯 任务编排
-								</button>
-								<div className="canvas-toggle-divider" />
-							</>
-						)}
-						<button
-							className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
-							onClick={() => handleViewModeChange('canvas')}
-							title="画布视图"
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-							</svg>
-						</button>
-						<button
-							className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
-							onClick={() => handleViewModeChange('list')}
-							title="列表视图"
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-							</svg>
-						</button>
-					</div>
-
-					<ReactFlow
-						nodes={nodes}
-						edges={edges}
-						onNodesChange={onNodesChange}
-						onEdgesChange={handleEdgesChange}
-						onConnect={onConnect}
-						onNodeDragStart={onNodeDragStart}
-						onNodeDrag={onNodeDrag}
-						onNodeDragStop={onNodeDragStop}
-						onNodeClick={onNodeClick}
-						onInit={onInit}
-						onDragOver={onDragOver}
-						onDrop={onDrop}
-						nodeTypes={nodeTypes}
-						edgeTypes={edgeTypes}
-						nodesDraggable={true}
-						nodesConnectable={!isReadOnly}
-						elementsSelectable={true}
-						fitView
-						fitViewOptions={{ padding: 0.2 }}
-						proOptions={{ hideAttribution: true }}
-						defaultEdgeOptions={{
-							type: 'connection',
-							animated: true,
-							style: { stroke: 'var(--vscode-textLink-foreground, #3b82f6)', strokeWidth: 2 },
-						}}
-						className="workspace-canvas"
-					>
-						<Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--vscode-editorIndentGuide-background, #374151)" />
-						<Controls
-							className="canvas-controls"
-							showInteractive={false}
-						/>
-						<MiniMap
-							className="canvas-minimap"
-							nodeColor={() => 'var(--vscode-textLink-foreground, #3b82f6)'}
-							maskColor="var(--vscode-editor-background, rgba(17, 24, 39, 0.8))"
-						/>
-					</ReactFlow>
-
-					{/* Empty state */}
-					{employees.length === 0 && (
-						<div className="canvas-empty">
-							<div className="canvas-empty-icon">
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-								</svg>
-							</div>
-							<p className="canvas-empty-text">还没有 Agent</p>
-							<p className="canvas-empty-hint">创建 Agent 来组织你的团队</p>
+							{/* Conditionally show "Add Agent" button only in Root mode */}
+							{!isReadOnly && (
+								<>
+									<button
+										className="canvas-add-agent-btn"
+										onClick={() => setShowCreateModal(true)}
+										title="添加 Agent"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+										</svg>
+										<span className="canvas-add-agent-label">添加 Agent</span>
+									</button>
+									<button
+										className="task-board-orchestrate-btn"
+										onClick={() => openPlanDialog()}
+										title="任务编排 - AI 自动拆分任务、创建 Agent"
+									>
+										🎯 任务编排
+									</button>
+									<div className="canvas-toggle-divider" />
+								</>
+							)}
 							<button
-								className="canvas-empty-add-btn"
-								onClick={() => setShowCreateModal(true)}
+								className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
+								onClick={() => handleViewModeChange('canvas')}
+								title="画布视图"
 							>
 								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
 								</svg>
-								创建 Agent
+							</button>
+							<button
+								className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
+								onClick={() => handleViewModeChange('list')}
+								title="列表视图"
+							>
+								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+								</svg>
 							</button>
 						</div>
-					)}
-				</div>
-			)}
 
-			{/* List mode */}
-			{displayMode === 'list' && (
-				<div
-					className="canvas-list-area"
-					onDragOver={onDragOver}
-					onDrop={onListDrop}
-				>
-					{/* Floating action bar (top-right corner of list) */}
-					<div className="canvas-view-toggle">
-						<SessionSwitcher />
-						<div className="canvas-toggle-divider" />
-						{!isReadOnly && (
-							<>
+						<ReactFlow
+							nodes={nodes}
+							edges={edges}
+							onNodesChange={onNodesChange}
+							onEdgesChange={handleEdgesChange}
+							onConnect={onConnect}
+							onNodeDragStart={onNodeDragStart}
+							onNodeDrag={onNodeDrag}
+							onNodeDragStop={onNodeDragStop}
+							onNodeClick={onNodeClick}
+							onInit={onInit}
+							onDragOver={onDragOver}
+							onDrop={onDrop}
+							nodeTypes={nodeTypes}
+							edgeTypes={edgeTypes}
+							nodesDraggable={true}
+							nodesConnectable={!isReadOnly}
+							elementsSelectable={true}
+							fitView
+							fitViewOptions={{ padding: 0.2 }}
+							proOptions={{ hideAttribution: true }}
+							defaultEdgeOptions={{
+								type: 'connection',
+								animated: true,
+								style: { stroke: 'var(--vscode-textLink-foreground, #3b82f6)', strokeWidth: 2 },
+							}}
+							className="workspace-canvas"
+						>
+							<Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--vscode-editorIndentGuide-background, #374151)" />
+							<Controls
+								className="canvas-controls"
+								showInteractive={false}
+							/>
+							<MiniMap
+								className="canvas-minimap"
+								nodeColor={() => 'var(--vscode-textLink-foreground, #3b82f6)'}
+								maskColor="var(--vscode-editor-background, rgba(17, 24, 39, 0.8))"
+							/>
+						</ReactFlow>
+
+						{/* Empty state */}
+						{employees.length === 0 && (
+							<div className="canvas-empty">
+								<div className="canvas-empty-icon">
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+									</svg>
+								</div>
+								<p className="canvas-empty-text">还没有 Agent</p>
+								<p className="canvas-empty-hint">创建 Agent 来组织你的团队</p>
 								<button
-									className="canvas-add-agent-btn"
+									className="canvas-empty-add-btn"
 									onClick={() => setShowCreateModal(true)}
-									title="添加 Agent"
 								>
 									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
 									</svg>
-									<span className="canvas-add-agent-label">添加 Agent</span>
+									创建 Agent
 								</button>
-								<button
-									className="task-board-orchestrate-btn"
-									onClick={() => openPlanDialog()}
-									title="任务编排 - AI 自动拆分任务、创建 Agent"
-								>
-									🎯 任务编排
-								</button>
-								<div className="canvas-toggle-divider" />
-							</>
+							</div>
 						)}
-						<button
-							className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
-							onClick={() => handleViewModeChange('canvas')}
-							title="画布视图"
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-							</svg>
-						</button>
-						<button
-							className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
-							onClick={() => handleViewModeChange('list')}
-							title="列表视图"
-						>
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-							</svg>
-						</button>
 					</div>
+				)}
 
-					<EmployeeListView
-						employees={employees}
-						selectedEmployeeId={useEmployeeStore.getState().selectedEmployeeId}
-						onSelectEmployee={selectEmployee}
-						onDeleteEmployee={handleDeleteEmployee}
-						onRefresh={handleRefresh}
-						workspaceId={activeWorkspaceId || undefined}
-					/>
-				</div>
-			)}
+				{/* List mode */}
+				{displayMode === 'list' && (
+					<div
+						className="canvas-list-area"
+						onDragOver={onDragOver}
+						onDrop={onListDrop}
+					>
+						{/* Floating action bar (top-right corner of list) */}
+						<div className="canvas-view-toggle">
+							<SessionSwitcher />
+							<div className="canvas-toggle-divider" />
+							{!isReadOnly && (
+								<>
+									<button
+										className="canvas-add-agent-btn"
+										onClick={() => setShowCreateModal(true)}
+										title="添加 Agent"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+										</svg>
+										<span className="canvas-add-agent-label">添加 Agent</span>
+									</button>
+									<button
+										className="task-board-orchestrate-btn"
+										onClick={() => openPlanDialog()}
+										title="任务编排 - AI 自动拆分任务、创建 Agent"
+									>
+										🎯 任务编排
+									</button>
+									<div className="canvas-toggle-divider" />
+								</>
+							)}
+							<button
+								className={`canvas-view-toggle-btn ${displayMode === 'canvas' ? 'active' : ''}`}
+								onClick={() => handleViewModeChange('canvas')}
+								title="画布视图"
+							>
+								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+								</svg>
+							</button>
+							<button
+								className={`canvas-view-toggle-btn ${displayMode === 'list' ? 'active' : ''}`}
+								onClick={() => handleViewModeChange('list')}
+								title="列表视图"
+							>
+								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+								</svg>
+							</button>
+						</div>
 
-			{/* Create Agent Modal */}
-			<CreateAgentModal
-				isOpen={showCreateModal}
-				onClose={() => {
-					setShowCreateModal(false);
-					handleAgentCreated();
-				}}
+						<EmployeeListView
+							employees={employees}
+							selectedEmployeeId={useEmployeeStore.getState().selectedEmployeeId}
+							onSelectEmployee={selectEmployee}
+							onDeleteEmployee={handleDeleteEmployee}
+							onRefresh={handleRefresh}
+							workspaceId={activeWorkspaceId || undefined}
+						/>
+					</div>
+				)}
+
+				{/* Create Agent Modal */}
+				<CreateAgentModal
+					isOpen={showCreateModal}
+					onClose={() => {
+						setShowCreateModal(false);
+						handleAgentCreated();
+					}}
 				workspaceId={activeWorkspaceId || undefined}
 			/>
-
-			{/* Orchestration Plan Dialog */}
-			{isPlanDialogOpen && (
-				<OrchestrationPlanDialog onClose={closePlanDialog} />
-			)}
 		</div>
+		</ErrorBoundary>
 	);
 }

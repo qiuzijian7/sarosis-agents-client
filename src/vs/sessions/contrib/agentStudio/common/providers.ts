@@ -113,6 +113,12 @@ export interface IToolCallInfo {
 	readonly id: string;
 	readonly name: string;
 	readonly arguments: string; // JSON string
+	/** UI 显示名称（来自模型的 display_name 字段） */
+	readonly displayName?: string;
+	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
+	readonly renderType?: string;
+	/** 是否默认展开显示工具卡（默认 true） */
+	readonly defaultShow?: boolean;
 }
 
 export interface IModelOptions {
@@ -385,6 +391,8 @@ export interface IAgentTurnRequest {
 	readonly messages: IChatMessage[];
 	readonly systemPrompt?: string;
 	readonly options?: IModelOptions;
+	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
+	readonly explicitSkillIds?: readonly string[];
 }
 
 export interface IChatStreamDelta {
@@ -396,6 +404,12 @@ export interface IChatStreamDelta {
 	readonly progress?: number; // 0-100 进度百分比（用于 tool_progress 类型）
 	readonly stage?: string; // 当前阶段描述（用于 tool_progress 类型）
 	readonly success?: boolean; // tool_end 时表示工具是否执行成功
+	/** UI 显示名称（来自模型的 display_name 字段） */
+	readonly displayName?: string;
+	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
+	readonly renderType?: string;
+	/** 是否默认展开显示工具卡（默认 true） */
+	readonly defaultShow?: boolean;
 }
 
 /**

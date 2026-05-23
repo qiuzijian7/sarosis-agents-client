@@ -12,8 +12,9 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { IAgentTaskBoardService, IAgentStudioService } from '../common/agentStudio.js';
+import { IAgentTaskBoardService, IAgentStudioService, ITaskOrchestrationService } from '../common/agentStudio.js';
 import { TaskBoardStatus, type TaskBoardRecord, type Workspace } from '../common/types.js';
+import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import * as DOM from '../../../../base/browser/dom.js';
@@ -46,9 +47,23 @@ export class TaskOverviewEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
 		@IEditorService private readonly editorService: IEditorService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
+		
+		// Listen for plan changes to refresh the board
+		this._register(
+			this.taskOrchestrationService.onDidChangePlan((plan: OrchestrationPlan) => {
+				// Refresh the board when a plan is updated
+				// Only refresh if the board container exists (i.e., the editor is fully rendered)
+				if (this._boardContainer) {
+					this._renderBoard().catch(err => {
+						console.error('[TaskOverviewEditorPane] Failed to refresh board on plan change:', err);
+					});
+				}
+			})
+		);
 	}
 
 	protected createEditor(parent: HTMLElement): void {

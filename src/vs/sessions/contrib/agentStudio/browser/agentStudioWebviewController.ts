@@ -71,6 +71,7 @@ import {
 	type IWorkspaceSessionService,
 } from "./workspaceSessionService.js";
 import { HtmlPreviewEditorInput } from "./htmlPreviewEditorInput.js";
+import { TaskOverviewEditorInput } from "./taskOverviewEditorInput.js";
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -219,7 +220,7 @@ export class AgentStudioWebviewController extends Disposable {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'unsafe-inline'; img-src data: https:; font-src data:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' vscode-webview: vscode-resource:; style-src 'nonce-${nonce}' 'unsafe-inline' vscode-webview: vscode-resource:; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
 	<title>Agent Studio</title>
 	<link rel="stylesheet" nonce="${nonce}" href="${styleUri}">
 	<style nonce="${nonce}">
@@ -586,12 +587,24 @@ export class AgentStudioWebviewController extends Disposable {
 				);
 
 			// ─── Orchestration ─────────────────────────────────────
-			case "orchestration.plan":
-				return this.taskOrchestrationService.createPlan(
+			case "orchestration.plan": {
+				const plan = await this.taskOrchestrationService.createPlan(
 					p.goal as string,
 					p.workspaceId as string,
 					p.plannerId as string,
 				);
+				// Auto-open Task Overview in the left editor area
+				try {
+					const input = TaskOverviewEditorInput.getOrCreate();
+					const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+					const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+					await this.editorService.openEditor(input, { pinned: false, preserveFocus: true }, targetGroup);
+					this.logService.info(`[AgentStudio] Auto-opened TaskOverviewEditorPane for plan ${plan.id}`);
+				} catch (err) {
+					this.logService.warn('[AgentStudio] Failed to auto-open TaskOverviewEditorPane:', err);
+				}
+				return plan;
+			}
 			case "orchestration.approve":
 				return this.taskOrchestrationService.approvePlan(p.planId as string);
 			case "orchestration.reject":
@@ -967,6 +980,7 @@ export class AgentStudioWebviewController extends Disposable {
 					temperature: payload.temperature as number | undefined,
 					workspaceId: payload.workspaceId as string | undefined,
 					agentSessionId,
+					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
 				},
 				(delta: IChatStreamDelta) => {
 					// Capture provider session ID from metadata (e.g. Knot AG-UI threadId)
@@ -1887,8 +1901,15 @@ export class AgentStudioWebviewController extends Disposable {
 	 * Handle `skills.list` message from webview.
 	 * Returns all registered skills in a format suitable for the webview.
 	 */
-	private _handleSkillsList(): Array<{ id: string; name: string; category: string; activation: string; description?: string }> {
+	private async _handleSkillsList(): Promise<Array<{ id: string; name: string; category: string; activation: string; description?: string }>> {
+		console.error('[AgentStudioWebviewController._handleSkillsList] called');
+		await this.skillRegistry.whenReady();
+		console.error('[AgentStudioWebviewController._handleSkillsList] whenReady resolved');
 		const skills = this.skillRegistry.getSkills();
+		console.error(`[AgentStudioWebviewController._handleSkillsList] got ${skills.length} skills`);
+		for (const s of skills) {
+			console.error(`[AgentStudioWebviewController._handleSkillsList] skill: ${s.id} (${s.name})`);
+		}
 		return skills.map(skill => ({
 			id: skill.id,
 			name: skill.name,

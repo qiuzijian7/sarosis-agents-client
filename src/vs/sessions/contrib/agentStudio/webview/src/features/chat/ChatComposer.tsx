@@ -13,12 +13,15 @@ import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
 import type { ProviderInfo } from '../../store/useProviderStore';
+import { sendRequest } from '../../bridge/messageClient';
 
 interface ChatComposerProps {
 	onSend: (message: string) => void;
 	onCancel?: () => void;
 	isLoading?: boolean;
 	placeholder?: string;
+	/** Called when a special command (e.g. /plan) is executed */
+	onCommand?: (commandId: string, args: string) => void;
 }
 
 // 输入框高度上下限（px）。最低值保证至少能完整显示一行+padding，最高值避免遮挡消息列表。
@@ -26,7 +29,7 @@ const TEXTAREA_MIN_HEIGHT = 60;
 const TEXTAREA_MAX_HEIGHT = 300;
 const TEXTAREA_DEFAULT_HEIGHT = 60;
 
-export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder }: ChatComposerProps): React.ReactElement {
+export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder, onCommand }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
 	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
 	const [showProviderDropdown, setShowProviderDropdown] = useState(false);
@@ -42,6 +45,19 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 	const providerDropdownRef = useRef<HTMLDivElement>(null);
 	const agentDropdownRef = useRef<HTMLDivElement>(null);
 	const modelDropdownRef = useRef<HTMLDivElement>(null);
+
+	// 命令系统状态
+	const [showCommandMenu, setShowCommandMenu] = useState(false);
+	const [commandFilter, setCommandFilter] = useState('');
+	const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+	
+	// 技能菜单状态
+	const [showSkillMenu, setShowSkillMenu] = useState(false);
+	const [skills, setSkills] = useState<Array<{ id: string; name: string }>>([]);
+	const [skillFilter, setSkillFilter] = useState('');
+	const [selectedSkillIndex, setSelectedSkillIndex] = useState(0);
+	const skillMenuRef = useRef<HTMLDivElement>(null);
+	const commandMenuRef = useRef<HTMLDivElement>(null);
 	const { activeEmployeeId } = useChatStore();
 	const { employees } = useEmployeeStore();
 	const { providers, selection, selectProvider, openProviderSettings } = useProviderStore();
@@ -105,6 +121,15 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 			if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
 				setShowModelDropdown(false);
 				setModelSearchQuery('');
+			}
+			// 命令菜单和技能菜单的点击外部关闭
+			if (commandMenuRef.current && !commandMenuRef.current.contains(e.target as Node)) {
+				setShowCommandMenu(false);
+				setCommandFilter('');
+			}
+			if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
+				setShowSkillMenu(false);
+				setSkillFilter('');
 			}
 		};
 		document.addEventListener('mousedown', handleClickOutside);
@@ -173,8 +198,35 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 		setShowModelDropdown(false);
 	}, [selection, selectProvider]);
 
+	// 关闭所有弹出菜单（定义在 handleSend 之前，避免 TDZ 错误）
+	const closeAllPopups = useCallback(() => {
+		setShowCommandMenu(false);
+		setShowSkillMenu(false);
+		setShowProviderDropdown(false);
+		setShowAgentDropdown(false);
+		setShowModelDropdown(false);
+		setCommandFilter('');
+		setSkillFilter('');
+		setSelectedCommandIndex(0);
+		setSelectedSkillIndex(0);
+	}, []);
+
 	const handleSend = useCallback(() => {
 		if (!input.trim()) return;
+		// 检查是否以 /plan 开头，如果是则触发任务编排命令
+		if (input.trim().startsWith('/plan') && onCommand) {
+			const goal = input.trim().substring('/plan'.length).trim();
+			closeAllPopups();
+			onCommand('plan', goal);
+			setInput('');
+			if (textareaRef.current) {
+				const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
+				textareaRef.current.style.height = `${preferred}px`;
+			}
+			return;
+		}
+		// 发送前关闭所有弹出菜单
+		closeAllPopups();
 		onSend(input.trim());
 		setInput('');
 		if (textareaRef.current) {
@@ -182,7 +234,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 			const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
 			textareaRef.current.style.height = `${preferred}px`;
 		}
-	}, [input, onSend]);
+	}, [input, onSend, onCommand, closeAllPopups]);
 
 	const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === 'Enter' && !e.shiftKey) {
@@ -248,6 +300,232 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 		document.addEventListener('mouseup', handleUp);
 	}, []);
 
+	// 命令系统：定义可用命令（Planner 额外显示 /plan 命令）
+	const commands = useMemo(() => {
+		const items = [
+			{ id: 'skill', name: '技能', description: '选择并使用技能', icon: '🛠️' },
+			{ id: 'help', name: '帮助', description: '显示帮助信息', icon: '❓' },
+			{ id: 'clear', name: '清除', description: '清除聊天记录', icon: '🗑️' },
+		];
+		// 兼容 agentType 字段缺失的情况，使用 presetId/role/name 回退判断
+		const isPlanner = activeEmployee?.agentType === 'planner'
+			|| activeEmployee?.presetId === 'planner'
+			|| activeEmployee?.role?.toLowerCase().includes('planner')
+			|| activeEmployee?.name?.toLowerCase() === 'planner';
+		if (isPlanner) {
+			items.push({ id: 'plan', name: '任务编排', description: '创建任务编排计划', icon: '🎯' });
+		}
+		return items;
+	}, [activeEmployee?.agentType]);
+
+	// 过滤命令列表
+	const filteredCommands = useMemo(() => {
+		if (!commandFilter.trim()) return commands;
+		const filter = commandFilter.toLowerCase();
+		return commands.filter(cmd => 
+			cmd.id.toLowerCase().includes(filter) || 
+			cmd.name.toLowerCase().includes(filter)
+		);
+	}, [commands, commandFilter]);
+
+	// 过滤技能列表
+	const filteredSkills = useMemo(() => {
+		if (!skillFilter.trim()) return skills;
+		const filter = skillFilter.toLowerCase();
+		return skills.filter(skill => 
+			skill.id.toLowerCase().includes(filter) || 
+			skill.name.toLowerCase().includes(filter)
+		);
+	}, [skills, skillFilter]);
+
+	// 加载技能列表
+	const loadSkills = useCallback(async () => {
+		console.error('[ChatComposer] loadSkills() called');
+		try {
+			const result = await sendRequest<{}, Array<{ id: string; name: string }>>('skills.list', {});
+			console.error('[ChatComposer] loadSkills() result:', JSON.stringify(result)?.slice(0, 500));
+			if (result && Array.isArray(result)) {
+				console.error(`[ChatComposer] loadSkills() setting ${result.length} skills`);
+				setSkills(result);
+			} else {
+				console.error('[ChatComposer] loadSkills() result is not an array or is falsy:', typeof result, result);
+				setSkills([]);
+			}
+		} catch (error) {
+			console.error('[ChatComposer] Failed to load skills:', error);
+			setSkills([]);
+		}
+	}, []);
+
+	// 处理输入框变化：检测 '/' 输入以显示命令菜单，并更新过滤条件
+	const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+		const value = e.target.value;
+		setInput(value);
+		
+		// 检查是否刚刚输入了 '/'（当前光标位置前一个字符是 '/'）
+		const cursorPos = e.target.selectionStart;
+		const lastSlashIndex = value.lastIndexOf('/');
+		
+		if (showCommandMenu) {
+			// 命令菜单显示中：更新过滤条件或关闭菜单
+			if (lastSlashIndex >= 0) {
+				const filterText = value.substring(lastSlashIndex + 1);
+				setCommandFilter(filterText);
+				setSelectedCommandIndex(0);
+			} else {
+				// 输入中不再有 '/', 关闭菜单
+				setShowCommandMenu(false);
+				setCommandFilter('');
+			}
+		} else if (showSkillMenu) {
+			// 技能菜单显示中：更新过滤条件或关闭菜单
+			const skillIndex = value.lastIndexOf('/skill ');
+			if (skillIndex >= 0) {
+				const filterText = value.substring(skillIndex + '/skill '.length);
+				setSkillFilter(filterText);
+				setSelectedSkillIndex(0);
+			} else {
+				// 输入中不再有 '/skill ', 关闭菜单
+				setShowSkillMenu(false);
+				setSkillFilter('');
+			}
+		} else {
+			// 没有菜单显示：检查是否刚刚输入了 '/'
+			if (cursorPos > 0 && cursorPos <= value.length && value[cursorPos - 1] === '/') {
+				// 显示命令菜单
+				setShowCommandMenu(true);
+				setCommandFilter('');
+				setSelectedCommandIndex(0);
+			}
+		}
+	}, [showCommandMenu, showSkillMenu]);
+
+	// 处理键盘事件：支持命令菜单和技能菜单中的导航
+	const handleKeyDownWithCommands = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
+		// 如果命令菜单显示，处理菜单导航
+		if (showCommandMenu) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				setSelectedCommandIndex(prev => 
+					prev < filteredCommands.length - 1 ? prev + 1 : 0
+				);
+				return;
+			}
+			if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				setSelectedCommandIndex(prev => 
+					prev > 0 ? prev - 1 : filteredCommands.length - 1
+				);
+				return;
+			}
+			if (e.key === 'Enter' || e.key === 'Tab') {
+				e.preventDefault();
+				if (filteredCommands.length > 0) {
+					const selectedCommand = filteredCommands[selectedCommandIndex];
+					if (selectedCommand.id === 'skill') {
+						// 选择 /skill 命令：加载技能并显示技能菜单
+						setShowCommandMenu(false);
+						setShowSkillMenu(true);
+						setSkillFilter('');
+						setSelectedSkillIndex(0);
+						loadSkills();
+					} else if (selectedCommand.id === 'plan' && onCommand) {
+						// 选择 /plan 命令：触发任务编排
+						const goal = input.substring(input.lastIndexOf('/') + '/plan'.length).trim();
+						onCommand('plan', goal);
+						setShowCommandMenu(false);
+						setCommandFilter('');
+					} else {
+						// 其他命令：插入命令到输入框
+						const beforeSlash = input.substring(0, input.lastIndexOf('/'));
+						const newValue = beforeSlash + '/' + selectedCommand.id + ' ';
+						setInput(newValue);
+						setShowCommandMenu(false);
+						setCommandFilter('');
+					}
+				}
+				return;
+			}
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				setShowCommandMenu(false);
+				setCommandFilter('');
+				return;
+			}
+			// 过滤命令列表
+			if (e.key.length === 1 && e.key.match(/[a-zA-Z0-9]/)) {
+				// 字母数字键：更新过滤条件
+				setTimeout(() => {
+					const afterSlash = input.substring(input.lastIndexOf('/') + 1) + e.key;
+					setCommandFilter(afterSlash);
+					setSelectedCommandIndex(0);
+				}, 0);
+			}
+			if (e.key === 'Backspace') {
+				setTimeout(() => {
+					const afterSlash = input.substring(input.lastIndexOf('/') + 1);
+					setCommandFilter(afterSlash);
+					setSelectedCommandIndex(0);
+				}, 0);
+			}
+			return;
+		}
+		
+		// 如果技能菜单显示，处理菜单导航
+		if (showSkillMenu) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				setSelectedSkillIndex(prev => 
+					prev < filteredSkills.length - 1 ? prev + 1 : 0
+				);
+				return;
+			}
+			if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				setSelectedSkillIndex(prev => 
+					prev > 0 ? prev - 1 : filteredSkills.length - 1
+				);
+				return;
+			}
+			if (e.key === 'Enter' || e.key === 'Tab') {
+				e.preventDefault();
+				if (filteredSkills.length > 0) {
+					const selectedSkill = filteredSkills[selectedSkillIndex];
+					// 插入选定的技能到输入框
+					const beforeSlash = input.substring(0, input.lastIndexOf('/'));
+					const newValue = beforeSlash + '/skill ' + selectedSkill.id + ' ';
+					setInput(newValue);
+					setShowSkillMenu(false);
+					setSkillFilter('');
+				}
+				return;
+			}
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				setShowSkillMenu(false);
+				setSkillFilter('');
+				return;
+			}
+			// 字母/数字/退格键：让默认输入行为触发 handleInputChange 来更新 skillFilter
+			return;
+		}
+		
+		// 默认处理：调用原始的 handleKeyDown 逻辑
+		// 这里需要调用原始的 handleKeyDown 函数
+		// 由于原始的 handleKeyDown 是在后面定义的，我们需要调整代码结构
+		// 暂时先调用默认逻辑
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			if (isLoading && !input.trim()) { return; }
+			handleSend();
+		}
+		// Escape to cancel streaming
+		if (e.key === 'Escape' && isLoading && onCancel) {
+			e.preventDefault();
+			onCancel();
+		}
+	}, [showCommandMenu, showSkillMenu, filteredCommands, filteredSkills, selectedCommandIndex, selectedSkillIndex, input, isLoading, onCancel, loadSkills]);
+
 	return (
 		<div className="chat-input-area">
 			<div className="chat-composer-box">
@@ -266,13 +544,90 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder 
 				<textarea
 					ref={textareaRef}
 					value={input}
-					onChange={(e) => setInput(e.target.value)}
-					onKeyDown={handleKeyDown}
+					onChange={handleInputChange}
+					onKeyDown={handleKeyDownWithCommands}
 					onInput={handleInput}
 					placeholder={composerPlaceholder}
 					rows={1}
 					className="chat-composer-textarea"
 				/>
+				
+				{/* 命令菜单 */}
+				{showCommandMenu && filteredCommands.length > 0 && (
+					<div className="command-menu" ref={commandMenuRef}>
+						<div className="command-menu-header">
+							<span>可用命令</span>
+						</div>
+						{filteredCommands.map((cmd, index) => (
+							<div
+								key={cmd.id}
+								className={`command-menu-item ${index === selectedCommandIndex ? 'selected' : ''}`}
+								onClick={() => {
+									if (cmd.id === 'skill') {
+										setShowCommandMenu(false);
+										setShowSkillMenu(true);
+										setSkillFilter('');
+										setSelectedSkillIndex(0);
+										loadSkills();
+									} else if (cmd.id === 'plan' && onCommand) {
+										// 点击 /plan 命令：触发任务编排
+										const goal = input.substring(input.lastIndexOf('/') + '/plan'.length).trim();
+										onCommand('plan', goal);
+										setShowCommandMenu(false);
+										setCommandFilter('');
+									} else {
+										const beforeSlash = input.substring(0, input.lastIndexOf('/'));
+										const newValue = beforeSlash + '/' + cmd.id + ' ';
+										setInput(newValue);
+										setShowCommandMenu(false);
+										setCommandFilter('');
+									}
+								}}
+							>
+								<span className="command-menu-icon">{cmd.icon}</span>
+								<span className="command-menu-name">/{cmd.id}</span>
+								<span className="command-menu-desc">{cmd.description}</span>
+							</div>
+						))}
+					</div>
+				)}
+				
+				{/* 技能菜单 */}
+				{showSkillMenu && (
+					<div className="skill-menu" ref={skillMenuRef}>
+						<div className="skill-menu-header">
+							<span>选择技能</span>
+							<input
+								type="text"
+								className="skill-menu-search"
+								placeholder="输入过滤技能..."
+								value={skillFilter}
+								readOnly
+								onClick={(e) => e.stopPropagation()}
+							/>
+						</div>
+						{filteredSkills.length > 0 ? (
+							filteredSkills.map((skill, index) => (
+								<div
+									key={skill.id}
+									className={`skill-menu-item ${index === selectedSkillIndex ? 'selected' : ''}`}
+									onClick={() => {
+										const beforeSlash = input.substring(0, input.lastIndexOf('/'));
+										const newValue = beforeSlash + '/skill ' + skill.id + ' ';
+										setInput(newValue);
+										setShowSkillMenu(false);
+										setSkillFilter('');
+									}}
+								>
+									<span className="skill-menu-name">{skill.name}</span>
+									<span className="skill-menu-id">{skill.id}</span>
+								</div>
+							))
+						) : (
+							<div className="skill-menu-empty">无可用技能</div>
+						)}
+					</div>
+				)}
 
 				{/* 下方：工具栏 */}
 				<div className="chat-composer-toolbar">

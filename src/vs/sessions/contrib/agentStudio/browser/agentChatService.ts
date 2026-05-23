@@ -373,6 +373,27 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 		}
 
+		// When a sessionId is specified, also include messages stored with
+		// agentSessionId=undefined (e.g. task orchestration system messages).
+		// These messages belong to the agent globally, not to any specific session,
+		// so they should appear regardless of which session is active.
+		if (sessionId) {
+			const noSessionKey = this._cacheKey(employeeId, undefined);
+			let noSessionMessages = this._historyCache.get(noSessionKey);
+			if (!noSessionMessages || noSessionMessages.length === 0) {
+				noSessionMessages = await this._loadFromSessionFile(employeeId, undefined);
+			}
+			if (noSessionMessages && noSessionMessages.length > 0) {
+				// Merge and deduplicate by message id, sorted by timestamp
+				const existingIds = new Set((messages || []).map(m => m.id));
+				const merged = [
+					...(messages || []),
+					...noSessionMessages.filter(m => !existingIds.has(m.id)),
+				].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+				messages = merged;
+			}
+		}
+
 		this.logService.info(
 			`[AgentChatService] getHistory: ${(messages || []).length} msgs for ${key}`,
 		);
@@ -423,6 +444,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let toolCalls: ChatMessage["toolCalls"];
 
 		try {
+			// Persist user message (fire-and-forget, don't block AI response)
+			const userMessage: ChatMessage = {
+				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+				role: 'user',
+				content: message,
+				employeeId,
+				agentSessionId: options.agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
+			this.appendMessage(employeeId, userMessage).catch(err =>
+				this.logService.error('[AgentChatService] Failed to persist user message:', err)
+			);
+
 			const stream = this.driverService.executeFromChatOptions(
 				employeeId,
 				message,

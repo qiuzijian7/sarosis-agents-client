@@ -678,8 +678,11 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 	const [promptDirty, setPromptDirty] = useState(false);
 
 	// ── Skills state (from employee.skills[]) ───────────────────────
+	// Skills may be strings or objects {id, name, enabled, description}
+	const normalizeSkills = (skills: any[]): string[] =>
+		(skills || []).map(s => typeof s === 'string' ? s : s.id).filter(Boolean);
 	const [skills, setSkills] = useState<string[]>(
-		employee?.skills || [],
+		normalizeSkills(employee?.skills || []),
 	);
 
 	// ── Memory state ──────────────────────────────────────────────────
@@ -710,7 +713,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		if (employee) {
 			setPrompt(employee.customPrompt || '');
 			setPromptDirty(false);
-			setSkills(employee.skills || []);
+			setSkills(normalizeSkills(employee.skills || []));
 			setMemoryConfig(employee.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'sliding_window', windowSize: 20, entries: [] });
 			setKnowledgeConfig(employee.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
 		}

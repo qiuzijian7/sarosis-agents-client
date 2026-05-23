@@ -11,7 +11,7 @@ import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { TaskCard } from './TaskCard';
-import { OrchestrationPlanDialog } from '../orchestration/OrchestrationPlanDialog';
+import { OrchestrationPlanView } from '../orchestration/OrchestrationPlanView';
 
 // Column configuration
 const COLUMNS: { status: TaskBoardStatus; label: string; icon: string; color: string }[] = [
@@ -34,7 +34,11 @@ export function TaskBoardPanel(): React.ReactElement {
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();
-	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans } = useOrchestrationStore();
+	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan } = useOrchestrationStore();
+
+	const handleClosePlanInput = useCallback(() => {
+		useOrchestrationStore.setState({ isPlanDialogOpen: false });
+	}, []);
 
 	const [dragOverColumn, setDragOverColumn] = useState<TaskBoardStatus | null>(null);
 	const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -122,71 +126,71 @@ export function TaskBoardPanel(): React.ReactElement {
 					<span className="task-board-title">任务看板</span>
 					{totalTasks > 0 && <span className="task-board-count">{totalTasks}</span>}
 				</div>
-				<div className="task-board-header-right">
-					<button
-						className="task-board-orchestrate-btn"
-						onClick={(e) => { e.stopPropagation(); openPlanDialog(); }}
-						title="任务编排 - AI 自动拆分任务、创建 Agent"
-					>
-						🎯 任务编排
-					</button>
-					{isLoading && <span className="task-board-loading">Loading...</span>}
-				</div>
+			<div className="task-board-header-right">
+				<button
+					className="task-board-orchestrate-btn"
+					onClick={(e) => { e.stopPropagation(); if (!activePlan) { openPlanDialog(); } }}
+					title="任务编排 - AI 自动拆分任务、创建 Agent"
+				>
+					🎯 任务编排
+				</button>
+				{isLoading && <span className="task-board-loading">Loading...</span>}
 			</div>
+		</div>
 
-			{/* Kanban columns */}
-			{!isCollapsed && (
-				<div className="task-board-columns">
-					{COLUMNS.map(col => {
-						const columnTasks = getTasksForColumn(col.status);
-						const isDragOver = dragOverColumn === col.status;
+		{/* Inline Orchestration Plan View */}
+		{(isPlanDialogOpen || activePlan) && !isCollapsed && (
+			<OrchestrationPlanView onClose={activePlan ? undefined : handleClosePlanInput} />
+		)}
 
-						return (
-							<div
-								key={col.status}
-								className={`task-board-column ${isDragOver ? 'drag-over' : ''}`}
-								onDragOver={(e) => handleDragOver(e, col.status)}
-								onDragLeave={handleDragLeave}
-								onDrop={(e) => handleDrop(e, col.status)}
-							>
-								{/* Column header */}
-								<div className="task-column-header">
-									<span className="task-column-icon">{col.icon}</span>
-									<span className="task-column-label">{col.label}</span>
-									<span className="task-column-count" style={{ backgroundColor: col.color + '30', color: col.color }}>
-										{columnTasks.length}
-									</span>
-								</div>
+		{/* Kanban columns */}
+		{!isCollapsed && (
+			<div className="task-board-columns">
+				{COLUMNS.map(col => {
+					const columnTasks = getTasksForColumn(col.status);
+					const isDragOver = dragOverColumn === col.status;
 
-								{/* Cards */}
-								<div className="task-column-cards">
-									{columnTasks.map(task => (
-										<TaskCard
-											key={task.id}
-											task={task}
-											employees={employees}
-											onStatusChange={handleStatusChange}
-											onDelete={handleDelete}
-											onArchive={handleArchive}
-											onDragStart={handleDragStart}
-											onDragEnd={handleDragEnd}
-											isDragging={draggingTaskId === task.id}
-										/>
-									))}
-									{columnTasks.length === 0 && (
-										<div className="task-column-empty">No tasks</div>
-									)}
-								</div>
+					return (
+						<div
+							key={col.status}
+							className={`task-board-column ${isDragOver ? 'drag-over' : ''}`}
+							onDragOver={(e) => handleDragOver(e, col.status)}
+							onDragLeave={handleDragLeave}
+							onDrop={(e) => handleDrop(e, col.status)}
+						>
+							{/* Column header */}
+							<div className="task-column-header">
+								<span className="task-column-icon">{col.icon}</span>
+								<span className="task-column-label">{col.label}</span>
+								<span className="task-column-count" style={{ backgroundColor: col.color + '30', color: col.color }}>
+									{columnTasks.length}
+								</span>
 							</div>
-						);
-					})}
-				</div>
-			)}
 
-			{/* Orchestration Plan Dialog */}
-			{isPlanDialogOpen && (
-				<OrchestrationPlanDialog onClose={closePlanDialog} />
-			)}
+							{/* Cards */}
+							<div className="task-column-cards">
+								{columnTasks.map(task => (
+									<TaskCard
+										key={task.id}
+										task={task}
+										employees={employees}
+										onStatusChange={handleStatusChange}
+										onDelete={handleDelete}
+										onArchive={handleArchive}
+										onDragStart={handleDragStart}
+										onDragEnd={handleDragEnd}
+										isDragging={draggingTaskId === task.id}
+									/>
+								))}
+								{columnTasks.length === 0 && (
+									<div className="task-column-empty">No tasks</div>
+								)}
+							</div>
+						</div>
+					);
+				})}
+			</div>
+		)}
 		</div>
 	);
 }

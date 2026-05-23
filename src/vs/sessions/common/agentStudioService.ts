@@ -130,6 +130,12 @@ export interface IChatStreamDelta {
 	readonly metadata?: Record<string, unknown>;
 	readonly progress?: number;
 	readonly stage?: string;
+	/** UI display name for tool card (from model's display_name field) */
+	readonly displayName?: string;
+	/** Render type for tool card (e.g. RunTerminal, CodeEditor, ListItems) */
+	readonly renderType?: string;
+	/** Whether to show this tool call card by default (default true) */
+	readonly defaultShow?: boolean;
 }
 
 export interface IChatSendOptions {
@@ -140,6 +146,9 @@ export interface IChatSendOptions {
 	readonly workspaceId?: string;
 	/** Fork-scoped Agent session ID (undefined = Root default session) */
 	readonly agentSessionId?: string;
+	// allow-any-unicode-next-line
+	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
+	readonly explicitSkillIds?: readonly string[];
 }
 
 export interface IAgentChatService {
@@ -266,6 +275,17 @@ export interface ITaskOrchestrationService {
 		taskId: string,
 		action: OrchestrationTaskAction,
 	): Promise<PlanTask>;
+
+	/**
+	 * Ensure a task has an agent assigned. If the task already has an assigneeId,
+	 * verify it still exists. If not, find or create a suitable agent.
+	 * Used when a task board item transitions to 'running' (user clicks "approve").
+	 */
+	ensureTaskAgent(
+		workspaceId: string,
+		taskBoardRecordId: string,
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
+	): Promise<{ assigneeId: string; assigneeName: string } | undefined>;
 }
 
 // --- ConfigMD Service ---

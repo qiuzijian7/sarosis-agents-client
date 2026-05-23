@@ -10,7 +10,7 @@
  *  - WorkspaceCanvas (main area: canvas/list mode with MiniMap, Controls, Background)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback, useState, Component, type ReactNode } from 'react';
 import { WorkspaceToolbar } from './features/title/WorkspaceToolbar';
 import { WorkspaceCanvas } from './features/canvas/WorkspaceCanvas';
 import { EmployeeChat } from './features/chat/EmployeeChat';
@@ -26,6 +26,43 @@ import { sendRequest } from './bridge/messageClient';
 type PanelType = 'canvas' | 'chat' | undefined;
 const panelType: PanelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__ as PanelType;
 
+/* ── Error Boundary for debugging render crashes ─────────────── */
+interface ErrorBoundaryProps {
+	children: React.ReactNode;
+	panelType: string;
+}
+interface ErrorBoundaryState {
+	hasError: boolean;
+	error: Error | null;
+}
+class PanelErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+	constructor(props: ErrorBoundaryProps) {
+		super(props);
+		this.state = { hasError: false, error: null };
+	}
+	static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+		return { hasError: true, error };
+	}
+	componentDidCatch(error: Error, info: React.ErrorInfo): void {
+		console.error(`[${this.props.panelType}] React render error:`, error, info);
+	}
+	render(): React.ReactNode {
+		if (this.state.hasError) {
+			return (
+				<div style={{ padding: 20, color: '#f48771', fontFamily: 'monospace', fontSize: 12 }}>
+					<h3>{this.props.panelType} Render Error</h3>
+					<pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+						{this.state.error?.message}
+						{'\n\n'}
+						{this.state.error?.stack}
+					</pre>
+				</div>
+			);
+		}
+		return this.props.children;
+	}
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * Independent panel components (rendered when panelType is set)
  * ═══════════════════════════════════════════════════════════════════════════════ */
@@ -35,32 +72,50 @@ function CanvasPanel(): React.ReactElement {
 	const { loadEmployees } = useEmployeeStore();
 
 	useEffect(() => {
+		console.log('[CanvasPanel] mount, activeWorkspaceId:', activeWorkspaceId);
 		// Only load workspaces here; employees will be loaded once activeWorkspaceId is set
 		// (avoids redundant employees.list call without workspaceId).
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
+			console.log('[CanvasPanel] loadWorkspaces done, workspaces:', store.workspaces.length, 'activeWorkspaceId:', store.activeWorkspaceId);
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
+				console.log('[CanvasPanel] setting active workspace:', store.workspaces[0].id);
 				store.setActiveWorkspace(store.workspaces[0].id);
+			}
+			// Fallback: if no workspaces registered (e.g. workspaces.json was deleted),
+			// try loading employees from the current VS Code folder directly.
+			if (store.workspaces.length === 0) {
+				console.log('[CanvasPanel] no workspaces, calling loadEmployees() without workspaceId');
+				loadEmployees();
 			}
 		});
 	}, []);
 
 	useEffect(() => {
+		console.log('[CanvasPanel] activeWorkspaceId changed:', activeWorkspaceId);
 		if (activeWorkspaceId) {
+			console.log('[CanvasPanel] calling loadEmployees with workspaceId:', activeWorkspaceId);
 			loadEmployees(activeWorkspaceId);
 		}
 	}, [activeWorkspaceId, loadEmployees]);
 
 	useEffect(() => {
+		console.log('[CanvasPanel] setting up event listeners');
 		const onEmployeesChanged = () => {
+			console.log('[CanvasPanel] event: employees-changed, activeWorkspaceId:', activeWorkspaceId);
 			// Skip if no active workspace yet — initial load will be handled by the effect above
 			if (activeWorkspaceId) {
+				console.log('[CanvasPanel] event: employees-changed, calling loadEmployees');
 				loadEmployees(activeWorkspaceId);
 			}
 		};
-		const onWorkspaceChanged = () => { loadWorkspaces(); };
+		const onWorkspaceChanged = () => {
+			console.log('[CanvasPanel] event: workspace-changed');
+			loadWorkspaces();
+		};
 		const onActiveWorkspaceChanged = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
+			console.log('[CanvasPanel] event: workspace-active-changed', detail);
 			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
 				setActiveWorkspace(detail.workspaceId);
 			}
@@ -78,7 +133,9 @@ function CanvasPanel(): React.ReactElement {
 	return (
 		<div className="panel-standalone">
 			<div className="panel-standalone-content">
-				<WorkspaceCanvas />
+				<PanelErrorBoundary panelType="CanvasPanel">
+					<WorkspaceCanvas />
+				</PanelErrorBoundary>
 			</div>
 		</div>
 	);
@@ -117,6 +174,10 @@ function ChatPanel(): React.ReactElement {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
 				store.setActiveWorkspace(store.workspaces[0].id);
+			}
+			// Fallback: if no workspaces registered, try loading employees directly.
+			if (store.workspaces.length === 0) {
+				loadEmployees();
 			}
 		});
 		loadProviders();
@@ -194,14 +255,16 @@ function ChatPanel(): React.ReactElement {
 
 	return (
 		<div className="panel-standalone">
-			{editorPaneOpen && editorPaneEmployeeId ? (
-				<AgentEditorPane
-					employeeId={editorPaneEmployeeId}
-					onClose={handleCloseEditorPane}
-				/>
-			) : (
-				<EmployeeChat onOpenEditorPane={handleOpenEditorPane} />
-			)}
+			<PanelErrorBoundary panelType="ChatPanel">
+				{editorPaneOpen && editorPaneEmployeeId ? (
+					<AgentEditorPane
+						employeeId={editorPaneEmployeeId}
+						onClose={handleCloseEditorPane}
+					/>
+				) : (
+					<EmployeeChat onOpenEditorPane={handleOpenEditorPane} />
+				)}
+			</PanelErrorBoundary>
 		</div>
 	);
 }

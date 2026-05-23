@@ -189,13 +189,20 @@ const FUZZY_NAME_MAP: Record<string, string> = {
 	grep: "search_files",
 	find: "search_files",
 
-	// Task/planning hallucinations (models confuse tool-set description "Task planning" with tool name)
-	task_planning: "todo",
-	taskplanning: "todo",
-	plan_task: "todo",
-	plan_tasks: "todo",
-	task_plan: "todo",
-	planning: "todo",
+	// Task/planning hallucinations — these are "phantom" tool names that the LLM
+	// generates as UI indicators (e.g., showing "任务规划中" in the chat).
+	// They have render_type="None" and default_show=false, meaning they should
+	// NOT be executed as real tools. Do NOT map them to "todo" or any other real tool.
+	// Mapping them to "todo" causes the bundled stub handler to return
+	// "not yet implemented natively", which confuses the LLM and derails the conversation.
+	//
+	// REMOVED mappings (were causing Bug: task_planning → todo loop):
+	//   task_planning: "todo", taskplanning: "todo", plan_task: "todo",
+	//   plan_tasks: "todo", task_plan: "todo", planning: "todo",
+	//
+	// These names will now fall through to the "tool not found" path, which
+	// returns a proper error with available tool names — much better than the
+	// confusing "not yet implemented" stub response.
 
 	// Semantic misnamings
 	read_file: "file_read",
@@ -749,6 +756,9 @@ export class StreamingToolCallAssembler {
 	private _name = "";
 	private _argsBuffer = "";
 	private _finalized = false;
+	private _displayName: string | undefined;
+	private _renderType: string | undefined;
+	private _defaultShow: boolean | undefined;
 
 	get id(): string {
 		return this._id;
@@ -766,11 +776,14 @@ export class StreamingToolCallAssembler {
 	/**
 	 * Start a new tool call. Resets internal state.
 	 */
-	start(id: string, name: string, initialArgs?: string): void {
+	start(id: string, name: string, initialArgs?: string, meta?: { displayName?: string; renderType?: string; defaultShow?: boolean }): void {
 		this._id = id;
 		this._name = name;
 		this._argsBuffer = initialArgs || "";
 		this._finalized = false;
+		this._displayName = meta?.displayName;
+		this._renderType = meta?.renderType;
+		this._defaultShow = meta?.defaultShow;
 	}
 
 	/**
@@ -825,6 +838,9 @@ export class StreamingToolCallAssembler {
 			id: this._id,
 			name: this._name,
 			arguments: args,
+			displayName: this._displayName,
+			renderType: this._renderType,
+			defaultShow: this._defaultShow,
 		};
 	}
 

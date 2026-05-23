@@ -636,10 +636,15 @@ export class CustomizationHarnessServiceBase implements ICustomizationHarnessSer
 	}
 
 	async getSlashCommands(sessionType: string, token: CancellationToken): Promise<readonly IChatPromptSlashCommand[]> {
+		console.error(`[CustomizationHarnessServiceBase.getSlashCommands] sessionType=${sessionType}`);
 		const harness = this.findHarnessById(sessionType);
 		if (!harness || !harness.itemProvider) {
+			console.error(`[CustomizationHarnessServiceBase.getSlashCommands] no itemProvider, calling promptsService.getPromptSlashCommands`);
 			const commands = await this.promptsService.getPromptSlashCommands(token);
-			return commands.filter(command => matchesSessionType(command.sessionTypes, sessionType));
+			console.error(`[CustomizationHarnessServiceBase.getSlashCommands] got ${commands.length} commands from promptsService`);
+			const filtered = commands.filter(command => matchesSessionType(command.sessionTypes, sessionType));
+			console.error(`[CustomizationHarnessServiceBase.getSlashCommands] filtered to ${filtered.length} commands for sessionType=${sessionType}`);
+			return filtered;
 		}
 
 		const items = await harness.itemProvider.provideChatSessionCustomizations(token);

@@ -112,7 +112,8 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 			set(state => ({
 				plans: [...state.plans, plan],
 				activePlan: plan,
-				isPlanDialogOpen: true,
+				// Don't open dialog automatically - plan will be shown in chat message
+				isPlanDialogOpen: false,
 				isLoading: false,
 			}));
 			return plan;
