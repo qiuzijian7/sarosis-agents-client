@@ -182,3 +182,4 @@ hygiene-check.txt
 compile_err.txt
 err.txt
 out.txt
+src/vs/sessions/contrib/agentStudio/webview/tserr.txt
