@@ -155,10 +155,20 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	/** Track whether we just loaded history (vs. a new message arriving).
 	 *  When history loads we want instant scroll; for new messages we use smooth. */
 	const wasLoadingRef = useRef(false);
-	/** Show "scroll to bottom" button when user has scrolled up. */
-	const [showScrollBottom, setShowScrollBottom] = useState(false);
 	/** Whether auto-scroll should follow new content (user is at the bottom). */
 	const isAtBottomRef = useRef(true);
+	/** Whether scroll-to-bottom button should be visible (React state so re-renders don't reset it). */
+	const [showScrollBtn, setShowScrollBtn] = useState(false);
+	// Track previous employee to detect employee switches (used by useLayoutEffect below)
+	const prevEmployeeIdRef = useRef<string | null>(activeEmployeeId);
+
+	/**
+	 * Update scroll-down button visibility.
+	 * Uses React state instead of direct DOM manipulation to survive re-renders.
+	 */
+	const updateScrollDownButton = useCallback((atBottom: boolean) => {
+		setShowScrollBtn(!atBottom);
+	}, []);
 
 	// Sync selected employee with chat
 	useEffect(() => {
@@ -186,18 +196,39 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	useLayoutEffect(() => {
 		const el = chatMessagesRef.current;
 		if (!el) { return; }
+
+		// Detect employee switch: force scroll to bottom on all subsequent renders
+		// until new messages are loaded (wasLoadingRef ensures instant scroll when they arrive).
+		const isEmployeeSwitch = prevEmployeeIdRef.current !== activeEmployeeId;
+		if (isEmployeeSwitch) {
+			prevEmployeeIdRef.current = activeEmployeeId;
+			wasLoadingRef.current = true; // ensures instant scroll when messages load
+		}
+
 		const THRESHOLD = 80;
 		const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 		const atBottom = distFromBottom < THRESHOLD;
-		isAtBottomRef.current = atBottom;
-		setShowScrollBottom(!atBottom);
-		if (!atBottom) { return; }
-		const behavior = wasLoadingRef.current ? 'instant' : 'smooth';
-		wasLoadingRef.current = false;
-		messagesEndRef.current?.scrollIntoView({ behavior });
-	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls]);
 
-	// Listen to scroll events on the message list to detect "at bottom" vs "scrolled up"
+		// When loading (employee switch or history load), always scroll to bottom
+		// regardless of current scroll position. Otherwise only scroll if already near bottom.
+		if (wasLoadingRef.current) {
+			isAtBottomRef.current = true;
+			setShowScrollBtn(false);
+			wasLoadingRef.current = false;
+			messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+			return;
+		}
+
+		isAtBottomRef.current = atBottom;
+		updateScrollDownButton(atBottom);
+		if (!atBottom) { return; }
+		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls, updateScrollDownButton, activeEmployeeId]);
+
+	// Listen to scroll events on the message list — mirrors VS Code's onDidScroll handler.
+	// This is the sole authority for button visibility (just like VS Code).
+	// IMPORTANT: activeEmployeeId in deps so listener re-binds when employee changes
+	// (on first mount the ref may be null if no employee is selected yet).
 	useEffect(() => {
 		const el = chatMessagesRef.current;
 		if (!el) { return; }
@@ -206,23 +237,20 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 			const atBottom = distFromBottom < THRESHOLD;
 			isAtBottomRef.current = atBottom;
-			setShowScrollBottom(!atBottom);
+			updateScrollDownButton(atBottom);
 		};
-		// Initialise once on mount so the button shows if content already overflows.
+		// Initialise once so the button shows if content already overflows.
 		handleScroll();
 		el.addEventListener('scroll', handleScroll, { passive: true });
 		return () => { el.removeEventListener('scroll', handleScroll); };
-	}, []);
+	}, [updateScrollDownButton, activeEmployeeId]);
 
-	// Scroll to bottom handler
+	// Scroll to bottom handler — mirrors VS Code's scrollDownButton.onDidClick
 	const handleScrollToBottom = useCallback(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-		// Defer flag update to next frame so the scroll event handler
-		// (fired synchronously by scrollIntoView) doesn't overwrite us.
-		requestAnimationFrame(() => {
-			isAtBottomRef.current = true;
-			setShowScrollBottom(false);
-		});
+		// Immediately mark as at-bottom and hide button
+		isAtBottomRef.current = true;
+		setShowScrollBtn(false);
 	}, []);
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
@@ -430,48 +458,38 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					<span>任务: {taskCount}</span>
 				</div>
 
-				{/* Message List */}
-				<div className="chat-messages" ref={chatMessagesRef}>
-					{messages.map((msg) => (
-						<ChatMessageComponent key={msg.id} message={msg} />
-					))}
+				{/* Message List Container: wraps the scrollable list + scroll-down button */}
+				<div className="chat-messages-container">
+					<div className="chat-messages" ref={chatMessagesRef}>
+						{messages.map((msg) => (
+							<ChatMessageComponent key={msg.id} message={msg} />
+						))}
 
-					{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
-					{/* DEBUG: Always log streaming condition on every render */}
-					{(() => {
-						console.log('[EmployeeChat] render check:', {
-							isStreaming: streamState.isStreaming,
-							streamEmployeeId: streamState.employeeId,
-							activeEmployeeId,
-							textBufferLen: streamState.textBuffer.length,
-							willRenderBubble: streamState.isStreaming && streamState.employeeId === activeEmployeeId,
-						});
-						return null;
-					})()}
-					{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
-						<StreamingBubble
-							textBuffer={streamState.textBuffer}
-							thinkingBuffer={streamState.thinkingBuffer}
-							toolCalls={streamState.toolCalls}
-							errorMessage={streamState.errorMessage}
-							streamError={streamState.error}
-						/>
-					)}
+						{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
+						{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
+							<StreamingBubble
+								textBuffer={streamState.textBuffer}
+								thinkingBuffer={streamState.thinkingBuffer}
+								toolCalls={streamState.toolCalls}
+								errorMessage={streamState.errorMessage}
+								streamError={streamState.error}
+							/>
+						)}
 
-					<div ref={messagesEndRef} />
+						<div ref={messagesEndRef} />
+					</div>
 
-					{/* Scroll-to-bottom button: floats inside the message list */}
-					{showScrollBottom && (
-						<button
-							className="chat-scroll-bottom-btn"
-							onClick={handleScrollToBottom}
-							title="滚动到底部"
-						>
-							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-								<polyline points="6 9 12 15 18 9" />
-							</svg>
-						</button>
-					)}
+					{/* Scroll-to-bottom button: always in DOM, visibility via React state */}
+					<button
+						className="chat-scroll-bottom-btn"
+						onClick={handleScrollToBottom}
+						title="滚动到底部"
+						style={{ display: showScrollBtn ? 'flex' : 'none' }}
+					>
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="6 9 12 15 18 9" />
+						</svg>
+					</button>
 				</div>
 
 				{/* Composer */}
