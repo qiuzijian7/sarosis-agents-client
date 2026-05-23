@@ -30,14 +30,11 @@ export const enum DelegationStatus {
 /**
  * Agent type determines capabilities within a workspace.
  * - planner: Can decompose goals into tasks (orchestration). Multiple allowed per workspace.
- * - pm: Can dispatch/schedule tasks to agents. Only ONE allowed per workspace.
- * - worker: Executes assigned tasks. No orchestration or dispatch capabilities.
+ * - worker: Executes assigned tasks. No orchestration capabilities.
  */
 export const enum AgentType {
 	/** Can decompose goals into sub-tasks. Multiple planners allowed per workspace. */
 	Planner = 'planner',
-	/** Project Manager — dispatches tasks. Only ONE PM allowed per workspace. */
-	PM = 'pm',
 	/** Regular worker agent — executes tasks. */
 	Worker = 'worker',
 }
@@ -538,6 +535,32 @@ export const enum PlanTaskStatus {
 }
 
 /**
+ * Task review status for human-in-the-loop approval workflow.
+ */
+export const enum TaskReviewStatus {
+	/** Task is completed and waiting for human review */
+	Pending = 'pending',
+	/** Task has been reviewed and approved by human */
+	Approved = 'approved',
+	/** Task has been reviewed and rejected by human */
+	Rejected = 'rejected',
+}
+
+/**
+ * A comment on a task, used for human-in-the-loop collaboration.
+ */
+export interface TaskComment {
+	/** Unique comment ID */
+	readonly id: string;
+	/** Author name or ID */
+	author: string;
+	/** Comment content */
+	content: string;
+	/** Creation timestamp */
+	createdAt: string;
+}
+
+/**
  * A single task within an orchestration plan.
  * Each task has a unique ID, may depend on other tasks, and is assigned to an agent.
  */
@@ -578,6 +601,29 @@ export interface PlanTask {
 	createdAt: string;
 	startedAt?: string;
 	completedAt?: string;
+
+	// allow-any-unicode-next-line
+	// ─── Human-in-the-Loop Fields ─────────────────────────────────────────────
+	/** Whether this task needs human review after completion */
+	needsReview?: boolean;
+	/** Review status (pending/approved/rejected) */
+	reviewStatus?: TaskReviewStatus;
+	/** Review comment from human */
+	reviewComment?: string;
+	/** Human who reviewed this task */
+	reviewedBy?: string;
+	/** Review timestamp */
+	reviewedAt?: string;
+	/** Comments on this task (human-agent collaboration) */
+	comments?: TaskComment[];
+	/** Whether this task is blocked by human */
+	isBlocked?: boolean;
+	/** Reason why this task is blocked */
+	blockedReason?: string;
+	/** Human who blocked this task */
+	blockedBy?: string;
+	/** Block timestamp */
+	blockedAt?: string;
 }
 
 /**
@@ -599,8 +645,6 @@ export interface OrchestrationPlan {
 	workspaceId: string;
 	/** The planner agent (Employee) who created this plan */
 	plannerId: string;
-	/** The PM agent (Employee) who will dispatch/schedule the tasks. Only the PM can approve. */
-	pmId?: string;
 	/** Max number of tasks running concurrently (default: 3) */
 	maxConcurrency: number;
 	/** Timestamps */

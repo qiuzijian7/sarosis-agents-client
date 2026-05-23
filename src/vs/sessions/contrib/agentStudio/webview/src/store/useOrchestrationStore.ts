@@ -24,7 +24,16 @@ export type PlanTaskStatus =
 	| 'cancelled'
 	| 'error';
 
-export type OrchestrationTaskAction = 'retry' | 'pause' | 'resume' | 'cancel';
+export type OrchestrationTaskAction = 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'comment' | 'block' | 'unblock';
+
+export interface TaskComment {
+	id: string;
+	author: string;
+	content: string;
+	createdAt: string;
+}
+
+export type TaskReviewStatus = 'pending' | 'approved' | 'rejected';
 
 export interface PlanTask {
 	id: string;
@@ -46,6 +55,27 @@ export interface PlanTask {
 	createdAt: string;
 	startedAt?: string;
 	completedAt?: string;
+	// ─── Human-in-the-Loop Fields ─────────────────────────────────────────
+	/** Whether this task needs human review after completion */
+	needsReview?: boolean;
+	/** Review status (pending/approved/rejected) */
+	reviewStatus?: TaskReviewStatus;
+	/** Review comment from human */
+	reviewComment?: string;
+	/** Human who reviewed this task */
+	reviewedBy?: string;
+	/** Review timestamp */
+	reviewedAt?: string;
+	/** Comments on this task (human-agent collaboration) */
+	comments?: TaskComment[];
+	/** Whether this task is blocked by human */
+	isBlocked?: boolean;
+	/** Reason why this task is blocked */
+	blockedReason?: string;
+	/** Human who blocked this task */
+	blockedBy?: string;
+	/** Block timestamp */
+	blockedAt?: string;
 }
 
 export interface OrchestrationPlan {
@@ -57,8 +87,6 @@ export interface OrchestrationPlan {
 	workspaceId: string;
 	/** The planner agent who created this plan */
 	plannerId: string;
-	/** The PM agent who dispatches tasks (only PM can approve) */
-	pmId?: string;
 	/** Max concurrent running tasks */
 	maxConcurrency: number;
 	createdAt: string;
@@ -86,6 +114,12 @@ interface OrchestrationState {
 	approvePlan: (planId: string) => Promise<void>;
 	rejectPlan: (planId: string) => Promise<void>;
 	taskAction: (planId: string, taskId: string, action: OrchestrationTaskAction) => Promise<void>;
+	// ─── Human-in-the-Loop Actions ─────────────────────────────────────
+	approveTask: (planId: string, taskId: string, comment?: string) => Promise<void>;
+	rejectTask: (planId: string, taskId: string, comment?: string) => Promise<void>;
+	commentTask: (planId: string, taskId: string, comment: string) => Promise<void>;
+	blockTask: (planId: string, taskId: string, reason?: string) => Promise<void>;
+	unblockTask: (planId: string, taskId: string) => Promise<void>;
 	loadPlans: (workspaceId: string) => Promise<void>;
 	openPlanDialog: () => void;
 	closePlanDialog: () => void;
@@ -178,6 +212,62 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 		}
 	},
 
+	// ─── Human-in-the-Loop Actions ─────────────────────────────────────
+	approveTask: async (planId, taskId, comment) => {
+		try {
+			await sendRequest<
+				{ planId: string; taskId: string; comment?: string },
+				PlanTask
+			>('orchestration.approveTask', { planId, taskId, comment });
+		} catch (err) {
+			console.error('[OrchestrationStore] approveTask failed:', err);
+		}
+	},
+
+	rejectTask: async (planId, taskId, comment) => {
+		try {
+			await sendRequest<
+				{ planId: string; taskId: string; comment?: string },
+				PlanTask
+			>('orchestration.rejectTask', { planId, taskId, comment });
+		} catch (err) {
+			console.error('[OrchestrationStore] rejectTask failed:', err);
+		}
+	},
+
+	commentTask: async (planId, taskId, comment) => {
+		try {
+			await sendRequest<
+				{ planId: string; taskId: string; comment: string },
+				PlanTask
+			>('orchestration.commentTask', { planId, taskId, comment });
+		} catch (err) {
+			console.error('[OrchestrationStore] commentTask failed:', err);
+		}
+	},
+
+	blockTask: async (planId, taskId, reason) => {
+		try {
+			await sendRequest<
+				{ planId: string; taskId: string; reason?: string },
+				PlanTask
+			>('orchestration.blockTask', { planId, taskId, reason });
+		} catch (err) {
+			console.error('[OrchestrationStore] blockTask failed:', err);
+		}
+	},
+
+	unblockTask: async (planId, taskId) => {
+		try {
+			await sendRequest<
+				{ planId: string; taskId: string },
+				PlanTask
+			>('orchestration.unblockTask', { planId, taskId });
+		} catch (err) {
+			console.error('[OrchestrationStore] unblockTask failed:', err);
+		}
+	},
+
 	loadPlans: async (workspaceId) => {
 		set({ isLoading: true });
 		try {
@@ -185,7 +275,24 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 				{ workspaceId: string },
 				OrchestrationPlan[]
 			>('orchestration.listPlans', { workspaceId });
-			set({ plans, isLoading: false });
+			set(state => {
+				// Restore activePlan from the loaded plans if it's no longer valid,
+				// or if there's no activePlan but there's a pending_approval plan.
+				let newActivePlan = state.activePlan;
+				if (newActivePlan) {
+					// Sync activePlan with the latest data from the server
+					const synced = plans.find(p => p.id === newActivePlan!.id);
+					newActivePlan = synced || null;
+				}
+				if (!newActivePlan) {
+					// Auto-activate the most relevant plan: prefer pending_approval,
+					// then executing/approved, then the most recent one
+					newActivePlan = plans.find(p => p.status === 'pending_approval')
+						|| plans.find(p => p.status === 'executing' || p.status === 'approved')
+						|| null;
+				}
+				return { plans, activePlan: newActivePlan, isLoading: false };
+			});
 		} catch (err) {
 			console.error('[OrchestrationStore] loadPlans failed:', err);
 			set({ isLoading: false });

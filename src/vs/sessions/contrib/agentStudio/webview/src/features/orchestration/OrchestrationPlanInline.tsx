@@ -11,6 +11,7 @@ import {
 	type PlanTask,
 } from '../../store/useOrchestrationStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { sendRequest } from '../../bridge/messageClient';
 
 // ─── Status styling ─────────────────────────────────────────────────────────
 
@@ -73,9 +74,6 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 	const plannerName = plan
 		? employees.find(e => e.id === plan.plannerId)?.name || 'Unknown Planner'
 		: '';
-	const pmName = plan?.pmId
-		? employees.find(e => e.id === plan.pmId)?.name || 'Unknown PM'
-		: '';
 
 	const stats = useMemo(() => {
 		if (!plan) { return null; }
@@ -121,18 +119,24 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 			{/* Plan summary */}
 			<div className="orch-plan-inline-summary">
 				<div className="orch-plan-inline-goal">
-					<strong>目标:</strong> {plan.goal}
+					<strong>目标:</strong>{' '}
+					<span
+						className="orch-plan-goal-link"
+						title="点击打开任务看板"
+						onClick={() => {
+							sendRequest('taskBoard.openOverview', { taskTitle: plan.goal }).catch(err => {
+								console.warn('[OrchestrationPlanInline] Failed to open task overview:', err);
+							});
+						}}
+					>
+						{plan.goal}
+					</span>
 				</div>
 				<div className="orch-plan-inline-desc">{plan.summary}</div>
 
-				<div className="orch-plan-inline-roles">
-					<span className="orch-role-tag planner">📐 Planner: {plannerName}</span>
-					{pmName ? (
-						<span className="orch-role-tag pm">👔 PM: {pmName}</span>
-					) : (
-						<span className="orch-role-tag pm missing">⚠️ PM: 未分配</span>
-					)}
-				</div>
+			<div className="orch-plan-inline-roles">
+				<span className="orch-role-tag planner">📐 Planner: {plannerName}</span>
+			</div>
 
 				{stats && (
 					<div className="orch-plan-inline-stats">

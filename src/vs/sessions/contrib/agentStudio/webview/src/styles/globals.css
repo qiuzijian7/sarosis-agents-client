@@ -1285,8 +1285,21 @@ html, body, #root {
 .task-card-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 4px;
   margin-bottom: 3px;
+}
+
+.task-card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.task-card-header-right {
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .task-card-id-label {
@@ -1305,6 +1318,39 @@ html, body, #root {
   font-family: var(--vscode-editor-font-family, monospace);
 }
 
+.task-card-copy-id {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 2px;
+  font-size: 9px;
+  opacity: 0;
+  transition: opacity 100ms, background-color 100ms;
+}
+
+.task-card:hover .task-card-copy-id {
+  opacity: 0.6;
+}
+
+.task-card-copy-id:hover {
+  opacity: 1 !important;
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.task-card-priority {
+  font-size: 8px;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
 .task-card-badge {
   font-size: 8px;
   padding: 0 4px;
@@ -1317,6 +1363,11 @@ html, body, #root {
   color: #60a5fa;
 }
 
+.task-card-badge.manual {
+  background-color: rgba(107, 114, 128, 0.15);
+  color: #9ca3af;
+}
+
 .task-card-title {
   font-size: 11px;
   line-height: 1.3;
@@ -1325,6 +1376,32 @@ html, body, #root {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  font-weight: 500;
+}
+
+.task-card-desc {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 2px;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  opacity: 0.8;
+}
+
+.task-card.priority-high {
+  border-left: 3px solid #ef4444;
+}
+
+.task-card.priority-medium {
+  border-left: 3px solid #f59e0b;
+}
+
+.task-card.priority-low {
+  border-left: 3px solid #6b7280;
 }
 
 .task-card-route,
@@ -1462,6 +1539,21 @@ html, body, #root {
   font-family: var(--vscode-editor-font-family, monospace);
 }
 
+.task-card-dep-tag.done {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+
+.task-card-dep-tag.running {
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+}
+
+.task-card-dep-tag.pending {
+  background: rgba(139, 92, 246, 0.12);
+  color: #8b5cf6;
+}
+
 .task-card-dep-none {
   color: var(--vscode-descriptionForeground);
   opacity: 0.5;
@@ -1504,6 +1596,26 @@ html, body, #root {
 
 .task-card-action.restore:hover {
   background-color: rgba(59, 130, 246, 0.15);
+}
+
+.task-card-action.chat {
+  color: #3b82f6;
+}
+
+.task-card-action.chat:hover {
+  background-color: rgba(59, 130, 246, 0.15);
+}
+
+.task-card-action.archive {
+  color: #8b5cf6;
+}
+
+.task-card-action.archive:hover {
+  background-color: rgba(139, 92, 246, 0.15);
+}
+
+.task-card-action.delete {
+  color: #ef4444;
 }
 
 /* ─── Task Board Header: orchestrate button ──────────────────────────────── */
@@ -1931,15 +2043,7 @@ html, body, #root {
   color: var(--vscode-textLink-foreground, #3b82f6);
 }
 
-.orch-role-tag.pm {
-  background: rgba(139, 92, 246, 0.1);
-  color: #8b5cf6;
-}
 
-.orch-role-tag.pm.missing {
-  background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
-}
 
 /* ─── Inline Plan View (inside TaskBoardPanel) ───────────────────────────── */
 
@@ -2022,7 +2126,6 @@ html, body, #root {
   height: 100%;
   width: 100%;
   background-color: var(--as-bg-primary, var(--vscode-editor-background));
-  position: relative;
 }
 
 /* ─── Empty State ─────────────────────────────────────────────────────────── */
@@ -2244,16 +2347,17 @@ html, body, #root {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 16px;
+  padding: 12px 16px 56px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  position: relative;
 }
 
-/* Scroll-to-bottom button: floats above the composer on the right side */
+/* Scroll-to-bottom button: floats at the bottom-right of the message list */
 .chat-scroll-bottom-btn {
   position: absolute;
-  bottom: 80px;
+  bottom: 16px;
   right: 16px;
   width: 32px;
   height: 32px;

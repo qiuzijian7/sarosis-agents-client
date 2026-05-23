@@ -361,24 +361,21 @@ export const useChatStore = create<ChatState>((set, get) => {
 					set({ isLoading: false });
 					return;
 				}
-				// Guard: don't overwrite messages if local messages already exist
-				// (e.g. user typed something during the await, or a background
-				// stream completion already appended an assistant message). We
-				// must NOT guard on `isStreaming` here — when the user switches
-				// back to an employee whose stream is still running, we restored
-				// its background streamState and need the historical messages
-				// to render alongside the live streaming bubble. Skipping here
-				// would leave the chat panel empty (only the streaming bubble).
-				const currentMessages = get().messages;
-				if (currentMessages.length > 0) {
-					console.warn(`[ChatStore] loadHistoryForSession: skipping — existingMessages=${currentMessages.length}`);
-					set({ isLoading: false });
-					return;
-				}
 				console.log(`[ChatStore] loadHistoryForSession: received ${messages?.length ?? 0} messages for ${employeeId}`);
 				
-				// ── Re-create orchestration_plan message if there's an active pending plan ──
-				let finalMessages = messages || [];
+				// ── Filter out orchestration_plan messages that don't belong to this agent ──
+				let finalMessages = (messages || []).filter(m => {
+					if (m.metadata?.type === 'orchestration_plan') {
+						// Only keep plan messages whose plannerId matches the current agent
+						const { useOrchestrationStore } = require('./useOrchestrationStore');
+						const plan = useOrchestrationStore.getState().plans.find(p => p.id === m.metadata!.planId);
+						if (plan && plan.plannerId !== employeeId) {
+							console.log(`[ChatStore] Filtering out plan ${plan.id} (plannerId=${plan.plannerId}) from agent ${employeeId}`);
+							return false;
+						}
+					}
+					return true;
+				});
 				try {
 					const { useOrchestrationStore } = require('./useOrchestrationStore');
 					const { useWorkspaceStore } = require('./useWorkspaceStore');
@@ -390,15 +387,36 @@ export const useChatStore = create<ChatState>((set, get) => {
 						await useOrchestrationStore.getState().loadPlans(workspaceId);
 					}
 					
-					const plans = useOrchestrationStore.getState().plans;
-					const activePlan = plans.find(p => p.status === 'pending_approval');
-					if (activePlan) {
-						console.log(`[ChatStore] Found active pending plan ${activePlan.id}, re-creating orchestration_plan message`);
+				const plans = useOrchestrationStore.getState().plans;
+				console.log(`[ChatStore] loadHistoryForSession: plans count=${plans.length}, statuses=${plans.map(p => p.status).join(',')}`);
+				// Include all non-rejected plans (pending_approval, approved, executing, completed)
+				// so the plan UI doesn't disappear when switching back to the planner chat.
+				const activePlans = plans.filter(p =>
+					p.status !== 'rejected' && p.status !== 'error'
+				);
+				console.log(`[ChatStore] loadHistoryForSession: activePlans count=${activePlans.length}`);
+
+					// Avoid duplicating plan messages that may already exist in history
+					const existingPlanIds = new Set(
+						finalMessages
+							.filter(m => m.metadata?.type === 'orchestration_plan')
+							.map(m => m.metadata!.planId)
+					);
+
+					for (const plan of activePlans) {
+						// 只有当前 agent 是该 plan 的 planner 时才显示任务计划卡片
+						if (plan.plannerId !== employeeId) { continue; }
+						if (existingPlanIds.has(plan.id)) { continue; }
+						console.log(`[ChatStore] Re-creating orchestration_plan message for plan ${plan.id} (status=${plan.status})`);
+						const statusText = plan.status === 'pending_approval' ? '任务计划已创建，请在下方面板中审批：'
+							: plan.status === 'executing' || plan.status === 'approved' ? '任务计划执行中：'
+							: plan.status === 'completed' ? '任务计划已完成：'
+							: '任务计划：';
 						const planMessage: ChatMessage = {
-							id: `plan_${activePlan.id}`,
+							id: `plan_${plan.id}`,
 							role: 'system',
-							content: `✅ 任务计划已创建，请在下方面板中审批：`,
-							metadata: { type: 'orchestration_plan', planId: activePlan.id },
+							content: `✅ ${statusText}`,
+							metadata: { type: 'orchestration_plan', planId: plan.id },
 							timestamp: new Date().toISOString(),
 						};
 						finalMessages = [...finalMessages, planMessage];

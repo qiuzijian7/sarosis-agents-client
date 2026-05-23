@@ -782,6 +782,17 @@
 	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
 }
 
+.orch-plan-goal-link {
+	color: var(--vscode-textLink-foreground, #3794ff);
+	cursor: pointer;
+	text-decoration: underline;
+	transition: opacity 150ms;
+}
+
+.orch-plan-goal-link:hover {
+	opacity: 0.8;
+}
+
 .orch-plan-inline-desc {
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
 	font-size: 11px;
@@ -806,13 +817,7 @@
 	color: var(--as-accent, #3b82f6);
 }
 
-.orch-role-tag.pm {
-	color: var(--as-success, #10b981);
-}
 
-.orch-role-tag.pm.missing {
-	color: var(--vscode-errorForeground, #f48771);
-}
 
 .orch-plan-inline-stats {
 	display: flex;

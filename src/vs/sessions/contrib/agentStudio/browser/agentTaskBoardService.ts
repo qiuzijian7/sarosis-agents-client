@@ -12,7 +12,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IAgentTaskBoardService, ITaskOrchestrationService, IAgentChatService } from '../common/agentStudio.js';
+import { IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
 import type { TaskBoardRecord } from '../common/types.js';
 import { TaskBoardStatus, TaskSource } from '../common/types.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
@@ -29,7 +29,6 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 
 	/** Lazy references to break cyclic dependency (agentTaskBoardService ↔ taskOrchestrationService) */
 	private _orchestrationService: ITaskOrchestrationService | undefined;
-	private _chatService: IAgentChatService | undefined;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -47,14 +46,6 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			this._orchestrationService = this.instantiationService.invokeFunction(accessor => accessor.get(ITaskOrchestrationService));
 		}
 		return this._orchestrationService!;
-	}
-
-	/** Lazily resolve IAgentChatService to keep constructor clean */
-	private get chatService(): IAgentChatService {
-		if (!this._chatService) {
-			this._chatService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentChatService));
-		}
-		return this._chatService!;
 	}
 
 	private _getDataUri(): URI {
@@ -169,21 +160,14 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 					updated.assigneeName = result.assigneeName;
 					this.logService.info(`[AgentStudio] TaskBoard: ensured agent "${result.assigneeName}" (${result.assigneeId}) for task ${id}`);
 
-					// Send system message to agent's chat box to notify task start
-					try {
-						const chatMessage = {
-							id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-							role: 'system' as const,
-							content: `🚀 开始执行任务: ${updated.title}\n\n任务描述: ${updated.description || updated.title}\n任务ID: ${updated.id}\n执行者: ${result.assigneeName}`,
-							employeeId: result.assigneeId,
-							agentSessionId: undefined,
-							timestamp: new Date().toISOString(),
-						};
-						await this.chatService.appendMessage(result.assigneeId, chatMessage);
-						this.logService.info(`[AgentStudio] TaskBoard: sent execution start message to agent ${result.assigneeId} for task ${id}`);
-					} catch (chatErr) {
-						this.logService.warn(`[AgentStudio] TaskBoard: failed to send chat message to agent ${result.assigneeId}:`, chatErr);
-					}
+					// Fire-and-forget: invoke the agent to actually execute the task
+					this.orchestrationService.executeTaskForBoard(
+						updated.workspaceId!,
+						id,
+						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId },
+					).catch(err => {
+						this.logService.warn(`[AgentStudio] TaskBoard: task execution failed for ${id}:`, err);
+					});
 				} else {
 					this.logService.warn(`[AgentStudio] TaskBoard: could not ensure agent for task ${id}, proceeding without assignment`);
 				}

@@ -37,6 +37,7 @@ export type RequestType =
 	| 'taskBoard.update'
 	| 'taskBoard.delete'
 	| 'taskBoard.archive'
+	| 'taskBoard.openOverview'
 	| 'session.list'
 	| 'session.get'
 	| 'session.create'

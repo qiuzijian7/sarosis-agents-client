@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
 import { useWorkspaceStore } from './useWorkspaceStore';
 
-export type AgentType = 'planner' | 'pm' | 'worker';
+export type AgentType = 'planner' | 'worker';
 
 export interface Employee {
 	id: string;
@@ -167,12 +167,8 @@ interface EmployeeState {
 	filteredEmployees: () => Employee[];
 	/** Get all planners in the workspace */
 	getPlanners: () => Employee[];
-	/** Get the workspace PM (at most one) */
-	getPM: () => Employee | undefined;
 	/** Check if the selected employee is a planner */
 	isSelectedPlanner: () => boolean;
-	/** Check if the selected employee is the PM */
-	isSelectedPM: () => boolean;
 }
 
 export const useEmployeeStore = create<EmployeeState>((set, get) => ({
@@ -266,10 +262,6 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 		);
 	},
 
-	getPM: () => {
-		return get().employees.find(e => e.agentType === 'pm');
-	},
-
 	isSelectedPlanner: () => {
 		const { employees, selectedEmployeeId } = get();
 		if (!selectedEmployeeId) { return false; }
@@ -278,12 +270,5 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 			|| emp?.presetId === 'planner'
 			|| emp?.role?.toLowerCase().includes('planner')
 			|| emp?.name?.toLowerCase() === 'planner';
-	},
-
-	isSelectedPM: () => {
-		const { employees, selectedEmployeeId } = get();
-		if (!selectedEmployeeId) { return false; }
-		const emp = employees.find(e => e.id === selectedEmployeeId);
-		return emp?.agentType === 'pm';
 	},
 }));

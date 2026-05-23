@@ -39,6 +39,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 	private _boardContainer: HTMLElement | undefined;
 	private _selectedWorkspaceId: string | undefined; // undefined = All
 	private _workspaces: Workspace[] = [];
+	private _highlightedTaskTitle: string | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -60,6 +61,17 @@ export class TaskOverviewEditorPane extends EditorPane {
 				if (this._boardContainer) {
 					this._renderBoard().catch(err => {
 						console.error('[TaskOverviewEditorPane] Failed to refresh board on plan change:', err);
+					});
+				}
+			})
+		);
+		// Listen for focus task requests to highlight a task card
+		this._register(
+			this.taskOrchestrationService.onDidFocusTask((taskTitle: string) => {
+				this._highlightedTaskTitle = taskTitle;
+				if (this._boardContainer) {
+					this._renderBoard().catch(err => {
+						console.error('[TaskOverviewEditorPane] Failed to refresh board on focus task:', err);
 					});
 				}
 			})
@@ -183,9 +195,14 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 			for (const task of colTasks) {
 				const card = document.createElement('div');
-				card.style.cssText = 'padding:8px 10px;border-radius:6px;background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border,rgba(128,128,128,0.15));cursor:pointer;transition:border-color 100ms;';
-				card.onmouseenter = () => { card.style.borderColor = col.color; };
-				card.onmouseleave = () => { card.style.borderColor = 'var(--vscode-panel-border,rgba(128,128,128,0.15))'; };
+				const isHighlighted = this._highlightedTaskTitle && task.title === this._highlightedTaskTitle;
+				card.style.cssText = `padding:8px 10px;border-radius:6px;background:var(--vscode-editor-background);border:2px solid ${isHighlighted ? col.color : 'var(--vscode-panel-border,rgba(128,128,128,0.15))'};cursor:pointer;transition:border-color 100ms;${isHighlighted ? `box-shadow:0 0 0 3px ${col.color}30;` : ''}`;
+				if (isHighlighted) {
+					// Scroll into view after a short delay to ensure DOM is ready
+					setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+				}
+				card.onmouseenter = () => { if (!isHighlighted) { card.style.borderColor = col.color; } };
+				card.onmouseleave = () => { if (!isHighlighted) { card.style.borderColor = 'var(--vscode-panel-border,rgba(128,128,128,0.15))'; } };
 				card.onclick = () => this._openTaskDetail(task);
 
 				const cardTitle = document.createElement('div');

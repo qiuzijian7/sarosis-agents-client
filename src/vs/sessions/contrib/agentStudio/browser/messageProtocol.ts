@@ -52,6 +52,7 @@ export type RequestType =
 	| 'taskBoard.update'
 	| 'taskBoard.delete'
 	| 'taskBoard.archive'
+	| 'taskBoard.openOverview'
 	| 'session.list'
 	| 'session.get'
 	| 'session.create'
@@ -80,6 +81,11 @@ export type RequestType =
 	| 'orchestration.getPlan'
 	| 'orchestration.listPlans'
 	| 'orchestration.taskAction'
+	| 'orchestration.approveTask'
+	| 'orchestration.rejectTask'
+	| 'orchestration.commentTask'
+	| 'orchestration.blockTask'
+	| 'orchestration.unblockTask'
 	| 'confightml.event'  // legacy: redirected to configmd.event
 	| 'configmd.getResource'      // resolve { md, html, parserScript, stylesContent }
 	| 'configmd.readSource'       // read raw MD content
@@ -332,12 +338,48 @@ export interface IOrchestrationListPlansPayload {
 }
 
 /** Actions a user can perform on a single orchestration task */
-export type OrchestrationTaskAction = 'retry' | 'pause' | 'resume' | 'cancel';
+export type OrchestrationTaskAction = 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'comment' | 'block' | 'unblock';
 
 export interface IOrchestrationTaskActionPayload {
 	readonly planId: string;
 	readonly taskId: string;
 	readonly action: OrchestrationTaskAction;
+}
+
+// ─── Human-in-the-Loop Payloads ─────────────────────────────────────
+
+export interface IOrchestrationApproveTaskPayload {
+	readonly planId: string;
+	readonly taskId: string;
+	readonly comment?: string;
+}
+
+export interface IOrchestrationRejectTaskPayload {
+	readonly planId: string;
+	readonly taskId: string;
+	readonly comment?: string;
+}
+
+export interface IOrchestrationCommentTaskPayload {
+	readonly planId: string;
+	readonly taskId: string;
+	readonly comment: string;
+}
+
+export interface IOrchestrationBlockTaskPayload {
+	readonly planId: string;
+	readonly taskId: string;
+	readonly reason?: string;
+}
+
+export interface IOrchestrationUnblockTaskPayload {
+	readonly planId: string;
+	readonly taskId: string;
+}
+
+export interface ITaskBoardOpenOverviewPayload {
+	/** Task title to highlight in the task board (matches TaskBoardRecord.title) */
+	readonly taskTitle: string;
 }
 
 // ─── ConfigMD Payloads ──────────────────────────────────────────────────────

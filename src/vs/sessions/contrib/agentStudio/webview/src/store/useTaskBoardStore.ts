@@ -23,12 +23,14 @@ export interface TaskBoardRecord {
 	toEmployeeId?: string;
 	toEmployeeName?: string;
 	workspaceId?: string;
+	priority?: 'low' | 'medium' | 'high';
 	dependencies?: string[];
 	createdAt: string;
 	startedAt?: string;
 	finishedAt?: string;
 	result?: string;
 	error?: string;
+	sourceId?: string;
 }
 
 // Delegation status → TaskBoard status mapping

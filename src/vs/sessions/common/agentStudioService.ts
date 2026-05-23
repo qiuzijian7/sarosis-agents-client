@@ -226,18 +226,26 @@ export interface IAgentTaskBoardService {
 export const ITaskOrchestrationService =
 	createDecorator<ITaskOrchestrationService>("taskOrchestrationService");
 
-export type OrchestrationTaskAction = "retry" | "pause" | "resume" | "cancel";
+export type OrchestrationTaskAction = "retry" | "pause" | "resume" | "cancel" | "approve" | "reject" | "comment" | "block" | "unblock";
 
 export interface ITaskOrchestrationService {
 	readonly _serviceBrand: undefined;
 
 	readonly onDidChangePlan: Event<OrchestrationPlan>;
 	readonly onDidChangeTask: Event<{ planId: string; task: PlanTask }>;
+	/** Fired when the user requests to focus/highlight a task in the task board */
+	readonly onDidFocusTask: Event<string>;
+
+	/**
+	 * Focus/highlight a task in the Task Overview board by title.
+	 * The TaskOverviewEditorPane listens to this and scrolls to the matching card.
+	 */
+	focusTaskInBoard(taskTitle: string): void;
 
 	/**
 	 * Use the planner to decompose a goal into tasks.
 	 * Only agents with agentType='planner' may call this.
-	 * Returns a plan in PendingApproval status — PM must approve before execution.
+	 * Returns a plan in PendingApproval status.
 	 */
 	createPlan(
 		goal: string,
@@ -246,13 +254,12 @@ export interface ITaskOrchestrationService {
 	): Promise<OrchestrationPlan>;
 
 	/**
-	 * PM approves the plan: auto-create agents, connections, task board items, then execute.
-	 * Only the workspace's PM (agentType='pm') can approve.
+	 * Approve the plan: auto-create agents, connections, task board items, then execute.
 	 */
 	approvePlan(planId: string): Promise<OrchestrationPlan>;
 
 	/**
-	 * PM rejects the plan: mark as rejected, no side effects.
+	 * Reject the plan: mark as rejected, no side effects.
 	 */
 	rejectPlan(planId: string): Promise<OrchestrationPlan>;
 
@@ -268,13 +275,40 @@ export interface ITaskOrchestrationService {
 
 	/**
 	 * Perform an action on a specific task within a plan.
-	 * Only the PM can perform task actions (dispatch control).
 	 */
 	taskAction(
 		planId: string,
 		taskId: string,
 		action: OrchestrationTaskAction,
 	): Promise<PlanTask>;
+
+	// allow-any-unicode-next-line
+	// ─── Human-in-the-Loop Methods ─────────────────────────────────────
+
+	/**
+	 * Approve a completed task that needs human review.
+	 */
+	approveTask(planId: string, taskId: string, comment?: string): Promise<PlanTask>;
+
+	/**
+	 * Reject a completed task that needs human review.
+	 */
+	rejectTask(planId: string, taskId: string, comment?: string): Promise<PlanTask>;
+
+	/**
+	 * Add a comment to a task (human-agent collaboration).
+	 */
+	commentTask(planId: string, taskId: string, comment: string): Promise<PlanTask>;
+
+	/**
+	 * Block a task to prevent it from executing.
+	 */
+	blockTask(planId: string, taskId: string, reason?: string): Promise<PlanTask>;
+
+	/**
+	 * Unblock a previously blocked task.
+	 */
+	unblockTask(planId: string, taskId: string): Promise<PlanTask>;
 
 	/**
 	 * Ensure a task has an agent assigned. If the task already has an assigneeId,
@@ -286,6 +320,24 @@ export interface ITaskOrchestrationService {
 		taskBoardRecordId: string,
 		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
 	): Promise<{ assigneeId: string; assigneeName: string } | undefined>;
+
+	/**
+	 * Execute a task board item by invoking the assigned agent.
+	 * Sends the task description as a user message, streams the agent's response,
+	 * and updates task status when done.
+	 * Called by AgentTaskBoardService when a task transitions to 'running'.
+	 */
+	executeTaskForBoard(
+		workspaceId: string,
+		taskBoardRecordId: string,
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
+	): Promise<void>;
+
+	/**
+	 * Register a callback for streaming events (chat.stream.delta/complete/error)
+	 * generated during background task execution.
+	 */
+	setStreamEventCallback(callback: (eventType: string, payload: Record<string, unknown>) => void): void;
 }
 
 // --- ConfigMD Service ---

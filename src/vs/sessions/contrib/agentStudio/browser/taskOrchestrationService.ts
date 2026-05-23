@@ -29,6 +29,7 @@ import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService,
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
 import type { OrchestrationPlan, PlanTask, Employee } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
+import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { TaskDecomposer } from './taskDecomposer.js';
@@ -54,10 +55,16 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	private readonly _onDidChangeTask = this._register(new Emitter<{ planId: string; task: PlanTask }>());
 	readonly onDidChangeTask: Event<{ planId: string; task: PlanTask }> = this._onDidChangeTask.event;
 
+	private readonly _onDidFocusTask = this._register(new Emitter<string>());
+	readonly onDidFocusTask: Event<string> = this._onDidFocusTask.event;
+
 	/** Timeout check interval handle */
 	private _timeoutTimer: ReturnType<typeof setInterval> | undefined;
 	/** Serialise file writes to avoid race conditions */
 	private _writeLock = false;
+
+	/** Callback to push chat stream events to the webview. Set by AgentStudioWebviewController. */
+	private _streamEventCallback: ((eventType: string, payload: Record<string, unknown>) => void) | undefined;
 
 	private _dataUri: URI | undefined;
 
@@ -85,6 +92,14 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	override dispose(): void {
 		if (this._timeoutTimer) { clearInterval(this._timeoutTimer); }
 		super.dispose();
+	}
+
+	/**
+	 * Focus/highlight a task in the Task Overview board by title.
+	 */
+	focusTaskInBoard(taskTitle: string): void {
+		this._onDidFocusTask.fire(taskTitle);
+		this.logService.info(`[TaskOrchestrationService] Focus task in board: ${taskTitle}`);
 	}
 
 	// ═══ Data Persistence (with simple write lock) ══════════════════════════════
@@ -360,6 +375,14 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 	// ═══ Plan CRUD ══════════════════════════════════════════════════════════════
 
+	/**
+	 * Set the callback used to push chat stream events (chat.stream.start/delta/complete)
+	 * to the webview. Called by AgentStudioWebviewController after construction.
+	 */
+	setStreamEventCallback(cb: (eventType: string, payload: Record<string, unknown>) => void): void {
+		this._streamEventCallback = cb;
+	}
+
 	async createPlan(goal: string, workspaceId: string, plannerId: string): Promise<OrchestrationPlan> {
 		this.logService.info(`[Orchestration] Creating plan for goal: "${goal}" in workspace: ${workspaceId}, planner: ${plannerId}`);
 
@@ -375,12 +398,6 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 		const existingEmployees = await this.agentStudioService.getEmployees(workspaceId);
 		const existingNames = new Set(existingEmployees.map(e => e.name.toLowerCase()));
-		const pm = existingEmployees.find(e =>
-			e.agentType === AgentType.PM
-			|| (e as any).presetId === 'pm'
-			|| (e as any).role?.toLowerCase().includes('pm')
-			|| e.name?.toLowerCase() === 'pm'
-		);
 
 		// Delegate decomposition to TaskDecomposer
 		const tasks = this._decomposer.decomposeGoal(goal, existingNames);
@@ -392,12 +409,11 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		const plan: OrchestrationPlan = {
 			id: this._generateId('orch_plan'),
 			goal,
-			summary: this._generateSummary(tasks, pm),
+			summary: this._generateSummary(tasks),
 			status: OrchestrationPlanStatus.PendingApproval,
 			tasks,
 			workspaceId,
 			plannerId,
-			pmId: pm?.id,
 			maxConcurrency: DEFAULT_MAX_CONCURRENCY,
 			createdAt: now,
 			updatedAt: now,
@@ -417,18 +433,6 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		if (plan.status !== OrchestrationPlanStatus.PendingApproval) {
 			throw new Error(`Plan ${planId} is not pending approval (status: ${plan.status})`);
 		}
-
-		// PM is optional - if no PM exists, planner can approve and execute directly
-		const employees = await this.agentStudioService.getEmployees(plan.workspaceId);
-		const pms = employees.filter(e =>
-			e.agentType === AgentType.PM
-			|| (e as any).presetId === 'pm'
-			|| (e as any).role?.toLowerCase().includes('pm')
-			|| e.name?.toLowerCase() === 'pm'
-		);
-		// Only validate PM if PMs exist - allow 0 or 1 PM
-		if (pms.length > 1) { throw new Error(`此 Workspace 有 ${pms.length} 个 PM，仅允许 1 个。`); }
-		if (!plan.pmId && pms.length === 1) { plan.pmId = pms[0].id; }
 
 		plan.status = OrchestrationPlanStatus.Approved;
 		plan.approvedAt = new Date().toISOString();
@@ -507,6 +511,45 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 				task.status = PlanTaskStatus.Cancelled;
 				task.completedAt = now;
 				break;
+			// ─── Human-in-the-Loop Actions ─────────────────────────────
+			case 'approve':
+				if (task.status !== PlanTaskStatus.Done || task.reviewStatus !== TaskReviewStatus.Pending) {
+					throw new Error(`Cannot approve task in status: ${task.status}, reviewStatus: ${task.reviewStatus}`);
+				}
+				task.reviewStatus = TaskReviewStatus.Approved;
+				task.reviewedBy = 'user'; // TODO: get actual user info
+				task.reviewedAt = now;
+				break;
+			case 'reject':
+				if (task.status !== PlanTaskStatus.Done || task.reviewStatus !== TaskReviewStatus.Pending) {
+					throw new Error(`Cannot reject task in status: ${task.status}, reviewStatus: ${task.reviewStatus}`);
+				}
+				task.reviewStatus = TaskReviewStatus.Rejected;
+				task.reviewedBy = 'user'; // TODO: get actual user info
+				task.reviewedAt = now;
+				// Reject means task needs to be redone
+				task.status = PlanTaskStatus.Pending;
+				task.result = undefined;
+				task.completedAt = undefined;
+				break;
+			case 'comment':
+				// Comment is handled separately in commentTask method
+				throw new Error(`Use commentTask method to add comments`);
+			case 'block':
+				if (task.isBlocked) {
+					throw new Error(`Task is already blocked`);
+				}
+				task.isBlocked = true;
+				task.blockedBy = 'user'; // TODO: get actual user info
+				task.blockedAt = now;
+				break;
+			case 'unblock':
+				if (!task.isBlocked) {
+					throw new Error(`Task is not blocked`);
+				}
+				task.isBlocked = false;
+				task.blockedReason = undefined;
+				break;
 		}
 
 		plan.updatedAt = now;
@@ -518,6 +561,12 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 				r.status = PlanTaskStatus.Running;
 				r.startedAt = now;
 				this._onDidChangeTask.fire({ planId, task: r });
+				// Fire-and-forget: execute the ready task
+				if (r.assigneeId) {
+					this._executeTask(planId, r).catch(err => {
+						this.logService.error(`[Orchestration] Ready task ${r.id} execution failed:`, err);
+					});
+				}
 			}
 		}
 
@@ -549,6 +598,11 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		task.completedAt = now;
 		plan.updatedAt = now;
 
+		// ─── Human-in-the-Loop: Set review status if task needs review ─────────────────
+		if (task.needsReview) {
+			task.reviewStatus = TaskReviewStatus.Pending;
+		}
+
 		// Send completion message to agent's chat box
 		if (task.assigneeId) {
 			try {
@@ -571,6 +625,12 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		const promoted = this._unblockDependentTasks(plan, task.id);
 		for (const p of promoted) {
 			this._onDidChangeTask.fire({ planId, task: p });
+			// Fire-and-forget: execute the promoted downstream task
+			if (p.assigneeId) {
+				this._executeTask(planId, p).catch(err => {
+					this.logService.error(`[Orchestration] Promoted task ${p.id} execution failed:`, err);
+				});
+			}
 		}
 
 		this._checkPlanCompletion(plan);
@@ -662,7 +722,7 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 		// Strategy 2: Score-based selection from existing agents
 		const candidates = employees.filter(e =>
-			e.agentType !== AgentType.PM && e.status !== 'offline'
+			e.status !== 'offline'
 		);
 		if (candidates.length > 0) {
 			let best: Employee | undefined;
@@ -718,6 +778,107 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		} catch (err) {
 			this.logService.error(`[Orchestration] ensureTaskAgent: Failed to create agent: ${err}`);
 			return undefined;
+		}
+	}
+
+	/**
+	 * Execute a task board item by invoking the assigned agent.
+	 * Used when a task transitions to 'running' from the task board UI.
+	 * Also pushes chat.stream.* events to the webview.
+	 */
+	async executeTaskForBoard(
+		workspaceId: string,
+		taskBoardRecordId: string,
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
+	): Promise<void> {
+		const assigneeId = taskInfo?.assigneeId;
+		if (!assigneeId) {
+			this.logService.warn(`[Orchestration] executeTaskForBoard: no assigneeId for task ${taskBoardRecordId}`);
+			return;
+		}
+
+		const taskTitle = taskInfo?.title || 'Unknown Task';
+		const taskDesc = taskInfo?.description || taskTitle;
+		const sourceId = taskInfo?.sourceId;
+
+		// Find the corresponding plan task (if any) for the planId
+		let planId: string | undefined;
+		if (sourceId) {
+			const plans = await this._readPlans();
+			for (const plan of plans) {
+				if (plan.tasks.find(t => t.id === sourceId)) {
+					planId = plan.id;
+					break;
+				}
+			}
+		}
+
+		// Resolve the agent's current session
+		let agentSessionId: string | undefined;
+		try {
+			const session = await (this.agentChatService as any).getOrCreateActiveSession(
+				assigneeId,
+				`任务: ${taskTitle}`,
+			);
+			agentSessionId = session?.id as string | undefined;
+		} catch { /* fall back to undefined */ }
+
+		const sessionIdForEvent = agentSessionId || '';
+
+		// Notify the webview that a new session was created for this agent
+		if (this._streamEventCallback && agentSessionId) {
+			this._streamEventCallback('workspace.sessionUpdated', {
+				agentId: assigneeId,
+				agentSessionId,
+			});
+		}
+
+		// Build task prompt
+		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${taskTitle}\n**任务描述**: ${taskDesc}\n**任务来源**: 任务看板`;
+
+		try {
+			const chatMessage = await this.agentChatService.sendMessage(
+				assigneeId,
+				taskPrompt,
+				{ workspaceId, agentSessionId },
+				(delta) => {
+					if (this._streamEventCallback) {
+						this._streamEventCallback('chat.stream.delta', {
+							employeeId: assigneeId,
+							sessionId: sessionIdForEvent,
+							chunks: [delta],
+						});
+					}
+				},
+			);
+
+			this.logService.info(`[Orchestration] executeTaskForBoard: task ${taskBoardRecordId} completed by agent ${assigneeId}`);
+
+			// Notify the webview that the stream completed
+			if (this._streamEventCallback) {
+				this._streamEventCallback('chat.stream.complete', {
+					employeeId: assigneeId,
+					sessionId: sessionIdForEvent,
+					message: chatMessage,
+				});
+			}
+
+			// If we found a plan task, also update it
+			if (planId && sourceId) {
+				await this.completeTask(planId, sourceId, chatMessage.content).catch(err => {
+					this.logService.warn(`[Orchestration] executeTaskForBoard: failed to complete plan task ${sourceId}:`, err);
+				});
+			}
+		} catch (err) {
+			this.logService.error(`[Orchestration] executeTaskForBoard: task ${taskBoardRecordId} execution error:`, err);
+
+			if (this._streamEventCallback) {
+				this._streamEventCallback('chat.stream.error', {
+					employeeId: assigneeId,
+					sessionId: sessionIdForEvent,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 		}
 	}
 
@@ -779,28 +940,128 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			task.status = PlanTaskStatus.Running;
 			task.startedAt = new Date().toISOString();
 
-			// Send message to agent's chat box to show execution process
+			// Fire-and-forget: actually invoke the agent to execute the task
 			if (task.assigneeId) {
-				try {
-					const chatMessage = {
-						id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-						role: 'system' as const,
-						content: `🚀 开始执行任务: ${task.title}\n\n任务描述: ${task.description || task.title}\n任务ID: ${task.id}\n依赖任务: ${task.dependencies.length > 0 ? task.dependencies.join(', ') : '无'}`,
-						employeeId: task.assigneeId,
-						agentSessionId: undefined,
-						timestamp: new Date().toISOString(),
-					};
-					await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
-					this.logService.info(`[Orchestration] Sent execution start message to agent ${task.assigneeId} for task ${task.id}`);
-				} catch (err) {
-					this.logService.warn(`[Orchestration] Failed to send execution message to agent ${task.assigneeId}:`, err);
-				}
+				this._executeTask(planRef.id, task).catch(err => {
+					this.logService.error(`[Orchestration] Task ${task.id} execution failed:`, err);
+				});
 			}
 		}
 
 		planRef.updatedAt = new Date().toISOString();
 		await this._writePlans(plans);
 		this._onDidChangePlan.fire(planRef);
+	}
+
+	/**
+	 * Execute a single task by invoking the assigned agent.
+	 * Sends the task description as a user message, streams the agent's response,
+	 * and marks the task as completed (or errored) when done.
+	 * Also pushes chat.stream.* events to the webview so the execution
+	 * content appears in the agent's chat box in real-time.
+	 */
+	private async _executeTask(planId: string, task: PlanTask): Promise<void> {
+		if (!task.assigneeId) { return; }
+
+		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n**任务ID**: ${task.id}${task.dependencies.length > 0 ? `\n**依赖任务**: ${task.dependencies.join(', ')}` : ''}`;
+
+		// Resolve the agent's current (or default) session so messages are
+		// persisted under the same key that the webview loads.
+		let agentSessionId: string | undefined;
+		try {
+			const session = await (this.agentChatService as any).getOrCreateActiveSession(
+				task.assigneeId,
+				`任务: ${task.title}`,
+			);
+			agentSessionId = session?.id as string | undefined;
+		} catch {
+			// Fall back to undefined — messages go to the "no session" bucket
+		}
+
+		const sessionIdForEvent = agentSessionId || '';
+
+		// Notify the webview that a new session was created for this agent
+		if (this._streamEventCallback && agentSessionId) {
+			this._streamEventCallback('workspace.sessionUpdated', {
+				agentId: task.assigneeId,
+				agentSessionId,
+			});
+		}
+
+		try {
+			// Send the task as a user message and get the agent's response,
+			// forwarding stream deltas to the webview for real-time display.
+			const chatMessage = await this.agentChatService.sendMessage(
+				task.assigneeId,
+				taskPrompt,
+				{ workspaceId: undefined, agentSessionId },
+				(delta) => {
+					// Forward stream deltas to the webview
+					if (this._streamEventCallback) {
+						this._streamEventCallback('chat.stream.delta', {
+							employeeId: task.assigneeId,
+							sessionId: sessionIdForEvent,
+							chunks: [delta],
+						});
+					}
+				},
+			);
+
+			// Extract result content from the assistant response
+			const resultContent = chatMessage.content || '';
+			this.logService.info(`[Orchestration] Task ${task.id} completed by agent ${task.assigneeId}`);
+
+			// Notify the webview that the stream completed
+			if (this._streamEventCallback) {
+				this._streamEventCallback('chat.stream.complete', {
+					employeeId: task.assigneeId,
+					sessionId: sessionIdForEvent,
+					message: chatMessage,
+				});
+			}
+
+			// Mark task as completed, which also triggers downstream tasks
+			await this.completeTask(planId, task.id, resultContent);
+		} catch (err) {
+			this.logService.error(`[Orchestration] Task ${task.id} execution error:`, err);
+
+			// Notify the webview about the error
+			if (this._streamEventCallback) {
+				this._streamEventCallback('chat.stream.error', {
+					employeeId: task.assigneeId,
+					sessionId: sessionIdForEvent,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
+			// Mark task as error so downstream tasks are not stuck
+			try {
+				const plans = await this._readPlans();
+				const plan = plans.find(p => p.id === planId);
+				const taskRef = plan?.tasks.find(t => t.id === task.id);
+				if (taskRef && taskRef.status === PlanTaskStatus.Running) {
+					taskRef.status = PlanTaskStatus.Error;
+					taskRef.result = err instanceof Error ? err.message : String(err);
+					taskRef.completedAt = new Date().toISOString();
+					if (plan) { plan.updatedAt = taskRef.completedAt; }
+					await this._writePlans(plans);
+					await this._syncTaskBoardStatus(taskRef);
+					this._onDidChangeTask.fire({ planId, task: taskRef });
+					if (plan) { this._onDidChangePlan.fire(plan); }
+
+					// Still try to promote downstream tasks even on error
+					if (plan) {
+						const promoted = this._unblockDependentTasks(plan, task.id);
+						for (const p of promoted) {
+							this._onDidChangeTask.fire({ planId, task: p });
+						}
+						this._checkPlanCompletion(plan);
+					}
+				}
+			} catch (markErr) {
+				this.logService.error(`[Orchestration] Failed to mark task ${task.id} as error:`, markErr);
+			}
+		}
 	}
 
 	// ═══ Task Board Sync ════════════════════════════════════════════════════════
@@ -828,7 +1089,7 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 	// ═══ Summary ════════════════════════════════════════════════════════════════
 
-	private _generateSummary(tasks: PlanTask[], pm?: { name: string }): string {
+	private _generateSummary(tasks: PlanTask[]): string {
 		const agentCount = new Set(tasks.map(t => t.assigneeName)).size;
 		const taskCount = tasks.length;
 		const autoCreateCount = tasks.filter(t => t.autoCreateAgent).length;
@@ -844,7 +1105,187 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		if (autoCreateCount > 0) {
 			summary += `（${autoCreateCount} 个需自动创建）`;
 		}
-		summary += pm ? `。PM: ${pm.name}` : `。⚠️ 无 PM`;
 		return summary;
+	}
+
+	// ═══ Human-in-the-Loop Methods ══════════════════════════════════════════
+
+	/**
+	 * Approve a completed task that needs human review.
+	 * Task must be in 'done' status and 'pending' review status.
+	 */
+	async approveTask(planId: string, taskId: string, comment?: string): Promise<PlanTask> {
+		this.logService.info(`[Orchestration] approveTask: planId=${planId}, taskId=${taskId}`);
+		
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		const task = plan.tasks.find(t => t.id === taskId);
+		if (!task) { throw new Error(`Task not found: ${taskId}`); }
+
+		if (task.status !== PlanTaskStatus.Done || task.reviewStatus !== TaskReviewStatus.Pending) {
+			throw new Error(`Cannot approve task in status: ${task.status}, reviewStatus: ${task.reviewStatus}`);
+		}
+
+		const now = new Date().toISOString();
+		task.reviewStatus = TaskReviewStatus.Approved;
+		task.reviewedBy = 'user'; // TODO: get actual user info
+		task.reviewedAt = now;
+		if (comment) {
+			task.reviewComment = comment;
+		}
+
+		// Unblock downstream tasks
+		const promoted = this._unblockDependentTasks(plan, task.id);
+		for (const p of promoted) {
+			this._onDidChangeTask.fire({ planId, task: p });
+		}
+
+		this._checkPlanCompletion(plan);
+		await this._writePlans(plans);
+		this._onDidChangeTask.fire({ planId, task });
+		this._onDidChangePlan.fire(plan);
+		return task;
+	}
+
+	/**
+	 * Reject a completed task that needs human review.
+	 * Task will be reset to 'pending' status for re-execution.
+	 */
+	async rejectTask(planId: string, taskId: string, comment?: string): Promise<PlanTask> {
+		this.logService.info(`[Orchestration] rejectTask: planId=${planId}, taskId=${taskId}`);
+		
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		const task = plan.tasks.find(t => t.id === taskId);
+		if (!task) { throw new Error(`Task not found: ${taskId}`); }
+
+		if (task.status !== PlanTaskStatus.Done || task.reviewStatus !== TaskReviewStatus.Pending) {
+			throw new Error(`Cannot reject task in status: ${task.status}, reviewStatus: ${task.reviewStatus}`);
+		}
+
+		const now = new Date().toISOString();
+		task.reviewStatus = TaskReviewStatus.Rejected;
+		task.reviewedBy = 'user'; // TODO: get actual user info
+		task.reviewedAt = now;
+		if (comment) {
+			task.reviewComment = comment;
+		}
+
+		// Reset task to pending for re-execution
+		task.status = PlanTaskStatus.Pending;
+		task.result = undefined;
+		task.completedAt = undefined;
+		task.startedAt = undefined;
+
+		plan.updatedAt = now;
+		await this._writePlans(plans);
+		await this._syncTaskBoardStatus(task);
+		this._onDidChangeTask.fire({ planId, task });
+		this._onDidChangePlan.fire(plan);
+		return task;
+	}
+
+	/**
+	 * Add a comment to a task (human-agent collaboration).
+	 */
+	async commentTask(planId: string, taskId: string, comment: string): Promise<PlanTask> {
+		this.logService.info(`[Orchestration] commentTask: planId=${planId}, taskId=${taskId}`);
+		
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		const task = plan.tasks.find(t => t.id === taskId);
+		if (!task) { throw new Error(`Task not found: ${taskId}`); }
+
+		if (!task.comments) {
+			task.comments = [];
+		}
+
+		const newComment: TaskComment = {
+			id: this._generateId('comment'),
+			author: 'user', // TODO: get actual user info
+			content: comment,
+			createdAt: new Date().toISOString(),
+		};
+		task.comments.push(newComment);
+
+		const now = new Date().toISOString();
+		plan.updatedAt = now;
+		await this._writePlans(plans);
+		this._onDidChangeTask.fire({ planId, task });
+		this._onDidChangePlan.fire(plan);
+		return task;
+	}
+
+	/**
+	 * Block a task to prevent it from executing.
+	 */
+	async blockTask(planId: string, taskId: string, reason?: string): Promise<PlanTask> {
+		this.logService.info(`[Orchestration] blockTask: planId=${planId}, taskId=${taskId}`);
+		
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		const task = plan.tasks.find(t => t.id === taskId);
+		if (!task) { throw new Error(`Task not found: ${taskId}`); }
+
+		if (task.isBlocked) {
+			throw new Error(`Task is already blocked`);
+		}
+
+		const now = new Date().toISOString();
+		task.isBlocked = true;
+		task.blockedBy = 'user'; // TODO: get actual user info
+		task.blockedAt = now;
+		if (reason) {
+			task.blockedReason = reason;
+		}
+
+		// If task is running, pause it
+		if (task.status === PlanTaskStatus.Running) {
+			task.status = PlanTaskStatus.Paused;
+		}
+
+		plan.updatedAt = now;
+		await this._writePlans(plans);
+		await this._syncTaskBoardStatus(task);
+		this._onDidChangeTask.fire({ planId, task });
+		this._onDidChangePlan.fire(plan);
+		return task;
+	}
+
+	/**
+	 * Unblock a previously blocked task.
+	 */
+	async unblockTask(planId: string, taskId: string): Promise<PlanTask> {
+		this.logService.info(`[Orchestration] unblockTask: planId=${planId}, taskId=${taskId}`);
+		
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		const task = plan.tasks.find(t => t.id === taskId);
+		if (!task) { throw new Error(`Task not found: ${taskId}`); }
+
+		if (!task.isBlocked) {
+			throw new Error(`Task is not blocked`);
+		}
+
+		const now = new Date().toISOString();
+		task.isBlocked = false;
+		task.blockedReason = undefined;
+
+		// If task was paused due to blocking, resume it
+		if (task.status === PlanTaskStatus.Paused) {
+			task.status = PlanTaskStatus.Pending;
+		}
+
+		plan.updatedAt = now;
+		await this._writePlans(plans);
+		await this._syncTaskBoardStatus(task);
+		this._onDidChangeTask.fire({ planId, task });
+		this._onDidChangePlan.fire(plan);
+		return task;
 	}
 }

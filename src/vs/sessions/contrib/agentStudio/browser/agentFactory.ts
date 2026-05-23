@@ -82,7 +82,9 @@ export class AgentFactory {
 				}
 			}
 
-			// Strategy 2: Score-based selection - 从已有agent中选择评分最高的
+		// Strategy 2: Score-based selection - 从已有agent中选择评分最高的
+		// 只有当 autoCreateAgent 为 false 时才尝试评分匹配，否则直接创建新 agent
+		if (!task.autoCreateAgent) {
 			const allEmps = await this.agentStudioService.getEmployees(plan.workspaceId);
 			const best = this._selectBestAgent(allEmps, task.assigneeRole || '', this._usedAgentIds);
 			if (best) {
@@ -94,6 +96,9 @@ export class AgentFactory {
 			} else {
 				this.logService.info(`[AgentFactory] [Strategy 2] No suitable agent found via scoring. Candidates excluded: [${this._usedAgentIds.size} used], role=${task.assigneeRole}`);
 			}
+		} else {
+			this.logService.info(`[AgentFactory] [Strategy 2] Skipping score-based selection because autoCreateAgent=true for task "${task.title}"`);
+		}
 
 			// Strategy 3: Auto-create - 只有当确实没有合适agent时才创建新的
 			const shouldCreate = task.autoCreateAgent || (task.assigneeName && !existingByName.has(task.assigneeName.toLowerCase()));
@@ -225,7 +230,6 @@ export class AgentFactory {
 	private _selectBestAgent(employees: Employee[], taskRole: string, excludeIds: Set<string>): Employee | undefined {
 		const candidates = employees.filter(e =>
 			!excludeIds.has(e.id) &&
-			e.agentType !== AgentType.PM &&
 			e.status !== 'offline'
 		);
 

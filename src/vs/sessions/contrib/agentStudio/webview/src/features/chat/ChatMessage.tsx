@@ -148,9 +148,11 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				{/* ── Tool calls ────────────────────────────── */}
 				{message.toolCalls && message.toolCalls.length > 0 && (
 					<div className="tool-calls-section">
-						{message.toolCalls.map((tc) => (
-							<ToolCallCard key={tc.id} toolCall={tc} />
-						))}
+						{message.toolCalls
+							.filter(tc => tc.defaultShow !== false)
+							.map((tc) => (
+								<ToolCallCard key={tc.id} toolCall={tc} />
+							))}
 					</div>
 				)}
 

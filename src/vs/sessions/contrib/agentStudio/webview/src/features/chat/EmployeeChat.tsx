@@ -184,7 +184,14 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	// Auto-scroll to bottom: instant after history load, smooth for new messages/streaming.
 	// Only auto-scroll if user is already at (or near) the bottom.
 	useLayoutEffect(() => {
-		if (!isAtBottomRef.current) { return; }
+		const el = chatMessagesRef.current;
+		if (!el) { return; }
+		const THRESHOLD = 80;
+		const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+		const atBottom = distFromBottom < THRESHOLD;
+		isAtBottomRef.current = atBottom;
+		setShowScrollBottom(!atBottom);
+		if (!atBottom) { return; }
 		const behavior = wasLoadingRef.current ? 'instant' : 'smooth';
 		wasLoadingRef.current = false;
 		messagesEndRef.current?.scrollIntoView({ behavior });
@@ -201,6 +208,8 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			isAtBottomRef.current = atBottom;
 			setShowScrollBottom(!atBottom);
 		};
+		// Initialise once on mount so the button shows if content already overflows.
+		handleScroll();
 		el.addEventListener('scroll', handleScroll, { passive: true });
 		return () => { el.removeEventListener('scroll', handleScroll); };
 	}, []);
@@ -208,8 +217,12 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	// Scroll to bottom handler
 	const handleScrollToBottom = useCallback(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-		isAtBottomRef.current = true;
-		setShowScrollBottom(false);
+		// Defer flag update to next frame so the scroll event handler
+		// (fired synchronously by scrollIntoView) doesn't overwrite us.
+		requestAnimationFrame(() => {
+			isAtBottomRef.current = true;
+			setShowScrollBottom(false);
+		});
 	}, []);
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
@@ -446,20 +459,20 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					)}
 
 					<div ref={messagesEndRef} />
-				</div>
 
-				{/* Scroll-to-bottom button: floats on the right side above the composer */}
-				{showScrollBottom && (
-					<button
-						className="chat-scroll-bottom-btn"
-						onClick={handleScrollToBottom}
-						title="滚动到底部"
-					>
-						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-							<polyline points="6 9 12 15 18 9" />
-						</svg>
-					</button>
-				)}
+					{/* Scroll-to-bottom button: floats inside the message list */}
+					{showScrollBottom && (
+						<button
+							className="chat-scroll-bottom-btn"
+							onClick={handleScrollToBottom}
+							title="滚动到底部"
+						>
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+								<polyline points="6 9 12 15 18 9" />
+							</svg>
+						</button>
+					)}
+				</div>
 
 				{/* Composer */}
 			<ChatComposer

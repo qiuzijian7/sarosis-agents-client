@@ -479,16 +479,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		const employees = await this._readJsonFile<Employee>(dirUri, filename);
 
-		// PM uniqueness check: only one PM per workspace
-		if (data.agentType === EmployeeStatus.Idle as unknown || false) { /* never */ }
-		const incomingType = (data as Record<string, unknown>).agentType as string | undefined;
-		if (incomingType === 'pm') {
-			const existingPM = employees.find(e => (e as unknown as Record<string, unknown>).agentType === 'pm');
-			if (existingPM) {
-				throw new Error(`此 Workspace 已有 PM "${existingPM.name}"，仅允许 1 个 PM。请先移除现有 PM 再创建新的。`);
-			}
-		}
-
 		const now = new Date().toISOString();
 		const id = this._generateId();
 

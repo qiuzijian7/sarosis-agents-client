@@ -61,7 +61,7 @@ function PlanTaskItem({
 	task: PlanTask;
 	allTasks: PlanTask[];
 	showActions: boolean;
-	onAction?: (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel') => void;
+	onAction?: (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => void;
 }) {
 	const config = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending;
 	const depthIndent = task.depth * 24;
@@ -126,6 +126,27 @@ function PlanTaskItem({
 							✕ 取消
 						</button>
 					)}
+					{/* Human-in-the-Loop Actions */}
+					{task.status === 'done' && task.reviewStatus === 'pending' && (
+						<>
+							<button className="orch-task-action-btn approve" onClick={() => onAction(task.id, 'approve')} title="审核通过">
+								✅ 通过
+							</button>
+							<button className="orch-task-action-btn reject" onClick={() => onAction(task.id, 'reject')} title="审核拒绝">
+								❌ 拒绝
+							</button>
+						</>
+					)}
+					{!task.isBlocked && task.status !== 'done' && (
+						<button className="orch-task-action-btn block" onClick={() => onAction(task.id, 'block')} title="阻塞任务">
+							🚫 阻塞
+						</button>
+					)}
+					{task.isBlocked && (
+						<button className="orch-task-action-btn unblock" onClick={() => onAction(task.id, 'unblock')} title="解除阻塞">
+							🔓 解除
+						</button>
+					)}
 				</div>
 			)}
 		</div>
@@ -188,9 +209,14 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 		approvePlan,
 		rejectPlan,
 		taskAction,
+		approveTask,
+		rejectTask,
+		commentTask,
+		blockTask,
+		unblockTask,
 	} = useOrchestrationStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
-	const { employees, getPlanners, getPM } = useEmployeeStore();
+	const { employees, getPlanners } = useEmployeeStore();
 
 	const [goal, setGoal] = useState('');
 	const [selectedPlannerId, setSelectedPlannerId] = useState<string>('');
@@ -199,11 +225,9 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	const isPendingApproval = activePlan?.status === 'pending_approval';
 	const isExecuting = activePlan?.status === 'executing' || activePlan?.status === 'approved';
 
-	// Available planners and PM
+	// Available planners
 	const planners = useMemo(() => getPlanners(), [employees]);
-	const pm = useMemo(() => getPM(), [employees]);
 	const hasPlanners = planners.length > 0;
-	const hasPM = !!pm;
 
 	// Auto-select the first planner if only one
 	useEffect(() => {
@@ -231,19 +255,35 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	}, [activePlan, rejectPlan]);
 
 	// Task action — planner or PM can dispatch (PM is optional)
-	const handleTaskAction = useCallback(async (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel') => {
+	const handleTaskAction = useCallback(async (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => {
 		if (!activePlan) { return; }
-		await taskAction(activePlan.id, taskId, action);
-	}, [activePlan, taskAction]);
+		
+		// Handle different action types
+		switch (action) {
+			case 'approve':
+				await approveTask(activePlan.id, taskId);
+				break;
+			case 'reject':
+				await rejectTask(activePlan.id, taskId);
+				break;
+			case 'block':
+				await blockTask(activePlan.id, taskId);
+				break;
+			case 'unblock':
+				await unblockTask(activePlan.id, taskId);
+				break;
+			default:
+				// For retry, pause, resume, cancel - use taskAction
+				await taskAction(activePlan.id, taskId, action);
+				break;
+		}
+	}, [activePlan, taskAction, approveTask, rejectTask, blockTask, unblockTask]);
 
 	const planStatusConfig = activePlan ? PLAN_STATUS_CONFIG[activePlan.status] : null;
 
-	// Find planner/PM names for display
+	// Find planner name for display
 	const plannerName = activePlan
 		? employees.find(e => e.id === activePlan.plannerId)?.name || 'Unknown Planner'
-		: '';
-	const pmName = activePlan?.pmId
-		? employees.find(e => e.id === activePlan.pmId)?.name || 'Unknown PM'
 		: '';
 
 	// Statistics
@@ -284,16 +324,13 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 				{!activePlan && (
 					<>
 						<p className="orch-dialog-hint">
-							描述你的目标，Planner 会自动拆分为子任务、创建 Agent、建立依赖关系和连线。PM 审批后开始调度执行。
+							描述你的目标，Planner 会自动拆分为子任务、创建 Agent、建立依赖关系和连线，然后开始调度执行。
 						</p>
 
 						{/* Role status indicators */}
 						<div className="orch-role-status">
 							<div className={`orch-role-badge ${hasPlanners ? 'ok' : 'missing'}`}>
 								{hasPlanners ? '✅' : '⚠️'} Planner: {hasPlanners ? `${planners.length} 个可用` : '未创建 — 请先创建一个 agentType=planner 的 Agent'}
-							</div>
-							<div className={`orch-role-badge ${hasPM ? 'ok' : 'optional'}`}>
-								{hasPM ? '✅' : 'ℹ️'} PM: {hasPM ? pm!.name : '可选 — PM 可审批计划（当前无 PM）'}
 							</div>
 						</div>
 
@@ -356,11 +393,6 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 							{/* Role info */}
 							<div className="orch-plan-roles">
 								<span className="orch-role-tag planner">📐 Planner: {plannerName}</span>
-								{pmName ? (
-									<span className="orch-role-tag pm">👔 PM: {pmName}</span>
-								) : (
-									<span className="orch-role-tag pm missing">⚠️ PM: 未分配</span>
-								)}
 							</div>
 
 							{stats && (
@@ -436,9 +468,9 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 									className="btn-primary"
 									onClick={handleApprove}
 									disabled={isLoading}
-									title={hasPM ? `PM(${pm!.name}) 批准并开始调度` : '批准并开始调度'}
+									title='批准并开始调度'
 								>
-									{isLoading ? '执行中...' : hasPM ? `✅ PM(${pm!.name}) 批准调度` : '✅ 批准并执行'}
+									{isLoading ? '执行中...' : '✅ 批准并执行'}
 								</button>
 								</>
 							)}

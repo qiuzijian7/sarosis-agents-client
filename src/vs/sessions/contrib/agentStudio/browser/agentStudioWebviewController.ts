@@ -35,6 +35,11 @@ import type {
 	RequestType,
 	IResponseMessage,
 	IEventMessage,
+	IOrchestrationApproveTaskPayload,
+	IOrchestrationRejectTaskPayload,
+	IOrchestrationCommentTaskPayload,
+	IOrchestrationBlockTaskPayload,
+	IOrchestrationUnblockTaskPayload,
 } from "./messageProtocol.js";
 import type { AgentStudioPanelType } from "../common/constants.js";
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from "../common/constants.js";
@@ -598,7 +603,7 @@ export class AgentStudioWebviewController extends Disposable {
 					const input = TaskOverviewEditorInput.getOrCreate();
 					const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 					const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-					await this.editorService.openEditor(input, { pinned: false, preserveFocus: true }, targetGroup);
+					await this.editorService.openEditor(input, { pinned: true, preserveFocus: true }, targetGroup);
 					this.logService.info(`[AgentStudio] Auto-opened TaskOverviewEditorPane for plan ${plan.id}`);
 				} catch (err) {
 					this.logService.warn('[AgentStudio] Failed to auto-open TaskOverviewEditorPane:', err);
@@ -622,6 +627,57 @@ export class AgentStudioWebviewController extends Disposable {
 					actionPayload.taskId,
 					actionPayload.action,
 				);
+			}
+			// ─── Human-in-the-Loop Actions ─────────────────────────────
+			case "orchestration.approveTask": {
+				const approvePayload = p as unknown as IOrchestrationApproveTaskPayload;
+				return this.taskOrchestrationService.approveTask(
+					approvePayload.planId,
+					approvePayload.taskId,
+					approvePayload.comment,
+				);
+			}
+			case "orchestration.rejectTask": {
+				const rejectPayload = p as unknown as IOrchestrationRejectTaskPayload;
+				return this.taskOrchestrationService.rejectTask(
+					rejectPayload.planId,
+					rejectPayload.taskId,
+					rejectPayload.comment,
+				);
+			}
+			case "orchestration.commentTask": {
+				const commentPayload = p as unknown as IOrchestrationCommentTaskPayload;
+				return this.taskOrchestrationService.commentTask(
+					commentPayload.planId,
+					commentPayload.taskId,
+					commentPayload.comment,
+				);
+			}
+			case "orchestration.blockTask": {
+				const blockPayload = p as unknown as IOrchestrationBlockTaskPayload;
+				return this.taskOrchestrationService.blockTask(
+					blockPayload.planId,
+					blockPayload.taskId,
+					blockPayload.reason,
+				);
+			}
+			case "orchestration.unblockTask": {
+				const unblockPayload = p as unknown as IOrchestrationUnblockTaskPayload;
+				return this.taskOrchestrationService.unblockTask(
+					unblockPayload.planId,
+					unblockPayload.taskId,
+				);
+			}
+			case "taskBoard.openOverview": {
+				const { taskTitle } = p as { taskTitle: string };
+				// Open Task Overview in the left editor area
+				const input = TaskOverviewEditorInput.getOrCreate();
+				const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+				const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+				await this.editorService.openEditor(input, { pinned: true, preserveFocus: false }, targetGroup);
+				// Trigger focus/highlight on the matching task card
+				this.taskOrchestrationService.focusTaskInBoard(taskTitle);
+				return;
 			}
 
 			// ─── ConfigMD ─────────────────────────────────────────
@@ -1590,6 +1646,12 @@ export class AgentStudioWebviewController extends Disposable {
 				this._sendEvent("orchestration.taskUpdated", { planId, task });
 			}),
 		);
+
+		// Wire up the orchestration service's stream event callback so that
+		// background task execution can push chat.stream.* events to the webview.
+		this.taskOrchestrationService.setStreamEventCallback((eventType: string, payload: Record<string, unknown>) => {
+			this._sendEvent(eventType as any, payload);
+		});
 
 		// Listen for ConfigMD source / html / command events to push to WebView
 		this._register(
