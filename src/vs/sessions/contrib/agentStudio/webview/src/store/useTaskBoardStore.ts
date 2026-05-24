@@ -65,6 +65,7 @@ interface TaskBoardState {
 	isCollapsed: boolean;
 	isLoading: boolean;
 	dragTargetId: string | null;
+	focusedTaskId: string | null;
 
 	// Actions
 	loadTasks: (workspaceId?: string) => Promise<void>;
@@ -74,6 +75,8 @@ interface TaskBoardState {
 	archiveTask: (taskId: string, source: TaskSource) => Promise<void>;
 	toggleCollapse: () => void;
 	setDragTarget: (id: string | null) => void;
+	focusTask: (taskId: string) => void;
+	clearFocus: () => void;
 
 	// Computed
 	getTasksByStatus: (status: TaskBoardStatus) => TaskBoardRecord[];
@@ -84,6 +87,7 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 	isCollapsed: false,
 	isLoading: false,
 	dragTargetId: null,
+	focusedTaskId: null,
 
 	loadTasks: async (workspaceId?: string) => {
 		set({ isLoading: true });
@@ -163,6 +167,15 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 
 	toggleCollapse: () => set(state => ({ isCollapsed: !state.isCollapsed })),
 	setDragTarget: (id) => set({ dragTargetId: id }),
+	focusTask: (taskId: string) => {
+		set({ focusedTaskId: taskId });
+		// Auto-clear focus after 4 seconds
+		setTimeout(() => {
+			const current = get().focusedTaskId;
+			if (current === taskId) { set({ focusedTaskId: null }); }
+		}, 4000);
+	},
+	clearFocus: () => set({ focusedTaskId: null }),
 
 	getTasksByStatus: (status) => {
 		return get().tasks.filter(t => t.status === status);

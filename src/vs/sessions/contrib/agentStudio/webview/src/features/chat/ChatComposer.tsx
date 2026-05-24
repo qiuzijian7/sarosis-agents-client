@@ -236,21 +236,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		}
 	}, [input, onSend, onCommand, closeAllPopups]);
 
-	const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
-		if (e.key === 'Enter' && !e.shiftKey) {
-			e.preventDefault();
-			// During streaming: Enter with content sends new message (auto-cancels stream)
-			// During streaming: Enter without content does nothing
-			if (isLoading && !input.trim()) { return; }
-			handleSend();
-		}
-		// Escape to cancel streaming (VS Code Copilot Chat pattern: Ctrl+Escape / Escape)
-		if (e.key === 'Escape' && isLoading && onCancel) {
-			e.preventDefault();
-			onCancel();
-		}
-	}, [handleSend, isLoading, onCancel, input]);
-
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
 		if (textarea) {
@@ -370,8 +355,15 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			// 命令菜单显示中：更新过滤条件或关闭菜单
 			if (lastSlashIndex >= 0) {
 				const filterText = value.substring(lastSlashIndex + 1);
-				setCommandFilter(filterText);
-				setSelectedCommandIndex(0);
+				// If the filter contains a space, the user has typed past a command
+				// (e.g. "/plan test") — close the menu so Enter will send normally
+				if (filterText.includes(' ')) {
+					setShowCommandMenu(false);
+					setCommandFilter('');
+				} else {
+					setCommandFilter(filterText);
+					setSelectedCommandIndex(0);
+				}
 			} else {
 				// 输入中不再有 '/', 关闭菜单
 				setShowCommandMenu(false);
@@ -429,20 +421,19 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 						setSkillFilter('');
 						setSelectedSkillIndex(0);
 						loadSkills();
-					} else if (selectedCommand.id === 'plan' && onCommand) {
-						// 选择 /plan 命令：触发任务编排
-						const goal = input.substring(input.lastIndexOf('/') + '/plan'.length).trim();
-						onCommand('plan', goal);
-						setShowCommandMenu(false);
-						setCommandFilter('');
 					} else {
-						// 其他命令：插入命令到输入框
+						// 所有其他命令（含 /plan）：插入命令到输入框，用户手动补充内容后发送
 						const beforeSlash = input.substring(0, input.lastIndexOf('/'));
 						const newValue = beforeSlash + '/' + selectedCommand.id + ' ';
 						setInput(newValue);
 						setShowCommandMenu(false);
 						setCommandFilter('');
 					}
+				} else {
+					// No matching commands: close menu and send as regular message
+					setShowCommandMenu(false);
+					setCommandFilter('');
+					handleSend();
 				}
 				return;
 			}
@@ -452,22 +443,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 				setCommandFilter('');
 				return;
 			}
-			// 过滤命令列表
-			if (e.key.length === 1 && e.key.match(/[a-zA-Z0-9]/)) {
-				// 字母数字键：更新过滤条件
-				setTimeout(() => {
-					const afterSlash = input.substring(input.lastIndexOf('/') + 1) + e.key;
-					setCommandFilter(afterSlash);
-					setSelectedCommandIndex(0);
-				}, 0);
-			}
-			if (e.key === 'Backspace') {
-				setTimeout(() => {
-					const afterSlash = input.substring(input.lastIndexOf('/') + 1);
-					setCommandFilter(afterSlash);
-					setSelectedCommandIndex(0);
-				}, 0);
-			}
+			// For other keys, let the default input behavior handle it (handleInputChange will update filter)
+			// But if the input no longer looks like a command (has space after command word), close the menu
 			return;
 		}
 		
@@ -506,25 +483,20 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 				setSkillFilter('');
 				return;
 			}
-			// 字母/数字/退格键：让默认输入行为触发 handleInputChange 来更新 skillFilter
 			return;
 		}
 		
-		// 默认处理：调用原始的 handleKeyDown 逻辑
-		// 这里需要调用原始的 handleKeyDown 函数
-		// 由于原始的 handleKeyDown 是在后面定义的，我们需要调整代码结构
-		// 暂时先调用默认逻辑
+		// 默认处理：Enter 发送，Escape 取消
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			if (isLoading && !input.trim()) { return; }
 			handleSend();
 		}
-		// Escape to cancel streaming
 		if (e.key === 'Escape' && isLoading && onCancel) {
 			e.preventDefault();
 			onCancel();
 		}
-	}, [showCommandMenu, showSkillMenu, filteredCommands, filteredSkills, selectedCommandIndex, selectedSkillIndex, input, isLoading, onCancel, loadSkills]);
+	}, [showCommandMenu, showSkillMenu, filteredCommands, filteredSkills, selectedCommandIndex, selectedSkillIndex, input, isLoading, onCancel, handleSend, onCommand, loadSkills]);
 
 	return (
 		<div className="chat-input-area">
@@ -569,13 +541,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 										setSkillFilter('');
 										setSelectedSkillIndex(0);
 										loadSkills();
-									} else if (cmd.id === 'plan' && onCommand) {
-										// 点击 /plan 命令：触发任务编排
-										const goal = input.substring(input.lastIndexOf('/') + '/plan'.length).trim();
-										onCommand('plan', goal);
-										setShowCommandMenu(false);
-										setCommandFilter('');
 									} else {
+										// 所有其他命令（含 /plan）：插入命令到输入框，用户手动补充内容后发送
 										const beforeSlash = input.substring(0, input.lastIndexOf('/'));
 										const newValue = beforeSlash + '/' + cmd.id + ' ';
 										setInput(newValue);

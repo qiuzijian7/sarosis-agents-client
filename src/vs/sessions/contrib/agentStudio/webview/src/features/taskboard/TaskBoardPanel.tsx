@@ -4,14 +4,15 @@
  *  Supports drag-and-drop status change, collapse/expand
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTaskBoardStore, type TaskBoardStatus, type TaskSource } from '../../store/useTaskBoardStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { TaskCard } from './TaskCard';
-import { OrchestrationPlanView } from '../orchestration/OrchestrationPlanView';
+import { OrchestrationPlanModal } from '../orchestration/OrchestrationPlanModal';
+import { registerAgentColors } from '../../utils/agentColors';
 
 // Column configuration
 const COLUMNS: { status: TaskBoardStatus; label: string; icon: string; color: string }[] = [
@@ -30,15 +31,32 @@ const CollapseIcon = ({ collapsed }: { collapsed: boolean }) => (
 );
 
 export function TaskBoardPanel(): React.ReactElement {
-	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, deleteTask, archiveTask, setDragTarget } = useTaskBoardStore();
+	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, deleteTask, archiveTask, setDragTarget, focusedTaskId, focusTask } = useTaskBoardStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();
-	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan } = useOrchestrationStore();
+	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
 
 	const handleClosePlanInput = useCallback(() => {
 		useOrchestrationStore.setState({ isPlanDialogOpen: false });
 	}, []);
+
+	// Track which pending plans have been auto-opened so we don't re-open them
+	const autoOpenedPlanIdsRef = useRef<Set<string>>(new Set());
+
+	// Auto-open the orchestration dialog when a new pending_approval plan arrives.
+	// This handles /plan commands sent from the chat panel — the dialog shows in taskboard.
+	// Even if the dialog is already open (e.g. showing an empty creation form),
+	// we switch to showing the new pending plan.
+	useEffect(() => {
+		const pendingPlan = orchestrationPlans.find(p => p.status === 'pending_approval');
+		if (!pendingPlan) { return; }
+		if (autoOpenedPlanIdsRef.current.has(pendingPlan.id)) { return; }
+
+		autoOpenedPlanIdsRef.current.add(pendingPlan.id);
+		setActivePlan(pendingPlan);
+		openPlanDialog();
+	}, [orchestrationPlans, setActivePlan, openPlanDialog]);
 
 	const [dragOverColumn, setDragOverColumn] = useState<TaskBoardStatus | null>(null);
 	const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -53,6 +71,13 @@ export function TaskBoardPanel(): React.ReactElement {
 		}
 	}, [activeWorkspaceId, loadDelegations, loadTasks, loadPlans]);
 
+	// Register agent colors when employees change (ensures consistent color assignment)
+	useEffect(() => {
+		if (employees.length > 0) {
+			registerAgentColors(employees.map(e => e.id));
+		}
+	}, [employees]);
+
 	// Listen for task-board changes from host
 	useEffect(() => {
 		const handler = () => {
@@ -61,6 +86,27 @@ export function TaskBoardPanel(): React.ReactElement {
 		window.addEventListener('agentStudio:taskboard-changed', handler);
 		return () => window.removeEventListener('agentStudio:taskboard-changed', handler);
 	}, [activeWorkspaceId, loadTasks]);
+
+	// Listen for focusTask messages from host (via custom event dispatched by index.tsx)
+	useEffect(() => {
+		const handler = (e: Event) => {
+			const detail = (e as CustomEvent).detail;
+			if (detail?.taskTitle) {
+				const task = useTaskBoardStore.getState().tasks.find(t => t.title === detail.taskTitle);
+				if (task) {
+					focusTask(task.id);
+					setTimeout(() => {
+						const el = document.querySelector(`[data-task-id="${task.id}"]`);
+						if (el) {
+							el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+						}
+					}, 300);
+				}
+			}
+		};
+		window.addEventListener('agentStudio:focusTask', handler as EventListener);
+		return () => window.removeEventListener('agentStudio:focusTask', handler as EventListener);
+	}, [focusTask]);
 
 	const getTasksForColumn = useCallback((status: TaskBoardStatus) => {
 		return tasks.filter(t => t.status === status);
@@ -127,21 +173,22 @@ export function TaskBoardPanel(): React.ReactElement {
 					{totalTasks > 0 && <span className="task-board-count">{totalTasks}</span>}
 				</div>
 			<div className="task-board-header-right">
-				<button
-					className="task-board-orchestrate-btn"
-					onClick={(e) => { e.stopPropagation(); if (!activePlan) { openPlanDialog(); } }}
-					title="任务编排 - AI 自动拆分任务、创建 Agent"
-				>
-					🎯 任务编排
-				</button>
+			<button
+				className="task-board-orchestrate-btn"
+				onClick={(e) => { e.stopPropagation(); openPlanDialog(); }}
+				title="任务编排 - AI 自动拆分任务、创建 Agent"
+			>
+				🎯 任务编排
+			</button>
 				{isLoading && <span className="task-board-loading">Loading...</span>}
 			</div>
 		</div>
 
-		{/* Inline Orchestration Plan View */}
-		{(isPlanDialogOpen || activePlan) && !isCollapsed && (
-			<OrchestrationPlanView onClose={activePlan ? undefined : handleClosePlanInput} />
-		)}
+		{/* Orchestration Plan Modal */}
+		<OrchestrationPlanModal
+			isOpen={isPlanDialogOpen}
+			onClose={handleClosePlanInput}
+		/>
 
 		{/* Kanban columns */}
 		{!isCollapsed && (
@@ -180,6 +227,7 @@ export function TaskBoardPanel(): React.ReactElement {
 										onDragStart={handleDragStart}
 										onDragEnd={handleDragEnd}
 										isDragging={draggingTaskId === task.id}
+										isFocused={focusedTaskId === task.id}
 									/>
 								))}
 								{columnTasks.length === 0 && (

@@ -304,6 +304,76 @@ export interface ChatMessageMetadata {
 	planId: string;
 }
 
+// Reference item for ReferencesCard (VS Code chatReferencesContentPart pattern)
+export interface ReferenceItem {
+	id: string;
+	kind: 'file' | 'code' | 'url' | 'symbol' | 'text';
+	name: string;
+	uri?: string;
+	range?: { startLine: number; startCol: number; endLine: number; endCol: number };
+	description?: string;
+	state?: 'not-modified' | 'modified' | 'pending' | 'excluded';
+}
+
+// Progress message for ProgressCard (VS Code chatProgressContentPart pattern)
+export interface ProgressMessage {
+	id: string;
+	content: string;
+	status: 'pending' | 'in-progress' | 'completed' | 'error';
+	icon?: 'spinner' | 'check' | 'warning' | 'error';
+	timestamp?: string;
+}
+
+// Confirmation button for ConfirmationCard
+export interface ConfirmationButton {
+	id: string;
+	label: string;
+	tooltip?: string;
+	primary?: boolean;
+	danger?: boolean;
+	icon?: string;
+}
+
+// Confirmation request for ConfirmationCard (VS Code chatConfirmationContentPart pattern)
+export interface ConfirmationRequest {
+	id: string;
+	title: string;
+	message: string;
+	detail?: string;
+	buttons: ConfirmationButton[];
+	status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+	icon?: string;
+}
+
+// Todo item for TodoListCard (VS Code chatTodoListWidget pattern)
+export interface TodoItem {
+	id: string;
+	label: string;
+	completed: boolean;
+	description?: string;
+	assignee?: string;
+}
+
+// Tip message for TipCard (VS Code chatTipContentPart pattern)
+export interface TipMessage {
+	id: string;
+	content: string;
+	icon?: string;
+	action?: {
+		label: string;
+		tooltip?: string;
+		actionId?: string;
+	};
+}
+
+// Suggested question for QuestionCarouselCard (VS Code chatQuestionCarouselPart pattern)
+export interface SuggestedQuestion {
+	id: string;
+	label: string;
+	tooltip?: string;
+	category?: string;
+}
+
 export interface ChatMessage {
 	readonly id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
@@ -319,6 +389,18 @@ export interface ChatMessage {
 	tokenUsage?: { input: number; output: number; total: number };
 	/** Metadata for special message types (e.g., orchestration_plan for inline plan approval) */
 	metadata?: ChatMessageMetadata;
+	/** References used by AI (files, code, etc.) - VS Code chatReferencesContentPart pattern */
+	references?: ReferenceItem[];
+	/** Progress messages showing task execution status - VS Code chatProgressContentPart pattern */
+	progress?: ProgressMessage | ProgressMessage[];
+	/** Confirmation request requiring user approval - VS Code chatConfirmationContentPart pattern */
+	confirmation?: ConfirmationRequest;
+	/** Todo list for task tracking - VS Code chatTodoListWidget pattern */
+	todos?: TodoItem[];
+	/** Dismissible tips - VS Code chatTipContentPart pattern */
+	tips?: TipMessage[];
+	/** Suggested questions for user to ask - VS Code chatQuestionCarouselPart pattern */
+	questions?: SuggestedQuestion[];
 }
 
 export interface ToolCall {

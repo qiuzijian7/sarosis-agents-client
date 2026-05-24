@@ -1,0 +1,587 @@
+/*---------------------------------------------------------------------------------------------
+ *  Agent Studio WebView - Chat Cards Styles
+ *
+ *  Styles for new card components (References, Progress, Confirmation, Todo, Tip, Question)
+ *  Mirrors VS Code's chatContentParts patterns
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── References Card (VS Code: chatReferencesContentPart pattern) ─────────────────────────── */
+.references-card {
+	margin: 8px 0;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	overflow: hidden;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+}
+
+.references-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	cursor: pointer;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	transition: background-color 0.1s;
+}
+
+.references-header:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.12));
+}
+
+.references-icon {
+	font-size: 14px;
+}
+
+.references-title {
+	font-size: 12px;
+	font-weight: 600;
+	flex: 1;
+}
+
+.references-toggle {
+	transition: transform 0.2s;
+}
+
+.references-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.references-list {
+	max-height: 300px;
+	overflow-y: auto;
+}
+
+.reference-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 12px;
+	cursor: pointer;
+	transition: background-color 0.1s;
+}
+
+.reference-item:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.08));
+}
+
+.reference-icon {
+	font-size: 14px;
+}
+
+.reference-name {
+	font-size: 12px;
+	font-weight: 500;
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.reference-description {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.reference-state-badge {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	font-weight: 500;
+}
+
+.reference-state-badge.state-modified {
+	background-color: rgba(255, 193, 7, 0.15);
+	color: #ffc107;
+}
+
+.reference-state-badge.state-pending {
+	background-color: rgba(0, 123, 255, 0.15);
+	color: #007bff;
+}
+
+.reference-state-badge.state-excluded {
+	background-color: rgba(108, 117, 125, 0.15);
+	color: #6c757d;
+}
+
+/* ── Progress Card (VS Code: chatProgressContentPart pattern) ────────────────────────────── */
+.progress-card {
+	margin: 8px 0;
+}
+
+.progress-card.collapsible {
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	overflow: hidden;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+}
+
+.progress-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	cursor: pointer;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	transition: background-color 0.1s;
+}
+
+.progress-header:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.12));
+}
+
+.progress-header-icon {
+	font-size: 14px;
+}
+
+.progress-icon-spinner {
+	animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+.progress-header-title {
+	font-size: 12px;
+	font-weight: 600;
+	flex: 1;
+}
+
+.progress-toggle {
+	transition: transform 0.2s;
+}
+
+.progress-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.progress-list {
+	padding: 4px 12px;
+}
+
+.progress-step {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 0;
+	font-size: 12px;
+	line-height: 1.4;
+}
+
+.progress-step.pending {
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.progress-step.in-progress {
+	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
+}
+
+.progress-step.completed {
+	color: var(--as-accent, #3b82f6);
+}
+
+.progress-step.error {
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.progress-icon {
+	font-size: 14px;
+	min-width: 16px;
+	text-align: center;
+}
+
+.progress-icon-check {
+	color: var(--as-accent, #3b82f6);
+}
+
+.progress-icon-warning {
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.progress-content {
+	flex: 1;
+}
+
+.progress-timestamp {
+	font-size: 10px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+/* ── Confirmation Card (VS Code: chatConfirmationContentPart pattern) ─────────────────── */
+.confirmation-card {
+	margin: 8px 0;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	overflow: hidden;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+}
+
+.confirmation-card.submitted {
+	opacity: 0.7;
+}
+
+.confirmation-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+}
+
+.confirmation-icon {
+	font-size: 16px;
+}
+
+.confirmation-title {
+	font-size: 13px;
+	font-weight: 600;
+	flex: 1;
+}
+
+.confirmation-toggle {
+	cursor: pointer;
+	transition: transform 0.2s;
+}
+
+.confirmation-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.confirmation-body {
+	padding: 12px;
+}
+
+.confirmation-message {
+	font-size: 13px;
+	line-height: 1.5;
+	margin-bottom: 8px;
+}
+
+.confirmation-detail {
+	font-size: 12px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	margin-bottom: 12px;
+	padding: 8px;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-radius: 4px;
+}
+
+.confirmation-buttons {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
+.confirmation-btn {
+	padding: 6px 16px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 4px;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
+	cursor: pointer;
+	font-size: 12px;
+	transition: background-color 0.1s, border-color 0.1s;
+}
+
+.confirmation-btn:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.12));
+}
+
+.confirmation-btn.primary {
+	background-color: var(--as-accent, #3b82f6);
+	color: #fff;
+	border-color: var(--as-accent, #3b82f6);
+}
+
+.confirmation-btn.primary:hover {
+	background-color: var(--as-accent-hover, #2563eb);
+}
+
+.confirmation-btn.danger {
+	color: var(--vscode-errorForeground, #f48771);
+	border-color: var(--vscode-errorForeground, #f48771);
+}
+
+.confirmation-btn.danger:hover {
+	background-color: rgba(244, 135, 113, 0.1);
+}
+
+/* ── Todo List Card (VS Code: chatTodoListWidget pattern) ─────────────────────────────── */
+.todo-list-card {
+	margin: 8px 0;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	overflow: hidden;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+}
+
+.todo-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	cursor: pointer;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	transition: background-color 0.1s;
+}
+
+.todo-header:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.12));
+}
+
+.todo-icon {
+	font-size: 14px;
+}
+
+.todo-title {
+	font-size: 12px;
+	font-weight: 600;
+	flex: 1;
+}
+
+.todo-progress {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.todo-toggle {
+	transition: transform 0.2s;
+}
+
+.todo-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.todo-body {
+	padding: 8px 12px;
+}
+
+.todo-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.todo-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 0;
+	font-size: 12px;
+}
+
+.todo-item.completed .todo-label {
+	text-decoration: line-through;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.todo-checkbox-label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	flex: 1;
+}
+
+.todo-checkbox {
+	cursor: pointer;
+}
+
+.todo-label {
+	flex: 1;
+}
+
+.todo-description {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.todo-assignee {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+.todo-add {
+	display: flex;
+	gap: 4px;
+	margin-top: 8px;
+}
+
+.todo-add-input {
+	flex: 1;
+	padding: 4px 8px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 4px;
+	background-color: var(--as-bg-primary, var(--vscode-editor-background, #1e1e1e));
+	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
+	font-size: 12px;
+}
+
+.todo-add-input:focus {
+	outline: none;
+	border-color: var(--as-accent, #3b82f6);
+}
+
+.todo-add-btn {
+	padding: 4px 12px;
+	border: 1px solid var(--as-accent, #3b82f6);
+	border-radius: 4px;
+	background-color: var(--as-accent, #3b82f6);
+	color: #fff;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 1;
+}
+
+.todo-add-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* ── Tip Card (VS Code: chatTipContentPart pattern) ───────────────────────────────────── */
+.tip-card {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	margin: 8px 0;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+	font-size: 12px;
+}
+
+.tip-icon {
+	font-size: 16px;
+}
+
+.tip-content {
+	flex: 1;
+	line-height: 1.4;
+}
+
+.tip-action-btn {
+	padding: 4px 12px;
+	border: 1px solid var(--as-accent, #3b82f6);
+	border-radius: 4px;
+	background-color: transparent;
+	color: var(--as-accent, #3b82f6);
+	cursor: pointer;
+	font-size: 11px;
+	transition: background-color 0.1s;
+}
+
+.tip-action-btn:hover {
+	background-color: rgba(59, 130, 246, 0.1);
+}
+
+.tip-dismiss-btn {
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	font-size: 16px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	padding: 0 4px;
+	line-height: 1;
+	opacity: 0.6;
+	transition: opacity 0.1s;
+}
+
+.tip-dismiss-btn:hover {
+	opacity: 1;
+}
+
+/* ── Question Carousel Card (VS Code: chatQuestionCarouselPart pattern) ───────────────── */
+.question-carousel-card {
+	margin: 8px 0;
+	padding: 12px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+}
+
+.question-carousel-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	font-weight: 600;
+	margin-bottom: 8px;
+}
+
+.question-carousel-icon {
+	font-size: 14px;
+}
+
+.question-carousel-categories {
+	display: flex;
+	gap: 4px;
+	margin-bottom: 8px;
+	flex-wrap: wrap;
+}
+
+.category-btn {
+	padding: 4px 12px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 4px;
+	background-color: transparent;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	cursor: pointer;
+	font-size: 11px;
+	transition: background-color 0.1s, border-color 0.1s;
+}
+
+.category-btn:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.08));
+}
+
+.category-btn.active {
+	background-color: var(--as-accent, #3b82f6);
+	color: #fff;
+	border-color: var(--as-accent, #3b82f6);
+}
+
+.question-carousel-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.question-carousel-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 12px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
+	border-radius: 4px;
+	background-color: var(--as-bg-primary, var(--vscode-editor-background, #1e1e1e));
+	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
+	cursor: pointer;
+	font-size: 12px;
+	text-align: left;
+	transition: background-color 0.1s, border-color 0.1s;
+}
+
+.question-carousel-item:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.08));
+	border-color: var(--as-accent, #3b82f6);
+}
+
+.question-label {
+	flex: 1;
+}
+
+.question-carousel-item svg {
+	opacity: 0.5;
+	transition: opacity 0.1s;
+}
+
+.question-carousel-item:hover svg {
+	opacity: 1;
+}

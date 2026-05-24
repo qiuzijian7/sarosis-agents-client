@@ -218,11 +218,13 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 	}
 
-	private async _readJsonFile<T>(dirUri: URI, filename: string): Promise<T[]> {
+	private async _readJsonFile<T extends { id?: string }>(dirUri: URI, filename: string): Promise<T[]> {
 		try {
 			const uri = URI.joinPath(dirUri, filename);
 			const content = await this.fileService.readFile(uri);
-			return JSON.parse(content.value.toString()) as T[];
+			const parsed = JSON.parse(content.value.toString()) as T[];
+			// Defensive: filter out null/undefined/corrupted entries that could crash downstream .id access
+			return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object' && item.id) : [];
 		} catch (err) {
 			this.logService.debug(`[AgentStudio] File not found or empty: ${filename} in ${dirUri.toString()}`);
 			return [];

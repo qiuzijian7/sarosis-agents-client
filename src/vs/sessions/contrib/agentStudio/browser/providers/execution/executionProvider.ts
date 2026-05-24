@@ -87,8 +87,24 @@ export class ExecutionProvider implements IExecutionProvider {
 
 		// 7. Agent 主循环
 		try {
+			let iterationCount = 0;
 			while (budget.hasRemaining()) {
+				iterationCount++;
 				this._logService.debug(`[ExecutionProvider] Iteration ${budget.consumed + 1}/${budget.maxIterations}`);
+
+				// TEST: Yield a sample progress delta (for testing new card types)
+				if (iterationCount === 1) {
+					yield {
+						type: 'progress',
+						progressData: [{
+							id: 'test-progress-1',
+							content: '正在执行任务...',
+							status: 'in-progress' as const,
+							icon: 'spinner' as const,
+							timestamp: new Date().toISOString(),
+						}],
+					};
+				}
 
 				// 7.1 上下文压缩（如需要）
 				messages = await contextManager.compressIfNeeded(messages, this._contextWindow);

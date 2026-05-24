@@ -57,14 +57,120 @@ function PlanTaskItem({
 	allTasks,
 	showActions,
 	onAction,
+	isEditable,
+	employees,
+	onUpdate,
+	onDecompose,
+	isDecomposing,
 }: {
 	task: PlanTask;
 	allTasks: PlanTask[];
 	showActions: boolean;
 	onAction?: (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => void;
+	isEditable?: boolean;
+	employees?: { id: string; name: string; role?: string }[];
+	onUpdate?: (taskId: string, updates: Record<string, unknown>) => void;
+	onDecompose?: (taskId: string) => void;
+	isDecomposing?: boolean;
 }) {
 	const config = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending;
 	const depthIndent = task.depth * 24;
+	const [isEditing, setIsEditing] = useState(false);
+	const [editTitle, setEditTitle] = useState(task.title);
+	const [editDesc, setEditDesc] = useState(task.description || '');
+	const [editAssigneeId, setEditAssigneeId] = useState(task.assigneeId || '');
+	const [editPriority, setEditPriority] = useState(task.priority);
+	const [editDeps, setEditDeps] = useState<string[]>(task.dependencies);
+
+	const handleSave = useCallback(() => {
+		if (!onUpdate) { return; }
+		const assignee = employees?.find(e => e.id === editAssigneeId);
+		onUpdate(task.id, {
+			title: editTitle,
+			description: editDesc,
+			assigneeId: editAssigneeId || undefined,
+			assigneeName: assignee?.name || task.assigneeName,
+			assigneeRole: assignee?.role || task.assigneeRole,
+			priority: editPriority,
+			dependencies: editDeps,
+		});
+		setIsEditing(false);
+	}, [onUpdate, task.id, editTitle, editDesc, editAssigneeId, editPriority, editDeps, employees, task.assigneeName, task.assigneeRole]);
+
+	const handleCancel = useCallback(() => {
+		setEditTitle(task.title);
+		setEditDesc(task.description || '');
+		setEditAssigneeId(task.assigneeId || '');
+		setEditPriority(task.priority);
+		setEditDeps(task.dependencies);
+		setIsEditing(false);
+	}, [task]);
+
+	if (isEditing) {
+		const otherTasks = allTasks.filter(t => t.id !== task.id);
+		return (
+			<div className="orch-task-item orch-task-item-editing" style={{ marginLeft: depthIndent }}>
+				<div className="orch-task-edit-form">
+					<div className="form-field">
+						<label>任务标题</label>
+						<input type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="任务标题" />
+					</div>
+					<div className="form-field">
+						<label>任务描述</label>
+						<textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={2} placeholder="任务描述" />
+					</div>
+					<div className="form-field-row">
+						<div className="form-field">
+							<label>分配 Agent</label>
+							<select value={editAssigneeId} onChange={(e) => setEditAssigneeId(e.target.value)}>
+								<option value="">-- 自动创建 --</option>
+								{employees?.map(e => (
+									<option key={e.id} value={e.id}>{e.name} ({e.role || 'Agent'})</option>
+								))}
+							</select>
+						</div>
+						<div className="form-field">
+							<label>优先级</label>
+							<select value={editPriority} onChange={(e) => setEditPriority(Number(e.target.value))}>
+								<option value={1}>1 - 最高</option>
+								<option value={2}>2 - 高</option>
+								<option value={3}>3 - 中</option>
+								<option value={4}>4 - 低</option>
+								<option value={5}>5 - 最低</option>
+							</select>
+						</div>
+					</div>
+					{otherTasks.length > 0 && (
+						<div className="form-field">
+							<label>依赖任务</label>
+							<div className="orch-dep-checkboxes">
+								{otherTasks.map(t => (
+									<label key={t.id} className="orch-dep-checkbox">
+										<input
+											type="checkbox"
+											checked={editDeps.includes(t.id)}
+											onChange={(e) => {
+												if (e.target.checked) {
+													setEditDeps([...editDeps, t.id]);
+												} else {
+													setEditDeps(editDeps.filter(id => id !== t.id));
+												}
+											}}
+										/>
+										<span>{t.title}</span>
+									</label>
+								))}
+							</div>
+						</div>
+					)}
+					<div className="orch-task-edit-actions">
+						<button className="btn-secondary" onClick={handleCancel}>取消</button>
+						<button className="btn-primary" onClick={handleSave}>保存</button>
+					</div>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="orch-task-item" style={{ marginLeft: depthIndent }}>
@@ -77,6 +183,14 @@ function PlanTaskItem({
 				>
 					{config.label}
 				</span>
+				{isEditable && (
+					<div className="orch-task-header-actions">
+						<button className="orch-task-header-btn" onClick={() => setIsEditing(true)} title="编辑任务">✏️</button>
+						<button className="orch-task-header-btn" onClick={() => onDecompose?.(task.id)} disabled={isDecomposing} title="AI 自动拆分任务">
+							{isDecomposing ? '⏳' : '🔀'}
+						</button>
+					</div>
+				)}
 			</div>
 
 			{task.description && task.description !== task.title && (
@@ -207,6 +321,7 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 		error,
 		createPlan,
 		approvePlan,
+		approveWithoutExecute,
 		rejectPlan,
 		taskAction,
 		approveTask,
@@ -214,6 +329,9 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 		commentTask,
 		blockTask,
 		unblockTask,
+		updatePlan,
+		updateTask,
+		decomposeTask,
 	} = useOrchestrationStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const { employees, getPlanners } = useEmployeeStore();
@@ -221,6 +339,9 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	const [goal, setGoal] = useState('');
 	const [selectedPlannerId, setSelectedPlannerId] = useState<string>('');
 	const [viewMode, setViewMode] = useState<'list' | 'graph'>('list');
+	const [decomposingTaskId, setDecomposingTaskId] = useState<string | null>(null);
+	const [isEditingGoal, setIsEditingGoal] = useState(false);
+	const [editGoal, setEditGoal] = useState('');
 
 	const isPendingApproval = activePlan?.status === 'pending_approval';
 	const isExecuting = activePlan?.status === 'executing' || activePlan?.status === 'approved';
@@ -253,6 +374,49 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 		if (!activePlan) { return; }
 		await rejectPlan(activePlan.id);
 	}, [activePlan, rejectPlan]);
+
+	// Approve without executing
+	const handleApproveWithoutExecute = useCallback(async () => {
+		if (!activePlan) { return; }
+		await approveWithoutExecute(activePlan.id);
+	}, [activePlan, approveWithoutExecute]);
+
+	// Update task
+	const handleUpdateTask = useCallback(async (taskId: string, updates: Record<string, unknown>) => {
+		if (!activePlan) { return; }
+		await updateTask(activePlan.id, taskId, updates);
+	}, [activePlan, updateTask]);
+
+	// Decompose task with AI
+	const handleDecomposeTask = useCallback(async (taskId: string) => {
+		if (!activePlan || !activeWorkspaceId) { return; }
+		const effectivePlannerId = selectedPlannerId || activePlan.plannerId;
+		if (!effectivePlannerId) { return; }
+		setDecomposingTaskId(taskId);
+		try {
+			await decomposeTask(activePlan.id, taskId, activeWorkspaceId, effectivePlannerId);
+		} finally {
+			setDecomposingTaskId(null);
+		}
+	}, [activePlan, activeWorkspaceId, selectedPlannerId, decomposeTask]);
+
+	// Edit plan goal
+	const handleStartEditGoal = useCallback(() => {
+		if (!activePlan) { return; }
+		setEditGoal(activePlan.goal);
+		setIsEditingGoal(true);
+	}, [activePlan]);
+
+	const handleSaveGoal = useCallback(async () => {
+		if (!activePlan || !editGoal.trim()) { return; }
+		await updatePlan(activePlan.id, { goal: editGoal.trim() });
+		setIsEditingGoal(false);
+	}, [activePlan, editGoal, updatePlan]);
+
+	const handleCancelEditGoal = useCallback(() => {
+		setIsEditingGoal(false);
+		setEditGoal('');
+	}, []);
 
 	// Task action — planner or PM can dispatch (PM is optional)
 	const handleTaskAction = useCallback(async (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => {
@@ -385,10 +549,40 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 					<>
 						{/* Plan summary */}
 						<div className="orch-plan-summary">
-							<div className="orch-plan-goal">
-								<strong>目标:</strong> {activePlan.goal}
+							{isEditingGoal ? (
+								<div className="orch-plan-goal-edit">
+									<div className="form-field">
+										<label>目标描述</label>
+										<textarea
+											value={editGoal}
+											onChange={(e) => setEditGoal(e.target.value)}
+											rows={2}
+											placeholder="描述任务目标..."
+											autoFocus
+										/>
+									</div>
+									<div className="orch-goal-edit-actions">
+										<button className="btn-secondary" onClick={handleCancelEditGoal}>取消</button>
+										<button className="btn-primary" onClick={handleSaveGoal}>保存</button>
+									</div>
+								</div>
+							) : (
+								<div className="orch-plan-goal">
+									<strong>目标:</strong> {activePlan.goal}
+									{isPendingApproval && (
+										<button
+											className="orch-edit-goal-btn"
+											onClick={handleStartEditGoal}
+											title="编辑目标"
+										>
+											✏️
+										</button>
+									)}
+								</div>
+							)}
+							<div className="orch-plan-desc">
+								{activePlan.summary.replace(/[。\s]*⚠️?\s*无\s*PM/g, '')}
 							</div>
-							<div className="orch-plan-desc">{activePlan.summary}</div>
 
 							{/* Role info */}
 							<div className="orch-plan-roles">
@@ -440,6 +634,11 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 											allTasks={activePlan.tasks}
 											showActions={isExecuting}
 											onAction={handleTaskAction}
+											isEditable={isPendingApproval}
+											employees={employees}
+											onUpdate={handleUpdateTask}
+											onDecompose={handleDecomposeTask}
+											isDecomposing={decomposingTaskId === task.id}
 										/>
 									))}
 							</div>
@@ -453,27 +652,36 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 
 						{/* Action buttons */}
 						<div className="form-actions">
-							{isPendingApproval && (
-								<>
-									<button
-										type="button"
-										className="btn-secondary"
-										onClick={handleReject}
-										disabled={isLoading}
-									>
-										❌ 拒绝计划
-									</button>
+						{isPendingApproval && (
+							<>
 								<button
 									type="button"
-									className="btn-primary"
-									onClick={handleApprove}
+									className="btn-secondary"
+									onClick={handleReject}
 									disabled={isLoading}
-									title='批准并开始调度'
 								>
-									{isLoading ? '执行中...' : '✅ 批准并执行'}
+									❌ 拒绝计划
 								</button>
-								</>
-							)}
+								<button
+									type="button"
+									className="btn-secondary"
+									onClick={handleApproveWithoutExecute}
+									disabled={isLoading}
+									title="批准计划，创建任务到看板，但不自动执行"
+								>
+									📋 批准（仅拆分）
+								</button>
+							<button
+								type="button"
+								className="btn-primary"
+								onClick={handleApprove}
+								disabled={isLoading}
+								title='批准并开始调度'
+							>
+								{isLoading ? '执行中...' : '✅ 批准并执行'}
+							</button>
+							</>
+						)}
 							{!isPendingApproval && (
 								<button type="button" className="btn-secondary" onClick={onClose}>
 									关闭

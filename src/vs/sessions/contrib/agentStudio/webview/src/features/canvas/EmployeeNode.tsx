@@ -10,6 +10,7 @@ import type { Employee } from '../../store/useEmployeeStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
 import { SkillMissingDialog } from '../agentEditor/SkillMissingDialog';
+import { getAgentColor } from '../../utils/agentColors';
 
 interface EmployeeNodeData {
 	employee: Employee;
@@ -99,10 +100,17 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 		.map(s => typeof s === 'string' ? s : s.id)
 		.filter(Boolean) as string[];
 
+	const agentColor = getAgentColor(employee.id);
+
 	return (
 		<div
 			className={`employee-node ${isSelected ? 'selected' : ''} ${statusInfo.animated ? 'status-animated' : ''}`}
-			style={{ background: statusInfo.bg }}
+			style={{
+				background: statusInfo.bg,
+				'--agent-color': agentColor.primary,
+				'--agent-color-light': agentColor.light,
+				borderTopColor: agentColor.primary,
+			} as React.CSSProperties}
 			onClick={() => {
 				console.warn(`[EmployeeNode] onClick: employee=${employee.name}(${employee.id}), onSelect=${!!onSelect}`);
 				onSelect?.(employee.id);
@@ -135,7 +143,7 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 					)}
 					<div
 						className="employee-card-avatar"
-						style={{ borderColor: statusInfo.dot }}
+						style={{ borderColor: agentColor.primary }}
 					>
 						{!imgError ? (
 							<img

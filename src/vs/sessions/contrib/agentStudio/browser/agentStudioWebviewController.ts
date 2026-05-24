@@ -612,8 +612,17 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 			case "orchestration.approve":
 				return this.taskOrchestrationService.approvePlan(p.planId as string);
+			case "orchestration.approveWithoutExecute":
+				return this.taskOrchestrationService.approveWithoutExecute(p.planId as string);
 			case "orchestration.reject":
 				return this.taskOrchestrationService.rejectPlan(p.planId as string);
+			case "orchestration.updatePlan": {
+				const updatePlanPayload = p as unknown as { planId: string; updates: Record<string, unknown> };
+				return this.taskOrchestrationService.updatePlan(
+					updatePlanPayload.planId,
+					updatePlanPayload.updates as { goal?: string; summary?: string },
+				);
+			}
 			case "orchestration.getPlan":
 				return this.taskOrchestrationService.getPlan(p.planId as string);
 			case "orchestration.listPlans":
@@ -1644,6 +1653,13 @@ export class AgentStudioWebviewController extends Disposable {
 		this._register(
 			this.taskOrchestrationService.onDidChangeTask(({ planId, task }) => {
 				this._sendEvent("orchestration.taskUpdated", { planId, task });
+			}),
+		);
+
+		// Push focus/highlight task events to WebView
+		this._register(
+			this.taskOrchestrationService.onDidFocusTask((taskTitle: string) => {
+				this._sendEvent("taskBoard.focusTask", { taskTitle });
 			}),
 		);
 

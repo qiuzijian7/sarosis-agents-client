@@ -894,3 +894,48 @@
 	align-items: center;
 	gap: 4px;
 }
+
+/* ── Decomposition Progress Messages (Chat) ─────────────────────────── */
+.decomposition-progress-msg {
+	padding: 6px 10px;
+	border-radius: 6px;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.decomposition-stage {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.decomposition-stage-start {
+	color: var(--as-accent, var(--vscode-textLink-foreground, #3b82f6));
+}
+
+.decomposition-stage-calling_ai {
+	color: var(--as-accent, var(--vscode-textLink-foreground, #3b82f6));
+	animation: decomposition-pulse 2s ease-in-out infinite;
+}
+
+.decomposition-stage-parsing {
+	color: var(--as-warning, #eab308);
+}
+
+.decomposition-stage-complete {
+	color: var(--as-success, #4ade80);
+}
+
+.decomposition-stage-error {
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.decomposition-stage-fallback {
+	color: var(--as-accent, var(--vscode-textLink-foreground, #3b82f6));
+	animation: decomposition-pulse 2s ease-in-out infinite;
+}
+
+@keyframes decomposition-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.6; }
+}

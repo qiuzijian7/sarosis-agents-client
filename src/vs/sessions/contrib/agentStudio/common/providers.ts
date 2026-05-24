@@ -396,7 +396,8 @@ export interface IAgentTurnRequest {
 }
 
 export interface IChatStreamDelta {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace'
+		| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -410,6 +411,68 @@ export interface IChatStreamDelta {
 	readonly renderType?: string;
 	/** 是否默认展开显示工具卡（默认 true） */
 	readonly defaultShow?: boolean;
+	// New fields for card data (VS Code Copilot Chat pattern)
+	/** References data (for references delta type) */
+	readonly references?: Array<{
+		readonly id: string;
+		readonly kind: 'file' | 'code' | 'url' | 'symbol' | 'text';
+		readonly name: string;
+		readonly uri?: string;
+		readonly range?: { startLine: number; startCol: number; endLine: number; endCol: number };
+		readonly description?: string;
+		readonly state?: 'not-modified' | 'modified' | 'pending' | 'excluded';
+	}>;
+	/** Progress data (for progress delta type) */
+	readonly progressData?: Array<{
+		readonly id: string;
+		readonly content: string;
+		readonly status: 'pending' | 'in-progress' | 'completed' | 'error';
+		readonly icon?: 'spinner' | 'check' | 'warning' | 'error';
+		readonly timestamp?: string;
+	}>;
+	/** Confirmation data (for confirmation delta type) */
+	readonly confirmationData?: {
+		readonly id: string;
+		readonly title: string;
+		readonly message: string;
+		readonly detail?: string;
+		readonly buttons: Array<{
+			readonly id: string;
+			readonly label: string;
+			readonly tooltip?: string;
+			readonly primary?: boolean;
+			readonly danger?: boolean;
+			readonly icon?: string;
+		}>;
+		readonly status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+		readonly icon?: string;
+	};
+	/** Todos data (for todos delta type) */
+	readonly todosData?: Array<{
+		readonly id: string;
+		readonly label: string;
+		readonly completed: boolean;
+		readonly description?: string;
+		readonly assignee?: string;
+	}>;
+	/** Tips data (for tips delta type) */
+	readonly tipsData?: Array<{
+		readonly id: string;
+		readonly content: string;
+		readonly icon?: string;
+		readonly action?: {
+			readonly label: string;
+			readonly tooltip?: string;
+			readonly actionId?: string;
+		};
+	}>;
+	/** Questions data (for questions delta type) */
+	readonly questionsData?: Array<{
+		readonly id: string;
+		readonly label: string;
+		readonly tooltip?: string;
+		readonly category?: string;
+	}>;
 }
 
 /**

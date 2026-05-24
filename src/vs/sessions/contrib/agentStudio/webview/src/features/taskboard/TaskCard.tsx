@@ -7,6 +7,7 @@
 import React, { useCallback, useState } from 'react';
 import { type TaskBoardRecord, type TaskBoardStatus, type TaskSource, useTaskBoardStore } from '../../store/useTaskBoardStore';
 import { type Employee, useEmployeeStore } from '../../store/useEmployeeStore';
+import { getAgentColor } from '../../utils/agentColors';
 
 interface TaskCardProps {
 	task: TaskBoardRecord;
@@ -17,6 +18,7 @@ interface TaskCardProps {
 	onDragStart: (taskId: string) => void;
 	onDragEnd: () => void;
 	isDragging: boolean;
+	isFocused?: boolean;
 }
 
 const PRIORITY_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
@@ -34,6 +36,7 @@ export function TaskCard({
 	onDragStart,
 	onDragEnd,
 	isDragging,
+	isFocused,
 }: TaskCardProps): React.ReactElement {
 	const isDraggable = task.status !== 'running';
 	const isDelegation = task.source === 'delegation';
@@ -82,12 +85,21 @@ export function TaskCard({
 
 	const priorityInfo = task.priority ? PRIORITY_CONFIG[task.priority] : null;
 
+	// Agent color: use assignee's color if task is assigned
+	const agentColor = task.assigneeId ? getAgentColor(task.assigneeId) : null;
+
 	return (
 		<div
-			className={`task-card ${isDragging ? 'dragging' : ''} ${!isDraggable ? 'no-drag' : ''} ${priorityInfo ? `priority-${task.priority}` : ''}`}
+			className={`task-card ${isDragging ? 'dragging' : ''} ${!isDraggable ? 'no-drag' : ''} ${priorityInfo ? `priority-${task.priority}` : ''} ${isFocused ? 'focused' : ''} ${agentColor ? 'has-agent-color' : ''}`}
+			data-task-id={task.id}
 			draggable={isDraggable}
 			onDragStart={handleDragStart}
 			onDragEnd={onDragEnd}
+			style={agentColor ? {
+				'--agent-color': agentColor.primary,
+				'--agent-color-light': agentColor.light,
+				borderLeftColor: agentColor.primary,
+			} as React.CSSProperties : undefined}
 		>
 			{/* Card header: Task ID + priority + source badge */}
 			<div className="task-card-header">
@@ -148,21 +160,21 @@ export function TaskCard({
 				<div className="task-card-route">
 					<span className="task-card-route-from">{fromEmp.name}</span>
 					<span className="task-card-route-arrow">→</span>
-					<span className="task-card-route-to">{assignee.name}</span>
+					<span className="task-card-route-to" style={agentColor ? { color: agentColor.primary } : undefined}>{assignee.name}</span>
 				</div>
 			)}
 			{!fromEmp && assignee && (
 				<div className="task-card-assignee">
-					<span className="task-card-assignee-icon">🤖</span>
-					<span className="task-card-assignee-name">{assignee.name}</span>
+					<span className="task-card-assignee-icon" style={agentColor ? { color: agentColor.primary } : undefined}>🤖</span>
+					<span className="task-card-assignee-name" style={agentColor ? { color: agentColor.primary } : undefined}>{assignee.name}</span>
 					{assignee.role && <span className="task-card-assignee-role"> · {assignee.role}</span>}
 				</div>
 			)}
 			{/* Show assigneeName even if not found in employees list (e.g. auto-created) */}
 			{!assignee && task.assigneeName && (
 				<div className="task-card-assignee">
-					<span className="task-card-assignee-icon">🤖</span>
-					<span className="task-card-assignee-name">{task.assigneeName}</span>
+					<span className="task-card-assignee-icon" style={agentColor ? { color: agentColor.primary } : undefined}>🤖</span>
+					<span className="task-card-assignee-name" style={agentColor ? { color: agentColor.primary } : undefined}>{task.assigneeName}</span>
 				</div>
 			)}
 
@@ -170,98 +182,70 @@ export function TaskCard({
 			<div className="task-card-footer">
 				<span className="task-card-time">{timeStr}</span>
 				<div className="task-card-actions">
-					{/* Navigate to agent chat */}
-					{task.assigneeId && (
-						<button
-							className="task-card-action chat"
-							onClick={handleNavigateChat}
-							title="跳转到 Agent 聊天"
-						>💬 聊天</button>
-					)}
-					{/* Todo: 执行 + 取消 */}
-					{task.status === 'todo' && (
-						<>
-							<button
-								className="task-card-action execute"
-								onClick={() => onStatusChange(task.id, 'running', task.source)}
-								title="执行任务"
-							>▶ 执行</button>
-							<button
-								className="task-card-action cancel"
-								onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
-								title="取消任务"
-							>✕ 取消</button>
-						</>
-					)}
-					{/* Running: 暂停 + 取消 + 重试 */}
-					{task.status === 'running' && (
-						<>
-							<button
-								className="task-card-action pause"
-								onClick={() => onStatusChange(task.id, 'todo', task.source)}
-								title="暂停任务"
-							>⏸ 暂停</button>
-							<button
-								className="task-card-action cancel"
-								onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
-								title="取消任务"
-							>✕ 取消</button>
-							<button
-								className="task-card-action retry"
-								onClick={() => onStatusChange(task.id, 'todo', task.source)}
-								title="重试任务"
-							>🔄 重试</button>
-						</>
-					)}
-					{/* Done: 重试 + 归档 */}
-					{task.status === 'done' && (
-						<>
-							<button
-								className="task-card-action retry"
-								onClick={() => onStatusChange(task.id, 'todo', task.source)}
-								title="重试任务"
-							>🔄 重试</button>
-							<button
-								className="task-card-action archive"
-								onClick={() => onArchive(task.id, task.source)}
-								title="归档任务"
-							>📦 归档</button>
-						</>
-					)}
-					{/* Cancelled: 重试 + 删除 */}
-					{task.status === 'cancelled' && (
-						<>
-							<button
-								className="task-card-action retry"
-								onClick={() => onStatusChange(task.id, 'todo', task.source)}
-								title="重试任务"
-							>🔄 重试</button>
-							{task.source === 'task-board' && (
-								<button
-									className="task-card-action delete"
-									onClick={() => onDelete(task.id, task.source)}
-									title="删除任务"
-								>🗑 删除</button>
-							)}
-						</>
-					)}
-					{/* Archived: 恢复 + 删除 */}
-					{task.status === 'archived' && (
-						<>
-							<button
-								className="task-card-action restore"
-								onClick={() => onStatusChange(task.id, 'todo', task.source)}
-								title="恢复任务"
-							>↩ 恢复</button>
-							{task.source === 'task-board' && (
-								<button
-									className="task-card-action delete"
-									onClick={() => onDelete(task.id, task.source)}
-									title="删除任务"
-								>🗑 删除</button>
-							)}
-						</>
-					)}
+				{/* Navigate to agent chat */}
+				{task.assigneeId && (
+					<button
+						className="task-card-action chat"
+						onClick={handleNavigateChat}
+						title="聊天"
+					>💬</button>
+				)}
+				{/* 执行 */}
+				{task.status === 'todo' && (
+					<button
+						className="task-card-action execute"
+						onClick={() => onStatusChange(task.id, 'running', task.source)}
+						title="执行"
+					>▶</button>
+				)}
+				{/* 暂停 */}
+				{task.status === 'running' && (
+					<button
+						className="task-card-action pause"
+						onClick={() => onStatusChange(task.id, 'todo', task.source)}
+						title="暂停"
+					>⏸</button>
+				)}
+				{/* 重试（running/done/cancelled/archived 都可用） */}
+				{(task.status === 'running' || task.status === 'done' || task.status === 'cancelled' || task.status === 'archived') && (
+					<button
+						className="task-card-action retry"
+						onClick={() => onStatusChange(task.id, 'todo', task.source)}
+						title="重试"
+					>🔄</button>
+				)}
+				{/* 取消（todo/running 可用） */}
+				{(task.status === 'todo' || task.status === 'running') && (
+					<button
+						className="task-card-action cancel"
+						onClick={() => onStatusChange(task.id, 'cancelled', task.source)}
+						title="取消"
+					>✕</button>
+				)}
+				{/* 归档（done 可用） */}
+				{task.status === 'done' && (
+					<button
+						className="task-card-action archive"
+						onClick={() => onArchive(task.id, task.source)}
+						title="归档"
+					>📦</button>
+				)}
+				{/* 恢复（archived 可用） */}
+				{task.status === 'archived' && (
+					<button
+						className="task-card-action restore"
+						onClick={() => onStatusChange(task.id, 'todo', task.source)}
+						title="恢复"
+					>↩</button>
+				)}
+				{/* 删除（cancelled/archived 的手动任务） */}
+				{(task.status === 'cancelled' || task.status === 'archived') && task.source === 'task-board' && (
+					<button
+						className="task-card-action delete"
+						onClick={() => onDelete(task.id, task.source)}
+						title="删除"
+					>🗑</button>
+				)}
 				</div>
 			</div>
 

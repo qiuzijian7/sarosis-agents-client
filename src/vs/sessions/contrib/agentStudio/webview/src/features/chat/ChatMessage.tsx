@@ -23,6 +23,13 @@ import { ToolCallCard } from './ToolCallCard';
 import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
 import { OrchestrationPlanInline } from '../../features/orchestration/OrchestrationPlanInline';
+// New card components (VS Code chatContentParts pattern)
+import { ReferencesCard } from './ReferencesCard';
+import { ProgressCard } from './ProgressCard';
+import { ConfirmationCard } from './ConfirmationCard';
+import { TodoListCard } from './TodoListCard';
+import { TipCard } from './TipCard';
+import { QuestionCarouselCard } from './QuestionCarouselCard';
 
 interface ChatMessageProps {
 	message: ChatMessage;
@@ -145,6 +152,44 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 					</div>
 				)}
 
+				{/* ── References card (VS Code: chatReferencesContentPart pattern) ─── */}
+				{message.references && message.references.length > 0 && (
+					<ReferencesCard
+						references={message.references}
+						defaultExpanded={false}
+						onReferenceClick={(ref) => {
+							// TODO: Handle reference click - open file/url/etc.
+							console.log('[ChatMessage] Reference clicked:', ref);
+						}}
+					/>
+				)}
+
+				{/* ── Progress card (VS Code: chatProgressContentPart pattern) ─── */}
+				{message.progress && (
+					<ProgressCard
+						progress={message.progress}
+						showSpinner={isStreaming}
+						collapsible={Array.isArray(message.progress) && message.progress.length > 1}
+						defaultExpanded={true}
+					/>
+				)}
+
+				{/* ── Confirmation card (VS Code: chatConfirmationContentPart pattern) ─── */}
+				{message.confirmation && (
+					<ConfirmationCard
+						confirmation={message.confirmation}
+						onApprove={(buttonId) => {
+							console.log('[ChatMessage] Confirmation approved:', buttonId);
+							// TODO: Handle confirmation approve
+						}}
+						onReject={() => {
+							console.log('[ChatMessage] Confirmation rejected');
+							// TODO: Handle confirmation reject
+						}}
+						collapsed={false}
+					/>
+				)}
+
 				{/* ── Tool calls ────────────────────────────── */}
 				{message.toolCalls && message.toolCalls.length > 0 && (
 					<div className="tool-calls-section">
@@ -162,6 +207,13 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 						{/* Orchestration plan inline (special message type) */}
 						{message.metadata?.type === 'orchestration_plan' ? (
 							<OrchestrationPlanInline planId={message.metadata.planId} />
+						) : message.metadata?.type === 'decomposition_progress' ? (
+							// Decomposition progress message with styled indicator
+							<div className="decomposition-progress-msg">
+								<span className={`decomposition-stage decomposition-stage-${(message.metadata.stage as string) || 'info'}`}>
+									{displayContent}
+								</span>
+							</div>
 						) : isStreaming && !isUser ? (
 							// During streaming: live markdown rendering (OpenClaw pattern)
 							<MarkdownRenderer content={displayContent} showCursor />
@@ -202,6 +254,50 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							displayContent
 						)}
 					</div>
+				)}
+
+				{/* ── Todo List card (VS Code: chatTodoListWidget pattern) ─── */}
+				{message.todos && message.todos.length > 0 && (
+					<TodoListCard
+						todos={message.todos}
+						title="任务清单"
+						readonly={!isStreaming}
+						onToggle={(id, completed) => {
+							console.log('[ChatMessage] Todo toggled:', id, completed);
+							// TODO: Handle todo toggle
+						}}
+						onAdd={(label) => {
+							console.log('[ChatMessage] Todo added:', label);
+							// TODO: Handle todo add
+						}}
+					/>
+				)}
+
+				{/* ── Tip card (VS Code: chatTipContentPart pattern) ─── */}
+				{message.tips && message.tips.map((tip) => (
+					<TipCard
+						key={tip.id}
+						tip={tip}
+						onDismiss={(id) => {
+							console.log('[ChatMessage] Tip dismissed:', id);
+							// TODO: Handle tip dismiss
+						}}
+					/>
+				))}
+
+				{/* ── Question Carousel card (VS Code: chatQuestionCarouselPart pattern) ─── */}
+				{message.questions && message.questions.length > 0 && (
+					<QuestionCarouselCard
+						questions={message.questions}
+						title="推荐问题"
+						onQuestionClick={(question) => {
+							console.log('[ChatMessage] Question clicked:', question);
+							// TODO: Handle question click - send as user message
+							const { sendMessage } = useChatStore.getState();
+							sendMessage(question.label);
+						}}
+						showCategories={true}
+					/>
 				)}
 			</div>
 
@@ -268,6 +364,12 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.toolCalls === nm.toolCalls &&
 		pm.tokenUsage === nm.tokenUsage &&
 		pm.metadata === nm.metadata &&
+		pm.references === nm.references &&
+		pm.progress === nm.progress &&
+		pm.confirmation === nm.confirmation &&
+		pm.todos === nm.todos &&
+		pm.tips === nm.tips &&
+		pm.questions === nm.questions &&
 		prev.isStreaming === next.isStreaming
 	);
 });

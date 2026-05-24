@@ -21,6 +21,7 @@ import { dispatchConfigMdEvent } from './features/configmd/configMdBridge.js';
 import './styles/globals.css';
 import './styles/themes.css';
 import './styles/chat-enhanced.css';
+import './styles/chat-cards.css';
 import './styles/configmd.css';
 import './styles/agent-editor.css';
 
@@ -89,6 +90,9 @@ initMessageClient((type, data) => {
 			break;
 		case 'taskBoard.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:taskboard-changed', { detail: data }));
+			break;
+		case 'taskBoard.focusTask':
+			window.dispatchEvent(new CustomEvent('agentStudio:focusTask', { detail: data }));
 			break;
 		case 'session.activated':
 			window.dispatchEvent(new CustomEvent('agentStudio:session-activated', { detail: data }));
@@ -174,6 +178,11 @@ initMessageClient((type, data) => {
 			const { planId, task } = data as { planId: string; task: import('./store/useOrchestrationStore.js').PlanTask };
 			useOrchestrationStore.getState().updateTaskFromEvent(planId, task);
 			window.dispatchEvent(new CustomEvent('agentStudio:orchestration-task-updated', { detail: data }));
+			break;
+		}
+		case 'orchestration.decompositionProgress': {
+			// Dispatch as custom event so chat UI can show decomposition progress
+			window.dispatchEvent(new CustomEvent('agentStudio:decomposition-progress', { detail: data }));
 			break;
 		}
 		case 'configmd.sourceChanged':

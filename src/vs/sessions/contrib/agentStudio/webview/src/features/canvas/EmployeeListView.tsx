@@ -14,6 +14,7 @@ import React, { useState, useCallback } from 'react';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { sendRequest } from '../../bridge/messageClient';
 import { previewAgentConfigMd } from '../../bridge/fileBridge';
+import { getAgentColor } from '../../utils/agentColors';
 
 // Status configuration matching sarosis-webui STATUS_MAP
 const STATUS_MAP: Record<string, { label: string; dot: string; color: string; animated: boolean }> = {
@@ -234,12 +235,18 @@ const EmployeeListItem: React.FC<EmployeeListItemProps> = ({
 		|| (employee.avatarStyle && employee.avatarSeed
 			? `https://api.dicebear.com/7.x/${employee.avatarStyle}/svg?seed=${employee.avatarSeed}`
 			: `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`);
+	const agentColor = getAgentColor(employee.id);
 
 	return (
 		<div
 			className={`emp-list-item ${isSelected ? 'emp-list-selected' : ''} ${
 				dragOverSide === 'before' ? 'emp-list-drag-over-before' : ''
 			} ${dragOverSide === 'after' ? 'emp-list-drag-over-after' : ''}`}
+			style={{
+				'--agent-color': agentColor.primary,
+				'--agent-color-light': agentColor.light,
+				borderLeftColor: agentColor.primary,
+			} as React.CSSProperties}
 			onClick={() => {
 				console.warn(`[EmployeeListItem] onClick: employee=${employee.name}(${employee.id})`);
 				onSelect();
@@ -263,7 +270,7 @@ const EmployeeListItem: React.FC<EmployeeListItemProps> = ({
 			</div>
 
 			{/* Avatar */}
-			<div className="emp-list-avatar" style={{ background: statusInfo.bg }}>
+			<div className="emp-list-avatar" style={{ background: agentColor.light, borderColor: agentColor.primary }}>
 				<img src={avatarUrl} alt={employee.name} className="emp-list-avatar-img" />
 			</div>
 

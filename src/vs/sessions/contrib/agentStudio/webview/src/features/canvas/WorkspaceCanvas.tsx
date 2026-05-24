@@ -42,6 +42,7 @@ import { useWorkspaceSessionStore } from '../../store/useWorkspaceSessionStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { sendRequest } from '../../bridge/messageClient';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { getAgentColor } from '../../utils/agentColors';
 
 type ViewMode = 'canvas' | 'list';
 
@@ -673,7 +674,9 @@ export function WorkspaceCanvas(): React.ReactElement {
 							/>
 							<MiniMap
 								className="canvas-minimap"
-								nodeColor={() => 'var(--vscode-textLink-foreground, #3b82f6)'}
+								nodeColor={(node) => {
+									try { return getAgentColor(node.id).primary; } catch { return 'var(--vscode-textLink-foreground, #3b82f6)'; }
+								}}
 								maskColor="var(--vscode-editor-background, rgba(17, 24, 39, 0.8))"
 							/>
 						</ReactFlow>

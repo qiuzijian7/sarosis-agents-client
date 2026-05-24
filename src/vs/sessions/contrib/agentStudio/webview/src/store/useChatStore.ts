@@ -14,6 +14,75 @@ export interface ChatMessageMetadata {
 	planId: string;
 }
 
+// Reference item for ReferencesCard
+export interface ReferenceItem {
+	id: string;
+	kind: 'file' | 'code' | 'url' | 'symbol' | 'text';
+	name: string;
+	uri?: string;
+	range?: { startLine: number; startCol: number; endLine: number; endCol: number };
+	description?: string;
+	state?: 'not-modified' | 'modified' | 'pending' | 'excluded';
+}
+
+// Progress message for ProgressCard
+export interface ProgressMessage {
+	id: string;
+	content: string;
+	status: 'pending' | 'in-progress' | 'completed' | 'error';
+	icon?: 'spinner' | 'check' | 'warning' | 'error';
+	timestamp?: string;
+}
+
+// Confirmation request for ConfirmationCard
+export interface ConfirmationRequest {
+	id: string;
+	title: string;
+	message: string;
+	detail?: string;
+	buttons: ConfirmationButton[];
+	status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+	icon?: string;
+}
+
+export interface ConfirmationButton {
+	id: string;
+	label: string;
+	tooltip?: string;
+	primary?: boolean;
+	danger?: boolean;
+	icon?: string;
+}
+
+// Todo item for TodoListCard
+export interface TodoItem {
+	id: string;
+	label: string;
+	completed: boolean;
+	description?: string;
+	assignee?: string;
+}
+
+// Tip message for TipCard
+export interface TipMessage {
+	id: string;
+	content: string;
+	icon?: string;
+	action?: {
+		label: string;
+		tooltip?: string;
+		onClick: () => void;
+	};
+}
+
+// Suggested question for QuestionCarouselCard
+export interface SuggestedQuestion {
+	id: string;
+	label: string;
+	tooltip?: string;
+	category?: string;
+}
+
 export interface ChatMessage {
 	id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
@@ -26,6 +95,18 @@ export interface ChatMessage {
 	error?: StreamError;
 	/** Metadata for special message types (e.g., orchestration_plan for inline plan approval) */
 	metadata?: ChatMessageMetadata;
+	/** References used by AI (files, code, etc.) - VS Code chatReferencesContentPart pattern */
+	references?: ReferenceItem[];
+	/** Progress messages showing task execution status - VS Code chatProgressContentPart pattern */
+	progress?: ProgressMessage | ProgressMessage[];
+	/** Confirmation request requiring user approval - VS Code chatConfirmationContentPart pattern */
+	confirmation?: ConfirmationRequest;
+	/** Todo list for task tracking - VS Code chatTodoListWidget pattern */
+	todos?: TodoItem[];
+	/** Dismissible tips - VS Code chatTipContentPart pattern */
+	tips?: TipMessage[];
+	/** Suggested questions for user to ask - VS Code chatQuestionCarouselPart pattern */
+	questions?: SuggestedQuestion[];
 }
 
 export interface AgentSessionInfo {
@@ -48,6 +129,13 @@ interface ChatState {
 	activeAgentSessionId: string | null;
 	/** List of sessions for the current agent (Root mode) */
 	agentSessions: AgentSessionInfo[];
+	/**
+	 * Decomposition progress messages per employee, keyed by employeeId.
+	 * These are NOT persisted to the host; they survive employee switches
+	 * so the user still sees "analyzing goal..." progress after switching
+	 * back to a planner chat.
+	 */
+	decompositionProgress: Record<string, ChatMessage[]>;
 
 	// Actions
 	setActiveEmployee: (employeeId: string) => void;
@@ -79,6 +167,8 @@ interface ChatState {
 	renameAgentSession: (sessionId: string, newName: string) => Promise<void>;
 	/** Delete an agent session */
 	deleteAgentSession: (sessionId: string) => Promise<void>;
+	/** Append a decomposition progress message for the given employee */
+	addDecompositionProgress: (employeeId: string, message: ChatMessage) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -258,6 +348,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 					defaultShow: tc.defaultShow,
 				})),
 				timestamp: new Date().toISOString(),
+				// Copy new card data fields from hostMessage (VS Code Copilot Chat pattern)
+				references: (hostMessage?.references as ChatMessage['references']) || undefined,
+				progress: (hostMessage?.progress as ChatMessage['progress']) || undefined,
+				confirmation: (hostMessage?.confirmation as ChatMessage['confirmation']) || undefined,
+				todos: (hostMessage?.todos as ChatMessage['todos']) || undefined,
+				tips: (hostMessage?.tips as ChatMessage['tips']) || undefined,
+				questions: (hostMessage?.questions as ChatMessage['questions']) || undefined,
 			};
 			// Atomically commit the new message AND the reset streamState
 			// so React never sees "no streaming bubble + no message" in between.
@@ -289,6 +386,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		activeEmployeeId: null,
 		activeAgentSessionId: null,
 		agentSessions: [],
+		decompositionProgress: {},
 
 		setActiveEmployee: (employeeId: string) => {
 			const current = get().activeEmployeeId;
@@ -376,6 +474,25 @@ export const useChatStore = create<ChatState>((set, get) => {
 					}
 					return true;
 				});
+
+				// Deduplicate orchestration_plan messages by planId — keep only the last one
+				// (prevents duplicates when loadHistoryForSession re-creates a message
+				// and EmployeeChat useEffect also adds one with a different id).
+				const seenPlanIds = new Set<string>();
+				const deduped: ChatMessage[] = [];
+				for (let i = finalMessages.length - 1; i >= 0; i--) {
+					const m = finalMessages[i];
+					if (m.metadata?.type === 'orchestration_plan') {
+						const planId = m.metadata.planId;
+						if (seenPlanIds.has(planId)) {
+							continue;
+						}
+						seenPlanIds.add(planId);
+					}
+					deduped.unshift(m);
+				}
+				finalMessages = deduped;
+
 				try {
 					const { useOrchestrationStore } = require('./useOrchestrationStore');
 					const { useWorkspaceStore } = require('./useWorkspaceStore');
@@ -421,15 +538,27 @@ export const useChatStore = create<ChatState>((set, get) => {
 						};
 						finalMessages = [...finalMessages, planMessage];
 					}
-				} catch (err) {
-					console.warn('[ChatStore] Failed to check for active plans:', err);
-				}
-				
-				set({ messages: finalMessages, isLoading: false });
 			} catch (err) {
-				console.error('[ChatStore] Failed to load history:', err);
-				set({ isLoading: false });
+				console.warn('[ChatStore] Failed to check for active plans:', err);
 			}
+
+			// Restore any decomposition progress messages for this employee
+			// so "analyzing goal..." hints survive chat-tab switches.
+			const progressMsgs = get().decompositionProgress[employeeId] || [];
+			if (progressMsgs.length > 0) {
+				const existingIds = new Set(finalMessages.map(m => m.id));
+				const newProgress = progressMsgs.filter(m => !existingIds.has(m.id));
+				if (newProgress.length > 0) {
+					console.log(`[ChatStore] Restoring ${newProgress.length} decomposition progress messages for ${employeeId}`);
+					finalMessages = [...finalMessages, ...newProgress];
+				}
+			}
+
+			set({ messages: finalMessages, isLoading: false });
+		} catch (err) {
+			console.error('[ChatStore] Failed to load history:', err);
+			set({ isLoading: false });
+		}
 		},
 
 		sendMessage: async (message: string) => {
@@ -680,6 +809,22 @@ export const useChatStore = create<ChatState>((set, get) => {
 			} catch (err) {
 				console.error('[ChatStore] Failed to delete agent session:', err);
 			}
+		},
+
+		addDecompositionProgress: (employeeId: string, message: ChatMessage) => {
+			set(state => {
+				const existing = state.decompositionProgress[employeeId] || [];
+				// Avoid duplicates by id
+				if (existing.some(m => m.id === message.id)) {
+					return state;
+				}
+				return {
+					decompositionProgress: {
+						...state.decompositionProgress,
+						[employeeId]: [...existing, message],
+					},
+				};
+			});
 		},
 	};
 });

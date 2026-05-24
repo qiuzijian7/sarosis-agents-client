@@ -442,6 +442,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let fullContent = "";
 		let fullThinking = "";
 		let toolCalls: ChatMessage["toolCalls"];
+		// Accumulators for new card data (VS Code Copilot Chat pattern)
+		let references: ChatMessage["references"];
+		let progress: ChatMessage["progress"];
+		let confirmation: ChatMessage["confirmation"];
+		let todos: ChatMessage["todos"];
+		let tips: ChatMessage["tips"];
+		let questions: ChatMessage["questions"];
 
 		try {
 			// Persist user message (fire-and-forget, don't block AI response)
@@ -505,6 +512,25 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						tc.result = delta.content;
 					}
 				}
+				// Handle new card data delta types (VS Code Copilot Chat pattern)
+				if (delta.type === 'references' && delta.references) {
+					references = delta.references as unknown as ChatMessage['references'];
+				}
+				if (delta.type === 'progress' && delta.progressData) {
+					progress = delta.progressData as unknown as ChatMessage['progress'];
+				}
+				if (delta.type === 'confirmation' && delta.confirmationData) {
+					confirmation = delta.confirmationData as unknown as ChatMessage['confirmation'];
+				}
+				if (delta.type === 'todos' && delta.todosData) {
+					todos = delta.todosData as unknown as ChatMessage['todos'];
+				}
+				if (delta.type === 'tips' && delta.tipsData) {
+					tips = delta.tipsData as unknown as ChatMessage['tips'];
+				}
+				if (delta.type === 'questions' && delta.questionsData) {
+					questions = delta.questionsData as unknown as ChatMessage['questions'];
+				}
 				onDelta(delta);
 			}
 
@@ -517,6 +543,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				thinking: fullThinking || undefined,
 				toolCalls: toolCalls || undefined,
 				timestamp: new Date().toISOString(),
+				// New card data fields (VS Code Copilot Chat pattern)
+				references: references || undefined,
+				progress: progress || undefined,
+				confirmation: confirmation || undefined,
+				todos: todos || undefined,
+				tips: tips || undefined,
+				questions: questions || undefined,
 			};
 
 			this.appendMessage(employeeId, chatMessage).catch((err) =>

@@ -112,6 +112,7 @@ interface OrchestrationState {
 	// Actions
 	createPlan: (goal: string, workspaceId: string, plannerId: string) => Promise<OrchestrationPlan | null>;
 	approvePlan: (planId: string) => Promise<void>;
+	approveWithoutExecute: (planId: string) => Promise<void>;
 	rejectPlan: (planId: string) => Promise<void>;
 	taskAction: (planId: string, taskId: string, action: OrchestrationTaskAction) => Promise<void>;
 	// ─── Human-in-the-Loop Actions ─────────────────────────────────────
@@ -120,6 +121,9 @@ interface OrchestrationState {
 	commentTask: (planId: string, taskId: string, comment: string) => Promise<void>;
 	blockTask: (planId: string, taskId: string, reason?: string) => Promise<void>;
 	unblockTask: (planId: string, taskId: string) => Promise<void>;
+	updatePlan: (planId: string, updates: Record<string, unknown>) => Promise<OrchestrationPlan>;
+	updateTask: (planId: string, taskId: string, updates: Record<string, unknown>) => Promise<PlanTask>;
+	decomposeTask: (planId: string, taskId: string, workspaceId: string, plannerId: string) => Promise<OrchestrationPlan>;
 	loadPlans: (workspaceId: string) => Promise<void>;
 	openPlanDialog: () => void;
 	closePlanDialog: () => void;
@@ -177,6 +181,27 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 			const message = err instanceof Error ? err.message : String(err);
 			set({ isLoading: false, error: message });
 			console.error('[OrchestrationStore] approvePlan failed:', err);
+		}
+	},
+
+	approveWithoutExecute: async (planId) => {
+		set({ isLoading: true, error: null });
+		try {
+			const updatedPlan = await sendRequest<
+				{ planId: string },
+				OrchestrationPlan
+			>('orchestration.approveWithoutExecute', { planId });
+
+			set(state => ({
+				plans: state.plans.map(p => p.id === planId ? updatedPlan : p),
+				activePlan: state.activePlan?.id === planId ? updatedPlan : state.activePlan,
+				isPlanDialogOpen: false,
+				isLoading: false,
+			}));
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			set({ isLoading: false, error: message });
+			console.error('[OrchestrationStore] approveWithoutExecute failed:', err);
 		}
 	},
 
@@ -268,6 +293,79 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 		}
 	},
 
+	updatePlan: async (planId, updates) => {
+		set({ isLoading: true, error: null });
+		try {
+			const updatedPlan = await sendRequest<
+				{ planId: string; updates: Record<string, unknown> },
+				OrchestrationPlan
+			>('orchestration.updatePlan', { planId, updates });
+
+			set(state => ({
+				plans: state.plans.map(p => p.id === planId ? updatedPlan : p),
+				activePlan: state.activePlan?.id === planId ? updatedPlan : state.activePlan,
+				isLoading: false,
+			}));
+			return updatedPlan;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			set({ isLoading: false, error: message });
+			console.error('[OrchestrationStore] updatePlan failed:', err);
+			throw err;
+		}
+	},
+
+	updateTask: async (planId, taskId, updates) => {
+		set({ isLoading: true, error: null });
+		try {
+			const updatedTask = await sendRequest<
+				{ planId: string; taskId: string; updates: Record<string, unknown> },
+				PlanTask
+			>('orchestration.updateTask', { planId, taskId, updates });
+
+			set(state => {
+				if (!state.activePlan) { return { isLoading: false }; }
+				const newPlan = {
+					...state.activePlan,
+					tasks: state.activePlan.tasks.map(t => t.id === taskId ? updatedTask : t),
+				};
+				return {
+					activePlan: newPlan,
+					plans: state.plans.map(p => p.id === planId ? newPlan : p),
+					isLoading: false,
+				};
+			});
+			return updatedTask;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			set({ isLoading: false, error: message });
+			console.error('[OrchestrationStore] updateTask failed:', err);
+			throw err;
+		}
+	},
+
+	decomposeTask: async (planId, taskId, workspaceId, plannerId) => {
+		set({ isLoading: true, error: null });
+		try {
+			const updatedPlan = await sendRequest<
+				{ planId: string; taskId: string; workspaceId: string; plannerId: string },
+				OrchestrationPlan
+			>('orchestration.decomposeTask', { planId, taskId, workspaceId, plannerId });
+
+			set(state => ({
+				plans: state.plans.map(p => p.id === planId ? updatedPlan : p),
+				activePlan: state.activePlan?.id === planId ? updatedPlan : state.activePlan,
+				isLoading: false,
+			}));
+			return updatedPlan;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			set({ isLoading: false, error: message });
+			console.error('[OrchestrationStore] decomposeTask failed:', err);
+			throw err;
+		}
+	},
+
 	loadPlans: async (workspaceId) => {
 		set({ isLoading: true });
 		try {
@@ -304,11 +402,15 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 	setActivePlan: (plan) => set({ activePlan: plan, isPlanDialogOpen: !!plan }),
 
 	updatePlanFromEvent: (plan) => {
+		if (!plan || !plan.id) {
+			console.warn('[OrchestrationStore] updatePlanFromEvent received invalid plan:', plan);
+			return;
+		}
 		set(state => {
-			const exists = state.plans.some(p => p.id === plan.id);
+			const exists = state.plans.some(p => p && p.id === plan.id);
 			const plans = exists
-				? state.plans.map(p => p.id === plan.id ? plan : p)
-				: [...state.plans, plan];
+				? state.plans.map(p => p && p.id === plan.id ? plan : p).filter(Boolean)
+				: [...state.plans.filter(Boolean), plan];
 			return {
 				plans,
 				activePlan: state.activePlan?.id === plan.id ? plan : state.activePlan,

@@ -1,4 +1,4 @@
-/*---------------------------------------------------------------------------------------------
+/*--------------------------------------------------------------------------------------------- 
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
@@ -14,11 +14,10 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { IAgentTaskBoardService, IAgentStudioService } from '../../common/agentStudio.js';
+import { IAgentTaskBoardService, IAgentStudioService, ITaskOrchestrationService } from '../../common/agentStudio.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { TaskBoardStatus, type TaskBoardRecord, type Workspace } from '../../common/types.js';
 import { TaskOverviewEditorInput } from '../taskOverviewEditorInput.js';
-import { TaskDetailEditorInput } from '../taskDetailEditorInput.js';
 
 /**
  * Tasks View - 任务管理面板 (ActivityBar Sidebar)
@@ -28,7 +27,7 @@ import { TaskDetailEditorInput } from '../taskDetailEditorInput.js';
  * - 顶部搜索框
  * - Workspace/All 过滤切换
  * - Overview 按钮（打开看板 EditorPane）
- * - 任务列表（点击打开详情 EditorPane）
+ * - 任务列表（点击打开看板总览并高亮对应任务卡片）
  */
 export class TasksViewPane extends ViewPane {
 
@@ -55,6 +54,7 @@ export class TasksViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
 		@IEditorService private readonly editorService: IEditorService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -65,6 +65,11 @@ export class TasksViewPane extends ViewPane {
 
 		this._root = $('div.tasks-view-root');
 		container.appendChild(this._root);
+
+		// ─── Inject scoped styles ──────────────────────────────────
+		const styleEl = document.createElement('style');
+		styleEl.textContent = this._getScopedCSS();
+		this._root.appendChild(styleEl);
 
 		// ─── Toolbar: Overview + Workspace selector ──────────────────
 		const toolbar = $('div.tasks-toolbar');
@@ -209,12 +214,14 @@ export class TasksViewPane extends ViewPane {
 		for (const task of tasks) {
 			const item = $('div.task-list-item');
 			item.classList.add(`status-${task.status}`);
-			item.onclick = () => this._openTaskDetail(task);
+			item.onclick = () => this._openTaskInOverview(task);
 
-			// Status dot
+			// Status indicator
+			const statusWrap = $('div.task-item-status');
 			const dot = $('span.task-dot');
 			dot.textContent = this._getStatusIcon(task.status);
-			item.appendChild(dot);
+			statusWrap.appendChild(dot);
+			item.appendChild(statusWrap);
 
 			// Content
 			const content = $('div.task-item-content');
@@ -262,9 +269,224 @@ export class TasksViewPane extends ViewPane {
 		this.editorService.openEditor(input, { pinned: true });
 	}
 
-	private _openTaskDetail(task: TaskBoardRecord): void {
-		const input = TaskDetailEditorInput.getOrCreate(task.id, task.title);
-		this.editorService.openEditor(input, { pinned: false });
+	/**
+	 * Open the Task Overview (Kanban board) and highlight the clicked task.
+	 * This replaces the old behavior of opening a separate TaskDetailEditorPane.
+	 */
+	private async _openTaskInOverview(task: TaskBoardRecord): Promise<void> {
+		const input = TaskOverviewEditorInput.getOrCreate();
+		// Open the overview editor in the editor area
+		await this.editorService.openEditor(input, { pinned: false, preserveFocus: false });
+		// Trigger highlight on the matching task card via task title
+		this.taskOrchestrationService.focusTaskInBoard(task.title);
+	}
+
+	// ─── Scoped CSS ────────────────────────────────────────────────
+
+	private _getScopedCSS(): string {
+		return `
+.tasks-view-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+	font-family: var(--vscode-font-family);
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	background: var(--vscode-sideBar-background);
+}
+
+/* Toolbar */
+.tasks-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--vscode-sideBar-border);
+}
+.tasks-overview-btn {
+	font-size: 11px;
+	padding: 3px 8px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	cursor: pointer;
+	white-space: nowrap;
+}
+.tasks-overview-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+.tasks-ws-selector {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	padding: 2px 4px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border));
+	background: var(--vscode-dropdown-background, var(--vscode-input-background));
+	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+}
+
+/* Search */
+.tasks-search {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-sideBar-border);
+}
+.tasks-search-icon {
+	font-size: 12px;
+	opacity: 0.6;
+}
+.tasks-search-input {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	padding: 3px 6px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-input-border);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	outline: none;
+}
+.tasks-search-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+/* Status filters */
+.tasks-status-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 3px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-sideBar-border);
+}
+.task-filter-chip {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 9px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	opacity: 0.7;
+}
+.task-filter-chip:hover {
+	opacity: 1;
+	background: var(--vscode-list-hoverBackground);
+}
+.task-filter-chip.active {
+	opacity: 1;
+	background: var(--vscode-button-secondaryBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+/* Task list scroll */
+.tasks-list-scroll {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 2px 0;
+}
+.tasks-list-scroll::-webkit-scrollbar {
+	width: 4px;
+}
+.tasks-list-scroll::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background);
+	border-radius: 2px;
+}
+
+.tasks-count {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	padding: 4px 10px 2px;
+	opacity: 0.7;
+}
+
+.tasks-empty {
+	text-align: center;
+	padding: 24px 12px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+/* Task list item — enhanced */
+.task-list-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	margin: 1px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+	border-left: 3px solid transparent;
+}
+.task-list-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.task-list-item:active {
+	transform: scale(0.985);
+}
+
+/* Status-based left border color */
+.task-list-item.status-todo {
+	border-left-color: #f59e0b;
+}
+.task-list-item.status-running {
+	border-left-color: #3b82f6;
+}
+.task-list-item.status-done {
+	border-left-color: #10b981;
+}
+.task-list-item.status-cancelled {
+	border-left-color: #6b7280;
+}
+.task-list-item.status-archived {
+	border-left-color: #8b5cf6;
+}
+
+/* Status indicator */
+.task-item-status {
+	flex-shrink: 0;
+	width: 20px;
+	text-align: center;
+}
+.task-dot {
+	font-size: 12px;
+}
+
+/* Content area */
+.task-item-content {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+}
+.task-item-title {
+	font-size: 12px;
+	line-height: 1.35;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--vscode-foreground);
+}
+.task-item-meta {
+	font-size: 10px;
+	line-height: 1.3;
+	margin-top: 1px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.task-priority-high {
+	font-size: 12px;
+	flex-shrink: 0;
+}
+`;
 	}
 
 	// ─── Layout ───────────────────────────────────────────────────

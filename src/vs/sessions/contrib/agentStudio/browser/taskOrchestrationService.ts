@@ -30,11 +30,13 @@ import type { OrchestrationTaskAction } from '../common/agentStudio.js';
 import type { OrchestrationPlan, PlanTask, Employee } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
 import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
-import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
+import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING } from '../common/constants.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { TaskDecomposer } from './taskDecomposer.js';
 import { AgentFactory } from './agentFactory.js';
 import { CanvasLayoutEngine } from './canvasLayoutEngine.js';
+import { IAgentOSService } from '../common/agentOS.js';
+import type { IAgentTurnRequest } from '../common/providers.js';
 
 const DATA_FILE_ORCHESTRATION = 'orchestration-plans.json';
 
@@ -66,7 +68,30 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	/** Callback to push chat stream events to the webview. Set by AgentStudioWebviewController. */
 	private _streamEventCallback: ((eventType: string, payload: Record<string, unknown>) => void) | undefined;
 
+	/**
+	 * Tracks agent IDs that are currently executing a task.
+	 * Used to determine if an agent is "busy" (has a running task) or "idle"
+	 * for the purpose of auto-executing pending tasks.
+	 * Key: assigneeId (agent ID), Value: count of running tasks for that agent.
+	 */
+	private readonly _runningAssignees = new Map<string, number>();
+
 	private _dataUri: URI | undefined;
+
+	/** Helper to fire a decomposition progress event to the webview chat UI. */
+	private _fireDecompositionProgress(payload: {
+		plannerId?: string;
+		plannerName?: string;
+		stage: string;
+		message: string;
+		taskTitle?: string;
+		goal?: string;
+		subTaskCount?: number;
+	}): void {
+		if (this._streamEventCallback) {
+			this._streamEventCallback('orchestration.decompositionProgress', payload);
+		}
+	}
 
 	// ─── Sub-modules ─────────────────────────────────────────────────────────
 	private readonly _decomposer: TaskDecomposer;
@@ -81,6 +106,7 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
 	) {
 		super();
 		this._decomposer = new TaskDecomposer();
@@ -121,7 +147,9 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_ORCHESTRATION);
 			const content = await this.fileService.readFile(uri);
-			return JSON.parse(content.value.toString()) as OrchestrationPlan[];
+			const parsed = JSON.parse(content.value.toString()) as OrchestrationPlan[];
+			// Defensive: filter out null/undefined/corrupted entries that could crash downstream .id access
+			return Array.isArray(parsed) ? parsed.filter(p => p && typeof p === 'object' && p.id) : [];
 		} catch {
 			return [];
 		}
@@ -373,6 +401,117 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		}
 	}
 
+	// ═══ Auto-Execution (idle agent → pending task) ═════════════════════════════
+
+	/**
+	 * Check if an agent is currently busy (executing at least one task).
+	 */
+	private _isAgentBusy(assigneeId: string): boolean {
+		return (this._runningAssignees.get(assigneeId) ?? 0) > 0;
+	}
+
+	/**
+	 * Mark an agent as having one more running task.
+	 */
+	private _markAgentBusy(assigneeId: string): void {
+		const count = this._runningAssignees.get(assigneeId) ?? 0;
+		this._runningAssignees.set(assigneeId, count + 1);
+	}
+
+	/**
+	 * Mark an agent as having one fewer running task.
+	 * When count reaches 0, the agent is considered idle again.
+	 */
+	private _markAgentIdle(assigneeId: string): void {
+		const count = this._runningAssignees.get(assigneeId) ?? 0;
+		if (count <= 1) {
+			this._runningAssignees.delete(assigneeId);
+		} else {
+			this._runningAssignees.set(assigneeId, count - 1);
+		}
+	}
+
+	/**
+	 * Scan all executing plans for pending tasks whose assigned agent is idle,
+	 * and auto-start them (respecting concurrency limits and DAG dependencies).
+	 *
+	 * This is called after a task completes (its agent becomes free) and after
+	 * plan approval (initial kick-off). It replaces the previous pattern of
+	 * only promoting downstream tasks on completion.
+	 */
+	private async _tryAutoExecutePendingTasks(): Promise<void> {
+		try {
+			const plans = await this._readPlans();
+
+			for (const plan of plans) {
+				if (plan.status !== OrchestrationPlanStatus.Executing) { continue; }
+
+				const running = plan.tasks.filter(t => t.status === PlanTaskStatus.Running).length;
+				const maxConc = plan.maxConcurrency || DEFAULT_MAX_CONCURRENCY;
+				if (running >= maxConc) { continue; }
+
+				// Find pending tasks that are ready (all deps done) and whose agent is idle
+				const readyTasks = plan.tasks
+					.filter(t => t.status === PlanTaskStatus.Pending)
+					.filter(t => t.dependencies.every(depId => {
+						const dep = plan.tasks.find(d => d.id === depId);
+						return dep && dep.status === PlanTaskStatus.Done;
+					}))
+					.filter(t => t.assigneeId && !this._isAgentBusy(t.assigneeId))
+					.sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2));
+
+				let slotsAvailable = maxConc - running;
+
+				for (const task of readyTasks) {
+					if (slotsAvailable <= 0) { break; }
+
+					task.status = PlanTaskStatus.Running;
+					task.startedAt = new Date().toISOString();
+					// Note: _markAgentBusy is called inside _executeTask, so we don't
+					// call it here to avoid double-counting.
+					slotsAvailable--;
+
+					this._onDidChangeTask.fire({ planId: plan.id, task });
+					this.logService.info(`[Orchestration] Auto-executing pending task "${task.title}" (${task.id}) with idle agent ${task.assigneeId}`);
+
+					// Notify chat about auto-execution
+					if (task.assigneeId) {
+						try {
+							const chatMessage = {
+								id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+								role: 'system' as const,
+								content: `🚀 自动执行: ${task.title}\n\nAgent空闲，自动启动待执行任务`,
+								employeeId: task.assigneeId,
+								agentSessionId: undefined,
+								timestamp: new Date().toISOString(),
+							};
+							await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
+						} catch { /* ignore */ }
+					}
+
+					// Fire-and-forget: execute the task
+					this._executeTask(plan.id, task).catch(err => {
+						this.logService.error(`[Orchestration] Auto-executed task ${task.id} failed:`, err);
+					});
+				}
+
+				if (readyTasks.length > 0) {
+					plan.updatedAt = new Date().toISOString();
+				}
+			}
+
+			// Persist any status changes
+			await this._writePlans(plans);
+			for (const plan of plans) {
+				if (plan.status === OrchestrationPlanStatus.Executing) {
+					this._onDidChangePlan.fire(plan);
+				}
+			}
+		} catch (err) {
+			this.logService.warn('[Orchestration] _tryAutoExecutePendingTasks error:', err);
+		}
+	}
+
 	// ═══ Plan CRUD ══════════════════════════════════════════════════════════════
 
 	/**
@@ -381,6 +520,312 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	 */
 	setStreamEventCallback(cb: (eventType: string, payload: Record<string, unknown>) => void): void {
 		this._streamEventCallback = cb;
+	}
+
+	// ═══ Plan Editing (pending approval only) ═══════════════════════════════════
+
+	/**
+	 * Update a plan's editable fields. Only allowed when plan is pending approval.
+	 */
+	async updatePlan(
+		planId: string,
+		updates: {
+			goal?: string;
+			summary?: string;
+		},
+	): Promise<OrchestrationPlan> {
+		this.logService.info(`[Orchestration] updatePlan: planId=${planId}`);
+
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		if (plan.status !== OrchestrationPlanStatus.PendingApproval) {
+			throw new Error(`Cannot edit plan: plan is ${plan.status}`);
+		}
+
+		if (updates.goal !== undefined) { plan.goal = updates.goal; }
+		if (updates.summary !== undefined) { plan.summary = updates.summary; }
+
+		plan.updatedAt = new Date().toISOString();
+		await this._writePlans(plans);
+		this._onDidChangePlan.fire(plan);
+		return plan;
+	}
+
+	// ═══ Task Editing (pending approval only) ═══════════════════════════════════
+
+	/**
+	 * Update a task's editable fields. Only allowed when plan is pending approval.
+	 */
+	async updateTask(
+		planId: string,
+		taskId: string,
+		updates: {
+			title?: string;
+			description?: string;
+			assigneeId?: string;
+			assigneeName?: string;
+			assigneeRole?: string;
+			dependencies?: string[];
+			priority?: number;
+		},
+	): Promise<PlanTask> {
+		this.logService.info(`[Orchestration] updateTask: planId=${planId}, taskId=${taskId}`);
+
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		if (plan.status !== OrchestrationPlanStatus.PendingApproval) {
+			throw new Error(`Cannot edit tasks: plan is ${plan.status}`);
+		}
+
+		const task = plan.tasks.find(t => t.id === taskId);
+		if (!task) { throw new Error(`Task not found: ${taskId}`); }
+
+		// Validate dependencies
+		if (updates.dependencies !== undefined) {
+			if (updates.dependencies.includes(taskId)) {
+				throw new Error(`Task cannot depend on itself`);
+			}
+			const invalidDeps = updates.dependencies.filter(depId => !plan.tasks.some(t => t.id === depId));
+			if (invalidDeps.length > 0) {
+				throw new Error(`Invalid dependencies: ${invalidDeps.join(', ')}`);
+			}
+			const testTask = { ...task, dependencies: updates.dependencies };
+			const testTasks = plan.tasks.map(t => t.id === taskId ? testTask : t);
+			try {
+				this._topologicalSort(testTasks);
+			} catch {
+				throw new Error(`Dependency change would create a cycle`);
+			}
+		}
+
+		if (updates.title !== undefined) { task.title = updates.title; }
+		if (updates.description !== undefined) { task.description = updates.description; }
+		if (updates.assigneeId !== undefined) { task.assigneeId = updates.assigneeId; }
+		if (updates.assigneeName !== undefined) { task.assigneeName = updates.assigneeName; }
+		if (updates.assigneeRole !== undefined) { task.assigneeRole = updates.assigneeRole; }
+		if (updates.dependencies !== undefined) { task.dependencies = updates.dependencies; }
+		if (updates.priority !== undefined) { task.priority = updates.priority; }
+
+		this._topologicalSort(plan.tasks);
+		plan.updatedAt = new Date().toISOString();
+		plan.summary = this._generateSummary(plan.tasks);
+
+		await this._writePlans(plans);
+		this._onDidChangeTask.fire({ planId, task });
+		this._onDidChangePlan.fire(plan);
+		return task;
+	}
+
+	/**
+	 * Use AI to decompose a single task into sub-tasks.
+	 * Only allowed when plan is pending approval.
+	 */
+	async decomposeTask(
+		planId: string,
+		taskId: string,
+		workspaceId: string,
+		plannerId: string,
+	): Promise<OrchestrationPlan> {
+		this.logService.info(`[Orchestration] decomposeTask: planId=${planId}, taskId=${taskId}`);
+
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		if (plan.status !== OrchestrationPlanStatus.PendingApproval) {
+			throw new Error(`Cannot decompose tasks: plan is ${plan.status}`);
+		}
+
+		const originalTask = plan.tasks.find(t => t.id === taskId);
+		if (!originalTask) { throw new Error(`Task not found: ${taskId}`); }
+
+		const employees = await this.agentStudioService.getEmployees(workspaceId);
+		const employeeNameToId = new Map<string, string>();
+		employees.forEach(e => {
+			if (e.name && e.id) {
+				employeeNameToId.set(e.name.toLowerCase(), e.id);
+			}
+		});
+
+		const subTasks = await this._decomposeSingleTaskWithAI(originalTask, workspaceId, employees, plannerId);
+
+		const originalIndex = plan.tasks.findIndex(t => t.id === taskId);
+		const lastSubTaskId = subTasks[subTasks.length - 1]?.id;
+
+		// Remove original task
+		plan.tasks.splice(originalIndex, 1);
+
+		// Update dependencies that pointed to original task
+		for (const t of plan.tasks) {
+			if (t.dependencies.includes(taskId) && lastSubTaskId) {
+				t.dependencies = t.dependencies.map(depId => depId === taskId ? lastSubTaskId : depId);
+			}
+		}
+
+		// Add sub-tasks with chained dependencies
+		for (let i = 0; i < subTasks.length; i++) {
+			const subTask = subTasks[i];
+			if (i > 0) {
+				subTask.dependencies = [...originalTask.dependencies, subTasks[i - 1].id];
+			} else {
+				subTask.dependencies = [...originalTask.dependencies];
+			}
+			subTask.dependencies = subTask.dependencies.filter(depId => depId !== subTask.id);
+			plan.tasks.push(subTask);
+		}
+
+		this._topologicalSort(plan.tasks);
+		plan.updatedAt = new Date().toISOString();
+		plan.summary = this._generateSummary(plan.tasks);
+
+		await this._writePlans(plans);
+		this._onDidChangePlan.fire(plan);
+		return plan;
+	}
+
+	/**
+	 * Decompose a single task into sub-tasks using AI.
+	 * Uses the planner agent's preset (customPrompt, skills, model) for better decomposition.
+	 */
+	private async _decomposeSingleTaskWithAI(
+		task: PlanTask,
+		workspaceId: string,
+		employees: Employee[],
+		plannerId?: string,
+	): Promise<PlanTask[]> {
+		this.logService.info(`[Orchestration] Decomposing task "${task.title}" with AI (plannerId=${plannerId || 'default'})`);
+
+		// Resolve planner agent for its preset configuration
+		let plannerEmployee: Employee | undefined;
+		let agentId: string;
+		if (plannerId) {
+			plannerEmployee = await this.agentStudioService.getEmployee(plannerId);
+			if (plannerEmployee) {
+				agentId = plannerEmployee.id;
+				this.logService.info(`[Orchestration] Using planner agent "${plannerEmployee.name}" (${plannerEmployee.id}) for decomposition`);
+			} else {
+				this.logService.warn(`[Orchestration] Planner agent ${plannerId} not found, falling back to default`);
+				agentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
+			}
+		} else {
+			agentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
+		}
+
+		// Fire progress: starting decomposition
+		this._fireDecompositionProgress({
+			plannerId: plannerId || agentId,
+			plannerName: plannerEmployee?.name,
+			stage: 'start',
+			message: plannerEmployee
+				? `🔄 正在使用 ${plannerEmployee.name} 分析并拆解任务「${task.title}」...`
+				: `🔄 正在分析并拆解任务「${task.title}」...`,
+			taskTitle: task.title,
+		});
+
+		const employeeContext = employees.length > 0
+			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
+			: 'No team members available.';
+
+		// Build system prompt: prepend planner's customPrompt if available
+		const plannerContext = plannerEmployee?.customPrompt
+			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.customPrompt}\n--- End Planner Context ---\n\n`
+			: '';
+
+		const systemPrompt = `${plannerContext}You are a task decomposition expert. Your ONLY job is to output valid JSON.
+
+CRITICAL: YOUR ENTIRE RESPONSE MUST BE A VALID JSON OBJECT. NOTHING ELSE.
+
+FORBIDDEN:
+- NO conversational text
+- NO markdown code blocks
+- NO explanations before or after JSON
+- NO nested structures
+
+REQUIRED OUTPUT FORMAT:
+{"tasks":[{"id":"T1","title":"Sub-task title","description":"Description","suggestedRole":"Role","suggestedAssignee":"Name or empty","dependencies":[],"priority":1}]}
+
+FIELD NAMES (case-sensitive):
+- "id", "title", "description", "suggestedRole", "suggestedAssignee", "dependencies", "priority"
+
+${employeeContext}
+
+OUTPUT ONLY JSON. START WITH { AND END WITH }.`;
+
+		const userMessage = `Decompose the following task into smaller, executable sub-tasks. Output ONLY valid JSON.
+
+PARENT TASK: ${task.title}
+DESCRIPTION: ${task.description || task.title}
+
+REQUIRED OUTPUT FORMAT:
+{"tasks": [{"id": "T1", "title": "Sub-task title", "description": "Description", "suggestedRole": "Developer", "suggestedAssignee": "", "dependencies": [], "priority": 1}]}
+
+RULES:
+- Start response with { and end with }
+- NO text before/after JSON
+- NO markdown code blocks
+- Create 2-5 sub-tasks that are smaller and more specific
+- Each sub-task should be independently executable
+- Use suggestedAssignee field with existing team member names when appropriate`;
+
+		const employeeNameToId = new Map<string, string>();
+		employees.forEach(e => {
+			if (e.name && e.id) {
+				employeeNameToId.set(e.name.toLowerCase(), e.id);
+			}
+		});
+
+		// Fire progress: calling AI model
+		this._fireDecompositionProgress({
+			plannerId: plannerId || agentId,
+			plannerName: plannerEmployee?.name,
+			stage: 'calling_ai',
+			message: plannerEmployee
+				? `🤖 ${plannerEmployee.name} 正在思考如何拆解任务「${task.title}」...`
+				: `🤖 AI 正在思考如何拆解任务「${task.title}」...`,
+			taskTitle: task.title,
+		});
+
+		const request: IAgentTurnRequest = {
+			agentId,
+			sessionId: workspaceId,
+			messages: [{ role: 'user', content: userMessage }],
+			systemPrompt,
+			explicitSkillIds: plannerEmployee?.skills?.filter((s): s is string => typeof s === 'string') || [],
+		};
+
+		const stream = this.agentOSService.executeAgentTurn(request);
+		let responseText = '';
+		for await (const delta of stream) {
+			if (delta.type === 'text' && delta.content) {
+				responseText += delta.content;
+			}
+		}
+
+		// Fire progress: parsing results
+		this._fireDecompositionProgress({
+			plannerId: plannerId || agentId,
+			plannerName: plannerEmployee?.name,
+			stage: 'parsing',
+			message: `📋 正在解析 AI 拆解结果...`,
+			taskTitle: task.title,
+		});
+
+		const subTasks = this._parseAiResponseToPlanTasks(responseText, employeeNameToId);
+
+		// Fire progress: decomposition complete
+		this._fireDecompositionProgress({
+			plannerId: plannerId || agentId,
+			plannerName: plannerEmployee?.name,
+			stage: 'complete',
+			message: plannerEmployee
+				? `✅ ${plannerEmployee.name} 已将任务「${task.title}」拆解为 ${subTasks.length} 个子任务`
+				: `✅ 已将任务「${task.title}」拆解为 ${subTasks.length} 个子任务`,
+			taskTitle: task.title,
+			subTaskCount: subTasks.length,
+		});
+
+		return subTasks;
 	}
 
 	async createPlan(goal: string, workspaceId: string, plannerId: string): Promise<OrchestrationPlan> {
@@ -397,10 +842,10 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		}
 
 		const existingEmployees = await this.agentStudioService.getEmployees(workspaceId);
-		const existingNames = new Set(existingEmployees.map(e => e.name.toLowerCase()));
 
-		// Delegate decomposition to TaskDecomposer
-		const tasks = this._decomposer.decomposeGoal(goal, existingNames);
+		// Use AI-based decomposition
+		this.logService.info(`[Orchestration] Using AI-based decomposition for goal: "${goal}"`);
+		const tasks = await this._decomposeGoalWithAI(goal, workspaceId, existingEmployees, plannerId);
 
 		// Validate DAG — topological sort will throw on cycle
 		this._topologicalSort(tasks);
@@ -426,6 +871,381 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		return plan;
 	}
 
+	// ─── AI-based Goal Decomposition ─────────────────────────────────────
+
+	/**
+	 * Decompose a goal into PlanTasks using AI.
+	 * This replaces the rule-based TaskDecomposer.decomposeGoal() with AI-powered decomposition.
+	 */
+	private async _decomposeGoalWithAI(goal: string, workspaceId: string, employees: Employee[], plannerId?: string): Promise<PlanTask[]> {
+		this.logService.info(`[Orchestration] Starting AI-based goal decomposition for: "${goal}" (plannerId=${plannerId || 'default'})`);
+
+		// Fire progress: starting goal decomposition
+		let plannerName: string | undefined;
+		if (plannerId) {
+			const planner = await this.agentStudioService.getEmployee(plannerId);
+			plannerName = planner?.name;
+		}
+		this._fireDecompositionProgress({
+			plannerId,
+			plannerName,
+			stage: 'start',
+			message: plannerName
+				? `🔄 正在使用 ${plannerName} 分析目标并拆解任务...`
+				: `🔄 正在分析目标并拆解任务...`,
+			goal,
+		});
+
+		try {
+			// Step 1: Call AI model
+			this.logService.info(`[Orchestration] Calling AI model for task decomposition`);
+			const aiResponse = await this._callAIModelForDecomposition(goal, workspaceId, employees, plannerId);
+			this.logService.info(`[Orchestration] AI response received, length=${aiResponse.length}`);
+
+			// Step 2: Parse AI response into PlanTask[]
+			this.logService.info(`[Orchestration] Parsing AI response into PlanTask[]`);
+			const employeeNameToId = new Map<string, string>();
+			employees.forEach(e => {
+				if (e.name && e.id) {
+					employeeNameToId.set(e.name.toLowerCase(), e.id);
+				}
+			});
+			const tasks = this._parseAiResponseToPlanTasks(aiResponse, employeeNameToId);
+			this.logService.info(`[Orchestration] Parsed ${tasks.length} tasks from AI response`);
+
+			// Fire progress: decomposition complete
+			this._fireDecompositionProgress({
+				plannerId,
+				plannerName,
+				stage: 'complete',
+				message: plannerName
+					? `✅ ${plannerName} 已将目标拆解为 ${tasks.length} 个任务`
+					: `✅ 已将目标拆解为 ${tasks.length} 个任务`,
+				goal,
+				subTaskCount: tasks.length,
+			});
+
+			return tasks;
+		} catch (error) {
+			this.logService.error(`[Orchestration] AI decomposition failed: ${error instanceof Error ? error.message : String(error)}`);
+
+			// Fire progress: falling back to rule-based decomposition (neutral message)
+			this._fireDecompositionProgress({
+				plannerId,
+				plannerName,
+				stage: 'fallback',
+				message: `🔄 正在使用规则引擎进行任务拆解...`,
+				goal,
+			});
+
+			this.logService.info(`[Orchestration] Falling back to rule-based decomposition`);
+			// Fallback to rule-based decomposition
+			const existingNames = new Set(employees.map(e => e.name.toLowerCase()));
+			return this._decomposer.decomposeGoal(goal, existingNames);
+		}
+	}
+
+	/**
+	 * Call AI model to decompose goal into tasks.
+	 * Uses the planner agent's preset (customPrompt, skills, model) for better decomposition.
+	 * Returns the raw AI response string.
+	 */
+	private async _callAIModelForDecomposition(goal: string, workspaceId: string, employees: Employee[], plannerId?: string): Promise<string> {
+		this.logService.info(`[Orchestration] _callAIModelForDecomposition: goal="${goal}", plannerId=${plannerId || 'default'}`);
+
+		// Resolve planner agent for its preset configuration
+		let plannerEmployee: Employee | undefined;
+		let agentId: string;
+		if (plannerId) {
+			plannerEmployee = await this.agentStudioService.getEmployee(plannerId);
+			if (plannerEmployee) {
+				agentId = plannerEmployee.id;
+				this.logService.info(`[Orchestration] Using planner agent "${plannerEmployee.name}" (${plannerEmployee.id}) for goal decomposition`);
+			} else {
+				this.logService.warn(`[Orchestration] Planner agent ${plannerId} not found, falling back to default`);
+				agentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
+			}
+		} else {
+			agentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
+		}
+
+		// Fire progress: calling AI model
+		this._fireDecompositionProgress({
+			plannerId: plannerId || agentId,
+			plannerName: plannerEmployee?.name,
+			stage: 'calling_ai',
+			message: plannerEmployee
+				? `🤖 ${plannerEmployee.name} 正在分析目标并生成任务拆解方案...`
+				: `🤖 AI 正在分析目标并生成任务拆解方案...`,
+			goal,
+		});
+
+		// Build employee context string
+		const employeeContext = employees.length > 0
+			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
+			: 'No team members available.';
+
+		// Build system prompt: prepend planner's customPrompt if available
+		const plannerContext = plannerEmployee?.customPrompt
+			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.customPrompt}\n--- End Planner Context ---\n\n`
+			: '';
+
+		// Build system prompt - EXTREMELY STRICT JSON OUTPUT REQUIRED
+		const systemPrompt = `${plannerContext}You are a task decomposition expert. Your ONLY job is to output valid JSON.
+
+CRITICAL: YOUR ENTIRE RESPONSE MUST BE A VALID JSON OBJECT. NOTHING ELSE.
+
+FORBIDDEN:
+- NO conversational text (no "I'll help", no "Here is", no asking for clarification)
+- NO markdown code blocks (no \`\`\`)
+- NO explanations before or after JSON
+- NO "goal" or "description" fields at root level
+- NO wrapping tasks in "phases" or any nested structure
+
+MANDATORY: Even if the goal is vague, simple, or unclear (e.g., a single word like "test16"), you MUST still output a valid JSON task list. Do NOT ask for clarification. Do NOT explain why the goal is unclear. Always return tasks.
+
+REQUIRED OUTPUT FORMAT - EXACTLY THIS STRUCTURE:
+{"tasks":[{"id":"T1","title":"Task title","description":"Task description","suggestedRole":"Role","suggestedAssignee":"Name or empty","dependencies":[],"priority":1}]}
+
+FIELD NAMES - USE EXACTLY THESE (case-sensitive):
+- "id" (not "task_id")
+- "title" (not "task_name" or "name")
+- "description" (not "task_description")
+- "suggestedRole" (not "role" or "required_role")
+- "suggestedAssignee" (not "assignee" or "owner")
+- "dependencies" (not "depends_on")
+- "priority" (not "priority_level")
+
+AVAILABLE TEAM MEMBERS:
+${employeeContext}
+
+EXAMPLE CONVERSATION:
+User: Goal: Build a login page
+You: {"tasks":[{"id":"T1","title":"Design login UI","description":"Create mockup","suggestedRole":"Designer","suggestedAssignee":"","dependencies":[],"priority":1},{"id":"T2","title":"Implement login backend","description":"API endpoint","suggestedRole":"Developer","suggestedAssignee":"","dependencies":[],"priority":1}]}
+
+REMEMBER: OUTPUT ONLY JSON. NO OTHER TEXT. START WITH { AND END WITH }.`;
+
+		const userMessage = `Decompose the following goal into executable tasks. Output ONLY a valid JSON object.
+
+REQUIRED OUTPUT FORMAT (copy exactly):
+{"tasks": [{"id": "T1", "title": "Task title", "description": "Description", "suggestedRole": "Developer", "suggestedAssignee": "", "dependencies": [], "priority": 1}]}
+
+CRITICAL RULES:
+- Start response with { and end with }
+- NO text before/after JSON
+- NO markdown code blocks
+- Field names: id, title, description, suggestedRole, suggestedAssignee, dependencies, priority
+- Use suggestedAssignee field with existing team member names when appropriate
+
+Goal: ${goal}`;
+
+		this.logService.info(`[Orchestration] Request: agentId=${agentId}, systemPrompt length=${systemPrompt.length}, userMessage length=${userMessage.length}`);
+		this.logService.info(`[Orchestration] Calling AgentOS.executeAgentTurn with agentId=${agentId}`);
+
+		const request: IAgentTurnRequest = {
+			agentId,
+			sessionId: workspaceId,
+			messages: [
+				{ role: 'user', content: userMessage }
+			],
+			systemPrompt,
+			explicitSkillIds: plannerEmployee?.skills?.filter((s): s is string => typeof s === 'string') || [],
+		};
+
+		const stream = this.agentOSService.executeAgentTurn(request);
+		let responseText = '';
+		let textDeltaCount = 0;
+		const deltaTypes = new Set<string>();
+
+		for await (const delta of stream) {
+			deltaTypes.add(delta.type);
+			if (delta.type === 'text' && delta.content) {
+				responseText += delta.content;
+				textDeltaCount++;
+			} else if (delta.type === 'error') {
+				this.logService.error(`[Orchestration] Received error delta: ${delta.content}`);
+			}
+		}
+
+		this.logService.info(`[Orchestration] Stream complete. Delta types: [${Array.from(deltaTypes).join(', ')}], text deltas: ${textDeltaCount}, total length: ${responseText.length}`);
+		this.logService.info(`[Orchestration] Response preview: ${responseText.substring(0, 300)}`);
+
+		return responseText;
+	}
+
+	/**
+	 * Parse AI response string into PlanTask[].
+	 */
+	private _parseAiResponseToPlanTasks(aiResponse: string, employeeNameToId: Map<string, string>): PlanTask[] {
+		this.logService.info(`[Orchestration] _parseAiResponseToPlanTasks: raw response length=${aiResponse.length}`);
+		this.logService.info(`[Orchestration] _parseAiResponseToPlanTasks: response preview=${aiResponse.substring(0, 300)}`);
+
+		// Try multiple strategies to extract JSON from response
+		let jsonStr: string | null = null;
+
+		// Strategy 1: Extract from markdown code block (```json ... ```)
+		const markdownMatch = aiResponse.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+		if (markdownMatch) {
+			jsonStr = markdownMatch[1].trim();
+			this.logService.info(`[Orchestration] Strategy 1: Extracted JSON from markdown block`);
+		}
+
+		// Strategy 2: Find JSON object starting with {"tasks" or {"phases"
+		if (!jsonStr) {
+			const tasksMatch = aiResponse.match(/\{"\w+":\s*\[[\s\S]*\]\s*\}/);
+			if (tasksMatch) {
+				jsonStr = tasksMatch[0];
+				this.logService.info(`[Orchestration] Strategy 2: Found JSON with array at root`);
+			}
+		}
+
+		// Strategy 3: Find any JSON object (starts with {, ends with })
+		if (!jsonStr) {
+			const firstBrace = aiResponse.indexOf('{');
+			const lastBrace = aiResponse.lastIndexOf('}');
+			if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+				jsonStr = aiResponse.substring(firstBrace, lastBrace + 1);
+				this.logService.info(`[Orchestration] Strategy 3: Extracted JSON by brace matching`);
+			}
+		}
+
+		// Strategy 4: Aggressive search for "tasks" or "phases" key
+		if (!jsonStr) {
+			const keyMatch = aiResponse.match(/"tasks|phases"\s*:\s*\[/);
+			if (keyMatch) {
+				const startIdx = aiResponse.indexOf('{', Math.max(0, (keyMatch.index || 0) - 50));
+				const endIdx = aiResponse.lastIndexOf('}');
+				if (startIdx !== -1 && endIdx !== -1) {
+					jsonStr = aiResponse.substring(startIdx, endIdx + 1);
+					this.logService.info(`[Orchestration] Strategy 4: Extracted JSON by finding "tasks"/"phases" key`);
+				}
+			}
+		}
+
+		// Check if any strategy succeeded
+		if (!jsonStr) {
+			this.logService.error(`[Orchestration] All JSON extraction strategies failed. Response preview: ${aiResponse.substring(0, 500)}`);
+			throw new Error('Could not extract JSON from AI response');
+		}
+
+		this.logService.info(`[Orchestration] Attempting to parse JSON: ${jsonStr.substring(0, 200)}`);
+
+		// Try to parse JSON
+		let parsed: any;
+		try {
+			parsed = JSON.parse(jsonStr);
+		} catch (e) {
+			this.logService.error(`[Orchestration] JSON parse error: ${e instanceof Error ? e.message : String(e)}`);
+			// Try to fix common JSON issues (trailing commas, single quotes, etc.)
+			try {
+				// Remove trailing commas
+				let fixedJson = jsonStr.replace(/,\s*([}\]])/g, '$1');
+				// Try parsing again
+				parsed = JSON.parse(fixedJson);
+				this.logService.info(`[Orchestration] Successfully parsed JSON after fixing trailing commas`);
+			} catch (e2) {
+				this.logService.error(`[Orchestration] Second JSON parse error: ${e2 instanceof Error ? e2.message : String(e2)}`);
+				throw new Error(`Failed to parse AI response as JSON: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+
+		// Validate parsed structure - handle both formats
+		let tasksArray: any[] = [];
+		if (parsed.tasks && Array.isArray(parsed.tasks)) {
+			// Format 1: { "tasks": [...] }
+			tasksArray = parsed.tasks;
+			this.logService.info(`[Orchestration] Detected format: root-level tasks array`);
+		} else if (parsed.phases && Array.isArray(parsed.phases)) {
+			// Format 2: { "phases": [{ "tasks": [...] }] }
+			this.logService.info(`[Orchestration] Detected format: phases with nested tasks`);
+			for (const phase of parsed.phases) {
+				if (phase.tasks && Array.isArray(phase.tasks)) {
+					tasksArray.push(...phase.tasks);
+				}
+			}
+			this.logService.info(`[Orchestration] Extracted ${tasksArray.length} tasks from phases`);
+		} else {
+			this.logService.error(`[Orchestration] Invalid AI response structure: missing tasks array or phases`);
+			throw new Error('Invalid AI response structure: missing tasks array or phases');
+		}
+
+		if (tasksArray.length === 0) {
+			this.logService.error(`[Orchestration] No tasks found in AI response`);
+			throw new Error('No tasks found in AI response');
+		}
+
+		this.logService.info(`[Orchestration] Parsed ${tasksArray.length} tasks from AI response`);
+
+		// Normalize field names (handle AI variations like task_id->id, task_name->title)
+		const normalizedTasks = tasksArray.map((task: any) => ({
+			id: task.id || task.task_id || `task_${Math.random().toString(36).substring(2, 9)}`,
+			title: task.title || task.task_name || task.name || 'Untitled Task',
+			description: task.description || task.task_description || '',
+			suggestedRole: task.suggestedRole || task.role || task.required_role || 'Software Developer',
+			suggestedAssignee: task.suggestedAssignee || task.assignee || task.owner || '',
+			dependencies: task.dependencies || task.depends_on || [],
+			priority: task.priority || task.priority_level || 2,
+		}));
+
+		this.logService.info(`[Orchestration] Normalized ${normalizedTasks.length} tasks`);
+
+		// Convert to PlanTask[]
+		const now = new Date().toISOString();
+		const tasks: PlanTask[] = [];
+		const taskIdMap = new Map<string, string>(); // AI task ID -> PlanTask ID
+
+		for (const taskData of normalizedTasks) {
+			const taskId = this._generateId('orch_task_ai');
+			taskIdMap.set(taskData.id, taskId);
+
+			// Resolve assignee
+			let assigneeId = '';
+			if (taskData.suggestedAssignee) {
+				const resolvedId = employeeNameToId.get(taskData.suggestedAssignee.toLowerCase());
+				if (resolvedId) {
+					assigneeId = resolvedId;
+				}
+			}
+
+			const task: PlanTask = {
+				id: taskId,
+				title: taskData.title,
+				description: taskData.description,
+				status: PlanTaskStatus.Pending,
+				dependencies: [], // Will be resolved after all tasks are created
+				assigneeName: taskData.suggestedAssignee,
+				assigneeRole: taskData.suggestedRole,
+				autoCreateAgent: !taskData.suggestedAssignee,
+				priority: taskData.priority,
+				depth: 0,
+				retryCount: 0,
+				maxRetries: 3,
+				timeoutMs: 300_000,
+				createdAt: now,
+			};
+
+			tasks.push(task);
+			this.logService.info(`[Orchestration] Created task: id=${task.id}, title="${task.title}", assigneeId="${assigneeId}"`);
+		}
+
+		// Resolve dependencies
+		for (let i = 0; i < normalizedTasks.length; i++) {
+			const taskData = normalizedTasks[i];
+			const task = tasks[i];
+			if (taskData.dependencies && Array.isArray(taskData.dependencies)) {
+				for (const depId of taskData.dependencies) {
+					const resolvedDepId = taskIdMap.get(depId);
+					if (resolvedDepId) {
+						task.dependencies.push(resolvedDepId);
+					}
+				}
+			}
+		}
+
+		this.logService.info(`[Orchestration] Resolved dependencies for ${tasks.length} tasks`);
+		return tasks;
+	}
+
 	async approvePlan(planId: string): Promise<OrchestrationPlan> {
 		const plans = await this._readPlans();
 		const plan = plans.find(p => p.id === planId);
@@ -444,6 +1264,38 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			await this._executePlan(plan);
 		} catch (err) {
 			this.logService.error('[Orchestration] Plan execution failed:', err);
+			plan.status = OrchestrationPlanStatus.Error;
+			plan.updatedAt = new Date().toISOString();
+			await this._writePlans(plans);
+			this._onDidChangePlan.fire(plan);
+		}
+		return plan;
+	}
+
+	/**
+	 * Approve a plan without executing it.
+	 * Tasks are created in the task board but not auto-started.
+	 */
+	async approveWithoutExecute(planId: string): Promise<OrchestrationPlan> {
+		const plans = await this._readPlans();
+		const plan = plans.find(p => p.id === planId);
+		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
+		if (plan.status !== OrchestrationPlanStatus.PendingApproval) {
+			throw new Error(`Plan ${planId} is not pending approval (status: ${plan.status})`);
+		}
+
+		plan.status = OrchestrationPlanStatus.Approved;
+		plan.approvedAt = new Date().toISOString();
+		plan.updatedAt = plan.approvedAt;
+		await this._writePlans(plans);
+		this._onDidChangePlan.fire(plan);
+
+		// Create tasks in task board but do NOT start execution
+		try {
+			await this._createTasksFromPlan(plan);
+			this.logService.info(`[Orchestration] Plan ${planId} approved without execution. Tasks created, ready to start manually.`);
+		} catch (err) {
+			this.logService.error('[Orchestration] Failed to create tasks from plan:', err);
 			plan.status = OrchestrationPlanStatus.Error;
 			plan.updatedAt = new Date().toISOString();
 			await this._writePlans(plans);
@@ -558,6 +1410,12 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		if (action === 'retry' || action === 'resume') {
 			const ready = this._getReadyTasks(plan);
 			for (const r of ready) {
+				// If the assigned agent is busy, keep as Pending for auto-execution later
+				if (r.assigneeId && this._isAgentBusy(r.assigneeId)) {
+					this.logService.info(`[Orchestration] Ready task "${r.title}" (${r.id}) kept as Pending — agent ${r.assigneeId} is busy`);
+					this._onDidChangeTask.fire({ planId, task: r });
+					continue;
+				}
 				r.status = PlanTaskStatus.Running;
 				r.startedAt = now;
 				this._onDidChangeTask.fire({ planId, task: r });
@@ -624,13 +1482,22 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		// Unblock downstream dependents (core DAG propagation)
 		const promoted = this._unblockDependentTasks(plan, task.id);
 		for (const p of promoted) {
-			this._onDidChangeTask.fire({ planId, task: p });
-			// Fire-and-forget: execute the promoted downstream task
-			if (p.assigneeId) {
+			// If the assigned agent is busy, revert to Pending so that
+			// _tryAutoExecutePendingTasks can pick it up when the agent becomes idle.
+			// This avoids leaving a task in Running state without actual execution.
+			if (p.assigneeId && this._isAgentBusy(p.assigneeId)) {
+				p.status = PlanTaskStatus.Pending;
+				p.startedAt = undefined;
+				this.logService.info(`[Orchestration] Promoted task "${p.title}" (${p.id}) reverted to Pending — agent ${p.assigneeId} is busy, will auto-execute later`);
+			} else if (p.assigneeId) {
+				// Agent is idle — execute immediately
+				this._onDidChangeTask.fire({ planId, task: p });
 				this._executeTask(planId, p).catch(err => {
 					this.logService.error(`[Orchestration] Promoted task ${p.id} execution failed:`, err);
 				});
+				continue;
 			}
+			this._onDidChangeTask.fire({ planId, task: p });
 		}
 
 		this._checkPlanCompletion(plan);
@@ -836,6 +1703,9 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		// Build task prompt
 		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${taskTitle}\n**任务描述**: ${taskDesc}\n**任务来源**: 任务看板`;
 
+		// Mark agent as busy while executing this board task
+		this._markAgentBusy(assigneeId);
+
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				assigneeId,
@@ -863,12 +1733,23 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 				});
 			}
 
+			// Update task board status to Done (regardless of whether there's a linked plan task)
+			await this.taskBoardService.updateTaskStatus(taskBoardRecordId, TaskBoardStatus.Done).catch(updateErr => {
+				this.logService.warn(`[Orchestration] executeTaskForBoard: failed to update task board status for ${taskBoardRecordId}:`, updateErr);
+			});
+
 			// If we found a plan task, also update it
 			if (planId && sourceId) {
 				await this.completeTask(planId, sourceId, chatMessage.content).catch(err => {
 					this.logService.warn(`[Orchestration] executeTaskForBoard: failed to complete plan task ${sourceId}:`, err);
 				});
 			}
+
+			// Agent is now idle — try to auto-execute pending tasks
+			this._markAgentIdle(assigneeId);
+			this._tryAutoExecutePendingTasks().catch(err => {
+				this.logService.warn('[Orchestration] Auto-execute check after board task completion failed:', err);
+			});
 		} catch (err) {
 			this.logService.error(`[Orchestration] executeTaskForBoard: task ${taskBoardRecordId} execution error:`, err);
 
@@ -879,6 +1760,17 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 					error: err instanceof Error ? err.message : String(err),
 				});
 			}
+
+			// Update task board status to Done even on error so the card doesn't stay in "running"
+			await this.taskBoardService.updateTaskStatus(taskBoardRecordId, TaskBoardStatus.Done).catch(updateErr => {
+				this.logService.warn(`[Orchestration] executeTaskForBoard: failed to update task board status on error for ${taskBoardRecordId}:`, updateErr);
+			});
+
+			// Agent is no longer busy — mark idle and try auto-execute
+			this._markAgentIdle(assigneeId);
+			this._tryAutoExecutePendingTasks().catch(err2 => {
+				this.logService.warn('[Orchestration] Auto-execute check after board task error failed:', err2);
+			});
 		}
 	}
 
@@ -914,6 +1806,38 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		await this._layoutEngine.autoArrangeCanvas(planRef);
 
 		// ── Step 5: Create task board items ──
+		await this._createTaskBoardItems(planRef);
+
+		// ── Step 6: Start ready tasks (respecting concurrency limit) ──
+		// On initial plan execution, agents are typically idle, but check anyway
+		// for cases where an agent might already be running a task from another plan.
+		const ready = this._getReadyTasks(planRef);
+		for (const task of ready) {
+			// If agent is busy with another task, keep as Pending for auto-execution
+			if (task.assigneeId && this._isAgentBusy(task.assigneeId)) {
+				this.logService.info(`[Orchestration] Ready task "${task.title}" (${task.id}) kept as Pending — agent ${task.assigneeId} is busy with another task`);
+				continue;
+			}
+			task.status = PlanTaskStatus.Running;
+			task.startedAt = new Date().toISOString();
+
+			// Fire-and-forget: actually invoke the agent to execute the task
+			if (task.assigneeId) {
+				this._executeTask(planRef.id, task).catch(err => {
+					this.logService.error(`[Orchestration] Task ${task.id} execution failed:`, err);
+				});
+			}
+		}
+
+		planRef.updatedAt = new Date().toISOString();
+		await this._writePlans(plans);
+		this._onDidChangePlan.fire(planRef);
+	}
+
+	/**
+	 * Create task board items from plan tasks without starting execution.
+	 */
+	private async _createTaskBoardItems(planRef: OrchestrationPlan): Promise<void> {
 		for (const task of planRef.tasks) {
 			if (task.status !== PlanTaskStatus.Error) {
 				try {
@@ -933,20 +1857,38 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 				}
 			}
 		}
+	}
 
-		// ── Step 6: Start ready tasks (respecting concurrency limit) ──
-		const ready = this._getReadyTasks(planRef);
-		for (const task of ready) {
-			task.status = PlanTaskStatus.Running;
-			task.startedAt = new Date().toISOString();
+	/**
+	 * Create tasks from plan and set up agents/connections/layout,
+	 * but do NOT start task execution.
+	 */
+	private async _createTasksFromPlan(plan: OrchestrationPlan): Promise<void> {
+		this.logService.info(`[Orchestration] Creating tasks from plan (no execution): ${plan.id}`);
 
-			// Fire-and-forget: actually invoke the agent to execute the task
-			if (task.assigneeId) {
-				this._executeTask(planRef.id, task).catch(err => {
-					this.logService.error(`[Orchestration] Task ${task.id} execution failed:`, err);
-				});
-			}
+		const plans = await this._readPlans();
+		const planRef = plans.find(p => p.id === plan.id);
+		if (!planRef) { return; }
+
+		// ── Step 1: Topological sort to validate + compute depths ──
+		try {
+			this._topologicalSort(planRef.tasks);
+		} catch (err) {
+			throw new Error(`DAG validation failed: ${err instanceof Error ? err.message : err}`);
 		}
+
+		// ── Step 2: Auto-create agents + intelligent assignment ──
+		this._agentFactory.resetPool();
+		await this._agentFactory.assignAgents(planRef);
+
+		// ── Step 3: Auto-create connections ──
+		await this._agentFactory.wireConnections(planRef);
+
+		// ── Step 4: Auto-layout canvas ──
+		await this._layoutEngine.autoArrangeCanvas(planRef);
+
+		// ── Step 5: Create task board items (tasks stay in 'todo' status) ──
+		await this._createTaskBoardItems(planRef);
 
 		planRef.updatedAt = new Date().toISOString();
 		await this._writePlans(plans);
@@ -962,6 +1904,9 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	 */
 	private async _executeTask(planId: string, task: PlanTask): Promise<void> {
 		if (!task.assigneeId) { return; }
+
+		// Mark agent as busy while executing this task
+		this._markAgentBusy(task.assigneeId);
 
 		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n**任务ID**: ${task.id}${task.dependencies.length > 0 ? `\n**依赖任务**: ${task.dependencies.join(', ')}` : ''}`;
 
@@ -1022,8 +1967,17 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 
 			// Mark task as completed, which also triggers downstream tasks
 			await this.completeTask(planId, task.id, resultContent);
+
+			// Agent is now idle — try to auto-execute pending tasks for this agent
+			this._markAgentIdle(task.assigneeId);
+			this._tryAutoExecutePendingTasks().catch(err => {
+				this.logService.warn('[Orchestration] Auto-execute check after task completion failed:', err);
+			});
 		} catch (err) {
 			this.logService.error(`[Orchestration] Task ${task.id} execution error:`, err);
+
+			// Agent is no longer busy — mark idle before error handling
+			this._markAgentIdle(task.assigneeId);
 
 			// Notify the webview about the error
 			if (this._streamEventCallback) {
@@ -1061,6 +2015,11 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			} catch (markErr) {
 				this.logService.error(`[Orchestration] Failed to mark task ${task.id} as error:`, markErr);
 			}
+
+			// Agent is now idle — try to auto-execute pending tasks
+			this._tryAutoExecutePendingTasks().catch(err2 => {
+				this.logService.warn('[Orchestration] Auto-execute check after task error failed:', err2);
+			});
 		}
 	}
 

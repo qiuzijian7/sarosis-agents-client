@@ -53,7 +53,9 @@ export class AgentFactory {
 	 */
 	async assignAgents(plan: OrchestrationPlan): Promise<void> {
 		const existingEmployees = await this.agentStudioService.getEmployees(plan.workspaceId);
-		const existingByName = new Map(existingEmployees.map(e => [e.name.toLowerCase(), e]));
+		// Defensive: filter out any null/undefined entries from the service
+		const validEmployees = existingEmployees.filter(e => e && e.id);
+		const existingByName = new Map(validEmployees.map(e => [e.name.toLowerCase(), e]));
 
 		this.logService.info(`[AgentFactory] assignAgents: workspaceId=${plan.workspaceId}, tasks=${plan.tasks.length}, existingEmployees=${existingEmployees.length}, usedAgentIds=${this._usedAgentIds.size}`);
 
@@ -229,6 +231,7 @@ export class AgentFactory {
 	 */
 	private _selectBestAgent(employees: Employee[], taskRole: string, excludeIds: Set<string>): Employee | undefined {
 		const candidates = employees.filter(e =>
+			e && e.id &&
 			!excludeIds.has(e.id) &&
 			e.status !== 'offline'
 		);

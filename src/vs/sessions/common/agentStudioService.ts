@@ -123,7 +123,13 @@ export interface IChatStreamDelta {
 	| "tool_progress"
 	| "done"
 	| "error"
-	| "content_replace";
+	| "content_replace"
+	| "references"
+	| "progress"
+	| "confirmation"
+	| "todos"
+	| "tips"
+	| "questions";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -136,6 +142,68 @@ export interface IChatStreamDelta {
 	readonly renderType?: string;
 	/** Whether to show this tool call card by default (default true) */
 	readonly defaultShow?: boolean;
+	// New fields for card data (VS Code Copilot Chat pattern)
+	/** References data (for references delta type) */
+	readonly references?: Array<{
+		readonly id: string;
+		readonly kind: 'file' | 'code' | 'url' | 'symbol' | 'text';
+		readonly name: string;
+		readonly uri?: string;
+		readonly range?: { startLine: number; startCol: number; endLine: number; endCol: number };
+		readonly description?: string;
+		readonly state?: 'not-modified' | 'modified' | 'pending' | 'excluded';
+	}>;
+	/** Progress data (for progress delta type) */
+	readonly progressData?: Array<{
+		readonly id: string;
+		readonly content: string;
+		readonly status: 'pending' | 'in-progress' | 'completed' | 'error';
+		readonly icon?: 'spinner' | 'check' | 'warning' | 'error';
+		readonly timestamp?: string;
+	}>;
+	/** Confirmation data (for confirmation delta type) */
+	readonly confirmationData?: {
+		readonly id: string;
+		readonly title: string;
+		readonly message: string;
+		readonly detail?: string;
+		readonly buttons: Array<{
+			readonly id: string;
+			readonly label: string;
+			readonly tooltip?: string;
+			readonly primary?: boolean;
+			readonly danger?: boolean;
+			readonly icon?: string;
+		}>;
+		readonly status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+		readonly icon?: string;
+	};
+	/** Todos data (for todos delta type) */
+	readonly todosData?: Array<{
+		readonly id: string;
+		readonly label: string;
+		readonly completed: boolean;
+		readonly description?: string;
+		readonly assignee?: string;
+	}>;
+	/** Tips data (for tips delta type) */
+	readonly tipsData?: Array<{
+		readonly id: string;
+		readonly content: string;
+		readonly icon?: string;
+		readonly action?: {
+			readonly label: string;
+			readonly tooltip?: string;
+			readonly actionId?: string;
+		};
+	}>;
+	/** Questions data (for questions delta type) */
+	readonly questionsData?: Array<{
+		readonly id: string;
+		readonly label: string;
+		readonly tooltip?: string;
+		readonly category?: string;
+	}>;
 }
 
 export interface IChatSendOptions {
@@ -332,6 +400,36 @@ export interface ITaskOrchestrationService {
 		taskBoardRecordId: string,
 		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
 	): Promise<void>;
+
+	/**
+	 * Update a task's editable fields (title, description, assignee, dependencies, priority).
+	 * Only allowed when plan is in 'pending_approval' status.
+	 */
+	updateTask(
+		planId: string,
+		taskId: string,
+		updates: {
+			title?: string;
+			description?: string;
+			assigneeId?: string;
+			assigneeName?: string;
+			assigneeRole?: string;
+			dependencies?: string[];
+			priority?: number;
+		},
+	): Promise<PlanTask>;
+
+	/**
+	 * Use AI to decompose a single task into sub-tasks.
+	 * Replaces the original task with the decomposed sub-tasks in the plan.
+	 * Only allowed when plan is in 'pending_approval' status.
+	 */
+	decomposeTask(
+		planId: string,
+		taskId: string,
+		workspaceId: string,
+		plannerId: string,
+	): Promise<OrchestrationPlan>;
 
 	/**
 	 * Register a callback for streaming events (chat.stream.delta/complete/error)

@@ -16,6 +16,7 @@ import { WorkspaceCanvas } from './features/canvas/WorkspaceCanvas';
 import { EmployeeChat } from './features/chat/EmployeeChat';
 import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
 import { CreateAgentModal } from './features/employees/CreateAgentModal';
+import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
 import { useProviderStore } from './store/useProviderStore';
@@ -23,7 +24,7 @@ import { useChatStore } from './store/useChatStore';
 import { sendRequest } from './bridge/messageClient';
 
 // Read the panel type injected by the VS Code host
-type PanelType = 'canvas' | 'chat' | undefined;
+type PanelType = 'canvas' | 'chat' | 'taskboard' | undefined;
 const panelType: PanelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__ as PanelType;
 
 /* ── Error Boundary for debugging render crashes ─────────────── */
@@ -269,6 +270,47 @@ function ChatPanel(): React.ReactElement {
 	);
 }
 
+function TaskboardPanel(): React.ReactElement {
+	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
+	const { loadEmployees } = useEmployeeStore();
+
+	useEffect(() => {
+		loadWorkspaces().then(() => {
+			const store = useWorkspaceStore.getState();
+			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
+				store.setActiveWorkspace(store.workspaces[0].id);
+			}
+		});
+	}, []);
+
+	useEffect(() => {
+		if (activeWorkspaceId) {
+			loadEmployees(activeWorkspaceId);
+		}
+	}, [activeWorkspaceId, loadEmployees]);
+
+	useEffect(() => {
+		const onActiveWorkspaceChanged = (e: Event) => {
+			const detail = (e as CustomEvent).detail;
+			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
+				setActiveWorkspace(detail.workspaceId);
+			}
+		};
+		window.addEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
+		return () => window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
+	}, [setActiveWorkspace]);
+
+	return (
+		<div className="panel-standalone">
+			<div className="panel-standalone-content">
+				<PanelErrorBoundary panelType="TaskboardPanel">
+					<TaskBoardPanel />
+				</PanelErrorBoundary>
+			</div>
+		</div>
+	);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * Full layout (legacy mode, rendered when panelType is undefined)
  * ═══════════════════════════════════════════════════════════════════════════════ */
@@ -403,6 +445,8 @@ export function App(): React.ReactElement {
 			return <CanvasPanel />;
 		case 'chat':
 			return <ChatPanel />;
+		case 'taskboard':
+			return <TaskboardPanel />;
 		default:
 			return <FullLayout />;
 	}

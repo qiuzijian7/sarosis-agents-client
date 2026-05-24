@@ -161,6 +161,12 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	const [showScrollBtn, setShowScrollBtn] = useState(false);
 	// Track previous employee to detect employee switches (used by useLayoutEffect below)
 	const prevEmployeeIdRef = useRef<string | null>(activeEmployeeId);
+	// Pending plan info: when /plan is sent, we store goal/planId here until the plan
+	// status changes from pending_approval to approved/executing/rejected.
+	// The dialog lives in the Task Board panel; chat only shows the result.
+	const pendingPlanGoalRef = useRef<string | null>(null);
+	const pendingPlanIdRef = useRef<string | null>(null);
+	const prevPlanStatusRef = useRef<Record<string, string>>({});
 
 	/**
 	 * Update scroll-down button visibility.
@@ -267,6 +273,127 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		}
 	}, [isEditingChatName]);
 
+	// Listen for AI decomposition progress events and display in chat
+	useEffect(() => {
+		const handleDecompositionProgress = (e: Event) => {
+			const detail = (e as CustomEvent).detail as {
+				plannerId?: string;
+				plannerName?: string;
+				stage: string;
+				message: string;
+				taskTitle?: string;
+				goal?: string;
+				subTaskCount?: number;
+			};
+			if (!detail) { return; }
+
+			// Only show progress for the currently active planner/employee
+			// or if no specific planner is targeted
+			if (detail.plannerId && activeEmployeeId && detail.plannerId !== activeEmployeeId) {
+				return;
+			}
+
+			const progressMessage: ChatMessage = {
+				id: `decomp_${detail.stage}_${Date.now()}`,
+				role: 'system',
+				content: detail.message,
+				metadata: {
+					type: 'decomposition_progress',
+					stage: detail.stage,
+					plannerName: detail.plannerName,
+					taskTitle: detail.taskTitle,
+					goal: detail.goal,
+					subTaskCount: detail.subTaskCount,
+				},
+				timestamp: new Date().toISOString(),
+			};
+			useChatStore.setState(state => ({
+				messages: [...state.messages, progressMessage]
+			}));
+			// Also persist so it survives chat-tab switches
+			const targetEmployeeId = detail.plannerId || activeEmployeeId;
+			if (targetEmployeeId) {
+				useChatStore.getState().addDecompositionProgress(targetEmployeeId, progressMessage);
+				// Clear progress history when decomposition finishes so old
+				// progress messages don't pile up across multiple /plan calls.
+				if (detail.stage === 'complete' || detail.stage === 'error' || detail.stage === 'fallback') {
+					useChatStore.setState(state => ({
+						decompositionProgress: {
+							...state.decompositionProgress,
+							[targetEmployeeId]: [progressMessage],
+						},
+					}));
+				}
+			}
+		};
+
+		window.addEventListener('agentStudio:decomposition-progress', handleDecompositionProgress);
+		return () => window.removeEventListener('agentStudio:decomposition-progress', handleDecompositionProgress);
+	}, [activeEmployeeId]);
+
+	// Watch for plan status changes: when a /plan command's plan moves from
+	// pending_approval to approved/executing/rejected, add the result messages to chat.
+	// The orchestration dialog lives in the Task Board panel, not in chat.
+	const { plans: orchestrationPlans } = useOrchestrationStore();
+
+	useEffect(() => {
+		if (!pendingPlanIdRef.current || !pendingPlanGoalRef.current) { return; }
+
+		const planId = pendingPlanIdRef.current;
+		const goal = pendingPlanGoalRef.current;
+		const plan = orchestrationPlans.find(p => p.id === planId);
+		if (!plan) { return; }
+
+		const prevStatus = prevPlanStatusRef.current[planId];
+		if (prevStatus === plan.status) { return; }
+		prevPlanStatusRef.current[planId] = plan.status;
+
+		// Only react when leaving pending_approval
+		if (prevStatus !== 'pending_approval') { return; }
+
+		// Clear pending state
+		pendingPlanGoalRef.current = null;
+		pendingPlanIdRef.current = null;
+
+		if (plan.status === 'approved' || plan.status === 'executing') {
+			// Approved — add user message + plan inline message
+			const userMessage: ChatMessage = {
+				id: `user_${Date.now()}`,
+				role: 'user',
+				content: `/plan ${goal}`,
+				timestamp: new Date().toISOString(),
+			};
+			const planMessage: ChatMessage = {
+				id: `plan_${Date.now()}`,
+				role: 'system',
+				content: `✅ 任务计划已批准并开始执行`,
+				metadata: { type: 'orchestration_plan', planId: plan.id },
+				timestamp: new Date().toISOString(),
+			};
+			useChatStore.setState(state => ({
+				messages: [...state.messages, userMessage, planMessage]
+			}));
+		} else if (plan.status === 'rejected') {
+			// Rejected — add user message + rejection notice
+			const userMessage: ChatMessage = {
+				id: `user_${Date.now()}`,
+				role: 'user',
+				content: `/plan ${goal}`,
+				timestamp: new Date().toISOString(),
+			};
+			const rejectMessage: ChatMessage = {
+				id: `reject_${Date.now()}`,
+				role: 'system',
+				content: `❌ 任务计划已被拒绝`,
+				timestamp: new Date().toISOString(),
+			};
+			useChatStore.setState(state => ({
+				messages: [...state.messages, userMessage, rejectMessage]
+			}));
+		}
+		// If status changed to something else (e.g. error), don't add messages.
+	}, [orchestrationPlans]);
+
 	const handleChatNameDoubleClick = useCallback(() => {
 		if (!activeEmployee) { return; }
 		setEditChatName(activeEmployee.name);
@@ -316,36 +443,19 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				return;
 			}
 			
-			// Add user message to chat
-			const userMessage: ChatMessage = {
-				id: `user_${Date.now()}`,
-				role: 'user',
-				content: `/plan ${goal}`,
-				timestamp: new Date().toISOString(),
-			};
-			useChatStore.setState(state => ({
-				messages: [...state.messages, userMessage]
-			}));
-			
+			// Don't add user message yet — wait for plan approval in dialog
 			try {
 				const plan = await useOrchestrationStore.getState().createPlan(goal, workspaceId, plannerId);
 				
-				// Add orchestration plan message for inline approval
 				if (plan) {
-					const planMessage: ChatMessage = {
-						id: `plan_${Date.now()}`,
-						role: 'system',
-						content: `✅ 任务计划已创建，请在下方面板中审批：`,
-						metadata: { type: 'orchestration_plan', planId: plan.id },
-						timestamp: new Date().toISOString(),
-					};
-					useChatStore.setState(state => ({
-						messages: [...state.messages, planMessage]
-					}));
+					// Store pending plan info; messages will be added after user approves/rejects
+					// The dialog is shown in the Task Board panel, not here in chat.
+					pendingPlanGoalRef.current = goal;
+					pendingPlanIdRef.current = plan.id;
 				}
 			} catch (err) {
 				console.error('[EmployeeChat] Failed to create plan:', err);
-				// Add error message
+				// On failure, add error message immediately
 				const errorMessage: ChatMessage = {
 					id: `error_${Date.now()}`,
 					role: 'system',
@@ -440,12 +550,6 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
 							</svg>
 						</button>
-						{/* 兼容 agentType 字段缺失的情况 */}
-						{(activeEmployee?.agentType === 'planner' || activeEmployee?.presetId === 'planner' || activeEmployee?.role?.toLowerCase().includes('planner') || activeEmployee?.name?.toLowerCase() === 'planner') && (
-							<button className="chat-header-btn" title="任务编排" onClick={() => useOrchestrationStore.getState().openPlanDialog()}>
-								🎯
-							</button>
-						)}
 					</div>
 				</div>
 

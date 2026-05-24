@@ -132,7 +132,9 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 						{plan.goal}
 					</span>
 				</div>
-				<div className="orch-plan-inline-desc">{plan.summary}</div>
+				<div className="orch-plan-inline-desc">
+					{plan.summary.replace(/[。\s]*⚠️?\s*无\s*PM/g, '')}
+				</div>
 
 			<div className="orch-plan-inline-roles">
 				<span className="orch-role-tag planner">📐 Planner: {plannerName}</span>
