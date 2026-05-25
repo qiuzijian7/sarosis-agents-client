@@ -275,6 +275,7 @@ import '../workbench/contrib/git/browser/git.contributions.js';
 // SCM
 import '../workbench/contrib/scm/browser/quickDiff.contribution.js';
 import '../workbench/contrib/scm/browser/scm.service.contribution.js';
+import '../workbench/contrib/scm/browser/scm.contribution.js';
 
 // Debug (service)
 import { NullDebugService, NullDebugVisualizerService } from '../workbench/contrib/debug/common/nullDebugService.js';
@@ -464,6 +465,7 @@ import './contrib/files/browser/files.contribution.js';
 import './contrib/github/browser/github.contribution.js';
 import './contrib/applyCommitsToParentRepo/browser/applyChangesToParentRepo.js';
 import './contrib/fileTreeView/browser/fileTreeView.contribution.js'; // view registration disabled; filesystem provider still needed
+import './contrib/worktree/browser/worktree.contribution.js';
 import './contrib/configuration/browser/configuration.contribution.js';
 import './contrib/workingSet/browser/workingSet.contribution.js';
 import './contrib/browserView/browser/sessionBrowserView.contribution.js';

@@ -448,6 +448,19 @@ export interface IChatStreamDelta {
 		}>;
 		readonly status: 'pending' | 'approved' | 'rejected' | 'cancelled';
 		readonly icon?: string;
+		/** Plan-mode specific: structured plan data for approval */
+		readonly type?: 'plan-approval';
+		readonly planSummary?: string;
+		readonly tasks?: Array<{
+			readonly title: string;
+			readonly description: string;
+			readonly files?: string[];
+			readonly complexity?: 'low' | 'medium' | 'high';
+			readonly suggestedRole?: string;
+			readonly dependencies?: number[];
+		}>;
+		/** Recommended chat mode after plan approval */
+		readonly nextMode?: 'craft' | 'ask';
 	};
 	/** Todos data (for todos delta type) */
 	readonly todosData?: Array<{

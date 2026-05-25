@@ -233,24 +233,6 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 				</button>
 			</div>
 
-			{/* ConfigMD indicator - clickable to open the MD source file */}
-			{(employee as any).configMd && (
-				<div
-					className="employee-node-configmd"
-					title="点击在编辑器中打开 ConfigMD 源文件"
-					role="button"
-					onClick={(e) => {
-						e.stopPropagation();
-						void openAgentConfigMd(employee.id).catch((err) => {
-							console.error('[EmployeeNode] open configMd failed:', err);
-						});
-					}}
-				>
-					<span className="employee-node-configmd-icon">📝</span>
-					<span>MD Panel</span>
-				</div>
-			)}
-
 			{/* Bottom tags bar - Skills / Token */}
 			{(skillIds.length > 0 || totalTokens > 0) && (
 				<div className="employee-node-tags">

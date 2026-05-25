@@ -533,12 +533,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			<div className="employee-chat">
 				{/* Chat Header */}
 				<div className="chat-header">
-					{/* Provider icon */}
-					<div className="chat-header-provider" title={selection?.providerName || activeEmployee.provider ? `Provider: ${selection?.providerName || activeEmployee.provider}` : undefined}>
-						<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-						</svg>
-					</div>
+	
 
 					<img
 						src={activeEmployee.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeEmployee.id}`}
@@ -577,6 +572,14 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 				{/* Session Info Bar */}
 				<div className="chat-session-info">
+					{/* Mode badge */}
+					<span className={`chat-mode-badge mode-${chatMode}`}>
+						{chatMode === 'craft' && '⚡ Craft'}
+						{chatMode === 'ask' && '💡 Ask'}
+						{chatMode === 'plan' && '📋 Plan'}
+						{chatMode === 'workflow' && '✓ Workflow'}
+					</span>
+					<span className="session-info-sep">|</span>
 					{superior && (
 						<span className="session-info-hierarchy">
 							<span className="hierarchy-label">上级</span>

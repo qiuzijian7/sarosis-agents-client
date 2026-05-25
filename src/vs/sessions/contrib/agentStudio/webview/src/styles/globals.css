@@ -650,9 +650,11 @@ html, body, #root {
 }
 
 .employee-node.selected {
-  border-color: var(--vscode-focusBorder, #3b82f6);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3), 0 8px 16px rgba(0, 0, 0, 0.3);
-  transform: translateY(-1px);
+  border-color: var(--vscode-focusBorder, #3b82f6) !important;
+  border-width: 2px !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4), 0 8px 24px rgba(59, 130, 246, 0.2) !important;
+  transform: translateY(-2px);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0.02) 100%);
 }
 
 .employee-node.status-animated {
@@ -2594,6 +2596,35 @@ html, body, #root {
   opacity: 0.4;
 }
 
+/* Mode badge in session info bar */
+.chat-mode-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+}
+
+.chat-mode-badge.mode-craft {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+}
+
+.chat-mode-badge.mode-ask {
+  background: rgba(96, 165, 250, 0.12);
+  color: #60a5fa;
+}
+
+.chat-mode-badge.mode-plan {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+}
+
+.chat-mode-badge.mode-workflow {
+  background: rgba(168, 85, 247, 0.12);
+  color: #a855f7;
+}
+
 .session-info-hierarchy {
   display: inline-flex;
   align-items: center;
@@ -2997,7 +3028,6 @@ html, body, #root {
   position: relative;
   width: 100%;
   height: 6px;
-  cursor: ns-resize;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3006,23 +3036,36 @@ html, body, #root {
   transition: background-color 0.15s ease;
 }
 
-.chat-composer-resizer:hover,
-.chat-composer-resizer:active {
-  background: var(--as-border-focus, rgba(124, 185, 255, 0.18));
-}
-
+/* 分割线（grip）：只在分割线处可拖拽 */
 .chat-composer-resizer-grip {
+  position: relative;
   width: 36px;
   height: 3px;
   border-radius: 2px;
   background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
   opacity: 0.5;
   transition: opacity 0.15s ease, background-color 0.15s ease;
-  pointer-events: none;
+  cursor: ns-resize;
 }
 
-.chat-composer-resizer:hover .chat-composer-resizer-grip,
-.chat-composer-resizer:active .chat-composer-resizer-grip {
+/* 扩大分割线的可点击热区 */
+.chat-composer-resizer-grip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -20px;
+  right: -20px;
+  bottom: -6px;
+}
+
+/* grip hover 时 resizer 背景也高亮 */
+.chat-composer-resizer:has(.chat-composer-resizer-grip:hover),
+.chat-composer-resizer:has(.chat-composer-resizer-grip:active) {
+  background: var(--as-border-focus, rgba(124, 185, 255, 0.18));
+}
+
+.chat-composer-resizer-grip:hover,
+.chat-composer-resizer-grip:active {
   opacity: 1;
   background: var(--as-border-focus, rgba(124, 185, 255, 0.7));
 }
@@ -3109,6 +3152,88 @@ html, body, #root {
   background: rgba(255, 255, 255, 0.03);
 }
 
+/* Mode-specific accent colors */
+.chat-toolbar-btn.mode-tag[data-mode="craft"],
+.chat-toolbar-btn.mode-tag:has(.toolbar-btn-label:empty) {
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.06);
+}
+
+.chat-toolbar-btn.mode-tag:hover {
+  border-color: rgba(124, 185, 255, 0.3);
+  background: rgba(124, 185, 255, 0.06);
+  color: var(--vscode-textLink-foreground, #60a5fa);
+}
+
+/* Mode dropdown item with tooltip */
+.provider-dropdown-item.mode-item {
+  position: relative;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.mode-item-icon {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.mode-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Tooltip popup shown on hover (outside item, above dropdown) */
+.mode-item-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: block;
+  padding: 6px 10px;
+  min-width: 160px;
+  max-width: 240px;
+  background: var(--as-bg-elevated, var(--vscode-dropdown-background, #1e1e1e));
+  border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--vscode-foreground);
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s, visibility 0.15s;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* Tooltip arrow */
+.mode-item-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px;
+  border-style: solid;
+  border-color: var(--as-bg-elevated, var(--vscode-dropdown-background, #1e1e1e)) transparent transparent transparent;
+}
+
+.provider-dropdown-item.mode-item {
+  position: relative;
+}
+
+.provider-dropdown-item.mode-item:hover .mode-item-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
 .chat-toolbar-btn.provider-tag:hover,
 .chat-toolbar-btn.model-tag:hover,
 .chat-toolbar-btn.agent-tag:hover,
@@ -3144,6 +3269,7 @@ html, body, #root {
   min-width: 200px;
   max-height: 260px;
   overflow-y: auto;
+  overflow-x: hidden;
   background: var(--as-bg-elevated, var(--vscode-dropdown-background, #1e1e1e));
   border: 1px solid var(--as-border, var(--vscode-dropdown-border, rgba(128, 128, 128, 0.35)));
   border-radius: 8px;
@@ -3156,6 +3282,11 @@ html, body, #root {
 @keyframes provider-dropdown-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Mode dropdown: allow tooltips to overflow (only 4 items, no scroll needed) */
+.provider-dropdown.mode-dropdown-composer {
+  overflow: visible;
 }
 
 .provider-dropdown::-webkit-scrollbar {

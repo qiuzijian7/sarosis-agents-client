@@ -14,6 +14,7 @@ import {
 	IToolDefinition, IToolCallInfo, IToolResult, IModelOptions,
 	IToolApprovalHandler,
 } from '../common/providers.js';
+import { filterToolsByChatMode } from '../common/chatModeConfig.js';
 import { SlotRegistry } from './slotRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -439,38 +440,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		// ─── 1. 收集启用的工具 ─────────────────────────────────────
 		const allEnabledTools = await this._getEnabledTools(request.agentId);
 		const chatMode = request.chatMode || 'craft';
-		let enabledTools: typeof allEnabledTools;
 
-		if (chatMode === 'plan') {
-			// Plan mode: no tools — pure text decomposition
-			enabledTools = [];
-			this._logService.info(`[AgentOS] PLAN mode: tools disabled for agent ${request.agentId}`);
-		} else if (chatMode === 'ask') {
-			// Ask mode: only read-only tools
-			const destructivePatterns = [
-				/^file_write$/i, /^file_delete$/i, /^write$/i, /^delete$/i, /^remove$/i,
-				/^terminal$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
-				/^mkdir$/i, /^mv$/i, /^cp$/i, /^rename$/i, /^chmod$/i,
-			];
-			const readOnlyPatterns = [
-				/^file_read$/i, /^search_files$/i, /^search$/i, /^grep$/i, /^find$/i,
-				/^list_files$/i, /^list_dir$/i, /^read$/i, /^cat$/i, /^head$/i, /^tail$/i,
-				/^glob$/i, /^ripgrep$/i, /^rg$/i, /^tree$/i, /^ls$/i,
-				/^read_skill$/i, /^web_search$/i, /^web_fetch$/i, /^browser/i,
-				/^symbol/i, /^references$/i, /^definition$/i, /^hover$/i,
-			];
-			enabledTools = allEnabledTools.filter((t: any) => {
-				if (destructivePatterns.some(p => p.test(t.name))) { return false; }
-				if (readOnlyPatterns.some(p => p.test(t.name))) { return true; }
-				const cat = ((t.category || '') as string).toLowerCase();
-				if (cat === 'search' || cat === 'retrieval' || cat === 'read') { return true; }
-				return false;
-			});
-			this._logService.info(`[AgentOS] ASK mode: ${enabledTools.length}/${allEnabledTools.length} tools allowed (read-only) for agent ${request.agentId}`);
-		} else {
-			enabledTools = allEnabledTools;
-		}
-		this._logService.info(`[AgentOS] Direct mode: ${enabledTools.length} enabled tools for agent ${request.agentId}`);
+		// Filter tools by chat mode (unified in chatModeConfig)
+		const enabledTools = filterToolsByChatMode(allEnabledTools, chatMode);
+		this._logService.info(`[AgentOS] Chat mode=${chatMode}: ${enabledTools.length}/${allEnabledTools.length} tools allowed for agent ${request.agentId}`);
 
 		// ─── 2. 初始化消息历史 ─────────────────────────────────────
 		let messages: any[];
@@ -698,6 +671,49 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					toolCallId: toolResult.toolCallId,
 					success: toolResult.success,
 				};
+			}
+
+			// ─── Plan-mode: exit_plan_mode handling ─────────────────────
+			// When exit_plan_mode is called, emit a confirmation delta for the
+			// UI to render an approval card, then stop the loop.
+			if (request.chatMode === 'plan') {
+				const exitPlanCall = effectiveToolCalls.find(tc => tc.name === 'exit_plan_mode');
+				if (exitPlanCall) {
+					this._logService.info('[AgentOS] PLAN mode: exit_plan_mode called, emitting confirmation');
+					try {
+						const args = typeof exitPlanCall.arguments === 'string'
+							? JSON.parse(exitPlanCall.arguments)
+							: exitPlanCall.arguments;
+						yield {
+							type: 'confirmation',
+							confirmationData: {
+								id: `plan-approval-${Date.now()}`,
+								type: 'plan-approval' as const,
+								title: 'Plan Approval',
+								message: args?.plan_summary || 'Please review and approve the plan',
+								detail: `Plan contains ${(args?.tasks || []).length} tasks`,
+								buttons: [
+									{ id: 'approve', label: 'Approve', primary: true },
+									{ id: 'reject', label: 'Reject', danger: true },
+								],
+								status: 'pending' as const,
+								planSummary: args?.plan_summary || '',
+								tasks: (args?.tasks || []).map((t: any) => ({
+									title: t.title || '',
+									description: t.description || '',
+									files: t.files || [],
+									complexity: t.complexity,
+									suggestedRole: t.suggestedRole,
+									dependencies: t.dependencies,
+								})),
+							},
+						};
+					} catch {
+						// If parsing fails, just continue normally
+					}
+					yield { type: 'done' };
+					break;
+				}
 			}
 
 			// ─── Guardrail: too many failed tool calls → break ──────
@@ -1850,9 +1866,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 				const stream = await modelProvider.chat(fallbackModel, messages, options, context);
 
-				for await (const delta of stream) {
-					yield this._adaptModelDelta(delta);
+			for await (const delta of stream) {
+				const adapted = this._adaptModelDelta(delta);
+				if (adapted) {
+					yield adapted;
 				}
+			}
 
 				// 成功，返回
 				this._logService.info(`[AgentOS] Fallback model ${fallbackModel} succeeded`);
@@ -1888,13 +1907,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		yield { type: 'error', content: 'No ModelProvider registered. Please install a Model Provider plugin.' };
 	}
 
-	private _adaptModelDelta(delta: any): IChatStreamDelta {
+	private _adaptModelDelta(delta: any): IChatStreamDelta | undefined {
 		// 将 IModelDelta 适配为 IChatStreamDelta
 		if (delta.type === 'text') {
-			return { type: 'text', content: delta.content };
+			const content = delta.content;
+			// Defensive: filter out undefined / 'undefined' strings from misbehaving providers
+			if (typeof content !== 'string' || content === 'undefined' || content === '') {
+				return undefined;
+			}
+			return { type: 'text', content };
 		}
 		if (delta.type === 'thinking') {
-			return { type: 'thinking', content: delta.content };
+			const content = delta.content;
+			if (typeof content !== 'string' || content === 'undefined' || content === '') {
+				return undefined;
+			}
+			return { type: 'thinking', content };
 		}
 		if (delta.type === 'tool_call' && delta.toolCall) {
 			// Adapt tool_call delta to tool_start/tool_args chunks

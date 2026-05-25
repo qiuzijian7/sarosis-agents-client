@@ -172,6 +172,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	const initialNodes = useMemo<Node[]>(() => {
 		const assignedPositions: Array<{ x: number; y: number }> = [];
+		const selectedEmployeeId = useEmployeeStore.getState().selectedEmployeeId;
 		return employees.map((emp) => {
 			const storedNode = storeNodes.find(n => n.id === emp.id);
 			const pos = storedNode?.position || emp.position || findNonOverlappingPosition(assignedPositions);
@@ -184,7 +185,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 				selectable: true,
 				data: {
 					employee: emp,
-					isSelected: false,
+					isSelected: emp.id === selectedEmployeeId,
 					onSelect: (empId: string) => selectEmployee(empId),
 					onDelete: (empId: string) => handleDeleteEmployee(empId),
 				},
@@ -229,6 +230,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 	// INITIAL placement of brand-new employees (read inline below).
 	useEffect(() => {
 		console.log('[WorkspaceCanvas] employees changed, count:', employees.length, 'employees:', employees.map(e => e.name));
+		const selectedEmployeeId = useEmployeeStore.getState().selectedEmployeeId;
 		setNodes(prevNodes => {
 			console.log('[WorkspaceCanvas] rebuilding nodes, prevNodes:', prevNodes.length, 'employees:', employees.length);
 			const assignedPositions: Array<{ x: number; y: number }> = [];
@@ -266,7 +268,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 					selectable: true,
 					data: {
 						employee: emp,
-						isSelected: false,
+						isSelected: emp.id === selectedEmployeeId,
 						onSelect: (empId: string) => selectEmployee(empId),
 						onDelete: (empId: string) => handleDeleteEmployee(empId),
 					},
@@ -542,13 +544,14 @@ export function WorkspaceCanvas(): React.ReactElement {
 		const currentNodes = reactFlowInstance.current.getNodes();
 		const position = resolveNonOverlappingPosition(rawPosition, employee.id, currentNodes);
 
+		const selectedEmployeeId = useEmployeeStore.getState().selectedEmployeeId;
 		const newNode: Node = {
 			id: employee.id,
 			type: 'employee',
 			position,
 			data: {
 				employee,
-				isSelected: false,
+				isSelected: employee.id === selectedEmployeeId,
 				onSelect: (empId: string) => selectEmployee(empId),
 				onDelete: (empId: string) => handleDeleteEmployee(empId),
 			},
@@ -594,6 +597,32 @@ export function WorkspaceCanvas(): React.ReactElement {
 			loadEmployees(activeWorkspaceId);
 		}
 	}, [activeWorkspaceId, loadEmployees]);
+
+	// Subscribe to selectedEmployeeId changes to update node selection state
+	const selectedEmployeeId = useEmployeeStore(state => state.selectedEmployeeId);
+	
+	useEffect(() => {
+		setNodes(prevNodes => {
+			let changed = false;
+			const newNodes = prevNodes.map(node => {
+				const emp = node.data?.employee;
+				if (!emp) return node;
+				const shouldBeSelected = emp.id === selectedEmployeeId;
+				if (node.data.isSelected !== shouldBeSelected) {
+					changed = true;
+					return {
+						...node,
+						data: {
+							...node.data,
+							isSelected: shouldBeSelected,
+						},
+					};
+				}
+				return node;
+			});
+			return changed ? newNodes : prevNodes;
+		});
+	}, [selectedEmployeeId, setNodes]);
 
 	return (
 		<ErrorBoundary name="WorkspaceCanvas">

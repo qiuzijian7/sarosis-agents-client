@@ -192,12 +192,10 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 					<ConfirmationCard
 						confirmation={message.confirmation}
 						onApprove={(buttonId) => {
-							console.log('[ChatMessage] Confirmation approved:', buttonId);
-							// TODO: Handle confirmation approve
+							useChatStore.getState().approvePlanConfirmation(message.confirmation!, buttonId);
 						}}
 						onReject={() => {
-							console.log('[ChatMessage] Confirmation rejected');
-							// TODO: Handle confirmation reject
+							useChatStore.getState().rejectPlanConfirmation(message.confirmation!);
 						}}
 						collapsed={false}
 					/>

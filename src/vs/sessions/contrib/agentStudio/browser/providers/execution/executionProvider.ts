@@ -9,6 +9,7 @@ import { IterationBudget } from '../../../common/iterationBudget.js';
 import { ContextManager } from '../../../common/contextManager.js';
 import { ToolArgumentRepairer } from '../../../common/toolRepair.js';
 import { ParallelToolExecutor } from '../../../common/parallelToolExecutor.js';
+import { filterToolsByChatMode } from '../../../common/chatModeConfig.js';
 import type { IChatMessage, IModelOptions, IToolCallInfo, IModelDelta } from '../../../common/providers.js';
 import type { ChatMessage } from '../../../common/types.js';
 
@@ -116,46 +117,12 @@ export class ExecutionProvider implements IExecutionProvider {
 					const allTools = await toolProvider.listTools(request.agentId);
 					const chatMode = request.chatMode || 'craft';
 
-					if (chatMode === 'plan') {
-						// Plan mode: no tools — pure text decomposition
+					// Filter tools by chat mode (unified in chatModeConfig)
+					tools = filterToolsByChatMode(allTools, chatMode);
+					if (tools.length === 0) {
 						tools = undefined;
-						this._logService.info('[ExecutionProvider] PLAN mode: tools disabled');
-					} else if (chatMode === 'ask') {
-						// Ask mode: only read-only tools (no file_write, terminal, or destructive operations)
-						const readOnlyPatterns = [
-							/^file_read$/i, /^search_files$/i, /^search$/i, /^grep$/i, /^find$/i,
-							/^list_files$/i, /^list_dir$/i, /^read$/i, /^cat$/i, /^head$/i, /^tail$/i,
-							/^glob$/i, /^ripgrep$/i, /^rg$/i, /^tree$/i, /^ls$/i,
-							/^read_skill$/i, /^web_search$/i, /^web_fetch$/i, /^browser/i,
-							/^symbol/i, /^references$/i, /^definition$/i, /^hover$/i,
-						];
-						const destructivePatterns = [
-							/^file_write$/i, /^file_delete$/i, /^write$/i, /^delete$/i, /^remove$/i,
-							/^terminal$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
-							/^mkdir$/i, /^mv$/i, /^cp$/i, /^rename$/i, /^chmod$/i,
-						];
-						tools = allTools.filter(t => {
-							// Explicitly exclude destructive tools
-							if (destructivePatterns.some(p => p.test(t.name))) {
-								return false;
-							}
-							// Include known read-only tools
-							if (readOnlyPatterns.some(p => p.test(t.name))) {
-								return true;
-							}
-							// For unknown tools, include only if category suggests read-only
-							const cat = (t.category || '').toLowerCase();
-							if (cat === 'search' || cat === 'retrieval' || cat === 'read') {
-								return true;
-							}
-							// Exclude unknown tools by default in ask mode
-							return false;
-						});
-						this._logService.info(`[ExecutionProvider] ASK mode: ${tools.length}/${allTools.length} tools allowed (read-only)`);
-					} else {
-						// Craft / default: all tools
-						tools = allTools;
 					}
+					this._logService.info(`[ExecutionProvider] Chat mode=${chatMode}: ${tools?.length ?? 0}/${allTools.length} tools allowed`);
 				}
 
 				const modelOptions: IModelOptions = {
@@ -236,6 +203,42 @@ export class ExecutionProvider implements IExecutionProvider {
 						toolCallId: toolResult.toolCallId,
 					};
 					messages.push(toolResultMessage);
+				}
+
+				// 7.6a Plan-mode: if exit_plan_mode was called, emit a confirmation delta
+				// and stop the loop so the user can review and approve the plan.
+				if (request.chatMode === 'plan') {
+					const exitPlanCall = assistantToolCalls.find(tc => tc.name === 'exit_plan_mode');
+					if (exitPlanCall) {
+						this._logService.info('[ExecutionProvider] PLAN mode: exit_plan_mode called, emitting confirmation');
+						try {
+							const args = typeof exitPlanCall.arguments === 'string'
+								? JSON.parse(exitPlanCall.arguments)
+								: exitPlanCall.arguments;
+							yield {
+								type: 'confirmation',
+								confirmationData: {
+									id: `plan-approval-${Date.now()}`,
+									type: 'plan-approval' as const,
+									title: 'Plan Approval',
+									planSummary: args?.plan_summary || '',
+									tasks: (args?.tasks || []).map((t: any) => ({
+										title: t.title || '',
+										description: t.description || '',
+										files: t.files || [],
+										complexity: t.complexity,
+										suggestedRole: t.suggestedRole,
+										dependencies: t.dependencies,
+									})),
+									nextMode: args?.next_mode || 'craft',
+								},
+							} as IChatStreamDelta;
+						} catch {
+							// If parsing fails, just continue normally
+						}
+						yield { type: 'done' };
+						break;
+					}
 				}
 
 				// 7.7 更新记忆（如果有 Memory Provider）

@@ -557,9 +557,121 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				return text(`HTTP ${ctx.res.statusCode}\n\n${body.slice(0, 1024 * 1024)}`);
 			},
 		});
-	}
 
-	// ─── Skill 按需读取工具 ───────────────────────────────────────────
+		// ── Plan-mode exclusive tools ──────────────────────────────────
+		// These tools are only available in Plan mode and enable the
+		// AI to signal plan completion and ask clarifying questions.
+
+		this.register({
+			definition: {
+				name: 'exit_plan_mode',
+				description: 'Exit plan mode after the plan is ready for user review. ' +
+					'Call this when you have finished analyzing the task and produced a structured plan. ' +
+					'The plan will be presented to the user for approval. After approval, the system will ' +
+					'automatically create Agent instances, assign tasks, and execute them.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						plan_summary: {
+							type: 'string',
+							description: 'A concise summary of the plan for the user to review.',
+						},
+						tasks: {
+							type: 'array',
+							items: {
+								type: 'object',
+								properties: {
+									title: { type: 'string', description: 'Task title' },
+									description: { type: 'string', description: 'What needs to be done' },
+									files: { type: 'array', items: { type: 'string' }, description: 'Files likely involved' },
+									complexity: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Estimated complexity' },
+									suggestedRole: { type: 'string', description: 'Suggested agent role (e.g., Developer, Designer, Tester)' },
+									dependencies: { type: 'array', items: { type: 'integer' }, description: '0-based indices of tasks this task depends on' },
+								},
+								required: ['title', 'description'],
+							},
+							description: 'Ordered list of sub-tasks in the plan. Each task should be independently executable. Use dependencies to indicate task ordering.',
+						},
+						next_mode: {
+							type: 'string',
+							enum: ['craft', 'ask'],
+							description: 'Recommended mode after plan approval. Default: craft.',
+						},
+					},
+					required: ['plan_summary'],
+				},
+				category: 'plan',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Safe,
+			},
+			handler: async (args) => {
+				const planSummary = String(args['plan_summary'] ?? '');
+				const tasks = (args['tasks'] as Array<Record<string, unknown>>) ?? [];
+				const nextMode = String(args['next_mode'] ?? 'craft');
+				// Return the plan as text — the execution layer will also
+				// emit a 'confirmation' delta so the UI can show an approval card.
+				const taskLines = tasks.map((t, i) => {
+					const files = Array.isArray(t['files']) ? ` [${(t['files'] as string[]).join(', ')}]` : '';
+					const cpx = t['complexity'] ? ` (${t['complexity']})` : '';
+					const role = t['suggestedRole'] ? ` → ${t['suggestedRole']}` : '';
+					const deps = Array.isArray(t['dependencies']) ? ` (depends on: ${(t['dependencies'] as number[]).map(d => `#${d + 1}`).join(', ')})` : '';
+					return `  ${i + 1}. ${t['title']}${cpx}${role}: ${t['description']}${files}${deps}`;
+				});
+				return text([
+					'Plan submitted for review:',
+					'',
+					planSummary,
+					'',
+					'Tasks:',
+					...taskLines,
+					'',
+					`Next mode after approval: ${nextMode}`,
+					'',
+					'After approval, the system will automatically:',
+					'  1. Create an OrchestrationPlan',
+					'  2. Create Agent instances for each task',
+					'  3. Assign tasks to agents based on role',
+					'  4. Execute tasks following dependency order',
+					'',
+					'Waiting for user approval...',
+				].join('\n'));
+			},
+		});
+
+		this.register({
+			definition: {
+				name: 'ask_user_question',
+				description: 'Ask the user a clarifying question during plan mode. ' +
+					'Use this when you need more information to complete the plan.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						question: {
+							type: 'string',
+							description: 'The question to ask the user.',
+						},
+						options: {
+							type: 'array',
+							items: { type: 'string' },
+							description: 'Suggested answer options for the user to choose from.',
+						},
+					},
+					required: ['question'],
+				},
+				category: 'plan',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Safe,
+			},
+			handler: async (args) => {
+				const question = String(args['question'] ?? '');
+				const options = (args['options'] as string[]) ?? [];
+				const optionLines = options.length > 0
+					? '\nOptions:\n' + options.map((o, i) => `  ${i + 1}. ${o}`).join('\n')
+					: '';
+				return text(`Question for user: ${question}${optionLines}`);
+			},
+		});
+	}
 
 	/**
 	 * 注册 Skill 相关工具 —— 借鉴 OpenClaw 的按需加载模式。

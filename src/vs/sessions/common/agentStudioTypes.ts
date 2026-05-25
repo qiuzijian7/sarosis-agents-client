@@ -343,6 +343,18 @@ export interface ConfirmationRequest {
 	buttons: ConfirmationButton[];
 	status: 'pending' | 'approved' | 'rejected' | 'cancelled';
 	icon?: string;
+	/** Plan-mode specific fields */
+	type?: 'plan-approval';
+	planSummary?: string;
+	tasks?: Array<{
+		title: string;
+		description: string;
+		files?: string[];
+		complexity?: 'low' | 'medium' | 'high';
+		suggestedRole?: string;
+		dependencies?: number[];
+	}>;
+	nextMode?: 'craft' | 'ask';
 }
 
 // Todo item for TodoListCard (VS Code chatTodoListWidget pattern)

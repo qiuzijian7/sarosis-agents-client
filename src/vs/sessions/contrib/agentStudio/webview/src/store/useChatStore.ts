@@ -43,6 +43,18 @@ export interface ConfirmationRequest {
 	buttons: ConfirmationButton[];
 	status: 'pending' | 'approved' | 'rejected' | 'cancelled';
 	icon?: string;
+	/** Plan-mode specific fields */
+	type?: 'plan-approval';
+	planSummary?: string;
+	tasks?: Array<{
+		title: string;
+		description: string;
+		files?: string[];
+		complexity?: 'low' | 'medium' | 'high';
+		suggestedRole?: string;
+		dependencies?: number[];
+	}>;
+	nextMode?: 'craft' | 'ask';
 }
 
 export interface ConfirmationButton {
@@ -173,6 +185,10 @@ interface ChatState {
 	addDecompositionProgress: (employeeId: string, message: ChatMessage) => void;
 	/** Set the current chat mode */
 	setChatMode: (mode: 'craft' | 'ask' | 'plan' | 'workflow') => void;
+	/** Approve a plan-approval confirmation card → create OrchestrationPlan → auto-execute */
+	approvePlanConfirmation: (confirmation: ConfirmationRequest, buttonId: string) => Promise<void>;
+	/** Reject a plan-approval confirmation card */
+	rejectPlanConfirmation: (confirmation: ConfirmationRequest) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -857,6 +873,111 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 		setChatMode: (mode: 'craft' | 'ask' | 'plan' | 'workflow') => {
 			set({ chatMode: mode });
+		},
+
+		approvePlanConfirmation: async (confirmation: ConfirmationRequest, buttonId: string) => {
+			if (confirmation.type !== 'plan-approval') { return; }
+
+			const { activeEmployeeId } = get();
+			if (!activeEmployeeId) { return; }
+
+			// 1. Mark the confirmation as approved in local state
+			set(state => ({
+				messages: state.messages.map(m =>
+					m.confirmation?.id === confirmation.id
+						? { ...m, confirmation: { ...m.confirmation!, status: 'approved' as const } }
+						: m
+				),
+			}));
+
+			const autoExecute = buttonId === 'approve-execute';
+
+			try {
+				const { useEmployeeStore } = await import('./useEmployeeStore');
+				const { useWorkspaceStore } = await import('./useWorkspaceStore');
+				const employee = useEmployeeStore.getState().employees.find(e => e.id === activeEmployeeId);
+				const workspaceId = employee?.workspaceId || useWorkspaceStore.getState().activeWorkspaceId;
+
+				if (!workspaceId) {
+					console.error('[ChatStore] approvePlanConfirmation: no workspaceId found');
+					return;
+				}
+
+				// 2. Create an OrchestrationPlan from the plan data
+				const planGoal = confirmation.planSummary || 'Plan execution';
+				const plan = await sendRequest<
+					{ goal: string; workspaceId: string; plannerId: string },
+					any
+				>('orchestration.plan', {
+					goal: planGoal,
+					workspaceId,
+					plannerId: activeEmployeeId,
+				}, 0); // no timeout — plan creation may take a while
+
+				if (!plan?.id) {
+					console.error('[ChatStore] approvePlanConfirmation: plan creation returned no id');
+					return;
+				}
+
+				// 3. Approve the plan — auto-execute or approve-only
+				if (autoExecute) {
+					await sendRequest<{ planId: string }, any>(
+						'orchestration.approve',
+						{ planId: plan.id },
+					);
+				} else {
+					await sendRequest<{ planId: string }, any>(
+						'orchestration.approveWithoutExecute',
+						{ planId: plan.id },
+					);
+				}
+
+				// 4. Switch chat mode to the recommended next mode (default: craft)
+				const nextMode = confirmation.nextMode || 'craft';
+				set({ chatMode: nextMode });
+
+				// 5. Add a system message confirming the action
+				const actionMsg: ChatMessage = {
+					id: `plan_exec_${Date.now()}`,
+					role: 'system',
+					content: autoExecute
+						? `✅ 计划已批准，正在创建 Agent 实例并自动执行 ${plan.tasks?.length || 0} 个任务...`
+						: `✅ 计划已批准，${plan.tasks?.length || 0} 个任务已创建到看板。您可以在任务看板中手动启动执行。`,
+					timestamp: new Date().toISOString(),
+				};
+				set(state => ({ messages: [...state.messages, actionMsg] }));
+
+			} catch (err) {
+				console.error('[ChatStore] approvePlanConfirmation failed:', err);
+				// Add an error system message
+				const errMsg: ChatMessage = {
+					id: `plan_err_${Date.now()}`,
+					role: 'system',
+					content: `❌ 计划执行启动失败: ${err instanceof Error ? err.message : String(err)}`,
+					timestamp: new Date().toISOString(),
+				};
+				set(state => ({ messages: [...state.messages, errMsg] }));
+			}
+		},
+
+		rejectPlanConfirmation: (confirmation: ConfirmationRequest) => {
+			// Mark the confirmation as rejected in local state
+			set(state => ({
+				messages: state.messages.map(m =>
+					m.confirmation?.id === confirmation.id
+						? { ...m, confirmation: { ...m.confirmation!, status: 'rejected' as const } }
+						: m
+				),
+			}));
+
+			// Add a rejection message
+			const rejectMsg: ChatMessage = {
+				id: `plan_reject_${Date.now()}`,
+				role: 'system',
+				content: '❌ 计划已拒绝。您可以继续对话调整方案，或重新规划。',
+				timestamp: new Date().toISOString(),
+			};
+			set(state => ({ messages: [...state.messages, rejectMsg] }));
 		},
 	};
 });

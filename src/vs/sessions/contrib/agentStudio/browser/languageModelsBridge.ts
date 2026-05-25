@@ -310,10 +310,22 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 
 	private _toModelDelta(part: IChatResponsePart): IModelDelta | undefined {
 		switch (part.type) {
-			case 'text':
-				return { type: 'text', content: part.value };
-			case 'thinking':
-				return { type: 'thinking', content: typeof (part as { value?: unknown }).value === 'string' ? (part as { value: string }).value : '' };
+		case 'text': {
+			const textValue = part.value;
+			// Defensive: some providers (e.g. Knot) may emit 'undefined' as a string
+			// for unhandled event types. Filter these out to avoid polluting the chat.
+			if (typeof textValue !== 'string' || textValue === 'undefined' || textValue === '') {
+				return undefined;
+			}
+			return { type: 'text', content: textValue };
+		}
+		case 'thinking': {
+			const thinkValue = typeof (part as { value?: unknown }).value === 'string' ? (part as { value: string }).value : '';
+			if (thinkValue === 'undefined' || thinkValue === '') {
+				return undefined;
+			}
+			return { type: 'thinking', content: thinkValue };
+		}
 			case 'tool_use': {
 				const toolPart = part as IChatResponseToolUsePart;
 				const rawParams = toolPart.parameters;

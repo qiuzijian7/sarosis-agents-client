@@ -67,13 +67,33 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
 
-	// Mode options
+	// Mode options — with descriptions and icons (ref: CodeBuddy-IDE-模式分析.md)
 	const modeOptions = useMemo(() => {
-		const all = [
-			{ id: 'craft' as const, label: 'Craft' },
-			{ id: 'ask' as const, label: 'Ask' },
-			{ id: 'plan' as const, label: 'Plan' },
-			{ id: 'workflow' as const, label: 'Workflow' },
+		const all: Array<{ id: 'craft' | 'ask' | 'plan' | 'workflow'; label: string; description: string; icon: string }> = [
+			{
+				id: 'craft',
+				label: 'Craft',
+				description: 'Agent 模式 — 完整工具访问，可直接修改代码和执行命令',
+				icon: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
+			},
+			{
+				id: 'ask',
+				label: 'Ask',
+				description: '问答模式 — 只读工具访问，提供技术解答和建议',
+				icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm1 5.5v5h-2v-5h2z',
+			},
+			{
+				id: 'plan',
+				label: 'Plan',
+				description: '计划模式 — 只读探索 + 任务拆解，确认后切换执行模式',
+				icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
+			},
+			{
+				id: 'workflow',
+				label: 'Workflow',
+				description: '工作流模式 — Craft + 完成后驱动下游 Agent 执行',
+				icon: 'M22 11.08V12a10 10 0 11-5.93-9.14M22 4L12 14.01l-3-3',
+			},
 		];
 		const isPlanner = activeEmployee?.agentType === 'planner'
 			|| activeEmployee?.presetId === 'planner'
@@ -238,9 +258,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 	const handleSend = useCallback(() => {
 		if (!input.trim()) return;
-		// 检查是否以 /plan 开头，如果是则触发任务编排命令
-		if (input.trim().startsWith('/plan') && onCommand) {
-			const goal = input.trim().substring('/plan'.length).trim();
+		// Plan 模式下：消息内容即为要编排的任务目标，直接触发任务编排流程
+		if (chatMode === 'plan' && onCommand) {
+			const goal = input.trim().replace(/^\/plan\s*/, ''); // 去掉可能手动输入的 /plan 前缀
 			closeAllPopups();
 			onCommand('plan', goal);
 			setInput('');
@@ -259,7 +279,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
 			textareaRef.current.style.height = `${preferred}px`;
 		}
-	}, [input, onSend, onCommand, closeAllPopups]);
+	}, [input, onSend, onCommand, closeAllPopups, chatMode]);
 
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
@@ -310,23 +330,15 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		document.addEventListener('mouseup', handleUp);
 	}, []);
 
-	// 命令系统：定义可用命令（Planner 额外显示 /plan 命令）
+	// 命令系统：定义可用命令（Plan 模式通过模式选择器触发，不再需要 /plan 命令）
 	const commands = useMemo(() => {
 		const items = [
 			{ id: 'skill', name: '技能', description: '选择并使用技能', icon: '🛠️' },
 			{ id: 'help', name: '帮助', description: '显示帮助信息', icon: '❓' },
 			{ id: 'clear', name: '清除', description: '清除聊天记录', icon: '🗑️' },
 		];
-		// 兼容 agentType 字段缺失的情况，使用 presetId/role/name 回退判断
-		const isPlanner = activeEmployee?.agentType === 'planner'
-			|| activeEmployee?.presetId === 'planner'
-			|| activeEmployee?.role?.toLowerCase().includes('planner')
-			|| activeEmployee?.name?.toLowerCase() === 'planner';
-		if (isPlanner) {
-			items.push({ id: 'plan', name: '任务编排', description: '创建任务编排计划', icon: '🎯' });
-		}
 		return items;
-	}, [activeEmployee?.agentType]);
+	}, []);
 
 	// 过滤命令列表
 	const filteredCommands = useMemo(() => {
@@ -529,12 +541,14 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 				{/* 顶部拖动条：手动调整 textarea 高度（最低 60px / 最高 300px） */}
 				<div
 					className="chat-composer-resizer"
-					onMouseDown={handleResizerMouseDown}
 					title="拖动调整输入框高度"
 					role="separator"
 					aria-orientation="horizontal"
 				>
-					<span className="chat-composer-resizer-grip" />
+					<span
+						className="chat-composer-resizer-grip"
+						onMouseDown={handleResizerMouseDown}
+					/>
 				</div>
 
 				{/* 上方：文本输入 */}
@@ -663,39 +677,48 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 						<div className="provider-model-chip-wrap mode-chip-wrap" ref={modeDropdownRef}>
 							<button
 								className="chat-toolbar-btn has-label mode-tag"
-								title="选择模式"
+								title={modeOptions.find(m => m.id === chatMode)?.description || '选择模式'}
 								onClick={() => {
 									const wasOpen = showModeDropdown;
 									closeAllDropdowns();
 									if (!wasOpen) { setShowModeDropdown(true); }
 								}}
 							>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<path d={modeOptions.find(m => m.id === chatMode)?.icon || 'M13 2L3 14h9l-1 8 10-12h-9l1-8z'} />
+								</svg>
 								<span className="toolbar-btn-label">{modeOptions.find(m => m.id === chatMode)?.label || 'Craft'}</span>
 								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
 									<path d="M6 9l6 6 6-6" />
 								</svg>
 							</button>
-							{showModeDropdown && (
-								<div className="provider-dropdown mode-dropdown-composer">
-									{modeOptions.map(opt => (
-										<button
-											key={opt.id}
-											className={`provider-dropdown-item ${chatMode === opt.id ? 'active' : ''}`}
-											onClick={() => {
-												setChatMode(opt.id);
-												setShowModeDropdown(false);
-											}}
-										>
+						{showModeDropdown && (
+							<div className="provider-dropdown mode-dropdown-composer">
+								{modeOptions.map(opt => (
+									<button
+										key={opt.id}
+										className={`provider-dropdown-item mode-item ${chatMode === opt.id ? 'active' : ''}`}
+										onClick={() => {
+											setChatMode(opt.id);
+											setShowModeDropdown(false);
+										}}
+									>
+										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mode-item-icon">
+											<path d={opt.icon} />
+										</svg>
+										<div className="mode-item-text">
 											<span className="provider-dropdown-name">{opt.label}</span>
-											{chatMode === opt.id && (
-												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-													<polyline points="20 6 9 17 4 12" />
-												</svg>
-											)}
-										</button>
-									))}
-								</div>
-							)}
+										</div>
+										{chatMode === opt.id && (
+											<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+												<polyline points="20 6 9 17 4 12" />
+											</svg>
+										)}
+										<span className="mode-item-tooltip">{opt.description}</span>
+									</button>
+								))}
+							</div>
+						)}
 						</div>
 
 						{/* Provider 选择器 */}
