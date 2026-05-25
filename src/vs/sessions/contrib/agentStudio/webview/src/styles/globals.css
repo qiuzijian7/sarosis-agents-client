@@ -1690,6 +1690,27 @@ html, body, #root {
   font-size: 12px;
 }
 
+/* Plan selector (shown when multiple plans exist) */
+.orch-plan-selector {
+  margin-bottom: 8px;
+}
+
+.orch-plan-selector select {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  cursor: pointer;
+}
+
+.orch-plan-selector select:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #3b82f6);
+}
+
 /* Plan Summary */
 .orch-plan-summary {
   padding: 10px 12px;

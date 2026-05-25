@@ -27,7 +27,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService, IAgentChatService } from '../common/agentStudio.js';
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
-import type { OrchestrationPlan, PlanTask, Employee } from '../common/types.js';
+import type { OrchestrationPlan, PlanTask, Employee, ChatMessage } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
 import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING } from '../common/constants.js';
@@ -868,6 +868,22 @@ RULES:
 		plans.push(plan);
 		await this._writePlans(plans);
 		this._onDidChangePlan.fire(plan);
+
+		// Persist plan message to planner's chat history so it survives page reloads
+		try {
+			const planMessage: ChatMessage = {
+				id: `plan_${plan.id}`,
+				role: 'system',
+				content: `✅ 任务计划已创建，请在下方面板中审批：`,
+				employeeId: plannerId,
+				metadata: { type: 'orchestration_plan', planId: plan.id },
+				timestamp: now,
+			};
+			await this.agentChatService.appendMessage(plannerId, planMessage);
+		} catch (err) {
+			this.logService.warn('[Orchestration] Failed to persist plan message to chat history:', err);
+		}
+
 		return plan;
 	}
 
@@ -1312,6 +1328,21 @@ Goal: ${goal}`;
 		plan.updatedAt = new Date().toISOString();
 		await this._writePlans(plans);
 		this._onDidChangePlan.fire(plan);
+
+		// Persist rejection message to planner's chat history so it survives page reloads
+		try {
+			const rejectMessage: ChatMessage = {
+				id: `reject_${plan.id}_${Date.now()}`,
+				role: 'system',
+				content: `❌ 任务计划「${plan.goal}」已被拒绝。您可以重新发送 /plan 命令来创建新的计划。`,
+				employeeId: plan.plannerId,
+				timestamp: plan.updatedAt,
+			};
+			await this.agentChatService.appendMessage(plan.plannerId, rejectMessage);
+		} catch (err) {
+			this.logService.warn('[Orchestration] Failed to persist rejection message to chat history:', err);
+		}
+
 		return plan;
 	}
 

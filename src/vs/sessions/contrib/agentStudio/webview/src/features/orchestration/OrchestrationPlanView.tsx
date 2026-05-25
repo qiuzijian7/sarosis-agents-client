@@ -349,7 +349,19 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 		updatePlan,
 		updateTask,
 		decomposeTask,
+		closePlanDialog,
 	} = useOrchestrationStore();
+
+	// When closing a pending_approval plan, reject it first.
+	// For other statuses, just close the dialog.
+	const handleClose = useCallback(async () => {
+		if (activePlan?.status === 'pending_approval') {
+			await rejectPlan(activePlan.id);
+		} else {
+			closePlanDialog();
+		}
+		onClose?.();
+	}, [activePlan, rejectPlan, closePlanDialog, onClose]);
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const { employees, getPlanners } = useEmployeeStore();
 
@@ -483,7 +495,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 					</span>
 				)}
 			{onClose && (
-				<button className="orch-inline-close" onClick={onClose} title="关闭">✕</button>
+				<button className="orch-inline-close" onClick={handleClose} title={activePlan?.status === 'pending_approval' ? '拒绝并关闭' : '关闭'}>✕</button>
 			)}
 			</div>
 
@@ -533,7 +545,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 
 					<div className="form-actions">
 						{onClose && (
-							<button type="button" className="btn-secondary" onClick={onClose}>取消</button>
+							<button type="button" className="btn-secondary" onClick={handleClose}>取消</button>
 						)}
 						<button
 							type="button"
@@ -681,7 +693,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 							</>
 						)}
 						{!isPendingApproval && onClose && (
-							<button type="button" className="btn-secondary" onClick={onClose}>
+							<button type="button" className="btn-secondary" onClick={handleClose}>
 								关闭
 							</button>
 						)}

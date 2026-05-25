@@ -49,12 +49,18 @@ export function TaskBoardPanel(): React.ReactElement {
 	// Even if the dialog is already open (e.g. showing an empty creation form),
 	// we switch to showing the new pending plan.
 	useEffect(() => {
-		const pendingPlan = orchestrationPlans.find(p => p.status === 'pending_approval');
-		if (!pendingPlan) { return; }
-		if (autoOpenedPlanIdsRef.current.has(pendingPlan.id)) { return; }
+		// Always pick the LATEST pending_approval plan (by createdAt desc),
+		// not just the first one in the array. When multiple plans are pending
+		// (e.g. test55 and test100), we want the newest one.
+		const pendingPlans = orchestrationPlans
+			.filter(p => p.status === 'pending_approval')
+			.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+		const latestPending = pendingPlans[0];
+		if (!latestPending) { return; }
+		if (autoOpenedPlanIdsRef.current.has(latestPending.id)) { return; }
 
-		autoOpenedPlanIdsRef.current.add(pendingPlan.id);
-		setActivePlan(pendingPlan);
+		autoOpenedPlanIdsRef.current.add(latestPending.id);
+		setActivePlan(latestPending);
 		openPlanDialog();
 	}, [orchestrationPlans, setActivePlan, openPlanDialog]);
 

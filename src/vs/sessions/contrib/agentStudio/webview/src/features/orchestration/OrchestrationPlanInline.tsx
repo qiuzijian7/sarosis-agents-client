@@ -4,7 +4,7 @@
  *  Shows the planner's decomposition for user approval/rejection.
  *---------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
 	useOrchestrationStore,
 	type OrchestrationPlan,
@@ -50,11 +50,28 @@ interface OrchestrationPlanInlineProps {
 }
 
 export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanInlineProps): React.ReactElement | null {
-	const { plans, isLoading, error, approvePlan, rejectPlan } = useOrchestrationStore();
+	// Use selector so Zustand re-renders this component whenever the matching
+	// plan changes, bypassing any parent memo barriers.
+	const plan = useOrchestrationStore(s => s.plans.find(p => p.id === planId));
+	const { isLoading, error, approvePlan, rejectPlan } = useOrchestrationStore();
 	const { employees } = useEmployeeStore();
 
-	// Find the plan by ID
-	const plan = useMemo(() => plans.find(p => p.id === planId), [plans, planId]);
+	// Fallback: subscribe to the custom event dispatched by index.tsx when
+	// the host pushes an orchestration.planUpdated event. This ensures the
+	// component re-renders even if the Zustand selector somehow misses the
+	// change (e.g. stale closure over planId).
+	const [, forceUpdate] = useState(0);
+	useEffect(() => {
+		const handler = (e: Event) => {
+			const detail = (e as CustomEvent).detail as OrchestrationPlan | undefined;
+			if (detail && detail.id === planId) {
+				console.log(`[OrchestrationPlanInline] planUpdated event for ${planId}, status=${detail.status}`);
+				forceUpdate(n => n + 1);
+			}
+		};
+		window.addEventListener('agentStudio:orchestration-plan-updated', handler);
+		return () => window.removeEventListener('agentStudio:orchestration-plan-updated', handler);
+	}, [planId]);
 
 	const isPendingApproval = plan?.status === 'pending_approval';
 	const isExecuting = plan?.status === 'executing' || plan?.status === 'approved';

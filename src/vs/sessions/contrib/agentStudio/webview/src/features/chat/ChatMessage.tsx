@@ -23,6 +23,7 @@ import { ToolCallCard } from './ToolCallCard';
 import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
 import { OrchestrationPlanInline } from '../../features/orchestration/OrchestrationPlanInline';
+import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 // New card components (VS Code chatContentParts pattern)
 import { ReferencesCard } from './ReferencesCard';
 import { ProgressCard } from './ProgressCard';
@@ -74,6 +75,18 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	const isSystemError = message.role === 'system' && message.id.startsWith('error_');
 	const [thinkingCollapsed, setThinkingCollapsed] = useState(true); // Collapsed by default (OpenClaw pattern)
 	const [jsonExpanded, setJsonExpanded] = useState(false);
+
+	// Subscribe to the orchestration plan that this message renders.
+	// ChatMessageRaw is wrapped in React.memo; while the custom comparator
+	// returns false for orchestration_plan messages (so it re-renders when
+	// the parent list re-renders), the parent list only re-renders when the
+	// messages array changes.  By subscribing to the plan status here we
+	// force this component to re-render whenever the plan is
+	// approved/rejected/updated, bypassing the memo barrier entirely.
+	const _orchPlanStatus = message.metadata?.type === 'orchestration_plan'
+		? useOrchestrationStore(s => s.plans.find(p => p.id === message.metadata.planId)?.status)
+		: undefined;
+	void _orchPlanStatus; // subscription side-effect is the only purpose
 
 	const formatTime = (timestamp: string | number) => {
 		return new Date(timestamp).toLocaleTimeString('zh-CN', {
@@ -357,6 +370,14 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 	// Custom shallow compare: only re-render when content actually changes
 	const pm = prev.message;
 	const nm = next.message;
+
+	// Messages that render content from external stores (e.g. orchestration plans)
+	// must not be memoized, since their visual state depends on store data that
+	// can change without the message object itself changing.
+	if (pm.metadata?.type === 'orchestration_plan' || nm.metadata?.type === 'orchestration_plan') {
+		return false;
+	}
+
 	return (
 		pm.id === nm.id &&
 		pm.content === nm.content &&

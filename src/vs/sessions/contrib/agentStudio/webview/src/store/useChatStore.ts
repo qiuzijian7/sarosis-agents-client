@@ -529,13 +529,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 							: plan.status === 'executing' || plan.status === 'approved' ? '任务计划执行中：'
 							: plan.status === 'completed' ? '任务计划已完成：'
 							: '任务计划：';
-						const planMessage: ChatMessage = {
-							id: `plan_${plan.id}`,
-							role: 'system',
-							content: `✅ ${statusText}`,
-							metadata: { type: 'orchestration_plan', planId: plan.id },
-							timestamp: new Date().toISOString(),
-						};
+					const planMessage: ChatMessage = {
+						id: `plan_${plan.id}`,
+						role: 'system',
+						content: `✅ ${statusText}`,
+						metadata: { type: 'orchestration_plan', planId: plan.id },
+						timestamp: plan.updatedAt,
+					};
 						finalMessages = [...finalMessages, planMessage];
 					}
 			} catch (err) {
@@ -553,6 +553,27 @@ export const useChatStore = create<ChatState>((set, get) => {
 					finalMessages = [...finalMessages, ...newProgress];
 				}
 			}
+
+			// Sort all messages by timestamp to ensure correct chronological order
+			// (progress messages restored from memory may have earlier timestamps
+			// than history messages loaded from the host, so a final sort is needed).
+			finalMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+			// Final deduplication pass: after sorting and re-creating plan messages,
+			// there may still be duplicate orchestration_plan entries for the same planId
+			// (e.g. one from persisted history + one recreated from activePlans).
+			const finalSeenPlanIds = new Set<string>();
+			finalMessages = finalMessages.filter(m => {
+				if (m.metadata?.type === 'orchestration_plan') {
+					const planId = m.metadata.planId;
+					if (finalSeenPlanIds.has(planId)) {
+						console.log(`[ChatStore] loadHistoryForSession: removing duplicate plan message for ${planId}`);
+						return false;
+					}
+					finalSeenPlanIds.add(planId);
+				}
+				return true;
+			});
 
 			set({ messages: finalMessages, isLoading: false });
 		} catch (err) {

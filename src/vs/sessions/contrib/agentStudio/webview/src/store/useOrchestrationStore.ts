@@ -5,6 +5,7 @@
 
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
+import { useChatStore } from './useChatStore';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -145,13 +146,13 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 			const plan = await sendRequest<
 				{ goal: string; workspaceId: string; plannerId: string },
 				OrchestrationPlan
-			>('orchestration.plan', { goal, workspaceId, plannerId });
+			>('orchestration.plan', { goal, workspaceId, plannerId }, 0);
 
 			set(state => ({
 				plans: [...state.plans, plan],
 				activePlan: plan,
-				// Don't open dialog automatically - plan will be shown in chat message
-				isPlanDialogOpen: false,
+				// Open the plan dialog so the user can review and approve the plan immediately
+				isPlanDialogOpen: true,
 				isLoading: false,
 			}));
 			return plan;
@@ -219,6 +220,26 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 				isPlanDialogOpen: false,
 				isLoading: false,
 			}));
+
+			// Update the plan message metadata so EmployeeChat re-renders the
+			// message list (ChatMessageRaw is memo-wrapped; the list must
+			// re-render for the memo comparator to run). Also append a
+			// rejection system message.
+			const goal = updatedPlan.goal || '任务计划';
+			useChatStore.setState(state => {
+				const updatedMessages = state.messages.map(m =>
+					m.metadata?.type === 'orchestration_plan' && m.metadata.planId === planId
+						? { ...m, metadata: { ...m.metadata, _planStatus: updatedPlan.status } }
+						: m
+				);
+				const rejectMessage = {
+					id: `reject_${planId}_${Date.now()}`,
+					role: 'system' as const,
+					content: `❌ 任务计划「${goal}」已被拒绝。您可以重新发送 /plan 命令来创建新的计划。`,
+					timestamp: new Date().toISOString(),
+				};
+				return { messages: [...updatedMessages, rejectMessage] };
+			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			set({ isLoading: false, error: message });
@@ -383,9 +404,14 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 					newActivePlan = synced || null;
 				}
 				if (!newActivePlan) {
-					// Auto-activate the most relevant plan: prefer pending_approval,
-					// then executing/approved, then the most recent one
-					newActivePlan = plans.find(p => p.status === 'pending_approval')
+					// Auto-activate the most relevant plan: prefer the latest
+					// pending_approval (by createdAt desc), then executing/approved,
+					// then the most recent one.  Sorting by createdAt desc ensures
+					// we pick the newest plan when multiple pending_approval plans exist.
+					const pendingPlans = plans
+						.filter(p => p.status === 'pending_approval')
+						.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+					newActivePlan = pendingPlans[0]
 						|| plans.find(p => p.status === 'executing' || p.status === 'approved')
 						|| null;
 				}
@@ -406,14 +432,39 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 			console.warn('[OrchestrationStore] updatePlanFromEvent received invalid plan:', plan);
 			return;
 		}
+		console.log(`[OrchestrationStore] updatePlanFromEvent: planId=${plan.id}, status=${plan.status}`);
 		set(state => {
 			const exists = state.plans.some(p => p && p.id === plan.id);
 			const plans = exists
 				? state.plans.map(p => p && p.id === plan.id ? plan : p).filter(Boolean)
 				: [...state.plans.filter(Boolean), plan];
+
+			// Determine the new activePlan:
+			// 1. If the updated plan is the current activePlan, keep it synced
+			// 2. If the plan is pending_approval, always auto-activate it — this
+			//    ensures the TaskOverviewEditorPane shows the plan the user just
+			//    created from the chat (e.g. /plan test99), even if loadPlans()
+			//    already populated the store with this plan from the host.
+			// 3. Otherwise, keep the current activePlan unchanged
+			let newActivePlan = state.activePlan;
+			if (newActivePlan?.id === plan.id) {
+				newActivePlan = plan;
+			} else if (plan.status === 'pending_approval') {
+				// Only auto-activate if there's no activePlan, or the current activePlan
+				// is not pending_approval, or this updated plan is newer than the current
+				// activePlan. This prevents older pending plans (e.g. test55) from
+				// overriding a newer one (e.g. test100) when their tasks update.
+				if (!newActivePlan ||
+					newActivePlan.status !== 'pending_approval' ||
+					(plan.createdAt || '').localeCompare(newActivePlan.createdAt || '') > 0) {
+					newActivePlan = plan;
+					console.log(`[OrchestrationStore] Auto-activated pending_approval plan: ${plan.id}`);
+				}
+			}
+
 			return {
 				plans,
-				activePlan: state.activePlan?.id === plan.id ? plan : state.activePlan,
+				activePlan: newActivePlan,
 			};
 		});
 	},

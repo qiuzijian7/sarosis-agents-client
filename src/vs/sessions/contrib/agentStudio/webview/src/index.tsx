@@ -170,8 +170,36 @@ initMessageClient((type, data) => {
 		case 'orchestration.planCreated':
 		case 'orchestration.planUpdated': {
 			const plan = data as import('./store/useOrchestrationStore.js').OrchestrationPlan;
+			console.log(`[AgentStudio] orchestration.planUpdated: planId=${plan?.id}, status=${plan?.status}`);
 			useOrchestrationStore.getState().updatePlanFromEvent(plan);
 			window.dispatchEvent(new CustomEvent('agentStudio:orchestration-plan-updated', { detail: plan }));
+
+			// When a plan status changes (e.g. rejected from TaskOverviewEditorPane),
+			// update the matching chat message metadata so EmployeeChat re-renders
+			// its message list.  This is necessary because:
+			//   1. ChatMessageRaw is wrapped in React.memo — the memo comparator
+			//      only runs when the parent (EmployeeChat) re-renders.
+			//   2. The Zustand subscription inside ChatMessageRaw may not fire if
+			//      the plan data in the store doesn't match the message's planId
+			//      (e.g. the host sends a stale or different plan object).
+			//   3. EmployeeChat only re-renders when the messages array changes.
+			// Mutating the metadata._planStatus forces a new message object ref,
+			// which triggers EmployeeChat → ChatMessageComponent → ChatMessageRaw
+			// → OrchestrationPlanInline to re-render with fresh data.
+			if (plan?.id && plan.status !== 'pending_approval') {
+				useChatStore.setState(state => {
+					const updatedMessages = state.messages.map(m =>
+						m.metadata?.type === 'orchestration_plan' && m.metadata.planId === plan.id
+							? { ...m, metadata: { ...m.metadata, _planStatus: plan.status } }
+							: m
+					);
+					const hasChanges = updatedMessages.some((m, i) => m !== state.messages[i]);
+					if (hasChanges) {
+						console.log(`[AgentStudio] Updated chat message metadata for plan ${plan.id} → ${plan.status}`);
+					}
+					return hasChanges ? { messages: updatedMessages } : state;
+				});
+			}
 			break;
 		}
 		case 'orchestration.taskUpdated': {

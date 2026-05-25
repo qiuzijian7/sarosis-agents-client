@@ -332,6 +332,24 @@ export interface ITaskOrchestrationService {
 	rejectPlan(planId: string): Promise<OrchestrationPlan>;
 
 	/**
+	 * Approve a plan without executing it.
+	 * Tasks are created in the task board but not auto-started.
+	 */
+	approveWithoutExecute(planId: string): Promise<OrchestrationPlan>;
+
+	/**
+	 * Update a plan's editable fields (goal, summary).
+	 * Only allowed when plan is in 'pending_approval' status.
+	 */
+	updatePlan(
+		planId: string,
+		updates: {
+			goal?: string;
+			summary?: string;
+		},
+	): Promise<OrchestrationPlan>;
+
+	/**
 	 * Get a specific plan by ID.
 	 */
 	getPlan(planId: string): Promise<OrchestrationPlan | undefined>;

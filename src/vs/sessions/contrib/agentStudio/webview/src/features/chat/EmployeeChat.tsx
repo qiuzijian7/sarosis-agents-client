@@ -356,39 +356,26 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		pendingPlanIdRef.current = null;
 
 		if (plan.status === 'approved' || plan.status === 'executing') {
-			// Approved — add user message + plan inline message
+			// Approved — add user message (the backend persists plan/approval messages)
 			const userMessage: ChatMessage = {
 				id: `user_${Date.now()}`,
 				role: 'user',
 				content: `/plan ${goal}`,
 				timestamp: new Date().toISOString(),
 			};
-			const planMessage: ChatMessage = {
-				id: `plan_${Date.now()}`,
-				role: 'system',
-				content: `✅ 任务计划已批准并开始执行`,
-				metadata: { type: 'orchestration_plan', planId: plan.id },
-				timestamp: new Date().toISOString(),
-			};
 			useChatStore.setState(state => ({
-				messages: [...state.messages, userMessage, planMessage]
+				messages: [...state.messages, userMessage]
 			}));
 		} else if (plan.status === 'rejected') {
-			// Rejected — add user message + rejection notice
+			// Rejected — add user message (the backend persists the rejection message)
 			const userMessage: ChatMessage = {
 				id: `user_${Date.now()}`,
 				role: 'user',
 				content: `/plan ${goal}`,
 				timestamp: new Date().toISOString(),
 			};
-			const rejectMessage: ChatMessage = {
-				id: `reject_${Date.now()}`,
-				role: 'system',
-				content: `❌ 任务计划已被拒绝`,
-				timestamp: new Date().toISOString(),
-			};
 			useChatStore.setState(state => ({
-				messages: [...state.messages, userMessage, rejectMessage]
+				messages: [...state.messages, userMessage]
 			}));
 		}
 		// If status changed to something else (e.g. error), don't add messages.
@@ -446,12 +433,24 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			// Don't add user message yet — wait for plan approval in dialog
 			try {
 				const plan = await useOrchestrationStore.getState().createPlan(goal, workspaceId, plannerId);
-				
+
 				if (plan) {
 					// Store pending plan info; messages will be added after user approves/rejects
-					// The dialog is shown in the Task Board panel, not here in chat.
 					pendingPlanGoalRef.current = goal;
 					pendingPlanIdRef.current = plan.id;
+
+					// Add the plan card to chat immediately so the user sees the result
+					// (the backend also persists an identical message to chat history)
+					const planMessage: ChatMessage = {
+						id: `plan_${plan.id}`,
+						role: 'system',
+						content: `✅ 任务计划已创建，请在下方面板中审批：`,
+						metadata: { type: 'orchestration_plan', planId: plan.id },
+						timestamp: plan.updatedAt,
+					};
+					useChatStore.setState(state => ({
+						messages: [...state.messages, planMessage]
+					}));
 				}
 			} catch (err) {
 				console.error('[EmployeeChat] Failed to create plan:', err);
