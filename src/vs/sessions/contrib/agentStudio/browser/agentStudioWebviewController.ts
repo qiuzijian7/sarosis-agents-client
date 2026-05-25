@@ -831,6 +831,15 @@ export class AgentStudioWebviewController extends Disposable {
 		let agentSessionId = payload.agentSessionId as string | undefined;
 		const workspaceSessionId = payload.workspaceSessionId as string | undefined;
 		const workspaceId = payload.workspaceId as string | undefined;
+		const chatMode = payload.chatMode as string | undefined;
+
+		// ─── Workflow mode: delegate to orchestration service ───────────
+		// When the user selects "Workflow" mode in the chat, the message
+		// is routed to executeWorkflow which runs the agent chain.
+		if (chatMode === 'workflow' && workspaceId) {
+			this._runWorkflowStream(employeeId, message, workspaceId, agentSessionId);
+			return { status: "streaming", employeeId };
+		}
 
 		// If we're in a Fork but no agentSessionId was provided, lazily create one
 		if (workspaceId && workspaceSessionId && !agentSessionId) {
@@ -1046,6 +1055,7 @@ export class AgentStudioWebviewController extends Disposable {
 					workspaceId: payload.workspaceId as string | undefined,
 					agentSessionId,
 					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
+					chatMode: payload.chatMode as import("../../../common/agentStudioService.js").ChatMode | undefined,
 				},
 				(delta: IChatStreamDelta) => {
 					// Capture provider session ID from metadata (e.g. Knot AG-UI threadId)
@@ -1137,6 +1147,73 @@ export class AgentStudioWebviewController extends Disposable {
 			this._sendEvent("chat.stream.complete", {
 				employeeId,
 				sessionId: sessionIdForEvent,
+				message: { content: "", error: errMsg },
+			});
+		}
+	}
+
+	/**
+	 * Run a workflow stream: persist the user message, then delegate to
+	 * TaskOrchestrationService.executeWorkflow which drives the agent chain.
+	 * The orchestration service handles the actual streaming via its own
+	 * _streamEventCallback, so we just kick off the workflow and let it run.
+	 */
+	private async _runWorkflowStream(
+		employeeId: string,
+		message: string,
+		workspaceId: string,
+		agentSessionId?: string,
+	): Promise<void> {
+		// Persist the user message to chat history
+		const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage = {
+			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+			role: "user",
+			content: message,
+			employeeId,
+			agentSessionId,
+			timestamp: new Date().toISOString(),
+			metadata: { type: 'workflow' },
+		};
+		this.agentChatService
+			.appendMessage(employeeId, userMessage)
+			.catch((err) =>
+				this.logService.error(
+					"[AgentStudio] Failed to persist workflow user message:",
+					err,
+				),
+			);
+
+		try {
+			const planId = await this.taskOrchestrationService.executeWorkflow(
+				employeeId,
+				message,
+				workspaceId,
+				{ agentSessionId },
+			);
+			this.logService.info(`[AgentStudio] Workflow started: planId=${planId}, agentId=${employeeId}`);
+
+			// Auto-open Task Overview to show the workflow progress
+			try {
+				const input = TaskOverviewEditorInput.getOrCreate();
+				const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+				const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+				await this.editorService.openEditor(input, { pinned: true, preserveFocus: true }, targetGroup);
+			} catch (err) {
+				this.logService.warn('[AgentStudio] Failed to auto-open TaskOverviewEditorPane for workflow:', err);
+			}
+		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
+			this.logService.error(`[AgentStudio] executeWorkflow error for ${employeeId}:`, err);
+
+			this._sendEvent("chat.stream.error", {
+				employeeId,
+				sessionId: agentSessionId || "",
+				error: errMsg,
+			});
+
+			this._sendEvent("chat.stream.complete", {
+				employeeId,
+				sessionId: agentSessionId || "",
 				message: { content: "", error: errMsg },
 			});
 		}

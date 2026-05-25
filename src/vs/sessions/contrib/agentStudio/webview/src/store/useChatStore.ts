@@ -136,6 +136,8 @@ interface ChatState {
 	 * back to a planner chat.
 	 */
 	decompositionProgress: Record<string, ChatMessage[]>;
+	/** Current chat mode: craft / ask / plan / workflow */
+	chatMode: 'craft' | 'ask' | 'plan' | 'workflow';
 
 	// Actions
 	setActiveEmployee: (employeeId: string) => void;
@@ -169,6 +171,8 @@ interface ChatState {
 	deleteAgentSession: (sessionId: string) => Promise<void>;
 	/** Append a decomposition progress message for the given employee */
 	addDecompositionProgress: (employeeId: string, message: ChatMessage) => void;
+	/** Set the current chat mode */
+	setChatMode: (mode: 'craft' | 'ask' | 'plan' | 'workflow') => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -387,6 +391,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		activeAgentSessionId: null,
 		agentSessions: [],
 		decompositionProgress: {},
+		chatMode: 'craft',
 
 		setActiveEmployee: (employeeId: string) => {
 			const current = get().activeEmployeeId;
@@ -413,6 +418,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				inputValue: '',
 				agentSessions: [],
 				streamState: newStreamState,
+				chatMode: 'craft',
 			});
 
 			if (forkSessionId) {
@@ -585,7 +591,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		sendMessage: async (message: string) => {
 			// Guard: never send empty or whitespace-only messages to the LLM
 			if (!message || !message.trim()) { return; }
-			let { activeEmployeeId, activeAgentSessionId, streamState } = get();
+			let { activeEmployeeId, activeAgentSessionId, streamState, chatMode } = get();
 			if (!activeEmployeeId) { return; }
 
 			// ── 解析 /skill <id> 命令，提取显式激活的技能 ID ──
@@ -665,6 +671,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					workspaceSessionId,
 					workspaceId,
 					explicitSkillIds: explicitSkillIds.length > 0 ? explicitSkillIds : undefined,
+					chatMode,
 				});
 				// After send completes, refresh session list to update messageCount
 				get().loadAgentSessions(activeEmployeeId!);
@@ -846,6 +853,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 					},
 				};
 			});
+		},
+
+		setChatMode: (mode: 'craft' | 'ask' | 'plan' | 'workflow') => {
+			set({ chatMode: mode });
 		},
 	};
 });

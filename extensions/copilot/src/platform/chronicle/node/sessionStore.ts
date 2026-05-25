@@ -57,7 +57,7 @@ export class SessionStore implements ISessionStore {
 	/**
 	 * Lazily open (or create) the database and ensure the schema exists.
 	 */
-	private ensureDb(): DatabaseSync {
+	protected ensureDb(): DatabaseSync {
 		if (this.db) {
 			return this.db;
 		}

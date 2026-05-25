@@ -45,6 +45,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const providerDropdownRef = useRef<HTMLDivElement>(null);
 	const agentDropdownRef = useRef<HTMLDivElement>(null);
 	const modelDropdownRef = useRef<HTMLDivElement>(null);
+	const modeDropdownRef = useRef<HTMLDivElement>(null);
+	const [showModeDropdown, setShowModeDropdown] = useState(false);
 
 	// 命令系统状态
 	const [showCommandMenu, setShowCommandMenu] = useState(false);
@@ -58,12 +60,30 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const [selectedSkillIndex, setSelectedSkillIndex] = useState(0);
 	const skillMenuRef = useRef<HTMLDivElement>(null);
 	const commandMenuRef = useRef<HTMLDivElement>(null);
-	const { activeEmployeeId } = useChatStore();
+	const { activeEmployeeId, chatMode, setChatMode } = useChatStore();
 	const { employees } = useEmployeeStore();
 	const { providers, selection, selectProvider, openProviderSettings } = useProviderStore();
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
+
+	// Mode options
+	const modeOptions = useMemo(() => {
+		const all = [
+			{ id: 'craft' as const, label: 'Craft' },
+			{ id: 'ask' as const, label: 'Ask' },
+			{ id: 'plan' as const, label: 'Plan' },
+			{ id: 'workflow' as const, label: 'Workflow' },
+		];
+		const isPlanner = activeEmployee?.agentType === 'planner'
+			|| activeEmployee?.presetId === 'planner'
+			|| activeEmployee?.role?.toLowerCase().includes('planner')
+			|| activeEmployee?.name?.toLowerCase() === 'planner';
+		if (!isPlanner) {
+			return all.filter(m => m.id !== 'plan');
+		}
+		return all;
+	}, [activeEmployee]);
 
 	// 从 provider store 获取当前选中的 Provider/Model 名称
 	const authenticatedProviders = providers.filter(p => p.authStatus === 'authenticated');
@@ -122,6 +142,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 				setShowModelDropdown(false);
 				setModelSearchQuery('');
 			}
+			if (modeDropdownRef.current && !modeDropdownRef.current.contains(e.target as Node)) {
+				setShowModeDropdown(false);
+			}
 			// 命令菜单和技能菜单的点击外部关闭
 			if (commandMenuRef.current && !commandMenuRef.current.contains(e.target as Node)) {
 				setShowCommandMenu(false);
@@ -164,6 +187,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		setShowProviderDropdown(false);
 		setShowAgentDropdown(false);
 		setShowModelDropdown(false);
+		setShowModeDropdown(false);
 		setModelSearchQuery('');
 	}, []);
 
@@ -205,6 +229,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		setShowProviderDropdown(false);
 		setShowAgentDropdown(false);
 		setShowModelDropdown(false);
+		setShowModeDropdown(false);
 		setCommandFilter('');
 		setSkillFilter('');
 		setSelectedCommandIndex(0);
@@ -633,6 +658,45 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 						{/* 分隔线 */}
 						<div className="chat-toolbar-divider" />
+
+						{/* Mode 选择器 */}
+						<div className="provider-model-chip-wrap mode-chip-wrap" ref={modeDropdownRef}>
+							<button
+								className="chat-toolbar-btn has-label mode-tag"
+								title="选择模式"
+								onClick={() => {
+									const wasOpen = showModeDropdown;
+									closeAllDropdowns();
+									if (!wasOpen) { setShowModeDropdown(true); }
+								}}
+							>
+								<span className="toolbar-btn-label">{modeOptions.find(m => m.id === chatMode)?.label || 'Craft'}</span>
+								<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+									<path d="M6 9l6 6 6-6" />
+								</svg>
+							</button>
+							{showModeDropdown && (
+								<div className="provider-dropdown mode-dropdown-composer">
+									{modeOptions.map(opt => (
+										<button
+											key={opt.id}
+											className={`provider-dropdown-item ${chatMode === opt.id ? 'active' : ''}`}
+											onClick={() => {
+												setChatMode(opt.id);
+												setShowModeDropdown(false);
+											}}
+										>
+											<span className="provider-dropdown-name">{opt.label}</span>
+											{chatMode === opt.id && (
+												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+													<polyline points="20 6 9 17 4 12" />
+												</svg>
+											)}
+										</button>
+									))}
+								</div>
+							)}
+						</div>
 
 						{/* Provider 选择器 */}
 						<div className="provider-model-chip-wrap" ref={providerDropdownRef}>

@@ -300,8 +300,8 @@ export interface Delegation {
 }
 
 export interface ChatMessageMetadata {
-	type: 'orchestration_plan';
-	planId: string;
+	type: 'orchestration_plan' | 'workflow';
+	planId?: string;
 }
 
 // Reference item for ReferencesCard (VS Code chatReferencesContentPart pattern)

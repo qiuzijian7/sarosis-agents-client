@@ -3,13 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { IExecutionProvider, IAgentTurnRequest, IChatStreamDelta, ISlotRegistry, IToolResult } from '../../../common/providers.js';
+import type { IExecutionProvider, IAgentTurnRequest, IChatStreamDelta, ISlotRegistry, IToolResult, IToolDefinition } from '../../../common/providers.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { ContextManager } from '../../../common/contextManager.js';
 import { ToolArgumentRepairer } from '../../../common/toolRepair.js';
 import { ParallelToolExecutor } from '../../../common/parallelToolExecutor.js';
 import type { IChatMessage, IModelOptions, IToolCallInfo, IModelDelta } from '../../../common/providers.js';
+import type { ChatMessage } from '../../../common/types.js';
 
 /**
  * 完整的 Execution Provider 实现
@@ -107,14 +108,61 @@ export class ExecutionProvider implements IExecutionProvider {
 				}
 
 				// 7.1 上下文压缩（如需要）
-				messages = await contextManager.compressIfNeeded(messages, this._contextWindow);
+				messages = [...await contextManager.compressIfNeeded(messages as unknown as ReadonlyArray<ChatMessage>, this._contextWindow)] as unknown as IChatMessage[];
 
 				// 7.2 构建模型选项
+				let tools: IToolDefinition[] | undefined;
+				if (toolProvider) {
+					const allTools = await toolProvider.listTools(request.agentId);
+					const chatMode = request.chatMode || 'craft';
+
+					if (chatMode === 'plan') {
+						// Plan mode: no tools — pure text decomposition
+						tools = undefined;
+						this._logService.info('[ExecutionProvider] PLAN mode: tools disabled');
+					} else if (chatMode === 'ask') {
+						// Ask mode: only read-only tools (no file_write, terminal, or destructive operations)
+						const readOnlyPatterns = [
+							/^file_read$/i, /^search_files$/i, /^search$/i, /^grep$/i, /^find$/i,
+							/^list_files$/i, /^list_dir$/i, /^read$/i, /^cat$/i, /^head$/i, /^tail$/i,
+							/^glob$/i, /^ripgrep$/i, /^rg$/i, /^tree$/i, /^ls$/i,
+							/^read_skill$/i, /^web_search$/i, /^web_fetch$/i, /^browser/i,
+							/^symbol/i, /^references$/i, /^definition$/i, /^hover$/i,
+						];
+						const destructivePatterns = [
+							/^file_write$/i, /^file_delete$/i, /^write$/i, /^delete$/i, /^remove$/i,
+							/^terminal$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
+							/^mkdir$/i, /^mv$/i, /^cp$/i, /^rename$/i, /^chmod$/i,
+						];
+						tools = allTools.filter(t => {
+							// Explicitly exclude destructive tools
+							if (destructivePatterns.some(p => p.test(t.name))) {
+								return false;
+							}
+							// Include known read-only tools
+							if (readOnlyPatterns.some(p => p.test(t.name))) {
+								return true;
+							}
+							// For unknown tools, include only if category suggests read-only
+							const cat = (t.category || '').toLowerCase();
+							if (cat === 'search' || cat === 'retrieval' || cat === 'read') {
+								return true;
+							}
+							// Exclude unknown tools by default in ask mode
+							return false;
+						});
+						this._logService.info(`[ExecutionProvider] ASK mode: ${tools.length}/${allTools.length} tools allowed (read-only)`);
+					} else {
+						// Craft / default: all tools
+						tools = allTools;
+					}
+				}
+
 				const modelOptions: IModelOptions = {
 					temperature: request.options?.temperature ?? 0.7,
 					maxTokens: request.options?.maxTokens ?? this._maxTokens,
 					systemPrompt: request.systemPrompt,
-					tools: toolProvider ? await toolProvider.listTools(request.agentId) : undefined,
+					tools,
 					stop: request.options?.stop,
 				};
 

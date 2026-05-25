@@ -14,6 +14,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
+import { ConnectionType } from '../../../common/agentStudioTypes.js';
 import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
 import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
 import { ISkillRegistry } from '../common/skills.js';
@@ -160,14 +161,20 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 */
 	private async _resolveDataUri(workspaceId?: string): Promise<URI> {
 		if (workspaceId) {
-			return this._getWorkspaceDataUri(workspaceId);
+			const result = await this._getWorkspaceDataUri(workspaceId);
+			this.logService.info(`[AgentStudio] _resolveDataUri(workspaceId=${workspaceId}) -> ${result.toString()}`);
+			return result;
 		}
 		// No workspaceId — try to use the currently open VS Code folder
 		const folderUri = this._getFirstWorkspaceFolderUri();
 		if (folderUri) {
-			return URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
+			const result = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
+			this.logService.info(`[AgentStudio] _resolveDataUri(no workspaceId, folder=${folderUri.toString()}) -> ${result.toString()}`);
+			return result;
 		}
-		return this._getGlobalDataUri();
+		const result = this._getGlobalDataUri();
+		this.logService.info(`[AgentStudio] _resolveDataUri(no workspaceId, no folder) -> ${result.toString()}`);
+		return result;
 	}
 
 	// ─── Data directory helpers ─────────────────────────────────────────────────
@@ -199,10 +206,14 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
 		const ws = workspaces.find(w => w.id === workspaceId);
 		if (ws?.path) {
-			return URI.joinPath(URI.file(ws.path), WORKSPACE_DATA_DIR);
+			const result = URI.joinPath(URI.file(ws.path), WORKSPACE_DATA_DIR);
+			this.logService.info(`[AgentStudio] _getWorkspaceDataUri(${workspaceId}) -> ${result.toString()} (workspace has path)`);
+			return result;
 		}
 		// Fallback: store in global directory under workspace ID
-		return URI.joinPath(this._getGlobalDataUri(), workspaceId);
+		const result = URI.joinPath(this._getGlobalDataUri(), workspaceId);
+		this.logService.info(`[AgentStudio] _getWorkspaceDataUri(${workspaceId}) -> ${result.toString()} (workspace not found or no path, fallback)`);
+		return result;
 	}
 
 	private async _ensureDir(dirUri: URI): Promise<void> {
@@ -288,7 +299,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	async getEmployees(workspaceId?: string): Promise<Employee[]> {
 		const dirUri = await this._resolveDataUri(workspaceId);
+		this.logService.info(`[AgentStudio] getEmployees: workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
 		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+		this.logService.info(`[AgentStudio] getEmployees: found ${employees.length} employees`);
 		// Lazy migration: backfill default skills (e.g. `configmd`) onto
 		// existing agents that pre-date the default-skill bundling. Runs
 		// at most once per dataDir per session.
@@ -477,6 +490,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	async createEmployee(data: Partial<Employee>): Promise<Employee> {
 		const workspaceId = data.workspaceId;
 		const dirUri = await this._resolveDataUri(workspaceId);
+		this.logService.info(`[AgentStudio] createEmployee: workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
 		const filename = DATA_FILE_EMPLOYEES;
 
 		const employees = await this._readJsonFile<Employee>(dirUri, filename);
@@ -939,6 +953,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			throw new Error(`Workspace not found: ${id}`);
 		}
 		workspaces[index].layout = layout;
+		
+		// Sync edges from layout to connections to keep data consistent
+		if (layout.edges) {
+			workspaces[index].connections = layout.edges.map(e => ({
+				id: e.id,
+				sourceId: e.source,
+				targetId: e.target,
+				type: (e.type as ConnectionType) || ConnectionType.Subagent,
+				label: (e.data?.label as string) || '',
+			}));
+		}
+		
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
@@ -983,6 +1009,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			...connection,
 		};
 		workspaces[index].connections.push(newConnection);
+		
+		// Also update layout.edges to keep data consistent
+		if (workspaces[index].layout) {
+			workspaces[index].layout!.edges.push({
+				id: newConnection.id,
+				source: newConnection.sourceId,
+				target: newConnection.targetId,
+				type: newConnection.type,
+				data: { label: newConnection.label },
+			});
+		}
+		
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
@@ -1012,6 +1050,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			throw new Error(`Workspace not found: ${workspaceId}`);
 		}
 		workspaces[index].connections = workspaces[index].connections.filter((c: Connection) => c.id !== connectionId);
+		
+		// Also remove from layout.edges to keep data consistent
+		if (workspaces[index].layout) {
+			workspaces[index].layout = {
+				...workspaces[index].layout,
+				edges: workspaces[index].layout.edges.filter(e => e.id !== connectionId),
+			};
+		}
+		
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 

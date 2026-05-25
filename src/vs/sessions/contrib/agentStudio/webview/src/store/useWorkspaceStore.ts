@@ -104,10 +104,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 	setActiveWorkspace: async (id: string) => {
 		set({ isLoading: true, activeWorkspaceId: id });
 		try {
-			const workspace = await sendRequest<{ id: string }, { layout?: { nodes: WorkspaceNode[]; edges: WorkspaceEdge[]; viewport?: { x: number; y: number; zoom: number } } }>('workspace.get', { id });
+			const workspace = await sendRequest<{ id: string }, any>('workspace.get', { id });
+			
+			// Load edges from layout.edges, fallback to connections if layout.edges is empty
+			let edges = workspace?.layout?.edges || [];
+			if (edges.length === 0 && workspace?.connections) {
+				// Build edges from connections as fallback
+				edges = workspace.connections.map((conn: any) => ({
+					id: conn.id,
+					source: conn.sourceId,
+					target: conn.targetId,
+					type: conn.type,
+					data: { label: conn.label },
+				}));
+			}
+			
 			set({
 				nodes: workspace?.layout?.nodes || [],
-				edges: workspace?.layout?.edges || [],
+				edges: edges,
 				viewport: workspace?.layout?.viewport || { x: 0, y: 0, zoom: 1 },
 				isLoading: false,
 			});

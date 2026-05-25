@@ -41,6 +41,7 @@ export interface Employee {
 	sortOrder?: number;
 	subagentOf?: string | null;
 	category?: string;
+	connections?: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>;
 	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
 	agentDir?: string;
 	/** Number of skills that are missing from the skill library (for UI warning badge) */

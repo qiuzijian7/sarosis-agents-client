@@ -393,6 +393,8 @@ export interface IAgentTurnRequest {
 	readonly options?: IModelOptions;
 	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
 	readonly explicitSkillIds?: readonly string[];
+	/** Current chat mode: craft (full access), ask (read-only tools), plan (decomposition only), workflow (craft + downstream agents) */
+	readonly chatMode?: 'craft' | 'ask' | 'plan' | 'workflow';
 }
 
 export interface IChatStreamDelta {

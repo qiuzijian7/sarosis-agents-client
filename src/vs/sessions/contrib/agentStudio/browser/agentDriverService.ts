@@ -214,13 +214,44 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// 3a-2. 注入已启用工具的使用指引（让模型知道有工具可用）
 			try {
 				const allTools = await this._agentOS.listAllToolsWithState(request.agentId);
-				const enabledTools = allTools.filter(t => t.enabled);
+				let enabledTools = allTools.filter(t => t.enabled);
+				const chatMode = request.chatMode || 'craft';
+
+				// Filter tools by chat mode
+				if (chatMode === 'plan') {
+					// Plan mode: no tool injection
+					enabledTools = [];
+				} else if (chatMode === 'ask') {
+					// Ask mode: only read-only tools
+					const destructivePatterns = [
+						/^file_write$/i, /^file_delete$/i, /^write$/i, /^delete$/i, /^remove$/i,
+						/^terminal$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
+						/^mkdir$/i, /^mv$/i, /^cp$/i, /^rename$/i, /^chmod$/i,
+					];
+					const readOnlyPatterns = [
+						/^file_read$/i, /^search_files$/i, /^search$/i, /^grep$/i, /^find$/i,
+						/^list_files$/i, /^list_dir$/i, /^read$/i, /^cat$/i, /^head$/i, /^tail$/i,
+						/^glob$/i, /^ripgrep$/i, /^rg$/i, /^tree$/i, /^ls$/i,
+						/^read_skill$/i, /^web_search$/i, /^web_fetch$/i, /^browser/i,
+						/^symbol/i, /^references$/i, /^definition$/i, /^hover$/i,
+					];
+					enabledTools = enabledTools.filter(t => {
+						if (destructivePatterns.some(p => p.test(t.name))) { return false; }
+						if (readOnlyPatterns.some(p => p.test(t.name))) { return true; }
+						const cat = ((t.category || '') as string).toLowerCase();
+						if (cat === 'search' || cat === 'retrieval' || cat === 'read') { return true; }
+						return false;
+					});
+				}
+
 				if (enabledTools.length > 0) {
 					const toolSection = [
 						'',
 						'## Available Tools',
 						'',
-						'You have access to the following tools. When a user asks you to perform an action that requires interacting with the filesystem, executing commands, searching the web, or any other external system, you MUST use the appropriate tool instead of explaining that you cannot do it.',
+						chatMode === 'ask'
+							? 'You have access to the following READ-ONLY tools. You may use them to read files and search code, but you MUST NOT modify, delete, or create any files.'
+							: 'You have access to the following tools. When a user asks you to perform an action that requires interacting with the filesystem, executing commands, searching the web, or any other external system, you MUST use the appropriate tool instead of explaining that you cannot do it.',
 						'',
 						'CRITICAL: You MUST ONLY use the exact tool names listed below. Do NOT invent or guess tool names (e.g., do NOT use "os.getcwd", "read_file", etc.). Use ONLY the names from this list.',
 						'',
@@ -228,11 +259,19 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						'',
 						...enabledTools.map(t => `- ${t.name}: ${t.description || 'No description'}`),
 						'',
-						'Usage rules:',
-						'- To execute a shell command (e.g., "print current directory", "list files"), use: **terminal** with {"command": "<your command>"}',
-						'- To read a file, use: **file_read** with {"path": "<file path>"}',
-						'- To write a file, use: **file_write** with {"path": "<file path>", "content": "<content>"}',
-						'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
+					];
+
+					if (chatMode !== 'ask') {
+						toolSection.push(
+							'Usage rules:',
+							'- To execute a shell command (e.g., "print current directory", "list files"), use: **terminal** with {"command": "<your command>"}',
+							'- To read a file, use: **file_read** with {"path": "<file path>"}',
+							'- To write a file, use: **file_write** with {"path": "<file path>", "content": "<content>"}',
+							'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
+						);
+					}
+
+					toolSection.push(
 						'',
 						'When you need to use a tool, respond with a function call using the exact tool name and required arguments.',
 						'',
@@ -241,9 +280,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						'If your model does NOT support function calling, output a JSON object in this exact format: {"name": "<tool_name>", "arguments": {<args>}}.',
 						'Never output tool calls as plain text explanations or code blocks without the proper format.',
 						'',
-					].join('\n');
-					mergedSystemPrompt = mergedSystemPrompt + toolSection;
-					this._logService.info(`[AgentDriver] Injected ${enabledTools.length} enabled tools into systemPrompt`);
+					);
+
+					const toolSectionStr = toolSection.join('\n');
+					mergedSystemPrompt = mergedSystemPrompt + toolSectionStr;
+					this._logService.info(`[AgentDriver] Injected ${enabledTools.length} enabled tools into systemPrompt (mode=${chatMode})`);
 				}
 			} catch (error) {
 				this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
@@ -477,12 +518,58 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		message: string,
 		options: IChatSendOptions,
 	): AsyncIterable<IChatStreamDelta> {
+		// Inject mode-specific system prompt constraints
+		let modeSystemPrompt = options.systemPrompt || '';
+		const chatMode = options.chatMode || 'craft';
+
+		if (chatMode === 'ask') {
+			modeSystemPrompt = modeSystemPrompt + '\n\n' + [
+				'## Chat Mode: ASK (Read-Only)',
+				'',
+				'You are in ASK mode. You may use tools to READ files, search code, and retrieve information,',
+				'but you MUST NOT modify, delete, create, or overwrite any local files or execute shell commands that change state.',
+				'',
+				'Allowed actions:',
+				'- Read file contents (file_read, search_files, etc.)',
+				'- Search and browse code/documentation',
+				'- Answer questions based on existing files and context',
+				'- Provide explanations, analysis, and suggestions',
+				'',
+				'Forbidden actions:',
+				'- Writing, creating, or overwriting files (file_write, etc.)',
+				'- Deleting files or directories',
+				'- Executing terminal commands that modify the filesystem (e.g., git commit, npm install, mkdir)',
+				'- Any operation that changes the state of the workspace',
+				'',
+				'If the user asks you to perform a forbidden action, explain that you are in ASK mode and suggest switching to CRAFT mode.',
+			].join('\n');
+		} else if (chatMode === 'plan') {
+			modeSystemPrompt = modeSystemPrompt + '\n\n' + [
+				'## Chat Mode: PLAN (Task Decomposition Only)',
+				'',
+				'You are in PLAN mode. Your ONLY job is to analyze the user\'s request and produce a clear,',
+				'structured task decomposition / implementation plan.',
+				'',
+				'You MUST NOT use any tools or modify any files. You MUST NOT execute any code or commands.',
+				'',
+				'Your response should:',
+				'1. Analyze the user\'s goal and identify key requirements',
+				'2. Break down the goal into concrete, ordered sub-tasks',
+				'3. For each sub-task, describe what needs to be done, which files are likely involved, and any dependencies',
+				'4. Estimate complexity and suggest an execution order',
+				'5. Flag any risks, assumptions, or open questions',
+				'',
+				'If the user asks you to actually implement something, explain that you are in PLAN mode and suggest switching to CRAFT mode for execution.',
+			].join('\n');
+		}
+
 		const request: IAgentTurnRequest = {
 			agentId: employeeId,
 			sessionId: options.agentSessionId,
 			messages: [{ role: 'user', content: message }],
-			systemPrompt: options.systemPrompt,
+			systemPrompt: modeSystemPrompt || undefined,
 			explicitSkillIds: options.explicitSkillIds,
+			chatMode,
 			options: {
 				temperature: options.temperature,
 			},

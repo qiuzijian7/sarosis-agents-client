@@ -206,6 +206,8 @@ export interface IChatStreamDelta {
 	}>;
 }
 
+export type ChatMode = 'craft' | 'ask' | 'plan' | 'workflow';
+
 export interface IChatSendOptions {
 	readonly model?: string;
 	readonly agentId?: string; // selected Agent ID (e.g. Knot Agent)
@@ -217,6 +219,8 @@ export interface IChatSendOptions {
 	// allow-any-unicode-next-line
 	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
 	readonly explicitSkillIds?: readonly string[];
+	/** Current chat mode: craft (full access), ask (read-only tools), plan (decomposition only), workflow (craft + downstream agents) */
+	readonly chatMode?: ChatMode;
 }
 
 export interface IAgentChatService {
@@ -418,6 +422,21 @@ export interface ITaskOrchestrationService {
 		taskBoardRecordId: string,
 		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
 	): Promise<void>;
+
+	/**
+	 * Execute a workflow starting from the given agent.
+	 * The agent processes the user message, then upon completion,
+	 * automatically drives downstream agents (connected via 'subagent'
+	 * connections) to execute in topological order.
+	 * Creates task board items for each step of the workflow.
+	 * Returns the ID of the transient workflow plan for tracking.
+	 */
+	executeWorkflow(
+		agentId: string,
+		message: string,
+		workspaceId: string,
+		options?: { agentSessionId?: string },
+	): Promise<string>;
 
 	/**
 	 * Update a task's editable fields (title, description, assignee, dependencies, priority).

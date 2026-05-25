@@ -277,6 +277,20 @@ export function WorkspaceCanvas(): React.ReactElement {
 		});
 	}, [employees, selectEmployee, setNodes, findNonOverlappingPosition]);
 
+	// Sync edges when storeEdges change (initial load, workspace switch, etc.)
+	useEffect(() => {
+		console.log('[WorkspaceCanvas] storeEdges changed, count:', storeEdges.length);
+		setEdges(storeEdges.map((e) => ({
+			id: e.id,
+			source: e.source,
+			target: e.target,
+			type: 'connection',
+			animated: true,
+			style: { stroke: 'var(--vscode-textLink-foreground, #3b82f6)', strokeWidth: 2 },
+			data: e.data,
+		})));
+	}, [storeEdges, setEdges]);
+
 	// Connection handlers
 	const onConnect = useCallback(async (params: Connection) => {
 		if (!activeWorkspaceId || !params.source || !params.target || isReadOnly) { return; }

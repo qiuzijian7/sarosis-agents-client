@@ -1216,7 +1216,19 @@ export class PresetAgentViewPane extends ViewPane {
 		try {
 			// Use the tracked activeWorkspaceId (kept in sync via the
 			// agent-studio:active-workspace-changed event from the toolbar).
-			const workspaceId = this._activeWorkspaceId;
+			// If undefined, try to resolve from service.
+			let workspaceId = this._activeWorkspaceId;
+			if (!workspaceId) {
+				const workspaces = await this.agentStudioService.getWorkspaces();
+				if (workspaces.length === 1) {
+					workspaceId = workspaces[0].id;
+				} else if (workspaces.length > 1) {
+					// Use the first workspace as fallback
+					workspaceId = workspaces[0].id;
+				}
+				// Update tracked value so future deploys work
+				this._activeWorkspaceId = workspaceId;
+			}
 
 			const employeeData: Partial<Employee> = {
 				name: preset.name,

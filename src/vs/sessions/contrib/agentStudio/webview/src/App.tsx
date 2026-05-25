@@ -104,11 +104,8 @@ function CanvasPanel(): React.ReactElement {
 		console.log('[CanvasPanel] setting up event listeners');
 		const onEmployeesChanged = () => {
 			console.log('[CanvasPanel] event: employees-changed, activeWorkspaceId:', activeWorkspaceId);
-			// Skip if no active workspace yet — initial load will be handled by the effect above
-			if (activeWorkspaceId) {
-				console.log('[CanvasPanel] event: employees-changed, calling loadEmployees');
-				loadEmployees(activeWorkspaceId);
-			}
+			// Always load employees - if no active workspace, load from default location
+			loadEmployees(activeWorkspaceId || undefined);
 		};
 		const onWorkspaceChanged = () => {
 			console.log('[CanvasPanel] event: workspace-changed');
@@ -192,9 +189,8 @@ function ChatPanel(): React.ReactElement {
 
 	useEffect(() => {
 		const onEmployeesChanged = () => {
-			if (activeWorkspaceId) {
-				loadEmployees(activeWorkspaceId);
-			}
+			// Always load employees - if no active workspace, load from default location
+			loadEmployees(activeWorkspaceId || undefined);
 		};
 		const onActiveWorkspaceChanged = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
@@ -364,9 +360,8 @@ function FullLayout(): React.ReactElement {
 	// Listen for host events
 	useEffect(() => {
 		const onEmployeesChanged = () => {
-			if (activeWorkspaceId) {
-				loadEmployees(activeWorkspaceId);
-			}
+			// Always load employees - if no active workspace, load from default location
+			loadEmployees(activeWorkspaceId || undefined);
 		};
 		const onWorkspaceChanged = () => { loadWorkspaces(); };
 

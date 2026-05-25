@@ -437,7 +437,39 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}
 
 		// ─── 1. 收集启用的工具 ─────────────────────────────────────
-		const enabledTools = await this._getEnabledTools(request.agentId);
+		const allEnabledTools = await this._getEnabledTools(request.agentId);
+		const chatMode = request.chatMode || 'craft';
+		let enabledTools: typeof allEnabledTools;
+
+		if (chatMode === 'plan') {
+			// Plan mode: no tools — pure text decomposition
+			enabledTools = [];
+			this._logService.info(`[AgentOS] PLAN mode: tools disabled for agent ${request.agentId}`);
+		} else if (chatMode === 'ask') {
+			// Ask mode: only read-only tools
+			const destructivePatterns = [
+				/^file_write$/i, /^file_delete$/i, /^write$/i, /^delete$/i, /^remove$/i,
+				/^terminal$/i, /^shell$/i, /^exec$/i, /^bash$/i, /^command$/i,
+				/^mkdir$/i, /^mv$/i, /^cp$/i, /^rename$/i, /^chmod$/i,
+			];
+			const readOnlyPatterns = [
+				/^file_read$/i, /^search_files$/i, /^search$/i, /^grep$/i, /^find$/i,
+				/^list_files$/i, /^list_dir$/i, /^read$/i, /^cat$/i, /^head$/i, /^tail$/i,
+				/^glob$/i, /^ripgrep$/i, /^rg$/i, /^tree$/i, /^ls$/i,
+				/^read_skill$/i, /^web_search$/i, /^web_fetch$/i, /^browser/i,
+				/^symbol/i, /^references$/i, /^definition$/i, /^hover$/i,
+			];
+			enabledTools = allEnabledTools.filter((t: any) => {
+				if (destructivePatterns.some(p => p.test(t.name))) { return false; }
+				if (readOnlyPatterns.some(p => p.test(t.name))) { return true; }
+				const cat = ((t.category || '') as string).toLowerCase();
+				if (cat === 'search' || cat === 'retrieval' || cat === 'read') { return true; }
+				return false;
+			});
+			this._logService.info(`[AgentOS] ASK mode: ${enabledTools.length}/${allEnabledTools.length} tools allowed (read-only) for agent ${request.agentId}`);
+		} else {
+			enabledTools = allEnabledTools;
+		}
 		this._logService.info(`[AgentOS] Direct mode: ${enabledTools.length} enabled tools for agent ${request.agentId}`);
 
 		// ─── 2. 初始化消息历史 ─────────────────────────────────────

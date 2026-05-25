@@ -147,8 +147,8 @@ interface EmployeeChatProps {
 }
 
 export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.ReactElement {
-	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee, isLoading } = useChatStore();
-	const { employees, selectedEmployeeId } = useEmployeeStore();
+	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee, isLoading, chatMode } = useChatStore();
+	const { employees, selectedEmployeeId, selectEmployee } = useEmployeeStore();
 	const { selection, loadSelectionForEmployee } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -468,11 +468,34 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		}
 	}, [activeEmployeeId]);
 
-	// Count team members and tasks
-	const teamMembers = activeEmployeeId
-		? employees.filter(e => e.teamId === activeEmployee?.teamId || e.id === activeEmployeeId).length
-		: 0;
+	// Compute superior and subordinates from connections + subagentOf
+	const { superior, subordinates } = useMemo(() => {
+		if (!activeEmployee) { return { superior: undefined as Employee | undefined, subordinates: [] as Employee[] }; }
+		const conns = activeEmployee.connections || [];
+		// Superior: connection where current agent is the target (subagent)
+		let superiorId = activeEmployee.subagentOf || undefined;
+		if (!superiorId) {
+			const supConn = conns.find(c => c.type === 'subagent' && c.targetId === activeEmployee.id);
+			if (supConn) { superiorId = supConn.sourceId; }
+		}
+		const superior = superiorId ? employees.find(e => e.id === superiorId) : undefined;
+		// Subordinates: connections where current agent is the source
+		const subIds = new Set<string>();
+		conns.filter(c => c.type === 'subagent' && c.sourceId === activeEmployee.id).forEach(c => subIds.add(c.targetId));
+		// Also include agents whose subagentOf points to current agent
+		employees.forEach(e => { if (e.subagentOf === activeEmployee.id) { subIds.add(e.id); } });
+		const subordinates = Array.from(subIds).map(id => employees.find(e => e.id === id)).filter(Boolean) as Employee[];
+		return { superior, subordinates };
+	}, [activeEmployee, employees]);
+
 	const taskCount = messages.filter(m => m.role === 'assistant').length;
+
+	// Click handler to switch to another agent's chat
+	const handleSwitchAgent = useCallback((employeeId: string) => {
+		if (employeeId === activeEmployeeId) { return; }
+		selectEmployee(employeeId, true);
+		setActiveEmployee(employeeId);
+	}, [activeEmployeeId, selectEmployee, setActiveEmployee]);
 
 	// Empty state - no employee selected
 	if (!activeEmployee || !selectedEmployeeId) {
@@ -554,10 +577,29 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 				{/* Session Info Bar */}
 				<div className="chat-session-info">
-					<span>PM: {activeEmployee.name}</span>
-					<span className="session-info-sep">|</span>
-					<span>成员: {teamMembers}</span>
-					<span className="session-info-sep">|</span>
+					{superior && (
+						<span className="session-info-hierarchy">
+							<span className="hierarchy-label">上级</span>
+							<span className="hierarchy-agent" onClick={() => handleSwitchAgent(superior.id)} title={`切换到 ${superior.name}`}>
+								{superior.name}
+							</span>
+						</span>
+					)}
+					{superior && subordinates.length > 0 && <span className="session-info-sep">|</span>}
+					{subordinates.length > 0 && (
+						<span className="session-info-hierarchy">
+							<span className="hierarchy-label">下级</span>
+							{subordinates.map((sub, i) => (
+								<React.Fragment key={sub.id}>
+									<span className="hierarchy-agent" onClick={() => handleSwitchAgent(sub.id)} title={`切换到 ${sub.name}`}>
+										{sub.name}
+									</span>
+									{i < subordinates.length - 1 && <span className="hierarchy-comma">,</span>}
+								</React.Fragment>
+							))}
+						</span>
+					)}
+					{(superior || subordinates.length > 0) && <span className="session-info-sep">|</span>}
 					<span>任务: {taskCount}</span>
 				</div>
 

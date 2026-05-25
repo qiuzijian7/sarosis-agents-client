@@ -1467,11 +1467,309 @@ Goal: ${goal}`;
 		return task;
 	}
 
+	// ═══ Workflow Execution ═════════════════════════════════════════════════════
+
 	/**
-	 * Mark a task as completed (called by agent execution or external callback).
-	 * Triggers automatic unblocking of downstream dependent tasks.
+	 * Execute a workflow starting from the given agent.
+	 *
+	 * Algorithm:
+	 * 1. Find the agent and its workspace connections
+	 * 2. Build the downstream dependency graph from 'subagent' connections
+	 * 3. Create a transient OrchestrationPlan with tasks for each agent in the chain
+	 * 4. Execute the starting agent with the user's message
+	 * 5. Upon completion, auto-drive downstream agents using the existing DAG engine
+	 * 6. Create task board items for each step
+	 *
+	 * Returns the transient plan ID.
 	 */
-	async completeTask(planId: string, taskId: string, result?: string): Promise<PlanTask> {
+	async executeWorkflow(
+		agentId: string,
+		message: string,
+		workspaceId: string,
+		options?: { agentSessionId?: string },
+	): Promise<string> {
+		this.logService.info(`[Orchestration] executeWorkflow: agentId=${agentId}, workspaceId=${workspaceId}`);
+
+		// ── Step 1: Get the starting agent ──
+		const startAgent = await this.agentStudioService.getEmployee(agentId);
+		if (!startAgent) {
+			throw new Error(`Agent not found: ${agentId}`);
+		}
+
+		// ── Step 2: Get workspace connections and build downstream graph ──
+		const connections = await this.agentStudioService.getConnections(workspaceId);
+
+		// Only follow 'subagent' connections where this agent is the source (or
+		// a downstream agent is the source).  We build a full descendant tree.
+		const subagentConns = connections.filter(c => c.type === 'subagent');
+
+		// BFS to find all downstream agents from the start agent
+		const agentChain = await this._buildDownstreamChain(agentId, subagentConns);
+
+		if (agentChain.length === 0) {
+			// No downstream agents — just execute the single agent normally
+			// by creating a trivial 1-task plan
+			this.logService.info(`[Orchestration] executeWorkflow: no downstream agents, single-agent workflow for ${agentId}`);
+		}
+
+		// ── Step 3: Create a transient OrchestrationPlan ──
+		const planId = `wf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+		const tasks: PlanTask[] = [];
+		const agentToTaskId = new Map<string, string>();
+
+		// Create a task for each agent in the chain
+		for (let i = 0; i < agentChain.length; i++) {
+			const agent = agentChain[i];
+			const taskId = `wft_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+			agentToTaskId.set(agent.id, taskId);
+
+			// Find dependencies: if this agent is the target of a subagent
+			// connection from another agent in the chain, that's its dependency
+			const deps: string[] = [];
+			for (const conn of subagentConns) {
+				if (conn.targetId === agent.id && agentToTaskId.has(conn.sourceId)) {
+					deps.push(agentToTaskId.get(conn.sourceId)!);
+				}
+			}
+
+			tasks.push({
+				id: taskId,
+				title: agent.name || `Workflow Step ${i + 1}`,
+				description: i === 0 ? message : `上游任务输出`,
+				status: PlanTaskStatus.Pending,
+				dependencies: deps,
+				assigneeId: agent.id,
+				assigneeName: agent.name,
+				assigneeRole: agent.role,
+				autoCreateAgent: false,
+				priority: i + 1,
+				depth: i,
+				retryCount: 0,
+				maxRetries: DEFAULT_MAX_RETRIES,
+				timeoutMs: DEFAULT_TIMEOUT_MS,
+				createdAt: new Date().toISOString(),
+			});
+		}
+
+		// Topological sort to compute proper depths
+		try {
+			this._topologicalSort(tasks);
+		} catch (err) {
+			this.logService.warn(`[Orchestration] Workflow DAG validation warning: ${err}`);
+		}
+
+		const plan: OrchestrationPlan = {
+			id: planId,
+			goal: `[Workflow] ${startAgent.name}: ${message.slice(0, 80)}`,
+			summary: `工作流执行: ${agentChain.map(a => a.name).join(' → ')}`,
+			status: OrchestrationPlanStatus.Executing,
+			tasks,
+			workspaceId,
+			plannerId: agentId,
+			maxConcurrency: 1, // Workflow executes sequentially by default
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		};
+
+		// Persist the plan
+		const plans = await this._readPlans();
+		plans.push(plan);
+		await this._writePlans(plans);
+		this._onDidChangePlan.fire(plan);
+
+		this.logService.info(`[Orchestration] Created workflow plan ${planId} with ${tasks.length} tasks`);
+
+		// ── Step 4: Create task board items ──
+		await this._createTaskBoardItems(plan);
+
+		// ── Step 5: Execute the first (root) task ──
+		// Find root tasks (no dependencies) and start them
+		const rootTasks = tasks.filter(t => t.dependencies.length === 0);
+		for (const rootTask of rootTasks) {
+			rootTask.status = PlanTaskStatus.Running;
+			rootTask.startedAt = new Date().toISOString();
+		}
+		await this._writePlans(plans);
+
+		for (const rootTask of rootTasks) {
+			// Mark the starting agent as busy
+			if (rootTask.assigneeId) {
+				this._markAgentBusy(rootTask.assigneeId);
+			}
+
+			this._onDidChangeTask.fire({ planId, task: rootTask });
+			this._onDidChangePlan.fire(plan);
+
+			// Execute the root task with the user's original message
+			this._executeWorkflowTask(planId, rootTask, options?.agentSessionId).catch(err => {
+				this.logService.error(`[Orchestration] Workflow task ${rootTask.id} execution failed:`, err);
+			});
+		}
+
+		return planId;
+	}
+
+	/**
+	 * Build a chain of agents starting from the given agent, following
+	 * downstream 'subagent' connections (BFS traversal).
+	 * Returns an array of Employee objects in topological order.
+	 */
+	private async _buildDownstreamChain(startAgentId: string, subagentConns: { sourceId: string; targetId: string }[]): Promise<Employee[]> {
+		const visited = new Set<string>();
+		const ordered: Employee[] = [];
+		const queue: string[] = [startAgentId];
+		visited.add(startAgentId);
+
+		while (queue.length > 0) {
+			const currentId = queue.shift()!;
+			const emp = await this.agentStudioService.getEmployee(currentId);
+			if (emp) {
+				ordered.push(emp);
+			}
+
+			// Find direct downstream agents
+			for (const conn of subagentConns) {
+				if (conn.sourceId === currentId && !visited.has(conn.targetId)) {
+					visited.add(conn.targetId);
+					queue.push(conn.targetId);
+				}
+			}
+		}
+
+		return ordered;
+	}
+
+	/**
+	 * Execute a single workflow task. Similar to _executeTask but
+	 * includes the upstream result in the prompt for downstream agents.
+	 */
+	private async _executeWorkflowTask(planId: string, task: PlanTask, agentSessionId?: string): Promise<void> {
+		if (!task.assigneeId) { return; }
+
+		// Resolve the agent's current (or default) session
+		let resolvedSessionId = agentSessionId;
+		if (!resolvedSessionId) {
+			try {
+				const session = await (this.agentChatService as any).getOrCreateActiveSession(
+					task.assigneeId,
+					`工作流: ${task.title}`,
+				);
+				resolvedSessionId = session?.id as string | undefined;
+			} catch {
+				// Fall back to undefined
+			}
+		}
+
+		const sessionIdForEvent = resolvedSessionId || '';
+
+		// Notify the webview that a new session was created for this agent
+		if (this._streamEventCallback && resolvedSessionId) {
+			this._streamEventCallback('workspace.sessionUpdated', {
+				agentId: task.assigneeId,
+				agentSessionId: resolvedSessionId,
+			});
+		}
+
+		// Build the task prompt — for downstream tasks, include the upstream result
+		let taskPrompt: string;
+		if (task.dependencies.length === 0) {
+			// Root task: use the original user message
+			taskPrompt = task.description || task.title;
+		} else {
+			// Downstream task: include upstream results
+			const plans = await this._readPlans();
+			const plan = plans.find(p => p.id === planId);
+			const upstreamResults: string[] = [];
+			if (plan) {
+				for (const depId of task.dependencies) {
+					const depTask = plan.tasks.find(t => t.id === depId);
+					if (depTask?.result) {
+						upstreamResults.push(`**${depTask.assigneeName || depTask.title}** 的输出:\n${depTask.result.slice(0, 2000)}`);
+					}
+				}
+			}
+			taskPrompt = `请基于上游任务的结果执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n\n**上游任务输出**:\n${upstreamResults.join('\n\n') || '(无上游输出)'}`;
+		}
+
+		try {
+			const chatMessage = await this.agentChatService.sendMessage(
+				task.assigneeId,
+				taskPrompt,
+				{ workspaceId: undefined, agentSessionId: resolvedSessionId },
+				(delta) => {
+					if (this._streamEventCallback) {
+						this._streamEventCallback('chat.stream.delta', {
+							employeeId: task.assigneeId,
+							sessionId: sessionIdForEvent,
+							chunks: [delta],
+						});
+					}
+				},
+			);
+
+			const resultContent = chatMessage.content || '';
+			this.logService.info(`[Orchestration] Workflow task ${task.id} completed by agent ${task.assigneeId}`);
+
+			// Notify the webview that the stream completed
+			if (this._streamEventCallback) {
+				this._streamEventCallback('chat.stream.complete', {
+					employeeId: task.assigneeId,
+					sessionId: sessionIdForEvent,
+					message: chatMessage,
+				});
+			}
+
+			// Mark task as completed — this triggers downstream tasks via completeTask
+			await this.completeTask(planId, task.id, resultContent);
+
+			// Agent is now idle — try to auto-execute pending tasks
+			this._markAgentIdle(task.assigneeId);
+			this._tryAutoExecutePendingTasks().catch(err => {
+				this.logService.warn('[Orchestration] Auto-execute check after workflow task completion failed:', err);
+			});
+		} catch (err) {
+			this.logService.error(`[Orchestration] Workflow task ${task.id} execution error:`, err);
+			this._markAgentIdle(task.assigneeId);
+
+			// Notify the webview about the error
+			if (this._streamEventCallback) {
+				this._streamEventCallback('chat.stream.error', {
+					employeeId: task.assigneeId,
+					sessionId: sessionIdForEvent,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
+			// Mark task as error so downstream tasks are not stuck
+			try {
+				const plans = await this._readPlans();
+				const plan = plans.find(p => p.id === planId);
+				const taskRef = plan?.tasks.find(t => t.id === task.id);
+				if (taskRef && taskRef.status === PlanTaskStatus.Running) {
+					taskRef.status = PlanTaskStatus.Error;
+					taskRef.result = err instanceof Error ? err.message : String(err);
+					taskRef.completedAt = new Date().toISOString();
+					if (plan) { plan.updatedAt = taskRef.completedAt; }
+					await this._writePlans(plans);
+					await this._syncTaskBoardStatus(taskRef);
+					this._onDidChangeTask.fire({ planId, task: taskRef });
+					if (plan) { this._onDidChangePlan.fire(plan); }
+
+					if (plan) {
+						const promoted = this._unblockDependentTasks(plan, task.id);
+						for (const p of promoted) {
+							this._onDidChangeTask.fire({ planId, task: p });
+						}
+						this._checkPlanCompletion(plan);
+					}
+				}
+			} catch (markErr) {
+				this.logService.error(`[Orchestration] Failed to mark workflow task ${task.id} as error:`, markErr);
+			}
+		}
+	}
+
+	async completeTask(planId: string, taskId: string, result?: string): Promise<PlanTask | undefined> {
 		const plans = await this._readPlans();
 		const plan = plans.find(p => p.id === planId);
 		if (!plan) { throw new Error(`Plan not found: ${planId}`); }

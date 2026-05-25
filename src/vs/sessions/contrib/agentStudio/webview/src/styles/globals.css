@@ -2524,12 +2524,66 @@ html, body, #root {
 
 /* ─── Session Info Bar ───────────────────────────────────────────────────── */
 
+/* Mode Selector */
+.mode-selector-wrap {
+	position: relative;
+	flex-shrink: 0;
+}
+
+.mode-selector-btn {
+	width: auto;
+	min-width: 54px;
+	padding: 0 6px;
+	gap: 4px;
+}
+
+.mode-dropdown {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 0;
+	min-width: 120px;
+	max-height: 200px;
+	overflow-y: auto;
+	background: var(--as-bg-elevated, var(--vscode-dropdown-background, #1e1e1e));
+	border: 1px solid var(--as-border, var(--vscode-dropdown-border, rgba(128, 128, 128, 0.35)));
+	border-radius: 8px;
+	padding: 4px;
+	z-index: 100;
+	box-shadow: 0 4px 16px var(--as-shadow-heavy, rgba(0, 0, 0, 0.3));
+}
+
+.mode-dropdown-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	width: 100%;
+	padding: 6px 10px;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 12px;
+	cursor: pointer;
+	text-align: left;
+	transition: background 0.1s;
+}
+
+.mode-dropdown-item:hover {
+	background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06));
+}
+
+.mode-dropdown-item.active {
+	background: var(--vscode-list-activeSelectionBackground, rgba(124, 185, 255, 0.12));
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-textLink-foreground, #60a5fa));
+}
+
 .chat-session-info {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  font-size: 10px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 12px;
+	font-size: 10px;
   color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
   border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.1)));
   background-color: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground));
@@ -2538,6 +2592,33 @@ html, body, #root {
 
 .session-info-sep {
   opacity: 0.4;
+}
+
+.session-info-hierarchy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hierarchy-label {
+  opacity: 0.65;
+  margin-right: 2px;
+}
+
+.hierarchy-agent {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  transition: opacity 0.15s;
+}
+
+.hierarchy-agent:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+.hierarchy-comma {
+  opacity: 0.5;
+  margin-right: 2px;
 }
 
 /* ─── Message List ────────────────────────────────────────────────────────── */
@@ -3020,7 +3101,8 @@ html, body, #root {
 /* Provider/Model 标签按钮 */
 .chat-toolbar-btn.provider-tag,
 .chat-toolbar-btn.model-tag,
-.chat-toolbar-btn.agent-tag {
+.chat-toolbar-btn.agent-tag,
+.chat-toolbar-btn.mode-tag {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   border-radius: 6px;
   padding: 4px 8px;
@@ -3029,7 +3111,8 @@ html, body, #root {
 
 .chat-toolbar-btn.provider-tag:hover,
 .chat-toolbar-btn.model-tag:hover,
-.chat-toolbar-btn.agent-tag:hover {
+.chat-toolbar-btn.agent-tag:hover,
+.chat-toolbar-btn.mode-tag:hover {
   border-color: rgba(124, 185, 255, 0.3);
   background: rgba(124, 185, 255, 0.06);
   color: var(--vscode-textLink-foreground, #60a5fa);
