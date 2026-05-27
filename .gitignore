@@ -153,6 +153,7 @@ temp_employeeChat.txt
 
 # 本地配置目录
 .sarosis/
+.sarosisworkspace/
 .workbuddy/
 
 # 临时脚本和文档
@@ -183,3 +184,6 @@ compile_err.txt
 err.txt
 out.txt
 src/vs/sessions/contrib/agentStudio/webview/tserr.txt
+
+.agent
+commit-chat.txt
