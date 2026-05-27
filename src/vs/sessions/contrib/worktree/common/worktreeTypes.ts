@@ -78,11 +78,13 @@ export const WORKTREE_VIEW_CONTAINER_ID = 'sessions.worktree.container';
 export const enum WorktreeCommands {
 	Refresh = 'sessions.worktree.refresh',
 	Create = 'sessions.worktree.create',
+	CreateWithBranch = 'sessions.worktree.createWithBranch',
 	Delete = 'sessions.worktree.delete',
 	Open = 'sessions.worktree.open',
 	OpenInTerminal = 'sessions.worktree.openInTerminal',
 	Remove = 'sessions.worktree.remove',
 	Prune = 'sessions.worktree.prune',
+	Reset = 'sessions.worktree.reset',
 }
 
 export const enum WorktreeContextKeys {
@@ -92,4 +94,72 @@ export const enum WorktreeContextKeys {
 	WorktreeIsDetached = 'sessions.worktree.isDetached',
 	WorktreeIsLocked = 'sessions.worktree.isLocked',
 	WorktreeIsPrunable = 'sessions.worktree.isPrunable',
+}
+
+// ─── Two-phase creation (opencode pattern) ──────────────────────────────────
+
+/**
+ * Options for generating worktree info (phase 1 of two-phase creation).
+ * Compatible with opencode's makeWorktreeInfo pattern.
+ */
+export interface IWorktreeInfoOptions {
+	/** Display name for the worktree (will be slugified for branch name). Auto-generated if omitted. */
+	name?: string;
+	/** If true, create a detached HEAD worktree without a branch. */
+	detached?: boolean;
+}
+
+/**
+ * Pre-computed worktree info (output of phase 1, input of phase 2).
+ * Compatible with opencode's WorktreeInfo pattern.
+ */
+export interface IWorktreeInfo {
+	/** Slugified name (e.g. "feature-auth") */
+	name: string;
+	/** Branch name (e.g. "opencode/feature-auth"), undefined if detached */
+	branch?: string;
+	/** Absolute file system path where the worktree will be created */
+	directory: string;
+}
+
+// ─── Worktree state tracking ────────────────────────────────────────────────
+
+/**
+ * Lifecycle status of a worktree (compatible with opencode's pending/ready/failed).
+ */
+export const enum WorktreeStatus {
+	/** Not using worktree isolation */
+	None = 'none',
+	/** Worktree is being created (git worktree add + boot) */
+	Pending = 'pending',
+	/** Worktree is ready for use */
+	Ready = 'ready',
+	/** Worktree creation or boot failed */
+	Failed = 'failed',
+}
+
+/**
+ * Event payload when a worktree's status changes.
+ */
+export interface IWorktreeStateEvent {
+	/** Absolute path of the worktree directory */
+	directory: string;
+	/** New status */
+	status: WorktreeStatus;
+	/** Optional message (e.g. error details when status=Failed) */
+	message?: string;
+}
+
+/**
+ * Options for creating a workspace with worktree isolation.
+ */
+export interface IWorktreeWorkspaceOptions {
+	/** How to handle worktree for this workspace */
+	mode: 'main' | 'create' | 'existing';
+	/** Name for the new worktree (only for mode='create'). Auto-generated if omitted. */
+	name?: string;
+	/** Existing worktree path (only for mode='existing') */
+	existingPath?: string;
+	/** Whether to create a detached worktree (only for mode='create') */
+	detached?: boolean;
 }

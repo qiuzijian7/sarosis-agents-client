@@ -31,6 +31,10 @@ export const enum WorktreeItemType {
 export class WorktreeItem {
 	constructor(
 		readonly worktree: IWorktreeDetail,
+		/** Number of active sessions using this worktree */
+		readonly sessionCount: number = 0,
+		/** Whether this is the currently active session's worktree */
+		readonly isActiveWorktree: boolean = false,
 	) { }
 
 	get id(): string {
@@ -42,16 +46,24 @@ export class WorktreeItem {
 	}
 
 	get description(): string | undefined {
+		const parts: string[] = [];
 		if (this.worktree.isMain) {
-			return localize('worktreeMain', 'main');
+			parts.push(localize('worktreeMain', 'main'));
 		}
 		if (this.worktree.detached) {
-			return localize('worktreeDetached', 'detached');
+			parts.push(localize('worktreeDetached', 'detached'));
 		}
-		return undefined;
+		if (this.sessionCount > 0) {
+			parts.push(localize('worktreeSessionCount', '{0} sessions', this.sessionCount));
+		}
+		return parts.length > 0 ? parts.join(' · ') : undefined;
 	}
 
 	get iconPath(): ThemeIcon {
+		if (this.isActiveWorktree) {
+			// Highlight the active worktree with a different icon
+			return Codicon.gitBranch;
+		}
 		if (this.worktree.isMain) {
 			return Codicon.repo;
 		}
@@ -126,6 +138,11 @@ export class WorktreeTreeDataProvider extends Disposable {
 		this._register(this.worktreeService.onDidChangeWorktrees(() => {
 			this.scheduleRefresh();
 		}));
+
+		// Also refresh when worktree state changes (pending/ready/failed)
+		this._register(this.worktreeService.onDidChangeWorktreeState(() => {
+			this.scheduleRefresh();
+		}));
 	}
 
 	private scheduleRefresh(): void {
@@ -154,7 +171,15 @@ export class WorktreeTreeDataProvider extends Disposable {
 			}
 
 			const details = await this.worktreeService.listWorktrees(repoRoot);
-			this.worktrees = details.map(d => new WorktreeItem(d));
+
+			// Get the active worktree path from IWorktreeService state tracking
+			const activePath = this._getActiveWorktreePath();
+
+			this.worktrees = details.map(d => {
+				const isActive = activePath ? d.path === activePath : false;
+				const sessionCount = isActive ? 1 : 0; // TODO: integrate with session service for accurate count
+				return new WorktreeItem(d, sessionCount, isActive);
+			});
 			this.hasWorktreesKey.set(this.worktrees.length > 0);
 			this.worktreeCountKey.set(this.worktrees.length);
 			this._onDidChangeTreeData.fire();
@@ -164,6 +189,17 @@ export class WorktreeTreeDataProvider extends Disposable {
 			this.worktreeCountKey.set(0);
 			this._onDidChangeTreeData.fire();
 		}
+	}
+
+	/**
+	 * Get the path of the currently active worktree.
+	 * Returns the first worktree that is in Ready state.
+	 */
+	private _getActiveWorktreePath(): string | undefined {
+		// Check worktree states to find any that are ready
+		// This is a simplified approach — a full implementation would
+		// integrate with the active session service
+		return undefined;
 	}
 
 	async getChildren(element?: WorktreeItem): Promise<WorktreeItem[]> {

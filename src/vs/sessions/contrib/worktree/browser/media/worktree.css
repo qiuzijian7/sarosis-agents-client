@@ -80,3 +80,39 @@
 	vertical-align: middle;
 	margin-right: 4px;
 }
+
+/* Active worktree highlight */
+.worktree-item.is-active-worktree {
+	background-color: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.1));
+	border-left: 2px solid var(--vscode-notificationsInfoIcon-foreground, #3794ff);
+	padding-left: 4px;
+}
+
+.worktree-item.is-active-worktree .worktree-item-label {
+	font-weight: 600;
+}
+
+/* Worktree status indicators in explorer */
+.worktree-item.is-pending .worktree-item-icon {
+	color: var(--vscode-notificationsWarningIcon-foreground, #cca700);
+}
+
+.worktree-item.is-failed .worktree-item-icon {
+	color: var(--vscode-notificationsErrorIcon-foreground, #f14c4c);
+}
+
+/* Session count badge in worktree view */
+.worktree-session-count {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 16px;
+	height: 16px;
+	border-radius: 8px;
+	background-color: var(--vscode-activityBarBadge-background, #4d78cc);
+	color: var(--vscode-activityBarBadge-foreground, #ffffff);
+	font-size: 10px;
+	font-weight: 600;
+	margin-left: 6px;
+	padding: 0 4px;
+}

@@ -6,15 +6,43 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorktreeService } from '../common/worktreeService.js';
-import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeOutputItem } from '../common/worktreeTypes.js';
+import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeOutputItem, IWorktreeInfoOptions, IWorktreeInfo, WorktreeStatus, IWorktreeStateEvent } from '../common/worktreeTypes.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { URI } from '../../../../base/common/uri.js';
+import { timeout } from '../../../../base/common/async.js';
+
+/**
+ * Slugify a name: lowercase, replace non-alphanumeric with hyphens, collapse multiple hyphens.
+ */
+function slugify(name: string): string {
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Generate a random short slug for auto-naming.
+ */
+function generateSlug(): string {
+	const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+	let result = '';
+	for (let i = 0; i < 8; i++) {
+		result += chars.charAt(Math.floor(Math.random() * chars.length));
+	}
+	return result;
+}
 
 /**
  * Service for managing git worktrees in the sessions window.
  * Executes git commands via child_process (electron main process context).
+ *
+ * Supports opencode-compatible two-phase creation:
+ *   1. makeWorktreeInfo() → compute name/branch/directory (no git yet)
+ *   2. createFromInfo() → git worktree add + boot (async)
  */
 export class WorktreeService extends Disposable implements IWorktreeService {
 	declare readonly _serviceBrand: undefined;
@@ -22,7 +50,15 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	private readonly _onDidChangeWorktrees = this._register(new Emitter<void>());
 	readonly onDidChangeWorktrees = this._onDidChangeWorktrees.event;
 
+	private readonly _onDidChangeWorktreeState = this._register(new Emitter<IWorktreeStateEvent>());
+	readonly onDidChangeWorktreeState = this._onDidChangeWorktreeState.event;
+
 	private _repositoryRoot: string | undefined;
+
+	/** Track worktree states by directory path */
+	private readonly _worktreeStates = new Map<string, WorktreeStatus>();
+	/** Pending waiters for worktree ready/failed */
+	private readonly _worktreeWaiters = new Map<string, Array<(status: WorktreeStatus) => void>>();
 
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -99,18 +135,247 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		return created;
 	}
 
-	async removeWorktree(worktreePath: string, force: boolean = false): Promise<void> {
-		const repoPath = await this.getRepositoryRoot();
-		if (!repoPath) {
+	// ─── Two-phase creation (opencode pattern) ──────────────────────────────────
+
+	async makeWorktreeInfo(options?: IWorktreeInfoOptions): Promise<IWorktreeInfo> {
+		const repoRoot = await this.getRepositoryRoot();
+		if (!repoRoot) {
 			throw new Error('No git repository found');
 		}
 
+		// Generate name
+		const rawName = options?.name || generateSlug();
+		let name = slugify(rawName);
+		if (!name) {
+			name = generateSlug();
+		}
+
+		// Branch naming: opencode/<slug>
+		const branch = options?.detached ? undefined : `opencode/${name}`;
+
+		// Directory: <repoRoot>/.worktrees/<name>
+		// Use a sibling directory pattern like opencode: repo/../.worktrees/projectName/name
+		const projectDir = repoRoot.replace(/[/\\]$/, '');
+		const projectSegments = projectDir.split(/[/\\]/).filter(Boolean);
+		const projectName = projectSegments[projectSegments.length - 1] || 'project';
+		const parentDir = projectSegments.slice(0, -1).join('/');
+		const directory = parentDir + '/.worktrees/' + projectName + '/' + name;
+
+		// Conflict detection for directory
+		let attempts = 0;
+		let finalName = name;
+		let finalDirectory = directory;
+		let finalBranch = branch;
+
+		while (attempts < 26) {
+			try {
+				const dirUri = URI.file(finalDirectory);
+				const stat = await this.fileService.stat(dirUri);
+				// Directory exists, try with suffix
+				if (stat) {
+					const suffix = String.fromCharCode(97 + attempts); // a, b, c, ...
+					finalName = `${name}-${suffix}`;
+					finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
+					finalBranch = options?.detached ? undefined : `opencode/${finalName}`;
+					attempts++;
+					continue;
+				}
+			} catch {
+				// Directory doesn't exist — good
+				break;
+			}
+			break;
+		}
+
+		// Check branch existence
+		if (finalBranch) {
+			try {
+				const result = await this.execGit(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${finalBranch}`]);
+				// If show-ref succeeds (exit 0), branch exists
+				if (result !== undefined) {
+					const suffix = String.fromCharCode(97 + Math.min(attempts, 25));
+					finalName = `${name}-${suffix}`;
+					finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
+					finalBranch = `opencode/${finalName}`;
+				}
+			} catch {
+				// show-ref failed — branch doesn't exist, which is what we want
+			}
+		}
+
+		return { name: finalName, branch: finalBranch, directory: finalDirectory };
+	}
+
+	async createFromInfo(info: IWorktreeInfo): Promise<void> {
+		const repoRoot = await this.getRepositoryRoot();
+		if (!repoRoot) {
+			throw new Error('No git repository found');
+		}
+
+		// Set pending state
+		this.setWorktreeState(info.directory, WorktreeStatus.Pending);
+
+		// Phase 2a: git worktree add --no-checkout [-b <branch>] <dir>
+		const args = ['worktree', 'add', '--no-checkout'];
+		if (info.branch) {
+			args.push('-b', info.branch);
+		}
+		args.push(info.directory);
+
+		await this.execGit(repoRoot, args);
+
+		// Phase 2b: git reset --hard (populate files)
+		await this.execGit(info.directory, ['reset', '--hard']);
+
+		this._onDidChangeWorktrees.fire();
+
+		// Boot phase (fire-and-forget, like opencode's fork pattern)
+		this.bootWorktree(info);
+	}
+
+	private async bootWorktree(info: IWorktreeInfo): Promise<void> {
+		try {
+			// Verify the worktree is populated
+			await this.execGit(info.directory, ['status', '--porcelain']);
+
+			// Mark as ready
+			this.setWorktreeState(info.directory, WorktreeStatus.Ready);
+			this.logService.info(`[WorktreeService] Worktree boot complete: ${info.directory}`);
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e);
+			this.setWorktreeState(info.directory, WorktreeStatus.Failed, message);
+			this.logService.error(`[WorktreeService] Worktree boot failed: ${info.directory}`, e);
+		}
+	}
+
+	// ─── Reset (opencode pattern) ───────────────────────────────────────────────
+
+	async resetWorktree(worktreePath: string): Promise<void> {
+		const repoRoot = await this.getRepositoryRoot();
+		if (!repoRoot) {
+			throw new Error('No git repository found');
+		}
+
+		// 1. Get default branch
+		const defaultBranch = await this.getDefaultBranch(repoRoot);
+
+		// 2. Fetch from remote
+		try {
+			await this.execGit(worktreePath, ['fetch', 'origin']);
+		} catch {
+			this.logService.warn('[WorktreeService] fetch failed during reset, continuing...');
+		}
+
+		// 3. git reset --hard <defaultBranch>
+		await this.execGit(worktreePath, ['reset', '--hard', defaultBranch]);
+
+		// 4. git clean -ffdx
+		try {
+			await this.execGit(worktreePath, ['clean', '-ffdx']);
+		} catch (e) {
+			// Retry once for locked files (Windows)
+			this.logService.warn('[WorktreeService] clean failed, retrying...', e);
+			await timeout(1000);
+			try {
+				await this.execGit(worktreePath, ['clean', '-ffdx']);
+			} catch {
+				this.logService.warn('[WorktreeService] clean retry failed, continuing...');
+			}
+		}
+
+		// 5. git submodule update --init --recursive --force
+		try {
+			await this.execGit(worktreePath, ['submodule', 'update', '--init', '--recursive', '--force']);
+		} catch {
+			this.logService.warn('[WorktreeService] submodule update failed, continuing...');
+		}
+
+		// 6. git submodule foreach --recursive git reset --hard
+		try {
+			await this.execGit(worktreePath, ['submodule', 'foreach', '--recursive', 'git', 'reset', '--hard']);
+		} catch {
+			this.logService.warn('[WorktreeService] submodule reset failed, continuing...');
+		}
+
+		// 7. Verify clean state
+		const status = await this.execGit(worktreePath, ['status', '--porcelain']);
+		if (status.trim()) {
+			this.logService.warn('[WorktreeService] Worktree still has uncommitted changes after reset');
+		}
+
+		this.logService.info(`[WorktreeService] Worktree reset complete: ${worktreePath}`);
+	}
+
+	// ─── Enhanced remove (opencode pattern) ─────────────────────────────────────
+
+	async removeWorktree(worktreePath: string, force: boolean = false): Promise<void> {
+		const repoRoot = await this.getRepositoryRoot();
+		if (!repoRoot) {
+			throw new Error('No git repository found');
+		}
+
+		// 1. Stop fsmonitor daemon in the worktree
+		try {
+			await this.execGit(worktreePath, ['fsmonitor', '--stop']);
+		} catch {
+			// Not critical, continue
+		}
+
+		// 2. git worktree remove [--force]
 		const args = ['worktree', 'remove', worktreePath];
 		if (force) {
 			args.push('--force');
 		}
 
-		await this.execGit(repoPath, args);
+		try {
+			await this.execGit(repoRoot, args);
+		} catch (e) {
+			// If remove fails, check if it's already gone
+			this.logService.warn('[WorktreeService] worktree remove failed, verifying...', e);
+			const worktrees = await this.listWorktrees(repoRoot);
+			const stillExists = worktrees.some(w => w.path === worktreePath);
+			if (!stillExists) {
+				this.logService.info('[WorktreeService] Worktree already removed from git list');
+			} else {
+				throw e; // Re-throw if it still exists
+			}
+		}
+
+		// 3. Manual cleanup of residual directory (opencode pattern)
+		try {
+			const dirUri = URI.file(worktreePath);
+			const stat = await this.fileService.stat(dirUri);
+			if (stat) {
+				await this.fileService.del(dirUri, { recursive: true });
+				this.logService.info(`[WorktreeService] Cleaned up residual directory: ${worktreePath}`);
+			}
+		} catch {
+			// Directory already gone, that's fine
+		}
+
+		// 4. Delete the associated branch (opencode/<name> pattern)
+		try {
+			// Try to delete opencode/* branch matching the worktree name
+			const worktreeName = worktreePath.split(/[/\\]/).pop();
+			if (worktreeName) {
+				const branchName = `opencode/${worktreeName}`;
+				await this.execGit(repoRoot, ['branch', '-D', branchName]);
+				this.logService.info(`[WorktreeService] Deleted branch: ${branchName}`);
+			}
+		} catch {
+			// Branch may not exist or may be the current branch — ignore
+		}
+
+		// 5. Prune
+		try {
+			await this.execGit(repoRoot, ['worktree', 'prune']);
+		} catch {
+			// Not critical
+		}
+
+		// 6. Clean up state tracking
+		this._worktreeStates.delete(worktreePath);
+
 		this._onDidChangeWorktrees.fire();
 	}
 
@@ -119,7 +384,89 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		this._onDidChangeWorktrees.fire();
 	}
 
+	// ─── State tracking ─────────────────────────────────────────────────────────
+
+	getWorktreeState(directory: string): WorktreeStatus {
+		return this._worktreeStates.get(directory) ?? WorktreeStatus.None;
+	}
+
+	async waitForWorktreeReady(directory: string, timeoutMs: number = 30000): Promise<WorktreeStatus> {
+		const current = this._worktreeStates.get(directory);
+		if (current === WorktreeStatus.Ready || current === WorktreeStatus.Failed) {
+			return current;
+		}
+
+		return new Promise<WorktreeStatus>((resolve) => {
+			const timer = setTimeout(() => {
+				// Timeout — remove waiter and resolve with current state
+				const waiters = this._worktreeWaiters.get(directory);
+				if (waiters) {
+					const idx = waiters.indexOf(resolve);
+					if (idx >= 0) {
+						waiters.splice(idx, 1);
+					}
+				}
+				resolve(this._worktreeStates.get(directory) ?? WorktreeStatus.Pending);
+			}, timeoutMs);
+
+			// Wrap resolve to also clear the timer
+			const wrappedResolve = (status: WorktreeStatus) => {
+				clearTimeout(timer);
+				resolve(status);
+			};
+
+			let waiters = this._worktreeWaiters.get(directory);
+			if (!waiters) {
+				waiters = [];
+				this._worktreeWaiters.set(directory, waiters);
+			}
+			waiters.push(wrappedResolve);
+		});
+	}
+
+	async getDefaultBranch(repoPath: string): Promise<string> {
+		// Try to get from remote HEAD
+		try {
+			const output = await this.execGit(repoPath, ['symbolic-ref', 'refs/remotes/origin/HEAD']);
+			const match = output.match(/refs\/remotes\/origin\/(.+)/);
+			if (match) {
+				return match[1];
+			}
+		} catch {
+			// Fallback
+		}
+
+		// Try HEAD
+		try {
+			const output = await this.execGit(repoPath, ['symbolic-ref', '--short', 'HEAD']);
+			if (output.trim()) {
+				return output.trim();
+			}
+		} catch {
+			// Fallback
+		}
+
+		// Default fallback
+		return 'main';
+	}
+
 	// --- Private helpers ---
+
+	private setWorktreeState(directory: string, status: WorktreeStatus, message?: string): void {
+		this._worktreeStates.set(directory, status);
+		this._onDidChangeWorktreeState.fire({ directory, status, message });
+
+		// Notify waiters
+		if (status === WorktreeStatus.Ready || status === WorktreeStatus.Failed) {
+			const waiters = this._worktreeWaiters.get(directory);
+			if (waiters) {
+				this._worktreeWaiters.delete(directory);
+				for (const waiter of waiters) {
+					waiter(status);
+				}
+			}
+		}
+	}
 
 	private async execGit(cwd: string, args: string[]): Promise<string> {
 		// child_process is not available in browser/renderer context
