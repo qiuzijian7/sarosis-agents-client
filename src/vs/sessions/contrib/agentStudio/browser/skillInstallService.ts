@@ -7,7 +7,7 @@
  * Skill 安装服务实现 —— 从 Hub 或本地文件安装 skill 到工作区。
  *
  * 安装目标目录：
- *   `<workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/<skillId>/SKILL.md`
+ *   `<workspaceFolder>/.agents/skills/<skillId>/SKILL.md`
  *
  * 安装流程：
  *   1. 获取 SKILL.md 内容（从远程 URL 下载或读取本地文件）
@@ -22,7 +22,6 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../platform/request/common/request.js';
 import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
@@ -62,7 +61,6 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@ILogService private readonly logService: ILogService,
 		@IRequestService private readonly requestService: IRequestService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
@@ -168,15 +166,18 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 
 		const skillId = parsed.name.toLowerCase().replace(/\s+/g, '-');
 
-		// 找到目标目录 — 写入用户全局 skills 目录
-		const targetDir = URI.joinPath(
-			this.environmentService.userRoamingDataHome, 'sarosis', 'skills', skillId
-		);
+		// 找到目标目录 — 写入工作区 .agents/skills 目录
+		const workspaceFolders = this.workspaceService.getWorkspace().folders;
+		if (workspaceFolders.length === 0) {
+			return { success: false, skillId, skillName: parsed.name, error: 'No workspace folder found. Please open a workspace first.' };
+		}
+		const workspaceFolder = workspaceFolders[0].uri;
+		const targetDir = URI.joinPath(workspaceFolder, '.agents', 'skills', skillId);
 		const targetFile = URI.joinPath(targetDir, 'SKILL.md');
 
 		// 不覆盖已有
 		if (await this.fileService.exists(targetFile)) {
-			return { success: false, skillId, skillName: parsed.name, error: `Skill "${skillId}" already exists in user skills directory` };
+			return { success: false, skillId, skillName: parsed.name, error: `Skill "${skillId}" already exists in workspace .agents/skills directory` };
 		}
 
 		// 创建目录并写入
@@ -197,8 +198,8 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 			return false;
 		}
 
-		// 只能卸载 source === 'user' 的 skill（全局用户目录）
-		if (skill.source !== 'user') {
+		// 只能卸载 source === 'user' 或 'workspace' 的 skill（用户安装或工作区技能）
+		if (skill.source !== 'user' && skill.source !== 'workspace') {
 			this.logService.warn(`[SkillInstall] Cannot uninstall skill "${skillId}" with source "${skill.source}"`);
 			return false;
 		}

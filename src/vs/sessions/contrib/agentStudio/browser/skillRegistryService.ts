@@ -9,8 +9,8 @@
  * Skill 注册表实现 —— 见 `common/skills.ts` 接口契约。
  *
  * 加载策略（参考 Hermes-Agent 模式）：
- *   1. 异步扫描内置技能目录 `skills/`（产品自带，文件形式）
- *      - 技能以 `SKILL.md` 文件形式存储在扩展目录下 `skills/<skill-name>/SKILL.md`
+ *   1. 异步扫描内置技能目录 `.agents/skills/`（产品自带，文件形式）
+ *      - 技能以 `SKILL.md` 文件形式存储在扩展目录下 `.agents/skills/<skill-name>/SKILL.md`
  *      - 参考 Hermes-Agent 的 `skills/` 项目目录模式
  *   2. `_scanFolder(roaming)`   —— 用户全局技能库 `<userRoamingDataHome>/sarosis/skills-library/`
  *   3. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
@@ -19,8 +19,8 @@
  * 这与 hermes 的 `optional-skills` < `skills` < `~/.hermes/skills` 优先级一致。
  *
  * 架构说明：
- *   - 技能统一存储于用户全局技能库（`~/.sarosis/skills-library/`）和内置技能目录（`skills/`）
- *   - 内置技能从 `skills/` 目录文件加载（参考 Hermes-Agent 模式）
+ *   - 技能统一存储于用户全局技能库（`~/.sarosis/skills-library/`）和内置技能目录（`.agents/skills/`）
+ *   - 内置技能从 `.agents/skills/` 目录文件加载（参考 Hermes-Agent 模式）
  *   - 好处：技能以文件形式管理，便于版本控制和升级
  *
  * Skill 文件格式（仿 hermes 与 Claude SKILL.md 标准）：
@@ -48,7 +48,9 @@ import {
 	SkillActivation,
 } from '../common/skills.js';
 import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
+import * as path from '../../../../base/common/path.js';
 import { FileAccess } from '../../../../base/common/network.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
 /**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
@@ -73,7 +75,7 @@ interface IRawFrontmatter {
 /**
  * 一组随产品发布的内置 skill。
  * 之所以用常量数组而不是物理文件，是为了在 web/electron 两端零成本可用 ——
- * 技能现在以文件形式存储在 skills/ 目录，参考 Hermes-Agent 模式。
+ * 技能现在以文件形式存储在 .agents/skills/ 目录，参考 Hermes-Agent 模式。
  * 无需硬编码，通过 _scanFolder() 扫描加载。
  */
 
@@ -173,6 +175,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@ILogService private readonly logService: ILogService,
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
+		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 	) {
 		super();
 		this.logService.info('[SkillRegistry] constructor called');
@@ -268,62 +271,60 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	async reload(): Promise<void> {
 		this.logService.info(`[SkillRegistry] reload() called`);
-		console.error(`[SkillRegistry] reload() called`);
 		// 调试信息：打印 _VSCODE_FILE_ROOT 和 appRoot 帮助诊断路径问题
 		try {
 			this.logService.info(`[SkillRegistry] _VSCODE_FILE_ROOT: ${(globalThis as any)._VSCODE_FILE_ROOT ?? 'undefined'}`);
-			console.error(`[SkillRegistry] _VSCODE_FILE_ROOT: ${(globalThis as any)._VSCODE_FILE_ROOT ?? 'undefined'}`);
 		} catch { /* ignore */ }
 		try {
 			this.logService.info(`[SkillRegistry] env.appRoot: ${(this.environmentService as INativeEnvironmentService).appRoot ?? 'undefined'}`);
-			console.error(`[SkillRegistry] env.appRoot: ${(this.environmentService as INativeEnvironmentService).appRoot ?? 'undefined'}`);
 		} catch { /* ignore */ }
 		this._skills.clear();
-		// 参考 Hermes-Agent 模式：技能从 skills/ 目录扫描加载，不再硬编码
-		// this._loadBuiltins(); // 已移除 - 技能现在从 skills/ 目录文件加载
+		// 参考 Hermes-Agent 模式：技能从 .agents/skills/ 目录扫描加载，不再硬编码
+		// this._loadBuiltins(); // 已移除 - 技能现在从 .agents/skills/ 目录文件加载
 
-		// 内置技能目录（产品自带的 skills/）
+		// 内置技能目录（产品自带的 resources/.agents/skills/）
 		// 尝试多个候选路径以兼容不同运行环境（开发/打包、桌面/浏览器）
 		try {
 			const candidates: URI[] = [];
 
-			// 候选1：通过 FileAccess.asFileUri 基于 _VSCODE_FILE_ROOT 解析路径
-			// 适用于大多数场景，_VSCODE_FILE_ROOT 通常指向 out/ 或 out-build/
-			try {
-				const uri1 = FileAccess.asFileUri('vs/sessions/contrib/agentStudio/browser/skills');
-				this.logService.info(`[SkillRegistry] candidate1 (FileAccess): ${uri1.toString()}`);
-				candidates.push(uri1);
-			} catch (e) {
-				this.logService.info(`[SkillRegistry] candidate1 failed: ${e}`);
-			}
-
-			// 候选2：通过 appRoot 拼接路径
-			// appRoot 是 JS 源码根目录（含 out/ 或 out-build/）
+			// 候选1：通过 appRoot 的父目录（项目根目录）拼接 resources/.agents/skills
 			let appRoot: string | undefined;
 			try {
 				appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
 				this.logService.info(`[SkillRegistry] appRoot: ${appRoot}`);
 				if (appRoot) {
-					const uri2 = URI.joinPath(URI.file(appRoot), 'vs', 'sessions', 'contrib', 'agentStudio', 'browser', 'skills');
-					this.logService.info(`[SkillRegistry] candidate2 (appRoot): ${uri2.toString()}`);
-					candidates.push(uri2);
+					// appRoot 是 out/ 或 out-build/ 目录，需要往上一级得到项目根目录
+					const projectRoot = path.dirname(appRoot);
+					const uri1 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'skills');
+					this.logService.info(`[SkillRegistry] candidate1 (projectRoot/resources): ${uri1.toString()}`);
+					candidates.push(uri1);
+				}
+			} catch (e) {
+				this.logService.info(`[SkillRegistry] candidate1 failed: ${e}`);
+			}
+
+			// 候选2：开发环境回退到 projectRoot/resources/.agents/skills
+			// 在开发环境中，appRoot 可能指向 out/，但技能文件在 projectRoot/resources/.agents/skills
+			try {
+				if (appRoot) {
+					const projectRoot = path.dirname(appRoot);
+					const uri2 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'skills');
+					this.logService.info(`[SkillRegistry] candidate2 (projectRoot/resources): ${uri2.toString()}`);
+					// 避免重复添加相同的 URI
+					if (!candidates.some(c => c.toString() === uri2.toString())) {
+						candidates.push(uri2);
+					}
 				}
 			} catch (e) {
 				this.logService.info(`[SkillRegistry] candidate2 failed: ${e}`);
 			}
 
-			// 候选3：开发环境回退到 src/ 目录
-			// TypeScript 编译输出到 out/，但 SKILL.md 等非代码文件不会自动复制，
-			// 因此需要直接访问源码目录中的技能文件。
+			// 候选3：通过 FileAccess.asFileUri 计算项目根目录（浏览器环境兼容）
 			try {
-				if (appRoot) {
-					// 将路径中的 out/ 或 out-build/ 替换为 src/
-					const srcRoot = appRoot.replace(/[\\/]out-build[\\/]/, '/src/').replace(/[\\/]out[\\/]/, '/src/');
-					if (srcRoot !== appRoot) {
-						const uri3 = URI.joinPath(URI.file(srcRoot), 'vs', 'sessions', 'contrib', 'agentStudio', 'browser', 'skills');
-						this.logService.info(`[SkillRegistry] candidate3 (src fallback): ${uri3.toString()}`);
-						candidates.push(uri3);
-					}
+				const uri3 = FileAccess.asFileUri('vs/../../resources/.agents/skills');
+				this.logService.info(`[SkillRegistry] candidate3 (FileAccess): ${uri3.toString()}`);
+				if (!candidates.some(c => c.toString() === uri3.toString())) {
+					candidates.push(uri3);
 				}
 			} catch (e) {
 				this.logService.info(`[SkillRegistry] candidate3 failed: ${e}`);
@@ -338,28 +339,38 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			let scanned = false;
 			for (const builtinDir of uniqueCandidates) {
 				this.logService.info(`[SkillRegistry] trying builtin dir: ${builtinDir.toString()}`);
-				console.error(`[SkillRegistry] trying builtin dir: ${builtinDir.toString()}`);
 				try {
 					await this.fileService.stat(builtinDir);
 					this.logService.info(`[SkillRegistry] stat OK, scanning builtin skills: ${builtinDir.toString()}`);
-					console.error(`[SkillRegistry] stat OK, scanning builtin skills: ${builtinDir.toString()}`);
 					await this._scanFolder(builtinDir, 'builtin');
 					this.logService.info(`[SkillRegistry] after builtin scan: ${this._skills.size} skills`);
-					console.error(`[SkillRegistry] after builtin scan: ${this._skills.size} skills`);
 					scanned = true;
 					break;
 				} catch (e) {
 					this.logService.info(`[SkillRegistry] builtin dir not found or scan failed: ${builtinDir.toString()}, error: ${e}`);
-					console.error(`[SkillRegistry] builtin dir not found or scan failed: ${builtinDir.toString()}, error: ${e}`);
 				}
 			}
 			if (!scanned) {
 				this.logService.info(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
-				console.error(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
 			}
 		} catch (err) {
 			this.logService.error('[SkillRegistry] builtin skills scan failed', err);
-			console.error('[SkillRegistry] builtin skills scan failed', err);
+		}
+
+		// 工作区技能目录（<workspaceFolder>/.agents/skills/）
+		try {
+			const workspaceFolders = this.workspaceService.getWorkspace().folders;
+			if (workspaceFolders.length > 0) {
+				const workspaceFolder = workspaceFolders[0].uri;
+				const workspaceSkillsDir = URI.joinPath(workspaceFolder, '.agents', 'skills');
+				this.logService.info(`[SkillRegistry] scanning workspace skills: ${workspaceSkillsDir.toString()}`);
+				await this._scanFolder(workspaceSkillsDir, 'workspace');
+				this.logService.info(`[SkillRegistry] after workspace scan: ${this._skills.size} skills`);
+			} else {
+				this.logService.info('[SkillRegistry] no workspace folder found, skipping workspace skills scan');
+			}
+		} catch (err) {
+			this.logService.info('[SkillRegistry] workspace skills scan failed or dir not found', err);
 		}
 
 		// 用户全局技能库
@@ -381,7 +392,6 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		}
 
 		this.logService.info(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
-		console.error(`[SkillRegistry] reload() complete: total ${this._skills.size} skills`);
 		this._onDidChangeSkills.fire();
 
 		// Fire a batch Synced event so external consumers (e.g. knot-agui) can
@@ -422,7 +432,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	// _loadBuiltins() 已移除 - 技能现在从 skills/ 目录文件加载（参考 Hermes-Agent 模式）
 
-	private async _scanFolder(dir: URI, source: 'user' | 'builtin'): Promise<void> {
+	private async _scanFolder(dir: URI, source: 'user' | 'builtin' | 'workspace'): Promise<void> {
 		let stat: IFileStat;
 		try {
 			stat = await this.fileService.resolve(dir);
@@ -435,36 +445,33 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			return;
 		}
 
-		this.logService.info(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
-		console.error(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
+		this.logService.debug(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
 		let loaded = 0;
 		for (const child of stat.children) {
 			if (!child.isDirectory) { continue; }
 			const skillFile = URI.joinPath(child.resource, 'SKILL.md');
-			console.error(`[SkillRegistry] _scanFolder: checking ${skillFile.toString()}`);
+			this.logService.debug(`[SkillRegistry] _scanFolder: checking ${skillFile.toString()}`);
 			try {
 				const content = await this.fileService.readFile(skillFile);
 				const text = content.value.toString();
-				console.error(`[SkillRegistry] _scanFolder: read ${text.length} chars from ${skillFile.toString()}`);
+				this.logService.debug(`[SkillRegistry] _scanFolder: read ${text.length} chars from ${skillFile.toString()}`);
 				const skill = this._parseSkillFile(child.resource, text, source);
 				if (skill) {
 					this._skills.set(skill.id, skill);
 					loaded++;
-					console.error(`[SkillRegistry] _scanFolder: loaded skill ${skill.id}`);
+					this.logService.debug(`[SkillRegistry] _scanFolder: loaded skill ${skill.id}`);
 				} else {
 					this.logService.warn(`[SkillRegistry] _scanFolder: parse returned null for ${skillFile.toString()}`);
-					console.error(`[SkillRegistry] _scanFolder: parse returned null for ${skillFile.toString()}`);
 				}
 			} catch (e) {
 				// SKILL.md 可缺失，忽略
-				console.error(`[SkillRegistry] _scanFolder: readFile failed for ${skillFile.toString()}: ${e}`);
+				this.logService.debug(`[SkillRegistry] _scanFolder: readFile failed for ${skillFile.toString()}: ${e}`);
 			}
 		}
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
-		console.error(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
 	}
 
-	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin'): ISkillDefinition | undefined {
+	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin' | 'workspace'): ISkillDefinition | undefined {
 		const { meta, body } = parseFrontmatter(text);
 		const name = typeof meta.name === 'string' ? meta.name : undefined;
 		if (!name) {
