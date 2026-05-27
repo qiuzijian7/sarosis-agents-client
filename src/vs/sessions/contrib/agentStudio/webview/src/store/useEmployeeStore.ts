@@ -48,6 +48,10 @@ export interface Employee {
 	skillErrorCount?: number;
 	/** Missing skill IDs - for UI dialog display */
 	missingSkillIds?: string[];
+	/** Git worktree directory this agent works in (inherits from workspace if not set) */
+	worktreePath?: string;
+	/** Branch name of the agent's worktree */
+	worktreeBranch?: string;
 	/**
 	 * Bootstrap templates from a preset, used when creating the agent instance directory.
 	 * Transient — only used during creation, not persisted.
@@ -249,8 +253,8 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 		if (!searchQuery) { return employees; }
 		const q = searchQuery.toLowerCase();
 		return employees.filter(e =>
-			e.name.toLowerCase().includes(q) ||
-			e.role.toLowerCase().includes(q)
+			e?.name?.toLowerCase().includes(q) ||
+			e?.role?.toLowerCase().includes(q)
 		);
 	},
 

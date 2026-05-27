@@ -15,8 +15,21 @@ export interface IAgentYaml {
 	readonly name: string;
 	readonly version?: string;
 	readonly description?: string;
-	readonly model?: string;
-	readonly tools?: string[];
+	readonly model?: string | readonly string[];
+	readonly tools?: readonly string[];
+	readonly sandbox?: 'none' | 'readOnly' | 'sandboxed';
+	readonly limits?: {
+		readonly maxIterations?: number;
+		readonly timeoutSecs?: number;
+		readonly maxResponseTokens?: number;
+	};
+	readonly background?: boolean;
+	readonly temperature?: number;
+	readonly skillDirectives?: readonly {
+		readonly path: string;
+		readonly autoActivate?: boolean;
+		readonly activation?: 'manual' | 'auto' | 'always';
+	}[];
 	readonly schedules?: IAgentYamlSchedule[];
 }
 

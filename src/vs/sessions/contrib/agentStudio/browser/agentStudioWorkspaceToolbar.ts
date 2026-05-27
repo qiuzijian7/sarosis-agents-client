@@ -199,9 +199,22 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		try {
 			this._workspaces = await this._agentStudioService.getWorkspaces();
 
-			// Auto-select first workspace if none selected
+			// Auto-select workspace if none selected
 			if (!this._activeWorkspaceId && this._workspaces.length > 0) {
-				this._activeWorkspaceId = this._workspaces[0].id;
+				// 1. 尝试从缓存恢复上次活跃的工作区
+				let restoredId: string | undefined;
+				try {
+					const cachedId = await this._agentStudioService.getLastActiveWorkspaceId();
+					if (cachedId && this._workspaces.some(w => w.id === cachedId)) {
+						restoredId = cachedId;
+					}
+				} catch {
+					// 读取缓存失败，使用默认行为
+				}
+
+				// 2. 如果缓存无效，回退到第一个工作区
+				this._activeWorkspaceId = restoredId ?? this._workspaces[0].id;
+
 				// Fire event so webviews know
 				this._fireWorkspaceChanged(this._activeWorkspaceId);
 			}
@@ -224,6 +237,56 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		if (countEl) {
 			const employeeCount = current?.employees?.length ?? 0;
 			countEl.textContent = String(employeeCount);
+		}
+
+		// Update worktree status indicator
+		let worktreeBadge = this._element.querySelector('.astb-worktree-badge') as HTMLElement | null;
+		if (current?.worktreePath && current.worktreeStatus !== 'none') {
+			if (!worktreeBadge) {
+				worktreeBadge = document.createElement('div');
+				worktreeBadge.className = 'astb-worktree-badge';
+				worktreeBadge.style.cssText = [
+					'display:inline-flex',
+					'align-items:center',
+					'gap:3px',
+					'padding:2px 8px',
+					'border-radius:6px',
+					'font-size:10px',
+					'margin-left:8px',
+					'white-space:nowrap',
+					'overflow:hidden',
+					'text-overflow:ellipsis',
+					'max-width:200px',
+				].join(';');
+				// Insert after the badge element
+				const leftSection = this._element.querySelector('.astb-left');
+				leftSection?.appendChild(worktreeBadge);
+			}
+
+			const statusIcon = current.worktreeStatus === 'ready' ? '🌿' :
+				current.worktreeStatus === 'pending' ? '⏳' :
+				current.worktreeStatus === 'failed' ? '❌' : '📁';
+
+			const borderColor = current.worktreeStatus === 'ready' ? 'rgba(55, 148, 255, 0.25)' :
+				current.worktreeStatus === 'pending' ? 'rgba(204, 167, 0, 0.3)' :
+				current.worktreeStatus === 'failed' ? 'rgba(241, 76, 76, 0.25)' : 'transparent';
+
+			const bgColor = current.worktreeStatus === 'ready' ? 'rgba(55, 148, 255, 0.08)' :
+				current.worktreeStatus === 'pending' ? 'rgba(204, 167, 0, 0.08)' :
+				current.worktreeStatus === 'failed' ? 'rgba(241, 76, 76, 0.08)' : 'transparent';
+
+			const textColor = current.worktreeStatus === 'ready' ? '#3794ff' :
+				current.worktreeStatus === 'pending' ? '#cca700' :
+				current.worktreeStatus === 'failed' ? '#f14c4c' : '#e5e7eb';
+
+			worktreeBadge.textContent = `${statusIcon} ${current.worktreeBranch || current.worktreePath.split(/[/\\]/).pop() || ''}`;
+			worktreeBadge.title = current.worktreePath;
+			worktreeBadge.style.borderColor = borderColor;
+			worktreeBadge.style.backgroundColor = bgColor;
+			worktreeBadge.style.color = textColor;
+			worktreeBadge.style.border = `1px solid ${borderColor}`;
+		} else if (worktreeBadge) {
+			worktreeBadge.remove();
 		}
 
 		// Update dropdown list if open

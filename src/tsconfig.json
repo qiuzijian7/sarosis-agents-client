@@ -35,6 +35,7 @@
 	],
 	"exclude": [
 		"vs/workbench/contrib/webview/browser/pre/service-worker.js",
-		"vs/sessions/contrib/agentStudio/webview/**/*"
+		"vs/sessions/contrib/agentStudio/webview/**/*",
+		"vs/sessions/contrib/agentStudio/test/**/*"
 	]
 }

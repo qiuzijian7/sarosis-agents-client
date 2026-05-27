@@ -19,6 +19,8 @@ import { IAgentOSService } from '../common/agentOS.js';
 import type { IAgentTurnRequest } from '../common/providers.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee } from '../../../common/agentStudioTypes.js';
+import { StructuredOutputParser } from './structuredOutputParser.js';
+import { ITaskOrchestrationService } from '../common/agentStudio.js';
 
 export class AgentDelegationService extends Disposable implements IAgentDelegationService {
 	declare readonly _serviceBrand: undefined;
@@ -28,14 +30,20 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 
 	private _dataUri: URI | undefined;
 
+	/** Structured output parser (replaces hand-written JSON extraction) */
+	private readonly _outputParser: StructuredOutputParser;
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
 	) {
 		super();
+		void this.taskOrchestrationService; // injected for future use
+		this._outputParser = new StructuredOutputParser(logService);
 	}
 
 	private _getDataUri(): URI {
@@ -155,7 +163,7 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 			const employeeNameToId = new Map<string, string>();
 			employees.forEach(e => {
 				if (e.name && e.id) {
-					employeeNameToId.set(e.name, e.id);
+					employeeNameToId.set(e.name.toLowerCase(), e.id);
 				}
 			});
 			this.logService.info(`[AgentStudio] [Step 0] Built employeeNameToId map with ${employeeNameToId.size} entries`);
@@ -165,24 +173,37 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 			const aiResponse = await this._callAIModel(goal, workspaceId, employees);
 			this.logService.info(`[AgentStudio] [Step 1] AI response received, length=${aiResponse.length}`);
 			
-			// Step 2: Parse AI response
-			this.logService.info(`[AgentStudio] [Step 2] Parsing AI response into tasks`);
-			const tasks = this._parseAiResponse(aiResponse, employeeNameToId);
-			this.logService.info(`[AgentStudio] [Step 2] Parsed ${tasks.length} tasks from AI response`);
+			// Step 2: Parse AI response using StructuredOutputParser
+			this.logService.info(`[AgentStudio] [Step 2] Parsing AI response with StructuredOutputParser`);
+			const { tasks: parsedTasks, errors } = this._outputParser.parseTaskDecomposition(aiResponse);
+			
+			if (errors.length > 0) {
+				this.logService.warn(`[AgentStudio] [Step 2] StructuredOutputParser reported ${errors.length} validation errors`);
+				for (const err of errors.slice(0, 5)) {
+					this.logService.warn(`[AgentStudio]   - ${err.path}: ${err.message}`);
+				}
+			}
+
+			this.logService.info(`[AgentStudio] [Step 2] Parsed ${parsedTasks.length} tasks from AI response`);
 			
 			// Step 3: Create delegations for each task
 			this.logService.info(`[AgentStudio] [Step 3] Creating delegations`);
 			const delegations: Delegation[] = [];
 			const taskIdMap = new Map<string, string>(); // Map AI task ID to delegation ID
 			
-			for (const task of tasks) {
-				this.logService.info(`[AgentStudio] [Step 3] Creating delegation: title="${task.title}", assigneeId="${task.suggestedAssigneeId}"`);
+			for (const task of parsedTasks) {
+				// Resolve assignee ID
+				const assigneeId = task.suggestedAssignee
+					? (employeeNameToId.get(task.suggestedAssignee.toLowerCase()) || '')
+					: '';
+
+				this.logService.info(`[AgentStudio] [Step 3] Creating delegation: title="${task.title}", assigneeId="${assigneeId}"`);
 				const delegation = await this.createDelegation({
 					title: task.title,
 					description: task.description,
 					workspaceId,
 					status: DelegationStatus.Pending,
-					assigneeId: task.suggestedAssigneeId || '',
+					assigneeId,
 					dependencies: task.dependencies
 						.map(depId => taskIdMap.get(depId))
 						.filter(Boolean) as string[],
@@ -317,109 +338,5 @@ Important:
 		}
 	}
 
-	/**
-	 * Parse AI response into task list.
-	 */
-	private _parseAiResponse(response: string, employeeNameToId: Map<string, string>): Array<{
-		id: string;
-		title: string;
-		description: string;
-		suggestedRole: string;
-		suggestedAssignee: string;
-		suggestedAssigneeId: string;
-		dependencies: string[];
-		priority: number;
-	}> {
-		try {
-			this.logService.info(`[AgentStudio] _parseAiResponse: raw response length=${response.length}`);
-			this.logService.info(`[AgentStudio] _parseAiResponse: response preview=${response.substring(0, 300)}`);
-			
-			// Extract JSON from response (handle markdown code blocks)
-			const jsonStr = this._extractJsonFromResponse(response);
-			this.logService.info(`[AgentStudio] _parseAiResponse: extracted JSON length=${jsonStr.length}`);
-			
-			const parsed = JSON.parse(jsonStr);
-			this.logService.info(`[AgentStudio] _parseAiResponse: parsed JSON keys=${Object.keys(parsed).join(', ')}`);
-			
-			if (!parsed.tasks || !Array.isArray(parsed.tasks)) {
-				this.logService.error(`[AgentStudio] _parseAiResponse: missing tasks array. parsed=${JSON.stringify(parsed).substring(0, 200)}`);
-				throw new Error('Invalid AI response format: missing tasks array');
-			}
-			
-			this.logService.info(`[AgentStudio] _parseAiResponse: found ${parsed.tasks.length} tasks`);
-			
-			const mappedTasks = parsed.tasks.map((task: any, index: number) => {
-				// Resolve suggestedAssignee to suggestedAssigneeId
-				const suggestedAssignee = task.suggestedAssignee || '';
-				let suggestedAssigneeId = '';
-				
-				if (suggestedAssignee) {
-					// Try to find employee by name
-					suggestedAssigneeId = employeeNameToId.get(suggestedAssignee) || '';
-					
-					// If not found by exact name, try case-insensitive
-					if (!suggestedAssigneeId) {
-						for (const [name, id] of employeeNameToId.entries()) {
-							if (name.toLowerCase() === suggestedAssignee.toLowerCase()) {
-								suggestedAssigneeId = id;
-								break;
-							}
-						}
-					}
-				}
-				
-				this.logService.info(`[AgentStudio] Task[${index}]: id=${task.id}, title="${task.title}", assignee="${suggestedAssignee}" -> id="${suggestedAssigneeId}"`);
-				
-				return {
-					id: task.id || `task_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-					title: task.title || 'Untitled Task',
-					description: task.description || '',
-					suggestedRole: task.suggestedRole || 'Developer',
-					suggestedAssignee,
-					suggestedAssigneeId,
-					dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
-					priority: typeof task.priority === 'number' ? task.priority : 1,
-				};
-			});
-			
-			this.logService.info(`[AgentStudio] _parseAiResponse: successfully mapped ${mappedTasks.length} tasks`);
-			return mappedTasks;
-		} catch (error) {
-			this.logService.error('[AgentStudio] Failed to parse AI response:', error);
-			this.logService.error(`[AgentStudio] Raw response that failed: ${response.substring(0, 1000)}`);
-			throw new Error(`Failed to parse AI response: ${error}`);
-		}
-	}
-
-	/**
-	 * Extract JSON string from AI response.
-	 * Handles cases where AI wraps JSON in markdown code blocks or adds extra text.
-	 */
-	private _extractJsonFromResponse(response: string): string {
-		// Try direct JSON parse first
-		try {
-			JSON.parse(response);
-			return response; // If succeeds, return as-is
-		} catch {
-			// Continue to extraction logic
-		}
-		
-		// Find first { and last } in the response
-		const firstBrace = response.indexOf('{');
-		const lastBrace = response.lastIndexOf('}');
-		
-		if (firstBrace === -1 || lastBrace === -1 || firstBrace >= lastBrace) {
-			throw new Error('No JSON object found in response');
-		}
-		
-		const jsonStr = response.substring(firstBrace, lastBrace + 1);
-		
-		// Validate it's parseable JSON
-		try {
-			JSON.parse(jsonStr);
-			return jsonStr;
-		} catch (error) {
-			throw new Error(`Found JSON-like content but failed to parse: ${error}`);
-		}
-	}
 }
+

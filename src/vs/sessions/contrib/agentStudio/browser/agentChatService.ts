@@ -431,6 +431,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		options: IChatSendOptions,
 		onDelta: (delta: IChatStreamDelta) => void,
 	): Promise<ChatMessage> {
+		this.logService.info(
+			`[CoderTrace] AgentChatService.sendMessage: employeeId=${employeeId}, messageLen=${message.length}, model=${options.model}, chatMode=${options.chatMode}, explicitSkillIds=${JSON.stringify(options.explicitSkillIds)}`,
+		);
+
 		const streamKey = options.agentSessionId
 			? `${employeeId}::${options.agentSessionId}`
 			: employeeId;
@@ -452,17 +456,33 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 		try {
 			// Persist user message (fire-and-forget, don't block AI response)
-			const userMessage: ChatMessage = {
-				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-				role: 'user',
-				content: message,
-				employeeId,
-				agentSessionId: options.agentSessionId,
-				timestamp: new Date().toISOString(),
-			};
-			this.appendMessage(employeeId, userMessage).catch(err =>
-				this.logService.error('[AgentChatService] Failed to persist user message:', err)
+			// Defensive: check if an identical user message was already persisted
+			// in the last 5 seconds (e.g. by the webview controller or another caller).
+			const key = this._cacheKey(employeeId, options.agentSessionId);
+			const existingMessages = this._historyCache.get(key) || [];
+			const now = Date.now();
+			const alreadyPersisted = existingMessages.some(m =>
+				m.role === 'user' &&
+				m.content === message &&
+				m.agentSessionId === options.agentSessionId &&
+				(now - new Date(m.timestamp).getTime()) < 5000
 			);
+
+			if (!alreadyPersisted) {
+				const userMessage: ChatMessage = {
+					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+					role: 'user',
+					content: message,
+					employeeId,
+					agentSessionId: options.agentSessionId,
+					timestamp: new Date().toISOString(),
+				};
+				this.appendMessage(employeeId, userMessage).catch(err =>
+					this.logService.error('[AgentChatService] Failed to persist user message:', err)
+				);
+			} else {
+				this.logService.info(`[AgentChatService] Skipping duplicate user message persist: "${message.substring(0, 40)}..."`);
+			}
 
 			const stream = this.driverService.executeFromChatOptions(
 				employeeId,
@@ -493,6 +513,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						name: delta.toolName,
 						arguments: "",
 						result: undefined,
+						displayName: delta.displayName,
+						renderType: delta.renderType,
+						defaultShow: delta.defaultShow,
+						serverExecuted: (delta as any).serverExecuted,
 					});
 				}
 				if (

@@ -135,7 +135,7 @@ export function WorkspaceSidebar(): React.ReactElement {
 		if (searchQuery) {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(e =>
-				e.name.toLowerCase().includes(q) || e.role.toLowerCase().includes(q)
+				e?.name?.toLowerCase().includes(q) || e?.role?.toLowerCase().includes(q)
 			);
 		}
 		return filtered;
@@ -147,7 +147,7 @@ export function WorkspaceSidebar(): React.ReactElement {
 		if (searchQuery) {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(e =>
-				e.name.toLowerCase().includes(q) || e.role.toLowerCase().includes(q)
+				e?.name?.toLowerCase().includes(q) || e?.role?.toLowerCase().includes(q)
 			);
 		}
 		return filtered;

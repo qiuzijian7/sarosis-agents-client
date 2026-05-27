@@ -5,6 +5,212 @@
 
 // --- Shared Types for Agent Studio ---
 
+// ─── Agent Interop Types (aligned with VS Code ICustomAgent) ─────────────────
+
+/**
+ * Declarative hand-off from one agent to another.
+ * Aligned with VS Code's IHandOff format for .agent.md compatibility.
+ */
+export interface IAgentHandOff {
+	/** Target agent name (must match an existing Employee.name or ICustomAgent.name) */
+	readonly agent: string;
+	/** Display label for the hand-off button */
+	readonly label: string;
+	/** Prompt sent to the target agent */
+	readonly prompt: string;
+	/** If true, automatically send without user confirmation */
+	readonly send?: boolean;
+	/** Switch to a specific model when handing off (qualified name, e.g. "GPT-5 (copilot)") */
+	readonly model?: string;
+}
+
+/**
+ * Lifecycle hooks for an agent.
+ * Aligned with VS Code's ChatRequestHooks for .agent.md compatibility.
+ * Extended with PreToolUse/PostToolUse for tool-level granularity.
+ */
+export interface IAgentHooks {
+	/** Hooks that run when the agent starts */
+	start?: IAgentHookEntry[];
+	/** Hooks that run when the agent stops (completes or is cancelled) */
+	stop?: IAgentHookEntry[];
+	/** Hooks that run before each request is sent to the model */
+	preRequest?: IAgentHookEntry[];
+	/** Hooks that run after each model response */
+	postRequest?: IAgentHookEntry[];
+	/** Hooks that run when the agent stops as a sub-agent (remapped from stop in sub-agent context) */
+	subagentStop?: IAgentHookEntry[];
+	/**
+	 * Hooks that run before each tool invocation.
+	 * Aligned with VS Code's ChatRequestHooks.PreToolUse.
+	 * Can inspect/modify tool arguments, or block the invocation entirely.
+	 */
+	preToolUse?: IAgentToolHookEntry[];
+	/**
+	 * Hooks that run after each tool invocation completes.
+	 * Aligned with VS Code's ChatRequestHooks.PostToolUse.
+	 * Can inspect/modify tool results, or trigger side effects.
+	 */
+	postToolUse?: IAgentToolHookEntry[];
+}
+
+/**
+ * A single hook entry.
+ */
+export interface IAgentHookEntry {
+	/** Type of the hook action */
+	readonly type: 'prompt' | 'command' | 'script';
+	/** The hook content (prompt text, command string, or script path) */
+	readonly content: string;
+	/** Optional description shown in the UI */
+	readonly description?: string;
+}
+
+/**
+ * A tool-level hook entry.
+ * Extends IAgentHookEntry with tool-specific filtering and result modification.
+ * Aligned with VS Code's PreToolUse/PostToolUse hook types.
+ */
+export interface IAgentToolHookEntry extends IAgentHookEntry {
+	/**
+	 * Optional tool name filter. If set, the hook only fires for tools
+	 * whose name matches this pattern (supports glob-like patterns:
+	 * - "readFile" — exact match
+	 * - "read*" — prefix match
+	 * - "*" — all tools (default)
+	 */
+	readonly toolPattern?: string;
+	/**
+	 * For PreToolUse hooks: if true, the hook can block the tool invocation.
+	 * When the hook returns a non-empty result, the tool invocation is
+	 * cancelled and the hook result is returned instead.
+	 */
+	readonly blockable?: boolean;
+}
+
+/**
+ * Visibility control for an agent.
+ * Mirrors VS Code's ICustomAgentVisibility.
+ */
+export interface IAgentVisibility {
+	/** Show in the user-facing agent picker */
+	readonly userInvocable: boolean;
+	/** Can be invoked as a sub-agent by other agents */
+	readonly agentInvocable: boolean;
+}
+
+/**
+ * Sandbox mode for an agent.
+ * Controls the level of restriction on agent tool access and file system operations.
+ * Inspired by OpenHuman's SandboxMode and OpenClaw's AgentSandboxConfig.
+ */
+export const enum SandboxMode {
+	/** No restrictions — agent can use all declared tools freely (default) */
+	None = 'none',
+	/** Read-only — agent can only read files and search, cannot edit/execute */
+	ReadOnly = 'readOnly',
+	/** Sandboxed — agent runs in a restricted environment with limited capabilities */
+	Sandboxed = 'sandboxed',
+}
+
+/**
+ * Model specification with fallback chain.
+ * When the primary model is unavailable, the runtime tries fallback models in order.
+ * Inspired by OpenClaw's `{primary, fallbacks}` and VS Code's `model: string[]`.
+ *
+ * Usage:
+ * - Simple string: `'claude-sonnet-4-20250514'` — single model, no fallback
+ * - Array: `['claude-sonnet-4-20250514', 'gpt-4o']` — primary + fallbacks
+ * - Structured: `{ primary: 'claude-sonnet-4-20250514', fallbacks: ['gpt-4o'] }` — explicit chain
+ */
+export type ModelSpec = string | string[] | IModelChain;
+
+/**
+ * Structured model chain with explicit primary and fallback list.
+ */
+export interface IModelChain {
+	/** Primary model to use */
+	readonly primary: string;
+	/** Fallback models tried in order when primary is unavailable */
+	readonly fallbacks?: string[];
+}
+
+/**
+ * Iteration and timeout limits for an agent session.
+ * Prevents runaway agents from consuming excessive resources.
+ * Inspired by OpenHuman's `max_iterations` / `timeout_secs` and Hermes' `max_iterations`.
+ */
+export interface IAgentLimits {
+	/** Maximum number of tool-use iterations per request (default: 0 = unlimited) */
+	readonly maxIterations?: number;
+	/** Timeout in seconds for a single agent request (default: 0 = unlimited) */
+	readonly timeoutSecs?: number;
+	/** Maximum tokens for a single model response (overrides Employee.maxTokens if set) */
+	readonly maxResponseTokens?: number;
+}
+
+/**
+ * Skill directive file configuration.
+ * Links an agent to a specific SKILL.md file that defines its skill behavior.
+ * Unlike `skills: string[]` (which are lightweight IDs), a skill directive file
+ * provides the full skill definition including prompt, triggers, and recommended tools.
+ *
+ * Inspired by Hermes/OpenClaw's SKILL.md format and OpenHuman's `SubagentEntry::Skills`.
+ */
+export interface ISkillDirective {
+	/**
+	 * Path to the SKILL.md file, relative to the agent instance directory.
+	 * E.g. "skills/code-review.md" or "SKILL.md"
+	 * The file follows the standard SKILL.md format with YAML frontmatter + Markdown body.
+	 */
+	readonly path: string;
+	/**
+	 * Whether to auto-activate this skill when the agent starts.
+	 * If true, the skill's prompt is injected at the start of every session.
+	 * Default: false.
+	 */
+	readonly autoActivate?: boolean;
+	/**
+	 * Activation mode override:
+	 * - 'manual': Only activate on explicit `/skill <name>` command
+	 * - 'auto': Activate when user message matches skill's `match` keywords
+	 * - 'always': Inject in every turn
+	 * If unset, uses the skill's own `activation` field.
+	 */
+	readonly activation?: 'manual' | 'auto' | 'always';
+}
+
+/**
+ * Target platform for an agent definition.
+ * Aligned with VS Code's ICustomAgent.target field for cross-platform agent compatibility.
+ * Determines which platform(s) the agent's instructions and tool references are designed for.
+ */
+export const enum AgentTarget {
+	/** Optimized for GitHub Copilot */
+	Copilot = 'copilot',
+	/** Optimized for VS Code native chat */
+	VSCode = 'vscode',
+	/** Optimized for Claude / Anthropic */
+	Claude = 'claude',
+	/** Platform-agnostic / universal (default) */
+	Universal = 'universal',
+}
+
+/**
+ * Agent source type, tracking where the agent definition originated.
+ * Aligned with VS Code's IAgentSource for security auditing and trust decisions.
+ */
+export const enum AgentSource {
+	/** Created locally by the user */
+	Local = 'local',
+	/** Part of the built-in preset collection */
+	Builtin = 'builtin',
+	/** Contributed by a VS Code extension */
+	Extension = 'extension',
+	/** Imported from external source (e.g. shared JSON) */
+	Imported = 'imported',
+}
+
 export const enum EmployeeStatus {
 	Idle = 'idle',
 	Working = 'working',
@@ -60,6 +266,8 @@ export interface AgentExportData {
 		readonly identityMd?: string;
 		readonly toolsMd?: string;
 		readonly memoryMd?: string;
+		/** Skill directive files (SKILL.md format) */
+		readonly skillDirectives?: Record<string, string>;
 	};
 }
 
@@ -88,7 +296,17 @@ export interface Employee {
 	email?: string;
 	avatar?: string;
 	presetId?: string;
-	model?: string;
+	/**
+	 * Model specification — supports single model, fallback chain, or structured chain.
+	 * - Simple: `'claude-sonnet-4-20250514'` (backward compatible)
+	 * - Array: `['claude-sonnet-4-20250514', 'gpt-4o']` (primary + fallbacks)
+	 * - Structured: `{ primary: 'claude-sonnet-4-20250514', fallbacks: ['gpt-4o'] }`
+	 *
+	 * When a model is unavailable, the runtime tries the next model in the chain.
+	 * Aligned with VS Code's `model: string[]` and OpenClaw's `{primary, fallbacks}`.
+	 */
+	model?: ModelSpec;
+	/** @deprecated Use `model` with ModelSpec instead. Kept for serialization compat. */
 	provider?: string;
 	customPrompt?: string;
 	// allow-any-unicode-next-line
@@ -103,6 +321,80 @@ export interface Employee {
 	// allow-any-unicode-next-line
 	/** 缺失的技能 ID 列表 - 用于 UI 对话框显示 */
 	missingSkillIds?: string[];
+	/**
+	 * Skill directive files — links this agent to specific SKILL.md files.
+	 * Unlike `skills` (lightweight IDs), directive files contain the full skill
+	 * definition including prompt, triggers, and recommended tools.
+	 * Inspired by Hermes/OpenClaw's SKILL.md format.
+	 */
+	skillDirectives?: ISkillDirective[];
+	/**
+	 * Tool references bound to this agent (Sarosis internal tool names).
+	 * Only declared tools are injected into the LLM; all others are disabled for this agent.
+	 *
+	 * Current tool names (22 total):
+	 *   grep_search, list_dir, search_files, read_file, replace_in_file, edit_file,
+	 *   write_to_file, terminal, use_mcp_tool, fetch_mcp_tools, grep_mcp_tools,
+	 *   use_skill, read_image, capture_screen, web_preview, get_env_info,
+	 *   generate_picture, read_history_context, grep_history_context, cron,
+	 *   notify, display_download_links
+	 *
+	 * Legacy aliases expanded automatically:
+	 *   vscode → write_to_file, list_dir, search_files, read_file
+	 *   read   → read_file, list_dir, search_files, grep_search
+	 *   execute → terminal
+	 * Old internal names also supported:
+	 *   file_read → read_file, file_write → write_to_file, file_list → list_dir,
+	 *   read_skill → use_skill, list_skills → use_skill
+	 *
+	 * If undefined or empty, all tools are allowed (no restriction).
+	 */
+	tools?: string[];
+	/**
+	 * Declarative hand-offs to other agents.
+	 * When this agent completes, it can suggest or auto-trigger a hand-off to another agent
+	 * with a specific prompt. Compatible with VS Code's ICustomAgent.handOffs format.
+	 */
+	handOffs?: IAgentHandOff[];
+	/**
+	 * Lifecycle hooks scoped to this agent.
+	 * Supports Start / Stop / PreRequest / PostRequest hook points.
+	 * Compatible with VS Code's ChatRequestHooks format.
+	 */
+	hooks?: IAgentHooks;
+	/**
+	 * Visibility control: whether the agent is visible in the user picker
+	 * and/or invocable as a sub-agent by other agents.
+	 */
+	visibility?: IAgentVisibility;
+	/**
+	 * Sub-agent allowlist: names of agents this agent can invoke.
+	 * If undefined or ['*'], all agents are available.
+	 * If empty array, no sub-agents can be used.
+	 */
+	agents?: string[];
+	/**
+	 * Target platform for this agent's instructions and tool references.
+	 * Aligned with VS Code's ICustomAgent.target.
+	 * Determines compatibility with different LLM platforms.
+	 * Default: 'universal' (platform-agnostic).
+	 */
+	target?: AgentTarget;
+	/**
+	 * Source tracking — where this agent definition originated.
+	 * Used for trust decisions, security auditing, and UI indicators.
+	 * Aligned with VS Code's IAgentSource.
+	 */
+	source?: AgentSource;
+	/**
+	 * If source is 'extension', the ID of the contributing extension.
+	 */
+	extensionId?: string;
+	/**
+	 * Session types this agent is applicable to (e.g. 'agent-mode', 'edit-mode').
+	 * Aligned with VS Code's ICustomAgent.sessionTypes.
+	 */
+	sessionTypes?: string[];
 	status: EmployeeStatus;
 	/**
 	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
@@ -117,6 +409,31 @@ export interface Employee {
 	/** Max tokens for LLM response, persisted per agent */
 	maxTokens?: number;
 	/**
+	 * Sandbox mode — controls the level of restriction on agent tool access.
+	 * - None: No restrictions (default, backward compatible)
+	 * - ReadOnly: Agent can only read/search, cannot edit or execute
+	 * - Sandboxed: Agent runs in a restricted environment
+	 *
+	 * When SandboxMode is set, it takes precedence over `tools` for access control:
+	 * - ReadOnly automatically restricts to read-only tools regardless of `tools`
+	 * - Sandboxed uses the `tools` list but with additional safety constraints
+	 *
+	 * Inspired by OpenHuman's SandboxMode and OpenClaw's AgentSandboxConfig.
+	 */
+	sandbox?: SandboxMode;
+	/**
+	 * Iteration and timeout limits for this agent's sessions.
+	 * Prevents runaway agents from consuming excessive resources.
+	 * Inspired by OpenHuman's `max_iterations` / `timeout_secs` and Hermes' `max_iterations`.
+	 */
+	limits?: IAgentLimits;
+	/**
+	 * Whether this agent can run in background mode.
+	 * Background agents can continue execution without blocking the user's session.
+	 * Inspired by OpenHuman's `background: bool`.
+	 */
+	background?: boolean;
+	/**
 	 * Connections (edges) this agent participates in (as source or target).
 	 * Persisted to employees.json so hierarchy survives window reload.
 	 */
@@ -125,10 +442,32 @@ export interface Employee {
 	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
 	agentDir?: string;
 	/**
+	 * Minimum confidence threshold (0-100) for the agent's output to be
+	 * accepted without human review. Inspired by Feature-Dev's
+	 * code-reviewer confidence scoring. Only report findings with
+	 * confidence >= this value.
+	 */
+	confidenceThreshold?: number;
+	/**
+	 * Strategy for parallel execution of multiple instances of this agent.
+	 * - undefined: no parallel strategy (single instance)
+	 * - 'voting': launch N instances, compare results, pick best / merge
+	 * - 'coverage': launch N instances with different focuses, merge all
+	 */
+	parallelStrategy?: 'voting' | 'coverage';
+	/**
 	 * Bootstrap templates from a preset, used when creating the agent instance directory.
 	 * Not persisted to employees.json — only used during creation.
 	 */
 	bootstrapTemplates?: AgentBootstrapTemplates;
+	/**
+	 * Git worktree directory this agent works in.
+	 * Inherits from Workspace.worktreePath if not set.
+	 * Set this only when an agent needs its own isolated worktree.
+	 */
+	worktreePath?: string;
+	/** Branch name of the agent's worktree (overrides workspace-level) */
+	worktreeBranch?: string;
 	/**
 	 * ConfigMD — Markdown file as the canonical data source, rendered as HTML.
 	 * The MD file is the single source of truth; the HTML view is computed from it.
@@ -251,6 +590,19 @@ export interface Workspace {
 	updatedAt: string;
 	/** Root/Fork management info */
 	rootInfo?: WorkspaceRootInfo;
+	/**
+	 * Git worktree directory for agent isolation.
+	 * When set, agents in this workspace work in this isolated directory.
+	 * Compatible with opencode's worktree binding pattern.
+	 */
+	worktreePath?: string;
+	/** Branch name of the associated worktree (e.g. "opencode/feature-auth") */
+	worktreeBranch?: string;
+	/**
+	 * Lifecycle status of the worktree (pending/ready/failed).
+	 * Not persisted — computed at runtime from IWorktreeService state.
+	 */
+	worktreeStatus?: 'none' | 'pending' | 'ready' | 'failed';
 }
 
 export interface WorkspaceLayout {
@@ -421,6 +773,14 @@ export interface ToolCall {
 	arguments: string;
 	result?: string;
 	status?: 'running' | 'done' | 'error';
+	/** UI 显示名称（来自模型的 display_name 字段） */
+	displayName?: string;
+	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
+	renderType?: string;
+	/** 是否默认展开显示工具卡（默认 true） */
+	defaultShow?: boolean;
+	/** 工具已在服务端执行（如 Knot AG-UI），客户端不需要再执行 */
+	serverExecuted?: boolean;
 }
 
 export class AgentStudioSession {
@@ -748,4 +1108,30 @@ export interface OrchestrationPlan {
 	approvedAt?: string;
 	/** Completion timestamp */
 	completedAt?: string;
+}
+
+// ─── ModelSpec Utility Functions ────────────────────────────────────────────
+
+/**
+ * Resolve the primary model from a ModelSpec.
+ * - String: returns the string itself
+ * - Array: returns the first element
+ * - IModelChain: returns primary
+ */
+export function getPrimaryModel(model: ModelSpec | undefined): string | undefined {
+	if (!model) { return undefined; }
+	if (typeof model === 'string') { return model; }
+	if (Array.isArray(model)) { return model[0]; }
+	return model.primary;
+}
+
+/**
+ * Resolve the full fallback chain from a ModelSpec.
+ * Returns an array of model identifiers in priority order (primary first).
+ */
+export function getModelChain(model: ModelSpec | undefined): string[] {
+	if (!model) { return []; }
+	if (typeof model === 'string') { return [model]; }
+	if (Array.isArray(model)) { return model; }
+	return [model.primary, ...(model.fallbacks ?? [])];
 }

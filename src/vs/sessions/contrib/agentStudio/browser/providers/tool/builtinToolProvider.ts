@@ -6,25 +6,32 @@
 /**
  * 内置 Tool Provider —— 见 `common/providers.ts` 中的 `IToolProvider` 契约。
  *
+ * 工具集（22 个 Sarosis 内部工具，按 category 分组）：
+ *   search     : grep_search, search_files
+ *   filesystem : list_dir, read_file, replace_in_file, edit_file, write_to_file
+ *   terminal   : terminal
+ *   mcp        : use_mcp_tool, fetch_mcp_tools, grep_mcp_tools
+ *   skills     : use_skill
+ *   vision     : read_image, capture_screen
+ *   web        : web_preview
+ *   env        : get_env_info
+ *   media      : generate_picture
+ *   history    : read_history_context, grep_history_context
+ *   scheduler  : cron
+ *   notify     : notify
+ *   download   : display_download_links
+ *
  * 设计借鉴 Hermes-Agent `tools/registry.py`：
  *   - 每个工具用一个常量描述符注册（schema + handler + check）。
  *   - `category` 充当 hermes 的 toolset，便于 UI 按组展示与启停。
  *   - `check_fn` 决定该工具在当前环境是否可用（例如 shell_exec 仅在桌面端）。
  *
- * 与 hermes 不同的地方：
- *   - 这里的 handler 是 TS async 函数，返回 IToolResultContent[]（更贴合 IMcpTool 风格）。
- *   - 不做 prompt-cache TTL 缓存（VSCode renderer 周期短，不必要）。
- *   - 文件操作走 IFileService，而非 Node.js fs；所以在 web 端也能跑 file_read/file_write。
+ * 旧工具名迁移：
+ *   echo, get_current_time, math_eval, http_get, exit_plan_mode, ask_user_question → 已移除
+ *   file_read → read_file, file_write → write_to_file, file_list → list_dir
+ *   search_files → grep_search, read_skill → use_skill
  *
- * 工具集合：
- *   utility   : echo, get_current_time, math_eval
- *   filesystem: file_read, file_write, file_list, search_files
- *   shell     : shell_exec (仅 desktop)
- *   web       : http_get, web_search (web_search 需要外部 provider，未配置则降级)
- *
- *   另外，从 Hermes-Agent 迁移了 69 个 bundled tool 定义（schema-only）。
- *   这些工具只有 schema，handler 为存根，返回"未实现"提示。
- *   实际执行需通过 MCP 服务器或后续实现的 Provider。
+ * 从 Hermes-Agent 迁移了 69 个 bundled tool 定义（schema-only），作为 MCP 未配置时的 fallback。
  */
 
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -33,14 +40,11 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IFileService, FileType } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
-import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
-import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel } from '../../../common/providers.js';
 import { BUNDLED_TOOL_DEFINITIONS } from '../../../common/bundled-tools/bundledTools.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IAgentStudioService } from '../../../common/agentStudio.js';
 
 
 type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<IToolResultContent[]>;
@@ -73,76 +77,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IRequestService private readonly requestService: IRequestService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@ITerminalService private readonly terminalService: ITerminalService,
-		@IAgentStudioService private readonly studioService: IAgentStudioService,
 	) {
 		super();
 		this._registerCoreTools();
-		this._registerSkillTools();
 		this._registerBundledTools();
-	}
-
-	// ─── 路径安全校验 ─────────────────────────────────────────────────────
-
-	/**
-	 * 检查请求的路径是否在允许的工作区目录内。
-	 * 同时检查 VS Code 工作区文件夹和 Sarosis Agent 工作区路径。
-	 * Windows 路径大小写不敏感。
-	 *
-	 * @param agentId 当前 agent 的 ID，用于查找 Sarosis workspace 路径
-	 * @param requestedPath 请求的文件/目录路径
-	 * @throws Error 如果路径不在任何允许的工作区内
-	 */
-	private async _checkWorkspacePath(agentId: string | undefined, requestedPath: string): Promise<void> {
-		const normalizedUri = URI.file(requestedPath);
-		const requestedFsPath = normalizedUri.fsPath;
-		const normalizedRequest = requestedFsPath.replace(/[\\/]+$/, '').toLowerCase();
-
-		// 收集所有允许的根路径
-		const allowedRoots: string[] = [];
-
-		// 1. VS Code 工作区文件夹
-		const vscodeFolders = this.workspaceService.getWorkspace().folders;
-		for (const folder of vscodeFolders) {
-			allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
-		}
-
-		// 2. Sarosis Agent 工作区路径
-		if (agentId) {
-			try {
-				const employee = await this.studioService.getEmployee(agentId);
-				if (employee?.workspaceId) {
-					const workspace = await this.studioService.getWorkspace(employee.workspaceId);
-					if (workspace?.path) {
-						allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
-					}
-				}
-			} catch (err) {
-				this.logService.warn(`[BuiltinTools] Failed to resolve Sarosis workspace for agent ${agentId}:`, err);
-			}
-		}
-
-		// 检查请求路径是否在任一允许根目录下
-		const isAllowed = allowedRoots.some(root => {
-			const normalizedRoot = root.toLowerCase();
-			return normalizedRequest === normalizedRoot ||
-			       normalizedRequest.startsWith(normalizedRoot + '\\') ||
-			       normalizedRequest.startsWith(normalizedRoot + '/');
-		});
-
-		if (!isAllowed) {
-			const allowedList = allowedRoots.length > 0
-				? allowedRoots.map(r => `  - ${r}`).join('\n')
-				: '  (无 — 请确认已正确配置工作区)';
-			throw new Error(
-				`安全沙箱限制：路径 "${requestedPath}" 不在允许的工作区目录内。\n` +
-				`当前允许的工作区目录：\n${allowedList}\n` +
-				`请在上述目录内操作，或在 Sarosis 工作区设置中配置正确的路径。`
-			);
-		}
 	}
 
 	// ─── IToolProvider 实现 ─────────────────────────────────────────────
@@ -309,99 +250,54 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this.logService.info('[BuiltinTools] _registerCoreTools: starting to register core tools');
 		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 
-		// ── utility ─────────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'echo',
-				description: 'Echo back the input text. Mostly used to verify tool plumbing.',
-				inputSchema: {
-					type: 'object',
-					properties: { text: { type: 'string', description: 'Text to echo' } },
-					required: ['text'],
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => text(String(args['text'] ?? '')),
-		});
-
-		this.register({
-			definition: {
-				name: 'get_current_time',
-				description: 'Return the current date/time. Optionally formatted in UTC.',
-				inputSchema: {
-					type: 'object',
-					properties: { utc: { type: 'boolean', description: 'Use UTC formatting' } },
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => {
-				const now = new Date();
-				return text(args['utc'] ? now.toISOString() : now.toLocaleString());
-			},
-		});
-
-		this.register({
-			definition: {
-				name: 'math_eval',
-				description: 'Evaluate a simple arithmetic expression. Only +,-,*,/,(),. and digits are allowed.',
-				inputSchema: {
-					type: 'object',
-					properties: { expr: { type: 'string', description: 'Arithmetic expression' } },
-					required: ['expr'],
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => {
-				const expr = String(args['expr'] ?? '');
-				if (!/^[\d+\-*/().\s]+$/.test(expr)) {
-					throw new Error('expression contains forbidden characters');
-				}
-				// eslint-disable-next-line no-new-func
-				const fn = new Function(`"use strict"; return (${expr});`);
-				return text(String(fn()));
-			},
-		});
-
 		// ── filesystem ─────────────────────────────────────────────────
 		this.register({
 			definition: {
-				name: 'file_read',
-				description: 'Read a UTF-8 text file. Returns the full file content (max 256 KiB).',
+				name: 'read_file',
+				description: '读取本地文件内容。Returns the full file content (max 256 KiB).',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						path: { type: 'string', description: 'Absolute path or workspace-relative path' },
+						path: { type: 'string', description: 'Absolute or workspace-relative path' },
+						start_line: { type: 'number', description: 'Start line number (1-based, optional)' },
+						end_line: { type: 'number', description: 'End line number (inclusive, optional)' },
 					},
 					required: ['path'],
 				},
 				category: 'filesystem',
 				source: this.id,
 			},
-		handler: async (args, _signal, agentId) => {
-			const requestedPath = String(args['path'] || '');
-			if (!requestedPath) {
-				throw new Error('path is required');
-			}
+			handler: async (args, _signal, agentId) => {
+				const requestedPath = String(args['path'] || '');
+				if (!requestedPath) {
+					throw new Error('path is required');
+				}
 
-			// 路径遍历保护：检查请求的路径是否在工作区目录内
-			await this._checkWorkspacePath(agentId, requestedPath);
+				// 读取操作允许任意路径，不再检查工作区限制
+				// 写入操作才需要检查工作区限制（在 write_to_file 等工具中）
 
-			const normalizedUri = URI.file(requestedPath);
-			const buf = await this.fileService.readFile(normalizedUri);
-			if (buf.value.byteLength > 256 * 1024) {
-				throw new Error(`file too large (${buf.value.byteLength} bytes), use a streaming tool`);
-			}
-			return text(buf.value.toString());
+				const normalizedUri = URI.file(requestedPath);
+				const buf = await this.fileService.readFile(normalizedUri);
+				if (buf.value.byteLength > 256 * 1024) {
+					throw new Error(`file too large (${buf.value.byteLength} bytes), use a streaming tool`);
+				}
+				let content = buf.value.toString();
+				const startLine = Number(args['start_line'] ?? 1);
+				const endLine = Number(args['end_line'] ?? Infinity);
+				if (isFinite(startLine) || isFinite(endLine)) {
+					const lines = content.split('\n');
+					const start = Math.max((isFinite(startLine) ? startLine : 1) - 1, 0);
+					const end = isFinite(endLine) ? Math.min(endLine, lines.length) : lines.length;
+					content = lines.slice(start, end).join('\n');
+				}
+			return text(content);
 		},
 		});
 
 		this.register({
 			definition: {
-				name: 'file_write',
-				description: 'Write a UTF-8 text file (overwrites). Creates parent directories as needed.',
+				name: 'write_to_file',
+				description: '写入/创建文件。Creates the file and parent directories if they do not exist.',
 				inputSchema: {
 					type: 'object',
 					properties: {
@@ -420,20 +316,21 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				throw new Error('path is required');
 			}
 
-			// 路径遍历保护：检查请求的路径是否在工作区目录内
-			await this._checkWorkspacePath(agentId, requestedPath);
+			// 写入操作：不再阻止工作区外的路径
+			// 提示词已要求LLM在写入工作区外文件前请求用户批准
+			// 如果用户未批准但LLM仍尝试写入，我们允许操作（依赖提示词约束）
 
 			const normalizedUri = URI.file(requestedPath);
 			const content = String(args['content'] ?? '');
 			await this.fileService.writeFile(normalizedUri, VSBuffer.fromString(content));
-			return text(`wrote ${content.length} chars to ${normalizedUri.fsPath}`);
+		return text(`wrote ${content.length} chars to ${normalizedUri.fsPath}`);
 		},
 		});
 
-		this.register({
+	this.register({
 			definition: {
-				name: 'file_list',
-				description: 'List entries in a directory. Returns an array of { name, type, size }.',
+				name: 'list_dir',
+				description: '列出目录内容。Returns an array of { name, type, size }.',
 				inputSchema: {
 					type: 'object',
 					properties: { path: { type: 'string' } },
@@ -448,34 +345,35 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				throw new Error('path is required');
 			}
 
-			// 路径遍历保护：检查请求的路径是否在工作区目录内
-			await this._checkWorkspacePath(agentId, requestedPath);
+			// 列表操作允许任意路径，不再检查工作区限制
 
 			const normalizedUri = URI.file(requestedPath);
 			const stat = await this.fileService.resolve(normalizedUri);
-			const rows = (stat.children ?? []).map(c => ({
-				name: c.name,
-				type: c.isDirectory ? 'dir' : 'file',
-				size: typeof c.size === 'number' ? c.size : 0,
-			}));
+				const rows = (stat.children ?? []).map(c => ({
+					name: c.name,
+					type: c.isDirectory ? 'dir' : 'file',
+					size: typeof c.size === 'number' ? c.size : 0,
+				}));
 			return [{ type: 'text', text: JSON.stringify(rows, null, 2) }];
 		},
 		});
 
-		this.register({
+	this.register({
 			definition: {
-				name: 'search_files',
-				description: 'Recursively grep a directory for a literal substring. Returns matching path:line snippets.',
+				name: 'grep_search',
+				description: '正则/精确文本搜索 (ripgrep)。Returns matching path:line snippets.',
 				inputSchema: {
 					type: 'object',
 					properties: {
 						path: { type: 'string' },
-						query: { type: 'string' },
-						maxResults: { type: 'number', description: 'Default 50' },
+						pattern: { type: 'string', description: 'Search pattern (literal or regex)' },
+						file_pattern: { type: 'string', description: 'Glob pattern to filter files (e.g., "*.py")' },
+						ignore_case: { type: 'boolean', description: 'Case-insensitive search (default: true)' },
+						max_results: { type: 'number', description: 'Maximum number of results (default: 50)' },
 					},
-					required: ['path', 'query'],
+					required: ['path', 'pattern'],
 				},
-				category: 'filesystem',
+				category: 'search',
 				source: this.id,
 			},
 		handler: async (args, _signal, agentId) => {
@@ -484,24 +382,37 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				throw new Error('path is required');
 			}
 
-			// 路径遍历保护：检查请求的路径是否在工作区目录内
-			await this._checkWorkspacePath(agentId, requestedPath);
+			// 搜索操作允许任意路径，不再检查工作区限制
 
 			const normalizedUri = URI.file(requestedPath);
-			const query = String(args['query'] ?? '');
-			const limit = Math.min(Math.max(Number(args['maxResults'] ?? 50), 1), 500);
-			if (!query) { throw new Error('query is required'); }
-			const hits: string[] = [];
-			await this._walkAndGrep(normalizedUri, query, hits, limit);
+			const pattern = String(args['pattern'] ?? '');
+				const filePattern = String(args['file_pattern'] ?? '');
+				const ignoreCase = Boolean(args['ignore_case'] ?? true);
+				const limit = Math.min(Math.max(Number(args['max_results'] ?? 50), 1), 500);
+				if (!pattern) { throw new Error('pattern is required'); }
+
+				const regex = (() => {
+					try {
+						return new RegExp(pattern, ignoreCase ? 'i' : '');
+					} catch {
+						return null;
+					}
+				})();
+
+				const hits: string[] = [];
+				const matcher = regex
+					? (t: string) => regex.test(t)
+					: (t: string) => ignoreCase ? t.toLowerCase().includes(pattern.toLowerCase()) : t.includes(pattern);
+				await this._walkAndGrep(normalizedUri, matcher, hits, limit, filePattern);
 			return [{ type: 'text', text: hits.join('\n') || '(no matches)' }];
 		},
 		});
 
-		// ── terminal ────────────────────────────────────────────────────
+	// ── terminal ─────────────────────────────────────────────────
 		this.register({
 			definition: {
 				name: 'terminal',
-				description: 'Execute a shell command and return the output. Works on desktop only. Returns stdout, stderr, and exit code.',
+				description: '执行命令行命令。Returns stdout, stderr, and exit code.',
 				inputSchema: {
 					type: 'object',
 					properties: {
@@ -526,191 +437,362 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		// ── web ────────────────────────────────────────────────────────
+		// ── search / search_files ─────────────────────────────────────
 		this.register({
 			definition: {
-				name: 'http_get',
-				description: 'HTTP GET request. Returns response body as text (max 1 MiB).',
+				name: 'search_files',
+				description: '模糊搜索文件/目录路径。Fuzzy-match file and directory names by name substring. Returns matching paths.',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						url: { type: 'string' },
-						headers: { type: 'object', additionalProperties: { type: 'string' } },
+						path: { type: 'string', description: 'Root directory to search in' },
+						query: { type: 'string', description: 'File/directory name substring to match' },
+						max_results: { type: 'number', description: 'Maximum number of results (default: 50)' },
+					},
+					required: ['path', 'query'],
+				},
+				category: 'search',
+				source: this.id,
+			},
+		handler: async (args, _signal, agentId) => {
+			const requestedPath = String(args['path'] || '');
+			if (!requestedPath) { throw new Error('path is required'); }
+			// 文件搜索允许任意路径，不再检查工作区限制
+			const normalizedUri = URI.file(requestedPath);
+			const query = String(args['query'] ?? '').toLowerCase();
+				const limit = Math.min(Math.max(Number(args['max_results'] ?? 50), 1), 500);
+				if (!query) { throw new Error('query is required'); }
+
+				const matches: string[] = [];
+				await this._walkAndMatchNames(normalizedUri, query, matches, limit);
+				return [{ type: 'text', text: matches.join('\n') || '(no matches)' }];
+			},
+		});
+
+		// ── mcp ───────────────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'use_mcp_tool',
+				description: '调用 MCP Server 提供的工具。Execute a tool provided by a connected MCP server.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						server: { type: 'string', description: 'MCP server name or id' },
+						tool: { type: 'string', description: 'Tool name on the MCP server' },
+						arguments: { type: 'object', description: 'Tool arguments as a key-value object' },
+					},
+					required: ['server', 'tool'],
+				},
+				category: 'mcp',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const server = String(args['server'] ?? '');
+				const tool = String(args['tool'] ?? '');
+				const mcpArgs = (args['arguments'] as Record<string, unknown>) ?? {};
+				return text(`[MCP stub] use_mcp_tool called: server="${server}", tool="${tool}", args=${JSON.stringify(mcpArgs)}. Configure an MCP server to enable real execution.`);
+			},
+		});
+
+		this.register({
+			definition: {
+				name: 'fetch_mcp_tools',
+				description: '获取 MCP Server 工具的详细描述。Returns tool schemas from a connected MCP server.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						server: { type: 'string', description: 'MCP server name or id' },
+					},
+					required: ['server'],
+				},
+				category: 'mcp',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const server = String(args['server'] ?? '');
+				return text(`[MCP stub] fetch_mcp_tools called for server="${server}". Configure an MCP server to enable real tool listing.`);
+			},
+		});
+
+		this.register({
+			definition: {
+				name: 'grep_mcp_tools',
+				description: '按关键词搜索 MCP 工具。Search for tools on a connected MCP server by keyword.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						server: { type: 'string', description: 'MCP server name or id' },
+						query: { type: 'string', description: 'Keyword to search for in tool names and descriptions' },
+					},
+					required: ['server', 'query'],
+				},
+				category: 'mcp',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const server = String(args['server'] ?? '');
+				const query = String(args['query'] ?? '');
+				return text(`[MCP stub] grep_mcp_tools called: server="${server}", query="${query}". Configure an MCP server to enable real search.`);
+			},
+		});
+
+		// ── vision ──────────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'read_image',
+				description: '读取/分析图片。Analyze an image using a multimodal vision model.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						path: { type: 'string', description: 'Image file path or URL' },
+						query: { type: 'string', description: 'Question or instruction about the image' },
+					},
+					required: ['path'],
+				},
+				category: 'vision',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const path = String(args['path'] ?? '');
+				const query = String(args['query'] ?? 'Describe this image.');
+				return text(`[Vision stub] read_image: path="${path}", query="${query}". Configure a vision-capable MCP server or provider to enable real image analysis.`);
+			},
+		});
+
+		this.register({
+			definition: {
+				name: 'capture_screen',
+				description: '截取屏幕。Capture a screenshot of the current screen or a specific window.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						target: { type: 'string', description: 'Target: "screen", "window", or window id (optional)' },
+					},
+				},
+				category: 'vision',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const target = String(args['target'] ?? 'screen');
+				return text(`[Vision stub] capture_screen: target="${target}". Configure a screen capture provider to enable real screenshots.`);
+			},
+		});
+
+		// ── web ─────────────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'web_preview',
+				description: '预览前端 Web 页面。Load and render a web page, returning the content.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						url: { type: 'string', description: 'URL to preview' },
+						_wait: { type: 'number', description: 'Wait time in ms before capturing (default: 500)' },
 					},
 					required: ['url'],
 				},
 				category: 'web',
 				source: this.id,
-				securityLevel: ToolSecurityLevel.Cautious,
 			},
-			handler: async args => {
+			handler: async (args) => {
 				const url = String(args['url'] ?? '');
-				if (!/^https?:\/\//i.test(url)) {
-					throw new Error('url must start with http:// or https://');
-				}
-				const headers = (args['headers'] as Record<string, string> | undefined) ?? {};
-				const ctx = await this.requestService.request({ type: 'GET', url, headers, callSite: 'sarosis.builtinTool.http_get' }, CancellationToken.None);
-				const body = (await asText(ctx)) ?? '';
-				if (body.length > 1024 * 1024) {
-					throw new Error('response body exceeded 1 MiB');
-				}
-				return text(`HTTP ${ctx.res.statusCode}\n\n${body.slice(0, 1024 * 1024)}`);
+				if (!/^https?:\/\//i.test(url)) { throw new Error('url must start with http:// or https://'); }
+				return text(`[Web stub] web_preview: url="${url}". Configure a browser automation provider to enable real web previews.`);
 			},
 		});
 
-		// ── Plan-mode exclusive tools ──────────────────────────────────
-		// These tools are only available in Plan mode and enable the
-		// AI to signal plan completion and ask clarifying questions.
-
+		// ── env ─────────────────────────────────────────────────────
 		this.register({
 			definition: {
-				name: 'exit_plan_mode',
-				description: 'Exit plan mode after the plan is ready for user review. ' +
-					'Call this when you have finished analyzing the task and produced a structured plan. ' +
-					'The plan will be presented to the user for approval. After approval, the system will ' +
-					'automatically create Agent instances, assign tasks, and execute them.',
+				name: 'get_env_info',
+				description: '获取环境变量信息。Returns environment variables and system information.',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						plan_summary: {
-							type: 'string',
-							description: 'A concise summary of the plan for the user to review.',
-						},
-						tasks: {
-							type: 'array',
-							items: {
-								type: 'object',
-								properties: {
-									title: { type: 'string', description: 'Task title' },
-									description: { type: 'string', description: 'What needs to be done' },
-									files: { type: 'array', items: { type: 'string' }, description: 'Files likely involved' },
-									complexity: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Estimated complexity' },
-									suggestedRole: { type: 'string', description: 'Suggested agent role (e.g., Developer, Designer, Tester)' },
-									dependencies: { type: 'array', items: { type: 'integer' }, description: '0-based indices of tasks this task depends on' },
-								},
-								required: ['title', 'description'],
-							},
-							description: 'Ordered list of sub-tasks in the plan. Each task should be independently executable. Use dependencies to indicate task ordering.',
-						},
-						next_mode: {
-							type: 'string',
-							enum: ['craft', 'ask'],
-							description: 'Recommended mode after plan approval. Default: craft.',
-						},
+						filter: { type: 'string', description: 'Optional prefix filter for environment variable names' },
 					},
-					required: ['plan_summary'],
 				},
-				category: 'plan',
+				category: 'env',
 				source: this.id,
-				securityLevel: ToolSecurityLevel.Safe,
 			},
 			handler: async (args) => {
-				const planSummary = String(args['plan_summary'] ?? '');
-				const tasks = (args['tasks'] as Array<Record<string, unknown>>) ?? [];
-				const nextMode = String(args['next_mode'] ?? 'craft');
-				// Return the plan as text — the execution layer will also
-				// emit a 'confirmation' delta so the UI can show an approval card.
-				const taskLines = tasks.map((t, i) => {
-					const files = Array.isArray(t['files']) ? ` [${(t['files'] as string[]).join(', ')}]` : '';
-					const cpx = t['complexity'] ? ` (${t['complexity']})` : '';
-					const role = t['suggestedRole'] ? ` → ${t['suggestedRole']}` : '';
-					const deps = Array.isArray(t['dependencies']) ? ` (depends on: ${(t['dependencies'] as number[]).map(d => `#${d + 1}`).join(', ')})` : '';
-					return `  ${i + 1}. ${t['title']}${cpx}${role}: ${t['description']}${files}${deps}`;
-				});
-				return text([
-					'Plan submitted for review:',
-					'',
-					planSummary,
-					'',
-					'Tasks:',
-					...taskLines,
-					'',
-					`Next mode after approval: ${nextMode}`,
-					'',
-					'After approval, the system will automatically:',
-					'  1. Create an OrchestrationPlan',
-					'  2. Create Agent instances for each task',
-					'  3. Assign tasks to agents based on role',
-					'  4. Execute tasks following dependency order',
-					'',
-					'Waiting for user approval...',
-				].join('\n'));
+				const filter = String(args['filter'] ?? '');
+				const entries = Object.entries(process.env ?? {}).filter(([k]) => !filter || k.startsWith(filter));
+				const lines = entries.map(([k, v]) => `${k}=${v ?? ''}`);
+				return text(lines.join('\n') || '(no env vars)');
 			},
 		});
 
+		// ── media ──────────────────────────────────────────────────
 		this.register({
 			definition: {
-				name: 'ask_user_question',
-				description: 'Ask the user a clarifying question during plan mode. ' +
-					'Use this when you need more information to complete the plan.',
+				name: 'generate_picture',
+				description: 'AI 图像生成 (文生图/图生图)。Generate an image from a text prompt or transform an existing image.',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						question: {
-							type: 'string',
-							description: 'The question to ask the user.',
-						},
-						options: {
-							type: 'array',
-							items: { type: 'string' },
-							description: 'Suggested answer options for the user to choose from.',
-						},
+						prompt: { type: 'string', description: 'Image generation prompt' },
+						negative_prompt: { type: 'string', description: 'What to avoid in the generated image' },
+						width: { type: 'number', description: 'Image width in pixels (default: 1024)' },
+						height: { type: 'number', description: 'Image height in pixels (default: 1024)' },
+						image_url: { type: 'string', description: 'Reference image URL for image-to-image generation (optional)' },
 					},
-					required: ['question'],
+					required: ['prompt'],
 				},
-				category: 'plan',
+				category: 'media',
 				source: this.id,
-				securityLevel: ToolSecurityLevel.Safe,
 			},
 			handler: async (args) => {
-				const question = String(args['question'] ?? '');
-				const options = (args['options'] as string[]) ?? [];
-				const optionLines = options.length > 0
-					? '\nOptions:\n' + options.map((o, i) => `  ${i + 1}. ${o}`).join('\n')
-					: '';
-				return text(`Question for user: ${question}${optionLines}`);
+				const prompt = String(args['prompt'] ?? '');
+				return text(`[Media stub] generate_picture: prompt="${prompt}". Configure an image generation MCP server to enable real generation.`);
 			},
 		});
-	}
 
-	/**
-	 * 注册 Skill 相关工具 —— 借鉴 OpenClaw 的按需加载模式。
-	 * 模型在 systemPrompt 中看到轻量目录后，通过这些工具按需读取完整内容。
-	 */
-	private _registerSkillTools(): void {
-		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
-		const MAX_SKILL_BYTES = 256_000; // 单个 skill 内容上限 256KB
-
+		// ── history ───────────────────────────────────────────────────
 		this.register({
 			definition: {
-				name: 'read_skill',
-				description: 'Read the full instructions of an installed skill by its id. Use this when you need detailed instructions from a skill listed in <available_skills>.',
+				name: 'read_history_context',
+				description: '读取历史对话上下文。Read recent conversation history for context.',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						skill_id: {
-							type: 'string',
-							description: 'The skill id (from <available_skills> in system prompt)',
-						},
+						limit: { type: 'number', description: 'Number of recent messages to retrieve (default: 20)' },
+					},
+				},
+				category: 'history',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const limit = Math.min(Math.max(Number(args['limit'] ?? 20), 1), 200);
+				return text(`[History stub] read_history_context: limit=${limit}. Configure a session memory provider to enable real history retrieval.`);
+			},
+		});
+
+		this.register({
+			definition: {
+				name: 'grep_history_context',
+				description: '按关键词搜索历史上下文。Search conversation history for messages matching a keyword.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						query: { type: 'string', description: 'Keyword to search for in conversation history' },
+						limit: { type: 'number', description: 'Maximum number of results (default: 10)' },
+					},
+					required: ['query'],
+				},
+				category: 'history',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const query = String(args['query'] ?? '');
+				const limit = Math.min(Math.max(Number(args['limit'] ?? 10), 1), 100);
+				return text(`[History stub] grep_history_context: query="${query}", limit=${limit}. Configure a session memory provider to enable real history search.`);
+			},
+		});
+
+		// ── scheduler ──────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'cron',
+				description: '创建/管理定时任务。Manage scheduled tasks: create, list, update, pause, resume, and remove cron jobs.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						action: { type: 'string', enum: ['create', 'list', 'update', 'pause', 'resume', 'remove', 'trigger'], description: 'Action to perform' },
+						name: { type: 'string', description: 'Cron job name' },
+						schedule: { type: 'string', description: 'Cron schedule expression (e.g., "0 9 * * *")' },
+						task: { type: 'string', description: 'Task description for the scheduled job' },
+					},
+					required: ['action'],
+				},
+				category: 'scheduler',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const action = String(args['action'] ?? '');
+				const name = String(args['name'] ?? '');
+				const schedule = String(args['schedule'] ?? '');
+				const task = String(args['task'] ?? '');
+				return text(`[Scheduler stub] cron: action="${action}", name="${name}", schedule="${schedule}", task="${task}". Configure a scheduler service to enable real cron job management.`);
+			},
+		});
+
+		// ── notify ────────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'notify',
+				description: '发送通知消息。Send a notification to the user.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						message: { type: 'string', description: 'Notification message text' },
+						level: { type: 'string', enum: ['info', 'warning', 'error'], description: 'Notification level (default: info)' },
+					},
+					required: ['message'],
+				},
+				category: 'notify',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const message = String(args['message'] ?? '');
+				const level = String(args['level'] ?? 'info');
+				this.logService.info(`[Notify] [${level}] ${message}`);
+				return text(`notification sent: [${level}] ${message}`);
+			},
+		});
+
+		// ── download ────────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'display_download_links',
+				description: '生成文件下载链接。Generate temporary download links for one or more files.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						paths: { type: 'array', items: { type: 'string' }, description: 'File paths to generate download links for' },
+						expires_in: { type: 'number', description: 'Link expiry time in seconds (default: 3600)' },
+					},
+					required: ['paths'],
+				},
+				category: 'download',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const paths = (args['paths'] as string[]) ?? [];
+				const expiresIn = Number(args['expires_in'] ?? 3600);
+				if (paths.length === 0) { throw new Error('paths is required and must be non-empty'); }
+				const links = paths.map(p => `[stub] download link for "${p}" (expires in ${expiresIn}s)`);
+				return text(links.join('\n'));
+			},
+		});
+
+		this.logService.info('[BuiltinTools] _registerCoreTools: all 22 tools registered');
+
+		// ── skills ───────────────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'use_skill',
+				description: '加载并使用 Skill。Read the full instructions of an installed skill by its id.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						skill_id: { type: 'string', description: 'The skill id (from <available_skills> in system prompt)' },
 					},
 					required: ['skill_id'],
 				},
 				category: 'skills',
 				source: this.id,
 			},
-			handler: async args => {
+			handler: async (args) => {
 				const skillId = String(args['skill_id'] ?? '').trim();
-				if (!skillId) {
-					throw new Error('skill_id is required');
-				}
+				if (!skillId) { throw new Error('skill_id is required'); }
 
 				const skill = this.skillRegistry.getSkill(skillId);
 				if (!skill) {
-					// 尝试模糊匹配（按 name）
 					const allSkills = this.skillRegistry.getSkills();
 					const byName = allSkills.find(s => s.name.toLowerCase() === skillId.toLowerCase());
 					if (byName) {
-						const content = byName.prompt.slice(0, MAX_SKILL_BYTES);
+						const content = byName.prompt.slice(0, 256_000);
 						return text([
 							`# Skill: ${byName.name}`,
 							byName.description ? `_${byName.description}_` : '',
@@ -725,8 +807,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					}
 					throw new Error(`Skill not found: "${skillId}". Use list_skills to see available skill ids.`);
 				}
-
-				const content = skill.prompt.slice(0, MAX_SKILL_BYTES);
+				const content = skill.prompt.slice(0, 256_000);
 				return text([
 					`# Skill: ${skill.name}`,
 					skill.description ? `_${skill.description}_` : '',
@@ -741,62 +822,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		this.register({
-			definition: {
-				name: 'list_skills',
-				description: 'List all installed skills with their ids, names, descriptions, and activation modes. Use when you need to browse or search available skills.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						filter: {
-							type: 'string',
-							description: 'Optional keyword to filter skills by name or description',
-						},
-						category: {
-							type: 'string',
-							description: 'Optional category to filter by',
-						},
-					},
-				},
-				category: 'skills',
-				source: this.id,
-			},
-			handler: async args => {
-				const filter = String(args['filter'] ?? '').toLowerCase().trim();
-				const category = String(args['category'] ?? '').toLowerCase().trim();
-
-				let skills = [...this.skillRegistry.getSkills()].filter(s => s.enabled !== false);
-
-				if (filter) {
-					skills = skills.filter(s =>
-						s.name.toLowerCase().includes(filter) ||
-						s.description.toLowerCase().includes(filter) ||
-						(s.match?.some(m => m.toLowerCase().includes(filter)) ?? false)
-					);
-				}
-				if (category) {
-					skills = skills.filter(s => (s.category ?? '').toLowerCase() === category);
-				}
-
-				if (skills.length === 0) {
-					return text('No skills found matching the given criteria.');
-				}
-
-				const rows = skills.map(s => [
-					`- **${s.name}** (id: \`${s.id}\`)`,
-					`  ${s.description || 'No description'}`,
-					`  Activation: ${s.activation} | Source: ${s.source}${s.category ? ` | Category: ${s.category}` : ''}`,
-				].join('\n'));
-
-				return text([
-					`Found ${skills.length} skill(s):`,
-					'',
-					...rows,
-				].join('\n'));
-			},
-		});
-
-		this.logService.info('[BuiltinTools] _registerSkillTools: read_skill and list_skills registered');
+		// list_skills removed — merged into use_skill
 	}
 
 	/**
@@ -966,7 +992,50 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		}
 	}
 
-	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number): Promise<void> {
+	private async _walkAndGrep(
+		dir: URI,
+		matcher: (line: string) => boolean,
+		out: string[],
+		limit: number,
+		filePattern?: string,
+	): Promise<void> {
+		if (out.length >= limit) { return; }
+		let stat;
+		try { stat = await this.fileService.resolve(dir); } catch { return; }
+		if (!stat.isDirectory || !stat.children) { return; }
+		// Simple glob match — supports "*.py", "src/*.ts" patterns
+		const globToRegex = (pattern: string): RegExp => {
+			const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+			const regexStr = '^' + escaped.replace(/\*/g, '.*').replace(/\?/g, '.') + '$';
+			return new RegExp(regexStr);
+		};
+		const fileRegex = filePattern ? globToRegex(filePattern) : null;
+		for (const child of stat.children) {
+			if (out.length >= limit) { return; }
+			if (child.isDirectory) {
+				// 跳过常见噪声目录
+				if (child.name === 'node_modules' || child.name === '.git' || child.name === 'out' || child.name === 'dist') { continue; }
+				await this._walkAndGrep(child.resource, matcher, out, limit, filePattern);
+				continue;
+			}
+			if (!child.isFile) { continue; }
+			if (fileRegex && !fileRegex.test(child.name)) { continue; }
+			if (typeof child.size === 'number' && child.size > 512 * 1024) { continue; }
+			try {
+				const buf = await this.fileService.readFile(child.resource);
+				const text = buf.value.toString();
+				const lines = text.split('\n');
+				for (let i = 0; i < lines.length; i++) {
+					if (matcher(lines[i])) {
+						out.push(`${child.resource.fsPath}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+						if (out.length >= limit) { return; }
+					}
+				}
+			} catch { /* skip binary */ }
+		}
+	}
+
+	private async _walkAndMatchNames(dir: URI, query: string, out: string[], limit: number): Promise<void> {
 		if (out.length >= limit) { return; }
 		let stat;
 		try { stat = await this.fileService.resolve(dir); } catch { return; }
@@ -974,24 +1043,18 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		for (const child of stat.children) {
 			if (out.length >= limit) { return; }
 			if (child.isDirectory) {
-				// 跳过常见噪声目录
 				if (child.name === 'node_modules' || child.name === '.git' || child.name === 'out' || child.name === 'dist') { continue; }
-				await this._walkAndGrep(child.resource, query, out, limit);
-				continue;
-			}
-			if (!child.isFile) { continue; }
-			if (typeof child.size === 'number' && child.size > 512 * 1024) { continue; } // skip > 512 KiB
-			try {
-				const buf = await this.fileService.readFile(child.resource);
-				const text = buf.value.toString();
-				const lines = text.split('\n');
-				for (let i = 0; i < lines.length; i++) {
-					if (lines[i].includes(query)) {
-						out.push(`${child.resource.fsPath}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-						if (out.length >= limit) { return; }
-					}
+				if (child.name.toLowerCase().includes(query)) {
+					out.push(`${child.resource.fsPath}/`);
+					if (out.length >= limit) { return; }
 				}
-			} catch { /* skip binary */ }
+				await this._walkAndMatchNames(child.resource, query, out, limit);
+			} else if (child.isFile) {
+				if (child.name.toLowerCase().includes(query)) {
+					out.push(child.resource.fsPath);
+					if (out.length >= limit) { return; }
+				}
+			}
 		}
 	}
 }

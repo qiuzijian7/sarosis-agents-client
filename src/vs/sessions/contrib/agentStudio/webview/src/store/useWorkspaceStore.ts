@@ -24,6 +24,12 @@ interface Workspace {
 	id: string;
 	name: string;
 	description?: string;
+	/** Git worktree directory for agent isolation */
+	worktreePath?: string;
+	/** Branch name of the associated worktree */
+	worktreeBranch?: string;
+	/** Lifecycle status of the worktree (pending/ready/failed) */
+	worktreeStatus?: 'none' | 'pending' | 'ready' | 'failed';
 }
 
 interface WorkspaceState {
@@ -39,6 +45,7 @@ interface WorkspaceState {
 	// Actions
 	loadWorkspaces: () => Promise<void>;
 	createWorkspace: (name: string, description?: string) => Promise<string | null>;
+	createWorkspaceWithWorktree: (name: string, options?: { mode?: 'main' | 'create' | 'existing'; worktreeName?: string; existingPath?: string; detached?: boolean }) => Promise<string | null>;
 	deleteWorkspace: (id: string) => Promise<boolean>;
 	setActiveWorkspace: (id: string) => Promise<void>;
 	updateNodes: (nodes: WorkspaceNode[]) => void;
@@ -61,7 +68,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 		set({ isLoading: true });
 		try {
 			const workspaces = await sendRequest<unknown, Workspace[]>('workspace.list', {});
-			set({ workspaces, isLoading: false });
+			// 恢复上次活动的工作区
+			let activeWorkspaceId: string | null = null;
+			try {
+				activeWorkspaceId = await sendRequest<unknown, string | null>('workspace.getActive', {});
+				// 验证恢复的 workspace ID 是否有效
+				if (activeWorkspaceId && !workspaces.find(w => w.id === activeWorkspaceId)) {
+					activeWorkspaceId = null;
+				}
+			} catch {
+				// 获取失败，使用默认行为
+			}
+			set({ workspaces, activeWorkspaceId, isLoading: false });
+			// 如果有上次活动的工作区，自动加载它
+			if (activeWorkspaceId) {
+				get().setActiveWorkspace(activeWorkspaceId);
+			}
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to load workspaces:', err);
 			set({ isLoading: false });
@@ -80,6 +102,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 			return null;
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to create workspace:', err);
+			return null;
+		}
+	},
+
+	/**
+	 * Create a workspace with worktree isolation (opencode pattern).
+	 * Supports three modes: 'main' (no worktree), 'create' (new worktree), 'existing' (use existing).
+	 */
+	createWorkspaceWithWorktree: async (name: string, options?: { mode?: 'main' | 'create' | 'existing'; worktreeName?: string; existingPath?: string; detached?: boolean }) => {
+		try {
+			const result = await sendRequest<{ name: string; mode?: string; name?: string; existingPath?: string; detached?: boolean }, { id: string }>(
+				'workspace.createWithWorktree',
+				{ name, ...options },
+			);
+			if (result?.id) {
+				const workspaces = await sendRequest<unknown, Workspace[]>('workspace.list', {});
+				set({ workspaces, activeWorkspaceId: result.id, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } });
+				return result.id;
+			}
+			return null;
+		} catch (err) {
+			console.error('[WorkspaceStore] Failed to create workspace with worktree:', err);
 			return null;
 		}
 	},
@@ -125,6 +169,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 				viewport: workspace?.layout?.viewport || { x: 0, y: 0, zoom: 1 },
 				isLoading: false,
 			});
+			
+			// 持久化最后活动的工作区ID
+			try {
+				await sendRequest('workspace.setActive', { id });
+			} catch (err) {
+				console.warn('[WorkspaceStore] Failed to persist active workspace:', err);
+			}
 		} catch (err) {
 			console.error('[WorkspaceStore] Failed to load workspace:', err);
 			set({ isLoading: false });

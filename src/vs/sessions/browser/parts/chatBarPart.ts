@@ -156,7 +156,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						status: emp.status,
 						isPM: emp.presetId === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 						customPrompt: emp.customPrompt,
-						model: emp.model,
+						model: typeof emp.model === 'string' ? emp.model : (Array.isArray(emp.model) ? emp.model[0] : emp.model?.primary),
 						provider: undefined,
 					});
 					// Load chat history

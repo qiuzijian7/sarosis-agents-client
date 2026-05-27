@@ -10,6 +10,9 @@
 
 // ─── Message Types ──────────────────────────────────────────────────────────────
 
+/** Maximum nesting depth for agent-to-agent invocations (prevents infinite recursion) */
+export const MAX_AGENT_NESTING_DEPTH = 5;
+
 export type MessageDirection = 'toHost' | 'toWebview';
 export const MessageDirection = {
 	ToHost: 'toHost' as const,
@@ -30,9 +33,15 @@ export type RequestType =
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
+	| 'workspace.createWithWorktree'
+	| 'workspace.assignWorktree'
+	| 'workspace.resetWorktree'
+	| 'workspace.removeWorktree'
 	| 'workspace.delete'
 	| 'workspace.update'
 	| 'workspace.updateLayout'
+	| 'workspace.setActive'
+	| 'workspace.getActive'
 	| 'workspace.connections.list'
 	| 'workspace.connections.add'
 	| 'workspace.connections.remove'
@@ -106,6 +115,9 @@ export type RequestType =
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
+	| 'files.applyCode'           // apply code content to a file (Void-inspired Apply Code Blocks)
+	| 'chat.jumpToCheckpoint'     // navigate to a checkpoint (Void-inspired time-travel)
+	| 'chat.toolApprove'          // approve/reject a tool call (Void-inspired ToolApproval)
 	| 'skills.list';              // list all registered skills
 
 // Event types (Host → WebView, unsolicited)
@@ -172,10 +184,18 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
+	/** Sub-agent invocation ID for grouping sub-agent deltas */
+	readonly subAgentId?: string;
+	/** Sub-agent metadata (type, task, parent) — sent with subagent_start */
+	readonly subAgentMeta?: {
+		readonly type: 'explore' | 'general' | 'scout';
+		readonly task: string;
+		readonly parentAgentId?: string;
+	};
 }
 
 export interface IChatStreamCompletePayload {
@@ -201,6 +221,16 @@ export interface IChatSendPayload {
 	readonly workspaceId?: string;
 	/** Fork-scoped Agent session ID */
 	readonly agentSessionId?: string;
+	/**
+	 * Current nesting depth of agent invocations.
+	 * 0 = top-level, 1 = invoked by another agent, etc.
+	 * The host enforces a max depth limit (default: 5).
+	 */
+	readonly nestingDepth?: number;
+	/**
+	 * ID of the parent agent that invoked this agent (if nestingDepth > 0).
+	 */
+	readonly parentAgentId?: string;
 }
 
 export interface IEmployeeCreatePayload {
@@ -527,6 +557,8 @@ export interface IFileOpenPayload {
 	readonly preserveFocus?: boolean;
 	/** Whether to open as a pinned (non-preview) editor. Default: false. */
 	readonly pinned?: boolean;
+	/** Line number to scroll to after opening (1-based). */
+	readonly lineNumber?: number;
 	/**
 	 * Optional workspace context captured at the moment the preview is
 	 * opened. Forwarded into the HTML preview's imgui SDK so form submits
@@ -571,4 +603,37 @@ export interface IFileOpenUntitledTextPayload {
 	readonly preserveFocus?: boolean;
 	/** Whether to open as a pinned (non-preview) editor. Default: true. */
 	readonly pinned?: boolean;
+}
+
+/**
+ * Payload for `files.applyCode` — applies code content to a file.
+ * (Void-inspired Apply Code Blocks: one-click apply from chat UI)
+ */
+export interface IFileApplyCodePayload {
+	/** Absolute filesystem path of the target file. */
+	readonly path: string;
+	/** The code content to apply (replaces the file content). */
+	readonly content: string;
+	/** Optional: the tool call ID that generated this code (for tracking). */
+	readonly toolCallId?: string;
+}
+
+/**
+ * Payload for `chat.jumpToCheckpoint` — navigate to a checkpoint.
+ * (Void-inspired time-travel navigation)
+ */
+export interface IChatJumpToCheckpointPayload {
+	/** The checkpoint ID to jump to. */
+	readonly checkpointId: string;
+}
+
+/**
+ * Payload for `chat.toolApprove` — approve or reject a pending tool call.
+ * (Void-inspired ToolApproval system)
+ */
+export interface IChatToolApprovePayload {
+	/** The tool call ID to approve/reject. */
+	readonly toolCallId: string;
+	/** The approval decision. */
+	readonly decision: 'allow_once' | 'allow_always' | 'deny';
 }

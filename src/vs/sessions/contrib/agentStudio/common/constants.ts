@@ -6,6 +6,7 @@
 // Configuration keys — feature toggles
 export const AGENT_STUDIO_ENABLED_SETTING = 'sessions.agentStudio.enabled';
 export const AGENT_STUDIO_DATA_PATH_SETTING = 'sessions.agentStudio.dataPath';
+export const AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING = 'sessions.agentStudio.chatStreamLog.enabled';
 
 // NOTE: Knot AG-UI configuration keys are defined in the knot-agui extension's
 // package.json (contributes.configuration) and discovered at runtime via
@@ -99,6 +100,8 @@ export const AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID = 'agentStudio.healthMonitorVie
 export const AGENT_STUDIO_CREW_TEAM_VIEW_ID = 'agentStudio.crewTeamView';
 export const AGENT_STUDIO_EVOLUTION_VIEW_ID = 'agentStudio.evolutionView';
 export const AGENT_STUDIO_CHANNEL_VIEW_ID = 'agentStudio.channelView';
+export const AGENT_STUDIO_WORKTREE_VIEW_ID = 'agentStudio.worktreeView';
+export const AGENT_STUDIO_GRAPH_VIEW_ID = 'agentStudio.graphView';
 
 // Channel keys — ALL channels supported by OpenClaw
 // Sources: ChannelsConfig explicit properties (9) + UI renderChannel switch (8)
@@ -599,6 +602,7 @@ export const DATA_FILE_WORKSPACES = 'workspaces.json';
 export const DATA_FILE_DELEGATIONS = 'delegations.json';
 export const DATA_FILE_SESSIONS = 'sessions.json';
 export const DATA_FILE_CHAT_HISTORY = 'chat-history.json';
+export const DATA_FILE_LAST_ACTIVE_WORKSPACE = 'last-active-workspace.json';
 
 // Workspace-local data directory name (stored inside the workspace folder)
 export const WORKSPACE_DATA_DIR = '.sarosisworkspace';

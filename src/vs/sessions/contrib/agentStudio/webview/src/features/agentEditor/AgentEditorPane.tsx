@@ -55,30 +55,30 @@ interface AgentEditorPaneProps {
 
 interface SkillsDragDropPanelProps {
 	employeeId: string;
-	agentSkills: { id: string; name: string; enabled: boolean }[];
-	onUpdateSkills: (skills: { id: string; name: string; enabled: boolean }[]) => void;
+	agentSkillIds: string[];
+	onUpdateSkills: (skillIds: string[]) => void;
 	allSkills: Array<{ id: string; name: string; category: string; activation: string; description?: string }>;
 }
 
-function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills, allSkills }: SkillsDragDropPanelProps): React.ReactElement {
+function SkillsDragDropPanel({ employeeId, agentSkillIds, onUpdateSkills, allSkills }: SkillsDragDropPanelProps): React.ReactElement {
 	const [leftFilter, setLeftFilter] = useState('');
 	const [rightFilter, setRightFilter] = useState('');
 	const [dragOverSide, setDragOverSide] = useState<'left' | 'right' | null>(null);
 
 	// Agent skill IDs set for quick lookup
-	const agentSkillIds = new Set(agentSkills.map(s => s.id));
+	const agentSkillIdSet = new Set(agentSkillIds);
 
 	// Left: all skills NOT installed on this agent
 	const availableSkills = allSkills.filter(
-		s => !agentSkillIds.has(s.id) && s.name.toLowerCase().includes(leftFilter.toLowerCase()),
+		s => s && s.id && s.name && !agentSkillIdSet.has(s.id) && s.name.toLowerCase().includes(leftFilter.toLowerCase()),
 	);
 
-	// Right: agent skills
-	const installedSkills = agentSkills.filter(
-		s => s.name.toLowerCase().includes(rightFilter.toLowerCase()),
-	);
+	// Right: agent skills (look up names from allSkills)
+	const installedSkills = agentSkillIds
+		.map(id => allSkills.find(s => s.id === id))
+		.filter((s): s is NonNullable<typeof s> => !!s && s.name && s.name.toLowerCase().includes(rightFilter.toLowerCase()));
 
-	const handleDragStart = (e: React.DragEvent, skill: { id: string; name: string; category: string; activation: string; description?: string } | { id: string; name: string; enabled: boolean }, from: 'left' | 'right') => {
+	const handleDragStart = (e: React.DragEvent, skill: { id: string; name: string; category: string; activation: string; description?: string }, from: 'left' | 'right') => {
 		e.dataTransfer.setData('application/json', JSON.stringify({ skill, from }));
 		e.dataTransfer.effectAllowed = 'move';
 	};
@@ -101,19 +101,13 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills, allSkill
 
 		if (from === 'left' && targetSide === 'right') {
 			// Install skill
-			if (!agentSkillIds.has(skill.id)) {
-				onUpdateSkills([...agentSkills, { id: skill.id, name: skill.name, enabled: true }]);
+			if (!agentSkillIdSet.has(skill.id)) {
+				onUpdateSkills([...agentSkillIds, skill.id]);
 			}
 		} else if (from === 'right' && targetSide === 'left') {
 			// Uninstall skill
-			onUpdateSkills(agentSkills.filter(s => s.id !== skill.id));
+			onUpdateSkills(agentSkillIds.filter(id => id !== skill.id));
 		}
-	};
-
-	const handleToggleEnabled = (skillId: string) => {
-		onUpdateSkills(
-			agentSkills.map(s => s.id === skillId ? { ...s, enabled: !s.enabled } : s),
-		);
 	};
 
 	return (
@@ -127,7 +121,7 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills, allSkill
 			>
 				<div className="skills-panel-header">
 					<h4>所有技能</h4>
-					<span className="skills-panel-count">{allSkills.length - agentSkills.length}</span>
+					<span className="skills-panel-count">{allSkills.length - agentSkillIds.length}</span>
 				</div>
 				<input
 					type="text"
@@ -177,7 +171,7 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills, allSkill
 			>
 				<div className="skills-panel-header">
 					<h4>已安装技能</h4>
-					<span className="skills-panel-count">{agentSkills.length}</span>
+					<span className="skills-panel-count">{agentSkillIds.length}</span>
 				</div>
 				<input
 					type="text"
@@ -202,18 +196,9 @@ function SkillsDragDropPanel({ employeeId, agentSkills, onUpdateSkills, allSkill
 							<span className="skill-item-icon">🛠</span>
 							<div className="skill-item-info">
 								<span className="skill-item-name">{skill.name}</span>
-								<span className={`skill-item-status ${skill.enabled ? 'enabled' : 'disabled'}`}>
-									{skill.enabled ? '已启用' : '已禁用'}
-								</span>
+								<span className="skill-item-status enabled">已安装</span>
 							</div>
-							<label className="skill-toggle-switch" title={skill.enabled ? '点击禁用' : '点击启用'}>
-								<input
-									type="checkbox"
-									checked={skill.enabled}
-									onChange={() => handleToggleEnabled(skill.id)}
-								/>
-								<span className="skill-toggle-slider" />
-							</label>
+							<span className="skill-item-hint">拖拽卸载</span>
 						</div>
 					))}
 				</div>
@@ -921,7 +906,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			{activeTab === 'skills' && (
 				<SkillsDragDropPanel
 					employeeId={employeeId}
-					agentSkills={skills}
+					agentSkillIds={skills}
 					allSkills={allSkills}
 					onUpdateSkills={(next) => {
 						setSkills(next);

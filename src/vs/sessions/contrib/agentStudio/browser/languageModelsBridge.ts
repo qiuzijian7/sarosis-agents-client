@@ -333,6 +333,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				let displayName: string | undefined;
 				let renderType: string | undefined;
 				let defaultShow: boolean | undefined;
+				let serverExecuted: boolean | undefined;
 
 				// Extract _meta from parameters if present (set by Knot AG-UI extension)
 				if (rawParams && typeof rawParams === 'object' && '_meta' in (rawParams as object)) {
@@ -341,6 +342,11 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						displayName = meta.display_name as string | undefined;
 						renderType = meta.render_type as string | undefined;
 						defaultShow = meta.default_show as boolean | undefined;
+						serverExecuted = meta.server_executed as boolean | undefined;
+						// Normalize: render_type="none" implies defaultShow=false
+						if (renderType && renderType.toLowerCase() === 'none' && defaultShow === undefined) {
+							defaultShow = false;
+						}
 					}
 					// Strip _meta from the parameters before passing to tool
 					const cleanParams = { ...(rawParams as Record<string, unknown>) };
@@ -361,6 +367,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						displayName,
 						renderType,
 						defaultShow,
+						serverExecuted,
 					},
 				};
 			}

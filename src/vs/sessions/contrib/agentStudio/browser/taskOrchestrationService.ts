@@ -36,7 +36,13 @@ import { TaskDecomposer } from './taskDecomposer.js';
 import { AgentFactory } from './agentFactory.js';
 import { CanvasLayoutEngine } from './canvasLayoutEngine.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import type { IAgentTurnRequest } from '../common/providers.js';
+import type { IAgentTurnRequest, IChatStreamDelta } from '../common/providers.js';
+// ─── New unified imports ──────────────────────────────────────────────────
+import { UnifiedSubAgentDispatch } from '../common/unifiedSubAgentDispatch.js';
+import { StructuredOutputParser } from './structuredOutputParser.js';
+import { RepoOverviewProvider } from './repoOverviewProvider.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IterationBudget } from '../common/iterationBudget.js';
 
 const DATA_FILE_ORCHESTRATION = 'orchestration-plans.json';
 
@@ -97,6 +103,14 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	private readonly _decomposer: TaskDecomposer;
 	private readonly _agentFactory: AgentFactory;
 	private readonly _layoutEngine: CanvasLayoutEngine;
+	/** Unified sub-agent dispatch (replaces previous SubAgentManager + delegate_task) */
+	private readonly _subAgentDispatch: UnifiedSubAgentDispatch;
+	/** Structured output parser (replaces _parseAiResponseToPlanTasks) */
+	private readonly _outputParser: StructuredOutputParser;
+	/** Repo overview provider (injects codebase context into AI decomposition) */
+	private readonly _repoOverviewProvider: RepoOverviewProvider;
+	/** Cached repo overview (invalidated on workspace change) */
+	private _cachedRepoOverview: string | undefined;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -107,11 +121,15 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		this._decomposer = new TaskDecomposer();
 		this._agentFactory = new AgentFactory(agentStudioService, logService);
 		this._layoutEngine = new CanvasLayoutEngine(agentStudioService, logService);
+		this._subAgentDispatch = new UnifiedSubAgentDispatch(undefined, DEFAULT_MAX_CONCURRENCY);
+		this._outputParser = new StructuredOutputParser(logService);
+		this._repoOverviewProvider = new RepoOverviewProvider(fileService, logService);
 		this._startTimeoutMonitor();
 	}
 
@@ -811,7 +829,10 @@ RULES:
 			taskTitle: task.title,
 		});
 
-		const subTasks = this._parseAiResponseToPlanTasks(responseText, employeeNameToId);
+		const subTasks = this._convertParsedTasksToPlanTasks(
+			this._outputParser.parseTaskDecomposition(responseText).tasks,
+			employeeNameToId,
+		);
 
 		// Fire progress: decomposition complete
 		this._fireDecompositionProgress({
@@ -892,6 +913,11 @@ RULES:
 	/**
 	 * Decompose a goal into PlanTasks using AI.
 	 * This replaces the rule-based TaskDecomposer.decomposeGoal() with AI-powered decomposition.
+	 *
+	 * Improvements over previous implementation:
+	 * 1. Injects codebase context (repo_overview) so AI understands the project
+	 * 2. Uses StructuredOutputParser instead of fragile hand-written JSON extraction
+	 * 3. Supports parallel explore sub-agents (inspired by OpenCode Phase 1)
 	 */
 	private async _decomposeGoalWithAI(goal: string, workspaceId: string, employees: Employee[], plannerId?: string): Promise<PlanTask[]> {
 		this.logService.info(`[Orchestration] Starting AI-based goal decomposition for: "${goal}" (plannerId=${plannerId || 'default'})`);
@@ -913,21 +939,49 @@ RULES:
 		});
 
 		try {
-			// Step 1: Call AI model
+			// Step 0: Inject codebase context (repo_overview)
+			let repoContext: string | undefined;
+			try {
+				repoContext = await this._getRepoOverview();
+				if (repoContext) {
+					this.logService.info(`[Orchestration] Injected repo overview context (${repoContext.length} chars)`);
+				}
+			} catch (err) {
+				this.logService.warn(`[Orchestration] Failed to get repo overview, continuing without: ${err}`);
+			}
+
+			// Step 1: Call AI model (with codebase context)
 			this.logService.info(`[Orchestration] Calling AI model for task decomposition`);
-			const aiResponse = await this._callAIModelForDecomposition(goal, workspaceId, employees, plannerId);
+			const aiResponse = await this._callAIModelForDecomposition(goal, workspaceId, employees, plannerId, repoContext);
 			this.logService.info(`[Orchestration] AI response received, length=${aiResponse.length}`);
 
-			// Step 2: Parse AI response into PlanTask[]
-			this.logService.info(`[Orchestration] Parsing AI response into PlanTask[]`);
+			// Step 2: Parse AI response into PlanTask[] using StructuredOutputParser
+			this.logService.info(`[Orchestration] Parsing AI response with StructuredOutputParser`);
+			const { tasks: parsedTasks, errors } = this._outputParser.parseTaskDecomposition(aiResponse);
+
+			if (errors.length > 0) {
+				this.logService.warn(`[Orchestration] StructuredOutputParser reported ${errors.length} validation errors:`);
+				for (const err of errors.slice(0, 5)) {
+					this.logService.warn(`  - ${err.path}: ${err.message}`);
+				}
+			}
+
+			if (parsedTasks.length === 0) {
+				throw new Error('StructuredOutputParser returned 0 tasks');
+			}
+
+			this.logService.info(`[Orchestration] Parsed ${parsedTasks.length} tasks from AI response`);
+
+			// Step 3: Convert parsed tasks to PlanTask[]
 			const employeeNameToId = new Map<string, string>();
 			employees.forEach(e => {
 				if (e.name && e.id) {
 					employeeNameToId.set(e.name.toLowerCase(), e.id);
 				}
 			});
-			const tasks = this._parseAiResponseToPlanTasks(aiResponse, employeeNameToId);
-			this.logService.info(`[Orchestration] Parsed ${tasks.length} tasks from AI response`);
+
+			const tasks = this._convertParsedTasksToPlanTasks(parsedTasks, employeeNameToId);
+			this.logService.info(`[Orchestration] Converted ${tasks.length} tasks to PlanTask[]`);
 
 			// Fire progress: decomposition complete
 			this._fireDecompositionProgress({
@@ -965,8 +1019,10 @@ RULES:
 	 * Call AI model to decompose goal into tasks.
 	 * Uses the planner agent's preset (customPrompt, skills, model) for better decomposition.
 	 * Returns the raw AI response string.
+	 *
+	 * Improvement: now accepts optional repoContext for codebase-aware decomposition.
 	 */
-	private async _callAIModelForDecomposition(goal: string, workspaceId: string, employees: Employee[], plannerId?: string): Promise<string> {
+	private async _callAIModelForDecomposition(goal: string, workspaceId: string, employees: Employee[], plannerId?: string, repoContext?: string): Promise<string> {
 		this.logService.info(`[Orchestration] _callAIModelForDecomposition: goal="${goal}", plannerId=${plannerId || 'default'}`);
 
 		// Resolve planner agent for its preset configuration
@@ -1007,7 +1063,12 @@ RULES:
 			: '';
 
 		// Build system prompt - EXTREMELY STRICT JSON OUTPUT REQUIRED
-		const systemPrompt = `${plannerContext}You are a task decomposition expert. Your ONLY job is to output valid JSON.
+		// Improvement: inject codebase context so decomposition is project-aware
+		const repoContextSection = repoContext
+			? `\n\n--- CODEBASE CONTEXT ---\n${repoContext}\n--- END CODEBASE CONTEXT ---\n\nUse the codebase context above to make informed decisions about task decomposition. For example:\n- If the project is a frontend-only app, don't create backend tasks\n- If the project uses a specific framework, suggest tasks aligned with that framework\n- Match suggested roles to the actual tech stack\n`
+			: '';
+
+		const systemPrompt = `${plannerContext}${repoContextSection}You are a task decomposition expert. Your ONLY job is to output valid JSON.
 
 CRITICAL: YOUR ENTIRE RESPONSE MUST BE A VALID JSON OBJECT. NOTHING ELSE.
 
@@ -1090,127 +1151,26 @@ Goal: ${goal}`;
 	}
 
 	/**
-	 * Parse AI response string into PlanTask[].
+	 * Convert parsed tasks from StructuredOutputParser into PlanTask[].
+	 * This replaces the old _parseAiResponseToPlanTasks method.
 	 */
-	private _parseAiResponseToPlanTasks(aiResponse: string, employeeNameToId: Map<string, string>): PlanTask[] {
-		this.logService.info(`[Orchestration] _parseAiResponseToPlanTasks: raw response length=${aiResponse.length}`);
-		this.logService.info(`[Orchestration] _parseAiResponseToPlanTasks: response preview=${aiResponse.substring(0, 300)}`);
-
-		// Try multiple strategies to extract JSON from response
-		let jsonStr: string | null = null;
-
-		// Strategy 1: Extract from markdown code block (```json ... ```)
-		const markdownMatch = aiResponse.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-		if (markdownMatch) {
-			jsonStr = markdownMatch[1].trim();
-			this.logService.info(`[Orchestration] Strategy 1: Extracted JSON from markdown block`);
-		}
-
-		// Strategy 2: Find JSON object starting with {"tasks" or {"phases"
-		if (!jsonStr) {
-			const tasksMatch = aiResponse.match(/\{"\w+":\s*\[[\s\S]*\]\s*\}/);
-			if (tasksMatch) {
-				jsonStr = tasksMatch[0];
-				this.logService.info(`[Orchestration] Strategy 2: Found JSON with array at root`);
-			}
-		}
-
-		// Strategy 3: Find any JSON object (starts with {, ends with })
-		if (!jsonStr) {
-			const firstBrace = aiResponse.indexOf('{');
-			const lastBrace = aiResponse.lastIndexOf('}');
-			if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-				jsonStr = aiResponse.substring(firstBrace, lastBrace + 1);
-				this.logService.info(`[Orchestration] Strategy 3: Extracted JSON by brace matching`);
-			}
-		}
-
-		// Strategy 4: Aggressive search for "tasks" or "phases" key
-		if (!jsonStr) {
-			const keyMatch = aiResponse.match(/"tasks|phases"\s*:\s*\[/);
-			if (keyMatch) {
-				const startIdx = aiResponse.indexOf('{', Math.max(0, (keyMatch.index || 0) - 50));
-				const endIdx = aiResponse.lastIndexOf('}');
-				if (startIdx !== -1 && endIdx !== -1) {
-					jsonStr = aiResponse.substring(startIdx, endIdx + 1);
-					this.logService.info(`[Orchestration] Strategy 4: Extracted JSON by finding "tasks"/"phases" key`);
-				}
-			}
-		}
-
-		// Check if any strategy succeeded
-		if (!jsonStr) {
-			this.logService.error(`[Orchestration] All JSON extraction strategies failed. Response preview: ${aiResponse.substring(0, 500)}`);
-			throw new Error('Could not extract JSON from AI response');
-		}
-
-		this.logService.info(`[Orchestration] Attempting to parse JSON: ${jsonStr.substring(0, 200)}`);
-
-		// Try to parse JSON
-		let parsed: any;
-		try {
-			parsed = JSON.parse(jsonStr);
-		} catch (e) {
-			this.logService.error(`[Orchestration] JSON parse error: ${e instanceof Error ? e.message : String(e)}`);
-			// Try to fix common JSON issues (trailing commas, single quotes, etc.)
-			try {
-				// Remove trailing commas
-				let fixedJson = jsonStr.replace(/,\s*([}\]])/g, '$1');
-				// Try parsing again
-				parsed = JSON.parse(fixedJson);
-				this.logService.info(`[Orchestration] Successfully parsed JSON after fixing trailing commas`);
-			} catch (e2) {
-				this.logService.error(`[Orchestration] Second JSON parse error: ${e2 instanceof Error ? e2.message : String(e2)}`);
-				throw new Error(`Failed to parse AI response as JSON: ${e instanceof Error ? e.message : String(e)}`);
-			}
-		}
-
-		// Validate parsed structure - handle both formats
-		let tasksArray: any[] = [];
-		if (parsed.tasks && Array.isArray(parsed.tasks)) {
-			// Format 1: { "tasks": [...] }
-			tasksArray = parsed.tasks;
-			this.logService.info(`[Orchestration] Detected format: root-level tasks array`);
-		} else if (parsed.phases && Array.isArray(parsed.phases)) {
-			// Format 2: { "phases": [{ "tasks": [...] }] }
-			this.logService.info(`[Orchestration] Detected format: phases with nested tasks`);
-			for (const phase of parsed.phases) {
-				if (phase.tasks && Array.isArray(phase.tasks)) {
-					tasksArray.push(...phase.tasks);
-				}
-			}
-			this.logService.info(`[Orchestration] Extracted ${tasksArray.length} tasks from phases`);
-		} else {
-			this.logService.error(`[Orchestration] Invalid AI response structure: missing tasks array or phases`);
-			throw new Error('Invalid AI response structure: missing tasks array or phases');
-		}
-
-		if (tasksArray.length === 0) {
-			this.logService.error(`[Orchestration] No tasks found in AI response`);
-			throw new Error('No tasks found in AI response');
-		}
-
-		this.logService.info(`[Orchestration] Parsed ${tasksArray.length} tasks from AI response`);
-
-		// Normalize field names (handle AI variations like task_id->id, task_name->title)
-		const normalizedTasks = tasksArray.map((task: any) => ({
-			id: task.id || task.task_id || `task_${Math.random().toString(36).substring(2, 9)}`,
-			title: task.title || task.task_name || task.name || 'Untitled Task',
-			description: task.description || task.task_description || '',
-			suggestedRole: task.suggestedRole || task.role || task.required_role || 'Software Developer',
-			suggestedAssignee: task.suggestedAssignee || task.assignee || task.owner || '',
-			dependencies: task.dependencies || task.depends_on || [],
-			priority: task.priority || task.priority_level || 2,
-		}));
-
-		this.logService.info(`[Orchestration] Normalized ${normalizedTasks.length} tasks`);
-
-		// Convert to PlanTask[]
+	private _convertParsedTasksToPlanTasks(
+		parsedTasks: Array<{
+			id: string;
+			title: string;
+			description: string;
+			suggestedRole: string;
+			suggestedAssignee: string;
+			dependencies: string[];
+			priority: number;
+		}>,
+		employeeNameToId: Map<string, string>,
+	): PlanTask[] {
 		const now = new Date().toISOString();
 		const tasks: PlanTask[] = [];
-		const taskIdMap = new Map<string, string>(); // AI task ID -> PlanTask ID
+		const taskIdMap = new Map<string, string>(); // AI task ID → PlanTask ID
 
-		for (const taskData of normalizedTasks) {
+		for (const taskData of parsedTasks) {
 			const taskId = this._generateId('orch_task_ai');
 			taskIdMap.set(taskData.id, taskId);
 
@@ -1229,24 +1189,24 @@ Goal: ${goal}`;
 				description: taskData.description,
 				status: PlanTaskStatus.Pending,
 				dependencies: [], // Will be resolved after all tasks are created
-				assigneeName: taskData.suggestedAssignee,
+				assigneeId,
+				assigneeName: taskData.suggestedAssignee || undefined,
 				assigneeRole: taskData.suggestedRole,
 				autoCreateAgent: !taskData.suggestedAssignee,
 				priority: taskData.priority,
 				depth: 0,
 				retryCount: 0,
-				maxRetries: 3,
-				timeoutMs: 300_000,
+				maxRetries: DEFAULT_MAX_RETRIES,
+				timeoutMs: DEFAULT_TIMEOUT_MS,
 				createdAt: now,
 			};
 
 			tasks.push(task);
-			this.logService.info(`[Orchestration] Created task: id=${task.id}, title="${task.title}", assigneeId="${assigneeId}"`);
 		}
 
-		// Resolve dependencies
-		for (let i = 0; i < normalizedTasks.length; i++) {
-			const taskData = normalizedTasks[i];
+		// Resolve dependencies (map AI task IDs → PlanTask IDs)
+		for (let i = 0; i < parsedTasks.length; i++) {
+			const taskData = parsedTasks[i];
 			const task = tasks[i];
 			if (taskData.dependencies && Array.isArray(taskData.dependencies)) {
 				for (const depId of taskData.dependencies) {
@@ -1258,8 +1218,47 @@ Goal: ${goal}`;
 			}
 		}
 
-		this.logService.info(`[Orchestration] Resolved dependencies for ${tasks.length} tasks`);
 		return tasks;
+	}
+
+	/**
+	 * Get a cached repo overview for the current workspace.
+	 * The overview is generated once and cached until invalidated.
+	 */
+	private async _getRepoOverview(): Promise<string | undefined> {
+		if (this._cachedRepoOverview) {
+			return this._cachedRepoOverview;
+		}
+
+		try {
+			const workspaceFolders = this.workspaceContextService.getWorkspace().folders;
+			if (workspaceFolders.length === 0) {
+				return undefined;
+			}
+
+			const rootUri = workspaceFolders[0].uri;
+			const overview = await this._repoOverviewProvider.getOverview(rootUri, 2);
+			this._cachedRepoOverview = overview.summary;
+			return this._cachedRepoOverview;
+		} catch (err) {
+			this.logService.warn(`[Orchestration] Failed to get repo overview: ${err}`);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Invalidate the cached repo overview (call when workspace changes).
+	 */
+	invalidateRepoOverview(): void {
+		this._cachedRepoOverview = undefined;
+	}
+
+	/**
+	 * Access the unified sub-agent dispatch for direct sub-agent operations.
+	 * Used by delegate_task tool implementation.
+	 */
+	get subAgentDispatch(): UnifiedSubAgentDispatch {
+		return this._subAgentDispatch;
 	}
 
 	async approvePlan(planId: string): Promise<OrchestrationPlan> {
@@ -2231,13 +2230,247 @@ Goal: ${goal}`;
 	 * Also pushes chat.stream.* events to the webview so the execution
 	 * content appears in the agent's chat box in real-time.
 	 */
+	// ═══ Automatic Task Decomposition & SubAgent Creation ════════════════════
+
+	/**
+	 * Check if a task needs code exploration before execution.
+	 * Uses heuristics and optional AI analysis to determine if the task
+	 * would benefit from parallel code exploration via explore subagents.
+	 */
+	private async _needsCodeExploration(task: PlanTask): Promise<boolean> {
+		// Heuristics: tasks that likely need code exploration
+		const explorationKeywords = [
+			'实现', 'implement', '开发', 'develop', '编码', 'code',
+			'修复', 'fix', '调试', 'debug', '查找', 'find', '搜索', 'search',
+			'分析', 'analyze', '理解', 'understand', '探索', 'explore',
+			'重构', 'refactor', '优化', 'optimize', '改进', 'improve'
+		];
+		
+		const taskText = `${task.title} ${task.description || ''}`.toLowerCase();
+		const hasExplorationKeyword = explorationKeywords.some(keyword => 
+			taskText.includes(keyword.toLowerCase())
+		);
+
+		// If task is simple (no dependencies, short description), skip exploration
+		if (!hasExplorationKeyword || taskText.length < 20) {
+			return false;
+		}
+
+		// Use AI to make a more informed decision
+		try {
+			const prompt = `Analyze if the following task requires code exploration before execution.
+
+Task: ${task.title}
+Description: ${task.description || task.title}
+
+Does this task require exploring the codebase to understand existing code, find relevant files, or understand the architecture?
+
+Answer with only "yes" or "no".`;
+
+			const response = await this._collectStreamText(
+				this.agentOSService.executeAgentTurn(
+					{ agentId: '_planner', messages: [{ role: 'user', content: prompt }] }
+				)
+			);
+
+			const answer = response.toLowerCase();
+			return answer.includes('yes');
+		} catch {
+			// If AI check fails, fall back to heuristic
+			return hasExplorationKeyword;
+		}
+	}
+
+	/**
+	 * Decompose a task into exploration subtasks using AI.
+	 * Returns an array of exploration prompts for subagents.
+	 */
+	private async _decomposeTaskForExploration(task: PlanTask): Promise<string[]> {
+		try {
+			const repoOverview = await this._getRepoOverview();
+			const prompt = `You are planning code exploration for a task. Based on the task and codebase overview, 
+generate 2-4 focused exploration subtasks that will gather the necessary context.
+
+**Task**: ${task.title}
+**Description**: ${task.description || task.title}
+
+**Codebase Overview**:
+${repoOverview}
+
+Generate exploration subtasks that will help understand:
+1. Relevant files and modules
+2. Existing patterns and architecture
+3. Dependencies and imports
+4. Similar implementations
+
+Return a JSON array of strings, each being a focused exploration prompt for a subagent.
+Example: ["Explore the authentication module to understand the login flow", "Search for similar API endpoint implementations"]
+
+Only return the JSON array, no other text.`;
+
+			const response = await this._collectStreamText(
+				this.agentOSService.executeAgentTurn(
+					{ agentId: '_planner', messages: [{ role: 'user', content: prompt }] }
+				)
+			);
+
+			// Parse the response as JSON array
+			const match = response.match(/\[[\s\S]*\]/);
+			if (match) {
+				const subtasks = JSON.parse(match[0]);
+				if (Array.isArray(subtasks) && subtasks.length > 0) {
+					return subtasks.slice(0, 4); // Max 4 exploration subtasks
+				}
+			}
+			
+			// Fallback: create a single exploration task
+			return [`Explore the codebase to understand the context for: ${task.title}`];
+		} catch (error) {
+			this.logService.warn('[Orchestration] Failed to decompose task for exploration:', error);
+			// Fallback: create a single exploration task
+			return [`Explore the codebase to understand the context for: ${task.title}`];
+		}
+	}
+
+	/**
+	 * Execute explore subagents in parallel and return their results.
+	 */
+	private async _executeExploreSubAgents(
+		parentAgentId: string,
+		explorationTasks: string[],
+	): Promise<string[]> {
+		try {
+			const repoOverview = await this._getRepoOverview();
+			
+			// Create executeFn that delegates to agentOSService.executeAgentTurn
+			const executeFn = (request: IAgentTurnRequest, _budget: IterationBudget): AsyncIterable<IChatStreamDelta> => {
+				return this.agentOSService.executeAgentTurn(request);
+			};
+
+			// Dispatch parallel explore subagents
+			const results = await this._subAgentDispatch.dispatchParallelExplore(
+				parentAgentId,
+				explorationTasks,
+				executeFn,
+				repoOverview
+			);
+
+			// Extract outputs from results
+			return results
+				.filter(r => r.success && r.output)
+				.map(r => r.output!);
+		} catch (error) {
+			this.logService.error('[Orchestration] Failed to execute explore subagents:', error);
+			return [];
+		}
+	}
+
+	/** Collect all text deltas from an AsyncIterable<IChatStreamDelta> into a string. */
+	private async _collectStreamText(stream: AsyncIterable<IChatStreamDelta>): Promise<string> {
+		let output = '';
+		for await (const delta of stream) {
+			if (delta.type === 'text' && delta.content) {
+				output += delta.content;
+			}
+			if (delta.type === 'done' || delta.type === 'error') {
+				break;
+			}
+		}
+		return output;
+	}
+
+	/**
+	 * Summarize subagent results into a concise context for the main task.
+	 */
+	private async _summarizeSubAgentResults(
+		task: PlanTask,
+		subAgentResults: string[],
+	): Promise<string> {
+		if (subAgentResults.length === 0) {
+			return '';
+		}
+
+		try {
+			const combinedResults = subAgentResults.join('\n\n---\n\n');
+			const prompt = `Summarize the following code exploration results into a concise context for task execution.
+
+**Task**: ${task.title}
+**Description**: ${task.description || task.title}
+
+**Exploration Results**:
+${combinedResults}
+
+Provide a structured summary that includes:
+1. Key files and modules identified
+2. Relevant code patterns and architecture
+3. Important findings for task execution
+4. Any potential issues or dependencies
+
+Keep the summary concise and focused on information needed to execute the task.`;
+
+			const summary = await this._collectStreamText(
+				this.agentOSService.executeAgentTurn(
+					{ agentId: '_planner', messages: [{ role: 'user', content: prompt }] }
+				)
+			);
+
+			return summary;
+		} catch (error) {
+			this.logService.warn('[Orchestration] Failed to summarize subagent results:', error);
+			// Fallback: return combined results (truncated)
+			return subAgentResults.join('\n\n').substring(0, 2000);
+		}
+	}
+
+	// ═══ Task Execution (modified to include automatic exploration) ═══════════
+
 	private async _executeTask(planId: string, task: PlanTask): Promise<void> {
 		if (!task.assigneeId) { return; }
 
 		// Mark agent as busy while executing this task
 		this._markAgentBusy(task.assigneeId);
 
-		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n**任务ID**: ${task.id}${task.dependencies.length > 0 ? `\n**依赖任务**: ${task.dependencies.join(', ')}` : ''}`;
+		// ─── Automatic Task Decomposition & Exploration ─────────────────
+		let explorationContext = '';
+		try {
+			const needsExploration = await this._needsCodeExploration(task);
+			if (needsExploration) {
+				this.logService.info(`[Orchestration] Task ${task.id} needs code exploration, decomposing...`);
+				
+				// Notify webview about exploration start
+				if (this._streamEventCallback) {
+					this._streamEventCallback('orchestration.explorationStart', {
+						taskId: task.id,
+						taskTitle: task.title,
+					});
+				}
+
+				// Decompose task into exploration subtasks
+				const explorationTasks = await this._decomposeTaskForExploration(task);
+				this.logService.info(`[Orchestration] Decomposed into ${explorationTasks.length} exploration subtasks`);
+
+				// Execute explore subagents in parallel
+				const subAgentResults = await this._executeExploreSubAgents(task.assigneeId, explorationTasks);
+				this.logService.info(`[Orchestration] Exploration completed, got ${subAgentResults.length} results`);
+
+				// Summarize results
+				explorationContext = await this._summarizeSubAgentResults(task, subAgentResults);
+
+				// Notify webview about exploration complete
+				if (this._streamEventCallback) {
+					this._streamEventCallback('orchestration.explorationComplete', {
+						taskId: task.id,
+						taskTitle: task.title,
+						context: explorationContext,
+					});
+				}
+			}
+		} catch (error) {
+			this.logService.warn('[Orchestration] Exploration failed, continuing without context:', error);
+		}
+
+		// Build task prompt with exploration context if available
+		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n**任务ID**: ${task.id}${task.dependencies.length > 0 ? `\n**依赖任务**: ${task.dependencies.join(', ')}` : ''}${explorationContext ? `\n\n**代码探索上下文**:\n${explorationContext}` : ''}`;
 
 		// Resolve the agent's current (or default) session so messages are
 		// persisted under the same key that the webview loads.

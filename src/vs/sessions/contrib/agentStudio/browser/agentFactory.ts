@@ -26,6 +26,7 @@ const SCORE_WEIGHT_AVAILABILITY = 0.30;
  * - Reuse agents from pool when possible (name match → score match)
  * - Auto-create agents when no suitable candidate exists
  * - Wire connections between agents based on task dependency graph
+ * - Enforce visibility rules: agents with agentInvocable=false cannot be sub-agents
  */
 export class AgentFactory {
 
@@ -35,6 +36,53 @@ export class AgentFactory {
 		private readonly agentStudioService: IAgentStudioService,
 		private readonly logService: ILogService,
 	) { }
+
+	/**
+	 * Check if an agent can be invoked as a sub-agent.
+	 * Enforces the visibility.agentInvocable rule (aligned with VS Code's
+	 * runSubagentTool which checks ICustomAgent.visibility.agentInvocable).
+	 */
+	isAgentInvocable(agent: Employee): boolean {
+		if (!agent.visibility) { return true; }
+		return agent.visibility.agentInvocable;
+	}
+
+	/**
+	 * Check if an agent can be invoked by a user.
+	 */
+	isAgentUserInvocable(agent: Employee): boolean {
+		if (!agent.visibility) { return true; }
+		return agent.visibility.userInvocable;
+	}
+
+	/**
+	 * Check if a parent agent is allowed to invoke a specific child agent.
+	 * Enforces the parent's `agents` allowlist (aligned with ICustomAgent.agents).
+	 */
+	isSubagentAllowed(parent: Employee, childName: string): boolean {
+		if (!parent.agents || parent.agents.length === 0 || parent.agents.includes('*')) {
+			return true;
+		}
+		return parent.agents.includes(childName);
+	}
+
+	/**
+	 * Validate that a sub-agent invocation is permitted by checking both
+	 * the child's agentInvocable and the parent's agents allowlist.
+	 * @throws Error if the invocation is not permitted
+	 */
+	validateSubagentInvocation(parent: Employee, child: Employee): void {
+		if (!this.isAgentInvocable(child)) {
+			throw new Error(
+				`Agent "${child.name}" is not invocable as a sub-agent (visibility.agentInvocable=false).`
+			);
+		}
+		if (!this.isSubagentAllowed(parent, child.name)) {
+			throw new Error(
+				`Agent "${parent.name}" is not allowed to invoke "${child.name}". Allowed: [${parent.agents?.join(', ') || 'none'}]`
+			);
+		}
+	}
 
 	/**
 	 * Reset the agent pool for a new execution cycle.
@@ -206,8 +254,11 @@ export class AgentFactory {
 	}
 
 	/**
-	 * Capability score based on role keyword matching.
-	 * Exact match = 1.0, partial overlap = proportional, no match = 0.1 (baseline).
+	 * Capability score based on role keyword matching + tool overlap.
+	 * - Role exact match = 1.0
+	 * - Role keyword overlap = proportional
+	 * - Tool match bonus: +0.1 per matching tool (capped at +0.3)
+	 * - No match = 0.1 (baseline)
 	 */
 	private _calcCapabilityScore(agent: Employee, taskRole: string): number {
 		const agentRole = (agent.role || '').toLowerCase();
@@ -221,7 +272,39 @@ export class AgentFactory {
 		if (keywords.length === 0) { return 0.3; }
 
 		const matched = keywords.filter(kw => agentRole.includes(kw)).length;
-		return Math.max(0.1, matched / keywords.length);
+		let score = Math.max(0.1, matched / keywords.length);
+
+		// Tool match bonus: if the agent has tools that are relevant to the task
+		if (agent.tools && agent.tools.length > 0) {
+			// Tasks requiring code changes benefit from write/terminal tools
+			const codeRelatedTools = ['write_to_file', 'edit_file', 'replace_in_file', 'terminal'];
+			const readRelatedTools = ['read_file', 'list_dir', 'search_files', 'grep_search'];
+			const isCodeTask = keywords.some(kw =>
+				['code', 'implement', 'build', 'fix', 'refactor', 'deploy', 'test'].includes(kw)
+			);
+			const isReadTask = keywords.some(kw =>
+				['research', 'analyze', 'review', 'search', 'find'].includes(kw)
+			);
+
+			let toolBonus = 0;
+			if (isCodeTask) {
+				toolBonus += Math.min(0.3, agent.tools.filter(t => codeRelatedTools.includes(t)).length * 0.15);
+			}
+			if (isReadTask) {
+				toolBonus += Math.min(0.2, agent.tools.filter(t => readRelatedTools.includes(t)).length * 0.2);
+			}
+			score = Math.min(1.0, score + toolBonus);
+		}
+
+		// Skills match bonus (descriptive labels, lower weight than tools)
+		if (agent.skills && agent.skills.length > 0) {
+			const skillMatch = keywords.filter(kw =>
+				agent.skills!.some(s => s.toLowerCase().includes(kw) || kw.includes(s.toLowerCase()))
+			).length;
+			score = Math.min(1.0, score + Math.min(0.1, skillMatch * 0.05));
+		}
+
+		return score;
 	}
 
 	/**
@@ -233,7 +316,8 @@ export class AgentFactory {
 		const candidates = employees.filter(e =>
 			e && e.id &&
 			!excludeIds.has(e.id) &&
-			e.status !== 'offline'
+			e.status !== 'offline' &&
+			this.isAgentInvocable(e)  // Exclude agents that can't be invoked as sub-agents
 		);
 
 		this.logService.info(`[AgentFactory] _selectBestAgent: taskRole=${taskRole}, total=${employees.length}, candidates=${candidates.length}, excluded=${excludeIds.size}`);

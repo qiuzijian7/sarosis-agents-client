@@ -51,8 +51,8 @@ export interface ISkillDefinition {
 	readonly recommendedTools?: readonly string[];
 	/** 注入到对话中的正文（已去除 frontmatter） */
 	readonly prompt: string;
-	/** 来源标记，用于 UI 区分内置 / 用户 / 扩展 */
-	readonly source: 'builtin' | 'user' | 'extension' | 'memory';
+	/** 来源标记，用于 UI 区分内置 / 用户 / 扩展 / 工作区 */
+	readonly source: 'builtin' | 'user' | 'extension' | 'memory' | 'workspace';
 	/** Skill 文件 URI（可选，用于「在编辑器中打开」） */
 	readonly resource?: URI;
 	/**

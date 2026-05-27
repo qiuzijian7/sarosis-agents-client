@@ -173,10 +173,15 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const initialNodes = useMemo<Node[]>(() => {
 		const assignedPositions: Array<{ x: number; y: number }> = [];
 		const selectedEmployeeId = useEmployeeStore.getState().selectedEmployeeId;
+		const activeWorkspace = useWorkspaceStore.getState().workspaces.find(w => w.id === activeWorkspaceId);
 		return employees.map((emp) => {
 			const storedNode = storeNodes.find(n => n.id === emp.id);
 			const pos = storedNode?.position || emp.position || findNonOverlappingPosition(assignedPositions);
 			assignedPositions.push(pos);
+			// Worktree info: employee-level overrides workspace-level
+			const worktreePath = (emp as any).worktreePath || activeWorkspace?.worktreePath;
+			const worktreeBranch = (emp as any).worktreeBranch || activeWorkspace?.worktreeBranch;
+			const worktreeStatus = worktreePath ? (activeWorkspace?.worktreeStatus ?? 'none') : 'none';
 			return {
 				id: emp.id,
 				type: 'employee',
@@ -188,6 +193,9 @@ export function WorkspaceCanvas(): React.ReactElement {
 					isSelected: emp.id === selectedEmployeeId,
 					onSelect: (empId: string) => selectEmployee(empId),
 					onDelete: (empId: string) => handleDeleteEmployee(empId),
+					worktreePath,
+					worktreeBranch,
+					worktreeStatus,
 				},
 			};
 		});
@@ -241,6 +249,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 			// initialize positions of newly-added employees, not to override
 			// existing ones that the user may have just dragged.
 			const currentStoreNodes = useWorkspaceStore.getState().nodes;
+			const activeWorkspace = useWorkspaceStore.getState().workspaces.find(w => w.id === activeWorkspaceId);
 
 			const builtNodes = employees.map((emp) => {
 				const existingNode = prevNodes.find(n => n.id === emp.id);
@@ -260,6 +269,11 @@ export function WorkspaceCanvas(): React.ReactElement {
 				}
 				assignedPositions.push(pos);
 
+				// Worktree info: employee-level overrides workspace-level
+				const worktreePath = (emp as any).worktreePath || activeWorkspace?.worktreePath;
+				const worktreeBranch = (emp as any).worktreeBranch || activeWorkspace?.worktreeBranch;
+				const worktreeStatus = worktreePath ? (activeWorkspace?.worktreeStatus ?? 'none') : 'none';
+
 				return {
 					id: emp.id,
 					type: 'employee' as const,
@@ -271,6 +285,9 @@ export function WorkspaceCanvas(): React.ReactElement {
 						isSelected: emp.id === selectedEmployeeId,
 						onSelect: (empId: string) => selectEmployee(empId),
 						onDelete: (empId: string) => handleDeleteEmployee(empId),
+						worktreePath,
+						worktreeBranch,
+						worktreeStatus,
 					},
 				};
 			});
@@ -545,6 +562,10 @@ export function WorkspaceCanvas(): React.ReactElement {
 		const position = resolveNonOverlappingPosition(rawPosition, employee.id, currentNodes);
 
 		const selectedEmployeeId = useEmployeeStore.getState().selectedEmployeeId;
+		const activeWorkspace = useWorkspaceStore.getState().workspaces.find(w => w.id === activeWorkspaceId);
+		const worktreePath = (employee as any).worktreePath || activeWorkspace?.worktreePath;
+		const worktreeBranch = (employee as any).worktreeBranch || activeWorkspace?.worktreeBranch;
+		const worktreeStatus = worktreePath ? (activeWorkspace?.worktreeStatus ?? 'none') : 'none';
 		const newNode: Node = {
 			id: employee.id,
 			type: 'employee',
@@ -554,6 +575,9 @@ export function WorkspaceCanvas(): React.ReactElement {
 				isSelected: employee.id === selectedEmployeeId,
 				onSelect: (empId: string) => selectEmployee(empId),
 				onDelete: (empId: string) => handleDeleteEmployee(empId),
+				worktreePath,
+				worktreeBranch,
+				worktreeStatus,
 			},
 		};
 

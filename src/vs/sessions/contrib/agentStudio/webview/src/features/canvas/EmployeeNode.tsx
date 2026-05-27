@@ -11,12 +11,17 @@ import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
 import { SkillMissingDialog } from '../agentEditor/SkillMissingDialog';
 import { getAgentColor } from '../../utils/agentColors';
+import { WorktreeBadge } from './WorktreeBadge';
 
 interface EmployeeNodeData {
 	employee: Employee;
 	isSelected?: boolean;
 	onSelect?: (empId: string) => void;
 	onDelete?: (empId: string) => void;
+	/** Worktree info inherited from workspace or set on employee */
+	worktreePath?: string;
+	worktreeBranch?: string;
+	worktreeStatus?: 'none' | 'pending' | 'ready' | 'failed';
 }
 
 // Status color/style configuration matching sarosis-webui STATUS_MAP
@@ -29,7 +34,7 @@ const STATUS_MAP: Record<string, { label: string; color: string; bg: string; dot
 };
 
 function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData }): React.ReactElement {
-	const { employee, isSelected, onSelect, onDelete } = data;
+	const { employee, isSelected, onSelect, onDelete, worktreePath, worktreeBranch, worktreeStatus } = data;
 	const [imgError, setImgError] = useState(false);
 	const [isEditingName, setIsEditingName] = useState(false);
 	const [editName, setEditName] = useState(employee.name);
@@ -88,7 +93,8 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 			? `https://api.dicebear.com/7.x/${employee.avatarStyle}/svg?seed=${employee.avatarSeed}`
 			: `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`);
 
-	const modelLabel = employee.model ? employee.model.split('/').pop()?.slice(0, 12) || '' : '';
+	const primaryModel = typeof employee.model === 'string' ? employee.model : (Array.isArray(employee.model) ? employee.model[0] : employee.model?.primary);
+	const modelLabel = primaryModel ? primaryModel.split('/').pop()?.slice(0, 12) || '' : '';
 
 	// Token usage: support both number and object formats
 	const totalTokens = typeof employee.tokenUsage === 'object'
@@ -195,6 +201,17 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 								</svg>
 								{modelLabel}
 							</span>
+						</div>
+					)}
+
+					{/* Worktree badge — shows which worktree this agent works in */}
+					{worktreeStatus && worktreeStatus !== 'none' && (
+						<div className="employee-card-worktree-row">
+							<WorktreeBadge
+								status={worktreeStatus}
+								branch={worktreeBranch}
+								directory={worktreePath}
+							/>
 						</div>
 					)}
 				</div>

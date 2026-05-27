@@ -76,8 +76,11 @@ import {
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
+	AGENT_STUDIO_WORKTREE_VIEW_ID,
+	AGENT_STUDIO_GRAPH_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
+	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
@@ -137,6 +140,7 @@ import { TasksViewPane } from './views/tasksView.js';
 import { ScheduleViewPane } from './views/scheduleView.js';
 import { ToolsViewPane } from './views/toolsView.js';
 import { ChangesViewPane } from './views/changesView.js';
+import { GraphViewPane } from './views/graphView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
@@ -149,6 +153,18 @@ import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
 import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import { ChannelViewPane } from './views/channelView.js';
+import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
+import { WorktreeCommands, WorktreeContextKeys } from '../../worktree/common/worktreeTypes.js';
+import { IWorktreeService } from '../../worktree/common/worktreeService.js';
+import { WorktreeItem } from '../../worktree/browser/worktreeDataProvider.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
+import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
+import { URI } from '../../../../base/common/uri.js';
+import { MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
 import { TaskOverviewEditorInput } from './taskOverviewEditorInput.js';
 import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
@@ -191,6 +207,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			description: localize('agentStudio.enabled', "Enable Agent Studio multi-agent workspace in the Sessions window."),
 		},
+	[AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING]: {
+		type: 'boolean',
+		default: true,
+		description: localize('agentStudio.chatStreamLog.enabled', "Enable chat stream logging for debugging. Logs are saved to the workspace logs/chat-streams directory."),
+	},
 		// --- Preferences ---
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
 			type: 'string',
@@ -1337,15 +1358,66 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: McpViewPane,
 		});
 
-		// 8. Changes (order: 70)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+		// Hide native VS Code Source Control from Activity Bar
+		const nativeScm = viewContainerRegistry.getViewContainers(ViewContainerLocation.Sidebar)
+			.find(c => c.id === 'workbench.view.scm');
+		if (nativeScm) {
+			viewContainerRegistry.deregisterViewContainer(nativeScm);
+		}
+		// Also listen for late registration and immediately deregister
+		this._register(viewContainerRegistry.onDidRegister(({ viewContainer }) => {
+			if (viewContainer.id === 'workbench.view.scm') {
+				viewContainerRegistry.deregisterViewContainer(viewContainer);
+			}
+		}));
+
+		// 8. Changes + Worktrees + Graph (order: 70) — multi-view container
+		const changesContainer = viewContainerRegistry.registerViewContainer({
 			id: 'agentStudio.changes',
-			title: localize2('agentStudio.changes.title', "Changes"),
+			title: localize2('agentStudio.changes.title', "Source Control"),
 			icon: changesIcon,
-			viewId: AGENT_STUDIO_CHANGES_VIEW_ID,
+			ctorDescriptor: new SyncDescriptor(ViewPaneContainer, ['agentStudio.changes', { mergeViewWithContainerWhenSingleView: false }]),
+			storageId: 'agentStudio.changes',
+			hideIfEmpty: false,
 			order: 70,
-			viewCtor: ChangesViewPane,
-		});
+			windowEnablement: WindowEnablement.Both,
+		}, ViewContainerLocation.Sidebar, { isDefault: true, doNotRegisterOpenCommand: true });
+
+		// 8a. Changes view
+		viewsRegistry.registerViews([{
+			id: AGENT_STUDIO_CHANGES_VIEW_ID,
+			name: localize2('agentStudio.changes.title', "Changes"),
+			ctorDescriptor: new SyncDescriptor(ChangesViewPane),
+			canToggleVisibility: true,
+			canMoveView: false,
+			order: 0,
+			weight: 40,
+			windowEnablement: WindowEnablement.Both,
+		}], changesContainer);
+
+		// 8b. Worktrees view
+		viewsRegistry.registerViews([{
+			id: AGENT_STUDIO_WORKTREE_VIEW_ID,
+			name: localize2('agentStudio.worktrees.title', "Worktrees"),
+			ctorDescriptor: new SyncDescriptor(WorktreeViewPane),
+			canToggleVisibility: true,
+			canMoveView: false,
+			order: 1,
+			weight: 20,
+			windowEnablement: WindowEnablement.Both,
+		}], changesContainer);
+
+		// 8c. Graph view (commit history)
+		viewsRegistry.registerViews([{
+			id: AGENT_STUDIO_GRAPH_VIEW_ID,
+			name: localize2('agentStudio.graph.title', "Graph"),
+			ctorDescriptor: new SyncDescriptor(GraphViewPane),
+			canToggleVisibility: true,
+			canMoveView: false,
+			order: 2,
+			weight: 40,
+			windowEnablement: WindowEnablement.Both,
+		}], changesContainer);
 
 		// 8.5 Channel (order: 75)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
@@ -1449,6 +1521,336 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 }
 
 registerWorkbenchContribution2(AgentStudioToolbarContribution.ID, AgentStudioToolbarContribution, WorkbenchPhase.BlockStartup);
+
+// ─── Worktree Menu Items for the AgentStudio Worktree view ─────────────────
+
+const WT_WHEN = ContextKeyExpr.equals('view', AGENT_STUDIO_WORKTREE_VIEW_ID);
+const WT_NOT_MAIN = ContextKeyExpr.and(
+	WT_WHEN,
+	ContextKeyExpr.regex('viewItem', /^(?!.*worktreeMain).*$/i)
+);
+const WT_RESET_WHEN = ContextKeyExpr.and(
+	WT_WHEN,
+	ContextKeyExpr.notEquals(WorktreeContextKeys.WorktreeIsMain, true),
+);
+
+// Refresh
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: { id: WorktreeCommands.Refresh, title: localize2('worktreeRefresh', 'Refresh Worktrees'), icon: Codicon.refresh },
+	when: WT_WHEN,
+	group: 'navigation',
+	order: 10,
+});
+
+// Create
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: { id: WorktreeCommands.Create, title: localize2('worktreeCreate', 'Create Worktree'), icon: Codicon.add },
+	when: WT_WHEN,
+	group: 'navigation',
+	order: 20,
+});
+
+// Create With Branch
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: { id: WorktreeCommands.CreateWithBranch, title: localize2('worktreeCreateWithBranch', 'Create Isolated Worktree'), icon: Codicon.gitBranch },
+	when: WT_WHEN,
+	group: 'navigation',
+	order: 3,
+});
+
+// Delete
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.Delete, title: localize2('worktreeDelete', 'Delete Worktree'), icon: Codicon.trash },
+	when: WT_NOT_MAIN,
+	group: 'inline',
+	order: 10,
+});
+
+// Open
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.Open, title: localize2('worktreeOpen', 'Open Worktree Folder') },
+	when: WT_WHEN,
+	group: 'navigation',
+	order: 10,
+});
+
+// Open in Terminal
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.OpenInTerminal, title: localize2('worktreeOpenInTerminal', 'Open in Terminal') },
+	when: WT_WHEN,
+	group: 'navigation',
+	order: 20,
+});
+
+// Prune
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: { id: WorktreeCommands.Prune, title: localize2('worktreePrune', 'Prune Stale Worktrees') },
+	when: WT_WHEN,
+	group: '2_worktree',
+	order: 10,
+});
+
+// Reset
+MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
+	command: { id: WorktreeCommands.Reset, title: localize2('worktreeReset', 'Reset Worktree'), icon: Codicon.discard },
+	when: WT_RESET_WHEN,
+	group: '2_worktree',
+	order: 5,
+});
+
+// ─── Worktree Commands (action registrations) ────────────────────────────
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.Refresh,
+			title: localize2('worktreeRefresh', 'Refresh Worktrees'),
+			icon: Codicon.refresh,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const worktreeService = accessor.get(IWorktreeService);
+		const repoRoot = await worktreeService.getRepositoryRoot();
+		if (repoRoot) {
+			await worktreeService.listWorktrees(repoRoot);
+		}
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.Create,
+			title: localize2('worktreeCreate', 'Create Worktree'),
+			icon: Codicon.add,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const notificationService = accessor.get(INotificationService);
+		notificationService.info(localize('worktreeCreateInfo', 'Create worktree: Use the command palette to specify branch name and path.'));
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.Delete,
+			title: localize2('worktreeDelete', 'Delete Worktree'),
+			icon: Codicon.trash,
+		});
+	}
+	async run(accessor: ServicesAccessor, item: WorktreeItem): Promise<void> {
+		if (!item || item.worktree.isMain) {
+			return;
+		}
+		const worktreeService = accessor.get(IWorktreeService);
+		const notificationService = accessor.get(INotificationService);
+		try {
+			await worktreeService.removeWorktree(item.path);
+			notificationService.info(localize('worktreeDeleted', 'Deleted worktree: {0}', item.label));
+		} catch (e) {
+			notificationService.error(localize('worktreeDeleteError', 'Failed to delete worktree: {0}', (e as Error).message));
+		}
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.Open,
+			title: localize2('worktreeOpen', 'Open Worktree Folder'),
+		});
+	}
+	async run(accessor: ServicesAccessor, path: string): Promise<void> {
+		if (!path) { return; }
+		const hostService = accessor.get(IHostService);
+		const uri = URI.file(path);
+		hostService.openWindow([{ folderUri: uri }], { forceNewWindow: true });
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.OpenInTerminal,
+			title: localize2('worktreeOpenInTerminal', 'Open in Terminal'),
+		});
+	}
+	async run(accessor: ServicesAccessor, item: WorktreeItem): Promise<void> {
+		if (!item) { return; }
+		const commandService = accessor.get(ICommandService);
+		const uri = URI.file(item.path);
+		await commandService.executeCommand('openInIntegratedTerminal', uri);
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.Prune,
+			title: localize2('worktreePrune', 'Prune Stale Worktrees'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const worktreeService = accessor.get(IWorktreeService);
+		const notificationService = accessor.get(INotificationService);
+		const repoRoot = await worktreeService.getRepositoryRoot();
+		if (!repoRoot) {
+			notificationService.warn(localize('worktreeNoRepo', 'No git repository found in workspace.'));
+			return;
+		}
+		try {
+			await worktreeService.pruneWorktrees(repoRoot);
+			notificationService.info(localize('worktreePruned', 'Pruned stale worktrees.'));
+		} catch (e) {
+			notificationService.error(localize('worktreePruneError', 'Failed to prune worktrees: {0}', (e as Error).message));
+		}
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.Reset,
+			title: localize2('worktreeReset', 'Reset Worktree'),
+			icon: Codicon.discard,
+		});
+	}
+	async run(accessor: ServicesAccessor, ...args: any[]): Promise<void> {
+		const worktreeService = accessor.get(IWorktreeService);
+		const notificationService = accessor.get(INotificationService);
+		const worktreePath = args[0]?.worktreePath ?? args[0]?.path;
+		if (!worktreePath) {
+			notificationService.warn(localize('worktreeResetNoPath', 'No worktree selected.'));
+			return;
+		}
+		try {
+			await worktreeService.resetWorktree(worktreePath);
+			notificationService.info(localize('worktreeResetDone', 'Worktree reset to default branch.'));
+		} catch (e) {
+			notificationService.error(localize('worktreeResetError', 'Failed to reset worktree: {0}', (e as Error).message));
+		}
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WorktreeCommands.CreateWithBranch,
+			title: localize2('worktreeCreateWithBranch', 'Create Isolated Worktree'),
+			icon: Codicon.gitBranch,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const worktreeService = accessor.get(IWorktreeService);
+		const notificationService = accessor.get(INotificationService);
+		const quickInputService = accessor.get(IQuickInputService);
+		const name = await quickInputService.input({
+			placeHolder: localize('worktreeCreateNamePlaceholder', 'Worktree name (e.g. feature-auth)'),
+			prompt: localize('worktreeCreateNamePrompt', 'Enter a name for the new worktree. A branch "opencode/<name>" will be created.'),
+		});
+		if (!name?.trim()) { return; }
+		try {
+			const info = await worktreeService.makeWorktreeInfo({ name: name.trim() });
+			await worktreeService.createFromInfo(info);
+			notificationService.info(localize('worktreeCreateWithBranchDone',
+				'Created worktree "{0}" at branch "{1}"', info.name, info.branch ?? '(detached)'));
+		} catch (e) {
+			notificationService.error(localize('worktreeCreateWithBranchError',
+				'Failed to create worktree: {0}', (e as Error).message));
+		}
+	}
+});
+
+// ─── Workspace Folder Sync ──────────────────────────────────────────────────
+// When the user switches the active workspace in the AgentStudio toolbar,
+// update the VS Code workspace folders so that the Git extension discovers
+// the new repository and the SCM views refresh automatically.
+
+class AgentStudioWorkspaceSyncContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'agentStudio.workspaceSync';
+
+	private _activeWorkspaceId: string | undefined;
+	private readonly _domEventHandler: (e: Event) => void;
+
+	constructor(
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IWorkspaceEditingService private readonly workspaceEditingService: IWorkspaceEditingService,
+		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
+	) {
+		super();
+
+		this._domEventHandler = (e: Event) => {
+			const detail = (e as CustomEvent).detail;
+			if (detail?.workspaceId) {
+				this._activeWorkspaceId = detail.workspaceId;
+				this._syncWorkspaceFolder(detail.workspaceId);
+			}
+		};
+		document.addEventListener('agent-studio:active-workspace-changed', this._domEventHandler);
+		this._register({
+			dispose: () => document.removeEventListener('agent-studio:active-workspace-changed', this._domEventHandler),
+		});
+
+		// Only sync if the mutation affects the active workspace
+		this._register(this.agentStudioService.onDidChangeWorkspace((workspaceId: string) => {
+			if (workspaceId === this._activeWorkspaceId) {
+				this._syncWorkspaceFolder(workspaceId);
+			}
+		}));
+
+		// Initial sync
+		this._initialSync();
+	}
+
+	private async _initialSync(): Promise<void> {
+		try {
+			const workspaces = await this.agentStudioService.getWorkspaces();
+			if (workspaces.length > 0) {
+				this._activeWorkspaceId = workspaces[0].id;
+				await this._syncWorkspaceFolder(workspaces[0].id);
+			}
+		} catch {
+			// Ignore
+		}
+	}
+
+	private async _syncWorkspaceFolder(workspaceId: string): Promise<void> {
+		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
+		if (!workspace) { return; }
+
+		let folderPath: string | undefined;
+		if (workspace.worktreePath) {
+			folderPath = workspace.worktreePath;
+		} else if (workspace.path) {
+			folderPath = workspace.path;
+		}
+		if (!folderPath) { return; }
+
+		const folderUri = URI.file(folderPath);
+		const currentFolders = this.workspaceContextService.getWorkspace().folders;
+
+		if (currentFolders.length > 0 && this.uriIdentityService.extUri.isEqual(currentFolders[0].uri, folderUri)) {
+			return;
+		}
+
+		const folderName = workspace.name || this.uriIdentityService.extUri.basenameOrAuthority(folderUri);
+		const folderData = { uri: folderUri, name: folderName };
+
+		try {
+			if (currentFolders.length === 0) {
+				await this.workspaceEditingService.addFolders([folderData], true);
+			} else {
+				await this.workspaceEditingService.updateFolders(0, currentFolders.length, [folderData], true);
+			}
+		} catch (err) {
+			console.warn('[AgentStudioWorkspaceSync] Failed to sync workspace folder:', err);
+		}
+	}
+}
+
+registerWorkbenchContribution2(AgentStudioWorkspaceSyncContribution.ID, AgentStudioWorkspaceSyncContribution, WorkbenchPhase.BlockStartup);
 
 // --- Settings Icon → EditorPane Redirect ----------------------------------------
 // When the Settings sidebar icon is clicked, the sidebar ViewContainer is activated

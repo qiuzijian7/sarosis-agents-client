@@ -33,3 +33,72 @@
 	color: var(--vscode-descriptionForeground);
 	font-size: 12px;
 }
+
+/* Sessions Explorer Viewlet — unified Files + Worktree container */
+.sessions-explorer-viewlet {
+	height: 100%;
+}
+
+/* Worktree section inside the explorer */
+.sessions-explorer-viewlet .worktree-tree {
+	height: 100%;
+}
+
+/* Worktree pane header — compact styling to match explorer aesthetic */
+.sessions-explorer-viewlet .worktree-item {
+	display: flex;
+	align-items: center;
+	padding: 0 6px;
+	height: 22px;
+	line-height: 22px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.sessions-explorer-viewlet .worktree-item-icon {
+	flex-shrink: 0;
+	width: 16px;
+	height: 16px;
+	margin-right: 6px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.sessions-explorer-viewlet .worktree-item-label {
+	flex-shrink: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sessions-explorer-viewlet .worktree-item-description {
+	flex-shrink: 0;
+	margin-left: 6px;
+	opacity: 0.7;
+	font-size: 0.9em;
+}
+
+/* Main worktree indicator */
+.sessions-explorer-viewlet .worktree-item.is-main {
+	font-weight: 600;
+}
+
+.sessions-explorer-viewlet .worktree-item.is-main .worktree-item-icon {
+	color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+
+/* Detached worktree styling */
+.sessions-explorer-viewlet .worktree-item.is-detached .worktree-item-icon {
+	color: var(--vscode-gitDecoration-untrackedResourceForeground);
+}
+
+/* Locked worktree indicator */
+.sessions-explorer-viewlet .worktree-item.is-locked .worktree-item-label {
+	opacity: 0.7;
+}
+
+/* Prunable worktree indicator */
+.sessions-explorer-viewlet .worktree-item.is-prunable .worktree-item-icon {
+	color: var(--vscode-gitDecoration-deletedResourceForeground);
+}

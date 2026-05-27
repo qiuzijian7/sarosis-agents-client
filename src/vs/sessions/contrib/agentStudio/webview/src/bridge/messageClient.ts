@@ -16,6 +16,10 @@ export type RequestType =
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
+	| 'workspace.createWithWorktree'
+	| 'workspace.assignWorktree'
+	| 'workspace.resetWorktree'
+	| 'workspace.removeWorktree'
 	| 'workspace.delete'
 	| 'workspace.update'
 	| 'workspace.updateLayout'
@@ -87,6 +91,9 @@ export type RequestType =
 	| 'files.open'
 	| 'files.openHtmlPreview'
 	| 'files.openUntitledText'
+	| 'files.applyCode'
+	| 'chat.jumpToCheckpoint'
+	| 'chat.toolApprove'
 	| 'skills.list';
 
 interface PendingRequest {

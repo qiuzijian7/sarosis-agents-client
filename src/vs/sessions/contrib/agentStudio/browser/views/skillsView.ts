@@ -28,8 +28,8 @@ type ViewMode = 'list' | 'install-hubs' | 'install-entries';
  *
  * 数据来源：
  *   - 内置 skill (硬编码常量数组，随产品发布)
- *   - 用户全局目录 `<userRoamingDataHome>/sarosis/skills/<id>/SKILL.md`
- *   - 工作区目录 `<workspaceFolder>/.sarosisworkspace/agents/<agentDir>/skills/<id>/SKILL.md`
+ *   - 用户全局目录 `<userRoamingDataHome>/sarosis/skills/<id>/SKILL.md` (旧版)
+ *   - 工作区目录 `<workspaceFolder>/.agents/skills/<id>/SKILL.md` (新版)
  *   - 扩展通过 ISkillRegistry.registerSkill 运行时注册
  *   - 从 Skill Hub 在线安装
  *

@@ -16,7 +16,6 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING } from '../common/constants.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -37,7 +36,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		@ILogService logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
-		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		this._logService = logService;
@@ -48,6 +46,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	async *executeTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		// Composite turnId: session-scoped to prevent cross-fork cancellation
 		const turnId = request.sessionId ? `${request.sessionId}::${request.agentId}` : request.agentId;
+
+		this._logService.info(
+			`[CoderTrace] AgentDriver.executeTurn START: agentId=${request.agentId}, turnId=${turnId}, messages=${request.messages.length}, systemPromptLen=${request.systemPrompt?.length ?? 0}, chatMode=${request.chatMode}, explicitSkillIds=${JSON.stringify(request.explicitSkillIds)}`,
+		);
 
 		// 如果已有同 ID 的轮次在运行，先取消
 		this.cancelTurn(turnId);
@@ -110,6 +112,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			
 			// 【关键修复】仅注入 agent 实例中配置的技能，未配置的不要注入
 			const employee = await this._agentStudioService.getEmployee(request.agentId);
+			
+			// ─── Coder Agent 执行日志 ─────────────────────────────────────
+			this._logService.info(
+				`[CoderTrace] Employee loaded: name="${employee?.name}", role="${employee?.role}", presetId=${employee?.presetId}, skills=${JSON.stringify(employee?.skills)}, tools=${JSON.stringify(employee?.tools)}, handOffs=${employee?.handOffs?.length ?? 0}, customPromptLen=${employee?.customPrompt?.length ?? 0}`,
+			);
 			
 			// 规范化 skills 格式：处理旧格式（对象数组）和新格式（字符串数组）的混合情况
 			const rawSkills = employee?.skills || [];
@@ -205,7 +212,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				'<available_skills>',
 				skillsXml,
 				'</available_skills>',
-				'',
 				compact ? `(${allSkills.length} skills total, showing ${skillsToInclude.length} in compact mode)` : `(${allSkills.length} skills total)`,
 				'',
 			].join('\n');
@@ -213,6 +219,12 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		}
 
 			// 3a-2. 注入已启用工具的使用指引（让模型知道有工具可用）
+		// 【Knot 特殊处理】当使用 Knot 作为 Model Provider 时，不注入 Available Tools
+		// 因为 Knot 在服务端处理工具，客户端不需要告诉模型有哪些工具
+		const activeModelSelection = this._agentOS.getActiveModelSelection();
+		const isKnotProvider = activeModelSelection?.providerId.includes('knot');
+		
+		if (!isKnotProvider) {
 			try {
 				const allTools = await this._agentOS.listAllToolsWithState(request.agentId);
 				const enabledToolsRaw = allTools.filter(t => t.enabled);
@@ -266,6 +278,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			} catch (error) {
 				this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
 			}
+		} else {
+			this._logService.info(`[AgentDriver] Skipped Available Tools injection (Knot provider detected: ${activeModelSelection?.providerId})`);
+		}
 
 			// 3b. 解析本轮激活的技能内容并注入
 				let mergedMessages = [...request.messages];
@@ -340,12 +355,24 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 		this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills (lightweight XML catalog injected), systemPrompt length: ${mergedSystemPrompt.length}`);
 		this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 300)}...`);
-			} catch (error) {
+		
+		// 打印完整的 system prompt 到日志（分块打印，每块 2000 字符）
+		const SYSTEM_PROMPT_CHUNK_SIZE = 2000;
+		this._logService.info(`[AgentDriver] ======= SYSTEM PROMPT START =======`);
+		for (let i = 0; i < mergedSystemPrompt.length; i += SYSTEM_PROMPT_CHUNK_SIZE) {
+			const chunk = mergedSystemPrompt.substring(i, i + SYSTEM_PROMPT_CHUNK_SIZE);
+			this._logService.info(`[AgentDriver] systemPrompt[${i}-${i + chunk.length}]: ${chunk}`);
+		}
+		this._logService.info(`[AgentDriver] ======= SYSTEM PROMPT END (total ${mergedSystemPrompt.length} chars) =======`);
+		} catch (error) {
 				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
 				// Skill 解析失败不阻塞主流程
 			}
 
 			// Step 4: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
+			this._logService.info(
+				`[CoderTrace] AgentDriver → AgentOS: agentId=${request.agentId}, systemPromptFinalLen=${enrichedRequest.systemPrompt?.length ?? 0}, messages=${enrichedRequest.messages.length}`,
+			);
 			const osStream = this._agentOS.executeAgentTurn(enrichedRequest);
 
 			for await (const delta of osStream) {
@@ -439,28 +466,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				return undefined;
 			}
 
-			let workspaceRoot = workspace.path;
+		let workspaceRoot = workspace.path;
 
-			// Auto-sync: if the VS Code currently-open folder differs from the
-			// stored workspace path, update the workspace record to match.
-			const vsCodeFolders = this._workspaceContextService.getWorkspace().folders;
-			const vsCodeFolder = vsCodeFolders.length > 0 ? vsCodeFolders[0].uri.fsPath : undefined;
-
-			if (vsCodeFolder && workspaceRoot !== vsCodeFolder) {
-				this._logService.info(
-					`[AgentDriver] Syncing workspace path: "${workspaceRoot}" → "${vsCodeFolder}"`
-				);
-				try {
-					await this._agentStudioService.updateWorkspace(employee.workspaceId, { path: vsCodeFolder });
-				} catch (err) {
-					this._logService.warn('[AgentDriver] Failed to sync workspace path:', err);
-				}
-				workspaceRoot = vsCodeFolder;
-			}
-
-			if (!workspaceRoot) {
-				return undefined;
-			}
+		if (!workspaceRoot) {
+			return undefined;
+		}
 
 			const lines: string[] = [
 				'## Workspace Context',
@@ -471,11 +481,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				'When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,',
 				`they mean this directory: ${workspaceRoot}`,
 				'',
-				'### Security Sandbox',
+				'### Security Policy',
 				'',
-				`You are ONLY permitted to read, write, search, and execute commands within the workspace directory and its subdirectories.`,
-				`You MUST NOT access, modify, or reference any files or directories outside of: ${workspaceRoot}`,
-				'If a user asks you to operate on a path outside this workspace, refuse and explain that you are sandboxed to the current workspace.',
+				`You are FREE to READ any files or directories, whether inside or outside the workspace.`,
+				`You MAY search and read files anywhere on the system.`,
+				'',
+				`For WRITING or DELETING files outside the workspace (${workspaceRoot}), you MUST request user approval first.`,
+				`When asked to modify/delete files outside ${workspaceRoot}, explain the operation and ask the user for permission.`,
+				'If the user denies the operation, do not proceed.',
 			];
 
 			return lines.join('\n');

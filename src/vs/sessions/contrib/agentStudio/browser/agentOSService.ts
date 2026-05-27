@@ -45,6 +45,8 @@ import {
 	ToolApprovalService,
 	ToolExecutionTracker,
 } from './toolExecutionGuard.js';
+import { IAgentStudioService } from '../../../common/agentStudioService.js';
+import { AgentToolIsolator } from '../common/agentToolIsolator.js';
 
 // ─── Agent OS Service Implementation ────────────────────────────────────
 
@@ -56,6 +58,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _modelProviders: IModelProvider[] = [];
 	private _activeSelection: IModelSelection | undefined;
 	private readonly _logService: ILogService;
+	private readonly _studioService: IAgentStudioService;
+	private readonly _toolIsolator: AgentToolIsolator;
 
 	// ─── Tool Execution Guard (P0 优化) ───────────────────────
 	private readonly _approvalService = new ToolApprovalService();
@@ -73,9 +77,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	constructor(
 		@ILogService logService: ILogService,
+		@IAgentStudioService studioService: IAgentStudioService,
 	) {
 		super();
 		this._logService = logService;
+		this._studioService = studioService;
+		this._toolIsolator = new AgentToolIsolator();
 		this._slotRegistry = this._register(new SlotRegistry(logService));
 
 		// Bridge the OS-level ModelProvider list and active selection
@@ -431,6 +438,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const selection = this.getActiveModelSelection();
 		this._logService.info(`[AgentOS] Using ModelProvider directly: ${modelProvider.id}, modelId=${selection?.modelId}`);
 
+		// ─── Coder Agent 执行日志 ─────────────────────────────────────
+		this._logService.info(
+			`[CoderTrace] _executeWithFallbackDirectly START: agentId=${request.agentId}, providerId=${selection?.providerId}, modelId=${selection?.modelId}, systemPromptLen=${request.systemPrompt?.length ?? 0}, chatMode=${request.chatMode}`,
+		);
+
 		if (!selection || !selection.modelId) {
 			this._logService.error('[AgentOS] No active model selection or modelId is empty');
 			yield { type: 'error', content: 'No model selected. Please select a model from the toolbar.' };
@@ -523,6 +535,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							displayName: tc.displayName,
 							renderType: tc.renderType,
 							defaultShow: tc.defaultShow,
+							serverExecuted: tc.serverExecuted,
 						});
 					} else {
 						// Continuation chunk — append arguments with buffer size check
@@ -561,6 +574,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	// ─── 检查是否需要执行工具（含文本解析兜底）──────────────────
 	let effectiveToolCalls = assistantToolCalls;
+	// Pre-extracted results for server-executed tool calls (populated during text extraction).
+	// Declared at this scope so it's accessible when yielding tool_result/tool_end below.
+	const preExtractedResults = new Map<string, string>();
 	if (effectiveToolCalls.length === 0 && assistantContent) {
 		// 尝试从纯文本中解析工具调用（兼容不严格遵循 OpenAI 格式的模型）
 		// 传入 enabledTools 以支持从纯参数 JSON 推断工具名
@@ -569,21 +585,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			this._logService.info(`[AgentOS] Extracted ${extracted.length} tool calls from text output`);
 			effectiveToolCalls = extracted;
 
-			// ── Clean assistantContent using the unified sanitizer pipeline
-			// (OpenClaw-style multi-stage strip: JSON objects, code blocks, XML, brackets, etc.)
-			if (isEntirelyToolCallContent(assistantContent)) {
-				assistantContent = '';
-				this._logService.info(`[AgentOS] Cleared assistantContent (was entirely tool-call content)`);
-			} else {
-				const cleaned = sanitizeAssistantVisibleText(assistantContent, 'streaming');
-				assistantContent = cleaned.length < 5 ? '' : cleaned;
-				this._logService.info(`[AgentOS] Sanitized assistantContent, remaining: ${assistantContent.length} chars`);
+			// ── Pre-extract server-executed results BEFORE sanitization removes <tool_result> tags
+			const serverExecutedExtracted = extracted.filter(tc => tc.serverExecuted === true);
+			for (const tc of serverExecutedExtracted) {
+				const result = this._tryExtractToolResultForCall(tc.id, assistantContent);
+				if (result) {
+					preExtractedResults.set(tc.id, result);
+				}
 			}
-
-			// Notify downstream (agentChatService + webview) to replace accumulated text
-			// content with the cleaned version. This prevents the UI from showing
-			// the raw JSON that was already extracted into tool cards.
-			yield { type: 'content_replace', content: assistantContent };
 
 			// 向 UI 发送 tool_start 事件（前端需要 tool_start 才能渲染工具卡片）
 			for (const tc of extracted) {
@@ -599,27 +608,102 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}
 	}
 
+	// ── ALWAYS replace XML tool blocks with placeholders and sanitize text.
+	// This runs regardless of whether tool calls came from OpenAI streaming
+	// (assistantToolCalls) or text extraction. Knot AG-UI embeds XML tool
+	// blocks in the text even when OpenAI function calling is active, so we
+	// must always clean them up and insert positioning placeholders.
+	if (assistantContent) {
+		assistantContent = this._replaceToolBlocksWithPlaceholders(assistantContent);
+
+		// ── When we have effective tool calls but no placeholders were inserted
+		// (e.g. OpenAI function calling with JSON in text, no XML blocks), the
+		// webview needs placeholder markers so it can interleave tool cards at the
+		// correct positions. Inject <!--TOOL_CARD:id--> markers for all effective
+		// tool calls if none exist yet — this enables position-based interleaving
+		// even when the model output contains no XML tool block format.
+		if (effectiveToolCalls.length > 0 && !/<!--TOOL_CARD:/.test(assistantContent)) {
+			const markers = effectiveToolCalls
+				.filter(tc => !tc.id.startsWith('xml_')) // xml_-prefixed ids are from text extraction, not real
+				.map(tc => `<!--TOOL_CARD:${tc.id}-->`)
+				.join('');
+			this._logService.info(`[AgentOS] No XML placeholders found in content for ${effectiveToolCalls.length} tool calls, injecting markers`);
+			assistantContent = markers + assistantContent;
+		}
+
+		// ── Clean assistantContent using the unified sanitizer pipeline
+		// (OpenClaw-style multi-stage strip: JSON objects, code blocks, XML, brackets, etc.)
+		if (isEntirelyToolCallContent(assistantContent)) {
+			assistantContent = '';
+			this._logService.info(`[AgentOS] Cleared assistantContent (was entirely tool-call content)`);
+		} else {
+			const cleaned = sanitizeAssistantVisibleText(assistantContent, 'streaming');
+			assistantContent = cleaned.length < 5 ? '' : cleaned;
+			this._logService.info(`[AgentOS] Sanitized assistantContent, remaining: ${assistantContent.length} chars`);
+		}
+
+		// Notify downstream (agentChatService + webview) to replace accumulated text
+		// content with the cleaned version. This prevents the UI from showing
+		// the raw JSON that was already extracted into tool cards.
+		yield { type: 'content_replace', content: assistantContent };
+	}
+
 		// Deduplicate tool calls
 		effectiveToolCalls = deduplicateToolCalls(effectiveToolCalls);
 		if (effectiveToolCalls.length < assistantToolCalls.length) {
 			this._logService.info(`[AgentOS] Deduplicated: ${assistantToolCalls.length} → ${effectiveToolCalls.length}`);
 		}
 
-		// ─── Filter out phantom tool calls (render_type="None", default_show=false) ─────
+		// ─── Filter out hidden tool calls (defaultShow=false) ─────
 		// These are UI indicator tools (e.g., "task_planning" showing "任务规划中")
 		// that should NOT be executed as real tools. Executing them causes confusing
 		// "not yet implemented" errors that derail the conversation.
 		const realToolCalls = effectiveToolCalls.filter(tc => {
-			const isPhantom = tc.renderType === 'None' && tc.defaultShow === false;
-			if (isPhantom) {
-				this._logService.info(`[AgentOS] Skipping phantom tool call: ${tc.name} (render_type=None, default_show=false)`);
+			const isHidden = tc.defaultShow === false;
+			if (isHidden) {
+				this._logService.info(`[AgentOS] Skipping hidden tool call: ${tc.name} (defaultShow=false, render_type=${tc.renderType})`);
 			}
-			return !isPhantom;
+			return !isHidden;
 		});
 		if (realToolCalls.length < effectiveToolCalls.length) {
-			this._logService.info(`[AgentOS] Filtered phantom tool calls: ${effectiveToolCalls.length} → ${realToolCalls.length}`);
+			this._logService.info(`[AgentOS] Filtered hidden tool calls: ${effectiveToolCalls.length} → ${realToolCalls.length}`);
 			effectiveToolCalls = realToolCalls;
 		}
+
+		// ─── Separate server-executed tool calls (e.g. Knot AG-UI) ─────
+		// Server-side agents (Knot) execute tools on the backend and stream
+		// tool call events for display only. We must NOT re-execute them locally.
+		// For server-executed calls: yield tool_result + tool_end so the UI card
+		// stops spinning, but skip actual execution.
+		const serverExecutedCalls = effectiveToolCalls.filter(tc => tc.serverExecuted === true);
+		const clientExecutableCalls = effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
+
+		if (serverExecutedCalls.length > 0) {
+			this._logService.info(`[AgentOS] Found ${serverExecutedCalls.length} server-executed tool call(s), yielding results without local execution`);
+			for (const tc of serverExecutedCalls) {
+				// The tool card was already shown via tool_start during streaming.
+				// Now yield tool_result + tool_end so the card transitions to "done" state.
+				// Results were pre-extracted before sanitization removed <tool_result> tags.
+				const extractedResult = preExtractedResults.get(tc.id);
+				const resultContent = extractedResult ?? JSON.stringify({ success: true, message: 'Tool executed on server' });
+				if (extractedResult) {
+					this._logService.info(`[AgentOS] Extracted real tool result for server-executed call ${tc.id} (${tc.name})`);
+				}
+				yield {
+					type: 'tool_result',
+					content: resultContent,
+					toolCallId: tc.id,
+				};
+				yield {
+					type: 'tool_end',
+					toolCallId: tc.id,
+					success: true,
+				};
+			}
+		}
+
+		// Only proceed with client-executable calls
+		effectiveToolCalls = clientExecutableCalls;
 
 		// 将助手消息添加到消息历史
 		if (assistantContent || effectiveToolCalls.length > 0) {
@@ -636,12 +720,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (effectiveToolCalls.length === 0) {
 			// 没有工具调用，对话结束
 			this._logService.info('[AgentOS] No tool calls, ending conversation');
+			this._logService.info(`[CoderTrace] Agent loop END at iteration ${iteration}: no tool calls, textLen=${assistantContent.length}`);
 			yield { type: 'done' };
 			break;
 		}
 
 		// ─── 执行工具调用 ─────────────────────────────────────
 		const canParallel = shouldParallelizeToolBatch(effectiveToolCalls);
+		this._logService.info(
+			`[CoderTrace] Executing ${effectiveToolCalls.length} tool call(s) at iteration ${iteration}: [${effectiveToolCalls.map(tc => tc.name).join(', ')}] (parallel=${canParallel})`,
+		);
 		const toolResults = canParallel
 			? await this._executeToolCallsParallel(effectiveToolCalls, request.agentId)
 			: await this._executeToolCalls(effectiveToolCalls, request.agentId);
@@ -743,11 +831,45 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	/**
 	 * 获取指定 agent 的已启用工具列表
+	 *
+	 * 过滤流程：
+	 * 1. 从所有 ToolProvider 收集可用工具
+	 * 2. 使用 AgentToolIsolator 根据 employee.tools 配置进行过滤
+	 *    - 支持旧 VS Code 别名（vscode→file_write+file_list+search_files 等）
+	 *    - 无 tools 配置则全部启用
+	 *    - SandboxMode.ReadOnly 只启用只读工具
 	 */
 	private async _getEnabledTools(agentId: string): Promise<IToolDefinition[]> {
 		const allToolsWithState = await this.listAllToolsWithState(agentId);
+
+		// ─── AgentToolIsolator 过滤 ─────────────────────────
+		// 根据 employee.tools 配置决定哪些工具对 agent 可见
+		let employee;
+		try {
+			employee = await this._studioService.getEmployee(agentId);
+		} catch (err) {
+			this._logService.warn(`[AgentOS] _getEnabledTools: failed to get employee ${agentId}, skipping tool isolation`, err);
+		}
+
+		if (employee) {
+			const allToolNames = allToolsWithState.map(t => t.name);
+			const isolated = this._toolIsolator.isolateTools(employee, allToolNames);
+
+			if (isolated) {
+				// Apply isolation: only include tools that are explicitly enabled
+				const enabled = allToolsWithState.filter(t => isolated.enabledTools[t.name] !== false);
+				this._logService.info(
+					`[AgentOS] _getEnabledTools (isolated): ${enabled.length}/${allToolsWithState.length} tools for agent ${agentId}, ` +
+					`declared=[${isolated.declaredTools.join(', ')}], disabled=[${isolated.disabledTools.join(', ')}]` +
+					(isolated.unknownTools.length > 0 ? `, unknown=[${isolated.unknownTools.join(', ')}]` : ''),
+				);
+				return enabled.map(({ enabled: _, ...toolDef }) => toolDef);
+			}
+		}
+
+		// No isolation (no employee or no tools config) — fall back to enabled state
 		const enabled = allToolsWithState.filter(t => t.enabled);
-		this._logService.info(`[AgentOS] _getEnabledTools: ${enabled.length}/${allToolsWithState.length} tools enabled for agent ${agentId}`);
+		this._logService.info(`[AgentOS] _getEnabledTools (no isolation): ${enabled.length}/${allToolsWithState.length} tools enabled for agent ${agentId}`);
 		return enabled.map(({ enabled: _, ...toolDef }) => toolDef);
 	}
 
@@ -765,6 +887,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 */
 	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
+
+		this._logService.info(
+			`[CoderTrace] _executeToolCalls: agentId=${agentId}, toolCalls=[${toolCalls.map(tc => tc.name).join(', ')}]`,
+		);
 
 		// Pre-collect all available tools and build lookup structures
 		const allAvailableTools: IToolDefinition[] = [];
@@ -1291,6 +1417,147 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	/**
+	 * 从 assistant 文本输出中提取与指定 toolCallId 匹配的 <tool_result> 内容。
+	 * Knot AG-UI 在服务器端执行工具后，会把结果放在 <tool_result> 标签中随文本流一起返回。
+	 * 标签格式: <tool_result>{"items":[...]}</tool_result>
+	 *
+	 * 返回提取到的结果 JSON 字符串，如果没有找到则返回 undefined。
+	 */
+	private _tryExtractToolResultForCall(toolCallId: string, text: string): string | undefined {
+		if (!text || text.length < 10) { return undefined; }
+
+		// 1. 尝试匹配带 tool_call_id 属性的 <tool_result> 标签
+		// 格式: <tool_result tool_call_id="xxx">...</tool_result>
+		const idRegex = new RegExp(`<tool_result\\b[^>]*\\btool_call_id=["']${this._escapeRegex(toolCallId)}["'][^>]*>([\\s\\S]*?)</tool_result>`, 'i');
+		const idMatch = idRegex.exec(text);
+		if (idMatch) {
+			const content = idMatch[1].trim();
+			if (content) {
+				this._logService.info(`[AgentOS] _tryExtractToolResultForCall: found result by tool_call_id for ${toolCallId}`);
+				return content;
+			}
+		}
+
+		// 2. 尝试匹配所有 <tool_result> 标签（按顺序与 tool_call 一一对应）
+		// 先收集所有 tool_call id 的顺序，然后按相同顺序匹配 tool_result
+		const toolCallIdRegex = /<tool_call\b[^>]*>\s*\{[^}]*"tool_call_id"\s*:\s*"([^"]+)"[\s\S]*?\}\s*<\/tool_call>/gi;
+		const toolCallIds: string[] = [];
+		let tcMatch: RegExpExecArray | null;
+		while ((tcMatch = toolCallIdRegex.exec(text)) !== null) {
+			toolCallIds.push(tcMatch[1]);
+		}
+
+		const toolResultRegex = /<tool_result\b[^>]*>([\s\S]*?)<\/tool_result>/gi;
+		const toolResults: string[] = [];
+		let trMatch: RegExpExecArray | null;
+		while ((trMatch = toolResultRegex.exec(text)) !== null) {
+			toolResults.push(trMatch[1].trim());
+		}
+
+		const idx = toolCallIds.indexOf(toolCallId);
+		if (idx >= 0 && idx < toolResults.length) {
+			this._logService.info(`[AgentOS] _tryExtractToolResultForCall: found result by index mapping for ${toolCallId} (idx=${idx})`);
+			return toolResults[idx];
+		}
+
+		// 3. 如果只有一个 <tool_result>，直接返回它（兜底）
+		if (toolResults.length === 1) {
+			this._logService.info(`[AgentOS] _tryExtractToolResultForCall: using single tool_result as fallback for ${toolCallId}`);
+			return toolResults[0];
+		}
+
+		return undefined;
+	}
+
+	private _escapeRegex(str: string): string {
+		return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	}
+
+	/**
+	 * Replace XML tool blocks with HTML-style placeholder comments.
+	 * These placeholders survive sanitization and tell the frontend exactly
+	 * where to insert each tool call card within the text flow.
+	 *
+	 * Supported blocks:
+	 *   <tool>...</tool>              → <!--TOOL_CARD:tool_call_id-->
+	 *   <tool_result>...</tool_result> → <!--TOOL_CARD:tool_call_id-->
+	 *   <custom>...</custom>           → removed (internal directives)
+	 */
+	private _replaceToolBlocksWithPlaceholders(text: string): string {
+		if (!text) { return text; }
+		let result = text;
+
+		// Helper: extract tool_call_id from JSON inside XML block
+		const extractIdFromJson = (jsonStr: string): string | null => {
+			// Try "id" field first (most common)
+			const idMatch = /"id"\s*:\s*"([^"]+)"/.exec(jsonStr);
+			if (idMatch) { return idMatch[1]; }
+			// Try "tool_call_id" field
+			const tcIdMatch = /"tool_call_id"\s*:\s*"([^"]+)"/.exec(jsonStr);
+			if (tcIdMatch) { return tcIdMatch[1]; }
+			// Try "tool_use_id" field
+			const tuIdMatch = /"tool_use_id"\s*:\s*"([^"]+)"/.exec(jsonStr);
+			if (tuIdMatch) { return tuIdMatch[1]; }
+			return null;
+		};
+
+		// 1. Replace <tool>...</tool> blocks with placeholders.
+		//    The inner <tool_call> JSON contains the tool_call_id we need.
+		const toolBlockRe = /<tool\b[^>]*>([\s\S]*?)<\/tool>/gi;
+		result = result.replace(toolBlockRe, (match, inner) => {
+			const id = extractIdFromJson(inner);
+			if (id) {
+				return `<!--TOOL_CARD:${id}-->`;
+			}
+			// No id found — just remove the block
+			return '';
+		});
+
+		// 2. Replace <tool_call>...</tool_call> blocks with placeholders.
+		//    Inner content is JSON with id/tool_call_id field.
+		const toolCallBlockRe = /<tool_call\b[^>]*>([\s\S]*?)<\/tool_call>/gi;
+		result = result.replace(toolCallBlockRe, (match, inner) => {
+			const id = extractIdFromJson(inner);
+			if (id) {
+				return `<!--TOOL_CARD:${id}-->`;
+			}
+			return '';
+		});
+
+		// 3. Replace <function_call>...</function_call> blocks with placeholders.
+		const funcCallBlockRe = /<function_call\b[^>]*>([\s\S]*?)<\/function_call>/gi;
+		result = result.replace(funcCallBlockRe, (match, inner) => {
+			const id = extractIdFromJson(inner);
+			if (id) {
+				return `<!--TOOL_CARD:${id}-->`;
+			}
+			return '';
+		});
+
+		// 4. Replace <tool_result>...</tool_result> blocks with placeholders.
+		//    Try to match by tool_call_id attribute first.
+		const toolResultRe = /<tool_result\b([^>]*)>([\s\S]*?)<\/tool_result>/gi;
+		result = result.replace(toolResultRe, (match, attrs, inner) => {
+			const idAttrMatch = /\btool_call_id=["']([^"']+)["']/.exec(attrs);
+			if (idAttrMatch) {
+				return `<!--TOOL_CARD:${idAttrMatch[1]}-->`;
+			}
+			// Fallback: try to extract id from inner JSON
+			const id = extractIdFromJson(inner);
+			if (id) {
+				return `<!--TOOL_CARD:${id}-->`;
+			}
+			// No id attribute — we can't map it, just remove it
+			return '';
+		});
+
+		// 5. Remove <custom>...</custom> blocks (internal directives)
+		result = result.replace(/<custom\b[^>]*>([\s\S]*?)<\/custom>/gi, '');
+
+		return result;
+	}
+
+	/**
 	 * 从 XML 格式提取工具调用。
 	 * 支持: <tool_call>, <function_call>, <tool_use>, <invoke>
 	 */
@@ -1633,13 +1900,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				const header = JSON.parse(toolCallMatch[1].trim());
 				const args = this._extractToolDocument(content);
 				this._logService.info(`[AgentOS] _parseToolXMLFormat format B (tool_call): name=${header.name}, default_show=${header.default_show} (type=${typeof header.default_show}), displayName=${header.display_name}, renderType=${header.render_type}`);
+				// Normalize: render_type="none" implies defaultShow=false (unless explicitly set)
+				const rtB = header.render_type as string | undefined;
+				const isRenderTypeNoneB = rtB && rtB.toLowerCase() === 'none';
+				const dsB = header.default_show === false ? false : (isRenderTypeNoneB ? false : true);
 				return {
 					id: header.tool_call_id || header.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 					name: header.name || header.tool_name || header.tool || '',
 					arguments: args ? JSON.stringify(args) : '{}',
 					displayName: header.display_name,
-					renderType: header.render_type,
-					defaultShow: header.default_show !== false,
+					renderType: rtB,
+					defaultShow: dsB,
 				};
 			} catch (e) {
 				this._logService.info(`[AgentOS] _parseToolXMLFormat format B parse error: ${e}`);
@@ -1660,13 +1931,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				const header = JSON.parse(plainJsonMatch[1]);
 				const args = this._extractToolDocument(content);
 				this._logService.info(`[AgentOS] _parseToolXMLFormat format A (plain JSON): name=${header.name}, default_show=${header.default_show} (type=${typeof header.default_show}), displayName=${header.display_name}, renderType=${header.render_type}`);
+				const rtPJ = header.render_type as string | undefined;
+				const dsPJ = header.default_show === false ? false : ((rtPJ && rtPJ.toLowerCase() === 'none') ? false : true);
 				return {
 					id: header.tool_call_id || header.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 					name: header.name || header.tool_name || header.tool || '',
 					arguments: args ? JSON.stringify(args) : '{}',
 					displayName: header.display_name,
-					renderType: header.render_type,
-					defaultShow: header.default_show !== false,
+					renderType: rtPJ,
+					defaultShow: dsPJ,
 				};
 			} catch { return null; }
 		}
@@ -1675,13 +1948,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const header = JSON.parse(headerMatch[1]);
 			const args = this._extractToolDocument(content);
 			this._logService.info(`[AgentOS] _parseToolXMLFormat format A (▷ prefix): name=${header.name}, default_show=${header.default_show} (type=${typeof header.default_show}), displayName=${header.display_name}, renderType=${header.render_type}`);
+			const rtA = header.render_type as string | undefined;
+			const dsA = header.default_show === false ? false : ((rtA && rtA.toLowerCase() === 'none') ? false : true);
 			return {
 				id: header.tool_call_id || header.id || `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 				name: header.name || header.tool_name || header.tool || '',
 				arguments: args ? JSON.stringify(args) : '{}',
 				displayName: header.display_name,
-				renderType: header.render_type,
-				defaultShow: header.default_show !== false,
+				renderType: rtA,
+				defaultShow: dsA,
 			};
 		} catch {
 			return null;
@@ -1932,7 +2207,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				if (delta.toolCall.displayName !== undefined) { result.displayName = delta.toolCall.displayName; }
 				if (delta.toolCall.renderType !== undefined) { result.renderType = delta.toolCall.renderType; }
 				if (delta.toolCall.defaultShow !== undefined) { result.defaultShow = delta.toolCall.defaultShow; }
-				this._logService.info(`[AgentOS] _adaptModelDelta tool_start: name=${delta.toolCall.name}, defaultShow=${delta.toolCall.defaultShow}, displayName=${delta.toolCall.displayName}, renderType=${delta.toolCall.renderType}`);
+				if (delta.toolCall.serverExecuted !== undefined) { result.serverExecuted = delta.toolCall.serverExecuted; }
+				this._logService.info(`[AgentOS] _adaptModelDelta tool_start: name=${delta.toolCall.name}, defaultShow=${delta.toolCall.defaultShow}, displayName=${delta.toolCall.displayName}, renderType=${delta.toolCall.renderType}, serverExecuted=${delta.toolCall.serverExecuted}`);
 				return result;
 			}
 			return { type: 'tool_args' as any, content: delta.toolCall.arguments || '', toolCallId: delta.toolCall.id };

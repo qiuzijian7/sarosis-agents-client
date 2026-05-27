@@ -236,7 +236,7 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 					maxTokens: 4096,
 				},
 				memory: { enabled: true },
-				tools: ['filesystem', 'search'],
+				tools: ['read_file', 'list_dir', 'search_files', 'grep_search'],
 				planning: { enabled: true },
 				execution: { enabled: true, maxIterations: 10 },
 				retrieval: { enabled: false },

@@ -22,6 +22,7 @@ import type {
 	PlanTask,
 	ConfigMdCapability,
 } from "./agentStudioTypes.js";
+import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
 
 // --- Agent Studio Service ---
 
@@ -54,6 +55,8 @@ export interface IAgentStudioService {
 	updateWorkspace(id: string, data: Partial<Workspace>): Promise<Workspace>;
 	deleteWorkspace(id: string): Promise<void>;
 	updateWorkspaceLayout(id: string, layout: WorkspaceLayout): Promise<void>;
+	setLastActiveWorkspaceId(id: string | null): Promise<void>;
+	getLastActiveWorkspaceId(): Promise<string | null>;
 
 	// Connections
 	getConnections(workspaceId: string): Promise<Connection[]>;
@@ -105,6 +108,48 @@ export interface IAgentStudioService {
 		data: AgentExportData,
 		workspaceId?: string,
 	): Promise<Employee>;
+
+	// ─── Worktree Integration (opencode-compatible) ─────────────────────────────
+
+	/**
+	 * Create a workspace with worktree isolation.
+	 * Handles the full lifecycle: makeWorktreeInfo → createFromInfo → waitReady.
+	 * Compatible with opencode's session-worktree binding pattern.
+	 */
+	createWorkspaceWithWorktree(
+		name: string,
+		options?: IWorktreeWorkspaceOptions,
+	): Promise<Workspace>;
+
+	/**
+	 * Assign an existing worktree to a workspace.
+	 * Updates Workspace.worktreePath and Workspace.worktreeBranch.
+	 */
+	assignWorktreeToWorkspace(
+		workspaceId: string,
+		worktreePath: string,
+		worktreeBranch?: string,
+	): Promise<void>;
+
+	/**
+	 * Get the effective worktree path for an employee.
+	 * Returns Employee.worktreePath if set, otherwise falls back to Workspace.worktreePath.
+	 */
+	getEffectiveWorktreePath(employeeId: string): Promise<string | undefined>;
+
+	/**
+	 * Reset the worktree associated with a workspace to its default state.
+	 * Requires the workspace to have a worktreePath set.
+	 */
+	resetWorkspaceWorktree(workspaceId: string): Promise<void>;
+
+	/**
+	 * Remove the worktree associated with a workspace and clear the binding.
+	 */
+	removeWorkspaceWorktree(workspaceId: string): Promise<void>;
+
+	/** Event fired when a workspace's worktree status changes */
+	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }>;
 }
 
 // --- Agent Chat Service ---
@@ -142,6 +187,8 @@ export interface IChatStreamDelta {
 	readonly renderType?: string;
 	/** Whether to show this tool call card by default (default true) */
 	readonly defaultShow?: boolean;
+	/** Whether the tool was executed on the server side */
+	readonly serverExecuted?: boolean;
 	// New fields for card data (VS Code Copilot Chat pattern)
 	/** References data (for references delta type) */
 	readonly references?: Array<{
@@ -473,6 +520,18 @@ export interface ITaskOrchestrationService {
 	 * generated during background task execution.
 	 */
 	setStreamEventCallback(callback: (eventType: string, payload: Record<string, unknown>) => void): void;
+
+	/**
+	 * Invalidate the cached repo overview. Call when workspace content changes.
+	 */
+	invalidateRepoOverview(): void;
+
+	/**
+	 * Access the unified sub-agent dispatch for direct sub-agent operations.
+	 * Used by delegate_task tool and other runtime delegation paths.
+	 * Typed as unknown here to avoid circular deps; cast at the call site.
+	 */
+	readonly subAgentDispatch: unknown;
 }
 
 // --- ConfigMD Service ---

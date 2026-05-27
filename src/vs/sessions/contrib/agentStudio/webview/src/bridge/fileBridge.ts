@@ -7,13 +7,24 @@ import { sendRequest } from './messageClient';
 export interface OpenFileOptions {
 	preserveFocus?: boolean;
 	pinned?: boolean;
+	/** Line number to scroll to after opening (1-based) */
+	lineNumber?: number;
 }
 
 /**
  * Open a file by absolute filesystem path.
+ * Supports `path:line` format (e.g., "/foo/bar.ts:42") for line jumping.
  */
 export async function openFile(path: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { path, ...options });
+	// Parse path:line format
+	let filePath = path;
+	let lineNumber = options?.lineNumber;
+	const colonMatch = path.match(/^(.+):(\d+)$/);
+	if (colonMatch) {
+		filePath = colonMatch[1];
+		lineNumber = parseInt(colonMatch[2], 10);
+	}
+	await sendRequest('files.open', { path: filePath, lineNumber, ...options });
 }
 
 /**

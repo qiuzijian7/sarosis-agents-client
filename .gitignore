@@ -155,6 +155,7 @@ temp_employeeChat.txt
 .sarosis/
 .sarosisworkspace/
 .workbuddy/
+.codebuddy/
 
 # 临时脚本和文档
 add-ts-nocheck.js
@@ -187,3 +188,9 @@ src/vs/sessions/contrib/agentStudio/webview/tserr.txt
 
 .agent
 commit-chat.txt
+prompt.txt
+commit-knot.txt
+commit-knot2.txt
+commit-worktree.txt
+commit-git.txt
+commit-doc.txt

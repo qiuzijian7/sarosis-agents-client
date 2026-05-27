@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { FileAccess } from '../../../../base/common/network.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { SKILL_FILENAME } from '../../../../workbench/contrib/chat/common/promptSyntax/config/promptFileLocations.js';
 import { PromptsType } from '../../../../workbench/contrib/chat/common/promptSyntax/promptTypes.js';
 import { IAgentSkill, IPromptPath, PromptsStorage } from '../../../../workbench/contrib/chat/common/promptSyntax/service/promptsService.js';
@@ -13,8 +13,10 @@ import { PromptsService } from '../../../../workbench/contrib/chat/common/prompt
 import { BUILTIN_STORAGE, IBuiltinPromptPath } from '../common/builtinPromptsStorage.js';
 
 /** URI root for built-in skills bundled with the Agents app. */
-// 参考 Hermes-Agent 模式：技能现在存储在 src/vs/sessions/contrib/agentStudio/browser/skills/
-export const BUILTIN_SKILLS_URI = FileAccess.asFileUri('vs/sessions/contrib/agentStudio/browser/skills');
+// 技能现在存储在 resources/.agents/skills/ 目录
+// 使用 FileAccess.asFileUri 获取 vs/ 目录，然后向上导航到项目根目录
+// 注意：FileAccess.asFileUri 返回的是 vscode-file:// 协议的 URI，在浏览器环境中可用
+export const BUILTIN_SKILLS_URI = FileAccess.asFileUri('vs/../../resources/.agents/skills');
 
 /**
  * Sessions-specific PromptsService that additionally discovers built-in skills

@@ -546,7 +546,7 @@ export class ContextManager implements IContextManager {
 						agentName: employee.name || employee.id,
 						agentRole: employee.role || 'worker',
 						agentType: employee.agentType,
-						model: employee.model,
+						model: typeof employee.model === 'string' ? employee.model : (Array.isArray(employee.model) ? employee.model[0] : employee.model?.primary),
 						provider: employee.provider,
 						skills: employee.skills ? [...employee.skills] : undefined,
 						status: employee.status || 'idle',

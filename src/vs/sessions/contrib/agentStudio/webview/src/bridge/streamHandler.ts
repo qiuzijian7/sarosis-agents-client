@@ -1,4 +1,4 @@
-/*---------------------------------------------------------------------------------------------
+﻿/*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Stream Handler
  *
  *  Receives chat.stream.delta events from the Host (already frame-throttled at 16ms),
@@ -6,7 +6,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 export interface StreamChunk {
-	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace';
+	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
 	content?: string;
 	toolCallId?: string;
 	toolName?: string;
@@ -17,6 +17,22 @@ export interface StreamChunk {
 	renderType?: string;
 	/** 是否默认展开显示工具卡（默认 true） */
 	defaultShow?: boolean;
+	/** 工具已在服务端执行（如 Knot AG-UI），客户端不需要再执行 */
+	serverExecuted?: boolean;
+	/** Security level for approval UI */
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	/** Exit code from terminal commands */
+	exitCode?: number;
+	/** Lint/diagnostic errors after edit_file */
+	diagnostics?: Array<{ message: string; line?: number; severity: 'error' | 'warning' }>;
+	/** Sub-agent invocation ID for grouping */
+	subAgentId?: string;
+	/** Sub-agent metadata — sent with subagent_start */
+	subAgentMeta?: {
+		type: 'explore' | 'general' | 'scout';
+		task: string;
+		parentAgentId?: string;
+	};
 }
 
 /**
@@ -37,13 +53,28 @@ export interface StreamError {
 	code?: string;
 }
 
+/**
+ * Structured content item — replaces textBuffer/thinkingBuffer with a typed array.
+ * Inspired by VS Code Copilot Chat's content parts pattern.
+ */
+export type ContentItem =
+	| { type: 'text'; text: string }
+	| { type: 'thinking'; text: string }
+	| { type: 'tool_call'; toolCallId: string };
+
 export interface StreamState {
 	isStreaming: boolean;
 	employeeId: string | null;
 	sessionId: string | null;
+	/** @deprecated Use contentItems instead — kept temporarily for backward compat */
 	textBuffer: string;
+	/** @deprecated Use contentItems instead — kept temporarily for backward compat */
 	thinkingBuffer: string;
+	/** Structured content items (text / thinking / tool_call in order). */
+	contentItems: ContentItem[];
 	toolCalls: ToolCallState[];
+	/** Active sub-agents being tracked during this stream */
+	subAgents: SubAgentState[];
 	/** @deprecated Use `error` instead for structured error info */
 	errorMessage: string | null;
 	/** Structured error details (VS Code Copilot Chat pattern) */
@@ -55,13 +86,47 @@ export interface ToolCallState {
 	name: string;
 	arguments: string;
 	result?: string;
-	status: 'running' | 'done' | 'error';
+	status: 'running' | 'done' | 'error' | 'approval_required' | 'rejected';
 	/** Whether to show this tool call card in the chat UI. Default true. */
 	defaultShow?: boolean;
 	/** UI 显示名称（来自模型的 display_name 字段） */
 	displayName?: string;
 	/** 渲染类型（如 RunTerminal、CodeEditor 等） */
 	renderType?: string;
+	/** 工具已在服务端执行（如 Knot AG-UI），客户端不需要再执行 */
+	serverExecuted?: boolean;
+	/** Security level for approval UI */
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	/** Exit code from terminal commands */
+	exitCode?: number;
+	/** Lint/diagnostic errors after edit_file */
+	diagnostics?: Array<{ message: string; line?: number; severity: 'error' | 'warning' }>;
+	/**
+	 * Character offset in the textBuffer at the moment tool_start was received.
+	 * Used to position the tool card at the correct location in the interleaved
+	 * rendering (Void-inspired: tool card appears where tool_start happened).
+	 */
+	textPosition?: number;
+}
+
+/** Sub-agent state tracked during streaming */
+export interface SubAgentState {
+	/** Unique sub-agent invocation ID */
+	id: string;
+	/** Sub-agent type (explore/general/scout) */
+	type: 'explore' | 'general' | 'scout';
+	/** Task description */
+	task: string;
+	/** Parent agent ID */
+	parentAgentId?: string;
+	/** Current status */
+	status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+	/** Progress text (from subagent_progress chunks) */
+	progress?: string;
+	/** Final output (from subagent_end chunks) */
+	output?: string;
+	/** Error message (if status is error) */
+	error?: string;
 }
 
 type StreamListener = (state: StreamState) => void;
@@ -95,7 +160,9 @@ function createInitialState(): StreamState {
 		sessionId: null,
 		textBuffer: '',
 		thinkingBuffer: '',
+		contentItems: [],
 		toolCalls: [],
+		subAgents: [],
 		errorMessage: null,
 		error: null,
 	};
@@ -164,7 +231,9 @@ export function onStreamComplete(callback: StreamCompleteCallback): () => void {
 export function getStreamState(): StreamState {
 	return {
 		...currentState,
+		contentItems: [...currentState.contentItems],
 		toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),
+		subAgents: currentState.subAgents.map(sa => ({ ...sa })),
 	};
 }
 
@@ -176,7 +245,9 @@ function notify(): void {
 	// stays the same.
 	const snapshot: StreamState = {
 		...currentState,
+		contentItems: [...currentState.contentItems],
 		toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),
+		subAgents: currentState.subAgents.map(sa => ({ ...sa })),
 	};
 	for (const listener of listeners) {
 		listener(snapshot);
@@ -194,15 +265,68 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 	switch (chunk.type) {
 		case 'text':
 			state.textBuffer += chunk.content ?? '';
+			// Also append to contentItems
+			const lastTextItem = state.contentItems[state.contentItems.length - 1];
+			if (lastTextItem?.type === 'text') {
+				lastTextItem.text += chunk.content ?? '';
+			} else {
+				state.contentItems.push({ type: 'text', text: chunk.content ?? '' });
+			}
 			break;
 		case 'thinking':
 			state.thinkingBuffer += chunk.content ?? '';
+			// Also append to contentItems
+			const lastThinkItem = state.contentItems[state.contentItems.length - 1];
+			if (lastThinkItem?.type === 'thinking') {
+				lastThinkItem.text += chunk.content ?? '';
+			} else {
+				state.contentItems.push({ type: 'thinking', text: chunk.content ?? '' });
+			}
 			break;
 		case 'content_replace':
 			// Replace the entire text buffer with the new content.
 			// Used when tool calls are extracted from text and the original
 			// JSON content should no longer be displayed.
-			state.textBuffer = chunk.content ?? '';
+			//
+			// The new content may contain <!--TOOL_CARD:id--> placeholders that
+			// indicate where tool cards should appear. When placeholders exist,
+			// we re-compute textPosition to match the placeholder offsets so
+			// position-based interleaving works correctly. When placeholders are
+			// absent (e.g. OpenAI function calling with no XML blocks), we leave
+			// existing textPosition intact — clearing it would dump all cards at
+			// the end because there is no other positioning signal.
+			{
+				const newContent = chunk.content ?? '';
+				state.textBuffer = newContent;
+
+				// Scan for placeholder positions and update textPosition accordingly.
+				// If no placeholders are found but we have tool calls with recorded
+				// textPosition values, keep those positions — they reflect the true
+				// character offset where each tool started in the original streaming
+				// text and enable correct position-based interleaving fallback.
+				const placeholderRe = /<!--TOOL_CARD:([^>]+)-->/g;
+				let match: RegExpExecArray | null;
+				let foundAny = false;
+				while ((match = placeholderRe.exec(newContent)) !== null) {
+					foundAny = true;
+					const tcId = match[1].trim();
+					const tc = state.toolCalls.find(t => t.id === tcId);
+					if (tc) {
+						tc.textPosition = match.index;
+					}
+				}
+				// If no placeholders were found, textPosition values from tool_start
+				// are already correct and should be preserved as-is.
+				if (!foundAny) {
+					// Ensure textPosition is defined for all tool calls using their
+					// existing values (or falling back to their array index order)
+					state.toolCalls.forEach((tc, idx) => {
+						if (tc.textPosition === undefined) {
+							tc.textPosition = state.textBuffer.length + idx + 1; // place all tool cards after text content
+						}
+					});
+				}
+			}
 			break;
 		case 'tool_start':
 			state.toolCalls.push({
@@ -213,6 +337,11 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 				defaultShow: chunk.defaultShow,
 				displayName: chunk.displayName,
 				renderType: chunk.renderType,
+				serverExecuted: chunk.serverExecuted,
+				securityLevel: chunk.securityLevel,
+				// Record position in text buffer at tool_start time — this determines
+				// where the tool card appears in the interleaved rendering
+				textPosition: state.textBuffer.length,
 			});
 			break;
 		case 'tool_args': {
@@ -226,6 +355,12 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 			const endCall = state.toolCalls.find(tc => tc.id === chunk.toolCallId);
 			if (endCall) {
 				endCall.status = chunk.success === false ? 'error' : 'done';
+				if (chunk.exitCode !== undefined) {
+					endCall.exitCode = chunk.exitCode;
+				}
+				if (chunk.diagnostics) {
+					endCall.diagnostics = chunk.diagnostics;
+				}
 			}
 			break;
 		}
@@ -243,6 +378,31 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 		case 'done':
 			// Stream finished — no action needed, completion is handled by handleStreamComplete
 			break;
+		case 'subagent_start':
+			state.subAgents.push({
+				id: chunk.subAgentId ?? '',
+				type: chunk.subAgentMeta?.type ?? 'general',
+				task: chunk.subAgentMeta?.task ?? chunk.content ?? '',
+				parentAgentId: chunk.subAgentMeta?.parentAgentId,
+				status: 'running',
+			});
+			break;
+		case 'subagent_progress': {
+			const progressAgent = state.subAgents.find(sa => sa.id === chunk.subAgentId);
+			if (progressAgent) {
+				progressAgent.progress = chunk.content ?? '';
+			}
+			break;
+		}
+		case 'subagent_end': {
+			const endAgent = state.subAgents.find(sa => sa.id === chunk.subAgentId);
+			if (endAgent) {
+				endAgent.status = chunk.success === false ? 'error' : 'done';
+				endAgent.output = chunk.content ?? '';
+				endAgent.error = chunk.success === false ? chunk.content : undefined;
+			}
+			break;
+		}
 	}
 }
 
@@ -564,6 +724,7 @@ export function switchActiveStream(employeeId: string | null, sessionId: string 
 		backgroundStreams.set(currentKey, {
 			...currentState,
 			toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),
+			subAgents: currentState.subAgents.map(sa => ({ ...sa })),
 		});
 		console.log(`[StreamHandler] Saved current stream to background: employee=${currentState.employeeId}, sessionId=${currentState.sessionId}`);
 	}
@@ -584,5 +745,6 @@ export function switchActiveStream(employeeId: string | null, sessionId: string 
 	return {
 		...currentState,
 		toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),
+		subAgents: currentState.subAgents.map(sa => ({ ...sa })),
 	};
 }

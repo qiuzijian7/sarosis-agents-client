@@ -8,6 +8,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { WorktreeBadge } from './WorktreeBadge';
 
 export type ViewMode = 'canvas' | 'list';
 
@@ -20,7 +21,7 @@ export function WorkspaceHeader({
 	viewMode,
 	onViewModeChange,
 }: WorkspaceHeaderProps): React.ReactElement {
-	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace } = useWorkspaceStore();
+	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, createWorkspaceWithWorktree } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 	const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
@@ -190,6 +191,17 @@ export function WorkspaceHeader({
 								>
 									<div className="ws-hd-opt-info">
 										<span className="ws-hd-opt-name">{ws.name}</span>
+										{ws.worktreeBranch && (
+											<span className="ws-hd-opt-worktree-branch">
+												🌿 {ws.worktreeBranch}
+											</span>
+										)}
+										{ws.worktreeStatus === 'pending' && (
+											<span className="ws-hd-opt-worktree-status pending">⏳</span>
+										)}
+										{ws.worktreeStatus === 'failed' && (
+											<span className="ws-hd-opt-worktree-status failed">❌</span>
+										)}
 									</div>
 									{ws.id === activeWorkspaceId && (
 										<svg className="ws-hd-opt-check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -244,15 +256,31 @@ export function WorkspaceHeader({
 								</div>
 							</div>
 						) : (
-							<div
-								className="ws-hd-opt ws-hd-opt-action"
-								onClick={handleStartCreate}
-							>
-								<svg className="ws-hd-opt-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-								</svg>
-								<span className="ws-hd-opt-name">创建新工作区</span>
-							</div>
+							<>
+								<div
+									className="ws-hd-opt ws-hd-opt-action"
+									onClick={handleStartCreate}
+								>
+									<svg className="ws-hd-opt-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+									</svg>
+									<span className="ws-hd-opt-name">创建新工作区</span>
+								</div>
+								<div
+									className="ws-hd-opt ws-hd-opt-action"
+									onClick={() => {
+										// Quick create with isolated worktree
+										const name = `工作区 ${workspaces.length + 1}`;
+										void createWorkspaceWithWorktree(name, { mode: 'create' });
+										setIsDropdownOpen(false);
+									}}
+								>
+									<svg className="ws-hd-opt-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+									</svg>
+									<span className="ws-hd-opt-name">🌿 隔离 Worktree 工作区</span>
+								</div>
+							</>
 						)}
 					</div>
 				)}
@@ -264,6 +292,15 @@ export function WorkspaceHeader({
 					</svg>
 					<span className="ws-header-emp-text">{employeeCount}</span>
 				</div>
+
+				{/* Worktree badge */}
+				{currentWorkspace && (
+					<WorktreeBadge
+						status={currentWorkspace.worktreeStatus ?? 'none'}
+						branch={currentWorkspace.worktreeBranch}
+						directory={currentWorkspace.worktreePath}
+					/>
+				)}
 			</div>
 
 			{/* Right: view mode toggle */}

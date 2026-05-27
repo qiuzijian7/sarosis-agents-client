@@ -16,11 +16,13 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
 import { ConnectionType } from '../../../common/agentStudioTypes.js';
 import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
-import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
+import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
 import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
 import { IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
+import { IWorktreeService } from '../../worktree/common/worktreeService.js';
+import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent } from '../../worktree/common/worktreeTypes.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
@@ -36,6 +38,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	private readonly _onDidSelectEmployee = this._register(new Emitter<string | null>());
 	readonly onDidSelectEmployee: Event<string | null> = this._onDidSelectEmployee.event;
+
+	private readonly _onDidChangeWorktreeState = this._register(new Emitter<{ workspaceId: string; status: string; message?: string }>());
+	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }> = this._onDidChangeWorktreeState.event;
 
 	/**
 	 * 规范化 skills 格式：处理旧格式（对象数组）和新格式（字符串数组）的混合情况
@@ -81,8 +86,34 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
+		@IWorktreeService private readonly worktreeService: IWorktreeService,
 	) {
 		super();
+
+		// Listen for worktree state changes and forward as workspace-level events
+		this._register(this.worktreeService.onDidChangeWorktreeState((e: IWorktreeStateEvent) => {
+			this._forwardWorktreeStateChange(e);
+		}));
+	}
+
+	/**
+	 * Forward worktree state changes to workspace-level events.
+	 * Looks up which workspace(s) are associated with the worktree directory.
+	 */
+	private async _forwardWorktreeStateChange(e: IWorktreeStateEvent): Promise<void> {
+		const workspaces = await this.getWorkspaces();
+		const matching = workspaces.filter(ws => ws.worktreePath === e.directory);
+		for (const ws of matching) {
+			this._onDidChangeWorktreeState.fire({
+				workspaceId: ws.id,
+				status: e.status,
+				message: e.message,
+			});
+			// Also update the workspace's worktreeStatus field
+			await this.updateWorkspace(ws.id, {
+				worktreeStatus: e.status as Workspace['worktreeStatus'],
+			});
+		}
 	}
 
 	// ─── Workspace lifecycle helpers ─────────────────────────────────────────────
@@ -510,6 +541,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// take precedence on id collision so explicit overrides win.
 		const mergedSkills = this._mergeWithDefaultSkills(data.skills);
 
+		// Merge caller-provided tools with the default tool set for the role.
+		// If the caller explicitly provides tools, those take priority.
+		// If no tools are provided, infer from role using DEFAULT_TOOL_SETS.
+		const mergedTools = this._mergeWithDefaultTools(data.tools, data.role);
+
 		const newEmployee: Employee = {
 			id,
 			name: data.name || 'New Employee',
@@ -520,6 +556,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			model: data.model,
 			customPrompt: data.customPrompt,
 			skills: mergedSkills,
+			tools: mergedTools,
+			handOffs: (data as Record<string, unknown>).handOffs as Employee['handOffs'],
+			hooks: (data as Record<string, unknown>).hooks as Employee['hooks'],
+			visibility: (data as Record<string, unknown>).visibility as Employee['visibility'],
+			agents: (data as Record<string, unknown>).agents as Employee['agents'],
 			status: EmployeeStatus.Idle,
 			agentType: (data as Record<string, unknown>).agentType as Employee['agentType'],
 			teamId: data.teamId,
@@ -574,9 +615,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const oldSkills = employees[index].skills ?? [];
 		const oldSkillIds = new Set(oldSkills);
 
+		// Deduplicate skills if provided
+		const sanitizedData = { ...data };
+		if (sanitizedData.skills !== undefined) {
+			sanitizedData.skills = [...new Set(sanitizedData.skills)];
+		}
+
 		employees[index] = {
 			...employees[index],
-			...data,
+			...sanitizedData,
 			id, // ensure ID can't be changed
 			updatedAt: new Date().toISOString(),
 		};
@@ -905,9 +952,19 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		if (index === -1) {
 			throw new Error(`Workspace not found: ${id}`);
 		}
+		// Protect critical fields from being accidentally overwritten by undefined.
+		// If the caller explicitly passes undefined for path/name, we keep the existing value
+		// to prevent accidental data loss (e.g. webview partial updates, message protocol quirks).
+		const safeData: Partial<Workspace> = { ...data };
+		if (safeData.path === undefined && workspaces[index].path !== undefined) {
+			delete (safeData as any).path;
+		}
+		if (safeData.name === undefined && workspaces[index].name !== undefined) {
+			delete (safeData as any).name;
+		}
 		workspaces[index] = {
 			...workspaces[index],
-			...data,
+			...safeData,
 			id,
 			updatedAt: new Date().toISOString(),
 		};
@@ -991,7 +1048,37 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		this._onDidChangeWorkspace.fire(id);
 	}
 
-	// ─── Connections ────────────────────────────────────────────────────────────
+	// ─── Last Active Workspace ────────────────────────────────────
+
+	/**
+	 * Get the ID of the last active workspace.
+	 * Returns null if no workspace has been activated yet.
+	 */
+	async getLastActiveWorkspaceId(): Promise<string | null> {
+		try {
+			const uri = URI.joinPath(this._getGlobalDataUri(), DATA_FILE_LAST_ACTIVE_WORKSPACE);
+			const content = await this.fileService.readFile(uri);
+			const data = JSON.parse(content.value.toString());
+			return data.lastActiveWorkspaceId || null;
+		} catch {
+			// File doesn't exist or is corrupted — return null
+			return null;
+		}
+	}
+
+	/**
+	 * Set the ID of the last active workspace.
+	 * Pass null to clear the last active workspace.
+	 */
+	async setLastActiveWorkspaceId(id: string | null): Promise<void> {
+		const uri = URI.joinPath(this._getGlobalDataUri(), DATA_FILE_LAST_ACTIVE_WORKSPACE);
+		await this._ensureDir(this._getGlobalDataUri());
+		const content = VSBuffer.fromString(JSON.stringify({ lastActiveWorkspaceId: id }, null, 2));
+		await this.fileService.writeFile(uri, content);
+		this.logService.info(`[AgentStudio] Last active workspace set to: ${id}`);
+	}
+
+	// ─── Connections ────────────────────────────────────────────
 
 	async getConnections(workspaceId: string): Promise<Connection[]> {
 		const workspace = await this.getWorkspace(workspaceId);
@@ -1599,6 +1686,54 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return out;
 	}
 
+	/**
+	 * Merge caller-provided tools with a role-based default tool set.
+	 * If the caller explicitly provides tools, those take priority (no auto-merge).
+	 * If no tools are provided, infer from the agent's role category.
+	 */
+	private _mergeWithDefaultTools(
+		provided: readonly string[] | undefined,
+		role?: string,
+	): string[] | undefined {
+		// If caller explicitly provides tools, use them as-is
+		if (provided && provided.length > 0) {
+			return [...provided];
+		}
+
+		// Infer default tool set from role
+		if (!role) { return undefined; }
+		const roleLower = role.toLowerCase();
+
+		// Match role keywords to tool categories
+		if (/\b(engineer|developer|coder|programmer|dev)\b/i.test(roleLower)) {
+			return ['vscode', 'read', 'execute', 'search'];
+		}
+		if (/\b(research|analyst|investigator)\b/i.test(roleLower)) {
+			return ['read', 'search'];
+		}
+		if (/\b(writer|author|document)\b/i.test(roleLower)) {
+			return ['read', 'vscode'];
+		}
+		if (/\b(design|ui|ux)\b/i.test(roleLower)) {
+			return ['read', 'vscode'];
+		}
+		if (/\b(manager|planner|coordinator|pm)\b/i.test(roleLower)) {
+			return ['read', 'agent'];
+		}
+		if (/\b(test|qa|quality)\b/i.test(roleLower)) {
+			return ['vscode', 'read', 'execute', 'search'];
+		}
+		if (/\b(devops|deploy|infra|sre)\b/i.test(roleLower)) {
+			return ['vscode', 'read', 'execute'];
+		}
+		if (/\b(data|scientist|ml|ai)\b/i.test(roleLower)) {
+			return ['read', 'execute'];
+		}
+
+		// Default: read-only access
+		return ['read'];
+	}
+
 	private _generateAgentSlug(name: string, id: string): string {
 		const sanitised = name
 			.toLowerCase()
@@ -1655,7 +1790,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				modelSection.providerId = employee.provider;
 			}
 			if (employee.model) {
-				modelSection.modelId = employee.model;
+				const primary = typeof employee.model === 'string' ? employee.model : (Array.isArray(employee.model) ? employee.model[0] : employee.model.primary);
+				if (primary) {
+					modelSection.modelId = primary;
+				}
 			}
 			const agentConfig = {
 				id: employee.id,
@@ -1667,7 +1805,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				skills: (employee.skills || []),
 				presetId: employee.presetId,
 				memory: { enabled: true },
-				tools: ['filesystem', 'search'],
+				tools: employee.tools && employee.tools.length > 0 ? employee.tools : ['read_file', 'list_dir', 'search_files', 'grep_search'],
 				planning: { enabled: true },
 				execution: { enabled: true, maxIterations: 10 },
 				// ConfigMD panel binding. Paths are resolved relative to this
@@ -2003,6 +2141,126 @@ module.exports = {
  */
 ${IMGUI_SDK_STYLES}
 `;
+	}
+
+	// ─── Worktree Integration (opencode-compatible) ─────────────────────────────
+
+	async createWorkspaceWithWorktree(
+		name: string,
+		options?: IWorktreeWorkspaceOptions,
+	): Promise<Workspace> {
+		const mode = options?.mode ?? 'main';
+
+		if (mode === 'main') {
+			// Create workspace without worktree isolation
+			return this.createWorkspace({ name });
+		}
+
+		if (mode === 'existing' && options?.existingPath) {
+			// Create workspace bound to an existing worktree
+			const worktrees = await this.worktreeService.listWorktrees(
+				(await this.worktreeService.getRepositoryRoot())!
+			);
+			const existing = worktrees.find(w => w.path === options.existingPath);
+			const workspace = await this.createWorkspace({
+				name,
+				worktreePath: options.existingPath,
+				worktreeBranch: existing?.branch,
+				worktreeStatus: 'ready',
+			});
+			return workspace;
+		}
+
+		// mode === 'create' — two-phase creation
+		const worktreeInfo = await this.worktreeService.makeWorktreeInfo({
+			name: options?.name ?? name,
+			detached: options?.detached,
+		});
+
+		// Create workspace with worktree info (pending state)
+		const workspace = await this.createWorkspace({
+			name,
+			worktreePath: worktreeInfo.directory,
+			worktreeBranch: worktreeInfo.branch,
+			worktreeStatus: 'pending',
+		});
+
+		// Phase 2: Create the worktree (async boot)
+		try {
+			await this.worktreeService.createFromInfo(worktreeInfo);
+
+			// Wait for ready (with timeout)
+			const status = await this.worktreeService.waitForWorktreeReady(worktreeInfo.directory, 30000);
+			await this.updateWorkspace(workspace.id, {
+				worktreeStatus: status === WorktreeStatus.Ready ? 'ready' : 'failed',
+			});
+		} catch (e) {
+			await this.updateWorkspace(workspace.id, {
+				worktreeStatus: 'failed',
+			});
+			this.logService.error('[AgentStudioService] createWorkspaceWithWorktree failed:', e);
+		}
+
+		// Return the updated workspace
+		const updated = await this.getWorkspace(workspace.id);
+		return updated ?? workspace;
+	}
+
+	async assignWorktreeToWorkspace(
+		workspaceId: string,
+		worktreePath: string,
+		worktreeBranch?: string,
+	): Promise<void> {
+		await this.updateWorkspace(workspaceId, {
+			worktreePath,
+			worktreeBranch,
+			worktreeStatus: this.worktreeService.getWorktreeState(worktreePath) === WorktreeStatus.Ready ? 'ready' : 'pending',
+		});
+	}
+
+	async getEffectiveWorktreePath(employeeId: string): Promise<string | undefined> {
+		const employee = await this.getEmployee(employeeId);
+		if (!employee) {
+			return undefined;
+		}
+
+		// Employee-level worktree takes priority
+		if (employee.worktreePath) {
+			return employee.worktreePath;
+		}
+
+		// Fall back to workspace-level worktree
+		if (employee.workspaceId) {
+			const workspace = await this.getWorkspace(employee.workspaceId);
+			return workspace?.worktreePath;
+		}
+
+		return undefined;
+	}
+
+	async resetWorkspaceWorktree(workspaceId: string): Promise<void> {
+		const workspace = await this.getWorkspace(workspaceId);
+		if (!workspace?.worktreePath) {
+			throw new Error(`Workspace ${workspaceId} has no worktree assigned`);
+		}
+
+		await this.worktreeService.resetWorktree(workspace.worktreePath);
+	}
+
+	async removeWorkspaceWorktree(workspaceId: string): Promise<void> {
+		const workspace = await this.getWorkspace(workspaceId);
+		if (!workspace?.worktreePath) {
+			return; // Nothing to remove
+		}
+
+		await this.worktreeService.removeWorktree(workspace.worktreePath, true);
+
+		// Clear the worktree binding
+		await this.updateWorkspace(workspaceId, {
+			worktreePath: undefined,
+			worktreeBranch: undefined,
+			worktreeStatus: 'none',
+		});
 	}
 }
 

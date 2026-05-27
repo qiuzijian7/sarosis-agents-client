@@ -228,6 +228,25 @@ const FUZZY_NAME_MAP: Record<string, string> = {
 	append_file: "file_write",
 };
 
+// ─── Phantom Tool Names ──────────────────────────────────────
+
+/**
+ * Tool names that are phantom / UI-indicator tools (render_type="none").
+ * These tools signal a state change (e.g., "planning in progress") but
+ * should NOT be rendered as visible tool-call cards in the chat UI.
+ * The Knot server may not always send the correct render_type in its
+ * _meta, so we maintain this client-side canonical list.
+ */
+export const PHANTOM_TOOL_NAMES = new Set([
+	'task_planning',
+	'taskplanning',
+	'plan_task',
+	'plan_tasks',
+	'task_plan',
+	'planning',
+	'taskplan',
+]);
+
 /**
  * Multi-level tool name repair — mirrors Hermes-Agent's `_repair_tool_call()`.
  *
@@ -759,6 +778,7 @@ export class StreamingToolCallAssembler {
 	private _displayName: string | undefined;
 	private _renderType: string | undefined;
 	private _defaultShow: boolean | undefined;
+	private _serverExecuted: boolean | undefined;
 
 	get id(): string {
 		return this._id;
@@ -776,7 +796,7 @@ export class StreamingToolCallAssembler {
 	/**
 	 * Start a new tool call. Resets internal state.
 	 */
-	start(id: string, name: string, initialArgs?: string, meta?: { displayName?: string; renderType?: string; defaultShow?: boolean }): void {
+	start(id: string, name: string, initialArgs?: string, meta?: { displayName?: string; renderType?: string; defaultShow?: boolean; serverExecuted?: boolean }): void {
 		this._id = id;
 		this._name = name;
 		this._argsBuffer = initialArgs || "";
@@ -784,6 +804,7 @@ export class StreamingToolCallAssembler {
 		this._displayName = meta?.displayName;
 		this._renderType = meta?.renderType;
 		this._defaultShow = meta?.defaultShow;
+		this._serverExecuted = meta?.serverExecuted;
 	}
 
 	/**
@@ -841,6 +862,7 @@ export class StreamingToolCallAssembler {
 			displayName: this._displayName,
 			renderType: this._renderType,
 			defaultShow: this._defaultShow,
+			serverExecuted: this._serverExecuted,
 		};
 	}
 

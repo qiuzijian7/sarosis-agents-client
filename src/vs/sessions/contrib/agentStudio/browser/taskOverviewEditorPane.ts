@@ -285,6 +285,21 @@ export class TaskOverviewEditorPane extends EditorPane {
 				return this._agentStudioService.getWorkspace(p.id as string);
 			case 'workspace.create':
 				return this._agentStudioService.createWorkspace(p as Record<string, unknown>);
+			case 'workspace.createWithWorktree':
+				return this._agentStudioService.createWorkspaceWithWorktree(
+					p.name as string,
+					p as any,
+				);
+			case 'workspace.assignWorktree':
+				return this._agentStudioService.assignWorktreeToWorkspace(
+					p.workspaceId as string,
+					p.worktreePath as string,
+					p.worktreeBranch as string | undefined,
+				);
+			case 'workspace.resetWorktree':
+				return this._agentStudioService.resetWorkspaceWorktree(p.workspaceId as string);
+			case 'workspace.removeWorktree':
+				return this._agentStudioService.removeWorkspaceWorktree(p.workspaceId as string);
 			case 'workspace.delete':
 				return this._agentStudioService.deleteWorkspace(p.id as string);
 			case 'workspace.update':

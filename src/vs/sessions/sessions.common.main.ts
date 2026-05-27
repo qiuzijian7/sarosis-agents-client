@@ -461,11 +461,12 @@ import './contrib/sessions/browser/customizationsToolbar.contribution.js';
 import './contrib/changes/browser/changes.contribution.js';
 import './contrib/layout/browser/layout.contribution.js';
 import './contrib/codeReview/browser/codeReview.contributions.js';
-import './contrib/files/browser/files.contribution.js';
+import './contrib/worktree/browser/worktree.contribution.js'; // Service registration must come before files.contribution which imports worktree views
+import './contrib/files/browser/files.contribution.js'; // Unified Explorer: registers both Files + Worktree views
+import './contrib/sourceControl/browser/sourceControl.contribution.js'; // Custom Source Control panel with worktree integration
 import './contrib/github/browser/github.contribution.js';
 import './contrib/applyCommitsToParentRepo/browser/applyChangesToParentRepo.js';
 import './contrib/fileTreeView/browser/fileTreeView.contribution.js'; // view registration disabled; filesystem provider still needed
-import './contrib/worktree/browser/worktree.contribution.js';
 import './contrib/configuration/browser/configuration.contribution.js';
 import './contrib/workingSet/browser/workingSet.contribution.js';
 import './contrib/browserView/browser/sessionBrowserView.contribution.js';

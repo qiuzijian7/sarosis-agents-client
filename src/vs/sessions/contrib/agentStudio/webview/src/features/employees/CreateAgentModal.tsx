@@ -721,9 +721,9 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 	const filteredPresets = AGENT_PRESETS.filter(p => {
 		if (!searchQuery) { return true; }
 		const q = searchQuery.toLowerCase();
-		return p.name.toLowerCase().includes(q)
-			|| p.role.toLowerCase().includes(q)
-			|| p.description.toLowerCase().includes(q);
+		return p?.name?.toLowerCase().includes(q)
+			|| p?.role?.toLowerCase().includes(q)
+			|| p?.description?.toLowerCase().includes(q);
 	});
 
 	if (!isOpen) { return null; }

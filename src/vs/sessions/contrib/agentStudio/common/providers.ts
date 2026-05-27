@@ -119,6 +119,8 @@ export interface IToolCallInfo {
 	readonly renderType?: string;
 	/** 是否默认展开显示工具卡（默认 true） */
 	readonly defaultShow?: boolean;
+	/** 工具已在服务端执行（如 Knot AG-UI），客户端不需要再执行 */
+	readonly serverExecuted?: boolean;
 }
 
 export interface IModelOptions {

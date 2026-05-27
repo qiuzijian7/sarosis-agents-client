@@ -9,13 +9,22 @@
 export {
 	AgentStudioSession,
 	AgentType,
+	AgentTarget,
+	AgentSource,
 	ConnectionType,
 	DelegationStatus,
 	EmployeeStatus,
+	SandboxMode,
 	TaskBoardStatus,
 	TaskSource,
 	OrchestrationPlanStatus,
 	PlanTaskStatus,
+} from '../../../common/agentStudioTypes.js';
+
+// Function exports - utility helpers
+export {
+	getPrimaryModel,
+	getModelChain,
 } from '../../../common/agentStudioTypes.js';
 
 // Type-only exports (interfaces) - erased at runtime, must use 'export type'
@@ -26,6 +35,15 @@ export type {
 	Connection,
 	Delegation,
 	Employee,
+	IAgentHandOff,
+	IAgentHooks,
+	IAgentHookEntry,
+	IAgentLimits,
+	IAgentToolHookEntry,
+	IAgentVisibility,
+	IModelChain,
+	ISkillDirective,
+	ModelSpec,
 	TaskBoardRecord,
 	ToolCall,
 	Workspace,
