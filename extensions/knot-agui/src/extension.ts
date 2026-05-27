@@ -27,6 +27,22 @@ import * as fs from 'fs';
 const VENDOR = 'knot';
 
 /**
+ * Tool names that are phantom / UI-indicator tools (render_type="none").
+ * These tools signal a state change (e.g., "planning in progress") but
+ * should NOT be rendered as visible tool-call cards in the chat UI.
+ * The Knot server may not always send the correct render_type in its
+ * _meta, so we maintain this client-side canonical list.
+ */
+const PHANTOM_TOOL_NAMES = new Set([
+	'task_planning',
+	'taskplanning',
+	'plan_task',
+	'plan_tasks',
+	'task_plan',
+	'planning',
+]);
+
+/**
  * Separator used inside `LanguageModelChatInformation.id` to encode (agentId, modelName) pairs.
  * Chosen because Knot agent ids are hex strings and Knot model names use only alphanumerics +
 // allow-any-unicode-next-line
@@ -44,6 +60,9 @@ interface KnotAgentConfig {
 class KnotChatProvider implements vscode.LanguageModelChatProvider {
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
+
+	/** Accumulated in-progress tool calls (keyed by toolCallId) */
+	private _pendingToolCalls = new Map<string, { name: string; argsBuffer: string }>();
 
 	constructor(
 		private readonly _globalState: any, // vscode.GlobalState not available in this API version
@@ -238,12 +257,16 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			(bodyObj.input as Record<string, unknown>).model = selectedModel;
 		}
 		if (systemPrompt) {
+			// allow-any-unicode-next-line
+			// Knot AG-UI 协议不支持向 LLM 注入 system_prompt，
+			// 使用 background_knowledge 字段传递上下文信息（技能清单等），
+			// 其效果与 system prompt 类似但不会覆盖 agent 自身的系统提示。
 			(
 				(bodyObj.input as Record<string, unknown>).chat_extra as Record<
 					string,
 					unknown
 				>
-			).system_prompt = systemPrompt;
+			).background_knowledge = systemPrompt;
 		}
 		const body = JSON.stringify(bodyObj);
 
@@ -328,9 +351,23 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 
 					try {
 						const event = JSON.parse(rawData);
-						const delta = this._translateEvent(event);
-						if (delta) {
-							progress.report(delta);
+						// allow-any-unicode-next-line
+						// 在调用 _translateEvent 之前，先处理工具调用相关事件
+						// AG-UI 协议的工具调用分为三步：START → ARGS → END
+						// 需要跨事件累积参数，在 END 时才发射完整的 LanguageModelToolCallPart
+						const eventType = String(event.type ?? event.event_type ?? '').toUpperCase().replace(/-/g, '_');
+
+						if (this._handleToolCallEvent(eventType, event, progress)) {
+							// allow-any-unicode-next-line
+							// 工具调用事件已处理，跳过 _translateEvent
+						} else if (this._isLifecycleOrHeartbeat(eventType)) {
+							// allow-any-unicode-next-line
+							// 生命周期/心跳事件，静默忽略
+						} else {
+							const delta = this._translateEvent(event);
+							if (delta) {
+								progress.report(delta);
+							}
 						}
 					} catch {
 						// allow-any-unicode-next-line
@@ -412,6 +449,129 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		return parts.join('');
 	}
 
+	/**
+	 * Handle AG-UI tool call events (TOOL_CALL_START / ARGS / END / RESULT).
+	 * Accumulates tool call data across events and emits LanguageModelToolCallPart
+	 * at TOOL_CALL_END, with _meta.server_executed=true so the client knows
+	 * not to re-execute the tool.
+	 *
+	 * @returns true if the event was handled (caller should skip _translateEvent)
+	 */
+	private _handleToolCallEvent(
+		normalizedType: string,
+		event: Record<string, unknown>,
+		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+	): boolean {
+		const rawEvent = (event.rawEvent ?? {}) as Record<string, unknown>;
+
+		switch (normalizedType) {
+			case 'TOOL_CALL_START':
+			case 'TOOLCALLSTART': {
+				// AG-UI spec: toolCallId, toolCallName; also accept Knot-specific aliases
+				const callId = String(
+					rawEvent.toolCallId ?? rawEvent.tool_call_id ?? rawEvent.id
+					?? event.toolCallId ?? event.tool_call_id ?? `tc_${Date.now()}`
+				);
+				const toolName = String(
+					rawEvent.toolCallName ?? rawEvent.name ?? rawEvent.tool_name
+					?? event.toolCallName ?? event.tool_name ?? 'unknown_tool'
+				);
+				this._pendingToolCalls.set(callId, { name: toolName, argsBuffer: '' });
+				console.log(`[Knot] Tool call started: ${toolName} (id=${callId})`);
+				return true;
+			}
+			case 'TOOL_CALL_ARGS':
+			case 'TOOLCALLARGS': {
+				const callId = String(
+					rawEvent.toolCallId ?? rawEvent.tool_call_id ?? rawEvent.id
+					?? event.toolCallId ?? event.tool_call_id ?? ''
+				);
+				const pending = callId ? this._pendingToolCalls.get(callId) : undefined;
+				if (pending) {
+					const argsDelta = String(
+						rawEvent.delta ?? rawEvent.args ?? rawEvent.arguments
+						?? event.delta ?? ''
+					);
+					pending.argsBuffer += argsDelta;
+				}
+				return true;
+			}
+			case 'TOOL_CALL_END':
+			case 'TOOLCALLEND': {
+				const callId = String(
+					rawEvent.toolCallId ?? rawEvent.tool_call_id ?? rawEvent.id
+					?? event.toolCallId ?? event.tool_call_id ?? ''
+				);
+				const pending = callId ? this._pendingToolCalls.get(callId) : undefined;
+				if (pending) {
+					// Parse accumulated arguments
+					let parameters: any = {};
+					try {
+						parameters = JSON.parse(pending.argsBuffer || '{}');
+					} catch {
+						parameters = { _raw_args: pending.argsBuffer };
+					}
+
+					// Add _meta so the bridge can extract display metadata and server_executed flag
+					if (typeof parameters === 'object' && parameters !== null) {
+						// Phantom/indicator tools have render_type="none" — they are UI signals
+						// (e.g., "task_planning" showing "任务规划中") that should NOT render
+						// as visible tool cards.  All other tools default to "CodeApply".
+						const isPhantom = PHANTOM_TOOL_NAMES.has(pending.name);
+						parameters._meta = {
+							server_executed: true,
+							display_name: pending.name,
+							render_type: isPhantom ? 'none' : 'CodeApply',
+							default_show: !isPhantom,
+						};
+					}
+
+					progress.report(new vscode.LanguageModelToolCallPart(callId, pending.name, parameters));
+					this._pendingToolCalls.delete(callId);
+					console.log(`[Knot] Tool call emitted: ${pending.name} (id=${callId}, argsLen=${pending.argsBuffer.length})`);
+				} else {
+					console.log(`[Knot] Tool call ended (no pending call for id=${callId})`);
+				}
+				return true;
+			}
+			case 'TOOL_CALL_RESULT':
+			case 'TOOLCALLRESULT': {
+				// Server-side tool result — the Knot backend already incorporated this
+				// into subsequent text responses. Just log it.
+				const callId = String(
+					rawEvent.toolCallId ?? rawEvent.tool_call_id ?? rawEvent.id
+					?? event.toolCallId ?? event.tool_call_id ?? ''
+				);
+				console.log(`[Knot] Tool call result received for id=${callId}`);
+				return true;
+			}
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * Check if an event type is a lifecycle or heartbeat event that should be silently ignored.
+	 */
+	private _isLifecycleOrHeartbeat(normalizedType: string): boolean {
+		switch (normalizedType) {
+			case 'HEARTBEAT':
+			case 'STEP_STARTED':
+			case 'STEPSTARTED':
+			case 'STEP_FINISHED':
+			case 'STEPFINISHED':
+			case 'RUN_STARTED':
+			case 'RUNSTARTED':
+			case 'RUN_FINISHED':
+			case 'RUNFINISHED':
+			case 'RUN_ERROR':
+			case 'RUNERROR':
+				return true;
+			default:
+				return false;
+		}
+	}
+
 	private _translateEvent(
 		event: Record<string, unknown>,
 	): vscode.LanguageModelResponsePart | undefined {
@@ -458,26 +618,6 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 					return new vscode.LanguageModelTextPart(content);
 				}
 				return undefined;
-			case 'TOOL_CALL_START':
-			case 'TOOLCALLSTART':
-				{
-					// allow-any-unicode-next-line
-					// 工具调用开始：记录到日志，但不返回内容
-					const toolName = rawEvent.name ?? 'unknown_tool';
-					console.log(`[Knot] Tool call started: ${toolName}`);
-				}
-				return undefined;
-			case 'TOOL_CALL_ARGS':
-			case 'TOOLCALLARGS':
-				// allow-any-unicode-next-line
-				// 工具参数：增量接收，不返回内容
-				return undefined;
-			case 'TOOL_CALL_END':
-			case 'TOOLCALLEND':
-				// allow-any-unicode-next-line
-				// 工具调用结束
-				console.log(`[Knot] Tool call ended`);
-				return undefined;
 			case 'TEXT_MESSAGE_START':
 			case 'TEXTMESSAGESTART':
 			case 'TEXT_MESSAGE_END':
@@ -487,9 +627,13 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			case 'THINKING_TEXT_MESSAGE_END':
 			case 'THINKINGTEXTMESSAGEEND':
 				// allow-any-unicode-next-line
-				// 生命周期事件：忽略
+				// 文本消息生命周期事件：忽略
 				return undefined;
 			default:
+				// allow-any-unicode-next-line
+				// 工具调用事件 (TOOL_CALL_START/ARGS/END/RESULT) 和生命周期事件
+				// (HEARTBEAT/STEP_STARTED/STEP_FINISHED/RUN_*) 已在调用方处理，不应到达此处。
+				// 如果到达，说明是未知事件类型。
 				console.log(`[Knot] _translateEvent: unhandled type='${eventType}'`);
 				// allow-any-unicode-next-line
 				// 宽松处理：如果有 content 也尝试返回
@@ -506,7 +650,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 // allow-any-unicode-next-line
 	 * 读取 `.sarosisworkspace/employees.json` 找到 agentDir，然后读取
 // allow-any-unicode-next-line
-	 * `.sarosisworkspace/agents/<agentDir>/skills/` 目录下的技能。
+	 * `.agents/skills/` 和 `.sarosisworkspace/agents/<agentDir>/skills/` 目录下的技能。
 	 */
 	private async _getAgentSkillsManifest(
 		workspacePath: string,
@@ -548,30 +692,39 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 				return '';
 			}
 
-			// 2. Read .sarosisworkspace/agents/<agentDir>/skills/ to get skills
-			const skillsDir = path.join(
-				workspacePath,
-				'.sarosisworkspace',
-				'agents',
-				agentDir,
-				'skills',
-			);
-			if (!fs.existsSync(skillsDir)) {
-				console.log(
-					`[Knot] _getAgentSkillsManifest: skills dir not found at ${skillsDir}`,
-				);
-				return '';
+			// 2. Read .agents/skills/ and .sarosisworkspace/agents/<agentDir>/skills/ to get skills
+			const workspaceSkillsDir = path.join(workspacePath, '.agents', 'skills');
+			const agentSkillsDir = path.join(workspacePath, '.sarosisworkspace', 'agents', agentDir, 'skills');
+			
+			// Collect skill entries from both locations: {name, basePath}
+			const skillEntries: Array<{name: string, basePath: string}> = [];
+			
+			// Read workspace skills directory (.agents/skills/)
+			if (fs.existsSync(workspaceSkillsDir)) {
+				const dirs = fs.readdirSync(workspaceSkillsDir, { withFileTypes: true })
+					.filter((d) => d.isDirectory())
+					.map((d) => d.name);
+				for (const dir of dirs) {
+					skillEntries.push({ name: dir, basePath: workspaceSkillsDir });
+				}
+			} else {
+				console.log(`[Knot] _getAgentSkillsManifest: workspace skills dir not found at ${workspaceSkillsDir}`);
 			}
-
-			const skillDirs = fs
-				.readdirSync(skillsDir, { withFileTypes: true })
-				.filter((d) => d.isDirectory())
-				.map((d) => d.name);
-
-			if (skillDirs.length === 0) {
-				console.log(
-					`[Knot] _getAgentSkillsManifest: no skill directories found in ${skillsDir}`,
-				);
+			
+			// Read agent skills directory (.sarosisworkspace/agents/<agentDir>/skills/)
+			if (fs.existsSync(agentSkillsDir)) {
+				const dirs = fs.readdirSync(agentSkillsDir, { withFileTypes: true })
+					.filter((d) => d.isDirectory())
+					.map((d) => d.name);
+				for (const dir of dirs) {
+					skillEntries.push({ name: dir, basePath: agentSkillsDir });
+				}
+			} else {
+				console.log(`[Knot] _getAgentSkillsManifest: agent skills dir not found at ${agentSkillsDir}`);
+			}
+			
+			if (skillEntries.length === 0) {
+				console.log(`[Knot] _getAgentSkillsManifest: no skill directories found`);
 				return '';
 			}
 
@@ -587,9 +740,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 				'<available_skills>',
 			];
 
-			for (const skillDir of skillDirs) {
-				const skillMdPath = path.join(skillsDir, skillDir, 'SKILL.md');
-				let name = skillDir;
+			for (const entry of skillEntries) {
+				const skillMdPath = path.join(entry.basePath, entry.name, 'SKILL.md');
+				let name = entry.name;
 				let description = '';
 				if (fs.existsSync(skillMdPath)) {
 					try {
@@ -612,23 +765,27 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 					}
 				}
 
-				const skillPath = `.sarosisworkspace/agents/${agentDir}/skills/${skillDir}/`;
+				// Generate relative path for knot-cli
+				const relativePath = entry.basePath.includes('.agents/skills') 
+					? `.agents/skills/${entry.name}/`
+					: `.sarosisworkspace/agents/${agentDir}/skills/${entry.name}/`;
+				const skillPath = relativePath;
 				lines.push('  <skill>');
 				lines.push(`    <name>${name}</name>`);
 				lines.push(`    <description>${description}</description>`);
-				lines.push(`    <id>${skillDir}</id>`);
+				lines.push(`    <id>${entry.name}</id>`);
 				lines.push(`    <path>${skillPath}</path>`);
 				lines.push('  </skill>');
 			}
 
-			lines.push('</available_skills>');
+		lines.push('</available_skills>');
 			lines.push('');
-			lines.push(`(${skillDirs.length} skills total)`);
+			lines.push(`(${skillEntries.length} skills total)`);
 			lines.push('');
-
+			
 			const result = lines.join('\n');
 			console.log(
-				`[Knot] _getAgentSkillsManifest: found ${skillDirs.length} skill(s), manifest length=${result.length}`,
+				`[Knot] _getAgentSkillsManifest: found ${skillEntries.length} skill(s), manifest length=${result.length}`,
 			);
 			return result;
 		} catch (err) {
@@ -959,6 +1116,136 @@ export function activate(context: vscode.ExtensionContext): void {
 		// allow-any-unicode-next-line
 		`[Knot] activate() — registered chat provider, vendor='${VENDOR}'`,
 	);
+
+	// Auto-add local resources directory to knot-cli workspace on activation (fire-and-forget).
+	void autoAddLocalResourcesDirToKnotWorkspace();
+}
+
+/**
+ * Find the AgentStudio app's resources directory by trying multiple candidate paths.
+ * This ensures the function works in both development and production environments.
+ *
+ * Returns the `resources/` directory path (e.g. `/path/to/resources`),
+ * which contains `.agents/skills/` and other app resources.
+ */
+async function findResourcesDir(): Promise<string | undefined> {
+	const candidates: string[] = [];
+
+	// 1. Development environment: project root directory (check if package.json exists to verify)
+	const projectRootCandidate = path.join(process.cwd(), 'resources');
+	if (fs.existsSync(projectRootCandidate) && fs.existsSync(path.join(process.cwd(), 'package.json'))) {
+		console.log(`[Knot] findResourcesDir: found at project root ${projectRootCandidate}`);
+		return projectRootCandidate;
+	}
+	candidates.push(projectRootCandidate);
+
+	// 2. Development environment: walk up from __dirname to find project root
+	//    Stop when we find a directory that contains 'resources'
+	let currentDir = __dirname;
+	for (let i = 0; i < 10; i++) {
+		const candidate = path.join(currentDir, 'resources');
+		// Check if this is likely the project root (has package.json or .git)
+		const likelyProjectRoot = fs.existsSync(path.join(currentDir, 'package.json')) || fs.existsSync(path.join(currentDir, '.git'));
+		if (fs.existsSync(candidate) && likelyProjectRoot) {
+			console.log(`[Knot] findResourcesDir: found at project root ${candidate}`);
+			return candidate;
+		}
+		candidates.push(candidate);
+		currentDir = path.dirname(currentDir);
+		if (currentDir === path.dirname(currentDir)) {
+			// Reached root
+			break;
+		}
+	}
+
+	// 3. Production environment: app install directory
+	const appInstallDir = getAppInstallDir();
+	candidates.push(path.join(appInstallDir, 'resources'));
+
+	// 4. macOS .app bundle: Contents/Resources/
+	if (process.platform === 'darwin') {
+		candidates.push(path.join(appInstallDir, 'Contents', 'Resources'));
+	}
+
+	// Try each candidate, verify that resources exists
+	for (const candidate of candidates) {
+		if (fs.existsSync(candidate)) {
+			console.log(`[Knot] findResourcesDir: found at ${candidate}`);
+			return candidate;
+		}
+	}
+
+	console.log(`[Knot] findResourcesDir: not found. Candidates tried: ${candidates.join(', ')}`);
+	return undefined;
+}
+
+/**
+ * Automatically add the AgentStudio app's resources directory to knot-cli workspace on activation.
+ * This ensures that knot agents can access the built-in skills and other resources of the AgentStudio app.
+ *
+ * Steps:
+ *   1. Find the resources directory using multiple candidate paths
+ *   2. Check if knot-cli is installed
+ *   3. Get knot client status to see if the resources directory is already in workspace paths
+ *   4. If not, add it using `knot-cli workspace --action add --path <path>`
+ */
+async function autoAddLocalResourcesDirToKnotWorkspace(): Promise<void> {
+	try {
+		// 1. Find the resources directory
+		const resourcesDir = await findResourcesDir();
+		if (!resourcesDir) {
+			console.log('[Knot] autoAddLocalResourcesDirToKnotWorkspace: resources directory not found, skipping');
+			return;
+		}
+
+		console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace: checking resources directory: ${resourcesDir}`);
+
+		// 2. Check if knot-cli is installed
+		const cliStatus = await detectKnotCli();
+		if (!cliStatus.installed) {
+			console.log('[Knot] autoAddLocalResourcesDirToKnotWorkspace: knot-cli is not installed, skipping');
+			return;
+		}
+
+		// 3. Get knot client status to see if the resources directory is already in workspace paths
+		let clientStatus: KnotClientStatus;
+		try {
+			clientStatus = await getKnotClientStatus();
+		} catch (err) {
+			console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace: failed to get client status: ${err instanceof Error ? err.message : String(err)}, skipping`);
+			return;
+		}
+
+		// Normalize paths for comparison (handle trailing slashes and backslashes)
+		const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+		const normalizedResourcesDir = normalizePath(resourcesDir);
+
+		// Check if the resources directory is already in the workspace paths
+		const isAlreadyAdded = clientStatus.path.some((p) => normalizePath(p) === normalizedResourcesDir);
+
+		if (isAlreadyAdded) {
+			console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace: resources directory is already in knot-cli workspace, skipping`);
+			return;
+		}
+
+		// 4. Add it using `knot-cli workspace --action add --path <path>`
+		console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace: adding resources directory to knot-cli workspace: ${resourcesDir}`);
+		const addResult = await runKnotWorkspaceCli([
+			'workspace',
+			'--action',
+			'add',
+			'--path',
+			resourcesDir,
+		]);
+
+		if (addResult.ok) {
+			console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace: successfully added resources directory to knot-cli workspace`);
+		} else {
+			console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace: failed to add resources directory: ${addResult.message ?? 'unknown error'}`);
+		}
+	} catch (err) {
+		console.log(`[Knot] autoAddLocalResourcesDirToKnotWorkspace error: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 export function deactivate(): void {
