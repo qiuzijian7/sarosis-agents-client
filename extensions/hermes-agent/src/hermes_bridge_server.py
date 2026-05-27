@@ -218,6 +218,39 @@ class HermesBridgeServer:
                     "content": msg.get("content", ""),
                 })
 
+            # Write all messages (including system_prompt) to message.txt for debugging
+            try:
+                import datetime
+                message_log_path = 'g:/CustomWorkspaces/AIProjects/sarosis-agents-client/message.txt'
+                timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                with open(message_log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"Timestamp: {timestamp}\n")
+                    f.write(f"Provider: {provider}\n")
+                    f.write(f"Model: {model}\n")
+                    f.write(f"Session ID: {session_id}\n")
+                    f.write(f"{'='*80}\n")
+                    for i, msg in enumerate(openai_messages):
+                        f.write(f"\n--- Message {i+1} (role: {msg.get('role', 'unknown')}) ---\n")
+                        content = msg.get('content', '')
+                        if isinstance(content, list):
+                            # Handle content array format (e.g., Anthropic)
+                            for block in content:
+                                if isinstance(block, dict):
+                                    if block.get('type') == 'text':
+                                        f.write(block.get('text', ''))
+                                    elif block.get('type') == 'image':
+                                        f.write('[Image]')
+                                else:
+                                    f.write(str(block))
+                        else:
+                            f.write(str(content))
+                        f.write("\n")
+                    f.write(f"\n{'='*80}\n")
+                print(f"[HermesBridge] Messages written to {message_log_path}")
+            except Exception as e:
+                print(f"[HermesBridge] Failed to write messages to file: {e}")
+
             # Create AIAgent instance
             agent = AIAgent(
                 base_url=base_url or None,
