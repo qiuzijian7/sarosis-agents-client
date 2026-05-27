@@ -45,6 +45,20 @@ export interface IGitStatus {
 
 export const IGitCommitService = createDecorator<IGitCommitService>('agentStudio.gitCommitService');
 
+/**
+ * Single git log entry
+ */
+export interface IGitLogEntry {
+	hash: string;
+	shortHash: string;
+	message: string;
+	author: string;
+	email: string;
+	date: string;
+	relativeDate: string;
+	refs: string;
+}
+
 export interface IGitCommitService {
 	readonly _serviceBrand: undefined;
 
@@ -64,6 +78,12 @@ export interface IGitCommitService {
 	 * List all configured remotes
 	 */
 	getRemotes(): Promise<IGitRemote[]>;
+
+	/**
+	 * Get commit history (git log)
+	 * @param count Number of commits to retrieve
+	 */
+	getLog(count?: number): Promise<IGitLogEntry[]>;
 
 	/**
 	 * Commit all changes (git add -A + git commit) and push to all remotes
@@ -181,6 +201,33 @@ export class GitCommitService extends Disposable implements IGitCommitService {
 		}
 
 		return Array.from(remotes.entries()).map(([name, url]) => ({ name, url }));
+	}
+
+	async getLog(count: number = 50): Promise<IGitLogEntry[]> {
+		// Format: hash | shortHash | message | author | email | date ISO | relativeDate | refs
+		const format = '%H|%h|%s|%an|%ae|%aI|%ar|%D';
+		const result = await this._execGit(['log', `-${count}`, `--pretty=format:${format}`]);
+		if (!result.success || !result.stdout.trim()) {
+			return [];
+		}
+
+		const entries: IGitLogEntry[] = [];
+		for (const line of result.stdout.split('\n')) {
+			const parts = line.split('|');
+			if (parts.length >= 7) {
+				entries.push({
+					hash: parts[0],
+					shortHash: parts[1],
+					message: parts[2],
+					author: parts[3],
+					email: parts[4],
+					date: parts[5],
+					relativeDate: parts[6],
+					refs: parts[7] ?? '',
+				});
+			}
+		}
+		return entries;
 	}
 
 	async commitAll(message?: string): Promise<IGitOperationResult> {

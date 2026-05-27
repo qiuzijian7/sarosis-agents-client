@@ -1,0 +1,42 @@
+/*---------------------------------------------------------------------------------------------
+ *  Source Control View Welcome Content Styling
+ *--------------------------------------------------------------------------------------------*/
+
+/* Target welcome content inside the Source Control viewlet */
+.monaco-workbench .scm-viewlet .welcome-view-content {
+	padding: 32px 24px !important;
+	line-height: 1.6;
+}
+
+/* First paragraph acts as the heading */
+.monaco-workbench .scm-viewlet .welcome-view-content > p:first-child {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	text-align: center;
+	margin: 0 0 10px 0;
+}
+
+/* Subsequent paragraphs act as description */
+.monaco-workbench .scm-viewlet .welcome-view-content > p:not(:first-child) {
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+	text-align: center;
+	margin: 0 0 8px 0;
+}
+
+/* Button container in welcome content */
+.monaco-workbench .scm-viewlet .welcome-view-content > .button-container {
+	margin-top: 16px;
+	display: flex;
+	justify-content: center;
+}
+
+/* Ensure single paragraph (no description) still looks good */
+.monaco-workbench .scm-viewlet .welcome-view-content > p:only-child {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	text-align: center;
+	margin: 0;
+}
