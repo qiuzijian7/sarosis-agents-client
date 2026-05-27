@@ -20,7 +20,7 @@ import React, { memo, useMemo, useState } from 'react';
 import type { ChatMessage } from '../../store/useChatStore';
 import { useChatStore } from '../../store/useChatStore';
 import { ToolCallCard } from './ToolCallCard';
-import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
+import { MarkdownRenderer, InterleavedMarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
 import { OrchestrationPlanInline } from '../../features/orchestration/OrchestrationPlanInline';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
@@ -31,6 +31,15 @@ import { ConfirmationCard } from './ConfirmationCard';
 import { TodoListCard } from './TodoListCard';
 import { TipCard } from './TipCard';
 import { QuestionCarouselCard } from './QuestionCarouselCard';
+import { SubAgentCard } from './SubAgentCard';
+import { CheckpointCard } from './CheckpointCard';
+import type { CheckpointData } from '../../store/useChatStore';
+
+/**
+ * Phantom tool names — DEPRECATED: visibility is now controlled solely by
+ * `defaultShow`. Kept as empty set for backward compatibility.
+ */
+const PHANTOM_TOOL_NAMES = new Set<string>([]);
 
 interface ChatMessageProps {
 	message: ChatMessage;
@@ -73,8 +82,21 @@ function formatJsonForDisplay(text: string): string {
 function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): React.ReactElement {
 	const isUser = message.role === 'user';
 	const isSystemError = message.role === 'system' && message.id.startsWith('error_');
+	const isCheckpoint = message.role === 'checkpoint';
 	const [thinkingCollapsed, setThinkingCollapsed] = useState(true); // Collapsed by default (OpenClaw pattern)
 	const [jsonExpanded, setJsonExpanded] = useState(false);
+
+	// Checkpoint card rendering (Void-inspired time-travel navigation)
+	if (isCheckpoint && message.checkpoint) {
+		return (
+			<CheckpointCard
+				checkpoint={message.checkpoint}
+				onRestore={(cpId) => {
+					useChatStore.getState().jumpToCheckpoint(cpId);
+				}}
+			/>
+		);
+	}
 
 	// Subscribe to the orchestration plan that this message renders.
 	// ChatMessageRaw is wrapped in React.memo; while the custom comparator
@@ -102,6 +124,31 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 		return detectPureJson(message.content);
 	}, [message.content, isUser, isStreaming, message.toolCalls]);
 
+	// Filter visible tool calls once (shared between old top-section and new interleaved layout)
+	const visibleToolCalls = useMemo(() => {
+		if (!message.toolCalls || message.toolCalls.length === 0) { return []; }
+		return message.toolCalls.filter(tc =>
+			tc.defaultShow !== false
+		);
+	}, [message.toolCalls]);
+
+	// Build tool-call card nodes for interleaved rendering
+	const toolCallNodes = useMemo(() =>
+		visibleToolCalls.map(tc => <ToolCallCard key={tc.id} toolCall={tc} />),
+		[visibleToolCalls]
+	);
+
+	// Build tool position map for interleaved rendering (from textPosition recorded at tool_start)
+	const toolPositions = useMemo(() => {
+		const map = new Map<string, number>();
+		for (const tc of visibleToolCalls) {
+			if ((tc as any).textPosition !== undefined) {
+				map.set(tc.id, (tc as any).textPosition);
+			}
+		}
+		return map;
+	}, [visibleToolCalls]);
+
 	// Always sanitize assistant content using the unified pipeline.
 	// This catches tool-call artifacts that may remain even when no toolCalls
 	// were detected (e.g. model outputs raw JSON that was extracted by the
@@ -110,17 +157,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	const displayContent = useMemo(() => {
 		if (!message.content) { return ''; }
 		if (isUser) { return message.content; }
-		const sanitized = sanitizeAssistantContent(message.content);
-		// DEBUG: Log completed message content for consistency diagnosis
-		console.log('[ChatMessage] displayContent computed:', {
-			rawLen: message.content.length,
-			sanitizedLen: sanitized.length,
-			first200: sanitized.substring(0, 200),
-			// Check if ## headings have space already (should have after host processing)
-			headingsRaw: (message.content.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
-			headingsSanitized: (sanitized.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
-		});
-		return sanitized;
+		return sanitizeAssistantContent(message.content);
 	}, [message.content, isUser]);
 
 	return (
@@ -201,18 +238,12 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 					/>
 				)}
 
-				{/* ── Tool calls ────────────────────────────── */}
-				{message.toolCalls && message.toolCalls.length > 0 && (
-					<div className="tool-calls-section">
-						{message.toolCalls
-							.filter(tc => tc.defaultShow !== false)
-							.map((tc) => (
-								<ToolCallCard key={tc.id} toolCall={tc} />
-							))}
-					</div>
+				{/* ── Sub-Agent execution cards (parallel/sequential) ─── */}
+				{message.subAgents && message.subAgents.length > 0 && (
+					<SubAgentCard subAgents={message.subAgents} isStreaming={isStreaming} />
 				)}
 
-				{/* ── Main content ──────────────────────────── */}
+				{/* ── Main content (with tool calls interleaved) ─────────── */}
 				{displayContent && (
 					<div className="message-text">
 						{/* Orchestration plan inline (special message type) */}
@@ -227,7 +258,17 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							</div>
 						) : isStreaming && !isUser ? (
 							// During streaming: live markdown rendering (OpenClaw pattern)
-							<MarkdownRenderer content={displayContent} showCursor />
+							// Tool calls are interleaved into the text when present
+							toolCallNodes.length > 0 ? (
+								<InterleavedMarkdownRenderer
+									content={displayContent}
+									showCursor
+									toolCallNodes={toolCallNodes}
+									toolPositions={toolPositions}
+								/>
+							) : (
+								<MarkdownRenderer content={displayContent} showCursor />
+							)
 						) : isPureJson ? (
 							// Pure JSON content: render as collapsible code block (OpenClaw pattern)
 							<div className="json-content-block">
@@ -259,7 +300,16 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							</div>
 						) : !isUser ? (
 							// Completed assistant messages: full Markdown rendering
-							<MarkdownRenderer content={displayContent} />
+							// Tool calls are interleaved into the text when present
+							toolCallNodes.length > 0 ? (
+								<InterleavedMarkdownRenderer
+									content={displayContent}
+									toolCallNodes={toolCallNodes}
+									toolPositions={toolPositions}
+								/>
+							) : (
+								<MarkdownRenderer content={displayContent} />
+							)
 						) : (
 							// User messages: plain text
 							displayContent
@@ -389,6 +439,7 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.todos === nm.todos &&
 		pm.tips === nm.tips &&
 		pm.questions === nm.questions &&
+		pm.subAgents === nm.subAgents &&
 		prev.isStreaming === next.isStreaming
 	);
 });

@@ -9,9 +9,26 @@ import { sendRequest } from '../bridge/messageClient';
 import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState, type StreamError } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
+/**
+ * Phantom tool names — DEPRECATED: visibility is now controlled solely by
+ * `defaultShow`. Kept as empty set for backward compatibility.
+ */
+const PHANTOM_TOOL_NAMES = new Set<string>([]);
+
 export interface ChatMessageMetadata {
 	type: 'orchestration_plan';
 	planId: string;
+}
+
+// Checkpoint data for time-travel navigation (Void-inspired)
+export interface CheckpointData {
+	id: string;
+	type: 'user_edit' | 'tool_edit' | 'message_boundary';
+	timestamp: string;
+	description?: string;
+	filesChanged?: number;
+	isGhost?: boolean;
+	isDisabled?: boolean;
 }
 
 // Reference item for ReferencesCard
@@ -95,12 +112,34 @@ export interface SuggestedQuestion {
 	category?: string;
 }
 
+// Sub-agent info for SubAgentCard (parallel execution display)
+export interface SubAgentInfo {
+	/** Unique sub-agent invocation ID */
+	id: string;
+	/** Sub-agent type (explore/general/scout) */
+	type: 'explore' | 'general' | 'scout';
+	/** Task description */
+	task: string;
+	/** Parent agent ID */
+	parentAgentId?: string;
+	/** Current status */
+	status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+	/** Progress text */
+	progress?: string;
+	/** Final output */
+	output?: string;
+	/** Error message */
+	error?: string;
+	/** Group ID for parallel batch grouping (e.g., "batch-1") */
+	groupId?: string;
+}
+
 export interface ChatMessage {
 	id: string;
-	role: 'user' | 'assistant' | 'tool' | 'system';
+	role: 'user' | 'assistant' | 'tool' | 'system' | 'checkpoint';
 	content: string;
 	thinking?: string;
-	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string }[];
+	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string; serverExecuted?: boolean; textPosition?: number }[];
 	tokenUsage?: { input: number; output: number; total: number };
 	timestamp: string;
 	/** Structured error info for system error messages (VS Code Copilot Chat pattern) */
@@ -119,6 +158,10 @@ export interface ChatMessage {
 	tips?: TipMessage[];
 	/** Suggested questions for user to ask - VS Code chatQuestionCarouselPart pattern */
 	questions?: SuggestedQuestion[];
+	/** Sub-agent executions (parallel or sequential) - VS Code chatSubagentContentPart pattern */
+	subAgents?: SubAgentInfo[];
+	/** Checkpoint data for time-travel navigation (Void-inspired) */
+	checkpoint?: CheckpointData;
 }
 
 export interface AgentSessionInfo {
@@ -189,6 +232,12 @@ interface ChatState {
 	approvePlanConfirmation: (confirmation: ConfirmationRequest, buttonId: string) => Promise<void>;
 	/** Reject a plan-approval confirmation card */
 	rejectPlanConfirmation: (confirmation: ConfirmationRequest) => void;
+	/** Add a checkpoint after a message boundary (Void-inspired time-travel) */
+	addCheckpoint: (checkpoint: CheckpointData) => void;
+	/** Navigate to a checkpoint (restore state) */
+	jumpToCheckpoint: (checkpointId: string) => void;
+	/** Mark all checkpoints as ghost except the one at the given id */
+	setActiveCheckpoint: (checkpointId: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -366,6 +415,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 					result: tc.result,
 					status: tc.status,
 					defaultShow: tc.defaultShow,
+					displayName: tc.displayName,
+					renderType: tc.renderType,
+					serverExecuted: tc.serverExecuted,
+					textPosition: tc.textPosition,
 				})),
 				timestamp: new Date().toISOString(),
 				// Copy new card data fields from hostMessage (VS Code Copilot Chat pattern)
@@ -375,6 +428,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 				todos: (hostMessage?.todos as ChatMessage['todos']) || undefined,
 				tips: (hostMessage?.tips as ChatMessage['tips']) || undefined,
 				questions: (hostMessage?.questions as ChatMessage['questions']) || undefined,
+				subAgents: (hostMessage?.subAgents as ChatMessage['subAgents']) || finalState.subAgents.length > 0
+					? finalState.subAgents.map(sa => ({
+						id: sa.id,
+						type: sa.type,
+						task: sa.task,
+						parentAgentId: sa.parentAgentId,
+						status: sa.status,
+						progress: sa.progress,
+						output: sa.output,
+						error: sa.error,
+					})) : undefined,
 			};
 			// Atomically commit the new message AND the reset streamState
 			// so React never sees "no streaming bubble + no message" in between.
@@ -497,23 +561,52 @@ export const useChatStore = create<ChatState>((set, get) => {
 					return true;
 				});
 
-				// Deduplicate orchestration_plan messages by planId — keep only the last one
-				// (prevents duplicates when loadHistoryForSession re-creates a message
-				// and EmployeeChat useEffect also adds one with a different id).
-				const seenPlanIds = new Set<string>();
-				const deduped: ChatMessage[] = [];
-				for (let i = finalMessages.length - 1; i >= 0; i--) {
-					const m = finalMessages[i];
-					if (m.metadata?.type === 'orchestration_plan') {
-						const planId = m.metadata.planId;
-						if (seenPlanIds.has(planId)) {
-							continue;
-						}
-						seenPlanIds.add(planId);
-					}
-					deduped.unshift(m);
+			// ── Deduplicate messages by id first, then by content+role+timestamp ──
+			// This handles cases where the same message was persisted twice
+			// (e.g. both webview controller and agentChatService saved the user message).
+			const seenIds = new Set<string>();
+			const seenContentKeys = new Set<string>();
+			const deduped: ChatMessage[] = [];
+			for (let i = finalMessages.length - 1; i >= 0; i--) {
+				const m = finalMessages[i];
+				// Skip by id
+				if (seenIds.has(m.id)) {
+					continue;
 				}
-				finalMessages = deduped;
+				seenIds.add(m.id);
+				// For user/assistant messages, also deduplicate by content+role+approximate timestamp
+				// (within 3 seconds) to catch duplicates with different ids.
+				if (m.role === 'user' || m.role === 'assistant') {
+					const ts = new Date(m.timestamp).getTime();
+					const tsBucket = Math.floor(ts / 3000); // 3-second bucket
+					const contentKey = `${m.role}::${tsBucket}::${m.content}`;
+					if (seenContentKeys.has(contentKey)) {
+						console.log(`[ChatStore] loadHistoryForSession: removing duplicate ${m.role} message by content key`);
+						continue;
+					}
+					seenContentKeys.add(contentKey);
+				}
+				deduped.unshift(m);
+			}
+			finalMessages = deduped;
+
+			// Deduplicate orchestration_plan messages by planId — keep only the last one
+			// (prevents duplicates when loadHistoryForSession re-creates a message
+			// and EmployeeChat useEffect also adds one with a different id).
+			const seenPlanIds = new Set<string>();
+			const dedupedPlans: ChatMessage[] = [];
+			for (let i = finalMessages.length - 1; i >= 0; i--) {
+				const m = finalMessages[i];
+				if (m.metadata?.type === 'orchestration_plan') {
+					const planId = m.metadata.planId;
+					if (seenPlanIds.has(planId)) {
+						continue;
+					}
+					seenPlanIds.add(planId);
+				}
+				dedupedPlans.unshift(m);
+			}
+			finalMessages = dedupedPlans;
 
 				try {
 					const { useOrchestrationStore } = require('./useOrchestrationStore');
@@ -595,6 +688,18 @@ export const useChatStore = create<ChatState>((set, get) => {
 					finalSeenPlanIds.add(planId);
 				}
 				return true;
+			});
+
+			// Strip hidden tool calls (defaultShow=false) from loaded history.
+			// Visibility is now controlled solely by defaultShow.
+			finalMessages = finalMessages.map(m => {
+				if (m.toolCalls && m.toolCalls.length > 0) {
+					const filtered = m.toolCalls.filter(tc => tc.defaultShow !== false);
+					if (filtered.length !== m.toolCalls.length) {
+						return { ...m, toolCalls: filtered };
+					}
+				}
+				return m;
 			});
 
 			set({ messages: finalMessages, isLoading: false });
@@ -978,6 +1083,45 @@ export const useChatStore = create<ChatState>((set, get) => {
 				timestamp: new Date().toISOString(),
 			};
 			set(state => ({ messages: [...state.messages, rejectMsg] }));
+		},
+
+		addCheckpoint: (checkpoint: CheckpointData) => {
+			const checkpointMessage: ChatMessage = {
+				id: checkpoint.id,
+				role: 'checkpoint',
+				content: '',
+				timestamp: checkpoint.timestamp,
+				checkpoint,
+			};
+			set(state => ({ messages: [...state.messages, checkpointMessage] }));
+		},
+
+		jumpToCheckpoint: (checkpointId: string) => {
+			// Send a request to the host to restore the checkpoint state
+			sendRequest('chat.jumpToCheckpoint', { checkpointId }).catch(err => {
+				console.error('[ChatStore] jumpToCheckpoint failed:', err);
+			});
+			// Mark all checkpoints after the target as ghost
+			setActiveCheckpoint(checkpointId);
+		},
+
+		setActiveCheckpoint: (checkpointId: string) => {
+			set(state => {
+				const targetIdx = state.messages.findIndex(m => m.id === checkpointId);
+				if (targetIdx < 0) { return state; }
+				return {
+					messages: state.messages.map((m, idx) => {
+						if (m.role !== 'checkpoint' || !m.checkpoint) { return m; }
+						return {
+							...m,
+							checkpoint: {
+								...m.checkpoint,
+								isGhost: idx > targetIdx,
+							},
+						};
+					}),
+				};
+			});
 		},
 	};
 });

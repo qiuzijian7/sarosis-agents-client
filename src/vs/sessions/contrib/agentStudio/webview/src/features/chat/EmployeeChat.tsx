@@ -23,10 +23,17 @@ import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { ChatComposer } from './ChatComposer';
 import { ToolCallCard } from './ToolCallCard';
-import { MarkdownRenderer } from './MarkdownRenderer';
+import { SubAgentCard } from './SubAgentCard';
+import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRenderer';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import type { StreamError } from '../../bridge/streamHandler';
+
+/**
+ * Phantom tool names — DEPRECATED: visibility is now controlled solely by
+ * `defaultShow`. Kept as empty set for backward compatibility.
+ */
+const PHANTOM_TOOL_NAMES = new Set<string>([]);
 
 
 /* ── Streaming Bubble Component (VS Code pattern: separate memoized component) ── */
@@ -42,12 +49,14 @@ const StreamingBubble = memo(function StreamingBubble({
 	textBuffer,
 	thinkingBuffer,
 	toolCalls,
+	subAgents,
 	errorMessage,
 	streamError,
 }: {
 	textBuffer: string;
 	thinkingBuffer: string;
-	toolCalls: Array<{ id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string }>;
+	toolCalls: Array<{ id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string; serverExecuted?: boolean; textPosition?: number }>;
+	subAgents: Array<{ id: string; type: 'explore' | 'general' | 'scout'; task: string; parentAgentId?: string; status: string; progress?: string; output?: string; error?: string; groupId?: string }>;
 	errorMessage: string | null;
 	streamError: StreamError | null;
 }): React.ReactElement {
@@ -55,18 +64,7 @@ const StreamingBubble = memo(function StreamingBubble({
 	const sanitizedText = useMemo(
 		() => {
 			if (!textBuffer) { return ''; }
-			const result = sanitizeStreamingText(textBuffer);
-			// DEBUG: Log streaming content for consistency diagnosis
-			console.log('[StreamingBubble] sanitizedText update:', {
-				rawLen: textBuffer.length,
-				sanitizedLen: result.length,
-				// Show first few lines to check normalization
-				first200: result.substring(0, 200),
-				// Show if ## headings have space
-				headingsRaw: (textBuffer.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
-				headingsSanitized: (result.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
-			});
-			return result;
+			return sanitizeStreamingText(textBuffer);
 		},
 		[textBuffer]
 	);
@@ -93,25 +91,43 @@ const StreamingBubble = memo(function StreamingBubble({
 					</div>
 				)}
 
-				{/* Streaming tool calls */}
-				{toolCalls.length > 0 && (
-					<div className="tool-calls-section">
-						{toolCalls.map((tc) => (
-							<ToolCallCard key={tc.id} toolCall={{
-								...tc,
-								result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
-							}} />
-						))}
-					</div>
+				{/* Streaming sub-agents */}
+				{subAgents.length > 0 && (
+					<SubAgentCard subAgents={subAgents} isStreaming={true} />
 				)}
 
-				{/* Streaming text content — live markdown rendering */}
+				{/* Streaming text content + tool calls (interleaved) */}
 				{sanitizedText && (
 					<div className="message-text">
-						<MarkdownRenderer
-							content={sanitizedText}
-							showCursor
-						/>
+						{(() => {
+							const visibleToolCalls = toolCalls.filter(tc => tc.defaultShow !== false);
+							const toolCallNodes = visibleToolCalls.map(tc => (
+								<ToolCallCard key={tc.id} toolCall={{
+									...tc,
+									result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
+								}} />
+							));
+							// Build position map from textPosition hints (recorded at tool_start time)
+							const toolPositions = new Map<string, number>();
+							for (const tc of visibleToolCalls) {
+								if (tc.textPosition !== undefined) {
+									toolPositions.set(tc.id, tc.textPosition);
+								}
+							}
+							return toolCallNodes.length > 0 ? (
+								<InterleavedMarkdownRenderer
+									content={sanitizedText}
+									showCursor
+									toolCallNodes={toolCallNodes}
+									toolPositions={toolPositions}
+								/>
+							) : (
+								<MarkdownRenderer
+									content={sanitizedText}
+									showCursor
+								/>
+							);
+						})()}
 					</div>
 				)}
 
@@ -123,7 +139,7 @@ const StreamingBubble = memo(function StreamingBubble({
 				)}
 
 				{/* Typing dots — only when nothing else is showing */}
-				{!textBuffer && !thinkingBuffer && !errorMessage && toolCalls.length === 0 && (
+				{!textBuffer && !thinkingBuffer && !errorMessage && toolCalls.length === 0 && subAgents.length === 0 && (
 					<div className="typing-indicator">
 						<span className="typing-dot">●</span>
 						<span className="typing-dot">●</span>
@@ -619,6 +635,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 								textBuffer={streamState.textBuffer}
 								thinkingBuffer={streamState.thinkingBuffer}
 								toolCalls={streamState.toolCalls}
+								subAgents={streamState.subAgents}
 								errorMessage={streamState.errorMessage}
 								streamError={streamState.error}
 							/>

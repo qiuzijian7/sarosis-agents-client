@@ -17,6 +17,7 @@ import { useThemeStore } from './store/useThemeStore.js';
 import { useWorkspaceSessionStore } from './store/useWorkspaceSessionStore.js';
 import { useChatStore } from './store/useChatStore.js';
 import { useOrchestrationStore } from './store/useOrchestrationStore.js';
+import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigMdEvent } from './features/configmd/configMdBridge.js';
 import './styles/globals.css';
 import './styles/themes.css';
@@ -109,6 +110,14 @@ initMessageClient((type, data) => {
 			const { providers } = (data as { providers: any[] }) ?? {};
 			if (providers) {
 				useProviderStore.getState().updateProviders(providers);
+			}
+			break;
+		}
+		case 'debug.trace': {
+			const { message } = (data as { message: string }) ?? {};
+			if (message) {
+				console.log(`%c${message}`, 'color: #4fc3f7; font-weight: bold');
+				useDebugTraceStore.getState().addEntry(message);
 			}
 			break;
 		}

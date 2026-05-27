@@ -694,3 +694,295 @@
 .question-carousel-item:hover svg {
 	opacity: 1;
 }
+
+/* ── Sub-Agent Card (VS Code: chatSubagentContentPart pattern) ────────────────────────── */
+.subagent-card {
+	margin: 8px 0;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+	border-radius: 8px;
+	overflow: hidden;
+	background-color: var(--as-bg-secondary, rgba(128, 128, 128, 0.05));
+	transition: border-color 0.2s;
+}
+
+.subagent-card.active {
+	border-color: rgba(96, 165, 250, 0.3);
+}
+
+.subagent-card.single {
+	border-radius: 6px;
+}
+
+.subagent-card-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	cursor: pointer;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	transition: background-color 0.1s;
+}
+
+.subagent-card-header:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.12));
+}
+
+.subagent-card-icon {
+	display: flex;
+	align-items: center;
+	font-size: 14px;
+	min-width: 16px;
+}
+
+.subagent-card-title {
+	font-size: 12px;
+	font-weight: 600;
+	flex: 1;
+}
+
+.subagent-card-title.shimmer {
+	background: linear-gradient(
+		90deg,
+		var(--as-fg-primary, var(--vscode-foreground, #ccc)) 0%,
+		var(--as-accent, #60a5fa) 50%,
+		var(--as-fg-primary, var(--vscode-foreground, #ccc)) 100%
+	);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	animation: subagent-shimmer 2s ease-in-out infinite;
+}
+
+@keyframes subagent-shimmer {
+	0% { background-position: 200% 0; }
+	100% { background-position: -200% 0; }
+}
+
+.subagent-card-summary {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	white-space: nowrap;
+}
+
+.subagent-card-toggle {
+	transition: transform 0.2s;
+	flex-shrink: 0;
+}
+
+.subagent-card-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.subagent-card-body {
+	padding: 6px 0;
+}
+
+/* ── Sub-Agent Group (parallel batch) ────────────────────────────── */
+.subagent-group {
+	padding: 0 8px;
+}
+
+.subagent-group + .subagent-group {
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.08));
+	margin-top: 4px;
+	padding-top: 4px;
+}
+
+.subagent-group-label {
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	padding: 4px 4px 2px;
+}
+
+/* ── Sub-Agent Row ───────────────────────────────────────────────── */
+.subagent-row {
+	padding: 6px 8px;
+	border-radius: 4px;
+	margin: 2px 4px;
+	transition: background-color 0.1s;
+}
+
+.subagent-row:hover {
+	background-color: var(--as-bg-hover, rgba(128, 128, 128, 0.06));
+}
+
+.subagent-row.running {
+	background-color: rgba(96, 165, 250, 0.04);
+}
+
+.subagent-row.error {
+	background-color: rgba(244, 135, 113, 0.04);
+}
+
+.subagent-row-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.subagent-type-icon {
+	font-size: 13px;
+	flex-shrink: 0;
+}
+
+.subagent-status-icon {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+}
+
+.subagent-task {
+	font-size: 12px;
+	flex: 1;
+	line-height: 1.4;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.subagent-task.shimmer {
+	background: linear-gradient(
+		90deg,
+		var(--as-fg-primary, var(--vscode-foreground, #ccc)) 0%,
+		var(--as-accent, #60a5fa) 50%,
+		var(--as-fg-primary, var(--vscode-foreground, #ccc)) 100%
+	);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	animation: subagent-shimmer 2s ease-in-out infinite;
+}
+
+.subagent-type-badge {
+	font-size: 10px;
+	font-weight: 500;
+	padding: 1px 6px;
+	border-radius: 3px;
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+
+.subagent-type-badge.type-explore {
+	background-color: rgba(96, 165, 250, 0.12);
+	color: #60a5fa;
+}
+
+.subagent-type-badge.type-general {
+	background-color: rgba(52, 211, 153, 0.12);
+	color: #34d399;
+}
+
+.subagent-type-badge.type-scout {
+	background-color: rgba(192, 132, 252, 0.12);
+	color: #c084fc;
+}
+
+/* ── Sub-Agent Progress ──────────────────────────────────────────── */
+.subagent-progress {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 0 2px 28px;
+}
+
+.subagent-progress-dots {
+	display: flex;
+	gap: 3px;
+}
+
+.subagent-progress-dots .typing-dot {
+	font-size: 8px;
+	color: var(--as-accent, #60a5fa);
+	animation: typing-bounce 1.4s ease-in-out infinite;
+}
+
+.subagent-progress-dots .typing-dot:nth-child(2) {
+	animation-delay: 0.2s;
+}
+
+.subagent-progress-dots .typing-dot:nth-child(3) {
+	animation-delay: 0.4s;
+}
+
+@keyframes typing-bounce {
+	0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+	30% { opacity: 1; transform: translateY(-3px); }
+}
+
+.subagent-progress-text {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+}
+
+/* ── Sub-Agent Error ─────────────────────────────────────────────── */
+.subagent-error {
+	font-size: 11px;
+	color: var(--vscode-errorForeground, #f48771);
+	padding: 4px 0 2px 28px;
+	line-height: 1.4;
+}
+
+/* ── Sub-Agent Output ────────────────────────────────────────────── */
+.subagent-output {
+	padding: 4px 0 2px 28px;
+}
+
+.subagent-output-preview {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+}
+
+.subagent-output-text {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.subagent-output-toggle {
+	font-size: 10px;
+	color: var(--as-accent, #60a5fa);
+	background: none;
+	border: none;
+	cursor: pointer;
+	padding: 0;
+	white-space: nowrap;
+}
+
+.subagent-output-toggle:hover {
+	text-decoration: underline;
+}
+
+.subagent-output-full pre {
+	font-size: 11px;
+	line-height: 1.4;
+	margin: 0;
+	padding: 6px 8px;
+	background-color: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-radius: 4px;
+	max-height: 300px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* ── Sub-Agent Spinner ───────────────────────────────────────────── */
+.subagent-spinner {
+	animation: subagent-spin 1s linear infinite;
+}
+
+@keyframes subagent-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+

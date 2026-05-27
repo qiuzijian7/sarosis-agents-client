@@ -199,7 +199,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		}
 		const query = modelSearchQuery.toLowerCase().trim();
 		return availableModels.filter(m =>
-			m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query)
+			m?.name?.toLowerCase().includes(query) || m?.id?.toLowerCase().includes(query)
 		);
 	}, [availableModels, modelSearchQuery]);
 
@@ -345,8 +345,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		if (!commandFilter.trim()) return commands;
 		const filter = commandFilter.toLowerCase();
 		return commands.filter(cmd => 
-			cmd.id.toLowerCase().includes(filter) || 
-			cmd.name.toLowerCase().includes(filter)
+			cmd && cmd.id && cmd.name && (cmd.id.toLowerCase().includes(filter) || 
+			cmd.name.toLowerCase().includes(filter))
 		);
 	}, [commands, commandFilter]);
 
@@ -355,8 +355,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		if (!skillFilter.trim()) return skills;
 		const filter = skillFilter.toLowerCase();
 		return skills.filter(skill => 
-			skill.id.toLowerCase().includes(filter) || 
-			skill.name.toLowerCase().includes(filter)
+			skill && skill.id && skill.name && (skill.id.toLowerCase().includes(filter) || 
+			skill.name.toLowerCase().includes(filter))
 		);
 	}, [skills, skillFilter]);
 

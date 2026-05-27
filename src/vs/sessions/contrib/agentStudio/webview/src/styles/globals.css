@@ -804,6 +804,94 @@ html, body, #root {
   border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
+/* ─── Worktree Badge (Canvas node + Header) ──────────────────────────────── */
+.employee-card-worktree-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.worktree-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-badge-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.worktree-badge-branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-badge-pending {
+  border-color: rgba(204, 167, 0, 0.3);
+}
+
+.worktree-badge-ready {
+  background-color: rgba(55, 148, 255, 0.08);
+  border-color: rgba(55, 148, 255, 0.25);
+}
+
+.worktree-badge-failed {
+  background-color: rgba(241, 76, 76, 0.08);
+  border-color: rgba(241, 76, 76, 0.25);
+}
+
+.worktree-badge-animated {
+  animation: worktree-badge-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes worktree-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.worktree-badge-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: worktree-spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes worktree-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Workspace header worktree branch label */
+.ws-hd-opt-worktree-branch {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  margin-left: 6px;
+}
+
+.ws-hd-opt-worktree-status {
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.ws-hd-opt-worktree-status.pending {
+  animation: worktree-badge-pulse 1.5s ease-in-out infinite;
+}
+
 .badge-icon {
   width: 11px;
   height: 11px;
