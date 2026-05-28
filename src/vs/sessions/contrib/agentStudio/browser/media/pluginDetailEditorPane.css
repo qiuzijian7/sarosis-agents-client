@@ -317,6 +317,14 @@
 	max-width: 200px;
 }
 
+/* Select dropdown for enum fields (e.g. model list) */
+.plugin-detail-config-select {
+	max-width: 480px;
+	appearance: auto;
+	cursor: pointer;
+	padding-right: 28px;
+}
+
 .plugin-detail-config-textarea {
 	width: 100%;
 	max-width: 480px;

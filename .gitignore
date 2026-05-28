@@ -2,6 +2,10 @@
 .cache
 npm-debug.log
 Thumbs.db
+
+# TypeScript compilation artifacts accidentally generated in src/
+src/**/*.js
+
 node_modules/
 .tmp/
 .build/
@@ -194,3 +198,9 @@ commit-knot2.txt
 commit-worktree.txt
 commit-git.txt
 commit-doc.txt
+commit-all2.txt
+commit-all3.txt
+extensions/hermes-agent/hermes
+commit-hermes2.txt
+commit-hermes.txt
+compile_output.txt

@@ -11,32 +11,19 @@ import { IAgentPlugin } from '../../../../workbench/contrib/chat/common/plugins/
 /**
  * EditorInput for the Plugin Detail panel.
  * Opens in the editor area (like VS Code native Extensions detail view).
+ *
+ * Each plugin gets its own EditorInput instance so that the editor framework
+ * can correctly detect input changes (via `matches()`) and call `setInput()`
+ * to refresh the detail pane when the user switches between plugins.
  */
 export class PluginDetailEditorInput extends EditorInput {
 
 	static readonly TypeID = 'workbench.editors.pluginDetailInput';
 
-	private static _instance: PluginDetailEditorInput | undefined;
-	private static _currentPlugin: IAgentPlugin | undefined;
-
-	static getOrCreate(plugin: IAgentPlugin): PluginDetailEditorInput {
-		PluginDetailEditorInput._currentPlugin = plugin;
-		if (!PluginDetailEditorInput._instance || PluginDetailEditorInput._instance.isDisposed()) {
-			PluginDetailEditorInput._instance = new PluginDetailEditorInput();
-		}
-		return PluginDetailEditorInput._instance;
-	}
-
-	static getCurrentPlugin(): IAgentPlugin | undefined {
-		return PluginDetailEditorInput._currentPlugin;
-	}
-
-	constructor() {
+	constructor(
+		private readonly _plugin: IAgentPlugin,
+	) {
 		super();
-		if (PluginDetailEditorInput._instance && !PluginDetailEditorInput._instance.isDisposed()) {
-			console.warn('[PluginDetailEditorInput] Use PluginDetailEditorInput.getOrCreate() to get the singleton.');
-		}
-		PluginDetailEditorInput._instance = this;
 	}
 
 	override get typeId(): string {
@@ -48,27 +35,35 @@ export class PluginDetailEditorInput extends EditorInput {
 	}
 
 	override get resource(): URI | undefined {
-		const plugin = PluginDetailEditorInput._currentPlugin;
 		return URI.from({
 			scheme: 'agent-studio-plugin',
-			path: plugin ? `/${plugin.uri.toString()}` : '/unknown',
+			path: `/${this._plugin.uri.toString()}`,
 		});
 	}
 
 	override get capabilities(): EditorInputCapabilities {
+		// Use Singleton so the editor reuses the same pane, but NOT
+		// SingleResource which would cause resource-based matching.
+		// Our custom matches() ensures different plugins are treated as
+		// different inputs, triggering setInput() on the existing pane.
 		return EditorInputCapabilities.Readonly | EditorInputCapabilities.Singleton;
 	}
 
-	get plugin(): IAgentPlugin | undefined {
-		return PluginDetailEditorInput._currentPlugin;
+	get plugin(): IAgentPlugin {
+		return this._plugin;
 	}
 
 	override getName(): string {
-		const plugin = PluginDetailEditorInput._currentPlugin;
-		return plugin ? `📦 ${plugin.label}` : 'Plugin Detail';
+		return `📦 ${this._plugin.label}`;
 	}
 
 	override matches(otherInput: EditorInput | unknown): boolean {
-		return otherInput instanceof PluginDetailEditorInput;
+		if (!(otherInput instanceof PluginDetailEditorInput)) {
+			return false;
+		}
+		// Two inputs match only when they refer to the same plugin (by URI).
+		// When the user clicks a different plugin, matches() returns false,
+		// so the editor framework calls setInput() on the existing pane.
+		return this._plugin.uri.toString() === otherInput._plugin.uri.toString();
 	}
 }

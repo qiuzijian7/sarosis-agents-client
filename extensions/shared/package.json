@@ -1,0 +1,16 @@
+{
+	"name": "@sarosis/shared",
+	"version": "1.0.0",
+	"description": "Shared utilities for Sarosis chat model providers (SSE parsing, model config, chat helpers)",
+	"main": "./out/index.js",
+	"types": "./out/index.d.ts",
+	"scripts": {
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./"
+	},
+	"devDependencies": {
+		"@types/node": "22.x",
+		"@types/vscode": "^1.95.0",
+		"typescript": "^6.0.3"
+	}
+}

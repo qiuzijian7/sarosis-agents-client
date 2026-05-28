@@ -1,0 +1,68 @@
+{
+	"name": "codebuddy-provider",
+	"version": "1.0.0",
+	"description": "CodeBuddy AI 聊天模型提供者，提供与 CodeBuddy API 的集成能力。\n\n登录状态：运行命令 `CodeBuddy: Login (iOA SSO)` 进行 iOA 登录，或运行 `CodeBuddy: Logout` 登出。",
+	"publisher": "sarosis",
+	"configuration": {
+		"properties": {
+			"codebuddy.status": {
+				"type": "string",
+				"default": "未登录",
+				"description": "登录状态。点击登录按钮触发 iOA SSO 登录流程，登录后自动填充 token 等字段。"
+			},
+			"codebuddy.endpoint": {
+				"type": "string",
+				"default": "https://copilot.tencent.com",
+				"description": "CodeBuddy API 服务端 base URL"
+			},
+			"codebuddy.token": {
+				"type": "string",
+				"default": "",
+				"description": "CodeBuddy API Token（iOA 登录后自动填充）"
+			},
+			"codebuddy.user": {
+				"type": "string",
+				"default": "",
+				"description": "用户 ID（企微英文名，iOA 登录后自动填充）"
+			},
+			"codebuddy.enterpriseId": {
+				"type": "string",
+				"default": "",
+				"description": "企业 ID（iOA 登录后自动填充）"
+			},
+			"codebuddy.tenantId": {
+				"type": "string",
+				"default": "",
+				"description": "租户 ID"
+			},
+			"codebuddy.departmentInfo": {
+				"type": "string",
+				"default": "",
+				"description": "部门信息（iOA 登录后自动填充）"
+			},
+			"codebuddy.model": {
+				"type": "string",
+				"default": "default",
+				"description": "默认模型名称"
+			},
+			"codebuddy.models": {
+				"type": "array",
+				"default": ["claude-sonnet-4.6", "claude-opus-4.6", "gpt-5.2", "gemini-3.0-pro", "deepseek-v3-2", "glm-4.7"],
+				"description": "可用模型列表",
+				"items": {
+					"type": "string"
+				}
+			},
+			"codebuddy.timeout": {
+				"type": "number",
+				"default": 60000,
+				"description": "请求超时时间（毫秒）"
+			},
+			"codebuddy.streaming": {
+				"type": "boolean",
+				"default": true,
+				"description": "启用流式响应"
+			}
+		}
+	}
+}

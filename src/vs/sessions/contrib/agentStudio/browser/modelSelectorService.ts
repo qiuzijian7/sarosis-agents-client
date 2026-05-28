@@ -299,6 +299,13 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 
 		for (const provider of providers) {
 			const authStatus = provider.getAuthStatus();
+			
+			// 只显示已认证的 Provider
+			if (authStatus !== 'authenticated') {
+				this._logService.info(`[ModelSelector][Diag]   provider=${provider.id} skipped (authStatus=${authStatus})`);
+				continue;
+			}
+
 			const providerInfo: IModelSelectorProviderInfo = {
 				id: provider.id,
 				name: provider.name,

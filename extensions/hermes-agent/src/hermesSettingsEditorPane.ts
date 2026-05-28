@@ -13,6 +13,7 @@ import { IEditorOptions } from '../../../src/vs/platform/editor/common/editor.js
 import { IEditorOpenContext } from '../../../src/vs/workbench/common/editor.js';
 import { CancellationToken } from '../../../src/vs/base/common/cancellation.js';
 import * as DOM from '../../../src/vs/base/browser/dom.js';
+import { IConfigurationService } from '../../../src/vs/platform/configuration/common/configuration.js';
 
 /**
  * Hermes Settings Editor Pane
@@ -75,6 +76,7 @@ export class HermesSettingsEditorPane extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(HermesSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -89,6 +91,7 @@ export class HermesSettingsEditorPane extends EditorPane {
 
 	override async setInput(input: HermesSettingsEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
+		this._loadSettings();
 	}
 
 	private _getHTML(): string {
@@ -255,7 +258,18 @@ export class HermesSettingsEditorPane extends EditorPane {
 		const inputs = this._container.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-setting]');
 		for (const input of inputs) {
 			input.addEventListener('change', () => {
-				this._saveSetting(input.dataset.setting!, input.value);
+				const key = input.dataset.setting!;
+				if (input.type === 'checkbox') {
+					this._saveSetting(key, (input as HTMLInputElement).checked);
+				} else if (key.endsWith('Toolsets')) {
+					// Array fields stored as comma-separated text
+					const arr = input.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+					this._saveSetting(key, arr);
+				} else if (input.type === 'number') {
+					this._saveSetting(key, Number(input.value));
+				} else {
+					this._saveSetting(key, input.value);
+				}
 			});
 		}
 
@@ -268,10 +282,32 @@ export class HermesSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	private _saveSetting(key: string, value: string): void {
-		// Configuration updates are handled by the VS Code configuration service
-		// The plugin's config change listener will pick up changes automatically
-		console.log(`[Hermes Settings] Setting ${key} = ${value}`);
+	private _loadSettings(): void {
+		if (!this._container) { return; }
+
+		const inputs = this._container.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-setting]');
+		for (const input of inputs) {
+			const key = input.dataset.setting!;
+			const value = this._configurationService.getValue<unknown>(key);
+
+			if (input.type === 'checkbox') {
+				(input as HTMLInputElement).checked = !!value;
+			} else if (key.endsWith('Toolsets')) {
+				// Array fields displayed as comma-separated text
+				if (Array.isArray(value)) {
+					input.value = value.join(', ');
+				} else {
+					input.value = '';
+				}
+			} else if (value !== undefined && value !== null) {
+				input.value = String(value);
+			}
+		}
+	}
+
+	private _saveSetting(key: string, value: unknown): void {
+		void this._configurationService.updateValue(key, value);
+		console.log(`[Hermes Settings] Setting ${key} =`, value);
 	}
 
 	private _handleAction(action: string): void {

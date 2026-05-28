@@ -33,6 +33,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { PluginDetailEditorInput } from '../pluginDetailEditorInput.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
 
 // --- Constants ---
 
@@ -494,15 +495,27 @@ export class PluginsViewPane extends ViewPane {
 					this._selectedPlugin.set(selected.plugin, undefined);
 					// Open plugin detail in editor area (like VS Code native Extensions view)
 					try {
-						const input = PluginDetailEditorInput.getOrCreate(selected.plugin);
+						const input = new PluginDetailEditorInput(selected.plugin);
 						this.instantiationService.invokeFunction((accessor: any) => {
 							const editorService = accessor.get(IEditorService);
 							const editorGroupsService = accessor.get(IEditorGroupsService);
-							const groups = editorGroupsService.getGroups(0);
-							if (groups.length <= 1) {
-								editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+
+							// Close any existing PluginDetailEditorInput tabs so that
+							// switching plugins replaces the current tab rather than
+							// opening a new one each time.
+							for (const group of editorGroupsService.getGroups(0)) {
+								const existing = group.editors.find((ed: EditorInput) => ed instanceof PluginDetailEditorInput);
+								if (existing) {
+									group.closeEditor(existing, { preserveFocus: true });
+								}
+							}
+
+							// Re-query groups after closing (group layout may change)
+							const targetGroup = editorGroupsService.getGroups(0)[0];
+							if (targetGroup) {
+								editorService.openEditor(input, { pinned: true }, targetGroup);
 							} else {
-								editorService.openEditor(input, { pinned: true }, groups[0]);
+								editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
 							}
 						});
 					} catch (err) {

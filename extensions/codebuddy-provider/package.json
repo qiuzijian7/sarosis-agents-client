@@ -1,0 +1,134 @@
+{
+	"name": "sarosis-codebuddy-provider",
+	"displayName": "CodeBuddy Provider",
+	"description": "CodeBuddy AI 聊天模型提供者，提供与 CodeBuddy API 的集成能力。",
+	"version": "1.0.0",
+	"publisher": "sarosis",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.95.0"
+	},
+	"capabilities": {
+		"virtualWorkspaces": true,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"activationEvents": [
+		"*"
+	],
+	"main": "./out/extension.js",
+	"contributes": {
+		"chatPlugins": [
+			{
+				"path": "./plugin"
+			}
+		],
+		"languageModelChatProviders": [
+			{
+				"vendor": "codebuddy",
+				"displayName": "CodeBuddy"
+			}
+		],
+		"agentCapabilities": [
+			{
+				"capability": "model",
+				"provider": "codebuddy-provider",
+				"priority": 100
+			}
+		],
+		"configuration": {
+			"type": "object",
+			"title": "CodeBuddy Provider",
+			"properties": {
+			"codebuddy.endpoint": {
+				"type": "string",
+				"default": "https://copilot.tencent.com",
+				"description": "CodeBuddy API 服务端 base URL（默认 https://copilot.tencent.com）。",
+				"scope": "application"
+			},
+				"codebuddy.token": {
+					"type": "string",
+					"default": "",
+					"description": "CodeBuddy Access Token（登录后自动填充，无需手动配置）",
+					"scope": "application",
+					"markdownDescription": "CodeBuddy Access Token。通过 [CodeBuddy: Login](command:codebuddy.login) 命令登录后自动填充，无需手动配置。"
+				},
+				"codebuddy.model": {
+					"type": "string",
+					"default": "default",
+					"description": "默认模型名称（如：hunyuan-turbo、hunyuan-pro等）",
+					"scope": "application"
+				},
+			"codebuddy.models": {
+				"type": "string",
+				"default": "claude-sonnet-4.6,claude-sonnet-4.6-1m,claude-4.5,claude-haiku-4.5,claude-opus-4.7,claude-opus-4.7-1m,claude-opus-4.6,claude-opus-4.6-1m,claude-opus-4.5,gpt-5.4,gpt-5.3-codex,gpt-5.2,gpt-5.2-codex,gpt-5.1,gpt-5.1-codex,gpt-5.1-codex-max,gpt-5.1-codex-mini,gemini-3.1-pro,gemini-3.0-flash,gemini-2.5-pro,gemini-3.1-flash-lite,glm-5.1-ioa,glm-5.0-ioa,glm-5.0-turbo-ioa,glm-5v-turbo-ioa,glm-4.6-ioa,glm-4.6v-ioa,glm-4.7-ioa,deepseek-v3-2-volc-ioa,minimax-m2.5-ioa,minimax-m2.7-ioa,kimi-k2.5-ioa,kimi-k2-thinking,hunyuan-2.0-thinking-ioa,hunyuan-chat,hunyuan-image-v3.0-ioa,hunyuan-image-v2.0-general-edit-ioa",
+				"description": "可用模型列表（用英文逗号分隔）",
+				"scope": "application",
+				"markdownDescription": "可用模型列表，用英文逗号分隔。例如：`deepseek-v3.1,glm-5.1,claude-4.7-opus`\n\n留空则使用默认模型列表。"
+			},
+				"codebuddy.timeout": {
+					"type": "number",
+					"default": 60000,
+					"description": "请求超时时间（毫秒）。"
+				},
+				"codebuddy.apiKeyHelper": {
+					"type": "string",
+					"default": "",
+					"description": "用于获取 access token 的可执行命令路径（与 CodeBuddy 原生 apiKeyHelper 一致，每 300 秒执行一次）",
+					"scope": "application",
+					"markdownDescription": "用于获取 access token 的可执行命令路径。\n\n设置后，插件会定期执行该命令获取 token，无需手动登录。\n\n与 CodeBuddy 原生 `apiKeyHelper` 配置一致。"
+				},
+				"codebuddy.authPlatform": {
+					"type": "string",
+					"default": "ide",
+					"description": "cli-external-link 认证流程的 platform 参数（默认 ide）",
+					"scope": "application",
+					"markdownDescription": "cli-external-link 认证流程的 `platform` 查询参数。\n\n- `ide` — CodeBuddy IDE CN 使用的值（推荐）\n- `codebuddy-code` — CodeBuddy 官方使用的值\n- `CLI` — CodeBuddy CLI 使用的值\n- `VSCode` — VS Code 扩展使用的值\n\n如果登录失败，可尝试更换此值。"
+				},
+				"codebuddy.streaming": {
+					"type": "boolean",
+					"default": true,
+					"description": "启用流式响应。"
+				},
+				"codebuddy.status": {
+					"type": "string",
+					"default": "未登录",
+					"description": "登录状态",
+					"scope": "application",
+					"markdownDescription": "登录状态\n\n[点击登录](command:codebuddy.login)  [点击登出](command:codebuddy.logout)\n\n登录后 token、user、enterpriseId 等字段会自动填充。"
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "codebuddy.openSettings",
+				"title": "CodeBuddy: Open Settings"
+			},
+			{
+				"command": "codebuddy.refreshModels",
+				"title": "CodeBuddy: Refresh Model List"
+			},
+			{
+				"command": "codebuddy.login",
+				"title": "CodeBuddy: Login"
+			},
+			{
+				"command": "codebuddy.logout",
+				"title": "CodeBuddy: Logout"
+			}
+		]
+	},
+	"scripts": {
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./"
+	},
+	"dependencies": {
+		"@sarosis/shared": "file:../shared"
+	},
+	"devDependencies": {
+		"@types/node": "22.x",
+		"@types/vscode": "^1.95.0",
+		"typescript": "^6.0.3"
+	}
+}

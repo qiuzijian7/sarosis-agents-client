@@ -83,6 +83,15 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		const agents = this._getAgents();
 
 		if (agents.length === 0) {
+			// Check if knot.models is configured as fallback
+			const defaultModels = this._getDefaultModels();
+			if (defaultModels.length > 0) {
+				console.log(
+					`[Knot] provideLanguageModelChatInformation -> no agents configured, using ${defaultModels.length} default models from knot.models`,
+				);
+				return defaultModels;
+			}
+
 			console.log(
 				`[Knot] provideLanguageModelChatInformation -> no agents configured. Run 'Knot: Open Settings' and add at least one agent under 'knot.agents'.`,
 			);
@@ -437,6 +446,41 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			return [];
 		}
 		return raw.filter((a) => a && typeof a.id === 'string' && a.id.length > 0);
+	}
+
+	/** Parse models configuration (comma-separated string) and return model names */
+	private _parseModelsConfig(modelsConfig: string): string[] {
+		if (!modelsConfig) {
+			return [];
+		}
+		const modelNames = modelsConfig.split(',').map(m => m.trim()).filter(m => m.length > 0);
+		return modelNames;
+	}
+
+	/** Get default models from knot.models configuration */
+	private _getDefaultModels(): vscode.LanguageModelChatInformation[] {
+		const config = vscode.workspace.getConfiguration('knot');
+		const modelsConfig = config.get<string>('models') ?? '';
+		const modelNames = this._parseModelsConfig(modelsConfig);
+
+		if (modelNames.length === 0) {
+			return [];
+		}
+
+		// Create virtual "default" agent with these models
+		// The agentId will be 'default' - the server must have a "default" agent or the chat will fail
+		console.log(`[Knot] _getDefaultModels: returning ${modelNames.length} models from knot.models: [${modelNames.join(', ')}]`);
+		return modelNames.map(modelName => ({
+			id: `default::${modelName}`,
+			name: modelName,
+			family: 'default',
+			version: '1',
+			maxInputTokens: 32_000,
+			maxOutputTokens: 4_096,
+			tooltip: 'Default',
+			detail: `Default model: ${modelName}`,
+			capabilities: {},
+		}));
 	}
 
 	private _extractText(msg: vscode.LanguageModelChatRequestMessage): string {
