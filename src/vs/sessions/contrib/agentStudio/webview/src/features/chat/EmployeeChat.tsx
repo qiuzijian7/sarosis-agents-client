@@ -92,7 +92,7 @@ const StreamingBubble = memo(function StreamingBubble({
 				)}
 
 				{/* Streaming sub-agents */}
-				{subAgents.length > 0 && (
+				{subAgents && subAgents.length > 0 && (
 					<SubAgentCard subAgents={subAgents} isStreaming={true} />
 				)}
 
@@ -100,7 +100,8 @@ const StreamingBubble = memo(function StreamingBubble({
 				{sanitizedText && (
 					<div className="message-text">
 						{(() => {
-							const visibleToolCalls = toolCalls.filter(tc => tc.defaultShow !== false);
+							const safeToolCalls = Array.isArray(toolCalls) ? toolCalls : [];
+							const visibleToolCalls = safeToolCalls.filter(tc => tc && tc.defaultShow !== false);
 							const toolCallNodes = visibleToolCalls.map(tc => (
 								<ToolCallCard key={tc.id} toolCall={{
 									...tc,
@@ -139,7 +140,7 @@ const StreamingBubble = memo(function StreamingBubble({
 				)}
 
 				{/* Typing dots — only when nothing else is showing */}
-				{!textBuffer && !thinkingBuffer && !errorMessage && toolCalls.length === 0 && subAgents.length === 0 && (
+				{!textBuffer && !thinkingBuffer && !errorMessage && (!toolCalls || toolCalls.length === 0) && (!subAgents || subAgents.length === 0) && (
 					<div className="typing-indicator">
 						<span className="typing-dot">●</span>
 						<span className="typing-dot">●</span>
@@ -445,7 +446,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				console.error('[EmployeeChat] No active employee for plan command');
 				return;
 			}
-			
+
 			// Don't add user message yet — wait for plan approval in dialog
 			try {
 				const plan = await useOrchestrationStore.getState().createPlan(goal, workspaceId, plannerId);
@@ -549,7 +550,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			<div className="employee-chat">
 				{/* Chat Header */}
 				<div className="chat-header">
-	
+
 
 					<img
 						src={activeEmployee.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeEmployee.id}`}

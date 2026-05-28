@@ -750,7 +750,15 @@ export interface ChatMessage {
 	toolCalls?: ToolCall[];
 	thinking?: string;
 	timestamp: string;
-	tokenUsage?: { input: number; output: number; total: number };
+	tokenUsage?: {
+		input: number;
+		output: number;
+		total: number;
+		/** KV Cache: tokens read from cache (Anthropic cache_read_input_tokens / OpenAI cached_tokens). */
+		cached?: number;
+		/** KV Cache: tokens written to cache (Anthropic cache_creation_input_tokens). */
+		cacheWrite?: number;
+	};
 	/** Metadata for special message types (e.g., orchestration_plan for inline plan approval) */
 	metadata?: ChatMessageMetadata;
 	/** References used by AI (files, code, etc.) - VS Code chatReferencesContentPart pattern */

@@ -29,13 +29,14 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
-import { ILanguageModelsService, IChatMessage, IChatResponsePart, IChatResponseToolUsePart, ChatMessageRole, ILanguageModelChatMetadata } from '../../../../workbench/contrib/chat/common/languageModels.js';
+import { ILanguageModelsService, IChatMessage, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import {
 	IModelProvider,
 	IModelInfo,
 	IModelAgentInfo,
 	IModelDelta,
+	IModelUsage,
 	IModelOptions,
 	IChatContext,
 	IChatMessage as IAgentChatMessage,
@@ -309,23 +310,23 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 	}
 
 	private _toModelDelta(part: IChatResponsePart): IModelDelta | undefined {
+		// ── 防御性 string-coercion ────────────────────────────────────────
+		// IChatResponsePart 来自第三方 LM 扩展（Copilot / Knot / 自研 vendor 等），
+		// 协议未对 `value` 字段强制做 string 校验。实测中：
+		//  • 部分 reasoning 模型在思考阶段会发出 type='text' 但 value=undefined 的
+		//    占位 part（仅作为 stream keep-alive 信号）；
+		//  • 某些 Knot AG-UI 流转层在 chunk 拆分边界会产生 value 为 null 的尾包。
+		// 若直接 return { content: part.value } 透传，下游虽然在 += 累积处用了
+		// `?? ''` 但 webview 端的 ${chunk.content} 模板字面量会把 undefined 渲染成
+		// 字符串 "undefined"，导致 assistant 消息被海量 "undefinedundefined…" 污染。
+		// 这里在桥接层统一做 coercion，保证 IModelDelta.content 永远是 string。
+		const safeStr = (v: unknown): string => (typeof v === 'string' ? v : '');
+
 		switch (part.type) {
-		case 'text': {
-			const textValue = part.value;
-			// Defensive: some providers (e.g. Knot) may emit 'undefined' as a string
-			// for unhandled event types. Filter these out to avoid polluting the chat.
-			if (typeof textValue !== 'string' || textValue === 'undefined' || textValue === '') {
-				return undefined;
-			}
-			return { type: 'text', content: textValue };
-		}
-		case 'thinking': {
-			const thinkValue = typeof (part as { value?: unknown }).value === 'string' ? (part as { value: string }).value : '';
-			if (thinkValue === 'undefined' || thinkValue === '') {
-				return undefined;
-			}
-			return { type: 'thinking', content: thinkValue };
-		}
+			case 'text':
+				return { type: 'text', content: safeStr(part.value) };
+			case 'thinking':
+				return { type: 'thinking', content: safeStr((part as { value?: unknown }).value) };
 			case 'tool_use': {
 				const toolPart = part as IChatResponseToolUsePart;
 				const rawParams = toolPart.parameters;
@@ -333,7 +334,6 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				let displayName: string | undefined;
 				let renderType: string | undefined;
 				let defaultShow: boolean | undefined;
-				let serverExecuted: boolean | undefined;
 
 				// Extract _meta from parameters if present (set by Knot AG-UI extension)
 				if (rawParams && typeof rawParams === 'object' && '_meta' in (rawParams as object)) {
@@ -342,11 +342,6 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						displayName = meta.display_name as string | undefined;
 						renderType = meta.render_type as string | undefined;
 						defaultShow = meta.default_show as boolean | undefined;
-						serverExecuted = meta.server_executed as boolean | undefined;
-						// Normalize: render_type="none" implies defaultShow=false
-						if (renderType && renderType.toLowerCase() === 'none' && defaultShow === undefined) {
-							defaultShow = false;
-						}
 					}
 					// Strip _meta from the parameters before passing to tool
 					const cleanParams = { ...(rawParams as Record<string, unknown>) };
@@ -367,9 +362,40 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						displayName,
 						renderType,
 						defaultShow,
-						serverExecuted,
 					},
 				};
+			}
+			case 'step': {
+				// ── KnotBridge prompt-cache metric 透传 ──────────────────────────────
+				// Knot AG-UI 扩展在每个 LLM call_llm step 结束时（phase='end'）随
+				// tokenUsage 一起上报 prompt_tokens_details.cached_tokens 和
+				// cache_write_tokens。
+				// 若不在这里解析并转为 IModelDelta usage，这些指标会被 default 分支
+				// 丢弃，导致走 Knot 路由时 UI 始终看不到 KV Cache 命中数。
+				const stepPart = part as IChatResponseStepPart;
+				if (stepPart.phase === 'end' && stepPart.tokenUsage) {
+					const tu = stepPart.tokenUsage;
+					const usage: IModelUsage = {
+						inputTokens: tu.prompt_tokens ?? undefined,
+						outputTokens: tu.completion_tokens ?? undefined,
+						// cached_tokens 的类型是 number | null（Knot AG-UI 协议），
+						// IModelUsage 期望 number | undefined，null 需显式转为 undefined
+						cachedTokens: tu.prompt_tokens_details?.cached_tokens != null
+							? tu.prompt_tokens_details.cached_tokens
+							: undefined,
+						cacheWriteTokens: tu.prompt_tokens_details?.cache_write_tokens ?? undefined,
+					};
+					// 仅当至少有一项指标时才 yield，避免发出全 undefined 的噪音 delta
+					if (
+						usage.inputTokens !== undefined ||
+						usage.outputTokens !== undefined ||
+						usage.cachedTokens !== undefined ||
+						usage.cacheWriteTokens !== undefined
+					) {
+						return { type: 'usage', usage };
+					}
+				}
+				return undefined; // step start / no usage — skip
 			}
 			default:
 				return undefined; // data parts and others — ignored for now

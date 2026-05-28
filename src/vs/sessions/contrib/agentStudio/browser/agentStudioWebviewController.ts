@@ -15,7 +15,6 @@ import { IInstantiationService } from "../../../../platform/instantiation/common
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import { URI } from "../../../../base/common/uri.js";
-import { VSBuffer } from "../../../../base/common/buffer.js";
 import { mainWindow } from "../../../../base/browser/window.js";
 import {
 	IAgentStudioService,
@@ -32,7 +31,6 @@ import {
 	IEnvironmentService,
 	type INativeEnvironmentService,
 } from "../../../../platform/environment/common/environment.js";
-import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import type {
 	RequestType,
 	IResponseMessage,
@@ -49,9 +47,9 @@ import { IModelSelectorService } from "../common/modelSelector.js";
 import { IAgentOSService } from "../common/agentOS.js";
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
-import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
-import { IOpenerService } from "../../../../platform/opener/common/opener.js";
+import { VSBuffer } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
+import { IOpenerService } from "../../../../platform/opener/common/opener.js";
 import {
 	IEditorService,
 	SIDE_GROUP,
@@ -118,8 +116,6 @@ export class AgentStudioWebviewController extends Disposable {
 	 */
 	private _activeChatEmployeeId: string | undefined;
 	private _activeChatAgentSessionId: string | undefined;
-	private _chatStreamLogUri: URI | undefined;
-	private _chatStreamLogBuffer: string[] | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -152,8 +148,6 @@ export class AgentStudioWebviewController extends Disposable {
 		@IOpenerService private readonly openerService: IOpenerService,
 		@IConfigMdService private readonly _configMdService: IConfigMdService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
-		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IModelService private readonly modelService: IModelService,
 	) {
 		super();
@@ -415,12 +409,6 @@ export class AgentStudioWebviewController extends Disposable {
 							| undefined,
 					} as never,
 				);
-
-			// ─── Last Active Workspace ────────────────────────────────
-			case "workspace.setActive":
-				return this.agentStudioService.setLastActiveWorkspaceId(p.id as string | null);
-			case "workspace.getActive":
-				return this.agentStudioService.getLastActiveWorkspaceId();
 
 			// ─── Connections ────────────────────────────────────────
 			case "workspace.connections.list":
@@ -786,31 +774,33 @@ export class AgentStudioWebviewController extends Disposable {
 				const fp = p as unknown as IFileOpenPayload;
 				return this._handleOpenHtmlPreview(fp);
 			}
-		case "files.openUntitledText": {
-			const fp = p as unknown as IFileOpenUntitledTextPayload;
-			return this._handleOpenUntitledText(fp);
-		}
-		case "files.applyCode": {
-			const ap = p as unknown as IFileApplyCodePayload;
-			return this._handleApplyCode(ap);
-		}
-		case "chat.jumpToCheckpoint": {
-			const cp = p as unknown as IChatJumpToCheckpointPayload;
-			return this._handleJumpToCheckpoint(cp);
-		}
-		case "chat.toolApprove": {
-			const tp = p as unknown as IChatToolApprovePayload;
-			return this._handleToolApprove(tp);
-		}
+			case "files.openUntitledText": {
+				const fp = p as unknown as IFileOpenUntitledTextPayload;
+				return this._handleOpenUntitledText(fp);
+			}
 
-		// ─── Skills ────────────────────────────────────────────
-		case "skills.list":
-			return this._handleSkillsList();
+			case "files.applyCode": {
+				const ap = p as unknown as IFileApplyCodePayload;
+				return this._handleApplyCode(ap);
+			}
+			case "chat.jumpToCheckpoint": {
+				const cp = p as unknown as IChatJumpToCheckpointPayload;
+				return this._handleJumpToCheckpoint(cp);
+			}
+			case "chat.toolApprove": {
+				const tp = p as unknown as IChatToolApprovePayload;
+				return this._handleToolApprove(tp);
+			}
 
-		default:
-			throw new Error(`Unknown message type: ${type}`);
+			// ─── Skills ────────────────────────────────────────────
+			case "skills.list":
+				return this._handleSkillsList();
+
+			default:
+				throw new Error(`Unknown message type: ${type}`);
+
+		}
 	}
-}
 
 	/**
 	 * Webview tells us which (employeeId, agentSessionId) is currently
@@ -861,20 +851,6 @@ export class AgentStudioWebviewController extends Disposable {
 		let agentSessionId = payload.agentSessionId as string | undefined;
 		const workspaceSessionId = payload.workspaceSessionId as string | undefined;
 		const workspaceId = payload.workspaceId as string | undefined;
-		const chatMode = payload.chatMode as string | undefined;
-
-		// ─── Coder Agent 执行日志 ─────────────────────────────────────
-		const traceMsg1 = `[CoderTrace] _handleChatSend: employeeId=${employeeId}, message="${message.slice(0, 80)}${message.length > 80 ? '...' : ''}", chatMode=${chatMode}, agentSessionId=${agentSessionId}, workspaceId=${workspaceId}`;
-		this.logService.info(traceMsg1);
-		this._sendEvent('debug.trace', { message: traceMsg1 });
-
-		// ─── Workflow mode: delegate to orchestration service ───────────
-		// When the user selects "Workflow" mode in the chat, the message
-		// is routed to executeWorkflow which runs the agent chain.
-		if (chatMode === 'workflow' && workspaceId) {
-			this._runWorkflowStream(employeeId, message, workspaceId, agentSessionId);
-			return { status: "streaming", employeeId };
-		}
 
 		// If we're in a Fork but no agentSessionId was provided, lazily create one
 		if (workspaceId && workspaceSessionId && !agentSessionId) {
@@ -902,8 +878,25 @@ export class AgentStudioWebviewController extends Disposable {
 			return { status: "streaming", employeeId };
 		}
 
-		// User message persistence is handled inside agentChatService.sendMessage
-		// (which _runChatStream calls). Avoid duplicate saves here.
+		// Persist the user message to chat history so it survives refreshes.
+		const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
+		{
+			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+			role: "user",
+			content: message,
+			employeeId,
+			agentSessionId,
+			timestamp: new Date().toISOString(),
+		};
+		this.agentChatService
+			.appendMessage(employeeId, userMessage)
+			.catch((err) =>
+				this.logService.error(
+					"[AgentStudio] Failed to persist user message:",
+					err,
+				),
+			);
+
 		this._runChatStream(employeeId, message, payload);
 
 		return { status: "streaming", employeeId };
@@ -952,8 +945,24 @@ export class AgentStudioWebviewController extends Disposable {
 				agentSessionId,
 			});
 
-		// User message persistence is handled inside agentChatService.sendMessage
-		// (which _runChatStream calls). Avoid duplicate saves here.
+			// Persist the user message under the resolved session.
+			const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
+			{
+				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+				role: "user",
+				content: message,
+				employeeId,
+				agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
+			this.agentChatService
+				.appendMessage(employeeId, userMessage)
+				.catch((err) =>
+					this.logService.error(
+						"[AgentStudio] Failed to persist user message:",
+						err,
+					),
+				);
 
 			// Run the chat stream with the resolved agentSessionId.
 			const enrichedPayload = { ...payload, agentSessionId };
@@ -991,8 +1000,24 @@ export class AgentStudioWebviewController extends Disposable {
 			);
 			const agentSessionId = entry.sessionId;
 
-		// User message persistence is handled inside agentChatService.sendMessage
-		// (which _runChatStream calls). Avoid duplicate saves here.
+			// Persist the user message with the resolved agentSessionId
+			const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
+			{
+				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
+				role: "user",
+				content: message,
+				employeeId,
+				agentSessionId,
+				timestamp: new Date().toISOString(),
+			};
+			this.agentChatService
+				.appendMessage(employeeId, userMessage)
+				.catch((err) =>
+					this.logService.error(
+						"[AgentStudio] Failed to persist user message:",
+						err,
+					),
+				);
 
 			// Notify webview of the newly assigned agentSessionId
 			this._sendEvent("workspace.sessionUpdated", {
@@ -1019,119 +1044,6 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
-	 * Create a log file for chat stream debugging.
-	 * Creates a new log file in the logs directory with timestamp, employeeId, and sessionId.
-	 */
-	private _createChatStreamLog(employeeId: string, sessionId: string): void {
-		// Check if chat stream logging is enabled
-		const loggingEnabled = this._configurationService.getValue<boolean>('sessions.agentStudio.chatStreamLog.enabled');
-		if (!loggingEnabled) {
-			return;
-		}
-
-		try {
-			// Get workspace folder path
-			const workspaceFolders = this._workspaceContextService.getWorkspace().folders;
-			if (workspaceFolders.length === 0) {
-				this.logService.error('[AgentStudio] No workspace folder found, cannot create chat stream log');
-				return;
-			}
-			const workspaceUri = workspaceFolders[0].uri;
-			
-			// Create logs directory URI
-			const logsDirUri = URI.joinPath(workspaceUri, 'logs', 'chat-streams');
-			
-			// Generate log file name with timestamp, employeeId, and sessionId
-			const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-			const logFileName = `chat-stream-${employeeId}-${sessionId}-${timestamp}.log`;
-			this._chatStreamLogUri = URI.joinPath(logsDirUri, logFileName);
-
-			// Initialize buffer and write header
-			this._chatStreamLogBuffer = [];
-			this._writeChatStreamLog('--- Chat Stream Log Started ---');
-			this._writeChatStreamLog(`EmployeeId: ${employeeId}`);
-			this._writeChatStreamLog(`SessionId: ${sessionId}`);
-			this._writeChatStreamLog(`Timestamp: ${timestamp}`);
-			this._writeChatStreamLog('---');
-			
-			// Flush buffer to create the file
-			this._flushChatStreamLog();
-		} catch (error) {
-			this.logService.error('[AgentStudio] Failed to create chat stream log:', error);
-		}
-	}
-
-	/**
-	 * Write a line to the chat stream log file.
-	 */
-	private _writeChatStreamLog(line: string): void {
-		if (this._chatStreamLogBuffer) {
-			this._chatStreamLogBuffer.push(line);
-			// Flush if buffer reaches threshold (100 lines)
-			if (this._chatStreamLogBuffer.length >= 100) {
-				this._flushChatStreamLog();
-			}
-		}
-	}
-
-	/**
-	 * Flush the chat stream log buffer to file.
-	 */
-	private async _flushChatStreamLog(): Promise<void> {
-		if (!this._chatStreamLogUri || !this._chatStreamLogBuffer || this._chatStreamLogBuffer.length === 0) {
-			return;
-		}
-
-		try {
-			const content = this._chatStreamLogBuffer.join('\n') + '\n';
-			const buffer = VSBuffer.fromString(content);
-			
-			// Check if file exists
-			const fileExists = await this.fileService.exists(this._chatStreamLogUri);
-			
-			if (fileExists) {
-				// Read existing content and append
-				const existingContent = await this.fileService.readFile(this._chatStreamLogUri);
-				const existingString = existingContent.value.toString();
-				const newContent = existingString + content;
-				await this.fileService.writeFile(this._chatStreamLogUri, VSBuffer.fromString(newContent));
-			} else {
-				// Create new file
-				await this.fileService.writeFile(this._chatStreamLogUri, buffer);
-			}
-			
-			// Clear buffer
-			this._chatStreamLogBuffer = [];
-		} catch (error) {
-			this.logService.error('[AgentStudio] Failed to flush chat stream log:', error);
-		}
-	}
-
-	/**
-	 * Write a chat stream chunk to the log file.
-	 */
-	private _writeChatStreamChunk(chunk: IChatStreamDelta): void {
-		try {
-			const chunkStr = JSON.stringify(chunk, null, 2);
-			this._writeChatStreamLog(`CHUNK: ${chunkStr}`);
-		} catch (error) {
-			this.logService.error('[AgentStudio] Failed to write chat stream chunk:', error);
-		}
-	}
-
-	/**
-	 * Close the chat stream log file.
-	 */
-	private async _closeChatStreamLog(): Promise<void> {
-		if (this._chatStreamLogUri && this._chatStreamLogBuffer) {
-			this._writeChatStreamLog('--- Chat Stream Log Ended ---');
-			await this._flushChatStreamLog();
-			this._chatStreamLogUri = undefined;
-			this._chatStreamLogBuffer = undefined;
-		}
-	}
-
-	/**
 	 * Run the chat stream in the background. This is fire-and-forget from
 	 * the webview's perspective — all results flow through events.
 	 */
@@ -1143,14 +1055,6 @@ export class AgentStudioWebviewController extends Disposable {
 		const agentSessionId = payload.agentSessionId as string | undefined;
 		const sessionIdForEvent = agentSessionId || "";
 		let capturedProviderSessionId: string | undefined;
-
-		const traceMsg2 = `[CoderTrace] _runChatStream START: employeeId=${employeeId}, model=${payload.model}, chatMode=${payload.chatMode}, explicitSkillIds=${JSON.stringify(payload.explicitSkillIds)}`;
-		this.logService.info(traceMsg2);
-		this._sendEvent('debug.trace', { message: traceMsg2 });
-
-		// Create chat stream log file
-		this._createChatStreamLog(employeeId, sessionIdForEvent);
-
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
@@ -1162,7 +1066,6 @@ export class AgentStudioWebviewController extends Disposable {
 					workspaceId: payload.workspaceId as string | undefined,
 					agentSessionId,
 					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
-					chatMode: payload.chatMode as import("../../../common/agentStudioService.js").ChatMode | undefined,
 				},
 				(delta: IChatStreamDelta) => {
 					// Capture provider session ID from metadata (e.g. Knot AG-UI threadId)
@@ -1175,15 +1078,33 @@ export class AgentStudioWebviewController extends Disposable {
 							capturedProviderSessionId = psid;
 						}
 					}
-				this._sendEvent("chat.stream.delta", {
-					employeeId,
-					sessionId: sessionIdForEvent,
-					chunks: [delta],
-				});
-				// Write chunk to log file
-				this._writeChatStreamChunk(delta);
-			},
-		);
+					// ── 最终防线：strip undefined/non-string from the chunk before
+					// sending across the host→webview boundary ─────────────────
+					// Even though all upstream layers (BYOK, LM bridge, executionProvider,
+					// agentOSService._adaptModelDelta) now coerce content to string, this
+					// is the single funnel through which every text delta reaches the
+					// webview's textBuffer. A defensive scrub here guarantees that even
+					// if a future provider regression yields undefined in `content` /
+					// `error`, the webview never sees the literal "undefined" string
+					// produced by template-string coercion.
+					const safeChunk = (() => {
+						const d: any = delta;
+						const out: any = { ...d };
+						if ('content' in out && typeof out.content !== 'string') {
+							out.content = '';
+						}
+						if ('error' in out && typeof out.error !== 'string') {
+							out.error = out.error == null ? undefined : String(out.error);
+						}
+						return out;
+					})();
+					this._sendEvent("chat.stream.delta", {
+						employeeId,
+						sessionId: sessionIdForEvent,
+						chunks: [safeChunk],
+					});
+				},
+			);
 
 			// If we captured a provider session ID, persist it to the session index
 			if (capturedProviderSessionId && agentSessionId) {
@@ -1240,20 +1161,8 @@ export class AgentStudioWebviewController extends Disposable {
 				sessionId: sessionIdForEvent,
 				message: chatMessage,
 			});
-
-			// Close chat stream log file
-			await this._closeChatStreamLog();
-
-			this.logService.info(
-				`[CoderTrace] _runChatStream COMPLETE: employeeId=${employeeId}, responseLen=${chatMessage?.content?.length ?? 0}, toolCalls=${chatMessage?.toolCalls?.length ?? 0}`,
-			);
-			this._sendEvent('debug.trace', { message: `[CoderTrace] _runChatStream COMPLETE: employeeId=${employeeId}, responseLen=${chatMessage?.content?.length ?? 0}, toolCalls=${chatMessage?.toolCalls?.length ?? 0}` });
 		} catch (error) {
 			const errMsg = error instanceof Error ? error.message : String(error);
-			this.logService.error(
-				`[CoderTrace] _runChatStream ERROR for ${employeeId}: ${errMsg}`,
-			);
-			this._sendEvent('debug.trace', { message: `[CoderTrace] _runChatStream ERROR for ${employeeId}: ${errMsg}` });
 			this.logService.error(
 				`[AgentStudio] _runChatStream error for ${employeeId}:`,
 				error,
@@ -1268,76 +1177,6 @@ export class AgentStudioWebviewController extends Disposable {
 			this._sendEvent("chat.stream.complete", {
 				employeeId,
 				sessionId: sessionIdForEvent,
-				message: { content: "", error: errMsg },
-			});
-
-			// Close chat stream log file
-			await this._closeChatStreamLog();
-		}
-	}
-
-	/**
-	 * Run a workflow stream: persist the user message, then delegate to
-	 * TaskOrchestrationService.executeWorkflow which drives the agent chain.
-	 * The orchestration service handles the actual streaming via its own
-	 * _streamEventCallback, so we just kick off the workflow and let it run.
-	 */
-	private async _runWorkflowStream(
-		employeeId: string,
-		message: string,
-		workspaceId: string,
-		agentSessionId?: string,
-	): Promise<void> {
-		// Persist the user message to chat history
-		const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage = {
-			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
-			role: "user",
-			content: message,
-			employeeId,
-			agentSessionId,
-			timestamp: new Date().toISOString(),
-			metadata: { type: 'workflow' },
-		};
-		this.agentChatService
-			.appendMessage(employeeId, userMessage)
-			.catch((err) =>
-				this.logService.error(
-					"[AgentStudio] Failed to persist workflow user message:",
-					err,
-				),
-			);
-
-		try {
-			const planId = await this.taskOrchestrationService.executeWorkflow(
-				employeeId,
-				message,
-				workspaceId,
-				{ agentSessionId },
-			);
-			this.logService.info(`[AgentStudio] Workflow started: planId=${planId}, agentId=${employeeId}`);
-
-			// Auto-open Task Overview to show the workflow progress
-			try {
-				const input = TaskOverviewEditorInput.getOrCreate();
-				const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-				const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-				await this.editorService.openEditor(input, { pinned: true, preserveFocus: true }, targetGroup);
-			} catch (err) {
-				this.logService.warn('[AgentStudio] Failed to auto-open TaskOverviewEditorPane for workflow:', err);
-			}
-		} catch (err) {
-			const errMsg = err instanceof Error ? err.message : String(err);
-			this.logService.error(`[AgentStudio] executeWorkflow error for ${employeeId}:`, err);
-
-			this._sendEvent("chat.stream.error", {
-				employeeId,
-				sessionId: agentSessionId || "",
-				error: errMsg,
-			});
-
-			this._sendEvent("chat.stream.complete", {
-				employeeId,
-				sessionId: agentSessionId || "",
 				message: { content: "", error: errMsg },
 			});
 		}
@@ -1481,8 +1320,7 @@ export class AgentStudioWebviewController extends Disposable {
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 
 		this.logService.info(
-			`[AgentStudioWebviewController] files.open → ${resource.toString()}` +
-			(payload.lineNumber ? `:${payload.lineNumber}` : ''),
+			`[AgentStudioWebviewController] files.open → ${resource.toString()}`,
 		);
 		await this.editorService.openEditor(
 			{
@@ -1490,9 +1328,6 @@ export class AgentStudioWebviewController extends Disposable {
 				options: {
 					preserveFocus: payload.preserveFocus ?? false,
 					pinned: payload.pinned ?? false,
-					selection: payload.lineNumber
-						? { startLineNumber: payload.lineNumber, startColumn: 1, endLineNumber: payload.lineNumber, endColumn: 1 }
-						: undefined,
 				},
 			},
 			targetGroup,
@@ -1514,48 +1349,6 @@ export class AgentStudioWebviewController extends Disposable {
 	 * Demo clicks open distinct tabs instead of re-using the same dirty
 	 * buffer.
 	 */
-	private async _handleOpenUntitledText(
-		payload: IFileOpenUntitledTextPayload,
-	): Promise<void> {
-		const contents = payload.contents ?? "";
-		const languageId = payload.languageId || "plaintext";
-		// Synthesise an untitled URI. Including the title (if any) makes the
-		// tab label readable; appending a counter avoids collisions when the
-		// user clicks the same Demo button repeatedly.
-		const safeTitle =
-			(payload.title || "Untitled")
-				.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
-				.slice(0, 64) || "Untitled";
-		const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-		const resource = URI.from({
-			scheme: "untitled",
-			path: `/${safeTitle}-${id}`,
-		});
-
-		const groups = this.editorGroupsService.getGroups(
-			GroupsOrder.CREATION_TIME,
-		);
-		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-
-		this.logService.info(
-			`[AgentStudioWebviewController] files.openUntitledText → ${resource.toString()} ` +
-			`(${contents.length} chars, languageId=${languageId})`,
-		);
-
-		await this.editorService.openEditor(
-			{
-				resource,
-				contents,
-				languageId,
-				options: {
-					preserveFocus: payload.preserveFocus ?? false,
-					pinned: payload.pinned ?? true,
-				},
-			},
-			targetGroup,
-		);
-	}
-
 	/**
 	 * Apply code content to a file (Void-inspired Apply Code Blocks).
 	 * Writes the code content to the specified file path, replacing existing content.
@@ -1599,7 +1392,6 @@ export class AgentStudioWebviewController extends Disposable {
 			`[AgentStudioWebviewController] chat.jumpToCheckpoint → ${payload.checkpointId}`,
 		);
 		// TODO: Implement checkpoint restoration with file snapshots
-		// This will require the ToolApprovalService and EditCodeService integration
 	}
 
 	/**
@@ -1613,9 +1405,49 @@ export class AgentStudioWebviewController extends Disposable {
 			`[AgentStudioWebviewController] chat.toolApprove → ${payload.toolCallId} decision=${payload.decision}`,
 		);
 		// The approval decision is handled by the ToolApprovalService's pending request system.
-		// When a tool is waiting for approval, its request is stored with a resolve callback.
-		// We need to find and resolve that pending request here.
 		// This will be wired up when the full approval flow is implemented in the agent loop.
+	}
+
+	private async _handleOpenUntitledText(
+		payload: IFileOpenUntitledTextPayload,
+	): Promise<void> {
+		const contents = payload.contents ?? "";
+		const languageId = payload.languageId || "plaintext";
+		// Synthesise an untitled URI. Including the title (if any) makes the
+		// tab label readable; appending a counter avoids collisions when the
+		// user clicks the same Demo button repeatedly.
+		const safeTitle =
+			(payload.title || "Untitled")
+				.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
+				.slice(0, 64) || "Untitled";
+		const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+		const resource = URI.from({
+			scheme: "untitled",
+			path: `/${safeTitle}-${id}`,
+		});
+
+		const groups = this.editorGroupsService.getGroups(
+			GroupsOrder.CREATION_TIME,
+		);
+		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+
+		this.logService.info(
+			`[AgentStudioWebviewController] files.openUntitledText → ${resource.toString()} ` +
+			`(${contents.length} chars, languageId=${languageId})`,
+		);
+
+		await this.editorService.openEditor(
+			{
+				resource,
+				contents,
+				languageId,
+				options: {
+					preserveFocus: payload.preserveFocus ?? false,
+					pinned: payload.pinned ?? true,
+				},
+			},
+			targetGroup,
+		);
 	}
 
 	/**
@@ -1828,6 +1660,19 @@ export class AgentStudioWebviewController extends Disposable {
 			this.agentTaskBoardService.onDidChangeTaskBoard(() => {
 				this._sendEvent("taskBoard.changed", {});
 			}),
+		);
+
+		// Listen for agent session list changes (create/rename/delete/update after message)
+		// and push agentSessions.changed to the webview so the L0 panel refreshes automatically.
+		this._register(
+			this.agentChatService.onDidChangeAgentSessions(
+				({ employeeId }: { employeeId: string }) => {
+					this.logService.info(
+						`[AgentStudio] agentSessions changed for ${employeeId}, notifying webview`,
+					);
+					this._sendEvent("agentSessions.changed", { employeeId });
+				},
+			),
 		);
 
 		// Listen for active workspace switching from the global toolbar

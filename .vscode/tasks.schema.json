@@ -1,0 +1,116 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "sarosis tasks.json",
+	"description": "Permissive schema for the sarosis fork. Same shape as the built-in VS Code tasks schema, but allows additional fields used by the fork (e.g. `inAgents` consumed by sessionsTasksService) and a wider problemMatcher set ($tsgo-watch, $tsc-watch, ...).",
+	"type": "object",
+	"properties": {
+		"version": {
+			"type": "string"
+		},
+		"windows": {
+			"type": "object",
+			"additionalProperties": true
+		},
+		"linux": {
+			"type": "object",
+			"additionalProperties": true
+		},
+		"osx": {
+			"type": "object",
+			"additionalProperties": true
+		},
+		"tasks": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"additionalProperties": true,
+				"properties": {
+					"label": { "type": "string" },
+					"type": { "type": "string" },
+					"command": { "type": "string" },
+					"script": { "type": "string" },
+					"task": { "type": "string" },
+					"args": {
+						"type": "array"
+					},
+					"options": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"isBackground": { "type": "boolean" },
+					"presentation": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"group": {
+						"oneOf": [
+							{ "type": "string" },
+							{
+								"type": "object",
+								"additionalProperties": true
+							}
+						]
+					},
+					"problemMatcher": {
+						"oneOf": [
+							{ "type": "string" },
+							{
+								"type": "object",
+								"additionalProperties": true
+							},
+							{
+								"type": "array",
+								"items": {
+									"oneOf": [
+										{ "type": "string" },
+										{
+											"type": "object",
+											"additionalProperties": true
+										}
+									]
+								}
+							}
+						]
+					},
+					"dependsOn": {
+						"oneOf": [
+							{ "type": "string" },
+							{
+								"type": "array",
+								"items": { "type": "string" }
+							}
+						]
+					},
+					"dependsOrder": {
+						"type": "string",
+						"enum": ["parallel", "sequence"]
+					},
+					"detail": { "type": "string" },
+					"runOptions": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"hide": { "type": "boolean" },
+					"icon": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"customize": { "type": "string" },
+
+					"inAgents": {
+						"type": "boolean",
+						"description": "sarosis fork: when true, this task is exposed to the Agents run button (consumed by sessionsTasksService)."
+					}
+				}
+			}
+		},
+		"inputs": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"additionalProperties": true
+			}
+		}
+	},
+	"additionalProperties": true
+}

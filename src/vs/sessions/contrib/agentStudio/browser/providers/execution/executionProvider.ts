@@ -63,17 +63,62 @@ export class ExecutionProvider implements IExecutionProvider {
 		// 3. 初始化消息历史
 		let messages: IChatMessage[] = [...request.messages];
 
-		// 4. 加载记忆上下文（如果有 Memory Provider）
+		// 4. 加载记忆上下文（冻结快照模式，借鉴 Hermes Agent）
+		// ── 设计说明 ──────────────────────────────────────────────────────────
+		// Hermes 的"冻结快照"：会话开始时把 Persona/L1 注入 system prompt，
+		// 会话内不再刷新（中途写入的新记忆下次会话才生效）。
+		// 好处：保持 KV prefix cache 稳定，prefix 不变则推理服务端可复用计算结果。
+		// 参见：doc/Memory-Strategy.md §4.2 / §五.2
 		if (memoryProvider) {
 			try {
-				const memoryContext = await memoryProvider.loadContext(request.agentId, request.sessionId || '');
-				// 将记忆合并到系统消息中
-				if (memoryContext.systemPrompt) {
+				// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
+				// 做 FTS5/embedding 匹配，而不是占位字符串（详见 IMemoryProvider.loadContext 注释）
+				const recallQuery = [...request.messages].reverse().find(m => m.role === 'user')?.content ?? '';
+				const memoryContext = await memoryProvider.loadContext(request.agentId, request.sessionId || '', recallQuery);
+
+				// ── 收集所有记忆内容 ──
+				const memoryParts: string[] = [];
+
+				// longTermMemories（L1/L2 召回内容）——TDB-AM 的核心记忆
+				if (memoryContext.longTermMemories && memoryContext.longTermMemories.length > 0) {
+					const ltContents = memoryContext.longTermMemories
+						.map(m => m.content)
+						.filter(Boolean)
+						.join('\n\n');
+					if (ltContents.trim().length > 0) {
+						memoryParts.push(`## Long-term Memory (TDB-AM Recall)\n\n${ltContents}`);
+					}
+				}
+
+				// shortTermMemories（最近几轮摘要，通常为空，因 TDB-AM 不填此字段）
+				if (memoryContext.shortTermMemories && memoryContext.shortTermMemories.length > 0) {
+					const stContents = memoryContext.shortTermMemories
+						.map(m => m.content)
+						.filter(Boolean)
+						.join('\n\n');
+					if (stContents.trim().length > 0) {
+						memoryParts.push(`## Short-term Memory\n\n${stContents}`);
+					}
+				}
+
+				// systemPrompt（第三方 Memory Provider 可能直接返回格式化字符串）
+				if (memoryContext.systemPrompt && memoryContext.systemPrompt.trim().length > 0) {
+					memoryParts.push(memoryContext.systemPrompt.trim());
+				}
+
+				// ── 注入为 system 消息（放在现有消息历史最前面）──
+				// 冻结语义：此处仅在每次 runAgentLoop 开头调用一次，agent loop 内部
+				// 不会再次 loadContext，因此即使中途有新记忆写入，本轮 prompt 也不会
+				// 被更新——这是"冻结快照"的核心，保证 KV prefix 在整个会话内稳定。
+				if (memoryParts.length > 0) {
+					const frozenMemoryBlock = `<memory_context>\n${memoryParts.join('\n\n')}\n</memory_context>`;
 					messages.unshift({
 						role: 'system',
-						content: memoryContext.systemPrompt,
+						content: frozenMemoryBlock,
 					});
+					this._logService.info(`[ExecutionProvider] Injected frozen memory snapshot (${frozenMemoryBlock.length} chars) into system prompt`);
 				}
+
 				this._logService.debug('[ExecutionProvider] Loaded memory context');
 			} catch (error) {
 				this._logService.error('[ExecutionProvider] Failed to load memory:', error);
@@ -133,51 +178,51 @@ export class ExecutionProvider implements IExecutionProvider {
 					stop: request.options?.stop,
 				};
 
-			// 7.3 调用模型（传递 context 包含 agentId）
-			this._logService.debug(`[ExecutionProvider] Calling model ${modelId} with ${messages.length} messages`);
+				// 7.3 调用模型（传递 context 包含 agentId）
+				this._logService.debug(`[ExecutionProvider] Calling model ${modelId} with ${messages.length} messages`);
 
-			let modelResponse: IModelDelta[] = [];
-			const modelContext: { agentId?: string } = {};
-			if (request.agentId) {
-				modelContext.agentId = request.agentId;
-			}
-			const modelStream = modelProvider.chat(modelId, messages, modelOptions, modelContext);
+				let modelResponse: IModelDelta[] = [];
+				const modelContext: { agentId?: string } = {};
+				if (request.agentId) {
+					modelContext.agentId = request.agentId;
+				}
+				const modelStream = modelProvider.chat(modelId, messages, modelOptions, modelContext);
 
-			// 收集模型响应并 yield 给调用者
-			// 注意：IChatMessage 的属性是只读的，所以需要收集数据后创建新对象
-			let assistantContent = '';
-			let assistantToolCalls: IToolCallInfo[] = [];
+				// 收集模型响应并 yield 给调用者
+				// 注意：IChatMessage 的属性是只读的，所以需要收集数据后创建新对象
+				let assistantContent = '';
+				let assistantToolCalls: IToolCallInfo[] = [];
 
-			for await (const delta of modelStream) {
-				// 将模型 delta 转换为 stream delta 并 yield
-				const streamDelta = this._convertToStreamDelta(delta);
-				if (streamDelta) {
-					yield streamDelta;
+				for await (const delta of modelStream) {
+					// 将模型 delta 转换为 stream delta 并 yield
+					const streamDelta = this._convertToStreamDelta(delta);
+					if (streamDelta) {
+						yield streamDelta;
+					}
+
+					// 收集完整的助手消息
+					if (delta.type === 'text' && delta.content) {
+						assistantContent += delta.content;
+					} else if (delta.type === 'tool_call' && delta.toolCall) {
+						assistantToolCalls.push(delta.toolCall);
+					}
+
+					modelResponse.push(delta);
+
+					if (delta.type === 'done' || delta.type === 'error') {
+						break;
+					}
 				}
 
-				// 收集完整的助手消息
-				if (delta.type === 'text' && delta.content) {
-					assistantContent += delta.content;
-				} else if (delta.type === 'tool_call' && delta.toolCall) {
-					assistantToolCalls.push(delta.toolCall);
+				// 创建助手消息并添加到历史
+				if (assistantContent || assistantToolCalls.length > 0) {
+					const assistantMessage: IChatMessage = {
+						role: 'assistant',
+						content: assistantContent,
+						toolCalls: assistantToolCalls.length > 0 ? assistantToolCalls : undefined,
+					};
+					messages.push(assistantMessage);
 				}
-
-				modelResponse.push(delta);
-
-				if (delta.type === 'done' || delta.type === 'error') {
-					break;
-				}
-			}
-
-			// 创建助手消息并添加到历史
-			if (assistantContent || assistantToolCalls.length > 0) {
-				const assistantMessage: IChatMessage = {
-					role: 'assistant',
-					content: assistantContent,
-					toolCalls: assistantToolCalls.length > 0 ? assistantToolCalls : undefined,
-				};
-				messages.push(assistantMessage);
-			}
 
 				// 7.4 检查是否需要执行工具调用
 				if (assistantToolCalls.length === 0) {
@@ -249,6 +294,11 @@ export class ExecutionProvider implements IExecutionProvider {
 							type: 'short_term',
 							content: assistantContent || 'Tool execution completed',
 							metadata: {
+								// ── memory 合并 schema 预留（参见 doc/Memory-Strategy.md §2.7）──
+								owner: 'default',
+								userId: 'default',
+								agentId: request.agentId,
+								role: 'assistant',
 								toolCalls: assistantToolCalls?.length || 0,
 								toolResults: toolResults.length,
 							},
@@ -326,19 +376,26 @@ export class ExecutionProvider implements IExecutionProvider {
 
 	/**
 	 * 将 IModelDelta 转换为 IChatStreamDelta
+	 *
+	 * 防御性兜底：上游 IModelDelta（来自各家 ModelProvider）的 content 字段
+	 * 不能保证一定是 string —— 例如 vendor copilot 的 LM bridge 在 reasoning
+	 * 阶段会发出 type='text' 但 value=undefined 的占位 part。透传到 webview
+	 * 后，模板字符串会把 undefined 渲染成字面量 "undefined" 字符串污染显示。
+	 * 这里统一做一次 type-coercion，保证下游永远拿到 string。
 	 */
 	private _convertToStreamDelta(delta: IModelDelta): IChatStreamDelta | null {
+		const safeContent = (v: unknown): string => (typeof v === 'string' ? v : '');
 		if (delta.type === 'text') {
 			return {
 				type: 'text',
-				content: delta.content,
+				content: safeContent(delta.content),
 			};
 		}
 
 		if (delta.type === 'thinking') {
 			return {
 				type: 'thinking',
-				content: delta.content,
+				content: safeContent(delta.content),
 			};
 		}
 
@@ -357,7 +414,15 @@ export class ExecutionProvider implements IExecutionProvider {
 		if (delta.type === 'error') {
 			return {
 				type: 'error',
-				content: delta.error,
+				content: safeContent(delta.error) || safeContent(delta.content) || 'Unknown error',
+			};
+		}
+
+		// ── KV Cache: Forward usage metrics ──────────────────────────────────
+		if (delta.type === 'usage' && delta.usage) {
+			return {
+				type: 'usage',
+				usage: delta.usage,
 			};
 		}
 

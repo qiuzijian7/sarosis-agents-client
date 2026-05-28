@@ -876,6 +876,28 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 				{ capability: 'memory', provider: 'hermes-agent', priority: 70 },
 			],
 		},
+		{
+			// tdb-am-memory：把每轮对话通过 POST /capture 上报给 tdb-am-gateway 子进程，
+			// 让 vendor TdaiGateway 写入 L0/L1/L2/L3 SQLite。
+			//
+			// priority 80 > 内置 SessionMemoryProvider(50)，因此 sarosis 会优先调用本
+			// provider 的 writeMemory；同时 hermes-agent.memory(70) 也低于本条，确保在
+			// 同时启用时仍然由 tdb-am 拿走数据。
+			//
+			// 注意：模块路径必须指向 `out/extension.js`（运行时实际产物），不能指向
+			// `src/extension.js`，因为 src 是 .ts，浏览器 ESM loader 不识别。
+			id: 'tdb-am-memory',
+			name: 'TDB-AM Memory',
+			version: '1.0.0',
+			module: '../../../../extensions/tdb-am-memory/out/extension.js',
+			appResource: 'vs/../../extensions/tdb-am-memory/out/extension.js',
+			capabilities: [
+				{ capability: 'memory', provider: 'tdb-am-memory', priority: 80 },
+			],
+		},
+		// tdb-am-gateway 不再走 AgentCapability 路径——它走 VSCode 扩展宿主，
+		// 由 vscode 主框架在 builtInExtensions 加载时直接 activate，避免 bare specifier
+		// "vscode" / "fs" 等无法在渲染端 ESM 解析导致的启动失败。
 	];
 
 	// --- Source 1: Built-in plugins (build-time manifest) -------------------

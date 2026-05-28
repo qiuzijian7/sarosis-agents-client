@@ -232,6 +232,20 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'agentSessions.changed': {
+			// Agent session list changed (created/renamed/deleted/updated).
+			// Refresh the session list in the chat store if the affected employee
+			// is currently active so the L0 panel updates automatically.
+			const detail = data as { employeeId: string } | undefined;
+			if (detail?.employeeId) {
+				const chatStore = useChatStore.getState();
+				if (chatStore.activeEmployeeId === detail.employeeId) {
+					console.log(`[AgentStudio] agentSessions.changed → reloading sessions for ${detail.employeeId}`);
+					chatStore.loadAgentSessions(detail.employeeId);
+				}
+			}
+			break;
+		}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}

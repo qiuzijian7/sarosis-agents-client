@@ -140,7 +140,15 @@ export interface ChatMessage {
 	content: string;
 	thinking?: string;
 	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string; serverExecuted?: boolean; textPosition?: number }[];
-	tokenUsage?: { input: number; output: number; total: number };
+	tokenUsage?: {
+		input: number;
+		output: number;
+		total: number;
+		/** KV Cache: tokens read from prompt cache (Anthropic / OpenAI). */
+		cached?: number;
+		/** KV Cache: tokens written to cache (Anthropic cache_creation_input_tokens). */
+		cacheWrite?: number;
+	};
 	timestamp: string;
 	/** Structured error info for system error messages (VS Code Copilot Chat pattern) */
 	error?: StreamError;
@@ -403,6 +411,21 @@ export const useChatStore = create<ChatState>((set, get) => {
 		resetStreamSilent();
 
 		if (textContent || thinkingContent) {
+			// KV Cache: prefer the host-assembled message's tokenUsage when available
+			// (canonical, accumulated server-side); fall back to the webview-side
+			// stream accumulator. Persisting on the message lets the chat footer
+			// render "N tokens (cache: M)" badges and survives page reloads.
+			const hostUsage = (hostMessage?.tokenUsage as ChatMessage['tokenUsage']) || undefined;
+			let finalUsage: ChatMessage['tokenUsage'] | undefined = hostUsage;
+			if (!finalUsage && finalState.usage?.seen) {
+				finalUsage = {
+					input: finalState.usage.input,
+					output: finalState.usage.output,
+					total: finalState.usage.input + finalState.usage.output,
+					cached: finalState.usage.cached > 0 ? finalState.usage.cached : undefined,
+					cacheWrite: finalState.usage.cacheWrite > 0 ? finalState.usage.cacheWrite : undefined,
+				};
+			}
 			const assistantMessage: ChatMessage = {
 				id: hostMessage?.id || `asst_${Date.now()}`,
 				role: 'assistant',
@@ -413,7 +436,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 					name: tc.name,
 					arguments: tc.arguments,
 					result: tc.result,
-					status: tc.status,
+					// Stream has completed — any tool still marked 'running' must be
+					// finalized so the UI doesn't keep spinning forever. If we have a
+					// result, treat it as success; otherwise mark as 'done' (best effort).
+					status: tc.status === 'running' ? 'done' : tc.status,
 					defaultShow: tc.defaultShow,
 					displayName: tc.displayName,
 					renderType: tc.renderType,
@@ -421,6 +447,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					textPosition: tc.textPosition,
 				})),
 				timestamp: new Date().toISOString(),
+				tokenUsage: finalUsage,
 				// Copy new card data fields from hostMessage (VS Code Copilot Chat pattern)
 				references: (hostMessage?.references as ChatMessage['references']) || undefined,
 				progress: (hostMessage?.progress as ChatMessage['progress']) || undefined,
@@ -546,7 +573,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					return;
 				}
 				console.log(`[ChatStore] loadHistoryForSession: received ${messages?.length ?? 0} messages for ${employeeId}`);
-				
+
 				// ── Filter out orchestration_plan messages that don't belong to this agent ──
 				let finalMessages = (messages || []).filter(m => {
 					if (m.metadata?.type === 'orchestration_plan') {
@@ -561,72 +588,72 @@ export const useChatStore = create<ChatState>((set, get) => {
 					return true;
 				});
 
-			// ── Deduplicate messages by id first, then by content+role+timestamp ──
-			// This handles cases where the same message was persisted twice
-			// (e.g. both webview controller and agentChatService saved the user message).
-			const seenIds = new Set<string>();
-			const seenContentKeys = new Set<string>();
-			const deduped: ChatMessage[] = [];
-			for (let i = finalMessages.length - 1; i >= 0; i--) {
-				const m = finalMessages[i];
-				// Skip by id
-				if (seenIds.has(m.id)) {
-					continue;
-				}
-				seenIds.add(m.id);
-				// For user/assistant messages, also deduplicate by content+role+approximate timestamp
-				// (within 3 seconds) to catch duplicates with different ids.
-				if (m.role === 'user' || m.role === 'assistant') {
-					const ts = new Date(m.timestamp).getTime();
-					const tsBucket = Math.floor(ts / 3000); // 3-second bucket
-					const contentKey = `${m.role}::${tsBucket}::${m.content}`;
-					if (seenContentKeys.has(contentKey)) {
-						console.log(`[ChatStore] loadHistoryForSession: removing duplicate ${m.role} message by content key`);
+				// ── Deduplicate messages by id first, then by content+role+timestamp ──
+				// This handles cases where the same message was persisted twice
+				// (e.g. both webview controller and agentChatService saved the user message).
+				const seenIds = new Set<string>();
+				const seenContentKeys = new Set<string>();
+				const deduped: ChatMessage[] = [];
+				for (let i = finalMessages.length - 1; i >= 0; i--) {
+					const m = finalMessages[i];
+					// Skip by id
+					if (seenIds.has(m.id)) {
 						continue;
 					}
-					seenContentKeys.add(contentKey);
+					seenIds.add(m.id);
+					// For user/assistant messages, also deduplicate by content+role+approximate timestamp
+					// (within 3 seconds) to catch duplicates with different ids.
+					if (m.role === 'user' || m.role === 'assistant') {
+						const ts = new Date(m.timestamp).getTime();
+						const tsBucket = Math.floor(ts / 3000); // 3-second bucket
+						const contentKey = `${m.role}::${tsBucket}::${m.content}`;
+						if (seenContentKeys.has(contentKey)) {
+							console.log(`[ChatStore] loadHistoryForSession: removing duplicate ${m.role} message by content key`);
+							continue;
+						}
+						seenContentKeys.add(contentKey);
+					}
+					deduped.unshift(m);
 				}
-				deduped.unshift(m);
-			}
-			finalMessages = deduped;
+				finalMessages = deduped;
 
-			// Deduplicate orchestration_plan messages by planId — keep only the last one
-			// (prevents duplicates when loadHistoryForSession re-creates a message
-			// and EmployeeChat useEffect also adds one with a different id).
-			const seenPlanIds = new Set<string>();
-			const dedupedPlans: ChatMessage[] = [];
-			for (let i = finalMessages.length - 1; i >= 0; i--) {
-				const m = finalMessages[i];
-				if (m.metadata?.type === 'orchestration_plan') {
-					const planId = m.metadata.planId;
-					if (seenPlanIds.has(planId)) {
-						continue;
+				// Deduplicate orchestration_plan messages by planId — keep only the last one
+				// (prevents duplicates when loadHistoryForSession re-creates a message
+				// and EmployeeChat useEffect also adds one with a different id).
+				const seenPlanIds = new Set<string>();
+				const dedupedPlans: ChatMessage[] = [];
+				for (let i = finalMessages.length - 1; i >= 0; i--) {
+					const m = finalMessages[i];
+					if (m.metadata?.type === 'orchestration_plan') {
+						const planId = m.metadata.planId;
+						if (seenPlanIds.has(planId)) {
+							continue;
+						}
+						seenPlanIds.add(planId);
 					}
-					seenPlanIds.add(planId);
+					dedupedPlans.unshift(m);
 				}
-				dedupedPlans.unshift(m);
-			}
-			finalMessages = dedupedPlans;
+				finalMessages = dedupedPlans;
 
 				try {
 					const { useOrchestrationStore } = require('./useOrchestrationStore');
 					const { useWorkspaceStore } = require('./useWorkspaceStore');
 					const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-					
+
 					// Ensure plans are loaded before checking
 					if (workspaceId && useOrchestrationStore.getState().plans.length === 0) {
 						console.log('[ChatStore] Plans not loaded yet, loading plans first...');
 						await useOrchestrationStore.getState().loadPlans(workspaceId);
 					}
-					
-				const plans = useOrchestrationStore.getState().plans;
-				console.log(`[ChatStore] loadHistoryForSession: plans count=${plans.length}, statuses=${plans.map(p => p.status).join(',')}`);
-				// Include all non-rejected plans (pending_approval, approved, executing, completed)
-				// so the plan UI doesn't disappear when switching back to the planner chat.
-				const activePlans = plans.filter(p =>
-					p.status !== 'rejected' && p.status !== 'error'
-				);
-				console.log(`[ChatStore] loadHistoryForSession: activePlans count=${activePlans.length}`);
+
+					const plans = useOrchestrationStore.getState().plans;
+					console.log(`[ChatStore] loadHistoryForSession: plans count=${plans.length}, statuses=${plans.map(p => p.status).join(',')}`);
+					// Include all non-rejected plans (pending_approval, approved, executing, completed)
+					// so the plan UI doesn't disappear when switching back to the planner chat.
+					const activePlans = plans.filter(p =>
+						p.status !== 'rejected' && p.status !== 'error'
+					);
+					console.log(`[ChatStore] loadHistoryForSession: activePlans count=${activePlans.length}`);
 
 					// Avoid duplicating plan messages that may already exist in history
 					const existingPlanIds = new Set(
@@ -642,71 +669,71 @@ export const useChatStore = create<ChatState>((set, get) => {
 						console.log(`[ChatStore] Re-creating orchestration_plan message for plan ${plan.id} (status=${plan.status})`);
 						const statusText = plan.status === 'pending_approval' ? '任务计划已创建，请在下方面板中审批：'
 							: plan.status === 'executing' || plan.status === 'approved' ? '任务计划执行中：'
-							: plan.status === 'completed' ? '任务计划已完成：'
-							: '任务计划：';
-					const planMessage: ChatMessage = {
-						id: `plan_${plan.id}`,
-						role: 'system',
-						content: `✅ ${statusText}`,
-						metadata: { type: 'orchestration_plan', planId: plan.id },
-						timestamp: plan.updatedAt,
-					};
+								: plan.status === 'completed' ? '任务计划已完成：'
+									: '任务计划：';
+						const planMessage: ChatMessage = {
+							id: `plan_${plan.id}`,
+							role: 'system',
+							content: `✅ ${statusText}`,
+							metadata: { type: 'orchestration_plan', planId: plan.id },
+							timestamp: plan.updatedAt,
+						};
 						finalMessages = [...finalMessages, planMessage];
 					}
+				} catch (err) {
+					console.warn('[ChatStore] Failed to check for active plans:', err);
+				}
+
+				// Restore any decomposition progress messages for this employee
+				// so "analyzing goal..." hints survive chat-tab switches.
+				const progressMsgs = get().decompositionProgress[employeeId] || [];
+				if (progressMsgs.length > 0) {
+					const existingIds = new Set(finalMessages.map(m => m.id));
+					const newProgress = progressMsgs.filter(m => !existingIds.has(m.id));
+					if (newProgress.length > 0) {
+						console.log(`[ChatStore] Restoring ${newProgress.length} decomposition progress messages for ${employeeId}`);
+						finalMessages = [...finalMessages, ...newProgress];
+					}
+				}
+
+				// Sort all messages by timestamp to ensure correct chronological order
+				// (progress messages restored from memory may have earlier timestamps
+				// than history messages loaded from the host, so a final sort is needed).
+				finalMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+				// Final deduplication pass: after sorting and re-creating plan messages,
+				// there may still be duplicate orchestration_plan entries for the same planId
+				// (e.g. one from persisted history + one recreated from activePlans).
+				const finalSeenPlanIds = new Set<string>();
+				finalMessages = finalMessages.filter(m => {
+					if (m.metadata?.type === 'orchestration_plan') {
+						const planId = m.metadata.planId;
+						if (finalSeenPlanIds.has(planId)) {
+							console.log(`[ChatStore] loadHistoryForSession: removing duplicate plan message for ${planId}`);
+							return false;
+						}
+						finalSeenPlanIds.add(planId);
+					}
+					return true;
+				});
+
+				// Strip hidden tool calls (defaultShow=false) from loaded history.
+				// Visibility is now controlled solely by defaultShow.
+				finalMessages = finalMessages.map(m => {
+					if (m.toolCalls && Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
+						const filtered = m.toolCalls.filter(tc => tc && tc.defaultShow !== false);
+						if (filtered.length !== m.toolCalls.length) {
+							return { ...m, toolCalls: filtered };
+						}
+					}
+					return m;
+				});
+
+				set({ messages: finalMessages, isLoading: false });
 			} catch (err) {
-				console.warn('[ChatStore] Failed to check for active plans:', err);
+				console.error('[ChatStore] Failed to load history:', err);
+				set({ isLoading: false });
 			}
-
-			// Restore any decomposition progress messages for this employee
-			// so "analyzing goal..." hints survive chat-tab switches.
-			const progressMsgs = get().decompositionProgress[employeeId] || [];
-			if (progressMsgs.length > 0) {
-				const existingIds = new Set(finalMessages.map(m => m.id));
-				const newProgress = progressMsgs.filter(m => !existingIds.has(m.id));
-				if (newProgress.length > 0) {
-					console.log(`[ChatStore] Restoring ${newProgress.length} decomposition progress messages for ${employeeId}`);
-					finalMessages = [...finalMessages, ...newProgress];
-				}
-			}
-
-			// Sort all messages by timestamp to ensure correct chronological order
-			// (progress messages restored from memory may have earlier timestamps
-			// than history messages loaded from the host, so a final sort is needed).
-			finalMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-			// Final deduplication pass: after sorting and re-creating plan messages,
-			// there may still be duplicate orchestration_plan entries for the same planId
-			// (e.g. one from persisted history + one recreated from activePlans).
-			const finalSeenPlanIds = new Set<string>();
-			finalMessages = finalMessages.filter(m => {
-				if (m.metadata?.type === 'orchestration_plan') {
-					const planId = m.metadata.planId;
-					if (finalSeenPlanIds.has(planId)) {
-						console.log(`[ChatStore] loadHistoryForSession: removing duplicate plan message for ${planId}`);
-						return false;
-					}
-					finalSeenPlanIds.add(planId);
-				}
-				return true;
-			});
-
-			// Strip hidden tool calls (defaultShow=false) from loaded history.
-			// Visibility is now controlled solely by defaultShow.
-			finalMessages = finalMessages.map(m => {
-				if (m.toolCalls && m.toolCalls.length > 0) {
-					const filtered = m.toolCalls.filter(tc => tc.defaultShow !== false);
-					if (filtered.length !== m.toolCalls.length) {
-						return { ...m, toolCalls: filtered };
-					}
-				}
-				return m;
-			});
-
-			set({ messages: finalMessages, isLoading: false });
-		} catch (err) {
-			console.error('[ChatStore] Failed to load history:', err);
-			set({ isLoading: false });
-		}
 		},
 
 		sendMessage: async (message: string) => {
@@ -818,17 +845,34 @@ export const useChatStore = create<ChatState>((set, get) => {
 			// Instead of discarding everything, commit partial content as a cancelled message.
 			const partialText = streamState.textBuffer || '';
 			const partialThinking = streamState.thinkingBuffer || '';
+			// CRITICAL: also preserve any tool calls that were in flight when the
+			// user pressed stop. Without this, those tool cards vanish from history
+			// (or, worse, remain "running" in stale state). Force every running
+			// tool to a terminal state so cards never spin forever.
+			const partialToolCalls = (streamState.toolCalls || []).map(tc => ({
+				id: tc.id,
+				name: tc.name,
+				arguments: tc.arguments,
+				result: tc.result,
+				status: (tc.status === 'running' ? 'done' : tc.status) as 'pending' | 'running' | 'done' | 'error',
+				defaultShow: tc.defaultShow,
+				displayName: tc.displayName,
+				renderType: tc.renderType,
+				serverExecuted: tc.serverExecuted,
+				textPosition: tc.textPosition,
+			}));
 
 			// Reset the stream state first (stops the streaming bubble)
 			resetStreamSilent();
 
-			if (partialText || partialThinking) {
+			if (partialText || partialThinking || partialToolCalls.length > 0) {
 				// Commit partial content as a cancelled assistant message
 				const cancelledMessage: ChatMessage = {
 					id: `cancelled_${Date.now()}`,
 					role: 'assistant',
 					content: partialText || '(已停止生成)',
 					thinking: partialThinking || undefined,
+					toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
 					timestamp: new Date().toISOString(),
 				};
 				set(state => ({
@@ -838,6 +882,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				console.log('[ChatStore] cancelStream: committed partial content as cancelled message', {
 					textLen: partialText.length,
 					thinkingLen: partialThinking.length,
+					toolCalls: partialToolCalls.length,
 				});
 			} else {
 				set({ streamState: getStreamState() });

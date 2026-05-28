@@ -840,6 +840,17 @@ function discoverCapabilityPlugins(): CapabilityPluginManifest[] {
 				// Relative from out/vs/sessions/contrib/agentStudio/browser/
 				// to out/vs/extensions/<name>/src/extension.js
 				module: `../../../../extensions/${entry.name}/src/extension.js`,
+				// Fallback resource path used by AgentCapabilityPluginContribution
+				// when the relative `module` import fails (e.g. when the manifest
+				// is loaded from a different bundle layout than expected). This is
+				// resolved via FileAccess.asBrowserUri at runtime.
+				//
+				// Path convention: prefer the extension's own bundled output
+				// (extensions/<id>/dist/extension.js) if it exists; otherwise fall
+				// back to the standalone tsc output (extensions/<id>/out/extension.js).
+				appResource: fs.existsSync(path.join(extensionsDir, entry.name, 'dist', 'extension.js'))
+					? `vs/../../extensions/${entry.name}/dist/extension.js`
+					: `vs/../../extensions/${entry.name}/out/extension.js`,
 				capabilities,
 				exportClass: pkgJson.contributes?.agentCapabilities?.[0]?.exportClass,
 			});

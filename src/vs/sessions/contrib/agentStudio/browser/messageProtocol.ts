@@ -10,9 +10,6 @@
 
 // ─── Message Types ──────────────────────────────────────────────────────────────
 
-/** Maximum nesting depth for agent-to-agent invocations (prevents infinite recursion) */
-export const MAX_AGENT_NESTING_DEPTH = 5;
-
 export type MessageDirection = 'toHost' | 'toWebview';
 export const MessageDirection = {
 	ToHost: 'toHost' as const,
@@ -33,15 +30,9 @@ export type RequestType =
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
-	| 'workspace.createWithWorktree'
-	| 'workspace.assignWorktree'
-	| 'workspace.resetWorktree'
-	| 'workspace.removeWorktree'
 	| 'workspace.delete'
 	| 'workspace.update'
 	| 'workspace.updateLayout'
-	| 'workspace.setActive'
-	| 'workspace.getActive'
 	| 'workspace.connections.list'
 	| 'workspace.connections.add'
 	| 'workspace.connections.remove'
@@ -117,7 +108,7 @@ export type RequestType =
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
 	| 'files.applyCode'           // apply code content to a file (Void-inspired Apply Code Blocks)
 	| 'chat.jumpToCheckpoint'     // navigate to a checkpoint (Void-inspired time-travel)
-	| 'chat.toolApprove'          // approve/reject a tool call (Void-inspired ToolApproval)
+	| 'chat.toolApprove'          // approve/reject a pending tool call
 	| 'skills.list';              // list all registered skills
 
 // Event types (Host → WebView, unsolicited)
@@ -125,6 +116,7 @@ export type EventType =
 	| 'chat.stream.delta'
 	| 'chat.stream.complete'
 	| 'chat.stream.error'
+	| 'chat.userMessageAppended'
 	| 'employee.selected'
 	| 'employees.changed'
 	| 'workspace.changed'
@@ -141,6 +133,7 @@ export type EventType =
 	| 'orchestration.planCreated'
 	| 'orchestration.planUpdated'
 	| 'orchestration.taskUpdated'
+	| 'agentSessions.changed'      // agent session list changed (create/rename/delete/update)
 	| 'configmd.sourceChanged'    // MD content updated (file watcher / external edit)
 	| 'configmd.htmlRendered'     // new HTML rendered (push to preview)
 	| 'configmd.command'          // model-issued command for HTML view
@@ -184,17 +177,20 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
-	/** Sub-agent invocation ID for grouping sub-agent deltas */
-	readonly subAgentId?: string;
-	/** Sub-agent metadata (type, task, parent) — sent with subagent_start */
-	readonly subAgentMeta?: {
-		readonly type: 'explore' | 'general' | 'scout';
-		readonly task: string;
-		readonly parentAgentId?: string;
+	/**
+	 * KV Cache / token usage metrics (Anthropic Prompt Caching, OpenAI cached_tokens, …).
+	 * Sent on `type: 'usage'` chunks; the webview accumulates these and renders
+	 * them in the message footer as a "cache hit" badge.
+	 */
+	readonly usage?: {
+		readonly inputTokens?: number;
+		readonly outputTokens?: number;
+		readonly cachedTokens?: number;
+		readonly cacheWriteTokens?: number;
 	};
 }
 
@@ -221,16 +217,6 @@ export interface IChatSendPayload {
 	readonly workspaceId?: string;
 	/** Fork-scoped Agent session ID */
 	readonly agentSessionId?: string;
-	/**
-	 * Current nesting depth of agent invocations.
-	 * 0 = top-level, 1 = invoked by another agent, etc.
-	 * The host enforces a max depth limit (default: 5).
-	 */
-	readonly nestingDepth?: number;
-	/**
-	 * ID of the parent agent that invoked this agent (if nestingDepth > 0).
-	 */
-	readonly parentAgentId?: string;
 }
 
 export interface IEmployeeCreatePayload {
@@ -444,12 +430,12 @@ export interface IConfigMdWriteSourcePayload {
  */
 export interface IConfigMdPatchOp {
 	readonly op:
-		| 'replace-anchor'
-		| 'replace-bind'
-		| 'append'
-		| 'prepend'
-		| 'replace-section'
-		| 'replace-all';
+	| 'replace-anchor'
+	| 'replace-bind'
+	| 'append'
+	| 'prepend'
+	| 'replace-section'
+	| 'replace-all';
 	readonly anchor?: string;
 	readonly heading?: string;
 	readonly content: string;
@@ -557,8 +543,6 @@ export interface IFileOpenPayload {
 	readonly preserveFocus?: boolean;
 	/** Whether to open as a pinned (non-preview) editor. Default: false. */
 	readonly pinned?: boolean;
-	/** Line number to scroll to after opening (1-based). */
-	readonly lineNumber?: number;
 	/**
 	 * Optional workspace context captured at the moment the preview is
 	 * opened. Forwarded into the HTML preview's imgui SDK so form submits
@@ -606,34 +590,30 @@ export interface IFileOpenUntitledTextPayload {
 }
 
 /**
- * Payload for `files.applyCode` — applies code content to a file.
- * (Void-inspired Apply Code Blocks: one-click apply from chat UI)
+ * Apply code content to a file (Void-inspired Apply Code Blocks).
+ * Writes the code content to the specified file path, replacing existing content.
  */
 export interface IFileApplyCodePayload {
-	/** Absolute filesystem path of the target file. */
+	/** Absolute filesystem path of the file to write. */
 	readonly path: string;
-	/** The code content to apply (replaces the file content). */
+	/** New content to write to the file. */
 	readonly content: string;
-	/** Optional: the tool call ID that generated this code (for tracking). */
-	readonly toolCallId?: string;
 }
 
 /**
- * Payload for `chat.jumpToCheckpoint` — navigate to a checkpoint.
- * (Void-inspired time-travel navigation)
+ * Navigate to a checkpoint (Void-inspired time-travel navigation).
  */
 export interface IChatJumpToCheckpointPayload {
-	/** The checkpoint ID to jump to. */
+	/** The checkpoint ID to restore. */
 	readonly checkpointId: string;
 }
 
 /**
- * Payload for `chat.toolApprove` — approve or reject a pending tool call.
- * (Void-inspired ToolApproval system)
+ * Approve or reject a pending tool call (Void-inspired ToolApproval).
  */
 export interface IChatToolApprovePayload {
-	/** The tool call ID to approve/reject. */
+	/** The tool call ID to approve or reject. */
 	readonly toolCallId: string;
-	/** The approval decision. */
-	readonly decision: 'allow_once' | 'allow_always' | 'deny';
+	/** The decision: 'approve' or 'reject'. */
+	readonly decision: 'approve' | 'reject';
 }
