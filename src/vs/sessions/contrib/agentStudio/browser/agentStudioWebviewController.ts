@@ -75,13 +75,21 @@ import type {
 	IFileApplyCodePayload,
 	IChatJumpToCheckpointPayload,
 	IChatToolApprovePayload,
+	IChatAddCheckpointPayload,
+	IChatGetCheckpointPayload,
+	IChatListCheckpointsPayload,
+	IChatDeleteCheckpointPayload,
 } from "./messageProtocol.js";
+import type {
+	ICheckpoint,
+} from "../common/checkpointTypes.js";
 import {
 	WorkspaceSessionService,
 	type IWorkspaceSessionService,
 } from "./workspaceSessionService.js";
 import { HtmlPreviewEditorInput } from "./htmlPreviewEditorInput.js";
 import { TaskOverviewEditorInput } from "./taskOverviewEditorInput.js";
+import { CheckpointService } from "./checkpointService.js";
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -116,6 +124,7 @@ export class AgentStudioWebviewController extends Disposable {
 	 */
 	private _activeChatEmployeeId: string | undefined;
 	private _activeChatAgentSessionId: string | undefined;
+	private _checkpointService: CheckpointService | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -155,6 +164,12 @@ export class AgentStudioWebviewController extends Disposable {
 			logService,
 			this.fileService,
 			agentStudioService,
+		);
+		// Create CheckpointService (initialized lazily on first use)
+		this._checkpointService = new CheckpointService(
+			logService,
+			this.fileService,
+			this.modelService,
 		);
 		this._createWebview();
 		this._registerServiceListeners();
@@ -410,6 +425,11 @@ export class AgentStudioWebviewController extends Disposable {
 					} as never,
 				);
 
+			// ── Worktrees ───────────────────────
+			case "worktree.list":
+				return this.agentStudioService.getWorktrees(
+					p.workspaceId as string,
+				);
 			// ─── Connections ────────────────────────────────────────
 			case "workspace.connections.list":
 				return this.agentStudioService.getConnections(p.workspaceId as string);
@@ -782,6 +802,22 @@ export class AgentStudioWebviewController extends Disposable {
 			case "files.applyCode": {
 				const ap = p as unknown as IFileApplyCodePayload;
 				return this._handleApplyCode(ap);
+			}
+			case "chat.addCheckpoint": {
+				const acp = p as unknown as IChatAddCheckpointPayload;
+				return this._handleAddCheckpoint(acp);
+			}
+			case "chat.getCheckpoint": {
+				const gcp = p as unknown as IChatGetCheckpointPayload;
+				return this._handleGetCheckpoint(gcp);
+			}
+			case "chat.listCheckpoints": {
+				const lcp = p as unknown as IChatListCheckpointsPayload;
+				return this._handleListCheckpoints(lcp);
+			}
+			case "chat.deleteCheckpoint": {
+				const dcp = p as unknown as IChatDeleteCheckpointPayload;
+				return this._handleDeleteCheckpoint(dcp);
 			}
 			case "chat.jumpToCheckpoint": {
 				const cp = p as unknown as IChatJumpToCheckpointPayload;
@@ -1383,7 +1419,6 @@ export class AgentStudioWebviewController extends Disposable {
 
 	/**
 	 * Navigate to a checkpoint (Void-inspired time-travel navigation).
-	 * Currently a stub — full implementation requires snapshot storage.
 	 */
 	private async _handleJumpToCheckpoint(
 		payload: IChatJumpToCheckpointPayload,
@@ -1391,7 +1426,70 @@ export class AgentStudioWebviewController extends Disposable {
 		this.logService.info(
 			`[AgentStudioWebviewController] chat.jumpToCheckpoint → ${payload.checkpointId}`,
 		);
-		// TODO: Implement checkpoint restoration with file snapshots
+
+		// Ensure checkpoint service is initialized
+		await this.ensureCheckpointServiceInitialized();
+
+		// Call the service to jump to the checkpoint
+		const result = await this._checkpointService!.jumpToCheckpoint(payload.checkpointId);
+
+		// Get the checkpoint to find messageId (for chat history cleanup)
+		const checkpoint = await this._checkpointService!.getCheckpoint(payload.checkpointId);
+
+		// Delete chat messages after the checkpoint's message
+		if (checkpoint?.messageId) {
+			try {
+				await this.agentChatService.deleteMessagesAfter(
+					payload.employeeId,
+					payload.sessionId,
+					checkpoint.messageId,
+				);
+				this.logService.info(
+					`[AgentStudioWebviewController] Deleted messages after ${checkpoint.messageId}`,
+				);
+			} catch (err) {
+				this.logService.error(
+					'[AgentStudioWebviewController] Failed to delete messages after checkpoint:',
+					err,
+				);
+			}
+		}
+
+		this.logService.info(
+			`[AgentStudioWebviewController] Jumped to checkpoint: ${payload.checkpointId}, ` +
+			`restored ${result.restoredFiles.length} files, removed ${result.removedMessages} messages`,
+		);
+
+		// Send event to webview to update UI (chat.checkpointRestored)
+		this._sendEvent("chat.checkpointRestored", {
+			checkpointId: payload.checkpointId,
+			messageId: checkpoint?.messageId,
+			restoredFiles: result.restoredFiles,
+		});
+	}
+
+	/**
+	 * Ensure the checkpoint service is initialized.
+	 */
+	private async ensureCheckpointServiceInitialized(): Promise<void> {
+		if (this._checkpointService && (this._checkpointService as any)._isInitialized) {
+			return;
+		}
+
+		// Get user home directory from environment service
+		const userHome = (this._environmentService as unknown as { userHome: { fsPath: string } }).userHome.fsPath;
+		const dbPath = `${userHome}\\.agent-studio\\checkpoints.db`;
+
+		// Ensure directory exists (use Node.js fs)
+		const fs = require('fs');
+		const path = require('path');
+		const dir = path.dirname(dbPath);
+		if (!fs.existsSync(dir)) {
+			fs.mkdirSync(dir, { recursive: true });
+		}
+
+		await this._checkpointService!.initialize(dbPath);
+		(this._checkpointService as any)._isInitialized = true;
 	}
 
 	/**
@@ -1406,6 +1504,101 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 		// The approval decision is handled by the ToolApprovalService's pending request system.
 		// This will be wired up when the full approval flow is implemented in the agent loop.
+	}
+
+	/**
+	 * Handle add checkpoint request from webview.
+	 */
+	private async _handleAddCheckpoint(
+		payload: IChatAddCheckpointPayload,
+	): Promise<void> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.addCheckpoint → ${payload.employeeId}/${payload.sessionId} type=${payload.type}`,
+		);
+
+		// Ensure checkpoint service is initialized
+		await this.ensureCheckpointServiceInitialized();
+
+		// Read file contents for the URIs to snapshot
+		const fileSnapshots: Array<{ uri: URI; languageId: string | undefined; content: string }> = [];
+		for (const uriStr of payload.fileUris) {
+			try {
+				const uri = URI.parse(uriStr);
+				// Read file content using fileService (returns { value: VSBuffer })
+				const fileContent = await this.fileService.readFile(uri);
+				const content = fileContent.value.toString(); // VSBuffer → string (UTF-8)
+				fileSnapshots.push({
+					uri,
+					languageId: undefined, // TODO: get languageId from model service
+					content,
+				});
+			} catch (err) {
+				this.logService.error(`[AgentStudioWebviewController] Failed to read file ${uriStr}: ${err}`);
+			}
+		}
+
+		// Call service to create checkpoint
+		await this._checkpointService!.createCheckpoint({
+			employeeId: payload.employeeId,
+			sessionId: payload.sessionId,
+			type: payload.type,
+			label: payload.label,
+			description: payload.description,
+			fileSnapshots: fileSnapshots as any,
+			messageId: payload.messageId,
+		});
+
+		this.logService.info(`[AgentStudioWebviewController] Checkpoint created with ${fileSnapshots.length} snapshots`);
+	}
+
+	/**
+	 * Handle get checkpoint request from webview.
+	 */
+	private async _handleGetCheckpoint(
+		payload: IChatGetCheckpointPayload,
+	): Promise<ICheckpoint | undefined> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.getCheckpoint → ${payload.checkpointId}`,
+		);
+
+		await this.ensureCheckpointServiceInitialized();
+		const checkpoint = await this._checkpointService!.getCheckpoint(payload.checkpointId);
+
+		this.logService.info(`[AgentStudioWebviewController] Got checkpoint: ${checkpoint ? 'found' : 'not found'}`);
+		return checkpoint;
+	}
+
+	/**
+	 * Handle list checkpoints request from webview.
+	 */
+	private async _handleListCheckpoints(
+		payload: IChatListCheckpointsPayload,
+	): Promise<ICheckpoint[]> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.listCheckpoints → ${payload.employeeId}/${payload.sessionId}`,
+		);
+
+		await this.ensureCheckpointServiceInitialized();
+		const checkpoints = await this._checkpointService!.listCheckpoints(payload.employeeId, payload.sessionId);
+
+		this.logService.info(`[AgentStudioWebviewController] Listed ${checkpoints.length} checkpoints`);
+		return checkpoints;
+	}
+
+	/**
+	 * Handle delete checkpoint request from webview.
+	 */
+	private async _handleDeleteCheckpoint(
+		payload: IChatDeleteCheckpointPayload,
+	): Promise<void> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.deleteCheckpoint → ${payload.checkpointId}`,
+		);
+
+		await this.ensureCheckpointServiceInitialized();
+		await this._checkpointService!.deleteCheckpoint(payload.checkpointId);
+
+		this.logService.info(`[AgentStudioWebviewController] Checkpoint deleted`);
 	}
 
 	private async _handleOpenUntitledText(
@@ -1910,12 +2103,42 @@ export class AgentStudioWebviewController extends Disposable {
 
 		for (const provider of providers) {
 			const authStatus = provider.getAuthStatus();
-			let models: { id: string; name: string }[] = [];
+			let models: Array<{
+				id: string;
+				name: string;
+				descriptionZh?: string;
+				descriptionEn?: string;
+				maxInputTokens?: number;
+				maxOutputTokens?: number;
+				maxAllowedSize?: number;
+				supportsToolCall?: boolean;
+				supportsImages?: boolean;
+				supportsReasoning?: boolean;
+				onlyReasoning?: boolean;
+				temperature?: number;
+				vendor?: string;
+				credits?: string;
+			}> = [];
 			let agents: { id: string; name: string; models?: string[] }[] = [];
 
 			try {
 				const modelList = await provider.listModels();
-				models = modelList.map((m) => ({ id: m.id, name: m.name || m.id }));
+				models = modelList.map((m) => ({
+					id: m.id,
+					name: m.name || m.id,
+					descriptionZh: m.descriptionZh,
+					descriptionEn: m.descriptionEn,
+					maxInputTokens: m.maxInputTokens,
+					maxOutputTokens: m.maxOutputTokens,
+					maxAllowedSize: m.maxAllowedSize,
+					supportsToolCall: m.supportsToolCall,
+					supportsImages: m.supportsImages,
+					supportsReasoning: m.supportsReasoning,
+					onlyReasoning: m.onlyReasoning,
+					temperature: m.temperature,
+					vendor: m.vendor,
+					credits: m.credits,
+				}));
 			} catch {
 				// ignore
 			}

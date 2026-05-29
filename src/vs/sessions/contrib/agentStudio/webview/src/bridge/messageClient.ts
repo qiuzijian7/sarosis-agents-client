@@ -94,6 +94,7 @@ export type RequestType =
 	| 'files.applyCode'
 	| 'chat.jumpToCheckpoint'
 	| 'chat.toolApprove'
+	| 'worktree.list'
 	| 'skills.list';
 
 interface PendingRequest {

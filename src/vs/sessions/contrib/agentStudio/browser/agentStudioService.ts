@@ -897,6 +897,14 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return workspaces.find(w => w.id === id);
 	}
 
+	async getWorktrees(workspaceId: string): Promise<any[]> {
+		const workspace = await this.getWorkspace(workspaceId);
+		if (!workspace?.path) {
+			return [];
+		}
+		return this.worktreeService.listWorktrees(workspace.path);
+	}
+
 	async createWorkspace(data: Partial<Workspace>): Promise<Workspace> {
 		const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
 		const now = new Date().toISOString();

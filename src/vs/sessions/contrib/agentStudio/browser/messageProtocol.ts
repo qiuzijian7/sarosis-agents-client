@@ -107,8 +107,13 @@ export type RequestType =
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
 	| 'files.applyCode'           // apply code content to a file (Void-inspired Apply Code Blocks)
+	| 'chat.addCheckpoint'       // create a new checkpoint (Void-inspired time-travel)
+	| 'chat.getCheckpoint'       // get checkpoint details
+	| 'chat.listCheckpoints'     // list checkpoints for a session
+	| 'chat.deleteCheckpoint'     // delete a checkpoint
 	| 'chat.jumpToCheckpoint'     // navigate to a checkpoint (Void-inspired time-travel)
 	| 'chat.toolApprove'          // approve/reject a pending tool call
+	| 'worktree.list'           // list git worktrees for a workspace
 	| 'skills.list';              // list all registered skills
 
 // Event types (Host → WebView, unsolicited)
@@ -606,6 +611,10 @@ export interface IFileApplyCodePayload {
 export interface IChatJumpToCheckpointPayload {
 	/** The checkpoint ID to restore. */
 	readonly checkpointId: string;
+	/** The employee ID (for multi-agent support). */
+	readonly employeeId: string;
+	/** The session ID (for multi-session support). */
+	readonly sessionId: string;
 }
 
 /**
@@ -614,6 +623,52 @@ export interface IChatJumpToCheckpointPayload {
 export interface IChatToolApprovePayload {
 	/** The tool call ID to approve or reject. */
 	readonly toolCallId: string;
-	/** The decision: 'approve' or 'reject'. */
-	readonly decision: 'approve' | 'reject';
+	/** The decision: 'allow_once' | 'allow_session' | 'allow_workspace' | 'allow_always' | 'deny'. */
+	readonly decision: 'allow_once' | 'allow_session' | 'allow_workspace' | 'allow_always' | 'deny';
+}
+
+/**
+ * Create a new checkpoint.
+ */
+export interface IChatAddCheckpointPayload {
+	/** The employee ID. */
+	readonly employeeId: string;
+	/** The session ID. */
+	readonly sessionId: string;
+	/** Checkpoint type. */
+	readonly type: 'user_edit' | 'tool_edit';
+	/** Optional label. */
+	readonly label?: string;
+	/** Optional description. */
+	readonly description?: string;
+	/** File URIs to snapshot (content provided separately). */
+	readonly fileUris: string[];
+	/** The chat message ID associated with this checkpoint (for time-travel). */
+	readonly messageId?: string;
+}
+
+/**
+ * Get checkpoint details.
+ */
+export interface IChatGetCheckpointPayload {
+	/** The checkpoint ID. */
+	readonly checkpointId: string;
+}
+
+/**
+ * List checkpoints for a session.
+ */
+export interface IChatListCheckpointsPayload {
+	/** The employee ID. */
+	readonly employeeId: string;
+	/** The session ID. */
+	readonly sessionId: string;
+}
+
+/**
+ * Delete a checkpoint.
+ */
+export interface IChatDeleteCheckpointPayload {
+	/** The checkpoint ID. */
+	readonly checkpointId: string;
 }

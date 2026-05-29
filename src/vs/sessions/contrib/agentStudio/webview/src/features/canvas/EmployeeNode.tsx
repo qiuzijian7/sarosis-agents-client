@@ -9,6 +9,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
+import { sendRequest } from '../../bridge/messageClient';
 import { SkillMissingDialog } from '../agentEditor/SkillMissingDialog';
 import { getAgentColor } from '../../utils/agentColors';
 import { WorktreeBadge } from './WorktreeBadge';
@@ -39,6 +40,8 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 	const [isEditingName, setIsEditingName] = useState(false);
 	const [editName, setEditName] = useState(employee.name);
 	const [showSkillMissingDialog, setShowSkillMissingDialog] = useState(false);
+	const [worktreeList, setWorktreeList] = useState<Array<{ path: string; branch: string }>>([]);
+	const [isLoadingWorktrees, setIsLoadingWorktrees] = useState(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
 	const statusInfo = STATUS_MAP[employee.status] || STATUS_MAP.idle;
 
@@ -56,6 +59,24 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 			setEditName(employee.name);
 		}
 	}, [employee.name, isEditingName]);
+
+	// Fetch worktree list when workspaceId changes
+	useEffect(() => {
+		if (!employee.workspaceId) { return; }
+
+		setIsLoadingWorktrees(true);
+		sendRequest<{ workspaceId: string }, Array<{ path: string; branch: string }>>('worktree.list', { workspaceId: employee.workspaceId })
+			.then(worktrees => {
+				setWorktreeList(worktrees || []);
+			})
+			.catch(err => {
+				console.error('[EmployeeNode] Failed to load worktrees:', err);
+				setWorktreeList([]);
+			})
+			.finally(() => {
+				setIsLoadingWorktrees(false);
+			});
+	}, [employee.workspaceId]);
 
 	const handleNameDoubleClick = (e: React.MouseEvent) => {
 		e.stopPropagation();
@@ -204,16 +225,34 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 						</div>
 					)}
 
-					{/* Worktree badge — shows which worktree this agent works in */}
-					{worktreeStatus && worktreeStatus !== 'none' && (
-						<div className="employee-card-worktree-row">
-							<WorktreeBadge
-								status={worktreeStatus}
-								branch={worktreeBranch}
-								directory={worktreePath}
-							/>
-						</div>
-					)}
+				{/* Worktree badge — shows which worktree this agent works in */}
+				{(worktreeStatus && worktreeStatus !== 'none') && (
+					<div className="employee-card-worktree-row">
+						<WorktreeBadge
+							status={worktreeStatus}
+							branch={worktreeBranch}
+							directory={worktreePath}
+						/>
+					</div>
+				)}
+				</div>
+
+				{/* Worktree selector */}
+				<div className="employee-card-worktree-selector">
+					<select
+						value={employee.worktreePath || ''}
+						onChange={(e) => {
+							const selectedPath = e.target.value;
+							useEmployeeStore.getState().updateEmployee(employee.id, { worktreePath: selectedPath || undefined });
+						}}
+						onClick={(e) => e.stopPropagation()}
+					>
+						<option value="">无 worktree</option>
+						{worktreeList.map(wt => (
+							<option key={wt.path} value={wt.path}>{wt.branch} ({wt.path})</option>
+						))}
+					</select>
+					{isLoadingWorktrees && <span className="worktree-loading">加载中...</span>}
 				</div>
 
 				{/* Open ConfigMD file button - shown only when configMd is configured */}
