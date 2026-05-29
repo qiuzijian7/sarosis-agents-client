@@ -1648,8 +1648,23 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
+		const worktreeService = accessor.get(IWorktreeService);
 		const notificationService = accessor.get(INotificationService);
-		notificationService.info(localize('worktreeCreateInfo', 'Create worktree: Use the command palette to specify branch name and path.'));
+		const quickInputService = accessor.get(IQuickInputService);
+		const name = await quickInputService.input({
+			placeHolder: localize('worktreeCreateNamePlaceholder', 'Worktree name (e.g. feature-auth)'),
+			prompt: localize('worktreeCreateNamePrompt', 'Enter a name for the new worktree. A branch "opencode/<name>" will be created.'),
+		});
+		if (!name?.trim()) { return; }
+		try {
+			const info = await worktreeService.makeWorktreeInfo({ name: name.trim() });
+			await worktreeService.createFromInfo(info);
+			notificationService.info(localize('worktreeCreateDone',
+				'Created worktree "{0}" at branch "{1}"', info.name, info.branch ?? '(detached)'));
+		} catch (e) {
+			notificationService.error(localize('worktreeCreateError',
+				'Failed to create worktree: {0}', (e as Error).message));
+		}
 	}
 });
 
