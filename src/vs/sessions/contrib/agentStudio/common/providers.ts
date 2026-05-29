@@ -21,8 +21,20 @@ export interface IModelInfo {
 	readonly id: string;               // e.g. 'gpt-4o'
 	readonly name: string;             // e.g. 'GPT-4o'
 	readonly description?: string;
-	readonly contextWindow?: number;
+	readonly descriptionZh?: string;    // 中文描述
+	readonly descriptionEn?: string;    // 英文描述
+	readonly contextWindow?: number;    // 上下文窗口大小
+	readonly maxInputTokens?: number;   // 最大输入 token 数
+	readonly maxOutputTokens?: number;  // 最大输出 token 数
+	readonly maxAllowedSize?: number;   // 最大上下文大小（input + output）
 	readonly capabilities?: ModelCapability[];
+	readonly supportsToolCall?: boolean; // 是否支持工具调用
+	readonly supportsImages?: boolean;  // 是否支持图片
+	readonly supportsReasoning?: boolean; // 是否支持推理/思考模式
+	readonly onlyReasoning?: boolean;   // 是否仅推理模式
+	readonly temperature?: number;      // 温度参数
+	readonly vendor?: string;           // 供应商
+	readonly credits?: string;          // Credits 信息
 	readonly pricing?: IModelPricing;
 }
 

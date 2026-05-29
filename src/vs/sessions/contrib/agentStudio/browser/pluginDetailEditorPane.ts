@@ -25,6 +25,8 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { URI } from '../../../../base/common/uri.js';
 
 import { renderKnotCliSection } from './views/knotPluginDetailView.js';
 import { renderCodebuddyAuthSection } from './views/codebuddyPluginDetailView.js';
@@ -64,6 +66,7 @@ export class PluginDetailEditorPane extends EditorPane {
 		@ICommandService private readonly commandService: ICommandService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExtensionService private readonly extensionService: IExtensionService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super(PluginDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -95,13 +98,13 @@ export class PluginDetailEditorPane extends EditorPane {
 			this._plugin = (input as PluginDetailEditorInput).plugin;
 
 			if (this._container && !this._initialized) {
-				this._buildUI(this._container);
+				await this._buildUI(this._container);
 				this._initialized = true;
 			} else if (this._container && this._initialized) {
 				// Plugin changed, rebuild UI
 				this._initialized = false;
 				this._container.replaceChildren();
-				this._buildUI(this._container);
+				await this._buildUI(this._container);
 				this._initialized = true;
 			}
 		} catch (err) {
@@ -112,7 +115,7 @@ export class PluginDetailEditorPane extends EditorPane {
 		}
 	}
 
-	private _buildUI(container: HTMLElement): void {
+	private async _buildUI(container: HTMLElement): Promise<void> {
 		if (!this._plugin) {
 			container.textContent = 'No plugin selected.';
 			return;
@@ -355,12 +358,28 @@ export class PluginDetailEditorPane extends EditorPane {
 
 		for (const prop of configProperties) {
 				// Skip the standalone "models" and "agentId" configs — models are embedded in agents, agentId is removed
-				if ((prop.key.endsWith('.models') && !prop.key.endsWith('.agents')) || prop.key.endsWith('.agentId')) {
-					continue;
-				}
+			// Skip internal agentId (used for identification, not user-configurable)
+			if (prop.key.endsWith('.agentId')) {
+				continue;
+			}
 
 				// Load current value from configuration service
-				const currentValue = this.configurationService.getValue(prop.key);
+				let currentValue = this.configurationService.getValue(prop.key);
+
+				// For codebuddy.models, if no user config exists and default is empty, try loading from model.json
+				if (prop.key === 'codebuddy.models') {
+					const isEmpty =
+						currentValue === undefined || currentValue === null ||
+						(Array.isArray(currentValue) && currentValue.length === 0);
+					const defaultIsEmpty = !prop.default || (Array.isArray(prop.default) && prop.default.length === 0);
+					if (isEmpty && defaultIsEmpty) {
+						const jsonModels = await this._loadModelsFromJsonFile(plugin);
+						if (jsonModels && jsonModels.length > 0) {
+							currentValue = jsonModels;
+						}
+					}
+				}
+
 				const value = currentValue !== undefined && currentValue !== null
 					? currentValue
 					: prop.default;
@@ -393,6 +412,41 @@ export class PluginDetailEditorPane extends EditorPane {
 	}
 
 	// ─── Configuration Helpers ─────────────────────────────────
+
+	/**
+	 * Load models from the extension's model.json file.
+	 * Returns null if the file cannot be read or parsed.
+	 */
+	private async _loadModelsFromJsonFile(plugin: IAgentPlugin): Promise<unknown[] | null> {
+		try {
+			const pluginLabel = plugin.label.toLowerCase();
+			const pluginUriStr = plugin.uri.toString().toLowerCase();
+
+			for (const ext of this.extensionService.extensions) {
+				const extId = ext.identifier.value.toLowerCase();
+				const extName = (ext.displayName || ext.name || '').toLowerCase();
+
+				const isMatch =
+					extId.includes(pluginLabel) || pluginLabel.includes(extId) ||
+					extName.includes(pluginLabel) || pluginLabel.includes(extName) ||
+					pluginUriStr.includes(extId.replace(/\./g, '-'));
+
+				if (!isMatch) { continue; }
+
+				const modelJsonUri = URI.joinPath(ext.extensionLocation, 'model.json');
+				const content = await this.fileService.readFile(modelJsonUri);
+				const json = JSON.parse(content.value.toString());
+				const models = json?.models;
+				if (Array.isArray(models) && models.length > 0) {
+					console.log(`[PluginDetail] Loaded ${models.length} models from ${modelJsonUri.toString()}`);
+					return models;
+				}
+			}
+		} catch (error) {
+			console.error('[PluginDetail] Failed to load model.json:', error);
+		}
+		return null;
+	}
 
 	/**
 	 * Extract configuration properties from the plugin's matching extension.
@@ -532,6 +586,10 @@ export class PluginDetailEditorPane extends EditorPane {
 				if (prop.key.endsWith('.agents')) {
 					const agentsContainer = this._renderAgentsExpandableList(prop, value);
 					row.appendChild(agentsContainer);
+				} else if (prop.key === 'codebuddy.models') {
+					// Special handling for codebuddy.models: expandable list with id, name, maxInputTokens, maxAllowedSize
+					const modelsContainer = this._renderModelsExpandableList(prop, value);
+					row.appendChild(modelsContainer);
 				} else {
 					const textarea = document.createElement('textarea');
 					textarea.id = `config-${prop.key}`;
@@ -729,6 +787,370 @@ export class PluginDetailEditorPane extends EditorPane {
 	}
 
 	/**
+	 * Render the models configuration as an expandable list.
+	 * Each entry has full model fields: id, name, vendor, maxOutputTokens, maxInputTokens,
+	 * supportsToolCall, supportsImages, maxAllowedSize, temperature, supportsReasoning,
+	 * onlyReasoning, reasoning, relatedModels, disabledMultimodal, descriptionEn,
+	 * descriptionZh, credits, tags, top_p, top_k, repetition_penalty, isDefault, supportsExtra.
+	 */
+	private _renderModelsExpandableList(prop: IPluginConfigProperty, value: unknown): HTMLElement {
+		console.log(`[PluginDetail] _renderModelsExpandableList called for ${prop.key}, value:`, value);
+		const container = $$('div.plugin-detail-models-list');
+		const models: Array<{
+			id?: string;
+			name?: string;
+			vendor?: string;
+			maxOutputTokens?: number;
+			maxInputTokens?: number;
+			supportsToolCall?: boolean;
+			supportsImages?: boolean;
+			maxAllowedSize?: number;
+			temperature?: number;
+			supportsReasoning?: boolean;
+			onlyReasoning?: boolean;
+			reasoning?: { effort?: string; summary?: string };
+			relatedModels?: { lite?: string; reasoning?: string };
+			disabledMultimodal?: boolean;
+			descriptionEn?: string;
+			descriptionZh?: string;
+			credits?: string;
+			tags?: string[];
+			top_p?: number;
+			top_k?: number;
+			repetition_penalty?: number;
+			isDefault?: boolean;
+			supportsExtra?: boolean;
+		}> = Array.isArray(value) ? [...value] : [];
+
+		// Ensure at least one default entry exists
+		if (models.length === 0) {
+			models.push({ id: '', name: '', maxInputTokens: 128000, maxAllowedSize: 128000 });
+		}
+
+		// Store a mutable reference to models data
+		const modelsData = models.map(m => ({
+			id: m.id || '',
+			name: m.name || '',
+			vendor: m.vendor || '',
+			maxOutputTokens: m.maxOutputTokens || 0,
+			maxInputTokens: m.maxInputTokens || 128000,
+			supportsToolCall: m.supportsToolCall ?? false,
+			supportsImages: m.supportsImages ?? false,
+			maxAllowedSize: m.maxAllowedSize || 128000,
+			temperature: m.temperature ?? 1,
+			supportsReasoning: m.supportsReasoning ?? false,
+			onlyReasoning: m.onlyReasoning ?? false,
+			reasoning: {
+				effort: m.reasoning?.effort || 'medium',
+				summary: m.reasoning?.summary || 'auto'
+			},
+			relatedModels: {
+				lite: m.relatedModels?.lite || '',
+				reasoning: m.relatedModels?.reasoning || ''
+			},
+			disabledMultimodal: m.disabledMultimodal ?? false,
+			descriptionEn: m.descriptionEn || '',
+			descriptionZh: m.descriptionZh || '',
+			credits: m.credits || '',
+			tags: Array.isArray(m.tags) ? m.tags : [],
+			top_p: m.top_p ?? 1,
+			top_k: m.top_k ?? 0,
+			repetition_penalty: m.repetition_penalty ?? 1,
+			isDefault: m.isDefault ?? false,
+			supportsExtra: m.supportsExtra ?? false
+		}));
+
+		const syncToConfig = () => {
+			const result = modelsData.map(m => ({
+				id: m.id,
+				name: m.name,
+				vendor: m.vendor,
+				maxOutputTokens: m.maxOutputTokens,
+				maxInputTokens: m.maxInputTokens,
+				supportsToolCall: m.supportsToolCall,
+				supportsImages: m.supportsImages,
+				maxAllowedSize: m.maxAllowedSize,
+				temperature: m.temperature,
+				supportsReasoning: m.supportsReasoning,
+				onlyReasoning: m.onlyReasoning,
+				reasoning: m.reasoning,
+				relatedModels: m.relatedModels,
+				disabledMultimodal: m.disabledMultimodal,
+				descriptionEn: m.descriptionEn,
+				descriptionZh: m.descriptionZh,
+				credits: m.credits,
+				tags: m.tags,
+				top_p: m.top_p,
+				top_k: m.top_k,
+				repetition_penalty: m.repetition_penalty,
+				isDefault: m.isDefault,
+				supportsExtra: m.supportsExtra
+			}));
+			this._configFieldValues.set(prop.key, result);
+		};
+
+		const renderEntries = () => {
+			// Clear existing entries (keep the "add" button)
+			const existingEntries = container.querySelectorAll('.plugin-detail-model-entry');
+			existingEntries.forEach(el => el.remove());
+
+			// Remove existing add button
+			const existingAddBtn = container.querySelector('.plugin-detail-models-add-btn');
+			if (existingAddBtn) { existingAddBtn.remove(); }
+
+			for (let i = 0; i < modelsData.length; i++) {
+				const entry = this._renderModelEntry(modelsData, i, syncToConfig, renderEntries);
+				container.appendChild(entry);
+			}
+
+			// Add button
+			const addBtn = $$('button.plugin-detail-models-add-btn');
+			addBtn.textContent = '+ 添加模型';
+			addBtn.onclick = () => {
+				modelsData.push({
+				id: '', name: '', vendor: '', maxOutputTokens: 0, maxInputTokens: 128000,
+				supportsToolCall: false, supportsImages: false, maxAllowedSize: 128000,
+				temperature: 1, supportsReasoning: false, onlyReasoning: false,
+				reasoning: { effort: 'medium', summary: 'auto' },
+				relatedModels: { lite: '', reasoning: '' },
+				disabledMultimodal: false, descriptionEn: '', descriptionZh: '',
+				credits: '', tags: [], top_p: 1, top_k: 0, repetition_penalty: 1,
+				isDefault: false, supportsExtra: false
+			});
+				syncToConfig();
+				renderEntries();
+			};
+			container.appendChild(addBtn);
+		};
+
+		renderEntries();
+		syncToConfig();
+		return container;
+	}
+
+	/**
+	 * Render a single model entry with full model fields and expand/collapse.
+	 */
+	private _renderModelEntry(
+		modelsData: Array<{
+			id: string;
+			name: string;
+			vendor: string;
+			maxOutputTokens: number;
+			maxInputTokens: number;
+			supportsToolCall: boolean;
+			supportsImages: boolean;
+			maxAllowedSize: number;
+			temperature: number;
+			supportsReasoning: boolean;
+			onlyReasoning: boolean;
+			reasoning: { effort: string; summary: string };
+			relatedModels: { lite: string; reasoning: string };
+			disabledMultimodal: boolean;
+			descriptionEn: string;
+			descriptionZh: string;
+			credits: string;
+			tags: string[];
+			top_p: number;
+			top_k: number;
+			repetition_penalty: number;
+			isDefault: boolean;
+			supportsExtra: boolean;
+		}>,
+		index: number,
+		syncToConfig: () => void,
+		rerenderAll: () => void,
+	): HTMLElement {
+		const model = modelsData[index];
+		const entry = $$('div.plugin-detail-model-entry');
+
+		// Header row (always visible): shows summary + expand/collapse toggle + delete
+		const header = $$('div.plugin-detail-model-entry-header');
+
+		const expandBtn = $$('span.plugin-detail-model-expand-btn');
+		expandBtn.textContent = '▶';
+		header.appendChild(expandBtn);
+
+		const summary = $$('span.plugin-detail-model-entry-summary');
+		summary.textContent = model.name || model.id || `模型 ${index + 1}`;
+		header.appendChild(summary);
+
+		const deleteBtn = $$('button.plugin-detail-model-delete-btn');
+		deleteBtn.textContent = '✕';
+		deleteBtn.title = '删除此模型';
+		deleteBtn.onclick = (e) => {
+			e.stopPropagation();
+			modelsData.splice(index, 1);
+			syncToConfig();
+			rerenderAll();
+		};
+		header.appendChild(deleteBtn);
+
+		entry.appendChild(header);
+
+		// Body (expandable fields)
+		const body = $$('div.plugin-detail-model-entry-body');
+		body.style.display = 'none';
+
+		// Helper to create a text field row
+		const createTextRow = (label: string, value: string, placeholder: string, onChange: (val: string) => void) => {
+			const row = $$('div.plugin-detail-model-field-row');
+			const lbl = $$('label.plugin-detail-model-field-label');
+			lbl.textContent = label;
+			row.appendChild(lbl);
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.className = 'plugin-detail-config-input';
+			input.value = value;
+			input.placeholder = placeholder;
+			input.oninput = () => { onChange(input.value); syncToConfig(); };
+			row.appendChild(input);
+			body.appendChild(row);
+		};
+
+		// Helper to create a number field row
+		const createNumberRow = (label: string, value: number, placeholder: string, onChange: (val: number) => void) => {
+			const row = $$('div.plugin-detail-model-field-row');
+			const lbl = $$('label.plugin-detail-model-field-label');
+			lbl.textContent = label;
+			row.appendChild(lbl);
+			const input = document.createElement('input');
+			input.type = 'number';
+			input.className = 'plugin-detail-config-input plugin-detail-config-input-number';
+			input.value = String(value);
+			input.placeholder = placeholder;
+			input.oninput = () => { onChange(Number(input.value) || 0); syncToConfig(); };
+			row.appendChild(input);
+			body.appendChild(row);
+		};
+
+		// Helper to create a boolean toggle row
+		const createBoolRow = (label: string, value: boolean, onChange: (val: boolean) => void) => {
+			const row = $$('div.plugin-detail-model-field-row');
+			const lbl = $$('label.plugin-detail-model-field-label');
+			lbl.textContent = label;
+			row.appendChild(lbl);
+			const toggle = $$('label.plugin-detail-config-toggle');
+			const checkbox = document.createElement('input');
+			checkbox.type = 'checkbox';
+			checkbox.checked = value;
+			checkbox.onchange = () => { onChange(checkbox.checked); syncToConfig(); };
+			toggle.appendChild(checkbox);
+			const slider = $$('span.plugin-detail-config-toggle-slider');
+			toggle.appendChild(slider);
+			row.appendChild(toggle);
+			body.appendChild(row);
+		};
+
+		// ID field
+		createTextRow('模型 ID', model.id, '模型 ID（如：gpt-5.5）', (v) => {
+			model.id = v;
+			summary.textContent = model.name || model.id || `模型 ${index + 1}`;
+		});
+
+		// Name field
+		createTextRow('显示名称', model.name, '模型显示名称（如：GPT-5.5）', (v) => {
+			model.name = v;
+			summary.textContent = model.name || model.id || `模型 ${index + 1}`;
+		});
+
+		// Vendor field
+		createTextRow('供应商', model.vendor, '供应商标识（如：i, f, a）', (v) => { model.vendor = v; });
+
+		// maxOutputTokens field
+		createNumberRow('最大输出 Token', model.maxOutputTokens, '最大输出 Token 数', (v) => { model.maxOutputTokens = v; });
+
+		// maxInputTokens field
+		createNumberRow('最大输入 Token', model.maxInputTokens, '最大输入 Token 数', (v) => { model.maxInputTokens = v; });
+
+		// maxAllowedSize field
+		createNumberRow('最大上下文大小', model.maxAllowedSize, '最大上下文大小（input + output）', (v) => { model.maxAllowedSize = v; });
+
+		// supportsToolCall
+		createBoolRow('支持工具调用', model.supportsToolCall, (v) => { model.supportsToolCall = v; });
+
+		// supportsImages
+		createBoolRow('支持图片', model.supportsImages, (v) => { model.supportsImages = v; });
+
+		// temperature
+		createNumberRow('温度参数', model.temperature, '温度参数（如：1）', (v) => { model.temperature = v; });
+
+		// supportsReasoning
+		createBoolRow('支持推理', model.supportsReasoning, (v) => { model.supportsReasoning = v; });
+
+		// onlyReasoning
+		createBoolRow('仅推理', model.onlyReasoning, (v) => { model.onlyReasoning = v; });
+
+		// reasoning effort
+		createTextRow('推理强度', model.reasoning.effort, 'low / medium / high', (v) => { model.reasoning.effort = v; });
+
+		// reasoning summary
+		createTextRow('推理摘要', model.reasoning.summary, 'auto / detailed / concise', (v) => { model.reasoning.summary = v; });
+
+		// relatedModels lite
+		createTextRow('轻量版模型 ID', model.relatedModels.lite, '关联的轻量版模型 ID', (v) => { model.relatedModels.lite = v; });
+
+		// relatedModels reasoning
+		createTextRow('推理版模型 ID', model.relatedModels.reasoning, '关联的推理版模型 ID', (v) => { model.relatedModels.reasoning = v; });
+
+		// disabledMultimodal
+		createBoolRow('禁用多模态', model.disabledMultimodal, (v) => { model.disabledMultimodal = v; });
+
+		// descriptionEn
+		createTextRow('英文描述', model.descriptionEn, '模型英文描述', (v) => { model.descriptionEn = v; });
+
+		// descriptionZh
+		createTextRow('中文描述', model.descriptionZh, '模型中文描述', (v) => { model.descriptionZh = v; });
+
+		// credits
+		createTextRow('Credits', model.credits, '模型 credits 信息', (v) => { model.credits = v; });
+
+		// tags
+		const tagsRow = $$('div.plugin-detail-model-field-row');
+		const tagsLabel = $$('label.plugin-detail-model-field-label');
+		tagsLabel.textContent = '标签';
+		tagsRow.appendChild(tagsLabel);
+		const tagsInput = document.createElement('input');
+		tagsInput.type = 'text';
+		tagsInput.className = 'plugin-detail-config-input';
+		tagsInput.value = model.tags.join(', ');
+		tagsInput.placeholder = '标签，多个用逗号分隔';
+		tagsInput.oninput = () => {
+			model.tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+			syncToConfig();
+		};
+		tagsRow.appendChild(tagsInput);
+		body.appendChild(tagsRow);
+
+		// top_p
+		createNumberRow('Top P', model.top_p, 'Top P 采样参数', (v) => { model.top_p = v; });
+
+		// top_k
+		createNumberRow('Top K', model.top_k, 'Top K 采样参数', (v) => { model.top_k = v; });
+
+		// repetition_penalty
+		createNumberRow('重复惩罚', model.repetition_penalty, '重复惩罚参数', (v) => { model.repetition_penalty = v; });
+
+		// isDefault
+		createBoolRow('默认模型', model.isDefault, (v) => { model.isDefault = v; });
+
+		// supportsExtra
+		createBoolRow('支持额外参数', model.supportsExtra, (v) => { model.supportsExtra = v; });
+
+		entry.appendChild(body);
+
+		// Toggle expand/collapse
+		header.onclick = () => {
+			const isExpanded = body.style.display !== 'none';
+			body.style.display = isExpanded ? 'none' : 'block';
+			expandBtn.textContent = isExpanded ? '▶' : '▼';
+			entry.classList.toggle('expanded', !isExpanded);
+		};
+
+		return entry;
+	}
+
+	/**
 	 * Format a configuration key into a human-readable label.
 	 * e.g. "sessions.agentStudio.knot.token" → "Token"
 	 * e.g. "knot.streaming" → "Streaming"
@@ -747,9 +1169,8 @@ export class PluginDetailEditorPane extends EditorPane {
 	private _saveConfigFields(configProperties: IPluginConfigProperty[], saveBtn: HTMLElement): void {
 		const statusEl = this._container?.querySelector('#plugin-config-status') as HTMLElement | null;
 
-		// Filter out skipped properties (e.g. standalone models, agentId)
+		// Filter out internal properties (e.g. agentId used for identification)
 		const propsToSave = configProperties.filter(p => {
-			if (p.key.endsWith('.models') && !p.key.endsWith('.agents')) { return false; }
 			if (p.key.endsWith('.agentId')) { return false; }
 			return true;
 		});

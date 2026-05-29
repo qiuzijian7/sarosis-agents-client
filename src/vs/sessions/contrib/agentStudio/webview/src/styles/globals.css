@@ -788,6 +788,44 @@ html, body, #root {
   margin-top: 4px;
 }
 
+/* Worktree selector dropdown */
+.employee-card-worktree-selector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 4px;
+  width: 100%;
+}
+
+.employee-card-worktree-selector select {
+  width: 100%;
+  max-width: 160px;
+  padding: 2px 6px;
+  font-size: 10px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  background-color: var(--vscode-dropdown-background, #2c2c2c);
+  color: var(--vscode-dropdown-foreground, #cccccc);
+  cursor: pointer;
+  outline: none;
+}
+
+.employee-card-worktree-selector select:focus {
+  border-color: var(--vscode-focusBorder, #0078d4);
+}
+
+.employee-card-worktree-selector select option {
+  background-color: var(--vscode-dropdown-background, #2c2c2c);
+  color: var(--vscode-dropdown-foreground, #cccccc);
+  font-size: 10px;
+}
+
+.worktree-loading {
+  font-size: 9px;
+  color: var(--vscode-descriptionForeground, #858585);
+}
+
 .employee-card-badge {
   display: inline-flex;
   align-items: center;
@@ -802,99 +840,6 @@ html, body, #root {
   background-color: rgba(59, 130, 246, 0.15);
   color: var(--vscode-textLink-foreground, #60a5fa);
   border: 1px solid rgba(59, 130, 246, 0.25);
-}
-
-/* ─── Worktree Badge (Canvas node + Header) ──────────────────────────────── */
-.employee-card-worktree-row {
-  display: flex;
-  justify-content: center;
-  margin-top: 4px;
-}
-
-.worktree-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 10px;
-  font-weight: 500;
-  border: 1px solid transparent;
-  transition: all 0.2s ease;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worktree-badge-icon {
-  flex-shrink: 0;
-  font-size: 11px;
-  line-height: 1;
-}
-
-.worktree-badge-branch {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worktree-badge-pending {
-  border-color: rgba(204, 167, 0, 0.3);
-}
-
-.worktree-badge-ready {
-  background-color: rgba(55, 148, 255, 0.08);
-  border-color: rgba(55, 148, 255, 0.25);
-}
-
-.worktree-badge-failed {
-  background-color: rgba(241, 76, 76, 0.08);
-  border-color: rgba(241, 76, 76, 0.25);
-}
-
-.worktree-badge-animated {
-  animation: worktree-badge-pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes worktree-badge-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.worktree-badge-spinner {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: worktree-spinner-rotate 0.8s linear infinite;
-}
-
-@keyframes worktree-spinner-rotate {
-  to { transform: rotate(360deg); }
-}
-
-/* Workspace header worktree branch label */
-.ws-hd-opt-worktree-branch {
-  font-size: 10px;
-  color: var(--vscode-descriptionForeground);
-  margin-left: 6px;
-}
-
-.ws-hd-opt-worktree-status {
-  font-size: 10px;
-  margin-left: 4px;
-}
-
-.ws-hd-opt-worktree-status.pending {
-  animation: worktree-badge-pulse 1.5s ease-in-out infinite;
-}
-
-.badge-icon {
-  width: 11px;
-  height: 11px;
 }
 
 /* Delete button */
@@ -4895,4 +4840,262 @@ html, body, #root {
   font-family: inherit;
   outline: none;
   min-width: 0;
+}
+
+/* ═══ Worktree Switcher (Chat Header) ════════════════════════════════════ */
+
+.worktree-switcher {
+  position: relative;
+}
+
+.worktree-switcher-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  background: transparent;
+  color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  transition: background-color 100ms, border-color 100ms, color 100ms;
+  white-space: nowrap;
+}
+
+.worktree-switcher-trigger:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.5));
+}
+
+.worktree-switcher-label {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worktree-switcher-arrow {
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.worktree-switcher-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 220px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--as-bg-primary, var(--vscode-editor-background));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.3)));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px var(--as-shadow-heavy, rgba(0, 0, 0, 0.3));
+  z-index: 200;
+  padding: 4px;
+}
+
+.worktree-switcher-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--as-fg-primary, var(--vscode-foreground));
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  text-align: left;
+  transition: background-color 100ms;
+}
+
+.worktree-switcher-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.worktree-switcher-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.worktree-switcher-item-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.worktree-switcher-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-switcher-item-path {
+  font-size: 10px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-switcher-item-check {
+  font-size: 11px;
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  flex-shrink: 0;
+}
+
+.worktree-switcher-divider {
+  height: 1px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  margin: 3px 0;
+}
+
+.worktree-switcher-empty {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  text-align: center;
+}
+
+.worktree-switcher-loading {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  text-align: center;
+}
+
+/* ═══ Chat Session Switcher Bar ═══════════════════════════════════════════ */
+
+.chat-session-switcher-bar {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.15)));
+  background: var(--as-bg-secondary, var(--vscode-sideBar-background));
+}
+
+.chat-session-switcher-bar .agent-session-switcher {
+  width: 100%;
+}
+
+.chat-session-switcher-bar .agent-session-trigger {
+  width: 100%;
+  justify-content: space-between;
+  height: 26px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  background: var(--vscode-input-background, rgba(128, 128, 128, 0.05));
+}
+
+.chat-session-switcher-bar .agent-session-label {
+  max-width: none;
+  flex: 1;
+}
+
+
+/* ═══ HTML View Mode ═══════════════════════════════════ */
+
+.canvas-html-view-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-html-iframe {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--as-bg-primary, var(--vscode-editor-background));
+}
+
+.canvas-html-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.canvas-html-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+}
+
+/* HTML view dropdown button (next to HTML view toggle) */
+.canvas-html-dropdown-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: background-color 100ms, opacity 100ms, border-color 100ms;
+}
+
+.canvas-html-dropdown-btn:hover {
+  background-color: var(--vscode-list-hoverBackground);
+  opacity: 1;
+}
+
+/* HTML view dropdown menu */
+.canvas-html-dropdown {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  z-index: 200;
+  min-width: 180px;
+  background-color: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.canvas-html-dropdown-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--vscode-foreground);
+  transition: background-color 100ms;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.canvas-html-dropdown-item:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.canvas-html-dropdown-item.active {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.canvas-html-dropdown-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
 }

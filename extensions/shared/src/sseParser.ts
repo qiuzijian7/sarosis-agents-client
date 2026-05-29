@@ -13,20 +13,22 @@
 import * as vscode from 'vscode';
 
 /**
- * Parse an SSE stream from a fetch Response and report text parts to VS Code progress.
+ * Parse an SSE stream from a fetch Response and report text/tool-call parts to VS Code progress.
  *
  * @param response - The fetch Response with a ReadableStream body
  * @param progress - VS Code progress reporter
  * @param cancellationToken - Cancellation token
- * @param parseEvent - Callback that receives a parsed JSON object and returns text to report, or null to skip.
- *                     Return `{ text: string, done: true }` to stop early (e.g. on `[DONE]`).
+ * @param parseEvent - Callback that receives a parsed JSON object and returns data to report, or null to skip.
+ *                     Return `{ text: string, done?: true }` to report text.
+ *                     Return `{ toolCallId: string, name: string, parameters: object }` to report a tool call.
+ *                     Return `null` to skip.
  * @param logTag - Tag for console.log messages
  */
 export async function parseSSEStream(
 	response: Response,
 	progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 	cancellationToken: vscode.CancellationToken,
-	parseEvent: (event: any) => { text: string; done?: boolean } | null,
+	parseEvent: (event: any) => SSEEventResult | null,
 	logTag: string = 'SSE',
 ): Promise<void> {
 	const reader = response.body?.getReader();
@@ -71,8 +73,12 @@ export async function parseSSEStream(
 				const event = JSON.parse(rawData);
 				const result = parseEvent(event);
 				if (result) {
-					progress.report(new vscode.LanguageModelTextPart(result.text));
-					if (result.done) { return; }
+					if ('toolCallId' in result) {
+						progress.report(new vscode.LanguageModelToolCallPart(result.toolCallId, result.name, result.parameters));
+					} else {
+						progress.report(new vscode.LanguageModelTextPart(result.text));
+					}
+					if ('done' in result && result.done) { return; }
 				}
 			} catch {
 				// Non-JSON keep-alive or malformed — ignore
@@ -80,3 +86,8 @@ export async function parseSSEStream(
 		}
 	}
 }
+
+/** Return type for the parseEvent callback in parseSSEStream */
+export type SSEEventResult =
+	| { text: string; done?: boolean }
+	| { toolCallId: string; name: string; parameters: object };

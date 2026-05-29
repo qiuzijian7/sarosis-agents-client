@@ -72,7 +72,7 @@ export function SessionSwitcher(): React.ReactElement {
 	};
 
 	// Filter out archived sessions from the main list
-	const visibleSessions = sessions.filter(s => s.status !== 'archived');
+	const visibleSessions = sessions.filter((s): s is NonNullable<typeof s> => s != null && s.status !== 'archived');
 
 	return (
 		<div className="session-switcher" ref={dropdownRef}>

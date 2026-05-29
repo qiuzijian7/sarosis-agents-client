@@ -251,17 +251,38 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			return;
 		}
 
-		this._logService.info(`[LMBridge] chat() called — vendor=${this.vendor} model=${modelId}`);
+		this._logService.info(`[LMBridge] chat() called — vendor=${this.vendor} model=${modelId}, tools=${options.tools?.length ?? 0}`);
 
 		const lmMessages = this._toLanguageModelMessages(messages, options);
 		const cts = new CancellationTokenSource();
+
+		// 将 options 传递给 sendChatRequest，以便扩展可以访问 tools 等配置
+		// 注意：systemPrompt 已经在 _toLanguageModelMessages 中处理，不应重复传递
+		const requestOptions: any = {
+			requestInitiator: 'sessions.agentStudio',
+			modelOptions: {},
+		};
+		
+		// 传递 tools 定义给扩展（通过 modelOptions）
+		if (options.tools && options.tools.length > 0) {
+			requestOptions.modelOptions.tools = options.tools;
+			this._logService.info(`[LMBridge] Passing ${options.tools.length} tools to extension via modelOptions.tools`);
+		}
+		
+		// 传递其他 modelOptions（如 temperature, maxTokens）
+		if (options.temperature !== undefined) {
+			requestOptions.modelOptions.temperature = options.temperature;
+		}
+		if (options.maxTokens !== undefined) {
+			requestOptions.modelOptions.maxTokens = options.maxTokens;
+		}
 
 		try {
 			const response = await this._lmService.sendChatRequest(
 				modelId,
 				meta.extension,                   // initiating extension = the provider extension itself
 				lmMessages,
-				{ requestInitiator: 'sessions.agentStudio' },
+				requestOptions,
 				cts.token,
 			);
 

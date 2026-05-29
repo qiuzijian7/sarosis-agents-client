@@ -20,7 +20,7 @@ import React, { memo, useMemo, useState } from 'react';
 import type { ChatMessage } from '../../store/useChatStore';
 import { useChatStore } from '../../store/useChatStore';
 import { ToolCallCard } from './ToolCallCard';
-import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
+import { MarkdownRenderer, InterleavedMarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
 import { OrchestrationPlanInline } from '../../features/orchestration/OrchestrationPlanInline';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
@@ -213,8 +213,8 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 					/>
 				)}
 
-				{/* ── Tool calls ────────────────────────────── */}
-				{message.toolCalls && message.toolCalls.length > 0 && (
+				{/* ── Tool calls (Disabled: now handled by InterleavedMarkdownRenderer below) ─── */}
+							{/* {message.toolCalls && message.toolCalls.length > 0 && (
 					<div className="tool-calls-section">
 						{message.toolCalls
 							.filter(tc => tc.defaultShow !== false)
@@ -222,7 +222,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 								<ToolCallCard key={tc.id} toolCall={tc} />
 							))}
 					</div>
-				)}
+				)} */}
 
 				{/* ── Main content ──────────────────────────── */}
 				{displayContent && (
@@ -270,8 +270,30 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 								)}
 							</div>
 						) : !isUser ? (
-							// Completed assistant messages: full Markdown rendering
-							<MarkdownRenderer content={displayContent} />
+							// Completed assistant messages: full Markdown rendering with interleaved tool calls (Void pattern)
+							(() => {
+								const safeToolCalls = Array.isArray(message.toolCalls) ? message.toolCalls : [];
+								const visibleToolCalls = safeToolCalls.filter(tc => tc && tc.defaultShow !== false);
+								const toolCallNodes = visibleToolCalls.map(tc => (
+									<ToolCallCard key={tc.id} toolCall={tc} />
+								));
+								// Build position map from textPosition hints (recorded at tool_start time)
+								const toolPositions = new Map<string, number>();
+								for (const tc of visibleToolCalls) {
+									if (tc.textPosition !== undefined) {
+										toolPositions.set(tc.id, tc.textPosition);
+									}
+								}
+								return toolCallNodes.length > 0 ? (
+									<InterleavedMarkdownRenderer
+										content={displayContent}
+										toolCallNodes={toolCallNodes}
+										toolPositions={toolPositions}
+									/>
+								) : (
+									<MarkdownRenderer content={displayContent} />
+								);
+							})()
 						) : (
 							// User messages: plain text
 							displayContent

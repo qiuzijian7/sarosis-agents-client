@@ -179,6 +179,13 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 			renderType: 'ListItems',
 			detailKeys: ['path'],
 		},
+		file_list: {
+			emoji: '📂',
+			title: '列出文件',
+			label: '列出文件',
+			renderType: 'ListItems',
+			detailKeys: ['path', 'pattern'],
+		},
 		grep: {
 			emoji: '🔍',
 			title: 'Grep',

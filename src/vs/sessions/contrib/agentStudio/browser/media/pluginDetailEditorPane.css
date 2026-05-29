@@ -568,6 +568,128 @@
 	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
 }
 
+/* ─── Models List (CodeBuddy) ───────────────────────────── */
+
+.plugin-detail-models-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	max-width: 520px;
+}
+
+.plugin-detail-model-entry {
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, #424242));
+	border-radius: 6px;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+	transition: border-color 0.15s;
+}
+
+.plugin-detail-model-entry.expanded {
+	border-color: var(--vscode-focusBorder);
+}
+
+.plugin-detail-model-entry-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	cursor: pointer;
+	background: var(--vscode-input-background);
+	user-select: none;
+	transition: background 0.1s;
+}
+
+.plugin-detail-model-entry-header:hover {
+	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
+}
+
+.plugin-detail-model-expand-btn {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	width: 12px;
+	flex-shrink: 0;
+	transition: transform 0.15s;
+}
+
+.plugin-detail-model-entry-summary {
+	flex: 1;
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.plugin-detail-model-delete-btn {
+	background: transparent;
+	border: none;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-size: 14px;
+	padding: 2px 6px;
+	border-radius: 3px;
+	line-height: 1;
+	opacity: 0;
+	transition: opacity 0.15s, color 0.1s, background 0.1s;
+}
+
+.plugin-detail-model-entry-header:hover .plugin-detail-model-delete-btn {
+	opacity: 1;
+}
+
+.plugin-detail-model-delete-btn:hover {
+	color: var(--vscode-errorForeground, #f48771);
+	background: var(--vscode-errorBackground, rgba(244, 135, 113, 0.1));
+}
+
+.plugin-detail-model-entry-body {
+	padding: 10px 12px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	border-top: 1px solid var(--vscode-panel-border, #42424233);
+}
+
+.plugin-detail-model-field-row {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.plugin-detail-model-field-label {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-descriptionForeground);
+}
+
+.plugin-detail-model-field-row .plugin-detail-config-input {
+	max-width: 100%;
+}
+
+/* Add Model button */
+.plugin-detail-models-add-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 6px 14px;
+	border: 1px dashed var(--vscode-input-border, var(--vscode-panel-border, #424242));
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	cursor: pointer;
+	transition: border-color 0.15s, color 0.15s, background 0.15s;
+	align-self: flex-start;
+}
+
+.plugin-detail-models-add-btn:hover {
+	border-color: var(--vscode-focusBorder);
+	color: var(--vscode-foreground);
+	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
+}
+
 /* ─── Knot CLI Status Card ───────────────────────────── */
 
 .plugin-detail-cli-card {

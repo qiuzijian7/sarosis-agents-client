@@ -431,6 +431,50 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 	}
 
+	async deleteMessagesAfter(
+		employeeId: string,
+		sessionId: string | undefined,
+		messageId: string,
+	): Promise<void> {
+		await this._ensureHistoryLoaded();
+		const key = this._cacheKey(employeeId, sessionId);
+		let messages = this._historyCache.get(key);
+
+		if (!messages || messages.length === 0) {
+			messages = await this._loadFromSessionFile(employeeId, sessionId);
+		}
+		if (!messages || messages.length === 0) {
+			this.logService.info(`[AgentChatService] deleteMessagesAfter: no messages found for ${key}`);
+			return;
+		}
+
+		const targetIdx = messages.findIndex(m => m.id === messageId);
+		if (targetIdx < 0) {
+			this.logService.warn(`[AgentChatService] deleteMessagesAfter: message ${messageId} not found in ${key}`);
+			return;
+		}
+
+		// Keep messages up to and including targetIdx
+		const updatedMessages = messages.slice(0, targetIdx + 1);
+		this._historyCache.set(key, updatedMessages);
+
+		this.logService.info(
+			`[AgentChatService] deleteMessagesAfter: kept ${updatedMessages.length} messages (removed ${messages.length - updatedMessages.length}) for ${key}`,
+		);
+
+		// Persist: global + session file
+		this._persistGlobalHistory().catch((err) =>
+			this.logService.error("[AgentChatService] Global persist failed:", err),
+		);
+		this._persistToSessionFile(
+			employeeId,
+			sessionId,
+			updatedMessages,
+		).catch((err) =>
+			this.logService.error("[AgentChatService] Session file persist failed:", err),
+		);
+	}
+
 	// ─── Public: sendMessage ─────────────────────────────────────────────────
 
 	async sendMessage(

@@ -432,6 +432,12 @@ class DefaultAccountProvider extends Disposable implements IDefaultAccountProvid
 		const defaultAccountProvider = this.getDefaultAccountAuthenticationProvider();
 		this.logService.debug('[DefaultAccount] Default account provider ID:', defaultAccountProvider.id);
 
+		// 如果 provider ID 为空，说明默认登录功能已禁用
+		if (!defaultAccountProvider.id) {
+			this.logService.info('[DefaultAccount] Default account provider is disabled (empty ID).');
+			return null;
+		}
+
 		const declaredProvider = this.authenticationService.declaredProviders.find(provider => provider.id === defaultAccountProvider.id);
 		if (!declaredProvider) {
 			this.logService.info(`[DefaultAccount] Authentication provider is not declared.`, defaultAccountProvider);
@@ -895,8 +901,8 @@ class DefaultAccountProvider extends Disposable implements IDefaultAccountProvid
 
 	async signIn(options?: { additionalScopes?: readonly string[];[key: string]: unknown }): Promise<IDefaultAccount | null> {
 		const authProvider = this.getDefaultAccountAuthenticationProvider();
-		if (!authProvider) {
-			throw new Error('No default account provider configured');
+		if (!authProvider || !authProvider.id) {
+			throw new Error('No default account provider configured or provider is disabled');
 		}
 		const { additionalScopes, ...sessionOptions } = options ?? {};
 		const defaultAccountScopes = this.defaultAccountConfig.authenticationProvider.scopes[0];

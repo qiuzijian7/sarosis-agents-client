@@ -53,7 +53,7 @@ export function TaskBoardPanel(): React.ReactElement {
 		// not just the first one in the array. When multiple plans are pending
 		// (e.g. test55 and test100), we want the newest one.
 		const pendingPlans = orchestrationPlans
-			.filter(p => p.status === 'pending_approval')
+			.filter((p): p is NonNullable<typeof p> => p != null && p.status === 'pending_approval')
 			.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 		const latestPending = pendingPlans[0];
 		if (!latestPending) { return; }
@@ -115,7 +115,7 @@ export function TaskBoardPanel(): React.ReactElement {
 	}, [focusTask]);
 
 	const getTasksForColumn = useCallback((status: TaskBoardStatus) => {
-		return tasks.filter(t => t.status === status);
+		return tasks.filter(t => t && t.status === status);
 	}, [tasks]);
 
 	// Drag handlers
@@ -145,7 +145,7 @@ export function TaskBoardPanel(): React.ReactElement {
 		setDragOverColumn(null);
 
 		if (!draggingTaskId) { return; }
-		const task = tasks.find(t => t.id === draggingTaskId);
+		const task = tasks.find(t => t && t.id === draggingTaskId);
 		if (!task || task.status === targetStatus) { return; }
 
 		// Running tasks cannot be dragged away

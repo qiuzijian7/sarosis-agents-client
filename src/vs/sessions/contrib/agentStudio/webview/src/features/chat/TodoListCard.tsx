@@ -33,7 +33,7 @@ export const TodoListCard = memo(function TodoListCard({
 	const [isExpanded, setIsExpanded] = useState(true);
 	const [newTodo, setNewTodo] = useState('');
 
-	const completedCount = todos.filter(t => t.completed).length;
+	const completedCount = todos.filter(t => t && t.completed).length;
 	const totalCount = todos.length;
 
 	const handleToggle = (id: string) => {

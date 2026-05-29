@@ -9,17 +9,22 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { WorktreeBadge } from './WorktreeBadge';
+import { sendRequest } from '../../bridge/messageClient';
 
-export type ViewMode = 'canvas' | 'list';
+export type ViewMode = 'canvas' | 'list' | 'html';
 
 interface WorkspaceHeaderProps {
 	viewMode: ViewMode;
 	onViewModeChange: (mode: ViewMode) => void;
+	selectedAgentId?: string | null;
+	onSelectedAgentIdChange?: (agentId: string | null) => void;
 }
 
 export function WorkspaceHeader({
 	viewMode,
 	onViewModeChange,
+	selectedAgentId,
+	onSelectedAgentIdChange,
 }: WorkspaceHeaderProps): React.ReactElement {
 	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, createWorkspaceWithWorktree } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
@@ -31,6 +36,9 @@ export function WorkspaceHeader({
 	const dropdownRef = useRef<HTMLDivElement>(null);
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
+
+	const [isHtmlDropdownOpen, setIsHtmlDropdownOpen] = useState(false);
+	const [htmlViewAgents, setHtmlViewAgents] = useState<Array<{ id: string; name: string; role: string; workspaceId: string }>>([]);
 
 	const currentWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
 	const employeeCount = employees.filter(e => e.workspaceId === activeWorkspaceId).length;
@@ -85,6 +93,22 @@ export function WorkspaceHeader({
 			inputRef.current.focus();
 		}
 	}, [isCreating]);
+
+	// Load agents with config.md when HTML dropdown opens
+	useEffect(() => {
+		if (isHtmlDropdownOpen) {
+			const loadAgents = async () => {
+				try {
+					const result = await sendRequest('configmd.listAgents', {});
+					setHtmlViewAgents(result || []);
+				} catch (err) {
+					console.error('Failed to load agents with config.md:', err);
+					setHtmlViewAgents([]);
+				}
+			};
+			void loadAgents();
+		}
+	}, [isHtmlDropdownOpen]);
 
 	const toggleDropdown = useCallback(() => {
 		setIsDropdownOpen(prev => !prev);
@@ -323,6 +347,51 @@ export function WorkspaceHeader({
 						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
 					</svg>
 				</button>
+				{/* HTML view button with dropdown */}
+				<div className="ws-header-html-view-group">
+					<button
+						className={`ws-header-mode-btn ${viewMode === 'html' ? 'active' : ''}`}
+						onClick={() => onViewModeChange('html')}
+						title="HTML 视图"
+					>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 2v6h6" />
+						</svg>
+					</button>
+					<button
+						className="ws-header-html-dropdown-btn"
+						onClick={(e) => {
+							e.stopPropagation();
+							setIsHtmlDropdownOpen(!isHtmlDropdownOpen);
+						}}
+						title="选择 Agent"
+					>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 9l6 6 6-6" />
+						</svg>
+					</button>
+				</div>
+				{isHtmlDropdownOpen && (
+					<div className="ws-header-html-dropdown">
+						{htmlViewAgents.map(agent => (
+							<div
+								key={agent.id}
+								className="ws-header-html-dropdown-item"
+								onClick={() => {
+									onViewModeChange('html');
+									onSelectedAgentIdChange?.(agent.id);
+									setIsHtmlDropdownOpen(false);
+								}}
+							>
+								{agent.name} ({agent.role})
+							</div>
+						))}
+						{htmlViewAgents.length === 0 && (
+							<div className="ws-header-html-dropdown-empty">没有配置 config.md 的 Agent</div>
+						)}
+					</div>
+				)}
 			</div>
 		</div>
 	);

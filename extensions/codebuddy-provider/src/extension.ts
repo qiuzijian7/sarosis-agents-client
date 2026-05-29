@@ -14,12 +14,16 @@
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
 	parseSSEStream,
 	parseModelsConfig,
 	createModelInfo,
 	getModelTokenLimits,
 	CODEBUDDY_DEFAULT_MODELS,
+	CODEBUDDY_DEFAULT_MODEL_CONFIGS,
+	IModelConfig,
 	extractText,
 	extractModelName,
 	estimateTokenCount,
@@ -55,15 +59,162 @@ const VENDOR = 'codebuddy';
 const EXTENSION_ID = 'sarosis.sarosis-codebuddy-provider';
 
 /**
+ * Load models from a model.json file.
+ * @param filePath Path to the model.json file
+ * @param extensionPath Extension path for resolving relative paths
+ * @returns Array of IModelConfig or null if file cannot be read/parsed
+ */
+function loadModelsFromJsonFile(filePath: string, extensionPath?: string): IModelConfig[] | null {
+	try {
+		// Resolve path (support relative paths from workspace or extension directory)
+		let resolvedPath = filePath;
+		if (!path.isAbsolute(filePath)) {
+			// Try to resolve relative to extension path first
+			if (extensionPath) {
+				const extensionRelativePath = path.join(extensionPath, filePath);
+				if (fs.existsSync(extensionRelativePath)) {
+					resolvedPath = extensionRelativePath;
+				}
+			}
+			// If not found in extension path, try workspace
+			if (resolvedPath === filePath) {
+				const workspaceFolders = vscode.workspace.workspaceFolders;
+				if (workspaceFolders && workspaceFolders.length > 0) {
+					resolvedPath = path.join(workspaceFolders[0].uri.fsPath, filePath);
+				} else if (!extensionPath) {
+					console.warn(`[CodeBuddy] Cannot resolve relative path "${filePath}": no workspace folder open`);
+					return null;
+				}
+			}
+		}
+
+		// Check if file exists
+		if (!fs.existsSync(resolvedPath)) {
+			console.warn(`[CodeBuddy] model.json file not found: ${resolvedPath}`);
+			return null;
+		}
+
+		// Read and parse JSON file
+		const fileContent = fs.readFileSync(resolvedPath, 'utf8');
+		const jsonData = JSON.parse(fileContent);
+
+		// Extract models array
+		const models = jsonData.models;
+		if (!Array.isArray(models)) {
+			console.warn(`[CodeBuddy] model.json file does not contain a "models" array`);
+			return null;
+		}
+
+		// Convert each model to IModelConfig
+		const modelConfigs: IModelConfig[] = models.map((model: any) => {
+			// Extract all fields with defaults
+			const id = model.id || '';
+			const name = model.name || id;
+			const vendor = model.vendor || '';
+			const maxOutputTokens = model.maxOutputTokens || getModelTokenLimits(model.id || '').maxOutputTokens;
+			const maxInputTokens = model.maxInputTokens || 128000;
+			const supportsToolCall = model.supportsToolCall !== undefined ? model.supportsToolCall : true;
+			const supportsImages = model.supportsImages !== undefined ? model.supportsImages : false;
+			const disabledMultimodal = model.disabledMultimodal !== undefined ? model.disabledMultimodal : false;
+			const maxAllowedSize = model.maxAllowedSize || model.maxInputTokens || 128000;
+			const temperature = model.temperature !== undefined ? model.temperature : 1;
+			const supportsReasoning = model.supportsReasoning !== undefined ? model.supportsReasoning : false;
+			const reasoning = model.reasoning || null;
+			const onlyReasoning = model.onlyReasoning !== undefined ? model.onlyReasoning : false;
+			const descriptionEn = model.descriptionEn || '';
+			const descriptionZh = model.descriptionZh || '';
+			const credits = model.credits || '';
+			const relatedModels = model.relatedModels || null;
+			const tags = model.tags || [];
+			const top_p = model.top_p !== undefined ? model.top_p : undefined;
+			const top_k = model.top_k !== undefined ? model.top_k : undefined;
+			const repetition_penalty = model.repetition_penalty !== undefined ? model.repetition_penalty : undefined;
+			const isDefault = model.isDefault !== undefined ? model.isDefault : false;
+			const supportsExtra = model.supportsExtra !== undefined ? model.supportsExtra : false;
+
+			return {
+				id,
+				name,
+				vendor,
+				maxOutputTokens,
+				maxInputTokens,
+				supportsToolCall,
+				supportsImages,
+				disabledMultimodal,
+				maxAllowedSize,
+				temperature,
+				supportsReasoning,
+				reasoning,
+				onlyReasoning,
+				descriptionEn,
+				descriptionZh,
+				credits,
+				relatedModels,
+				tags,
+				top_p,
+				top_k,
+				repetition_penalty,
+				isDefault,
+				supportsExtra,
+			};
+		}).filter((config: IModelConfig) => config.id !== '');
+
+		console.log(`[CodeBuddy] Loaded ${modelConfigs.length} models from ${resolvedPath}:`, modelConfigs.map(m => m.id));
+		return modelConfigs;
+	} catch (error) {
+		console.error(`[CodeBuddy] Error loading model.json file: ${error}`);
+		console.error(`[CodeBuddy] Stack trace:`, error instanceof Error ? error.stack : '');
+		return null;
+	}
+}
+
+/**
+ * Load models from codebuddy.models configuration.
+ * Supports both old format (string) and new format (IModelConfig[]).
+ */
+async function loadModelsFromConfig(config: vscode.WorkspaceConfiguration): Promise<IModelConfig[]> {
+	// Migration: support both old format (string) and new format (IModelConfig[])
+	let modelConfigs: IModelConfig[];
+	const rawModelsConfig = config.get('models');
+	
+	if (Array.isArray(rawModelsConfig)) {
+		// New format: array of IModelConfig
+		modelConfigs = rawModelsConfig.length > 0 ? rawModelsConfig : CODEBUDDY_DEFAULT_MODEL_CONFIGS;
+	} else if (typeof rawModelsConfig === 'string' && rawModelsConfig.trim()) {
+		// Old format: comma-separated string - migrate to new format
+		const modelNames = rawModelsConfig.split(',').map(m => m.trim()).filter(m => m.length > 0);
+		modelConfigs = modelNames.map(name => {
+			const tokenLimits = getModelTokenLimits(name);
+			return {
+				id: name,
+				name: name,
+				maxInputTokens: tokenLimits.maxInputTokens,
+				maxAllowedSize: tokenLimits.maxAllowedSize || tokenLimits.maxInputTokens
+			};
+		});
+		// Auto-migrate: save in new format
+		await config.update('models', modelConfigs, vscode.ConfigurationTarget.Global);
+	} else {
+		// No config or empty - use defaults
+		modelConfigs = CODEBUDDY_DEFAULT_MODEL_CONFIGS;
+	}
+	
+	return modelConfigs;
+}
+
+/**
  * CodeBuddy Chat Provider implementation
  */
 class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
+	private readonly _context: vscode.ExtensionContext;
 
 	constructor(
 		private readonly _auth: CodeBuddyAuth,
+		context: vscode.ExtensionContext,
 	) {
+		this._context = context;
 		// Forward auth state changes to model list changes
 		this._auth.onDidChange(() => this._onDidChange.fire());
 	}
@@ -92,12 +243,51 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		}
 
 		const config = vscode.workspace.getConfiguration('codebuddy');
-		const modelsConfig = config.get<string>('models') ?? '';
-		const customModels = parseModelsConfig(modelsConfig);
-		const modelNames = customModels ?? CODEBUDDY_DEFAULT_MODELS;
+		
+		// Try to load models from model.json file first
+		let modelConfigs: IModelConfig[];
+		let modelJsonPath = config.get<string>('modelJsonPath');
+		
+		// If modelJsonPath is not configured (empty), try to load from default model.json in extension directory
+		if (!modelJsonPath || !modelJsonPath.trim()) {
+			const defaultModelJsonPath = path.join(this._context.extensionPath, 'model.json');
+			if (fs.existsSync(defaultModelJsonPath)) {
+				modelJsonPath = defaultModelJsonPath;
+				console.log(`[CodeBuddy] Using default model.json from extension directory: ${defaultModelJsonPath}`);
+			}
+		}
+		
+		if (modelJsonPath && modelJsonPath.trim()) {
+			// Try to load from model.json file
+			const jsonModelConfigs = loadModelsFromJsonFile(modelJsonPath.trim(), this._context.extensionPath);
+			if (jsonModelConfigs && jsonModelConfigs.length > 0) {
+				modelConfigs = jsonModelConfigs;
+				console.log(`[CodeBuddy] Using models from model.json file: ${modelJsonPath}, total ${modelConfigs.length} models`);
+			} else {
+				// Fallback to models config
+				console.log(`[CodeBuddy] model.json loading failed or returned empty, falling back to models config`);
+				modelConfigs = await loadModelsFromConfig(config);
+			}
+		} else {
+			// No modelJsonPath configured and no default model.json, use models config
+			console.log(`[CodeBuddy] No modelJsonPath configured and no default model.json found, using models config`);
+			modelConfigs = await loadModelsFromConfig(config);
+		}
 
-		return modelNames.map(modelName =>
-			createModelInfo(modelName, VENDOR, VENDOR, `CodeBuddy - ${modelName}`, getModelTokenLimits(modelName)),
+		console.log(`[CodeBuddy] provideLanguageModelChatInformation returning ${modelConfigs.length} models:`, modelConfigs.map(m => m.id));
+
+		return modelConfigs.map(modelConfig =>
+			createModelInfo(
+				modelConfig.id,
+				VENDOR,
+				VENDOR,
+				`CodeBuddy - ${modelConfig.name}`,
+				{
+					maxInputTokens: modelConfig.maxInputTokens,
+					maxOutputTokens: modelConfig.maxOutputTokens || getModelTokenLimits(modelConfig.id).maxOutputTokens,
+					maxAllowedSize: modelConfig.maxAllowedSize
+				}
+			),
 		);
 	}
 
@@ -237,7 +427,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	const auth = new CodeBuddyAuth(context.globalState);
 	context.subscriptions.push(auth);
 
-	const provider = new CodeBuddyChatProvider(auth);
+	const provider = new CodeBuddyChatProvider(auth, context);
 	context.subscriptions.push(provider);
 
 	const registration = vscode.lm.registerLanguageModelChatProvider(VENDOR, provider);

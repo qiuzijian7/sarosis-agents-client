@@ -88,6 +88,7 @@ export type RequestType =
 	| 'configmd.removeParser'
 	| 'configmd.getInfo'
 	| 'configmd.previewToFile'
+	| 'configmd.listAgents'
 	| 'files.open'
 	| 'files.openHtmlPreview'
 	| 'files.openUntitledText'

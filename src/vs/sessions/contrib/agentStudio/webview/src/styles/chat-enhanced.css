@@ -305,52 +305,67 @@
 .tool-calls-section {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	margin-bottom: 6px;
+	gap: 6px;
+	margin-bottom: 8px;
 }
 
 .tool-call-card {
-	border-radius: 6px;
+	border-radius: 8px;
 	overflow: hidden;
-	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
-	background-color: var(--as-bg-tertiary, var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.08)));
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+	background-color: var(--as-bg-tertiary, var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.06)));
 	font-size: 11px;
-	transition: border-color 0.2s;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.tool-call-card:hover {
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
 }
 
 .tool-call-card.running {
-	border-color: var(--as-accent, rgba(59, 130, 246, 0.3));
+	border-color: var(--as-accent, rgba(59, 130, 246, 0.4));
+	background-color: rgba(59, 130, 246, 0.03);
 }
 
 .tool-call-card.completed {
-	border-color: var(--as-success, rgba(74, 222, 128, 0.2));
+	border-color: var(--as-success, rgba(74, 222, 128, 0.3));
+	background-color: rgba(74, 222, 128, 0.02);
 }
 
 .tool-call-card.error {
-	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.3));
+	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.4));
+	background-color: rgba(244, 135, 113, 0.03);
 }
 
 .tool-call-card.approval-required {
-	border-color: var(--as-warning, rgba(234, 179, 8, 0.4));
+	border-color: var(--as-warning, rgba(234, 179, 8, 0.5));
+	background-color: rgba(234, 179, 8, 0.03);
 }
 
 .tool-call-card.rejected {
-	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.2));
+	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.3));
+	background-color: rgba(244, 135, 113, 0.02);
 	opacity: 0.7;
 }
 
 .tool-call-card-header {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 6px 10px;
+	gap: 8px;
+	padding: 8px 12px;
 	cursor: pointer;
 	user-select: none;
-	transition: background-color 0.1s;
+	transition: background-color 0.15s ease;
+	border-bottom: 1px solid transparent;
 }
 
 .tool-call-card-header:hover {
-	background-color: rgba(128, 128, 128, 0.06);
+	background-color: rgba(128, 128, 128, 0.08);
+}
+
+.tool-call-card-header:active {
+	background-color: rgba(128, 128, 128, 0.12);
 }
 
 .tool-call-icon {
@@ -391,46 +406,61 @@
 .tool-call-card-name {
 	display: flex;
 	align-items: center;
-	gap: 4px;
+	gap: 6px;
 	font-weight: 500;
+	font-size: 13px;
+	line-height: 1.4;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	color: var(--as-fg-primary, var(--vscode-foreground));
 }
 
 .tool-call-emoji {
-	font-size: 12px;
+	font-size: 14px;
 	flex-shrink: 0;
+	line-height: 1;
 }
 
 /* Args summary in collapsed view (OpenClaw pattern) */
 .tool-call-card-summary {
 	flex: 1;
-	font-size: 10px;
+	font-size: 11px;
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	opacity: 0.7;
-	margin-left: 4px;
+	opacity: 0.8;
+	margin-left: 8px;
+	font-style: italic;
 }
 
 /* Duration badge */
 .tool-call-duration {
-	font-size: 9px;
-	padding: 1px 5px;
-	border-radius: 3px;
-	background-color: rgba(128, 128, 128, 0.1);
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	background-color: rgba(128, 128, 128, 0.08);
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
 	flex-shrink: 0;
+	font-weight: 500;
+	font-variant-numeric: tabular-nums;
 }
 
 .tool-call-card-toggle {
 	display: flex;
 	align-items: center;
-	opacity: 0.5;
-	transition: transform 0.2s;
+	opacity: 0.6;
+	transition: transform 0.2s ease, opacity 0.15s ease;
 	flex-shrink: 0;
+}
+
+.tool-call-card-toggle:hover {
+	opacity: 1;
+}
+
+.tool-call-card-toggle.collapsed {
+	transform: rotate(-90deg);
 }
 
 .tool-call-card-toggle.collapsed {
@@ -438,15 +468,27 @@
 }
 
 .tool-call-card-body {
-	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.12));
+	animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 .tool-call-section {
-	padding: 6px 10px;
+	padding: 8px 12px;
 }
 
 .tool-call-section + .tool-call-section {
-	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.08));
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
 }
 
 /* Section header with title + copy button */
@@ -454,46 +496,47 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	margin-bottom: 4px;
+	margin-bottom: 6px;
 }
 
 .tool-call-section-title {
-	font-size: 10px;
+	font-size: 11px;
 	font-weight: 600;
 	color: var(--as-fg-secondary, var(--vscode-descriptionForeground));
 	text-transform: uppercase;
-	letter-spacing: 0.3px;
+	letter-spacing: 0.5px;
 }
 
 .tool-call-copy-btn {
 	border: none;
 	background: transparent;
 	cursor: pointer;
-	font-size: 11px;
-	padding: 1px 4px;
-	border-radius: 3px;
-	opacity: 0.4;
-	transition: opacity 0.1s, background-color 0.1s;
+	font-size: 12px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	opacity: 0.5;
+	transition: opacity 0.15s ease, background-color 0.15s ease;
 }
 
 .tool-call-copy-btn:hover {
 	opacity: 1;
-	background-color: rgba(128, 128, 128, 0.15);
+	background-color: rgba(128, 128, 128, 0.12);
 }
 
 .tool-call-code {
-	font-size: 10px;
-	line-height: 1.5;
-	padding: 6px 8px;
-	border-radius: 4px;
-	background-color: var(--vscode-editor-background, rgba(0, 0, 0, 0.15));
-	font-family: var(--vscode-editor-font-family, 'Fira Code', 'Consolas', monospace);
+	font-size: 11px;
+	line-height: 1.6;
+	padding: 8px 10px;
+	border-radius: 6px;
+	background-color: var(--vscode-editor-background, rgba(0, 0, 0, 0.18));
+	font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', monospace);
 	overflow-x: auto;
-	max-height: 200px;
+	max-height: 300px;
 	overflow-y: auto;
 	white-space: pre-wrap;
-	word-break: break-all;
+	word-break: break-word;
 	margin: 0;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.08));
 }
 
 .tool-call-code.error-output {
@@ -579,45 +622,39 @@
 	opacity: 0.6;
 }
 
-/* ── renderType: RunTerminal ── */
+/* ── renderType: RunTerminal (Monaco Editor) ── */
 .tool-call-render-terminal {
 	padding: 0;
+	background: var(--vscode-editor-background, rgba(0, 0, 0, 0.2));
+	border-radius: 6px;
+	overflow: hidden;
+	margin: 8px 12px;
+	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
 }
 
-.tool-call-terminal-cmd {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	padding: 6px 10px;
-	background: rgba(0, 0, 0, 0.15);
-	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
-	font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', monospace);
-	font-size: 12px;
+.tool-call-terminal-editor-wrapper {
+	/* Monaco Editor wrapper */
+	min-height: 32px;
 }
 
-.tool-call-terminal-prompt {
-	color: var(--as-success, #4ade80);
-	font-weight: 600;
-	flex-shrink: 0;
+.tool-call-terminal-editor-wrapper .monaco-editor {
+	background-color: transparent !important;
 }
 
-.tool-call-terminal-cmd code {
-	color: var(--vscode-foreground);
-	word-break: break-all;
+.tool-call-terminal-editor-wrapper .monaco-editor .margin {
+	background-color: transparent !important;
 }
 
-.tool-call-terminal-output {
-	margin: 0;
-	padding: 8px 10px;
-	font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', monospace);
-	font-size: 11px;
-	line-height: 1.5;
-	max-height: 300px;
-	overflow-y: auto;
-	white-space: pre-wrap;
-	word-break: break-all;
-	color: var(--vscode-foreground);
-	opacity: 0.85;
+.tool-call-terminal-editor-wrapper .monaco-editor .decorationsOverviewRuler {
+	display: none !important;
+}
+
+.tool-call-terminal-editor-wrapper .monaco-editor .scrollbar {
+	opacity: 0.6;
+}
+
+.tool-call-terminal-editor-wrapper .monaco-editor .scrollbar:hover {
+	opacity: 1;
 }
 
 /* ── renderType: CodeApply ── */
@@ -1370,103 +1407,6 @@
 }
 
 /* ── Tool Approval UI ─────────────────────────────────────────────── */
-.tool-call-approval {
-	padding: 8px 10px;
-	border-top: 1px solid var(--as-warning, rgba(234, 179, 8, 0.2));
-	background: var(--as-warning-bg, rgba(234, 179, 8, 0.04));
-}
-
-.tool-call-approval.dangerous {
-	background: rgba(248, 81, 73, 0.04);
-	border-top-color: rgba(248, 81, 73, 0.2);
-}
-
-.tool-call-approval-header {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	margin-bottom: 8px;
-	font-size: 12px;
-	font-weight: 500;
-}
-
-.tool-call-approval.dangerous .tool-call-approval-header {
-	color: var(--vscode-errorForeground, #f48771);
-}
-
-.tool-call-approval.cautious .tool-call-approval-header {
-	color: var(--as-warning, #eab308);
-}
-
-.tool-call-approval.safe .tool-call-approval-header {
-	color: var(--as-accent, #3b82f6);
-}
-
-.tool-call-approval-label {
-	font-size: 11px;
-}
-
-.tool-call-approval-actions {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	flex-wrap: wrap;
-}
-
-.tool-call-approve-btn,
-.tool-call-approve-always-btn,
-.tool-call-reject-btn {
-	border: 1px solid;
-	cursor: pointer;
-	font-size: 11px;
-	padding: 4px 12px;
-	border-radius: 4px;
-	font-weight: 500;
-	transition: background-color 0.15s, border-color 0.15s;
-}
-
-.tool-call-approve-btn {
-	border-color: var(--as-success, rgba(74, 222, 128, 0.4));
-	background: rgba(74, 222, 128, 0.1);
-	color: var(--as-success, #4ade80);
-}
-
-.tool-call-approve-btn:hover {
-	background: rgba(74, 222, 128, 0.2);
-	border-color: rgba(74, 222, 128, 0.6);
-}
-
-.tool-call-approve-always-btn {
-	border-color: var(--as-accent, rgba(59, 130, 246, 0.4));
-	background: rgba(59, 130, 246, 0.1);
-	color: var(--as-accent, #3b82f6);
-}
-
-.tool-call-approve-always-btn:hover {
-	background: rgba(59, 130, 246, 0.2);
-	border-color: rgba(59, 130, 246, 0.6);
-}
-
-.tool-call-reject-btn {
-	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.3));
-	background: rgba(244, 135, 113, 0.06);
-	color: var(--vscode-errorForeground, #f48771);
-}
-
-.tool-call-reject-btn:hover {
-	background: rgba(244, 135, 113, 0.15);
-	border-color: rgba(244, 135, 113, 0.5);
-}
-
-.tool-call-rejected-notice {
-	padding: 6px 10px;
-	font-size: 11px;
-	color: var(--vscode-errorForeground, #f48771);
-	opacity: 0.7;
-	border-top: 1px solid rgba(244, 135, 113, 0.1);
-	font-style: italic;
-}
-
 /* ── Lint Diagnostics ─────────────────────────────────────────────── */
 .tool-call-diagnostics {
 	border-top: 1px solid var(--as-warning, rgba(234, 179, 8, 0.15));
@@ -1527,10 +1467,12 @@
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	padding: 4px 10px;
-	font-size: 11px;
+	padding: 6px 12px;
+	font-size: 12px;
+	font-weight: 500;
 	font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', monospace);
-	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.08));
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.12));
+	background: rgba(128, 128, 128, 0.04);
 }
 
 .tool-call-exit-code svg {
@@ -1543,6 +1485,7 @@
 
 .tool-call-exit-code.non-zero {
 	color: var(--vscode-errorForeground, #f48771);
+	background: var(--vscode-errorForeground, rgba(244, 135, 113, 0.06));
 }
 
 /* ── Search Highlight ─────────────────────────────────────────────── */
@@ -1684,4 +1627,189 @@
 .code-block-apply-btn.applied {
 	border-color: var(--as-success, rgba(74, 222, 128, 0.6));
 	background: rgba(74, 222, 128, 0.15);
+}
+
+/* ── Error Section (improved error display) ─────────────────────────────── */
+.tool-call-error-section {
+	border-top: 1px solid var(--vscode-errorForeground, rgba(244, 135, 113, 0.2));
+	padding: 6px 10px;
+	background: var(--vscode-errorForeground, rgba(244, 135, 113, 0.04));
+}
+
+.tool-call-error-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.tool-call-error-header svg {
+	flex-shrink: 0;
+}
+
+.tool-call-error-title {
+	font-weight: 600;
+}
+
+.tool-call-error-content {
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--vscode-errorForeground, #f48771);
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', monospace);
+}
+
+/* ── Status Badge (modern status indicator) ─────────────────────────── */
+.tool-call-status-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 8px;
+	border-radius: 10px;
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 1.4;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.tool-call-status-badge.approval-required {
+	background: rgba(234, 179, 8, 0.15);
+	color: var(--as-warning, #eab308);
+	border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+.tool-call-status-badge.rejected {
+	background: rgba(244, 135, 113, 0.15);
+	color: var(--vscode-errorForeground, #f48771);
+	border: 1px solid rgba(244, 135, 113, 0.3);
+}
+
+.tool-call-status-badge.running {
+	background: rgba(59, 130, 246, 0.15);
+	color: var(--as-accent, #3b82f6);
+	border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.tool-call-status-badge.error {
+	background: rgba(244, 135, 113, 0.15);
+	color: var(--vscode-errorForeground, #f48771);
+	border: 1px solid rgba(244, 135, 113, 0.3);
+}
+
+.tool-call-status-badge.completed {
+	background: rgba(74, 222, 128, 0.15);
+	color: var(--as-success, #4ade80);
+	border: 1px solid rgba(74, 222, 128, 0.3);
+}
+
+/* ── Tool Approval UI (modern approval buttons) ─────────────────────── */
+.tool-approval-container {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px 12px;
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+	background: rgba(128, 128, 128, 0.04);
+}
+
+.tool-approval-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--as-warning, #eab308);
+}
+
+.tool-approval-label {
+	font-size: 12px;
+}
+
+.tool-approval-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.tool-approval-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 14px;
+	border-radius: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: all 0.15s ease;
+	border: 1px solid transparent;
+}
+
+.tool-approval-btn-approve {
+	background: var(--as-success, rgba(74, 222, 128, 0.15));
+	color: var(--as-success, #4ade80);
+	border-color: var(--as-success, rgba(74, 222, 128, 0.3));
+}
+
+.tool-approval-btn-approve:hover {
+	background: var(--as-success, rgba(74, 222, 128, 0.25));
+	border-color: var(--as-success, rgba(74, 222, 128, 0.5));
+}
+
+.tool-approval-btn-reject {
+	background: var(--vscode-errorForeground, rgba(244, 135, 113, 0.15));
+	color: var(--vscode-errorForeground, #f48771);
+	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.3));
+}
+
+.tool-approval-btn-reject:hover {
+	background: var(--vscode-errorForeground, rgba(244, 135, 113, 0.25));
+	border-color: var(--vscode-errorForeground, rgba(244, 135, 113, 0.5));
+}
+
+/* ── Rejected Notice ───────────────────────────────────────────────── */
+.tool-call-rejected-notice {
+	padding: 8px 12px;
+	border-top: 1px solid var(--vscode-errorForeground, rgba(244, 135, 113, 0.2));
+	background: var(--vscode-errorForeground, rgba(244, 135, 113, 0.04));
+	color: var(--vscode-errorForeground, #f48771);
+	font-size: 12px;
+	font-weight: 500;
+}
+
+/* ── Running Indicator ─────────────────────────────────────────────── */
+.tool-call-running-indicator {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.1));
+}
+
+.tool-call-running-dots {
+	display: flex;
+	gap: 4px;
+}
+
+.typing-dot {
+	animation: typingDot 1.4s infinite ease-in-out;
+	font-size: 8px;
+	opacity: 0.4;
+}
+
+.typing-dot:nth-child(1) { animation-delay: 0s; }
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingDot {
+	0%, 60%, 100% { opacity: 0.4; }
+	30% { opacity: 1; }
+}
+
+.tool-call-running-text {
+	font-size: 12px;
+	color: var(--as-accent, #3b82f6);
+	font-weight: 500;
 }

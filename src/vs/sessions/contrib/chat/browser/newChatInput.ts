@@ -53,6 +53,9 @@ import { IHistoryNavigationWidget } from '../../../../base/browser/history.js';
 import { registerAndCreateHistoryNavigationContext, IHistoryNavigationContext } from '../../../../platform/history/browser/contextScopedHistoryWidget.js';
 import { autorun, IObservable } from '../../../../base/common/observable.js';
 import { ChatInputNotificationWidget } from '../../../../workbench/contrib/chat/browser/widget/input/chatInputNotificationWidget.js';
+import { ISkillRegistry } from '../../agentStudio/common/skills.js';
+
+
 
 
 const STORAGE_KEY_DRAFT_STATE = 'sessions.draftState';
@@ -157,6 +160,7 @@ export class NewChatInputWidget extends Disposable implements IHistoryNavigation
 		@IStorageService private readonly storageService: IStorageService,
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super();
 		this._history = this._register(this.instantiationService.createInstance(ChatHistoryNavigator, ChatAgentLocation.Chat));
@@ -513,7 +517,17 @@ export class NewChatInputWidget extends Disposable implements IHistoryNavigation
 			return;
 		}
 
-		// Check for slash commands first
+		// Check for /skill command - load skill and send as request
+		// Format: /skill <skill-name> [user query]
+		const skillMatch = query.match(/^\/skill\s+(\S+)(?:\s+(.*))?$/i);
+		if (skillMatch) {
+			const skillName = skillMatch[1].trim();
+			const userQuery = skillMatch[2]?.trim() || '';
+			await this._handleSkillCommand(skillName, userQuery);
+			return;
+		}
+
+		// Check for slash commands
 		if (this._slashCommandHandler?.tryExecuteSlashCommand(query)) {
 			this._editor.getModel()?.setValue('');
 			return;
@@ -610,6 +624,52 @@ export class NewChatInputWidget extends Disposable implements IHistoryNavigation
 			editor.setPosition({ lineNumber: lastLine, column: maxColumn });
 			editor.focus();
 		}
+	}
+
+	private async _handleSkillCommand(skillName: string, userQuery: string): Promise<void> {
+		const skill = this.skillRegistry.getSkill(skillName);
+		if (!skill) {
+			this.logService.error(`[NewChatInputWidget] Skill not found: ${skillName}`);
+			return;
+		}
+
+		this.logService.info(`[NewChatInputWidget] Loading skill: ${skillName}, userQuery: ${userQuery || '(none)'}`);
+
+		// Use skill.prompt as the skill content (already without frontmatter)
+		const skillContent = skill.prompt || '';
+
+		// Build invocation message that triggers agent loop
+		// The key is to make the model understand it should USE TOOLS, not just reply
+		let invocationMessage = `[IMPORTANT: You are now operating under the "${skillName}" skill. You MUST follow the skill instructions below and actively use available tools to complete the task. Do not just acknowledge or summarize — take immediate action by invoking tools.]\n\n`;
+
+		if (skillContent) {
+			invocationMessage += `## Skill Instructions\n\n${skillContent}\n\n`;
+		}
+
+		if (userQuery) {
+			invocationMessage += `## User Request\n\n${userQuery}\n\n`;
+		}
+
+		invocationMessage += `Begin execution now. Start by analyzing what tools you need, then invoke them step by step until the task is complete.`;
+
+		// Send request with skill content (mirror normal send flow)
+		this._sending = true;
+		this._editor.updateOptions({ readOnly: true });
+		this._updateSendButtonState();
+		this._updateInputLoadingState();
+
+		try {
+			await this.options.sendRequest(invocationMessage);
+			this._contextAttachments.clear();
+			this._editor.getModel()?.setValue('');
+		} catch (e) {
+			this.logService.error('[NewChatInputWidget] Failed to send skill request:', e);
+		}
+
+		this._sending = false;
+		this._editor.updateOptions({ readOnly: false });
+		this._updateSendButtonState();
+		this._updateInputLoadingState();
 	}
 
 	sendQuery(text: string): void {

@@ -19,6 +19,7 @@ import {
 	IChatStreamDelta,
 	ISlotRegistry,
 	IToolDefinition,
+	IToolApprovalHandler,
 } from "./providers.js";
 
 // ─── Agent OS Service ───────────────────────────────────────────────────────
@@ -175,4 +176,11 @@ export interface IAgentOSService {
 	listAllToolsWithState(
 		agentId: string,
 	): Promise<(IToolDefinition & { enabled: boolean })[]>;
+
+	/**
+	 * 注册工具审批 UI Handler。
+	 * 由 WebView 或 Chat UI 层调用，提供用户确认能力。
+	 * @param handler 工具审批处理器
+	 */
+	setToolApprovalHandler(handler: IToolApprovalHandler): void;
 }

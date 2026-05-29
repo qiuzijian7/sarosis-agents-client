@@ -92,19 +92,21 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 	loadTasks: async (workspaceId?: string) => {
 		set({ isLoading: true });
 		try {
-			// Load standalone tasks
+			// Load standalone tasks (ensure array even if response is unexpected)
 			const boardTasks = await sendRequest<{ workspaceId?: string }, TaskBoardRecord[]>(
 				'taskBoard.list',
 				{ workspaceId }
 			);
+			const safeBoardTasks = Array.isArray(boardTasks) ? boardTasks : [];
 
-			// Load delegations and convert
+			// Load delegations and convert (filter out any undefined delegations)
 			const delegations = useDelegationStore.getState().delegations;
-			const delegationTasks = delegations.map(delegationToRecord);
+			const safeDelegations = Array.isArray(delegations) ? delegations : [];
+			const delegationTasks = safeDelegations.map(delegationToRecord).filter(Boolean);
 
-			// Merge both sources
+			// Merge both sources (filter out any undefined to prevent render crashes)
 			const allTasks = [
-				...boardTasks.map(t => ({ ...t, source: 'task-board' as TaskSource })),
+				...safeBoardTasks.filter(Boolean).map(t => ({ ...t, source: 'task-board' as TaskSource })),
 				...delegationTasks,
 			];
 
@@ -125,7 +127,7 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 				await sendRequest('taskBoard.update', { id: taskId, status });
 			}
 			set(state => ({
-				tasks: state.tasks.map(t => t.id === taskId ? { ...t, status } : t),
+				tasks: state.tasks.filter(Boolean).map(t => t.id === taskId ? { ...t, status } : t),
 			}));
 		} catch (err) {
 			console.error('[TaskBoardStore] Failed to update task status:', err);
@@ -158,7 +160,7 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 		try {
 			await sendRequest('taskBoard.archive', { id: taskId });
 			set(state => ({
-				tasks: state.tasks.map(t => t.id === taskId ? { ...t, status: 'archived' as TaskBoardStatus } : t),
+				tasks: state.tasks.filter(Boolean).map(t => t.id === taskId ? { ...t, status: 'archived' as TaskBoardStatus } : t),
 			}));
 		} catch (err) {
 			console.error('[TaskBoardStore] Failed to archive task:', err);
@@ -178,6 +180,6 @@ export const useTaskBoardStore = create<TaskBoardState>((set, get) => ({
 	clearFocus: () => set({ focusedTaskId: null }),
 
 	getTasksByStatus: (status) => {
-		return get().tasks.filter(t => t.status === status);
+		return get().tasks.filter(t => t && t.status === status);
 	},
 }));

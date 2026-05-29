@@ -20,6 +20,8 @@ export interface ICredentialData {
 export interface IModelTokenLimits {
 	maxInputTokens: number;
 	maxOutputTokens: number;
+	/** Maximum allowed context size (input + output) */
+	maxAllowedSize?: number;
 }
 
 /** SSE event parsed from stream — protocol-agnostic intermediate representation */

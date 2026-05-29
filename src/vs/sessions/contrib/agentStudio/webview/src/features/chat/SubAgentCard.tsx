@@ -174,10 +174,11 @@ function SubAgentCardRaw({ subAgents, isStreaming = false }: SubAgentCardProps):
 
 	// Compute overall status summary
 	const summary = useMemo(() => {
-		const running = subAgents.filter(a => a.status === 'running').length;
-		const done = subAgents.filter(a => a.status === 'done').length;
-		const error = subAgents.filter(a => a.status === 'error').length;
-		const total = subAgents.length;
+		const safeSubAgents = subAgents.filter((a): a is NonNullable<typeof a> => a != null);
+		const running = safeSubAgents.filter(a => a.status === 'running').length;
+		const done = safeSubAgents.filter(a => a.status === 'done').length;
+		const error = safeSubAgents.filter(a => a.status === 'error').length;
+		const total = safeSubAgents.length;
 
 		if (running > 0) {
 			return `${running}/${total} 执行中`;
@@ -191,7 +192,7 @@ function SubAgentCardRaw({ subAgents, isStreaming = false }: SubAgentCardProps):
 		return `${done}/${total} 完成`;
 	}, [subAgents]);
 
-	const anyRunning = subAgents.some(a => a.status === 'running');
+	const anyRunning = subAgents.some(a => a && a.status === 'running');
 
 	if (subAgents.length === 0) {
 		return null;
@@ -200,6 +201,7 @@ function SubAgentCardRaw({ subAgents, isStreaming = false }: SubAgentCardProps):
 	// Single agent: compact card
 	if (subAgents.length === 1) {
 		const agent = subAgents[0];
+		if (!agent) { return null; }
 		const config = SUB_AGENT_TYPE_CONFIG[agent.type] || SUB_AGENT_TYPE_CONFIG.general;
 		return (
 			<div className={`subagent-card single ${anyRunning ? 'active' : ''}`}>

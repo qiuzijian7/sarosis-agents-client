@@ -26,6 +26,7 @@ import { ToolCallCard } from './ToolCallCard';
 import { SubAgentCard } from './SubAgentCard';
 import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRenderer';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
+import { WorktreeSwitcher } from './WorktreeSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import type { StreamError } from '../../bridge/streamHandler';
 
@@ -577,7 +578,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						</span>
 					</div>
 					<div className="chat-header-actions">
-						<AgentSessionSwitcher />
+						<WorktreeSwitcher />
 						<button className="chat-header-btn" title="设置" onClick={() => onOpenEditorPane?.(activeEmployee?.id || '')}>
 							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -621,6 +622,11 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					)}
 					{(superior || subordinates.length > 0) && <span className="session-info-sep">|</span>}
 					<span>任务: {taskCount}</span>
+				</div>
+
+				{/* Session Switcher Bar */}
+				<div className="chat-session-switcher-bar">
+					<AgentSessionSwitcher />
 				</div>
 
 				{/* Message List Container: wraps the scrollable list + scroll-down button */}

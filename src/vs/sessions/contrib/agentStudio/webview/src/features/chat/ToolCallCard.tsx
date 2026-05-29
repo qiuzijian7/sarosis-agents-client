@@ -28,10 +28,16 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useMemo, useState } from 'react';
+import Editor from '@monaco-editor/react';
 import { sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import { ToolDisplayRegistry } from '../../utils/toolDisplayRegistry';
 import { openFile } from '../../bridge/fileBridge';
 import { sendRequest } from '../../bridge/messageClient';
+
+// Import Void-inspired components
+import { ConfirmationCard, TerminalConfirmationCard } from './ConfirmationCard';
+import { ProgressCard, TerminalProgressCard } from './ProgressCard';
+import { ResultCard } from './ResultCard';
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -103,6 +109,128 @@ function parseKnotDocument(raw: string): KnotDocument | null {
  */
 function useToolDisplay(name: string, args: string) {
 	return useMemo(() => ToolDisplayRegistry.resolve(name, args), [name, args]);
+}
+
+// ─── Unified Tool Result Parser ────────────────────────────────────────────────
+// Supports multiple provider formats:
+// 1. AG-UI format (Knot AGUI): [{"type":"text","text":"..."}]
+// 2. MCP format (CodeBuddy): [{"type":"text","text":"..."}] or {"content":"..."}
+// 3. Plain text or other JSON formats
+
+/**
+ * Parse tool result from various provider formats.
+ * Returns extracted text content, or null if parsing fails.
+ */
+function parseToolResult(raw: string): string | null {
+	if (!raw) { return null; }
+	
+	const cleaned = sanitizeToolResultText(raw);
+	
+	try {
+		const parsed = JSON.parse(cleaned);
+		
+		// Case 1: Array format (AG-UI or MCP)
+		// Both AG-UI and MCP may use [{"type":"text","text":"..."}]
+		if (Array.isArray(parsed) && parsed.length > 0) {
+			// Check if it's AG-UI/MCP content array format
+			if (parsed[0] && typeof parsed[0] === 'object' && 'type' in parsed[0]) {
+				// Extract all text content from type="text" items
+				const texts = parsed
+					.filter((item: any) => item.type === 'text' && item.text)
+					.map((item: any) => item.text);
+				
+				if (texts.length > 0) {
+					const textContent = texts.join('\n');
+					
+					// Try to parse the extracted text as JSON (might be JSON string from MCP)
+					try {
+						const innerParsed = JSON.parse(textContent);
+						// If it's an array or object, try to extract meaningful content
+						if (Array.isArray(innerParsed)) {
+							return extractContentFromArray(innerParsed);
+						} else if (typeof innerParsed === 'object' && innerParsed !== null) {
+							return extractContentFromObject(innerParsed);
+						}
+						return textContent;
+					} catch {
+						// textContent is not JSON, return as-is
+						return textContent;
+					}
+				}
+				
+				// If no text type found, return the whole array as JSON string
+				return JSON.stringify(parsed, null, 2);
+			}
+			
+			// Case 1b: Plain array (not content format)
+			return extractContentFromArray(parsed);
+		}
+		
+		// Case 2: Object format
+		if (typeof parsed === 'object' && parsed !== null) {
+			return extractContentFromObject(parsed);
+		}
+		
+		// Case 3: Primitive JSON value
+		return String(parsed);
+		
+	} catch {
+		// Not JSON, return cleaned text
+		return cleaned;
+	}
+}
+
+/**
+ * Extract content from an array (helper for parseToolResult).
+ */
+function extractContentFromArray(arr: any[]): string {
+	if (arr.length === 0) { return '(empty array)'; }
+	
+	// If array of strings, join them
+	if (arr.every(item => typeof item === 'string')) {
+		return arr.join('\n');
+	}
+	
+	// If array of objects with 'content' or 'text' field
+	if (arr.every(item => typeof item === 'object' && (item.content || item.text))) {
+		return arr.map(item => item.content || item.text).join('\n');
+	}
+	
+	// Fallback: JSON stringify
+	return JSON.stringify(arr, null, 2);
+}
+
+/**
+ * Extract content from an object (helper for parseToolResult).
+ */
+function extractContentFromObject(obj: any): string {
+	// Common fields that might contain the main content
+	const contentFields = ['content', 'result', 'output', 'data', 'message', 'text'];
+	
+	for (const field of contentFields) {
+		if (obj[field] !== undefined) {
+			const value = obj[field];
+			if (typeof value === 'string') {
+				return value;
+			} else if (Array.isArray(value)) {
+				return extractContentFromArray(value);
+			} else if (typeof value === 'object') {
+				return extractContentFromObject(value);
+			}
+			return String(value);
+		}
+	}
+	
+	// If no common fields found, check for items/list (ListItems format)
+	if (obj.items && Array.isArray(obj.items)) {
+		return JSON.stringify(obj.items, null, 2);
+	}
+	if (obj.list && Array.isArray(obj.list)) {
+		return JSON.stringify(obj.list, null, 2);
+	}
+	
+	// Fallback: return formatted JSON
+	return JSON.stringify(obj, null, 2);
 }
 
 /**
@@ -251,23 +379,41 @@ function ListItemsRenderer({ toolCall }: { toolCall: ToolCallData }): React.Reac
 	const items = useMemo(() => {
 		const raw = toolCall.result || '';
 		if (!raw) { return []; }
-		const cleaned = sanitizeToolResultText(raw);
+		
+		// Use unified parser to get text content
+		const parsedText = parseToolResult(raw);
+		const textToParse = parsedText || sanitizeToolResultText(raw);
+		
+		// Try to parse the text as JSON (might be JSON string from MCP/AG-UI)
 		try {
-			const parsed = JSON.parse(cleaned);
-			// Support: string[], {items: [...]}, {list: [...]}, or object with array values
-			if (Array.isArray(parsed)) { return parsed as (KnotListItem | string)[]; }
-			if (parsed.items && Array.isArray(parsed.items)) { return parsed.items as (KnotListItem | string)[]; }
-			if (parsed.list && Array.isArray(parsed.list)) { return parsed.list as (KnotListItem | string)[]; }
-			// If parsed is an object, return entries as key-value pairs
+			const parsed = JSON.parse(textToParse);
+			
+			// If it's an array, return it directly
+			if (Array.isArray(parsed)) { 
+				return parsed as (KnotListItem | string)[]; 
+			}
+			
+			// If it's an object with items/list, return those
+			if (parsed.items && Array.isArray(parsed.items)) { 
+				return parsed.items as (KnotListItem | string)[]; 
+			}
+			if (parsed.list && Array.isArray(parsed.list)) { 
+				return parsed.list as (KnotListItem | string)[]; 
+			}
+			
+			// If it's an object, return entries as key-value pairs
 			if (typeof parsed === 'object' && parsed !== null) {
 				return Object.entries(parsed).map(([k, v]) => ({
 					content: `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`,
 				}));
 			}
-			return [{ content: cleaned }];
+			
+			// If it's a primitive, wrap it
+			return [{ content: String(parsed) }];
+			
 		} catch {
-			// Fallback: split by newlines
-			return cleaned.split('\n').filter(Boolean).map(line => ({ content: line }));
+			// If not JSON, treat as plain text and split by newlines
+			return textToParse.split('\n').filter(Boolean).map(line => ({ content: line }));
 		}
 	}, [toolCall.result]);
 
@@ -331,7 +477,7 @@ function ListItemsRenderer({ toolCall }: { toolCall: ToolCallData }): React.Reac
 	);
 }
 
-/** RunTerminal renderer: displays terminal command and output */
+/** RunTerminal renderer: displays terminal command and output using Monaco Editor */
 function RunTerminalRenderer({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
 	const command = useMemo(() => {
 		try {
@@ -345,23 +491,72 @@ function RunTerminalRenderer({ toolCall }: { toolCall: ToolCallData }): React.Re
 	const output = useMemo(() => {
 		const raw = toolCall.result || '';
 		if (!raw) { return ''; }
-		return sanitizeToolResultText(raw);
+		// Use unified parser to handle AG-UI, MCP, and other formats
+		const parsed = parseToolResult(raw);
+		return parsed || '';
 	}, [toolCall.result]);
 
 	const exitCode = toolCall.exitCode;
 	const isNonZeroExit = exitCode !== undefined && exitCode !== 0;
 
+	// Combine command and output into a single shell script content
+	const editorContent = useMemo(() => {
+		const parts: string[] = [];
+		if (command) {
+			parts.push(`$ ${command}`);
+		}
+		if (output) {
+			parts.push(output);
+		}
+		if (exitCode !== undefined) {
+			parts.push(`(exit code ${exitCode})`);
+		}
+		return parts.join('\n');
+	}, [command, output, exitCode]);
+
+	// Monaco Editor options for terminal display
+	const editorOptions = useMemo(() => ({
+		readOnly: true,
+		domReadOnly: true,
+		automaticLayout: true,
+		minimap: { enabled: false },
+		scrollBeyondLastLine: false,
+		lineNumbers: 'off' as const,
+		folding: false,
+		wordWrap: 'on' as const,
+		scrollbar: {
+			vertical: 'auto' as const,
+			horizontal: 'auto' as const,
+		},
+		renderLineHighlight: 'none' as const,
+		contextmenu: false,
+		overviewRulerLanes: 0,
+		hideCursorInOverviewRuler: true,
+		overviewRulerBorder: false,
+		padding: { top: 8, bottom: 8 },
+	}), []);
+
 	return (
 		<div className="tool-call-render-terminal">
-			{command && (
-				<div className="tool-call-terminal-cmd">
-					<span className="tool-call-terminal-prompt">$</span>
-					<code>{command}</code>
-				</div>
-			)}
-			{output && (
-				<pre className="tool-call-terminal-output">{output}</pre>
-			)}
+			<div className="tool-call-terminal-editor-wrapper">
+				<Editor
+					height="auto"
+					language="shellscript"
+					value={editorContent}
+					options={editorOptions}
+					theme="vs-dark"
+					onMount={(editor) => {
+						// Auto-fit height to content
+						const updateHeight = () => {
+							const contentHeight = editor.getContentHeight();
+							editor.getDomNode()!.style.height = `${contentHeight}px`;
+							editor.layout();
+						};
+						updateHeight();
+						editor.onDidContentSizeChange(updateHeight);
+					}}
+				/>
+			</div>
 			{exitCode !== undefined && (
 				<div className={`tool-call-exit-code ${isNonZeroExit ? 'non-zero' : 'zero'}`}>
 					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -401,7 +596,10 @@ function CodeApplyRenderer({ toolCall }: { toolCall: ToolCallData }): React.Reac
 	const result = useMemo(() => {
 		const raw = toolCall.result || '';
 		if (!raw) { return ''; }
-		return sanitizeToolResultText(raw);
+		
+		// Use unified parser to handle AG-UI, MCP, and other formats
+		const parsed = parseToolResult(raw);
+		return parsed ? sanitizeToolResultText(parsed) : '';
 	}, [toolCall.result]);
 
 	// Try to compute diff for edit_file tools
@@ -566,6 +764,14 @@ function ToolApprovalButtons({ toolCall }: { toolCall: ToolCallData }): React.Re
 		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_once' }).catch(() => {});
 	}, [toolCall.id]);
 
+	const handleApproveSession = useCallback(() => {
+		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_session' }).catch(() => {});
+	}, [toolCall.id]);
+
+	const handleApproveWorkspace = useCallback(() => {
+		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_workspace' }).catch(() => {});
+	}, [toolCall.id]);
+
 	const handleApproveAlways = useCallback(() => {
 		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_always' }).catch(() => {});
 	}, [toolCall.id]);
@@ -587,21 +793,27 @@ function ToolApprovalButtons({ toolCall }: { toolCall: ToolCallData }): React.Re
 			: 'safe';
 
 	return (
-		<div className={`tool-call-approval ${securityClass}`}>
-			<div className="tool-call-approval-header">
+		<div className="tool-approval-container">
+			<div className="tool-approval-header">
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 					<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
 				</svg>
-				<span className="tool-call-approval-label">需要审批 · {securityLabel}</span>
+				<span className="tool-approval-label">需要审批 · {securityLabel}</span>
 			</div>
-			<div className="tool-call-approval-actions">
-				<button className="tool-call-approve-btn" onClick={handleApprove}>
+			<div className="tool-approval-actions">
+				<button className="tool-approval-btn tool-approval-btn-approve" onClick={handleApprove} title="仅允许此次执行">
 					允许一次
 				</button>
-				<button className="tool-call-approve-always-btn" onClick={handleApproveAlways}>
+				<button className="tool-approval-btn tool-approval-btn-approve-secondary" onClick={handleApproveSession} title="在当前会话中自动允许此工具">
+					会话中允许
+				</button>
+				<button className="tool-approval-btn tool-approval-btn-approve-secondary" onClick={handleApproveWorkspace} title="在当前工作区中自动允许此工具">
+					工作区允许
+				</button>
+				<button className="tool-approval-btn tool-approval-btn-approve-secondary" onClick={handleApproveAlways} title="始终自动允许此工具">
 					始终允许
 				</button>
-				<button className="tool-call-reject-btn" onClick={handleReject}>
+				<button className="tool-approval-btn tool-approval-btn-reject" onClick={handleReject}>
 					拒绝
 				</button>
 			</div>
@@ -615,11 +827,25 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 	const [expanded, setExpanded] = useState(false);
 	const [showFullResult, setShowFullResult] = useState(false);
 	const [copiedField, setCopiedField] = useState<string | null>(null);
+	const prevStatusRef = useRef(toolCall.status);
+
+	// Auto-collapse when tool finishes (Void-inspired: hide progress when follow-up content arrives)
+	// This reduces UI clutter and focuses user attention on the final result
+	useEffect(() => {
+		if (prevStatusRef.current === 'running' && toolCall.status !== 'running') {
+			// Tool just finished (success or error) — auto-collapse to reduce clutter
+			setExpanded(false);
+		}
+		prevStatusRef.current = toolCall.status;
+	}, [toolCall.status]);
 
 	const isRunning = toolCall.status === 'running' && !toolCall.result;
 	const isError = toolCall.status === 'error' || !!toolCall.error;
 	const isApprovalRequired = toolCall.status === 'approval_required';
 	const isRejected = toolCall.status === 'rejected';
+	const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
+	const isConfirmed = toolCall.status === 'confirmed' || !!toolCall.confirmed;
+	const isCompleted = toolCall.status === 'completed' && !toolCall.error && !toolCall.canceled;
 
 	const display = useToolDisplay(toolCall.name, toolCall.arguments);
 
@@ -665,16 +891,12 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 	const formattedResult = useMemo(() => {
 		const raw = toolCall.result || '';
 		if (!raw) { return ''; }
-		const cleaned = sanitizeToolResultText(raw);
 		if (knotDoc?.sub_content) {
 			return knotDoc.sub_content;
 		}
-		try {
-			const parsed = JSON.parse(cleaned);
-			return JSON.stringify(parsed, null, 2);
-		} catch {
-			return cleaned;
-		}
+		// Use unified parser to handle AG-UI, MCP, and other formats
+		const parsed = parseToolResult(raw);
+		return parsed || '';
 	}, [toolCall.result, knotDoc]);
 
 	const isResultLong = formattedResult.length > RESULT_EXPANDED_LIMIT;
@@ -689,78 +911,82 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 		}).catch(() => { });
 	}, []);
 
-	const statusClass = isApprovalRequired ? 'approval-required' : isRejected ? 'rejected' : isRunning ? 'running' : isError ? 'error' : 'completed';
+	const statusClass = isApprovalRequired ? 'approval-required' : isRejected ? 'rejected' : isCanceled ? 'canceled' : isRunning ? 'running' : isError ? 'error' : isCompleted ? 'completed' : 'confirmed';
 
 	return (
-		<div className={`tool-call-card ${statusClass}`}>
+		<div className={`tool-call-card ${statusClass}`} aria-live="polite">
 			{/* ── Collapsed Header ── */}
 			<div
 				className="tool-call-card-header"
 				onClick={() => setExpanded(!expanded)}
 				role="button"
 				aria-expanded={expanded}
+				aria-label={`工具调用: ${toolCall.displayName || display.label}, 状态: ${isApprovalRequired ? '等待审批' : isRejected ? '已拒绝' : isRunning ? '运行中' : isError ? '错误' : '完成'}`}
 			>
 				<span className="tool-call-icon">
 					{isApprovalRequired ? (
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 							<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
 						</svg>
-					) : isRejected ? (
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+					) : isRejected || isCanceled ? (
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 							<circle cx="12" cy="12" r="10" />
 							<line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
 						</svg>
 					) : isRunning ? (
 						<svg className="tool-spinner" width="14" height="14" viewBox="0 0 24 24"
-							fill="none" stroke="currentColor" strokeWidth="2.5">
+							fill="none" stroke="currentColor" strokeWidth="2">
 							<path d="M21 12a9 9 0 11-6.219-8.56" />
 						</svg>
 					) : isError ? (
 						<svg width="14" height="14" viewBox="0 0 24 24"
-							fill="none" stroke="currentColor" strokeWidth="2.5">
+							fill="none" stroke="currentColor" strokeWidth="2">
 							<circle cx="12" cy="12" r="10" />
 							<line x1="15" y1="9" x2="9" y2="15" />
 							<line x1="9" y1="9" x2="15" y2="15" />
 						</svg>
 					) : (
 						<svg width="14" height="14" viewBox="0 0 24 24"
-							fill="none" stroke="currentColor" strokeWidth="2.5">
+							fill="none" stroke="currentColor" strokeWidth="2">
 							<polyline points="20 6 9 17 4 12" />
 						</svg>
 					)}
 				</span>
-				<span className="tool-call-card-name">
-					<span className="tool-call-emoji">{display.emoji}</span>
-					{toolCall.displayName || display.label}
-				</span>
-				{!expanded && argsSummary && (
-					<span className="tool-call-card-summary" title={argsSummary}>
-						{argsSummary}
+					<span className="tool-call-card-name">
+						<span className="tool-call-emoji">{display.emoji}</span>
+						{toolCall.displayName || display.label}
 					</span>
-				)}
-				{!expanded && (extractFilePath(toolCall.arguments) || knotDoc?.sub_content_event_value) && (
-					<button
-						className="tool-call-card-open-file"
-						onClick={(e) => {
-							e.stopPropagation();
-							const fp = extractFilePath(toolCall.arguments) || knotDoc?.sub_content_event_value;
-							if (fp) { openFile(fp); }
-						}}
-					>
-						查看文件
-					</button>
-				)}
-				{toolCall.duration && !isRunning && (
-					<span className="tool-call-duration">
-						{formatDuration(toolCall.duration)}
+					<span className={`tool-call-status-badge ${statusClass}`} role="status" aria-live="polite">
+						{isApprovalRequired ? '等待审批' : isRejected ? '已拒绝' : isCanceled ? '已取消' : isRunning ? '运行中' : isError ? '错误' : isCompleted ? '完成' : '已确认'}
 					</span>
-				)}
-				<span className={`tool-call-card-toggle ${expanded ? '' : 'collapsed'}`}>
-					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-						<polyline points="6 9 12 15 18 9" />
-					</svg>
-				</span>
-			</div>
+					{!expanded && argsSummary && (
+						<span className="tool-call-card-summary" title={argsSummary}>
+							{argsSummary}
+						</span>
+					)}
+					{!expanded && (extractFilePath(toolCall.arguments) || knotDoc?.sub_content_event_value) && (
+						<button
+							className="tool-call-card-open-file"
+							onClick={(e) => {
+								e.stopPropagation();
+								const fp = extractFilePath(toolCall.arguments) || knotDoc?.sub_content_event_value;
+								if (fp) { openFile(fp); }
+							}}
+						>
+							查看文件
+						</button>
+					)}
+					{toolCall.duration && !isRunning && (
+						<span className="tool-call-duration">
+							{formatDuration(toolCall.duration)}
+						</span>
+					)}
+					<span className={`tool-call-card-toggle ${expanded ? '' : 'collapsed'}`}>
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+							<polyline points="6 9 12 15 18 9" />
+						</svg>
+					</span>
+				</div>
 
 			{/* ── Approval UI ── */}
 			{isApprovalRequired && (
@@ -823,14 +1049,19 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 						</div>
 					)}
 
-					{toolCall.error && !formattedResult && (
-						<div className="tool-call-section">
-							<div className="tool-call-section-header">
-								<span className="tool-call-section-title">错误</span>
-							</div>
-							<pre className="tool-call-code error-output">{toolCall.error}</pre>
+				{toolCall.error && !formattedResult && (
+					<div className="tool-call-error-section" role="alert">
+						<div className="tool-call-error-header">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+									<circle cx="12" cy="12" r="10" />
+									<line x1="15" y1="9" x2="9" y2="15" />
+									<line x1="9" y1="9" x2="15" y2="15" />
+								</svg>
+							<span className="tool-call-error-title">错误</span>
 						</div>
-					)}
+						<pre className="tool-call-error-content">{toolCall.error}</pre>
+					</div>
+				)}
 
 					{isRunning && !formattedResult && (
 						<div className="tool-call-running-indicator">
@@ -858,6 +1089,134 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 		return null;
 	}
 
+	// ─── Void-inspired: State-based Component Selection ─────────────────────
+	// Priority: status check > renderType check
+	// This matches Void's logic: confirmation > progress > result > generic
+	
+	const isRunning = toolCall.status === 'running';
+	const isCompleted = toolCall.status === 'completed' && !toolCall.error && !toolCall.canceled;
+	const isError = toolCall.status === 'error' || !!toolCall.error;
+	const isApprovalRequired = toolCall.status === 'approval_required';
+	const isRejected = toolCall.status === 'rejected';
+	const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
+	
+	// Check if this is a terminal tool
+	const isTerminalTool = toolCall.name?.toLowerCase().includes('terminal') || 
+	                     toolCall.name?.toLowerCase().includes('command') ||
+	                     toolCall.renderType === 'RunTerminal';
+	
+	// Case 1: Approval required - show confirmation card
+	if (isApprovalRequired) {
+		const title = `确认: ${toolCall.displayName || toolCall.name}`;
+		let message = '';
+		try {
+			const args = JSON.parse(toolCall.arguments || '{}');
+			message = args.message || args.confirmation_message || '';
+		} catch { /* ignore */ }
+		
+		const handleApprove = (decision: string) => {
+			sendRequest('chat.toolApprove', { 
+				toolCallId: toolCall.id, 
+				decision 
+			}).catch(() => {});
+		};
+		
+		const handleReject = () => {
+			sendRequest('chat.toolApprove', { 
+				toolCallId: toolCall.id, 
+				decision: 'deny' 
+			}).catch(() => {});
+		};
+		
+		if (isTerminalTool) {
+			// Terminal confirmation card
+			let command = '';
+			try {
+				const args = JSON.parse(toolCall.arguments || '{}');
+				command = args.command || args.cmd || '';
+			} catch { /* ignore */ }
+			
+			return (
+				<TerminalConfirmationCard
+					toolCall={toolCall}
+					command={command}
+					onApprove={handleApprove}
+					onReject={handleReject}
+				/>
+			);
+		} else {
+			// Regular confirmation card
+			return (
+				<ConfirmationCard
+					toolCall={toolCall}
+					title={title}
+					message={message}
+					onApprove={handleApprove}
+					onReject={handleReject}
+				/>
+			);
+		}
+	}
+	
+	// Case 2: Running - show progress card
+	if (isRunning) {
+		if (isTerminalTool) {
+			// Terminal progress card
+			let command = '';
+			let output = '';
+			try {
+				const args = JSON.parse(toolCall.arguments || '{}');
+				command = args.command || args.cmd || '';
+			} catch { /* ignore */ }
+			
+			if (toolCall.result) {
+				try {
+					const parsed = JSON.parse(toolCall.result);
+					if (Array.isArray(parsed) && parsed[0]?.text) {
+						output = parsed.map((p: any) => p.text).join('\n');
+					} else {
+						output = toolCall.result;
+					}
+				} catch {
+					output = toolCall.result;
+				}
+			}
+			
+			return (
+				<TerminalProgressCard
+					toolCall={toolCall}
+					command={command}
+					output={output}
+				/>
+			);
+		} else {
+			// Regular progress card
+			const message = toolCall.name?.toLowerCase().includes('read') ? '读取中...' :
+			                     toolCall.name?.toLowerCase().includes('write') ? '写入中...' :
+			                     toolCall.name?.toLowerCase().includes('edit') ? '编辑中...' :
+			                     '执行中...';
+			
+			return (
+				<ProgressCard
+					toolCall={toolCall}
+					message={message}
+					icon="spinner"
+				/>
+			);
+		}
+	}
+	
+	// Case 3: Completed or Error with result - show result card
+	if ((isCompleted || isError) && toolCall.result) {
+		return (
+			<ResultCard
+				toolCall={toolCall}
+				maxDisplayLength={5000}
+			/>
+		);
+	}
+	
+	// ─── Fallback: Use existing renderType logic ─────────────────────────────
 	// Resolve display info from registry (emoji, label, inferred renderType, etc.)
 	const display = ToolDisplayRegistry.resolve(toolCall.name, toolCall.arguments);
 
@@ -891,7 +1250,10 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 		const isError = toolCall.status === 'error' || !!toolCall.error;
 		const isApprovalRequired = toolCall.status === 'approval_required';
 		const isRejected = toolCall.status === 'rejected';
-		const statusClass = isApprovalRequired ? 'approval-required' : isRejected ? 'rejected' : isRunning ? 'running' : isError ? 'error' : 'completed';
+		const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
+		const isConfirmed = toolCall.status === 'confirmed' || !!toolCall.confirmed;
+		const isCompleted = toolCall.status === 'completed' && !toolCall.error && !toolCall.canceled;
+		const statusClass = isApprovalRequired ? 'approval-required' : isRejected ? 'rejected' : isCanceled ? 'canceled' : isRunning ? 'running' : isError ? 'error' : isCompleted ? 'completed' : 'confirmed';
 
 		return (
 			<div className={`tool-call-card ${statusClass}`}>
@@ -902,7 +1264,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
 								<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
 							</svg>
-						) : isRejected ? (
+						) : isRejected || isCanceled ? (
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
 								<circle cx="12" cy="12" r="10" />
 								<line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />

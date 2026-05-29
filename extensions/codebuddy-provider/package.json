@@ -61,11 +61,46 @@
 					"scope": "application"
 				},
 			"codebuddy.models": {
-				"type": "string",
-				"default": "claude-sonnet-4.6,claude-sonnet-4.6-1m,claude-4.5,claude-haiku-4.5,claude-opus-4.7,claude-opus-4.7-1m,claude-opus-4.6,claude-opus-4.6-1m,claude-opus-4.5,gpt-5.4,gpt-5.3-codex,gpt-5.2,gpt-5.2-codex,gpt-5.1,gpt-5.1-codex,gpt-5.1-codex-max,gpt-5.1-codex-mini,gemini-3.1-pro,gemini-3.0-flash,gemini-2.5-pro,gemini-3.1-flash-lite,glm-5.1-ioa,glm-5.0-ioa,glm-5.0-turbo-ioa,glm-5v-turbo-ioa,glm-4.6-ioa,glm-4.6v-ioa,glm-4.7-ioa,deepseek-v3-2-volc-ioa,minimax-m2.5-ioa,minimax-m2.7-ioa,kimi-k2.5-ioa,kimi-k2-thinking,hunyuan-2.0-thinking-ioa,hunyuan-chat,hunyuan-image-v3.0-ioa,hunyuan-image-v2.0-general-edit-ioa",
-				"description": "可用模型列表（用英文逗号分隔）",
+				"type": "array",
+				"default": [],
+				"description": "可用模型列表（每个模型包含完整的配置信息）",
 				"scope": "application",
-				"markdownDescription": "可用模型列表，用英文逗号分隔。例如：`deepseek-v3.1,glm-5.1,claude-4.7-opus`\n\n留空则使用默认模型列表。"
+				"markdownDescription": "可用模型列表。每个模型包含完整的配置信息：\n- `id`: 模型 ID（如 `gpt-5.5`）\n- `name`: 显示名称（如 `GPT-5.5`）\n- `vendor`: 供应商（如 `i` 表示内部）\n- `maxOutputTokens`: 最大输出 Token 数\n- `maxInputTokens`: 最大输入 Token 数\n- `supportsToolCall`: 是否支持工具调用\n- `supportsImages`: 是否支持图片\n- `maxAllowedSize`: 最大上下文大小（input + output）\n- `temperature`: 温度参数\n- `supportsReasoning`: 是否支持推理\n- `reasoning`: 推理配置（包含 `effort` 字段）\n- `onlyReasoning`: 是否仅推理\n- `descriptionEn`: 英文描述\n- `descriptionZh`: 中文描述\n- `credits`:  credits\n\n点击「添加模型」按钮添加新模型。",
+				"items": {
+					"type": "object",
+					"properties": {
+						"id": { "type": "string", "description": "模型 ID" },
+						"name": { "type": "string", "description": "显示名称" },
+						"vendor": { "type": "string", "description": "供应商（如 i 表示内部）", "default": "" },
+						"maxOutputTokens": { "type": "number", "description": "最大输出 Token 数", "default": 8192 },
+						"maxInputTokens": { "type": "number", "description": "最大输入 Token 数", "default": 128000 },
+						"supportsToolCall": { "type": "boolean", "description": "是否支持工具调用", "default": true },
+						"supportsImages": { "type": "boolean", "description": "是否支持图片", "default": false },
+						"disabledMultimodal": { "type": "boolean", "description": "是否禁用多模态", "default": false },
+						"maxAllowedSize": { "type": "number", "description": "最大上下文大小", "default": 128000 },
+						"temperature": { "type": "number", "description": "温度参数", "default": 1 },
+						"supportsReasoning": { "type": "boolean", "description": "是否支持推理", "default": false },
+						"reasoning": { "type": "object", "description": "推理配置", "properties": { "effort": { "type": "string", "description": "推理努力程度（high/medium/low）", "default": "high" }, "summary": { "type": "string", "description": "推理摘要", "default": "auto" } } },
+						"onlyReasoning": { "type": "boolean", "description": "是否仅推理", "default": false },
+						"relatedModels": { "type": "object", "description": "相关模型", "properties": { "lite": { "type": "string", "description": "轻量版模型 ID" }, "reasoning": { "type": "string", "description": "推理版模型 ID" } } },
+						"tags": { "type": "array", "description": "标签列表", "items": { "type": "string" } },
+						"top_p": { "type": "number", "description": "top_p 参数", "default": 0.95 },
+						"top_k": { "type": "number", "description": "top_k 参数", "default": 20 },
+						"repetition_penalty": { "type": "number", "description": "重复惩罚参数", "default": 1.05 },
+						"isDefault": { "type": "boolean", "description": "是否默认模型", "default": false },
+						"supportsExtra": { "type": "boolean", "description": "是否支持额外功能", "default": false },
+						"descriptionEn": { "type": "string", "description": "英文描述", "default": "" },
+						"descriptionZh": { "type": "string", "description": "中文描述", "default": "" },
+						"credits": { "type": "string", "description": "credits", "default": "" }
+					}
+				}
+			},
+			"codebuddy.modelJsonPath": {
+				"type": "string",
+				"default": "",
+				"description": "model.json 文件路径，从该文件加载模型配置",
+				"scope": "application",
+				"markdownDescription": "model.json 文件路径。从该文件加载模型配置，文件格式应包含 `models` 数组，每个模型包含完整的配置信息（id、name、maxInputTokens、maxOutputTokens、maxAllowedSize 等）。\n\n如果同时配置了 `codebuddy.models` 和 `codebuddy.modelJsonPath`，两者会合并，modelJsonPath 中的配置优先。"
 			},
 				"codebuddy.timeout": {
 					"type": "number",

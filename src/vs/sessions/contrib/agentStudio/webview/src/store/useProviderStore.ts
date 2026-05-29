@@ -38,6 +38,18 @@ function getChatStore() {
 export interface ProviderModelInfo {
 	id: string;
 	name: string;
+	descriptionZh?: string;    // 中文描述
+	descriptionEn?: string;    // 英文描述
+	maxInputTokens?: number;   // 最大输入 token 数
+	maxOutputTokens?: number;  // 最大输出 token 数
+	maxAllowedSize?: number;   // 最大上下文大小（input + output）
+	supportsToolCall?: boolean; // 是否支持工具调用
+	supportsImages?: boolean;  // 是否支持图片
+	supportsReasoning?: boolean; // 是否支持推理/思考模式
+	onlyReasoning?: boolean;   // 是否仅推理模式
+	temperature?: number;      // 温度参数
+	vendor?: string;           // 供应商
+	credits?: string;          // Credits 信息
 }
 
 export interface ProviderAgentInfo {

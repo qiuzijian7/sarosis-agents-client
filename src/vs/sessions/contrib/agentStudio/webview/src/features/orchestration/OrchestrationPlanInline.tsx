@@ -94,13 +94,13 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 
 	const stats = useMemo(() => {
 		if (!plan) { return null; }
-		const tasks = plan.tasks;
+		const tasks = plan.tasks.filter((t): t is NonNullable<typeof t> => t != null);
 		return {
 			total: tasks.length,
-			pending: tasks.filter(t => t.status === 'pending').length,
-			running: tasks.filter(t => t.status === 'running').length,
-			done: tasks.filter(t => t.status === 'done').length,
-			agents: new Set(tasks.map(t => t.assigneeName)).size,
+			pending: tasks.filter(t => t && t.status === 'pending').length,
+			running: tasks.filter(t => t && t.status === 'running').length,
+			done: tasks.filter(t => t && t.status === 'done').length,
+			agents: new Set(tasks.filter(t => t != null).map(t => t.assigneeName)).size,
 		};
 	}, [plan]);
 
@@ -174,14 +174,15 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 			{/* Task list (mini) */}
 			<div className="orch-plan-inline-tasks">
 				{plan.tasks
+					.filter((t): t is NonNullable<typeof t> => t != null)
 					.sort((a, b) => a.depth - b.depth || a.priority - b.priority)
 					.slice(0, 5)  // Show only first 5 tasks in inline view
 					.map(task => (
 						<PlanTaskMini key={task.id} task={task} />
 					))}
-				{plan.tasks.length > 5 && (
+				{plan.tasks.filter((t): t is NonNullable<typeof t> => t != null).length > 5 && (
 					<div className="orch-plan-inline-more">
-						... 还有 {plan.tasks.length - 5} 个任务（请在任务看板中查看完整列表）
+						... 还有 {plan.tasks.filter((t): t is NonNullable<typeof t> => t != null).length - 5} 个任务（请在任务看板中查看完整列表）
 					</div>
 				)}
 			</div>

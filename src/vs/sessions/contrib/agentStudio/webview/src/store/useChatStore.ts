@@ -1168,5 +1168,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 				};
 			});
 		},
+
+		removeMessagesAfter: (messageId: string) => {
+			set(state => {
+				const targetIdx = state.messages.findIndex(m => m.id === messageId);
+				if (targetIdx < 0) { return state; }
+				// Keep messages up to and including targetIdx
+				return {
+					messages: state.messages.slice(0, targetIdx + 1),
+				};
+			});
+		},
 	};
 });

@@ -409,7 +409,7 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 					// then the most recent one.  Sorting by createdAt desc ensures
 					// we pick the newest plan when multiple pending_approval plans exist.
 					const pendingPlans = plans
-						.filter(p => p.status === 'pending_approval')
+						.filter((p): p is NonNullable<typeof p> => p != null && p.status === 'pending_approval')
 						.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 					newActivePlan = pendingPlans[0]
 						|| plans.find(p => p.status === 'executing' || p.status === 'approved')

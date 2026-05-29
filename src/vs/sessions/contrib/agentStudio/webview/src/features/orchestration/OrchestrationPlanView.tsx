@@ -106,7 +106,7 @@ function PlanTaskItem({
 	}, [task]);
 
 	if (isEditing) {
-		const otherTasks = allTasks.filter(t => t.id !== task.id);
+		const otherTasks = allTasks.filter((t): t is NonNullable<typeof t> => t != null && t.id !== task.id);
 		return (
 			<div className="orch-task-item orch-task-item-editing" style={{ marginLeft: depthIndent }}>
 				<div className="orch-task-edit-form">
@@ -470,14 +470,14 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 
 	const stats = useMemo(() => {
 		if (!activePlan) { return null; }
-		const tasks = activePlan.tasks;
+		const tasks = activePlan.tasks.filter((t): t is NonNullable<typeof t> => t != null);
 		return {
 			total: tasks.length,
-			pending: tasks.filter(t => t.status === 'pending').length,
-			running: tasks.filter(t => t.status === 'running').length,
-			done: tasks.filter(t => t.status === 'done').length,
-			autoCreate: tasks.filter(t => t.autoCreateAgent).length,
-			agents: new Set(tasks.map(t => t.assigneeName)).size,
+			pending: tasks.filter(t => t && t.status === 'pending').length,
+			running: tasks.filter(t => t && t.status === 'running').length,
+			done: tasks.filter(t => t && t.status === 'done').length,
+			autoCreate: tasks.filter(t => t && t.autoCreateAgent).length,
+			agents: new Set(tasks.filter(t => t != null).map(t => t.assigneeName)).size,
 		};
 	}, [activePlan]);
 
@@ -637,12 +637,13 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 					{viewMode === 'list' ? (
 						<div className="orch-task-list">
 					{activePlan.tasks
+						.filter((t): t is NonNullable<typeof t> => t != null)
 						.sort((a, b) => a.depth - b.depth || a.priority - b.priority)
 						.map(task => (
 							<PlanTaskItem
 								key={task.id}
 								task={task}
-								allTasks={activePlan.tasks}
+								allTasks={activePlan.tasks.filter((t): t is NonNullable<typeof t> => t != null)}
 								showActions={isExecuting}
 								onAction={handleTaskAction}
 								isEditable={isPendingApproval}
@@ -653,8 +654,8 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 							/>
 						))}
 						</div>
-					) : (
-						<DependencyGraph tasks={activePlan.tasks} />
+						) : (
+						<DependencyGraph tasks={activePlan.tasks.filter((t): t is NonNullable<typeof t> => t != null)} />
 					)}
 
 					{error && (

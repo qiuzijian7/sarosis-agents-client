@@ -62,7 +62,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const commandMenuRef = useRef<HTMLDivElement>(null);
 	const { activeEmployeeId, chatMode, setChatMode } = useChatStore();
 	const { employees } = useEmployeeStore();
-	const { providers, selection, selectProvider, openProviderSettings } = useProviderStore();
+	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders } = useProviderStore();
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
@@ -106,7 +106,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	}, [activeEmployee]);
 
 	// 从 provider store 获取当前选中的 Provider/Model 名称
-	const authenticatedProviders = providers.filter(p => p.authStatus === 'authenticated');
+	// 使用 store 的计算属性 authenticatedProviders 确保过滤逻辑一致
+	const authenticatedProviders = getAuthenticatedProviders();
 	const providerDisplay = selection?.providerName || activeEmployee?.provider;
 
 	// 获取当前选中 Provider 的可用模型/Agent 列表
@@ -894,6 +895,15 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 													handleModelSelect(m.id);
 													setModelSearchQuery('');
 												}}
+												title={[
+													m.descriptionZh || m.descriptionEn || '',
+													m.maxInputTokens ? `最大输入: ${m.maxInputTokens.toLocaleString()} tokens` : '',
+													m.maxOutputTokens ? `最大输出: ${m.maxOutputTokens.toLocaleString()} tokens` : '',
+													`图片: ${m.supportsImages ? '支持' : '不支持'}`,
+													`思考模式: ${m.supportsReasoning ? '支持' : '不支持'}`,
+													m.onlyReasoning ? '仅思考模式' : '',
+													m.temperature !== undefined ? `温度: ${m.temperature}` : '',
+												].filter(Boolean).join('\n')}
 											>
 												<span className="provider-dropdown-name">{m.name}</span>
 											</button>
