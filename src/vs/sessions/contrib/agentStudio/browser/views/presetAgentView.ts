@@ -785,7 +785,7 @@ Reliability-focused. Thinks in terms of SLOs, SLIs, and error budgets.
 		description: 'Manages Git version control, handles branching strategies, merge conflicts, release tagging, and changelog generation. Ensures clean commit history and proper version management.',
 		icon: '📦',
 		model: 'claude-sonnet-4-20250514',
-		skills: ['git', 'version-control', 'release-management', 'changelog', 'branch-management'],
+		skills: ['git', 'version-control', 'release-management', 'changelog', 'branch-management', 'commit', 'commit-message', 'create-draft-pr', 'create-pr', 'finishing-a-development-branch', 'github-auth', 'github-code-review', 'github-issues', 'github-pr-workflow', 'github-repo-management', 'merge', 'sync', 'sync-upstream', 'update-pr', 'using-git-worktrees'],
 		tools: ['terminal', 'read_file', 'write_to_file', 'list_dir', 'search_files', 'grep_search'],
 		category: 'DevOps',
 		systemPrompt: `You are a version control specialist with expertise in Git workflows, branching strategies, and release management. Your primary responsibility is to maintain clean version history and facilitate smooth collaboration through proper version control practices.
@@ -1592,7 +1592,7 @@ const AVAILABLE_SKILLS = [
 	'writing', 'editing', 'formatting', 'ui-design', 'prototyping', 'review',
 	'planning', 'delegation', 'tracking', 'deploy', 'ci-cd', 'monitoring',
 	'file-ops', 'terminal', 'image-gen',
-	'git', 'version-control', 'release-management', 'changelog', 'branch-management',
+	'git', 'version-control', 'release-management', 'changelog', 'branch-management', 'commit', 'commit-message', 'create-draft-pr', 'create-pr', 'finishing-a-development-branch', 'github-auth', 'github-code-review', 'github-issues', 'github-pr-workflow', 'github-repo-management', 'merge', 'sync', 'sync-upstream', 'update-pr', 'using-git-worktrees',
 ];
 
 const AVAILABLE_TOOLS = [
