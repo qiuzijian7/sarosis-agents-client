@@ -1121,6 +1121,7 @@ export class AgentStudioWebviewController extends Disposable {
 		const agentSessionId = payload.agentSessionId as string | undefined;
 		const sessionIdForEvent = agentSessionId || "";
 		let capturedProviderSessionId: string | undefined;
+		let streamingTextBuffer: string = ''; // 流式文本缓冲区，用于增量工具检测（参考 Void 的 extractXMLToolsWrapper）
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
@@ -1164,10 +1165,43 @@ export class AgentStudioWebviewController extends Disposable {
 						}
 						return out;
 					})();
+
+					// 增量工具检测（参考 Void 的 extractXMLToolsWrapper）
+					let chunksToSend: IChatStreamDelta[] = [safeChunk];
+					if (safeChunk.type === 'text' && typeof safeChunk.content === 'string') {
+						streamingTextBuffer += safeChunk.content;
+						// 使用正则检测工具标签（简化版，仅检测完整标签）
+						const toolTagRegex = /<(tool_call|function_call|tool_use|invoke)[\s\S]*?>[\s\S]*?<\/\1>/gi;
+						const toolMatches: { index: number; toolName: string; fullMatch: string }[] = [];
+						let regexMatch: RegExpExecArray | null;
+						toolTagRegex.lastIndex = 0;
+						while ((regexMatch = toolTagRegex.exec(streamingTextBuffer)) !== null) {
+							// 从标签中提取工具名称
+							const nameFromAttr = regexMatch[0].match(/(?:name|tool|function)\s*[:=]\s*["']?(\w+)["']?/i);
+							const nameFromContent = regexMatch[0].match(/>(\w+)[\s]*<\//);
+							const toolName = nameFromAttr?.[1] || nameFromContent?.[1] || 'unknown';
+							toolMatches.push({ index: regexMatch.index, toolName, fullMatch: regexMatch[0] });
+						}
+						if (toolMatches.length > 0) {
+							// 从 streamingTextBuffer 中移除工具 XML，创建新的 chunks
+							const textBeforeTool = streamingTextBuffer.substring(0, toolMatches[0].index);
+							chunksToSend = [
+								{ ...safeChunk, content: textBeforeTool, type: 'text' } as IChatStreamDelta,
+								...toolMatches.map(tm => ({
+									type: 'tool_start' as const,
+									toolCallId: `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+									toolName: tm.toolName,
+								})) as unknown as IChatStreamDelta[],
+							];
+							// 重置 buffer 为工具之后的文本
+							streamingTextBuffer = streamingTextBuffer.substring(toolMatches[0].index + toolMatches[0].fullMatch.length);
+						}
+					}
+
 					this._sendEvent("chat.stream.delta", {
 						employeeId,
 						sessionId: sessionIdForEvent,
-						chunks: [safeChunk],
+						chunks: chunksToSend,
 					});
 				},
 			);

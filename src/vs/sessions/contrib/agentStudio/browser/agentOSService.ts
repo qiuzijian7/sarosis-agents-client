@@ -46,6 +46,11 @@ import {
 	ToolApprovalService,
 	ToolExecutionTracker,
 } from './toolExecutionGuard.js';
+import {
+	SurroundingsRemover,
+	endsWithAnyPrefixOf,
+	trimBeforeAndAfterNewLines,
+} from '../common/toolExtractionUtils.js';
 
 // ─── Agent OS Service Implementation ────────────────────────────────────
 
@@ -1571,6 +1576,62 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	/**
+	 * 使用 SurroundingsRemover 解析 XML 内容（参考 Void 的 parseXMLPrefixToToolCall）。
+	 * 尝试从 XML 格式的内容中提取工具名称和参数。
+	 * 返回 { name, args } 或 null（如果无法解析）。
+	 */
+	private _tryParseXmlWithSurroundingsRemover(content: string): { name: string; args: string } | null {
+		try {
+			const pm = new SurroundingsRemover(content);
+
+			// 尝试查找 <name>value</name> 或 <tool_name>value</tool_name> 标签
+			const allowedNames = ['name', 'tool_name', 'tool', 'function'];
+			let toolName: string | null = null;
+			let argsStr = '{}';
+
+			// 先尝试查找 </think> 标签（清理被污染的标签）
+			const thinkEnd = pm.value().indexOf('</think>');
+			if (thinkEnd !== -1) {
+				// 有 </think> 标签，截断
+				pm.j = thinkEnd - 1;
+			}
+
+			// 简化实现：查找第一个 <word> 标签作为工具名
+			// 格式: <terminal> 或 <name>terminal</name>
+			for (const n of allowedNames) {
+				const found = pm.removePrefix(`<${n}>`);
+				if (found) {
+					toolName = n;
+					// 查找 </name> 结束标记
+					const endIdx = pm.value().indexOf(`</${n}>`);
+					if (endIdx !== -1) {
+						pm.i = endIdx + `</${n}>`.length;
+					}
+					break;
+				}
+			}
+
+			// 如果没找到 <name> 格式，尝试属性格式 name="xxx"
+			if (!toolName) {
+				const attrMatch = pm.value().match(/(?:name|tool|function)\s*[:=]\s*["']?(\w+)["']?/i);
+				if (attrMatch) {
+					toolName = attrMatch[1];
+				}
+			}
+
+			if (!toolName) {
+				return null;
+			}
+
+			// 尝试提取参数（简化：返回空 args）
+			// TODO: 实现完整的参数解析
+			return { name: toolName, args: argsStr };
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * 处理 XML 标签内容（统一处理闭合和未闭合标签的 content）。
 	 */
 	private _processXmlTagContent(content: string, results: IToolCallInfo[], tag: string): void {
@@ -1584,6 +1645,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		} else {
 			// 清理被 </think> 等标签污染的内容（取第一个有效工具名）
 			const cleanContent = content.split(/\s*<\//)[0].trim();
+
+			// 新增：尝试使用 SurroundingsRemover 解析 XML 内容（参考 Void 的 parseXMLPrefixToToolCall）
+			const xmlParsed = this._tryParseXmlWithSurroundingsRemover(cleanContent);
+			if (xmlParsed) {
+				this._logService.info(`[AgentOS] _processXmlTagContent: parsed via SurroundingsRemover: name=${xmlParsed.name}`);
+				results.push({
+					id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+					name: xmlParsed.name,
+					arguments: xmlParsed.args,
+				});
+				return; // 解析成功，提前返回
+			}
 
 			// XML 属性式: <tool_call name="xxx"><param key="val"/></tool_call>
 			const nameMatch = cleanContent.match(/(?:name|tool|function)\s*[:=]\s*["']?(\w+)["']?/i);
