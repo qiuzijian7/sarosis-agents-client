@@ -273,6 +273,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 								'IMPORTANT: When you need to use a tool, you MUST use the exact tool name from the list above and provide the required arguments.',
 								'If your model supports function calling, use the native function_call format.',
 								'If your model does NOT support function calling, output a JSON object in this exact format: {"name": "<tool_name>", "arguments": {<args>}}.',
+								'DO NOT use XML tags like <tool_call> or <function_call> — they will NOT be recognized.',
+								'Example (correct): {"name": "file_list", "arguments": {"path": "."}}',
+								'Example (wrong, do NOT use): <tool_call>file_list</tool_call>',
 								'Never output tool calls as plain text explanations or code blocks without the proper format.',
 								'',
 							);

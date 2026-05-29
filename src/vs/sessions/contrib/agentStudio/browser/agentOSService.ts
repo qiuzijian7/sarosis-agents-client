@@ -1538,11 +1538,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const xmlTags = ['tool_call', 'function_call', 'tool_use', 'invoke', 'tool'];
 
 		for (const tag of xmlTags) {
+			// 1. 先匹配闭合标签: <tool_call>...</tool_call>
 			const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
 			let match: RegExpExecArray | null;
 			while ((match = regex.exec(text)) !== null) {
 				const content = match[1].trim();
-				this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag, contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
+				this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag (closed), contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
 				// <tool> 标签使用 ▷{JSON} 头部 + <document> 子标签格式
 				if (tag === 'tool') {
 					const parsed = this._parseToolXMLFormat(content);
@@ -1550,40 +1551,65 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					else { this._logService.info(`[AgentOS] _extractToolCallsFromXml: _parseToolXMLFormat returned null for <tool> tag`); }
 					continue;
 				}
-				// XML 内部可能是 JSON
-				if (content.startsWith('{')) {
-					try {
-						const parsed = JSON.parse(content);
-						const tc = this._parseSingleToolCall(parsed);
-						if (tc) { results.push(tc); }
-					} catch { /* ignore */ }
-				} else {
-					// XML 属性式: <tool_call name="xxx"><param key="val"/></tool_call>
-					const nameMatch = content.match(/(?:name|tool|function)\s*[:=]\s*["']?(\w+)["']?/i);
-					const argsMatch = content.match(/(?:arguments?|params?|input)\s*[:=]\s*({[\s\S]*})/i);
-					if (nameMatch) {
-						let args = '{}';
-						if (argsMatch) {
-							try { JSON.parse(argsMatch[1]); args = argsMatch[1]; } catch { /* use default */ }
-						}
-						results.push({
-							id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-							name: nameMatch[1],
-							arguments: args,
-						});
-					} else if (/^[\w_\-]+$/.test(content)) {
-						// 兜底: content 本身是纯文本工具名，如 <tool_call>terminal</tool_call>
-						this._logService.info(`[AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "${content}"`);
-						results.push({
-							id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-							name: content,
-							arguments: '{}',
-						});
-					}
+				this._processXmlTagContent(content, results, tag);
+			}
+
+			// 2. 兜底: 匹配未闭合标签: <tool_call>toolname (后面没有 </tool_call>)
+			// 只匹配当该标签在文本中确实没有被闭合时
+			const hasClosingTag = new RegExp(`</${tag}>`, 'i').test(text);
+			if (!hasClosingTag) {
+				const unclosedRegex = new RegExp(`<${tag}[^>]*>([\\w_\\-]+)(?=\\s*(?:<|$))`, 'gi');
+				let unclosedMatch: RegExpExecArray | null;
+				while ((unclosedMatch = unclosedRegex.exec(text)) !== null) {
+					const content = unclosedMatch[1].trim();
+					this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag (unclosed), content="${content}"`);
+					this._processXmlTagContent(content, results, tag);
 				}
 			}
 		}
 		return results;
+	}
+
+	/**
+	 * 处理 XML 标签内容（统一处理闭合和未闭合标签的 content）。
+	 */
+	private _processXmlTagContent(content: string, results: IToolCallInfo[], tag: string): void {
+		// XML 内部可能是 JSON
+		if (content.startsWith('{')) {
+			try {
+				const parsed = JSON.parse(content);
+				const tc = this._parseSingleToolCall(parsed);
+				if (tc) { results.push(tc); }
+			} catch { /* ignore */ }
+		} else {
+			// 清理被 </think> 等标签污染的内容（取第一个有效工具名）
+			const cleanContent = content.split(/\s*<\//)[0].trim();
+
+			// XML 属性式: <tool_call name="xxx"><param key="val"/></tool_call>
+			const nameMatch = cleanContent.match(/(?:name|tool|function)\s*[:=]\s*["']?(\w+)["']?/i);
+			const argsMatch = cleanContent.match(/(?:arguments?|params?|input)\s*[:=]\s*({[\s\S]*})/i);
+			if (nameMatch) {
+				let args = '{}';
+				if (argsMatch) {
+					try { JSON.parse(argsMatch[1]); args = argsMatch[1]; } catch { /* use default */ }
+				}
+				results.push({
+					id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+					name: nameMatch[1],
+					arguments: args,
+				});
+			} else if (/^[\w_\-]+$/.test(cleanContent)) {
+				// 兜底: content 本身是纯文本工具名，如 <tool_call>terminal</tool_call>
+				this._logService.info(`[AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "${cleanContent}"`);
+				results.push({
+					id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+					name: cleanContent,
+					arguments: '{}',
+				});
+			} else {
+				this._logService.info(`[AgentOS] _extractToolCallsFromXml: unprocessable content for <${tag}>: "${cleanContent.substring(0, 60)}"`);
+			}
+		}
 	}
 
 	/**
