@@ -45,6 +45,7 @@ import type { AgentStudioPanelType } from "../common/constants.js";
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from "../common/constants.js";
 import { IModelSelectorService } from "../common/modelSelector.js";
 import { IAgentOSService } from "../common/agentOS.js";
+import type { IToolApprovalHandler, ToolApprovalDecision, IToolApprovalRequest } from "../common/providers.js";
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
@@ -75,6 +76,7 @@ import type {
 	IFileApplyCodePayload,
 	IChatJumpToCheckpointPayload,
 	IChatToolApprovePayload,
+	IChatToolApprovalRequestPayload,
 	IChatAddCheckpointPayload,
 	IChatGetCheckpointPayload,
 	IChatListCheckpointsPayload,
@@ -124,6 +126,9 @@ export class AgentStudioWebviewController extends Disposable {
 	private _activeChatEmployeeId: string | undefined;
 	private _activeChatAgentSessionId: string | undefined;
 
+	/** Pending tool approval requests: toolCallId → resolve function */
+	private readonly _pendingToolApprovals = new Map<string, { resolve: (decision: ToolApprovalDecision) => void }>();
+
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly panelType: AgentStudioPanelType | undefined,
@@ -165,6 +170,27 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 		this._createWebview();
 		this._registerServiceListeners();
+
+		// Register tool approval handler (wires UI approval flow)
+		const approvalHandler: IToolApprovalHandler = {
+			requestApproval: (request: IToolApprovalRequest): Promise<ToolApprovalDecision> => {
+				return new Promise<ToolApprovalDecision>((resolve) => {
+					// Store resolve function
+					this._pendingToolApprovals.set(request.toolCallId, { resolve });
+					
+					// Send event to webview to show approval UI
+					this._sendEvent('chat.toolApprovalRequest', {
+						toolCallId: request.toolCallId,
+						toolName: request.toolName,
+						arguments: request.arguments,
+						securityLevel: request.securityLevel as any, // ToolSecurityLevel enum -> string
+						reason: request.reason,
+					} as IChatToolApprovalRequestPayload);
+				});
+			},
+		};
+		this.agentOSService.setToolApprovalHandler(approvalHandler);
+		this.logService.info('[AgentStudioWebviewController] Tool approval handler registered');
 	}
 
 	private _getMediaUri(): URI {
@@ -1444,8 +1470,39 @@ export class AgentStudioWebviewController extends Disposable {
 		this.logService.info(
 			`[AgentStudioWebviewController] chat.toolApprove → ${payload.toolCallId} decision=${payload.decision}`,
 		);
-		// The approval decision is handled by the ToolApprovalService's pending request system.
-		// This will be wired up when the full approval flow is implemented in the agent loop.
+
+		// Resolve the pending approval promise
+		const pending = this._pendingToolApprovals.get(payload.toolCallId);
+		if (pending) {
+			this._pendingToolApprovals.delete(payload.toolCallId);
+
+			// Convert decision string to ToolApprovalDecision enum
+			let decision: ToolApprovalDecision;
+			switch (payload.decision) {
+				case 'allow_once':
+					decision = ToolApprovalDecision.AllowOnce;
+					break;
+				case 'allow_always':
+					decision = ToolApprovalDecision.AllowAlways;
+					break;
+				case 'deny':
+					decision = ToolApprovalDecision.Deny;
+					break;
+				case 'allow_session':
+				case 'allow_workspace':
+					// Treat as AllowOnce for now (frontend concepts)
+					decision = ToolApprovalDecision.AllowOnce;
+					break;
+				default:
+					decision = ToolApprovalDecision.Deny;
+			}
+
+			pending.resolve(decision);
+		} else {
+			this.logService.warn(
+				`[AgentStudioWebviewController] No pending approval for toolCallId=${payload.toolCallId}`,
+			);
+		}
 	}
 
 	/**

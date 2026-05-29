@@ -103,6 +103,7 @@ export type RequestType =
 	| 'configmd.removeParser'     // restore built-in parser
 	| 'configmd.getInfo'          // get parser/styles info
 	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
+	| 'configmd.listAgents'      // list all agents that have config.md configured
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
@@ -143,7 +144,8 @@ export type EventType =
 	| 'configmd.htmlRendered'     // new HTML rendered (push to preview)
 	| 'configmd.command'          // model-issued command for HTML view
 	| 'configmd.message'          // model-issued message for HTML view
-	| 'configmd.error';           // sync/render error
+	| 'configmd.error'           // sync/render error
+	| 'chat.toolApprovalRequest'; // request webview to show tool approval UI
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -615,6 +617,22 @@ export interface IChatJumpToCheckpointPayload {
 	readonly employeeId: string;
 	/** The session ID (for multi-session support). */
 	readonly sessionId: string;
+}
+
+/**
+ * Request webview to show tool approval UI (Host → WebView).
+ */
+export interface IChatToolApprovalRequestPayload {
+	/** The tool call ID that needs approval. */
+	readonly toolCallId: string;
+	/** The tool name. */
+	readonly toolName: string;
+	/** The tool arguments. */
+	readonly arguments: Record<string, unknown>;
+	/** The security level of the tool. */
+	readonly securityLevel: 'safe' | 'cautious' | 'dangerous';
+	/** Reason why approval is needed. */
+	readonly reason?: string;
 }
 
 /**

@@ -246,6 +246,44 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'chat.toolApprovalRequest': {
+			// Host requests tool approval UI — find the tool call and set status to 'approval_required'
+			const payload = data as {
+				toolCallId: string;
+				toolName: string;
+				arguments: Record<string, unknown>;
+				securityLevel: 'safe' | 'cautious' | 'dangerous';
+				reason?: string;
+			};
+			
+			// Find the message containing this tool call and update its status
+			const store = useChatStore.getState();
+			const messages = store.messages;
+			let updated = false;
+			const newMessages = messages.map(msg => {
+				if (msg.toolCalls) {
+					const newToolCalls = msg.toolCalls.map(tc => {
+						if (tc.id === payload.toolCallId) {
+							updated = true;
+							return { ...tc, status: 'approval_required' };
+						}
+						return tc;
+					});
+					if (newToolCalls !== msg.toolCalls) {
+						return { ...msg, toolCalls: newToolCalls };
+					}
+				}
+				return msg;
+			});
+			
+			if (updated) {
+				useChatStore.setState({ messages: newMessages });
+				console.log(`[AgentStudio] Tool approval requested: toolCallId=${payload.toolCallId}, toolName=${payload.toolName}`);
+			} else {
+				console.warn(`[AgentStudio] chat.toolApprovalRequest: toolCallId=${payload.toolCallId} not found in messages`);
+			}
+			break;
+		}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}

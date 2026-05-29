@@ -35,13 +35,15 @@ import { IFileService, FileType } from '../../../../../../platform/files/common/
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
-import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel } from '../../../common/providers.js';
+import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel, IAgentTurnRequest, IChatStreamDelta } from '../../../common/providers.js';
 import { BUNDLED_TOOL_DEFINITIONS } from '../../../common/bundled-tools/bundledTools.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IAgentStudioService } from '../../../common/agentStudio.js';
+import { IAgentStudioService, ITaskOrchestrationService } from '../../../../../common/agentStudioService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
+import { SubAgentType, SubAgentResult, UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
+import { IterationBudget } from '../../../common/iterationBudget.js';
 
 
 type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<IToolResultContent[]>;
@@ -80,12 +82,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IAgentStudioService private readonly studioService: IAgentStudioService,
 		@IAgentOSService private readonly agentOS: IAgentOSService,
+		@ITaskOrchestrationService private readonly orchestrationService: ITaskOrchestrationService,
 	) {
 		super();
 		this._registerCoreTools();
 		this._registerMemoryTools();
 		this._registerSkillTools();
 		this._registerBundledTools();
+		this._registerDelegationTools();
 	}
 
 	// ─── 路径安全校验 ─────────────────────────────────────────────────────
@@ -946,6 +950,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				// 原生工具优先，不覆盖
 				continue;
 			}
+			// delegate_task 有真实 handler，不在 bundled 中注册 stub
+			if (def.name === 'delegate_task') {
+				continue;
+			}
 			this.register({
 				definition: { ...def, source: this.id },
 				handler: async () => [{
@@ -958,6 +966,82 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				isStub: true, // 标记为 stub — listTools 会跳过，防止 LLM 尝试调用
 			});
 		}
+	}
+
+	/**
+	 * 注册委派/子代理相关工具（delegate_task）。
+	 * 这些工具需要真实的 handler，不能只是 stub。
+	 */
+	private _registerDelegationTools(): void {
+		// delegate_task — LLM 自主委派任务给子代理
+		this.register({
+			definition: {
+				name: 'delegate_task',
+				description: 'Delegate a task (or multiple tasks) to a sub-agent. ' +
+					'The sub-agent runs independently and returns its result. ' +
+					'Use this when a task can be performed in parallel or requires a separate context. ' +
+					'Supports both single task (task) and batch tasks (tasks).',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						task: { type: 'string', description: 'Single task description to delegate' },
+						tasks: { type: 'array', items: { type: 'string' }, description: 'Multiple task descriptions to delegate in parallel' },
+						model: { type: 'string', description: 'Optional model to use for the sub-agent' },
+						toolsets: { type: 'array', items: { type: 'string' }, description: 'Optional tool sets to enable for the sub-agent' },
+					},
+					required: [],
+				},
+				category: 'delegation',
+				source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				const task = args['task'] as string | undefined;
+				const tasks = args['tasks'] as string[] | undefined;
+
+				if (!task && (!tasks || tasks.length === 0)) {
+					throw new Error('delegate_task: either "task" or "tasks" must be provided');
+				}
+
+				// Build executeFn that delegates to AgentOS
+				const executeFn = (request: IAgentTurnRequest, _budget: IterationBudget): AsyncIterable<IChatStreamDelta> => {
+					return this.agentOS.executeAgentTurn(request);
+				};
+
+				try {
+					if (task) {
+						// Single task mode — use dispatch()
+						const result = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatch(
+							agentId ?? 'unknown',
+							task,
+							executeFn,
+							{ type: SubAgentType.General },
+						);
+						if (result.success) {
+							return [{ type: 'text', text: result.output ?? '(no output)' }];
+						} else {
+							return [{ type: 'text', text: `Sub-agent failed: ${result.error ?? 'unknown error'}` }];
+						}
+					} else {
+						// Batch tasks mode — use dispatchParallelExplore()
+						const results = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatchParallelExplore(
+							agentId ?? 'unknown',
+							tasks!,
+							executeFn,
+						);
+						const lines = results.map((r: SubAgentResult, i: number) => [
+							`Task ${i + 1}: ${r.success ? 'SUCCESS' : 'FAILED'}`,
+							r.success ? `  Output: ${r.output ?? '(empty)'}` : `  Error: ${r.error ?? 'unknown'}`,
+						].join('\n'));
+						return [{ type: 'text', text: lines.join('\n\n') }];
+					}
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return [{ type: 'text', text: `delegate_task error: ${msg}` }];
+				}
+			},
+		});
+
+		this.logService.info('[BuiltinTools] _registerDelegationTools: delegate_task registered');
 	}
 
 	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal): Promise<void> {
