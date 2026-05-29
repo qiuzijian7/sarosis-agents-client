@@ -132,10 +132,26 @@ export interface IModelOptions {
 }
 
 export interface IModelDelta {
-	readonly type: 'text' | 'thinking' | 'tool_call' | 'done' | 'error';
+	readonly type: 'text' | 'thinking' | 'tool_call' | 'done' | 'error' | 'usage';
 	readonly content?: string;
 	readonly toolCall?: IToolCallInfo;
 	readonly error?: string;
+	/** Token 使用量（type === 'usage' 时携带） */
+	readonly usage?: IModelUsage;
+}
+
+/**
+ * LLM 调用的 Token 使用量统计
+ */
+export interface IModelUsage {
+	/** 输入 token 数 */
+	readonly inputTokens?: number;
+	/** 输出 token 数 */
+	readonly outputTokens?: number;
+	/** 缓存命中的输入 token 数（来自 OpenAI cached_tokens / Anthropic cache_read_input_tokens） */
+	readonly cachedTokens?: number;
+	/** 写入缓存的 token 数（来自 Anthropic cache_creation_input_tokens） */
+	readonly cacheWriteTokens?: number;
 }
 
 // ─── Memory Provider Interface ────────────────────────────────────────────────
@@ -144,7 +160,17 @@ export interface IMemoryProvider {
 	readonly id: string;
 	readonly name: string;
 
-	loadContext(agentId: string, sessionId: string): Promise<IMemoryContext>;
+	/**
+	 * 加载会话的记忆上下文。
+	 *
+	 * `query` 参数（可选）：当前轮次的用户输入文本，用于驱动 vendor 的语义/关键词
+	 * 召回。若不传，provider 实现可走"全量摘要"或返回空，但召回质量会大幅下降。
+	 *
+	 * 历史 bug：早期接口没有 query 参数，TdbAmMemoryProvider 只能用占位字符串
+	 * `_loadContext_` 当 query，导致 vendor FTS5 永远召不回任何 L1 记忆。
+	 * 加了第 3 参后，调用方应把 messages 中最近一条 user 消息抽出来传入。
+	 */
+	loadContext(agentId: string, sessionId: string, query?: string): Promise<IMemoryContext>;
 	writeMemory(agentId: string, entry: IMemoryEntry): Promise<void>;
 	searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]>;
 }
@@ -401,7 +427,7 @@ export interface IAgentTurnRequest {
 
 export interface IChatStreamDelta {
 	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace'
-		| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions';
+	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -409,6 +435,8 @@ export interface IChatStreamDelta {
 	readonly progress?: number; // 0-100 进度百分比（用于 tool_progress 类型）
 	readonly stage?: string; // 当前阶段描述（用于 tool_progress 类型）
 	readonly success?: boolean; // tool_end 时表示工具是否执行成功
+	/** Token 使用量（type === 'usage' 时携带） */
+	readonly usage?: IModelUsage;
 	/** UI 显示名称（来自模型的 display_name 字段） */
 	readonly displayName?: string;
 	/** 渲染类型（如 RunTerminal、CodeEditor 等） */

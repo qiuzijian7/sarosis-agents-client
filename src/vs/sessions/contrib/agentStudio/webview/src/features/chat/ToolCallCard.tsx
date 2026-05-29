@@ -616,7 +616,7 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 	const [showFullResult, setShowFullResult] = useState(false);
 	const [copiedField, setCopiedField] = useState<string | null>(null);
 
-	const isRunning = toolCall.status === 'running';
+	const isRunning = toolCall.status === 'running' && !toolCall.result;
 	const isError = toolCall.status === 'error' || !!toolCall.error;
 	const isApprovalRequired = toolCall.status === 'approval_required';
 	const isRejected = toolCall.status === 'rejected';
@@ -887,7 +887,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 
 	// If effectiveRenderType exists and is known, dispatch to specialized renderer
 	if (effectiveRenderType && KNOWN_RENDER_TYPES.has(effectiveRenderType)) {
-		const isRunning = toolCall.status === 'running';
+		const isRunning = toolCall.status === 'running' && !toolCall.result;
 		const isError = toolCall.status === 'error' || !!toolCall.error;
 		const isApprovalRequired = toolCall.status === 'approval_required';
 		const isRejected = toolCall.status === 'rejected';

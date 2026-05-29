@@ -1,0 +1,39 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": [
+			"ES2022",
+			"DOM"
+		],
+		"module": "commonjs",
+		"types": [
+			"node",
+			"vscode"
+		],
+		"typeRoots": [
+			"./node_modules/@types"
+		],
+		"outDir": "out",
+		"rootDir": "src",
+		"sourceMap": true,
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"noImplicitAny": false
+	},
+	// sarosis 顶层 gulpfile 流水线（build/lib/tsgo.ts）会扫描这个 tsconfig，
+	// 仅包含 src/ 下两个文件（extension.ts / inlineGateway.ts），让 tsgo 在
+	// 1 秒内跑完。vendor/tdbam/** 由 tsconfig.vendor.json 单独编译，
+	// 入口为本扩展的 `npm run compile:vendor`，或顶层 `npm run compile-tdb-am-vendor`
+	// （`npm run compile` 已串联调用，详见根 package.json）。
+	"include": [
+		"src/**/*"
+	],
+	"exclude": [
+		"node_modules",
+		"out",
+		"vendor",
+		".vscode-test"
+	]
+}

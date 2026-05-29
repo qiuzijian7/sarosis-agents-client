@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022", "DOM"],
+		"module": "ES2022",
+		"moduleResolution": "bundler",
+		"types": ["node"],
+		"typeRoots": ["./node_modules/@types"],
+		"esModuleInterop": true,
+		"strict": true,
+		"noImplicitAny": false,
+		"outDir": "./out",
+		"rootDir": "./src",
+		"sourceMap": true,
+		"declaration": true,
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*"],
+	"exclude": ["node_modules", "out"]
+}

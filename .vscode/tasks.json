@@ -1,4 +1,5 @@
 {
+	"$schema": "./tasks.schema.json",
 	"version": "2.0.0",
 	"tasks": [
 		{
@@ -529,6 +530,8 @@
 				"reveal": "always"
 			}
 		},
+		{
+			"label": "Mock E2E Test Output",
 			"type": "shell",
 			"command": "pwsh",
 			"args": [
@@ -536,7 +539,8 @@
 				"-Command",
 				"Write-Output \"134 passed, 0 failed, 1 skipped, 135 total\"; Start-Sleep -Seconds 2; Write-Output \"[PASS] E2E Tests\"; Write-Output \"Watching for changes...\""
 			],
-			"isBackground": false
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

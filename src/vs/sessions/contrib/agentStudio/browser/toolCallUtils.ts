@@ -583,6 +583,183 @@ export function limitToolResultSize(
 	);
 }
 
+/**
+ * Hard cap on the JSON-stringified size of a single tool result, used as a
+ * safety net BEFORE we ever call `JSON.stringify` on a tool's `result.content`.
+ *
+ * Why a separate (larger) cap than {@link MAX_TOOL_RESULT_CHARS}:
+ *  - `MAX_TOOL_RESULT_CHARS` (100KB) caps what is fed into the chat history /
+ *    streamed to the webview as a `tool_result`.
+ *  - `MAX_TOOL_RESULT_PRE_STRINGIFY_BYTES` (4MB) is a much higher safety wall.
+ *    It only kicks in when a tool returns something pathological (e.g.
+ *    `file_read` on a 50MB log, or a `grep` hit list with millions of bytes).
+ *    In that case we MUST avoid `JSON.stringify(content)` because V8 has to
+ *    materialise the entire string in heap, and a few concurrent tool calls
+ *    of that size will reliably OOM the renderer (we have observed
+ *    `CodeWindow: renderer process gone (reason: oom)` with this exact
+ *    signature).
+ */
+export const MAX_TOOL_RESULT_PRE_STRINGIFY_BYTES = 4 * 1024 * 1024; // 4MB
+
+/**
+ * Estimate the JSON-stringified size of an arbitrary value WITHOUT actually
+ * stringifying it — bails out as soon as the running total exceeds `limit`.
+ *
+ * Returns:
+ *  - `{ exceeded: false, approxBytes }` if the value fits comfortably.
+ *  - `{ exceeded: true, approxBytes }` once the running total crosses `limit`.
+ *
+ * This is intentionally conservative (overestimates) so we err on the side
+ * of triggering the truncation path early.
+ */
+function estimateJsonSize(value: unknown, limit: number): { exceeded: boolean; approxBytes: number } {
+	let total = 0;
+	const seen = new WeakSet<object>();
+
+	const visit = (v: unknown): boolean => {
+		if (total > limit) { return true; } // already exceeded
+		if (v === null || v === undefined) {
+			total += 4; return false;
+		}
+		const t = typeof v;
+		if (t === "string") {
+			// JSON string size ≈ string length + 2 quotes (UTF-16 chars; close enough)
+			total += (v as string).length + 2;
+			return total > limit;
+		}
+		if (t === "number" || t === "boolean") {
+			total += 8; return total > limit;
+		}
+		if (t === "bigint") {
+			total += 32; return total > limit;
+		}
+		if (t !== "object") {
+			total += 16; return total > limit;
+		}
+		const obj = v as object;
+		if (seen.has(obj)) { return false; } // skip cycles
+		seen.add(obj);
+		if (Array.isArray(obj)) {
+			total += 2; // []
+			for (let i = 0; i < obj.length; i++) {
+				if (i > 0) { total += 1; }
+				if (visit(obj[i])) { return true; }
+			}
+			return total > limit;
+		}
+		total += 2; // {}
+		const keys = Object.keys(obj);
+		for (let i = 0; i < keys.length; i++) {
+			const k = keys[i];
+			if (i > 0) { total += 1; }
+			total += k.length + 3; // "key":
+			if (visit((obj as Record<string, unknown>)[k])) { return true; }
+		}
+		return total > limit;
+	};
+
+	visit(value);
+	return { exceeded: total > limit, approxBytes: total };
+}
+
+/**
+ * Walk a value and return a shallow copy where every string is hard-capped
+ * to `perStringCap` characters. Used to defang giant tool results BEFORE
+ * we hand them to `JSON.stringify`. Cycles are short-circuited; arrays are
+ * truncated to `maxArrayItems` to keep the post-truncation object small
+ * even for results like "100,000 grep hits".
+ */
+function deepTruncateStrings(
+	value: unknown,
+	perStringCap: number,
+	maxArrayItems: number = 200,
+	seen: WeakSet<object> = new WeakSet(),
+): unknown {
+	if (value === null || value === undefined) { return value; }
+	const t = typeof value;
+	if (t === "string") {
+		const s = value as string;
+		if (s.length <= perStringCap) { return s; }
+		return s.substring(0, perStringCap) + `\n... [string truncated: ${s.length} → ${perStringCap} chars]`;
+	}
+	if (t !== "object") { return value; }
+	const obj = value as object;
+	if (seen.has(obj)) { return "[circular]"; }
+	seen.add(obj);
+	if (Array.isArray(obj)) {
+		const slice = obj.length > maxArrayItems ? obj.slice(0, maxArrayItems) : obj;
+		const out = slice.map(item => deepTruncateStrings(item, perStringCap, maxArrayItems, seen));
+		if (obj.length > maxArrayItems) {
+			out.push(`... [array truncated: ${obj.length} → ${maxArrayItems} items]`);
+		}
+		return out;
+	}
+	const out: Record<string, unknown> = {};
+	for (const k of Object.keys(obj)) {
+		out[k] = deepTruncateStrings((obj as Record<string, unknown>)[k], perStringCap, maxArrayItems, seen);
+	}
+	return out;
+}
+
+/**
+ * Safely stringify a tool result `content`, with hard guard against pathological
+ * payloads that would OOM the renderer when passed naively to `JSON.stringify`.
+ *
+ * Strategy:
+ *  1. Cheap structural size estimate (no string allocation).
+ *  2. If under {@link MAX_TOOL_RESULT_PRE_STRINGIFY_BYTES}: stringify directly.
+ *  3. Otherwise: deep-truncate strings/arrays inside the value first, prepend
+ *     a `[truncated]` marker, then stringify the smaller object.
+ *  4. Final length is still passed through {@link limitToolResultSize}, so the
+ *     post-stringify string also obeys {@link MAX_TOOL_RESULT_CHARS}.
+ *
+ * Returns the safe JSON string. Never throws; falls back to `String(value)`
+ * if both stringify paths fail (e.g. unserialisable BigInt edge cases).
+ */
+export function safeStringifyToolResult(
+	content: unknown,
+	preStringifyByteLimit: number = MAX_TOOL_RESULT_PRE_STRINGIFY_BYTES,
+	finalCharLimit: number = MAX_TOOL_RESULT_CHARS,
+): string {
+	const estimate = estimateJsonSize(content, preStringifyByteLimit);
+	let toStringify: unknown = content;
+	let preTruncated = false;
+	if (estimate.exceeded) {
+		// Per-string cap is a fraction of the final char limit so we don't
+		// recreate the original size after deep-truncation. /4 leaves room
+		// for several large strings in the same payload.
+		const perStringCap = Math.max(2_000, Math.floor(finalCharLimit / 4));
+		toStringify = {
+			__truncated__: true,
+			__originalApproxBytes__: estimate.approxBytes,
+			__note__: `Tool result exceeded ${preStringifyByteLimit} bytes pre-stringify and was deep-truncated to avoid OOM. Strings capped at ${perStringCap} chars per field.`,
+			content: deepTruncateStrings(content, perStringCap),
+		};
+		preTruncated = true;
+	}
+
+	let json: string;
+	try {
+		json = JSON.stringify(toStringify);
+	} catch {
+		try {
+			json = JSON.stringify({
+				__truncated__: true,
+				__error__: "Tool result could not be serialised to JSON",
+			});
+		} catch {
+			json = '"[unserialisable tool result]"';
+		}
+	}
+	// Final char-level cap (covers the case where the deep-truncated form is
+	// still larger than MAX_TOOL_RESULT_CHARS, e.g. extremely wide objects).
+	const final = limitToolResultSize(json, finalCharLimit);
+	if (preTruncated && final === json) {
+		// no-op: keep marker
+	}
+	return final;
+}
+
 // ─── Tool Result Formatting ─────────────────────────────────────────
 
 /**

@@ -478,6 +478,7 @@ import './contrib/welcome/browser/welcome.contribution.js';
 import './contrib/aquarium/browser/aquarium.contribution.js';
 import './contrib/policyBlocked/browser/policyBlocked.contribution.js';
 import './contrib/agentStudio/browser/agentStudio.contribution.js';
+import './contrib/tdbam/browser/tdbam.contribution.js';
 
 import './services/sessions/browser/sessionsManagementService.js';
 //#endregion

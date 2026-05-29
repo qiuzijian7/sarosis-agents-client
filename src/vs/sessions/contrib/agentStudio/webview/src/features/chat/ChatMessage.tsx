@@ -20,7 +20,7 @@ import React, { memo, useMemo, useState } from 'react';
 import type { ChatMessage } from '../../store/useChatStore';
 import { useChatStore } from '../../store/useChatStore';
 import { ToolCallCard } from './ToolCallCard';
-import { MarkdownRenderer, InterleavedMarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
+import { MarkdownRenderer, CodeBlockWithCollapse } from './MarkdownRenderer';
 import { sanitizeAssistantContent, isPureToolCallJson } from '../../utils/assistantVisibleText';
 import { OrchestrationPlanInline } from '../../features/orchestration/OrchestrationPlanInline';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
@@ -31,15 +31,6 @@ import { ConfirmationCard } from './ConfirmationCard';
 import { TodoListCard } from './TodoListCard';
 import { TipCard } from './TipCard';
 import { QuestionCarouselCard } from './QuestionCarouselCard';
-import { SubAgentCard } from './SubAgentCard';
-import { CheckpointCard } from './CheckpointCard';
-import type { CheckpointData } from '../../store/useChatStore';
-
-/**
- * Phantom tool names — DEPRECATED: visibility is now controlled solely by
- * `defaultShow`. Kept as empty set for backward compatibility.
- */
-const PHANTOM_TOOL_NAMES = new Set<string>([]);
 
 interface ChatMessageProps {
 	message: ChatMessage;
@@ -82,21 +73,8 @@ function formatJsonForDisplay(text: string): string {
 function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): React.ReactElement {
 	const isUser = message.role === 'user';
 	const isSystemError = message.role === 'system' && message.id.startsWith('error_');
-	const isCheckpoint = message.role === 'checkpoint';
 	const [thinkingCollapsed, setThinkingCollapsed] = useState(true); // Collapsed by default (OpenClaw pattern)
 	const [jsonExpanded, setJsonExpanded] = useState(false);
-
-	// Checkpoint card rendering (Void-inspired time-travel navigation)
-	if (isCheckpoint && message.checkpoint) {
-		return (
-			<CheckpointCard
-				checkpoint={message.checkpoint}
-				onRestore={(cpId) => {
-					useChatStore.getState().jumpToCheckpoint(cpId);
-				}}
-			/>
-		);
-	}
 
 	// Subscribe to the orchestration plan that this message renders.
 	// ChatMessageRaw is wrapped in React.memo; while the custom comparator
@@ -124,40 +102,35 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 		return detectPureJson(message.content);
 	}, [message.content, isUser, isStreaming, message.toolCalls]);
 
-	// Filter visible tool calls once (shared between old top-section and new interleaved layout)
-	const visibleToolCalls = useMemo(() => {
-		if (!message.toolCalls || message.toolCalls.length === 0) { return []; }
-		return message.toolCalls.filter(tc =>
-			tc.defaultShow !== false
-		);
-	}, [message.toolCalls]);
-
-	// Build tool-call card nodes for interleaved rendering
-	const toolCallNodes = useMemo(() =>
-		visibleToolCalls.map(tc => <ToolCallCard key={tc.id} toolCall={tc} />),
-		[visibleToolCalls]
-	);
-
-	// Build tool position map for interleaved rendering (from textPosition recorded at tool_start)
-	const toolPositions = useMemo(() => {
-		const map = new Map<string, number>();
-		for (const tc of visibleToolCalls) {
-			if ((tc as any).textPosition !== undefined) {
-				map.set(tc.id, (tc as any).textPosition);
-			}
-		}
-		return map;
-	}, [visibleToolCalls]);
-
 	// Always sanitize assistant content using the unified pipeline.
 	// This catches tool-call artifacts that may remain even when no toolCalls
 	// were detected (e.g. model outputs raw JSON that was extracted by the
 	// backend's _tryExtractToolCallsFromText, but the content_replace delta
 	// arrives after the message was already persisted).
+	//
+	// Additional defense: strip literal "undefined" pollution. Historical
+	// messages persisted to disk before the upstream coercion fixes were
+	// rolled out may contain runs of "undefined" coming from `${undefined}`
+	// template stringification in the IModelDelta pipeline. Removing them
+	// at render time cleans up old sessions without needing to migrate
+	// the JSON files on disk.
 	const displayContent = useMemo(() => {
 		if (!message.content) { return ''; }
 		if (isUser) { return message.content; }
-		return sanitizeAssistantContent(message.content);
+		const sanitized = sanitizeAssistantContent(message.content);
+		const cleaned = sanitized.includes('undefined')
+			? sanitized.replace(/(?:undefined)+/g, '')
+			: sanitized;
+		// DEBUG: Log completed message content for consistency diagnosis
+		console.log('[ChatMessage] displayContent computed:', {
+			rawLen: message.content.length,
+			sanitizedLen: cleaned.length,
+			first200: cleaned.substring(0, 200),
+			// Check if ## headings have space already (should have after host processing)
+			headingsRaw: (message.content.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
+			headingsSanitized: (cleaned.match(/^#{1,6}\S.*/gm) || []).slice(0, 3),
+		});
+		return cleaned;
 	}, [message.content, isUser]);
 
 	return (
@@ -229,21 +202,29 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 					<ConfirmationCard
 						confirmation={message.confirmation}
 						onApprove={(buttonId) => {
-							useChatStore.getState().approvePlanConfirmation(message.confirmation!, buttonId);
+							console.log('[ChatMessage] Confirmation approved:', buttonId);
+							// TODO: Handle confirmation approve
 						}}
 						onReject={() => {
-							useChatStore.getState().rejectPlanConfirmation(message.confirmation!);
+							console.log('[ChatMessage] Confirmation rejected');
+							// TODO: Handle confirmation reject
 						}}
 						collapsed={false}
 					/>
 				)}
 
-				{/* ── Sub-Agent execution cards (parallel/sequential) ─── */}
-				{message.subAgents && message.subAgents.length > 0 && (
-					<SubAgentCard subAgents={message.subAgents} isStreaming={isStreaming} />
+				{/* ── Tool calls ────────────────────────────── */}
+				{message.toolCalls && message.toolCalls.length > 0 && (
+					<div className="tool-calls-section">
+						{message.toolCalls
+							.filter(tc => tc.defaultShow !== false)
+							.map((tc) => (
+								<ToolCallCard key={tc.id} toolCall={tc} />
+							))}
+					</div>
 				)}
 
-				{/* ── Main content (with tool calls interleaved) ─────────── */}
+				{/* ── Main content ──────────────────────────── */}
 				{displayContent && (
 					<div className="message-text">
 						{/* Orchestration plan inline (special message type) */}
@@ -258,17 +239,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							</div>
 						) : isStreaming && !isUser ? (
 							// During streaming: live markdown rendering (OpenClaw pattern)
-							// Tool calls are interleaved into the text when present
-							toolCallNodes.length > 0 ? (
-								<InterleavedMarkdownRenderer
-									content={displayContent}
-									showCursor
-									toolCallNodes={toolCallNodes}
-									toolPositions={toolPositions}
-								/>
-							) : (
-								<MarkdownRenderer content={displayContent} showCursor />
-							)
+							<MarkdownRenderer content={displayContent} showCursor />
 						) : isPureJson ? (
 							// Pure JSON content: render as collapsible code block (OpenClaw pattern)
 							<div className="json-content-block">
@@ -300,16 +271,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							</div>
 						) : !isUser ? (
 							// Completed assistant messages: full Markdown rendering
-							// Tool calls are interleaved into the text when present
-							toolCallNodes.length > 0 ? (
-								<InterleavedMarkdownRenderer
-									content={displayContent}
-									toolCallNodes={toolCallNodes}
-									toolPositions={toolPositions}
-								/>
-							) : (
-								<MarkdownRenderer content={displayContent} />
-							)
+							<MarkdownRenderer content={displayContent} />
 						) : (
 							// User messages: plain text
 							displayContent
@@ -402,9 +364,18 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				)}
 				{!isUser && message.tokenUsage && message.tokenUsage.total > 0 && (
 					<span className="message-tokens"
-						title={`输入: ${message.tokenUsage.input} / 输出: ${message.tokenUsage.output}`}
+						title={
+							`输入: ${message.tokenUsage.input} / 输出: ${message.tokenUsage.output}` +
+							(message.tokenUsage.cached ? ` / 缓存命中: ${message.tokenUsage.cached}` : '') +
+							(message.tokenUsage.cacheWrite ? ` / 缓存写入: ${message.tokenUsage.cacheWrite}` : '')
+						}
 					>
 						{message.tokenUsage.total} tokens
+						{message.tokenUsage.cached && message.tokenUsage.cached > 0 ? (
+							<span className="message-cache-hit" style={{ marginLeft: 6, opacity: 0.85 }}>
+								🎯 cache {message.tokenUsage.cached}
+							</span>
+						) : null}
 					</span>
 				)}
 			</div>
@@ -439,7 +410,6 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.todos === nm.todos &&
 		pm.tips === nm.tips &&
 		pm.questions === nm.questions &&
-		pm.subAgents === nm.subAgents &&
 		prev.isStreaming === next.isStreaming
 	);
 });

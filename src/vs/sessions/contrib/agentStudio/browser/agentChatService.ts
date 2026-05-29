@@ -6,6 +6,7 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import { Disposable } from "../../../../base/common/lifecycle.js";
+import { Emitter, Event } from "../../../../base/common/event.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import {
 	IAgentChatService,
@@ -73,6 +74,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
 	private _historyLoaded = false;
 	private _globalDataUri: URI | undefined;
+
+	private readonly _onDidChangeAgentSessionsEmitter = this._register(
+		new Emitter<{ employeeId: string }>(),
+	);
+	readonly onDidChangeAgentSessions: Event<{ employeeId: string }> =
+		this._onDidChangeAgentSessionsEmitter.event;
 
 	constructor(
 		@ILogService logService: ILogService,
@@ -326,6 +333,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			entry.updatedAt = now;
 		}
 		await this._writeSessionIndex(employeeId, index);
+		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
 	}
 
 	// ─── Public: appendMessage ───────────────────────────────────────────────
@@ -453,6 +461,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let todos: ChatMessage["todos"];
 		let tips: ChatMessage["tips"];
 		let questions: ChatMessage["questions"];
+		// KV Cache: accumulated token usage across the turn.
+		let usageInput = 0;
+		let usageOutput = 0;
+		let usageCached = 0;
+		let usageCacheWrite = 0;
+		let usageSeen = false;
 
 		try {
 			// Persist user message (fire-and-forget, don't block AI response)
@@ -555,6 +569,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (delta.type === 'questions' && delta.questionsData) {
 					questions = delta.questionsData as unknown as ChatMessage['questions'];
 				}
+				// KV Cache: aggregate per-chunk usage so the persisted ChatMessage
+				// carries the final token totals (BYOK providers may emit usage on
+				// either the streaming chunk path or the fallback non-streaming path,
+				// so we sum defensively rather than overwrite).
+				if (delta.type === 'usage' && delta.usage) {
+					usageSeen = true;
+					if (typeof delta.usage.inputTokens === 'number') { usageInput += delta.usage.inputTokens; }
+					if (typeof delta.usage.outputTokens === 'number') { usageOutput += delta.usage.outputTokens; }
+					if (typeof delta.usage.cachedTokens === 'number') { usageCached += delta.usage.cachedTokens; }
+					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
+				}
 				onDelta(delta);
 			}
 
@@ -574,6 +599,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				todos: todos || undefined,
 				tips: tips || undefined,
 				questions: questions || undefined,
+				// KV Cache: persist token usage so the webview footer can render the
+				// total + cache-hit badge (only emitted when the provider reported usage).
+				tokenUsage: usageSeen
+					? {
+						input: usageInput,
+						output: usageOutput,
+						total: usageInput + usageOutput,
+						cached: usageCached > 0 ? usageCached : undefined,
+						cacheWrite: usageCacheWrite > 0 ? usageCacheWrite : undefined,
+					}
+					: undefined,
 			};
 
 			this.appendMessage(employeeId, chatMessage).catch((err) =>
@@ -661,6 +697,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		this.logService.info(
 			`[AgentChatService] Created session ${sessionId} for ${employeeId}`,
 		);
+		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
 		return meta;
 	}
 
@@ -680,6 +717,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		entry.name = newName;
 		entry.updatedAt = new Date().toISOString();
 		await this._writeSessionIndex(employeeId, index);
+		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
 	}
 
 	/**
@@ -712,6 +750,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		this.logService.info(
 			`[AgentChatService] Deleted session ${sessionId} for ${employeeId}`,
 		);
+		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
 	}
 
 	/**

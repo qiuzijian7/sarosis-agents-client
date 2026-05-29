@@ -52,7 +52,7 @@ export interface IAgentDriverService {
 	/**
 	 * 当前是否有正在执行的轮次
 	 */
-	readonly onDidChangeTurnStatus: Event<AgentTurnStatus>;
+	readonly onDidChangeTurnStatus: Event<{ status: AgentTurnStatus; turnId: string }>;
 
 	/**
 	 * 获取指定轮次的当前状态

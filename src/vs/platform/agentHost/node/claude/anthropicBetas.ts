@@ -25,6 +25,7 @@ const SUPPORTED_ANTHROPIC_BETAS: readonly string[] = [
 	'interleaved-thinking',
 	'context-management',
 	'advanced-tool-use',
+	'prompt-caching',
 ];
 
 /**

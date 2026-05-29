@@ -174,13 +174,32 @@ export interface IChatStreamDelta {
 	| "confirmation"
 	| "todos"
 	| "tips"
-	| "questions";
+	| "questions"
+	| "usage";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
 	readonly metadata?: Record<string, unknown>;
 	readonly progress?: number;
 	readonly stage?: string;
+	/** Whether the tool call succeeded (only meaningful on `tool_end`). */
+	readonly success?: boolean;
+	/**
+	 * Token usage statistics (only meaningful when `type === 'usage'`).
+	 *
+	 * Mirrored structurally from `IModelUsage` in
+	 * `contrib/agentStudio/common/providers.ts`. We deliberately inline the
+	 * shape here rather than import the contrib type, because `common/`
+	 * cannot depend on `contrib/` under the layered-architecture rule.
+	 */
+	readonly usage?: {
+		readonly inputTokens?: number;
+		readonly outputTokens?: number;
+		/** Cache-hit input tokens (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`). */
+		readonly cachedTokens?: number;
+		/** Cache-write tokens (Anthropic `cache_creation_input_tokens`). */
+		readonly cacheWriteTokens?: number;
+	};
 	/** UI display name for tool card (from model's display_name field) */
 	readonly displayName?: string;
 	/** Render type for tool card (e.g. RunTerminal, CodeEditor, ListItems) */
@@ -272,6 +291,13 @@ export interface IChatSendOptions {
 
 export interface IAgentChatService {
 	readonly _serviceBrand: undefined;
+
+	/**
+	 * Fired when the agent session list for any employee changes
+	 * (session created, renamed, deleted, or updated).
+	 * The payload carries the employeeId whose sessions changed.
+	 */
+	readonly onDidChangeAgentSessions: Event<{ employeeId: string }>;
 
 	sendMessage(
 		employeeId: string,

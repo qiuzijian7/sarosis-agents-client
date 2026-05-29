@@ -38,6 +38,11 @@ export interface IBYOKProviderDefinition {
 	readonly apiKeyOptional?: boolean;
 	/** Optional: chat completions endpoint path (default: 'chat/completions'). E.g. Ollama uses 'v1/chat/completions'. */
 	readonly chatEndpointPath?: string;
+	/**
+	 * Optional: if true, this provider targets the native Anthropic Messages API (not OpenAI-compatible).
+	 * When set, cache_control will be injected into system messages to enable Prompt Caching (KV Cache).
+	 */
+	readonly isAnthropic?: boolean;
 }
 
 // ─── Built-in BYOK Model Provider ──────────────────────────────────────────
@@ -283,7 +288,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		const body: Record<string, unknown> = {
 			model: modelId,
-			messages: messages.map(m => {
+			messages: messages.map((m, idx) => {
 				const base: Record<string, unknown> = { role: m.role, content: m.content };
 				if (m.role === 'tool' && (m as any).toolCallId) {
 					base.tool_call_id = (m as any).toolCallId;
@@ -297,6 +302,20 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 							arguments: tc.arguments || '{}',
 						},
 					}));
+				}
+				// ── KV Cache: Anthropic Prompt Caching ──────────────────────────
+				// Inject cache_control on the last system message to mark everything
+				// up to (and including) that point as a cacheable prefix.
+				// This covers: base system prompt + workspace context + skills directory.
+				if (this._definition.isAnthropic && m.role === 'system') {
+					// Find the index of the last system message
+					const lastSystemIdx = messages.reduce(
+						(last, msg, i) => (msg.role === 'system' ? i : last),
+						-1,
+					);
+					if (idx === lastSystemIdx) {
+						base.cache_control = { type: 'ephemeral' };
+					}
 				}
 				return base;
 			}),
@@ -419,6 +438,37 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					try {
 						const parsed = JSON.parse(jsonPayload);
 						sseDataFound = true;
+
+						// ── KV Cache: Extract token usage ──────────────────────────────
+						// OpenAI: usage.prompt_tokens_details.cached_tokens
+						// DeepSeek: usage.prompt_tokens_details.cached_tokens
+						// Anthropic (via proxy): usage.cache_read_input_tokens
+						if (parsed.usage) {
+							const u = parsed.usage;
+							const cachedTokens =
+								u.prompt_tokens_details?.cached_tokens ??
+								u.cache_read_input_tokens ??
+								undefined;
+							const cacheWriteTokens =
+								u.cache_creation_input_tokens ?? undefined;
+							const inputTokens = u.prompt_tokens ?? u.input_tokens ?? undefined;
+							const outputTokens = u.completion_tokens ?? u.output_tokens ?? undefined;
+							if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined) {
+								yieldCount++;
+								yield {
+									type: 'usage',
+									usage: {
+										inputTokens,
+										outputTokens,
+										cachedTokens,
+										cacheWriteTokens,
+									},
+								};
+								if (cachedTokens !== undefined) {
+									this._logService.info(`[BYOK:${this.id}] KV Cache hit: cached=${cachedTokens} / input=${inputTokens ?? '?'} tokens`);
+								}
+							}
+						}
 
 						// Handle both streaming delta format and non-streaming message format
 						const delta = parsed.choices?.[0]?.delta;
@@ -565,6 +615,27 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				this._logService.info(`[BYOK:${this.id}] _streamChat: no streaming data found, trying full JSON fallback (bodyLen=${fullBodyForFallback.length})`);
 				try {
 					const parsed = JSON.parse(fullBodyForFallback);
+					// ── KV Cache: Extract usage from non-streaming response ──────────
+					if (parsed.usage) {
+						const u = parsed.usage;
+						const cachedTokens =
+							u.prompt_tokens_details?.cached_tokens ??
+							u.cache_read_input_tokens ??
+							undefined;
+						const cacheWriteTokens = u.cache_creation_input_tokens ?? undefined;
+						const inputTokens = u.prompt_tokens ?? u.input_tokens ?? undefined;
+						const outputTokens = u.completion_tokens ?? u.output_tokens ?? undefined;
+						if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined) {
+							yieldCount++;
+							yield {
+								type: 'usage',
+								usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens },
+							};
+							if (cachedTokens !== undefined) {
+								this._logService.info(`[BYOK:${this.id}] KV Cache hit (fallback): cached=${cachedTokens} / input=${inputTokens ?? '?'} tokens`);
+							}
+						}
+					}
 					const message = parsed.choices?.[0]?.message;
 					if (message) {
 						let reasoningContent = message.reasoning_content ?? message.thinking;
@@ -688,6 +759,7 @@ export const BUILTIN_BYOK_PROVIDERS: IBYOKProviderDefinition[] = [
 		defaultBaseUrl: 'https://api.anthropic.com',
 		priority: 85,
 		openAICompatible: false,
+		isAnthropic: true,
 		staticModels: [
 			{ id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling] },
 			{ id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.Vision, ModelCapability.FunctionCalling] },

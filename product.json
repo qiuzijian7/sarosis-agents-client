@@ -82,6 +82,54 @@
 				},
 				"publisherDisplayName": "Microsoft"
 			}
+		},
+		{
+			"name": "tdb-am-gateway",
+			"version": "1.0.0",
+			"sha256": "",
+			"repo": "",
+			"metadata": {
+				"id": "tdb-am-gateway",
+				"publisherId": {
+					"publisherId": "tdb-am",
+					"publisherName": "tdb-am",
+					"displayName": "TDB-AM",
+					"flags": ""
+				},
+				"publisherDisplayName": "TDB-AM"
+			}
+		},
+		{
+			"name": "tdb-am-memory",
+			"version": "1.0.0",
+			"sha256": "",
+			"repo": "",
+			"metadata": {
+				"id": "tdb-am-memory",
+				"publisherId": {
+					"publisherId": "tdb-am",
+					"publisherName": "tdb-am",
+					"displayName": "TDB-AM",
+					"flags": ""
+				},
+				"publisherDisplayName": "TDB-AM"
+			}
+		},
+		{
+			"name": "tdb-am-viewer",
+			"version": "1.0.0",
+			"sha256": "",
+			"repo": "",
+			"metadata": {
+				"id": "tdb-am-viewer",
+				"publisherId": {
+					"publisherId": "tdb-am",
+					"publisherName": "tdb-am",
+					"displayName": "TDB-AM",
+					"flags": ""
+				},
+				"publisherDisplayName": "TDB-AM"
+			}
 		}
 	],
 	"defaultChatAgent": {
@@ -237,6 +285,9 @@
 		}
 	],
 	"builtInExtensionsEnabledWithAutoUpdates": [
-		"GitHub.copilot-chat"
+		"GitHub.copilot-chat",
+		"tdb-am-gateway",
+		"tdb-am-memory",
+		"tdb-am-viewer"
 	]
 }

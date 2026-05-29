@@ -128,14 +128,26 @@ function findBalancedJsonEnd(text: string, start: number): number | null {
 
 /**
  * Strip JSON objects that classify as tool calls from text.
+ *
+ * Performance notes:
+ *  - Uses an array buffer + single .join() instead of `result += text[i]`
+ *    to avoid O(N²) string concatenation cost on long streaming buffers.
+ *  - When findBalancedJsonEnd fails (e.g. an unclosed `{` in mid-stream),
+ *    we skip the whole "unparseable region" by jumping to the next `{`
+ *    (or end of text) rather than re-scanning 8000 chars from every
+ *    subsequent index. Without this, a single unclosed `{` in a streaming
+ *    chunk causes O(textLen × MAX_JSON_CANDIDATE_CHARS) work per delta,
+ *    which combined with React re-renders can freeze the renderer.
  */
 function stripJsonToolCalls(text: string): string {
 	if (!text || !text.includes('{')) { return text; }
 
-	let result = '';
+	const parts: string[] = [];
 	let i = 0;
-	while (i < text.length) {
-		if (text[i] === '{') {
+	const len = text.length;
+	while (i < len) {
+		const ch = text[i];
+		if (ch === '{') {
 			const end = findBalancedJsonEnd(text, i);
 			if (end !== null) {
 				const candidate = text.slice(i, end);
@@ -143,22 +155,41 @@ function stripJsonToolCalls(text: string): string {
 					const parsed = JSON.parse(candidate);
 					if (classifyJsonValue(parsed)) {
 						i = end;
-						while (i < text.length && (text[i] === '\n' || text[i] === '\r' || text[i] === ' ' || text[i] === '\t')) { i++; }
+						while (i < len && (text[i] === '\n' || text[i] === '\r' || text[i] === ' ' || text[i] === '\t')) { i++; }
 						continue;
 					}
 				} catch { /* not valid JSON */ }
-				result += text[i];
-				i++;
+				// Balanced but not a tool call → keep the whole candidate as-is
+				// instead of advancing one char at a time (which would re-parse).
+				parts.push(candidate);
+				i = end;
 			} else {
-				result += text[i];
-				i++;
+				// Unbalanced/oversize JSON region. Find the NEXT '{' after this one
+				// and emit everything up to it as opaque text. This avoids re-scanning
+				// 8000 chars on every subsequent index — the dominant cost in streaming.
+				const nextBrace = text.indexOf('{', i + 1);
+				if (nextBrace === -1) {
+					parts.push(text.slice(i));
+					i = len;
+				} else {
+					parts.push(text.slice(i, nextBrace));
+					i = nextBrace;
+				}
 			}
 		} else {
-			result += text[i];
-			i++;
+			// Fast-skip: bulk-copy run of non-'{' characters
+			const nextBrace = text.indexOf('{', i);
+			if (nextBrace === -1) {
+				parts.push(text.slice(i));
+				break;
+			}
+			if (nextBrace > i) {
+				parts.push(text.slice(i, nextBrace));
+			}
+			i = nextBrace;
 		}
 	}
-	return result;
+	return parts.join('');
 }
 
 /**
@@ -266,6 +297,16 @@ function stripReasoningTags(text: string): string {
 // ════════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Strip pollution from `${undefined}` template-string coercion that may slip
+ * through despite all upstream defenses. Removes runs of the literal string
+ * "undefined" that cannot legitimately appear in user-visible text.
+ */
+function stripUndefinedLiterals(text: string): string {
+	if (!text || !text.includes('undefined')) { return text; }
+	return text.replace(/(?:undefined)+/g, '');
+}
+
+/**
  * Sanitize assistant message content for display.
  * Strips all forms of tool-call artifacts from text.
  *
@@ -287,6 +328,7 @@ export function sanitizeAssistantContent(text: string): string {
 	cleaned = stripBracketToolCallBlocks(cleaned);
 	cleaned = stripDowngradedToolCallText(cleaned);
 	cleaned = stripReasoningTags(cleaned);
+	cleaned = stripUndefinedLiterals(cleaned);
 
 	return cleaned.trim();
 }
@@ -298,21 +340,36 @@ export function sanitizeAssistantContent(text: string): string {
  * OpenClaw pattern: use the exact same processing for both streaming and final
  * content so there is zero visual difference when a stream completes.
  *
+ * Performance guard: this runs synchronously on every stream delta (via the
+ * useMemo in `StreamingMessageBubble`). For very long buffers we skip the
+ * expensive JSON-parse passes and only keep the cheap regex strips, so we
+ * don't freeze the renderer on long replies. Any residual JSON tool-call
+ * artifacts will be cleaned up once the stream completes (via
+ * `sanitizeAssistantContent` on the persisted message).
+ *
  * NOTE: Markdown normalization is intentionally NOT done here.
  * It is handled uniformly by MarkdownRenderer for both streaming and
  * completed content, ensuring rendering consistency between the two phases.
  */
+const STREAMING_FAST_PATH_LIMIT = 64 * 1024; // 64KB — beyond this, skip JSON passes during streaming
+
 export function sanitizeStreamingText(text: string): string {
 	if (!text) { return ''; }
 
 	let cleaned = text;
 	// Apply the full sanitization pipeline (same as sanitizeAssistantContent)
-	cleaned = stripJsonCodeBlocks(cleaned);
-	cleaned = stripJsonToolCalls(cleaned);
+	// for normal-sized buffers; for extremely long streaming buffers, skip the
+	// JSON-parse passes (which can be O(N²) on text with many '{' chars) and
+	// rely on the post-stream sanitizer to do the heavy cleaning.
+	if (text.length <= STREAMING_FAST_PATH_LIMIT) {
+		cleaned = stripJsonCodeBlocks(cleaned);
+		cleaned = stripJsonToolCalls(cleaned);
+	}
 	cleaned = stripXmlToolCallTags(cleaned);
 	cleaned = stripBracketToolCallBlocks(cleaned);
 	cleaned = stripDowngradedToolCallText(cleaned);
 	cleaned = stripReasoningTags(cleaned);
+	cleaned = stripUndefinedLiterals(cleaned);
 
 	return cleaned.trim();
 }

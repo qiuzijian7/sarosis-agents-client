@@ -6,8 +6,9 @@
 import { app, Details, GPUFeatureStatus, powerMonitor, protocol, session, Session, systemPreferences, WebFrameMain } from 'electron';
 import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
 import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
-import { execFile } from 'child_process';
+import { execFile, spawn, type ChildProcess } from 'child_process';
 import { hostname, release } from 'os';
+import { existsSync } from 'fs';
 import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
 import { VSBuffer } from '../../base/common/buffer.js';
 import { toErrorMessage } from '../../base/common/errorMessage.js';
@@ -1793,6 +1794,11 @@ export class CodeApplication extends Disposable {
 
 		// macOS: eagerly register the embedded app with Launch Services
 		this.registerEmbeddedAppWithLaunchServices();
+
+		// 启动 TDB-AM 内嵌网关子进程（vendor TdaiGateway 的独立 Node host）。
+		// 必须在主进程而非 renderer 启动：vendor 依赖 fs/sqlite/http server 等
+		// Node 原生模块，无法在 renderer ESM 加载。
+		this.startTdbamGateway();
 	}
 
 	private registerEmbeddedAppWithLaunchServices(): void {
@@ -1819,5 +1825,150 @@ export class CodeApplication extends Disposable {
 			}
 		});
 		child.unref();
+	}
+
+	/**
+	 * 启动 TDB-AM 内嵌网关子进程（vendor TdaiGateway）。
+	 *
+	 * 架构说明：
+	 *   - sarosis renderer 进程的 capability 扩展不能直接 import vendor TdaiGateway
+	 *     （vendor 依赖 fs/sqlite/http server 等 Node 原生模块，renderer 无法加载）。
+	 *   - 因此 vendor 由 Electron 主进程 spawn 独立的 Node 子进程承载，
+	 *     监听 127.0.0.1:8420 提供 HTTP API；renderer 端通过 fetch 访问。
+	 *   - 子进程入口 host.mjs 读取 env 变量获取配置，启动后 emit "ready" JSON 行。
+	 *
+	 * 容错：
+	 *   - host.mjs 找不到时只记录 warning，不阻塞 sarosis 启动。
+	 *   - 子进程异常退出时记录 error，不影响其他功能（chat 等仍可工作）。
+	 *   - sarosis 退出时通过 SIGTERM 触发优雅关闭。
+	 */
+	private startTdbamGateway(): void {
+		try {
+			const appRoot = this.environmentMainService.appRoot;
+
+			// 候选 host 路径（开发模式 vs 打包后）
+			const hostCandidates = [
+				// 开发模式：源码目录布局 <repo>/extensions/tdb-am-gateway/host/host.mjs
+				join(appRoot, 'extensions', 'tdb-am-gateway', 'host', 'host.mjs'),
+				// 兜底：从 appRoot 上爬一级
+				join(appRoot, '..', 'extensions', 'tdb-am-gateway', 'host', 'host.mjs'),
+				// 打包后：相对 process.resourcesPath（macOS Contents/Resources）
+				join(process.resourcesPath ?? appRoot, 'app', 'extensions', 'tdb-am-gateway', 'host', 'host.mjs'),
+			];
+
+			let hostPath: string | undefined;
+			for (const candidate of hostCandidates) {
+				if (existsSync(candidate)) {
+					hostPath = candidate;
+					break;
+				}
+			}
+
+			if (!hostPath) {
+				this.logService.warn('[tdbam-gateway] host.mjs 未找到，跳过启动。已尝试: ' + hostCandidates.join(' | '));
+				return;
+			}
+
+			// 收集子进程 env：把 vendor 期望的变量都准备好
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				TDAI_GATEWAY_PORT: process.env['TDAI_GATEWAY_PORT'] ?? '8420',
+				TDAI_GATEWAY_HOST: '127.0.0.1',
+				TDAI_LLM_BASE_URL: process.env['TDAI_LLM_BASE_URL'] ?? 'http://127.0.0.1:8421/v1',
+				TDAI_LLM_API_KEY: process.env['TDAI_LLM_API_KEY'] ?? 'sarosis-knot-bridge-token',
+				TDAI_LLM_MODEL: process.env['TDAI_LLM_MODEL'] ?? 'knot-default',
+				TDAI_EMBEDDING_PROVIDER: 'none',
+				TDAI_EMBEDDING_ENABLED: 'false',
+				TDAI_STORE_BACKEND: 'sqlite',
+				TDAI_RECALL_STRATEGY: process.env['TDAI_RECALL_STRATEGY'] ?? 'keyword',
+			};
+
+			// 用 Electron 内置 Node 跑子进程（process.execPath 指向 Electron 二进制，
+			// 但通过 ELECTRON_RUN_AS_NODE=1 让它当纯 Node 跑，避免 GUI 依赖）。
+			env['ELECTRON_RUN_AS_NODE'] = '1';
+
+			this.logService.info(`[tdbam-gateway] 启动子进程: node host=${hostPath}`);
+
+			const childProc: ChildProcess = spawn(process.execPath, [hostPath], {
+				env,
+				stdio: ['pipe', 'pipe', 'pipe'],
+				windowsHide: true,
+			});
+
+			childProc.stdout?.setEncoding('utf8');
+			childProc.stderr?.setEncoding('utf8');
+
+			let stdoutBuf = '';
+			childProc.stdout?.on('data', (chunk: string) => {
+				stdoutBuf += chunk;
+				let nl: number;
+				while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
+					const line = stdoutBuf.slice(0, nl).trim();
+					stdoutBuf = stdoutBuf.slice(nl + 1);
+					if (!line) {
+						continue;
+					}
+					try {
+						const obj = JSON.parse(line);
+						if (obj && typeof obj === 'object') {
+							const kind = obj.kind ?? 'log';
+							const msg = obj.msg ?? JSON.stringify(obj);
+							if (kind === 'error') {
+								this.logService.error(`[tdbam-gateway] ${msg}`);
+								if (obj.stack) {
+									this.logService.error(`[tdbam-gateway]   stack: ${obj.stack}`);
+								}
+							} else if (kind === 'ready') {
+								this.logService.info(`[tdbam-gateway] ✅ 网关就绪: port=${obj.port} dataDir=${obj.dataDir}`);
+							} else {
+								this.logService.info(`[tdbam-gateway] ${msg}`);
+							}
+						} else {
+							this.logService.info(`[tdbam-gateway] ${line}`);
+						}
+					} catch {
+						// 非 JSON 行原样打印
+						this.logService.info(`[tdbam-gateway] ${line}`);
+					}
+				}
+			});
+
+			childProc.stderr?.on('data', (chunk: string) => {
+				const s = String(chunk).trim();
+				if (s) {
+					this.logService.warn(`[tdbam-gateway/stderr] ${s}`);
+				}
+			});
+
+			childProc.on('exit', (code, signal) => {
+				this.logService.info(`[tdbam-gateway] 子进程退出: code=${code} signal=${signal}`);
+			});
+
+			childProc.on('error', (err) => {
+				this.logService.error(`[tdbam-gateway] spawn 错误: ${err.message}`);
+			});
+
+			// 注册 sarosis 关闭时的 cleanup：发 SIGTERM，给 host.mjs 一秒做优雅关闭后强杀。
+			this._register(this.lifecycleMainService.onWillShutdown(() => {
+				if (childProc.exitCode === null && !childProc.killed) {
+					this.logService.info('[tdbam-gateway] sarosis 关闭中，发送 SIGTERM 给网关子进程');
+					try {
+						childProc.kill('SIGTERM');
+					} catch (err) {
+						this.logService.warn(`[tdbam-gateway] kill SIGTERM 失败: ${err instanceof Error ? err.message : String(err)}`);
+					}
+					// 1 秒后兜底强杀
+					setTimeout(() => {
+						if (childProc.exitCode === null && !childProc.killed) {
+							try {
+								childProc.kill('SIGKILL');
+							} catch { /* ignore */ }
+						}
+					}, 1000);
+				}
+			}));
+		} catch (err) {
+			this.logService.error(`[tdbam-gateway] 启动逻辑异常（已忽略，不影响 sarosis 启动）: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 }
