@@ -1571,6 +1571,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							name: nameMatch[1],
 							arguments: args,
 						});
+					} else if (/^[\w_\-]+$/.test(content)) {
+						// 兜底: content 本身是纯文本工具名，如 <tool_call>terminal</tool_call>
+						this._logService.info(`[AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "${content}"`);
+						results.push({
+							id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+							name: content,
+							arguments: '{}',
+						});
 					}
 				}
 			}
@@ -1597,6 +1605,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						const tc = this._parseSingleToolCall(parsed);
 						if (tc) { results.push(tc); }
 					} catch { /* ignore */ }
+				} else if (/^[\w_\-]+$/.test(content)) {
+					// 兜底: content 本身是纯文本工具名，如 [TOOL_CALL]terminal[/TOOL_CALL]
+					this._logService.info(`[AgentOS] _extractToolCallsFromBrackets: treating content as raw tool name: "${content}"`);
+					results.push({
+						id: `bracket_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+						name: content,
+						arguments: '{}',
+					});
 				}
 			}
 		}
@@ -1702,6 +1718,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 */
 	private _parsePythonKwargs(argsStr: string): Record<string, unknown> | null {
 		if (!argsStr || argsStr.trim() === '') { return {}; }
+
+		// 如果参数字符串是 JSON 对象格式（以 '{' 开头），直接解析为 JSON
+		// 这处理了 LLM 输出 tool_name({"arg": "value"}) 格式的情况
+		const trimmed = argsStr.trim();
+		if (trimmed.startsWith('{')) {
+			try {
+				const parsed = JSON.parse(trimmed);
+				if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+					return parsed as Record<string, unknown>;
+				}
+			} catch {
+				// 不是有效 JSON，继续 Python kwargs 解析
+			}
+		}
 
 		const result: Record<string, unknown> = {};
 		let i = 0;
