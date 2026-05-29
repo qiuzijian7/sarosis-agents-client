@@ -624,11 +624,6 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					<span>任务: {taskCount}</span>
 				</div>
 
-				{/* Session Switcher Bar */}
-				<div className="chat-session-switcher-bar">
-					<AgentSessionSwitcher />
-				</div>
-
 				{/* Message List Container: wraps the scrollable list + scroll-down button */}
 				<div className="chat-messages-container">
 					<div className="chat-messages" ref={chatMessagesRef}>
