@@ -109,7 +109,7 @@ export interface IAgentStudioService {
 		workspaceId?: string,
 	): Promise<Employee>;
 
-	// ─── Worktree Integration (opencode-compatible) ─────────────────────────────
+	// --- Worktree Integration (opencode-compatible) -------------------------------------
 
 	/**
 	 * Create a workspace with worktree isolation.
@@ -147,6 +147,12 @@ export interface IAgentStudioService {
 	 * Remove the worktree associated with a workspace and clear the binding.
 	 */
 	removeWorkspaceWorktree(workspaceId: string): Promise<void>;
+
+	/**
+	 * List git worktrees for a workspace.
+	 * Returns array of { path, branch } objects.
+	 */
+	getWorktrees(workspaceId: string): Promise<Array<{ path: string; branch: string }>>;
 
 	/** Event fired when a workspace's worktree status changes */
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }>;
@@ -312,6 +318,12 @@ export interface IAgentChatService {
 
 	/** Append a message to the chat history for an employee and persist. */
 	appendMessage(employeeId: string, message: ChatMessage): Promise<void>;
+
+	/**
+	 * Delete chat messages after a given message ID (for checkpoint time-travel).
+	 * Keeps messages up to and including the target message.
+	 */
+	deleteMessagesAfter(employeeId: string, sessionId: string | undefined, messageId: string): Promise<void>;
 }
 
 // --- Agent Delegation Service ---

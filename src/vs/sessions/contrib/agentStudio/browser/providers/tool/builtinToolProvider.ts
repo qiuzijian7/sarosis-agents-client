@@ -125,7 +125,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				}
 
 				// 检查 worktree 路径（agent 已选择 worktree 时，允许访问 worktree 目录）
-				if (employee.worktreePath) {
+				if (employee?.worktreePath) {
 					allowedRoots.push(employee.worktreePath.replace(/[\\/]+$/, ''));
 				}
 			} catch (err) {

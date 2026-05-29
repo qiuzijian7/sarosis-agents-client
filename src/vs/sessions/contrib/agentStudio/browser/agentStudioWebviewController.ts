@@ -169,7 +169,6 @@ export class AgentStudioWebviewController extends Disposable {
 		this._checkpointService = new CheckpointService(
 			logService,
 			this.fileService,
-			this.modelService,
 		);
 		this._createWebview();
 		this._registerServiceListeners();
