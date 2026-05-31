@@ -11,6 +11,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
@@ -190,7 +191,6 @@ const tasksIcon = registerIcon('agent-studio-tasks', Codicon.tasklist, localize(
 const scheduleIcon = registerIcon('agent-studio-schedule', Codicon.calendar, localize('scheduleIcon', "Schedule"));
 const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('toolsIcon', "Tools"));
 const mcpIcon = registerIcon('agent-studio-mcp', Codicon.plug, localize('mcpIcon', "MCP"));
-const changesIcon = registerIcon('agent-studio-changes', Codicon.diff, localize('changesIcon', "Changes"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
 const providerIcon = registerIcon('agent-studio-provider', Codicon.plug, localize('providerIcon', "Provider"));
@@ -1380,66 +1380,45 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: McpViewPane,
 		});
 
-		// Hide native VS Code Source Control from Activity Bar
-		const nativeScm = viewContainerRegistry.getViewContainers(ViewContainerLocation.Sidebar)
-			.find(c => c.id === 'workbench.view.scm');
-		if (nativeScm) {
-			viewContainerRegistry.deregisterViewContainer(nativeScm);
+		// 8. Register Changes + Worktrees + Graph views into the native Source Control panel
+		const scmContainer = viewContainerRegistry.get('workbench.view.scm');
+		if (scmContainer) {
+			// 8a. Changes view
+			viewsRegistry.registerViews([{
+				id: AGENT_STUDIO_CHANGES_VIEW_ID,
+				name: localize2('agentStudio.changes.title', "Changes"),
+				ctorDescriptor: new SyncDescriptor(ChangesViewPane),
+				canToggleVisibility: true,
+				canMoveView: false,
+				order: 0,
+				weight: 40,
+				windowEnablement: WindowEnablement.Both,
+			}], scmContainer);
+
+			// 8b. Worktrees view
+			viewsRegistry.registerViews([{
+				id: AGENT_STUDIO_WORKTREE_VIEW_ID,
+				name: localize2('agentStudio.worktrees.title', "Worktrees"),
+				ctorDescriptor: new SyncDescriptor(WorktreeViewPane),
+				canToggleVisibility: true,
+				canMoveView: false,
+				order: 1,
+				weight: 20,
+				windowEnablement: WindowEnablement.Both,
+			}], scmContainer);
+
+			// 8c. Graph view (commit history)
+			viewsRegistry.registerViews([{
+				id: AGENT_STUDIO_GRAPH_VIEW_ID,
+				name: localize2('agentStudio.graph.title', "Graph"),
+				ctorDescriptor: new SyncDescriptor(GraphViewPane),
+				canToggleVisibility: true,
+				canMoveView: false,
+				order: 2,
+				weight: 40,
+				windowEnablement: WindowEnablement.Both,
+			}], scmContainer);
 		}
-		// Also listen for late registration and immediately deregister
-		this._register(viewContainerRegistry.onDidRegister(({ viewContainer }) => {
-			if (viewContainer.id === 'workbench.view.scm') {
-				viewContainerRegistry.deregisterViewContainer(viewContainer);
-			}
-		}));
-
-		// 8. Changes + Worktrees + Graph (order: 70) — multi-view container
-		const changesContainer = viewContainerRegistry.registerViewContainer({
-			id: 'agentStudio.changes',
-			title: localize2('agentStudio.changes.title', "Source Control"),
-			icon: changesIcon,
-			ctorDescriptor: new SyncDescriptor(ViewPaneContainer, ['agentStudio.changes', { mergeViewWithContainerWhenSingleView: false }]),
-			storageId: 'agentStudio.changes',
-			hideIfEmpty: false,
-			order: 70,
-			windowEnablement: WindowEnablement.Both,
-		}, ViewContainerLocation.Sidebar, { isDefault: true, doNotRegisterOpenCommand: true });
-
-		// 8a. Changes view
-		viewsRegistry.registerViews([{
-			id: AGENT_STUDIO_CHANGES_VIEW_ID,
-			name: localize2('agentStudio.changes.title', "Changes"),
-			ctorDescriptor: new SyncDescriptor(ChangesViewPane),
-			canToggleVisibility: true,
-			canMoveView: false,
-			order: 0,
-			weight: 40,
-			windowEnablement: WindowEnablement.Both,
-		}], changesContainer);
-
-		// 8b. Worktrees view
-		viewsRegistry.registerViews([{
-			id: AGENT_STUDIO_WORKTREE_VIEW_ID,
-			name: localize2('agentStudio.worktrees.title', "Worktrees"),
-			ctorDescriptor: new SyncDescriptor(WorktreeViewPane),
-			canToggleVisibility: true,
-			canMoveView: false,
-			order: 1,
-			weight: 20,
-			windowEnablement: WindowEnablement.Both,
-		}], changesContainer);
-
-		// 8c. Graph view (commit history)
-		viewsRegistry.registerViews([{
-			id: AGENT_STUDIO_GRAPH_VIEW_ID,
-			name: localize2('agentStudio.graph.title', "Graph"),
-			ctorDescriptor: new SyncDescriptor(GraphViewPane),
-			canToggleVisibility: true,
-			canMoveView: false,
-			order: 2,
-			weight: 40,
-			windowEnablement: WindowEnablement.Both,
-		}], changesContainer);
 
 		// 8.5 Channel (order: 75)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
@@ -1648,22 +1627,15 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const worktreeService = accessor.get(IWorktreeService);
-		const notificationService = accessor.get(INotificationService);
-		const quickInputService = accessor.get(IQuickInputService);
-		const name = await quickInputService.input({
-			placeHolder: localize('worktreeCreateNamePlaceholder', 'Worktree name (e.g. feature-auth)'),
-			prompt: localize('worktreeCreateNamePrompt', 'Enter a name for the new worktree. A branch "opencode/<name>" will be created.'),
-		});
-		if (!name?.trim()) { return; }
-		try {
-			const info = await worktreeService.makeWorktreeInfo({ name: name.trim() });
-			await worktreeService.createFromInfo(info);
-			notificationService.info(localize('worktreeCreateDone',
-				'Created worktree "{0}" at branch "{1}"', info.name, info.branch ?? '(detached)'));
-		} catch (e) {
-			notificationService.error(localize('worktreeCreateError',
-				'Failed to create worktree: {0}', (e as Error).message));
+		const viewsService = accessor.get(IViewsService);
+		// Try to get existing view first (avoids layout jump)
+		let view = viewsService.getViewWithId<WorktreeViewPane>(AGENT_STUDIO_WORKTREE_VIEW_ID);
+		if (!view) {
+			// View not yet created, open it (first time)
+			view = await viewsService.openView<WorktreeViewPane>(AGENT_STUDIO_WORKTREE_VIEW_ID);
+		}
+		if (view) {
+			await view.showCreateInput();
 		}
 	}
 });

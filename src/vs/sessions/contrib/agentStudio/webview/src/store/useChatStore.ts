@@ -6,7 +6,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
-import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, type StreamState, type StreamError } from '../bridge/streamHandler';
+import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, buildChatMessagesFromState, type StreamState, type StreamError } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
 /**
@@ -409,6 +409,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 		// Reset silently (no notify → no intermediate subscribeStream callback)
 		// so we can atomically commit messages + streamState in a single set().
 		resetStreamSilent();
+
+		// Build unified ChatMessage[] from StreamState (adapter: StreamState → ChatMessage)
+		const unifiedMessages = buildChatMessagesFromState(finalState);
+		console.log('[ChatStore] Unified ChatMessage[] built:', unifiedMessages.length, unifiedMessages);
 
 		if (textContent || thinkingContent) {
 			// KV Cache: prefer the host-assembled message's tokenUsage when available

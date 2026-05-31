@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent 内部调用 SubAgent 时序图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            padding: 20px;
+            background: #ffffff;
+            color: #1a1a1a;
+        }
+        h1 {
+            text-align: center;
+            color: #1a1a1a;
+            margin-bottom: 30px;
+        }
+        .mermaid-container {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <h1>Agent 内部调用 SubAgent 时序图</h1>
+    <div class="mermaid-container">
+        <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant TOS as TaskOrchestration<br/>Service
+    participant AC as AgentChat<br/>Service
+    participant AOS as AgentOS<br/>Service
+    participant Model as Model<br/>Provider
+    participant BTP as BuiltinTool<br/>Provider
+    participant USD as UnifiedSubAgent<br/>Dispatch
+    participant SubAOS as SubAgent<br/>AgentOS
+    participant SubModel as SubAgent<br/>Model
+
+    Note over TOS,SubModel: ═══ 场景：Workflow 中 Agent 内部调用 delegate_task ═══
+
+    TOS->>AC: sendMessage(agentId, taskPrompt)
+    activate AC
+    AC->>AOS: executeAgentTurn(request)
+    activate AOS
+
+    AOS->>AOS: _getEnabledTools(agentId)
+    Note over AOS: 工具列表包含 delegate_task
+
+    AOS->>Model: chat(modelId, messages, tools)
+    activate Model
+
+    loop Agent Loop 迭代
+        Model-->>AOS: delta: text / tool_call(name=delegate_task)
+        AOS->>AOS: 收集 tool_calls
+    end
+
+    Model-->>AOS: 响应完成
+    deactivate Model
+
+    AOS->>AOS: 发现 delegate_task tool_call
+    AOS->>BTP: executeTool(agentId, delegate_task_call)
+    activate BTP
+
+    BTP->>BTP: handler(args): agentId, task="分析这个模块"
+    BTP->>USD: dispatch(parentAgentId, task, executeFn)
+    activate USD
+
+    USD->>USD: createSubAgent(parentAgentId, task, {type:General})
+    USD->>USD: 创建 SubAgentInstance (status=pending)
+
+    USD->>SubAOS: executeFn(request, budget)
+    activate SubAOS
+
+    SubAOS->>SubAOS: executeAgentTurn(subAgentRequest)
+    Note over SubAOS: 子代理开始自己的 Agent Loop
+
+    SubAOS->>SubModel: chat(modelId, messages, tools)
+    activate SubModel
+
+    loop 子代理 Agent Loop
+        SubModel-->>SubAOS: delta: text / tool_call
+        Note over SubAOS: 子代理也可以调用工具<br/>(包括递归 delegate_task)
+    end
+
+    SubModel-->>SubAOS: 子代理响应完成
+    deactivate SubModel
+
+    SubAOS-->>USD: 子代理执行完成 (输出)
+    deactivate SubAOS
+
+    USD->>USD: status=done, result={success:true, output}
+    USD-->>BTP: 返回 SubAgentResult
+    deactivate USD
+
+    BTP-->>AOS: tool_result: 子代理执行结果
+    deactivate BTP
+
+    AOS->>Model: chat(modelId, messages+tool_result, tools)
+    activate Model
+
+    loop 父 Agent 继续 Loop
+        Model-->>AOS: delta: text / tool_call
+    end
+
+    Model-->>AOS: 父 Agent 完成 (无 tool_call)
+    deactivate Model
+
+    AOS-->>AC: 流式响应完成
+    deactivate AOS
+
+    AC-->>TOS: chatMessage (最终结果)
+    deactivate AC
+
+    Note over TOS,SubModel: ═══ 递归场景：子代理内部再调 delegate_task ═══
+    Note over SubAOS: 子代理的 Model 也可以<br/>调用 delegate_task，<br/>形成递归调用链
+        </div>
+    </div>
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            sequence: {
+                diagramMarginX: 60,
+                diagramMarginY: 20,
+                actorMargin: 80,
+                width: 180,
+                height: 65,
+                boxMargin: 15,
+                boxTextMargin: 8,
+                noteMargin: 15,
+                messageMargin: 40
+            }
+        });
+    </script>
+</body>
+</html>

@@ -34,6 +34,9 @@ import { ToolDisplayRegistry } from '../../utils/toolDisplayRegistry';
 import { openFile } from '../../bridge/fileBridge';
 import { sendRequest } from '../../bridge/messageClient';
 
+// Import ToolMessage type from unified format
+import type { ToolMessage } from '../../../common/chatTypes.js';
+
 // Import Void-inspired components
 import { ConfirmationCard, TerminalConfirmationCard } from './ConfirmationCard';
 import { ProgressCard, TerminalProgressCard } from './ProgressCard';
@@ -44,6 +47,8 @@ import { ResultCard } from './ResultCard';
  * `defaultShow`. Kept as empty set for backward compatibility.
  */
 const PHANTOM_TOOL_NAMES = new Set<string>([]);
+
+// ─── ToolCallData (legacy format, kept for internal use) ──────────────
 
 export interface ToolCallData {
 	id: string;
@@ -69,10 +74,67 @@ export interface ToolCallData {
 	exitCode?: number;
 	/** Lint/diagnostic errors after edit_file */
 	diagnostics?: Array<{ message: string; line?: number; severity: 'error' | 'warning' }>;
+	/** Whether the tool call was canceled */
+	canceled?: boolean;
 }
 
 interface ToolCallCardProps {
-	toolCall: ToolCallData;
+	toolCall: ToolMessage;
+}
+
+// ─── Adapter: ToolMessage (unified format) → ToolCallData (legacy format) ──────────
+
+/** Convert ToolMessage to ToolCallData for internal use. */
+function toolMessageToToolCallData(toolMsg: ToolMessage): ToolCallData {
+	// Extract result text from ToolResult
+	let resultText: string | undefined = undefined;
+	if (toolMsg.result) {
+		if (typeof toolMsg.result === 'string') {
+			resultText = toolMsg.result;
+		} else if (toolMsg.result.content) {
+			// ToolResult: extract text from content array
+			const texts = toolMsg.result.content
+				.filter(c => c.type === 'text' && c.text)
+				.map(c => c.text);
+			resultText = texts.join('\n') || undefined;
+		}
+	}
+
+	// Build arguments string from params
+	let argsStr = '';
+	try {
+		argsStr = JSON.stringify(toolMsg.params, null, 2);
+	} catch {
+		argsStr = '';
+	}
+
+	// Map ToolMessageStatus to legacy status string
+	const statusMap: Record<string, string> = {
+		'success': 'done',
+		'error': 'error',
+		'running': 'running',
+		'pending': 'pending',
+		'rejected': 'rejected',
+		'invalid_params': 'error',
+	};
+	const statusStr = statusMap[toolMsg.status] || 'pending';
+
+	return {
+		id: toolMsg.id,
+		name: toolMsg.name,
+		arguments: argsStr,
+		result: resultText,
+		status: statusStr,
+		duration: toolMsg.duration,
+		error: toolMsg.error,
+		defaultShow: toolMsg.defaultShow,
+		displayName: toolMsg.displayName,
+		renderType: toolMsg.renderType,
+		serverExecuted: toolMsg.serverExecuted,
+		securityLevel: toolMsg.securityLevel,
+		exitCode: toolMsg.exitCode,
+		diagnostics: toolMsg.diagnostics ? [...toolMsg.diagnostics] : undefined,
+	};
 }
 
 /** Max chars to show in result preview before truncating */
@@ -109,6 +171,33 @@ function parseKnotDocument(raw: string): KnotDocument | null {
  */
 function useToolDisplay(name: string, args: string) {
 	return useMemo(() => ToolDisplayRegistry.resolve(name, args), [name, args]);
+}
+
+// ─── ToolMessage Result to Text Helper ─────────────────────────────────
+// Convert ToolMessage.result (ToolResult | string | null) to plain text string
+
+function toolMessageResultToText(result: any /* ToolResult | string | null */): string {
+	if (!result) { return ''; }
+	
+	// Case 1: result is string (error case or plain text)
+	if (typeof result === 'string') {
+		return result;
+	}
+	
+	// Case 2: result is ToolResult object { content: ToolResultContent[] }
+	if (typeof result === 'object' && result.content && Array.isArray(result.content)) {
+		const texts = result.content
+			.filter((c: any) => c.type === 'text' && c.text)
+			.map((c: any) => c.text);
+		return texts.join('\n');
+	}
+	
+	// Case 3: unknown format, stringify
+	try {
+		return JSON.stringify(result, null, 2);
+	} catch {
+		return String(result);
+	}
 }
 
 // ─── Unified Tool Result Parser ────────────────────────────────────────────────
@@ -1081,7 +1170,10 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 
 // ─── Main ToolCallCard with renderType dispatch ──────────────────────────────
 
-function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | null {
+function ToolCallCardRaw({ toolCall: toolMsg }: ToolCallCardProps): React.ReactElement | null {
+	// Adapt ToolMessage (unified format) to ToolCallData (legacy format) for internal use
+	const toolCall = toolMessageToToolCallData(toolMsg);
+
 	// Visibility is controlled solely by defaultShow.
 	// If defaultShow is false (or undefined for backward compat where defaultShow
 	// was not sent), don't render this tool call card.
@@ -1094,7 +1186,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 	// This matches Void's logic: confirmation > progress > result > generic
 	
 	const isRunning = toolCall.status === 'running';
-	const isCompleted = toolCall.status === 'completed' && !toolCall.error && !toolCall.canceled;
+	const isCompleted = (toolCall.status === 'success' || (toolCall.status as string) === 'completed') && !toolCall.error && !toolCall.canceled;
 	const isError = toolCall.status === 'error' || !!toolCall.error;
 	const isApprovalRequired = toolCall.status === 'approval_required';
 	const isRejected = toolCall.status === 'rejected';

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workflow 执行时序图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            padding: 20px;
+            background: #ffffff;
+            color: #1a1a1a;
+        }
+        h1 {
+            text-align: center;
+            color: #1a1a1a;
+            margin-bottom: 30px;
+        }
+        .mermaid-container {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <h1>Workflow 执行时序图</h1>
+    <div class="mermaid-container">
+        <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant User as User
+    participant TOS as TaskOrchestrationService
+    participant AS as AgentStudioService
+    participant AC as AgentChatService
+    participant AOS as AgentOSService
+    participant TB as TaskBoardService
+
+    User->>TOS: executeWorkflow(agentId, message, workspaceId)
+    activate TOS
+
+    TOS->>AS: getEmployee(agentId)
+    AS-->>TOS: startAgent
+    TOS->>AS: getConnections(workspaceId)
+    AS-->>TOS: connections
+
+    TOS->>TOS: _buildDownstreamChain(agentId, subagentConns)
+    TOS->>AS: getEmployee(id) 循环
+    AS-->>TOS: agents[]
+
+    TOS->>TOS: 创建 transient OrchestrationPlan
+    TOS->>TOS: _topologicalSort(tasks)
+
+    TOS->>TB: _createTaskBoardItems(plan)
+    TB-->>TOS: 任务板项目已创建
+
+    TOS->>TOS: 标记 root tasks 为 Running
+    TOS->>TOS: _writePlans(plans)
+
+    TOS->>TOS: _executeWorkflowTask(planId, rootTask)
+    activate TOS
+
+    TOS->>AC: getOrCreateActiveSession(assigneeId)
+    AC-->>TOS: session
+
+    TOS->>AC: sendMessage(assigneeId, taskPrompt, sessionId)
+    activate AC
+
+    AC->>AOS: executeAgentTurn(request)
+    activate AOS
+
+    loop 流式响应
+        AOS-->>AC: IChatStreamDelta
+        AC-->>TOS: delta(转发到webview)
+    end
+
+    AOS-->>AC: 完成
+    deactivate AOS
+
+    AC-->>TOS: chatMessage
+    deactivate AC
+
+    TOS->>TOS: completeTask(planId, taskId, result)
+    activate TOS
+
+    TOS->>TOS: task.status = Done
+    TOS->>TOS: _unblockDependentTasks(plan, task.id)
+
+    alt 下游任务就绪
+        TOS->>TOS: 标记下游任务为 Running
+        TOS->>TOS: _executeTask(planId, promotedTask)
+        Note over TOS: 递归执行下游任务
+    end
+
+    TOS->>TB: _syncTaskBoardStatus(task)
+    TB-->>TOS: 状态已同步
+
+    TOS->>TOS: _checkPlanCompletion(plan)
+
+    TOS->>TOS: _writePlans(plans)
+    TOS->>TOS: _onDidChangePlan.fire(plan)
+    TOS->>TOS: _onDidChangeTask.fire({planId, task})
+
+    deactivate TOS
+    deactivate TOS
+
+    TOS-->>User: 返回 planId
+    deactivate TOS
+
+    Note over User,TOS: 任务执行详细流程 _executeTask
+    User->>TOS: _executeTask(planId, task) 内部调用
+    activate TOS
+
+    TOS->>TOS: _markAgentBusy(task.assigneeId)
+
+    TOS->>TOS: _needsCodeExploration(task)?
+    alt 需要代码探索
+        TOS->>TOS: _decomposeTaskForExploration(task)
+        TOS->>TOS: _executeExploreSubAgents(task.assigneeId, explorationTasks)
+        Note over TOS: 使用 UnifiedSubAgentDispatch 并行执行 explore subagents
+        TOS->>TOS: _summarizeSubAgentResults(task, results)
+    end
+
+    TOS->>AC: sendMessage(assigneeId, taskPrompt, sessionId)
+    activate AC
+    AC-->>TOS: chatMessage(流式)
+    deactivate AC
+
+    TOS->>TOS: completeTask(planId, task.id, result)
+    TOS->>TOS: _markAgentIdle(task.assigneeId)
+    TOS->>TOS: _tryAutoExecutePendingTasks()
+
+    deactivate TOS
+        </div>
+    </div>
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            sequence: {
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 65,
+                boxMargin: 10,
+                boxTextMargin: 5,
+                noteMargin: 10,
+                messageMargin: 35
+            }
+        });
+    </script>
+</body>
+</html>

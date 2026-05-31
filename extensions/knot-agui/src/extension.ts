@@ -23,6 +23,7 @@ import * as cp from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { AGUIParser, SkipSignal } from './formatAdapter/aguiAdapter';
 
 const VENDOR = 'knot';
 
@@ -63,6 +64,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 
 	/** Accumulated in-progress tool calls (keyed by toolCallId) */
 	private _pendingToolCalls = new Map<string, { name: string; argsBuffer: string }>();
+
+	/** AG-UI event parser (moved from inline logic to adapter) */
+	private _aguiParser: AGUIParser | undefined;
 
 	constructor(
 		private readonly _globalState: any, // vscode.GlobalState not available in this API version
@@ -279,6 +283,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		}
 		const body = JSON.stringify(bodyObj);
 
+		// Initialize AG-UI event parser (moved from inline logic to adapter)
+		this._aguiParser = new AGUIParser();
+
 		console.log(
 			`[Knot] -> ${url}  agent=${agentId}  model=${selectedModel ?? '<default>'}  msg_len=${userMessage.length}`,
 		);
@@ -358,27 +365,17 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 						continue;
 					}
 
-					try {
-						const event = JSON.parse(rawData);
-						// allow-any-unicode-next-line
-						// 在调用 _translateEvent 之前，先处理工具调用相关事件
-						// AG-UI 协议的工具调用分为三步：START → ARGS → END
-						// 需要跨事件累积参数，在 END 时才发射完整的 LanguageModelToolCallPart
-						const eventType = String(event.type ?? event.event_type ?? '').toUpperCase().replace(/-/g, '_');
-
-						if (this._handleToolCallEvent(eventType, event, progress)) {
-							// allow-any-unicode-next-line
-							// 工具调用事件已处理，跳过 _translateEvent
-						} else if (this._isLifecycleOrHeartbeat(eventType)) {
-							// allow-any-unicode-next-line
-							// 生命周期/心跳事件，静默忽略
-						} else {
-							const delta = this._translateEvent(event);
-							if (delta) {
-								progress.report(delta);
-							}
-						}
-					} catch {
+				try {
+					const event = JSON.parse(rawData);
+					// allow-any-unicode-next-line
+					// Use AG-UI event parser (moved from inline logic to adapter)
+					const parseResult = this._aguiParser!.parseEvent(event);
+					if (parseResult instanceof SkipSignal) {
+						// handled, skip
+					} else if (parseResult) {
+						progress.report(parseResult);
+					}
+				} catch {
 						// allow-any-unicode-next-line
 						// 非 JSON keep-alive — 忽略
 					}

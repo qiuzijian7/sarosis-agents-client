@@ -1,0 +1,1 @@
+New-Item -ItemType Junction -Path "G:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\codebuddy-provider\node_modules\@sarosis\shared" -Target "G:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\shared" -Force

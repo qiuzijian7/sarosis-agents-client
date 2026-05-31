@@ -97,4 +97,11 @@ export interface IWorktreeService {
 	 * Get the default branch name for the repository (e.g. "main", "master").
 	 */
 	getDefaultBranch(repoPath: string): Promise<string>;
+
+	/**
+	 * List local git branches that are NOT currently checked out by any worktree.
+	 * Used for the "create worktree" flow to avoid branch conflicts.
+	 * @param repoPath Absolute path to the git repository root
+	 */
+	listGitBranches(repoPath: string): Promise<string[]>;
 }

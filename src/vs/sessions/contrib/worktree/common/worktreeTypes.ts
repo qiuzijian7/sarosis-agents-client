@@ -105,6 +105,10 @@ export const enum WorktreeContextKeys {
 export interface IWorktreeInfoOptions {
 	/** Display name for the worktree (will be slugified for branch name). Auto-generated if omitted. */
 	name?: string;
+	/** Branch name. If provided and branch exists, checkout existing branch.
+	 * If provided and branch does not exist, create new branch.
+	 * If omitted, branch defaults to "worktree/<slug>" (unless detached=true). */
+	branch?: string;
 	/** If true, create a detached HEAD worktree without a branch. */
 	detached?: boolean;
 }

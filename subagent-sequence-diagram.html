@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SubAgent 执行时序图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            padding: 20px;
+            background: #ffffff;
+            color: #1a1a1a;
+        }
+        h1 {
+            text-align: center;
+            color: #1a1a1a;
+            margin-bottom: 30px;
+        }
+        .mermaid-container {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <h1>SubAgent 执行时序图</h1>
+    <div class="mermaid-container">
+        <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant User as User
+    participant USD as UnifiedSubAgentDispatch
+    participant EF as ExecuteFn(AgentOS)
+    participant Budget as IterationBudget
+
+    User->>USD: createSubAgent(parentAgentId, task, options)
+    activate USD
+    USD->>USD: 创建 SubAgentInstance
+    USD-->>User: 返回 subAgentId
+    deactivate USD
+
+    User->>USD: executeSubAgent(subAgentId, executeFn)
+    activate USD
+    USD->>USD: 检查状态(pending)
+    USD->>USD: _buildMessages(subAgent)
+    USD->>USD: _buildSystemPrompt(subAgent)
+
+    USD->>EF: executeFn(request, budget)
+    activate EF
+
+    EF->>EF: agentOSService.executeAgentTurn()
+
+    loop 流式响应
+        EF-->>USD: IChatStreamDelta(text/tool_end/done/error)
+        USD->>USD: 累积 output
+        alt delta.type == tool_end
+            USD->>Budget: consume(1)
+            Budget-->>USD: hasRemaining()
+            alt 预算耗尽
+                USD->>USD: break 停止执行
+            end
+        end
+    end
+
+    EF-->>USD: 执行完成或超时
+    deactivate EF
+
+    alt 执行成功
+        USD->>USD: status=done, result={success:true, output}
+    else 执行失败
+        USD->>USD: status=error, result={success:false, error}
+    end
+
+    USD-->>User: 返回 SubAgentResult
+    deactivate USD
+
+    Note over User,USD: 并行执行多个 SubAgent
+    User->>USD: executeMultipleSubAgents(subAgentIds, executeFn)
+    activate USD
+    USD->>USD: 分批执行(尊重maxConcurrent)
+
+    loop 每批最多 maxConcurrent 个
+        par subAgent1 执行
+            USD->>EF: executeSubAgent(id1, executeFn)
+            EF-->>USD: SubAgentResult
+        and subAgent2 执行
+            USD->>EF: executeSubAgent(id2, executeFn)
+            EF-->>USD: SubAgentResult
+        and subAgentN 执行
+            USD->>EF: executeSubAgent(idN, executeFn)
+            EF-->>USD: SubAgentResult
+        end
+    end
+
+    USD-->>User: 返回 Map(subAgentId, SubAgentResult)
+    deactivate USD
+        </div>
+    </div>
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            sequence: {
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 65,
+                boxMargin: 10,
+                boxTextMargin: 5,
+                noteMargin: 10,
+                messageMargin: 35
+            }
+        });
+    </script>
+</body>
+</html>

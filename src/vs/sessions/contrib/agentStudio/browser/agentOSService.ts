@@ -48,9 +48,9 @@ import {
 } from './toolExecutionGuard.js';
 import {
 	SurroundingsRemover,
-	endsWithAnyPrefixOf,
-	trimBeforeAndAfterNewLines,
 } from '../common/toolExtractionUtils.js';
+
+import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
 
 // ─── Agent OS Service Implementation ────────────────────────────────────
 
@@ -69,6 +69,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	/** Agent Loop 级别的 AbortController — 用于取消整个循环 */
 	private _loopAbortController: AbortController | undefined;
+
+	/** 用于构建统一 ChatMessage 格式的流适配器（AG-UI → ChatMessage） */
+	private _chatMessageStream: AGUIChatMessageBuilder | undefined;
 
 	// Events
 	private readonly _onDidChangeModelProviders = this._register(new Emitter<void>());
@@ -593,6 +596,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			//   4. Any execution exception that bypasses results.push()
 			// We track started IDs and emit a synthetic tool_end with success=false
 			// for any ID that did not get a real tool_end before the iteration ends.
+			this._chatMessageStream = new AGUIChatMessageBuilder();
 			const startedToolIds = new Set<string>();
 			const endedToolIds = new Set<string>();
 
@@ -628,6 +632,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 
 					// 将 delta 适配并 yield 给调用者
+					// 同时更新统一 ChatMessage 格式（AG-UI → ChatMessage）
+					if (this._chatMessageStream) {
+						this._chatMessageStream.handlePart(delta as any);
+					}
 					const adapted = this._adaptModelDelta(delta);
 					if (adapted) {
 						// Track tool_start IDs for end-of-iteration reconciliation
@@ -647,7 +655,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// the model call failed — webview must not be left with spinners.
 				for (const orphanId of startedToolIds) {
 					if (!endedToolIds.has(orphanId)) {
-						this._logService.warn(`[AgentOS] Orphaned tool_start after model error: ${orphanId} — emitting synthetic tool_end`);
+						this._logService.warn(`[AgentOS] Orphaned tool_start after model error: ${orphanId} — emitting synthetic tool_result + tool_end`);
+						const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Model call failed before tool could execute' })));
+						yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
 						yield { type: 'tool_end', toolCallId: orphanId, success: false };
 						endedToolIds.add(orphanId);
 					}
@@ -758,7 +768,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// that were filtered out had a tool_start but no execution path).
 				for (const orphanId of startedToolIds) {
 					if (!endedToolIds.has(orphanId)) {
-						this._logService.warn(`[AgentOS] Orphaned tool_start at end-of-conversation: ${orphanId} — emitting synthetic tool_end`);
+						this._logService.warn(`[AgentOS] Orphaned tool_start at end-of-conversation: ${orphanId} — emitting synthetic tool_result + tool_end`);
+						const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (conversation ended before execution)' })));
+						yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
 						yield { type: 'tool_end', toolCallId: orphanId, success: false };
 						endedToolIds.add(orphanId);
 					}
@@ -864,7 +876,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// forever. We emit success=false so users can see they did not run.
 			for (const orphanId of startedToolIds) {
 				if (!endedToolIds.has(orphanId)) {
-					this._logService.warn(`[AgentOS] Orphaned tool_start without tool_end: ${orphanId} — emitting synthetic tool_end (success=false)`);
+					this._logService.warn(`[AgentOS] Orphaned tool_start without tool_end: ${orphanId} — emitting synthetic tool_result + tool_end (success=false)`);
+					const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (may have been filtered, deduplicated, or no provider found)' })));
+					yield {
+						type: 'tool_result',
+						content: orphanResultStr,
+						toolCallId: orphanId,
+					};
 					yield {
 						type: 'tool_end',
 						toolCallId: orphanId,

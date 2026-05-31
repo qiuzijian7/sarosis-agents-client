@@ -29,6 +29,7 @@ import { AgentSessionSwitcher } from './AgentSessionSwitcher';
 import { WorktreeSwitcher } from './WorktreeSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import type { StreamError } from '../../bridge/streamHandler';
+import { ChatHistoryPage } from './ChatHistoryPage';
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -177,6 +178,8 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	const isAtBottomRef = useRef(true);
 	/** Whether scroll-to-bottom button should be visible (React state so re-renders don't reset it). */
 	const [showScrollBtn, setShowScrollBtn] = useState(false);
+	// History page visibility
+	const [showHistory, setShowHistory] = useState(false);
 	// Track previous employee to detect employee switches (used by useLayoutEffect below)
 	const prevEmployeeIdRef = useRef<string | null>(activeEmployeeId);
 	// Pending plan info: when /plan is sent, we store goal/planId here until the plan
@@ -579,6 +582,17 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					</div>
 					<div className="chat-header-actions">
 						<WorktreeSwitcher />
+						<button className="chat-header-btn" title="创建会话" onClick={() => { useChatStore.getState().clearMessages(); }}>
+							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16M4 12h16" />
+							</svg>
+						</button>
+						<button className="chat-header-btn" title="聊天历史" onClick={() => setShowHistory(true)}>
+							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<circle cx="12" cy="12" r="10" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+								<polyline points="12 6 12 12 16 14" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+							</svg>
+						</button>
 						<button className="chat-header-btn" title="设置" onClick={() => onOpenEditorPane?.(activeEmployee?.id || '')}>
 							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -667,6 +681,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				onCommand={handleCommand}
 			/>
 		</div>
+		{showHistory && <ChatHistoryPage onClose={() => setShowHistory(false)} />}
 	</div>
 	</>
 	);

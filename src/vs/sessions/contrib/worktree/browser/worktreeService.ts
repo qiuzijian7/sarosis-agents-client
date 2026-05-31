@@ -150,8 +150,8 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			name = generateSlug();
 		}
 
-		// Branch naming: opencode/<slug>
-		const branch = options?.detached ? undefined : `opencode/${name}`;
+		// Branch naming: use options.branch if provided, otherwise default to "worktree/<slug>"
+		const branch = options?.detached ? undefined : (options?.branch || `worktree/${name}`);
 
 		// Directory: <repoRoot>/.worktrees/<name>
 		// Use a sibling directory pattern like opencode: repo/../.worktrees/projectName/name
@@ -176,7 +176,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 					const suffix = String.fromCharCode(97 + attempts); // a, b, c, ...
 					finalName = `${name}-${suffix}`;
 					finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
-					finalBranch = options?.detached ? undefined : `opencode/${finalName}`;
+					finalBranch = options?.detached ? undefined : (options?.branch || `worktree/${finalName}`);
 					attempts++;
 					continue;
 				}
@@ -196,7 +196,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 					const suffix = String.fromCharCode(97 + Math.min(attempts, 25));
 					finalName = `${name}-${suffix}`;
 					finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
-					finalBranch = `opencode/${finalName}`;
+					finalBranch = options?.branch || `worktree/${finalName}`;
 				}
 			} catch {
 				// show-ref failed — branch doesn't exist, which is what we want
@@ -536,5 +536,34 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			mainFolder,
 			branch: item.branch,
 		};
+	}
+
+	async listGitBranches(repoPath: string): Promise<string[]> {
+		try {
+			// 1. List all local branches
+			const branchOutput = await this.execGit(repoPath, ['branch', '--format=%(refname:short)']);
+			const allBranches = branchOutput
+				.split('\n')
+				.map(b => b.trim())
+				.filter(b => b.length > 0);
+
+			// 2. Get branches already checked out in worktrees (cannot be reused)
+			const worktreeOutput = await this.execGit(repoPath, ['worktree', 'list', '--porcelain']);
+			const usedBranches = new Set<string>();
+			for (const line of worktreeOutput.split('\n')) {
+				if (line.startsWith('branch ')) {
+					const branchRef = line.slice(7).trim();
+					const branchName = branchRef.replace(/^refs\/heads\//, '');
+					usedBranches.add(branchName);
+				}
+			}
+
+			// 3. Exclude branches already in use by a worktree
+			const result = allBranches.filter(b => !usedBranches.has(b));
+			return result;
+		} catch (e) {
+			this.logService.warn('[WorktreeService] Failed to list branches:', e);
+			return [];
+		}
 	}
 }

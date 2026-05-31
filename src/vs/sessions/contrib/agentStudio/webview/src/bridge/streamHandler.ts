@@ -5,6 +5,8 @@
  *  and provides a React-friendly interface for streaming text updates.
  *--------------------------------------------------------------------------------------------*/
 
+import type { ChatMessage, AssistantMessage, ToolMessage, ToolMessageStatus, ThinkingBlock, ToolResult } from '../../../../common/chatTypes.js';
+
 export interface StreamChunk {
 	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end';
 	content?: string;
@@ -70,6 +72,8 @@ export interface StreamState {
 	textBuffer: string;
 	thinkingBuffer: string;
 	toolCalls: ToolCallState[];
+	/** Unified ChatMessage format (Void-inspired, for adapter compatibility) */
+	chatMessages: ChatMessage[];
 	/** Sub-agent invocations accumulated during the stream (parallel execution display) */
 	subAgents: SubAgentState[];
 	/** @deprecated Use `error` instead for structured error info */
@@ -153,6 +157,7 @@ function createInitialState(): StreamState {
 		textBuffer: '',
 		thinkingBuffer: '',
 		toolCalls: [],
+		chatMessages: [],
 		subAgents: [],
 		errorMessage: null,
 		error: null,
@@ -751,4 +756,115 @@ export function switchActiveStream(employeeId: string | null, sessionId: string 
 		toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),
 		subAgents: (currentState.subAgents || []).map(sa => ({ ...sa })),
 	};
+}
+
+/*---------------------------------------------------------------------------------------------
+ *  Build ChatMessage[] from a complete StreamState (after streaming is done).
+ *  This is the adapter that converts StreamState → unified ChatMessage format.
+ *--------------------------------------------------------------------------------------------*/
+
+// Map StreamState tool status to ToolMessageStatus.
+function mapToolStatus(status: string): ToolMessageStatus {
+	switch (status) {
+		case 'running': return 'running';
+		case 'done': return 'success';
+		case 'error': return 'error';
+		case 'pending': return 'pending';
+		case 'rejected': return 'rejected';
+		case 'approval_required': return 'pending';
+		case 'cancelled': return 'rejected';
+		default: return 'pending';
+	}
+}
+
+export function buildChatMessagesFromState(state: StreamState): ChatMessage[] {
+	const messages: ChatMessage[] = [];
+
+	// Build assistant message from textBuffer + thinkingBuffer  
+	if (state.textBuffer || state.thinkingBuffer) {
+		const thinkingBlocks: ThinkingBlock[] = state.thinkingBuffer
+			? [{ type: 'thinking', thinking: state.thinkingBuffer, signature: undefined }]
+			: [];
+		const assistantMsg: AssistantMessage = {
+			role: 'assistant',
+			content: state.textBuffer || '',
+			reasoning: '',
+			thinking: thinkingBlocks,
+			timestamp: Date.now(),
+		};
+		messages.push(assistantMsg);
+	}
+
+	// Build tool messages from toolCalls[]
+	for (const tc of state.toolCalls) {
+		const toolStatus = mapToolStatus(tc.status);
+		
+		// Build ToolResult if available
+		let toolResult: ToolResult | null = null;
+		if (tc.result && toolStatus === 'success') {
+			toolResult = {
+				content: [{ type: 'text', text: tc.result }],
+				metadata: undefined,
+			};
+		}
+
+		// Build params from tool call (parse arguments JSON)
+		let params: Record<string, unknown> = {};
+		let rawParams: Record<string, string | undefined> = {};
+		try {
+			params = JSON.parse(tc.arguments || '{}');
+			rawParams = { [tc.name]: tc.arguments };
+		} catch {
+			// If can't parse, use empty object
+		}
+
+		// Build ToolMessage based on status
+		const baseToolMsg = {
+			role: 'tool' as const,
+			id: tc.id,
+			name: tc.name,
+			params: params as Readonly<Record<string, unknown>>,
+			rawParams: rawParams as Readonly<Record<string, string | undefined>>,
+			timestamp: Date.now(),
+		};
+
+		let toolMsg: ToolMessage;
+
+		if (toolStatus === 'success') {
+			toolMsg = {
+				...baseToolMsg,
+				status: 'success' as const,
+				result: toolResult || { content: [], metadata: undefined },
+			} as ToolMessage;
+		} else if (toolStatus === 'error') {
+			toolMsg = {
+				...baseToolMsg,
+				status: 'error' as const,
+				result: tc.error || 'Unknown error',
+			} as ToolMessage;
+		} else if (toolStatus === 'running') {
+			toolMsg = {
+				...baseToolMsg,
+				status: 'running' as const,
+				result: null,
+			} as ToolMessage;
+		} else if (toolStatus === 'rejected') {
+			toolMsg = {
+				...baseToolMsg,
+				status: 'rejected' as const,
+				result: null,
+			} as ToolMessage;
+		} else {
+			// pending or invalid_params
+			toolMsg = {
+				...baseToolMsg,
+				status: 'pending' as const,
+				result: null,
+			} as ToolMessage;
+		}
+
+		messages.push(toolMsg);
+	}
+
+	return messages;
 }

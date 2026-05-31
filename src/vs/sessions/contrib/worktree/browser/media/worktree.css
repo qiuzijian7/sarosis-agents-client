@@ -116,3 +116,120 @@
 	margin-left: 6px;
 	padding: 0 4px;
 }
+
+/* Create worktree form */
+.worktree-create-container {
+	padding: 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+}
+
+.worktree-create-row {
+	display: flex;
+	align-items: center;
+	margin-bottom: 6px;
+	gap: 6px;
+}
+
+.worktree-create-label {
+	flex-shrink: 0;
+	font-size: 13px;
+	color: var(--vscode-foreground, #cccccc);
+	min-width: 50px;
+}
+
+.worktree-create-input {
+	flex: 1;
+	padding: 4px 8px;
+	font-size: 13px;
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	background-color: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #cccccc);
+	outline: none;
+	border-radius: 3px;
+	min-width: 0;
+}
+
+.worktree-create-input:focus {
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.worktree-create-select {
+	flex: 1;
+	padding: 4px 8px;
+	font-size: 13px;
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	background-color: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #cccccc);
+	outline: none;
+	border-radius: 3px;
+	min-width: 0;
+}
+
+.worktree-create-btn {
+	padding: 4px 12px;
+	font-size: 13px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background-color: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+	cursor: pointer;
+	border-radius: 3px;
+	white-space: nowrap;
+}
+
+.worktree-create-btn:hover {
+	background-color: var(--vscode-button-hoverBackground, #1c6ce0);
+}
+
+.worktree-create-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* Worktree item actions */
+.worktree-item-actions {
+	flex-shrink: 0;
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.worktree-item-action {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	font-size: 14px;
+	font-weight: bold;
+	line-height: 1;
+	cursor: pointer;
+	border-radius: 3px;
+	color: var(--vscode-icon-foreground, #cccccc);
+	text-decoration: none;
+}
+
+.worktree-item-action:hover {
+	background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+
+/* Deleting spinner animation */
+.worktree-item-spinner {
+	width: 16px;
+	height: 16px;
+	border: 2px solid var(--vscode-foreground, #cccccc);
+	border-top-color: transparent;
+	border-radius: 50%;
+	animation: worktree-spin 0.8s linear infinite;
+}
+
+@keyframes worktree-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* Dim the item while deleting */
+.worktree-item.is-deleting {
+	opacity: 0.6;
+}
