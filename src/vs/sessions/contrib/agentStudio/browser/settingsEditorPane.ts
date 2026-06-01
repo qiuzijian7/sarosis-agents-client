@@ -20,6 +20,7 @@ import * as DOM from '../../../../base/browser/dom.js';
 import { IWorkbenchThemeService, IWorkbenchColorTheme } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { renderProviderSettings } from './providerSettingsRenderer.js';
 import {
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
@@ -184,12 +185,23 @@ interface TocEntry {
 	label: string;
 	icon: string;
 	sections: SettingSection[];
+	/** Custom content renderer — when provided, overrides default _renderCollapsibleSections */
+	renderContent?: (container: HTMLElement, parent: SettingsEditorPane) => void;
 }
 
 const TOC_ENTRIES: TocEntry[] = [
 	{ id: 'preferences', label: '通用设置', icon: '⚙️', sections: PREFERENCES_SECTIONS },
 	{ id: 'auxiliary', label: '辅助模型', icon: '🧠', sections: AUX_SECTIONS },
 	{ id: 'cli', label: 'CLI 设置', icon: '💻', sections: [CLI_SECTION, DATA_SECTION] },
+	{
+		id: 'provider',
+		label: 'Provider',
+		icon: '🔌',
+		sections: [],
+		renderContent: (container: HTMLElement, parent: SettingsEditorPane) => {
+			renderProviderSettings(container, parent.configurationService);
+		},
+	},
 ];
 
 // ─── Settings Editor Pane (VSCode-native layout) ──────────────────────────────────────────
@@ -216,7 +228,7 @@ export class SettingsEditorPane extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IConfigurationService readonly configurationService: IConfigurationService,
 		@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
 	) {
 		super(SettingsEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -353,8 +365,13 @@ export class SettingsEditorPane extends EditorPane {
 		const entry = TOC_ENTRIES.find(e => e.id === this._activeTocId);
 		if (!entry) { return; }
 
-		// Render sections for this TOC entry
-		this._renderCollapsibleSections(entry.sections);
+		// Use custom renderer if provided, otherwise fall back to collapsible sections
+		if (entry.renderContent) {
+			entry.renderContent(this._contentContainer, this);
+		} else {
+			// Render sections for this TOC entry
+			this._renderCollapsibleSections(entry.sections);
+		}
 
 		// Status message
 		if (this._statusMessage) {

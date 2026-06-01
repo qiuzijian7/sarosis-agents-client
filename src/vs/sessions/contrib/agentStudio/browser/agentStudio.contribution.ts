@@ -20,7 +20,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, registerAction2, MenuRegistry, MenuId } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
@@ -72,7 +72,6 @@ import {
 	AGENT_STUDIO_TOOLS_VIEW_ID,
 	AGENT_STUDIO_MCP_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
-	AGENT_STUDIO_PROVIDER_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
@@ -140,7 +139,6 @@ import { ToolsViewPane } from './views/toolsView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
-import { ProviderViewPane } from './views/providerView.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
 import { McpViewPane } from './views/mcpView.js';
 import { EvolutionViewPane } from './views/evolutionView.js';
@@ -154,9 +152,6 @@ import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { SESSIONS_SCM_WORKTREE_VIEW_ID } from '../../sourceControl/browser/sourceControl.contribution.js';
 import { WorktreeItem } from '../../worktree/browser/worktreeDataProvider.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
-import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -188,7 +183,6 @@ const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('to
 const mcpIcon = registerIcon('agent-studio-mcp', Codicon.plug, localize('mcpIcon', "MCP"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
-const providerIcon = registerIcon('agent-studio-provider', Codicon.plug, localize('providerIcon', "Provider"));
 const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
 const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
 
@@ -1405,17 +1399,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: PluginsViewPane,
 		});
 
-		// 11. Provider (order: 95)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.provider',
-			title: localize2('agentStudio.provider.title', "Provider"),
-			icon: providerIcon,
-			viewId: AGENT_STUDIO_PROVIDER_VIEW_ID,
-			order: 95,
-			viewCtor: ProviderViewPane,
-		});
-
-		// 10.5 Health Monitor (order: 85)
+		// 11. Health Monitor (order: 85)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.healthMonitor',
 			title: localize2('agentStudio.healthMonitor.title', "Health Monitor"),
@@ -1650,95 +1634,54 @@ registerAction2(class extends Action2 {
 	}
 });
 
-// ─── Workspace Folder Sync ──────────────────────────────────────────────────
-// When the user switches the active workspace in the AgentStudio toolbar,
-// update the VS Code workspace folders so that the Git extension discovers
-// the new repository and the SCM views refresh automatically.
+// ─── Add Related Folder (link a code repository to the active workspace) ─────
+const ADD_RELATED_FOLDER_COMMAND_ID = 'agentStudio.workspace.addRelatedFolder';
 
-class AgentStudioWorkspaceSyncContribution extends Disposable implements IWorkbenchContribution {
-	static readonly ID = 'agentStudio.workspaceSync';
-
-	private _activeWorkspaceId: string | undefined;
-	private readonly _domEventHandler: (e: Event) => void;
-
-	constructor(
-		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
-		@IWorkspaceEditingService private readonly workspaceEditingService: IWorkspaceEditingService,
-		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
-	) {
-		super();
-
-		this._domEventHandler = (e: Event) => {
-			const detail = (e as CustomEvent).detail;
-			if (detail?.workspaceId) {
-				this._activeWorkspaceId = detail.workspaceId;
-				this._syncWorkspaceFolder(detail.workspaceId);
-			}
-		};
-		document.addEventListener('agent-studio:active-workspace-changed', this._domEventHandler);
-		this._register({
-			dispose: () => document.removeEventListener('agent-studio:active-workspace-changed', this._domEventHandler),
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: ADD_RELATED_FOLDER_COMMAND_ID,
+			title: localize2('agentStudio.addRelatedFolder', "添加关联仓库"),
+			icon: Codicon.add,
 		});
-
-		// Only sync if the mutation affects the active workspace
-		this._register(this.agentStudioService.onDidChangeWorkspace((workspaceId: string) => {
-			if (workspaceId === this._activeWorkspaceId) {
-				this._syncWorkspaceFolder(workspaceId);
-			}
-		}));
-
-		// Initial sync
-		this._initialSync();
 	}
-
-	private async _initialSync(): Promise<void> {
-		try {
-			const workspaces = await this.agentStudioService.getWorkspaces();
-			if (workspaces.length > 0) {
-				this._activeWorkspaceId = workspaces[0].id;
-				await this._syncWorkspaceFolder(workspaces[0].id);
-			}
-		} catch {
-			// Ignore
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const viewsService = accessor.get(IViewsService);
+		let view = viewsService.getViewWithId<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
+		if (!view) {
+			view = await viewsService.openView<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
+		}
+		if (view) {
+			await view.showAddRelatedFolder();
 		}
 	}
+});
 
-	private async _syncWorkspaceFolder(workspaceId: string): Promise<void> {
-		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
-		if (!workspace) { return; }
+// Surface the command as an icon button in the Workspace view's title bar.
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: {
+		id: ADD_RELATED_FOLDER_COMMAND_ID,
+		title: localize2('agentStudio.addRelatedFolder', "添加关联仓库"),
+		icon: Codicon.add,
+	},
+	when: ContextKeyExpr.equals('view', AGENT_STUDIO_WORKSPACE_VIEW_ID),
+	group: 'navigation',
+	order: 1,
+});
 
-		let folderPath: string | undefined;
-		if (workspace.worktreePath) {
-			folderPath = workspace.worktreePath;
-		} else if (workspace.path) {
-			folderPath = workspace.path;
-		}
-		if (!folderPath) { return; }
-
-		const folderUri = URI.file(folderPath);
-		const currentFolders = this.workspaceContextService.getWorkspace().folders;
-
-		if (currentFolders.length > 0 && this.uriIdentityService.extUri.isEqual(currentFolders[0].uri, folderUri)) {
-			return;
-		}
-
-		const folderName = workspace.name || this.uriIdentityService.extUri.basenameOrAuthority(folderUri);
-		const folderData = { uri: folderUri, name: folderName };
-
-		try {
-			if (currentFolders.length === 0) {
-				await this.workspaceEditingService.addFolders([folderData], true);
-			} else {
-				await this.workspaceEditingService.updateFolders(0, currentFolders.length, [folderData], true);
-			}
-		} catch (err) {
-			console.warn('[AgentStudioWorkspaceSync] Failed to sync workspace folder:', err);
-		}
-	}
-}
-
-registerWorkbenchContribution2(AgentStudioWorkspaceSyncContribution.ID, AgentStudioWorkspaceSyncContribution, WorkbenchPhase.BlockStartup);
+// ─── Workspace Folder Sync ──────────────────────────────────────────────────
+// NOTE: VS Code workspace-folder synchronization for the active AgentStudio
+// workspace is now owned exclusively by `SourceControlWorkspaceSyncContribution`
+// (see sessions/contrib/sourceControl/browser/sourceControl.contribution.ts).
+//
+// That contribution performs *multi-root* synchronization — it writes the
+// active workspace's home directory PLUS every related folder (and worktree)
+// into the VS Code workspace folders, so the Git extension discovers all linked
+// repositories and the SCM view shows their status.
+//
+// The previous single-folder `AgentStudioWorkspaceSyncContribution` was removed
+// to avoid a double-write race: it overwrote the SCM contribution's multi-root
+// folder set with just the primary directory, dropping related repositories.
 
 // --- Settings Icon → EditorPane Redirect ----------------------------------------
 // When the Settings sidebar icon is clicked, the sidebar ViewContainer is activated

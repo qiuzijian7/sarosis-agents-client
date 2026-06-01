@@ -35,7 +35,7 @@ import {
 
 // ─── Provider Definitions ────────────────────────────────────────────────────
 
-interface ProviderDefinition {
+export interface ProviderDefinition {
 	id: string;
 	name: string;
 	icon: string;
@@ -47,7 +47,7 @@ interface ProviderDefinition {
 	isBuiltin: boolean;
 }
 
-const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
+export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
 	{
 		id: 'openrouter',
 		name: 'OpenRouter',
@@ -129,7 +129,7 @@ const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
 
 const AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING = 'sessions.agentStudio.provider.customProviders';
 
-interface CustomProviderData {
+export interface CustomProviderData {
 	id: string;
 	name: string;
 	apiKey: string;
