@@ -36,6 +36,74 @@ export interface IModelInfo {
 	readonly vendor?: string;           // 供应商
 	readonly credits?: string;          // Credits 信息
 	readonly pricing?: IModelPricing;
+
+	/**
+	 * 声明式能力配置 — 参考 Void 的 VoidStaticModelInfo。
+	 * 优先级高于上方布尔字段（supportsToolCall / supportsReasoning 等）。
+	 * 新增模型时只需添加配置对象，无需修改代码逻辑。
+	 */
+	readonly capabilityConfig?: IModelCapabilityConfig;
+}
+
+// ─── Declarative Capability Config (Void-inspired) ──────────────────────────
+
+/**
+ * 声明式模型能力配置。
+ *
+ * 参考 Void 项目的 VoidStaticModelInfo，将模型的行为差异通过配置声明，
+ * 而非在代码中 if/else 判断。新增模型时只需添加配置对象即可。
+ *
+ * 使用方式：
+ * 1. 优先读取 capabilityConfig 中的声明式配置
+ * 2. 若未配置，回退到 IModelInfo 上的布尔字段（supportsToolCall 等）
+ * 3. 若仍无信息，通过 _inferCapabilities() 从模型 ID/描述推断
+ */
+export interface IModelCapabilityConfig {
+	// ─── 系统消息处理 ──────────────────────────────────────────
+	/**
+	 * 系统消息如何处理。不同提供商 API 对系统消息的支持方式不同：
+	 * - false:           不支持，将系统消息嵌入到用户消息中
+	 * - 'system-role':   使用 role: 'system'（OpenAI 标准）
+	 * - 'developer-role': 使用 role: 'developer'（OpenAI o-series）
+	 * - 'separated':      作为单独参数传递（Anthropic system, Gemini systemInstruction）
+	 */
+	readonly supportsSystemMessage: false | 'system-role' | 'developer-role' | 'separated';
+
+	// ─── 工具调用格式 ──────────────────────────────────────────
+	/**
+	 * 工具调用的格式。不同提供商 API 使用不同的工具调用编码：
+	 * - undefined:       不支持原生工具调用，使用文本提取兜底（XML/JSON/ReAct 等）
+	 * - 'openai-style':  OpenAI 格式 tool_calls[].function.{name, arguments}
+	 * - 'anthropic-style': Anthropic 格式 content[].tool_use.{name, input}
+	 * - 'gemini-style':  Gemini 格式 functionCall.{name, args}
+	 */
+	readonly specialToolFormat?: 'openai-style' | 'anthropic-style' | 'gemini-style';
+
+	// ─── 推理/思考能力 ──────────────────────────────────────────
+	/**
+	 * 推理能力类型：
+	 * - false:           不支持推理
+	 * - 'budget-slider': 预算滑块（如 Anthropic extended thinking: budget_tokens）
+	 * - 'effort-slider': 努力滑块（如 OpenAI o-series: reasoning_effort）
+	 */
+	readonly reasoningType?: 'budget-slider' | 'effort-slider' | false;
+
+	// ─── 缓存支持 ──────────────────────────────────────────────
+	/**
+	 * 是否支持 KV Cache / Prompt Caching：
+	 * - 'openai':   OpenAI cached_tokens（prompt_tokens_details.cached_tokens）
+	 * - 'anthropic': Anthropic cache（cache_read_input_tokens / cache_creation_input_tokens）
+	 * - false:       不支持
+	 */
+	readonly supportsCaching?: 'openai' | 'anthropic' | false;
+
+	// ─── FIM 支持 ──────────────────────────────────────────────
+	/** 是否支持 Fill-in-the-Middle（代码补全） */
+	readonly supportsFIM?: boolean;
+
+	// ─── 预留输出 Token ────────────────────────────────────────
+	/** 为输出预留的 token 空间（某些模型需要从 contextWindow 中扣除） */
+	readonly reservedOutputTokenSpace?: number | null;
 }
 
 export const enum ModelCapability {

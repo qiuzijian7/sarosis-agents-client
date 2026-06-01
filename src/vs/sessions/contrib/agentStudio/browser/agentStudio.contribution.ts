@@ -71,14 +71,11 @@ import {
 	AGENT_STUDIO_SCHEDULE_VIEW_ID,
 	AGENT_STUDIO_TOOLS_VIEW_ID,
 	AGENT_STUDIO_MCP_VIEW_ID,
-	AGENT_STUDIO_CHANGES_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_PROVIDER_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
-	AGENT_STUDIO_WORKTREE_VIEW_ID,
-	AGENT_STUDIO_GRAPH_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
@@ -140,8 +137,6 @@ import { SkillsViewPane } from './views/skillsView.js';
 import { TasksViewPane } from './views/tasksView.js';
 import { ScheduleViewPane } from './views/scheduleView.js';
 import { ToolsViewPane } from './views/toolsView.js';
-import { ChangesViewPane } from './views/changesView.js';
-import { GraphViewPane } from './views/graphView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
@@ -155,14 +150,14 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import { ChannelViewPane } from './views/channelView.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
-import { WorktreeCommands, WorktreeContextKeys } from '../../worktree/common/worktreeTypes.js';
+import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
+import { SESSIONS_SCM_WORKTREE_VIEW_ID } from '../../sourceControl/browser/sourceControl.contribution.js';
 import { WorktreeItem } from '../../worktree/browser/worktreeDataProvider.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { URI } from '../../../../base/common/uri.js';
-import { MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
@@ -1380,46 +1375,6 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: McpViewPane,
 		});
 
-		// 8. Register Changes + Worktrees + Graph views into the native Source Control panel
-		const scmContainer = viewContainerRegistry.get('workbench.view.scm');
-		if (scmContainer) {
-			// 8a. Changes view
-			viewsRegistry.registerViews([{
-				id: AGENT_STUDIO_CHANGES_VIEW_ID,
-				name: localize2('agentStudio.changes.title', "Changes"),
-				ctorDescriptor: new SyncDescriptor(ChangesViewPane),
-				canToggleVisibility: true,
-				canMoveView: false,
-				order: 0,
-				weight: 40,
-				windowEnablement: WindowEnablement.Both,
-			}], scmContainer);
-
-			// 8b. Worktrees view
-			viewsRegistry.registerViews([{
-				id: AGENT_STUDIO_WORKTREE_VIEW_ID,
-				name: localize2('agentStudio.worktrees.title', "Worktrees"),
-				ctorDescriptor: new SyncDescriptor(WorktreeViewPane),
-				canToggleVisibility: true,
-				canMoveView: false,
-				order: 1,
-				weight: 20,
-				windowEnablement: WindowEnablement.Both,
-			}], scmContainer);
-
-			// 8c. Graph view (commit history)
-			viewsRegistry.registerViews([{
-				id: AGENT_STUDIO_GRAPH_VIEW_ID,
-				name: localize2('agentStudio.graph.title', "Graph"),
-				ctorDescriptor: new SyncDescriptor(GraphViewPane),
-				canToggleVisibility: true,
-				canMoveView: false,
-				order: 2,
-				weight: 40,
-				windowEnablement: WindowEnablement.Both,
-			}], scmContainer);
-		}
-
 		// 8.5 Channel (order: 75)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.channel',
@@ -1523,82 +1478,6 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 registerWorkbenchContribution2(AgentStudioToolbarContribution.ID, AgentStudioToolbarContribution, WorkbenchPhase.BlockStartup);
 
-// ─── Worktree Menu Items for the AgentStudio Worktree view ─────────────────
-
-const WT_WHEN = ContextKeyExpr.equals('view', AGENT_STUDIO_WORKTREE_VIEW_ID);
-const WT_NOT_MAIN = ContextKeyExpr.and(
-	WT_WHEN,
-	ContextKeyExpr.regex('viewItem', /^(?!.*worktreeMain).*$/i)
-);
-const WT_RESET_WHEN = ContextKeyExpr.and(
-	WT_WHEN,
-	ContextKeyExpr.notEquals(WorktreeContextKeys.WorktreeIsMain, true),
-);
-
-// Refresh
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: { id: WorktreeCommands.Refresh, title: localize2('worktreeRefresh', 'Refresh Worktrees'), icon: Codicon.refresh },
-	when: WT_WHEN,
-	group: 'navigation',
-	order: 10,
-});
-
-// Create
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: { id: WorktreeCommands.Create, title: localize2('worktreeCreate', 'Create Worktree'), icon: Codicon.add },
-	when: WT_WHEN,
-	group: 'navigation',
-	order: 20,
-});
-
-// Create With Branch
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: { id: WorktreeCommands.CreateWithBranch, title: localize2('worktreeCreateWithBranch', 'Create Isolated Worktree'), icon: Codicon.gitBranch },
-	when: WT_WHEN,
-	group: 'navigation',
-	order: 3,
-});
-
-// Delete
-MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
-	command: { id: WorktreeCommands.Delete, title: localize2('worktreeDelete', 'Delete Worktree'), icon: Codicon.trash },
-	when: WT_NOT_MAIN,
-	group: 'inline',
-	order: 10,
-});
-
-// Open
-MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
-	command: { id: WorktreeCommands.Open, title: localize2('worktreeOpen', 'Open Worktree Folder') },
-	when: WT_WHEN,
-	group: 'navigation',
-	order: 10,
-});
-
-// Open in Terminal
-MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
-	command: { id: WorktreeCommands.OpenInTerminal, title: localize2('worktreeOpenInTerminal', 'Open in Terminal') },
-	when: WT_WHEN,
-	group: 'navigation',
-	order: 20,
-});
-
-// Prune
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: { id: WorktreeCommands.Prune, title: localize2('worktreePrune', 'Prune Stale Worktrees') },
-	when: WT_WHEN,
-	group: '2_worktree',
-	order: 10,
-});
-
-// Reset
-MenuRegistry.appendMenuItem(MenuId.ViewItemContext, {
-	command: { id: WorktreeCommands.Reset, title: localize2('worktreeReset', 'Reset Worktree'), icon: Codicon.discard },
-	when: WT_RESET_WHEN,
-	group: '2_worktree',
-	order: 5,
-});
-
 // ─── Worktree Commands (action registrations) ────────────────────────────
 
 registerAction2(class extends Action2 {
@@ -1629,10 +1508,10 @@ registerAction2(class extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const viewsService = accessor.get(IViewsService);
 		// Try to get existing view first (avoids layout jump)
-		let view = viewsService.getViewWithId<WorktreeViewPane>(AGENT_STUDIO_WORKTREE_VIEW_ID);
+		let view = viewsService.getViewWithId<WorktreeViewPane>(SESSIONS_SCM_WORKTREE_VIEW_ID);
 		if (!view) {
 			// View not yet created, open it (first time)
-			view = await viewsService.openView<WorktreeViewPane>(AGENT_STUDIO_WORKTREE_VIEW_ID);
+			view = await viewsService.openView<WorktreeViewPane>(SESSIONS_SCM_WORKTREE_VIEW_ID);
 		}
 		if (view) {
 			await view.showCreateInput();

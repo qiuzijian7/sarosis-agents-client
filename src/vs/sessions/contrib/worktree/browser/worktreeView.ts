@@ -178,6 +178,10 @@ export class WorktreeViewPane extends ViewPane {
 	override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 
+		// Ensure container uses flex layout so tree fills remaining space
+		container.style.display = 'flex';
+		container.style.flexDirection = 'column';
+
 		this.dataProvider = this._register(this.instantiationService.createInstance(WorktreeTreeDataProvider));
 
 		// Create form container (hidden by default)
@@ -186,6 +190,9 @@ export class WorktreeViewPane extends ViewPane {
 		this._buildCreateForm();
 
 		const treeContainer = dom.append(container, $('.worktree-tree'));
+		// Ensure tree container fills remaining flex space
+		treeContainer.style.flex = '1';
+		treeContainer.style.minHeight = '0';
 		this.tree = <WorkbenchCompressibleObjectTree<WorktreeItem, void>>this.instantiationService.createInstance(
 			WorkbenchCompressibleObjectTree,
 			'WorktreeTree',
@@ -198,6 +205,7 @@ export class WorktreeViewPane extends ViewPane {
 				},
 				horizontalScrolling: false,
 				multipleSelectionSupport: false,
+				compressionEnabled: false,
 				accessibilityProvider: {
 					getAriaLabel: (element: WorktreeItem) => localize('worktreeAriaLabel', 'Worktree {0} at {1}', element.label, element.path),
 					getWidgetAriaLabel: () => localize('worktreeTreeAriaLabel', 'Worktree List'),

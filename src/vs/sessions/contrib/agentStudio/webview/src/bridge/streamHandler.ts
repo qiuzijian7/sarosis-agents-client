@@ -5,7 +5,7 @@
  *  and provides a React-friendly interface for streaming text updates.
  *--------------------------------------------------------------------------------------------*/
 
-import type { ChatMessage, AssistantMessage, ToolMessage, ToolMessageStatus, ThinkingBlock, ToolResult } from '../../../../common/chatTypes.js';
+import type { ChatMessage, AssistantMessage, ToolMessage, ToolMessageStatus, ThinkingBlock, ToolResult } from '../types/chatTypes';
 
 export interface StreamChunk {
 	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end';
@@ -840,7 +840,7 @@ export function buildChatMessagesFromState(state: StreamState): ChatMessage[] {
 			toolMsg = {
 				...baseToolMsg,
 				status: 'error' as const,
-				result: tc.error || 'Unknown error',
+				result: tc.result || 'Unknown error',
 			} as ToolMessage;
 		} else if (toolStatus === 'running') {
 			toolMsg = {

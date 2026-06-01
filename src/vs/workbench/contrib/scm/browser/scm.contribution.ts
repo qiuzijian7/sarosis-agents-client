@@ -62,7 +62,7 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensio
 	alwaysUseContainerInfo: true,
 	order: 2,
 	hideIfEmpty: true,
-	windowEnablement: WindowEnablement.Both,
+	windowEnablement: WindowEnablement.Editor,
 }, ViewContainerLocation.Sidebar, { doNotRegisterOpenCommand: true });
 
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);

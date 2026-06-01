@@ -351,11 +351,18 @@ export class GitCommitService extends Disposable implements IGitCommitService {
 		try {
 			this._logService.trace(`[GitCommitService] Executing: git ${args.join(' ')} (cwd: ${this._cwd})`);
 
-			// Use the global bridge exposed by the Electron preload script
-			// This is available in the sessions Electron renderer
-			const sarosisGit = (globalThis as any).__sarosisExecGit;
-			if (typeof sarosisGit === 'function') {
-				return await sarosisGit(this._cwd, args);
+			// Use the ipcRenderer bridge exposed by the Electron preload script
+			// to invoke the 'vscode:execGit' handler in the main process.
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				try {
+					this._logService.trace('[GitCommitService] _execGit: using vscode.ipcRenderer.invoke bridge');
+					const result: { success: boolean; stdout: string; stderr: string; exitCode: number } =
+						await vscodeBridge.ipcRenderer.invoke('vscode:execGit', this._cwd, args);
+					return { success: result.success, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+				} catch (invokeErr) {
+					this._logService.warn('[GitCommitService] _execGit: ipcRenderer.invoke failed, trying fallback:', invokeErr);
+				}
 			}
 
 			// Fallback: use Node.js child_process if available in this context

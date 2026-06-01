@@ -1564,18 +1564,45 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 1. 先匹配闭合标签: <tool_call>...</tool_call>
 			const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
 			let match: RegExpExecArray | null;
-			while ((match = regex.exec(text)) !== null) {
-				const content = match[1].trim();
-				this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag (closed), contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
-				// <tool> 标签使用 ▷{JSON} 头部 + <document> 子标签格式
-				if (tag === 'tool') {
-					const parsed = this._parseToolXMLFormat(content);
-					if (parsed) { results.push(parsed); }
-					else { this._logService.info(`[AgentOS] _extractToolCallsFromXml: _parseToolXMLFormat returned null for <tool> tag`); }
-					continue;
+				while ((match = regex.exec(text)) !== null) {
+					const fullMatch = match[0];
+					const content = match[1].trim();
+					this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag (closed), contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
+					// <tool> 标签使用 ▷{JSON} 头部 + <document> 子标签格式
+					if (tag === 'tool') {
+						const parsed = this._parseToolXMLFormat(content);
+						if (parsed) { results.push(parsed); }
+						else { this._logService.info(`[AgentOS] _extractToolCallsFromXml: _parseToolXMLFormat returned null for <tool> tag`); }
+						continue;
+					}
+					// 新增：尝试从开口标签提取工具名（如 <invoke name="file_list">）
+					const openTagMatch = fullMatch.match(new RegExp(`^<${tag}[^>]*\\bname\\s*=\\s*["']([^"']+)["'][^>]*>`));
+					if (openTagMatch) {
+						// 从开口标签找到了 name 属性，直接使用
+						const toolName = openTagMatch[1];
+						this._logService.info(`[AgentOS] _extractToolCallsFromXml: found tool name from open tag: ${toolName}`);
+						// 尝试从 content 中解析参数（简单实现：查找 <parameter name="xxx">value</parameter>）
+						let args = '{}';
+						try {
+							const paramRegex = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([^<]*)<\/parameter>/gi;
+							let paramMatch: RegExpExecArray | null;
+							const argsObj: Record<string, string> = {};
+							while ((paramMatch = paramRegex.exec(content)) !== null) {
+								argsObj[paramMatch[1]] = paramMatch[2];
+							}
+							if (Object.keys(argsObj).length > 0) {
+								args = JSON.stringify(argsObj);
+							}
+						} catch { /* ignore */ }
+						results.push({
+							id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+							name: toolName,
+							arguments: args,
+						});
+						continue;
+					}
+					this._processXmlTagContent(content, results, tag);
 				}
-				this._processXmlTagContent(content, results, tag);
-			}
 
 			// 2. 兜底: 匹配未闭合标签: <tool_call>toolname (后面没有 </tool_call>)
 			// 只匹配当该标签在文本中确实没有被闭合时

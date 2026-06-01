@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URI } from '../../../../base/common/uri.js';
+// import { URI } from '../../../../base/common/uri.js'; // REMOVED: URI not available in webview context
 
 // ============================================================================
 // 统一消息格式（Unified Message Format）
@@ -297,7 +297,7 @@ export interface CheckpointMessage {
  */
 export interface FileSnapshot {
 	/** 文件 URI */
-	readonly uri: URI;
+	readonly uri: any;
 	/** 文件内容 */
 	readonly content: string;
 	/** 语言 ID */
@@ -317,7 +317,7 @@ export type SelectionItem =
 
 export interface SelectionItemFile {
 	readonly type: 'File';
-	readonly uri: URI;
+	readonly uri: any;
 	readonly language: string;
 	readonly state: {
 		readonly wasAddedAsCurrentFile: boolean;
@@ -326,7 +326,7 @@ export interface SelectionItemFile {
 
 export interface SelectionItemCode {
 	readonly type: 'CodeSelection';
-	readonly uri: URI;
+	readonly uri: any;
 	readonly language: string;
 	readonly range: readonly [number, number]; // [start, end]
 	readonly state: {
@@ -336,7 +336,7 @@ export interface SelectionItemCode {
 
 export interface SelectionItemFolder {
 	readonly type: 'Folder';
-	readonly uri: URI;
+	readonly uri: any;
 	readonly language?: undefined;
 	readonly state?: undefined;
 }

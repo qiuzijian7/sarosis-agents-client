@@ -142,11 +142,13 @@ export function chatStreamDeltasToChatMessages(deltas: readonly IChatStreamDelta
 				// thinking delta 累积到 thinking
 				break;
 
-			case 'tool_start':
-				// 开始一个新的工具调用
-				currentTool = createPendingToolMessage(delta);
+		case 'tool_start':
+			// 开始一个新的工具调用
+			currentTool = createPendingToolMessage(delta);
+			if (currentTool) {
 				toolMap.set(delta.toolCallId!, currentTool);
-				break;
+			}
+			break;
 
 			case 'tool_args':
 				// 工具参数 delta（可能分片）

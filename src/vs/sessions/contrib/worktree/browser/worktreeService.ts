@@ -75,11 +75,14 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async getRepositoryRoot(): Promise<string | undefined> {
 		if (this._repositoryRoot !== undefined) {
+			this.logService.info(`[WorktreeService] getRepositoryRoot: cached "${this._repositoryRoot}"`);
 			return this._repositoryRoot;
 		}
 
 		const folders = this.workspaceContextService.getWorkspace().folders;
+		this.logService.info(`[WorktreeService] getRepositoryRoot: workspace folders count=${folders.length}`);
 		if (folders.length === 0) {
+			this.logService.error('[WorktreeService] getRepositoryRoot: no workspace folders!');
 			return undefined;
 		}
 
@@ -90,20 +93,26 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				const stat = await this.fileService.stat(gitPath);
 				if (stat) {
 					this._repositoryRoot = folder.uri.fsPath;
+					this.logService.info(`[WorktreeService] getRepositoryRoot: found .git at "${folder.uri.fsPath}", repoRoot="${this._repositoryRoot}"`);
 					return this._repositoryRoot;
 				}
 			} catch {
-				// No .git in this folder, continue
+				this.logService.warn(`[WorktreeService] getRepositoryRoot: no .git in "${folder.uri.fsPath}"`);
 			}
 		}
 
+		this.logService.error('[WorktreeService] getRepositoryRoot: no .git found in any workspace folder');
 		return undefined;
 	}
 
 	async listWorktrees(repoPath: string): Promise<IWorktreeDetail[]> {
 		try {
+			this.logService.info(`[WorktreeService] listWorktrees: repoPath="${repoPath}"`);
 			const output = await this.execGit(repoPath, ['worktree', 'list', '--porcelain']);
-			return this.parseWorktreeList(output, repoPath);
+			this.logService.info(`[WorktreeService] listWorktrees: output="${output}"`);
+			const result = this.parseWorktreeList(output, repoPath);
+			this.logService.info(`[WorktreeService] listWorktrees: parsed ${result.length} worktrees`);
+			return result;
 		} catch (e) {
 			this.logService.error('[WorktreeService] Failed to list worktrees:', e);
 			return [];
@@ -469,11 +478,82 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	}
 
 	private async execGit(cwd: string, args: string[]): Promise<string> {
-		// child_process is not available in browser/renderer context
-		// This service runs in the browser layer, so we cannot spawn git directly.
-		// For now, return empty output to gracefully degrade.
-		this.logService.warn('[WorktreeService] Git commands are not available in the browser context.');
-		return '';
+		try {
+			this.logService.info(`[WorktreeService] execGit: git ${args.join(' ')} (cwd: ${cwd})`);
+
+			// Use the ipcRenderer bridge exposed by the Electron preload script
+			// to invoke the 'vscode:execGit' handler in the main process.
+			const vscodeBridge = (globalThis as any).vscode;
+			if (vscodeBridge?.ipcRenderer?.invoke) {
+				try {
+					this.logService.info('[WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge');
+					const result: { success: boolean; stdout: string; stderr: string; exitCode: number } =
+						await vscodeBridge.ipcRenderer.invoke('vscode:execGit', cwd, args);
+					if (result.success) {
+						this.logService.info(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
+						return result.stdout;
+					}
+					this.logService.error(`[WorktreeService] execGit: failed, stderr="${result.stderr}", exitCode=${result.exitCode}`);
+					throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
+				} catch (invokeErr) {
+					this.logService.warn('[WorktreeService] execGit: ipcRenderer.invoke failed, trying fallback:', invokeErr);
+				}
+			}
+
+			// Fallback: use Node.js child_process if available in this context
+			// (Electron renderer with nodeIntegration or contextBridge)
+			if (typeof process !== 'undefined' && (process as any).versions?.electron) {
+				this.logService.info('[WorktreeService] execGit: falling back to child_process.spawn');
+				return await this._execGitNodeFallback(cwd, args);
+			}
+
+			// Last resort: report that git execution is not available
+			this.logService.error('[WorktreeService] execGit: No git execution method available');
+			throw new Error('Git execution not available in this context');
+		} catch (err) {
+			this.logService.error('[WorktreeService] execGit: error:', err);
+			throw err;
+		}
+	}
+
+	private _execGitNodeFallback(cwd: string, args: string[]): Promise<string> {
+		return new Promise((resolve, reject) => {
+			try {
+				// In Electron renderer, we can require child_process through the node integration
+				// eslint-disable-next-line local/code-import-patterns
+				const cp = require('child_process') as typeof import('child_process');
+				this.logService.info(`[WorktreeService] _execGitNodeFallback: spawning git ${args.join(' ')} in ${cwd}`);
+				const child = cp.spawn('git', args, {
+					cwd,
+					env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+					windowsHide: true,
+				});
+
+				let stdout = '';
+				let stderr = '';
+
+				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+				child.on('error', (err) => {
+					this.logService.error(`[WorktreeService] _execGitNodeFallback: spawn error: ${err.message}`);
+					reject(new Error(`git spawn error: ${err.message}`));
+				});
+
+				child.on('close', (code) => {
+					if (code === 0) {
+						this.logService.info(`[WorktreeService] _execGitNodeFallback: success, stdout length=${stdout.length}`);
+						resolve(stdout);
+					} else {
+						this.logService.error(`[WorktreeService] _execGitNodeFallback: failed, code=${code}, stderr="${stderr}"`);
+						reject(new Error(stderr || `git exited with code ${code}`));
+					}
+				});
+			} catch (err) {
+				this.logService.error('[WorktreeService] _execGitNodeFallback: exception:', err);
+				reject(err);
+			}
+		});
 	}
 
 	private parseWorktreeList(output: string, mainFolder: string): IWorktreeDetail[] {

@@ -551,6 +551,32 @@ export class CodeApplication extends Disposable {
 			}
 		});
 
+		// Git execution handler: allows renderer processes to execute git commands
+		// via the main process (which has access to child_process).
+		validatedIpcMain.handle('vscode:execGit', async (event, cwd: string, args: string[]) => {
+			return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
+				const child = spawn('git', args, {
+					cwd,
+					env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+					windowsHide: true,
+				});
+
+				let stdout = '';
+				let stderr = '';
+
+				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+				child.on('error', (err) => {
+					resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
+				});
+
+				child.on('close', (code) => {
+					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+				});
+			});
+		});
+
 		//#endregion
 	}
 

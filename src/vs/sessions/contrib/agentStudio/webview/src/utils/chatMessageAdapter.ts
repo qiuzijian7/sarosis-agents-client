@@ -10,8 +10,8 @@
  *    const messages = builder.getMessages();
  *--------------------------------------------------------------------------------------------*/
 
-import type { ChatMessage, AssistantMessage, ToolMessage, ToolMessageStatus, ThinkingBlock, ToolResult } from '../../../../common/chatTypes.js';
-import type { IChatStreamDelta } from '../../../../common/providers.js';
+import type { ChatMessage, AssistantMessage, ToolMessage, ToolMessageStatus, ThinkingBlock, ToolResult } from '../types/chatTypes';
+// import type { IChatStreamDelta } from '../../../common/providers'; // REMOVED: use any instead
 
 /**
  * Builds ChatMessage[] from IChatStreamDelta stream.
@@ -26,7 +26,7 @@ export class ChatMessageBuilder {
 
 	constructor() {}
 
-	handleDelta(delta: IChatStreamDelta): void {
+	handleDelta(delta: any): void {
 		if (!delta) return;
 
 		switch (delta.type) {
@@ -83,7 +83,7 @@ export class ChatMessageBuilder {
 		this._ensureAssistant();
 	}
 
-	private _startTool(id: string, name: string, delta: IChatStreamDelta): void {
+	private _startTool(id: string, name: string, delta: any): void {
 		// Create ToolMessage with status 'pending'
 		// ToolMessage type: base & _ToolMessagePending
 		const toolMsg: ToolMessage = {
@@ -173,7 +173,7 @@ export class ChatMessageBuilder {
 /**
  * Batch conversion helper (for non-streaming use cases).
  */
-export function deltasToChatMessages(deltas: readonly IChatStreamDelta[]): ChatMessage[] {
+export function deltasToChatMessages(deltas: readonly any[]): ChatMessage[] {
 	const builder = new ChatMessageBuilder();
 	for (const delta of deltas) {
 		builder.handleDelta(delta);

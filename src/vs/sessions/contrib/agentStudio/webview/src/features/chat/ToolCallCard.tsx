@@ -27,15 +27,13 @@
 
 
 /* eslint-disable local/code-no-unexternalized-strings */
-import React, { memo, useCallback, useMemo, useState } from 'react';
+import React, { memo, useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
 import { sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import { ToolDisplayRegistry } from '../../utils/toolDisplayRegistry';
 import { openFile } from '../../bridge/fileBridge';
 import { sendRequest } from '../../bridge/messageClient';
-
-// Import ToolMessage type from unified format
-import type { ToolMessage } from '../../../common/chatTypes.js';
+import type { ToolMessage } from '../../types/chatTypes';
 
 // Import Void-inspired components
 import { ConfirmationCard, TerminalConfirmationCard } from './ConfirmationCard';
@@ -76,6 +74,8 @@ export interface ToolCallData {
 	diagnostics?: Array<{ message: string; line?: number; severity: 'error' | 'warning' }>;
 	/** Whether the tool call was canceled */
 	canceled?: boolean;
+	/** Whether the tool call was confirmed by user */
+	confirmed?: boolean;
 }
 
 interface ToolCallCardProps {
@@ -93,9 +93,9 @@ function toolMessageToToolCallData(toolMsg: ToolMessage): ToolCallData {
 			resultText = toolMsg.result;
 		} else if (toolMsg.result.content) {
 			// ToolResult: extract text from content array
-			const texts = toolMsg.result.content
-				.filter(c => c.type === 'text' && c.text)
-				.map(c => c.text);
+		const texts = toolMsg.result.content
+			.filter((c: any) => c.type === 'text' && c.text)
+			.map((c: any) => c.text);
 			resultText = texts.join('\n') || undefined;
 		}
 	}
@@ -912,7 +912,7 @@ function ToolApprovalButtons({ toolCall }: { toolCall: ToolCallData }): React.Re
 
 // ─── Generic (default) tool call card ─────────────────────────────────────────
 
-function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElement {
+function GenericToolCallCard({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
 	const [expanded, setExpanded] = useState(false);
 	const [showFullResult, setShowFullResult] = useState(false);
 	const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -934,7 +934,7 @@ function GenericToolCallCard({ toolCall }: ToolCallCardProps): React.ReactElemen
 	const isRejected = toolCall.status === 'rejected';
 	const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
 	const isConfirmed = toolCall.status === 'confirmed' || !!toolCall.confirmed;
-	const isCompleted = toolCall.status === 'completed' && !toolCall.error && !toolCall.canceled;
+	const isCompleted = (toolCall.status === 'success' || (toolCall.status as any) === 'completed') && !toolCall.error && !toolCall.canceled;
 
 	const display = useToolDisplay(toolCall.name, toolCall.arguments);
 
