@@ -273,6 +273,18 @@ export class GeminiNativeModelProvider extends Disposable implements IModelProvi
 		if (options.maxTokens !== undefined) {
 			generationConfig.maxOutputTokens = options.maxTokens;
 		}
+		// ── Thinking / Reasoning（Gemini thinkingConfig.thinkingBudget）─────
+		// 参考 void：开启思考时按 budget 注入；关闭时显式置 0 以禁用思考。
+		if (options.reasoning) {
+			if (options.reasoning.enabled) {
+				const budget = options.reasoning.budget ?? 1024;
+				generationConfig.thinkingConfig = { thinkingBudget: budget };
+				this._logService.info(`[GeminiNative] _streamChat: thinkingBudget=${budget}`);
+			} else {
+				// 显式关闭思考（thinkingBudget=0）
+				generationConfig.thinkingConfig = { thinkingBudget: 0 };
+			}
+		}
 		if (Object.keys(generationConfig).length > 0) {
 			request.generationConfig = generationConfig;
 		}

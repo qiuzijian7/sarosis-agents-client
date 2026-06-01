@@ -81,16 +81,22 @@
 					"scope": "application",
 					"markdownDescription": "可用模型列表，用英文逗号分隔。例如：`deepseek-v3.1,glm-5.1,claude-4.7-opus`\n\n当 knot.agents 为空时，使用此列表作为默认模型。"
 				},
-				"knot.timeout": {
-					"type": "number",
-					"default": 60000,
-					"description": "请求超时时间（毫秒）。"
-				},
-				"knot.streaming": {
-					"type": "boolean",
-					"default": true,
-					"description": "启用流式响应。"
-				}
+			"knot.timeout": {
+				"type": "number",
+				"default": 60000,
+				"description": "请求超时时间（毫秒）。"
+			},
+			"knot.workspace": {
+				"type": "string",
+				"default": "",
+				"description": "Knot 工作区标识（当无法登录时，可手动指定工作区信息传递给 Knot API）",
+				"scope": "application"
+			},
+			"knot.streaming": {
+				"type": "boolean",
+				"default": true,
+				"description": "启用流式响应。"
+			}
 			}
 		},
 		"commands": [

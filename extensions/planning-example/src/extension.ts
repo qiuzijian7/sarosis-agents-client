@@ -2,10 +2,10 @@
  *  Planning Example Plugin
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../src/vs/base/common/lifecycle.js';
-import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
-import { IPlanningProvider, IPlan, IPlanStep, ITask } from '../../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
+import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
+import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
+import { IPlanningProvider, IPlan, IPlanStep, ITask } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 export class PlanningExampleProvider implements IPlanningProvider {
 	readonly id = 'planning-example';

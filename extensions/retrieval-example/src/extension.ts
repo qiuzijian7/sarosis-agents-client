@@ -2,10 +2,10 @@
  *  Retrieval Example Plugin
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../src/vs/base/common/lifecycle.js';
-import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
-import { IRetrievalProvider, IRetrievalResult } from '../../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
+import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
+import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
+import { IRetrievalProvider, IRetrievalResult } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 export class RetrievalExampleProvider implements IRetrievalProvider {
 	readonly id = 'retrieval-example';

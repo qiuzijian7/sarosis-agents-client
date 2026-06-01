@@ -62,7 +62,12 @@ interface RawToolCall {
 	arguments?: string;
 	params?: Record<string, unknown>;
 	result?: unknown;
-	status: string;
+	/**
+	 * Streaming ToolMessages carry an explicit status; history-restored
+	 * RawToolCalls (persisted by agentChatService) do NOT. Optional here so the
+	 * `normalize` fallback can infer the phase from result/error/serverExecuted.
+	 */
+	status?: string;
 	error?: string;
 	defaultShow?: boolean;
 	displayName?: string;
@@ -236,7 +241,36 @@ function normalize(tc: ToolMessage | RawToolCall): NormalizedTool {
 	const rawResultText = resultToText(anyTc.result);
 	const resultText = rawResultText ? sanitizeToolResultText(rawResultText) : '';
 
-	const phase = mapPhase(String(anyTc.status), anyTc.error, anyTc.canceled);
+	// Derive a status string. Streaming ToolMessages always carry an explicit
+	// `status`. History-restored RawToolCalls (persisted in
+	// agentChatService.ts) do NOT — they only store id/name/arguments/result/
+	// displayName/renderType/defaultShow/serverExecuted. Without a status the
+	// raw `mapPhase(String(undefined))` falls into its `default: 'pending'`
+	// branch, which makes a *completed* historical card render the animated
+	// LoadingTitle ("正在读取文件...") forever after a window refresh.
+	//
+	// Fallback inference (only when status is missing/blank):
+	//   - error present                → 'error'
+	//   - canceled flag                → handled by mapPhase
+	//   - a result was recorded        → 'success' (the call finished)
+	//   - serverExecuted (no result)   → 'success' (server ran it to completion)
+	//   - otherwise                    → leave to mapPhase (pending/running)
+	const hasStatus = typeof anyTc.status === 'string' && anyTc.status.trim().length > 0;
+	let statusForPhase: string;
+	if (hasStatus) {
+		statusForPhase = anyTc.status;
+	} else if (anyTc.error) {
+		statusForPhase = 'error';
+	} else if (anyTc.result !== undefined && anyTc.result !== null) {
+		statusForPhase = 'success';
+	} else if (anyTc.serverExecuted) {
+		statusForPhase = 'success';
+	} else {
+		// Genuinely incomplete (e.g. a live stream mid-flight without status).
+		statusForPhase = 'pending';
+	}
+
+	const phase = mapPhase(statusForPhase, anyTc.error, anyTc.canceled);
 
 	return {
 		id: anyTc.id,

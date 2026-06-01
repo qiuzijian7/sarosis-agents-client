@@ -1144,6 +1144,7 @@ export class AgentStudioWebviewController extends Disposable {
 					workspaceId: payload.workspaceId as string | undefined,
 					agentSessionId,
 					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
+					reasoning: payload.reasoning as { enabled: boolean; budget?: number; effort?: 'low' | 'medium' | 'high' } | undefined,
 				},
 				(delta: IChatStreamDelta) => {
 					// Capture provider session ID from metadata (e.g. Knot AG-UI threadId)
@@ -2281,6 +2282,7 @@ export class AgentStudioWebviewController extends Disposable {
 				supportsImages?: boolean;
 				supportsReasoning?: boolean;
 				onlyReasoning?: boolean;
+				reasoningType?: 'budget-slider' | 'effort-slider' | false;
 				temperature?: number;
 				vendor?: string;
 				credits?: string;
@@ -2301,6 +2303,7 @@ export class AgentStudioWebviewController extends Disposable {
 					supportsImages: m.supportsImages,
 					supportsReasoning: m.supportsReasoning,
 					onlyReasoning: m.onlyReasoning,
+					reasoningType: m.capabilityConfig?.reasoningType,
 					temperature: m.temperature,
 					vendor: m.vendor,
 					credits: m.credits,

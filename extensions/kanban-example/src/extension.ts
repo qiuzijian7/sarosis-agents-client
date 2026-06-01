@@ -2,11 +2,11 @@
  *  Kanban Example Plugin
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../src/vs/base/common/lifecycle.js';
-import { Emitter } from '../../../../src/vs/base/common/event.js';
-import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
-import { IKanbanProvider, IKanbanBoard, IKanbanCard, KanbanPriority } from '../../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
+import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { Emitter } from '../../../src/vs/base/common/event.js';
+import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
+import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
+import { IKanbanProvider, IKanbanBoard, IKanbanCard, KanbanPriority } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 export class KanbanExampleProvider implements IKanbanProvider {
 	readonly id = 'kanban-example';

@@ -592,6 +592,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					const tc = toolCalls.find((t) => t.id === delta.toolCallId);
 					if (tc) {
 						tc.result = delta.content;
+						// Mark finished so the persisted card restores in a
+						// completed (not loading) state after a window refresh.
+						// Without this, the webview's mapPhase sees no status and
+						// defaults to 'pending' → renders the loading title forever.
+						tc.status = 'done';
 					}
 				}
 				// Handle new card data delta types (VS Code Copilot Chat pattern)
@@ -625,6 +630,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
 				}
 				onDelta(delta);
+			}
+
+			// Finalization safety net: the stream has fully completed, so any
+			// tool call still lacking a status must have finished. Mark it 'done'
+			// so the persisted card restores in a completed state rather than the
+			// loading title after a window refresh.
+			if (toolCalls) {
+				for (const tc of toolCalls) {
+					if (!tc.status) {
+						tc.status = 'done';
+					}
+				}
 			}
 
 			const chatMessage: ChatMessage = {

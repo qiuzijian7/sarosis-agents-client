@@ -832,6 +832,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			explicitSkillIds: options.explicitSkillIds,
 			options: {
 				temperature: options.temperature,
+				reasoning: options.reasoning,
 			},
 		};
 		yield* this.executeTurn(request);

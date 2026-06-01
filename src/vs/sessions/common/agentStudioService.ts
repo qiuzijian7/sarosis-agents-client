@@ -198,7 +198,10 @@ export interface IChatStreamDelta {
 	| "tips"
 	| "questions"
 	| "usage"
-	| "phase_change";
+	| "phase_change"
+	| "sub_agent_start"
+	| "sub_agent_progress"
+	| "sub_agent_end";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -214,6 +217,22 @@ export interface IChatStreamDelta {
 	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
 	 */
 	readonly phase?: StreamPhase;
+	/**
+	 * Sub-agent lifecycle fields (carried on `sub_agent_*` delta types).
+	 * Kept 1:1 aligned with the WebView-side StreamChunk so the controller can
+	 * forward the delta verbatim to drive the SubAgentCard. Mirror of the same
+	 * fields in `contrib/agentStudio/common/providers.ts` IChatStreamDelta —
+	 * inlined here because `common/` cannot import from `contrib/`.
+	 */
+	readonly subAgentId?: string;
+	readonly subAgentType?: 'explore' | 'general' | 'scout';
+	readonly subAgentTask?: string;
+	readonly subAgentParentId?: string;
+	readonly subAgentStatus?: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+	readonly subAgentProgress?: string;
+	readonly subAgentOutput?: string;
+	readonly subAgentError?: string;
+	readonly subAgentGroupId?: string;
 	/**
 	 * Host-side full text snapshot (Void-inspired fullTextSoFar pattern).
 	 * When present, the WebView uses this instead of incrementally
@@ -329,6 +348,15 @@ export interface IChatSendOptions {
 	readonly explicitSkillIds?: readonly string[];
 	/** Current chat mode: craft (full access), ask (read-only tools), plan (decomposition only), workflow (craft + downstream agents) */
 	readonly chatMode?: ChatMode;
+	/**
+	 * 推理/思考（thinking）配置。由聊天输入框的 thinking UI 控件产生，
+	 * 经 host 透传到 IModelOptions.reasoning，最终由各 model provider 映射到原生 API 参数。
+	 */
+	readonly reasoning?: {
+		readonly enabled: boolean;
+		readonly budget?: number;
+		readonly effort?: 'low' | 'medium' | 'high';
+	};
 }
 
 export interface IAgentChatService {

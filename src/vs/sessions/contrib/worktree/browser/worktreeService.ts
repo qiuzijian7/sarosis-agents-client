@@ -164,67 +164,52 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		const branch = options?.detached ? undefined : (options?.branch || `worktree/${name}`);
 		this.logService.info('[WorktreeService] makeWorktreeInfo: computed', { name, branch, detached: options?.detached });
 
-		// Directory: <repoRoot>/.worktrees/<name>
-		// Use a sibling directory pattern like opencode: repo/../.worktrees/projectName/name
-		const projectDir = repoRoot.replace(/[/\\]$/, '');
-		const projectSegments = projectDir.split(/[/\\]/).filter(Boolean);
-		const projectName = projectSegments[projectSegments.length - 1] || 'project';
-		const parentDir = projectSegments.slice(0, -1).join('/');
-		const directory = parentDir + '/.worktrees/' + projectName + '/' + name;
+		// Directory: <repoRoot>/.sarosisworkspace/.worktree/<name>
+		const worktreeBase = repoRoot.replace(/[/\\]$/, '') + '/.sarosisworkspace/.worktree';
+		const directory = worktreeBase + '/' + name;
 
-		// Conflict detection for directory
+		// Conflict detection: check both directory and branch existence in a single loop
 		let attempts = 0;
 		let finalName = name;
 		let finalDirectory = directory;
 		let finalBranch = branch;
 
 		while (attempts < 26) {
+			let conflict = false;
+
+			// Check directory existence
 			try {
 				const dirUri = URI.file(finalDirectory);
-				const stat = await this.fileService.stat(dirUri);
-				// Directory exists, try with suffix
-				if (stat) {
-					const suffix = String.fromCharCode(97 + attempts); // a, b, c, ...
-					finalName = `${name}-${suffix}`;
-					finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
-					finalBranch = options?.detached ? undefined : (options?.branch || `worktree/${finalName}`);
-					attempts++;
-					continue;
-				}
+				await this.fileService.stat(dirUri);
+				// Directory exists, need to add suffix
+				conflict = true;
+				this.logService.info(`[WorktreeService] makeWorktreeInfo: directory exists, will add suffix: ${finalDirectory}`);
 			} catch {
 				// Directory doesn't exist — good
-				break;
 			}
-			break;
-		}
 
-		// Check branch existence (retry loop)
-		let branchAttempts = 0;
-		while (branchAttempts < 26) {
-			if (!finalBranch) {
-				break;
-			}
-			try {
-				await this.execGit(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${finalBranch}`]);
-				// show-ref succeeded (exit 0) → branch exists, add suffix
-				const suffix = String.fromCharCode(97 + Math.min(branchAttempts, 25));
-				finalName = `${name}-${suffix}`;
-				finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
-				finalBranch = options?.branch ? `${options.branch}-${suffix}` : `worktree/${finalName}`;
-				branchAttempts++;
-				// Also re-check directory conflict with new name
+			// Check branch existence (if not detached)
+			if (finalBranch) {
 				try {
-					const dirUri = URI.file(finalDirectory);
-					await this.fileService.stat(dirUri);
-					// Directory also exists, will be handled in next iteration
+					await this.execGit(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${finalBranch}`]);
+					// Branch exists, need to add suffix
+					conflict = true;
+					this.logService.info(`[WorktreeService] makeWorktreeInfo: branch exists, will add suffix: ${finalBranch}`);
 				} catch {
-					// Directory doesn't exist, good
+					// Branch doesn't exist — good
 				}
-				continue;
-			} catch {
-				// show-ref failed (exit 1) → branch doesn't exist, which is what we want
+			}
+
+			if (!conflict) {
 				break;
 			}
+
+			// Add suffix and retry
+			const suffix = String.fromCharCode(97 + attempts); // a, b, c, ...
+			finalName = `${name}-${suffix}`;
+			finalDirectory = worktreeBase + '/' + finalName;
+			finalBranch = options?.detached ? undefined : (options?.branch ? `${options.branch}-${suffix}` : `worktree/${finalName}`);
+			attempts++;
 		}
 
 		return { name: finalName, branch: finalBranch, directory: finalDirectory };
@@ -238,6 +223,17 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		// Set pending state
 		this.setWorktreeState(info.directory, WorktreeStatus.Pending);
+
+		// Ensure .sarosisworkspace/.worktree directory exists
+		const worktreeBaseUri = URI.joinPath(URI.file(repoRoot), '.sarosisworkspace', '.worktree');
+		try {
+			await this.fileService.stat(worktreeBaseUri);
+			// Directory exists, good
+		} catch {
+			// Directory doesn't exist, create it
+			this.logService.info(`[WorktreeService] Creating .sarosisworkspace/.worktree directory: ${worktreeBaseUri.fsPath}`);
+			await this.fileService.createFolder(worktreeBaseUri);
+		}
 
 		// Phase 2a: git worktree add --no-checkout [-b <branch>] <dir>
 		const args = ['worktree', 'add', '--no-checkout'];

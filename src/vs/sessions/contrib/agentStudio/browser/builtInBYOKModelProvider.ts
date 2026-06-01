@@ -251,7 +251,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					maxInputTokens: m.maxInputTokens || m.max_input_tokens || m.context_length || undefined,
 					capabilities: this._inferCapabilities(m),
 					supportsToolCall: m.supportsToolCall ?? (m.capabilityConfig?.specialToolFormat !== undefined),
-					supportsReasoning: m.supportsReasoning ?? m.capabilityConfig?.reasoningType ? true : undefined,
+					supportsReasoning: m.supportsReasoning ?? (m.capabilityConfig?.reasoningType ? true : undefined),
 					capabilityConfig: m.capabilityConfig || undefined,
 					pricing: m.pricing ? {
 						inputPerMillion: typeof m.pricing.prompt === 'string' ? parseFloat(m.pricing.prompt) * 1_000_000 : m.pricing.input_per_million,
@@ -469,6 +469,34 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
 			body.tool_choice = options.toolChoice ?? 'auto';
 			this._logService.info(`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools with tool_choice=${body.tool_choice}`);
+		}
+
+		// ── Thinking / Reasoning 参数注入 ─────────────────────────────
+		// 按模型 capabilityConfig.reasoningType 决定 API 形态（参考 void）：
+		//   - 'effort-slider'（OpenAI o 系列 / xAI / DeepSeek）→ reasoning_effort: 'low'|'medium'|'high'
+		//   - 'budget-slider' + Anthropic 兼容 → thinking: { type: 'enabled', budget_tokens: N }
+		//   - 'budget-slider' + OpenAI 兼容 → 退化为 reasoning_effort（按 budget 粗分档）
+		if (options.reasoning?.enabled) {
+			const model = this._models.find(m => m.id === modelId);
+			const reasoningType = model?.capabilityConfig?.reasoningType;
+			const effort = options.reasoning.effort;
+			const budget = options.reasoning.budget;
+
+			if (this._definition.isAnthropic || reasoningType === 'budget-slider') {
+				if (budget && budget > 0) {
+					// Anthropic 原生 extended thinking
+					body.thinking = { type: 'enabled', budget_tokens: budget };
+					this._logService.info(`[BYOK:${this.id}] reasoning: thinking budget_tokens=${budget}`);
+				} else if (effort) {
+					body.reasoning_effort = effort;
+					this._logService.info(`[BYOK:${this.id}] reasoning: reasoning_effort=${effort}`);
+				}
+			} else {
+				// OpenAI o 系列 / DeepSeek / 其它 OpenAI 兼容：reasoning_effort
+				body.reasoning_effort = effort
+					?? (budget != null ? (budget >= 6144 ? 'high' : budget >= 3072 ? 'medium' : 'low') : 'medium');
+				this._logService.info(`[BYOK:${this.id}] reasoning: reasoning_effort=${body.reasoning_effort}`);
+			}
 		}
 		return body;
 	}

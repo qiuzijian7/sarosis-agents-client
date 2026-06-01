@@ -218,6 +218,27 @@ export interface IModelOptions {
 	 * 未设置时 provider 应回退到 'auto'。
 	 */
 	readonly toolChoice?: 'auto' | 'required' | 'none';
+	/**
+	 * 推理/思考（thinking / reasoning）配置。各 provider 按自身能力映射到原生 API 参数：
+	 *   - Anthropic Claude：thinking: { type: 'enabled', budget_tokens: budget }
+	 *   - Gemini：config.thinkingConfig = { thinkingBudget: budget }
+	 *   - OpenAI o 系列 / xAI：reasoning_effort: effort
+	 *   - DeepSeek / OpenRouter：reasoning_effort 或开启 reasoning
+	 * 当 enabled 为 false 或字段缺失时，provider 不应注入任何 thinking 参数。
+	 */
+	readonly reasoning?: IReasoningOptions;
+}
+
+/**
+ * 推理/思考配置。budget 与 effort 二选一（取决于模型能力 reasoningType）。
+ */
+export interface IReasoningOptions {
+	/** 是否开启思考模式 */
+	readonly enabled: boolean;
+	/** 思考预算（token 数），用于 budget-slider 类模型（Claude / Gemini） */
+	readonly budget?: number;
+	/** 思考工作量等级，用于 effort-slider 类模型（OpenAI o 系列 / xAI） */
+	readonly effort?: 'low' | 'medium' | 'high';
 }
 
 export interface IModelDelta {
@@ -536,7 +557,8 @@ export type StreamPhase =
 
 export interface IChatStreamDelta {
 	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace'
-	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage' | 'phase_change';
+	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage' | 'phase_change'
+	| 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -553,6 +575,21 @@ export interface IChatStreamDelta {
 	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
 	 */
 	readonly phase?: StreamPhase;
+	/**
+	 * Sub-agent lifecycle fields. Carried on `sub_agent_start | sub_agent_progress | sub_agent_end`
+	 * delta types so that the Host can drive the WebView's SubAgentCard. Field names are kept
+	 * 1:1 aligned with the WebView-side StreamChunk (streamHandler.ts) so the controller can
+	 * forward the delta verbatim without remapping.
+	 */
+	readonly subAgentId?: string;
+	readonly subAgentType?: 'explore' | 'general' | 'scout';
+	readonly subAgentTask?: string;
+	readonly subAgentParentId?: string;
+	readonly subAgentStatus?: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+	readonly subAgentProgress?: string;
+	readonly subAgentOutput?: string;
+	readonly subAgentError?: string;
+	readonly subAgentGroupId?: string;
 	/**
 	 * Host-side full text snapshot (Void-inspired fullTextSoFar pattern).
 	 * When present, the WebView should use this instead of incrementally

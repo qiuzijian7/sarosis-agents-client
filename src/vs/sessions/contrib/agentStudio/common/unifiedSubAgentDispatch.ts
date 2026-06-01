@@ -123,6 +123,37 @@ export interface SubAgentResult {
 	readonly completedAt: number;
 }
 
+// ─── SubAgent Lifecycle Events (drives the WebView SubAgentCard) ──────────
+
+/**
+ * A lifecycle event emitted while a sub-agent runs. The optional event sink
+ * passed to dispatch()/executeSubAgent() receives these so the caller (e.g.
+ * the webview controller) can translate them into IChatStreamDelta
+ * `sub_agent_*` deltas and forward them to the WebView. This is what makes the
+ * SubAgentCard actually light up — previously the sub-agent stream was consumed
+ * as a black box (_executeWithBudget) and no lifecycle event ever surfaced.
+ */
+export interface SubAgentLifecycleEvent {
+	/** 'start' when execution begins, 'progress' on intermediate steps, 'end' on done/error/cancel */
+	readonly kind: 'start' | 'progress' | 'end';
+	readonly subAgentId: string;
+	readonly subAgentType: SubAgentType;
+	readonly task: string;
+	readonly parentId: string;
+	readonly status: SubAgentStatus;
+	/** Human-readable progress note (for kind === 'progress') */
+	readonly progress?: string;
+	/** Final output text (for kind === 'end' on success) */
+	readonly output?: string;
+	/** Error message (for kind === 'end' on failure) */
+	readonly error?: string;
+	/** Group id to cluster parallel sub-agents into one card (optional) */
+	readonly groupId?: string;
+}
+
+/** Sink that receives sub-agent lifecycle events. Errors thrown here are swallowed. */
+export type SubAgentEventSink = (event: SubAgentLifecycleEvent) => void;
+
 export interface SubAgentStatusReport {
 	readonly id: string;
 	readonly type: SubAgentType;
@@ -228,10 +259,16 @@ export class UnifiedSubAgentDispatch {
 	/**
 	 * Execute a previously created sub-agent.
 	 * The executeFn is provided by the caller (typically AgentOSService).
+	 *
+	 * @param eventSink Optional sink receiving start/progress/end lifecycle events.
+	 *                  This is the channel that drives the WebView SubAgentCard.
+	 * @param groupId   Optional group id to cluster parallel sub-agents into one card.
 	 */
 	async executeSubAgent(
 		subAgentId: string,
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
+		eventSink?: SubAgentEventSink,
+		groupId?: string,
 	): Promise<SubAgentResult> {
 		const subAgent = this._activeSubAgents.get(subAgentId);
 		if (!subAgent) {
@@ -243,6 +280,17 @@ export class UnifiedSubAgentDispatch {
 		}
 
 		subAgent.status = 'running';
+
+		// Emit start event — this is what creates the running card in the UI.
+		this._emit(eventSink, {
+			kind: 'start',
+			subAgentId: subAgent.id,
+			subAgentType: subAgent.type,
+			task: subAgent.task,
+			parentId: subAgent.parentAgentId,
+			status: 'running',
+			groupId,
+		});
 
 		try {
 			// Build the request with context injection
@@ -259,7 +307,21 @@ export class UnifiedSubAgentDispatch {
 				setTimeout(() => reject(new Error(`SubAgent timeout after ${subAgent.timeout}ms`)), subAgent.timeout);
 			});
 
-			const executionPromise = this._executeWithBudget(executeFn, request, subAgent.budget);
+			const executionPromise = this._executeWithBudget(
+				executeFn,
+				request,
+				subAgent.budget,
+				(progress) => this._emit(eventSink, {
+					kind: 'progress',
+					subAgentId: subAgent.id,
+					subAgentType: subAgent.type,
+					task: subAgent.task,
+					parentId: subAgent.parentAgentId,
+					status: 'running',
+					progress,
+					groupId,
+				}),
+			);
 			const output = await Promise.race([executionPromise, timeoutPromise]);
 
 			subAgent.result = {
@@ -268,15 +330,40 @@ export class UnifiedSubAgentDispatch {
 				completedAt: Date.now(),
 			};
 			subAgent.status = 'done';
+
+			this._emit(eventSink, {
+				kind: 'end',
+				subAgentId: subAgent.id,
+				subAgentType: subAgent.type,
+				task: subAgent.task,
+				parentId: subAgent.parentAgentId,
+				status: 'done',
+				output,
+				groupId,
+			});
+
 			return subAgent.result;
 
 		} catch (error) {
+			const errMsg = error instanceof Error ? error.message : String(error);
 			subAgent.result = {
 				success: false,
-				error: error instanceof Error ? error.message : String(error),
+				error: errMsg,
 				completedAt: Date.now(),
 			};
 			subAgent.status = 'error';
+
+			this._emit(eventSink, {
+				kind: 'end',
+				subAgentId: subAgent.id,
+				subAgentType: subAgent.type,
+				task: subAgent.task,
+				parentId: subAgent.parentAgentId,
+				status: 'error',
+				error: errMsg,
+				groupId,
+			});
+
 			return subAgent.result;
 		}
 	}
@@ -292,6 +379,8 @@ export class UnifiedSubAgentDispatch {
 	async executeMultipleSubAgents(
 		subAgentIds: string[],
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
+		eventSink?: SubAgentEventSink,
+		groupId?: string,
 	): Promise<Map<string, SubAgentResult>> {
 		const results = new Map<string, SubAgentResult>();
 
@@ -300,7 +389,7 @@ export class UnifiedSubAgentDispatch {
 			const batch = subAgentIds.slice(i, i + this._maxConcurrent);
 			const settled = await Promise.allSettled(
 				batch.map(async (subAgentId) => {
-					const result = await this.executeSubAgent(subAgentId, executeFn);
+					const result = await this.executeSubAgent(subAgentId, executeFn, eventSink, groupId);
 					return { subAgentId, result } as const;
 				})
 			);
@@ -333,9 +422,10 @@ export class UnifiedSubAgentDispatch {
 		task: string,
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		options?: SubAgentOptions,
+		eventSink?: SubAgentEventSink,
 	): Promise<SubAgentResult> {
 		const subAgentId = this.createSubAgent(parentAgentId, task, options);
-		return this.executeSubAgent(subAgentId, executeFn);
+		return this.executeSubAgent(subAgentId, executeFn, eventSink);
 	}
 
 	/**
@@ -351,6 +441,7 @@ export class UnifiedSubAgentDispatch {
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		context?: string,
 		perTaskOptions?: Array<Pick<SubAgentOptions, 'priority' | 'maxIterations' | 'timeout'>>,
+		eventSink?: SubAgentEventSink,
 	): Promise<SubAgentResult[]> {
 		const subAgentIds = tasks.map((task, idx) =>
 			this.createSubAgent(parentAgentId, task, {
@@ -362,7 +453,10 @@ export class UnifiedSubAgentDispatch {
 			})
 		);
 
-		const resultMap = await this.executeMultipleSubAgents(subAgentIds, executeFn);
+		// Cluster all parallel explore agents under one group so the UI can render
+		// them as a single grouped SubAgentCard.
+		const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+		const resultMap = await this.executeMultipleSubAgents(subAgentIds, executeFn, eventSink, groupId);
 		return subAgentIds.map(id => resultMap.get(id)!).filter(Boolean);
 	}
 
@@ -523,8 +617,10 @@ export class UnifiedSubAgentDispatch {
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		request: IAgentTurnRequest,
 		budget: IterationBudget,
+		onProgress?: (note: string) => void,
 	): Promise<string> {
 		let output = '';
+		let toolCount = 0;
 
 		const stream = executeFn(request, budget);
 		for await (const delta of stream) {
@@ -534,11 +630,21 @@ export class UnifiedSubAgentDispatch {
 			if (delta.type === 'done' || delta.type === 'error') {
 				break;
 			}
+			// Surface a progress note when the sub-agent starts a tool, so the
+			// SubAgentCard can show live activity rather than a frozen spinner.
+			if (delta.type === 'tool_start' && onProgress) {
+				const toolName = delta.toolName || delta.displayName || 'tool';
+				onProgress(`运行工具: ${toolName}`);
+			}
 			// Consume budget only on tool_end (one consumption per tool call).
 			// tool_result often fires alongside tool_end for the same call,
 			// so we deliberately skip it to avoid double-counting.
 			if (delta.type === 'tool_end') {
+				toolCount++;
 				budget.consume(1);
+				if (onProgress) {
+					onProgress(`已完成 ${toolCount} 个工具调用`);
+				}
 				if (!budget.hasRemaining()) {
 					output += '\n\n[Budget exhausted — sub-agent stopped]';
 					break;
@@ -547,5 +653,15 @@ export class UnifiedSubAgentDispatch {
 		}
 
 		return output;
+	}
+
+	/** Safely deliver a lifecycle event to the sink, swallowing any sink errors. */
+	private _emit(sink: SubAgentEventSink | undefined, event: SubAgentLifecycleEvent): void {
+		if (!sink) { return; }
+		try {
+			sink(event);
+		} catch {
+			// Event delivery must never break sub-agent execution.
+		}
 	}
 }

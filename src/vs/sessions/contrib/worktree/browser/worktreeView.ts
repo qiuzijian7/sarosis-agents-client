@@ -10,7 +10,6 @@ import { ICompressibleTreeRenderer } from '../../../../base/browser/ui/tree/obje
 import { ITreeNode } from '../../../../base/browser/ui/tree/tree.js';
 import { ICompressedTreeNode, ICompressedTreeElement } from '../../../../base/browser/ui/tree/compressedObjectTreeModel.js';
 import { localize } from '../../../../nls.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
@@ -22,13 +21,15 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { URI } from '../../../../base/common/uri.js';
 import { ViewPane, IViewPaneOptions } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
 import { WorktreeItem, WorktreeTreeDataProvider } from './worktreeDataProvider.js';
-import { WorktreeCommands } from '../common/worktreeTypes.js';
 import { IWorktreeService } from '../common/worktreeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 
 const $ = dom.$;
 
@@ -164,10 +165,11 @@ export class WorktreeViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAccessibleViewInformationService accessibleViewInformationService: IAccessibleViewInformationService,
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
-		@ICommandService private readonly commandService: ICommandService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
-	) {
+		@ISCMViewService private readonly _scmViewService: ISCMViewService,
+		@ICommandService private readonly _commandService: ICommandService,
+		) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService, accessibleViewInformationService);
 		this.renderer = new WorktreeTreeRenderer(
 			(path) => this._deletingWorktrees.has(path),
@@ -380,9 +382,24 @@ export class WorktreeViewPane extends ViewPane {
 		return false;
 	}
 
-	private async openWorktree(item: WorktreeItem): Promise<void> {
+		private async openWorktree(item: WorktreeItem): Promise<void> {
 		try {
-			await this.commandService.executeCommand(WorktreeCommands.Open, item.path);
+			const worktreeUri = URI.file(item.path);
+
+			// First, try to find an already-registered SCM repository for this worktree path
+			const repository = this._scmViewService.repositories.find((r: ISCMRepository) =>
+				r.provider.rootUri?.toString() === worktreeUri.toString()
+			);
+
+			if (repository) {
+				// Focus the SCM view on this repository
+				this._scmViewService.focus(repository);
+				return;
+			}
+
+			// No SCM repository registered (the worktree folder isn't an open workspace folder).
+			// Open the worktree directory in a new window — this is the standard git worktree workflow.
+			await this._commandService.executeCommand('vscode.openFolder', worktreeUri, { forceNewWindow: true });
 		} catch (e) {
 			this.notificationService.error(localize('worktreeOpenError', 'Failed to open worktree: {0}', (e as Error).message));
 		}

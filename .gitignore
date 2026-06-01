@@ -161,6 +161,7 @@ temp_employeeChat.txt
 .sarosisworkspace/
 .workbuddy/
 .codebuddy/
+.vscode-oss-agents-dev/
 
 # 临时脚本和文档
 add-ts-nocheck.js

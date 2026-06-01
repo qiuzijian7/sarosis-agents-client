@@ -3,9 +3,9 @@
  *  Implements IToolProvider interface
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter } from '../../../../src/vs/base/common/event.js';
-import { Disposable } from '../../../../src/vs/base/common/lifecycle.js';
-import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
+import { Emitter } from '../../../src/vs/base/common/event.js';
+import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { IToolProvider, IToolDefinition, IToolCall, IToolResult } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 /**
  * Example Tool Provider - 提供基础工具（echo, time, etc.）

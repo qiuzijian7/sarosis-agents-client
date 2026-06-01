@@ -37,13 +37,13 @@ import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js'
 import { Action2, IMenuService, isIMenuItem, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { Sequencer, Throttler } from '../../../../base/common/async.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { ActionRunner, IAction, IActionRunner } from '../../../../base/common/actions.js';
+import { Action, ActionRunner, IAction, IActionRunner, Separator } from '../../../../base/common/actions.js';
 import { delta, groupBy } from '../../../../base/common/arrays.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { IProgressService } from '../../../../platform/progress/common/progress.js';
 import { ContextKeys } from './scmViewPane.js';
 import { IActionViewItem } from '../../../../base/browser/ui/actionbar/actionbar.js';
-import { IDropdownMenuActionViewItemOptions } from '../../../../base/browser/ui/dropdown/dropdownActionViewItem.js';
+import { DropdownMenuActionViewItem, IDropdownMenuActionViewItemOptions } from '../../../../base/browser/ui/dropdown/dropdownActionViewItem.js';
 import { ActionViewItem } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { Event } from '../../../../base/common/event.js';
@@ -109,36 +109,44 @@ class SCMRepositoryActionViewItem extends ActionViewItem {
 	}
 }
 
-class SCMHistoryItemRefsActionViewItem extends ActionViewItem {
+class SCMHistoryItemRefsActionViewItem extends DropdownMenuActionViewItem {
 	constructor(
 		private readonly _repository: ISCMRepository,
 		private readonly _historyItemsFilter: 'all' | 'auto' | ISCMHistoryItemRef[],
 		action: IAction,
-		options?: IDropdownMenuActionViewItemOptions
+		options: IDropdownMenuActionViewItemOptions | undefined,
+		contextMenuService: IContextMenuService,
+		private readonly _onDidChangeFilter: (filter: HistoryItemRefsFilter) => void,
+		private readonly _onSelectBranches: () => void,
 	) {
-		super(null, action, { ...options, icon: false, label: true });
+		super(action, { getActions: () => this._getActions() }, contextMenuService, {
+			...options,
+			classNames: ['scm-graph-history-item-picker'],
+		});
 	}
 
-	protected override updateLabel(): void {
-		if (this.options.label && this.label) {
-			this.label.classList.add('scm-graph-history-item-picker');
+	protected override renderLabel(element: HTMLElement): IDisposable | null {
+		element.classList.add('scm-graph-history-item-picker', 'codicon');
+		element.textContent = '';
 
-			const icon = $('.icon');
-			icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.gitBranch));
+		const icon = $('span.icon');
+		icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.gitBranch));
 
-			const name = $('.name');
-			if (this._historyItemsFilter === 'all') {
-				name.textContent = localize('all', "All");
-			} else if (this._historyItemsFilter === 'auto') {
-				name.textContent = localize('auto', "Auto");
-			} else if (this._historyItemsFilter.length === 1) {
-				name.textContent = this._historyItemsFilter[0].name;
-			} else {
-				name.textContent = localize('items', "{0} Items", this._historyItemsFilter.length);
-			}
-
-			reset(this.label, icon, name);
+		const name = $('span.name');
+		if (this._historyItemsFilter === 'all') {
+			name.textContent = localize('all', "All");
+		} else if (this._historyItemsFilter === 'auto') {
+			name.textContent = localize('auto', "Auto");
+		} else if (this._historyItemsFilter.length === 1) {
+			name.textContent = this._historyItemsFilter[0].name;
+		} else {
+			name.textContent = localize('items', "{0} Items", this._historyItemsFilter.length);
 		}
+
+		element.appendChild(icon);
+		element.appendChild(name);
+
+		return null;
 	}
 
 	protected override getTooltip(): string | undefined {
@@ -157,6 +165,40 @@ class SCMHistoryItemRefsActionViewItem extends ActionViewItem {
 		} else {
 			return this._historyItemsFilter.map(ref => ref.name).join(', ');
 		}
+	}
+
+	private _getActions(): IAction[] {
+		const actions: IAction[] = [];
+
+		const allAction = new Action('all', localize('all', "All"), undefined, true, async () => {
+			this._onDidChangeFilter('all');
+		});
+		allAction.checked = this._historyItemsFilter === 'all';
+		actions.push(allAction);
+
+		const autoAction = new Action('auto', localize('auto', "Auto"), undefined, true, async () => {
+			this._onDidChangeFilter('auto');
+		});
+		autoAction.checked = this._historyItemsFilter === 'auto';
+		actions.push(autoAction);
+
+		if (Array.isArray(this._historyItemsFilter) && this._historyItemsFilter.length > 0) {
+			actions.push(new Separator());
+			for (const ref of this._historyItemsFilter) {
+				const refAction = new Action(ref.id, ref.name, undefined, true, async () => {
+					// No-op: selected refs are shown for information
+				});
+				refAction.checked = true;
+				actions.push(refAction);
+			}
+		}
+
+		actions.push(new Separator());
+		actions.push(new Action('selectBranches', localize('selectBranches', "Select Branches..."), undefined, true, async () => {
+			this._onSelectBranches();
+		}));
+
+		return actions;
 	}
 }
 
@@ -1876,7 +1918,15 @@ export class SCMHistoryViewPane extends ViewPane {
 			const repository = this._treeViewModel?.repository.get();
 			const historyItemsFilter = this._treeViewModel?.getHistoryItemsFilter();
 			if (repository && historyItemsFilter) {
-				return new SCMHistoryItemRefsActionViewItem(repository, historyItemsFilter, action, options);
+				return new SCMHistoryItemRefsActionViewItem(
+					repository,
+					historyItemsFilter,
+					action,
+					options,
+					this.contextMenuService,
+					(filter) => this._treeViewModel.setHistoryItemsFilter(filter),
+					() => this.pickHistoryItemRef()
+				);
 			}
 		}
 

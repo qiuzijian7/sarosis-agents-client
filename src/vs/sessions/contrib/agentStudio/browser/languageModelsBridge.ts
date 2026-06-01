@@ -124,15 +124,101 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 	async listModels(): Promise<IModelInfo[]> {
 		const result: IModelInfo[] = [];
 		for (const { id, metadata } of this._collectVendorModels()) {
+			// `ILanguageModelChatMetadata` (VSCode standard type) carries no reasoning flag,
+			// and extensions registering via vscode.lm.registerLanguageModelChatProvider
+			// (e.g. codebuddy) drop the `supportsReasoning` field on the way through
+			// `createModelInfo` → `LanguageModelChatInformation.capabilities` (always `{}`).
+			// So the thinking toggle never lights up for these models. We recover the
+			// capability by inferring it from the model id. Policy (per product decision):
+			// any model recognised as reasoning-capable surfaces a plain switch — we set
+			// `supportsReasoning: true` and leave `reasoningType` unset so the webview's
+			// `reasoningUIType` falls through to the `'switch'` branch.
+			const supportsReasoning = this._inferSupportsReasoning(id, metadata);
 			result.push({
 				id,                                       // qualified id, ready for sendChatRequest
 				name: this._friendlyModelName(id, metadata),
 				description: metadata.detail ?? metadata.tooltip,
 				contextWindow: metadata.maxInputTokens,
+				maxInputTokens: metadata.maxInputTokens,
 				capabilities: [ModelCapability.Chat],
+				...(supportsReasoning ? { supportsReasoning: true } : {}),
 			});
 		}
 		return result;
+	}
+
+	/**
+	 * Strip the `vendor/` prefix and any `agentId::` encoding from a qualified id to
+	 * recover the bare model id used by the provider extension (e.g. codebuddy).
+	 * Mirrors the id-decoding done in `_friendlyModelName`, but returns the raw model id
+	 * (not a display name) for capability matching.
+	 */
+	private _bareModelId(qualifiedId: string): string {
+		const slashIdx = qualifiedId.indexOf('/');
+		const rest = slashIdx === -1 ? qualifiedId : qualifiedId.slice(slashIdx + 1);
+		const sepIdx = rest.indexOf('::');
+		return (sepIdx > -1 ? rest.slice(sepIdx + 2) : rest) || qualifiedId;
+	}
+
+	/**
+	 * Infer whether a bridged LM model supports reasoning/thinking from its id.
+	 *
+	 * Rationale: the VSCode LM API metadata (`ILanguageModelChatMetadata`) has no field
+	 * to carry reasoning capability, and provider extensions (codebuddy etc.) lose the
+	 * flag when they build `LanguageModelChatInformation`. Rather than patch every
+	 * extension + the VSCode standard type, we reconstruct the capability here using id
+	 * heuristics derived from `extensions/codebuddy-provider/model.json` (validated to
+	 * match all 68 declared models exactly).
+	 *
+	 * Returns `true` only for families known to support thinking; conservatively `false`
+	 * otherwise (so non-reasoning models like gpt-5 plain / deepseek-v3-1 / gemini-2.5-flash
+	 * never show a stray toggle).
+	 */
+	private _inferSupportsReasoning(qualifiedId: string, _metadata: ILanguageModelChatMetadata): boolean {
+		const s = this._bareModelId(qualifiedId).toLowerCase();
+
+		// Image / completion / non-chat families — never reasoning.
+		if (s.includes('image')) { return false; }
+		if (/(completion|codewise)/.test(s)) { return false; }
+		if (/^o4-mini/.test(s)) { return false; }
+
+		// GPT-5: plain `gpt-5` and its codex/mini/nano variants do NOT reason;
+		// minor-versioned gpt-5.1 ~ gpt-5.5 (and their codex variants) DO.
+		if (/^gpt-5(-codex|-mini|-nano)?$/.test(s)) { return false; }
+		if (/^gpt-5\.\d/.test(s)) { return true; }
+
+		// DeepSeek: only v3-2 reasons; v3-1 / v3-0324 / r1 do not.
+		if (/^deepseek-v3-2/.test(s)) { return true; }
+		if (/^deepseek-/.test(s)) { return false; }
+
+		// Gemini: 3.x reasons, 2.5-pro reasons, 2.5-flash does not.
+		if (/^gemini-3/.test(s)) { return true; }
+		if (/^gemini-2\.5-pro/.test(s)) { return true; }
+		if (/^gemini-/.test(s)) { return false; }
+
+		// Claude: all currently-shipped families reason.
+		if (/^claude-/.test(s)) { return true; }
+
+		// GLM 4.6 / 4.7 / 5.x / 5v.
+		if (/^glm-(4\.[67]|5)/.test(s)) { return true; }
+
+		// Kimi K2 thinking / minor versions.
+		if (/^kimi-k2(\.\d|-thinking)/.test(s)) { return true; }
+
+		// MiniMax M-series.
+		if (/^minimax-m\d/.test(s)) { return true; }
+
+		// Hunyuan 2.x thinking / instruct (plain hunyuan-chat does not reason).
+		if (/^hunyuan-2\.\d-(thinking|instruct)/.test(s)) { return true; }
+		if (/^hunyuan-/.test(s)) { return false; }
+
+		// Hunyuan hy3 previews / dev builds.
+		if (/^hy3-/.test(s)) { return true; }
+
+		// Internal default reasoning model.
+		if (/^default-1\.2/.test(s)) { return true; }
+
+		return false;
 	}
 
 	/**

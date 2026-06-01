@@ -582,6 +582,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// 续跑兜底：若上一轮检测到"未完成意图却没调工具"，本轮强制
 				// tool_choice='required'，逼模型真正动手。仅在有可用工具时生效。
 				toolChoice: (forceToolChoiceNextIteration && enabledTools.length > 0) ? 'required' : 'auto',
+				// 思考/推理配置：由聊天输入框 thinking UI 控件透传至此，
+				// 各 model provider 据此映射到原生 API 参数（thinking/thinkingConfig/reasoning_effort）。
+				reasoning: request.options?.reasoning,
 			};
 			if (forceToolChoiceNextIteration) {
 				this._logService.info(`[AgentOS] Iteration ${iteration}: forcing tool_choice=required (continuation nudge follow-up)`);

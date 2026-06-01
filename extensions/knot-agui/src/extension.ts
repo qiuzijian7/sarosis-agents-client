@@ -171,6 +171,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		const endpoint = config.get<string>('endpoint') ?? 'https://knot.woa.com';
 		const token_ = config.get<string>('token') ?? '';
 		const user = config.get<string>('user') ?? '';
+		const workspace = config.get<string>('workspace') ?? '';
 
 		if (!token_) {
 			throw new Error(
@@ -250,11 +251,13 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		// 获取 agent_client_uuid（仅从 knot-cli 获取真实 connection_uuid，不可用时省略该字段）
 		const agentClientUuid = await this._tryGetConnectionUuid();
 		const chatExtra: Record<string, unknown> = {};
-		if (agentClientUuid) {
-			chatExtra.agent_client_uuid = agentClientUuid;
+		// 优先使用用户手动配置的 workspace（agent_client_uuid），否则使用自动获取的 agentClientUuid
+		const effectiveClientUuid = workspace || agentClientUuid;
+		if (effectiveClientUuid) {
+			chatExtra.agent_client_uuid = effectiveClientUuid;
 		}
 		console.log(
-			`[Knot] agent_client_uuid: ${agentClientUuid ?? '<not available>'}`,
+			`[Knot] agent_client_uuid: ${effectiveClientUuid ?? '<not available>'}, workspace config: ${workspace || '<not set>'}`,
 		);
 		const bodyObj: Record<string, unknown> = {
 			input: {

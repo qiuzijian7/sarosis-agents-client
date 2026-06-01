@@ -6,9 +6,9 @@
  *  优先级：50
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../src/vs/base/common/lifecycle.js';
-import { IAgentCapabilityPlugin, IAgentOSPluginContext, AgentCapability } from '../../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
+import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { IAgentCapabilityPlugin, IAgentOSPluginContext, AgentCapability } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
+import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
 import { ToolExampleProvider } from './toolProvider.js';
 
 export class ToolExamplePlugin extends Disposable implements IAgentCapabilityPlugin {

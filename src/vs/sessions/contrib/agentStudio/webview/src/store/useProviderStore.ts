@@ -47,6 +47,7 @@ export interface ProviderModelInfo {
 	supportsImages?: boolean;  // 是否支持图片
 	supportsReasoning?: boolean; // 是否支持推理/思考模式
 	onlyReasoning?: boolean;   // 是否仅推理模式
+	reasoningType?: 'budget-slider' | 'effort-slider' | false; // 推理 UI 形态（预算滑块 / 努力滑块）
 	temperature?: number;      // 温度参数
 	vendor?: string;           // 供应商
 	credits?: string;          // Credits 信息
@@ -74,10 +75,56 @@ interface ProviderSelection {
 	agentId?: string;
 }
 
+/**
+ * 单个模型的 thinking/reasoning 配置。
+ * 按 `${providerId}::${modelId}` 维度持久化，切换模型时各自独立。
+ */
+export interface ReasoningConfig {
+	/** 是否开启思考模式 */
+	enabled: boolean;
+	/** 思考预算（token 数），budget-slider 类模型使用 */
+	budget?: number;
+	/** 思考工作量等级，effort-slider 类模型使用 */
+	effort?: 'low' | 'medium' | 'high';
+}
+
+// thinking 配置默认值（参考 void）
+const DEFAULT_REASONING_BUDGET = 1024;   // void budget slider 默认 1024 tokens
+const DEFAULT_REASONING_EFFORT: 'low' | 'medium' | 'high' = 'low';
+const REASONING_STORAGE_KEY = 'agentStudio.reasoningConfig';
+
+function loadReasoningConfigFromStorage(): Record<string, ReasoningConfig> {
+	try {
+		const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(REASONING_STORAGE_KEY) : null;
+		if (raw) {
+			return JSON.parse(raw) as Record<string, ReasoningConfig>;
+		}
+	} catch (err) {
+		console.warn('[ProviderStore] Failed to load reasoning config from storage:', err);
+	}
+	return {};
+}
+
+function saveReasoningConfigToStorage(map: Record<string, ReasoningConfig>): void {
+	try {
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem(REASONING_STORAGE_KEY, JSON.stringify(map));
+		}
+	} catch (err) {
+		console.warn('[ProviderStore] Failed to save reasoning config to storage:', err);
+	}
+}
+
+function reasoningKey(providerId: string, modelId: string): string {
+	return `${providerId}::${modelId}`;
+}
+
 interface ProviderState {
 	providers: ProviderInfo[];
 	selection: ProviderSelection | null;
 	isLoading: boolean;
+	/** 各模型的 thinking 配置，键为 `${providerId}::${modelId}` */
+	reasoningConfig: Record<string, ReasoningConfig>;
 
 	// Actions
 	loadProviders: () => Promise<void>;
@@ -85,15 +132,22 @@ interface ProviderState {
 	selectProvider: (providerId: string, modelId: string, agentId?: string) => void;
 	updateProviders: (providers: ProviderInfo[]) => void;
 	openProviderSettings: (providerId?: string) => void;
+	/** 设置当前选中模型的 thinking 配置（部分更新） */
+	setReasoningConfig: (patch: Partial<ReasoningConfig>) => void;
 
 	// Computed
 	authenticatedProviders: () => ProviderInfo[];
+	/** 当前选中模型的能力信息 */
+	currentModelInfo: () => ProviderModelInfo | null;
+	/** 当前选中模型的 thinking 配置（带默认值兜底） */
+	currentReasoningConfig: () => ReasoningConfig | null;
 }
 
 export const useProviderStore = create<ProviderState>((set, get) => ({
 	providers: [],
 	selection: null,
 	isLoading: false,
+	reasoningConfig: loadReasoningConfigFromStorage(),
 
 	loadProviders: async () => {
 		set({ isLoading: true });
@@ -487,5 +541,52 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 	authenticatedProviders: () => {
 		const { providers } = get();
 		return providers.filter(p => p.authStatus === 'authenticated');
+	},
+
+	currentModelInfo: () => {
+		const { providers, selection } = get();
+		if (!selection) {
+			return null;
+		}
+		const provider = providers.find(p => p.id === selection.providerId);
+		if (!provider) {
+			return null;
+		}
+		return provider.models.find(m => m.id === selection.modelId) ?? null;
+	},
+
+	currentReasoningConfig: () => {
+		const { selection, reasoningConfig } = get();
+		if (!selection) {
+			return null;
+		}
+		const model = get().currentModelInfo();
+		// 模型不支持推理时返回 null（UI 不显示控件）
+		const supportsReasoning = model?.supportsReasoning || model?.reasoningType;
+		if (!supportsReasoning) {
+			return null;
+		}
+		const key = reasoningKey(selection.providerId, selection.modelId);
+		const saved = reasoningConfig[key];
+		const isEffort = model?.reasoningType === 'effort-slider';
+		// 兜底默认值：onlyReasoning 模型默认开启，否则默认关闭
+		return {
+			enabled: saved?.enabled ?? (model?.onlyReasoning ?? false),
+			budget: saved?.budget ?? (isEffort ? undefined : DEFAULT_REASONING_BUDGET),
+			effort: saved?.effort ?? (isEffort ? DEFAULT_REASONING_EFFORT : undefined),
+		};
+	},
+
+	setReasoningConfig: (patch: Partial<ReasoningConfig>) => {
+		const { selection, reasoningConfig } = get();
+		if (!selection) {
+			return;
+		}
+		const key = reasoningKey(selection.providerId, selection.modelId);
+		const current = get().currentReasoningConfig() ?? { enabled: false };
+		const next: ReasoningConfig = { ...current, ...patch };
+		const updated = { ...reasoningConfig, [key]: next };
+		set({ reasoningConfig: updated });
+		saveReasoningConfigToStorage(updated);
 	},
 }));

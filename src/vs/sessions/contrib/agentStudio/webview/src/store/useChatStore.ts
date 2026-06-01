@@ -783,6 +783,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 				workspaceId = wsStore.getState().activeWorkspaceId ?? undefined;
 			} catch { /* store not available */ }
 
+			// Resolve current model's thinking/reasoning config (if enabled)
+			let reasoning: { enabled: boolean; budget?: number; effort?: 'low' | 'medium' | 'high' } | undefined;
+			try {
+				const { useProviderStore } = require('./useProviderStore');
+				const cfg = useProviderStore.getState().currentReasoningConfig?.();
+				if (cfg && cfg.enabled) {
+					reasoning = { enabled: true, budget: cfg.budget, effort: cfg.effort };
+				}
+			} catch { /* provider store not available */ }
+
 			// Add user message optimistically
 			const userMessage: ChatMessage = {
 				id: `user_${Date.now()}`,
@@ -804,6 +814,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					workspaceId,
 					explicitSkillIds: explicitSkillIds.length > 0 ? explicitSkillIds : undefined,
 					chatMode,
+					reasoning,
 				});
 				// After send completes, refresh session list to update messageCount
 				get().loadAgentSessions(activeEmployeeId!);

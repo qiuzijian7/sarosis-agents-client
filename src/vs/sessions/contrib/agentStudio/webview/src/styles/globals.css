@@ -3206,6 +3206,140 @@ html, body, #root {
   color: var(--vscode-textLink-foreground, #60a5fa);
 }
 
+/* ── Thinking / Reasoning 控件 ───────────────────────────────── */
+.reasoning-chip-wrap {
+  position: relative;
+}
+
+.chat-toolbar-btn.reasoning-tag {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.chat-toolbar-btn.reasoning-tag:hover {
+  border-color: rgba(167, 139, 250, 0.4);
+  background: rgba(167, 139, 250, 0.08);
+  color: #c4b5fd;
+}
+
+.chat-toolbar-btn.reasoning-tag.reasoning-active {
+  border-color: rgba(167, 139, 250, 0.55);
+  background: rgba(167, 139, 250, 0.14);
+  color: #c4b5fd;
+}
+
+.reasoning-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--as-bg-elevated, var(--vscode-dropdown-background, #1e1e1e));
+  border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.1));
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+}
+
+.reasoning-popover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.reasoning-popover-label {
+  font-size: 12px;
+  color: var(--vscode-foreground);
+  font-weight: 500;
+}
+
+.reasoning-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  border: none;
+  background: var(--vscode-input-background, rgba(255, 255, 255, 0.12));
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.reasoning-switch.on {
+  background: rgba(167, 139, 250, 0.85);
+}
+
+.reasoning-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reasoning-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.reasoning-switch.on .reasoning-switch-knob {
+  transform: translateX(16px);
+}
+
+.reasoning-effort-row {
+  gap: 6px;
+}
+
+.reasoning-effort-btn {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: 5px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.reasoning-effort-btn:hover {
+  border-color: rgba(167, 139, 250, 0.4);
+}
+
+.reasoning-effort-btn.active {
+  border-color: rgba(167, 139, 250, 0.6);
+  background: rgba(167, 139, 250, 0.16);
+  color: #c4b5fd;
+}
+
+.reasoning-budget-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.reasoning-budget-slider {
+  width: 100%;
+  accent-color: #a78bfa;
+  cursor: pointer;
+}
+
+.reasoning-budget-value {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #9ca3af);
+  text-align: right;
+}
+
 /* Mode dropdown item with tooltip */
 .provider-dropdown-item.mode-item {
   position: relative;

@@ -3,9 +3,9 @@
  *  Implements IMemoryProvider interface
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter } from '../../../../src/vs/base/common/event.js';
-import { Disposable } from '../../../../src/vs/base/common/lifecycle.js';
-import { IMemoryProvider, IMemoryContext, IMemoryEntry } from '../../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
+import { Emitter } from '../../../src/vs/base/common/event.js';
+import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
+import { IMemoryProvider, IMemoryContext, IMemoryEntry } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 /**
  * Example Memory Provider - 基于内存的简单实现
