@@ -21,7 +21,9 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { URI } from '../../../../base/common/uri.js';
+import { basename } from '../../../../base/common/resources.js';
 import { ViewPane, IViewPaneOptions } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
@@ -29,6 +31,7 @@ import { WorktreeItem, WorktreeTreeDataProvider } from './worktreeDataProvider.j
 import { IWorktreeService } from '../common/worktreeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
+import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 
 const $ = dom.$;
@@ -41,6 +44,7 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 	constructor(
 		private readonly _isDeleting: (path: string) => boolean,
 		private readonly _onDelete: (item: WorktreeItem) => void,
+		private readonly _onOpen: (item: WorktreeItem) => void,
 	) { }
 
 	get templateId(): string { return WorktreeTreeRenderer.TEMPLATE_ID; }
@@ -73,13 +77,25 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 		const isDeleting = this._isDeleting(item.path);
 		templateData.element.classList.toggle('is-deleting', isDeleting);
 
-		// Render actions (remove button for non-main worktrees, spinner when deleting)
+		// Render actions (open button, remove button for non-main worktrees, spinner when deleting)
 		dom.clearNode(templateData.actions);
 		if (isDeleting) {
 			// Show loading spinner
 			const spinner = dom.append(templateData.actions, $('.worktree-item-spinner'));
 			spinner.title = localize('worktreeDeleting', 'Deleting...');
-		} else if (!item.worktree.isMain) {
+		} else {
+			// "Open in VS Code" button (available for all worktrees)
+			const openBtn = dom.append(templateData.actions, $('a.worktree-item-action'));
+			openBtn.setAttribute('role', 'button');
+			openBtn.setAttribute('title', localize('worktreeOpenInVSCode', 'Open in VS Code'));
+			openBtn.classList.add(...ThemeIcon.asClassNameArray(Codicon.emptyWindow));
+			openBtn.onclick = (e) => {
+				e.stopPropagation();
+				this._onOpen(item);
+			};
+		}
+
+		if (!isDeleting && !item.worktree.isMain) {
 			const removeBtn = dom.append(templateData.actions, $('a.worktree-item-action'));
 			removeBtn.setAttribute('role', 'button');
 			removeBtn.setAttribute('title', localize('worktreeRemove', 'Remove Worktree'));
@@ -168,12 +184,14 @@ export class WorktreeViewPane extends ViewPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ISCMViewService private readonly _scmViewService: ISCMViewService,
+		@IWorkspaceEditingService private readonly _workspaceEditingService: IWorkspaceEditingService,
 		@ICommandService private readonly _commandService: ICommandService,
 		) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService, accessibleViewInformationService);
 		this.renderer = new WorktreeTreeRenderer(
 			(path) => this._deletingWorktrees.has(path),
 			(item) => this.onDeleteWorktree(item),
+			(item) => this.openWorktreeInNewWindow(item),
 		);
 	}
 
@@ -382,27 +400,76 @@ export class WorktreeViewPane extends ViewPane {
 		return false;
 	}
 
-		private async openWorktree(item: WorktreeItem): Promise<void> {
+	private async openWorktree(item: WorktreeItem): Promise<void> {
 		try {
 			const worktreeUri = URI.file(item.path);
 
-			// First, try to find an already-registered SCM repository for this worktree path
+			// First, try to find an already-registered SCM repository for this worktree path.
+			// If found, just focus the SCM view on it (changes/graph already point at it).
 			const repository = this._scmViewService.repositories.find((r: ISCMRepository) =>
 				r.provider.rootUri?.toString() === worktreeUri.toString()
 			);
 
 			if (repository) {
-				// Focus the SCM view on this repository
 				this._scmViewService.focus(repository);
 				return;
 			}
 
-			// No SCM repository registered (the worktree folder isn't an open workspace folder).
-			// Open the worktree directory in a new window — this is the standard git worktree workflow.
+			// The worktree is not the current workspace folder. Instead of opening a new
+			// window, switch the active workspace folder to this worktree directory.
+			// The Git extension re-discovers the repository for the new folder, which
+			// automatically refreshes the Changes and Graph views in place.
+			const currentFolders = this._workspaceContextService.getWorkspace().folders;
+			const folderName = basename(worktreeUri) || item.label;
+			const folderData = { uri: worktreeUri, name: folderName };
+
+			if (currentFolders.length === 0) {
+				await this._workspaceEditingService.addFolders([folderData], true);
+			} else {
+				// Replace the primary folder (index 0) with the worktree folder.
+				await this._workspaceEditingService.updateFolders(0, currentFolders.length, [folderData], true);
+			}
+
+			// After the folder switch, try to focus the SCM repository for the new path
+			// once it has been registered by the Git extension.
+			this._focusRepositoryWhenReady(worktreeUri);
+		} catch (e) {
+			this.notificationService.error(localize('worktreeOpenError', 'Failed to switch to worktree: {0}', (e as Error).message));
+		}
+	}
+
+	/**
+	 * Open the worktree directory in a new VS Code window. Triggered by the
+	 * dedicated "Open in VS Code" action button on each worktree item.
+	 */
+	private async openWorktreeInNewWindow(item: WorktreeItem): Promise<void> {
+		try {
+			const worktreeUri = URI.file(item.path);
 			await this._commandService.executeCommand('vscode.openFolder', worktreeUri, { forceNewWindow: true });
 		} catch (e) {
-			this.notificationService.error(localize('worktreeOpenError', 'Failed to open worktree: {0}', (e as Error).message));
+			this.notificationService.error(localize('worktreeOpenWindowError', 'Failed to open worktree in VS Code: {0}', (e as Error).message));
 		}
+	}
+
+	/**
+	 * Focus the SCM repository matching the given worktree URI. Because the Git
+	 * extension registers repositories asynchronously after a workspace folder
+	 * change, we retry for a short period until the repository appears.
+	 */
+	private _focusRepositoryWhenReady(worktreeUri: URI, attempt: number = 0): void {
+		const repository = this._scmViewService.repositories.find((r: ISCMRepository) =>
+			r.provider.rootUri?.toString() === worktreeUri.toString()
+		);
+		if (repository) {
+			this._scmViewService.focus(repository);
+			return;
+		}
+		// Give up after ~5 seconds (10 attempts * 500ms)
+		if (attempt >= 10) {
+			return;
+		}
+		const handle = setTimeout(() => this._focusRepositoryWhenReady(worktreeUri, attempt + 1), 500);
+		this._register({ dispose: () => clearTimeout(handle) });
 	}
 
 	/** Handle worktree deletion with loading spinner */
