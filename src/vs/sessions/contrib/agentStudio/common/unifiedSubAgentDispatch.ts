@@ -121,38 +121,137 @@ export interface SubAgentResult {
 	readonly output?: string;
 	readonly error?: string;
 	readonly completedAt: number;
+	/** Execution duration in milliseconds */
+	readonly durationMs?: number;
+	/** Number of API (LLM) calls made */
+	readonly apiCalls?: number;
+	/** Token usage (if available from the LLM response) */
+	readonly tokensUsed?: { input: number; output: number };
+	/** Why the sub-agent stopped executing */
+	readonly exitReason?: SubAgentExitReason;
+	/** Tool call trace — list of tools invoked with their status */
+	readonly toolTrace?: ReadonlyArray<SubAgentToolTraceEntry>;
+	/** Files modified by this sub-agent (for file change coordination) */
+	readonly filesModified?: readonly string[];
 }
 
-// ─── SubAgent Lifecycle Events (drives the WebView SubAgentCard) ──────────
+/** A single tool call trace entry, inspired by Hermes tool_trace. */
+export interface SubAgentToolTraceEntry {
+	readonly toolName: string;
+	readonly status: 'ok' | 'error';
+	/** Approximate size of tool arguments in bytes */
+	readonly argsSizeBytes?: number;
+	/** Approximate size of tool result in bytes */
+	readonly resultSizeBytes?: number;
+	/** Error message (if status === 'error') */
+	readonly error?: string;
+}
+
+/** Internal execution result from _executeWithBudget, carrying metadata for SubAgentResult. */
+interface _ExecResult {
+	readonly output: string;
+	readonly apiCallCount: number;
+	readonly budgetExhausted: boolean;
+	readonly tokensUsed?: { input: number; output: number };
+	readonly toolTrace: SubAgentToolTraceEntry[];
+	/** Files that were modified (written/created) by this sub-agent */
+	readonly filesModified: string[];
+}
+
+// ─── SubAgent Event System (inspired by Hermes DelegateEvent) ───────────
 
 /**
- * A lifecycle event emitted while a sub-agent runs. The optional event sink
- * passed to dispatch()/executeSubAgent() receives these so the caller (e.g.
- * the webview controller) can translate them into IChatStreamDelta
- * `sub_agent_*` deltas and forward them to the WebView. This is what makes the
- * SubAgentCard actually light up — previously the sub-agent stream was consumed
- * as a black box (_executeWithBudget) and no lifecycle event ever surfaced.
+ * Fine-grained sub-agent event types, inspired by Hermes-Agent's DelegateEvent enum.
+ * These provide detailed observability into sub-agent execution lifecycle.
+ *
+ * Hermes DelegateEvent has 7 types: TASK_SPAWNED, TASK_PROGRESS, TASK_COMPLETED,
+ * TASK_FAILED, TASK_THINKING, TASK_TOOL_STARTED, TASK_TOOL_COMPLETED.
+ * We align with that set and add 'interrupted' for our interrupt mechanism.
  */
-export interface SubAgentLifecycleEvent {
-	/** 'start' when execution begins, 'progress' on intermediate steps, 'end' on done/error/cancel */
-	readonly kind: 'start' | 'progress' | 'end';
+export const enum SubAgentEventType {
+	/** Sub-agent has been spawned and is about to start execution */
+	Spawned = 'spawned',
+	/** Sub-agent is thinking (LLM inference in progress) */
+	Thinking = 'thinking',
+	/** Sub-agent has started a tool call */
+	ToolStarted = 'tool_started',
+	/** Sub-agent has completed a tool call */
+	ToolCompleted = 'tool_completed',
+	/** General progress update (e.g., batch progress summary) */
+	Progress = 'progress',
+	/** Sub-agent completed successfully */
+	Completed = 'completed',
+	/** Sub-agent failed with an error */
+	Failed = 'failed',
+	/** Sub-agent was interrupted by user or parent */
+	Interrupted = 'interrupted',
+}
+
+/**
+ * Sub-agent event emitted during execution.
+ * Inspired by Hermes-Agent's DelegateEvent — provides fine-grained
+ * observability into the sub-agent lifecycle.
+ *
+ * The event sink receives these so the caller (e.g. the webview controller)
+ * can translate them into IChatStreamDelta deltas and forward to the WebView.
+ */
+export interface SubAgentEvent {
+	/** Fine-grained event type (inspired by Hermes DelegateEvent) */
+	readonly type: SubAgentEventType;
 	readonly subAgentId: string;
 	readonly subAgentType: SubAgentType;
 	readonly task: string;
 	readonly parentId: string;
-	readonly status: SubAgentStatus;
-	/** Human-readable progress note (for kind === 'progress') */
-	readonly progress?: string;
-	/** Final output text (for kind === 'end' on success) */
+	readonly timestamp: number;
+
+	// ── Type-specific payloads ──
+
+	/** Tool name (for ToolStarted / ToolCompleted) */
+	readonly toolName?: string;
+	/** Tool call arguments preview (for ToolStarted, truncated) */
+	readonly toolArgsPreview?: string;
+	/** Tool result preview (for ToolCompleted, truncated) */
+	readonly toolResultPreview?: string;
+	/** Tool execution status (for ToolCompleted) */
+	readonly toolStatus?: 'ok' | 'error';
+	/** Thinking text (for Thinking) */
+	readonly thinkingText?: string;
+	/** Human-readable progress note (for Progress) */
+	readonly progressNote?: string;
+	/** Progress metrics: tool calls completed so far */
+	readonly toolsCompleted?: number;
+	/** Final output text (for Completed) */
 	readonly output?: string;
-	/** Error message (for kind === 'end' on failure) */
+	/** Error message (for Failed / Interrupted) */
 	readonly error?: string;
-	/** Group id to cluster parallel sub-agents into one card (optional) */
+	/** Duration in ms (for Completed / Failed) */
+	readonly durationMs?: number;
+	/** Token usage (for Completed) */
+	readonly tokensUsed?: { input: number; output: number };
+	/** Exit reason (for Completed / Failed / Interrupted) */
+	readonly exitReason?: SubAgentExitReason;
+	/** Group id to cluster parallel sub-agents into one card */
 	readonly groupId?: string;
 }
 
-/** Sink that receives sub-agent lifecycle events. Errors thrown here are swallowed. */
-export type SubAgentEventSink = (event: SubAgentLifecycleEvent) => void;
+/** Why a sub-agent stopped executing. */
+export type SubAgentExitReason =
+	| 'completed'       // Task finished normally
+	| 'max_iterations'  // Hit iteration budget
+	| 'timeout'         // Exceeded time limit
+	| 'interrupted'     // Interrupted by user or parent
+	| 'error';          // Unhandled exception
+
+/** Sink that receives sub-agent events. Errors thrown here are swallowed. */
+export type SubAgentEventSink = (event: SubAgentEvent) => void;
+
+// ─── Backward-compatible legacy aliases ─────────────────────────────────
+
+/**
+ * @deprecated Use SubAgentEvent instead. Kept for backward compatibility
+ * with existing callers that reference SubAgentLifecycleEvent.
+ */
+export type SubAgentLifecycleEvent = SubAgentEvent;
 
 export interface SubAgentStatusReport {
 	readonly id: string;
@@ -184,6 +283,70 @@ export class UnifiedSubAgentDispatch {
 	private readonly _parentBudget: IterationBudget;
 	private readonly _maxConcurrent: number;
 	private readonly _maxSpawnDepth: number;
+	/**
+	 * Set of sub-agent IDs that have been interrupted.
+	 * Checked in _executeWithBudget loop to break out of streaming.
+	 * Inspired by Hermes-Agent's interrupt signal propagation.
+	 */
+	private readonly _interruptedSubAgents = new Set<string>();
+
+	// ─── Global registry (inspired by Hermes _active_subagents) ───────
+	/**
+	 * Static registry of all active UnifiedSubAgentDispatch instances,
+	 * keyed by workspace/session ID. This enables cross-dispatch queries
+	 * and UI integration (TaskBoard can enumerate all running sub-agents).
+	 *
+	 * Inspired by Hermes-Agent's module-level `_active_subagents` dict
+	 * which supports TUI queries and interrupt propagation.
+	 */
+	private static readonly _globalRegistry = new Map<string, UnifiedSubAgentDispatch>();
+
+	/** Register this dispatch instance in the global registry. */
+	registerGlobal(sessionId: string): void {
+		UnifiedSubAgentDispatch._globalRegistry.set(sessionId, this);
+	}
+
+	/** Unregister this dispatch instance from the global registry. */
+	unregisterGlobal(sessionId: string): void {
+		UnifiedSubAgentDispatch._globalRegistry.delete(sessionId);
+	}
+
+	/**
+	 * Look up a sub-agent across all dispatch instances.
+	 * Useful for UI (TaskBoard) or interrupt propagation across sessions.
+	 */
+	static findSubAgentGlobal(subAgentId: string): SubAgentInstance | undefined {
+		for (const dispatch of UnifiedSubAgentDispatch._globalRegistry.values()) {
+			const agent = dispatch._activeSubAgents.get(subAgentId);
+			if (agent) { return agent; }
+		}
+		return undefined;
+	}
+
+	/**
+	 * Interrupt a sub-agent by ID across all dispatch instances.
+	 * Inspired by Hermes interrupt_subagent() which uses module-level lookup.
+	 */
+	static interruptSubAgentGlobal(subAgentId: string): boolean {
+		for (const dispatch of UnifiedSubAgentDispatch._globalRegistry.values()) {
+			if (dispatch._activeSubAgents.has(subAgentId)) {
+				return dispatch.interruptSubAgent(subAgentId);
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Get all running sub-agents across all sessions.
+	 * Useful for TaskBoard to show global sub-agent status.
+	 */
+	static getAllRunningGlobal(): SubAgentStatusReport[] {
+		const results: SubAgentStatusReport[] = [];
+		for (const dispatch of UnifiedSubAgentDispatch._globalRegistry.values()) {
+			results.push(...dispatch.getAllSubAgents());
+		}
+		return results;
+	}
 
 	constructor(parentBudget?: IterationBudget, maxConcurrent: number = 3, maxSpawnDepth: number = 2) {
 		this._parentBudget = parentBudget || new IterationBudget(90);
@@ -234,7 +397,7 @@ export class UnifiedSubAgentDispatch {
 			throw new Error(`Cannot spawn sub-agent: maximum spawn depth (${this._maxSpawnDepth}) reached. Parent agent depth: ${parentDepth}`);
 		}
 
-		const subAgentId = `subagent-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+		const subAgentId = `subagent-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 		const budget = this._parentBudget.createChildBudget(options?.maxIterations);
 		const type = options?.type ?? SubAgentType.General;
 
@@ -280,15 +443,16 @@ export class UnifiedSubAgentDispatch {
 		}
 
 		subAgent.status = 'running';
+		const startedAt = Date.now();
 
-		// Emit start event — this is what creates the running card in the UI.
+		// Emit spawned event — sub-agent has been created and is about to run.
 		this._emit(eventSink, {
-			kind: 'start',
+			type: SubAgentEventType.Spawned,
 			subAgentId: subAgent.id,
 			subAgentType: subAgent.type,
 			task: subAgent.task,
 			parentId: subAgent.parentAgentId,
-			status: 'running',
+			timestamp: startedAt,
 			groupId,
 		});
 
@@ -311,34 +475,60 @@ export class UnifiedSubAgentDispatch {
 				executeFn,
 				request,
 				subAgent.budget,
-				(progress) => this._emit(eventSink, {
-					kind: 'progress',
+				(event) => this._emit(eventSink, {
+					...event,
 					subAgentId: subAgent.id,
 					subAgentType: subAgent.type,
 					task: subAgent.task,
 					parentId: subAgent.parentAgentId,
-					status: 'running',
-					progress,
+					timestamp: Date.now(),
 					groupId,
 				}),
 			);
-			const output = await Promise.race([executionPromise, timeoutPromise]);
+			const execResult = await Promise.race([executionPromise, timeoutPromise]);
+
+			// Determine exit reason
+			const exitReason: SubAgentExitReason = execResult.budgetExhausted
+				? 'max_iterations'
+				: 'completed';
 
 			subAgent.result = {
 				success: true,
-				output,
+				output: execResult.output,
 				completedAt: Date.now(),
+				durationMs: Date.now() - startedAt,
+				apiCalls: execResult.apiCallCount,
+				tokensUsed: execResult.tokensUsed,
+				exitReason,
+				toolTrace: execResult.toolTrace,
+				filesModified: execResult.filesModified.length > 0 ? execResult.filesModified : undefined,
 			};
 			subAgent.status = 'done';
 
+			// ── File change coordination (inspired by Hermes file_state) ──
+			// If the sub-agent modified files, append a warning to the output
+			// so the parent agent knows to re-read those files.
+			if (execResult.filesModified.length > 0) {
+				const fileList = execResult.filesModified.join(', ');
+				subAgent.result = {
+					...subAgent.result,
+					output: (subAgent.result.output ?? '') +
+						`\n\n[NOTE: subagent modified files — re-read before editing: ${fileList}]`,
+				};
+			}
+
 			this._emit(eventSink, {
-				kind: 'end',
+				type: SubAgentEventType.Completed,
 				subAgentId: subAgent.id,
 				subAgentType: subAgent.type,
 				task: subAgent.task,
 				parentId: subAgent.parentAgentId,
-				status: 'done',
-				output,
+				timestamp: Date.now(),
+				output: execResult.output,
+				durationMs: Date.now() - startedAt,
+				tokensUsed: execResult.tokensUsed,
+				toolsCompleted: execResult.apiCallCount,
+				exitReason,
 				groupId,
 			});
 
@@ -346,21 +536,28 @@ export class UnifiedSubAgentDispatch {
 
 		} catch (error) {
 			const errMsg = error instanceof Error ? error.message : String(error);
+			const isTimeout = errMsg.includes('timeout');
+			const exitReason: SubAgentExitReason = isTimeout ? 'timeout' : 'error';
+
 			subAgent.result = {
 				success: false,
 				error: errMsg,
 				completedAt: Date.now(),
+				durationMs: Date.now() - startedAt,
+				exitReason,
 			};
 			subAgent.status = 'error';
 
 			this._emit(eventSink, {
-				kind: 'end',
+				type: SubAgentEventType.Failed,
 				subAgentId: subAgent.id,
 				subAgentType: subAgent.type,
 				task: subAgent.task,
 				parentId: subAgent.parentAgentId,
-				status: 'error',
+				timestamp: Date.now(),
 				error: errMsg,
+				durationMs: Date.now() - startedAt,
+				exitReason,
 				groupId,
 			});
 
@@ -518,11 +715,52 @@ export class UnifiedSubAgentDispatch {
 		return true;
 	}
 
-	cancelSubAgent(subAgentId: string): boolean {
+	/**
+	 * Interrupt a running sub-agent.
+	 * Inspired by Hermes-Agent's interrupt signal propagation:
+	 * 1. Marks the sub-agent as interrupted so _executeWithBudget breaks out
+	 * 2. Recursively interrupts any child sub-agents spawned by this one
+	 * 3. Sets status to 'cancelled'
+	 *
+	 * @returns true if the sub-agent was found and interrupted, false otherwise
+	 */
+	interruptSubAgent(subAgentId: string): boolean {
 		const subAgent = this._activeSubAgents.get(subAgentId);
 		if (!subAgent) { return false; }
+
+		// Mark for interrupt check in _executeWithBudget loop
+		this._interruptedSubAgents.add(subAgentId);
 		subAgent.status = 'cancelled';
+
+		// Recursively interrupt all child sub-agents (inspired by Hermes)
+		for (const [id, agent] of this._activeSubAgents.entries()) {
+			if (agent.parentAgentId === subAgentId && agent.status === 'running') {
+				this.interruptSubAgent(id);
+			}
+		}
+
 		return true;
+	}
+
+	/**
+	 * Cancel a sub-agent (legacy — now delegates to interruptSubAgent).
+	 * @deprecated Use interruptSubAgent instead for recursive propagation.
+	 */
+	cancelSubAgent(subAgentId: string): boolean {
+		return this.interruptSubAgent(subAgentId);
+	}
+
+	/**
+	 * Interrupt ALL running sub-agents.
+	 * Useful when the parent agent itself is interrupted and needs to
+	 * clean up all child agents.
+	 */
+	interruptAll(): void {
+		for (const [id, agent] of this._activeSubAgents.entries()) {
+			if (agent.status === 'running') {
+				this.interruptSubAgent(id);
+			}
+		}
 	}
 
 	cleanup(): void {
@@ -605,54 +843,195 @@ export class UnifiedSubAgentDispatch {
 	}
 
 	/**
-	 * Execute the sub-agent with budget tracking.
+	 * Execute the sub-agent with budget tracking and fine-grained event emission.
 	 *
 	 * Budget consumption is the SOLE responsibility of this method.
 	 * The executeFn receives the budget object for read-only checks only
 	 * (e.g., budget.hasRemaining()) — it must NOT call budget.consume().
 	 * This avoids double-counting when tool_end and tool_result fire
 	 * for the same tool invocation.
+	 *
+	 * Inspired by Hermes-Agent's _run_single_child which tracks:
+	 * - api_calls count
+	 * - tool_trace (tool name, args/result size, status)
+	 * - token usage (input/output)
 	 */
 	private async _executeWithBudget(
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		request: IAgentTurnRequest,
 		budget: IterationBudget,
-		onProgress?: (note: string) => void,
-	): Promise<string> {
+		emitEvent?: (partial: Omit<SubAgentEvent, 'subAgentId' | 'subAgentType' | 'task' | 'parentId' | 'timestamp'> & { type: SubAgentEventType }) => void,
+	): Promise<_ExecResult> {
 		let output = '';
-		let toolCount = 0;
+		let apiCallCount = 0;
+		let budgetExhausted = false;
+		let tokensUsed: { input: number; output: number } | undefined;
+		const toolTrace: SubAgentToolTraceEntry[] = [];
+		const filesModified: string[] = [];
+		let currentToolName: string | undefined;
+		let currentToolArgsSize = 0;
+		let currentToolArgs: Record<string, unknown> | undefined;
+		// Raw JSON string accumulated from streamed `tool_args` deltas. The main
+		// execution path does NOT populate `tool_start.metadata`, so the only
+		// reliable source of tool arguments is the `tool_args` content stream.
+		// We concatenate every chunk (handles both single-shot and streamed
+		// argument deltas) and JSON.parse it at `tool_end`.
+		let currentToolArgsRaw = '';
+		// Size and (on error) text of the most recent tool_result, used to fill
+		// SubAgentToolTraceEntry.resultSizeBytes / error at the following tool_end.
+		let currentToolResultSize = 0;
+		let currentToolResultText: string | undefined;
 
 		const stream = executeFn(request, budget);
 		for await (const delta of stream) {
+			// ── Text accumulation ──
 			if (delta.type === 'text' && delta.content) {
 				output += delta.content;
 			}
-			if (delta.type === 'done' || delta.type === 'error') {
-				break;
-			}
-			// Surface a progress note when the sub-agent starts a tool, so the
-			// SubAgentCard can show live activity rather than a frozen spinner.
-			if (delta.type === 'tool_start' && onProgress) {
-				const toolName = delta.toolName || delta.displayName || 'tool';
-				onProgress(`运行工具: ${toolName}`);
-			}
-			// Consume budget only on tool_end (one consumption per tool call).
-			// tool_result often fires alongside tool_end for the same call,
-			// so we deliberately skip it to avoid double-counting.
-			if (delta.type === 'tool_end') {
-				toolCount++;
-				budget.consume(1);
-				if (onProgress) {
-					onProgress(`已完成 ${toolCount} 个工具调用`);
+
+			// ── Thinking (inspired by Hermes TASK_THINKING) ──
+			if (delta.type === 'thinking' && emitEvent) {
+				const text = typeof delta.content === 'string' ? delta.content : '';
+				if (text) {
+					emitEvent({
+						type: SubAgentEventType.Thinking,
+						thinkingText: text.slice(0, 200),
+					});
 				}
+			}
+
+			// ── Tool started (inspired by Hermes TASK_TOOL_STARTED) ──
+			if (delta.type === 'tool_start') {
+				currentToolName = delta.toolName || 'unknown';
+				currentToolArgsSize = 0;
+				currentToolArgs = undefined;
+				currentToolArgsRaw = '';
+				currentToolResultSize = 0;
+				currentToolResultText = undefined;
+				// Some providers populate metadata with parsed args up-front; if
+				// present we seed from it, but the authoritative source remains the
+				// `tool_args` stream which is concatenated below.
+				if (delta.metadata) {
+					try {
+						currentToolArgsSize = JSON.stringify(delta.metadata).length;
+						currentToolArgs = delta.metadata;
+					} catch { /* ignore */ }
+				}
+				if (emitEvent) {
+					emitEvent({
+						type: SubAgentEventType.ToolStarted,
+						toolName: currentToolName,
+						toolArgsPreview: currentToolName,
+						toolsCompleted: apiCallCount,
+					});
+				}
+			}
+
+			// ── Tool arguments streaming ──
+			if (delta.type === 'tool_args' && delta.content) {
+				currentToolArgsSize += delta.content.length;
+				// Accumulate the raw argument JSON so it can be parsed at tool_end.
+				// This is the primary source of args for file-change detection,
+				// since tool_start.metadata is empty on the main execution path.
+				currentToolArgsRaw += delta.content;
+			}
+
+			// ── Tool result (captured for trace size / error text) ──
+			if (delta.type === 'tool_result' && typeof delta.content === 'string') {
+				currentToolResultSize = delta.content.length;
+				currentToolResultText = delta.content;
+			}
+
+			// ── Tool completed (inspired by Hermes TASK_TOOL_COMPLETED) ──
+			if (delta.type === 'tool_end') {
+				apiCallCount++;
+				const toolStatus: 'ok' | 'error' = delta.success === false ? 'error' : 'ok';
+
+				// Resolve tool arguments: prefer the accumulated `tool_args` JSON
+				// stream (authoritative on the main path); fall back to metadata
+				// seeded at tool_start. Without this, file-change detection never
+				// fires because tool_start carries no parameters.
+				if (!currentToolArgs && currentToolArgsRaw) {
+					try {
+						const parsed = JSON.parse(currentToolArgsRaw);
+						if (parsed && typeof parsed === 'object') {
+							currentToolArgs = parsed as Record<string, unknown>;
+						}
+					} catch { /* incomplete or non-JSON args — ignore */ }
+				}
+				if (currentToolArgsRaw && !currentToolArgsSize) {
+					currentToolArgsSize = currentToolArgsRaw.length;
+				}
+
+				const traceEntry: SubAgentToolTraceEntry = {
+					toolName: currentToolName || 'unknown',
+					status: toolStatus,
+					argsSizeBytes: currentToolArgsSize || undefined,
+					resultSizeBytes: currentToolResultSize || undefined,
+					error: toolStatus === 'error' ? (currentToolResultText?.slice(0, 500) || undefined) : undefined,
+				};
+				toolTrace.push(traceEntry);
+
+				// ── File change coordination (inspired by Hermes file_state) ──
+				// Track files modified by file-writing tools so the parent agent
+				// can be warned that its cached file reads may be stale.
+				if (currentToolName && currentToolArgs && toolStatus === 'ok') {
+					const filePath = this._extractModifiedFile(currentToolName, currentToolArgs);
+					if (filePath && !filesModified.includes(filePath)) {
+						filesModified.push(filePath);
+					}
+				}
+
+				if (emitEvent) {
+					emitEvent({
+						type: SubAgentEventType.ToolCompleted,
+						toolName: currentToolName || 'unknown',
+						toolStatus,
+						toolsCompleted: apiCallCount,
+					});
+				}
+
+				budget.consume(1);
 				if (!budget.hasRemaining()) {
 					output += '\n\n[Budget exhausted — sub-agent stopped]';
+					budgetExhausted = true;
 					break;
 				}
 			}
+
+			// ── Usage/token tracking ──
+			if (delta.type === 'usage' && delta.usage) {
+				// Accumulate across multiple usage events (one per LLM turn) rather
+				// than overwriting, so multi-iteration sub-agents report total cost.
+				const inTok = delta.usage.inputTokens ?? 0;
+				const outTok = delta.usage.outputTokens ?? 0;
+				if (!tokensUsed) {
+					tokensUsed = { input: inTok, output: outTok };
+				} else {
+					tokensUsed.input += inTok;
+					tokensUsed.output += outTok;
+				}
+			}
+
+			// ── Terminal events ──
+			if (delta.type === 'done' || delta.type === 'error') {
+				break;
+			}
+
+			// ── Check for interrupt signal ──
+			if (this._interruptedSubAgents.has(request.agentId)) {
+				output += '\n\n[Interrupted by user or parent agent]';
+				if (emitEvent) {
+					emitEvent({
+						type: SubAgentEventType.Interrupted,
+						exitReason: 'interrupted',
+					});
+				}
+				break;
+			}
 		}
 
-		return output;
+		return { output, apiCallCount, budgetExhausted, tokensUsed, toolTrace, filesModified };
 	}
 
 	/** Safely deliver a lifecycle event to the sink, swallowing any sink errors. */
@@ -663,5 +1042,36 @@ export class UnifiedSubAgentDispatch {
 		} catch {
 			// Event delivery must never break sub-agent execution.
 		}
+	}
+
+	/**
+	 * Extract a file path from a tool call if the tool is a file-modifying tool.
+	 * Inspired by Hermes-Agent's file_state coordination which tracks which files
+	 * sub-agents read/write to warn the parent about stale cache.
+	 */
+	private _extractModifiedFile(toolName: string, args: Record<string, unknown>): string | undefined {
+		// File-writing tools and their argument key containing the file path
+		const FILE_WRITE_TOOLS: Record<string, string> = {
+			'write_to_file': 'path',
+			'apply_diff': 'path',
+			'create_file': 'path',
+			'edit_file': 'path',
+			'write': 'path',
+			'edit': 'path',
+			'rename_file': 'path',
+			'delete_file': 'path',
+			'file_write': 'path',
+			'file_edit': 'path',
+		};
+
+		const pathKey = FILE_WRITE_TOOLS[toolName];
+		if (!pathKey) { return undefined; }
+
+		const filePath = args[pathKey];
+		if (typeof filePath === 'string' && filePath.length > 0) {
+			return filePath;
+		}
+
+		return undefined;
 	}
 }
