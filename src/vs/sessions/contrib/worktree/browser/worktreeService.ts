@@ -147,6 +147,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	// ─── Two-phase creation (opencode pattern) ──────────────────────────────────
 
 	async makeWorktreeInfo(options?: IWorktreeInfoOptions): Promise<IWorktreeInfo> {
+		this.logService.info('[WorktreeService] makeWorktreeInfo: called', { options });
 		const repoRoot = await this.getRepositoryRoot();
 		if (!repoRoot) {
 			throw new Error('No git repository found');
@@ -161,6 +162,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		// Branch naming: use options.branch if provided, otherwise default to "worktree/<slug>"
 		const branch = options?.detached ? undefined : (options?.branch || `worktree/${name}`);
+		this.logService.info('[WorktreeService] makeWorktreeInfo: computed', { name, branch, detached: options?.detached });
 
 		// Directory: <repoRoot>/.worktrees/<name>
 		// Use a sibling directory pattern like opencode: repo/../.worktrees/projectName/name
@@ -196,19 +198,32 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			break;
 		}
 
-		// Check branch existence
-		if (finalBranch) {
+		// Check branch existence (retry loop)
+		let branchAttempts = 0;
+		while (branchAttempts < 26) {
+			if (!finalBranch) {
+				break;
+			}
 			try {
-				const result = await this.execGit(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${finalBranch}`]);
-				// If show-ref succeeds (exit 0), branch exists
-				if (result !== undefined) {
-					const suffix = String.fromCharCode(97 + Math.min(attempts, 25));
-					finalName = `${name}-${suffix}`;
-					finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
-					finalBranch = options?.branch || `worktree/${finalName}`;
+				await this.execGit(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${finalBranch}`]);
+				// show-ref succeeded (exit 0) → branch exists, add suffix
+				const suffix = String.fromCharCode(97 + Math.min(branchAttempts, 25));
+				finalName = `${name}-${suffix}`;
+				finalDirectory = parentDir + '/.worktrees/' + projectName + '/' + finalName;
+				finalBranch = options?.branch ? `${options.branch}-${suffix}` : `worktree/${finalName}`;
+				branchAttempts++;
+				// Also re-check directory conflict with new name
+				try {
+					const dirUri = URI.file(finalDirectory);
+					await this.fileService.stat(dirUri);
+					// Directory also exists, will be handled in next iteration
+				} catch {
+					// Directory doesn't exist, good
 				}
+				continue;
 			} catch {
-				// show-ref failed — branch doesn't exist, which is what we want
+				// show-ref failed (exit 1) → branch doesn't exist, which is what we want
+				break;
 			}
 		}
 
@@ -235,6 +250,18 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		// Phase 2b: git reset --hard (populate files)
 		await this.execGit(info.directory, ['reset', '--hard']);
+
+		// Phase 2c: push new branch to remote (so it appears on GitHub/GitLab)
+		if (info.branch) {
+			try {
+				this.logService.info(`[WorktreeService] Pushing branch ${info.branch} to origin...`);
+				await this.execGit(repoRoot, ['push', '-u', 'origin', info.branch]);
+				this.logService.info(`[WorktreeService] Branch ${info.branch} pushed to origin successfully`);
+			} catch (pushErr) {
+				// Push failure is non-fatal — branch exists locally, user can push manually
+				this.logService.warn(`[WorktreeService] Failed to push branch ${info.branch} to origin:`, pushErr);
+			}
+		}
 
 		this._onDidChangeWorktrees.fire();
 
