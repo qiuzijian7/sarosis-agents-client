@@ -6,7 +6,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
-import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, buildChatMessagesFromState, type StreamState, type StreamError } from '../bridge/streamHandler';
+import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, buildChatMessagesFromState, type StreamState, type StreamError, isPhaseActive } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
 /**
@@ -266,24 +266,40 @@ export const useChatStore = create<ChatState>((set, get) => {
 		// This prevents stale deltas from a previous chat from leaking into the
 		// currently displayed chat after the user switches employees.
 		const { activeEmployeeId, activeAgentSessionId } = get();
-		if (streamState.isStreaming && streamState.employeeId && streamState.employeeId !== activeEmployeeId) {
+		if (isPhaseActive(streamState.phase) && streamState.employeeId && streamState.employeeId !== activeEmployeeId) {
 			return;
 		}
-		if (streamState.isStreaming && streamState.sessionId && activeAgentSessionId &&
+		if (isPhaseActive(streamState.phase) && streamState.sessionId && activeAgentSessionId &&
 			streamState.sessionId !== activeAgentSessionId) {
 			return;
 		}
 
 		set({ streamState });
 
-		// Sync employee status based on streaming state
-		if (streamState.isStreaming) {
-			if (streamState.thinkingBuffer && !streamState.textBuffer) {
-				syncEmployeeStatus('thinking');
-			} else if (streamState.textBuffer || streamState.toolCalls.length > 0) {
-				syncEmployeeStatus('working');
-			} else {
-				syncEmployeeStatus('thinking');
+		// Sync employee status based on streaming phase (precise state machine)
+		if (isPhaseActive(streamState.phase)) {
+			switch (streamState.phase) {
+				case 'llm_streaming':
+					if (streamState.thinkingBuffer && !streamState.textBuffer) {
+						syncEmployeeStatus('thinking');
+					} else {
+						syncEmployeeStatus('working');
+					}
+					break;
+				case 'tool_executing':
+					syncEmployeeStatus('working');
+					break;
+				case 'awaiting_approval':
+					syncEmployeeStatus('thinking'); // "waiting for input" → thinking indicator
+					break;
+				case 'compressing':
+					syncEmployeeStatus('thinking');
+					break;
+				case 'error':
+					syncEmployeeStatus('idle');
+					break;
+				default:
+					syncEmployeeStatus('thinking');
 			}
 		}
 	});
@@ -295,6 +311,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 	// persisted assistant message appears, causing the chat UI to flash empty.
 	onStreamComplete((finalState, hostMessage?: any) => {
 		console.log('[ChatStore] onStreamComplete fired:', {
+			phase: finalState.phase,
 			isStreaming: finalState.isStreaming,
 			textBufferLen: finalState.textBuffer.length,
 			thinkingBufferLen: finalState.thinkingBuffer.length,
@@ -592,11 +609,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 					return true;
 				});
 
-				// ── Deduplicate messages by id first, then by content+role+timestamp ──
-				// This handles cases where the same message was persisted twice
-				// (e.g. both webview controller and agentChatService saved the user message).
+				// ── Deduplicate messages by id (single-pass) ──
+				// Host guarantees message ID uniqueness; no need for content+timestamp
+				// bucketing (which could cause false positives with fast exchanges).
+				// Orchestration_plan messages are deduped by planId in the same pass.
 				const seenIds = new Set<string>();
-				const seenContentKeys = new Set<string>();
+				const seenPlanIds = new Set<string>();
 				const deduped: ChatMessage[] = [];
 				for (let i = finalMessages.length - 1; i >= 0; i--) {
 					const m = finalMessages[i];
@@ -605,39 +623,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 						continue;
 					}
 					seenIds.add(m.id);
-					// For user/assistant messages, also deduplicate by content+role+approximate timestamp
-					// (within 3 seconds) to catch duplicates with different ids.
-					if (m.role === 'user' || m.role === 'assistant') {
-						const ts = new Date(m.timestamp).getTime();
-						const tsBucket = Math.floor(ts / 3000); // 3-second bucket
-						const contentKey = `${m.role}::${tsBucket}::${m.content}`;
-						if (seenContentKeys.has(contentKey)) {
-							console.log(`[ChatStore] loadHistoryForSession: removing duplicate ${m.role} message by content key`);
+					// Skip duplicate orchestration_plan messages by planId
+					if (m.metadata?.type === 'orchestration_plan' && m.metadata.planId) {
+						if (seenPlanIds.has(m.metadata.planId)) {
+							console.log(`[ChatStore] loadHistoryForSession: removing duplicate plan message for ${m.metadata.planId}`);
 							continue;
 						}
-						seenContentKeys.add(contentKey);
+						seenPlanIds.add(m.metadata.planId);
 					}
 					deduped.unshift(m);
 				}
 				finalMessages = deduped;
-
-				// Deduplicate orchestration_plan messages by planId — keep only the last one
-				// (prevents duplicates when loadHistoryForSession re-creates a message
-				// and EmployeeChat useEffect also adds one with a different id).
-				const seenPlanIds = new Set<string>();
-				const dedupedPlans: ChatMessage[] = [];
-				for (let i = finalMessages.length - 1; i >= 0; i--) {
-					const m = finalMessages[i];
-					if (m.metadata?.type === 'orchestration_plan') {
-						const planId = m.metadata.planId;
-						if (seenPlanIds.has(planId)) {
-							continue;
-						}
-						seenPlanIds.add(planId);
-					}
-					dedupedPlans.unshift(m);
-				}
-				finalMessages = dedupedPlans;
 
 				try {
 					const { useOrchestrationStore } = require('./useOrchestrationStore');
@@ -705,22 +701,6 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// than history messages loaded from the host, so a final sort is needed).
 				finalMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-				// Final deduplication pass: after sorting and re-creating plan messages,
-				// there may still be duplicate orchestration_plan entries for the same planId
-				// (e.g. one from persisted history + one recreated from activePlans).
-				const finalSeenPlanIds = new Set<string>();
-				finalMessages = finalMessages.filter(m => {
-					if (m.metadata?.type === 'orchestration_plan') {
-						const planId = m.metadata.planId;
-						if (finalSeenPlanIds.has(planId)) {
-							console.log(`[ChatStore] loadHistoryForSession: removing duplicate plan message for ${planId}`);
-							return false;
-						}
-						finalSeenPlanIds.add(planId);
-					}
-					return true;
-				});
-
 				// Strip hidden tool calls (defaultShow=false) from loaded history.
 				// Visibility is now controlled solely by defaultShow.
 				finalMessages = finalMessages.map(m => {
@@ -761,7 +741,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			// ── Auto-cancel current stream if still running (VS Code Copilot Chat
 			// "steering" pattern: sending a new message interrupts the current one) ──
-			if (streamState.isStreaming) {
+			if (isPhaseActive(streamState.phase)) {
 				console.log('[ChatStore] sendMessage: auto-cancelling active stream before sending new message');
 				get().cancelStream();
 			}

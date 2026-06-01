@@ -158,6 +158,22 @@ export interface IAgentStudioService {
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }>;
 }
 
+// --- Stream Phase (Void-inspired: IsRunningType 5-state model) ---
+
+/**
+ * 精确表达 Agent 循环的每个阶段，替代 boolean isStreaming。
+ * 与 contrib/agentStudio/common/providers.ts 中的 StreamPhase 定义保持同步。
+ *
+ * 注意：此处独立定义而非从 contrib 导入，因为 sessions/common/ 不能依赖 contrib/。
+ */
+export type StreamPhase =
+	| 'idle'              // 完全空闲
+	| 'llm_streaming'     // LLM 正在流式输出
+	| 'tool_executing'    // 工具正在执行
+	| 'awaiting_approval' // 等待用户审批
+	| 'compressing'       // 正在压缩上下文
+	| 'error';            // 错误状态
+
 // --- Agent Chat Service ---
 
 export const IAgentChatService =
@@ -181,7 +197,8 @@ export interface IChatStreamDelta {
 	| "todos"
 	| "tips"
 	| "questions"
-	| "usage";
+	| "usage"
+	| "phase_change";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -190,6 +207,25 @@ export interface IChatStreamDelta {
 	readonly stage?: string;
 	/** Whether the tool call succeeded (only meaningful on `tool_end`). */
 	readonly success?: boolean;
+	/**
+	 * Stream phase — allows explicit phase transitions from Host.
+	 * When present, the WebView will set StreamState.phase to this value.
+	 *
+	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
+	 */
+	readonly phase?: StreamPhase;
+	/**
+	 * Host-side full text snapshot (Void-inspired fullTextSoFar pattern).
+	 * When present, the WebView uses this instead of incrementally
+	 * appending `content` to textBuffer.
+	 */
+	readonly fullText?: string;
+	/**
+	 * Host-side full thinking snapshot (parallel to fullText).
+	 * When present, the WebView uses this instead of incrementally
+	 * appending `content` to thinkingBuffer.
+	 */
+	readonly fullThinking?: string;
 	/**
 	 * Token usage statistics (only meaningful when `type === 'usage'`).
 	 *

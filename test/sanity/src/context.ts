@@ -33,7 +33,7 @@ interface ITargetMetadata {
 export class TestContext {
 	private static readonly authenticodeInclude = /^.+\.(exe|dll|sys|cab|cat|msi|jar|ocx|ps1|psm1|psd1|ps1xml|pssc1)$/i;
 	private static readonly versionInfoInclude = /^.+\.(exe|dll|node|msi)$/i;
-	private static readonly versionInfoExclude = /^(dxil\.dll|ffmpeg\.dll|msalruntime\.dll)$/i;
+	private static readonly versionInfoExclude = /^(dxil\.dll|ffmpeg\.dll)$/i;
 	private static readonly dpkgLockError = /dpkg frontend lock was locked by another process|unable to acquire the dpkg frontend lock|could not get lock \/var\/lib\/dpkg\/lock-frontend/i;
 
 	private readonly tempDirs = new Set<string>();

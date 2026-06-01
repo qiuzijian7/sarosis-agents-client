@@ -28,7 +28,8 @@ import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRendere
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
 import { WorktreeSwitcher } from './WorktreeSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
-import type { StreamError } from '../../bridge/streamHandler';
+import type { StreamError, StreamPhase } from '../../bridge/streamHandler';
+import { isPhaseActive, toolCallStateToToolMessage } from '../../bridge/streamHandler';
 import { ChatHistoryPage } from './ChatHistoryPage';
 
 /**
@@ -54,6 +55,7 @@ const StreamingBubble = memo(function StreamingBubble({
 	subAgents,
 	errorMessage,
 	streamError,
+	phase,
 }: {
 	textBuffer: string;
 	thinkingBuffer: string;
@@ -61,7 +63,10 @@ const StreamingBubble = memo(function StreamingBubble({
 	subAgents: Array<{ id: string; type: 'explore' | 'general' | 'scout'; task: string; parentAgentId?: string; status: string; progress?: string; output?: string; error?: string; groupId?: string }>;
 	errorMessage: string | null;
 	streamError: StreamError | null;
+	phase: StreamPhase;
 }): React.ReactElement {
+	// Thinking card in streaming bubble: default expanded, but user can collapse it
+	const [thinkingCollapsed, setThinkingCollapsed] = useState(false);
 	// Memoize sanitized text to avoid re-running sanitizer when buffer hasn't changed
 	const sanitizedText = useMemo(
 		() => {
@@ -75,21 +80,35 @@ const StreamingBubble = memo(function StreamingBubble({
 		<div className="chat-message assistant">
 			<div className="message-content message-streaming">
 
-				{/* Thinking card — active with spinner */}
+				{/* Thinking card — active with spinner, default expanded during streaming */}
 				{thinkingBuffer && (
 					<div className="thinking-card active">
-						<div className="thinking-card-header">
+						<div
+							className="thinking-card-header"
+							onClick={() => setThinkingCollapsed(!thinkingCollapsed)}
+							role="button"
+							aria-expanded={!thinkingCollapsed}
+						>
 							<span className="thinking-card-icon">
 								<svg className="thinking-spinner" width="14" height="14" viewBox="0 0 24 24"
 									fill="none" stroke="currentColor" strokeWidth="2">
 									<path d="M21 12a9 9 0 11-6.219-8.56" />
 								</svg>
 							</span>
-							<span className="thinking-card-title">思考中...</span>
+							<span className="thinking-card-title">
+								{phase === 'llm_streaming' ? '思考中...' : '思考过程'}
+							</span>
+							<span className={`thinking-card-toggle ${thinkingCollapsed ? 'collapsed' : ''}`}>
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+									<polyline points="6 9 12 15 18 9" />
+								</svg>
+							</span>
 						</div>
-						<div className="thinking-card-body">
-							<MarkdownRenderer content={thinkingBuffer} className="thinking-stream markdown-body" />
-						</div>
+						{!thinkingCollapsed && (
+							<div className="thinking-card-body">
+								<MarkdownRenderer content={thinkingBuffer} className="thinking-stream markdown-body" />
+							</div>
+						)}
 					</div>
 				)}
 
@@ -99,40 +118,55 @@ const StreamingBubble = memo(function StreamingBubble({
 				)}
 
 				{/* Streaming text content + tool calls (interleaved) */}
-				{sanitizedText && (
-					<div className="message-text">
-						{(() => {
-							const safeToolCalls = Array.isArray(toolCalls) ? toolCalls : [];
-							const visibleToolCalls = safeToolCalls.filter(tc => tc && tc.defaultShow !== false);
-							const toolCallNodes = visibleToolCalls.map(tc => (
-								<ToolCallCard key={tc.id} toolCall={{
-									...tc,
-									result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
-								}} />
-							));
-							// Build position map from textPosition hints (recorded at tool_start time)
-							const toolPositions = new Map<string, number>();
-							for (const tc of visibleToolCalls) {
-								if (tc.textPosition !== undefined) {
-									toolPositions.set(tc.id, tc.textPosition);
-								}
+				{(() => {
+					const safeToolCalls = Array.isArray(toolCalls) ? toolCalls : [];
+					const visibleToolCalls = safeToolCalls.filter(tc => tc && tc.defaultShow !== false);
+					const toolCallNodes = visibleToolCalls.map(tc => (
+						<ToolCallCard key={tc.id} toolCall={toolCallStateToToolMessage({
+							...tc,
+							status: tc.status as 'running' | 'done' | 'error' | 'approval_required',
+							result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
+						})} />
+					));
+
+					// Case A: there IS streaming text → interleave tool cards inside markdown
+					if (sanitizedText) {
+						// Build position map from textPosition hints (recorded at tool_start time)
+						const toolPositions = new Map<string, number>();
+						for (const tc of visibleToolCalls) {
+							if (tc.textPosition !== undefined) {
+								toolPositions.set(tc.id, tc.textPosition);
 							}
-							return toolCallNodes.length > 0 ? (
-								<InterleavedMarkdownRenderer
-									content={sanitizedText}
-									showCursor
-									toolCallNodes={toolCallNodes}
-									toolPositions={toolPositions}
-								/>
-							) : (
-								<MarkdownRenderer
-									content={sanitizedText}
-									showCursor
-								/>
-							);
-						})()}
-					</div>
-				)}
+						}
+						return (
+							<div className="message-text">
+								{toolCallNodes.length > 0 ? (
+									<InterleavedMarkdownRenderer
+										content={sanitizedText}
+										showCursor
+										toolCallNodes={toolCallNodes}
+										toolPositions={toolPositions}
+									/>
+								) : (
+									<MarkdownRenderer
+										content={sanitizedText}
+										showCursor
+									/>
+								)}
+							</div>
+						);
+					}
+
+					// Case B: NO text yet but tool cards exist (e.g. a tool requiring
+					// approval fired before any assistant text streamed). Render the
+					// cards standalone so the approval UI is visible — otherwise the
+					// user can never approve and the stream stays stuck.
+					if (toolCallNodes.length > 0) {
+						return <div className="message-text">{toolCallNodes}</div>;
+					}
+
+					return null;
+				})()}
 
 				{/* Error message */}
 				{errorMessage && (
@@ -141,12 +175,18 @@ const StreamingBubble = memo(function StreamingBubble({
 					</div>
 				)}
 
-				{/* Typing dots — only when nothing else is showing */}
+				{/* Phase-based typing indicator — only when nothing else is showing */}
 				{!textBuffer && !thinkingBuffer && !errorMessage && (!toolCalls || toolCalls.length === 0) && (!subAgents || subAgents.length === 0) && (
 					<div className="typing-indicator">
 						<span className="typing-dot">●</span>
 						<span className="typing-dot">●</span>
 						<span className="typing-dot">●</span>
+						<span className="typing-phase-label">
+							{phase === 'tool_executing' ? '正在执行工具...'
+								: phase === 'awaiting_approval' ? '等待您确认...'
+								: phase === 'compressing' ? '正在压缩上下文...'
+								: '思考中...'}
+						</span>
 					</div>
 				)}
 
@@ -646,7 +686,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						))}
 
 						{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
-						{streamState.isStreaming && streamState.employeeId === activeEmployeeId && (
+						{isPhaseActive(streamState.phase) && streamState.employeeId === activeEmployeeId && (
 							<StreamingBubble
 								textBuffer={streamState.textBuffer}
 								thinkingBuffer={streamState.thinkingBuffer}
@@ -654,6 +694,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 								subAgents={streamState.subAgents}
 								errorMessage={streamState.errorMessage}
 								streamError={streamState.error}
+								phase={streamState.phase}
 							/>
 						)}
 
@@ -677,7 +718,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			<ChatComposer
 				onSend={handleSend}
 				onCancel={cancelStream}
-				isLoading={streamState.isStreaming}
+				isLoading={isPhaseActive(streamState.phase)}
 				onCommand={handleCommand}
 			/>
 		</div>

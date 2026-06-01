@@ -9,6 +9,12 @@ export interface OpenFileOptions {
 	pinned?: boolean;
 	/** Line number to scroll to after opening (1-based) */
 	lineNumber?: number;
+	/**
+	 * Owning workspace id. Lets the host resolve a *relative* file path
+	 * (e.g. "product.json", "src/app.ts") against that workspace's on-disk
+	 * root. Without it, relative paths fail to open ("file not found").
+	 */
+	workspaceId?: string;
 }
 
 /**

@@ -51,6 +51,7 @@ const DATA_FILE_ORCHESTRATION = 'orchestration-plans.json';
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 const DEFAULT_MAX_CONCURRENCY = 3;
+const DEFAULT_MAX_SPAWN_DEPTH = 2;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -127,7 +128,7 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		this._decomposer = new TaskDecomposer();
 		this._agentFactory = new AgentFactory(agentStudioService, logService);
 		this._layoutEngine = new CanvasLayoutEngine(agentStudioService, logService);
-		this._subAgentDispatch = new UnifiedSubAgentDispatch(undefined, DEFAULT_MAX_CONCURRENCY);
+		this._subAgentDispatch = new UnifiedSubAgentDispatch(undefined, DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_SPAWN_DEPTH);
 		this._outputParser = new StructuredOutputParser(logService);
 		this._repoOverviewProvider = new RepoOverviewProvider(fileService, logService);
 		this._startTimeoutMonitor();

@@ -7,8 +7,35 @@
 
 import type { ChatMessage, AssistantMessage, ToolMessage, ToolMessageStatus, ThinkingBlock, ToolResult } from '../types/chatTypes';
 
+// ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────
+
+/**
+ * 精确表达 Agent 循环的每个阶段，替代 boolean isStreaming。
+ *
+ * 参考 Void 的 IsRunningType（LLM | tool | awaiting_user | idle | undefined），
+ * 额外增加 compressing 状态替代独立的 isCompressing boolean。
+ *
+ * 状态流转:
+ *   idle → llm_streaming → tool_executing → llm_streaming → ... → idle
+ *   idle → llm_streaming → awaiting_approval → tool_executing → ... → idle
+ *   idle → llm_streaming → compressing → llm_streaming → ... → idle
+ *   * → error → idle
+ */
+export type StreamPhase =
+	| 'idle'              // 完全空闲
+	| 'llm_streaming'     // LLM 正在流式输出（含 text/thinking delta）
+	| 'tool_executing'    // 工具正在执行（tool_start/tool_args/tool_end）
+	| 'awaiting_approval' // 等待用户审批（安全工具需确认）
+	| 'compressing'       // 正在压缩上下文
+	| 'error';            // 错误状态
+
+/** Helper: is the phase actively streaming (not idle)? */
+export function isPhaseActive(phase: StreamPhase): boolean {
+	return phase !== 'idle';
+}
+
 export interface StreamChunk {
-	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end';
+	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end' | 'phase_change' | 'tool_approval_request' | 'tool_approval_resolved';
 	content?: string;
 	toolCallId?: string;
 	toolName?: string;
@@ -21,8 +48,34 @@ export interface StreamChunk {
 	defaultShow?: boolean;
 	/** Whether the tool was server-executed (no client confirmation needed) */
 	serverExecuted?: boolean;
+	/**
+	 * Security level for an approval request. Carried on
+	 * `type: 'tool_approval_request'` chunks so the streaming tool card can
+	 * render the correct approval UI variant.
+	 */
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
 	/** Current text-buffer length when this tool started — used to interleave tool cards inside markdown */
 	textPosition?: number;
+	/**
+	 * Explicit phase transition. When present, accumulateChunk will set
+	 * StreamState.phase to this value (overriding the type-based inference).
+	 * This allows the Host to precisely control phase transitions (e.g.
+	 * sending phase_change to 'awaiting_approval' before a tool requires
+	 * user confirmation).
+	 */
+	phase?: StreamPhase;
+	/**
+	 * Host-side full text snapshot (Void-inspired fullTextSoFar).
+	 * When present, accumulateChunk will set textBuffer to this value
+	 * instead of incrementally appending `content`.
+	 */
+	fullText?: string;
+	/**
+	 * Host-side full thinking snapshot.
+	 * When present, accumulateChunk will set thinkingBuffer to this value
+	 * instead of incrementally appending `content`.
+	 */
+	fullThinking?: string;
 	/** Sub-agent fields (carried on `sub_agent_*` chunks) */
 	subAgentId?: string;
 	subAgentType?: 'explore' | 'general' | 'scout';
@@ -66,6 +119,20 @@ export interface StreamError {
 }
 
 export interface StreamState {
+	/**
+	 * Stream phase — replaces boolean isStreaming with a precise state machine.
+	 * UI components should check `phase` instead of `isStreaming`:
+	 *   - phase !== 'idle' → show streaming UI
+	 *   - phase === 'llm_streaming' → "AI 正在思考..." / "AI 正在输出..."
+	 *   - phase === 'tool_executing' → "正在执行工具..."
+	 *   - phase === 'awaiting_approval' → "等待您确认..."
+	 *   - phase === 'compressing' → "正在压缩上下文..."
+	 *   - phase === 'error' → show error state
+	 *
+	 * Backward compat: `isStreaming` is available as a getter via `isPhaseActive(phase)`.
+	 */
+	phase: StreamPhase;
+	/** @deprecated Use `isPhaseActive(phase)` or `phase !== 'idle'` instead */
 	isStreaming: boolean;
 	employeeId: string | null;
 	sessionId: string | null;
@@ -99,7 +166,13 @@ export interface ToolCallState {
 	name: string;
 	arguments: string;
 	result?: string;
-	status: 'running' | 'done' | 'error';
+	status: 'running' | 'done' | 'error' | 'approval_required';
+	/**
+	 * Security level for the approval UI. Carried on the tool call when the Host
+	 * requests approval (chat.toolApprovalRequest). Only meaningful while
+	 * status === 'approval_required'.
+	 */
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
 	/** Whether to show this tool call card in the chat UI. Default true. */
 	defaultShow?: boolean;
 	/** UI 显示名称（来自模型的 display_name 字段） */
@@ -151,7 +224,8 @@ const backgroundStreams = new Map<string, StreamState>();
 
 function createInitialState(): StreamState {
 	return {
-		isStreaming: false,
+		phase: 'idle',
+		isStreaming: false, // deprecated mirror
 		employeeId: null,
 		sessionId: null,
 		textBuffer: '',
@@ -290,18 +364,49 @@ function sanitizeChunkContent(content: unknown): string {
 
 /** Accumulate a single chunk into a StreamState (mutates state in-place). */
 function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
+	// ── Phase transition: explicit phase on chunk takes precedence ──
+	if (chunk.phase) {
+		state.phase = chunk.phase;
+		state.isStreaming = isPhaseActive(chunk.phase);
+	}
+
 	switch (chunk.type) {
 		case 'text':
-			state.textBuffer += sanitizeChunkContent(chunk.content);
+			// Priority: fullText snapshot > incremental content
+			if (chunk.fullText !== undefined) {
+				state.textBuffer = chunk.fullText;
+			} else {
+				state.textBuffer += sanitizeChunkContent(chunk.content);
+			}
+			// Auto-derive phase: text delta means LLM is streaming
+			if (state.phase === 'idle' || state.phase === 'compressing') {
+				state.phase = 'llm_streaming';
+				state.isStreaming = true;
+			}
 			break;
 		case 'thinking':
-			state.thinkingBuffer += sanitizeChunkContent(chunk.content);
+			// Priority: fullThinking snapshot > incremental content
+			if (chunk.fullThinking !== undefined) {
+				state.thinkingBuffer = chunk.fullThinking;
+			} else {
+				state.thinkingBuffer += sanitizeChunkContent(chunk.content);
+			}
+			// Auto-derive phase: thinking delta means LLM is streaming
+			if (state.phase === 'idle' || state.phase === 'compressing') {
+				state.phase = 'llm_streaming';
+				state.isStreaming = true;
+			}
 			break;
 		case 'content_replace':
 			// Replace the entire text buffer with the new content.
 			// Used when tool calls are extracted from text and the original
 			// JSON content should no longer be displayed.
 			state.textBuffer = sanitizeChunkContent(chunk.content);
+			// Still in LLM streaming phase after content replacement
+			if (state.phase !== 'llm_streaming') {
+				state.phase = 'llm_streaming';
+				state.isStreaming = true;
+			}
 			break;
 		case 'tool_start':
 			state.toolCalls.push({
@@ -315,11 +420,21 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 				serverExecuted: chunk.serverExecuted,
 				textPosition: typeof chunk.textPosition === 'number' ? chunk.textPosition : state.textBuffer.length,
 			});
+			// Auto-derive phase: tool starting means tool_executing
+			if (state.phase !== 'tool_executing' && state.phase !== 'awaiting_approval') {
+				state.phase = 'tool_executing';
+				state.isStreaming = true;
+			}
 			break;
 		case 'tool_args': {
 			const call = state.toolCalls.find(tc => tc.id === chunk.toolCallId);
 			if (call) {
 				call.arguments += sanitizeChunkContent(chunk.content);
+			}
+			// Auto-derive phase: tool args means tool_executing
+			if (state.phase !== 'tool_executing' && state.phase !== 'awaiting_approval') {
+				state.phase = 'tool_executing';
+				state.isStreaming = true;
 			}
 			break;
 		}
@@ -340,15 +455,62 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 				// filter, exception, abort, etc.), the result message proves
 				// completion. Promote the status here so the UI card stops spinning
 				// the moment we have evidence of completion.
-				if (resultCall.status === 'running') {
+				if (resultCall.status === 'running' || resultCall.status === 'approval_required') {
 					resultCall.status = 'done';
 				}
+			}
+			break;
+		}
+		case 'tool_approval_request': {
+			// Host requests user approval for a tool that is currently streaming.
+			// The tool call already lives in state.toolCalls (pushed by tool_start),
+			// so we flip its status to 'approval_required' and transition the phase
+			// so the UI renders the approval buttons inline on the streaming card.
+			//
+			// CRITICAL FIX (用户反馈："聊天框中输出流式信息最终卡住，没有结束"):
+			// Previously the approval request was only applied to the COMMITTED
+			// `messages` array (in index.tsx), but during streaming the tool calls
+			// live in streamState.toolCalls — so "toolCallId not found in messages"
+			// → card never showed approval UI → user could never approve →
+			// agentOSService.checkAndApprove() awaited forever → stream stuck.
+			const approvalCall = state.toolCalls.find(tc => tc.id === chunk.toolCallId);
+			if (approvalCall) {
+				approvalCall.status = 'approval_required';
+				if (chunk.securityLevel) {
+					approvalCall.securityLevel = chunk.securityLevel;
+				}
+				// Any pending approval blocks the loop → reflect it in the phase so
+				// the bubble shows "等待您确认...".
+				state.phase = 'awaiting_approval';
+				state.isStreaming = true;
+			}
+			break;
+		}
+		case 'tool_approval_resolved': {
+			// The user has responded to a pending approval (allow/deny). If the tool
+			// was approved it will proceed to execution (tool_result/tool_end will
+			// arrive); if denied, the host emits a failed tool_result/tool_end. Here
+			// we just clear the 'approval_required' visual state back to 'running' so
+			// the card stops showing the buttons while execution proceeds. If denied,
+			// the subsequent tool_end(success=false) will set it to 'error'.
+			const resolvedCall = state.toolCalls.find(tc => tc.id === chunk.toolCallId);
+			if (resolvedCall && resolvedCall.status === 'approval_required') {
+				resolvedCall.status = 'running';
+			}
+			// Re-derive phase: if no other call is still awaiting approval, go back to
+			// tool_executing so the bubble label updates.
+			const stillAwaiting = state.toolCalls.some(tc => tc.status === 'approval_required');
+			if (!stillAwaiting && state.phase === 'awaiting_approval') {
+				state.phase = 'tool_executing';
+				state.isStreaming = true;
 			}
 			break;
 		}
 		case 'error':
 			state.errorMessage = chunk.content || 'Unknown error';
 			state.error = parseStreamError(chunk.content || 'Unknown error');
+			state.phase = 'error';
+			state.isStreaming = true; // error is still an active state
 			break;
 		case 'usage': {
 			const u = chunk.usage;
@@ -361,6 +523,13 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 			}
 			break;
 		}
+		case 'phase_change':
+			// Explicit phase transition from Host — no data, just state change
+			if (chunk.phase) {
+				state.phase = chunk.phase;
+				state.isStreaming = isPhaseActive(chunk.phase);
+			}
+			break;
 		case 'done':
 			// Stream finished — no action needed, completion is handled by handleStreamComplete
 			break;
@@ -424,7 +593,7 @@ export function handleStreamDelta(data: {
 
 	// ── Case 1: Delta matches the currently displayed stream (same employee) ──
 	// We match by employeeId only, because the Host may change sessionId mid-stream.
-	if (currentState.isStreaming && data.employeeId === currentState.employeeId) {
+	if (isPhaseActive(currentState.phase) && data.employeeId === currentState.employeeId) {
 		// Keep sessionId in sync if the Host sent a different one
 		if (data.sessionId !== currentState.sessionId) {
 			currentState.sessionId = data.sessionId;
@@ -438,11 +607,12 @@ export function handleStreamDelta(data: {
 	}
 
 	// ── Case 2: Delta is for a different employee (background stream) ──
-	if (currentState.isStreaming && data.employeeId !== currentState.employeeId) {
+	if (isPhaseActive(currentState.phase) && data.employeeId !== currentState.employeeId) {
 		let bg = backgroundStreams.get(deltaKey);
 		if (!bg) {
 			bg = {
 				...createInitialState(),
+				phase: 'llm_streaming',
 				isStreaming: true,
 				employeeId: data.employeeId,
 				sessionId: data.sessionId,
@@ -476,6 +646,7 @@ export function handleStreamDelta(data: {
 		// Start as background stream
 		const bg: StreamState = {
 			...createInitialState(),
+			phase: 'llm_streaming',
 			isStreaming: true,
 			employeeId: data.employeeId,
 			sessionId: data.sessionId,
@@ -492,6 +663,7 @@ export function handleStreamDelta(data: {
 	deltaEventCount = 0;
 	currentState = {
 		...createInitialState(),
+		phase: 'llm_streaming',
 		isStreaming: true,
 		employeeId: data.employeeId,
 		sessionId: data.sessionId,
@@ -505,6 +677,76 @@ export function handleStreamDelta(data: {
 	// isStreaming=true before a potential handleStreamComplete in the same
 	// event loop tick (which would cancel the RAF).
 	notify();
+}
+
+/**
+ * Apply a tool approval request to the streaming tool call.
+ *
+ * CRITICAL FIX (用户反馈："聊天框中输出流式信息最终卡住，没有结束"):
+ * During streaming, tool calls live in StreamState.toolCalls (rendered by the
+ * StreamingBubble), NOT in the committed `messages` array. The Host's
+ * `chat.toolApprovalRequest` event must therefore update the stream state so
+ * the approval card renders inline and the user can approve — otherwise
+ * agentOSService.checkAndApprove() awaits forever and the stream is stuck at
+ * "执行中...".
+ *
+ * We search the foreground stream first, then any background streams. Returns
+ * true if a matching tool call was found and updated (so the caller can decide
+ * whether to also fall back to updating committed messages).
+ */
+export function applyToolApprovalRequest(payload: {
+	toolCallId: string;
+	toolName?: string;
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+}): boolean {
+	const chunk: StreamChunk = {
+		type: 'tool_approval_request',
+		toolCallId: payload.toolCallId,
+		toolName: payload.toolName,
+		securityLevel: payload.securityLevel,
+	};
+
+	// Foreground stream
+	if (currentState.toolCalls.some(tc => tc.id === payload.toolCallId)) {
+		accumulateChunk(currentState, chunk);
+		scheduleNotify();
+		return true;
+	}
+
+	// Background streams
+	for (const bg of backgroundStreams.values()) {
+		if (bg.toolCalls.some(tc => tc.id === payload.toolCallId)) {
+			accumulateChunk(bg, chunk);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Mark a pending approval as resolved (user clicked allow/deny). Clears the
+ * 'approval_required' visual state back to 'running' so the card stops showing
+ * the buttons while execution proceeds (a subsequent tool_end will finalize the
+ * status). Returns true if a matching tool call was found.
+ */
+export function applyToolApprovalResolved(toolCallId: string): boolean {
+	const chunk: StreamChunk = { type: 'tool_approval_resolved', toolCallId };
+
+	if (currentState.toolCalls.some(tc => tc.id === toolCallId)) {
+		accumulateChunk(currentState, chunk);
+		scheduleNotify();
+		return true;
+	}
+
+	for (const bg of backgroundStreams.values()) {
+		if (bg.toolCalls.some(tc => tc.id === toolCallId)) {
+			accumulateChunk(bg, chunk);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /** Schedule a RAF-batched notify to listeners. */
@@ -541,7 +783,7 @@ export function handleStreamComplete(data: {
 	}
 
 	// ── Completion for the currently displayed stream ──
-	const wasStreaming = currentState.isStreaming;
+	const wasStreaming = isPhaseActive(currentState.phase);
 	const hostMsg = data.message as Record<string, unknown> | undefined;
 
 	console.log(`[StreamHandler] handleStreamComplete: wasStreaming=${wasStreaming}, deltaCount=${deltaEventCount}, ` +
@@ -580,6 +822,7 @@ export function handleStreamComplete(data: {
 	// This guards against missing/late tool_end chunks from the host.
 	const finalState: StreamState = {
 		...currentState,
+		phase: 'idle',
 		isStreaming: false,
 		toolCalls: currentState.toolCalls.map(tc => ({
 			...tc,
@@ -613,8 +856,8 @@ export function handleStreamComplete(data: {
 
 	// If no callback called resetStream() (defensive), make sure we
 	// still transition out of the streaming state.
-	if (currentState.isStreaming) {
-		currentState = { ...currentState, isStreaming: false };
+	if (isPhaseActive(currentState.phase)) {
+		currentState = { ...currentState, phase: 'idle', isStreaming: false };
 		notify();
 	}
 }
@@ -640,7 +883,7 @@ export function handleStreamError(data: {
 
 	// ── Error for the currently displayed stream ──
 	console.error(`[StreamHandler] handleStreamError: employee=${data.employeeId}, ` +
-		`wasStreaming=${currentState.isStreaming}, deltaCount=${deltaEventCount}, error="${data.error}"`);
+		`wasStreaming=${isPhaseActive(currentState.phase)}, deltaCount=${deltaEventCount}, error="${data.error}"`);
 
 	// Cancel any pending RAF from the last delta
 	if (pendingRafId !== null) {
@@ -651,7 +894,8 @@ export function handleStreamError(data: {
 	// Snapshot the error state before callbacks may resetStream
 	const finalState: StreamState = {
 		...currentState,
-		isStreaming: false,
+		phase: 'error',
+		isStreaming: true, // error is still an active state
 		errorMessage: data.error || 'Unknown stream error',
 		error: parseStreamError(data.error || 'Unknown stream error'),
 	};
@@ -666,8 +910,8 @@ export function handleStreamError(data: {
 	}
 
 	// Defensive: if no callback reset the stream, do it now
-	if (currentState.isStreaming) {
-		currentState = { ...currentState, isStreaming: false, errorMessage: data.error || 'Unknown stream error', error: parseStreamError(data.error || 'Unknown stream error') };
+	if (isPhaseActive(currentState.phase)) {
+		currentState = { ...currentState, phase: 'idle', isStreaming: false, errorMessage: data.error || 'Unknown stream error', error: parseStreamError(data.error || 'Unknown stream error') };
 		notify();
 	}
 }
@@ -728,7 +972,7 @@ export function switchActiveStream(employeeId: string | null, sessionId: string 
 	activeEmployeeId = employeeId;
 
 	// Save current stream to background if it's active
-	if (currentState.isStreaming && currentState.employeeId) {
+	if (isPhaseActive(currentState.phase) && currentState.employeeId) {
 		const currentKey = streamKey(currentState.employeeId);
 		backgroundStreams.set(currentKey, {
 			...currentState,
@@ -771,10 +1015,103 @@ function mapToolStatus(status: string): ToolMessageStatus {
 		case 'error': return 'error';
 		case 'pending': return 'pending';
 		case 'rejected': return 'rejected';
-		case 'approval_required': return 'pending';
+		case 'approval_required': return 'approval_required';
 		case 'cancelled': return 'rejected';
 		default: return 'pending';
 	}
+}
+
+/**
+ * Convert a single streaming ToolCallState into the unified ToolMessage format
+ * that ToolCallCard expects.
+ *
+ * CRITICAL FIX (Problem 1 — 工具卡片显示异常 terminal/listfile/readfile):
+ * The StreamingBubble previously passed the raw ToolCallState directly to
+ * ToolCallCard. But ToolCallCard's internal adapter (toolMessageToToolCallData)
+ * reads `params` (an object) and a ToolMessageStatus — whereas ToolCallState
+ * carries `arguments` (a JSON string) and status values like 'done'. The
+ * mismatch caused arguments to be lost (params undefined) and the status to be
+ * misread ('done' is not a ToolMessageStatus → fell back to 'pending'), so the
+ * card rendered with no command/path and the wrong (perpetual pending) state.
+ *
+ * Routing streaming tool calls through the SAME converter used for committed
+ * messages guarantees identical, correct rendering during and after streaming.
+ */
+export function toolCallStateToToolMessage(tc: ToolCallState): ToolMessage {
+	const toolStatus = mapToolStatus(tc.status);
+
+	// Build ToolResult if available
+	let toolResult: ToolResult | null = null;
+	if (tc.result && toolStatus === 'success') {
+		toolResult = {
+			content: [{ type: 'text', text: tc.result }],
+			metadata: undefined,
+		};
+	}
+
+	// Build params from tool call (parse arguments JSON)
+	let params: Record<string, unknown> = {};
+	let rawParams: Record<string, string | undefined> = {};
+	try {
+		params = JSON.parse(tc.arguments || '{}');
+		rawParams = { [tc.name]: tc.arguments };
+	} catch {
+		// If can't parse (still streaming partial JSON), keep raw string so the
+		// card can at least show the in-progress arguments.
+		rawParams = { [tc.name]: tc.arguments };
+	}
+
+	const baseToolMsg = {
+		role: 'tool' as const,
+		id: tc.id,
+		name: tc.name,
+		params: params as Readonly<Record<string, unknown>>,
+		rawParams: rawParams as Readonly<Record<string, string | undefined>>,
+		timestamp: Date.now(),
+		displayName: tc.displayName,
+		renderType: tc.renderType,
+		serverExecuted: tc.serverExecuted,
+		securityLevel: tc.securityLevel,
+		defaultShow: tc.defaultShow,
+	};
+
+	if (toolStatus === 'success') {
+		return {
+			...baseToolMsg,
+			status: 'success' as const,
+			result: toolResult || { content: [], metadata: undefined },
+		} as ToolMessage;
+	} else if (toolStatus === 'error') {
+		return {
+			...baseToolMsg,
+			status: 'error' as const,
+			result: tc.result || 'Unknown error',
+		} as ToolMessage;
+	} else if (toolStatus === 'running') {
+		return {
+			...baseToolMsg,
+			status: 'running' as const,
+			result: null,
+		} as ToolMessage;
+	} else if (toolStatus === 'rejected') {
+		return {
+			...baseToolMsg,
+			status: 'rejected' as const,
+			result: null,
+		} as ToolMessage;
+	} else if (toolStatus === 'approval_required') {
+		return {
+			...baseToolMsg,
+			status: 'approval_required' as const,
+			result: null,
+		} as ToolMessage;
+	}
+	// pending or invalid_params
+	return {
+		...baseToolMsg,
+		status: 'pending' as const,
+		result: null,
+	} as ToolMessage;
 }
 
 export function buildChatMessagesFromState(state: StreamState): ChatMessage[] {
@@ -795,75 +1132,10 @@ export function buildChatMessagesFromState(state: StreamState): ChatMessage[] {
 		messages.push(assistantMsg);
 	}
 
-	// Build tool messages from toolCalls[]
+	// Build tool messages from toolCalls[] — reuse the single-tool converter so
+	// streaming and committed rendering stay identical.
 	for (const tc of state.toolCalls) {
-		const toolStatus = mapToolStatus(tc.status);
-		
-		// Build ToolResult if available
-		let toolResult: ToolResult | null = null;
-		if (tc.result && toolStatus === 'success') {
-			toolResult = {
-				content: [{ type: 'text', text: tc.result }],
-				metadata: undefined,
-			};
-		}
-
-		// Build params from tool call (parse arguments JSON)
-		let params: Record<string, unknown> = {};
-		let rawParams: Record<string, string | undefined> = {};
-		try {
-			params = JSON.parse(tc.arguments || '{}');
-			rawParams = { [tc.name]: tc.arguments };
-		} catch {
-			// If can't parse, use empty object
-		}
-
-		// Build ToolMessage based on status
-		const baseToolMsg = {
-			role: 'tool' as const,
-			id: tc.id,
-			name: tc.name,
-			params: params as Readonly<Record<string, unknown>>,
-			rawParams: rawParams as Readonly<Record<string, string | undefined>>,
-			timestamp: Date.now(),
-		};
-
-		let toolMsg: ToolMessage;
-
-		if (toolStatus === 'success') {
-			toolMsg = {
-				...baseToolMsg,
-				status: 'success' as const,
-				result: toolResult || { content: [], metadata: undefined },
-			} as ToolMessage;
-		} else if (toolStatus === 'error') {
-			toolMsg = {
-				...baseToolMsg,
-				status: 'error' as const,
-				result: tc.result || 'Unknown error',
-			} as ToolMessage;
-		} else if (toolStatus === 'running') {
-			toolMsg = {
-				...baseToolMsg,
-				status: 'running' as const,
-				result: null,
-			} as ToolMessage;
-		} else if (toolStatus === 'rejected') {
-			toolMsg = {
-				...baseToolMsg,
-				status: 'rejected' as const,
-				result: null,
-			} as ToolMessage;
-		} else {
-			// pending or invalid_params
-			toolMsg = {
-				...baseToolMsg,
-				status: 'pending' as const,
-				result: null,
-			} as ToolMessage;
-		}
-
-		messages.push(toolMsg);
+		messages.push(toolCallStateToToolMessage(tc));
 	}
 
 	return messages;

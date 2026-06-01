@@ -64,9 +64,9 @@ export const SUB_AGENT_PERMISSIONS: Record<SubAgentType, {
 		canWebFetch: true,
 		canWebSearch: true,
 		canCloneRepo: false,
-		canSpawnSubAgent: false,
+		canSpawnSubAgent: true,
 		allowedToolPatterns: ['*'],
-		deniedToolPatterns: ['delegate_task', 'todowrite'],
+		deniedToolPatterns: ['todowrite'],
 	},
 	[SubAgentType.Scout]: {
 		canRead: true,
@@ -152,10 +152,40 @@ export class UnifiedSubAgentDispatch {
 	private readonly _activeSubAgents = new Map<string, SubAgentInstance>();
 	private readonly _parentBudget: IterationBudget;
 	private readonly _maxConcurrent: number;
+	private readonly _maxSpawnDepth: number;
 
-	constructor(parentBudget?: IterationBudget, maxConcurrent: number = 3) {
+	constructor(parentBudget?: IterationBudget, maxConcurrent: number = 3, maxSpawnDepth: number = 2) {
 		this._parentBudget = parentBudget || new IterationBudget(90);
 		this._maxConcurrent = maxConcurrent;
+		this._maxSpawnDepth = maxSpawnDepth;
+	}
+
+	/** 获取当前配置（供 delegate_task 动态描述使用） */
+	getConfig() {
+		return {
+			maxConcurrent: this._maxConcurrent,
+			maxSpawnDepth: this._maxSpawnDepth,
+		};
+	}
+
+	/**
+	 * 计算指定 agent 的深度（从 root 到该 agent 的层数，root = 0）
+	 */
+	private _getAgentDepth(agentId: string): number {
+		let depth = 0;
+		let currentId: string | undefined = agentId;
+
+		while (currentId) {
+			const agent = this._activeSubAgents.get(currentId);
+			if (!agent) {
+				// Reached root agent (not in _activeSubAgents)
+				break;
+			}
+			depth++;
+			currentId = agent.parentAgentId;
+		}
+
+		return depth;
 	}
 
 	/**
@@ -167,6 +197,12 @@ export class UnifiedSubAgentDispatch {
 		task: string,
 		options?: SubAgentOptions,
 	): string {
+		// Check spawn depth limit
+		const parentDepth = this._getAgentDepth(parentAgentId);
+		if (parentDepth >= this._maxSpawnDepth) {
+			throw new Error(`Cannot spawn sub-agent: maximum spawn depth (${this._maxSpawnDepth}) reached. Parent agent depth: ${parentDepth}`);
+		}
+
 		const subAgentId = `subagent-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 		const budget = this._parentBudget.createChildBudget(options?.maxIterations);
 		const type = options?.type ?? SubAgentType.General;
@@ -448,9 +484,19 @@ export class UnifiedSubAgentDispatch {
 
 			[SubAgentType.General]: `You are a general-purpose agent. You can read, write, and execute commands.
 - Complete the task described by the user
-- You cannot spawn additional sub-agents
+- You CAN spawn sub-agents using delegate_task when the task can be decomposed into independent parallel subtasks
 - Report your results clearly
-- If you encounter errors, explain what went wrong`,
+- If you encounter errors, explain what went wrong
+
+## When to use delegate_task:
+- The task can be decomposed into 2+ independent subtasks
+- You need to run multiple independent investigations simultaneously
+- The subtask is complex enough to benefit from a dedicated context
+
+## When NOT to use delegate_task:
+- The task is simple and can be completed in one turn
+- You need to maintain ongoing context/memory across steps
+- You are already at maximum spawn depth (check parent agent constraints)`,
 
 			[SubAgentType.Scout]: `You are a research agent for external libraries, dependency source, and documentation.
 - Use repo_clone first when the task involves a GitHub repository

@@ -209,6 +209,15 @@ export interface IModelOptions {
 	readonly systemPrompt?: string;
 	readonly tools?: IToolDefinition[];
 	readonly stop?: string[];
+	/**
+	 * 工具选择策略（对齐 OpenAI tool_choice 语义）。
+	 *   - 'auto'（默认）：模型自行决定是否调用工具
+	 *   - 'required'：强制本轮必须调用至少一个工具（用于续跑兜底，逼模型
+	 *      停止"宣告意图却不动手"的空转行为）
+	 *   - 'none'：禁止调用工具
+	 * 未设置时 provider 应回退到 'auto'。
+	 */
+	readonly toolChoice?: 'auto' | 'required' | 'none';
 }
 
 export interface IModelDelta {
@@ -505,9 +514,29 @@ export interface IAgentTurnRequest {
 	readonly chatMode?: 'craft' | 'ask' | 'plan' | 'workflow';
 }
 
+// ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────
+
+/**
+ * 精确表达 Agent 循环的每个阶段，替代 boolean isStreaming。
+ * 与 WebView 端 streamHandler.ts 中的 StreamPhase 定义保持同步。
+ *
+ * 状态流转:
+ *   idle → llm_streaming → tool_executing → llm_streaming → ... → idle
+ *   idle → llm_streaming → awaiting_approval → tool_executing → ... → idle
+ *   idle → llm_streaming → compressing → llm_streaming → ... → idle
+ *   * → error → idle
+ */
+export type StreamPhase =
+	| 'idle'              // 完全空闲
+	| 'llm_streaming'     // LLM 正在流式输出
+	| 'tool_executing'    // 工具正在执行
+	| 'awaiting_approval' // 等待用户审批
+	| 'compressing'       // 正在压缩上下文
+	| 'error';            // 错误状态
+
 export interface IChatStreamDelta {
 	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace'
-	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage';
+	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage' | 'phase_change';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -517,6 +546,29 @@ export interface IChatStreamDelta {
 	readonly success?: boolean; // tool_end 时表示工具是否执行成功
 	/** Token 使用量（type === 'usage' 时携带） */
 	readonly usage?: IModelUsage;
+	/**
+	 * Stream phase — allows explicit phase transitions from Host.
+	 * When present, the WebView will set StreamState.phase to this value.
+	 *
+	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
+	 */
+	readonly phase?: StreamPhase;
+	/**
+	 * Host-side full text snapshot (Void-inspired fullTextSoFar pattern).
+	 * When present, the WebView should use this instead of incrementally
+	 * appending `content` to textBuffer. This eliminates the MISMATCH risk
+	 * where WebView-side textBuffer drifts from the Host's actual text.
+	 *
+	 * Only sent when the Host maintains a full-text accumulator; otherwise
+	 * the WebView falls back to delta accumulation (content += delta).
+	 */
+	readonly fullText?: string;
+	/**
+	 * Host-side full thinking snapshot (parallel to fullText).
+	 * When present, the WebView should use this instead of incrementally
+	 * appending `content` to thinkingBuffer.
+	 */
+	readonly fullThinking?: string;
 	/** UI 显示名称（来自模型的 display_name 字段） */
 	readonly displayName?: string;
 	/** 渲染类型（如 RunTerminal、CodeEditor 等） */

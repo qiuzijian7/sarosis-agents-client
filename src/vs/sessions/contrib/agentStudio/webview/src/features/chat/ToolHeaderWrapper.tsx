@@ -14,7 +14,7 @@
  *  Ref: Void sidebar-tsx/SidebarChat.tsx (ToolHeaderWrapper)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 
 // ─── Icon Components (inline SVG for self-contained component) ──────────────
 
@@ -22,6 +22,24 @@ function ChevronRight({ className, size = 14 }: { className?: string; size?: num
 	return (
 		<svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 			<polyline points="9 18 15 12 9 6" />
+		</svg>
+	);
+}
+
+/** Spinner icon for running state (Void: animated rotate). */
+function Spinner({ className, size = 14 }: { className?: string; size?: number }) {
+	return (
+		<svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+			<path d="M21 12a9 9 0 11-6.219-8.56" />
+		</svg>
+	);
+}
+
+/** Check icon for success state. */
+function Check({ className, size = 14 }: { className?: string; size?: number }) {
+	return (
+		<svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+			<polyline points="20 6 9 17 4 12" />
 		</svg>
 	);
 }
@@ -74,6 +92,10 @@ export interface ToolHeaderParams {
 	desc2OnClick?: () => void;
 	isOpen?: boolean;
 	isRejected?: boolean;
+	/** running state — shows animated spinner on the right */
+	isRunning?: boolean;
+	/** success state — shows a subtle check icon on the right */
+	isSuccess?: boolean;
 	className?: string; // applies to the main content
 	// Extra HTML attributes (for accessibility etc.)
 	role?: string;
@@ -104,6 +126,8 @@ export function ToolHeaderWrapper({
 	desc2OnClick,
 	isOpen,
 	isRejected,
+	isRunning,
+	isSuccess,
 	className,
 	...rest
 }: ToolHeaderParams): React.ReactElement {
@@ -168,6 +192,12 @@ export function ToolHeaderWrapper({
 							/>
 						)}
 
+						{isRunning && (
+							<Spinner
+								className="tool-header-spinner-icon"
+								size={14}
+							/>
+						)}
 						{isError && (
 							<AlertTriangle
 								className="tool-header-error-icon"
@@ -177,6 +207,12 @@ export function ToolHeaderWrapper({
 						{isRejected && (
 							<Ban
 								className="tool-header-rejected-icon"
+								size={14}
+							/>
+						)}
+						{isSuccess && !isError && !isRejected && !isRunning && (
+							<Check
+								className="tool-header-success-icon"
 								size={14}
 							/>
 						)}
@@ -198,6 +234,130 @@ export function ToolHeaderWrapper({
 				{children}
 			</div>
 			{bottomChildren}
+		</div>
+	);
+}
+
+// ─── IconLoading: animated dots ('.' → '..' → '...') ─────────────────────────
+// Ref: Void IconLoading (SidebarChat.tsx line 123)
+
+export function IconLoading({ className = '' }: { className?: string }): React.ReactElement {
+	const [loadingText, setLoadingText] = useState('.');
+	useEffect(() => {
+		const id = setInterval(() => {
+			setLoadingText(prev => (prev === '...' ? '.' : prev + '.'));
+		}, 300);
+		return () => clearInterval(id);
+	}, []);
+	return <span className={`tool-header-loading-dots ${className}`}>{loadingText}</span>;
+}
+
+// ─── LoadingTitle: wraps a title node with trailing loading dots ─────────────
+// Ref: Void loadingTitleWrapper (SidebarChat.tsx line 1398)
+
+export function LoadingTitle({ children }: { children: React.ReactNode }): React.ReactElement {
+	return (
+		<span className="tool-header-loading-title">
+			{children}
+			<IconLoading />
+		</span>
+	);
+}
+
+// ─── ToolChildrenWrapper: dropdown content container ─────────────────────────
+// Ref: Void ToolChildrenWrapper (SidebarChat.tsx line 1640)
+
+export function ToolChildrenWrapper({
+	children,
+	className,
+	withBackground,
+}: {
+	children: React.ReactNode;
+	className?: string;
+	withBackground?: boolean;
+}): React.ReactElement {
+	return (
+		<div className={`tool-children-wrapper ${withBackground ? 'tool-children-bg' : ''} ${className ?? ''}`}>
+			<div className="tool-children-wrapper-inner">{children}</div>
+		</div>
+	);
+}
+
+// ─── CodeChildren: selectable code/text content area ─────────────────────────
+// Ref: Void CodeChildren (SidebarChat.tsx line 1647)
+
+export function CodeChildren({
+	children,
+	className,
+}: {
+	children: React.ReactNode;
+	className?: string;
+}): React.ReactElement {
+	return (
+		<div className={`tool-code-children ${className ?? ''}`}>
+			<div className="tool-code-children-selectable">{children}</div>
+		</div>
+	);
+}
+
+// ─── ListableToolItem: clickable list row with bullet ────────────────────────
+// Ref: Void ListableToolItem (SidebarChat.tsx line 1655)
+
+export function ListableToolItem({
+	name,
+	onClick,
+	isSmall,
+	className,
+	showDot = true,
+}: {
+	name: React.ReactNode;
+	onClick?: () => void;
+	isSmall?: boolean;
+	className?: string;
+	showDot?: boolean;
+}): React.ReactElement {
+	return (
+		<div
+			className={`tool-listable-item ${onClick ? 'tool-listable-item-clickable' : ''} ${className ?? ''}`}
+			onClick={onClick}
+		>
+			{showDot !== false && (
+				<div className="tool-listable-item-dot">
+					<svg viewBox="0 0 100 40"><rect x="0" y="15" width="100" height="10" /></svg>
+				</div>
+			)}
+			<div className={isSmall ? 'tool-listable-item-small' : ''}>{name}</div>
+		</div>
+	);
+}
+
+// ─── BottomChildren: collapsible error / lint area below the card ────────────
+// Ref: Void BottomChildren (SidebarChat.tsx line 1694)
+
+export function BottomChildren({
+	children,
+	title,
+}: {
+	children: React.ReactNode;
+	title: string;
+}): React.ReactElement | null {
+	const [isOpen, setIsOpen] = useState(false);
+	if (!children) { return null; }
+	return (
+		<div className="tool-bottom-children">
+			<div
+				className="tool-bottom-children-header"
+				onClick={() => setIsOpen(o => !o)}
+			>
+				<ChevronRight
+					className={`tool-bottom-children-chevron ${isOpen ? 'tool-bottom-children-chevron-open' : ''}`}
+					size={12}
+				/>
+				<span className="tool-bottom-children-title">{title}</span>
+			</div>
+			<div className={`tool-bottom-children-body ${isOpen ? 'tool-bottom-children-body-open' : ''}`}>
+				<div className="tool-bottom-children-content">{children}</div>
+			</div>
 		</div>
 	);
 }

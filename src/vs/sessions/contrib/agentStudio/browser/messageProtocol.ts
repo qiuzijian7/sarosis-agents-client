@@ -33,6 +33,7 @@ export type RequestType =
 	| 'workspace.delete'
 	| 'workspace.update'
 	| 'workspace.updateLayout'
+	| 'workspace.setActive'
 	| 'workspace.connections.list'
 	| 'workspace.connections.add'
 	| 'workspace.connections.remove'
@@ -184,10 +185,59 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
+	/**
+	 * Stream phase — allows the Host to explicitly control phase transitions.
+	 * When present on any chunk type, the WebView will set StreamState.phase
+	 * to this value (overriding type-based inference).
+	 * On `type: 'phase_change'`, this field is required.
+	 *
+	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
+	 */
+	readonly phase?: string;
+	/**
+	 * Host-side full text snapshot (Void-inspired fullTextSoFar).
+	 * When present, WebView uses this instead of incremental content accumulation.
+	 */
+	readonly fullText?: string;
+	/**
+	 * Host-side full thinking snapshot.
+	 * When present, WebView uses this instead of incremental thinking accumulation.
+	 */
+	readonly fullThinking?: string;
+	/**
+	 * Display name for tool call cards (e.g. "Read File" instead of "read_file").
+	 * Set by the LLM via _meta.display_name or by AgentOS tool metadata.
+	 */
+	readonly displayName?: string;
+	/**
+	 * Render type hint for tool call cards (e.g. "ListItems", "RunTerminal", "CodeApply").
+	 * Controls which renderer the ToolCallCard component uses.
+	 */
+	readonly renderType?: string;
+	/**
+	 * Whether the tool call card should be visible in the chat.
+	 * When false, the tool is executed silently without showing a card.
+	 * Default: true (undefined → true).
+	 */
+	readonly defaultShow?: boolean;
+	/**
+	 * Whether the tool was executed server-side (no local execution needed).
+	 */
+	readonly serverExecuted?: boolean;
+	/**
+	 * Success flag for tool_end chunks.
+	 * true = tool completed successfully, false = tool failed.
+	 */
+	readonly success?: boolean;
+	/**
+	 * Character position in the text buffer where this tool call started.
+	 * Used by InterleavedMarkdownRenderer to position tool cards inline.
+	 */
+	readonly textPosition?: number;
 	/**
 	 * KV Cache / token usage metrics (Anthropic Prompt Caching, OpenAI cached_tokens, …).
 	 * Sent on `type: 'usage'` chunks; the webview accumulates these and renders
@@ -550,6 +600,12 @@ export interface IFileOpenPayload {
 	readonly preserveFocus?: boolean;
 	/** Whether to open as a pinned (non-preview) editor. Default: false. */
 	readonly pinned?: boolean;
+	/**
+	 * Optional 1-based line number to reveal/select after opening. Used by
+	 * tool cards (e.g. file_read with `start_line`) to jump to the relevant
+	 * line. Ignored when absent.
+	 */
+	readonly lineNumber?: number;
 	/**
 	 * Optional workspace context captured at the moment the preview is
 	 * opened. Forwarded into the HTML preview's imgui SDK so form submits

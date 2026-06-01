@@ -10,7 +10,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { initMessageClient } from './bridge/messageClient.js';
-import { handleStreamDelta, handleStreamComplete, handleStreamError } from './bridge/streamHandler.js';
+import { handleStreamDelta, handleStreamComplete, handleStreamError, applyToolApprovalRequest } from './bridge/streamHandler.js';
 import { useEmployeeStore } from './store/useEmployeeStore.js';
 import { useProviderStore } from './store/useProviderStore.js';
 import { useThemeStore } from './store/useThemeStore.js';
@@ -25,6 +25,7 @@ import './styles/chat-enhanced.css';
 import './styles/chat-cards.css';
 import './styles/configmd.css';
 import './styles/agent-editor.css';
+import './styles/void-tool-card.css';
 
 // Initialize the message bridge (must happen before React mounts)
 initMessageClient((type, data) => {
@@ -255,17 +256,33 @@ initMessageClient((type, data) => {
 				securityLevel: 'safe' | 'cautious' | 'dangerous';
 				reason?: string;
 			};
-			
-			// Find the message containing this tool call and update its status
+
+			// ── Step 1: streaming tool calls (PRIMARY path) ──────────────────
+			// During streaming, the tool call lives in streamState.toolCalls
+			// (rendered by StreamingBubble), NOT the committed `messages` array.
+			// This is the common case — a tool requiring approval mid-stream. If
+			// we don't update the stream state, the approval card never renders,
+			// the user can't approve, and agentOSService.checkAndApprove() awaits
+			// forever → stream stuck at "执行中..." (the reported bug).
+			const appliedToStream = applyToolApprovalRequest({
+				toolCallId: payload.toolCallId,
+				toolName: payload.toolName,
+				securityLevel: payload.securityLevel,
+			});
+
+			// ── Step 2: committed messages (FALLBACK path) ───────────────────
+			// If the tool call was already committed to `messages` (e.g. the
+			// stream completed but a deferred approval is still being requested),
+			// update it there too.
 			const store = useChatStore.getState();
 			const messages = store.messages;
-			let updated = false;
+			let updatedCommitted = false;
 			const newMessages = messages.map(msg => {
 				if (msg.toolCalls) {
 					const newToolCalls = msg.toolCalls.map(tc => {
 						if (tc.id === payload.toolCallId) {
-							updated = true;
-							return { ...tc, status: 'approval_required' };
+							updatedCommitted = true;
+							return { ...tc, status: 'approval_required', securityLevel: payload.securityLevel };
 						}
 						return tc;
 					});
@@ -275,12 +292,15 @@ initMessageClient((type, data) => {
 				}
 				return msg;
 			});
-			
-			if (updated) {
+
+			if (updatedCommitted) {
 				useChatStore.setState({ messages: newMessages });
-				console.log(`[AgentStudio] Tool approval requested: toolCallId=${payload.toolCallId}, toolName=${payload.toolName}`);
+			}
+
+			if (appliedToStream || updatedCommitted) {
+				console.log(`[AgentStudio] Tool approval requested: toolCallId=${payload.toolCallId}, toolName=${payload.toolName} (stream=${appliedToStream}, committed=${updatedCommitted})`);
 			} else {
-				console.warn(`[AgentStudio] chat.toolApprovalRequest: toolCallId=${payload.toolCallId} not found in messages`);
+				console.warn(`[AgentStudio] chat.toolApprovalRequest: toolCallId=${payload.toolCallId} not found in stream or messages`);
 			}
 			break;
 		}

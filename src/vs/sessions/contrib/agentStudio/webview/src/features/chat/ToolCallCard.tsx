@@ -1,1454 +1,736 @@
 /*---------------------------------------------------------------------------------------------
- *  Agent Studio WebView - Tool Call Card Component
+ *  Agent Studio WebView - Tool Call Card Component (Void-style unified shell)
  *
- *  Enhanced tool call card inspired by OpenClaw's tool-cards.ts and Void's SmallProseWrapper:
- *  - Collapsed summary with icon + tool name + status indicator
- *  - Expanded view with formatted input/output sections
- *  - Streaming argument preview (partial JSON display)
- *  - Result truncation with "show more" toggle
- *  - Copy button for args/results
- *  - Error state styling
- *  - Duration display
- *  - renderType-based rendering: ListItems / RunTerminal / CodeApply
+ *  A full rewrite that replicates Void's unified tool card architecture
+ *  (SidebarChat.tsx). A single `ToolHeaderWrapper` shell drives ALL tool types:
+ *    rounded bordered card → clickable title row (chevron + italic desc) →
+ *    right status area (spinner / error / N results) → smooth-height dropdown
+ *    body → collapsible bottom error area.
  *
- *  Void-inspired enhancements:
- *  - Line numbers for read_file (SmallProseWrapper pattern)
- *  - Diff view for edit_file (red/green highlighting)
- *  - Apply hover button for code blocks
- *  - Tool approval UI (approve/reject buttons)
- *  - Lint diagnostics after edit_file
- *  - Exit code for terminal commands
- *  - Search highlight for search_files
- *  - Clickable file path hyperlinks
+ *  Key Void concepts ported:
+ *  - titleOfBuiltinToolName: status-aware title text (done / proposed / running)
+ *  - toolNameToDesc: extracts file name / command / query as the italic desc1
+ *  - per-tool resultWrapper: read_file / ls_dir / search / edit / run_command /
+ *    generic / MCP — each renders into the unified shell
+ *  - ToolRequestAcceptRejectButtons: approval UI
+ *  - BottomChildren: collapsible error / lint area
  *
- *  Ref: OpenClaw ui/src/ui/chat/tool-cards.ts
- *  Ref: Void sidebar-tsx/SidebarChat.tsx (SmallProseWrapper, ToolRequestAcceptRejectButtons)
+ *  Replaces the previous multi-card patchwork (ConfirmationCard / ProgressCard /
+ *  ResultCard / GenericToolCallCard / renderType dispatch). The public prop
+ *  contract `{ toolCall: ToolMessage }` is preserved.
+ *
+ *  Ref: void sidebar-tsx/SidebarChat.tsx (ToolHeaderWrapper, titleOfBuiltinToolName,
+ *       toolNameToDesc, builtinToolNameToComponent, ToolRequestAcceptRejectButtons)
  *--------------------------------------------------------------------------------------------*/
 
-
 /* eslint-disable local/code-no-unexternalized-strings */
-import React, { memo, useCallback, useMemo, useState, useRef, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
+import React, { memo, useCallback, useMemo } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { sanitizeToolResultText } from '../../utils/assistantVisibleText';
-import { ToolDisplayRegistry } from '../../utils/toolDisplayRegistry';
-import { openFile } from '../../bridge/fileBridge';
+import { openFile, type OpenFileOptions } from '../../bridge/fileBridge';
 import { sendRequest } from '../../bridge/messageClient';
+import { applyToolApprovalResolved } from '../../bridge/streamHandler';
+import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import type { ToolMessage } from '../../types/chatTypes';
+import {
+	ToolHeaderWrapper,
+	ToolChildrenWrapper,
+	CodeChildren,
+	ListableToolItem,
+	BottomChildren,
+	LoadingTitle,
+	type ToolHeaderParams,
+} from './ToolHeaderWrapper';
 
-// Import Void-inspired components
-import { ConfirmationCard, TerminalConfirmationCard } from './ConfirmationCard';
-import { ProgressCard, TerminalProgressCard } from './ProgressCard';
-import { ResultCard } from './ResultCard';
-
-/**
- * Phantom tool names — DEPRECATED: visibility is now controlled solely by
- * `defaultShow`. Kept as empty set for backward compatibility.
- */
-const PHANTOM_TOOL_NAMES = new Set<string>([]);
-
-// ─── ToolCallData (legacy format, kept for internal use) ──────────────
-
-export interface ToolCallData {
-	id: string;
-	name: string;
-	arguments: string;
-	result?: string;
-	status: string;
-	/** Duration in ms (if available) */
-	duration?: number;
-	/** Error message (if failed) */
-	error?: string;
-	/** Whether to show this tool call card in the chat UI. Default true. */
-	defaultShow?: boolean;
-	/** UI 显示名称（来自模型的 display_name 字段） */
-	displayName?: string;
-	/** 渲染类型（如 RunTerminal、CodeApply、ListItems 等） */
-	renderType?: string;
-	/** 工具已在服务端执行（如 Knot AG-UI），客户端不需要再执行 */
-	serverExecuted?: boolean;
-	/** Security level for approval UI */
-	securityLevel?: 'safe' | 'cautious' | 'dangerous';
-	/** Exit code from terminal commands */
-	exitCode?: number;
-	/** Lint/diagnostic errors after edit_file */
-	diagnostics?: Array<{ message: string; line?: number; severity: 'error' | 'warning' }>;
-	/** Whether the tool call was canceled */
-	canceled?: boolean;
-	/** Whether the tool call was confirmed by user */
-	confirmed?: boolean;
-}
+// ─── Props ────────────────────────────────────────────────────────────────
 
 interface ToolCallCardProps {
-	toolCall: ToolMessage;
+	/**
+	 * Accepts either a fully-normalized ToolMessage (from EmployeeChat via
+	 * toolCallStateToToolMessage) OR a raw store tool-call object (from
+	 * ChatMessage, which passes message.toolCalls items directly). The
+	 * normalizer below tolerates both shapes.
+	 */
+	toolCall: ToolMessage | RawToolCall;
 }
 
-// ─── Adapter: ToolMessage (unified format) → ToolCallData (legacy format) ──────────
+/** Raw store tool-call shape (ChatMessage passes these directly). */
+interface RawToolCall {
+	id: string;
+	name: string;
+	arguments?: string;
+	params?: Record<string, unknown>;
+	result?: unknown;
+	status: string;
+	error?: string;
+	defaultShow?: boolean;
+	displayName?: string;
+	renderType?: string;
+	serverExecuted?: boolean;
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	exitCode?: number;
+	duration?: number;
+	canceled?: boolean;
+	mcpServerName?: string;
+	diagnostics?: ReadonlyArray<{ message: string; line?: number; severity: 'error' | 'warning' }>;
+}
 
-/** Convert ToolMessage to ToolCallData for internal use. */
-function toolMessageToToolCallData(toolMsg: ToolMessage): ToolCallData {
-	// Extract result text from ToolResult
-	let resultText: string | undefined = undefined;
-	if (toolMsg.result) {
-		if (typeof toolMsg.result === 'string') {
-			resultText = toolMsg.result;
-		} else if (toolMsg.result.content) {
-			// ToolResult: extract text from content array
-		const texts = toolMsg.result.content
-			.filter((c: any) => c.type === 'text' && c.text)
-			.map((c: any) => c.text);
-			resultText = texts.join('\n') || undefined;
-		}
+// ─── Normalized internal view of a tool call ────────────────────────────────
+
+type ToolPhase = 'running' | 'success' | 'error' | 'rejected' | 'canceled' | 'approval_required' | 'pending';
+
+interface NormalizedTool {
+	id: string;
+	name: string;
+	params: Record<string, unknown>;
+	/** pretty-printed JSON of params (for generic display) */
+	argsJson: string;
+	/** extracted plain-text result */
+	resultText: string;
+	phase: ToolPhase;
+	error?: string;
+	defaultShow?: boolean;
+	displayName?: string;
+	renderType?: string;
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	exitCode?: number;
+	duration?: number;
+	mcpServerName?: string;
+	diagnostics?: ReadonlyArray<{ message: string; line?: number; severity: 'error' | 'warning' }>;
+}
+
+/** Map the various status strings (unified + legacy) to a single phase. */
+function mapPhase(status: string, error: string | undefined, canceled: boolean | undefined): ToolPhase {
+	if (canceled) { return 'canceled'; }
+	switch (status) {
+		case 'running': return 'running';
+		case 'pending': return 'pending';
+		case 'success':
+		case 'completed':
+		case 'done': return error ? 'error' : 'success';
+		case 'error':
+		case 'invalid_params': return 'error';
+		case 'rejected': return 'rejected';
+		case 'canceled': return 'canceled';
+		case 'approval_required': return 'approval_required';
+		case 'confirmed': return 'running';
+		default: return 'pending';
 	}
+}
 
-	// Build arguments string from params
-	let argsStr = '';
-	try {
-		argsStr = JSON.stringify(toolMsg.params, null, 2);
-	} catch {
-		argsStr = '';
+/**
+ * Extract the human-readable text from a parsed content payload.
+ * Handles:
+ *   - an array of content parts: [{ type: 'text', text: '...' }, ...]
+ *   - an object with a `content` array: { content: [{ text: '...' }] }
+ *   - an object with a top-level `text` string
+ * Returns null when no text-shaped content is found.
+ */
+/** Normalize CRLF/CR line endings to LF so <pre> renders cleanly. */
+function normalizeNewlines(s: string): string {
+	return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function extractContentText(parsed: unknown): string | null {
+	if (Array.isArray(parsed)) {
+		const texts = parsed
+			.filter((c: any) => c && typeof c === 'object' && typeof c.text === 'string')
+			.map((c: any) => c.text as string);
+		return texts.length > 0 ? normalizeNewlines(texts.join('\n')) : null;
 	}
-
-	// Map ToolMessageStatus to legacy status string
-	const statusMap: Record<string, string> = {
-		'success': 'done',
-		'error': 'error',
-		'running': 'running',
-		'pending': 'pending',
-		'rejected': 'rejected',
-		'invalid_params': 'error',
-	};
-	const statusStr = statusMap[toolMsg.status] || 'pending';
-
-	return {
-		id: toolMsg.id,
-		name: toolMsg.name,
-		arguments: argsStr,
-		result: resultText,
-		status: statusStr,
-		duration: toolMsg.duration,
-		error: toolMsg.error,
-		defaultShow: toolMsg.defaultShow,
-		displayName: toolMsg.displayName,
-		renderType: toolMsg.renderType,
-		serverExecuted: toolMsg.serverExecuted,
-		securityLevel: toolMsg.securityLevel,
-		exitCode: toolMsg.exitCode,
-		diagnostics: toolMsg.diagnostics ? [...toolMsg.diagnostics] : undefined,
-	};
-}
-
-/** Max chars to show in result preview before truncating */
-const RESULT_PREVIEW_LIMIT = 500;
-/** Max chars to show in expanded result before "show all" */
-const RESULT_EXPANDED_LIMIT = 5000;
-
-/** Recognized renderType values */
-const KNOWN_RENDER_TYPES = new Set(['ListItems', 'RunTerminal', 'CodeApply']);
-
-// ─── Knot document format (from Knot AG-UI <document> tags) ───────────────────
-
-interface KnotDocument {
-	sub_content?: string;
-	sub_content_tip?: string;
-	sub_content_event?: string;
-	sub_content_event_value?: string;
-	path?: string;
-}
-
-function parseKnotDocument(raw: string): KnotDocument | null {
-	try {
-		const parsed = JSON.parse(raw);
-		if (parsed && (parsed.sub_content !== undefined || parsed.sub_content_event !== undefined || parsed.path !== undefined)) {
-			return parsed as KnotDocument;
+	if (parsed && typeof parsed === 'object') {
+		const obj = parsed as { content?: Array<{ type?: string; text?: string }>; text?: string };
+		if (Array.isArray(obj.content)) {
+			const texts = obj.content
+				.filter(c => c && typeof c.text === 'string')
+				.map(c => c.text as string);
+			if (texts.length > 0) { return normalizeNewlines(texts.join('\n')); }
 		}
-	} catch { /* not JSON or not a Knot document */ }
+		if (typeof obj.text === 'string') { return normalizeNewlines(obj.text); }
+	}
 	return null;
 }
 
 /**
- * Resolve display info via ToolDisplayRegistry.
- * Returns emoji, title/label, and detail summary.
+ * Open a file from a tool card, always attaching the active workspaceId so
+ * the host can resolve *relative* paths (e.g. "product.json") against the
+ * workspace root. Absolute paths are unaffected.
  */
-function useToolDisplay(name: string, args: string) {
-	return useMemo(() => ToolDisplayRegistry.resolve(name, args), [name, args]);
+function openFileFromCard(path: string, options?: OpenFileOptions): void {
+	let workspaceId: string | undefined;
+	try {
+		workspaceId = useWorkspaceStore.getState().activeWorkspaceId ?? undefined;
+	} catch {
+		/* store unavailable — host will fall back to absolute-path handling */
+	}
+	void openFile(path, { ...options, ...(workspaceId ? { workspaceId } : {}) });
 }
 
-// ─── ToolMessage Result to Text Helper ─────────────────────────────────
-// Convert ToolMessage.result (ToolResult | string | null) to plain text string
+/** Extract plain text from a ToolResult | string | null | unknown. */
+function resultToText(result: unknown): string {
+	return deepUnwrapResult(result, 0);
+}
 
-function toolMessageResultToText(result: any /* ToolResult | string | null */): string {
+/**
+ * Recursively unwrap a tool result down to its innermost plain text.
+ *
+ * The backend frequently delivers results that are *doubly* (or even triply)
+ * wrapped: a committed ToolMessage stores `{ content: [{ type: 'text',
+ * text: <X> }] }`, where `<X>` is itself the host's `safeStringifyToolResult`
+ * output — which may ALSO be a stringified content-parts array like
+ * `[{"type":"text","text":"file1\nfile2"}]`. Unwrapping only one layer left
+ * the inner JSON string intact, and downstream consumers (e.g. parseListItems)
+ * then JSON.parsed the content-parts array and rendered each part object as
+ * `[object Object]`. We loop the unwrap so the caller always gets real text.
+ */
+function deepUnwrapResult(result: unknown, depth: number): string {
 	if (!result) { return ''; }
-	
-	// Case 1: result is string (error case or plain text)
+	// Hard recursion guard — content payloads are shallow in practice.
+	if (depth > 4) {
+		return typeof result === 'string' ? normalizeNewlines(result) : '';
+	}
 	if (typeof result === 'string') {
-		return result;
+		const trimmed = result.trim();
+		const looksLikeJson =
+			(trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+			(trimmed.startsWith('{') && trimmed.endsWith('}'));
+		if (looksLikeJson && (trimmed.includes('"text"') || trimmed.includes('"content"'))) {
+			try {
+				const parsed = JSON.parse(trimmed);
+				const extracted = extractContentText(parsed);
+				// extracted may itself be another content-parts JSON string
+				// → keep unwrapping until we reach genuine plain text.
+				if (extracted !== null) { return deepUnwrapResult(extracted, depth + 1); }
+			} catch {
+				/* not valid JSON — fall through and return the raw string */
+			}
+		}
+		return normalizeNewlines(result);
 	}
-	
-	// Case 2: result is ToolResult object { content: ToolResultContent[] }
-	if (typeof result === 'object' && result.content && Array.isArray(result.content)) {
-		const texts = result.content
-			.filter((c: any) => c.type === 'text' && c.text)
-			.map((c: any) => c.text);
-		return texts.join('\n');
+	if (typeof result === 'object') {
+		const extracted = extractContentText(result);
+		if (extracted !== null) { return deepUnwrapResult(extracted, depth + 1); }
+		try { return JSON.stringify(result, null, 2); } catch { return String(result); }
 	}
-	
-	// Case 3: unknown format, stringify
-	try {
-		return JSON.stringify(result, null, 2);
-	} catch {
-		return String(result);
-	}
+	return String(result);
 }
 
-// ─── Unified Tool Result Parser ────────────────────────────────────────────────
-// Supports multiple provider formats:
-// 1. AG-UI format (Knot AGUI): [{"type":"text","text":"..."}]
-// 2. MCP format (CodeBuddy): [{"type":"text","text":"..."}] or {"content":"..."}
-// 3. Plain text or other JSON formats
+/** Normalize either a ToolMessage or a RawToolCall into NormalizedTool. */
+function normalize(tc: ToolMessage | RawToolCall): NormalizedTool {
+	const anyTc = tc as RawToolCall & ToolMessage;
 
-/**
- * Parse tool result from various provider formats.
- * Returns extracted text content, or null if parsing fails.
- */
-function parseToolResult(raw: string): string | null {
-	if (!raw) { return null; }
-	
-	const cleaned = sanitizeToolResultText(raw);
-	
+	// params: prefer object `params`; otherwise parse `arguments` JSON string
+	let params: Record<string, unknown> = {};
+	if (anyTc.params && typeof anyTc.params === 'object') {
+		params = anyTc.params as Record<string, unknown>;
+	} else if (typeof anyTc.arguments === 'string') {
+		try { params = JSON.parse(anyTc.arguments || '{}'); } catch { params = {}; }
+	}
+
+	let argsJson = '';
 	try {
-		const parsed = JSON.parse(cleaned);
-		
-		// Case 1: Array format (AG-UI or MCP)
-		// Both AG-UI and MCP may use [{"type":"text","text":"..."}]
-		if (Array.isArray(parsed) && parsed.length > 0) {
-			// Check if it's AG-UI/MCP content array format
-			if (parsed[0] && typeof parsed[0] === 'object' && 'type' in parsed[0]) {
-				// Extract all text content from type="text" items
-				const texts = parsed
-					.filter((item: any) => item.type === 'text' && item.text)
-					.map((item: any) => item.text);
-				
-				if (texts.length > 0) {
-					const textContent = texts.join('\n');
-					
-					// Try to parse the extracted text as JSON (might be JSON string from MCP)
-					try {
-						const innerParsed = JSON.parse(textContent);
-						// If it's an array or object, try to extract meaningful content
-						if (Array.isArray(innerParsed)) {
-							return extractContentFromArray(innerParsed);
-						} else if (typeof innerParsed === 'object' && innerParsed !== null) {
-							return extractContentFromObject(innerParsed);
-						}
-						return textContent;
-					} catch {
-						// textContent is not JSON, return as-is
-						return textContent;
-					}
+		argsJson = Object.keys(params).length > 0 ? JSON.stringify(params, null, 2) : '';
+	} catch { argsJson = ''; }
+
+	const rawResultText = resultToText(anyTc.result);
+	const resultText = rawResultText ? sanitizeToolResultText(rawResultText) : '';
+
+	const phase = mapPhase(String(anyTc.status), anyTc.error, anyTc.canceled);
+
+	return {
+		id: anyTc.id,
+		name: anyTc.name,
+		params,
+		argsJson,
+		resultText,
+		phase,
+		error: anyTc.error,
+		defaultShow: anyTc.defaultShow,
+		displayName: anyTc.displayName,
+		renderType: anyTc.renderType,
+		securityLevel: anyTc.securityLevel,
+		exitCode: anyTc.exitCode,
+		duration: anyTc.duration,
+		mcpServerName: anyTc.mcpServerName,
+		diagnostics: anyTc.diagnostics,
+	};
+}
+
+// ─── Title state machine (Void titleOfBuiltinToolName) ──────────────────────
+// each entry: [done/proposed text, running text]
+
+const BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
+	// ── 项目真实内置工具名（builtinToolProvider / bundledTools）──
+	file_read: { done: '读取文件', running: '正在读取文件' },
+	file_write: { done: '写入文件', running: '正在写入文件' },
+	file_list: { done: '查看目录', running: '正在查看目录' },
+	search_files: { done: '搜索内容', running: '正在搜索内容' },
+	patch: { done: '编辑文件', running: '正在编辑文件' },
+	terminal: { done: '执行终端命令', running: '正在执行终端命令' },
+	process: { done: '管理进程', running: '正在管理进程' },
+	http_get: { done: '请求网页', running: '正在请求网页' },
+	web_search: { done: '网络搜索', running: '正在网络搜索' },
+	web_fetch: { done: '抓取网页', running: '正在抓取网页' },
+	recall: { done: '检索记忆', running: '正在检索记忆' },
+	memory: { done: '记忆操作', running: '正在记忆操作' },
+	read_skill: { done: '读取技能', running: '正在读取技能' },
+	skill_view: { done: '读取技能', running: '正在读取技能' },
+	list_skills: { done: '列出技能', running: '正在列出技能' },
+	skills_list: { done: '列出技能', running: '正在列出技能' },
+	skill_manage: { done: '管理技能', running: '正在管理技能' },
+	delegate_task: { done: '委派任务', running: '正在委派任务' },
+	get_current_time: { done: '获取时间', running: '正在获取时间' },
+	math_eval: { done: '计算', running: '正在计算' },
+	echo: { done: 'Echo', running: 'Echo' },
+	todo: { done: '更新待办', running: '正在更新待办' },
+	execute_code: { done: '执行代码', running: '正在执行代码' },
+	session_search: { done: '搜索会话', running: '正在搜索会话' },
+	// ── void 旧别名（兼容，避免回归）──
+	read_file: { done: '读取文件', running: '正在读取文件' },
+	read: { done: '读取文件', running: '正在读取文件' },
+	ls_dir: { done: '查看目录', running: '正在查看目录' },
+	list_files: { done: '查看目录', running: '正在查看目录' },
+	get_dir_tree: { done: '查看目录树', running: '正在查看目录树' },
+	search_pathnames_only: { done: '按文件名搜索', running: '正在按文件名搜索' },
+	search_for_files: { done: '搜索', running: '正在搜索' },
+	search_content: { done: '搜索内容', running: '正在搜索内容' },
+	search_in_file: { done: '在文件中搜索', running: '正在文件中搜索' },
+	grep: { done: '搜索内容', running: '正在搜索内容' },
+	create_file_or_folder: { done: '创建', running: '正在创建' },
+	delete_file_or_folder: { done: '删除', running: '正在删除' },
+	edit_file: { done: '编辑文件', running: '正在编辑文件' },
+	edit: { done: '编辑文件', running: '正在编辑文件' },
+	replace_in_file: { done: '编辑文件', running: '正在编辑文件' },
+	apply_patch: { done: '编辑文件', running: '正在编辑文件' },
+	rewrite_file: { done: '写入文件', running: '正在写入文件' },
+	write_file: { done: '写入文件', running: '正在写入文件' },
+	write: { done: '写入文件', running: '正在写入文件' },
+	run_command: { done: '执行终端命令', running: '正在执行终端命令' },
+	run_persistent_command: { done: '执行终端命令', running: '正在执行终端命令' },
+	run_terminal_cmd: { done: '执行终端命令', running: '正在执行终端命令' },
+	open_persistent_terminal: { done: '打开终端', running: '正在打开终端' },
+	kill_persistent_terminal: { done: '关闭终端', running: '正在关闭终端' },
+	read_lint_errors: { done: '读取诊断', running: '正在读取诊断' },
+};
+
+/** Get the title node for a tool, status-aware (Void getTitle). */
+function getTitle(tool: NormalizedTool): React.ReactNode {
+	const key = (tool.name || '').toLowerCase();
+	const builtin = BUILTIN_TITLES[key];
+
+	if (!builtin) {
+		// MCP / unknown tool
+		const label = tool.displayName || tool.name || 'MCP';
+		const prefix =
+			tool.phase === 'success' ? '调用了'
+				: tool.phase === 'running' ? '正在调用'
+					: '调用';
+		const title = tool.mcpServerName ? `${prefix} ${tool.mcpServerName} · ${label}` : `${prefix} ${label}`;
+		if (tool.phase === 'running' || tool.phase === 'approval_required' || tool.phase === 'pending') {
+			return <LoadingTitle>{title}</LoadingTitle>;
+		}
+		return title;
+	}
+
+	if (tool.phase === 'running' || tool.phase === 'pending') {
+		return <LoadingTitle>{builtin.running}</LoadingTitle>;
+	}
+	return builtin.done;
+}
+
+// ─── Description extraction (Void toolNameToDesc) ───────────────────────────
+
+function getBasename(p: string): string {
+	if (!p) { return ''; }
+	const parts = p.split(/[/\\]/).filter(Boolean);
+	return parts[parts.length - 1] || p;
+}
+
+/** Extract italic desc1 (file name / command / query) from params. */
+function getDesc1(tool: NormalizedTool): { desc1: React.ReactNode; desc1Info?: string } {
+	const p = tool.params;
+	const key = (tool.name || '').toLowerCase();
+
+	const filePath = (p.file_path || p.filePath || p.path || p.uri) as string | undefined;
+	const query = (p.query || p.pattern || p.search_query) as string | undefined;
+	const command = (p.command || p.cmd) as string | undefined;
+
+	switch (key) {
+		case 'file_read':
+		case 'read_file':
+		case 'read':
+		case 'file_write':
+		case 'patch':
+		case 'edit_file':
+		case 'edit':
+		case 'replace_in_file':
+		case 'apply_patch':
+		case 'rewrite_file':
+		case 'write_file':
+		case 'write':
+		case 'create_file_or_folder':
+		case 'delete_file_or_folder':
+		case 'read_lint_errors': {
+			if (filePath) {
+				let desc: string = getBasename(filePath);
+				// read_file: append line range if present
+				const start = p.start_line ?? p.startLine ?? p.offset;
+				const end = p.end_line ?? p.endLine;
+				if ((key === 'file_read' || key === 'read_file' || key === 'read') && (start !== undefined && start !== null)) {
+					desc += ` (${start}${end !== undefined && end !== null ? '-' + end : ''})`;
 				}
-				
-				// If no text type found, return the whole array as JSON string
-				return JSON.stringify(parsed, null, 2);
+				return { desc1: desc, desc1Info: filePath };
 			}
-			
-			// Case 1b: Plain array (not content format)
-			return extractContentFromArray(parsed);
+			return { desc1: '' };
 		}
-		
-		// Case 2: Object format
-		if (typeof parsed === 'object' && parsed !== null) {
-			return extractContentFromObject(parsed);
-		}
-		
-		// Case 3: Primitive JSON value
-		return String(parsed);
-		
-	} catch {
-		// Not JSON, return cleaned text
-		return cleaned;
-	}
-}
-
-/**
- * Extract content from an array (helper for parseToolResult).
- */
-function extractContentFromArray(arr: any[]): string {
-	if (arr.length === 0) { return '(empty array)'; }
-	
-	// If array of strings, join them
-	if (arr.every(item => typeof item === 'string')) {
-		return arr.join('\n');
-	}
-	
-	// If array of objects with 'content' or 'text' field
-	if (arr.every(item => typeof item === 'object' && (item.content || item.text))) {
-		return arr.map(item => item.content || item.text).join('\n');
-	}
-	
-	// Fallback: JSON stringify
-	return JSON.stringify(arr, null, 2);
-}
-
-/**
- * Extract content from an object (helper for parseToolResult).
- */
-function extractContentFromObject(obj: any): string {
-	// Common fields that might contain the main content
-	const contentFields = ['content', 'result', 'output', 'data', 'message', 'text'];
-	
-	for (const field of contentFields) {
-		if (obj[field] !== undefined) {
-			const value = obj[field];
-			if (typeof value === 'string') {
-				return value;
-			} else if (Array.isArray(value)) {
-				return extractContentFromArray(value);
-			} else if (typeof value === 'object') {
-				return extractContentFromObject(value);
+		case 'file_list':
+		case 'ls_dir':
+		case 'list_files':
+		case 'get_dir_tree': {
+			if (filePath) {
+				const base = getBasename(filePath);
+				return { desc1: base || (filePath === '.' ? '.' : '/'), desc1Info: filePath };
 			}
-			return String(value);
+			return { desc1: '' };
+		}
+		case 'search_files':
+		case 'search_pathnames_only':
+		case 'search_for_files':
+		case 'search_content':
+		case 'search_in_file':
+		case 'grep': {
+			return { desc1: query ? `"${query}"` : '', desc1Info: filePath };
+		}
+		case 'terminal':
+		case 'run_command':
+		case 'run_persistent_command':
+		case 'run_terminal_cmd': {
+			return { desc1: command ? `"${command}"` : '' };
+		}
+		default: {
+			// MCP / generic: show first string param value, or file path / query
+			if (filePath) { return { desc1: getBasename(filePath), desc1Info: filePath }; }
+			if (query) { return { desc1: `"${query}"` }; }
+			if (command) { return { desc1: `"${command}"` }; }
+			const firstStr = Object.values(p).find(v => typeof v === 'string' && v.length > 0) as string | undefined;
+			if (firstStr) {
+				return { desc1: firstStr.length > 60 ? firstStr.slice(0, 60) + '…' : firstStr };
+			}
+			return { desc1: '' };
 		}
 	}
-	
-	// If no common fields found, check for items/list (ListItems format)
-	if (obj.items && Array.isArray(obj.items)) {
-		return JSON.stringify(obj.items, null, 2);
-	}
-	if (obj.list && Array.isArray(obj.list)) {
-		return JSON.stringify(obj.list, null, 2);
-	}
-	
-	// Fallback: return formatted JSON
-	return JSON.stringify(obj, null, 2);
 }
 
-/**
- * Extract file path from tool arguments (supports file_path, filePath, path).
- */
-function extractFilePath(args: string): string | null {
+// ─── Result parsing helpers ─────────────────────────────────────────────────
+
+interface ListItem {
+	name: string;
+	path?: string;
+	isDirectory?: boolean;
+}
+
+/** Try to parse the tool result text into a list of items (for ls_dir/search). */
+function parseListItems(resultText: string): ListItem[] | null {
+	if (!resultText) { return null; }
 	try {
-		const parsed = JSON.parse(args || '{}');
-		return parsed.file_path || parsed.filePath || parsed.path || null;
+		const parsed = JSON.parse(resultText);
+		const arr =
+			Array.isArray(parsed) ? parsed
+				: Array.isArray(parsed?.items) ? parsed.items
+					: Array.isArray(parsed?.children) ? parsed.children
+						: Array.isArray(parsed?.list) ? parsed.list
+							: Array.isArray(parsed?.uris) ? parsed.uris
+								: null;
+		if (!arr) { return null; }
+		const mapped: ListItem[] = [];
+		for (const it of arr) {
+			if (typeof it === 'string') {
+				mapped.push({ name: getBasename(it), path: it });
+				continue;
+			}
+			if (!it || typeof it !== 'object') {
+				// Non-object, non-string entry — skip rather than String(it).
+				continue;
+			}
+			const anyIt = it as Record<string, unknown>;
+			const path = (anyIt.path || anyIt.uri || anyIt.fsPath || anyIt.file || '') as string;
+			// Guard: a content-part object `{ type:'text', text:'...' }` is NOT a
+			// file/list entry. If there's no path AND no name-ish field, this is
+			// almost certainly an un-unwrapped content part — skip it so we never
+			// render `[object Object]`.
+			const nameRaw = anyIt.name || anyIt.content;
+			if (!path && !nameRaw) { continue; }
+			const name = (nameRaw || getBasename(path)) as string;
+			if (!name) { continue; }
+			// file_list returns { name, type: 'dir' | 'file', size }; also tolerate
+			// other shapes (isDirectory / item_type / type === 'directory').
+			const isDirectory =
+				anyIt.isDirectory === true ||
+				anyIt.item_type === 'directory' ||
+				anyIt.type === 'directory' ||
+				anyIt.type === 'dir';
+			mapped.push({ name: `${name}${isDirectory && !String(name).endsWith('/') ? '/' : ''}`, path, isDirectory });
+		}
+		return mapped.length > 0 ? mapped : null;
 	} catch {
-		return null;
+		// plain-text fallback: split lines
+		const lines = resultText.split('\n').map(l => l.trim()).filter(Boolean);
+		if (lines.length === 0) { return null; }
+		return lines.map(l => ({ name: l }));
 	}
 }
 
-/**
- * Extract search query from tool arguments.
- */
-function extractSearchQuery(args: string): string | null {
-	try {
-		const parsed = JSON.parse(args || '{}');
-		return parsed.query || parsed.pattern || parsed.search_query || null;
-	} catch {
-		return null;
-	}
+const TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_command', 'run_terminal_cmd', 'process', 'execute_code']);
+const LIST_TOOLS = new Set(['file_list', 'search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
+const READ_TOOLS = new Set(['file_read', 'read_file', 'read']);
+const EDIT_TOOLS = new Set(['file_write', 'patch', 'edit_file', 'edit', 'replace_in_file', 'apply_patch', 'rewrite_file', 'write_file', 'write']);
+
+// ─── Approval buttons (Void ToolRequestAcceptRejectButtons) ─────────────────
+
+function ApprovalButtons({ tool }: { tool: NormalizedTool }): React.ReactElement {
+	const resolve = useCallback((decision: string) => {
+		applyToolApprovalResolved(tool.id);
+		sendRequest('chat.toolApprove', { toolCallId: tool.id, decision }).catch(() => { });
+	}, [tool.id]);
+
+	const securityLabel = tool.securityLevel === 'dangerous'
+		? '危险操作'
+		: tool.securityLevel === 'cautious'
+			? '需谨慎'
+			: '需确认';
+
+	return (
+		<div className="tool-approval-row">
+			<span className="tool-approval-label">
+				<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+					<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+				</svg>
+				{securityLabel}
+			</span>
+			<button className="tool-approval-btn tool-approval-btn-primary" onClick={() => resolve('allow_once')} title="仅允许此次执行">
+				允许一次
+			</button>
+			<button className="tool-approval-btn tool-approval-btn-secondary" onClick={() => resolve('allow_session')} title="在当前会话中自动允许">
+				会话中允许
+			</button>
+			<button className="tool-approval-btn tool-approval-btn-secondary" onClick={() => resolve('allow_always')} title="始终自动允许此工具">
+				始终允许
+			</button>
+			<button className="tool-approval-btn tool-approval-btn-reject" onClick={() => resolve('deny')}>
+				拒绝
+			</button>
+		</div>
+	);
 }
 
-/**
- * Format duration for display.
- */
+// ─── Body renderers ──────────────────────────────────────────────────────────
+
+/** Terminal output body. Mirrors void's CommandTool: shellscript syntax
+ *  highlighting via SyntaxHighlighter, selectable text, horizontal scroll. */
+function TerminalBody({ tool }: { tool: NormalizedTool }): React.ReactElement {
+	const command = (tool.params.command || tool.params.cmd || '') as string;
+	const lines: string[] = [];
+	if (command) { lines.push(`$ ${command}`); }
+	if (tool.resultText) { lines.push(tool.resultText); }
+	const text = lines.join('\n');
+	const isNonZero = tool.exitCode !== undefined && tool.exitCode !== 0;
+	return (
+		<ToolChildrenWrapper className="tool-children-terminal">
+			<div className="tool-terminal-code">
+				<SyntaxHighlighter
+					style={oneDark}
+					language="shellscript"
+					PreTag="div"
+					customStyle={{
+						margin: 0,
+						padding: '6px 8px',
+						borderRadius: '3px',
+						background: 'transparent',
+						fontSize: '12px',
+						lineHeight: '1.5',
+					}}
+					codeTagProps={{ style: { fontFamily: 'var(--vscode-editor-font-family, monospace)' } }}
+					wrapLongLines={false}
+				>
+					{text}
+				</SyntaxHighlighter>
+			</div>
+			{tool.exitCode !== undefined && (
+				<div className={`tool-exit-code ${isNonZero ? 'tool-exit-code-nonzero' : 'tool-exit-code-zero'}`}>
+					{`exit code ${tool.exitCode}`}
+				</div>
+			)}
+		</ToolChildrenWrapper>
+	);
+}
+
+/** Generic code/text body. */
+function CodeBody({ text }: { text: string }): React.ReactElement {
+	return (
+		<ToolChildrenWrapper>
+			<CodeChildren>
+				<pre>{text}</pre>
+			</CodeChildren>
+		</ToolChildrenWrapper>
+	);
+}
+
+/** List body (ls_dir / search results). */
+function ListBody({ items }: { items: ListItem[] }): React.ReactElement {
+	return (
+		<ToolChildrenWrapper>
+			{items.map((item, i) => (
+				<ListableToolItem
+					key={i}
+					name={item.name}
+					className="tool-listable-item"
+					onClick={item.path ? () => openFileFromCard(item.path as string) : undefined}
+				/>
+			))}
+		</ToolChildrenWrapper>
+	);
+}
+
+// ─── Main component ──────────────────────────────────────────────────────────
+
+function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | null {
+	const tool = useMemo(() => normalize(toolCall), [toolCall]);
+
+	// Visibility controlled solely by defaultShow (false → hide).
+	if (tool.defaultShow === false) { return null; }
+
+	const key = (tool.name || '').toLowerCase();
+	const title = getTitle(tool);
+	const { desc1, desc1Info } = getDesc1(tool);
+
+	const isError = tool.phase === 'error';
+	const isRejected = tool.phase === 'rejected';
+	const isCanceled = tool.phase === 'canceled';
+	const isRunning = tool.phase === 'running' || tool.phase === 'pending';
+	const isApproval = tool.phase === 'approval_required';
+	const isSuccess = tool.phase === 'success';
+
+	// Status-driven wrapper class (drives accent borders in CSS).
+	const statusClass =
+		isApproval ? 'tool-card-approval'
+			: isError ? 'tool-card-error'
+				: isRejected ? 'tool-card-rejected'
+					: isCanceled ? 'tool-card-canceled'
+						: '';
+
+	// ── Build the file-open onClick (for read/edit tools) ──
+	const filePath = (tool.params.file_path || tool.params.filePath || tool.params.path || tool.params.uri) as string | undefined;
+	const openLine = (() => {
+		const s = tool.params.start_line ?? tool.params.startLine ?? tool.params.offset;
+		const n = typeof s === 'number' ? s : (typeof s === 'string' ? parseInt(s, 10) : NaN);
+		return Number.isFinite(n) && n > 0 ? n : undefined;
+	})();
+	const handleOpenFile = filePath ? () => { openFileFromCard(filePath, openLine ? { lineNumber: openLine } : undefined); } : undefined;
+
+	// ── Build children (dropdown body) based on tool type ──
+	let children: React.ReactNode = undefined;
+	let numResults: number | undefined = undefined;
+	let bottomChildren: React.ReactNode = undefined;
+
+	if (isError) {
+		// Error → collapsible bottom area (Void pattern).
+		bottomChildren = (
+			<BottomChildren title="错误">
+				<pre>{tool.error || tool.resultText || '工具执行失败'}</pre>
+			</BottomChildren>
+		);
+	} else if (isSuccess && tool.resultText) {
+		if (READ_TOOLS.has(key)) {
+			// read_file: NO dropdown — clicking the title opens the file directly
+			// in the host's center editor (Void behavior). Leave `children`
+			// undefined so the onClick=handleOpenFile path (below) takes effect
+			// instead of the chevron expand/collapse interaction.
+		} else if (TERMINAL_TOOLS.has(key)) {
+			children = <TerminalBody tool={tool} />;
+		} else if (LIST_TOOLS.has(key)) {
+			const items = parseListItems(tool.resultText);
+			if (items && items.length > 0) {
+				numResults = items.length;
+				children = <ListBody items={items} />;
+			} else {
+				children = <CodeBody text={tool.resultText} />;
+			}
+		} else if (EDIT_TOOLS.has(key)) {
+			// edit: result shown as code; clicking the title expands the diff/result.
+			children = <CodeBody text={tool.resultText} />;
+		} else {
+			// generic / MCP: show result as code; also show args if present.
+			children = (
+				<ToolChildrenWrapper>
+					{tool.argsJson && (
+						<CodeChildren>
+							<pre>{tool.argsJson}</pre>
+						</CodeChildren>
+					)}
+					<CodeChildren>
+						<pre>{tool.resultText}</pre>
+					</CodeChildren>
+				</ToolChildrenWrapper>
+			);
+		}
+	} else if (isRunning && tool.argsJson && !READ_TOOLS.has(key)) {
+		// While running with no result yet, allow expanding to see args.
+		// read_file is excluded so it never shows a dropdown — it stays a
+		// single clickable row that opens the file.
+		children = <CodeBody text={tool.argsJson} />;
+	}
+
+	// Diagnostics (lint) → bottom area when present and no error already.
+	if (!isError && tool.diagnostics && tool.diagnostics.length > 0) {
+		bottomChildren = (
+			<BottomChildren title={`${tool.diagnostics.length} 个诊断问题`}>
+				<pre>
+					{tool.diagnostics.map(d =>
+						`${d.severity === 'error' ? '✕' : '⚠'} ${d.line !== undefined ? 'L' + d.line + ': ' : ''}${d.message}`
+					).join('\n')}
+				</pre>
+			</BottomChildren>
+		);
+	}
+
+	// desc2: duration badge (only when finished).
+	const desc2 = (tool.duration && !isRunning)
+		? formatDuration(tool.duration)
+		: undefined;
+
+	const headerParams: ToolHeaderParams = {
+		title,
+		desc1,
+		desc1Info: typeof desc1Info === 'string' ? desc1Info : undefined,
+		desc2,
+		isError,
+		isRejected,
+		isRunning,
+		isSuccess,
+		numResults,
+		children,
+		bottomChildren,
+		onClick: (children === undefined && handleOpenFile) ? handleOpenFile : undefined,
+		className: statusClass,
+	};
+
+	return (
+		<>
+			<ToolHeaderWrapper {...headerParams} />
+			{isApproval && <ApprovalButtons tool={tool} />}
+			{isRejected && (
+				<div className="tool-rejected-notice">用户已拒绝此工具调用</div>
+			)}
+		</>
+	);
+}
+
+/** Format duration for the desc2 badge. */
 function formatDuration(ms: number): string {
 	if (ms < 1000) { return `${ms}ms`; }
 	if (ms < 60000) { return `${(ms / 1000).toFixed(1)}s`; }
 	return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
-}
-
-// ─── Diff computation for edit_file ──────────────────────────────────────────
-
-interface DiffLine {
-	type: 'context' | 'add' | 'remove';
-	content: string;
-	lineNumber?: number;
-}
-
-/**
- * Compute a simple diff between old and new content.
- * Uses line-by-line comparison with LCS approximation.
- */
-function computeDiff(oldText: string, newText: string): DiffLine[] {
-	const oldLines = oldText.split('\n');
-	const newLines = newText.split('\n');
-	const result: DiffLine[] = [];
-
-	// Simple approach: find common prefix and suffix, mark middle as changed
-	let prefixLen = 0;
-	while (prefixLen < oldLines.length && prefixLen < newLines.length && oldLines[prefixLen] === newLines[prefixLen]) {
-		prefixLen++;
-	}
-
-	let suffixLen = 0;
-	while (
-		suffixLen < (oldLines.length - prefixLen) &&
-		suffixLen < (newLines.length - prefixLen) &&
-		oldLines[oldLines.length - 1 - suffixLen] === newLines[newLines.length - 1 - suffixLen]
-	) {
-		suffixLen++;
-	}
-
-	// Context lines before
-	for (let i = 0; i < prefixLen; i++) {
-		result.push({ type: 'context', content: oldLines[i], lineNumber: i + 1 });
-	}
-
-	// Removed lines
-	for (let i = prefixLen; i < oldLines.length - suffixLen; i++) {
-		result.push({ type: 'remove', content: oldLines[i], lineNumber: i + 1 });
-	}
-
-	// Added lines
-	for (let i = prefixLen; i < newLines.length - suffixLen; i++) {
-		result.push({ type: 'add', content: newLines[i], lineNumber: i + 1 });
-	}
-
-	// Context lines after
-	for (let i = oldLines.length - suffixLen; i < oldLines.length; i++) {
-		result.push({ type: 'context', content: oldLines[i], lineNumber: i + 1 });
-	}
-
-	return result;
-}
-
-/**
- * Try to parse unified diff from edit_file arguments or result.
- * Returns DiffLine[] if a diff is found, null otherwise.
- */
-function tryParseDiff(toolCall: ToolCallData): DiffLine[] | null {
-	try {
-		const args = JSON.parse(toolCall.arguments || '{}');
-
-		// Check for diff/patch format in arguments
-		const diffContent = args.diff || args.patch || args.old_string !== undefined;
-		if (!diffContent) { return null; }
-
-		// If we have old_string and new_string, compute diff
-		if (args.old_string !== undefined && args.new_string !== undefined) {
-			return computeDiff(args.old_string, args.new_string);
-		}
-
-		// If we have raw diff content
-		if (args.diff || args.patch) {
-			const rawDiff = (args.diff || args.patch) as string;
-			const lines = rawDiff.split('\n');
-			const result: DiffLine[] = [];
-			for (const line of lines) {
-				if (line.startsWith('+') && !line.startsWith('+++')) {
-					result.push({ type: 'add', content: line.substring(1) });
-				} else if (line.startsWith('-') && !line.startsWith('---')) {
-					result.push({ type: 'remove', content: line.substring(1) });
-				} else {
-					result.push({ type: 'context', content: line.startsWith(' ') ? line.substring(1) : line });
-				}
-			}
-			return result;
-		}
-
-		return null;
-	} catch {
-		return null;
-	}
-}
-
-// ─── renderType-specific renderers ────────────────────────────────────────────
-
-interface KnotListItem {
-	content?: string;
-	content_tip?: string;
-	suffix_content?: string;
-	item_type?: 'file' | 'directory';
-	item_click_event?: string;
-	item_click_value?: string;
-}
-
-/** ListItems renderer: displays a list of items from the result */
-function ListItemsRenderer({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
-	const searchQuery = useMemo(() => extractSearchQuery(toolCall.arguments), [toolCall.arguments]);
-
-	const items = useMemo(() => {
-		const raw = toolCall.result || '';
-		if (!raw) { return []; }
-		
-		// Use unified parser to get text content
-		const parsedText = parseToolResult(raw);
-		const textToParse = parsedText || sanitizeToolResultText(raw);
-		
-		// Try to parse the text as JSON (might be JSON string from MCP/AG-UI)
-		try {
-			const parsed = JSON.parse(textToParse);
-			
-			// If it's an array, return it directly
-			if (Array.isArray(parsed)) { 
-				return parsed as (KnotListItem | string)[]; 
-			}
-			
-			// If it's an object with items/list, return those
-			if (parsed.items && Array.isArray(parsed.items)) { 
-				return parsed.items as (KnotListItem | string)[]; 
-			}
-			if (parsed.list && Array.isArray(parsed.list)) { 
-				return parsed.list as (KnotListItem | string)[]; 
-			}
-			
-			// If it's an object, return entries as key-value pairs
-			if (typeof parsed === 'object' && parsed !== null) {
-				return Object.entries(parsed).map(([k, v]) => ({
-					content: `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`,
-				}));
-			}
-			
-			// If it's a primitive, wrap it
-			return [{ content: String(parsed) }];
-			
-		} catch {
-			// If not JSON, treat as plain text and split by newlines
-			return textToParse.split('\n').filter(Boolean).map(line => ({ content: line }));
-		}
-	}, [toolCall.result]);
-
-	const handleItemClick = useCallback((item: KnotListItem) => {
-		if (item.item_click_event === 'open_editor' && item.item_click_value) {
-			openFile(item.item_click_value);
-		}
-	}, []);
-
-	/**
-	 * Highlight search query matches in text.
-	 */
-	const highlightText = useCallback((text: string): React.ReactNode => {
-		if (!searchQuery || !text) { return text; }
-		const escaped = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-		const regex = new RegExp(`(${escaped})`, 'gi');
-		const parts = text.split(regex);
-		if (parts.length <= 1) { return text; }
-		return (
-			<>
-				{parts.map((part, idx) =>
-					regex.test(part)
-						? <mark key={idx} className="tool-call-search-highlight">{part}</mark>
-						: part
-				)}
-			</>
-		);
-	}, [searchQuery]);
-
-	return (
-		<div className="tool-call-render-list-items">
-			{items.length > 0 ? (
-				<ul className="tool-call-list">
-					{items.map((item, idx) => {
-						const isObj = item !== null && typeof item === 'object';
-						const listItem: KnotListItem = isObj ? (item as KnotListItem) : { content: String(item) };
-						const isDir = listItem.item_type === 'directory';
-						const clickable = !!listItem.item_click_event;
-						return (
-							<li
-								key={idx}
-								className={`tool-call-list-item ${clickable ? 'clickable' : ''}`}
-								onClick={() => handleItemClick(listItem)}
-								title={listItem.content_tip || listItem.content}
-							>
-								<span className="tool-call-list-bullet">
-									{isDir ? '📁' : '📄'}
-								</span>
-								<span className="tool-call-list-content">{highlightText(listItem.content || '')}</span>
-								{listItem.suffix_content && (
-									<span className="tool-call-list-suffix">{listItem.suffix_content}</span>
-								)}
-							</li>
-						);
-					})}
-				</ul>
-			) : (
-				<span className="tool-call-empty">（无结果）</span>
-			)}
-		</div>
-	);
-}
-
-/** RunTerminal renderer: displays terminal command and output using Monaco Editor */
-function RunTerminalRenderer({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
-	const command = useMemo(() => {
-		try {
-			const parsed = JSON.parse(toolCall.arguments || '{}');
-			return parsed.command || parsed.cmd || '';
-		} catch {
-			return '';
-		}
-	}, [toolCall.arguments]);
-
-	const output = useMemo(() => {
-		const raw = toolCall.result || '';
-		if (!raw) { return ''; }
-		// Use unified parser to handle AG-UI, MCP, and other formats
-		const parsed = parseToolResult(raw);
-		return parsed || '';
-	}, [toolCall.result]);
-
-	const exitCode = toolCall.exitCode;
-	const isNonZeroExit = exitCode !== undefined && exitCode !== 0;
-
-	// Combine command and output into a single shell script content
-	const editorContent = useMemo(() => {
-		const parts: string[] = [];
-		if (command) {
-			parts.push(`$ ${command}`);
-		}
-		if (output) {
-			parts.push(output);
-		}
-		if (exitCode !== undefined) {
-			parts.push(`(exit code ${exitCode})`);
-		}
-		return parts.join('\n');
-	}, [command, output, exitCode]);
-
-	// Monaco Editor options for terminal display
-	const editorOptions = useMemo(() => ({
-		readOnly: true,
-		domReadOnly: true,
-		automaticLayout: true,
-		minimap: { enabled: false },
-		scrollBeyondLastLine: false,
-		lineNumbers: 'off' as const,
-		folding: false,
-		wordWrap: 'on' as const,
-		scrollbar: {
-			vertical: 'auto' as const,
-			horizontal: 'auto' as const,
-		},
-		renderLineHighlight: 'none' as const,
-		contextmenu: false,
-		overviewRulerLanes: 0,
-		hideCursorInOverviewRuler: true,
-		overviewRulerBorder: false,
-		padding: { top: 8, bottom: 8 },
-	}), []);
-
-	return (
-		<div className="tool-call-render-terminal">
-			<div className="tool-call-terminal-editor-wrapper">
-				<Editor
-					height="auto"
-					language="shellscript"
-					value={editorContent}
-					options={editorOptions}
-					theme="vs-dark"
-					onMount={(editor) => {
-						// Auto-fit height to content
-						const updateHeight = () => {
-							const contentHeight = editor.getContentHeight();
-							editor.getDomNode()!.style.height = `${contentHeight}px`;
-							editor.layout();
-						};
-						updateHeight();
-						editor.onDidContentSizeChange(updateHeight);
-					}}
-				/>
-			</div>
-			{exitCode !== undefined && (
-				<div className={`tool-call-exit-code ${isNonZeroExit ? 'non-zero' : 'zero'}`}>
-					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-						{isNonZeroExit
-							? <><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></>
-							: <polyline points="20 6 9 17 4 12" />
-						}
-					</svg>
-					<span>Exit code: {exitCode}</span>
-				</div>
-			)}
-		</div>
-	);
-}
-
-// ─── CodeApply renderer with line numbers, diff view, apply button ──────────
-
-/** CodeApply renderer: displays code changes with diff-like styling */
-function CodeApplyRenderer({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
-	const { filePath, code, language, offset, isEditFile, isReadFile } = useMemo(() => {
-		try {
-			const parsed = JSON.parse(toolCall.arguments || '{}');
-			const toolName = (toolCall.name || '').toLowerCase();
-			return {
-				filePath: parsed.file_path || parsed.filePath || parsed.path || '',
-				code: parsed.code || parsed.content || parsed.new_string || '',
-				language: parsed.language || '',
-				offset: parsed.offset ?? parsed.start_line ?? undefined,
-				isEditFile: toolName === 'edit_file' || toolName === 'edit' || toolName === 'replace_in_file' || toolName === 'apply_patch',
-				isReadFile: toolName === 'read_file' || toolName === 'read',
-			};
-		} catch {
-			return { filePath: '', code: '', language: '', offset: undefined, isEditFile: false, isReadFile: false };
-		}
-	}, [toolCall.arguments, toolCall.name]);
-
-	const result = useMemo(() => {
-		const raw = toolCall.result || '';
-		if (!raw) { return ''; }
-		
-		// Use unified parser to handle AG-UI, MCP, and other formats
-		const parsed = parseToolResult(raw);
-		return parsed ? sanitizeToolResultText(parsed) : '';
-	}, [toolCall.result]);
-
-	// Try to compute diff for edit_file tools
-	const diffLines = useMemo(() => {
-		if (isEditFile) {
-			return tryParseDiff(toolCall);
-		}
-		return null;
-	}, [isEditFile, toolCall]);
-
-	// Parse read_file result into numbered lines
-	const numberedLines = useMemo(() => {
-		if (!isReadFile || !result) { return null; }
-		const lines = result.split('\n');
-		const startLine = offset ?? 1;
-		return lines.map((line, idx) => ({
-			lineNumber: startLine + idx,
-			content: line,
-		}));
-	}, [isReadFile, result, offset]);
-
-	const handleOpenFile = useCallback(() => {
-		if (filePath) { openFile(filePath); }
-	}, [filePath]);
-
-	const handleOpenFileAtLine = useCallback((line: number) => {
-		if (filePath) { openFile(`${filePath}:${line}`); }
-	}, [filePath]);
-
-	const handleApply = useCallback(() => {
-		if (!filePath || !code) { return; }
-		// Send an apply request to the host — this will write the code to the file
-		sendRequest('files.applyCode', {
-			path: filePath,
-			content: code,
-			toolCallId: toolCall.id,
-		}).catch((err) => {
-			console.error('[ToolCallCard] Apply failed:', err);
-		});
-	}, [filePath, code, toolCall.id]);
-
-	return (
-		<div className="tool-call-render-code-apply">
-			{filePath && (
-				<div className="tool-call-code-file-header">
-					<div className="tool-call-code-file-info">
-						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-							<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-							<polyline points="14 2 14 8 20 8" />
-						</svg>
-						<code
-							className="tool-call-code-file-path tool-call-file-link"
-							onClick={handleOpenFile}
-							title="点击打开文件"
-						>
-							{filePath}
-						</code>
-					</div>
-					<div className="tool-call-code-file-actions">
-						{isEditFile && code && (
-							<button className="tool-call-apply-btn" onClick={handleApply} title="应用代码变更">
-								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-									<polyline points="20 6 9 17 4 12" />
-								</svg>
-								应用
-							</button>
-						)}
-						<button className="tool-call-code-open-file" onClick={handleOpenFile}>
-							查看文件
-						</button>
-					</div>
-				</div>
-			)}
-
-			{/* Diff view for edit_file */}
-			{diffLines && diffLines.length > 0 && (
-				<div className="tool-call-diff-view">
-					{diffLines.map((line, idx) => (
-						<div key={idx} className={`tool-call-diff-line diff-${line.type}`}>
-							<span className="tool-call-diff-line-number">
-								{line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ''}
-								{line.lineNumber ?? ''}
-							</span>
-							<span className="tool-call-diff-line-content">{line.content}</span>
-						</div>
-					))}
-				</div>
-			)}
-
-			{/* Numbered lines for read_file */}
-			{numberedLines && !diffLines && (
-				<div className="tool-call-numbered-code">
-					{numberedLines.map((line, idx) => (
-						<div
-							key={idx}
-							className="tool-call-code-line"
-							onClick={() => handleOpenFileAtLine(line.lineNumber)}
-							title={`点击跳转到第 ${line.lineNumber} 行`}
-						>
-							<span className="tool-call-line-number">{line.lineNumber}</span>
-							<span className="tool-call-line-content">{line.content}</span>
-						</div>
-					))}
-				</div>
-			)}
-
-			{/* Fallback: plain code preview (for write_file etc.) */}
-			{code && !diffLines && !numberedLines && (
-				<div className="tool-call-code-preview-wrapper">
-					<pre className="tool-call-code-preview"><code>{code}</code></pre>
-					{isEditFile && (
-						<button className="tool-call-apply-float-btn" onClick={handleApply} title="应用代码变更">
-							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-								<polyline points="20 6 9 17 4 12" />
-							</svg>
-							应用
-						</button>
-					)}
-				</div>
-			)}
-
-			{/* Result (when not rendered as numbered lines) */}
-			{result && !numberedLines && (
-				<div className="tool-call-code-result">
-					<span className="tool-call-code-result-label">结果:</span>
-					<span>{result}</span>
-				</div>
-			)}
-
-			{/* Lint diagnostics */}
-			{toolCall.diagnostics && toolCall.diagnostics.length > 0 && (
-				<div className="tool-call-diagnostics">
-					<div className="tool-call-diagnostics-header">
-						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-							<circle cx="12" cy="12" r="10" />
-							<line x1="12" y1="8" x2="12" y2="12" />
-							<line x1="12" y1="16" x2="12.01" y2="16" />
-						</svg>
-						<span>{toolCall.diagnostics.length} 个诊断问题</span>
-					</div>
-					{toolCall.diagnostics.map((diag, idx) => (
-						<div key={idx} className={`tool-call-diagnostic diagnostic-${diag.severity}`}>
-							<span className="tool-call-diagnostic-icon">
-								{diag.severity === 'error' ? '✕' : '⚠'}
-							</span>
-							{diag.line !== undefined && (
-								<span className="tool-call-diagnostic-line">L{diag.line}</span>
-							)}
-							<span className="tool-call-diagnostic-message">{diag.message}</span>
-						</div>
-					))}
-				</div>
-			)}
-		</div>
-	);
-}
-
-// ─── Tool Approval Buttons (Void-inspired) ──────────────────────────────────
-
-function ToolApprovalButtons({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
-	const handleApprove = useCallback(() => {
-		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_once' }).catch(() => {});
-	}, [toolCall.id]);
-
-	const handleApproveSession = useCallback(() => {
-		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_session' }).catch(() => {});
-	}, [toolCall.id]);
-
-	const handleApproveWorkspace = useCallback(() => {
-		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_workspace' }).catch(() => {});
-	}, [toolCall.id]);
-
-	const handleApproveAlways = useCallback(() => {
-		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'allow_always' }).catch(() => {});
-	}, [toolCall.id]);
-
-	const handleReject = useCallback(() => {
-		sendRequest('chat.toolApprove', { toolCallId: toolCall.id, decision: 'deny' }).catch(() => {});
-	}, [toolCall.id]);
-
-	const securityLabel = toolCall.securityLevel === 'dangerous'
-		? '危险操作'
-		: toolCall.securityLevel === 'cautious'
-			? '需谨慎'
-			: '需确认';
-
-	const securityClass = toolCall.securityLevel === 'dangerous'
-		? 'dangerous'
-		: toolCall.securityLevel === 'cautious'
-			? 'cautious'
-			: 'safe';
-
-	return (
-		<div className="tool-approval-container">
-			<div className="tool-approval-header">
-				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-					<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-				</svg>
-				<span className="tool-approval-label">需要审批 · {securityLabel}</span>
-			</div>
-			<div className="tool-approval-actions">
-				<button className="tool-approval-btn tool-approval-btn-approve" onClick={handleApprove} title="仅允许此次执行">
-					允许一次
-				</button>
-				<button className="tool-approval-btn tool-approval-btn-approve-secondary" onClick={handleApproveSession} title="在当前会话中自动允许此工具">
-					会话中允许
-				</button>
-				<button className="tool-approval-btn tool-approval-btn-approve-secondary" onClick={handleApproveWorkspace} title="在当前工作区中自动允许此工具">
-					工作区允许
-				</button>
-				<button className="tool-approval-btn tool-approval-btn-approve-secondary" onClick={handleApproveAlways} title="始终自动允许此工具">
-					始终允许
-				</button>
-				<button className="tool-approval-btn tool-approval-btn-reject" onClick={handleReject}>
-					拒绝
-				</button>
-			</div>
-		</div>
-	);
-}
-
-// ─── Generic (default) tool call card ─────────────────────────────────────────
-
-function GenericToolCallCard({ toolCall }: { toolCall: ToolCallData }): React.ReactElement {
-	const [expanded, setExpanded] = useState(false);
-	const [showFullResult, setShowFullResult] = useState(false);
-	const [copiedField, setCopiedField] = useState<string | null>(null);
-	const prevStatusRef = useRef(toolCall.status);
-
-	// Auto-collapse when tool finishes (Void-inspired: hide progress when follow-up content arrives)
-	// This reduces UI clutter and focuses user attention on the final result
-	useEffect(() => {
-		if (prevStatusRef.current === 'running' && toolCall.status !== 'running') {
-			// Tool just finished (success or error) — auto-collapse to reduce clutter
-			setExpanded(false);
-		}
-		prevStatusRef.current = toolCall.status;
-	}, [toolCall.status]);
-
-	const isRunning = toolCall.status === 'running' && !toolCall.result;
-	const isError = toolCall.status === 'error' || !!toolCall.error;
-	const isApprovalRequired = toolCall.status === 'approval_required';
-	const isRejected = toolCall.status === 'rejected';
-	const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
-	const isConfirmed = toolCall.status === 'confirmed' || !!toolCall.confirmed;
-	const isCompleted = (toolCall.status === 'success' || (toolCall.status as any) === 'completed') && !toolCall.error && !toolCall.canceled;
-
-	const display = useToolDisplay(toolCall.name, toolCall.arguments);
-
-	const formattedArgs = useMemo(() => {
-		const raw = toolCall.arguments || '';
-		if (!raw || raw === '{}') { return ''; }
-		try {
-			const parsed = JSON.parse(raw);
-			return JSON.stringify(parsed, null, 2);
-		} catch {
-			return raw;
-		}
-	}, [toolCall.arguments]);
-
-	const argsSummary = useMemo(() => {
-		// Prefer registry-extracted detail (from detailKeys)
-		if (display.detail) { return display.detail; }
-		// Fallback: show first arg value or count
-		const raw = toolCall.arguments || '';
-		if (!raw || raw === '{}') { return ''; }
-		try {
-			const parsed = JSON.parse(raw);
-			const keys = Object.keys(parsed);
-			if (keys.length === 0) { return ''; }
-			const firstKey = keys[0];
-			const firstVal = parsed[firstKey];
-			if (typeof firstVal === 'string') {
-				const displayVal = firstVal.length > 50 ? firstVal.substring(0, 50) + '...' : firstVal;
-				return displayVal;
-			}
-			return `${keys.length} 个参数`;
-		} catch {
-			return '';
-		}
-	}, [toolCall.arguments, display.detail]);
-
-	const knotDoc = useMemo(() => {
-		const raw = toolCall.result || '';
-		if (!raw) { return null; }
-		return parseKnotDocument(sanitizeToolResultText(raw));
-	}, [toolCall.result]);
-
-	const formattedResult = useMemo(() => {
-		const raw = toolCall.result || '';
-		if (!raw) { return ''; }
-		if (knotDoc?.sub_content) {
-			return knotDoc.sub_content;
-		}
-		// Use unified parser to handle AG-UI, MCP, and other formats
-		const parsed = parseToolResult(raw);
-		return parsed || '';
-	}, [toolCall.result, knotDoc]);
-
-	const isResultLong = formattedResult.length > RESULT_EXPANDED_LIMIT;
-	const displayResult = showFullResult
-		? formattedResult
-		: formattedResult.substring(0, RESULT_EXPANDED_LIMIT);
-
-	const handleCopy = useCallback((text: string, field: string) => {
-		navigator.clipboard?.writeText(text).then(() => {
-			setCopiedField(field);
-			setTimeout(() => setCopiedField(null), 2000);
-		}).catch(() => { });
-	}, []);
-
-	const statusClass = isApprovalRequired ? 'approval-required' : isRejected ? 'rejected' : isCanceled ? 'canceled' : isRunning ? 'running' : isError ? 'error' : isCompleted ? 'completed' : 'confirmed';
-
-	return (
-		<div className={`tool-call-card ${statusClass}`} aria-live="polite">
-			{/* ── Collapsed Header ── */}
-			<div
-				className="tool-call-card-header"
-				onClick={() => setExpanded(!expanded)}
-				role="button"
-				aria-expanded={expanded}
-				aria-label={`工具调用: ${toolCall.displayName || display.label}, 状态: ${isApprovalRequired ? '等待审批' : isRejected ? '已拒绝' : isRunning ? '运行中' : isError ? '错误' : '完成'}`}
-			>
-				<span className="tool-call-icon">
-					{isApprovalRequired ? (
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-							<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-						</svg>
-					) : isRejected || isCanceled ? (
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-							<circle cx="12" cy="12" r="10" />
-							<line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-						</svg>
-					) : isRunning ? (
-						<svg className="tool-spinner" width="14" height="14" viewBox="0 0 24 24"
-							fill="none" stroke="currentColor" strokeWidth="2">
-							<path d="M21 12a9 9 0 11-6.219-8.56" />
-						</svg>
-					) : isError ? (
-						<svg width="14" height="14" viewBox="0 0 24 24"
-							fill="none" stroke="currentColor" strokeWidth="2">
-							<circle cx="12" cy="12" r="10" />
-							<line x1="15" y1="9" x2="9" y2="15" />
-							<line x1="9" y1="9" x2="15" y2="15" />
-						</svg>
-					) : (
-						<svg width="14" height="14" viewBox="0 0 24 24"
-							fill="none" stroke="currentColor" strokeWidth="2">
-							<polyline points="20 6 9 17 4 12" />
-						</svg>
-					)}
-				</span>
-					<span className="tool-call-card-name">
-						<span className="tool-call-emoji">{display.emoji}</span>
-						{toolCall.displayName || display.label}
-					</span>
-					<span className={`tool-call-status-badge ${statusClass}`} role="status" aria-live="polite">
-						{isApprovalRequired ? '等待审批' : isRejected ? '已拒绝' : isCanceled ? '已取消' : isRunning ? '运行中' : isError ? '错误' : isCompleted ? '完成' : '已确认'}
-					</span>
-					{!expanded && argsSummary && (
-						<span className="tool-call-card-summary" title={argsSummary}>
-							{argsSummary}
-						</span>
-					)}
-					{!expanded && (extractFilePath(toolCall.arguments) || knotDoc?.sub_content_event_value) && (
-						<button
-							className="tool-call-card-open-file"
-							onClick={(e) => {
-								e.stopPropagation();
-								const fp = extractFilePath(toolCall.arguments) || knotDoc?.sub_content_event_value;
-								if (fp) { openFile(fp); }
-							}}
-						>
-							查看文件
-						</button>
-					)}
-					{toolCall.duration && !isRunning && (
-						<span className="tool-call-duration">
-							{formatDuration(toolCall.duration)}
-						</span>
-					)}
-					<span className={`tool-call-card-toggle ${expanded ? '' : 'collapsed'}`}>
-						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-							<polyline points="6 9 12 15 18 9" />
-						</svg>
-					</span>
-				</div>
-
-			{/* ── Approval UI ── */}
-			{isApprovalRequired && (
-				<ToolApprovalButtons toolCall={toolCall} />
-			)}
-			{isRejected && (
-				<div className="tool-call-rejected-notice">
-					<span>用户已拒绝此工具调用</span>
-				</div>
-			)}
-
-			{/* ── Expanded Body ── */}
-			{expanded && (
-				<div className="tool-call-card-body">
-					{formattedArgs && formattedArgs !== '{}' && (
-						<div className="tool-call-section">
-							<div className="tool-call-section-header">
-								<span className="tool-call-section-title">输入</span>
-								<button
-									className="tool-call-copy-btn"
-									onClick={(e) => { e.stopPropagation(); handleCopy(formattedArgs, 'args'); }}
-									title="复制参数"
-								>
-									{copiedField === 'args' ? '✓' : '📋'}
-								</button>
-							</div>
-							<pre className="tool-call-code">{formattedArgs}</pre>
-						</div>
-					)}
-
-					{formattedResult && (
-						<div className="tool-call-section">
-							<div className="tool-call-section-header">
-								<span className="tool-call-section-title">
-									{isError ? '错误' : '输出'}
-								</span>
-								<button
-									className="tool-call-copy-btn"
-									onClick={(e) => { e.stopPropagation(); handleCopy(formattedResult, 'result'); }}
-									title="复制结果"
-								>
-									{copiedField === 'result' ? '✓' : '📋'}
-								</button>
-							</div>
-							<pre className={`tool-call-code ${isError ? 'error-output' : ''}`}>
-								{displayResult}
-								{isResultLong && !showFullResult && '\n...'}
-							</pre>
-							{isResultLong && (
-								<button
-									className="tool-call-show-more"
-									onClick={() => setShowFullResult(!showFullResult)}
-								>
-									{showFullResult
-										? `▲ 收起 (${formattedResult.length} 字符)`
-										: `▼ 显示全部 (${formattedResult.length} 字符)`
-									}
-								</button>
-							)}
-						</div>
-					)}
-
-				{toolCall.error && !formattedResult && (
-					<div className="tool-call-error-section" role="alert">
-						<div className="tool-call-error-header">
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-									<circle cx="12" cy="12" r="10" />
-									<line x1="15" y1="9" x2="9" y2="15" />
-									<line x1="9" y1="9" x2="15" y2="15" />
-								</svg>
-							<span className="tool-call-error-title">错误</span>
-						</div>
-						<pre className="tool-call-error-content">{toolCall.error}</pre>
-					</div>
-				)}
-
-					{isRunning && !formattedResult && (
-						<div className="tool-call-running-indicator">
-							<span className="tool-call-running-dots">
-								<span className="typing-dot">●</span>
-								<span className="typing-dot">●</span>
-								<span className="typing-dot">●</span>
-							</span>
-							<span className="tool-call-running-text">执行中...</span>
-						</div>
-					)}
-				</div>
-			)}
-		</div>
-	);
-}
-
-// ─── Main ToolCallCard with renderType dispatch ──────────────────────────────
-
-function ToolCallCardRaw({ toolCall: toolMsg }: ToolCallCardProps): React.ReactElement | null {
-	// Adapt ToolMessage (unified format) to ToolCallData (legacy format) for internal use
-	const toolCall = toolMessageToToolCallData(toolMsg);
-
-	// Visibility is controlled solely by defaultShow.
-	// If defaultShow is false (or undefined for backward compat where defaultShow
-	// was not sent), don't render this tool call card.
-	if (toolCall.defaultShow === false) {
-		return null;
-	}
-
-	// ─── Void-inspired: State-based Component Selection ─────────────────────
-	// Priority: status check > renderType check
-	// This matches Void's logic: confirmation > progress > result > generic
-	
-	const isRunning = toolCall.status === 'running';
-	const isCompleted = (toolCall.status === 'success' || (toolCall.status as string) === 'completed') && !toolCall.error && !toolCall.canceled;
-	const isError = toolCall.status === 'error' || !!toolCall.error;
-	const isApprovalRequired = toolCall.status === 'approval_required';
-	const isRejected = toolCall.status === 'rejected';
-	const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
-	
-	// Check if this is a terminal tool
-	const isTerminalTool = toolCall.name?.toLowerCase().includes('terminal') || 
-	                     toolCall.name?.toLowerCase().includes('command') ||
-	                     toolCall.renderType === 'RunTerminal';
-	
-	// Case 1: Approval required - show confirmation card
-	if (isApprovalRequired) {
-		const title = `确认: ${toolCall.displayName || toolCall.name}`;
-		let message = '';
-		try {
-			const args = JSON.parse(toolCall.arguments || '{}');
-			message = args.message || args.confirmation_message || '';
-		} catch { /* ignore */ }
-		
-		const handleApprove = (decision: string) => {
-			sendRequest('chat.toolApprove', { 
-				toolCallId: toolCall.id, 
-				decision 
-			}).catch(() => {});
-		};
-		
-		const handleReject = () => {
-			sendRequest('chat.toolApprove', { 
-				toolCallId: toolCall.id, 
-				decision: 'deny' 
-			}).catch(() => {});
-		};
-		
-		if (isTerminalTool) {
-			// Terminal confirmation card
-			let command = '';
-			try {
-				const args = JSON.parse(toolCall.arguments || '{}');
-				command = args.command || args.cmd || '';
-			} catch { /* ignore */ }
-			
-			return (
-				<TerminalConfirmationCard
-					toolCall={toolCall}
-					command={command}
-					onApprove={handleApprove}
-					onReject={handleReject}
-				/>
-			);
-		} else {
-			// Regular confirmation card
-			return (
-				<ConfirmationCard
-					toolCall={toolCall}
-					title={title}
-					message={message}
-					onApprove={handleApprove}
-					onReject={handleReject}
-				/>
-			);
-		}
-	}
-	
-	// Case 2: Running - show progress card
-	if (isRunning) {
-		if (isTerminalTool) {
-			// Terminal progress card
-			let command = '';
-			let output = '';
-			try {
-				const args = JSON.parse(toolCall.arguments || '{}');
-				command = args.command || args.cmd || '';
-			} catch { /* ignore */ }
-			
-			if (toolCall.result) {
-				try {
-					const parsed = JSON.parse(toolCall.result);
-					if (Array.isArray(parsed) && parsed[0]?.text) {
-						output = parsed.map((p: any) => p.text).join('\n');
-					} else {
-						output = toolCall.result;
-					}
-				} catch {
-					output = toolCall.result;
-				}
-			}
-			
-			return (
-				<TerminalProgressCard
-					toolCall={toolCall}
-					command={command}
-					output={output}
-				/>
-			);
-		} else {
-			// Regular progress card
-			const message = toolCall.name?.toLowerCase().includes('read') ? '读取中...' :
-			                     toolCall.name?.toLowerCase().includes('write') ? '写入中...' :
-			                     toolCall.name?.toLowerCase().includes('edit') ? '编辑中...' :
-			                     '执行中...';
-			
-			return (
-				<ProgressCard
-					toolCall={toolCall}
-					message={message}
-					icon="spinner"
-				/>
-			);
-		}
-	}
-	
-	// Case 3: Completed or Error with result - show result card
-	if ((isCompleted || isError) && toolCall.result) {
-		return (
-			<ResultCard
-				toolCall={toolCall}
-				maxDisplayLength={5000}
-			/>
-		);
-	}
-	
-	// ─── Fallback: Use existing renderType logic ─────────────────────────────
-	// Resolve display info from registry (emoji, label, inferred renderType, etc.)
-	const display = ToolDisplayRegistry.resolve(toolCall.name, toolCall.arguments);
-
-	// Priority: explicit renderType from provider > inferred renderType from registry
-	const explicitRenderType = toolCall.renderType
-		? toolCall.renderType
-		: undefined;
-	const inferredRenderType = display.renderType;
-	let effectiveRenderType = explicitRenderType || inferredRenderType;
-
-	// Auto-detect renderType from result content when not explicitly provided
-	// (e.g. Knot AG-UI may send items without a renderType)
-	if (!effectiveRenderType || !KNOWN_RENDER_TYPES.has(effectiveRenderType)) {
-		const raw = toolCall.result || '';
-		if (raw) {
-			const cleaned = sanitizeToolResultText(raw);
-			try {
-				const parsed = JSON.parse(cleaned);
-				if (parsed.items && Array.isArray(parsed.items)) {
-					effectiveRenderType = 'ListItems';
-				} else if (Array.isArray(parsed)) {
-					effectiveRenderType = 'ListItems';
-				}
-			} catch { /* not JSON, keep existing */ }
-		}
-	}
-
-	// If effectiveRenderType exists and is known, dispatch to specialized renderer
-	if (effectiveRenderType && KNOWN_RENDER_TYPES.has(effectiveRenderType)) {
-		const isRunning = toolCall.status === 'running' && !toolCall.result;
-		const isError = toolCall.status === 'error' || !!toolCall.error;
-		const isApprovalRequired = toolCall.status === 'approval_required';
-		const isRejected = toolCall.status === 'rejected';
-		const isCanceled = toolCall.status === 'canceled' || !!toolCall.canceled;
-		const isConfirmed = toolCall.status === 'confirmed' || !!toolCall.confirmed;
-		const isCompleted = toolCall.status === 'completed' && !toolCall.error && !toolCall.canceled;
-		const statusClass = isApprovalRequired ? 'approval-required' : isRejected ? 'rejected' : isCanceled ? 'canceled' : isRunning ? 'running' : isError ? 'error' : isCompleted ? 'completed' : 'confirmed';
-
-		return (
-			<div className={`tool-call-card ${statusClass}`}>
-				{/* Card header */}
-				<div className="tool-call-card-header tool-call-card-header-readonly">
-					<span className="tool-call-icon">
-						{isApprovalRequired ? (
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-								<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-							</svg>
-						) : isRejected || isCanceled ? (
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-								<circle cx="12" cy="12" r="10" />
-								<line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-							</svg>
-						) : isRunning ? (
-							<svg className="tool-spinner" width="14" height="14" viewBox="0 0 24 24"
-								fill="none" stroke="currentColor" strokeWidth="2.5">
-								<path d="M21 12a9 9 0 11-6.219-8.56" />
-							</svg>
-						) : isError ? (
-							<svg width="14" height="14" viewBox="0 0 24 24"
-								fill="none" stroke="currentColor" strokeWidth="2.5">
-								<circle cx="12" cy="12" r="10" />
-								<line x1="15" y1="9" x2="9" y2="15" />
-								<line x1="9" y1="9" x2="15" y2="15" />
-							</svg>
-						) : (
-							<svg width="14" height="14" viewBox="0 0 24 24"
-								fill="none" stroke="currentColor" strokeWidth="2.5">
-								<polyline points="20 6 9 17 4 12" />
-							</svg>
-						)}
-					</span>
-					<span className="tool-call-card-name">
-						<span className="tool-call-emoji">{display.emoji}</span>
-						{toolCall.displayName || display.label}
-					</span>
-					{display.detail && (
-						<span className="tool-call-card-summary" title={display.detail}>
-							{display.detail}
-						</span>
-					)}
-					{effectiveRenderType === 'CodeApply' && extractFilePath(toolCall.arguments) && (
-						<code
-							className="tool-call-card-file-link"
-							onClick={(e) => {
-								e.stopPropagation();
-								const fp = extractFilePath(toolCall.arguments);
-								if (fp) { openFile(fp); }
-							}}
-							title="点击打开文件"
-						>
-							{extractFilePath(toolCall.arguments)}
-						</code>
-					)}
-					{effectiveRenderType === 'CodeApply' && extractFilePath(toolCall.arguments) && (
-						<button
-							className="tool-call-card-open-file"
-							onClick={(e) => {
-								e.stopPropagation();
-								const fp = extractFilePath(toolCall.arguments);
-								if (fp) { openFile(fp); }
-							}}
-						>
-							查看文件
-						</button>
-					)}
-					{toolCall.duration && !isRunning && (
-						<span className="tool-call-duration">
-							{formatDuration(toolCall.duration)}
-						</span>
-					)}
-				</div>
-				{/* Approval UI */}
-				{isApprovalRequired && (
-					<ToolApprovalButtons toolCall={toolCall} />
-				)}
-				{isRejected && (
-					<div className="tool-call-rejected-notice">
-						<span>用户已拒绝此工具调用</span>
-					</div>
-				)}
-				{/* Specialized body */}
-				<div className="tool-call-card-body">
-					{effectiveRenderType === 'ListItems' && <ListItemsRenderer toolCall={toolCall} />}
-					{effectiveRenderType === 'RunTerminal' && <RunTerminalRenderer toolCall={toolCall} />}
-					{effectiveRenderType === 'CodeApply' && <CodeApplyRenderer toolCall={toolCall} />}
-				</div>
-			</div>
-		);
-	}
-
-	// Log unrecognized explicit renderType
-	if (toolCall.renderType && !KNOWN_RENDER_TYPES.has(toolCall.renderType)) {
-		console.warn(
-			`[ToolCallCard] Unrecognized renderType: "${toolCall.renderType}" for tool "${toolCall.name}". ` +
-			`Known types: ${Array.from(KNOWN_RENDER_TYPES).join(', ')}. Falling back to generic card.`
-		);
-	}
-
-	// No renderType (explicit or inferred) → generic card (collapsible, with input/output sections)
-	return <GenericToolCallCard toolCall={toolCall} />;
 }
 
 export const ToolCallCard = memo(ToolCallCardRaw);

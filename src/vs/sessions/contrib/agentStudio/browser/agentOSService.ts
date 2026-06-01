@@ -557,6 +557,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const MAX_TOOL_ITERATIONS = 50;
 		let iteration = 0;
 		let invalidToolNameCount = 0;
+		// ─── 续跑兜底计数 ────────────────────────────────────────────────
+		// 某些模型（如 hy3-preview-ioa）在多轮 agent loop 中会把"接下来我要做 X"
+		// 当作最终回复输出，而不实际发出工具调用，导致任务半途而废。检测到这种
+		// "未完成意图"时注入一条续跑提示并重试，用计数器限制连续次数避免死循环。
+		let continuationNudgeCount = 0;
+		const MAX_CONTINUATION_NUDGES = 6;
+		// 当上一轮触发了续跑兜底时置位 —— 下一轮 modelOptions 注入
+		// toolChoice='required'，强制模型这一轮必须真正发出工具调用，
+		// 而不是再次用"好的，让我查看…"来回应续跑提示形成空转。
+		let forceToolChoiceNextIteration = false;
 
 		while (iteration < MAX_TOOL_ITERATIONS) {
 			iteration++;
@@ -569,7 +579,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				systemPrompt: request.systemPrompt,
 				tools: enabledTools.length > 0 ? enabledTools : undefined,
 				stop: request.options?.stop,
+				// 续跑兜底：若上一轮检测到"未完成意图却没调工具"，本轮强制
+				// tool_choice='required'，逼模型真正动手。仅在有可用工具时生效。
+				toolChoice: (forceToolChoiceNextIteration && enabledTools.length > 0) ? 'required' : 'auto',
 			};
+			if (forceToolChoiceNextIteration) {
+				this._logService.info(`[AgentOS] Iteration ${iteration}: forcing tool_choice=required (continuation nudge follow-up)`);
+			}
+			// 消费标志位（仅作用于紧接的这一轮）
+			forceToolChoiceNextIteration = false;
 
 			// 调用模型
 			const context: { agentId?: string } = {};
@@ -643,6 +661,30 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							startedToolIds.add((adapted as any).toolCallId);
 						}
 						yield adapted;
+						// ── Forward tool arguments alongside a single-shot tool_call ──
+						// Some model providers (e.g. CodeBuddy / hy3-preview-ioa) emit the
+						// whole tool call in ONE delta (name + arguments together) rather
+						// than streaming the name first and arguments in follow-up chunks.
+						// _adaptModelDelta maps such a delta to a `tool_start` ONLY (it can
+						// return a single chunk), so the arguments would be dropped and the
+						// webview card would never receive `params` → the title would show
+						// no file name / command. Detect this case and emit the matching
+						// `tool_args` right after the `tool_start` so the card can render
+						// the italic description (e.g. "读取文件 README.md").
+						if (
+							(adapted as any).type === 'tool_start' &&
+							delta.type === 'tool_call' &&
+							delta.toolCall &&
+							delta.toolCall.name &&
+							typeof delta.toolCall.arguments === 'string' &&
+							delta.toolCall.arguments.length > 0
+						) {
+							yield {
+								type: 'tool_args' as any,
+								content: delta.toolCall.arguments,
+								toolCallId: delta.toolCall.id,
+							};
+						}
 					}
 				}
 			} catch (error) {
@@ -762,6 +804,47 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			if (effectiveToolCalls.length === 0) {
+				// ─── 续跑兜底：检测"未完成意图"────────────────────────────────
+				// 模型返回纯文本但文末明显在声明"接下来要做某事"（却没真正发出工具
+				// 调用）时，注入一条续跑提示让它真正去调工具，而不是直接结束。
+				// 仅在：① 本轮无工具调用 ② 有文本 ③ 文末匹配未完成意图
+				// ④ 未超过最大续跑次数 时触发。
+				if (
+					assistantContent &&
+					continuationNudgeCount < MAX_CONTINUATION_NUDGES &&
+					this._looksLikeUnfinishedIntent(assistantContent)
+				) {
+					continuationNudgeCount++;
+					this._logService.info(
+						`[AgentOS] Detected unfinished intent without tool call — injecting continuation nudge (${continuationNudgeCount}/${MAX_CONTINUATION_NUDGES})`
+					);
+					// 置位：下一轮 modelOptions 注入 tool_choice='required'，从 API
+					// 层面强制模型这一轮必须发出工具调用，而不是再用"好的，让我查看…"
+					// 回应续跑提示形成空转。这是治本手段——单纯的自然语言劝说对
+					// "不爱调工具"的模型几乎无效。
+					forceToolChoiceNextIteration = true;
+					// 把这条"宣告意图"的助手消息已 push 进 messages（上方），
+					// 再补一条 user 提示，要求它真正调用工具继续。
+					messages.push({
+						role: 'user',
+						content:
+							'你刚才只是用文字描述了接下来打算做什么，但并没有真正发起工具调用，任务没有任何实际进展。' +
+							'现在请立即发起对应的工具调用（如查看文件/目录、执行命令、搜索代码等）来真正推进任务，' +
+							'不要再用"让我查看…""接下来我将…"这类描述性文字代替实际动作。' +
+							'若你确实判断任务已全部完成，再直接给出最终总结。',
+					});
+					// Reconcile orphaned tool_starts before next iteration
+					for (const orphanId of startedToolIds) {
+						if (!endedToolIds.has(orphanId)) {
+							const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (continuation nudge)' })));
+							yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
+							yield { type: 'tool_end', toolCallId: orphanId, success: false };
+							endedToolIds.add(orphanId);
+						}
+					}
+					continue; // 进入下一轮迭代
+				}
+
 				// 没有工具调用，对话结束
 				this._logService.info('[AgentOS] No tool calls, ending conversation');
 				// Reconcile orphaned tool_starts before ending (e.g., phantom tools
@@ -779,7 +862,61 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				break;
 			}
 
-			// ─── 执行工具调用 ─────────────────────────────────────
+			// ─── 分离 serverExecuted 工具（服务端已执行，跳过本地执行）──────────
+			// Knot AG-UI 等服务端 Agent 会在服务端执行工具并标记 server_executed=true。
+			// 这些工具不需要（也不应该）在客户端再次执行——本地没有对应的 provider，
+			// 强行执行只会报 "No provider available" 错误，导致 tool card 显示"错误详情"。
+			//
+			// 对于 serverExecuted 的工具：
+			//   - 发送 tool_result（占位成功结果）+ tool_end(success=true)
+			//   - 不添加到 messages 历史中的 tool 消息（服务端已将结果融入后续文本）
+			//   - 标记 endedToolIds 避免孤儿检测重复发送
+			const serverExecutedCalls = effectiveToolCalls.filter(tc => tc.serverExecuted === true);
+			const localExecutedCalls = effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
+
+			if (serverExecutedCalls.length > 0) {
+				this._logService.info(`[AgentOS] ${serverExecutedCalls.length} tool calls were server-executed (skipping local execution): ${serverExecutedCalls.map(tc => tc.name).join(', ')}`);
+				for (const tc of serverExecutedCalls) {
+					const serverResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({
+						ok: true,
+						serverExecuted: true,
+						note: 'Tool was executed on the server side; result incorporated into subsequent model response.',
+					})));
+					// 添加 tool message 到历史（即使结果是占位的），确保 messages 中
+					// 每个 assistant toolCall 都有对应的 tool result，否则模型可能困惑。
+					// 但如果所有工具都是 serverExecuted 且即将 break，则无需添加
+					// （因为不会再有下一轮迭代）。
+					if (localExecutedCalls.length > 0) {
+						messages.push({
+							role: 'tool',
+							content: serverResultStr,
+							toolCallId: tc.id,
+						});
+					}
+					yield {
+						type: 'tool_result',
+						content: serverResultStr,
+						toolCallId: tc.id,
+					};
+					yield {
+						type: 'tool_end',
+						toolCallId: tc.id,
+						success: true,
+					};
+					endedToolIds.add(tc.id);
+				}
+
+				// 如果所有工具都是服务端执行的，不需要继续 agent loop —
+				// 服务端 Agent（如 Knot）会在同一次 chat() 流中完成所有工具
+				// 调用循环并返回后续文本，客户端不应再发起新一轮 LLM 请求。
+				if (localExecutedCalls.length === 0) {
+					this._logService.info('[AgentOS] All tool calls were server-executed — ending local agent loop (server handles the loop)');
+					yield { type: 'done' };
+					break;
+				}
+			}
+
+			// ─── 执行工具调用（仅本地需要执行的）────────────────────────
 			// Wrap in try/catch so any provider/internal exception cannot break the
 			// generator before we have a chance to yield tool_end + done.
 			//
@@ -793,12 +930,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// Fix: stream results as each individual tool finishes, so each tool_end
 			// flushes to the UI at its real completion time. We collect into
 			// `toolResults` for the message history while streaming.
-			const canParallel = shouldParallelizeToolBatch(effectiveToolCalls);
+			const canParallel = shouldParallelizeToolBatch(localExecutedCalls);
 			const toolResults: Array<{ toolCallId: string; content: any; success: boolean }> = [];
+			// If all tool calls were server-executed, skip the local execution block entirely.
+			if (localExecutedCalls.length > 0) {
 			try {
 				if (canParallel) {
 					// Streaming parallel: yield as each tool finishes, in completion order.
-					for await (const toolResult of this._executeToolCallsParallelStreaming(effectiveToolCalls, request.agentId)) {
+					for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId)) {
 						toolResults.push(toolResult);
 						// Emit tool_result + tool_end for THIS tool immediately (do not
 						// wait for the rest of the batch).
@@ -823,7 +962,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				} else {
 					// Serial path: keep old behavior (each tool naturally finishes
 					// sequentially so head-of-line blocking is not an issue here).
-					const serial = await this._executeToolCalls(effectiveToolCalls, request.agentId);
+					const serial = await this._executeToolCalls(localExecutedCalls, request.agentId);
 					for (const toolResult of serial) {
 						toolResults.push(toolResult);
 						const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
@@ -849,7 +988,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				this._logService.error(`[AgentOS] Tool execution batch threw unexpectedly:`, execErr);
 				// Synthesize failed results for every tool that did NOT yet emit tool_end.
 				// This guarantees every started tool_call is terminated on the wire.
-				for (const tc of effectiveToolCalls) {
+				for (const tc of localExecutedCalls) {
 					if (endedToolIds.has(tc.id)) { continue; }
 					const errResult = {
 						toolCallId: tc.id,
@@ -868,6 +1007,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					endedToolIds.add(tc.id);
 				}
 			}
+			} // end if (localExecutedCalls.length > 0)
 
 			// ─── Reconcile: emit synthetic tool_end for any orphaned tool_start ──
 			// IDs that received tool_start but never tool_end (lost via dedup,
@@ -1426,6 +1566,47 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 			}
 		}
+	}
+
+	/**
+	 * 判断模型的纯文本输出是否表达了"未完成的意图"——即声明"接下来要做某事"
+	 * 却没有真正发出工具调用。用于 agent loop 的续跑兜底（continuation nudge）。
+	 *
+	 * 触发的典型文案（hy3-preview-ioa 等模型常见）：
+	 *   "让我继续深入分析…我需要查看 src 目录"
+	 *   "接下来我将查看 package.json"
+	 *   "Let me check the configuration files next"
+	 *
+	 * 判定逻辑：取文本末尾一段（意图通常在结尾），匹配"未来/打算/需要做某事"的措辞。
+	 * 保守起见，仅当文本较短（看起来不像最终总结）且命中关键词时返回 true。
+	 */
+	private _looksLikeUnfinishedIntent(text: string): boolean {
+		if (!text) { return false; }
+		const trimmed = text.trim();
+		if (trimmed.length < 4) { return false; }
+		// 取末尾一段（意图通常在结尾）作为"意图区"判定，而非用整体长度一刀切。
+		// 历史 BUG：之前 `if (length > 600) return false`，导致"分析项目"这类
+		// 模型每轮输出一大段描述性文字（>600 字符）时，意图检测被直接跳过 →
+		// 续跑兜底永不触发 → loop 在第一段"让我查看…"后就 yield done 提前收尾。
+		// 改为：仅当文本极长（>2000，几乎可确定是真正最终总结）时才豁免，其余
+		// 一律只看末尾意图区是否在"宣告下一步动作"。
+		if (trimmed.length > 2000) { return false; }
+		// 取末尾 240 字符作为"意图区"
+		const tail = trimmed.slice(-240);
+		// 中文"未来动作"措辞
+		const zhPatterns = [
+			/(让我|我将|我会|我要|我需要|接下来|下一步|继续|首先|然后|现在我).{0,40}(查看|读取|检查|分析|了解|看一下|看看|搜索|查找|获取|运行|执行|打开|列出|探索|深入)/,
+			/(查看|读取|检查|分析|搜索|查找|获取|列出|探索)(一下|下)?(项目|目录|文件|结构|代码|配置|架构|源码|内容)/,
+		];
+		// 英文"未来动作"措辞
+		const enPatterns = [
+			/\b(let me|i'?ll|i will|i'?m going to|i need to|next,? i|now i'?ll|let'?s)\b.{0,40}\b(check|read|look|view|examine|analyze|explore|search|find|inspect|open|list|review)\b/i,
+			/\b(check|read|look at|examine|analyze|explore|inspect|review)\b.{0,30}\b(the |this )?(project|directory|folder|file|files|structure|code|config|configuration|architecture|source)\b/i,
+		];
+		for (const re of [...zhPatterns, ...enPatterns]) {
+			if (re.test(tail)) { return true; }
+		}
+		return false;
 	}
 
 	/**

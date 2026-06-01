@@ -2,9 +2,9 @@
  * Shared types and utilities for tool call cards
  */
 
-import { sanitizeToolResultText } from '../../utils/assistantVisibleText';
-import { ToolDisplayRegistry } from '../../utils/toolDisplayRegistry';
-import { openFile } from '../../bridge/fileBridge';
+import { sanitizeToolResultText } from '../../../utils/assistantVisibleText';
+import { ToolDisplayRegistry } from '../../../utils/toolDisplayRegistry';
+import { openFile } from '../../../bridge/fileBridge';
 
 /**
  * Tool call data interface

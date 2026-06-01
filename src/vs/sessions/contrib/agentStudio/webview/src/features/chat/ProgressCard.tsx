@@ -1,5 +1,5 @@
 import React, { memo, useMemo } from 'react';
-import { ToolCallData } from './ToolCallCard';
+import { ToolCallData } from './tool-call-cards/tool-call-types';
 
 /**
  * Progress Card Component - Void-inspired progress indication

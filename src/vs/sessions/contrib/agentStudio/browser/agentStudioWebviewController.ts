@@ -49,6 +49,7 @@ import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/provi
 import { ToolApprovalDecision } from "../common/providers.js";
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
+import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
@@ -150,6 +151,8 @@ export class AgentStudioWebviewController extends Disposable {
 		@IWorkbenchThemeService
 		private readonly workbenchThemeService: IWorkbenchThemeService,
 		@IFileService private readonly fileService: IFileService,
+		@IWorkspaceContextService
+		private readonly workspaceContextService: IWorkspaceContextService,
 		@ITaskOrchestrationService
 		private readonly taskOrchestrationService: ITaskOrchestrationService,
 		@IEditorService private readonly editorService: IEditorService,
@@ -443,6 +446,13 @@ export class AgentStudioWebviewController extends Disposable {
 							| undefined,
 					} as never,
 				);
+
+			// ── Persist active workspace ID (used by webview to restore last session) ──
+			case "workspace.setActive":
+				// Fire-and-forget: store the active workspace ID for session restore.
+				// The webview already sets it in memory; this just persists it.
+				// TODO: integrate with IStorageService when available.
+				return Promise.resolve({ ok: true });
 
 			// ── Worktrees ───────────────────────
 			case "worktree.list":
@@ -1121,7 +1131,8 @@ export class AgentStudioWebviewController extends Disposable {
 		const agentSessionId = payload.agentSessionId as string | undefined;
 		const sessionIdForEvent = agentSessionId || "";
 		let capturedProviderSessionId: string | undefined;
-		let streamingTextBuffer: string = ''; // 流式文本缓冲区，用于增量工具检测（参考 Void 的 extractXMLToolsWrapper）
+		let streamingTextBuffer: string = ''; // 流式文本缓冲区，用于增量工具检测 + 全量快照（参考 Void 的 fullTextSoFar）
+		let streamingThinkingBuffer: string = ''; // 流式推理缓冲区，用于全量快照
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
@@ -1166,10 +1177,12 @@ export class AgentStudioWebviewController extends Disposable {
 						return out;
 					})();
 
-					// 增量工具检测（参考 Void 的 extractXMLToolsWrapper）
+					// 增量工具检测 + 全量快照（参考 Void 的 fullTextSoFar）
 					let chunksToSend: IChatStreamDelta[] = [safeChunk];
 					if (safeChunk.type === 'text' && typeof safeChunk.content === 'string') {
 						streamingTextBuffer += safeChunk.content;
+						// 附加全量文本快照
+						safeChunk.fullText = streamingTextBuffer;
 						// 使用正则检测工具标签（简化版，仅检测完整标签）
 						const toolTagRegex = /<(tool_call|function_call|tool_use|invoke)[\s\S]*?>[\s\S]*?<\/\1>/gi;
 						const toolMatches: { index: number; toolName: string; fullMatch: string }[] = [];
@@ -1196,6 +1209,16 @@ export class AgentStudioWebviewController extends Disposable {
 							// 重置 buffer 为工具之后的文本
 							streamingTextBuffer = streamingTextBuffer.substring(toolMatches[0].index + toolMatches[0].fullMatch.length);
 						}
+					}
+					// 累积 thinking buffer 并附加全量快照
+					if (safeChunk.type === 'thinking' && typeof safeChunk.content === 'string') {
+						streamingThinkingBuffer += safeChunk.content;
+						safeChunk.fullThinking = streamingThinkingBuffer;
+					}
+					// content_replace 时更新全量快照
+					if (safeChunk.type === 'content_replace' && typeof safeChunk.content === 'string') {
+						streamingTextBuffer = safeChunk.content;
+						safeChunk.fullText = streamingTextBuffer;
 					}
 
 					this._sendEvent("chat.stream.delta", {
@@ -1413,6 +1436,31 @@ export class AgentStudioWebviewController extends Disposable {
 			throw new Error("files.open requires path or employeeId");
 		}
 
+		// Resolve relative paths against the owning workspace root. Tool cards
+		// (e.g. file_read) frequently pass a *relative* path such as
+		// `product.json` or `src/app.ts`. Feeding those straight into
+		// `URI.file()` yields a bogus drive-root path (e.g. `/product.json`)
+		// → "file not found".
+		//
+		// CRITICAL: the file_read tool resolves relative paths against a
+		// *prioritized list of roots* — VS Code workspace folders FIRST, then
+		// the Sarosis workspace.path, then any agent worktree path (see
+		// builtinToolProvider._resolveAndCheckWorkspacePath). If we only join
+		// against the Sarosis workspace.path here, we can produce a path the
+		// tool never actually read from (file readable, but not openable). To
+		// stay consistent we build the SAME candidate-root list and open the
+		// first candidate that actually exists on disk.
+		if (!this._isAbsolutePath(absPath)) {
+			const resolved = await this._resolveRelativeOpenPath(
+				absPath,
+				payload.workspaceId,
+				payload.employeeId,
+			);
+			if (resolved) {
+				absPath = resolved;
+			}
+		}
+
 		const resource = URI.file(absPath);
 		const groups = this.editorGroupsService.getGroups(
 			GroupsOrder.CREATION_TIME,
@@ -1420,18 +1468,142 @@ export class AgentStudioWebviewController extends Disposable {
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 
 		this.logService.info(
-			`[AgentStudioWebviewController] files.open → ${resource.toString()}`,
+			`[AgentStudioWebviewController] files.open → ${resource.toString()}${payload.lineNumber ? ` :${payload.lineNumber}` : ""}`,
 		);
+		// Build editor options. When a 1-based lineNumber is supplied (e.g.
+		// file_read's start_line), reveal + select that line so the user lands
+		// on the relevant location instead of the top of the file.
+		const selection = payload.lineNumber && payload.lineNumber > 0
+			? {
+				startLineNumber: payload.lineNumber,
+				startColumn: 1,
+				endLineNumber: payload.lineNumber,
+				endColumn: 1,
+			}
+			: undefined;
 		await this.editorService.openEditor(
 			{
 				resource,
 				options: {
 					preserveFocus: payload.preserveFocus ?? false,
 					pinned: payload.pinned ?? false,
+					...(selection ? { selection } : {}),
 				},
 			},
 			targetGroup,
 		);
+	}
+
+	/**
+	 * Test whether a path is absolute on the current platform.
+	 * Handles POSIX (`/foo`), Windows drive (`C:\foo`, `C:/foo`) and UNC
+	 * (`\\server\share`) forms without importing Node's `path` module
+	 * (this controller runs in the renderer/browser context).
+	 */
+	private _isAbsolutePath(p: string): boolean {
+		if (!p) {
+			return false;
+		}
+		// POSIX absolute or UNC
+		if (p.startsWith("/") || p.startsWith("\\\\")) {
+			return true;
+		}
+		// Windows drive-letter absolute: C:\ or C:/
+		return /^[a-zA-Z]:[\\/]/.test(p);
+	}
+
+	/**
+	 * Resolve a *relative* `files.open` path to an absolute on-disk path,
+	 * mirroring how the `file_read` tool resolves it.
+	 *
+	 * The tool (builtinToolProvider._resolveAndCheckWorkspacePath) tries a
+	 * prioritized list of roots:
+	 *   1. VS Code workspace folders (in order)
+	 *   2. the Sarosis workspace.path for the owning agent/workspace
+	 *   3. the agent's worktreePath (if any)
+	 *
+	 * It joins the relative path onto the FIRST root for reads, but here we
+	 * cannot assume which root actually contained the file (the user may be
+	 * looking at a workspace whose Sarosis path differs from the VS Code
+	 * folder). So we build the same candidate list and return the first
+	 * candidate that EXISTS on disk. Falls back to joining onto the first
+	 * candidate root (so the editor surfaces a sensible "not found" path) and
+	 * finally to the untouched relative path when no roots are known.
+	 */
+	private async _resolveRelativeOpenPath(
+		relPath: string,
+		workspaceId: string | undefined,
+		employeeId: string | undefined,
+	): Promise<string | undefined> {
+		const segments = relPath.split(/[\\/]+/).filter(Boolean);
+		if (segments.length === 0) {
+			return undefined;
+		}
+
+		const roots: URI[] = [];
+		const pushRoot = (p: string | undefined | null) => {
+			if (!p) { return; }
+			const cleaned = p.replace(/[\\/]+$/, "");
+			if (cleaned) { roots.push(URI.file(cleaned)); }
+		};
+
+		// 1. VS Code workspace folders (same as file_read's first roots).
+		try {
+			for (const folder of this.workspaceContextService.getWorkspace().folders) {
+				pushRoot(folder.uri.fsPath);
+			}
+		} catch {
+			/* ignore — context service may be unavailable */
+		}
+
+		// 2 & 3. Sarosis workspace.path + agent worktreePath.
+		let wsId = workspaceId;
+		try {
+			if (employeeId) {
+				const employee = await this.agentStudioService.getEmployee(employeeId);
+				if (!wsId) { wsId = employee?.workspaceId; }
+				pushRoot(employee?.worktreePath);
+			}
+		} catch {
+			/* ignore */
+		}
+		if (wsId) {
+			try {
+				const workspace = await this.agentStudioService.getWorkspace(wsId);
+				pushRoot(workspace?.path);
+			} catch {
+				/* ignore */
+			}
+		}
+
+		if (roots.length === 0) {
+			return undefined;
+		}
+
+		// De-duplicate roots while preserving priority order.
+		const seen = new Set<string>();
+		const uniqueRoots = roots.filter((r) => {
+			const key = r.fsPath.toLowerCase();
+			if (seen.has(key)) { return false; }
+			seen.add(key);
+			return true;
+		});
+
+		// Probe each candidate; open the first that actually exists.
+		for (const root of uniqueRoots) {
+			const candidate = URI.joinPath(root, ...segments);
+			try {
+				if (await this.fileService.exists(candidate)) {
+					return candidate.fsPath;
+				}
+			} catch {
+				/* ignore — try next root */
+			}
+		}
+
+		// Nothing existed — fall back to the first root so the editor shows a
+		// meaningful path in its "file not found" message.
+		return URI.joinPath(uniqueRoots[0], ...segments).fsPath;
 	}
 
 	/**

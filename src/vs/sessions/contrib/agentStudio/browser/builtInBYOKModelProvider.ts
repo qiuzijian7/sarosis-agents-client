@@ -465,8 +465,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		}
 		if (options.tools && options.tools.length > 0) {
 			body.tools = MessageFormatConverter.toOpenAIToolDefinitions(options.tools);
-			body.tool_choice = 'auto';
-			this._logService.info(`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools with tool_choice=auto`);
+			// 透传上层（agent loop 续跑兜底）指定的 tool_choice；默认 'auto'。
+			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
+			body.tool_choice = options.toolChoice ?? 'auto';
+			this._logService.info(`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools with tool_choice=${body.tool_choice}`);
 		}
 		return body;
 	}

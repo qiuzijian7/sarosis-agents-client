@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useState, useRef, useEffect } from 'react';
-import { ToolCallData } from './ToolCallCard';
+import { ToolCallData } from './tool-call-cards/tool-call-types';
 import { Tooltip } from './Tooltip';
 
 /**

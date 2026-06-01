@@ -31,6 +31,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
+import * as path from '../../../../../../base/common/path.js';
 import { IFileService, FileType } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
@@ -55,6 +56,13 @@ interface IToolDescriptor {
 	readonly available?: () => boolean;
 	/** 标记为 stub — 只有 schema 定义，没有实际 handler 实现。listTools 会跳过这些工具，防止 LLM 看到后尝试调用导致 "not yet implemented" 错误。 */
 	readonly isStub?: boolean;
+	/**
+	 * 动态描述构建器 — 当需要提供动态工具描述时使用。
+	 * 参考 Hermes-Agent 的 _build_top_level_description() 设计。
+	 * 如果提供此函数，listTools() 会调用它生成动态 description，
+	 * 覆盖 definition.description 的静态值。
+	 */
+	readonly descriptionBuilder?: (agentId: string) => string;
 }
 
 /**
@@ -95,19 +103,16 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	// ─── 路径安全校验 ─────────────────────────────────────────────────────
 
 	/**
-	 * 检查请求的路径是否在允许的工作区目录内。
+	 * 检查请求的路径是否在允许的工作区目录内，并将相对路径解析为绝对路径。
 	 * 同时检查 VS Code 工作区文件夹和 Sarosis Agent 工作区路径。
 	 * Windows 路径大小写不敏感。
 	 *
 	 * @param agentId 当前 agent 的 ID，用于查找 Sarosis workspace 路径
-	 * @param requestedPath 请求的文件/目录路径
+	 * @param requestedPath 请求的文件/目录路径（支持相对路径，如 "."、"./src"）
+	 * @returns 解析后的绝对路径
 	 * @throws Error 如果路径不在任何允许的工作区内
 	 */
-	private async _checkWorkspacePath(agentId: string | undefined, requestedPath: string): Promise<void> {
-		const normalizedUri = URI.file(requestedPath);
-		const requestedFsPath = normalizedUri.fsPath;
-		const normalizedRequest = requestedFsPath.replace(/[\\/]+$/, '').toLowerCase();
-
+	private async _resolveAndCheckWorkspacePath(agentId: string | undefined, requestedPath: string): Promise<string> {
 		// 收集所有允许的根路径
 		const allowedRoots: string[] = [];
 
@@ -137,8 +142,24 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			}
 		}
 
+		// 去重
+		const uniqueRoots = [...new Set(allowedRoots)];
+
+		// 如果是相对路径，基于第一个允许的工作区根目录解析为绝对路径
+		let resolvedPath = requestedPath;
+		if (!path.isAbsolute(requestedPath)) {
+			if (uniqueRoots.length > 0) {
+				resolvedPath = path.join(uniqueRoots[0], requestedPath);
+				resolvedPath = path.normalize(resolvedPath);
+			}
+		}
+
+		const normalizedUri = URI.file(resolvedPath);
+		const requestedFsPath = normalizedUri.fsPath;
+		const normalizedRequest = requestedFsPath.replace(/[\\/]+$/, '').toLowerCase();
+
 		// 检查请求路径是否在任一允许根目录下
-		const isAllowed = allowedRoots.some(root => {
+		const isAllowed = uniqueRoots.some(root => {
 			const normalizedRoot = root.toLowerCase();
 			return normalizedRequest === normalizedRoot ||
 				normalizedRequest.startsWith(normalizedRoot + '\\') ||
@@ -146,15 +167,17 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		});
 
 		if (!isAllowed) {
-			const allowedList = allowedRoots.length > 0
-				? allowedRoots.map(r => `  - ${r}`).join('\n')
+			const allowedList = uniqueRoots.length > 0
+				? uniqueRoots.map(r => `  - ${r}`).join('\n')
 				: '  (无 — 请确认已正确配置工作区)';
 			throw new Error(
-				`安全沙箱限制：路径 "${requestedPath}" 不在允许的工作区目录内。\n` +
+				`安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
 				`当前允许的工作区目录：\n${allowedList}\n` +
 				`请在上述目录内操作，或在 Sarosis 工作区设置中配置正确的路径。`
 			);
 		}
+
+		return resolvedPath;
 	}
 
 	// ─── IToolProvider 实现 ─────────────────────────────────────────────
@@ -166,13 +189,19 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			if (t.available && !t.available()) { continue; }
 			// 检查用户是否禁用了该工具
 			if (this._disabledTools.has(name)) { continue; }
-			// 跳过 stub 工具 — 它们只有 schema 定义，没有实际 handler 实现
-			// 暴露 stub 工具给 LLM 会导致 LLM 尝试调用，返回 "not yet implemented" 错误
-			if (t.isStub) { continue; }
+		// 跳过 stub 工具 — 它们只有 schema 定义，没有实际 handler 实现
+		// 暴露 stub 工具给 LLM 会导致 LLM 尝试调用，返回 "not yet implemented" 错误
+		if (t.isStub) { continue; }
+		// 如果工具有动态描述构建器，使用它生成动态描述
+		if (t.descriptionBuilder) {
+			const dynamicDesc = t.descriptionBuilder(_agentId);
+			out.push({ ...t.definition, description: dynamicDesc });
+		} else {
 			out.push(t.definition);
 		}
-		return out;
 	}
+	return out;
+}
 
 	/**
 	 * 获取所有工具定义（包括被禁用的，供 UI 显示）
@@ -398,10 +427,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内
-				await this._checkWorkspacePath(agentId, requestedPath);
+				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
 
-				const normalizedUri = URI.file(requestedPath);
+				const normalizedUri = URI.file(resolvedPath);
 				const buf = await this.fileService.readFile(normalizedUri);
 				if (buf.value.byteLength > 256 * 1024) {
 					throw new Error(`file too large (${buf.value.byteLength} bytes), use a streaming tool`);
@@ -432,10 +461,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内
-				await this._checkWorkspacePath(agentId, requestedPath);
+				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
 
-				const normalizedUri = URI.file(requestedPath);
+				const normalizedUri = URI.file(resolvedPath);
 				const content = String(args['content'] ?? '');
 				await this.fileService.writeFile(normalizedUri, VSBuffer.fromString(content));
 				return text(`wrote ${content.length} chars to ${normalizedUri.fsPath}`);
@@ -460,10 +489,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内
-				await this._checkWorkspacePath(agentId, requestedPath);
+				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
 
-				const normalizedUri = URI.file(requestedPath);
+				const normalizedUri = URI.file(resolvedPath);
 				const stat = await this.fileService.resolve(normalizedUri);
 				const rows = (stat.children ?? []).map(c => ({
 					name: c.name,
@@ -496,10 +525,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内
-				await this._checkWorkspacePath(agentId, requestedPath);
+				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
 
-				const normalizedUri = URI.file(requestedPath);
+				const normalizedUri = URI.file(resolvedPath);
 				const query = String(args['query'] ?? '');
 				const limit = Math.min(Math.max(Number(args['maxResults'] ?? 50), 1), 500);
 				if (!query) { throw new Error('query is required'); }
@@ -1039,8 +1068,35 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					return [{ type: 'text', text: `delegate_task error: ${msg}` }];
 				}
 			},
+			descriptionBuilder: (agentId: string) => {
+				try {
+					const dispatch = this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch;
+					const config = dispatch.getConfig();
+					return `Delegate a task (or multiple tasks) to a sub-agent. ` +
+						`The sub-agent runs independently and returns its result. ` +
+						`Use this when the task can be decomposed into independent parallel subtasks, ` +
+						`or when the task requires a separate context window. ` +
+						`Supports both single task (task) and batch tasks (tasks). ` +
+						`You can run up to ${config.maxConcurrent} sub-agents in parallel ` +
+						`(max ${config.maxSpawnDepth} levels deep). ` +
+						`\n\n` +
+						`## When to use:\n` +
+						`- The task can be decomposed into 2+ independent subtasks\n` +
+						`- You need to run multiple independent investigations simultaneously\n` +
+						`- The subtask is complex enough to benefit from a dedicated context\n` +
+						`\n\n` +
+						`## When NOT to use:\n` +
+						`- The task is simple and can be completed in one turn\n` +
+						`- You need to maintain ongoing context/memory across steps\n` +
+						`- You are already at maximum spawn depth\n`;
+				} catch {
+					return 'Delegate a task (or multiple tasks) to a sub-agent. ' +
+						'The sub-agent runs independently and returns its result. ' +
+						'Use this when a task can be performed in parallel or requires a separate context. ' +
+						'Supports both single task (task) and batch tasks (tasks).';
+				}
+			},
 		});
-
 		this.logService.info('[BuiltinTools] _registerDelegationTools: delegate_task registered');
 	}
 

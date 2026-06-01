@@ -296,7 +296,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 	async provideLanguageModelChatResponse(
 		model: vscode.LanguageModelChatInformation,
 		messages: readonly vscode.LanguageModelChatRequestMessage[],
-		_options: vscode.ProvideLanguageModelChatResponseOptions,
+		options: vscode.ProvideLanguageModelChatResponseOptions,
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		cancellationToken: vscode.CancellationToken,
 	): Promise<void> {
@@ -312,13 +312,17 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// Debug: log token info (first 10 chars + length)
 		console.log(`[CodeBuddy] Sending request with token: length=${trimmedToken.length}, prefix=${trimmedToken.substring(0, 10)}...`);
 
-		return this._sendCodeBuddyRequest(trimmedToken, selectedModel, messages, progress, cancellationToken);
+		// Extract tools from modelOptions (set by LMBridge)
+		const tools = (options.modelOptions as Record<string, unknown> | undefined)?.tools as vscode.LanguageModelChatTool[] | undefined;
+
+		return this._sendCodeBuddyRequest(trimmedToken, selectedModel, messages, tools, progress, cancellationToken);
 	}
 
 	private async _sendCodeBuddyRequest(
 		accessToken: string,
 		selectedModel: string,
 		messages: readonly vscode.LanguageModelChatRequestMessage[],
+		tools: vscode.LanguageModelChatTool[] | undefined,
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		cancellationToken: vscode.CancellationToken,
 	): Promise<void> {
@@ -333,7 +337,19 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			content: extractText(msg),
 		}));
 
-		const body = JSON.stringify({
+		// Convert VS Code LanguageModelChatTool[] to OpenAI tools format
+		const openaiTools = tools && tools.length > 0
+			? tools.map(t => ({
+				type: 'function' as const,
+				function: {
+					name: t.name,
+					description: t.description,
+					parameters: t.inputSchema,
+				},
+			}))
+			: undefined;
+
+		const bodyObj: Record<string, unknown> = {
 			model: selectedModel,
 			messages: [
 				...(systemText ? [{ role: 'system', content: systemText }] : []),
@@ -342,7 +358,15 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			stream: true,
 			temperature: 1,
 			max_tokens: 48_000,
-		});
+		};
+
+		// Include tools if available
+		if (openaiTools) {
+			bodyObj.tools = openaiTools;
+			console.log(`[CodeBuddy] Including ${openaiTools.length} tools in request`);
+		}
+
+		const body = JSON.stringify(bodyObj);
 
 		const conversationId = crypto.randomUUID();
 		const requestId = crypto.randomUUID();
@@ -401,13 +425,63 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			signal: controller.signal,
 		});
 
-		// Parse OpenAI SSE stream
+		// Parse OpenAI SSE stream — supports both text content and tool_calls
+		// OpenAI tool_calls are streamed incrementally: first chunk has name + id,
+		// subsequent chunks append arguments fragments.
+		const toolCallAccumulators = new Map<number, { id: string; name: string; arguments: string }>();
+
 		return parseSSEStream(response, progress, cancellationToken, (event) => {
 			// OpenAI: choices[0].delta.content
 			if (event.choices && event.choices[0]) {
 				const choice = event.choices[0];
+
+				// Handle text content
 				if (choice.delta && choice.delta.content) {
 					return { text: choice.delta.content };
+				}
+
+				// Handle tool_calls (OpenAI streaming format)
+				// Each chunk may contain one or more tool_call deltas:
+				//   { index: N, id?: "call_xxx", function?: { name?: "tool_name", arguments?: "..." } }
+				if (choice.delta && choice.delta.tool_calls) {
+					for (const tc of choice.delta.tool_calls) {
+						const idx = tc.index ?? 0;
+						let acc = toolCallAccumulators.get(idx);
+						if (!acc) {
+							acc = { id: '', name: '', arguments: '' };
+							toolCallAccumulators.set(idx, acc);
+						}
+						// First chunk for this tool_call provides id and name
+						if (tc.id) { acc.id = tc.id; }
+						if (tc.function?.name) { acc.name = tc.function.name; }
+						if (tc.function?.arguments) { acc.arguments += tc.function.arguments; }
+					}
+
+					// Emit completed tool calls: only when we have id + name + the arguments
+					// are done (finish_reason='tool_calls' signals completion, but we can also
+					// emit eagerly when the next text chunk arrives). For streaming UX we emit
+					// on finish_reason or when a new tool_call index appears.
+					if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
+						// Emit all accumulated tool calls
+						for (const [, acc] of toolCallAccumulators) {
+							if (acc.id && acc.name) {
+								let params: object;
+								try {
+									params = JSON.parse(acc.arguments || '{}');
+								} catch {
+									params = { raw_arguments: acc.arguments };
+								}
+								// This will be reported as LanguageModelToolCallPart
+								// but we can only return one result per event — emit inline
+								progress.report(new vscode.LanguageModelToolCallPart(acc.id, acc.name, params));
+							}
+						}
+						toolCallAccumulators.clear();
+					}
+
+					// Return null — we already reported tool calls directly via progress.report()
+					// because parseSSEStream's callback can only return one result per event.
+					return null;
 				}
 			}
 			return null;

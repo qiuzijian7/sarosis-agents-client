@@ -43,26 +43,34 @@ function isTableRow(line: string): boolean {
  * messages to guarantee rendering consistency.
  *
  * Problems addressed:
- * 1. Missing space after heading markers (##Title -> ## Title). Models often
- *    output headings without the required space, causing them to render as
- *    plain text instead of <h2>..<h6> elements.
- * 2. Unicode bullet lists (•) are converted to standard markdown (-) so
+ * 1. Unicode bullet lists (•) are converted to standard markdown (-) so
  *    remark recognizes them as <ul> items instead of plain paragraphs.
- * 3. Missing space after ordered list markers (1.text -> 1. text) so remark
+ * 2. Missing space after ordered list markers (1.text -> 1. text) so remark
  *    recognizes them as list items rather than plain paragraphs.
- * 4. Fixed-width text tables (space-aligned columns without |) are converted
+ * 3. Fixed-width text tables (space-aligned columns without |) are converted
  *    to real markdown tables so column alignment is preserved.
- * 5. Excessive blank lines between list items are collapsed to prevent
+ * 4. Excessive blank lines between list items are collapsed to prevent
  *    "loose" list rendering with extra <p> wrappers that add unwanted spacing.
- * 6. General runs of 3+ blank lines are collapsed to 2.
+ * 5. General runs of 3+ blank lines are collapsed to 2.
+ *
+ * NOTE: We deliberately do NOT force a space after heading markers
+ * (##Title -> ## Title). Per CommonMark a heading requires a space after the
+ * leading "#" run, so lines like "#1", "#fff", "#!/bin/bash" must stay plain
+ * text. This mirrors the void project's non-interfering approach.
  */
 function normalizeStreamingMarkdown(content: string): string {
 	// Normalize line endings to \n for consistent regex matching
 	let result = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-	// 1. Fix missing space after heading markers: ##Title -> ## Title
-	//    Uses \S instead of [^#\s] to safely handle emoji surrogate pairs.
-	result = result.replace(/^([ \t]*#{1,6})(\S)(.*)$/gm, '$1 $2$3');
+	// NOTE: We intentionally do NOT force a space after heading markers
+	//   (e.g. "##Title" -> "## Title"). Per CommonMark, an ATX heading
+	//   requires a space after the leading "#" run; without it the line is a
+	//   plain paragraph. The previous aggressive normalization turned ANY line
+	//   starting with 1-6 "#" immediately followed by a non-space char into a
+	//   heading, which mis-rendered ordinary text such as "#1", "#fff",
+	//   "#!/bin/bash", "#include", "#123issue" as large headings. Aligning with
+	//   the void project, we leave such lines untouched and let remark-gfm
+	//   apply standard CommonMark behavior.
 
 	// 2. Convert Unicode bullet lists to standard markdown lists.
 	result = result.replace(/^(\s*)•[ \t]/gm, '$1- ');
