@@ -474,3 +474,109 @@
 	height: 20px;
 	line-height: 20px;
 }
+
+/* ─── Create Workspace Dialog ────────────────────────────────────── */
+/* A lightweight in-view modal: a full-cover overlay that centers a small
+   dialog card with a name field, a path field (input + Browse button) and
+   Cancel/Create footer buttons. Scoped to the workspace view so it never
+   leaks into other parts. */
+.workspace-create-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.4);
+}
+
+.workspace-create-dialog {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	width: 88%;
+	max-width: 360px;
+	box-sizing: border-box;
+	padding: 16px;
+	border-radius: 6px;
+	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
+	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+.workspace-create-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.workspace-create-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.workspace-create-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.workspace-create-input {
+	box-sizing: border-box;
+	width: 100%;
+	height: 26px;
+	padding: 0 8px;
+	font-size: 13px;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 2px;
+	outline: none;
+}
+
+.workspace-create-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.workspace-create-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.workspace-create-path-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.workspace-create-path-input {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.workspace-create-browse.monaco-button {
+	flex: 0 0 auto;
+	width: auto;
+	padding: 0 12px;
+	height: 26px;
+	line-height: 26px;
+	white-space: nowrap;
+}
+
+.workspace-create-error {
+	font-size: 11px;
+	min-height: 14px;
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.workspace-create-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 4px;
+}
+
+.workspace-create-footer .monaco-button {
+	width: auto;
+	padding: 0 16px;
+}

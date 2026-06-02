@@ -14,7 +14,7 @@ import { IAction, toAction, Separator } from '../../../../../base/common/actions
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import Severity from '../../../../../base/common/severity.js';
-import { dirname, joinPath } from '../../../../../base/common/resources.js';
+import { basename, dirname, joinPath } from '../../../../../base/common/resources.js';
 import { IActionViewItem } from '../../../../../base/browser/ui/actionbar/actionbar.js';
 import { BaseActionViewItem } from '../../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { IDropdownMenuActionViewItemOptions } from '../../../../../base/browser/ui/dropdown/dropdownActionViewItem.js';
@@ -40,8 +40,9 @@ import { IAgentStudioService } from '../../common/agentStudio.js';
 import { WorkbenchCompressibleAsyncDataTree } from '../../../../../platform/list/browser/listService.js';
 import { createFileIconThemableTreeContainerScope } from '../../../../../workbench/contrib/files/browser/views/explorerView.js';
 import { ProgressBar } from '../../../../../base/browser/ui/progressbar/progressbar.js';
+import { Button } from '../../../../../base/browser/ui/button/button.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
-import { defaultProgressBarStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
+import { defaultProgressBarStyles, defaultButtonStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { localize } from '../../../../../nls.js';
@@ -1085,13 +1086,239 @@ export class WorkspaceViewPane extends ViewPane {
 	}
 
 	/**
+	 * Create a brand-new workspace. Bound to the "+" button in the view title
+	 * bar (see CREATE_WORKSPACE_COMMAND_ID). This is distinct from
+	 * {@link showAddRelatedFolder}, which links an extra code repository into
+	 * an *existing* workspace — that action remains available via the inline
+	 * "+" button on each workspace-root row.
+	 *
+	 * Flow: open a custom create dialog (name + path fields, the path field
+	 * has a "Browse..." button driving the OS folder picker) → on confirm,
+	 * create the workspace → switch the active workspace so sandbox/SCM/tree/
+	 * canvas all follow. Mirrors the toolbar's `_submitCreate` semantics.
+	 */
+	async showCreateWorkspace(): Promise<void> {
+		const result = await this._promptCreateWorkspace();
+		if (!result) {
+			return; // Cancelled.
+		}
+		const { name, homeUri } = result;
+
+		// Warn (but don't block) if the chosen directory is non-empty, since
+		// the workspace metadata (.sarosisworkspace) will be written into it.
+		try {
+			const stat = await this.fileService.resolve(homeUri);
+			const nonEmpty = stat.isDirectory && !!stat.children && stat.children.length > 0;
+			if (nonEmpty) {
+				const confirmed = await this.dialogService.confirm({
+					type: 'warning',
+					message: localize('createWorkspaceNonEmpty', "所选主目录非空"),
+					detail: localize('createWorkspaceNonEmptyDetail', "工作区元数据（.sarosisworkspace）将写入其中，可能与已有文件混合。建议选择一个空文件夹。是否仍要继续？"),
+					primaryButton: localize('createWorkspaceContinue', "仍要继续"),
+				});
+				if (!confirmed.confirmed) {
+					return;
+				}
+			}
+		} catch {
+			// Non-existent / unresolvable dir counts as empty — proceed.
+		}
+
+		// Create the workspace and switch to it.
+		try {
+			const newWorkspace = await this.agentStudioService.createWorkspace({
+				name,
+				path: homeUri.fsPath || homeUri.path,
+				relatedFolders: [],
+			});
+			this.logService.info(`[WorkspaceViewPane] Created workspace "${newWorkspace.name}" (${newWorkspace.id})`);
+			await this.agentStudioService.setActiveWorkspace(newWorkspace.id);
+			this.notificationService.info(localize('createWorkspaceDone', "已创建工作区: {0}", newWorkspace.name));
+			await this._loadWorkspaceRoots();
+		} catch (err) {
+			this.logService.error('[WorkspaceViewPane] createWorkspace failed:', err);
+			this.notificationService.error(localize('createWorkspaceError', "创建工作区失败: {0}", (err as Error)?.message ?? String(err)));
+		}
+	}
+
+	/**
+	 * Show a custom modal dialog to collect the new workspace's name and home
+	 * path. The path field is read-only-ish (still editable by typing) and is
+	 * primarily driven by a "浏览..." button that opens the OS folder picker.
+	 * Picking a folder auto-fills the name field when it is still empty.
+	 *
+	 * Resolves with `{ name, homeUri }` on confirm, or `undefined` if the user
+	 * cancels (Esc / overlay click / cancel button).
+	 */
+	private _promptCreateWorkspace(): Promise<{ name: string; homeUri: URI } | undefined> {
+		return new Promise(resolve => {
+			const disposables = new DisposableStore();
+			let settled = false;
+			let selectedUri: URI | undefined;
+
+			const finish = (value: { name: string; homeUri: URI } | undefined) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				overlay.remove();
+				disposables.dispose();
+				resolve(value);
+			};
+
+			// ─── Overlay + dialog shell ──────────────────────────────────
+			const overlay = DOM.append(this.element, DOM.$('.workspace-create-overlay'));
+			const dialog = DOM.append(overlay, DOM.$('.workspace-create-dialog'));
+
+			const titleEl = DOM.append(dialog, DOM.$('.workspace-create-title'));
+			titleEl.textContent = localize('createWorkspaceTitle', "创建工作区");
+
+			// ─── Name field ──────────────────────────────────────────────
+			const nameField = DOM.append(dialog, DOM.$('.workspace-create-field'));
+			const nameLabel = DOM.append(nameField, DOM.$('label.workspace-create-label'));
+			nameLabel.textContent = localize('createWorkspaceNameLabel', "名称");
+			const nameInput = DOM.append(nameField, DOM.$('input.workspace-create-input')) as HTMLInputElement;
+			nameInput.type = 'text';
+			nameInput.placeholder = localize('createWorkspaceNamePlaceholder', "输入工作区名称");
+			nameInput.spellcheck = false;
+
+			// ─── Path field (input + browse button) ──────────────────────
+			const pathField = DOM.append(dialog, DOM.$('.workspace-create-field'));
+			const pathLabel = DOM.append(pathField, DOM.$('label.workspace-create-label'));
+			pathLabel.textContent = localize('createWorkspacePathLabel', "路径");
+			const pathRow = DOM.append(pathField, DOM.$('.workspace-create-path-row'));
+			const pathInput = DOM.append(pathRow, DOM.$('input.workspace-create-input.workspace-create-path-input')) as HTMLInputElement;
+			pathInput.type = 'text';
+			pathInput.placeholder = localize('createWorkspacePathPlaceholder', "选择或输入工作区主目录");
+			pathInput.spellcheck = false;
+
+			const browseButton = disposables.add(new Button(pathRow, {
+				...defaultButtonStyles,
+				title: localize('createWorkspaceBrowse', "浏览..."),
+			}));
+			browseButton.label = localize('createWorkspaceBrowse', "浏览...");
+			browseButton.element.classList.add('workspace-create-browse');
+
+			// ─── Error / hint line ───────────────────────────────────────
+			const errorEl = DOM.append(dialog, DOM.$('.workspace-create-error'));
+			errorEl.style.visibility = 'hidden';
+			errorEl.textContent = ' ';
+
+			// ─── Footer buttons ──────────────────────────────────────────
+			const footer = DOM.append(dialog, DOM.$('.workspace-create-footer'));
+			const cancelButton = disposables.add(new Button(footer, {
+				...defaultButtonStyles,
+				secondary: true,
+			}));
+			cancelButton.label = localize('createWorkspaceCancel', "取消");
+			const createButton = disposables.add(new Button(footer, {
+				...defaultButtonStyles,
+			}));
+			createButton.label = localize('createWorkspaceConfirm', "创建");
+			// Disabled by default: a workspace cannot be created without a name
+			// AND a (non-empty) folder path.
+			createButton.enabled = false;
+
+			// ─── Behaviour ───────────────────────────────────────────────
+			const showError = (msg: string) => {
+				errorEl.textContent = msg;
+				errorEl.style.visibility = 'visible';
+			};
+			const clearError = () => {
+				errorEl.style.visibility = 'hidden';
+			};
+			// The "创建" button stays disabled until BOTH a name and a folder
+			// path are present — enforcing that the workspace home directory
+			// can never be empty.
+			const updateValidity = () => {
+				const hasName = nameInput.value.trim().length > 0;
+				const hasPath = pathInput.value.trim().length > 0;
+				createButton.enabled = hasName && hasPath;
+			};
+
+			disposables.add(browseButton.onDidClick(async () => {
+				const picked = await this.fileDialogService.showOpenDialog({
+					title: localize('createWorkspaceFolderTitle', "选择工作区主目录（建议为空文件夹）"),
+					canSelectFolders: true,
+					canSelectFiles: false,
+					canSelectMany: false,
+				});
+				if (picked && picked.length > 0) {
+					selectedUri = picked[0];
+					pathInput.value = selectedUri.fsPath || selectedUri.path;
+					clearError();
+					// Auto-fill name from folder name when name is still empty.
+					if (!nameInput.value.trim()) {
+						nameInput.value = basename(selectedUri);
+					}
+					updateValidity();
+					nameInput.focus();
+				}
+			}));
+
+			// If the user types a path manually, drop the cached picked URI so
+			// the typed value wins (resolved to a file URI on submit).
+			disposables.add(DOM.addDisposableListener(pathInput, 'input', () => {
+				selectedUri = undefined;
+				clearError();
+				updateValidity();
+			}));
+			disposables.add(DOM.addDisposableListener(nameInput, 'input', () => {
+				clearError();
+				updateValidity();
+			}));
+
+			const submit = () => {
+				const name = nameInput.value.trim();
+				const pathText = pathInput.value.trim();
+				if (!name) {
+					showError(localize('createWorkspaceNameRequired', "工作区名称不能为空"));
+					nameInput.focus();
+					return;
+				}
+				if (!pathText) {
+					showError(localize('createWorkspacePathRequired', "文件夹路径不能为空，请选择或输入工作区主目录"));
+					pathInput.focus();
+					return;
+				}
+				// Prefer the URI from the folder picker; otherwise build one
+				// from the manually typed filesystem path.
+				const homeUri = selectedUri ?? URI.file(pathText);
+				finish({ name, homeUri });
+			};
+
+			disposables.add(createButton.onDidClick(() => submit()));
+			disposables.add(cancelButton.onDidClick(() => finish(undefined)));
+
+			// Keyboard: Enter submits, Esc cancels.
+			disposables.add(DOM.addDisposableListener(dialog, DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
+				const event = new StandardKeyboardEvent(e);
+				if (event.equals(KeyCode.Enter)) {
+					event.preventDefault();
+					submit();
+				} else if (event.equals(KeyCode.Escape)) {
+					event.preventDefault();
+					finish(undefined);
+				}
+			}));
+			// Click outside the dialog (on the overlay) cancels.
+			disposables.add(DOM.addDisposableListener(overlay, DOM.EventType.MOUSE_DOWN, (e: MouseEvent) => {
+				if (e.target === overlay) {
+					finish(undefined);
+				}
+			}));
+
+			nameInput.focus();
+		});
+	}
+
+	/**
 	 * Prompt the user to pick a folder and link it as a *related folder*
 	 * (an additional code repository) of a workspace.
 	 *
 	 * @param targetWorkspaceId When provided (e.g. from the inline "+" on a
 	 * specific workspace root row), the folder is linked to that workspace.
-	 * Otherwise it falls back to the currently active workspace — the behaviour
-	 * used by the "添加关联仓库" command in the view title bar.
+	 * Otherwise it falls back to the currently active workspace.
 	 */
 	async showAddRelatedFolder(targetWorkspaceId?: string): Promise<void> {
 		// Resolve the target workspace: explicit id first, then active, then first.

@@ -1635,7 +1635,34 @@ registerAction2(class extends Action2 {
 	}
 });
 
+// ─── Create Workspace (the title-bar "+" button) ────────────────────────────
+const CREATE_WORKSPACE_COMMAND_ID = 'agentStudio.workspace.createWorkspace';
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: CREATE_WORKSPACE_COMMAND_ID,
+			title: localize2('agentStudio.createWorkspace', "创建工作区"),
+			icon: Codicon.newFolder,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const viewsService = accessor.get(IViewsService);
+		let view = viewsService.getViewWithId<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
+		if (!view) {
+			view = await viewsService.openView<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
+		}
+		if (view) {
+			await view.showCreateWorkspace();
+		}
+	}
+});
+
 // ─── Add Related Folder (link a code repository to the active workspace) ─────
+// NOTE: This command is intentionally NOT surfaced in the view title bar — the
+// "+" button there creates a workspace (see above). Adding a related folder is
+// still available via the inline "+" on each workspace-root row and the command
+// palette.
 const ADD_RELATED_FOLDER_COMMAND_ID = 'agentStudio.workspace.addRelatedFolder';
 
 registerAction2(class extends Action2 {
@@ -1658,12 +1685,13 @@ registerAction2(class extends Action2 {
 	}
 });
 
-// Surface the command as an icon button in the Workspace view's title bar.
+// Surface the "create workspace" command as an icon button in the Workspace
+// view's title bar (right of the workspace selector dropdown).
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
 	command: {
-		id: ADD_RELATED_FOLDER_COMMAND_ID,
-		title: localize2('agentStudio.addRelatedFolder', "添加关联仓库"),
-		icon: Codicon.add,
+		id: CREATE_WORKSPACE_COMMAND_ID,
+		title: localize2('agentStudio.createWorkspace', "创建工作区"),
+		icon: Codicon.newFolder,
 	},
 	when: ContextKeyExpr.equals('view', AGENT_STUDIO_WORKSPACE_VIEW_ID),
 	group: 'navigation',
