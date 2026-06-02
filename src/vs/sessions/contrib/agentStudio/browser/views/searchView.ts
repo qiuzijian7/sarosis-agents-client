@@ -48,7 +48,6 @@ export class AgentStudioSearchViewPane extends SearchView {
 
 	private currentWorkspaceInfoContainer!: HTMLElement;
 	private currentWorkspaceNameLabel!: HTMLElement;
-	private currentWorkspacePathLabel!: HTMLElement;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -141,29 +140,32 @@ export class AgentStudioSearchViewPane extends SearchView {
 
 	private _renderCurrentWorkspaceInfo(): void {
 		const container = this.currentWorkspaceInfoContainer;
-		container.style.padding = '6px 12px';
-		container.style.borderBottom = '1px solid var(--vscode-panel-border)';
+		// [Sarosis] 紧凑单行布局，参考原生搜索页面，尽量减少垂直占用
 		container.style.display = 'flex';
-		container.style.flexDirection = 'column';
-		container.style.gap = '2px';
+		container.style.alignItems = 'center';
+		container.style.gap = '4px';
+		container.style.padding = '2px 12px 4px';
+		container.style.fontSize = '11px';
+		container.style.lineHeight = '16px';
+		container.style.color = 'var(--vscode-descriptionForeground)';
+		container.style.overflow = 'hidden';
+		container.style.whiteSpace = 'nowrap';
 
-		// Workspace name label
+		// Folder icon (codicon)
+		const icon = $('span.codicon.codicon-folder');
+		icon.style.fontSize = '13px';
+		icon.style.flexShrink = '0';
+		icon.style.opacity = '0.85';
+		container.appendChild(icon);
+
+		// Workspace name label (单行，省略号截断)
 		this.currentWorkspaceNameLabel = $('span.agent-studio-workspace-name');
-		this.currentWorkspaceNameLabel.style.fontSize = '12px';
-		this.currentWorkspaceNameLabel.style.fontWeight = '600';
+		this.currentWorkspaceNameLabel.style.overflow = 'hidden';
+		this.currentWorkspaceNameLabel.style.textOverflow = 'ellipsis';
+		this.currentWorkspaceNameLabel.style.whiteSpace = 'nowrap';
 		this.currentWorkspaceNameLabel.style.color = 'var(--vscode-foreground)';
-		this.currentWorkspaceNameLabel.textContent = 'No Workspace Active';
+		this.currentWorkspaceNameLabel.textContent = 'No Workspace';
 		container.appendChild(this.currentWorkspaceNameLabel);
-
-		// Workspace path label
-		this.currentWorkspacePathLabel = $('span.agent-studio-workspace-path');
-		this.currentWorkspacePathLabel.style.fontSize = '11px';
-		this.currentWorkspacePathLabel.style.color = 'var(--vscode-descriptionForeground)';
-		this.currentWorkspacePathLabel.style.overflow = 'hidden';
-		this.currentWorkspacePathLabel.style.textOverflow = 'ellipsis';
-		this.currentWorkspacePathLabel.style.whiteSpace = 'nowrap';
-		this.currentWorkspacePathLabel.textContent = '';
-		container.appendChild(this.currentWorkspacePathLabel);
 
 		// Load initial workspace info
 		this._updateCurrentWorkspaceDisplay();
@@ -173,20 +175,21 @@ export class AgentStudioSearchViewPane extends SearchView {
 		try {
 			const activeWorkspaceId = this.agentStudioService.getActiveWorkspaceId();
 			if (!activeWorkspaceId) {
-				this.currentWorkspaceNameLabel.textContent = 'No Workspace Active';
-				this.currentWorkspacePathLabel.textContent = '';
+				this.currentWorkspaceNameLabel.textContent = 'No Workspace';
+				this.currentWorkspaceInfoContainer.title = '';
 				return;
 			}
 
 			const workspaces = await this.agentStudioService.getWorkspaces();
 			const activeWorkspace = workspaces.find((ws: Workspace) => ws.id === activeWorkspaceId);
-			
+
 			if (activeWorkspace) {
 				this.currentWorkspaceNameLabel.textContent = activeWorkspace.name;
-				this.currentWorkspacePathLabel.textContent = activeWorkspace.path || '';
+				// 完整路径作为 tooltip，避免单独占用一行
+				this.currentWorkspaceInfoContainer.title = activeWorkspace.path || activeWorkspace.name;
 			} else {
 				this.currentWorkspaceNameLabel.textContent = 'Unknown Workspace';
-				this.currentWorkspacePathLabel.textContent = '';
+				this.currentWorkspaceInfoContainer.title = '';
 			}
 		} catch {
 			// Silently fail
@@ -228,11 +231,8 @@ export class AgentStudioSearchViewPane extends SearchView {
 		try {
 			// Use the inherited property to set the include pattern
 			(this as any).inputPatternIncludes?.setValue(pattern);
-			
-			// Expand query details to show include/exclude filters if pattern is set
-			if (pattern) {
-				(this as any).toggleQueryDetails?.(true);
-			}
+			// [Sarosis] 不再强制展开 query details，保持原生紧凑布局（与 VSCode 原生搜索一致）。
+			// include pattern 已静默写入，用户需要时可自行点击 "..." 展开查看/修改。
 		} catch {
 			// Silently fail if internal API changes
 		}
