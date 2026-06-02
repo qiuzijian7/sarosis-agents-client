@@ -208,16 +208,396 @@ function SkillsDragDropPanel({ employeeId, agentSkillIds, onUpdateSkills, allSki
 }
 
 /* ═════════════════════════════════════════════════════════════════════
- *  MemoryConfigPanel — memory settings + entries CRUD
+ *  MemoryConfigPanel — memory settings + Persona Memory (永久事实) CRUD
  * ═════════════════════════════════════════════════════════════════════ */
 
 const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
 	enabled: true,
 	maxEntries: 100,
-	strategy: 'sliding_window',
-	windowSize: 20,
+	strategy: 'full',
+	scope: 'agent',
 	entries: [],
 };
+
+/**
+ * 对旧 agent 配置中的 'sliding_window' 进行加载时迁移：统一视为 'full'。
+ * 只在展示 / 下拉选择时用；只要用户一旦修改并 onUpdate，便会在下次落盘时覆盖为 'full' / 'summary'。
+ */
+function normalizeStrategy(s: MemoryConfig['strategy'] | undefined): 'summary' | 'full' {
+	return s === 'summary' ? 'summary' : 'full';
+}
+
+/* ── TdbamMemorySection ──────────────────────────────────────────────
+ *
+ * "自动召回" 分区：根据当前 memory 策略（summary→L1 / full→L0）从 TDB-AM
+ * gateway 拉取属于本 agent 的记忆条目，每条带删除按钮。
+ *
+ * 数据通路：
+ *   webview --(sendRequest)--> host AgentStudioWebviewController
+ *          --(IRequestService)--> http://127.0.0.1:8420/list/conversations|memories
+ *          --SQLite WHERE session_key='agent:<agentId>'
+ *
+ * sessionKey 推导规则与 host._deriveSessionKey() 完全一致，由 host 统一处理；
+ * 此处只传 agentId 即可。
+ *
+ * 删除是硬删除，不可撤销（与现有 Tdbam ViewPane 行为一致）。
+ * ─────────────────────────────────────────────────────────────────── */
+
+interface L0Item {
+	recordId: string;
+	sessionKey?: string;
+	sessionId?: string;
+	role: string;
+	messageText: string;
+	recordedAt: string;
+	timestamp: number;
+}
+interface L1Item {
+	recordId: string;
+	content: string;
+	updatedTime: string;
+}
+
+/**
+ * 一对 Q + A 的配对单元（与 TdbamViewPane.TurnItem 对齐，便于两处视觉一致）。
+ *
+ * 配对规则（拷贝自 host 端 _pairConversationTurns）：
+ *  1. 按 sessionKey 分桶 — turn 永不跨 session
+ *  2. 桶内按 timestamp ASC 排序，相同 ts 时 user 排在 assistant 前（同源 /capture）
+ *  3. 一条 user 开启一个 turn，后续连续的 assistant 都归属该 turn 的 answer
+ *  4. 连续两条 user 各自开 turn，前一个 turn 即使没收到 assistant 也立刻关闭
+ *  5. 没有前置 user 的 assistant 形成 answer-only turn（question 为空）
+ *  6. 输出按 timestamp DESC（最新在前）
+ */
+interface Turn {
+	id: string;
+	question: string;
+	answer: string;
+	timestamp: string;
+	sessionKey?: string;
+	unanswered: boolean;
+	answerOnly: boolean;
+	recordIds: string[];
+}
+
+function pairTurns(rows: readonly L0Item[]): Turn[] {
+	// 按 sessionKey 分桶；缺失 key 的归到空桶（兼容 legacy 数据）。
+	const buckets = new Map<string, L0Item[]>();
+	for (const row of rows) {
+		const key = row.sessionKey ?? '';
+		let bucket = buckets.get(key);
+		if (!bucket) {
+			bucket = [];
+			buckets.set(key, bucket);
+		}
+		bucket.push(row);
+	}
+
+	const turns: Turn[] = [];
+	const roleOrder = (role: string | undefined): number =>
+		role === 'user' ? 0 : role === 'assistant' ? 1 : 2;
+
+	for (const [sessionKey, bucket] of buckets) {
+		// ASC 扫描：相同时间戳 user 先于 assistant
+		bucket.sort((a, b) => {
+			const tsDiff = (a.timestamp ?? 0) - (b.timestamp ?? 0);
+			if (tsDiff !== 0) return tsDiff;
+			return roleOrder(a.role) - roleOrder(b.role);
+		});
+
+		let openUser: L0Item | undefined;
+		let answerParts: string[] = [];
+		let answerFirstTs: string | undefined;
+		let recordIds: string[] = [];
+
+		const closeOpenTurn = (): void => {
+			if (!openUser && answerParts.length === 0) return;
+			const question = openUser?.messageText ?? '';
+			const answer = answerParts.join('\n\n');
+			const ts = openUser?.recordedAt || answerFirstTs || '';
+			turns.push({
+				id: openUser?.recordId ?? `answer_${ts}_${turns.length}`,
+				question,
+				answer,
+				timestamp: ts,
+				sessionKey: sessionKey || undefined,
+				unanswered: !!openUser && answerParts.length === 0,
+				answerOnly: !openUser && answerParts.length > 0,
+				recordIds: recordIds.slice(),
+			});
+			openUser = undefined;
+			answerParts = [];
+			answerFirstTs = undefined;
+			recordIds = [];
+		};
+
+		for (const row of bucket) {
+			const role = row.role ?? '';
+			if (role === 'user') {
+				closeOpenTurn();
+				openUser = row;
+				if (row.recordId) recordIds.push(row.recordId);
+			} else if (role === 'assistant') {
+				if (!openUser && answerParts.length === 0) {
+					answerFirstTs = row.recordedAt;
+				}
+				answerParts.push(row.messageText ?? '');
+				if (row.recordId) recordIds.push(row.recordId);
+			} else {
+				// system / tool / 其他角色：折进当前 open turn 的 answer，否则丢弃
+				if (openUser || answerParts.length > 0) {
+					answerParts.push(`[${role || 'note'}] ${row.messageText ?? ''}`);
+					if (row.recordId) recordIds.push(row.recordId);
+				}
+			}
+		}
+		closeOpenTurn();
+	}
+
+	// DESC by timestamp — 最新对话在最上面
+	turns.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''));
+	return turns;
+}
+
+/**
+ * 把多行文本压成单行预览：合并空白、保留首段，超长截断。
+ * 用于折叠态 Q / A 的一行展示。
+ */
+function toPreview(text: string, maxLen: number = 200): string {
+	if (!text) return '';
+	const collapsed = text.replace(/\s+/g, ' ').trim();
+	if (collapsed.length <= maxLen) return collapsed;
+	return collapsed.slice(0, maxLen) + '…';
+}
+
+const FETCH_LIMIT = 200;
+
+interface TdbamMemorySectionProps {
+	employeeId: string;
+	strategy: 'summary' | 'full';
+	enabled: boolean;
+}
+
+function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectionProps): React.ReactElement {
+	const [turns, setTurns] = useState<Turn[]>([]);
+	const [l1Items, setL1Items] = useState<L1Item[]>([]);
+	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	/** 总数：L0 = 原始消息数（非 turn 数），L1 = 摘要条数。与 TdbAm 网关返回的 total 字段对齐 */
+	const [total, setTotal] = useState(0);
+	/** 已展开的 turn id 集合 */
+	const [expandedTurns, setExpandedTurns] = useState<Set<string>>(new Set());
+
+	const layer: 'L0' | 'L1' = strategy === 'summary' ? 'L1' : 'L0';
+
+	const refresh = useCallback(async () => {
+		if (!employeeId) return;
+		setLoading(true);
+		setError(null);
+		try {
+			if (layer === 'L0') {
+				const resp = await sendRequest<{ agentId: string; limit: number }, { items: L0Item[]; total: number }>(
+					'memory.listL0',
+					{ agentId: employeeId, limit: FETCH_LIMIT },
+				);
+				const items = resp?.items ?? [];
+				setTurns(pairTurns(items));
+				setTotal(resp?.total ?? items.length);
+				// 切换 agent 时清空展开状态，避免不同 agent 之间残留
+				setExpandedTurns(new Set());
+			} else {
+				const resp = await sendRequest<{ agentId: string; limit: number }, { items: L1Item[]; total: number }>(
+					'memory.listL1',
+					{ agentId: employeeId, limit: FETCH_LIMIT },
+				);
+				setL1Items(resp?.items ?? []);
+				setTotal(resp?.total ?? 0);
+			}
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setLoading(false);
+		}
+	}, [employeeId, layer]);
+
+	// 切换 agent / 切换策略 / 切到 Memory tab 时自动刷新一次
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	/**
+	 * 删除一个 turn（L0）= 删除其底层所有 recordIds（user + 全部 assistant 折叠行）；
+	 * 或删除一条 L1 摘要。
+	 */
+	const handleDelete = useCallback(async (recordIds: string[]) => {
+		if (recordIds.length === 0) return;
+		const label = layer === 'L0' ? '该轮对话（含 user + assistant）' : '该条 L1 摘要';
+		const ok = window.confirm(`删除${label}？此操作不可撤销。`);
+		if (!ok) return;
+
+		const channel = layer === 'L0' ? 'memory.deleteL0' : 'memory.deleteL1';
+		try {
+			const resp = await sendRequest<{ agentId: string; recordIds: string[] }, { deleted: number; failed: string[] }>(
+				channel,
+				{ agentId: employeeId, recordIds },
+			);
+			if (!resp || resp.deleted === 0) {
+				const detail = resp?.failed?.length ? `失败：${resp.failed.join(', ')}` : '网关未确认删除';
+				setError(detail);
+				return;
+			}
+			// 本地乐观更新
+			if (layer === 'L0') {
+				const removeSet = new Set(recordIds);
+				setTurns(prev => prev.filter(t => !t.recordIds.some(id => removeSet.has(id))));
+			} else {
+				const removeSet = new Set(recordIds);
+				setL1Items(prev => prev.filter(it => !removeSet.has(it.recordId)));
+			}
+			setTotal(t => Math.max(0, t - resp.deleted));
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		}
+	}, [employeeId, layer]);
+
+	const toggleExpand = useCallback((id: string) => {
+		setExpandedTurns(prev => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id); else next.add(id);
+			return next;
+		});
+	}, []);
+
+	const renderRows = (): React.ReactNode => {
+		if (loading) {
+			return <div className="config-empty-hint">加载中…</div>;
+		}
+		if (error) {
+			return <div className="config-empty-hint" style={{ color: 'var(--vscode-errorForeground, #c00)' }}>{error}</div>;
+		}
+		if (layer === 'L0') {
+			if (turns.length === 0) {
+				return <div className="config-empty-hint">暂无 L0 对话记录</div>;
+			}
+			return turns.map(turn => {
+				const isExpanded = expandedTurns.has(turn.id);
+				const qPreview = turn.answerOnly ? '(无 user 消息)' : toPreview(turn.question);
+				const aPreview = turn.unanswered ? '(等待回复)' : toPreview(turn.answer);
+				return (
+					<div key={turn.id} className="memory-entry-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+						{/* ── 折叠态：标题行（点击切换展开） ───────────── */}
+						<div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}
+							onClick={() => toggleExpand(turn.id)}
+							title={isExpanded ? '点击折叠' : '点击展开查看完整 user / assistant 内容'}>
+							<span style={{ flexShrink: 0, fontSize: 10, opacity: 0.7, width: 14, textAlign: 'center', userSelect: 'none' }}>
+								{isExpanded ? '▼' : '▶'}
+							</span>
+							<div style={{ flex: 1, minWidth: 0 }}>
+								<div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>
+									{turn.timestamp}
+									{turn.unanswered && <span style={{ marginLeft: 8, color: 'var(--vscode-editorWarning-foreground, #b8860b)' }}>· 未回复</span>}
+									{turn.answerOnly && <span style={{ marginLeft: 8, opacity: 0.6 }}>· 仅 assistant</span>}
+									{turn.recordIds.length > 2 && <span style={{ marginLeft: 8, opacity: 0.6 }}>· {turn.recordIds.length} 条</span>}
+								</div>
+								<div style={{ fontSize: 12, lineHeight: 1.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+									<span className="memory-entry-category" style={{ marginRight: 6 }}>Q</span>
+									<span>{qPreview || '(empty)'}</span>
+								</div>
+								<div style={{ fontSize: 12, lineHeight: 1.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: 0.85 }}>
+									<span className="memory-entry-category" style={{ marginRight: 6 }}>A</span>
+									<span>{aPreview || '(empty)'}</span>
+								</div>
+							</div>
+							<button
+								className="btn-icon btn-delete"
+								onClick={(e) => { e.stopPropagation(); void handleDelete(turn.recordIds); }}
+								title={`删除整轮对话（${turn.recordIds.length} 条 L0 记录，不可撤销）`}
+								style={{ flexShrink: 0 }}
+							>
+								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+								</svg>
+							</button>
+						</div>
+						{/* ── 展开态：完整 user / assistant 文本 ───────── */}
+						{isExpanded && (
+							<div style={{ marginLeft: 20, paddingLeft: 8, borderLeft: '2px solid var(--vscode-panel-border, #444)', display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
+								{!turn.answerOnly && (
+									<div>
+										<div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>
+											<span className="memory-entry-category">user</span>
+										</div>
+										<div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
+											{turn.question || '(empty)'}
+										</div>
+									</div>
+								)}
+								{!turn.unanswered && (
+									<div>
+										<div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>
+											<span className="memory-entry-category">assistant</span>
+										</div>
+										<div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
+											{turn.answer || '(empty)'}
+										</div>
+									</div>
+								)}
+							</div>
+						)}
+					</div>
+				);
+			});
+		}
+		if (l1Items.length === 0) {
+			return <div className="config-empty-hint">暂无 L1 摘要记忆</div>;
+		}
+		return l1Items.map(it => (
+			<div key={it.recordId} className="memory-entry-row" style={{ alignItems: 'flex-start' }}>
+				<div style={{ flex: 1, minWidth: 0 }}>
+					<div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>{it.updatedTime}</div>
+					<div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>
+						{it.content}
+					</div>
+				</div>
+				<button
+					className="btn-icon btn-delete"
+					onClick={() => void handleDelete([it.recordId])}
+					title="删除该条 L1 记忆（不可撤销）"
+				>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
+						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+					</svg>
+				</button>
+			</div>
+		));
+	};
+
+	return (
+		<div className="config-section">
+			<div className="config-section-header">
+				<h4>
+					自动召回 · {layer}
+					<span style={{ marginLeft: 8, fontSize: 11, opacity: 0.6, fontWeight: 'normal' }}>
+						{layer === 'L0' ? '原始对话（来自 TDB-AM）' : '摘要记忆（来自 TDB-AM）'} · 共 {total} 条
+					</span>
+				</h4>
+				<button className="btn-secondary btn-sm" onClick={() => void refresh()} disabled={loading}>
+					{loading ? '刷新中…' : '刷新'}
+				</button>
+			</div>
+			<div className="config-section-body">
+				{!enabled && (
+					<div className="config-empty-hint" style={{ marginBottom: 8 }}>
+						Memory 已关闭：仅作展示，运行时不会被注入到 Prompt
+					</div>
+				)}
+				<div className="memory-entry-list">
+					{renderRows()}
+				</div>
+			</div>
+		</div>
+	);
+}
 
 interface MemoryConfigPanelProps {
 	employeeId: string;
@@ -226,7 +606,9 @@ interface MemoryConfigPanelProps {
 }
 
 function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelProps): React.ReactElement {
-	const cfg = config || DEFAULT_MEMORY_CONFIG;
+	const rawCfg = config || DEFAULT_MEMORY_CONFIG;
+	// 迁移展示：旧值 sliding_window 统一视为 full。
+	const cfg: MemoryConfig = { ...rawCfg, strategy: normalizeStrategy(rawCfg.strategy) };
 	const [newEntryKey, setNewEntryKey] = useState('');
 	const [newEntryValue, setNewEntryValue] = useState('');
 	const [newEntryCategory, setNewEntryCategory] = useState('');
@@ -286,9 +668,26 @@ function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelPr
 							value={cfg.strategy}
 							onChange={(e) => onUpdate({ ...cfg, strategy: e.target.value as MemoryConfig['strategy'] })}
 						>
-							<option value="sliding_window">滑动窗口</option>
-							<option value="summary">摘要压缩</option>
-							<option value="full">完整保留</option>
+							<option value="summary">摘要压缩（仅 L1）</option>
+							<option value="full">完整保留（L1 + L0）</option>
+						</select>
+					</div>
+					<div className="config-row">
+						<label
+							className="config-row-label"
+							title="决定本 Agent 在每轮对话开始时召回 L1 时能看到哪些 agent 的记忆。L2/L3 长期画像始终全局共享，不受此选项影响。"
+						>
+							记忆作用域
+						</label>
+						<select
+							className="config-row-select"
+							value={cfg.scope ?? 'agent'}
+							onChange={(e) => onUpdate({ ...cfg, scope: e.target.value as 'agent' | 'workspace' | 'global' })}
+							title="agent: 仅本 Agent 自己的记忆\nworkspace: 当前 workspace 下所有 agent 共享\nglobal: 全库（兼容旧行为）"
+						>
+							<option value="agent">仅本 Agent（默认 / 严格隔离）</option>
+							<option value="workspace">本 Workspace 共享</option>
+							<option value="global">全局（兼容旧行为）</option>
 						</select>
 					</div>
 					<div className="config-row">
@@ -302,25 +701,24 @@ function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelPr
 							onChange={(e) => onUpdate({ ...cfg, maxEntries: Math.max(1, parseInt(e.target.value) || 100) })}
 						/>
 					</div>
-					{cfg.strategy === 'sliding_window' && (
-						<div className="config-row">
-							<label className="config-row-label">窗口大小</label>
-							<input
-								type="number"
-								className="config-row-input"
-								value={cfg.windowSize || 20}
-								min={1}
-								max={1000}
-								onChange={(e) => onUpdate({ ...cfg, windowSize: Math.max(1, parseInt(e.target.value) || 20) })}
-							/>
-						</div>
-					)}
+					{/* sliding_window 策略已下线；windowSize 仅作为序列化兼容字段保留 */}
 				</div>
 			</div>
 
+			<TdbamMemorySection
+				employeeId={employeeId}
+				strategy={cfg.strategy as 'summary' | 'full'}
+				enabled={cfg.enabled}
+			/>
+
 			<div className="config-section">
 				<div className="config-section-header">
-					<h4>记忆条目 ({cfg.entries.length})</h4>
+					<h4>
+						Persona Memory ({cfg.entries.length})
+						<span style={{ marginLeft: 8, fontSize: 11, opacity: 0.6, fontWeight: 'normal' }}>
+							永久事实 · 每轮注入 system prompt 顶部 · 永不衰减
+						</span>
+					</h4>
 					{categories.length > 0 && (
 						<select
 							className="config-row-select config-filter-select"
@@ -345,14 +743,14 @@ function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelPr
 						<input
 							type="text"
 							className="config-row-input"
-							placeholder="键名"
+							placeholder="事实标签（如：老板）"
 							value={newEntryKey}
 							onChange={(e) => setNewEntryKey(e.target.value)}
 						/>
 						<input
 							type="text"
 							className="config-row-input"
-							placeholder="值"
+							placeholder="事实内容（如：张三）"
 							value={newEntryValue}
 							onChange={(e) => setNewEntryValue(e.target.value)}
 						/>
@@ -365,7 +763,7 @@ function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelPr
 					<div className="memory-entry-list">
 						{filteredEntries.length === 0 && (
 							<div className="config-empty-hint">
-								{filterCategory ? '该类别下暂无条目' : '暂无记忆条目，请在上方添加'}
+								{filterCategory ? '该类别下暂无条目' : '暂无 Persona Memory。在上方添加你希望模型永远记住的硬性事实/规则。'}
 							</div>
 						)}
 						{filteredEntries.map(entry => (
@@ -376,14 +774,14 @@ function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelPr
 									className="memory-entry-key"
 									value={entry.key}
 									onChange={(e) => handleUpdateEntry(entry.id, 'key', e.target.value)}
-									placeholder="键"
+									placeholder="事实标签"
 								/>
 								<input
 									type="text"
 									className="memory-entry-value"
 									value={entry.value}
 									onChange={(e) => handleUpdateEntry(entry.id, 'value', e.target.value)}
-									placeholder="值"
+									placeholder="事实内容"
 								/>
 								<button className="btn-icon btn-delete" onClick={() => handleDeleteEntry(entry.id)} title="删除">
 									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
@@ -672,7 +1070,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 
 	// ── Memory state ──────────────────────────────────────────────────
 	const [memoryConfig, setMemoryConfig] = useState<MemoryConfig>(
-		employee?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'sliding_window', windowSize: 20, entries: [] },
+		employee?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] },
 	);
 
 	// ── Knowledge state ───────────────────────────────────────────────
@@ -699,7 +1097,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			setPrompt(employee.customPrompt || '');
 			setPromptDirty(false);
 			setSkills(normalizeSkills(employee.skills || []));
-			setMemoryConfig(employee.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'sliding_window', windowSize: 20, entries: [] });
+		setMemoryConfig(employee.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] });
 			setKnowledgeConfig(employee.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
 		}
 	}, [employeeId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig]);
@@ -959,7 +1357,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 								<div className="configmd-empty-title">ConfigMD 未启用</div>
 								<div className="configmd-empty-desc">
 									启用后，Agent 将拥有一个 Markdown 配置文件，
-									可在右侧实时渲染为 HTML 面板，  
+									可在右侧实时渲染为 HTML 面板，
 									支持双向同步、自定义解析器与样式。
 								</div>
 								<button

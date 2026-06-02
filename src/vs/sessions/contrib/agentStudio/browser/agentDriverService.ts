@@ -67,6 +67,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		// 标签剥离 + L1 注入，避免本地流式剥离器的格式容错问题导致 L1 抓不到。
 		const rawDeltaChunks: string[] = [];
 
+		// Step 1 计算出的召回作用域选项 —— 同时被 Step 1 (loadContext) 和
+		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 employee 配置。
+		let resolvedMemoryScope: 'agent' | 'workspace' | 'global' = 'agent';
+		let resolvedMemoryAllowedKeys: readonly string[] | undefined;
+
 		try {
 			this._updateTurnStatus(turnId, AgentTurnStatus.Running);
 
@@ -84,8 +89,61 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
 					// 做 FTS5/embedding 匹配，而不是占位字符串。
 					const recallQuery = [...request.messages].reverse().find(m => m.role === 'user')?.content ?? '';
-					memoryContext = await memoryProvider.loadContext(request.agentId, request.sessionId || '', recallQuery);
-					this._logService.debug(`[AgentDriver] Loaded memory context for ${request.agentId} (queryLen=${recallQuery.length})`);
+
+					// ── 召回作用域（2026-06）──────────────────────────────────────
+					// 决定本 agent 能看到哪些 agent 的 L1 记忆：
+					//   - 'agent'(默认)   → 仅本 agent 自己的
+					//   - 'workspace'     → 同 workspace 下所有 agent 共享
+					//   - 'global'        → 全库（旧行为）
+					// 老 agent 配置缺省值视作 'agent'（C2：严格隔离），与文档
+					// Memory-Strategy.md §recall-scope 对齐。
+					let recallOptions: { scope: 'agent' | 'workspace' | 'global'; allowedSessionKeys?: readonly string[] } | undefined;
+					try {
+						const employeeForScope = await this._agentStudioService.getEmployee(request.agentId);
+						const scope: 'agent' | 'workspace' | 'global' =
+							employeeForScope?.memoryConfig?.scope ?? 'agent';
+
+						if (scope === 'workspace') {
+							// 拿当前 workspace 下所有 agent 的 sessionKey（agent:<id>）
+							const wsId = employeeForScope?.workspaceId;
+							const siblings = wsId ? await this._agentStudioService.getEmployees(wsId) : [];
+							const siblingKeys = siblings
+								.map(s => s.id)
+								.filter((id): id is string => typeof id === 'string' && id.length > 0)
+								.map(id => `agent:${id}`);
+							// 兜底：若 workspace 拉不到任何 sibling（不该发生），至少包含自己
+							const selfKey = `agent:${request.agentId}`;
+							const allowed = siblingKeys.length > 0 ? siblingKeys : [selfKey];
+							recallOptions = { scope: 'workspace', allowedSessionKeys: allowed };
+						} else if (scope === 'global') {
+							recallOptions = { scope: 'global' };
+						} else {
+							// 'agent' 或未知值
+							recallOptions = { scope: 'agent' };
+						}
+					} catch (scopeErr) {
+						// 解析作用域失败时按最严格策略（agent）兜底，永远不会"误开放"
+						this._logService.warn(
+							`[AgentDriver] resolve memory scope failed, falling back to 'agent': ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
+						);
+						recallOptions = { scope: 'agent' };
+					}
+
+					// 同步到外层变量，让 Step 6 enrichedRequest 复用，避免重复解析。
+					resolvedMemoryScope = recallOptions.scope;
+					resolvedMemoryAllowedKeys = recallOptions.allowedSessionKeys;
+
+					memoryContext = await memoryProvider.loadContext(
+						request.agentId,
+						request.sessionId || '',
+						recallQuery,
+						recallOptions,
+					);
+					this._logService.debug(
+						`[AgentDriver] Loaded memory context for ${request.agentId} ` +
+						`(queryLen=${recallQuery.length}, scope=${recallOptions?.scope ?? 'agent'}, ` +
+						`allowedKeys=${recallOptions?.allowedSessionKeys?.length ?? 0})`,
+					);
 				} catch (error) {
 					this._logService.error('[AgentDriver] Failed to load memory context:', error);
 				}
@@ -158,6 +216,60 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					.filter(s => agentSkillIds.has(s.id));  // 只保留 agent 配置的技能
 
 				let mergedSystemPrompt = request.systemPrompt || '';
+
+				// ── 注入 Persona Memory（永久事实，最高优先级）────────────────────
+				//
+				// 这些是用户在 Memory Tab 手动维护的硬性事实/规则，与 TDB-AM 的
+				// L0/L1 自动召回互补：
+				//   - L0/L1：程序性记忆（对话历史/摘要），由模型自动产生，会随时间衰减
+				//   - Persona Memory：硬编码事实，由用户显式设定，永不衰减
+				//
+				// 放在 systemPrompt 最顶部的原因：
+				//   1) 这是用户显式设定的"硬规则"，必须在所有其他上下文之前生效
+				//   2) 即使后续 prompt 因长度被截断，最重要的事实也保留下来
+				//   3) 与 ChatGPT Custom Instructions 的语义一致
+				//
+				// 仅当 memoryConfig.enabled !== false 且 entries 非空时注入。
+				try {
+					const personaEntries = (employee?.memoryConfig?.enabled !== false)
+						? (employee?.memoryConfig?.entries || [])
+						: [];
+					if (personaEntries.length > 0) {
+						const lines: string[] = [
+							'',
+							'## Persona Memory (永久事实，最高优先级)',
+							'',
+							'以下是用户显式设定的硬性事实与规则。在整个对话中，你必须始终把它们当作既定真相对待，优先于其他上下文：',
+							'',
+						];
+						// 按 category 分组展示，更易读
+						const grouped = new Map<string, typeof personaEntries>();
+						for (const entry of personaEntries) {
+							const cat = (entry.category && entry.category.trim()) || '通用';
+							if (!grouped.has(cat)) {
+								grouped.set(cat, []);
+							}
+							grouped.get(cat)!.push(entry);
+						}
+						for (const [cat, items] of grouped) {
+							lines.push(`### ${cat}`);
+							for (const item of items) {
+								// 使用 "标签 = 内容" 的紧凑格式，对 LLM 友好
+								lines.push(`- **${item.key}** = ${item.value}`);
+							}
+							lines.push('');
+						}
+						lines.push('（以上事实由用户在 Persona Memory 中显式维护，永不衰减；如与你的默认假设冲突，以这些事实为准。）');
+						lines.push('');
+						const personaSection = lines.join('\n');
+						// 放在 systemPrompt 最顶部
+						mergedSystemPrompt = personaSection + mergedSystemPrompt;
+						this._logService.info(`[AgentDriver] Injected Persona Memory: ${personaEntries.length} entries (${personaSection.length} chars) at top of systemPrompt`);
+					}
+				} catch (error) {
+					this._logService.warn('[AgentDriver] Failed to inject Persona Memory:', error);
+					// 非致命错误，不阻塞主流程
+				}
 
 				// 注入工作区上下文，让模型始终知晓当前工作区信息
 				const workspaceContext = await this._buildWorkspaceContext(request.agentId);
@@ -435,15 +547,30 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					}
 				}
 
+				// 解析 memoryConfig 中的策略 / 上限，向下游 AgentOS 传递。
+				// 注意：旧值 'sliding_window' 视为 'full'（参见 useEmployeeStore.ts MemoryConfig 注释）。
+				const rawStrategy = employee?.memoryConfig?.strategy;
+				const memoryStrategy: 'summary' | 'full' =
+					rawStrategy === 'summary' ? 'summary' : 'full';
+				const memoryMaxEntries = (
+					typeof employee?.memoryConfig?.maxEntries === 'number' &&
+					employee.memoryConfig.maxEntries > 0
+				) ? employee.memoryConfig.maxEntries : undefined;
+
 				enrichedRequest = {
 					...request,
 					systemPrompt: mergedSystemPrompt,
 					messages: mergedMessages,
+					memoryStrategy,
+					memoryMaxEntries,
+					memoryScope: resolvedMemoryScope,
+					memoryAllowedSessionKeys: resolvedMemoryAllowedKeys,
 				};
 
 				this._logService.info(`[AgentDriver] Injected memory_extract guidance (${memoryExtractGuide.length} chars) — provider=${activeModelSelection?.providerId ?? 'none'}`);
 				this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills (lightweight XML catalog injected), systemPrompt length: ${mergedSystemPrompt.length}`);
 				this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 300)}...`);
+				this._logService.info(`[AgentDriver] Memory injection policy: strategy=${memoryStrategy}, maxEntries=${memoryMaxEntries ?? 'unlimited'}, scope=${resolvedMemoryScope}, allowedKeys=${resolvedMemoryAllowedKeys?.length ?? 0} (raw=${rawStrategy ?? 'undefined'})`);
 			} catch (error) {
 				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
 				// Skill 解析失败不阻塞主流程

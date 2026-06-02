@@ -183,8 +183,12 @@ export class TdbamViewPane extends ViewPane {
 	private _expandedLayers = new Set<LayerId>();
 	private _healthTimer: number | undefined;
 	private _disposed = false;
-	/** 当前 L0 面板激活的 tab：'agent' 只看当前 Agent，'all' 看全部 */
-	private _l0ActiveTab: 'agent' | 'all' = 'agent';
+	/** 当前 L0 面板激活的 tab：'agent' 只看当前 Agent，'workspace' 看当前 Workspace 全部 Agent，'all' 看全部 */
+	private _l0ActiveTab: 'agent' | 'workspace' | 'all' = 'workspace';
+	/** 当前 Workspace 下的 employeeId 集合（懒加载缓存）。undefined = 未加载 */
+	private _workspaceEmployeeIds: Set<string> | undefined;
+	/** 是否正在加载 workspace employees（避免并发） */
+	private _workspaceEmployeesLoading: Promise<Set<string>> | undefined;
 	/** 当前活跃的 employeeId（从 onDidChangeTurnStatus 的 turnId 提取，用于 L0 过滤） */
 	private _activeEmployeeId: string | undefined;
 	/** 当前活跃的 Knot agentSessionId（如 "1779700214535-einbd4x"），用于精确匹配 L0 sessionKey 前缀 */
@@ -250,6 +254,17 @@ export class TdbamViewPane extends ViewPane {
 		// 监听 modelSelectorService Agent 切换事件（兜底）
 		this._register(this._modelSelectorService.onDidChangeAgent(() => {
 			if (this._expandedLayers.has('L0')) {
+				const l0Body = this._layerBodies.get('L0');
+				if (l0Body) {
+					void this._loadLayer('L0', l0Body);
+				}
+			}
+		}));
+		// 监听 employees 变更：当前 Workspace 下 agent 列表变了，需要清缓存并刷新
+		this._register(this._agentStudioService.onDidChangeEmployees(() => {
+			this._workspaceEmployeeIds = undefined;
+			this._workspaceEmployeesLoading = undefined;
+			if (this._l0ActiveTab === 'workspace' && this._expandedLayers.has('L0')) {
 				const l0Body = this._layerBodies.get('L0');
 				if (l0Body) {
 					void this._loadLayer('L0', l0Body);
@@ -512,6 +527,10 @@ export class TdbamViewPane extends ViewPane {
 			? `只展示 Agent "${agentId}" 的对话`
 			: '未选中 Agent，将展示 session_key 为 "agent:*" 的对话';
 
+		const tabWorkspaceBtn = append(tabBar, $('button.tdbam-tab'));
+		tabWorkspaceBtn.textContent = '当前 Workspace';
+		tabWorkspaceBtn.title = '展示当前 Workspace 下所有 Agent 的对话';
+
 		const tabAllBtn = append(tabBar, $('button.tdbam-tab'));
 		tabAllBtn.textContent = '所有对话';
 		tabAllBtn.title = '展示所有 Agent 的全部对话记录';
@@ -552,22 +571,56 @@ export class TdbamViewPane extends ViewPane {
 			btn.style.opacity = active ? '1' : '0.75';
 		};
 
-		const renderTab = (tab: 'agent' | 'all') => {
+		const renderWorkspaceTab = (sourceResult: TurnResult) => {
+			clearNode(tabContent);
+			if (this._workspaceEmployeeIds) {
+				const filteredResult = this._filterTurnsByWorkspace(sourceResult, this._workspaceEmployeeIds);
+				this._renderTurnItems(tabContent, filteredResult);
+				return;
+			}
+			// 懒加载 workspace employees
+			const loading = append(tabContent, $('div.tdbam-list-empty'));
+			loading.textContent = '加载 Workspace Agent 列表中…';
+			loading.style.opacity = '0.6';
+			loading.style.fontStyle = 'italic';
+			void (async () => {
+				try {
+					const ids = await this._loadWorkspaceEmployeeIds();
+					if (this._disposed || this._l0ActiveTab !== 'workspace') return;
+					clearNode(tabContent);
+					const filteredResult = this._filterTurnsByWorkspace(sourceResult, ids);
+					this._renderTurnItems(tabContent, filteredResult);
+				} catch (err) {
+					if (this._disposed) return;
+					clearNode(tabContent);
+					const errEl = append(tabContent, $('div.tdbam-list-empty'));
+					errEl.textContent = `加载 Workspace Agent 列表失败：${this._describeError(err)}`;
+					errEl.style.opacity = '0.6';
+				}
+			})();
+		};
+
+		const renderTab = (tab: 'agent' | 'workspace' | 'all') => {
 			this._l0ActiveTab = tab;
 			styleTab(tabAgentBtn, tab === 'agent');
+			styleTab(tabWorkspaceBtn, tab === 'workspace');
 			styleTab(tabAllBtn, tab === 'all');
-			clearNode(tabContent);
 			if (tab === 'agent') {
+				clearNode(tabContent);
 				// 优先用 agentSessionId 精确匹配（如 "1779700214535-einbd4x:*"）
 				// 兜底用 employeeId 后缀匹配（如 "*-4fuqqp3:*"）
 				const filteredResult = this._filterTurnsByAgent(result, agentId, agentSessionId);
 				this._renderTurnItems(tabContent, filteredResult);
+			} else if (tab === 'workspace') {
+				renderWorkspaceTab(result);
 			} else {
+				clearNode(tabContent);
 				this._renderTurnItems(tabContent, result);
 			}
 		};
 
 		tabAgentBtn.addEventListener('click', () => renderTab('agent'));
+		tabWorkspaceBtn.addEventListener('click', () => renderTab('workspace'));
 		tabAllBtn.addEventListener('click', () => renderTab('all'));
 
 		// 全量拉取：不受 SEARCH_LIMIT 限制，重新请求并刷新当前 tab
@@ -580,11 +633,14 @@ export class TdbamViewPane extends ViewPane {
 				try {
 					const fullResult = await this._fetchAllConversationTurns();
 					if (!this._disposed) {
-						clearNode(tabContent);
 						if (this._l0ActiveTab === 'agent') {
+							clearNode(tabContent);
 							const filteredResult = this._filterTurnsByAgent(fullResult, agentId, agentSessionId);
 							this._renderTurnItems(tabContent, filteredResult);
+						} else if (this._l0ActiveTab === 'workspace') {
+							renderWorkspaceTab(fullResult);
 						} else {
+							clearNode(tabContent);
 							this._renderTurnItems(tabContent, fullResult);
 						}
 					}
@@ -634,6 +690,73 @@ export class TdbamViewPane extends ViewPane {
 			return false;
 		});
 		return { turns: filtered, totalMessages: result.totalMessages };
+	}
+
+	/**
+	 * 按当前 Workspace 下的 employeeId 集合过滤 TurnResult。
+	 *
+	 * 复用 {@link _filterTurnsByAgent} 的 sessionKey 拆解规则：
+	 *  - prefix 形如 "timestamp-employeeId" → 取 "-" 之后的后缀与集合比对
+	 *  - prefix 直接等于某个 employeeId
+	 *  - sessionKey 形如 "agent:employeeId"
+	 *
+	 * 集合为空 → 返回空结果（workspace 内尚无 agent，明确没有对话归属于此 workspace）。
+	 */
+	private _filterTurnsByWorkspace(result: TurnResult, employeeIds: Set<string>): TurnResult {
+		if (employeeIds.size === 0) {
+			return { turns: [], totalMessages: result.totalMessages };
+		}
+		const filtered = result.turns.filter(t => {
+			if (!t.sessionKey) return false;
+			const colonIdx = t.sessionKey.indexOf(':');
+			const prefix = colonIdx >= 0 ? t.sessionKey.slice(0, colonIdx) : t.sessionKey;
+			// "agent:${employeeId}" 兜底格式
+			if (colonIdx >= 0 && prefix === 'agent') {
+				const empId = t.sessionKey.slice(colonIdx + 1);
+				if (employeeIds.has(empId)) return true;
+			}
+			// prefix 直接等于 employeeId
+			if (employeeIds.has(prefix)) return true;
+			// prefix = "timestamp-employeeId"，取最后一个 "-" 之后的部分
+			const dashIdx = prefix.lastIndexOf('-');
+			if (dashIdx >= 0) {
+				const suffix = prefix.slice(dashIdx + 1);
+				if (employeeIds.has(suffix)) return true;
+			}
+			return false;
+		});
+		return { turns: filtered, totalMessages: result.totalMessages };
+	}
+
+	/**
+	 * 懒加载当前 Workspace 下的 employeeId 集合，结果缓存到 {@link _workspaceEmployeeIds}。
+	 * 并发调用共享同一个 Promise，避免重复请求 employees.json。
+	 */
+	private _loadWorkspaceEmployeeIds(): Promise<Set<string>> {
+		if (this._workspaceEmployeeIds) {
+			return Promise.resolve(this._workspaceEmployeeIds);
+		}
+		if (this._workspaceEmployeesLoading) {
+			return this._workspaceEmployeesLoading;
+		}
+		const p = (async () => {
+			const employees = await this._agentStudioService.getEmployees();
+			const ids = new Set<string>();
+			for (const emp of employees) {
+				if (emp && typeof emp.id === 'string' && emp.id) {
+					ids.add(emp.id);
+				}
+			}
+			this._workspaceEmployeeIds = ids;
+			return ids;
+		})();
+		this._workspaceEmployeesLoading = p;
+		p.finally(() => {
+			if (this._workspaceEmployeesLoading === p) {
+				this._workspaceEmployeesLoading = undefined;
+			}
+		});
+		return p;
 	}
 
 	// ============================================================

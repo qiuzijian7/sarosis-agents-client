@@ -260,11 +260,27 @@ export class TdaiGateway {
       return;
     }
 
+    // Parse optional scope params. Invalid / unknown scope values are
+    // silently coerced to undefined → core treats as 'global' (back-compat).
+    const validScopes = new Set(["agent", "workspace", "global"]);
+    const scope = body.scope && validScopes.has(body.scope)
+      ? (body.scope as "agent" | "workspace" | "global")
+      : undefined;
+    const allowedSessionKeys = Array.isArray(body.allowed_session_keys)
+      ? body.allowed_session_keys.filter((k): k is string => typeof k === "string" && k.length > 0)
+      : undefined;
+
     const startMs = Date.now();
-    const result = await this.core.handleBeforeRecall(body.query, body.session_key);
+    const result = await this.core.handleBeforeRecall(body.query, body.session_key, {
+      scope,
+      allowedSessionKeys,
+    });
     const elapsed = Date.now() - startMs;
 
-    this.logger.info(`Recall completed in ${elapsed}ms: context=${(result.appendSystemContext?.length ?? 0)} chars`);
+    this.logger.info(
+      `Recall completed in ${elapsed}ms: context=${(result.appendSystemContext?.length ?? 0)} chars` +
+      (scope ? ` (scope=${scope}, allowedKeys=${allowedSessionKeys?.length ?? 0})` : ""),
+    );
 
     const response: RecallResponse = {
       context: result.appendSystemContext ?? "",
@@ -368,9 +384,16 @@ export class TdaiGateway {
   // ──────────────────────────────────────────────────────────────────────
 
   private async handleListConversations(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    type ListConversationsRequest = { limit?: number };
+    type ListConversationsRequest = { limit?: number; session_key?: string };
     const body = await parseJsonBody<ListConversationsRequest>(req).catch(() => ({} as ListConversationsRequest));
     const limit = typeof body.limit === "number" && body.limit > 0 ? Math.min(body.limit, 500) : 50;
+    // Push the optional session-bucket filter all the way down to SQL
+    // (`WHERE session_key = ?`). Empty / whitespace-only strings are treated
+    // as absent so callers don't have to special-case the "all" view.
+    const sessionKey = typeof body.session_key === "string" && body.session_key.trim().length > 0
+      ? body.session_key.trim()
+      : undefined;
+    const filter = sessionKey ? { sessionKey } : undefined;
 
     const store = this.core.getVectorStore();
     if (!store) {
@@ -396,17 +419,17 @@ export class TdaiGateway {
       let totalAll = 0;
 
       if (typeof store.getAllL0Rows === "function") {
-        const all = await store.getAllL0Rows();
+        const all = await store.getAllL0Rows(filter);
         totalAll = all.length;
         // store already sorts by timestamp DESC; defensive copy + slice.
         items = all.slice(0, limit);
       } else {
-        const all = await store.getAllL0Texts();
+        const all = await store.getAllL0Texts(filter);
         totalAll = all.length;
         const sorted = [...all].sort((a, b) => (b.recorded_at ?? "").localeCompare(a.recorded_at ?? ""));
         items = sorted.slice(0, limit).map((r) => ({
           record_id: r.record_id,
-          session_key: "",
+          session_key: sessionKey ?? "",
           session_id: "",
           role: "",
           message_text: r.message_text,
@@ -429,10 +452,17 @@ export class TdaiGateway {
   }
 
   private async handleListMemories(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    type ListMemoriesRequest = { type?: "L1" | "L2" | "L3"; limit?: number };
+    type ListMemoriesRequest = { type?: "L1" | "L2" | "L3"; limit?: number; session_key?: string };
     const body = await parseJsonBody<ListMemoriesRequest>(req).catch(() => ({} as ListMemoriesRequest));
     const type = body.type ?? "L1";
     const limit = typeof body.limit === "number" && body.limit > 0 ? Math.min(body.limit, 500) : 50;
+    // Per-session-bucket filter is only meaningful for L1 (rows are tagged
+    // with `session_key`). L2/L3 are agent-agnostic profile aggregates and
+    // ignore the field — silently dropping it for those layers keeps the
+    // gateway contract uniform across types.
+    const sessionKey = typeof body.session_key === "string" && body.session_key.trim().length > 0
+      ? body.session_key.trim()
+      : undefined;
 
     const store = this.core.getVectorStore();
     if (!store) {
@@ -442,7 +472,7 @@ export class TdaiGateway {
 
     try {
       if (type === "L1") {
-        const all = await store.getAllL1Texts();
+        const all = await store.getAllL1Texts(sessionKey ? { sessionKey } : undefined);
         const sorted = [...all].sort((a, b) => (b.updated_time ?? "").localeCompare(a.updated_time ?? ""));
         const trimmed = sorted.slice(0, limit);
         const items = trimmed.map((r) => ({

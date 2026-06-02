@@ -482,13 +482,49 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				const recallQuery = [...(request.messages as Array<{ role?: string; content?: string }>)]
 					.reverse()
 					.find(m => m?.role === 'user')?.content ?? '';
-				const memoryContext = await memoryProvider.loadContext(request.agentId, request.sessionId || '', recallQuery);
+
+				// ── 召回作用域（2026-06）─────────────────────────────────
+				// 直接用 AgentDriver 在 enrichedRequest 上提前计算好的字段，
+				// 避免 OSService 重复访问 IAgentStudioService（它没有这个依赖）。
+				// 缺省时按 'agent' 严格隔离，与 AgentDriver 默认对齐。
+				const recallScope: 'agent' | 'workspace' | 'global' = request.memoryScope ?? 'agent';
+				const recallAllowedKeys = request.memoryAllowedSessionKeys;
+				const recallOptions = recallScope === 'workspace'
+					? { scope: recallScope, allowedSessionKeys: recallAllowedKeys }
+					: { scope: recallScope };
+
+				const memoryContext = await memoryProvider.loadContext(
+					request.agentId,
+					request.sessionId || '',
+					recallQuery,
+					recallOptions,
+				);
+
+				// ─── 按 memoryConfig.strategy 过滤 memoryContext ────────────
+				// 'summary' → 仅注入 L1（longTermMemories：摘要 / 长期记忆）
+				// 'full'    → 注入 L1 + L0（longTermMemories + shortTermMemories）
+				//              即 full ⊇ summary，符合"全量"的语义直觉，
+				//              并保证跨 Agent / 跨 session 的 L1 共享在两种策略下都生效。
+				// 未指定时按 'full' 处理，与默认值一致。
+				const strategy: 'summary' | 'full' = request.memoryStrategy === 'summary' ? 'summary' : 'full';
+				const maxEntries = typeof request.memoryMaxEntries === 'number' && request.memoryMaxEntries > 0
+					? request.memoryMaxEntries
+					: undefined;
+				const cap = <T,>(arr: T[] | undefined): T[] => {
+					if (!arr || arr.length === 0) { return []; }
+					if (maxEntries === undefined) { return arr; }
+					// 取最近 N 条（按 timestamp 升序时取尾部；这里直接 slice 末尾以保留既有顺序语义）
+					return arr.length > maxEntries ? arr.slice(-maxEntries) : arr;
+				};
+				// L1 在 summary 与 full 两种策略下都注入；L0 仅在 full 下注入。
+				const filteredLongTerm = cap(memoryContext.longTermMemories);
+				const filteredShortTerm = strategy === 'full' ? cap(memoryContext.shortTermMemories) : [];
 
 				const memoryParts: string[] = [];
 
 				// longTermMemories（L1/L2 召回内容）——TDB-AM 的核心记忆
-				if (memoryContext.longTermMemories && memoryContext.longTermMemories.length > 0) {
-					const ltContents = memoryContext.longTermMemories
+				if (filteredLongTerm.length > 0) {
+					const ltContents = filteredLongTerm
 						.map(m => m.content)
 						.filter(Boolean)
 						.join('\n\n');
@@ -498,8 +534,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 
 				// shortTermMemories（最近几轮摘要，通常为空）
-				if (memoryContext.shortTermMemories && memoryContext.shortTermMemories.length > 0) {
-					const stContents = memoryContext.shortTermMemories
+				if (filteredShortTerm.length > 0) {
+					const stContents = filteredShortTerm
 						.map(m => m.content)
 						.filter(Boolean)
 						.join('\n\n');
@@ -509,6 +545,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 
 				// systemPrompt（第三方 Memory Provider 直接返回的格式化字符串）
+				// 其本质是 provider 端的摘要表述，属于 L1 范畴，因此在 summary 与 full
+				// 两种策略下均注入（full ⊇ summary）。
 				if (memoryContext.systemPrompt && memoryContext.systemPrompt.trim().length > 0) {
 					memoryParts.push(memoryContext.systemPrompt.trim());
 				}
@@ -531,16 +569,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						content: frozenMemoryBlock,
 					});
 					this._logService.info(
-						`[AgentOS] Injected frozen memory snapshot (${frozenMemoryBlock.length} chars, ` +
-						`L1/L2=${memoryContext.longTermMemories?.length ?? 0}, ` +
-						`short=${memoryContext.shortTermMemories?.length ?? 0}, ` +
+						`[AgentOS] Injected frozen memory snapshot (strategy=${strategy}, ${frozenMemoryBlock.length} chars, ` +
+						`L1/L2=${filteredLongTerm.length}, ` +
+						`L0=${filteredShortTerm.length}, ` +
 						`hasSystemPrompt=${!!memoryContext.systemPrompt}) for agent ${request.agentId}`
 					);
 				} else {
 					this._logService.info(
 						`[AgentOS] Memory provider returned empty context for agent ${request.agentId} ` +
-						`(L1/L2=${memoryContext.longTermMemories?.length ?? 0}, ` +
-						`short=${memoryContext.shortTermMemories?.length ?? 0})`
+						`(strategy=${strategy}, ` +
+						`L1/L2=${filteredLongTerm.length}, ` +
+						`L0=${filteredShortTerm.length})`
 					);
 				}
 			} catch (error) {
@@ -937,79 +976,79 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const toolResults: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 			// If all tool calls were server-executed, skip the local execution block entirely.
 			if (localExecutedCalls.length > 0) {
-			try {
-				if (canParallel) {
-					// Streaming parallel: yield as each tool finishes, in completion order.
-					for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId)) {
-						toolResults.push(toolResult);
-						// Emit tool_result + tool_end for THIS tool immediately (do not
-						// wait for the rest of the batch).
-						const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+				try {
+					if (canParallel) {
+						// Streaming parallel: yield as each tool finishes, in completion order.
+						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId)) {
+							toolResults.push(toolResult);
+							// Emit tool_result + tool_end for THIS tool immediately (do not
+							// wait for the rest of the batch).
+							const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+							messages.push({
+								role: 'tool',
+								content: resultStr,
+								toolCallId: toolResult.toolCallId,
+							});
+							yield {
+								type: 'tool_result',
+								content: resultStr,
+								toolCallId: toolResult.toolCallId,
+							};
+							yield {
+								type: 'tool_end',
+								toolCallId: toolResult.toolCallId,
+								success: toolResult.success,
+							};
+							endedToolIds.add(toolResult.toolCallId);
+						}
+					} else {
+						// Serial path: keep old behavior (each tool naturally finishes
+						// sequentially so head-of-line blocking is not an issue here).
+						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId);
+						for (const toolResult of serial) {
+							toolResults.push(toolResult);
+							const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+							messages.push({
+								role: 'tool',
+								content: resultStr,
+								toolCallId: toolResult.toolCallId,
+							});
+							yield {
+								type: 'tool_result',
+								content: resultStr,
+								toolCallId: toolResult.toolCallId,
+							};
+							yield {
+								type: 'tool_end',
+								toolCallId: toolResult.toolCallId,
+								success: toolResult.success,
+							};
+							endedToolIds.add(toolResult.toolCallId);
+						}
+					}
+				} catch (execErr) {
+					this._logService.error(`[AgentOS] Tool execution batch threw unexpectedly:`, execErr);
+					// Synthesize failed results for every tool that did NOT yet emit tool_end.
+					// This guarantees every started tool_call is terminated on the wire.
+					for (const tc of localExecutedCalls) {
+						if (endedToolIds.has(tc.id)) { continue; }
+						const errResult = {
+							toolCallId: tc.id,
+							content: { error: `Tool execution failed: ${execErr instanceof Error ? execErr.message : String(execErr)}` },
+							success: false,
+						};
+						toolResults.push(errResult);
+						const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(errResult.content)));
 						messages.push({
 							role: 'tool',
 							content: resultStr,
-							toolCallId: toolResult.toolCallId,
+							toolCallId: tc.id,
 						});
-						yield {
-							type: 'tool_result',
-							content: resultStr,
-							toolCallId: toolResult.toolCallId,
-						};
-						yield {
-							type: 'tool_end',
-							toolCallId: toolResult.toolCallId,
-							success: toolResult.success,
-						};
-						endedToolIds.add(toolResult.toolCallId);
-					}
-				} else {
-					// Serial path: keep old behavior (each tool naturally finishes
-					// sequentially so head-of-line blocking is not an issue here).
-					const serial = await this._executeToolCalls(localExecutedCalls, request.agentId);
-					for (const toolResult of serial) {
-						toolResults.push(toolResult);
-						const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
-						messages.push({
-							role: 'tool',
-							content: resultStr,
-							toolCallId: toolResult.toolCallId,
-						});
-						yield {
-							type: 'tool_result',
-							content: resultStr,
-							toolCallId: toolResult.toolCallId,
-						};
-						yield {
-							type: 'tool_end',
-							toolCallId: toolResult.toolCallId,
-							success: toolResult.success,
-						};
-						endedToolIds.add(toolResult.toolCallId);
+						yield { type: 'tool_result', content: resultStr, toolCallId: tc.id };
+						yield { type: 'tool_end', toolCallId: tc.id, success: false };
+						endedToolIds.add(tc.id);
 					}
 				}
-			} catch (execErr) {
-				this._logService.error(`[AgentOS] Tool execution batch threw unexpectedly:`, execErr);
-				// Synthesize failed results for every tool that did NOT yet emit tool_end.
-				// This guarantees every started tool_call is terminated on the wire.
-				for (const tc of localExecutedCalls) {
-					if (endedToolIds.has(tc.id)) { continue; }
-					const errResult = {
-						toolCallId: tc.id,
-						content: { error: `Tool execution failed: ${execErr instanceof Error ? execErr.message : String(execErr)}` },
-						success: false,
-					};
-					toolResults.push(errResult);
-					const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(errResult.content)));
-					messages.push({
-						role: 'tool',
-						content: resultStr,
-						toolCallId: tc.id,
-					});
-					yield { type: 'tool_result', content: resultStr, toolCallId: tc.id };
-					yield { type: 'tool_end', toolCallId: tc.id, success: false };
-					endedToolIds.add(tc.id);
-				}
-			}
 			} // end if (localExecutedCalls.length > 0)
 
 			// ─── Reconcile: emit synthetic tool_end for any orphaned tool_start ──
@@ -1748,45 +1787,45 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 1. 先匹配闭合标签: <tool_call>...</tool_call>
 			const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
 			let match: RegExpExecArray | null;
-				while ((match = regex.exec(text)) !== null) {
-					const fullMatch = match[0];
-					const content = match[1].trim();
-					this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag (closed), contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
-					// <tool> 标签使用 ▷{JSON} 头部 + <document> 子标签格式
-					if (tag === 'tool') {
-						const parsed = this._parseToolXMLFormat(content);
-						if (parsed) { results.push(parsed); }
-						else { this._logService.info(`[AgentOS] _extractToolCallsFromXml: _parseToolXMLFormat returned null for <tool> tag`); }
-						continue;
-					}
-					// 新增：尝试从开口标签提取工具名（如 <invoke name="file_list">）
-					const openTagMatch = fullMatch.match(new RegExp(`^<${tag}[^>]*\\bname\\s*=\\s*["']([^"']+)["'][^>]*>`));
-					if (openTagMatch) {
-						// 从开口标签找到了 name 属性，直接使用
-						const toolName = openTagMatch[1];
-						this._logService.info(`[AgentOS] _extractToolCallsFromXml: found tool name from open tag: ${toolName}`);
-						// 尝试从 content 中解析参数（简单实现：查找 <parameter name="xxx">value</parameter>）
-						let args = '{}';
-						try {
-							const paramRegex = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([^<]*)<\/parameter>/gi;
-							let paramMatch: RegExpExecArray | null;
-							const argsObj: Record<string, string> = {};
-							while ((paramMatch = paramRegex.exec(content)) !== null) {
-								argsObj[paramMatch[1]] = paramMatch[2];
-							}
-							if (Object.keys(argsObj).length > 0) {
-								args = JSON.stringify(argsObj);
-							}
-						} catch { /* ignore */ }
-						results.push({
-							id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-							name: toolName,
-							arguments: args,
-						});
-						continue;
-					}
-					this._processXmlTagContent(content, results, tag);
+			while ((match = regex.exec(text)) !== null) {
+				const fullMatch = match[0];
+				const content = match[1].trim();
+				this._logService.info(`[AgentOS] _extractToolCallsFromXml: found <${tag}> tag (closed), contentLen=${content.length}, contentPreview=${content.substring(0, 120)}`);
+				// <tool> 标签使用 ▷{JSON} 头部 + <document> 子标签格式
+				if (tag === 'tool') {
+					const parsed = this._parseToolXMLFormat(content);
+					if (parsed) { results.push(parsed); }
+					else { this._logService.info(`[AgentOS] _extractToolCallsFromXml: _parseToolXMLFormat returned null for <tool> tag`); }
+					continue;
 				}
+				// 新增：尝试从开口标签提取工具名（如 <invoke name="file_list">）
+				const openTagMatch = fullMatch.match(new RegExp(`^<${tag}[^>]*\\bname\\s*=\\s*["']([^"']+)["'][^>]*>`));
+				if (openTagMatch) {
+					// 从开口标签找到了 name 属性，直接使用
+					const toolName = openTagMatch[1];
+					this._logService.info(`[AgentOS] _extractToolCallsFromXml: found tool name from open tag: ${toolName}`);
+					// 尝试从 content 中解析参数（简单实现：查找 <parameter name="xxx">value</parameter>）
+					let args = '{}';
+					try {
+						const paramRegex = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([^<]*)<\/parameter>/gi;
+						let paramMatch: RegExpExecArray | null;
+						const argsObj: Record<string, string> = {};
+						while ((paramMatch = paramRegex.exec(content)) !== null) {
+							argsObj[paramMatch[1]] = paramMatch[2];
+						}
+						if (Object.keys(argsObj).length > 0) {
+							args = JSON.stringify(argsObj);
+						}
+					} catch { /* ignore */ }
+					results.push({
+						id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+						name: toolName,
+						arguments: args,
+					});
+					continue;
+				}
+				this._processXmlTagContent(content, results, tag);
+			}
 
 			// 2. 兜底: 匹配未闭合标签: <tool_call>toolname (后面没有 </tool_call>)
 			// 只匹配当该标签在文本中确实没有被闭合时

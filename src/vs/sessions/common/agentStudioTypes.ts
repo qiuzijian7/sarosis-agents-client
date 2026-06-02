@@ -475,6 +475,46 @@ export interface Employee {
 	 * the MD file, which then triggers re-rendering. Supports custom parser per agent.
 	 */
 	configMd?: AgentConfigMd;
+	/**
+	 * Memory configuration — controls how the agent's L0/L1 memory is loaded
+	 * and injected into prompts at runtime.
+	 *
+	 * Mirrors the WebView-side `MemoryConfig` (see useEmployeeStore.ts):
+	 *   - strategy === 'full'           → 注入 L0（原始对话）
+	 *   - strategy === 'summary'        → 注入 L1（摘要 / 长期记忆）
+	 *   - strategy === 'sliding_window' → 历史遗留值，运行时按 'full' 处理
+	 *
+	 * `entries` 是用户在面板里手动维护的固定记忆条目，host 端目前不读取，
+	 * 仅作为持久化字段透传，避免 WebView 写入后被覆盖丢失。
+	 *
+	 * 注意：与 entries 并行存在另一套"自动召回"机制（L0/L1）——由 TDB-AM
+	 * gateway 在对话流水中自动写入 SQLite，运行时通过 `IMemoryProvider`
+	 * 注入到 prompt。两者互不干扰：`strategy` 字段控制"自动召回"注入
+	 * 的层级（summary→L1 / full→L0），`entries` 永远是手动条目。
+	 * Memory 面板里的"自动召回"分区直接读 gateway，不经过 employees.json。
+	 */
+	memoryConfig?: {
+		enabled: boolean;
+		maxEntries: number;
+		strategy: 'summary' | 'full' | 'sliding_window';
+		windowSize?: number;
+		/**
+		 * 召回作用域（2026-06 新增）。控制本 Agent 在每轮对话开始时的 L1 召回边界：
+		 *   - 'agent'     → 仅本 Agent 自己积累的记忆（最严格隔离）
+		 *   - 'workspace' → 当前 workspace 下所有 agent 共享
+		 *   - 'global'    → 全库共享（旧行为）
+		 * 缺省 / undefined 时按 'agent' 处理（C2 默认严格隔离）。
+		 */
+		scope?: 'agent' | 'workspace' | 'global';
+		entries: Array<{
+			id: string;
+			key: string;
+			value: string;
+			category?: string;
+			createdAt?: string;
+			updatedAt?: string;
+		}>;
+	};
 	createdAt: string;
 	updatedAt: string;
 }

@@ -282,17 +282,44 @@ export interface IMemoryStore {
 
   countL1(): MaybePromise<number>;
   queryL1Records(filter?: L1QueryFilter): MaybePromise<L1RecordRow[]>;
-  getAllL1Texts(): MaybePromise<Array<{ record_id: string; content: string; updated_time: string }>>;
+  /**
+   * Bulk read of L1 record texts. Used both by the re-embedding pipeline and by
+   * the inspection panel.
+   *
+   * @param filter Optional row-level filter:
+   *   - `sessionKey`: restrict to L1 records produced from a specific session
+   *     bucket. Implementations should push this down to SQL (`WHERE session_key = ?`)
+   *     so callers can scope the dump to a single agent without paying the
+   *     cost of loading the entire table.
+   */
+  getAllL1Texts(filter?: { sessionKey?: string }): MaybePromise<Array<{ record_id: string; content: string; updated_time: string }>>;
 
   // ── L1 Search ────────────────────────────────────────────
+  //
+  // `sessionKeys` (optional, added 2026-06): when present and non-empty,
+  // restricts the search to L1 rows whose `session_key` matches one of
+  // the provided values. This enables agent-level / workspace-level
+  // memory isolation (see Memory-Strategy doc §recall scope).
+  // Backwards-compatible: undefined / [] preserves the original
+  // "search the whole library" behaviour.
 
-  searchL1Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string): MaybePromise<L1SearchResult[]>;
-  searchL1Fts(ftsQuery: string, limit?: number): MaybePromise<L1FtsResult[]>;
+  searchL1Vector(
+    queryEmbedding: Float32Array,
+    topK?: number,
+    queryText?: string,
+    sessionKeys?: readonly string[],
+  ): MaybePromise<L1SearchResult[]>;
+  searchL1Fts(
+    ftsQuery: string,
+    limit?: number,
+    sessionKeys?: readonly string[],
+  ): MaybePromise<L1FtsResult[]>;
   searchL1Hybrid?(params: {
     query?: string;
     queryEmbedding?: Float32Array;
     sparseVector?: Array<[number, number]>;
     topK?: number;
+    sessionKeys?: readonly string[];
   }): MaybePromise<L1SearchResult[]>;
 
   // ── L0 Write ─────────────────────────────────────────────
@@ -308,7 +335,13 @@ export interface IMemoryStore {
   countL0(): MaybePromise<number>;
   queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
   queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
-  getAllL0Texts(): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
+  /**
+   * Minimal text-only L0 dump (record_id / message_text / recorded_at).
+   *
+   * @param filter Optional row-level filter:
+   *   - `sessionKey`: restrict to a single session bucket. Push down to SQL.
+   */
+  getAllL0Texts(filter?: { sessionKey?: string }): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
 
   /**
    * Optional: full L0 dump including role / session_key / timestamp.
@@ -317,8 +350,11 @@ export interface IMemoryStore {
    * each turn as a collapsible item with author and session context. Stores
    * that don't implement this can be queried via {@link getAllL0Texts} for the
    * minimal text-only view.
+   *
+   * @param filter Optional row-level filter:
+   *   - `sessionKey`: restrict to a single session bucket. Push down to SQL.
    */
-  getAllL0Rows?(): MaybePromise<Array<{
+  getAllL0Rows?(filter?: { sessionKey?: string }): MaybePromise<Array<{
     record_id: string;
     session_key: string;
     session_id: string;

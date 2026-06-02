@@ -33,6 +33,21 @@ export interface RecallRequest {
   query: string;
   session_key: string;
   user_id?: string;
+  /**
+   * Recall scope (added 2026-06):
+   *   - 'agent'     → only this agent's own L1 memories (session_key match)
+   *   - 'workspace' → L1 memories of any agent in `allowed_session_keys`
+   *   - 'global'    → search the entire L1 library (legacy behaviour)
+   * When omitted, the gateway treats the request as 'global' for
+   * backwards compatibility with older callers.
+   */
+  scope?: 'agent' | 'workspace' | 'global';
+  /**
+   * When `scope === 'workspace'`, the caller MUST provide the list of
+   * sibling agent session_keys (including self). The gateway has no way
+   * to enumerate sibling agents on its own.
+   */
+  allowed_session_keys?: string[];
 }
 
 export interface RecallResponse {

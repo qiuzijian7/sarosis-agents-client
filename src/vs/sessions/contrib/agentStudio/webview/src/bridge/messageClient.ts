@@ -96,6 +96,10 @@ export type RequestType =
 	| 'chat.jumpToCheckpoint'
 	| 'chat.toolApprove'
 	| 'worktree.list'
+	| 'memory.listL0'
+	| 'memory.listL1'
+	| 'memory.deleteL0'
+	| 'memory.deleteL1'
 	| 'skills.list';
 
 interface PendingRequest {

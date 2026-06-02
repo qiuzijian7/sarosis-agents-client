@@ -53,6 +53,9 @@ import { IWorkspaceContextService } from "../../../../platform/workspace/common/
 import { VSBuffer } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
+import { IRequestService, asText } from "../../../../platform/request/common/request.js";
+import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
+import { CancellationToken } from "../../../../base/common/cancellation.js";
 import {
 	IEditorService,
 	SIDE_GROUP,
@@ -83,6 +86,13 @@ import type {
 	IChatGetCheckpointPayload,
 	IChatListCheckpointsPayload,
 	IChatDeleteCheckpointPayload,
+	IMemoryListPayload,
+	IMemoryDeletePayload,
+	IMemoryListL0Response,
+	IMemoryListL1Response,
+	IMemoryDeleteResponse,
+	IMemoryL0Item,
+	IMemoryL1Item,
 } from "./messageProtocol.js";
 import type {
 	ICheckpoint,
@@ -165,6 +175,8 @@ export class AgentStudioWebviewController extends Disposable {
 		@IConfigMdService private readonly _configMdService: IConfigMdService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IModelService private readonly modelService: IModelService,
+		@IRequestService private readonly requestService: IRequestService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(
@@ -181,7 +193,7 @@ export class AgentStudioWebviewController extends Disposable {
 				return new Promise<ToolApprovalDecision>((resolve) => {
 					// Store resolve function
 					this._pendingToolApprovals.set(request.toolCallId, { resolve });
-					
+
 					// Send event to webview to show approval UI
 					this._sendEvent('chat.toolApprovalRequest', {
 						toolCallId: request.toolCallId,
@@ -871,6 +883,24 @@ export class AgentStudioWebviewController extends Disposable {
 			// ─── Skills ────────────────────────────────────────────
 			case "skills.list":
 				return this._handleSkillsList();
+
+			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
+			case "memory.listL0": {
+				const mp = p as unknown as IMemoryListPayload;
+				return this._handleMemoryListL0(mp);
+			}
+			case "memory.listL1": {
+				const mp = p as unknown as IMemoryListPayload;
+				return this._handleMemoryListL1(mp);
+			}
+			case "memory.deleteL0": {
+				const mp = p as unknown as IMemoryDeletePayload;
+				return this._handleMemoryDelete(mp, "conversation");
+			}
+			case "memory.deleteL1": {
+				const mp = p as unknown as IMemoryDeletePayload;
+				return this._handleMemoryDelete(mp, "memory");
+			}
 
 			default:
 				throw new Error(`Unknown message type: ${type}`);
@@ -2499,6 +2529,146 @@ export class AgentStudioWebviewController extends Disposable {
 			activation: skill.activation,
 			description: skill.description || undefined,
 		}));
+	}
+
+	// ─── Memory inspection helpers (TDB-AM gateway proxy) ──────────────────────
+	//
+	// The webview cannot fetch http://127.0.0.1:<port> directly because the
+	// renderer's CSP `connect-src` does not whitelist arbitrary loopback
+	// origins. We forward through the host using `IRequestService` (same
+	// path TdbamViewPane already uses) and translate the gateway's wire
+	// format into a webview-friendly camelCase shape on the way out.
+	//
+	// `sessionKey` is derived from `agentId` via the same rule used by
+	// `TdbAmMemoryProvider.deriveSessionKey()` — without an explicit
+	// `metadata.sessionId` at write time, runtime falls back to
+	// `agent:<agentId>`. Mirroring it here ensures the panel reads back
+	// exactly what the runtime writes.
+
+	private static readonly _DEFAULT_GATEWAY_PORT = 8420;
+
+	private _gatewayBaseUrl(): string {
+		const port = this.configurationService.getValue<number>("tdbam.gatewayPort") ?? AgentStudioWebviewController._DEFAULT_GATEWAY_PORT;
+		return `http://127.0.0.1:${port}`;
+	}
+
+	private _deriveSessionKey(agentId: string): string {
+		const trimmed = (agentId ?? "").trim();
+		return trimmed.length > 0 ? `agent:${trimmed}` : "agent:default";
+	}
+
+	private async _gatewayPost<T>(pathSegment: string, body: unknown, callSite: string): Promise<T | null> {
+		const url = `${this._gatewayBaseUrl()}${pathSegment}`;
+		try {
+			const ctx = await this.requestService.request({
+				type: "POST",
+				url,
+				headers: { "Content-Type": "application/json" },
+				data: JSON.stringify(body),
+				callSite,
+			}, CancellationToken.None);
+			const text = await asText(ctx);
+			if (!text) {
+				return null;
+			}
+			return JSON.parse(text) as T;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.logService.warn(`[AgentStudioWebviewController] ${callSite} failed: ${msg}`);
+			return null;
+		}
+	}
+
+	private async _handleMemoryListL0(payload: IMemoryListPayload): Promise<IMemoryListL0Response> {
+		const sessionKey = this._deriveSessionKey(payload.agentId);
+		const limit = typeof payload.limit === "number" && payload.limit > 0 ? payload.limit : 200;
+
+		type GatewayItem = {
+			record_id: string;
+			session_key?: string;
+			session_id?: string;
+			role?: string;
+			message_text?: string;
+			recorded_at?: string;
+			timestamp?: number;
+		};
+		type GatewayResp = { items?: GatewayItem[]; total?: number; error?: string };
+
+		const resp = await this._gatewayPost<GatewayResp>("/list/conversations", {
+			limit,
+			session_key: sessionKey,
+		}, "agentStudio.memory.listL0");
+
+		if (!resp || resp.error) {
+			return { items: [], total: 0 };
+		}
+
+		const items: IMemoryL0Item[] = (resp.items ?? []).map((r) => ({
+			recordId: r.record_id,
+			sessionKey: r.session_key ?? sessionKey,
+			sessionId: r.session_id ?? "",
+			role: r.role ?? "",
+			messageText: r.message_text ?? "",
+			recordedAt: r.recorded_at ?? "",
+			timestamp: typeof r.timestamp === "number" ? r.timestamp : 0,
+		}));
+		return { items, total: typeof resp.total === "number" ? resp.total : items.length };
+	}
+
+	private async _handleMemoryListL1(payload: IMemoryListPayload): Promise<IMemoryListL1Response> {
+		const sessionKey = this._deriveSessionKey(payload.agentId);
+		const limit = typeof payload.limit === "number" && payload.limit > 0 ? payload.limit : 200;
+
+		type GatewayItem = {
+			id?: string;
+			content?: string;
+			timestamp?: string;
+		};
+		type GatewayResp = { items?: GatewayItem[]; total?: number; error?: string };
+
+		const resp = await this._gatewayPost<GatewayResp>("/list/memories", {
+			type: "L1",
+			limit,
+			session_key: sessionKey,
+		}, "agentStudio.memory.listL1");
+
+		if (!resp || resp.error) {
+			return { items: [], total: 0 };
+		}
+
+		const items: IMemoryL1Item[] = (resp.items ?? []).map((r) => ({
+			recordId: r.id ?? "",
+			content: r.content ?? "",
+			updatedTime: r.timestamp ?? "",
+		}));
+		return { items, total: typeof resp.total === "number" ? resp.total : items.length };
+	}
+
+	private async _handleMemoryDelete(
+		payload: IMemoryDeletePayload,
+		layer: "conversation" | "memory",
+	): Promise<IMemoryDeleteResponse> {
+		const recordIds = Array.isArray(payload.recordIds)
+			? payload.recordIds.filter((id) => typeof id === "string" && id.length > 0)
+			: [];
+		if (recordIds.length === 0) {
+			return { deleted: 0, failed: [] };
+		}
+
+		type GatewayResp = { deleted?: number; failed?: string[]; error?: string };
+		const callSite = layer === "conversation"
+			? "agentStudio.memory.deleteL0"
+			: "agentStudio.memory.deleteL1";
+		const path = layer === "conversation" ? "/delete/conversation" : "/delete/memory";
+
+		const resp = await this._gatewayPost<GatewayResp>(path, { record_ids: recordIds }, callSite);
+		if (!resp || resp.error) {
+			return { deleted: 0, failed: [...recordIds] };
+		}
+		return {
+			deleted: typeof resp.deleted === "number" ? resp.deleted : 0,
+			failed: Array.isArray(resp.failed) ? resp.failed : [],
+		};
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

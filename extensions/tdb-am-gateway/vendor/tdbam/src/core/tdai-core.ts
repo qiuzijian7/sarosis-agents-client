@@ -240,14 +240,28 @@ export class TdaiCore {
   /**
    * Handle recall (memory retrieval) before an LLM turn.
    * Maps to: OpenClaw `before_prompt_build` / Hermes `prefetch()`.
+   *
+   * `options.scope` (added 2026-06): controls L1 search isolation.
+   *   - 'agent'     → only this agent's own memories (sessionKey filter)
+   *   - 'workspace' → memories of any agent in `options.allowedSessionKeys`
+   *   - 'global'    → entire L1 library (legacy default for back-compat)
    */
-  async handleBeforeRecall(userText: string, sessionKey: string): Promise<RecallResult> {
+  async handleBeforeRecall(
+    userText: string,
+    sessionKey: string,
+    options?: {
+      scope?: 'agent' | 'workspace' | 'global';
+      allowedSessionKeys?: readonly string[];
+    },
+  ): Promise<RecallResult> {
     await this.storeReady?.catch(() => { });
 
     const result = await performAutoRecall({
       userText,
       actorId: "default_user",
       sessionKey,
+      scope: options?.scope,
+      allowedSessionKeys: options?.allowedSessionKeys,
       cfg: this.cfg,
       pluginDataDir: this.dataDir,
       logger: this.logger,

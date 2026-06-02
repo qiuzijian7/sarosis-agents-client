@@ -1251,7 +1251,12 @@ export class VectorStore implements IMemoryStore {
    * **Fault-tolerant**: returns an empty array on any error (e.g. dimension
    * mismatch, corrupted DB) so callers can fall back to keyword search.
    */
-  searchL1Vector(queryEmbedding: Float32Array, topK = 5): VectorSearchResult[] {
+  searchL1Vector(
+    queryEmbedding: Float32Array,
+    topK = 5,
+    _queryText?: string,
+    sessionKeys?: readonly string[],
+  ): VectorSearchResult[] {
     if (this.degraded || !this.vecTablesReady) {
       if (this.degraded) this.logger?.warn(`${TAG} [L1-search] SKIPPED (degraded mode)`);
       return [];
@@ -1265,7 +1270,18 @@ export class VectorStore implements IMemoryStore {
       // NOTE: "AND distance IS NOT NULL" is NOT usable because vec0 does not
       // support that constraint — it causes an empty result set.
       const ZERO_VEC_BUFFER = 10;
-      const retrieveCount = topK + ZERO_VEC_BUFFER;
+      // When sessionKeys filter is active, we may discard a large fraction of
+      // KNN hits during the meta lookup phase (vec0 doesn't support JOIN /
+      // WHERE on metadata columns). Inflate retrieveCount proportionally so
+      // the caller still gets approximately topK valid results.
+      // 4x is a heuristic — most workspaces have ≤10 agents, so the global L1
+      // table rarely contains a per-agent share lower than 25%. Bigger
+      // multiplier wastes vec0 work on the (already most expensive) KNN scan.
+      const SESSION_FILTER_OVERFETCH = sessionKeys && sessionKeys.length > 0 ? 4 : 1;
+      const retrieveCount = (topK + ZERO_VEC_BUFFER) * SESSION_FILTER_OVERFETCH;
+      const sessionKeySet = sessionKeys && sessionKeys.length > 0
+        ? new Set(sessionKeys)
+        : undefined;
 
       this.logger?.debug?.(
         `${TAG} [L1-search] START topK=${topK}, retrieveCount=${retrieveCount}, ` +
@@ -1312,6 +1328,13 @@ export class VectorStore implements IMemoryStore {
 
         if (!meta) {
           this.logger?.warn(`${TAG} [L1-search] record_id=${record_id} has vector but NO metadata (orphan)`);
+          continue;
+        }
+
+        // Session-scope filter: discard hits whose session_key is not in the
+        // allow-list. Done AFTER the meta lookup since vec0 KNN cannot
+        // express predicate filters on metadata columns.
+        if (sessionKeySet && !sessionKeySet.has(meta.session_key)) {
           continue;
         }
 
@@ -2010,12 +2033,28 @@ export class VectorStore implements IMemoryStore {
   // ── Re-index operations ──────────────────────────────────
 
   /**
-   * Get all L1 record texts for re-embedding.
+   * Get all L1 record texts for re-embedding or inspection.
    * Returns record_id → content pairs.
+   *
+   * When `filter.sessionKey` is provided, restricts the dump to L1 rows whose
+   * `session_key` exactly matches. The composite index
+   * `(session_key, updated_time)` (declared by the schema) keeps this fast
+   * even when the table grows.
    */
-  getAllL1Texts(): Array<{ record_id: string; content: string; updated_time: string }> {
+  getAllL1Texts(
+    filter?: { sessionKey?: string },
+  ): Array<{ record_id: string; content: string; updated_time: string }> {
     if (this.degraded) return [];
     try {
+      const sessionKey = filter?.sessionKey;
+      if (sessionKey) {
+        return this.db
+          .prepare(
+            "SELECT record_id, content, updated_time FROM l1_records " +
+            "WHERE session_key = ?",
+          )
+          .all(sessionKey) as Array<{ record_id: string; content: string; updated_time: string }>;
+      }
       return this.db
         .prepare("SELECT record_id, content, updated_time FROM l1_records")
         .all() as Array<{ record_id: string; content: string; updated_time: string }>;
@@ -2028,12 +2067,26 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
-   * Get all L0 message texts for re-embedding.
+   * Get all L0 message texts for re-embedding or inspection.
    * Returns record_id → message_text/recorded_at tuples.
+   *
+   * When `filter.sessionKey` is provided, restricts the dump to L0 rows whose
+   * `session_key` matches.
    */
-  getAllL0Texts(): Array<{ record_id: string; message_text: string; recorded_at: string }> {
+  getAllL0Texts(
+    filter?: { sessionKey?: string },
+  ): Array<{ record_id: string; message_text: string; recorded_at: string }> {
     if (this.degraded) return [];
     try {
+      const sessionKey = filter?.sessionKey;
+      if (sessionKey) {
+        return this.db
+          .prepare(
+            "SELECT record_id, message_text, recorded_at FROM l0_conversations " +
+            "WHERE session_key = ?",
+          )
+          .all(sessionKey) as Array<{ record_id: string; message_text: string; recorded_at: string }>;
+      }
       return this.db
         .prepare("SELECT record_id, message_text, recorded_at FROM l0_conversations")
         .all() as Array<{ record_id: string; message_text: string; recorded_at: string }>;
@@ -2052,8 +2105,14 @@ export class VectorStore implements IMemoryStore {
    * panels that want to render each turn as a collapsible item with author
    * label. Sorted by `timestamp DESC` so callers can take the first N for a
    * "newest-first" view without further work.
+   *
+   * When `filter.sessionKey` is provided, restricts the dump to L0 rows whose
+   * `session_key` matches — this is the primary code path used by per-agent
+   * memory inspection panels.
    */
-  getAllL0Rows(): Array<{
+  getAllL0Rows(
+    filter?: { sessionKey?: string },
+  ): Array<{
     record_id: string;
     session_key: string;
     session_id: string;
@@ -2064,20 +2123,30 @@ export class VectorStore implements IMemoryStore {
   }> {
     if (this.degraded) return [];
     try {
+      const sessionKey = filter?.sessionKey;
+      type Row = {
+        record_id: string;
+        session_key: string;
+        session_id: string;
+        role: string;
+        message_text: string;
+        recorded_at: string;
+        timestamp: number;
+      };
+      if (sessionKey) {
+        return this.db
+          .prepare(
+            "SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp " +
+            "FROM l0_conversations WHERE session_key = ? ORDER BY timestamp DESC",
+          )
+          .all(sessionKey) as Row[];
+      }
       return this.db
         .prepare(
           "SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp " +
           "FROM l0_conversations ORDER BY timestamp DESC",
         )
-        .all() as Array<{
-          record_id: string;
-          session_key: string;
-          session_id: string;
-          role: string;
-          message_text: string;
-          recorded_at: string;
-          timestamp: number;
-        }>;
+        .all() as Row[];
     } catch (err) {
       this.logger?.warn(
         `${TAG} getAllL0Rows failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
@@ -2344,10 +2413,16 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL1Fts(ftsQuery: string, limit = 20): FtsSearchResult[] {
+  searchL1Fts(ftsQuery: string, limit = 20, sessionKeys?: readonly string[]): FtsSearchResult[] {
     if (this.degraded || !this.ftsAvailable) return [];
     try {
-      const rows = this.stmtL1FtsSearch.all(ftsQuery, limit) as Array<{
+      // Filter shape:
+      //   - undefined / empty → use the prepared statement (no session filter, hot path)
+      //   - non-empty         → build an ad-hoc statement with a sessionKey IN (...) clause
+      // We deliberately do NOT prepare per-distinct-key-set: most callers
+      // pass either none, "agent:<id>" (1 key) or a small workspace set
+      // (≤10 keys); per-call prepare cost is negligible compared to FTS.
+      type FtsRow = {
         record_id: string;
         content: string;
         type: string;
@@ -2360,7 +2435,27 @@ export class VectorStore implements IMemoryStore {
         timestamp_end: string;
         metadata_json: string;
         rank: number;
-      }>;
+      };
+      let rows: FtsRow[];
+      if (sessionKeys && sessionKeys.length > 0) {
+        const placeholders = sessionKeys.map(() => "?").join(",");
+        const sql = `
+          SELECT record_id, content_original AS content, type, priority, scene_name,
+                 session_key, session_id, timestamp_str, timestamp_start, timestamp_end,
+                 metadata_json,
+                 bm25(l1_fts) AS rank
+          FROM l1_fts
+          WHERE l1_fts MATCH ?
+            AND session_key IN (${placeholders})
+          ORDER BY rank ASC
+          LIMIT ?
+        `;
+        rows = this.db
+          .prepare(sql)
+          .all(ftsQuery, ...sessionKeys, limit) as FtsRow[];
+      } else {
+        rows = this.stmtL1FtsSearch.all(ftsQuery, limit) as FtsRow[];
+      }
 
       if (rows.length === 0) return [];
 

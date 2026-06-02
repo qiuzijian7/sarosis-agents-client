@@ -74,14 +74,44 @@ export class ExecutionProvider implements IExecutionProvider {
 				// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
 				// 做 FTS5/embedding 匹配，而不是占位字符串（详见 IMemoryProvider.loadContext 注释）
 				const recallQuery = [...request.messages].reverse().find(m => m.role === 'user')?.content ?? '';
-				const memoryContext = await memoryProvider.loadContext(request.agentId, request.sessionId || '', recallQuery);
+
+				// ── 召回作用域（2026-06）─────────────────────────────────
+				// 复用 AgentDriver 在 enrichedRequest 上提前算好的 scope/allowedKeys。
+				// 缺省按 'agent' 严格隔离。
+				const recallScope: 'agent' | 'workspace' | 'global' = request.memoryScope ?? 'agent';
+				const recallAllowedKeys = request.memoryAllowedSessionKeys;
+				const recallOptions = recallScope === 'workspace'
+					? { scope: recallScope, allowedSessionKeys: recallAllowedKeys }
+					: { scope: recallScope };
+
+				const memoryContext = await memoryProvider.loadContext(
+					request.agentId,
+					request.sessionId || '',
+					recallQuery,
+					recallOptions,
+				);
+
+				// ─── 按 memoryConfig.strategy 过滤 memoryContext ────────────
+				// 与 agentOSService 中的注入策略保持一致，详见该处注释。
+				const strategy: 'summary' | 'full' = request.memoryStrategy === 'summary' ? 'summary' : 'full';
+				const maxEntries = typeof request.memoryMaxEntries === 'number' && request.memoryMaxEntries > 0
+					? request.memoryMaxEntries
+					: undefined;
+				const cap = <T,>(arr: T[] | undefined): T[] => {
+					if (!arr || arr.length === 0) { return []; }
+					if (maxEntries === undefined) { return arr; }
+					return arr.length > maxEntries ? arr.slice(-maxEntries) : arr;
+				};
+				// L1 在 summary 与 full 两种策略下都注入；L0 仅在 full 下注入（full ⊇ summary）。
+				const filteredLongTerm = cap(memoryContext.longTermMemories);
+				const filteredShortTerm = strategy === 'full' ? cap(memoryContext.shortTermMemories) : [];
 
 				// ── 收集所有记忆内容 ──
 				const memoryParts: string[] = [];
 
 				// longTermMemories（L1/L2 召回内容）——TDB-AM 的核心记忆
-				if (memoryContext.longTermMemories && memoryContext.longTermMemories.length > 0) {
-					const ltContents = memoryContext.longTermMemories
+				if (filteredLongTerm.length > 0) {
+					const ltContents = filteredLongTerm
 						.map(m => m.content)
 						.filter(Boolean)
 						.join('\n\n');
@@ -91,8 +121,8 @@ export class ExecutionProvider implements IExecutionProvider {
 				}
 
 				// shortTermMemories（最近几轮摘要，通常为空，因 TDB-AM 不填此字段）
-				if (memoryContext.shortTermMemories && memoryContext.shortTermMemories.length > 0) {
-					const stContents = memoryContext.shortTermMemories
+				if (filteredShortTerm.length > 0) {
+					const stContents = filteredShortTerm
 						.map(m => m.content)
 						.filter(Boolean)
 						.join('\n\n');
@@ -102,6 +132,8 @@ export class ExecutionProvider implements IExecutionProvider {
 				}
 
 				// systemPrompt（第三方 Memory Provider 可能直接返回格式化字符串）
+				// 其本质是 provider 端的摘要表述，属于 L1 范畴，因此在 summary 与 full
+				// 两种策略下均注入（full ⊇ summary）。
 				if (memoryContext.systemPrompt && memoryContext.systemPrompt.trim().length > 0) {
 					memoryParts.push(memoryContext.systemPrompt.trim());
 				}
@@ -116,7 +148,7 @@ export class ExecutionProvider implements IExecutionProvider {
 						role: 'system',
 						content: frozenMemoryBlock,
 					});
-					this._logService.info(`[ExecutionProvider] Injected frozen memory snapshot (${frozenMemoryBlock.length} chars) into system prompt`);
+					this._logService.info(`[ExecutionProvider] Injected frozen memory snapshot (strategy=${strategy}, ${frozenMemoryBlock.length} chars, L1/L2=${filteredLongTerm.length}, L0=${filteredShortTerm.length}) into system prompt`);
 				}
 
 				this._logService.debug('[ExecutionProvider] Loaded memory context');

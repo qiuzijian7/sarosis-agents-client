@@ -66,7 +66,15 @@ interface IMemoryContext {
 interface IMemoryProvider {
 	readonly id: string;
 	readonly name: string;
-	loadContext(agentId: string, sessionId: string, query?: string): Promise<IMemoryContext>;
+	loadContext(
+		agentId: string,
+		sessionId: string,
+		query?: string,
+		options?: {
+			scope?: 'agent' | 'workspace' | 'global';
+			allowedSessionKeys?: readonly string[];
+		},
+	): Promise<IMemoryContext>;
 	writeMemory(agentId: string, entry: IMemoryEntry): Promise<void>;
 	searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]>;
 }
@@ -172,18 +180,26 @@ function parseMemoryResults(blob: string): IMemoryEntry[] {
 	}];
 }
 
-/** 推导 sessionKey：优先 metadata 字段，兜底用 agentId 自身。 */
-function deriveSessionKey(agentId: string, entry: IMemoryEntry): string {
-	const md = entry.metadata ?? {};
-	const sid = (md['sessionId'] as string | undefined)
-		?? (md['session_key'] as string | undefined)
-		?? (md['session_id'] as string | undefined);
-	if (typeof sid === 'string' && sid.trim().length > 0) {
-		return `${agentId}:${sid.trim()}`;
-	}
-	// 兜底：仅用 agentId。同一 agent 在 sarosis 里通常只会有一个活动会话，
-	// 足以保证 vendor 内 session 连续性。
-	return agentId && agentId.trim().length > 0 ? `agent:${agentId}` : 'agent:default';
+/**
+ * 推导 sessionKey：统一以 `agent:<agentId>` 为粒度。
+ *
+ * ── 设计决策（2026-06）──────────────────────────────────────────────────
+ * 此前实现会优先用 metadata.sessionId 拼成 `<agentId>:<sessionId>`，
+ * 导致 SQLite 实际写入的 sessionKey 是 `<agentId>:<sessionId>`，
+ * 而 host 侧 Memory Tab（agentStudioWebviewController._deriveSessionKey）
+ * 用 `agent:<agentId>` 去查 → 永远查不到，列表恒为 0。
+ *
+ * 修复方式：写入侧也统一为 `agent:<agentId>`，放弃 session 级隔离。
+ * 同一 agent 跨 chat session 共享同一记忆空间，这与"长期记忆"语义
+ * 更契合，也跟 host._deriveSessionKey 完全对齐。
+ *
+ * 入参 `entry` 现已不再使用（保留参数避免改 callsites 签名），仅用
+ * 来兼容历史调用约定。
+ * ─────────────────────────────────────────────────────────────────────
+ */
+function deriveSessionKey(agentId: string, _entry: IMemoryEntry): string {
+	const trimmed = (agentId ?? '').trim();
+	return trimmed.length > 0 ? `agent:${trimmed}` : 'agent:default';
 }
 
 /**
@@ -353,7 +369,15 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 		}
 	}
 
-	async loadContext(agentId: string, sessionId: string, query?: string): Promise<IMemoryContext> {
+	async loadContext(
+		agentId: string,
+		sessionId: string,
+		query?: string,
+		options?: {
+			scope?: 'agent' | 'workspace' | 'global';
+			allowedSessionKeys?: readonly string[];
+		},
+	): Promise<IMemoryContext> {
 		const sessionKey = deriveSessionKey(agentId, {
 			id: '', type: 'short_term', content: '',
 			metadata: { sessionId },
@@ -361,10 +385,21 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 		// 优先用调用方传入的真实 user 消息做召回；只有缺省时才退回占位字符串。
 		// 占位字符串时 vendor FTS5 / embedding 都不会有实际命中，等价于"无召回"。
 		const recallQuery = (query && query.trim().length > 0) ? query.trim() : '_loadContext_';
-		const result = await postJson<RecallResponse>('/recall', {
+
+		// 召回作用域（2026-06 新增）：未传时不传 scope 字段，gateway 维持
+		// 'global' 兜底语义，老调用方零行为变更。
+		const recallBody: Record<string, unknown> = {
 			query: recallQuery,
 			session_key: sessionKey,
-		});
+		};
+		if (options?.scope) {
+			recallBody['scope'] = options.scope;
+		}
+		if (options?.allowedSessionKeys && options.allowedSessionKeys.length > 0) {
+			recallBody['allowed_session_keys'] = [...options.allowedSessionKeys];
+		}
+
+		const result = await postJson<RecallResponse>('/recall', recallBody);
 
 		const ctx: IMemoryContext = {
 			shortTermMemories: [],

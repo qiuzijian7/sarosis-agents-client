@@ -84,6 +84,14 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 */
 	private readonly _migratedDefaultSkillsDirs = new Set<string>();
 
+	/**
+	 * Same-shape session-dedupe set for {@link _ensureWorkspaceIdInDir}.
+	 * Backfills missing `workspaceId` on legacy / mis-created employee
+	 * records (caused by callers passing `data.workspaceId === undefined`
+	 * to `createEmployee`, which then got JSON-stringify-stripped).
+	 */
+	private readonly _migratedWorkspaceIdDirs = new Set<string>();
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
@@ -423,19 +431,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		this.logService.info(`[AgentStudio] getEmployees: workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
 		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
 		this.logService.info(`[AgentStudio] getEmployees: found ${employees.length} employees`);
+		// Lazy migration: backfill missing `workspaceId` (caused by older bug
+		// where createEmployee accepted undefined and JSON.stringify dropped it).
+		const wsMigrated = await this._ensureWorkspaceIdInDir(dirUri, employees, workspaceId);
+		const afterWsMigration = wsMigrated || employees;
 		// Lazy migration: backfill default skills (e.g. `configmd`) onto
 		// existing agents that pre-date the default-skill bundling. Runs
 		// at most once per dataDir per session.
-		const migrated = await this._ensureDefaultSkillsInDir(dirUri, employees);
-		const result = migrated || employees;
-		
+		const migrated = await this._ensureDefaultSkillsInDir(dirUri, afterWsMigration);
+		const result = migrated || afterWsMigration;
+
 		// Calculate skillErrorCount and missingSkillIds for each employee
 		for (const emp of result) {
 			const { errorCount, missingSkillIds } = this._calculateSkillErrorInfo(emp);
 			emp.skillErrorCount = errorCount;
 			emp.missingSkillIds = missingSkillIds;
 		}
-		
+
 		return result;
 	}
 
@@ -446,7 +458,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private _calculateSkillErrorInfo(employee: Employee): { errorCount: number; missingSkillIds: string[] } {
 		const skillIds = this._normalizeSkillIds(employee.skills || []);
 		if (skillIds.length === 0) { return { errorCount: 0, missingSkillIds: [] }; }
-		
+
 		const missingSkillIds: string[] = [];
 		for (const skillId of skillIds) {
 			const skill = this.skillRegistry.getSkill(skillId);
@@ -463,8 +475,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		for (const ws of workspaces) {
 			const dirUri = await this._getWorkspaceDataUri(ws.id);
 			const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
-			const migrated = await this._ensureDefaultSkillsInDir(dirUri, employees);
-			const list = migrated || employees;
+			const wsMigrated = await this._ensureWorkspaceIdInDir(dirUri, employees, ws.id);
+			const afterWs = wsMigrated || employees;
+			const migrated = await this._ensureDefaultSkillsInDir(dirUri, afterWs);
+			const list = migrated || afterWs;
 			const found = list.find(e => e.id === id);
 			if (found) { return found; }
 		}
@@ -473,8 +487,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		if (folderUri) {
 			const localDirUri = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
 			const localEmployees = await this._readJsonFile<Employee>(localDirUri, DATA_FILE_EMPLOYEES);
-			const migrated = await this._ensureDefaultSkillsInDir(localDirUri, localEmployees);
-			const list = migrated || localEmployees;
+			const wsMigrated = await this._ensureWorkspaceIdInDir(localDirUri, localEmployees);
+			const afterWs = wsMigrated || localEmployees;
+			const migrated = await this._ensureDefaultSkillsInDir(localDirUri, afterWs);
+			const list = migrated || afterWs;
 			const found = list.find(e => e.id === id);
 			if (found) { return found; }
 		}
@@ -502,6 +518,80 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * must NEVER prevent the original employee list from being returned,
 	 * otherwise the whole UI breaks.
 	 */
+	/**
+	 * Reverse-lookup the `workspaceId` for the VS Code folder the user
+	 * currently has open. Reads workspaces.json and matches by normalised
+	 * absolute path. Returns `undefined` if no folder is open or no
+	 * matching workspace record exists.
+	 */
+	private async _inferWorkspaceIdFromActiveFolder(): Promise<string | undefined> {
+		const folderUri = this._getFirstWorkspaceFolderUri();
+		if (!folderUri) { return undefined; }
+		try {
+			const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+			const targetPath = folderUri.fsPath;
+			const norm = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase();
+			const targetNorm = norm(targetPath);
+			const match = workspaces.find(w => w.path && norm(w.path) === targetNorm);
+			return match?.id;
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] _inferWorkspaceIdFromActiveFolder failed: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Lazy migration: detect employees with a missing `workspaceId` field
+	 * and backfill it. The replacement value is, in order of preference:
+	 *   1. The `workspaceId` argument passed in by the caller (when known,
+	 *      i.e. `getEmployees(workspaceId)` was called explicitly).
+	 *   2. The id reverse-looked-up from the currently open VS Code folder.
+	 *
+	 * If neither is available, the affected employees are left untouched.
+	 * Runs at most once per dataDir per session, mirroring
+	 * {@link _ensureDefaultSkillsInDir}'s contract: errors are swallowed,
+	 * a successful migration fires `onDidChangeEmployees`.
+	 */
+	private async _ensureWorkspaceIdInDir(
+		dataDirUri: URI,
+		employees: Employee[],
+		knownWorkspaceId?: string,
+	): Promise<Employee[] | null> {
+		const key = dataDirUri.toString();
+		if (this._migratedWorkspaceIdDirs.has(key)) {
+			return null;
+		}
+		this._migratedWorkspaceIdDirs.add(key);
+
+		try {
+			const needsMigration = employees.some(e => !e.workspaceId);
+			if (!needsMigration) {
+				return null;
+			}
+
+			const inferred = knownWorkspaceId || (await this._inferWorkspaceIdFromActiveFolder());
+			if (!inferred) {
+				this.logService.warn(`[AgentStudio] _ensureWorkspaceIdInDir: ${employees.filter(e => !e.workspaceId).length} employee(s) in ${key} are missing workspaceId, but no fallback id could be inferred — skipped`);
+				return null;
+			}
+
+			let patched = 0;
+			const updated: Employee[] = employees.map(e => {
+				if (e.workspaceId) { return e; }
+				patched++;
+				return { ...e, workspaceId: inferred };
+			});
+
+			await this._writeJsonFile(dataDirUri, DATA_FILE_EMPLOYEES, updated);
+			this.logService.info(`[AgentStudio] _ensureWorkspaceIdInDir: backfilled workspaceId='${inferred}' on ${patched} employee(s) in ${key}`);
+			this._onDidChangeEmployees.fire();
+			return updated;
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] _ensureWorkspaceIdInDir failed for ${key}: ${err instanceof Error ? err.message : String(err)}`);
+			return null;
+		}
+	}
+
 	private async _ensureDefaultSkillsInDir(
 		dataDirUri: URI,
 		employees: Employee[],
@@ -676,6 +766,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			createdAt: now,
 			updatedAt: now,
 		};
+
+		// Defensive: if the caller didn't provide a workspaceId, derive one
+		// from the currently open VS Code folder by reverse-lookup against
+		// the global workspaces.json. Without this, the field is `undefined`
+		// and JSON.stringify drops it from the persisted record, which later
+		// blows up `agentChatService._resolveAgentPaths` with
+		// "Agent has no workspace directory".
+		if (!newEmployee.workspaceId) {
+			const inferred = await this._inferWorkspaceIdFromActiveFolder();
+			if (inferred) {
+				newEmployee.workspaceId = inferred;
+				this.logService.info(`[AgentStudio] createEmployee: backfilled missing workspaceId='${inferred}' for new employee id=${id} (caller did not supply one)`);
+			} else {
+				this.logService.warn(`[AgentStudio] createEmployee: new employee id=${id} has no workspaceId and no active folder to infer from — chat sessions will fail until this is fixed`);
+			}
+		}
+
 		employees.push(newEmployee);
 		await this._writeJsonFile(dirUri, filename, employees);
 
@@ -1112,7 +1219,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			throw new Error(`Workspace not found: ${id}`);
 		}
 		workspaces[index].layout = layout;
-		
+
 		// Sync edges from layout to connections to keep data consistent
 		if (layout.edges) {
 			workspaces[index].connections = layout.edges.map(e => ({
@@ -1123,7 +1230,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				label: (e.data?.label as string) || '',
 			}));
 		}
-		
+
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
@@ -1308,7 +1415,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			...connection,
 		};
 		workspaces[index].connections.push(newConnection);
-		
+
 		// Also update layout.edges to keep data consistent
 		if (workspaces[index].layout) {
 			workspaces[index].layout!.edges.push({
@@ -1319,7 +1426,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				data: { label: newConnection.label },
 			});
 		}
-		
+
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
@@ -1349,7 +1456,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			throw new Error(`Workspace not found: ${workspaceId}`);
 		}
 		workspaces[index].connections = workspaces[index].connections.filter((c: Connection) => c.id !== connectionId);
-		
+
 		// Also remove from layout.edges to keep data consistent
 		if (workspaces[index].layout) {
 			workspaces[index].layout = {
@@ -1357,7 +1464,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				edges: workspaces[index].layout.edges.filter(e => e.id !== connectionId),
 			};
 		}
-		
+
 		workspaces[index].updatedAt = new Date().toISOString();
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
@@ -2193,7 +2300,7 @@ ${employee.role}
 	private _getMemoryMdTemplate(): string {
 		return `# MEMORY.md - Long-Term Memory
 
-<!-- 
+<!--
   This file stores persistent memory across sessions.
   The agent may read and update this file to maintain
   context about the project, user preferences, and

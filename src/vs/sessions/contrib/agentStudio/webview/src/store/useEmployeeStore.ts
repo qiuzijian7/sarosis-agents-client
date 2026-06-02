@@ -102,9 +102,24 @@ export interface MemoryConfig {
 	enabled: boolean;
 	/** Maximum number of memory entries */
 	maxEntries: number;
-	/** Memory strategy: 'sliding_window' | 'summary' | 'full' */
-	strategy: 'sliding_window' | 'summary' | 'full';
-	/** Sliding window size (for sliding_window strategy) */
+	/**
+	 * Memory strategy:
+	 *   - 'summary' → 摘要压缩（仅注入 L1 长期记忆 / 摘要）
+	 *   - 'full'    → 完整保留（注入 L1 + L0：长期摘要 + 原始对话，full ⊇ summary）
+	 *
+	 * Note: 历史值 'sliding_window' 仍可能在已存盘的旧 agent 配置里出现，
+	 * 加载时由 UI / 注入层统一视为 'full'，下次保存时落盘为 'full'。
+	 */
+	strategy: 'summary' | 'full' | 'sliding_window';
+	/**
+	 * Recall scope (2026-06 新增) —— 决定召回 L1 时能看到哪些 agent 的记忆：
+	 *   - 'agent'     → 仅本 Agent 的记忆（默认，严格隔离）
+	 *   - 'workspace' → 本 workspace 下所有 agent 共享
+	 *   - 'global'    → 全库共享（兼容老行为）
+	 * 缺省 / undefined 时由调用层按 'agent' 处理。
+	 */
+	scope?: 'agent' | 'workspace' | 'global';
+	/** Sliding window size — DEPRECATED, kept for backward-compat with old configs */
 	windowSize?: number;
 	/** Custom memory entries */
 	entries: MemoryEntry[];

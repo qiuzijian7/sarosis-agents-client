@@ -279,10 +279,31 @@ export interface IMemoryProvider {
 	 * 历史 bug：早期接口没有 query 参数，TdbAmMemoryProvider 只能用占位字符串
 	 * `_loadContext_` 当 query，导致 vendor FTS5 永远召不回任何 L1 记忆。
 	 * 加了第 3 参后，调用方应把 messages 中最近一条 user 消息抽出来传入。
+	 *
+	 * `options.scope` (2026-06 新增) —— 控制召回的作用域：
+	 *   - 'agent'     → 仅本 Agent 自己写入的记忆
+	 *   - 'workspace' → 当前 workspace 下所有 agent 的记忆（需配合
+	 *     `options.allowedSessionKeys` 提供兄弟 agent 的 sessionKey 列表）
+	 *   - 'global'    → 全库（旧行为）
+	 * 不传时 provider 实现按"global"兜底，保持向后兼容；老的 provider
+	 * 实现可以忽略此参数（接口已声明为可选）。
 	 */
-	loadContext(agentId: string, sessionId: string, query?: string): Promise<IMemoryContext>;
+	loadContext(
+		agentId: string,
+		sessionId: string,
+		query?: string,
+		options?: IMemoryRecallOptions,
+	): Promise<IMemoryContext>;
 	writeMemory(agentId: string, entry: IMemoryEntry): Promise<void>;
 	searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]>;
+}
+
+/**
+ * 记忆召回的可选作用域参数（2026-06 新增）。详见 IMemoryProvider.loadContext 注释。
+ */
+export interface IMemoryRecallOptions {
+	scope?: 'agent' | 'workspace' | 'global';
+	allowedSessionKeys?: readonly string[];
 }
 
 export interface IMemoryContext {
@@ -533,6 +554,28 @@ export interface IAgentTurnRequest {
 	readonly explicitSkillIds?: readonly string[];
 	/** Current chat mode: craft (full access), ask (read-only tools), plan (decomposition only), workflow (craft + downstream agents) */
 	readonly chatMode?: 'craft' | 'ask' | 'plan' | 'workflow';
+	/**
+	 * Memory 注入策略（来自 Agent 的 memoryConfig.strategy）：
+	 *   - 'full'    → 仅注入 L0（原始对话 / shortTermMemories）
+	 *   - 'summary' → 仅注入 L1（摘要 / longTermMemories）
+	 * 未指定时按 'full' 处理，保留旧行为兼容。
+	 */
+	readonly memoryStrategy?: 'summary' | 'full';
+	/** Memory 注入条数上限（来自 Agent 的 memoryConfig.maxEntries），未指定时不限制。 */
+	readonly memoryMaxEntries?: number;
+	/**
+	 * Memory 召回作用域（2026-06 新增，来自 Agent 的 memoryConfig.scope）：
+	 *   - 'agent'     → 仅本 Agent 自己写入的 L1 记忆
+	 *   - 'workspace' → 当前 workspace 下所有 agent 共享 L1（需配合 memoryAllowedSessionKeys）
+	 *   - 'global'    → 全库 L1（旧行为）
+	 * 未指定时按 'agent' 处理（C2 默认严格隔离）。
+	 */
+	readonly memoryScope?: 'agent' | 'workspace' | 'global';
+	/**
+	 * 当 memoryScope === 'workspace' 时，调用方负责把"同 workspace 下所有 agent 的
+	 * sessionKey（agent:<id>）"列出来传下去。Provider 自身没有能力枚举兄弟 agent。
+	 */
+	readonly memoryAllowedSessionKeys?: readonly string[];
 }
 
 // ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────

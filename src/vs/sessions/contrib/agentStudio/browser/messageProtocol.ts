@@ -116,6 +116,10 @@ export type RequestType =
 	| 'chat.jumpToCheckpoint'     // navigate to a checkpoint (Void-inspired time-travel)
 	| 'chat.toolApprove'          // approve/reject a pending tool call
 	| 'worktree.list'           // list git worktrees for a workspace
+	| 'memory.listL0'           // list L0 raw conversation turns for an agent (TDB-AM)
+	| 'memory.listL1'           // list L1 distilled memories for an agent (TDB-AM)
+	| 'memory.deleteL0'         // hard-delete L0 record(s) by id
+	| 'memory.deleteL1'         // hard-delete L1 record(s) by id
 	| 'skills.list';              // list all registered skills
 
 // Event types (Host → WebView, unsolicited)
@@ -745,4 +749,66 @@ export interface IChatListCheckpointsPayload {
 export interface IChatDeleteCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
+}
+
+// ─── Memory inspection (TDB-AM gateway proxy) ─────────────────────────────────
+
+/**
+ * Common request shape for `memory.listL0` / `memory.listL1`.
+ *
+ * Both calls are scoped by **agentId**. The host derives the gateway
+ * `session_key` from it (`agent:<agentId>`) — identical to the rule used by
+ * `TdbAmMemoryProvider.deriveSessionKey()` so the panel sees exactly what the
+ * runtime writes.
+ */
+export interface IMemoryListPayload {
+	/** Agent whose memory layer is being inspected. */
+	readonly agentId: string;
+	/** Max rows to return (gateway clamps to 500). Default 200. */
+	readonly limit?: number;
+}
+
+/** Single L0 turn item returned by `memory.listL0`. */
+export interface IMemoryL0Item {
+	readonly recordId: string;
+	readonly sessionKey: string;
+	readonly sessionId: string;
+	readonly role: string;
+	readonly messageText: string;
+	readonly recordedAt: string;
+	readonly timestamp: number;
+}
+
+/** Single L1 distilled memory item returned by `memory.listL1`. */
+export interface IMemoryL1Item {
+	readonly recordId: string;
+	readonly content: string;
+	readonly updatedTime: string;
+}
+
+export interface IMemoryListL0Response {
+	readonly items: readonly IMemoryL0Item[];
+	readonly total: number;
+}
+
+export interface IMemoryListL1Response {
+	readonly items: readonly IMemoryL1Item[];
+	readonly total: number;
+}
+
+/**
+ * Hard-delete memory record(s). Used by per-row delete buttons in the
+ * agent editor's Memory tab. The gateway is the only writer to the
+ * underlying SQLite tables, so deletion goes through the same proxy
+ * channel as listing.
+ */
+export interface IMemoryDeletePayload {
+	readonly agentId: string;
+	/** Record IDs to delete. The host forwards them to the gateway as-is. */
+	readonly recordIds: readonly string[];
+}
+
+export interface IMemoryDeleteResponse {
+	readonly deleted: number;
+	readonly failed: readonly string[];
 }
