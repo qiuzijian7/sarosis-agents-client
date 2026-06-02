@@ -106,9 +106,13 @@ function CanvasPanel(): React.ReactElement {
 	useEffect(() => {
 		console.log('[CanvasPanel] setting up event listeners');
 		const onEmployeesChanged = () => {
-			console.log('[CanvasPanel] event: employees-changed, activeWorkspaceId:', activeWorkspaceId);
+			// Read activeWorkspaceId from store at event-time (not from stale closure).
+			// The closure-captured `activeWorkspaceId` can be null if the workspace was
+			// set after this useEffect registered the listener.
+			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
+			console.log('[CanvasPanel] event: employees-changed, activeWorkspaceId:', currentActiveId);
 			// Always load employees - if no active workspace, load from default location
-			loadEmployees(activeWorkspaceId || undefined);
+			loadEmployees(currentActiveId || undefined);
 		};
 		const onWorkspaceChanged = () => {
 			console.log('[CanvasPanel] event: workspace-changed');
@@ -193,8 +197,9 @@ function ChatPanel(): React.ReactElement {
 
 	useEffect(() => {
 		const onEmployeesChanged = () => {
-			// Always load employees - if no active workspace, load from default location
-			loadEmployees(activeWorkspaceId || undefined);
+			// Read activeWorkspaceId from store at event-time (not from stale closure).
+			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
+			loadEmployees(currentActiveId || undefined);
 		};
 		const onActiveWorkspaceChanged = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
@@ -366,8 +371,9 @@ function FullLayout(): React.ReactElement {
 	// Listen for host events
 	useEffect(() => {
 		const onEmployeesChanged = () => {
-			// Always load employees - if no active workspace, load from default location
-			loadEmployees(activeWorkspaceId || undefined);
+			// Read activeWorkspaceId from store at event-time (not from stale closure).
+			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
+			loadEmployees(currentActiveId || undefined);
 		};
 		const onWorkspaceChanged = () => { loadWorkspaces(); };
 

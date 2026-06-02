@@ -555,6 +555,42 @@ html, body, #root {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
 }
 
+/* Layout direction toggle - floating above the zoom controls (bottom-left) */
+.canvas-layout-direction-btn {
+  position: absolute;
+  left: 15px;
+  bottom: 108px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.canvas-layout-direction-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.canvas-layout-direction-btn:hover {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-textLink-foreground, #3b82f6));
+}
+
+.canvas-layout-direction-btn.horizontal {
+  color: var(--vscode-textLink-foreground, #3b82f6);
+  border-color: var(--vscode-textLink-foreground, #3b82f6);
+}
+
 .canvas-controls button {
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background)) !important;
   color: var(--vscode-foreground) !important;
@@ -5240,4 +5276,78 @@ html, body, #root {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
   opacity: 0.7;
+}
+
+/* ─── Canvas selection (box select) styles ─────────────────────── */
+.react-flow__selection {
+  background-color: rgba(59, 130, 246, 0.15) !important;
+  border: 1px solid rgba(59, 130, 246, 0.5) !important;
+  border-radius: 2px;
+}
+
+/* Selected node highlight */
+.employee-node-wrapper.selected,
+.employee-node-wrapper:has(.employee-node-selected) {
+  box-shadow: 0 0 0 2px var(--vscode-focusBorder, #3b82f6) !important;
+  border-radius: 10px;
+}
+
+/* Selected edge style */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--vscode-focusBorder, #3b82f6) !important;
+  stroke-width: 3px !important;
+}
+
+/* ─── Canvas context menu (right-click) ────────────────────────── */
+.canvas-context-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 180px;
+  background-color: var(--vscode-menu-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.canvas-context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  transition: background-color 80ms;
+}
+
+.canvas-context-menu-item:hover:not(.disabled) {
+  background-color: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground));
+}
+
+.canvas-context-menu-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.canvas-context-menu-item.danger:hover:not(.disabled) {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.canvas-context-menu-label {
+  flex: 1;
+}
+
+.canvas-context-menu-shortcut {
+  margin-left: 20px;
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+.canvas-context-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background-color: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
 }

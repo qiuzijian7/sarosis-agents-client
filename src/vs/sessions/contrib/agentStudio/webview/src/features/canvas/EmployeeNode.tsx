@@ -5,7 +5,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { memo, useState, useRef, useEffect } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { openAgentConfigMd, previewAgentConfigMd } from '../../bridge/fileBridge';
@@ -23,6 +23,8 @@ interface EmployeeNodeData {
 	worktreePath?: string;
 	worktreeBranch?: string;
 	worktreeStatus?: 'none' | 'pending' | 'ready' | 'failed';
+	/** Layout direction for handle positioning */
+	layoutDirection?: 'vertical' | 'horizontal';
 }
 
 // Status color/style configuration matching sarosis-webui STATUS_MAP
@@ -34,8 +36,9 @@ const STATUS_MAP: Record<string, { label: string; color: string; bg: string; dot
 	offline: { label: '离线', color: '#6b7280', bg: 'rgba(255,255,255,0.02)', dot: 'rgba(255,255,255,0.2)', animated: false },
 };
 
-function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData }): React.ReactElement {
-	const { employee, isSelected, onSelect, onDelete, worktreePath, worktreeBranch, worktreeStatus } = data;
+function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeData }): React.ReactElement {
+	const { employee, isSelected, onSelect, onDelete, worktreePath, worktreeBranch, worktreeStatus, layoutDirection } = data;
+	const updateNodeInternals = useUpdateNodeInternals();
 	const [imgError, setImgError] = useState(false);
 	const [isEditingName, setIsEditingName] = useState(false);
 	const [editName, setEditName] = useState(employee.name);
@@ -44,6 +47,34 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 	const [isLoadingWorktrees, setIsLoadingWorktrees] = useState(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
 	const statusInfo = STATUS_MAP[employee.status] || STATUS_MAP.idle;
+
+	// When layout direction changes, the connection handles move from
+	// Top/Bottom to Left/Right (or vice versa). ReactFlow caches handle
+	// positions internally and does NOT re-measure on its own, so edges
+	// would keep pointing at the old (vertical) anchor points. Calling
+	// updateNodeInternals forces ReactFlow to re-measure this node's
+	// handles and re-route connected edges to the new positions.
+	//
+	// IMPORTANT: We defer with requestAnimationFrame so the browser has
+	// already painted the Handle at its new DOM position BEFORE we ask
+	// ReactFlow to re-measure. Without this delay, updateNodeInternals
+	// may read stale handle coordinates from the previous frame.
+	useEffect(() => {
+		// Double-rAF: first frame lets React commit the new Handle DOM position,
+		// second frame ensures browser has completed layout & paint. Only then
+		// we ask ReactFlow to re-measure handle coordinates.
+		console.log(`[EmployeeNode] layoutDirection changed to "${layoutDirection}" for node "${id}"`);
+		let cancelled = false;
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				if (!cancelled) {
+					console.log(`[EmployeeNode] calling updateNodeInternals("${id}") after double-rAF`);
+					updateNodeInternals(id);
+				}
+			});
+		});
+		return () => { cancelled = true; };
+	}, [layoutDirection, id, updateNodeInternals]);
 
 	// Focus input when entering edit mode
 	useEffect(() => {
@@ -143,9 +174,19 @@ function EmployeeNodeComponent({ data }: NodeProps & { data: EmployeeNodeData })
 				onSelect?.(employee.id);
 			}}
 		>
-			{/* Connection handles */}
-			<Handle type="target" position={Position.Top} className="employee-node-handle" />
-			<Handle type="source" position={Position.Bottom} className="employee-node-handle" />
+			{/* Connection handles - direction based on layoutDirection */}
+			<Handle
+				type="target"
+				id="target"
+				position={layoutDirection === 'horizontal' ? Position.Left : Position.Top}
+				className="employee-node-handle"
+			/>
+			<Handle
+				type="source"
+				id="source"
+				position={layoutDirection === 'horizontal' ? Position.Right : Position.Bottom}
+				className="employee-node-handle"
+			/>
 
 			{/* Card body - vertical layout */}
 			<div className="employee-node-body">

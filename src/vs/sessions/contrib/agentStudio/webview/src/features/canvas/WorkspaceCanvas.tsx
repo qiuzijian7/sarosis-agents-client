@@ -27,6 +27,7 @@ import {
 	Edge,
 	EdgeChange,
 	Edge as XYEdge,
+	useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -56,7 +57,7 @@ const edgeTypes: EdgeTypes = {
 
 export function WorkspaceCanvas(): React.ReactElement {
 	const { nodes: storeNodes, edges: storeEdges, activeWorkspaceId, updateNodes, updateEdges, saveLayout, isReadOnly } = useWorkspaceStore();
-	const { employees, selectEmployee, deleteEmployee, loadEmployees } = useEmployeeStore();
+	const { employees, selectEmployee, deleteEmployee, loadEmployees, exportEmployee, importEmployee } = useEmployeeStore();
 	const { mode } = useWorkspaceSessionStore();
 	const { openPlanDialog } = useOrchestrationStore();
 	const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
@@ -74,11 +75,25 @@ export function WorkspaceCanvas(): React.ReactElement {
 		}
 	});
 
+	// Canvas layout direction with localStorage persistence
+	const [layoutDirection, setLayoutDirection] = useState<'vertical' | 'horizontal'>(() => {
+		try {
+			const saved = localStorage.getItem('hermes-canvas-layout-direction');
+			return saved === 'horizontal' ? 'horizontal' : 'vertical';
+		} catch {
+			return 'vertical';
+		}
+	});
+
 	// Sync displayMode to localStorage
 	const handleViewModeChange = useCallback((mode: ViewMode) => {
 		setDisplayMode(mode);
 		try { localStorage.setItem('hermes-display-mode', mode); } catch {}
 	}, []);
+
+	// NOTE: handleLayoutDirectionToggle is defined later (after node/edge state
+	// and persistence helpers are available) because toggling the direction now
+	// also re-arranges the card positions to match the new flow orientation.
 
 	// HTML view selected agent ID
 	const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -86,6 +101,22 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const [htmlViewLoading, setHtmlViewLoading] = useState(false);
 	const [htmlViewAgents, setHtmlViewAgents] = useState<Array<{ id: string; name: string; role: string; workspaceId: string }>>([]);
 	const [isHtmlDropdownOpen, setIsHtmlDropdownOpen] = useState(false);
+
+	// ─── Context menu for right-click copy/paste ─────────────────
+	const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+
+	// ─── Clipboard for copy/paste ─────────────────────────────────
+	interface ClipboardData {
+		nodes: Node[];
+		edges: Edge[];
+		timestamp: number;
+	}
+	const clipboardRef = useRef<ClipboardData | null>(null);
+
+	// Flag to suppress useEffect node rebuild during paste operation.
+	// When true, the employees-watching useEffect skips rebuilding nodes
+	// so that handlePaste has full control over node creation + positioning.
+	const isPastingRef = useRef(false);
 
 	const handleSelectedAgentIdChange = useCallback((agentId: string | null) => {
 		setSelectedAgentId(agentId);
@@ -245,10 +276,11 @@ export function WorkspaceCanvas(): React.ReactElement {
 					worktreePath,
 					worktreeBranch,
 					worktreeStatus,
+					layoutDirection,
 				},
 			};
 		});
-	}, [employees, storeNodes, selectEmployee, findNonOverlappingPosition]);
+	}, [employees, storeNodes, selectEmployee, findNonOverlappingPosition, layoutDirection]);
 
 	const initialEdges = useMemo<Edge[]>(() => {
 		return storeEdges.map((e) => ({
@@ -264,6 +296,14 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
 	const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+	// Sync layoutDirection to all nodes when it changes
+	useEffect(() => {
+		setNodes(prevNodes => prevNodes.map(n => ({
+			...n,
+			data: { ...n.data, layoutDirection },
+		})));
+	}, [layoutDirection, setNodes]);
 
 	// Keep a ref to the latest `nodes` so that drag callbacks (which may be
 	// cached by ReactFlow during an active drag gesture) can always read the
@@ -286,6 +326,11 @@ export function WorkspaceCanvas(): React.ReactElement {
 	// of truth for visual position updates; `storeNodes` is only used for
 	// INITIAL placement of brand-new employees (read inline below).
 	useEffect(() => {
+		// Skip rebuild during paste operation — handlePaste manages nodes directly.
+		if (isPastingRef.current) {
+			console.log('[WorkspaceCanvas] employees changed during paste — skipping rebuild');
+			return;
+		}
 		console.log('[WorkspaceCanvas] employees changed, count:', employees.length, 'employees:', employees.map(e => e.name));
 		const selectedEmployeeId = useEmployeeStore.getState().selectedEmployeeId;
 		setNodes(prevNodes => {
@@ -334,6 +379,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 						isSelected: emp.id === selectedEmployeeId,
 						onSelect: (empId: string) => selectEmployee(empId),
 						onDelete: (empId: string) => handleDeleteEmployee(empId),
+						layoutDirection,
 						worktreePath,
 						worktreeBranch,
 						worktreeStatus,
@@ -541,11 +587,371 @@ export function WorkspaceCanvas(): React.ReactElement {
 	const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
 		console.warn(`[WorkspaceCanvas] onNodeClick: node.id=${node.id}`);
 		selectEmployee(node.id);
-	}, [selectEmployee]);
+		// Explicitly mark the clicked node as selected in ReactFlow's internal state.
+		// This is necessary because selectionOnDrag + panOnDrag=[1] can sometimes
+		// prevent ReactFlow from automatically marking a single-clicked node as selected.
+		setNodes(prevNodes => prevNodes.map(n => ({
+			...n,
+			selected: n.id === node.id,
+		})));
+	}, [selectEmployee, setNodes]);
 
 	const onInit = useCallback((instance: ReactFlowInstance) => {
 		reactFlowInstance.current = instance;
 	}, []);
+
+	// ─── Layout direction toggle (also re-arranges card positions) ──────
+	// When the user switches between vertical and horizontal layout we not
+	// only flip the connection-handle orientation (handled inside
+	// EmployeeNode) but ALSO re-arrange the cards so the overall flow reads
+	// in the new direction:
+	//   - vertical   → cards stacked top→bottom (a grid that grows downward)
+	//   - horizontal → cards laid left→right   (a grid that grows rightward)
+	// Connected agents (source → target) are kept in dependency order so the
+	// arrows follow the chosen reading direction.
+	const handleLayoutDirectionToggle = useCallback(() => {
+		setLayoutDirection(prev => {
+			const next = prev === 'vertical' ? 'horizontal' : 'vertical';
+			try { localStorage.setItem('hermes-canvas-layout-direction', next); } catch {}
+
+			// Transpose node positions: swap x and y coordinates (reflection
+			// along y = -x). This preserves the relative spatial arrangement
+			// of cards while converting a vertical layout to horizontal or
+			// vice-versa.
+			const currentNodes = nodesRef.current;
+			if (currentNodes.length === 0) { return next; }
+
+			const newPosById = new Map<string, { x: number; y: number }>();
+			for (const n of currentNodes) {
+				// Simply swap x ↔ y to transpose the layout
+				newPosById.set(n.id, { x: n.position.y, y: n.position.x });
+			}
+
+			// Apply to ReactFlow nodes immediately (also refresh layoutDirection).
+			setNodes(prevNodes => prevNodes.map(n => ({
+				...n,
+				position: newPosById.get(n.id) || n.position,
+				data: { ...n.data, layoutDirection: next },
+			})));
+
+			// Note: Handle position update is handled by EmployeeNode's own
+			// useEffect which watches `layoutDirection` in node.data and calls
+			// updateNodeInternals via double-rAF after the DOM re-paints.
+
+			// Persist new positions (best-effort) so they survive reload.
+			if (!isReadOnly) {
+				const updated = currentNodes.map(n => ({
+					id: n.id,
+					type: n.type || 'employee',
+					position: newPosById.get(n.id) || n.position,
+					data: {},
+				}));
+				updateNodes(updated);
+				for (const n of updated) {
+					sendRequest('employees.update', { id: n.id, data: { position: n.position } })
+						.catch(err => console.error('[WorkspaceCanvas] layout reflow employees.update failed:', err));
+				}
+				saveLayout().catch(err => console.error('[WorkspaceCanvas] layout reflow saveLayout failed:', err));
+			}
+
+			return next;
+		});
+	}, [isReadOnly, setNodes, updateNodes, saveLayout]);
+
+	// ─── Copy / Paste keyboard handlers ──────────────────────────
+	const handleCopy = useCallback(() => {
+		if (!reactFlowInstance.current) { return; }
+		let selectedNodes = reactFlowInstance.current.getNodes().filter(n => n.selected);
+
+		// Fallback: if ReactFlow has no selection, use the store's selectedEmployeeId.
+		// This handles the case where clicking a node only updates our store but not
+		// ReactFlow's internal selection (e.g. in VS Code webview where click events
+		// may not propagate ReactFlow's selection logic correctly).
+		if (selectedNodes.length === 0) {
+			const selectedId = useEmployeeStore.getState().selectedEmployeeId;
+			if (selectedId) {
+				const node = reactFlowInstance.current.getNodes().find(n => n.id === selectedId);
+				if (node) {
+					selectedNodes = [node];
+					console.log(`[WorkspaceCanvas] Copy fallback: using store selectedEmployeeId "${selectedId}"`);
+				}
+			}
+		}
+
+		if (selectedNodes.length === 0) {
+			console.warn('[WorkspaceCanvas] Copy: no nodes selected (neither ReactFlow selection nor store)');
+			return;
+		}
+		const selectedNodeIds = new Set(selectedNodes.map(n => n.id));
+		// Only copy edges where both endpoints are in the selection
+		const selectedEdges = reactFlowInstance.current.getEdges().filter(
+			e => selectedNodeIds.has(e.source) && selectedNodeIds.has(e.target)
+		);
+		clipboardRef.current = { nodes: selectedNodes, edges: selectedEdges, timestamp: Date.now() };
+		console.log(`[WorkspaceCanvas] Copied ${selectedNodes.length} nodes, ${selectedEdges.length} edges`);
+	}, []);
+
+	const handlePaste = useCallback(async () => {
+		if (!clipboardRef.current) {
+			console.warn('[WorkspaceCanvas] Paste: clipboard is empty (nothing copied yet)');
+			return;
+		}
+		if (!reactFlowInstance.current) {
+			console.warn('[WorkspaceCanvas] Paste: ReactFlow instance not ready');
+			return;
+		}
+		if (isReadOnly) {
+			console.warn('[WorkspaceCanvas] Paste: canvas is read-only');
+			return;
+		}
+		const { nodes: copiedNodes, edges: copiedEdges } = clipboardRef.current;
+
+		// Resolve workspace ID — prefer store's activeWorkspaceId, fallback to the
+		// workspaceId field on the first copied employee (covers the case where
+		// the canvas displays agents but workspace.setActive was never called).
+		let resolvedWorkspaceId = activeWorkspaceId;
+		if (!resolvedWorkspaceId) {
+			const firstEmp = useEmployeeStore.getState().employees.find(e => e.id === copiedNodes[0]?.id);
+			resolvedWorkspaceId = firstEmp?.workspaceId ?? null;
+			if (resolvedWorkspaceId) {
+				console.log(`[WorkspaceCanvas] Paste: activeWorkspaceId was null, resolved from employee.workspaceId: ${resolvedWorkspaceId}`);
+			}
+		}
+		if (!resolvedWorkspaceId) {
+			// Last resort: try to get workspaceId from workspaces list (first workspace)
+			const workspaces = useWorkspaceStore.getState().workspaces;
+			resolvedWorkspaceId = workspaces[0]?.id ?? null;
+			if (resolvedWorkspaceId) {
+				console.log(`[WorkspaceCanvas] Paste: resolved from first workspace in store: ${resolvedWorkspaceId}`);
+			}
+		}
+		if (!resolvedWorkspaceId) {
+			console.warn('[WorkspaceCanvas] Paste: no active workspace ID and no fallback available');
+			return;
+		}
+
+		// CRITICAL: If activeWorkspaceId was null, update the store NOW so that
+		// any subsequent `employees.changed` event handlers (in App.tsx) will
+		// use the correct workspace ID when calling loadEmployees().
+		if (!activeWorkspaceId) {
+			console.log(`[WorkspaceCanvas] Paste: setting store activeWorkspaceId to ${resolvedWorkspaceId}`);
+			useWorkspaceStore.setState({ activeWorkspaceId: resolvedWorkspaceId });
+		}
+
+		console.log(`[WorkspaceCanvas] Paste started: ${copiedNodes.length} nodes, workspace=${resolvedWorkspaceId}`);
+
+		// Offset for paste (shift slightly so pasted nodes don't overlap originals)
+		const OFFSET = 40;
+		const idMap = new Map<string, string>(); // old id → new id
+
+		// Suppress useEffect rebuild while we import employees.
+		// importEmployee updates Zustand store.employees → which would normally
+		// trigger the useEffect to rebuild all nodes. That rebuild would produce
+		// duplicate IDs because we also manually add nodes below.
+		isPastingRef.current = true;
+
+		// 1. Create new employee instances via export → import
+		for (const node of copiedNodes) {
+			try {
+				console.log(`[WorkspaceCanvas] Paste: exporting employee "${node.id}"...`);
+				const exportData = await exportEmployee(node.id);
+				console.log(`[WorkspaceCanvas] Paste: importing clone of "${node.id}"...`);
+				// Create via import (which clones the agent dir, config, etc.)
+				const newEmployee = await importEmployee(exportData, resolvedWorkspaceId!);
+				idMap.set(node.id, newEmployee.id);
+				console.log(`[WorkspaceCanvas] Paste: cloned "${node.id}" → "${newEmployee.id}"`);
+			} catch (err) {
+				console.error(`[WorkspaceCanvas] Failed to clone employee ${node.id}:`, err);
+			}
+		}
+
+		if (idMap.size === 0) {
+			console.warn('[WorkspaceCanvas] Paste: all clone attempts failed, no nodes to paste');
+			isPastingRef.current = false;
+			return;
+		}
+
+		// 2. Build new nodes with offset positions
+		const newNodes: Node[] = [];
+		for (const node of copiedNodes) {
+			const newId = idMap.get(node.id);
+			if (!newId) { continue; }
+			const emp = useEmployeeStore.getState().employees.find(e => e.id === newId);
+			if (!emp) { continue; }
+			newNodes.push({
+				id: newId,
+				type: 'employee',
+				position: { x: node.position.x + OFFSET, y: node.position.y + OFFSET },
+				draggable: true,
+				selectable: true,
+				data: {
+					employee: emp,
+					isSelected: false,
+					onSelect: (empId: string) => selectEmployee(empId),
+					onDelete: (empId: string) => { void deleteEmployee(empId); },
+					layoutDirection,
+				},
+			});
+		}
+
+		// 3. Create new edges (only between successfully cloned nodes)
+		const newEdges: Edge[] = [];
+		for (const edge of copiedEdges) {
+			const newSource = idMap.get(edge.source);
+			const newTarget = idMap.get(edge.target);
+			if (!newSource || !newTarget) { continue; }
+			try {
+				await sendRequest('workspace.connections.add', {
+					workspaceId: resolvedWorkspaceId,
+					sourceId: newSource,
+					targetId: newTarget,
+					type: 'subagent',
+				});
+				newEdges.push({
+					id: `e-${newSource}-${newTarget}`,
+					source: newSource,
+					target: newTarget,
+					type: 'connection',
+					animated: true,
+					style: { stroke: 'var(--vscode-textLink-foreground, #3b82f6)', strokeWidth: 2 },
+				});
+			} catch (err) {
+				console.error(`[WorkspaceCanvas] Failed to add connection ${newSource}→${newTarget}:`, err);
+			}
+		}
+
+		// 4. Add new nodes/edges to ReactFlow state (merge, not replace)
+		setNodes(prev => {
+			// Filter out any duplicates that might have slipped through
+			const existingIds = new Set(prev.map(n => n.id));
+			const uniqueNewNodes = newNodes.filter(n => !existingIds.has(n.id));
+			return [...prev, ...uniqueNewNodes];
+		});
+		setEdges(prev => [...prev, ...newEdges]);
+
+		// 5. Persist layout
+		try {
+			// Update store nodes/edges with the new data
+			const currentStoreNodes = useWorkspaceStore.getState().nodes;
+			const currentStoreEdges = useWorkspaceStore.getState().edges;
+			updateNodes([...currentStoreNodes, ...newNodes.map(n => ({ id: n.id, position: n.position }))]);
+			updateEdges([...currentStoreEdges, ...newEdges.map(e => ({
+				id: e.id, source: e.source, target: e.target, type: e.type, data: e.data,
+			}))]);
+			await saveLayout();
+		} catch (err) {
+			console.error('[WorkspaceCanvas] Failed to save layout after paste:', err);
+		}
+
+		// 6. Persist positions to employees.json via employees.update
+		for (const node of newNodes) {
+			try {
+				await sendRequest('employees.update', {
+					id: node.id,
+					data: { position: node.position },
+				});
+			} catch (err) {
+				console.error(`[WorkspaceCanvas] Failed to persist position for pasted node ${node.id}:`, err);
+			}
+		}
+
+		// 7. Select newly pasted nodes
+		setNodes(prev => prev.map(n => ({
+			...n,
+			selected: newNodes.some(nn => nn.id === n.id),
+		})));
+
+		// Re-enable the employees useEffect after the current render cycle.
+		// Use setTimeout(0) to ensure any queued React re-renders from the
+		// importEmployee store updates have already been processed.
+		setTimeout(() => {
+			isPastingRef.current = false;
+		}, 0);
+
+		console.log(`[WorkspaceCanvas] Pasted ${newNodes.length} nodes, ${newEdges.length} edges`);
+	}, [activeWorkspaceId, isReadOnly, exportEmployee, importEmployee, selectEmployee, deleteEmployee, layoutDirection, setNodes, setEdges, updateNodes, updateEdges, saveLayout]);
+
+	// Global keyboard shortcut handler for copy/paste
+	// Uses document-level listener because ReactFlow's onKeyDown only fires when
+	// the ReactFlow container has focus — in a VS Code WebView this is unreliable.
+	//
+	// Supports both Ctrl+C/V and Ctrl+Shift+C/V (in case VS Code intercepts plain Ctrl+C/V).
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			// Only handle when not in an input/textarea
+			const target = event.target as HTMLElement;
+			if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+				return;
+			}
+
+			// IMPORTANT: exclude Shift so we do NOT swallow VS Code's native
+			// Ctrl+Shift+C / Ctrl+Shift+V (and avoid interfering with other
+			// Ctrl+Shift+* shortcuts that bubble through the webview, e.g.
+			// the command palette). Only plain Ctrl/Cmd + C/V is ours.
+			const ctrlOrMeta = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
+			const isCopy = ctrlOrMeta && (event.key === 'c' || event.key === 'C');
+			const isPaste = ctrlOrMeta && (event.key === 'v' || event.key === 'V');
+
+			if (isCopy) {
+				console.log('[WorkspaceCanvas] Copy shortcut detected, selectedNodes:',
+					reactFlowInstance.current?.getNodes().filter(n => n.selected).length ?? 0);
+				event.preventDefault();
+				event.stopPropagation();
+				handleCopy();
+			} else if (isPaste) {
+				console.log('[WorkspaceCanvas] Paste shortcut detected, clipboard:',
+					clipboardRef.current ? `${clipboardRef.current.nodes.length} nodes` : 'empty');
+				event.preventDefault();
+				event.stopPropagation();
+				handlePaste();
+			}
+		};
+
+		// Use capture phase to intercept before VS Code's handler
+		document.addEventListener('keydown', handleKeyDown, true);
+		return () => document.removeEventListener('keydown', handleKeyDown, true);
+	}, [handleCopy, handlePaste]);
+
+	// ─── Context menu (right-click) for copy/paste ───────────────
+	const onPaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
+		event.preventDefault();
+		setContextMenu({ x: event.clientX, y: event.clientY });
+	}, []);
+
+	const onNodeContextMenu = useCallback((event: React.MouseEvent, _node: Node) => {
+		event.preventDefault();
+		setContextMenu({ x: event.clientX, y: event.clientY });
+	}, []);
+
+	// Close context menu on any click outside
+	useEffect(() => {
+		const closeMenu = () => setContextMenu(null);
+		document.addEventListener('click', closeMenu);
+		return () => document.removeEventListener('click', closeMenu);
+	}, []);
+
+	const handleContextMenuCopy = useCallback(() => {
+		handleCopy();
+		setContextMenu(null);
+	}, [handleCopy]);
+
+	const handleContextMenuPaste = useCallback(() => {
+		handlePaste();
+		setContextMenu(null);
+	}, [handlePaste]);
+
+	const handleContextMenuDelete = useCallback(async () => {
+		if (!reactFlowInstance.current) { return; }
+		const selectedNodes = reactFlowInstance.current.getNodes().filter(n => n.selected);
+		for (const node of selectedNodes) {
+			try {
+				await deleteEmployee(node.id);
+			} catch (err) {
+				console.error(`[WorkspaceCanvas] Failed to delete employee ${node.id}:`, err);
+			}
+		}
+		setContextMenu(null);
+	}, [deleteEmployee]);
 
 	// Handle edge deletion
 	const handleEdgeDelete = useCallback(async (edgesToDelete: XYEdge[]) => {
@@ -775,6 +1181,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
 								</svg>
 							</button>
+							<div className="canvas-toggle-divider" />
 							<button
 								className="canvas-html-dropdown-btn"
 								onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
@@ -813,6 +1220,8 @@ export function WorkspaceCanvas(): React.ReactElement {
 							onNodeDrag={onNodeDrag}
 							onNodeDragStop={onNodeDragStop}
 							onNodeClick={onNodeClick}
+							onNodeContextMenu={onNodeContextMenu}
+							onPaneContextMenu={onPaneContextMenu}
 							onInit={onInit}
 							onDragOver={onDragOver}
 							onDrop={onDrop}
@@ -821,6 +1230,10 @@ export function WorkspaceCanvas(): React.ReactElement {
 							nodesDraggable={true}
 							nodesConnectable={!isReadOnly}
 							elementsSelectable={true}
+							selectionOnDrag={false}
+							panOnDrag={true}
+							panOnScroll={true}
+							selectionKeyCode="Shift"
 							fitView
 							fitViewOptions={{ padding: 0.2 }}
 							proOptions={{ hideAttribution: true }}
@@ -832,6 +1245,22 @@ export function WorkspaceCanvas(): React.ReactElement {
 							className="workspace-canvas"
 						>
 							<Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--vscode-editorIndentGuide-background, #374151)" />
+							{/* Layout direction toggle - floating above the zoom controls (bottom-left) */}
+							<button
+								className={`canvas-layout-direction-btn ${layoutDirection === 'vertical' ? 'vertical' : 'horizontal'}`}
+								onClick={handleLayoutDirectionToggle}
+								title={layoutDirection === 'vertical' ? '垂直布局（当前）- 点击切换为水平布局' : '水平布局（当前）- 点击切换为垂直布局'}
+							>
+								{layoutDirection === 'vertical' ? (
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-4 4m4-4l4 4" />
+									</svg>
+								) : (
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+										<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14m0 0l-4-4m4 4l-4 4" />
+									</svg>
+								)}
+							</button>
 							<Controls
 								className="canvas-controls"
 								showInteractive={false}
@@ -844,6 +1273,31 @@ export function WorkspaceCanvas(): React.ReactElement {
 								maskColor="var(--vscode-editor-background, rgba(17, 24, 39, 0.8))"
 							/>
 						</ReactFlow>
+
+						{/* Context menu for copy/paste/delete */}
+						{contextMenu && (
+							<div
+								className="canvas-context-menu"
+								style={{ left: contextMenu.x, top: contextMenu.y }}
+							>
+								<div className="canvas-context-menu-item" onClick={handleContextMenuCopy}>
+									<span className="canvas-context-menu-label">复制 Agent</span>
+									<span className="canvas-context-menu-shortcut">Ctrl+C</span>
+								</div>
+								<div
+									className={`canvas-context-menu-item ${!clipboardRef.current ? 'disabled' : ''}`}
+									onClick={clipboardRef.current ? handleContextMenuPaste : undefined}
+								>
+									<span className="canvas-context-menu-label">粘贴 Agent</span>
+									<span className="canvas-context-menu-shortcut">Ctrl+V</span>
+								</div>
+								<div className="canvas-context-menu-divider" />
+								<div className="canvas-context-menu-item danger" onClick={handleContextMenuDelete}>
+									<span className="canvas-context-menu-label">删除选中</span>
+									<span className="canvas-context-menu-shortcut">Delete</span>
+								</div>
+							</div>
+						)}
 
 						{/* Empty state */}
 						{employees.length === 0 && (
@@ -929,6 +1383,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
 								</svg>
 							</button>
+							<div className="canvas-toggle-divider" />
 							<button
 								className="canvas-html-dropdown-btn"
 								onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
@@ -1027,6 +1482,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
 								</svg>
 							</button>
+							<div className="canvas-toggle-divider" />
 							<button
 								className="canvas-html-dropdown-btn"
 								onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
