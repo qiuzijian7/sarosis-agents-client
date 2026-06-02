@@ -3717,6 +3717,56 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* 上下文使用量圆环进度条（发送按钮左侧）*/
+.context-usage-ring {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-right: 4px;
+  cursor: default;
+  user-select: none;
+}
+
+.context-usage-ring svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.context-usage-ring .ring-track {
+  stroke: var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
+.context-usage-ring .ring-progress {
+  stroke: var(--vscode-charts-green, #4caf50);
+  transition: stroke-dashoffset 0.35s ease, stroke 0.25s ease;
+}
+
+.context-usage-ring .context-usage-percent {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--vscode-descriptionForeground);
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+  text-align: right;
+}
+
+/* 70%+ 警告（黄）*/
+.context-usage-ring.warn .ring-progress {
+  stroke: var(--vscode-charts-yellow, #d9a441);
+}
+.context-usage-ring.warn .context-usage-percent {
+  color: var(--vscode-charts-yellow, #d9a441);
+}
+
+/* 90%+ 危险（红）*/
+.context-usage-ring.danger .ring-progress {
+  stroke: var(--vscode-charts-red, #e5534b);
+}
+.context-usage-ring.danger .context-usage-percent {
+  color: var(--vscode-charts-red, #e5534b);
+}
+
 /* 发送按钮（圆形） */
 .chat-send-circle {
   display: flex;

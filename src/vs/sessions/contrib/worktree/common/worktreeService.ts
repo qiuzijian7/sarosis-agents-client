@@ -4,10 +4,23 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Event } from '../../../../base/common/event.js';
+import { IObservable } from '../../../../base/common/observable.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeInfoOptions, IWorktreeInfo, WorktreeStatus, IWorktreeStateEvent } from './worktreeTypes.js';
 
 export const IWorktreeService = createDecorator<IWorktreeService>('worktreeService');
+
+/**
+ * The worktree the user has explicitly selected by clicking an item in the
+ * Worktree view. Used to drive the Changes view (sessions-customized
+ * ChangesViewModel) to show this worktree's working-tree diff, independently of
+ * the active session. `path` is the worktree directory; `branch` is its checked
+ * out branch (for the header label).
+ */
+export interface ISelectedWorktree {
+	readonly path: string;
+	readonly branch?: string;
+}
 
 /**
  * Service for managing git worktrees in the sessions window.
@@ -34,6 +47,24 @@ export interface IWorktreeService {
 	 * bindings on agents/workspaces that pointed at the removed directory.
 	 */
 	readonly onDidRemoveWorktree: Event<string>;
+
+	/**
+	 * The worktree the user has explicitly selected in the Worktree view.
+	 * `undefined` means "follow the active session" (default behaviour).
+	 *
+	 * The Changes view (ChangesViewModel) observes this and, when set, shows
+	 * the selected worktree's diff instead of the active session's diff. This
+	 * is the cross-contrib channel that lets clicking a worktree item switch
+	 * the Changes/Graph content without owning a ChangesViewModel reference
+	 * (it is created via createInstance, not a singleton).
+	 */
+	readonly selectedWorktree: IObservable<ISelectedWorktree | undefined>;
+
+	/**
+	 * Set (or clear with `undefined`) the explicitly selected worktree. Called
+	 * by the Worktree view when an item is clicked.
+	 */
+	setSelectedWorktree(selection: ISelectedWorktree | undefined): void;
 
 	/**
 	 * List all worktrees for the given repository path.

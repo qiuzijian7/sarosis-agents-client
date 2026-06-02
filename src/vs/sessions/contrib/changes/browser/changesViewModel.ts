@@ -21,6 +21,7 @@ import { IAgentFeedbackService } from '../../agentFeedback/browser/agentFeedback
 import { CodeReviewStateKind, getCodeReviewFilesFromSessionChanges, getCodeReviewVersion, ICodeReviewService, PRReviewStateKind } from '../../codeReview/browser/codeReviewService.js';
 import { IGitHubService } from '../../github/browser/githubService.js';
 import { toPRContentUri } from '../../github/common/utils.js';
+import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { ChangesVersionMode, ChangesViewMode, IsolationMode } from '../common/changes.js';
 
 function toIChatSessionFileChange2(changes: GitDiffChange[], originalRef: string | undefined, modifiedRef: string | undefined): IChatSessionFileChange2[] {
@@ -118,8 +119,11 @@ export class ChangesViewModel extends Disposable {
 		@IGitService private readonly gitService: IGitService,
 		@ISessionsManagementService private readonly sessionManagementService: ISessionsManagementService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IWorktreeService private readonly worktreeService: IWorktreeService,
 	) {
 		super();
+
+		console.log('[WT-DIAG][changes] ChangesViewModel constructed. worktreeService instanceId=', (this.worktreeService as any)._diagId ?? ((this.worktreeService as any)._diagId = 'cm-' + Math.random().toString(36).slice(2, 8)));
 
 		// Active session resource
 		this.activeSessionResourceObs = derivedOpts({ equalsFn: isEqual }, reader => {
@@ -143,6 +147,13 @@ export class ChangesViewModel extends Disposable {
 
 		// Active session has git repository
 		this.activeSessionHasGitRepositoryObs = derived(reader => {
+			// An explicitly selected worktree is always a git working tree.
+			const sel = this.worktreeService.selectedWorktree.read(reader);
+			console.log('[WT-DIAG][changes] hasGitRepoObs EVAL. instanceId=', (this.worktreeService as any)._diagId, 'selectedWorktree=', sel?.path);
+			if (sel?.path) {
+				return true;
+			}
+
 			const sessionType = this.activeSessionTypeObs.read(reader);
 			const metadata = this._activeSessionMetadataObs.read(reader);
 			if (sessionType === COPILOT_CLOUD_SESSION_TYPE || metadata?.repositoryPath !== undefined) {
@@ -268,6 +279,16 @@ export class ChangesViewModel extends Disposable {
 		});
 
 		const activeSessionRepositoryPathObs = derived(reader => {
+			// When the user explicitly clicked a worktree in the Worktree view,
+			// show THAT worktree's diff regardless of the active session. This is
+			// the cross-contrib override that makes the Changes view follow a
+			// worktree click (the view is otherwise hard-bound to the active
+			// session and never reads the SCM service).
+			const selectedWorktree = this.worktreeService.selectedWorktree.read(reader);
+			if (selectedWorktree?.path) {
+				return selectedWorktree.path;
+			}
+
 			const metadata = this._activeSessionMetadataObs.read(reader);
 			const repositoryPath = metadata?.repositoryPath as string | undefined;
 			const worktreePath = metadata?.worktreePath as string | undefined;
@@ -364,6 +385,18 @@ export class ChangesViewModel extends Disposable {
 		return derivedOpts({
 			equalsFn: arrayEqualsC<ISessionFileChange>()
 		}, reader => {
+			// When a worktree is explicitly selected, the session-provider
+			// `changes` observable (BranchChanges) is irrelevant — it tracks the
+			// active session, not the clicked worktree. Force the git-backed
+			// uncommitted diff (HEAD vs working tree) of the selected worktree so
+			// the Changes view reflects the worktree the user clicked.
+			const selectedWorktree = this.worktreeService.selectedWorktree.read(reader);
+			if (selectedWorktree?.path) {
+				const diag = this._activeSessionUncommittedChangesPromiseObs.read(reader).read(reader) ?? [];
+				console.log('[WT-DIAG][changes] final-derived HIT worktree override. serviceInstanceId=', (this.worktreeService as any)._diagId, 'path=', selectedWorktree.path, 'diffCount=', diag.length);
+				return diag;
+			}
+
 			const versionMode = this.versionModeObs.read(reader);
 
 			// BranchChanges reads from the session provider's `changes`
@@ -432,7 +465,11 @@ export class ChangesViewModel extends Disposable {
 			// Session state
 			const workspaceRepository = workspace?.repositories[0];
 			const hasGitRepository = this.activeSessionHasGitRepositoryObs.read(reader);
-			const branchName = (sessionMetadata?.branchName ?? sessionMetadata?.branch) as string | undefined
+			// When a worktree is explicitly selected, prefer its branch name for
+			// the header so the Changes view reads as "this worktree's branch".
+			const selectedWorktree = this.worktreeService.selectedWorktree.read(reader);
+			const branchName = selectedWorktree?.branch
+				?? (sessionMetadata?.branchName ?? sessionMetadata?.branch) as string | undefined
 				?? workspaceRepository?.branchName;
 			const baseBranchName = (sessionMetadata?.baseBranchName ?? sessionMetadata?.baseBranch) as string | undefined
 				?? workspaceRepository?.baseBranchName;
@@ -543,11 +580,13 @@ export class ChangesViewModel extends Disposable {
 
 	private async _getRepositoryChanges(repositoryPath: string, firstCheckpointRef: string, lastCheckpointRef: string | undefined): Promise<IChatSessionFileChange2[] | undefined> {
 		const repository = await this.gitService.openRepository(URI.file(repositoryPath));
+		console.log('[WT-DIAG][git] _getRepositoryChanges path=', repositoryPath, 'ref=', firstCheckpointRef, '..', lastCheckpointRef, 'repoOpened=', !!repository);
 		const ref = lastCheckpointRef
 			? `${firstCheckpointRef}..${lastCheckpointRef}`
 			: firstCheckpointRef;
 
 		const changes = await repository?.diffBetweenWithStats2(ref) ?? [];
+		console.log('[WT-DIAG][git] diff result count=', changes.length, 'for path=', repositoryPath);
 		return toIChatSessionFileChange2(changes, firstCheckpointRef, lastCheckpointRef);
 	}
 

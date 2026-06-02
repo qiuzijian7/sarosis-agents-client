@@ -886,6 +886,27 @@ button.primary:hover,
 	background: var(--vscode-button-hoverBackground);
 }
 
+.preset-header-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.preset-market-btn {
+	padding: 2px 8px;
+	font-size: 11px;
+	border-radius: 4px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.preset-market-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
 .preset-search-box {
 	display: flex;
 	align-items: center;

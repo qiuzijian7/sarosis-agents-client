@@ -12,7 +12,7 @@ import React, { useState, useRef, useCallback, KeyboardEvent, useEffect, useMemo
 import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
-import type { ProviderInfo } from '../../store/useProviderStore';
+import type { ProviderInfo, ProviderModelInfo } from '../../store/useProviderStore';
 import { sendRequest } from '../../bridge/messageClient';
 
 interface ChatComposerProps {
@@ -28,6 +28,17 @@ interface ChatComposerProps {
 const TEXTAREA_MIN_HEIGHT = 60;
 const TEXTAREA_MAX_HEIGHT = 300;
 const TEXTAREA_DEFAULT_HEIGHT = 60;
+
+// 圆环进度条几何参数：viewBox 20×20，半径 7，周长 = 2πr。
+const RING_RADIUS = 7;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+/** 将 token 数格式化为紧凑可读字符串（如 58.8K / 1.2M）。 */
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M`; }
+	if (n >= 1_000) { return `${(n / 1_000).toFixed(1)}K`; }
+	return String(n);
+}
 
 export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder, onCommand }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
@@ -139,13 +150,13 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const availableModels = useMemo(() => {
 		if (!currentProvider) { return []; }
 		if (supportsAgents && selectedAgent?.models) {
-			// Agent 模式：从 agent 声明的 model id 列表中映射回 currentProvider.models 里的友好名。
-			// 如果 agent 给出的字符串恰好不在 provider.models 中（少见），就回退用字符串本身做兜底。
-			const byId = new Map(currentProvider.models.map(m => [m.id, m.name]));
-			return selectedAgent.models.map(modelId => ({
-				id: modelId,
-				name: byId.get(modelId) || modelId,
-			}));
+			// Agent 模式：从 agent 声明的 model id 列表中映射回 currentProvider.models 里的完整模型信息。
+			// 如果 agent 给出的字符串恰好不在 provider.models 中（少见），就回退构造一个仅含 id/name 的兜底项。
+			const byId = new Map(currentProvider.models.map(m => [m.id, m]));
+			return selectedAgent.models.map(modelId => {
+				const full = byId.get(modelId);
+				return full ?? ({ id: modelId, name: modelId } as ProviderModelInfo);
+			});
 		}
 		return currentProvider.models;
 	}, [currentProvider, supportsAgents, selectedAgent]);
@@ -174,6 +185,39 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	);
 	// onlyReasoning 模型不能关闭思考
 	const canToggleReasoning = !currentModel?.onlyReasoning;
+
+	// ── 上下文使用量（发送按钮左侧圆环进度条）──────────────────────────
+	// 已用 token：流式进行时优先取实时 usage（input+output），否则取最近一条带 tokenUsage 的消息。
+	const streamUsage = useChatStore(s => s.streamState.usage);
+	const messages = useChatStore(s => s.messages);
+	const contextUsage = useMemo(() => {
+		const limit = currentModel?.maxInputTokens || 0;
+		// 1) 流式实时用量（已收到至少一个 usage chunk）
+		let used = 0;
+		if (streamUsage?.seen) {
+			used = (streamUsage.input || 0) + (streamUsage.output || 0);
+		} else {
+			// 2) 回溯最近一条携带 tokenUsage 的消息（通常是最后的 assistant 消息）
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const tu = messages[i]?.tokenUsage;
+				if (tu && tu.total > 0) {
+					used = tu.total;
+					break;
+				}
+			}
+		}
+		if (limit <= 0) {
+			return null; // 无上限信息，不显示圆环
+		}
+		const ratio = Math.max(0, Math.min(1, used / limit));
+		return {
+			used,
+			limit,
+			ratio,
+			percent: Math.round(ratio * 100),
+		};
+	}, [currentModel?.maxInputTokens, streamUsage, messages]);
+
 	const [showReasoningPopover, setShowReasoningPopover] = useState(false);
 	const reasoningPopoverRef = useRef<HTMLDivElement>(null);
 	// budget slider 范围（参考 void：1024 ~ 8192）
@@ -1044,6 +1088,39 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 							</div>
 						)}
 					</div>
+
+					{/* 上下文使用量圆环进度条（发送按钮左侧）*/}
+					{contextUsage && (
+						<div
+							className={`context-usage-ring ${contextUsage.percent >= 90 ? 'danger' : contextUsage.percent >= 70 ? 'warn' : ''}`}
+							title={`上下文已使用 ${contextUsage.percent}%（${formatTokens(contextUsage.used)} / ${formatTokens(contextUsage.limit)} tokens）`}
+						>
+							<svg width="20" height="20" viewBox="0 0 20 20">
+								{/* 轨道 */}
+								<circle
+									className="ring-track"
+									cx="10"
+									cy="10"
+									r={RING_RADIUS}
+									fill="none"
+									strokeWidth="2"
+								/>
+								{/* 进度（从 12 点方向顺时针）*/}
+								<circle
+									className="ring-progress"
+									cx="10"
+									cy="10"
+									r={RING_RADIUS}
+									fill="none"
+									strokeWidth="2"
+									strokeLinecap="round"
+									strokeDasharray={RING_CIRCUMFERENCE}
+									strokeDashoffset={RING_CIRCUMFERENCE * (1 - contextUsage.ratio)}
+									transform="rotate(-90 10 10)"
+								/>
+						</svg>
+					</div>
+					)}
 
 					{/* 右侧发送/取消按钮 */}
 					<button

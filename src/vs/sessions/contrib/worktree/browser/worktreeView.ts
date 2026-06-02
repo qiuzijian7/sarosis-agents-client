@@ -23,7 +23,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { URI } from '../../../../base/common/uri.js';
-import { basename, extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
 import { ViewPane, IViewPaneOptions } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
@@ -31,7 +31,7 @@ import { WorktreeItem, WorktreeTreeDataProvider, WorktreeRepoGroup, WorktreeTree
 import { IWorktreeService } from '../common/worktreeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
-import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
+import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 
@@ -226,7 +226,7 @@ export class WorktreeViewPane extends ViewPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ISCMViewService private readonly _scmViewService: ISCMViewService,
-		@IWorkspaceEditingService private readonly _workspaceEditingService: IWorkspaceEditingService,
+		@IGitService private readonly _gitService: IGitService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		) {
@@ -460,40 +460,30 @@ export class WorktreeViewPane extends ViewPane {
 	}
 
 	private async openWorktree(item: WorktreeItem): Promise<void> {
+		console.log('[WT-DIAG][view] openWorktree FIRED. item.path=', item?.path, 'item.label=', item?.label, 'item.worktree.branch=', item?.worktree?.branch, 'serviceInstanceId=', (this._worktreeService as any)._diagId);
 		try {
 			const worktreeUri = URI.file(item.path);
 
-			// First, try to find an already-registered SCM repository for this worktree path.
-			// If found, narrow the SCM views to it so Changes/Graph switch to its branch.
-			const repository = this._findScmRepository(worktreeUri);
+			// Drive the sessions' custom Changes view (ChangesViewPane) via the
+			// shared worktree-selection channel. This only has an effect when that
+			// view is actually instantiated/visible; it is a no-op otherwise (the
+			// view is lazy). Harmless to set unconditionally.
+			this._worktreeService.setSelectedWorktree({ path: item.path, branch: item.worktree.branch });
 
-			if (repository) {
-				// Narrow the visible repositories to JUST this worktree's repo BEFORE
-				// focusing it. focus() has a visibility guard (scmViewService.focus:
-				// `if (repository && !this.isVisible(repository)) return;`) so focusing
-				// alone is a no-op when the repo is hidden. Setting visibleRepositories
-				// also drives the Changes view (SCMViewPane listens to
-				// onDidChangeVisibleRepositories) and the Graph view (SCMHistoryViewPane
-				// follows the active/focused repository) to switch to this branch.
-				this._scmViewService.visibleRepositories = [repository];
-				this._scmViewService.focus(repository);
-				return;
-			}
-
-			// The worktree is not the current workspace folder. Instead of opening a new
-			// window, switch the active workspace folder to this worktree directory.
-			// The Git extension re-discovers the repository for the new folder, which
-			// automatically refreshes the Changes and Graph views in place.
-			const currentFolders = this._workspaceContextService.getWorkspace().folders;
-			const folderName = basename(worktreeUri) || item.label;
-			const folderData = { uri: worktreeUri, name: folderName };
-
-			// Mark the worktree root as workspace-trusted BEFORE injecting it as a
-			// workspace folder. Otherwise the Git extension's openRepository() stalls
-			// on requestResourceTrust (the Sessions synthetic workspace never
-			// auto-trusts injected roots), no SCM provider is registered for the new
-			// worktree, and _focusRepositoryWhenReady() below never finds the repo —
-			// so the Changes/Graph views fail to switch branches.
+			// THE key step (root cause of all prior failures): a linked worktree's
+			// git repository is NOT registered in the SCM system unless something
+			// explicitly opens it. The Git extension only auto-scans workspace
+			// folders, and the worktree dir (<repoRoot>/.worktrees/<name>) is not a
+			// workspace folder — so scmViewService.repositories only ever contained
+			// the main repo, and focus() had no target. We must proactively register
+			// the worktree repo via gitService.openRepository(), which makes the Git
+			// extension's Model.openRepository() create a dedicated SCM provider for
+			// this worktree root. Both the standard Changes (Source Control) view and
+			// the Graph (SCMHistoryViewPane) read scmViewService, so once registered +
+			// focused, BOTH switch to this worktree's branch.
+			//
+			// Trust the worktree root first, otherwise Model.openRepository() stalls
+			// on requestResourceTrust and never registers the provider.
 			try {
 				if (!this._workspaceTrustManagementService.getTrustedUris().some(u => u.toString() === worktreeUri.toString())) {
 					await this._workspaceTrustManagementService.setUrisTrust([worktreeUri], true);
@@ -502,19 +492,51 @@ export class WorktreeViewPane extends ViewPane {
 				console.warn('[WorktreeView] Failed to mark worktree root as trusted:', err);
 			}
 
-			if (currentFolders.length === 0) {
-				await this._workspaceEditingService.addFolders([folderData], true);
-			} else {
-				// Replace the primary folder (index 0) with the worktree folder.
-				await this._workspaceEditingService.updateFolders(0, currentFolders.length, [folderData], true);
+			// First, see if it is already registered (e.g. the main worktree, or a
+			// previously-opened one). If so, just focus it.
+			let repository = this._findScmRepository(worktreeUri, /* silent */ true);
+			if (!repository) {
+				// Not registered yet — ask the Git extension to open/register it.
+				console.log('[WT-DIAG][view] worktree repo not registered, calling gitService.openRepository for', worktreeUri.toString());
+				await this._gitService.openRepository(worktreeUri);
+				// Registration is asynchronous (the extension fires onDidOpenRepository
+				// after status()). Poll a few times for it to appear in scmViewService.
+				repository = await this._waitForScmRepository(worktreeUri);
 			}
 
-			// After the folder switch, try to focus the SCM repository for the new path
-			// once it has been registered by the Git extension.
-			this._focusRepositoryWhenReady(worktreeUri);
+			if (repository) {
+				// Narrow the visible repositories to JUST this worktree's repo BEFORE
+				// focusing it. focus() has a visibility guard (scmViewService.focus:
+				// `if (repository && !this.isVisible(repository)) return;`) so focusing
+				// alone is a no-op when the repo is hidden. This drives BOTH the
+				// standard Changes view and the Graph view to this worktree's branch.
+				this._scmViewService.visibleRepositories = [repository];
+				this._scmViewService.focus(repository);
+				console.log('[WT-DIAG][view] focused SCM repository for worktree', worktreeUri.toString());
+			} else {
+				console.warn('[WorktreeView] Worktree repository did not register in time:', worktreeUri.toString(), '— Changes/Graph cannot switch.');
+			}
 		} catch (e) {
 			this.notificationService.error(localize('worktreeOpenError', 'Failed to switch to worktree: {0}', (e as Error).message));
 		}
+	}
+
+	/**
+	 * Poll scmViewService for the worktree's SCM repository to appear after
+	 * gitService.openRepository() was called. Registration is async (the Git
+	 * extension fires onDidOpenRepository only after Repository.status()
+	 * resolves), so we retry for up to ~5 seconds.
+	 */
+	private async _waitForScmRepository(worktreeUri: URI): Promise<ISCMRepository | undefined> {
+		for (let attempt = 0; attempt < 25; attempt++) {
+			const repo = this._findScmRepository(worktreeUri, /* silent */ true);
+			if (repo) {
+				return repo;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, 200));
+		}
+		this._findScmRepository(worktreeUri, /* silent */ false); // log the give-up diagnostic once
+		return undefined;
 	}
 
 	/**
@@ -543,11 +565,11 @@ export class WorktreeViewPane extends ViewPane {
 	 * regression introduced when worktrees moved under
 	 * `<repoRoot>/.worktrees/<name>` (nested inside the main work tree).
 	 */
-	private _findScmRepository(worktreeUri: URI): ISCMRepository | undefined {
+	private _findScmRepository(worktreeUri: URI, silent: boolean = false): ISCMRepository | undefined {
 		const match = this._scmViewService.repositories.find((r: ISCMRepository) =>
 			!!r.provider.rootUri && extUriBiasedIgnorePathCase.isEqual(r.provider.rootUri, worktreeUri)
 		);
-		if (!match) {
+		if (!match && !silent) {
 			// Diagnostic: helps distinguish "registered but path mismatch" from
 			// "not registered yet" when troubleshooting branch-switch failures.
 			console.warn(
@@ -558,28 +580,6 @@ export class WorktreeViewPane extends ViewPane {
 			);
 		}
 		return match;
-	}
-
-	/**
-	 * Focus the SCM repository matching the given worktree URI. Because the Git
-	 * extension registers repositories asynchronously after a workspace folder
-	 * change, we retry for a short period until the repository appears.
-	 */
-	private _focusRepositoryWhenReady(worktreeUri: URI, attempt: number = 0): void {
-		const repository = this._findScmRepository(worktreeUri);
-		if (repository) {
-			// Narrow to just this repo first, then focus (focus() is gated on
-			// visibility — see openWorktree for details).
-			this._scmViewService.visibleRepositories = [repository];
-			this._scmViewService.focus(repository);
-			return;
-		}
-		// Give up after ~5 seconds (10 attempts * 500ms)
-		if (attempt >= 10) {
-			return;
-		}
-		const handle = setTimeout(() => this._focusRepositoryWhenReady(worktreeUri, attempt + 1), 500);
-		this._register({ dispose: () => clearTimeout(handle) });
 	}
 
 	/** Handle worktree deletion with loading spinner */

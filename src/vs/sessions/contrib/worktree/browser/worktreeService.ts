@@ -5,7 +5,8 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IWorktreeService } from '../common/worktreeService.js';
+import { ISettableObservable, observableValue } from '../../../../base/common/observable.js';
+import { IWorktreeService, ISelectedWorktree } from '../common/worktreeService.js';
 import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeOutputItem, IWorktreeInfoOptions, IWorktreeInfo, WorktreeStatus, IWorktreeStateEvent } from '../common/worktreeTypes.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -55,6 +56,14 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	private readonly _onDidRemoveWorktree = this._register(new Emitter<string>());
 	readonly onDidRemoveWorktree = this._onDidRemoveWorktree.event;
+
+	private readonly _selectedWorktree: ISettableObservable<ISelectedWorktree | undefined> = observableValue<ISelectedWorktree | undefined>('selectedWorktree', undefined);
+	readonly selectedWorktree = this._selectedWorktree;
+
+	setSelectedWorktree(selection: ISelectedWorktree | undefined): void {
+		console.log('[WT-DIAG][service] setSelectedWorktree called. instanceId=', (this as any)._diagId ?? ((this as any)._diagId = Math.random().toString(36).slice(2, 8)), 'selection=', JSON.stringify(selection));
+		this._selectedWorktree.set(selection, undefined);
+	}
 
 	private _repositoryRoot: string | undefined;
 

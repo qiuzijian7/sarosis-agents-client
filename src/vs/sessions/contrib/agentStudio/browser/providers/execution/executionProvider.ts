@@ -185,8 +185,29 @@ export class ExecutionProvider implements IExecutionProvider {
 					};
 				}
 
-				// 7.1 上下文压缩（如需要）
-				messages = [...await contextManager.compressIfNeeded(messages as unknown as ReadonlyArray<ChatMessage>, this._contextWindow)] as unknown as IChatMessage[];
+				// 7.1 上下文压缩（如需要）—— Hermes 三段式 + 压缩中 UI
+				// 复用现有 StreamPhase 机制：压缩前发 phase='compressing' 驱动 "正在压缩上下文..." UI，
+				// 压缩结束后发 phase='llm_streaming' 切回（后续 model text delta 也会自动切回，此处显式更稳妥）。
+				{
+					const compressionResult = await contextManager.compressContext(
+						messages as unknown as ReadonlyArray<ChatMessage>,
+						undefined,
+						this._contextWindow
+					);
+					const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
+					if (didCompress) {
+						// 压缩真正发生：通知 UI 进入压缩态（仅在确实压缩时发，避免无谓闪烁）
+						yield { type: 'phase_change', phase: 'compressing' };
+						messages = [...compressionResult.compressedMessages] as unknown as IChatMessage[];
+						this._logService.info(
+							`[ExecutionProvider] Context compressed: ${compressionResult.originalMessageCount} → ` +
+							`${compressionResult.compressedMessageCount} msgs, ` +
+							`tokens ${JSON.stringify(compressionResult.metadata?.tokensSaved ?? 'n/a')} saved`
+						);
+						// 压缩完成，切回流式输出态
+						yield { type: 'phase_change', phase: 'llm_streaming' };
+					}
+				}
 
 				// 7.2 构建模型选项
 				let tools: IToolDefinition[] | undefined;

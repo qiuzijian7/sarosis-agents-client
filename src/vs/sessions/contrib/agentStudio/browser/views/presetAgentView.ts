@@ -18,13 +18,14 @@ import { IAgentStudioService } from '../../common/agentStudio.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import type { Employee, AgentBootstrapTemplates, IAgentHandOff, IAgentHooks, IAgentVisibility } from '../../../../common/agentStudioTypes.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
-interface AgentPreset {
+export interface AgentPreset {
 	id: string;
 	name: string;
 	role: string;
@@ -68,9 +69,9 @@ interface AgentPreset {
 	parallelStrategy?: 'voting' | 'coverage';
 }
 
-type PresetCategory = 'Development' | 'Research' | 'Creative' | 'Management' | 'DevOps' | 'Analytics';
+export type PresetCategory = 'Development' | 'Research' | 'Creative' | 'Management' | 'DevOps' | 'Analytics';
 
-const BUILTIN_PRESETS: AgentPreset[] = [
+export const BUILTIN_PRESETS: AgentPreset[] = [
 	{
 		id: 'coder', name: 'Coder', role: 'Software Engineer',
 		description: 'Writes, reviews, and refactors code with deep understanding of programming patterns and best practices. Follows a structured workflow: understand → design → implement → verify.',
@@ -1567,7 +1568,7 @@ Uses a confidence scoring system (0-100) to filter out false positives and low-v
 
 ];
 
-const PRESET_CATEGORIES: { id: PresetCategory | 'All'; label: string }[] = [
+export const PRESET_CATEGORIES: { id: PresetCategory | 'All'; label: string }[] = [
 	{ id: 'All', label: 'All' },
 	{ id: 'Development', label: 'Dev' },
 	{ id: 'Research', label: 'Research' },
@@ -1679,6 +1680,7 @@ export class PresetAgentViewPane extends ViewPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._loadCustomPresets();
@@ -1772,11 +1774,22 @@ export class PresetAgentViewPane extends ViewPane {
 		titleRow.appendChild(countBadge);
 		header.appendChild(titleRow);
 
+		const actions = $('div.preset-header-actions');
+
+		const marketBtn = $('button.preset-market-btn');
+		marketBtn.textContent = '🛒 商城';
+		marketBtn.title = '打开 Agent 商城，浏览并部署更多智能体';
+		marketBtn.onclick = () => this.commandService.executeCommand('agentStudio.openMarket');
+		actions.appendChild(marketBtn);
+
 		const addBtn = $('button.preset-add-btn');
 		addBtn.textContent = '+ Custom';
 		addBtn.title = 'Create a custom agent preset';
 		addBtn.onclick = () => this._openCreateDialog();
-		header.appendChild(addBtn);
+		actions.appendChild(addBtn);
+
+		header.appendChild(actions);
+
 		container.appendChild(header);
 
 		// ── Search ───────────────────────────────────────────────────────────

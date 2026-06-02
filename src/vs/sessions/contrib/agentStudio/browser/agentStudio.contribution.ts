@@ -128,6 +128,8 @@ import { SettingsEditorPane } from './settingsEditorPane.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
 import { PluginDetailEditorPane } from './pluginDetailEditorPane.js';
 import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
+import { AgentMarketEditorPane } from './agentMarketEditorPane.js';
+import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { ClawChatViewPane } from './views/clawChatView.js';
@@ -466,6 +468,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register AgentMarketEditorPane so that the Agent Market (商城) page opens
+// in the editor area. Triggered by the "🛒 Agent 商城" entry in the Preset
+// Agent sidebar view, mirroring VS Code's native Extensions Marketplace.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		AgentMarketEditorPane,
+		AgentMarketEditorPane.ID,
+		localize('agentMarketEditor', "Agent Market"),
+	),
+	[
+		new SyncDescriptor(AgentMarketEditorInput)
+	]
+);
+
 // Register EvolutionDetailEditorPane so that evolution records open in the editor area.
 // Clicking a record in the Evolution sidebar view opens the detail in the editor area.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
@@ -545,6 +561,30 @@ registerAction2(class extends Action2 {
 		const editorService = accessor.get(IEditorService);
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const input = SettingsEditorInput.getInstance();
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		if (groups.length <= 1) {
+			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+});
+
+// Register a command to open the Agent Market (Agent 商城) editor directly.
+// Invoked by the "🛒 Agent 商城" button in the Preset Agent sidebar view.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openMarket',
+			title: localize2('agentStudio.openMarket', 'Open Agent Market'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const input = AgentMarketEditorInput.getInstance();
 		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
 		if (groups.length <= 1) {
 			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
