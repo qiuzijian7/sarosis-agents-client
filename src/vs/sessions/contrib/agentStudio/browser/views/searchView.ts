@@ -41,15 +41,14 @@ const $ = dom.$;
 
 /**
  * Agent Studio Search View - 继承原生 VSCode SearchView
- * 在原生搜索功能之上添加 workspace 选择器，支持选择搜索范围：
- * - 所有 workspaces
- * - 指定某个 workspace
+ * 自动基于当前激活的 workspace 查找，无需手动选择
+ * 当激活的 workspace 变化时，自动更新搜索范围
  */
 export class AgentStudioSearchViewPane extends SearchView {
 
-	private workspaceSelectorContainer!: HTMLElement;
-	private workspaceSelect!: HTMLSelectElement;
-	private selectedWorkspaceId: string = 'all';
+	private currentWorkspaceInfoContainer!: HTMLElement;
+	private currentWorkspaceNameLabel!: HTMLElement;
+	private currentWorkspacePathLabel!: HTMLElement;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -116,113 +115,108 @@ export class AgentStudioSearchViewPane extends SearchView {
 			accessibilitySignalService,
 			telemetryService,
 		);
+
+		// 监听激活的 workspace 变化，自动更新搜索范围
+		this._register(this.agentStudioService.onDidChangeActiveWorkspace(() => {
+			this._updateSearchScopeBasedOnActiveWorkspace();
+		}));
+
+		// 监听 workspace 列表变化，更新显示的 workspace 名称
+		this._register(this.agentStudioService.onDidChangeWorkspace(() => {
+			this._updateCurrentWorkspaceDisplay();
+		}));
 	}
 
 	protected override renderBody(parent: HTMLElement): void {
-		// Render workspace selector above native search
-		this.workspaceSelectorContainer = dom.append(parent, $('.agent-studio-workspace-selector'));
-		this._renderWorkspaceSelector();
+		// Render current workspace info above native search
+		this.currentWorkspaceInfoContainer = dom.append(parent, $('.agent-studio-workspace-info'));
+		this._renderCurrentWorkspaceInfo();
 
 		// Render native search view below
 		super.renderBody(parent);
+
+		// Initial update of search scope based on active workspace
+		this._updateSearchScopeBasedOnActiveWorkspace();
 	}
 
-	private _renderWorkspaceSelector(): void {
-		const container = this.workspaceSelectorContainer;
-		container.style.padding = '8px 12px';
+	private _renderCurrentWorkspaceInfo(): void {
+		const container = this.currentWorkspaceInfoContainer;
+		container.style.padding = '6px 12px';
 		container.style.borderBottom = '1px solid var(--vscode-panel-border)';
 		container.style.display = 'flex';
-		container.style.alignItems = 'center';
-		container.style.gap = '8px';
+		container.style.flexDirection = 'column';
+		container.style.gap = '2px';
 
-		// Label
-		const label = $('span.workspace-selector-label');
-		label.textContent = 'Workspace:';
-		label.style.fontSize = '12px';
-		label.style.color = 'var(--vscode-descriptionForeground)';
-		label.style.whiteSpace = 'nowrap';
-		container.appendChild(label);
+		// Workspace name label
+		this.currentWorkspaceNameLabel = $('span.agent-studio-workspace-name');
+		this.currentWorkspaceNameLabel.style.fontSize = '12px';
+		this.currentWorkspaceNameLabel.style.fontWeight = '600';
+		this.currentWorkspaceNameLabel.style.color = 'var(--vscode-foreground)';
+		this.currentWorkspaceNameLabel.textContent = 'No Workspace Active';
+		container.appendChild(this.currentWorkspaceNameLabel);
 
-		// Select dropdown
-		this.workspaceSelect = document.createElement('select');
-		this.workspaceSelect.className = 'agent-studio-workspace-select';
-		this.workspaceSelect.style.flex = '1';
-		this.workspaceSelect.style.padding = '3px 6px';
-		this.workspaceSelect.style.fontSize = '12px';
-		this.workspaceSelect.style.backgroundColor = 'var(--vscode-dropdown-background)';
-		this.workspaceSelect.style.color = 'var(--vscode-dropdown-foreground)';
-		this.workspaceSelect.style.border = '1px solid var(--vscode-dropdown-border)';
-		this.workspaceSelect.style.borderRadius = '2px';
-		this.workspaceSelect.style.outline = 'none';
+		// Workspace path label
+		this.currentWorkspacePathLabel = $('span.agent-studio-workspace-path');
+		this.currentWorkspacePathLabel.style.fontSize = '11px';
+		this.currentWorkspacePathLabel.style.color = 'var(--vscode-descriptionForeground)';
+		this.currentWorkspacePathLabel.style.overflow = 'hidden';
+		this.currentWorkspacePathLabel.style.textOverflow = 'ellipsis';
+		this.currentWorkspacePathLabel.style.whiteSpace = 'nowrap';
+		this.currentWorkspacePathLabel.textContent = '';
+		container.appendChild(this.currentWorkspacePathLabel);
 
-		// Default option
-		const allOption = document.createElement('option');
-		allOption.value = 'all';
-		allOption.textContent = 'All Workspaces';
-		this.workspaceSelect.appendChild(allOption);
-
-		this.workspaceSelect.addEventListener('change', () => {
-			this.selectedWorkspaceId = this.workspaceSelect.value;
-			this._onWorkspaceSelectionChanged();
-		});
-		container.appendChild(this.workspaceSelect);
-
-		// Load workspaces
-		this._loadWorkspaceOptions();
-
-		// Subscribe to workspace changes
-		this._register(this.agentStudioService.onDidChangeWorkspace(() => this._loadWorkspaceOptions()));
+		// Load initial workspace info
+		this._updateCurrentWorkspaceDisplay();
 	}
 
-	private async _loadWorkspaceOptions(): Promise<void> {
+	private async _updateCurrentWorkspaceDisplay(): Promise<void> {
 		try {
+			const activeWorkspaceId = this.agentStudioService.getActiveWorkspaceId();
+			if (!activeWorkspaceId) {
+				this.currentWorkspaceNameLabel.textContent = 'No Workspace Active';
+				this.currentWorkspacePathLabel.textContent = '';
+				return;
+			}
+
 			const workspaces = await this.agentStudioService.getWorkspaces();
-
-			// Clear all options except "All Workspaces"
-			while (this.workspaceSelect.options.length > 1) {
-				this.workspaceSelect.remove(1);
-			}
-
-			// Add workspace options
-			for (const ws of workspaces) {
-				const option = document.createElement('option');
-				option.value = ws.id;
-				option.textContent = ws.name;
-				this.workspaceSelect.appendChild(option);
-			}
-
-			// Restore selection
-			if (this.selectedWorkspaceId !== 'all') {
-				const exists = workspaces.some((ws: Workspace) => ws.id === this.selectedWorkspaceId);
-				if (!exists) {
-					this.selectedWorkspaceId = 'all';
-				}
-				this.workspaceSelect.value = this.selectedWorkspaceId;
+			const activeWorkspace = workspaces.find((ws: Workspace) => ws.id === activeWorkspaceId);
+			
+			if (activeWorkspace) {
+				this.currentWorkspaceNameLabel.textContent = activeWorkspace.name;
+				this.currentWorkspacePathLabel.textContent = activeWorkspace.path || '';
+			} else {
+				this.currentWorkspaceNameLabel.textContent = 'Unknown Workspace';
+				this.currentWorkspacePathLabel.textContent = '';
 			}
 		} catch {
-			// Silently fail - keep "All Workspaces" as only option
+			// Silently fail
 		}
 	}
 
-	private _onWorkspaceSelectionChanged(): void {
-		// When workspace selection changes, update the search scope
-		// The "include files" pattern can be updated to limit search to the selected workspace's folder
-		if (this.selectedWorkspaceId === 'all') {
-			// Clear any workspace-specific folder restriction
-			this._updateSearchIncludePattern('');
-		} else {
-			// Get workspace folder path and set it as include pattern
-			this._applyWorkspaceFolder(this.selectedWorkspaceId);
-		}
-	}
-
-	private async _applyWorkspaceFolder(workspaceId: string): Promise<void> {
+	private async _updateSearchScopeBasedOnActiveWorkspace(): Promise<void> {
 		try {
-			const workspaces = await this.agentStudioService.getWorkspaces();
-			const ws = workspaces.find((w: Workspace) => w.id === workspaceId);
-			if (ws && ws.path) {
-				this._updateSearchIncludePattern(ws.path);
+			const activeWorkspaceId = this.agentStudioService.getActiveWorkspaceId();
+			
+			if (!activeWorkspaceId) {
+				// No active workspace, clear search scope restriction
+				this._updateSearchIncludePattern('');
+				this._updateCurrentWorkspaceDisplay();
+				return;
 			}
+
+			const workspaces = await this.agentStudioService.getWorkspaces();
+			const activeWorkspace = workspaces.find((ws: Workspace) => ws.id === activeWorkspaceId);
+			
+			if (activeWorkspace && activeWorkspace.path) {
+				// Set search scope to active workspace path
+				this._updateSearchIncludePattern(activeWorkspace.path);
+			} else {
+				// Active workspace has no path, clear restriction
+				this._updateSearchIncludePattern('');
+			}
+
+			// Update displayed workspace info
+			this._updateCurrentWorkspaceDisplay();
 		} catch {
 			// Silently fail
 		}
@@ -232,9 +226,10 @@ export class AgentStudioSearchViewPane extends SearchView {
 		// Access the native search widget's include pattern input via the inherited searchWidget
 		// The SearchView has inputPatternIncludes which is a IncludePatternInputWidget
 		try {
-			// Use the inherited method to set the include pattern
+			// Use the inherited property to set the include pattern
 			(this as any).inputPatternIncludes?.setValue(pattern);
-			// Expand query details to show include/exclude filters
+			
+			// Expand query details to show include/exclude filters if pattern is set
 			if (pattern) {
 				(this as any).toggleQueryDetails?.(true);
 			}
@@ -244,8 +239,8 @@ export class AgentStudioSearchViewPane extends SearchView {
 	}
 
 	protected override layoutBody(height: number, width: number): void {
-		// Account for workspace selector height
-		const selectorHeight = this.workspaceSelectorContainer?.offsetHeight || 0;
-		super.layoutBody(height - selectorHeight, width);
+		// Account for workspace info container height
+		const infoHeight = this.currentWorkspaceInfoContainer?.offsetHeight || 0;
+		super.layoutBody(height - infoHeight, width);
 	}
 }
