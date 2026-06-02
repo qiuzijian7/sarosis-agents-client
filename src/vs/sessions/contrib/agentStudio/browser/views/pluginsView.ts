@@ -458,12 +458,10 @@ export class PluginsViewPane extends ViewPane {
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		console.warn('[PluginsViewPane] layoutBody called: h=', height, 'w=', width, 'hasList=', !!this.list, 'hasListContainer=', !!this.listContainer);
 		const listHeight = Math.max(0, height - 80);
 
 		if (this.listContainer) {
 			this.listContainer.style.height = `${listHeight}px`;
-			this.listContainer.style.width = `${width}px`;
 		}
 
 		// Defer WorkbenchList creation until container has positive dimensions

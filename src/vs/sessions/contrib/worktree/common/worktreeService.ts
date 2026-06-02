@@ -28,6 +28,14 @@ export interface IWorktreeService {
 	readonly onDidChangeWorktreeState: Event<IWorktreeStateEvent>;
 
 	/**
+	 * Event fired after a worktree is removed.
+	 * Payload is the absolute directory path of the removed worktree.
+	 * Consumers (e.g. AgentStudioService) use this to clear stale worktree
+	 * bindings on agents/workspaces that pointed at the removed directory.
+	 */
+	readonly onDidRemoveWorktree: Event<string>;
+
+	/**
 	 * List all worktrees for the given repository path.
 	 * @param repoPath Absolute path to the git repository root
 	 */

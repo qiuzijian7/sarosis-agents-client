@@ -15,6 +15,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
 import { ConnectionType } from '../../../common/agentStudioTypes.js';
+import { migrateWorkspace } from '../../../common/agentStudioTypes.js';
 import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
 import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
 import { ISkillRegistry } from '../common/skills.js';
@@ -32,6 +33,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	private readonly _onDidChangeWorkspace = this._register(new Emitter<string>());
 	readonly onDidChangeWorkspace: Event<string> = this._onDidChangeWorkspace.event;
+
+	private readonly _onDidChangeActiveWorkspace = this._register(new Emitter<string | undefined>());
+	readonly onDidChangeActiveWorkspace: Event<string | undefined> = this._onDidChangeActiveWorkspace.event;
+
+	/** Runtime-only active workspace id (persisted as lastActive via setActiveWorkspace). */
+	private _activeWorkspaceId: string | undefined;
 
 	private readonly _onDidChangeSessions = this._register(new Emitter<void>());
 	readonly onDidChangeSessions: Event<void> = this._onDidChangeSessions.event;
@@ -94,6 +101,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		this._register(this.worktreeService.onDidChangeWorktreeState((e: IWorktreeStateEvent) => {
 			this._forwardWorktreeStateChange(e);
 		}));
+
+		// Listen for worktree removal and clear stale bindings on any
+		// workspace/employee that pointed at the removed worktree directory.
+		this._register(this.worktreeService.onDidRemoveWorktree((removedPath: string) => {
+			void this._clearWorktreeBindings(removedPath);
+		}));
 	}
 
 	/**
@@ -113,6 +126,83 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			await this.updateWorkspace(ws.id, {
 				worktreeStatus: e.status as Workspace['worktreeStatus'],
 			});
+		}
+	}
+
+	/**
+	 * Clear stale worktree bindings after a worktree directory is removed.
+	 * Scans all workspaces and all employees; any whose `worktreePath` matches
+	 * the removed directory gets its worktree binding reset, so agents are no
+	 * longer sandboxed to a directory that no longer exists.
+	 *
+	 * @param removedPath Absolute path of the removed worktree (no trailing separator)
+	 */
+	private async _clearWorktreeBindings(removedPath: string): Promise<void> {
+		const normalize = (p: string | undefined): string | undefined =>
+			p ? p.replace(/[/\\]+$/, '') : undefined;
+		const target = normalize(removedPath);
+		if (!target) {
+			return;
+		}
+
+		this.logService.info(`[AgentStudioService] _clearWorktreeBindings: clearing bindings for removed worktree "${target}"`);
+
+		// 1. Clear matching workspace-level bindings
+		let affectedWorkspaceIds: string[] = [];
+		try {
+			const workspaces = await this.getWorkspaces();
+			affectedWorkspaceIds = workspaces
+				.filter(ws => normalize(ws.worktreePath) === target)
+				.map(ws => ws.id);
+			for (const wsId of affectedWorkspaceIds) {
+				try {
+					await this.updateWorkspace(wsId, {
+						worktreePath: undefined,
+						worktreeBranch: undefined,
+						worktreeStatus: 'none',
+					});
+					this.logService.info(`[AgentStudioService] _clearWorktreeBindings: cleared workspace ${wsId}`);
+				} catch (err) {
+					this.logService.warn(`[AgentStudioService] _clearWorktreeBindings: failed to clear workspace ${wsId}:`, err);
+				}
+			}
+		} catch (err) {
+			this.logService.warn('[AgentStudioService] _clearWorktreeBindings: failed to enumerate workspaces:', err);
+		}
+
+		// 2. Clear matching employee-level bindings (across all workspaces + global).
+		//    Employees may set their own worktreePath that overrides the workspace.
+		try {
+			const workspaces = await this.getWorkspaces().catch(() => [] as Workspace[]);
+			const scopes: (string | undefined)[] = [undefined, ...workspaces.map(ws => ws.id)];
+			const seenEmployeeIds = new Set<string>();
+			for (const scope of scopes) {
+				let employees: Employee[];
+				try {
+					employees = await this.getEmployees(scope);
+				} catch {
+					continue;
+				}
+				for (const emp of employees) {
+					if (seenEmployeeIds.has(emp.id)) {
+						continue;
+					}
+					seenEmployeeIds.add(emp.id);
+					if (normalize(emp.worktreePath) === target) {
+						try {
+							await this.updateEmployee(emp.id, {
+								worktreePath: undefined,
+								worktreeBranch: undefined,
+							});
+							this.logService.info(`[AgentStudioService] _clearWorktreeBindings: cleared employee ${emp.id} (${emp.name})`);
+						} catch (err) {
+							this.logService.warn(`[AgentStudioService] _clearWorktreeBindings: failed to clear employee ${emp.id}:`, err);
+						}
+					}
+				}
+			}
+		} catch (err) {
+			this.logService.warn('[AgentStudioService] _clearWorktreeBindings: failed to enumerate employees:', err);
 		}
 	}
 
@@ -857,7 +947,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	// ─── Workspaces ─────────────────────────────────────────────────────────────
 
 	async getWorkspaces(): Promise<Workspace[]> {
-		const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+		const rawWorkspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+		const workspaces = rawWorkspaces.map(w => migrateWorkspace(w));
 
 		// Auto-discover: if the global workspace index is empty but the current
 		// VS Code folder already contains a .sarosisworkspace directory (e.g.
@@ -875,6 +966,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 						id: this._generateId(),
 						name: folderUri.path.split('/').pop() || 'Workspace',
 						path: folderUri.fsPath,
+						relatedFolders: [],
 						employees: [],
 						connections: [],
 						createdAt: new Date().toISOString(),
@@ -894,7 +986,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	async getWorkspace(id: string): Promise<Workspace | undefined> {
 		const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
-		return workspaces.find(w => w.id === id);
+		const found = workspaces.find(w => w.id === id);
+		return found ? migrateWorkspace(found) : undefined;
 	}
 
 	async getWorktrees(workspaceId: string): Promise<any[]> {
@@ -924,6 +1017,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			name: data.name || 'New Workspace',
 			description: data.description,
 			path: wsPath,
+			relatedFolders: data.relatedFolders ?? [],
 			employees: data.employees || [],
 			connections: data.connections || [],
 			layout: data.layout,
@@ -1084,6 +1178,116 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const content = VSBuffer.fromString(JSON.stringify({ lastActiveWorkspaceId: id }, null, 2));
 		await this.fileService.writeFile(uri, content);
 		this.logService.info(`[AgentStudio] Last active workspace set to: ${id}`);
+	}
+
+	// ─── Related Folders (multi-repo management) ────────────────────────────
+
+	async addRelatedFolder(workspaceId: string, folderPath: string): Promise<Workspace> {
+		const ws = await this.getWorkspace(workspaceId);
+		if (!ws) {
+			throw new Error(`Workspace not found: ${workspaceId}`);
+		}
+		const norm = folderPath.replace(/[\\/]+$/, '');
+		if ((ws.relatedFolders ?? []).some(f => f.path.replace(/[\\/]+$/, '') === norm)) {
+			return ws; // already associated — dedupe
+		}
+		const name = norm.split(/[\\/]/).pop() || norm;
+		// Detect whether the folder is a git repository (has a .git entry).
+		// Drives the "关联仓库 · Git" badge in the ActivityBar and tells the
+		// SourceControl sync which related folders carry git info.
+		const isGitRepo = await this._detectGitRepo(folderPath);
+		const updated = await this.updateWorkspace(workspaceId, {
+			relatedFolders: [
+				...(ws.relatedFolders ?? []),
+				{ path: folderPath, name, addedAt: new Date().toISOString(), isGitRepo },
+			],
+		});
+		this.logService.info(`[AgentStudio] addRelatedFolder(${workspaceId}): ${folderPath} (git=${isGitRepo})`);
+		// If this is the active workspace, re-fire so sandbox + SCM re-sync.
+		if (this._activeWorkspaceId === workspaceId) {
+			this._onDidChangeActiveWorkspace.fire(workspaceId);
+		}
+		return updated;
+	}
+
+	async removeRelatedFolder(workspaceId: string, folderPath: string): Promise<Workspace> {
+		const ws = await this.getWorkspace(workspaceId);
+		if (!ws) {
+			throw new Error(`Workspace not found: ${workspaceId}`);
+		}
+		const norm = folderPath.replace(/[\\/]+$/, '');
+		const next = (ws.relatedFolders ?? []).filter(f => f.path.replace(/[\\/]+$/, '') !== norm);
+		const updated = await this.updateWorkspace(workspaceId, { relatedFolders: next });
+		this.logService.info(`[AgentStudio] removeRelatedFolder(${workspaceId}): ${folderPath}`);
+		if (this._activeWorkspaceId === workspaceId) {
+			this._onDidChangeActiveWorkspace.fire(workspaceId);
+		}
+		return updated;
+	}
+
+	/**
+	 * Detect whether a folder is a git repository by probing for a `.git`
+	 * entry (directory in normal clones, file in worktrees/submodules).
+	 * Returns false on any IO error rather than throwing — git detection is
+	 * best-effort metadata, not a hard precondition for associating a folder.
+	 */
+	private async _detectGitRepo(folderPath: string): Promise<boolean> {
+		try {
+			const gitUri = URI.file(folderPath.replace(/[\\/]+$/, '') + '/.git');
+			return await this.fileService.exists(gitUri);
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] _detectGitRepo failed for ${folderPath}`, err);
+			return false;
+		}
+	}
+
+	getActiveWorkspaceId(): string | undefined {
+		return this._activeWorkspaceId;
+	}
+
+	async setActiveWorkspace(workspaceId: string | undefined): Promise<void> {
+		if (this._activeWorkspaceId === workspaceId) {
+			return;
+		}
+		this._activeWorkspaceId = workspaceId;
+		// Persist as lastActive for next session restore.
+		try {
+			await this.setLastActiveWorkspaceId(workspaceId ?? null);
+		} catch (err) {
+			this.logService.warn('[AgentStudio] setActiveWorkspace: persist lastActive failed', err);
+		}
+		this.logService.info(`[AgentStudio] Active workspace changed to: ${workspaceId}`);
+		// (1) Fire the internal Emitter — drives native consumers:
+		//     sandbox roots, SCM folder sync, ActivityBar tree filtering.
+		this._onDidChangeActiveWorkspace.fire(workspaceId);
+		// (2) Dispatch the DOM event — drives the WebView canvas + any
+		//     DOM-event-based listeners (agentStudioWebviewController forwards
+		//     this as `workspace.activeChanged`; presetAgentView re-renders).
+		//     This makes setActiveWorkspace the single source of truth: no
+		//     matter who triggers the switch (ActivityBar selector, create-then-
+		//     activate, lastActive restore, or the global toolbar), native and
+		//     WebView views switch from the same origin.
+		this._dispatchActiveWorkspaceDomEvent(workspaceId);
+	}
+
+	/**
+	 * Dispatch the global `agent-studio:active-workspace-changed` DOM event so
+	 * that WebView-hosted canvases (and other DOM-event listeners) switch in
+	 * lockstep with the native side. Guarded for non-DOM environments.
+	 */
+	private _dispatchActiveWorkspaceDomEvent(workspaceId: string | undefined): void {
+		if (!workspaceId) {
+			return;
+		}
+		try {
+			if (typeof document !== 'undefined' && typeof CustomEvent !== 'undefined') {
+				document.dispatchEvent(new CustomEvent('agent-studio:active-workspace-changed', {
+					detail: { workspaceId }
+				}));
+			}
+		} catch (err) {
+			this.logService.warn('[AgentStudio] setActiveWorkspace: dispatch DOM event failed', err);
+		}
 	}
 
 	// ─── Connections ────────────────────────────────────────────
@@ -2232,18 +2436,10 @@ ${IMGUI_SDK_STYLES}
 			return undefined;
 		}
 
-		// Employee-level worktree takes priority
-		if (employee.worktreePath) {
-			return employee.worktreePath;
-		}
-
-		// Fall back to workspace-level worktree
-		if (employee.workspaceId) {
-			const workspace = await this.getWorkspace(employee.workspaceId);
-			return workspace?.worktreePath;
-		}
-
-		return undefined;
+		// 仅返回 Employee 级 worktree（agent 实例沙箱边界）。
+		// 不 fallback 到 Workspace.worktreePath —— 那是独立的"当前工作区 SCM 视角"
+		// 逻辑，与 agent 实例运行时沙箱无关，二者不可耦合。
+		return employee.worktreePath;
 	}
 
 	async resetWorkspaceWorktree(workspaceId: string): Promise<void> {

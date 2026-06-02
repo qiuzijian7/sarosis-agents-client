@@ -116,29 +116,55 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// 收集所有允许的根路径
 		const allowedRoots: string[] = [];
 
-		// 1. VS Code 工作区文件夹
-		const vscodeFolders = this.workspaceService.getWorkspace().folders;
-		for (const folder of vscodeFolders) {
-			allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
-		}
-
-		// 2. Sarosis Agent 工作区路径
+		// ─── 优先判定：worktree 独占沙箱 ───────────────────────────────
+		// 沙箱边界【只】取决于 Employee.worktreePath（agent 实例级 worktree）。
+		// 这是一条独立逻辑——表示"该 agent 实例运行时被限制在此 worktree 内"。
+		// 切勿 fallback 到 Workspace.worktreePath：后者是【另一条独立逻辑】
+		// （用户切换当前工作区的 SCM 视角，由 sourceControl.contribution 处理），
+		// 与 agent 实例沙箱无关，二者不可耦合。
+		let worktreeRoot: string | undefined;
 		if (agentId) {
 			try {
 				const employee = await this.studioService.getEmployee(agentId);
-				if (employee?.workspaceId) {
-					const workspace = await this.studioService.getWorkspace(employee.workspaceId);
-					if (workspace?.path) {
-						allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
-					}
-				}
-
-				// 检查 worktree 路径（agent 已选择 worktree 时，允许访问 worktree 目录）
 				if (employee?.worktreePath) {
-					allowedRoots.push(employee.worktreePath.replace(/[\\/]+$/, ''));
+					worktreeRoot = employee.worktreePath.replace(/[\\/]+$/, '');
 				}
 			} catch (err) {
-				this.logService.warn(`[BuiltinTools] Failed to resolve Sarosis workspace for agent ${agentId}:`, err);
+				this.logService.warn(`[BuiltinTools] Failed to resolve worktree for agent ${agentId}:`, err);
+			}
+		}
+
+		if (worktreeRoot) {
+			// 独占模式：仅允许 worktree 目录
+			allowedRoots.push(worktreeRoot);
+			this.logService.info(`[BuiltinTools] Agent ${agentId} is worktree-sandboxed to: ${worktreeRoot}`);
+		} else {
+			// ─── 常规模式：未绑定 worktree，沿用多根工作区 ───────────────
+			// 1. VS Code 工作区文件夹
+			const vscodeFolders = this.workspaceService.getWorkspace().folders;
+			for (const folder of vscodeFolders) {
+				allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
+			}
+
+			// 2. Sarosis Agent 工作区路径
+			if (agentId) {
+				try {
+					const employee = await this.studioService.getEmployee(agentId);
+					if (employee?.workspaceId) {
+						const workspace = await this.studioService.getWorkspace(employee.workspaceId);
+						if (workspace?.path) {
+							allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
+						}
+						// 关联代码仓库（多仓库管理）— 全部纳入沙箱允许根
+						for (const rf of workspace?.relatedFolders ?? []) {
+							if (rf?.path) {
+								allowedRoots.push(rf.path.replace(/[\\/]+$/, ''));
+							}
+						}
+					}
+				} catch (err) {
+					this.logService.warn(`[BuiltinTools] Failed to resolve Sarosis workspace for agent ${agentId}:`, err);
+				}
 			}
 		}
 
@@ -170,6 +196,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			const allowedList = uniqueRoots.length > 0
 				? uniqueRoots.map(r => `  - ${r}`).join('\n')
 				: '  (无 — 请确认已正确配置工作区)';
+			if (worktreeRoot) {
+				throw new Error(
+					`安全沙箱限制：该 Agent 实例已绑定 worktree，仅允许在 worktree 目录内操作。\n` +
+					`路径 "${requestedPath}" (解析后: "${resolvedPath}") 超出了 worktree 边界。\n` +
+					`当前 worktree 工作区：\n${allowedList}\n` +
+					`请在该 worktree 目录内操作。如需访问其它目录，请解除该 Agent 的 worktree 绑定。`
+				);
+			}
 			throw new Error(
 				`安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
 				`当前允许的工作区目录：\n${allowedList}\n` +
@@ -557,13 +591,16 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				securityLevel: ToolSecurityLevel.Dangerous,
 			},
 			available: () => typeof process !== 'undefined' || typeof navigator !== 'undefined',
-			handler: async (args, signal) => {
+			handler: async (args, signal, agentId) => {
 				const command = String(args['command'] ?? '').trim();
 				if (!command) { throw new Error('command is required'); }
-				const cwd = args['cwd'] ? String(args['cwd']) : undefined;
+				// cwd 必须落在 agent 的允许工作区内：传了就校验越界，没传则解析为有效根
+				// （绑定 worktree 的 agent 即 worktree 根，否则为工作区根）。
+				const requestedCwd = args['cwd'] ? String(args['cwd']) : '.';
+				const resolvedCwd = await this._resolveAndCheckWorkspacePath(agentId, requestedCwd);
 				const timeoutSec = Math.min(Math.max(Number(args['timeout'] ?? 30), 1), 300);
 
-				return this._executeTerminalCommand(command, cwd, timeoutSec, signal);
+				return this._executeTerminalCommand(command, resolvedCwd, timeoutSec, signal);
 			},
 		});
 
@@ -842,7 +879,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		}
 
 		try {
-			// 解析工作目录
+			// 工作目录：调用方已通过 _resolveAndCheckWorkspacePath 校验为允许根内的绝对路径。
+			// 仅在异常缺失时回退到 VS Code 工作区文件夹（不应发生）。
 			const workspaceFolders = this.workspaceService.getWorkspace().folders;
 			const effectiveCwd = cwd ?? (workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : undefined);
 

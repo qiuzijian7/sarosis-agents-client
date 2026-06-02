@@ -37,6 +37,13 @@ export interface IAgentStudioService {
 	readonly onDidChangeWorkspace: Event<string>;
 	readonly onDidChangeSessions: Event<void>;
 	readonly onDidSelectEmployee: Event<string | null>;
+	/**
+	 * Fired when the active (currently selected) workspace changes.
+	 * Payload is the active workspace id, or undefined when cleared.
+	 * This is the central hook that drives sandbox roots, SCM folder sync,
+	 * the ActivityBar tree filter, and canvas switching.
+	 */
+	readonly onDidChangeActiveWorkspace: Event<string | undefined>;
 
 	// Employee selection
 	fireSelectEmployee(employeeId: string | null): void;
@@ -57,6 +64,24 @@ export interface IAgentStudioService {
 	updateWorkspaceLayout(id: string, layout: WorkspaceLayout): Promise<void>;
 	setLastActiveWorkspaceId(id: string | null): Promise<void>;
 	getLastActiveWorkspaceId(): Promise<string | null>;
+
+	// --- Related Folders (multi-repo management) ---------------------------------------
+
+	/** Associate a local code repository folder with a workspace (deduped by path). */
+	addRelatedFolder(workspaceId: string, folderPath: string): Promise<Workspace>;
+	/** Remove a related folder association from a workspace. */
+	removeRelatedFolder(workspaceId: string, folderPath: string): Promise<Workspace>;
+
+	// --- Active Workspace (runtime selection, distinct from persisted lastActive) ------
+
+	/** The id of the currently active workspace, or undefined if none selected. */
+	getActiveWorkspaceId(): string | undefined;
+	/**
+	 * Set the active workspace. Drives the full linkage:
+	 * ① sandbox root set ② SCM folder sync ③ ActivityBar tree filter ④ canvas switch.
+	 * Also persists as lastActiveWorkspaceId.
+	 */
+	setActiveWorkspace(workspaceId: string | undefined): Promise<void>;
 
 	// Connections
 	getConnections(workspaceId: string): Promise<Connection[]>;

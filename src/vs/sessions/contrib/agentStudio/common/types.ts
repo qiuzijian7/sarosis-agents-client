@@ -46,6 +46,7 @@ export type {
 	ModelSpec,
 	TaskBoardRecord,
 	ToolCall,
+	RelatedFolder,
 	Workspace,
 	WorkspaceEdge,
 	WorkspaceLayout,

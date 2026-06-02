@@ -229,6 +229,17 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			}
 		}));
 
+		// Listen for active workspace switches via the service event (unified path).
+		// This drives SCM multi-repo sync whenever setActiveWorkspace / addRelatedFolder fires.
+		this._register(this.agentStudioService.onDidChangeActiveWorkspace((workspaceId: string | undefined) => {
+			this._activeWorkspaceId = workspaceId;
+			if (workspaceId) {
+				this._syncWorkspaceFolder(workspaceId);
+			} else {
+				this._hasGitRepoKey.set(false);
+			}
+		}));
+
 		// When VS Code workspace folders change, update git detection context key
 		// and refresh the worktree view
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
@@ -241,11 +252,17 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 	private async _initialSync(): Promise<void> {
 		try {
-			const workspaces = await this.agentStudioService.getWorkspaces();
-			if (workspaces.length > 0) {
-				// Use the first workspace as the active one on startup
-				this._activeWorkspaceId = workspaces[0].id;
-				await this._syncWorkspaceFolder(workspaces[0].id);
+			// Prefer the runtime-active workspace; fall back to first workspace.
+			let activeId = this.agentStudioService.getActiveWorkspaceId();
+			if (!activeId) {
+				const workspaces = await this.agentStudioService.getWorkspaces();
+				if (workspaces.length > 0) {
+					activeId = workspaces[0].id;
+				}
+			}
+			if (activeId) {
+				this._activeWorkspaceId = activeId;
+				await this._syncWorkspaceFolder(activeId);
 			} else {
 				this._hasGitRepoKey.set(false);
 			}
@@ -261,42 +278,59 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			return;
 		}
 
-		// Resolve the effective folder URI for the workspace
-		// Priority: worktreePath > path
-		let folderPath: string | undefined;
+		// Build the target root set for the active workspace:
+		//   home dir (workspace.path) + all relatedFolders + worktree (if any).
+		// Each related folder becomes an independent SCM git root.
+		const targets: { uri: URI; name: string }[] = [];
+		const seen = new Set<string>();
+		const pushTarget = (rawPath: string, name: string) => {
+			const norm = rawPath.replace(/[\\/]+$/, '').toLowerCase();
+			if (!norm || seen.has(norm)) {
+				return;
+			}
+			seen.add(norm);
+			targets.push({ uri: URI.file(rawPath), name });
+		};
+
+		// Home directory (stores metadata; kept as a root so agent artifacts land here)
+		if (workspace.path) {
+			pushTarget(workspace.path, workspace.name || this.uriIdentityService.extUri.basenameOrAuthority(URI.file(workspace.path)));
+		}
+		// Related code repositories — git extension auto-discovers .git under each root
+		for (const rf of workspace.relatedFolders ?? []) {
+			if (rf?.path) {
+				pushTarget(rf.path, rf.name || this.uriIdentityService.extUri.basenameOrAuthority(URI.file(rf.path)));
+			}
+		}
+		// Worktree (if assigned)
 		if (workspace.worktreePath) {
-			folderPath = workspace.worktreePath;
-		} else if (workspace.path) {
-			folderPath = workspace.path;
+			pushTarget(workspace.worktreePath, workspace.worktreeBranch || 'worktree');
 		}
 
-		if (!folderPath) {
+		if (targets.length === 0) {
 			this._hasGitRepoKey.set(false);
 			return;
 		}
 
-		const folderUri = URI.file(folderPath);
 		const currentFolders = this.workspaceContextService.getWorkspace().folders;
 
-		// If there's already a folder and it matches, no folder update needed
-		// but still check for git
-		if (currentFolders.length > 0 && this.uriIdentityService.extUri.isEqual(currentFolders[0].uri, folderUri)) {
+		// Skip the folder update if the current root set already matches the target set
+		// (same length, same order, same URIs) — avoids redundant churn & git re-scan.
+		const sameAsCurrent = currentFolders.length === targets.length &&
+			currentFolders.every((cf, i) => this.uriIdentityService.extUri.isEqual(cf.uri, targets[i].uri));
+		if (sameAsCurrent) {
 			await this._updateGitContextKey();
 			return;
 		}
 
-		// Derive a readable name for the folder
-		const folderName = workspace.name || this.uriIdentityService.extUri.basenameOrAuthority(folderUri);
-		const folderData = { uri: folderUri, name: folderName };
-
 		try {
 			if (currentFolders.length === 0) {
-				await this.workspaceEditingService.addFolders([folderData], true);
+				await this.workspaceEditingService.addFolders(targets, true);
 			} else {
-				await this.workspaceEditingService.updateFolders(0, currentFolders.length, [folderData], true);
+				await this.workspaceEditingService.updateFolders(0, currentFolders.length, targets, true);
 			}
 		} catch (err) {
-			console.warn('[SourceControlWorkspaceSync] Failed to sync workspace folder:', err);
+			console.warn('[SourceControlWorkspaceSync] Failed to sync workspace folders:', err);
 		}
 
 		// After folder sync, update git context key

@@ -231,10 +231,12 @@ export class WorkspaceViewPane extends ViewPane {
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		
+
+		// Do not hard-set container width: the sidebar CSS grid + SidebarPart.layout
+		// already account for the icon-strip column, and `.workspace-tree-container`
+		// uses `width: 100%`. An explicit pixel width re-introduces horizontal overflow.
 		if (this.treeContainer) {
 			this.treeContainer.style.height = `${height}px`;
-			this.treeContainer.style.width = `${width}px`;
 		}
 
 		if (this.tree) {

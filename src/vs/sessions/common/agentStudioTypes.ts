@@ -578,11 +578,38 @@ export interface AgentConfigMd {
 	capabilities?: ConfigMdCapability[];
 }
 
+/**
+ * A related code repository associated with a workspace.
+ * Each entry maps to: one git root in SCM, one allowed root in the file sandbox,
+ * and one folder root in the ActivityBar workspace tree.
+ */
+export interface RelatedFolder {
+	/** Absolute path of the related folder. */
+	readonly path: string;
+	/** Display name (defaults to the directory basename). */
+	name?: string;
+	/** ISO timestamp when this folder was associated. */
+	addedAt: string;
+	/** Whether this folder is a git repository (probed at runtime; persistence optional). */
+	isGitRepo?: boolean;
+}
+
 export interface Workspace {
 	readonly id: string;
 	name: string;
 	description?: string;
+	/**
+	 * Workspace home directory. On creation this should point to an (ideally empty)
+	 * folder used to store .sarosisworkspace metadata, agent artifacts, worktrees, etc.
+	 * Kept optional for backward compatibility with legacy "virtual" workspaces.
+	 */
 	path?: string;
+	/**
+	 * Associated local code repositories (core of multi-repo management).
+	 * Each entry becomes a git root in SCM, an allowed sandbox root, and a tree root.
+	 * Defaults to an empty array for legacy data (see migrateWorkspace).
+	 */
+	relatedFolders: RelatedFolder[];
 	employees: string[]; // employee IDs
 	connections: Connection[];
 	layout?: WorkspaceLayout;
@@ -603,6 +630,31 @@ export interface Workspace {
 	 * Not persisted — computed at runtime from IWorktreeService state.
 	 */
 	worktreeStatus?: 'none' | 'pending' | 'ready' | 'failed';
+}
+
+/**
+ * Normalize a possibly-legacy persisted workspace record into the current shape.
+ * Backward-compatible & non-destructive: legacy records without `relatedFolders`
+ * get an empty array; workspaces without `path` are kept (UI prompts to bind a home dir).
+ */
+export function migrateWorkspace(raw: any): Workspace {
+	if (!raw || typeof raw !== 'object') {
+		return raw as Workspace;
+	}
+	if (!Array.isArray(raw.relatedFolders)) {
+		raw.relatedFolders = [];
+	} else {
+		// Sanitize entries: ensure each has a path and addedAt.
+		raw.relatedFolders = raw.relatedFolders
+			.filter((f: any) => f && typeof f.path === 'string' && f.path.length > 0)
+			.map((f: any) => ({
+				path: f.path,
+				name: typeof f.name === 'string' ? f.name : undefined,
+				addedAt: typeof f.addedAt === 'string' ? f.addedAt : new Date().toISOString(),
+				isGitRepo: typeof f.isGitRepo === 'boolean' ? f.isGitRepo : undefined,
+			}));
+	}
+	return raw as Workspace;
 }
 
 export interface WorkspaceLayout {

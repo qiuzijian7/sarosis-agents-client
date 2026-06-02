@@ -53,6 +53,9 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	private readonly _onDidChangeWorktreeState = this._register(new Emitter<IWorktreeStateEvent>());
 	readonly onDidChangeWorktreeState = this._onDidChangeWorktreeState.event;
 
+	private readonly _onDidRemoveWorktree = this._register(new Emitter<string>());
+	readonly onDidRemoveWorktree = this._onDidRemoveWorktree.event;
+
 	private _repositoryRoot: string | undefined;
 
 	/** Track worktree states by directory path */
@@ -407,6 +410,12 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		// 6. Clean up state tracking
 		this._worktreeStates.delete(worktreePath);
+
+		// 7. Notify consumers that this worktree was removed, so they can clear
+		//    stale bindings (e.g. AgentStudioService clears agents/workspaces
+		//    that pointed at this directory). Normalize trailing separators so
+		//    listeners can compare paths reliably.
+		this._onDidRemoveWorktree.fire(worktreePath.replace(/[/\\]+$/, ''));
 
 		this._onDidChangeWorktrees.fire();
 	}

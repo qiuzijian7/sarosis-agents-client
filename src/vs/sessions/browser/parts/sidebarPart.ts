@@ -349,7 +349,21 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// No height reduction needed: .content occupies grid row 2 (1fr) which
 		// fills all remaining space after row 1 (title, auto). The footer is
 		// absolutely positioned and doesn't affect the grid sizing.
-		super.layout(width, height, top, left);
+		//
+		// [Sarosis] Width root-cause fix for viewpanel content overflow:
+		// This fork embeds the activity-bar icon strip INSIDE the sidebar part.
+		// CSS Grid (`grid-template-columns: 48px 1fr`) renders the icon strip in
+		// column 1 (48px) and the content panel in column 2, so the truly visible
+		// content width is `partWidth - 48`. However the workbench grid hands us
+		// the FULL part width (e.g. 450), and the composite layout chain
+		// (CompositePart.layout -> composite.layout -> ViewPane.layoutBody ->
+		// tree.layout) would otherwise propagate that full width to every view,
+		// making each view's content (and its monaco-list rows) overflow by 48px.
+		// Subtracting the icon-strip width here fixes ALL viewpanels at the source,
+		// instead of patching each view's layoutBody individually.
+		const iconStripWidth = this._contentCollapsed ? 0 : SidebarPart.COLLAPSED_WIDTH;
+		const contentWidth = Math.max(SidebarPart.COLLAPSED_WIDTH, width - iconStripWidth);
+		super.layout(contentWidth, height, top, left);
 	}
 
 	protected override getTitleAreaDropDownAnchorAlignment(): AnchorAlignment {

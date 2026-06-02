@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Studio 三栏布局效果图</title>
+<style>
+  :root {
+    --bg-window: #ffffff;
+    --bg-titlebar: #f1efe8;
+    --bg-sidebar: #fafaf8;
+    --bg-panel: #f5f4f1;
+    --border: #d3d1c7;
+    --border-strong: #b4b2a9;
+    --text-main: #2c2c2a;
+    --text-sub: #5f5e5a;
+    --text-dim: #888780;
+    --text-faint: #b4b2a9;
+    --accent-file: #d4537e;
+    --accent-agent: #ba7517;
+    --accent-sidebar: #d85a30;
+    --tab-active-file: #378add;
+    --tab-active-agent: #b07313;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #e9e7e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 16px;
+    color: var(--text-main);
+  }
+  .page-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #1d1d1b;
+  }
+  .page-sub {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 24px;
+  }
+
+  /* ===== Window ===== */
+  .window {
+    width: 1100px;
+    max-width: 100%;
+    height: 660px;
+    background: var(--bg-window);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.12);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ===== Window Controls (右上角) ===== */
+  .win-controls {
+    display: flex;
+    align-items: center;
+    margin-left: auto;
+    -webkit-app-region: no-drag;
+  }
+  .win-btn {
+    width: 38px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-sub);
+    transition: background .12s, color .12s;
+    border-radius: 4px;
+  }
+  .win-btn svg { width: 11px; height: 11px; }
+  .win-btn:hover { background: rgba(0,0,0,0.06); }
+  .win-btn.close:hover { background: #e24b4a; color: #ffffff; }
+
+  /* ===== Main Row ===== */
+  .main-row { flex: 1; display: flex; min-height: 0; }
+
+  /* ===== Column 1: Sidebar ===== */
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar-header {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #444441;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-body { flex: 1; display: flex; padding: 12px 0; }
+  .activity-bar {
+    width: 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding-top: 4px;
+  }
+  .activity-icon {
+    width: 24px; height: 24px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px;
+  }
+  .ai-1 { background: #cecbf6; border: 1px solid #7f77dd; }
+  .ai-2 { background: #e1f5ee; border: 1px solid #5dcaa5; }
+  .ai-3 { background: #faece7; border: 1px solid #d85a30; }
+  .content-panel {
+    flex: 1;
+    margin: 0 12px 0 4px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 10px;
+  }
+  .panel-item {
+    font-size: 12px; color: var(--text-sub);
+    padding: 5px 6px; border-radius: 5px; cursor: default;
+  }
+  .panel-item:hover { background: #f0eee8; }
+  .panel-item.active { background: #eef4fc; color: #0c447c; }
+  .panel-tree { margin-top: 10px; font-size: 11px; color: var(--text-faint); padding-left: 8px; }
+
+  /* ===== Column 2: File Zone ===== */
+  .file-zone {
+    width: 300px;
+    flex-shrink: 0;
+    background: var(--bg-window);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+  .tab-bar {
+    height: 36px;
+    background: var(--bg-titlebar);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-end;
+    padding: 0 8px;
+    gap: 4px;
+  }
+  .tab {
+    height: 28px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border-radius: 6px 6px 0 0;
+    cursor: default;
+  }
+  .tab.active-file {
+    background: var(--bg-window);
+    color: #0c447c;
+    border: 1px solid var(--border);
+    border-bottom: 1px solid var(--bg-window);
+  }
+  .tab.active-agent {
+    background: var(--bg-window);
+    color: #633806;
+    border: 1px solid var(--border);
+    border-bottom: 1px solid var(--bg-window);
+  }
+  .tab .tab-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .tab-add { color: var(--text-dim); font-size: 16px; padding: 0 6px; }
+  .file-body { flex: 1; padding: 20px 22px; overflow: auto; }
+  .md-h1 { font-size: 18px; font-weight: 700; color: var(--text-main); margin-bottom: 12px; }
+  .md-p { font-size: 12px; color: var(--text-sub); margin-bottom: 16px; line-height: 1.6; }
+  .md-callout {
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-file);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-size: 12px;
+    color: var(--text-sub);
+    line-height: 1.7;
+  }
+
+  /* ===== Column 3: Agent Zone ===== */
+  .agent-zone {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-sidebar);
+    display: flex;
+    flex-direction: column;
+  }
+  .workspace-header {
+    height: 40px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 10px;
+  }
+  .ws-dropdown {
+    flex: 1;
+    max-width: 320px;
+    height: 26px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    padding: 0 8px 0 10px;
+    gap: 8px;
+    cursor: pointer;
+    position: relative;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .ws-dropdown:hover { border-color: var(--border-strong); }
+  .ws-dropdown .ws-icon { font-size: 13px; opacity: 0.7; }
+  .ws-dropdown .ws-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-dropdown .ws-path { color: var(--text-dim); font-size: 11px; }
+  .ws-dropdown .ws-caret { font-size: 10px; color: var(--text-dim); margin-left: 2px; }
+  /* dropdown menu (static preview, always shown) */
+  .ws-menu {
+    position: absolute;
+    top: 30px;
+    left: 0;
+    width: 280px;
+    background: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+    padding: 5px;
+    z-index: 10;
+    display: none;
+  }
+  .ws-dropdown:hover .ws-menu { display: block; }
+  .ws-menu-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; color: var(--text-main);
+  }
+  .ws-menu-item:hover { background: #f0eee8; }
+  .ws-menu-item.active { background: #eef4fc; color: #0c447c; }
+  .ws-menu-item .mi-icon { font-size: 13px; opacity: 0.7; }
+  .ws-menu-item .mi-text { flex: 1; overflow: hidden; }
+  .ws-menu-item .mi-name { font-size: 12px; }
+  .ws-menu-item .mi-path { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+  .ws-menu-item .mi-check { font-size: 12px; color: #0c447c; }
+  .ws-menu-sep { height: 1px; background: var(--border); margin: 4px 8px; }
+  .ws-menu-add { color: var(--text-sub); }
+  .ws-menu-add .mi-icon { font-size: 14px; }
+  .ws-traffic { display: flex; gap: 8px; }
+  .ws-traffic .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .agent-tabbar {
+    height: 36px;
+    display: flex;
+    align-items: flex-end;
+    padding: 0 12px;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-sidebar);
+  }
+  .agent-tab {
+    height: 26px;
+    padding: 0 16px;
+    display: flex; align-items: center;
+    font-size: 12px;
+    border-radius: 6px 6px 0 0;
+    color: var(--text-dim);
+    cursor: default;
+  }
+  .agent-tab.active {
+    background: #faeeda;
+    color: #633806;
+    border: 1px solid #e0c590;
+    border-bottom-color: #faeeda;
+    font-weight: 500;
+  }
+  .agent-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: #ffffff;
+    margin: 12px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+  }
+  .agent-body .big { font-size: 15px; color: var(--text-sub); font-weight: 500; }
+  .agent-body .small { font-size: 12px; color: var(--text-dim); }
+  .agent-icon { font-size: 32px; opacity: 0.4; }
+
+  /* ===== Column Labels ===== */
+  .col-labels {
+    width: 1100px;
+    max-width: 100%;
+    display: flex;
+    margin-top: 14px;
+  }
+  .col-label { text-align: center; }
+  .col-label .cl-title { font-size: 13px; font-weight: 600; }
+  .col-label .cl-sub { font-size: 11px; margin-top: 2px; }
+  .col-label .cl-size { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .cl-1 { width: 220px; }
+  .cl-1 .cl-title { color: var(--accent-sidebar); }
+  .cl-1 .cl-sub { color: var(--accent-sidebar); }
+  .cl-2 { width: 300px; }
+  .cl-2 .cl-title { color: var(--accent-file); }
+  .cl-2 .cl-sub { color: var(--accent-file); }
+  .cl-3 { flex: 1; }
+  .cl-3 .cl-title { color: var(--accent-agent); }
+  .cl-3 .cl-sub { color: var(--accent-agent); }
+</style>
+</head>
+<body>
+  <div class="page-title">视觉三栏效果（与用户截图对应）</div>
+  <div class="page-sub">Agent Studio · Sidebar | File Zone | Agent Zone</div>
+
+  <div class="window">
+    <!-- Main Row (TitleBar 已隐藏，窗口控制按钮移至右上角 Agent Zone header) -->
+    <div class="main-row">
+      <!-- Column 1: Sidebar -->
+      <div class="sidebar">
+        <div class="sidebar-header">Sidebar</div>
+        <div class="sidebar-body">
+          <div class="activity-bar">
+            <div class="activity-icon ai-1">◧</div>
+            <div class="activity-icon ai-2">▤</div>
+            <div class="activity-icon ai-3">◔</div>
+          </div>
+          <div class="content-panel">
+            <div class="panel-item active">Sessions</div>
+            <div class="panel-item">Workspaces</div>
+            <div class="panel-tree">
+              ├ AI-Agent-KB<br>
+              │&nbsp;&nbsp;├ 核心特征<br>
+              │&nbsp;&nbsp;└ 架构设计<br>
+              └ tree view...
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 2: File Zone -->
+      <div class="file-zone">
+        <div class="tab-bar">
+          <div class="tab active-file">
+            <span class="tab-dot" style="background:#378add"></span>
+            核心特征.md
+          </div>
+          <div class="tab-add">+</div>
+        </div>
+        <div class="file-body">
+          <div class="md-h1"># 核心特征</div>
+          <div class="md-p">文本编辑器区域 · workspace 普通文件编辑（未锁定）</div>
+          <div class="md-callout">
+            <strong>对比表格：</strong>有这些特征 vs 没有这些特征<br><br>
+            • 双链笔记<br>
+            • 反向链接<br>
+            • 知识图谱关联
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 3: Agent Zone -->
+      <div class="agent-zone">
+        <div class="workspace-header">
+          <div class="ws-dropdown">
+            <span class="ws-icon">▦</span>
+            <span class="ws-name">sarosis-agents-client</span>
+            <span class="ws-caret">▾</span>
+            <!-- 下拉菜单（hover 预览） -->
+            <div class="ws-menu">
+              <div class="ws-menu-item active">
+                <span class="mi-icon">▦</span>
+                <div class="mi-text">
+                  <div class="mi-name">sarosis-agents-client</div>
+                  <div class="mi-path">G:\AIProjects\sarosis-agents-client</div>
+                </div>
+                <span class="mi-check">✓</span>
+              </div>
+              <div class="ws-menu-item">
+                <span class="mi-icon">▦</span>
+                <div class="mi-text">
+                  <div class="mi-name">n8n</div>
+                  <div class="mi-path">G:\AIProjects\n8n</div>
+                </div>
+              </div>
+              <div class="ws-menu-item">
+                <span class="mi-icon">▦</span>
+                <div class="mi-text">
+                  <div class="mi-name">void</div>
+                  <div class="mi-path">G:\AIProjects\void</div>
+                </div>
+              </div>
+              <div class="ws-menu-sep"></div>
+              <div class="ws-menu-item ws-menu-add">
+                <span class="mi-icon">＋</span>
+                <div class="mi-text"><div class="mi-name">打开工作区…</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="win-controls">
+            <div class="win-btn minimize" title="最小化">
+              <svg viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor"/></svg>
+            </div>
+            <div class="win-btn maximize" title="最大化">
+              <svg viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+            </div>
+            <div class="win-btn close" title="关闭">
+              <svg viewBox="0 0 11 11"><path d="M1.5 1.5 L9.5 9.5 M9.5 1.5 L1.5 9.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+            </div>
+          </div>
+        </div>
+        <div class="agent-tabbar">
+          <div class="agent-tab active">Canvas</div>
+          <div class="agent-tab">Chat</div>
+        </div>
+        <div class="agent-body">
+          <div class="agent-icon">◈</div>
+          <div class="big">Agent Studio 编辑器区域</div>
+          <div class="small">(WebView / React / ReactFlow)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Column Labels -->
+  <div class="col-labels">
+    <div class="col-label cl-1">
+      <div class="cl-title">Column 1</div>
+      <div class="cl-sub">Sidebar Part</div>
+      <div class="cl-size">~220px</div>
+    </div>
+    <div class="col-label cl-2">
+      <div class="cl-title">Column 2</div>
+      <div class="cl-sub">Editor → File Zone</div>
+      <div class="cl-size">~300px</div>
+    </div>
+    <div class="col-label cl-3">
+      <div class="cl-title">Column 3</div>
+      <div class="cl-sub">Editor → Agent Zone</div>
+      <div class="cl-size">flex (剩余)</div>
+    </div>
+  </div>
+</body>
+</html>

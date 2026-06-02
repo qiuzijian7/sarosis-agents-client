@@ -9,6 +9,7 @@ import type { Workspace } from '../common/types.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 
 // ── SVG helper (avoids innerHTML — compliant with Trusted Types CSP) ──
 
@@ -58,6 +59,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 	private _isDropdownOpen = false;
 	private _agentStudioService: IAgentStudioService | undefined;
 	private _fileDialogService: IFileDialogService | undefined;
+	private _fileService: IFileService | undefined;
 	private _selectedFolderUri: URI | undefined;
 
 	private readonly _disposables = this._register(new DisposableStore());
@@ -192,6 +194,14 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		this._fileDialogService = service;
 	}
 
+	/**
+	 * Connect the file service for empty-directory validation on workspace creation.
+	 * Can be called at any time after construction.
+	 */
+	connectFileService(service: IFileService): void {
+		this._fileService = service;
+	}
+
 	private async _loadWorkspaces(): Promise<void> {
 		if (!this._agentStudioService) {
 			return; // Service not connected yet
@@ -215,8 +225,8 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 				// 2. 如果缓存无效，回退到第一个工作区
 				this._activeWorkspaceId = restoredId ?? this._workspaces[0].id;
 
-				// Fire event so webviews know
-				this._fireWorkspaceChanged(this._activeWorkspaceId);
+				// Fire event so webviews know + drive service-level linkage
+				this._switchWorkspace(this._activeWorkspaceId);
 			}
 
 			this._updateUI();
@@ -366,7 +376,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 			item.addEventListener('click', () => {
 				this._activeWorkspaceId = ws.id;
-				this._fireWorkspaceChanged(ws.id);
+				this._switchWorkspace(ws.id);
 				this._closeDropdown();
 				this._updateUI();
 			});
@@ -445,7 +455,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		// ── Row 2: selected folder path display ──
 		const folderPathLabel = document.createElement('div');
 		folderPathLabel.className = 'astb-create-folder-path';
-		folderPathLabel.textContent = '未选择文件夹（可选）';
+		folderPathLabel.textContent = '请选择工作区主目录（建议为空文件夹）';
 
 		createInputWrapper.appendChild(inputRow);
 		createInputWrapper.appendChild(folderPathLabel);
@@ -509,6 +519,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 		if (!trimmed) {
 			console.warn('[AgentStudioWorkspaceToolbar] _submitCreate: name is empty after trim');
+			this._showCreateError('请输入工作区名称');
 			return;
 		}
 		if (!this._agentStudioService) {
@@ -516,23 +527,101 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 			return;
 		}
 
+		// ① 主目录必填
+		if (!this._selectedFolderUri) {
+			this._showCreateError('请选择工作区主目录（必须为文件夹）');
+			return;
+		}
+
+		// ② 校验为空目录（非空时弹确认）
+		const isEmpty = await this._checkFolderEmpty(this._selectedFolderUri);
+		if (!isEmpty) {
+			const confirmed = window.confirm(
+				'所选主目录非空，工作区元数据（.sarosisworkspace）将写入其中，可能与已有文件混合。\n\n建议选择一个空文件夹。是否仍要继续？'
+			);
+			if (!confirmed) {
+				return;
+			}
+		}
+
 		console.log('[AgentStudioWorkspaceToolbar] _submitCreate: creating workspace...', { name: trimmed, path: this._selectedFolderUri?.fsPath });
 
 		try {
-			const createData: Partial<Workspace> = { name: trimmed };
-			if (this._selectedFolderUri) {
-				createData.path = this._selectedFolderUri.fsPath || this._selectedFolderUri.path;
-			}
+			const createData: Partial<Workspace> = {
+				name: trimmed,
+				path: this._selectedFolderUri.fsPath || this._selectedFolderUri.path,
+				relatedFolders: [],
+			};
 			const newWorkspace = await this._agentStudioService.createWorkspace(createData);
 			console.log('[AgentStudioWorkspaceToolbar] _submitCreate: workspace created', newWorkspace);
 			this._activeWorkspaceId = newWorkspace.id;
 			this._selectedFolderUri = undefined;
-			this._fireWorkspaceChanged(newWorkspace.id);
+			// Route through the service so sandbox/SCM/tree/canvas all switch together.
+			await this._switchWorkspace(newWorkspace.id);
 			this._closeDropdown();
 			await this._loadWorkspaces();
 		} catch (err) {
 			console.error('[AgentStudioWorkspaceToolbar] _submitCreate: FAILED', err);
+			this._showCreateError('创建工作区失败，请查看控制台日志');
 		}
+	}
+
+	/** Check whether a directory is empty (non-existent counts as empty). */
+	private async _checkFolderEmpty(uri: URI): Promise<boolean> {
+		if (!this._fileService) {
+			return true; // Cannot validate without file service — don't block.
+		}
+		try {
+			const stat = await this._fileService.resolve(uri);
+			if (!stat.isDirectory) {
+				return false;
+			}
+			return !stat.children || stat.children.length === 0;
+		} catch {
+			return true; // Doesn't exist → treat as creatable/empty.
+		}
+	}
+
+	/** Show an inline error message inside the create-input wrapper. */
+	private _showCreateError(message: string): void {
+		const wrapper = this._dropdownContainer.querySelector('.astb-dropdown-create-input');
+		if (!wrapper) {
+			console.warn('[AgentStudioWorkspaceToolbar]', message);
+			return;
+		}
+		let errEl = wrapper.querySelector('.astb-create-error') as HTMLElement | null;
+		if (!errEl) {
+			errEl = document.createElement('div');
+			errEl.className = 'astb-create-error';
+			errEl.style.cssText = 'color:#f87171;font-size:11px;margin-top:4px;';
+			wrapper.appendChild(errEl);
+		}
+		errEl.textContent = message;
+	}
+
+	/**
+	 * Switch the active workspace through the service (unified linkage path).
+	 * Drives sandbox roots, SCM folder sync, ActivityBar tree, and canvas switch.
+	 *
+	 * setActiveWorkspace is the single source of truth: on success it fires the
+	 * internal Emitter AND dispatches the `agent-studio:active-workspace-changed`
+	 * DOM event itself, so WebView canvases switch too. We therefore only fall
+	 * back to a manual DOM dispatch when the service is unavailable or throws —
+	 * dispatching unconditionally would double-fire `workspace.activeChanged`.
+	 */
+	private async _switchWorkspace(id: string): Promise<void> {
+		if (this._agentStudioService?.setActiveWorkspace) {
+			try {
+				await this._agentStudioService.setActiveWorkspace(id);
+				return; // service already dispatched the DOM event
+			} catch (err) {
+				console.warn('[AgentStudioWorkspaceToolbar] setActiveWorkspace failed, falling back to DOM event', err);
+				this._fireWorkspaceChanged(id);
+				return;
+			}
+		}
+		// Service unavailable — legacy fallback.
+		this._fireWorkspaceChanged(id);
 	}
 
 	private _fireWorkspaceChanged(id: string): void {

@@ -12,6 +12,219 @@
 	overflow: hidden;
 }
 
+/* ─── Workspace Selector (active-workspace switcher in the title bar) ──── */
+
+/* The selector lives in the view title bar, left of the "+" button. It is a
+   compact button showing the active workspace name; clicking it opens a
+   dropdown panel anchored directly below it (search box on top, two-line rows:
+   name over path). Constrain the width so it doesn't crowd out the title or the
+   other action icons. */
+.workspace-selector-action-item {
+	display: flex;
+	align-items: center;
+	max-width: 160px;
+	min-width: 80px;
+	margin-right: 2px;
+}
+
+.workspace-selector-action-item .workspace-selector-button {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	width: 100%;
+	height: 20px;
+	padding: 0 4px;
+	box-sizing: border-box;
+	border-radius: 4px;
+	cursor: pointer;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+}
+
+.workspace-selector-action-item .workspace-selector-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.workspace-selector-action-item .workspace-selector-button:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* While the dropdown is open, keep the button visually "pressed". */
+.workspace-selector-action-item .workspace-selector-button.expanded {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.workspace-selector-action-item .workspace-selector-button.expanded .workspace-selector-chevron {
+	transform: rotate(180deg);
+}
+
+.workspace-selector-action-item .workspace-selector-button.disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.workspace-selector-action-item .workspace-selector-icon {
+	flex-shrink: 0;
+	font-size: 14px;
+	opacity: 0.85;
+}
+
+.workspace-selector-action-item .workspace-selector-label {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+	line-height: 20px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.workspace-selector-action-item .workspace-selector-chevron {
+	flex-shrink: 0;
+	font-size: 12px;
+	opacity: 0.7;
+	transition: transform 0.12s ease;
+}
+
+/* ─── Workspace Selector Dropdown Panel ───────────────────────────── */
+
+/* Rendered into the global context view, anchored below the title-bar button. */
+.workspace-selector-panel {
+	display: flex;
+	flex-direction: column;
+	width: 280px;
+	max-height: 360px;
+	box-sizing: border-box;
+	background-color: var(--vscode-editorWidget-background, var(--vscode-dropdown-background));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: 6px;
+	box-shadow: 0 2px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	overflow: hidden;
+}
+
+/* ─ Search box ─ */
+.workspace-selector-panel .workspace-selector-search {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 6px;
+	padding: 0 6px;
+	height: 26px;
+	box-sizing: border-box;
+	border-radius: 4px;
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+}
+
+.workspace-selector-panel .workspace-selector-search:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.workspace-selector-panel .workspace-selector-search-icon {
+	flex-shrink: 0;
+	font-size: 14px;
+	opacity: 0.7;
+}
+
+.workspace-selector-panel .workspace-selector-search-input {
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	font-size: 13px;
+	font-family: inherit;
+}
+
+.workspace-selector-panel .workspace-selector-search-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+/* ─ List ─ */
+.workspace-selector-panel .workspace-selector-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 0 4px 6px;
+}
+
+.workspace-selector-panel .workspace-selector-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	overflow: hidden;
+}
+
+.workspace-selector-panel .workspace-selector-row.focused {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.workspace-selector-panel .workspace-selector-row.active {
+	background-color: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.workspace-selector-panel .workspace-selector-row.active.focused {
+	background-color: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.workspace-selector-panel .workspace-selector-row-icon {
+	flex-shrink: 0;
+	font-size: 16px;
+	opacity: 0.85;
+}
+
+.workspace-selector-panel .workspace-selector-row-text {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.workspace-selector-panel .workspace-selector-row-name {
+	font-size: 13px;
+	line-height: 17px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.workspace-selector-panel .workspace-selector-row-path {
+	font-size: 11px;
+	line-height: 14px;
+	opacity: 0.7;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	direction: rtl;
+	text-align: left;
+}
+
+.workspace-selector-panel .workspace-selector-row-check {
+	flex-shrink: 0;
+	font-size: 14px;
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.workspace-selector-panel .workspace-selector-row.active:not(.focused) .workspace-selector-row-check {
+	color: var(--vscode-foreground);
+}
+
+.workspace-selector-panel .workspace-selector-empty {
+	padding: 16px 8px;
+	text-align: center;
+	font-size: 12px;
+	opacity: 0.7;
+}
+
 /* ─── Tree Container ─────────────────────────────────────────────── */
 
 .workspace-explorer-tree-container {
@@ -19,6 +232,53 @@
 	min-height: 0;
 	width: 100%;
 	overflow: hidden;
+}
+
+/* ─── Inline "+" on Workspace Root Rows ──────────────────────────── */
+/* A small add-related-folder button pinned to the right edge of every
+   workspace root (the collapsible workspace-name header). Following VS Code
+   convention it stays hidden until the row is hovered or focused, so it
+   doesn't clutter the tree. */
+.workspace-explorer-tree-container .monaco-tl-contents {
+	/* Allow the "+" to sit flush against the right edge of the row. */
+	position: relative;
+}
+
+.workspace-root-add-action {
+	flex-shrink: 0;
+	width: 22px;
+	height: 22px;
+	margin-left: auto;
+	margin-right: 4px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 4px;
+	cursor: pointer;
+	color: var(--vscode-icon-foreground);
+	font-size: 14px;
+	opacity: 0;
+}
+
+.workspace-root-add-action:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.workspace-root-add-action:focus {
+	opacity: 1;
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* Reveal the "+" when the row is hovered or selected. */
+.monaco-list-row:hover .workspace-root-add-action,
+.monaco-list-row.focused .workspace-root-add-action,
+.monaco-list-row.selected .workspace-root-add-action {
+	opacity: 0.8;
+}
+
+.monaco-list-row:hover .workspace-root-add-action:hover {
+	opacity: 1;
 }
 
 /* ─── File Entry ─────────────────────────────────────────────────── */
@@ -52,6 +312,22 @@
 
 .workspace-root-entry .workspace-explorer-icon {
 	color: var(--vscode-gitDecoration-submoduleResourceForeground, var(--vscode-icon-foreground));
+}
+
+/* ─── Related Folder Root (linked code repository) ───────────────── */
+/* Related-folder roots keep the bold uppercase root styling but show a
+   muted "关联仓库" description tag to the right of the name. */
+.workspace-related-folder-entry .monaco-icon-label-description-container .label-description {
+	opacity: 0.7;
+	font-size: 10px;
+	font-style: normal;
+	margin-left: 6px;
+	padding: 0 4px;
+	border-radius: 3px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	text-transform: none;
+	letter-spacing: 0;
 }
 
 /* ─── File Icon ──────────────────────────────────────────────────── */
@@ -89,6 +365,13 @@
 .workspace-explorer-tree-container .monaco-tl-contents {
 	display: flex;
 	align-items: center;
+}
+
+/* When a workspace root row shows the inline "+", let the label shrink so the
+   button stays visible at the right edge instead of being pushed off-screen. */
+.workspace-explorer-tree-container .monaco-tl-contents > .monaco-icon-label {
+	min-width: 0;
+	flex: 1 1 auto;
 }
 
 /* ─── Selection styles ───────────────────────────────────────────── */
@@ -168,4 +451,26 @@
 	color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
 	font-style: italic;
 	opacity: 0.7;
+}
+
+/* ─── Inline Rename Input Box ────────────────────────────────────── */
+/* When a row enters rename mode, the renderer hides the normal label and
+   mounts an InputBox in the row container, keeping the file-kind icon. These
+   rules make the box fill the row width and align with the tree's text. */
+.workspace-explorer-tree-container .monaco-icon-label.workspace-explorer-item-edited {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.workspace-explorer-tree-container .explorer-item-edited .monaco-inputbox,
+.workspace-explorer-tree-container .workspace-explorer-item-edited .monaco-inputbox {
+	flex: 1 1 auto;
+	height: 22px;
+	line-height: 22px;
+}
+
+.workspace-explorer-tree-container .monaco-inputbox > .ibwrapper > .input {
+	padding: 0 4px;
+	height: 20px;
+	line-height: 20px;
 }

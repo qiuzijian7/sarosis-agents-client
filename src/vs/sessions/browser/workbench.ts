@@ -35,6 +35,7 @@ import { IStorageService, WillSaveStateReason, StorageScope, StorageTarget } fro
 import { IConfigurationChangeEvent, IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { IHostService } from '../../workbench/services/host/browser/host.js';
 import { IDialogService, IFileDialogService } from '../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../platform/files/common/files.js';
 import { INotificationService } from '../../platform/notification/common/notification.js';
 import { NotificationService } from '../../workbench/services/notification/common/notificationService.js';
 import { IHoverService, WorkbenchHoverDelegate } from '../../platform/hover/browser/hover.js';
@@ -1168,6 +1169,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				} catch { setTimeout(connectFileDialog, 2000); }
 			};
 			connectFileDialog();
+
+			const connectFileSvc = () => {
+				try {
+					const fileService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileService));
+					toolbar.connectFileService(fileService);
+				} catch { setTimeout(connectFileSvc, 2000); }
+			};
+			connectFileSvc();
 		}
 
 		// ── Close-guard for the three Agent Studio panels ────────────────
