@@ -72,7 +72,6 @@ import {
 	AGENT_STUDIO_TOOLS_VIEW_ID,
 	AGENT_STUDIO_MCP_VIEW_ID,
 	AGENT_STUDIO_SEARCH_VIEW_ID,
-	AGENT_STUDIO_PROVIDER_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
@@ -143,7 +142,6 @@ import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
 import { McpViewPane } from './views/mcpView.js';
-import { ProviderViewPane } from './views/providerView.js';
 import { EvolutionViewPane } from './views/evolutionView.js';
 import { EvolutionDetailEditorPane } from './evolutionDetailEditorPane.js';
 import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
@@ -186,7 +184,6 @@ const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('to
 const mcpIcon = registerIcon('agent-studio-mcp', Codicon.plug, localize('mcpIcon', "MCP"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
-const providerIcon = registerIcon('agent-studio-provider', Codicon.plug, localize('providerIcon', "Provider"));
 const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
 const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
 
@@ -1421,16 +1418,6 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
 			order: 92,
 			viewCtor: EvolutionViewPane,
-		});
-
-		// 12. Provider (order: 95)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.provider',
-			title: localize2('agentStudio.provider.title', "Provider"),
-			icon: providerIcon,
-			viewId: AGENT_STUDIO_PROVIDER_VIEW_ID,
-			order: 95,
-			viewCtor: ProviderViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //
