@@ -71,6 +71,8 @@ import {
 	AGENT_STUDIO_SCHEDULE_VIEW_ID,
 	AGENT_STUDIO_TOOLS_VIEW_ID,
 	AGENT_STUDIO_MCP_VIEW_ID,
+	AGENT_STUDIO_SEARCH_VIEW_ID,
+	AGENT_STUDIO_PROVIDER_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
@@ -130,7 +132,7 @@ import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { ClawChatViewPane } from './views/clawChatView.js';
-import { WorkspaceViewPane } from './views/workspaceView.js';
+import { WorkspaceViewPane, WORKSPACE_SELECTOR_ACTION_ID } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { SkillsViewPane } from './views/skillsView.js';
 import { TasksViewPane } from './views/tasksView.js';
@@ -141,6 +143,7 @@ import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
 import { McpViewPane } from './views/mcpView.js';
+import { ProviderViewPane } from './views/providerView.js';
 import { EvolutionViewPane } from './views/evolutionView.js';
 import { EvolutionDetailEditorPane } from './evolutionDetailEditorPane.js';
 import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
@@ -183,6 +186,7 @@ const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('to
 const mcpIcon = registerIcon('agent-studio-mcp', Codicon.plug, localize('mcpIcon', "MCP"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
+const providerIcon = registerIcon('agent-studio-provider', Codicon.plug, localize('providerIcon', "Provider"));
 const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
 const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
 
@@ -1384,7 +1388,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			id: 'agentStudio.search',
 			title: localize2('agentStudio.search.title', "Search"),
 			icon: searchIcon,
-			viewId: 'workbench.view.search',
+			viewId: AGENT_STUDIO_SEARCH_VIEW_ID,
 			order: 80,
 			viewCtor: AgentStudioSearchViewPane,
 		});
@@ -1417,6 +1421,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
 			order: 92,
 			viewCtor: EvolutionViewPane,
+		});
+
+		// 12. Provider (order: 95)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.provider',
+			title: localize2('agentStudio.provider.title', "Provider"),
+			icon: providerIcon,
+			viewId: AGENT_STUDIO_PROVIDER_VIEW_ID,
+			order: 95,
+			viewCtor: ProviderViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //
@@ -1667,6 +1681,34 @@ MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
 	when: ContextKeyExpr.equals('view', AGENT_STUDIO_WORKSPACE_VIEW_ID),
 	group: 'navigation',
 	order: 1,
+});
+
+// ─── Workspace Selector (active-workspace dropdown in the title bar) ─────────
+// A placeholder action whose only job is to claim a title-bar slot left of the
+// "+" button (order 0 < 1). `WorkspaceViewPane.createActionViewItem` swaps it
+// for a SelectBox dropdown; the action's `run` is intentionally a no-op.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: WORKSPACE_SELECTOR_ACTION_ID,
+			title: localize2('agentStudio.workspaceSelector', "切换工作区"),
+			icon: Codicon.listFlat,
+		});
+	}
+	async run(): Promise<void> {
+		// No-op: interaction is handled by the custom SelectBox view item.
+	}
+});
+
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: {
+		id: WORKSPACE_SELECTOR_ACTION_ID,
+		title: localize2('agentStudio.workspaceSelector', "切换工作区"),
+		icon: Codicon.listFlat,
+	},
+	when: ContextKeyExpr.equals('view', AGENT_STUDIO_WORKSPACE_VIEW_ID),
+	group: 'navigation',
+	order: 0,
 });
 
 // ─── Workspace Folder Sync ──────────────────────────────────────────────────
