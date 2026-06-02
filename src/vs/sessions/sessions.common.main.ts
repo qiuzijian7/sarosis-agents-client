@@ -474,6 +474,7 @@ import './contrib/editor/browser/editor.contribution.js';
 
 import './contrib/terminal/browser/sessionsTerminalContribution.js';
 import './contrib/chatDebug/browser/chatDebug.contribution.js';
+import './contrib/output/browser/output.contribution.js'; // [Sarosis] 把原生 Output 视图从 Panel 搬到 Sidebar
 import './contrib/welcome/browser/welcome.contribution.js';
 import './contrib/aquarium/browser/aquarium.contribution.js';
 import './contrib/policyBlocked/browser/policyBlocked.contribution.js';

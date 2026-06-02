@@ -12,7 +12,8 @@
 
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { $ } from '../../../../base/browser/dom.js';
-import { ProviderDefinition, CustomProviderData, PROVIDER_DEFINITIONS } from './views/providerView.js';
+import type { ProviderDefinition, CustomProviderData } from './views/providerView.js';
+import { PROVIDER_DEFINITIONS } from './views/providerView.js';
 import {
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
@@ -20,7 +21,7 @@ import {
 
 // ─── Re-export types for convenience ─────────────────────────────
 
-export { ProviderDefinition, CustomProviderData };
+export type { ProviderDefinition, CustomProviderData };
 
 // ─── Constants ─────────────────────────────────────────────────
 
@@ -203,8 +204,8 @@ function renderProviderList(
 		const infoEl = $('div.provider-card-info');
 		const nameRow = $('div.provider-card-name-row');
 		const nameEl = $('span.provider-card-name');
-			nameEl.textContent = provider.name;
-			nameRow.appendChild(nameEl);
+		nameEl.textContent = provider.name;
+		nameRow.appendChild(nameEl);
 
 		const statusBadge = $('span.provider-card-status');
 		if (isConfigured) {
@@ -214,7 +215,7 @@ function renderProviderList(
 			statusBadge.textContent = '未配置';
 			statusBadge.classList.add('not-configured');
 		}
-			nameRow.appendChild(statusBadge);
+		nameRow.appendChild(statusBadge);
 		infoEl.appendChild(nameRow);
 
 		const descEl = $('div.provider-card-desc');

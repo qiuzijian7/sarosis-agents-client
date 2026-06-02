@@ -5,7 +5,6 @@
 		"module": "ES2022",
 		"moduleResolution": "bundler",
 		"types": ["node"],
-		"typeRoots": ["./node_modules/@types"],
 		"esModuleInterop": true,
 		"strict": true,
 		"noImplicitAny": false,
