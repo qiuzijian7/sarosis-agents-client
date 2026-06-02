@@ -200,8 +200,11 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		const branch = options?.detached ? undefined : (options?.branch || `worktree/${name}`);
 		this.logService.info('[WorktreeService] makeWorktreeInfo: computed', { name, branch, detached: options?.detached });
 
-		// Directory: <repoRoot>/.sarosisworkspace/.worktree/<name>
-		const worktreeBase = repoRoot.replace(/[/\\]$/, '') + '/.sarosisworkspace/.worktree';
+		// Directory: <repoRoot>/.worktrees/<name>
+		// The worktree lives inside the git repository root (the folder that
+		// actually contains .git). Add ".worktrees/" to the repo's .gitignore
+		// to keep these working trees from showing up as untracked changes.
+		const worktreeBase = repoRoot.replace(/[/\\]$/, '') + '/.worktrees';
 		const directory = worktreeBase + '/' + name;
 
 		// Conflict detection: check both directory and branch existence in a single loop
@@ -260,14 +263,14 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		// Set pending state
 		this.setWorktreeState(info.directory, WorktreeStatus.Pending);
 
-		// Ensure .sarosisworkspace/.worktree directory exists
-		const worktreeBaseUri = URI.joinPath(URI.file(repoRoot), '.sarosisworkspace', '.worktree');
+		// Ensure <repoRoot>/.worktrees directory exists
+		const worktreeBaseUri = URI.joinPath(URI.file(repoRoot), '.worktrees');
 		try {
 			await this.fileService.stat(worktreeBaseUri);
 			// Directory exists, good
 		} catch {
 			// Directory doesn't exist, create it
-			this.logService.info(`[WorktreeService] Creating .sarosisworkspace/.worktree directory: ${worktreeBaseUri.fsPath}`);
+			this.logService.info(`[WorktreeService] Creating .worktrees directory: ${worktreeBaseUri.fsPath}`);
 			await this.fileService.createFolder(worktreeBaseUri);
 		}
 
@@ -550,18 +553,30 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			// to invoke the 'vscode:execGit' handler in the main process.
 			const vscodeBridge = (globalThis as any).vscode;
 			if (vscodeBridge?.ipcRenderer?.invoke) {
+				let result: { success: boolean; stdout: string; stderr: string; exitCode: number } | undefined;
 				try {
 					this.logService.info('[WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge');
-					const result: { success: boolean; stdout: string; stderr: string; exitCode: number } =
-						await vscodeBridge.ipcRenderer.invoke('vscode:execGit', cwd, args);
+					result = await vscodeBridge.ipcRenderer.invoke('vscode:execGit', cwd, args);
+				} catch (invokeErr) {
+					// ONLY a genuine IPC transport failure lands here — fall through to the
+					// child_process fallback below. We must NOT put git's own result handling
+					// inside this try: a non-zero git exit (e.g. "fatal: branch already exists",
+					// directory conflict, etc.) would otherwise throw inside this catch, be
+					// mistaken for an IPC channel failure, drop to the fallback path, and finally
+					// get mis-reported as "Git execution not available in this context" — hiding
+					// the real git error. This is exactly the createWorktree failure we hit.
+					this.logService.warn('[WorktreeService] execGit: ipcRenderer.invoke failed, trying fallback:', invokeErr);
+				}
+
+				// The IPC call completed as a transport. Surface git's actual result here,
+				// OUTSIDE the try above, so real git errors propagate verbatim to the caller.
+				if (result !== undefined) {
 					if (result.success) {
 						this.logService.info(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
 						return result.stdout;
 					}
 					this.logService.error(`[WorktreeService] execGit: failed, stderr="${result.stderr}", exitCode=${result.exitCode}`);
 					throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
-				} catch (invokeErr) {
-					this.logService.warn('[WorktreeService] execGit: ipcRenderer.invoke failed, trying fallback:', invokeErr);
 				}
 			}
 

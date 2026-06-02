@@ -45,6 +45,7 @@ import type { AgentStudioPanelType } from "../common/constants.js";
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from "../common/constants.js";
 import { IModelSelectorService } from "../common/modelSelector.js";
 import { IAgentOSService } from "../common/agentOS.js";
+import { IWorktreeService } from "../../worktree/common/worktreeService.js";
 import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/providers.js";
 import { ToolApprovalDecision } from "../common/providers.js";
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
@@ -177,6 +178,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IModelService private readonly modelService: IModelService,
 		@IRequestService private readonly requestService: IRequestService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IWorktreeService private readonly worktreeService: IWorktreeService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(
@@ -2092,6 +2094,18 @@ export class AgentStudioWebviewController extends Disposable {
 					this._sendEvent("agentSessions.changed", { employeeId });
 				},
 			),
+		);
+
+		// Listen for git worktree list changes (create/remove) and push
+		// worktree.changed so the worktree dropdowns (EmployeeNode card +
+		// WorktreeSwitcher) refresh their lists automatically.
+		this._register(
+			this.worktreeService.onDidChangeWorktrees(() => {
+				this.logService.info(
+					"[AgentStudio] worktrees changed, notifying webview",
+				);
+				this._sendEvent("worktree.changed", {});
+			}),
 		);
 
 		// Listen for active workspace switching from the global toolbar

@@ -1,0 +1,16 @@
+{
+  "win32-x64-user": {
+    "version": "0000000000000000000000000000000000000000",
+    "productVersion": "0.0.0",
+    "url": "https://github.com/qiuzijian7/sarosis-agents-client/releases/download/v0.0.0/VsSarosisUserSetup.exe",
+    "sha256hash": "",
+    "timestamp": 0
+  },
+  "win32-x64": {
+    "version": "0000000000000000000000000000000000000000",
+    "productVersion": "0.0.0",
+    "url": "https://github.com/qiuzijian7/sarosis-agents-client/releases/download/v0.0.0/VsSarosisSetup.exe",
+    "sha256hash": "",
+    "timestamp": 0
+  }
+}

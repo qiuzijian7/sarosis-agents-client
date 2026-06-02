@@ -81,6 +81,11 @@ initMessageClient((type, data) => {
 		case 'employees.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:employees-changed'));
 			break;
+		case 'worktree.changed':
+			// Git worktree list changed (create/remove) — notify the worktree
+			// dropdowns (EmployeeNode card + WorktreeSwitcher) to re-fetch.
+			window.dispatchEvent(new CustomEvent('agentStudio:worktree-changed', { detail: data }));
+			break;
 		case 'workspace.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:workspace-changed', { detail: data }));
 			break;

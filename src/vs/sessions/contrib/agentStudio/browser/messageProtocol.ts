@@ -146,6 +146,7 @@ export type EventType =
 	| 'orchestration.planUpdated'
 	| 'orchestration.taskUpdated'
 	| 'agentSessions.changed'      // agent session list changed (create/rename/delete/update)
+	| 'worktree.changed'          // git worktree list changed (create/remove) — refresh worktree dropdowns
 	| 'configmd.sourceChanged'    // MD content updated (file watcher / external edit)
 	| 'configmd.htmlRendered'     // new HTML rendered (push to preview)
 	| 'configmd.command'          // model-issued command for HTML view

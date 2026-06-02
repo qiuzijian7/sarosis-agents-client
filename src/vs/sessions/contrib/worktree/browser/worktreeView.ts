@@ -23,7 +23,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { URI } from '../../../../base/common/uri.js';
-import { basename } from '../../../../base/common/resources.js';
+import { basename, extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
 import { ViewPane, IViewPaneOptions } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
@@ -32,6 +32,7 @@ import { IWorktreeService } from '../common/worktreeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 
 const $ = dom.$;
@@ -227,6 +228,7 @@ export class WorktreeViewPane extends ViewPane {
 		@ISCMViewService private readonly _scmViewService: ISCMViewService,
 		@IWorkspaceEditingService private readonly _workspaceEditingService: IWorkspaceEditingService,
 		@ICommandService private readonly _commandService: ICommandService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService, accessibleViewInformationService);
 		this.renderer = new WorktreeTreeRenderer(
@@ -462,12 +464,18 @@ export class WorktreeViewPane extends ViewPane {
 			const worktreeUri = URI.file(item.path);
 
 			// First, try to find an already-registered SCM repository for this worktree path.
-			// If found, just focus the SCM view on it (changes/graph already point at it).
-			const repository = this._scmViewService.repositories.find((r: ISCMRepository) =>
-				r.provider.rootUri?.toString() === worktreeUri.toString()
-			);
+			// If found, narrow the SCM views to it so Changes/Graph switch to its branch.
+			const repository = this._findScmRepository(worktreeUri);
 
 			if (repository) {
+				// Narrow the visible repositories to JUST this worktree's repo BEFORE
+				// focusing it. focus() has a visibility guard (scmViewService.focus:
+				// `if (repository && !this.isVisible(repository)) return;`) so focusing
+				// alone is a no-op when the repo is hidden. Setting visibleRepositories
+				// also drives the Changes view (SCMViewPane listens to
+				// onDidChangeVisibleRepositories) and the Graph view (SCMHistoryViewPane
+				// follows the active/focused repository) to switch to this branch.
+				this._scmViewService.visibleRepositories = [repository];
 				this._scmViewService.focus(repository);
 				return;
 			}
@@ -479,6 +487,20 @@ export class WorktreeViewPane extends ViewPane {
 			const currentFolders = this._workspaceContextService.getWorkspace().folders;
 			const folderName = basename(worktreeUri) || item.label;
 			const folderData = { uri: worktreeUri, name: folderName };
+
+			// Mark the worktree root as workspace-trusted BEFORE injecting it as a
+			// workspace folder. Otherwise the Git extension's openRepository() stalls
+			// on requestResourceTrust (the Sessions synthetic workspace never
+			// auto-trusts injected roots), no SCM provider is registered for the new
+			// worktree, and _focusRepositoryWhenReady() below never finds the repo —
+			// so the Changes/Graph views fail to switch branches.
+			try {
+				if (!this._workspaceTrustManagementService.getTrustedUris().some(u => u.toString() === worktreeUri.toString())) {
+					await this._workspaceTrustManagementService.setUrisTrust([worktreeUri], true);
+				}
+			} catch (err) {
+				console.warn('[WorktreeView] Failed to mark worktree root as trusted:', err);
+			}
 
 			if (currentFolders.length === 0) {
 				await this._workspaceEditingService.addFolders([folderData], true);
@@ -509,15 +531,46 @@ export class WorktreeViewPane extends ViewPane {
 	}
 
 	/**
+	 * Find the SCM repository whose root matches the given worktree URI.
+	 *
+	 * NOTE: we must NOT compare with `rootUri.toString() === worktreeUri.toString()`.
+	 * On Windows the Git extension may register the repository root with a
+	 * different drive-letter casing (e.g. `g:/...` vs `G:/...`) or a trailing
+	 * slash than the `URI.file(item.path)` we build here, so a strict string
+	 * compare silently fails and Changes/Graph never switch branches.
+	 * `extUriBiasedIgnorePathCase.isEqual` performs a platform-aware comparison
+	 * (case-insensitive on Windows/macOS for `file://` URIs), which fixes the
+	 * regression introduced when worktrees moved under
+	 * `<repoRoot>/.worktrees/<name>` (nested inside the main work tree).
+	 */
+	private _findScmRepository(worktreeUri: URI): ISCMRepository | undefined {
+		const match = this._scmViewService.repositories.find((r: ISCMRepository) =>
+			!!r.provider.rootUri && extUriBiasedIgnorePathCase.isEqual(r.provider.rootUri, worktreeUri)
+		);
+		if (!match) {
+			// Diagnostic: helps distinguish "registered but path mismatch" from
+			// "not registered yet" when troubleshooting branch-switch failures.
+			console.warn(
+				'[WorktreeView] No SCM repository matched worktree',
+				worktreeUri.toString(),
+				'— known repo roots:',
+				this._scmViewService.repositories.map(r => r.provider.rootUri?.toString())
+			);
+		}
+		return match;
+	}
+
+	/**
 	 * Focus the SCM repository matching the given worktree URI. Because the Git
 	 * extension registers repositories asynchronously after a workspace folder
 	 * change, we retry for a short period until the repository appears.
 	 */
 	private _focusRepositoryWhenReady(worktreeUri: URI, attempt: number = 0): void {
-		const repository = this._scmViewService.repositories.find((r: ISCMRepository) =>
-			r.provider.rootUri?.toString() === worktreeUri.toString()
-		);
+		const repository = this._findScmRepository(worktreeUri);
 		if (repository) {
+			// Narrow to just this repo first, then focus (focus() is gated on
+			// visibility — see openWorktree for details).
+			this._scmViewService.visibleRepositories = [repository];
 			this._scmViewService.focus(repository);
 			return;
 		}

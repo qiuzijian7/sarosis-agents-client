@@ -3,7 +3,7 @@
  *  Dropdown in chat header to switch worktree for current agent.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { sendRequest } from '../../bridge/messageClient';
@@ -27,8 +27,8 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	const currentWorktreeBranch = activeEmployee?.worktreeBranch;
 
 	// Load worktree list when dropdown opens
-	useEffect(() => {
-		if (!isOpen || !activeWorkspaceId) { return; }
+	const fetchWorktrees = useCallback(() => {
+		if (!activeWorkspaceId) { return; }
 
 		setIsLoading(true);
 		sendRequest<{ workspaceId: string }, WorktreeInfo[]>('worktree.list', { workspaceId: activeWorkspaceId })
@@ -42,7 +42,27 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 			.finally(() => {
 				setIsLoading(false);
 			});
-	}, [isOpen, activeWorkspaceId]);
+	}, [activeWorkspaceId]);
+
+	useEffect(() => {
+		if (!isOpen) { return; }
+		fetchWorktrees();
+	}, [isOpen, fetchWorktrees]);
+
+	// Refresh the worktree list when a worktree is created/removed elsewhere
+	// (e.g. via the EmployeeNode card or worktree view), even if the dropdown
+	// is currently open.
+	useEffect(() => {
+		const handler = () => {
+			// Only re-fetch when the dropdown is open; otherwise it will fetch
+			// fresh data the next time it opens.
+			if (isOpen) {
+				fetchWorktrees();
+			}
+		};
+		window.addEventListener('agentStudio:worktree-changed', handler);
+		return () => window.removeEventListener('agentStudio:worktree-changed', handler);
+	}, [isOpen, fetchWorktrees]);
 
 	// Close dropdown when clicking outside
 	useEffect(() => {

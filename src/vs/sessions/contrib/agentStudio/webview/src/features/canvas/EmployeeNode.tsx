@@ -4,7 +4,7 @@
  *  Avatar (top) → Name + Role → Model badge → Skills/Token tags (bottom)
  *--------------------------------------------------------------------------------------------*/
 
-import React, { memo, useState, useRef, useEffect } from 'react';
+import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { Employee } from '../../store/useEmployeeStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
@@ -92,7 +92,7 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 	}, [employee.name, isEditingName]);
 
 	// Fetch worktree list when workspaceId changes
-	useEffect(() => {
+	const fetchWorktrees = useCallback(() => {
 		if (!employee.workspaceId) { return; }
 
 		setIsLoadingWorktrees(true);
@@ -108,6 +108,17 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 				setIsLoadingWorktrees(false);
 			});
 	}, [employee.workspaceId]);
+
+	useEffect(() => {
+		fetchWorktrees();
+	}, [fetchWorktrees]);
+
+	// Refresh the worktree list when a worktree is created/removed elsewhere.
+	useEffect(() => {
+		const handler = () => fetchWorktrees();
+		window.addEventListener('agentStudio:worktree-changed', handler);
+		return () => window.removeEventListener('agentStudio:worktree-changed', handler);
+	}, [fetchWorktrees]);
 
 	const handleNameDoubleClick = (e: React.MouseEvent) => {
 		e.stopPropagation();

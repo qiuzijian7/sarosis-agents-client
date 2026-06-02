@@ -15,7 +15,11 @@ AppUpdatesURL=https://code.visualstudio.com/
 DefaultGroupName={#NameLong}
 AllowNoIcons=yes
 OutputDir={#OutputDir}
+#if "user" == InstallTarget
+OutputBaseFilename=VsSarosisUserSetup
+#else
 OutputBaseFilename=VsSarosisSetup
+#endif
 Compression=lzma
 SolidCompression=yes
 AppMutex={code:GetAppMutex}

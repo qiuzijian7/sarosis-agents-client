@@ -17,6 +17,7 @@ import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
 import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
+import { DEFAULT_CUSTOM_TITLEBAR_HEIGHT } from '../../platform/window/common/window.js';
 import { IEditorGroupsService, IEditorGroup, GroupDirection } from '../../workbench/services/editor/common/editorGroupsService.js';
 import { MainEditorPart as SessionsMainEditorPart } from './parts/editorPart.js';
 import { EditorParts as SessionsEditorParts } from './parts/editorParts.js';
@@ -246,11 +247,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		let top = 0;
 		let quickPickTop = 0;
 
-		if (this.isVisible(Parts.TITLEBAR_PART, mainWindow)) {
-			top = this.getPart(Parts.TITLEBAR_PART).maximumHeight;
-			quickPickTop = top;
-		} else if (this.mobileTopBarElement) {
-			// On phone layout the MobileTitlebarPart replaces the titlebar
+		// [Sarosis] The titlebar is no longer a window-top full-width band —
+		// it lives inside the left column (above the sidebar). The center
+		// (File) and right (Agent) content areas therefore start at y=0, so
+		// the global container offset is 0. (On phone the MobileTitlebarPart
+		// still sits at the top and contributes its own offset.)
+		if (this.mobileTopBarElement) {
 			top = this.mobileTopBarElement.offsetHeight;
 			quickPickTop = top;
 		}
@@ -1144,8 +1146,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			const updateToolbarPosition = () => {
 				const mainRect = this.mainContainer.getBoundingClientRect();
 				const partRect = agentPartContainer.getBoundingClientRect();
+				// The full-width titlebar is gone, so the agent part starts at
+				// the very top of the window. Clamp the toolbar's top to >= 0
+				// so it overlays the inner top band of the right column rather
+				// than being pushed off-screen above it. (Stage 3 will replace
+				// this floating overlay with a real right-column titlebar.)
+				const desiredTop = partRect.top - mainRect.top - TOOLBAR_HEIGHT;
 				toolbar.element.style.left = `${partRect.left - mainRect.left}px`;
-				toolbar.element.style.top = `${partRect.top - mainRect.top - TOOLBAR_HEIGHT}px`;
+				toolbar.element.style.top = `${Math.max(0, desiredTop)}px`;
 				toolbar.element.style.width = `${partRect.width}px`;
 			};
 			updateToolbarPosition();
@@ -1439,42 +1447,57 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const sideBarSize = this.partVisibility.sidebar
 			? this._sidebarExpandedWidth
 			: 48;
-		const titleBarHeight = this.titleBarPartView?.minimumHeight ?? 30;
+		// [Sarosis] The titlebar hosts the left-column tools (the sidebar
+		// expand/collapse toggle in `Menus.TitleBarLeftLayout`, plus the
+		// center command center and right account menu). Previously we gave
+		// it a zero-height hidden full-width slot so the three columns could
+		// fill the window top-to-bottom — but that also removed the sidebar
+		// toggle button. To keep the toggle button AND let the File/Agent
+		// editor columns fill the full window height, the titlebar is moved
+		// OUT of the window-top row and INTO the top of the left column.
+		//
+		// New grid shape (root = HORIZONTAL):
+		//   Root (HORIZONTAL):
+		//   ├─ leftColumn (branch, VERTICAL) [width=sideBarSize]:
+		//   │     ├─ TitleBar [height=titleBarHeight]  ← toggle button lives here
+		//   │     └─ Sidebar  [height=fill]
+		//   ├─ File editor  [width=editorWidth]        (fills full window height)
+		//   └─ Agent editor [width=agentEditorWidth]   (fills full window height)
+		//
+		// Because the editor columns are now direct children of the root
+		// HORIZONTAL branch, they span the entire window height — the File
+		// (middle) column is no longer pushed down by a top titlebar band.
+		const titleBarHeight = DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
 
-		// Calculate main content area dimensions
-		const contentHeight = Math.max(0, height - titleBarHeight);
-		// [Sarosis] The editor row is now split into two physically
-		// independent EditorPart columns:
+		// [Sarosis] The editor row is split into two physically independent
+		// EditorPart columns:
 		//   - File zone (middle)  → gets the larger share
 		//   - Agent zone (right)  → Canvas + Chat, ~40% of the editor band
 		const editorBandWidth = Math.max(300, width - sideBarSize);
 		const agentEditorWidth = Math.max(360, Math.round(editorBandWidth * 0.42));
 		const editorWidth = Math.max(300, editorBandWidth - agentEditorWidth);
 
-		const isPhone = this.layoutPolicy.viewportClass.get() === 'phone';
-
-		// --- Grid Structure ---
-		// Root orientation is VERTICAL:
-		//   Root (VERTICAL):
-		//   ├─ TitleBar [height=titleBarHeight]
-		//   └─ mainRow (branch) [height=contentHeight]:
-		//       → HORIZONTAL
-		//       ├─ Sidebar     [width=sideBarSize]
-		//       ├─ File editor [width=editorWidth]   (middle)
-		//       └─ Agent editor[width=agentEditorWidth] (right)
-
 		const titleBarNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.TITLEBAR_PART },
 			size: titleBarHeight,
-			visible: !isPhone
+			visible: true
 		};
 
 		const sideBarNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.SIDEBAR_PART },
-			size: sideBarSize,
+			size: Math.max(0, height - titleBarHeight),
 			visible: this.partVisibility.sidebar
+		};
+
+		// Left column (VERTICAL): TitleBar (top) | Sidebar (fill). Its width
+		// is the sidebar width; the titlebar shares that width and renders
+		// only the left-column tools (toggle button) within it.
+		const leftColumn: ISerializedNode = {
+			type: 'branch',
+			data: [titleBarNode, sideBarNode],
+			size: sideBarSize
 		};
 
 		const editorNode: ISerializedLeafNode = {
@@ -1491,23 +1514,18 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			visible: true
 		};
 
-		// Level 1 (HORIZONTAL): Sidebar | File editor | Agent editor
-		const mainRow: ISerializedNode = {
-			type: 'branch',
-			data: [sideBarNode, editorNode, agentEditorNode],
-			size: contentHeight
-		};
-
+		// Root (HORIZONTAL): Left column | File editor | Agent editor.
 		const result: ISerializedGrid = {
 			root: {
 				type: 'branch',
-				size: width,
+				size: height,
 				data: [
-					titleBarNode,
-					mainRow
+					leftColumn,
+					editorNode,
+					agentEditorNode
 				]
 			},
-			orientation: Orientation.VERTICAL,
+			orientation: Orientation.HORIZONTAL,
 			width,
 			height
 		};
@@ -1915,13 +1933,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	getMaximumEditorDimensions(_container: HTMLElement): IDimension {
 		// Return the available space for editor (excluding sidebar)
-		// [Sarosis] The sidebar is always in the grid (at least 48px for the icon strip).
+		// [Sarosis] The sidebar is always in the grid (at least 48px for the
+		// icon strip). The titlebar now lives INSIDE the left column (above
+		// the sidebar), not as a window-top band, so the editor columns span
+		// the full window height — we must NOT subtract the titlebar height.
 		const sidebarWidth = this.workbenchGrid.getViewSize(this.sideBarPartView).width;
-		const titleBarHeight = this.workbenchGrid.getViewSize(this.titleBarPartView).height;
 
 		return new Dimension(
 			this._mainContainerDimension.width - sidebarWidth,
-			this._mainContainerDimension.height - titleBarHeight
+			this._mainContainerDimension.height
 		);
 	}
 
