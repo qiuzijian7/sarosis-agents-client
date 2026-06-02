@@ -65,9 +65,6 @@ export class AgentStudioSearchViewPane extends SearchView {
 	/** Absolute path of the currently selected worktree (undefined = main repo). */
 	private selectedWorktreePath: string | undefined;
 
-	/** Saved reference to IWorkspaceContextService for comparing target path against active VSCode workspace folders. */
-	private wsContextService!: IWorkspaceContextService;
-
 	constructor(
 		options: IViewPaneOptions,
 		@IFileService fileService: IFileService,
@@ -140,9 +137,6 @@ export class AgentStudioSearchViewPane extends SearchView {
 			this.selectedWorktreePath = undefined;
 			this._updateSearchScopeBasedOnActiveWorkspace();
 		}));
-
-		// 保存 contextService 引用，供 include pattern 计算时比较目标路径与当前 VSCode workspace folder
-		this.wsContextService = contextService;
 
 		// 监听 workspace 列表变化，更新显示的 workspace 名称
 		this._register(this.agentStudioService.onDidChangeWorkspace(() => {
@@ -327,9 +321,10 @@ export class AgentStudioSearchViewPane extends SearchView {
 
 	private _selectWorktree(path: string | undefined): void {
 		this.selectedWorktreePath = path;
-		// 更新搜索范围到选中的 worktree（或主仓库）
-		const target = path || this.workspaceRootPath || '';
-		this._updateSearchIncludePattern(target);
+		// 重新基于激活 workspace 计算搜索范围：
+		// - 选中具体 worktree → 限定到该 worktree 单一路径
+		// - 选中「主仓库」(path===undefined) → 恢复为所有关联代码仓库根目录
+		this._updateSearchScopeBasedOnActiveWorkspace();
 		this._updateWorktreeLabel();
 	}
 
@@ -380,7 +375,7 @@ export class AgentStudioSearchViewPane extends SearchView {
 				// No active workspace, clear search scope restriction
 				this.workspaceRootPath = undefined;
 				this.selectedWorktreePath = undefined;
-				this._updateSearchIncludePattern('');
+				this._updateSearchIncludePaths([]);
 				this._updateCurrentWorkspaceDisplay();
 				this._updateWorktreeLabel();
 				return;
@@ -389,15 +384,21 @@ export class AgentStudioSearchViewPane extends SearchView {
 			const workspaces = await this.agentStudioService.getWorkspaces();
 			const activeWorkspace = workspaces.find((ws: Workspace) => ws.id === activeWorkspaceId);
 
-			// 记录 workspace 根路径（作为「主仓库」搜索范围 / worktree 列表过滤基准）
-			this.workspaceRootPath = activeWorkspace?.path;
+			// 真实代码仓库根目录集合（用于搜索范围）：
+			// 注意：workspace.path 是 home / 元数据目录（存放 .sarosisworkspace、worktrees 等），
+			// **不含代码**；真正的代码仓库在 relatedFolders[]（见 WorkspaceViewPane 文件树渲染逻辑）。
+			// 因此搜索范围必须用 relatedFolders 的路径，否则会搜到空的 home 目录 → 0 结果。
+			const repoPaths = this._collectWorkspaceRepoPaths(activeWorkspace);
 
-			// 搜索范围：优先用当前选中的 worktree 路径，否则用 workspace 根路径
-			const target = this.selectedWorktreePath || activeWorkspace?.path;
-			if (target) {
-				this._updateSearchIncludePattern(target);
+			// 记录首个仓库根路径，作为「主仓库」搜索范围 / worktree 列表过滤基准
+			this.workspaceRootPath = repoPaths[0];
+
+			if (this.selectedWorktreePath) {
+				// 用户选定了某个 worktree：搜索范围 = 该 worktree 单一路径
+				this._updateSearchIncludePaths([this.selectedWorktreePath]);
 			} else {
-				this._updateSearchIncludePattern('');
+				// 主仓库（默认）：搜索范围 = 所有关联代码仓库根目录
+				this._updateSearchIncludePaths(repoPaths);
 			}
 
 			// Update displayed workspace info & worktree label
@@ -408,59 +409,87 @@ export class AgentStudioSearchViewPane extends SearchView {
 		}
 	}
 
-	private _updateSearchIncludePattern(pattern: string): void {
-		// [Sarosis] 关键修复：对齐 VSCode 原生「在文件夹中查找」逻辑。
+	/**
+	 * 收集 workspace 的真实代码仓库根路径集合，用于限定搜索范围。
+	 * 优先 relatedFolders（真实代码仓库）；为兼容遗留无 relatedFolders 的 workspace，
+	 * 回退到 workspace.path。返回去重后的绝对路径数组（保留原始大小写与分隔符）。
+	 */
+	private _collectWorkspaceRepoPaths(ws: Workspace | undefined): string[] {
+		if (!ws) {
+			return [];
+		}
+		const paths: string[] = [];
+		const seen = new Set<string>();
+		const add = (p: string | undefined) => {
+			if (!p) {
+				return;
+			}
+			const key = this._toGlobPath(p).toLowerCase();
+			if (!seen.has(key)) {
+				seen.add(key);
+				paths.push(p);
+			}
+		};
+		// 1. 关联代码仓库（核心：真正含代码的目录）
+		for (const rf of ws.relatedFolders ?? []) {
+			add(rf?.path);
+		}
+		// 2. 遗留兼容：无 relatedFolders 时回退到 home 目录
+		if (paths.length === 0) {
+			add(ws.path);
+		}
+		return paths;
+	}
+
+	private _updateSearchIncludePaths(paths: string[]): void {
+		// [Sarosis] 关键修复（v3）：把「真实代码仓库根路径集合」以正斜杠绝对路径写入 include pattern。
 		//
-		// 背景：sessions 窗口中，VSCode 搜索的真实根目录由 active session 注入的 workspace folder
-		// 决定（见 WorkspaceFolderManagementContribution，通过 addFolders/updateFolders 注入，
-		// 且就是当前激活 workspace 的 repo/worktree）。搜索本来就被限定在这个 folder 内。
+		// 完整根因（前两版修复均未命中真凶）：
+		//   sessions 窗口的 agentStudio Workspace 有两类根目录：
+		//     - workspace.path  → home / 元数据目录（.sarosisworkspace、worktrees 等），**不含代码**
+		//     - relatedFolders[] → 真正的代码仓库（git root，含 AGENTS.md 等源码）
+		//   之前的代码错误地把 workspace.path（空的 home 目录）写入 include pattern，
+		//   导致搜索范围落在不含代码的目录 → 搜索已存在内容也 0 结果（与现象完全吻合）。
 		//
-		// 之前的 bug：无条件把原始 Windows 绝对路径（含反斜杠 `\`）写入 include pattern。
-		//   1. 当目标 == 当前 VSCode workspace folder（主仓库常态）时，绝对路径 include 触发
-		//      queryBuilder 的 usingSearchPaths 分支，改变搜索行为；且原始反斜杠在 glob 处理链
-		//      （splitGlobAware/splitGlobFromPath）中是非标准输入，导致 glob 不匹配 → 搜索无结果。
-		//   2. VSCode 原生 resolveResourcesForSearchIncludes 在目标 == 根 folder 时返回空（即不写
-		//      include，依赖 folder 自然限定范围），与我们的做法相反。
+		// 修复：改用 relatedFolders 的路径（见 _collectWorkspaceRepoPaths）。
 		//
-		// 修复策略：
-		//   - 若目标路径为空，或目标等于当前 VSCode workspace folder（主仓库），则清空 include
-		//     pattern，依赖 active session folder 自然限定搜索范围（与原生一致）。
-		//   - 仅当目标是 folder 之外的路径（如独立 worktree 目录）时，才写入绝对路径 include，
-		//     并将反斜杠规范化为正斜杠（glob 标准），避免转义问题。
+		// 实现要点（依据 queryBuilder.commonQuery）：
+		//   include pattern 含绝对路径时走 usingSearchPaths 分支，直接用这些绝对路径构建搜索根，
+		//   不依赖可能为空 / 不一致的 getWorkspace().folders。多个路径用逗号分隔（原生支持）。
+		//   必须把 Windows 反斜杠转正斜杠——原始 `\` 在 glob 链
+		//   （splitGlobFromPath / normalizeGlobPattern）中是转义字符，会破坏路径解析。
 		try {
 			const includeWidget = (this as any).inputPatternIncludes;
 			if (!includeWidget) {
 				return;
 			}
 
-			// 写入用：仅反斜杠转正斜杠 + 去尾斜杠，保留原始大小写（供 ripgrep 使用）
-			const targetForWrite = this._toGlobPath(pattern);
+			// 反斜杠转正斜杠 + 去尾斜杠，保留原始大小写（供 ripgrep 精确匹配），过滤空值并去重
+			const globPaths = Array.from(new Set(
+				paths.map(p => this._toGlobPath(p)).filter(p => p.length > 0)
+			));
 
-			// 目标为空 → 清空 include，搜索整个 active session folder
-			if (!targetForWrite) {
-				includeWidget.setValue('');
-				return;
+			// 原生 include 输入框用逗号分隔多个 search path
+			includeWidget.setValue(globPaths.join(', '));
+
+			// include pattern 变更后，若搜索框已有内容，主动重新触发查询，使新范围立即生效。
+			this._retriggerSearchIfActive();
+		} catch {
+			// Silently fail if internal API changes
+		}
+	}
+
+	/**
+	 * 若当前搜索框已有查询内容，则用新的搜索范围重新触发查询。
+	 * 直接复用原生 triggerQueryChange（protected），避免范围切换后旧结果残留 / 不刷新。
+	 */
+	private _retriggerSearchIfActive(): void {
+		try {
+			const widget = (this as any).searchWidget;
+			const value: string | undefined = widget?.searchInput?.getValue?.();
+			if (value && value.length > 0) {
+				(this as any).triggerQueryChange?.({ preserveFocus: true, delay: 0 });
 			}
-
-			// 比较用：大小写不敏感（Windows 盘符）
-			const targetForCompare = this._normalizeForCompare(targetForWrite);
-
-			// 比较目标路径与当前 VSCode workspace folders：若目标就是（或等于）某个根 folder，
-			// 则清空 include，让搜索自然覆盖整个 folder（与 VSCode 原生行为一致）。
-			const folders = this.wsContextService.getWorkspace().folders;
-			const targetMatchesRoot = folders.some(folder => {
-				const folderPath = this._normalizeForCompare(this._toGlobPath(folder.uri.fsPath));
-				return folderPath === targetForCompare;
-			});
-
-			if (targetMatchesRoot) {
-				// 主仓库 / 目标即根 folder：不写 include，依赖 folder 限定范围
-				includeWidget.setValue('');
-				return;
-			}
-
-			// 目标在根 folder 之外（独立 worktree 路径）：写入正斜杠规范化的绝对路径（保留大小写）
-			includeWidget.setValue(targetForWrite);
 		} catch {
 			// Silently fail if internal API changes
 		}
@@ -474,16 +503,6 @@ export class AgentStudioSearchViewPane extends SearchView {
 			return '';
 		}
 		return p.replace(/\\/g, '/').replace(/\/+$/, '');
-	}
-
-	/**
-	 * 路径比较规范化：Windows 盘符路径转小写（文件系统大小写不敏感），用于判断目标是否等于根 folder。
-	 */
-	private _normalizeForCompare(globPath: string): string {
-		if (/^[a-zA-Z]:\//.test(globPath)) {
-			return globPath.toLowerCase();
-		}
-		return globPath;
 	}
 
 	protected override layoutBody(height: number, width: number): void {
