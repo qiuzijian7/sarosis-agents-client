@@ -19,6 +19,7 @@ import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
 import { IEditorGroupsService, IEditorGroup, GroupDirection } from '../../workbench/services/editor/common/editorGroupsService.js';
 import { MainEditorPart as SessionsMainEditorPart } from './parts/editorPart.js';
+import { EditorParts as SessionsEditorParts } from './parts/editorParts.js';
 import { IEditorService } from '../../workbench/services/editor/common/editorService.js';
 import { IPaneCompositePartService } from '../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../workbench/common/views.js';
@@ -43,7 +44,7 @@ import { setHoverDelegateFactory } from '../../base/browser/ui/hover/hoverDelega
 import { setBaseLayerHoverDelegate } from '../../base/browser/ui/hover/hoverDelegate2.js';
 import { Registry } from '../../platform/registry/common/platform.js';
 import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from '../../workbench/common/contributions.js';
-import { IEditorFactoryRegistry, EditorExtensions, GroupModelChangeKind } from '../../workbench/common/editor.js';
+import { IEditorFactoryRegistry, EditorExtensions } from '../../workbench/common/editor.js';
 import { setARIAContainer } from '../../base/browser/ui/aria/aria.js';
 import { FontMeasurements } from '../../editor/browser/config/fontMeasurements.js';
 import { createBareFontInfoFromRawSettings } from '../../editor/common/config/fontInfoFromSettings.js';
@@ -267,6 +268,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private titleBarPartView!: ISerializableView;
 	private sideBarPartView!: ISerializableView;
 	private editorPartView!: ISerializableView;
+	private agentEditorPartView!: ISerializableView;
 
 	private readonly partVisibility: IPartVisibilityState = {
 		sidebar: true,
@@ -987,16 +989,31 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		editorPartContainer.setAttribute('role', 'main');
 
 		mark('code/willCreatePart/workbench.parts.editor');
-		// [Sarosis] Enable upstream state restoration so that the editor
-		// part recreates the previously persisted grid (groups, sash
-		// positions, active group, MRU). The sessions MainEditorPart
-		// override checks `hasRestorableState` itself and falls back to
-		// the default dual-zone build when no state exists or the saved
-		// zone-root ids are missing.
+		// [Sarosis] Enable upstream state restoration so that the File-zone
+		// editor part recreates the previously persisted grid (groups, sash
+		// positions, active group, MRU). After the path-A refactor this is a
+		// plain single-grid part; the Agent zone is a separate part below.
 		this.getPart(Parts.EDITOR_PART).create(editorPartContainer, { restorePreviousState: true });
 		mark('code/didCreatePart/workbench.parts.editor');
 
 		this.mainContainer.appendChild(editorPartContainer);
+
+		// [Sarosis] Create the second main-window-level editor part that
+		// hosts the Agent Studio zone (Canvas / Chat). Touching the
+		// `agentPart` getter lazily instantiates it and `registerPart()`s it
+		// into the EditorParts `_parts` set, enabling group→part routing.
+		const agentPart = (this.editorGroupService as SessionsEditorParts).agentPart;
+
+		const agentEditorPartContainer = document.createElement('div');
+		agentEditorPartContainer.classList.add('part', 'editor', 'agent-editor');
+		agentEditorPartContainer.id = Parts.AGENT_EDITOR_PART;
+		agentEditorPartContainer.setAttribute('role', 'main');
+
+		mark('code/willCreatePart/workbench.parts.agentEditor');
+		agentPart.create(agentEditorPartContainer, { restorePreviousState: true });
+		mark('code/didCreatePart/workbench.parts.agentEditor');
+
+		this.mainContainer.appendChild(agentEditorPartContainer);
 	}
 
 	private restore(lifecycleService: ILifecycleService): void {
@@ -1029,13 +1046,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}
 		}
 
-		// [Sarosis] Open Agent Studio EditorPanes — dual-zone model.
-		// The editor area is split horizontally into two top-level zones:
-		//   - Left  → file zone (regular file editors)
-		//   - Right → agent-studio zone (AgentStudioEditorInput tabs)
-		// Inside each zone, users can freely split / dock / merge / resize
-		// sub-groups, but cross-zone moves are blocked by the upstream
-		// drop interceptors that consult __sarosisIsAgentStudioGroup__.
+		// [Sarosis] Open Agent Studio EditorPanes — two physically
+		// independent EditorPart instances:
+		//   - EDITOR_PART       → File zone (middle column)
+		//   - AGENT_EDITOR_PART → Agent zone (right column: Canvas + Chat)
+		// Physical isolation makes cross-zone drags impossible, so no
+		// drag-gate / relocation guard is needed — only a close-guard.
 		this._openAgentStudioEditors();
 
 		// [Sarosis] Now that every part is wired up and the editor grid
@@ -1045,92 +1061,80 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	}
 
 	private _openAgentStudioEditors(): void {
-		// ── Retrieve the two pre-built zones ────────────────────────────
-		// The sessions EditorPart (MainEditorPart) overrides
-		// doCreateGridControl() to build a grid with two BranchNode
-		// children — each zone has its own split-view-container in the
-		// DOM, enabling truly independent drag/dock/resize within zones.
-		// We just look up the groups by the IDs the EditorPart recorded.
-		const editorPart = this.getPart(Parts.EDITOR_PART) as SessionsMainEditorPart;
-		const fileRootGroupId = editorPart.fileZoneRootGroupId;
-		const agentRootGroupId = editorPart.agentZoneRootGroupId;
+		// ── Physical two-part model ──────────────────────────────────────
+		// After the path-A refactor the editor area is split into two
+		// *physically independent* EditorPart instances that share the main
+		// window id:
+		//   - EDITOR_PART       → File zone (middle column). Regular file
+		//                         editors open here through the default
+		//                         group; we do not touch them.
+		//   - AGENT_EDITOR_PART → Agent zone (right column). Canvas / Chat
+		//                         live here.
+		//
+		// Because they are distinct Parts, each with its own grid and DOM
+		// container, editors can NEVER be dragged across the boundary — the
+		// old single-part dual-zone model required a globalThis drag-gate and
+		// a cross-zone relocation guard, but with physical isolation those
+		// are unnecessary. We only keep a lightweight close-guard so the last
+		// Canvas / Chat tab cannot be accidentally closed.
+		const editorParts = this.editorGroupService as SessionsEditorParts;
+		const agentPart = editorParts.agentPart;
 
-		const fileRootGroup = this.editorGroupService.getGroup(fileRootGroupId) ?? this.editorGroupService.activeGroup;
-		const agentRootGroup = this.editorGroupService.getGroup(agentRootGroupId)
-			?? this.editorGroupService.groups.find(g => g.id !== fileRootGroup.id)
-			?? fileRootGroup;
-
-		// Lock the agent-studio root group so file editors cannot land
-		// here through "open to side" / `editor.action.openSide` or other
-		// implicit routing.
-		agentRootGroup.lock(true);
-
-		// ── Zone membership tracking ─────────────────────────────────────
-		// Keep two sets that together cover *every* known editor group.
-		const fileZoneGroupIds = new Set<number>();
-		const agentStudioGroupIds = new Set<number>();
-		fileZoneGroupIds.add(fileRootGroup.id);
-		agentStudioGroupIds.add(agentRootGroup.id);
-		for (const g of this.editorGroupService.groups) {
-			if (g.id === fileRootGroup.id || g.id === agentRootGroup.id) {
-				continue;
+		// ── Purge stale Canvas/Chat from the File zone (middle column) ──
+		// Before the path-A refactor, Canvas / Chat lived in the single
+		// shared EditorPart and were persisted there. The middle File part
+		// is created with `restorePreviousState: true`, so on the first
+		// launch after the refactor it re-materialises those old
+		// AgentStudioEditorInput tabs — producing a *duplicate* Canvas/Chat
+		// in the middle column (and the Chat pane's "New Session" header
+		// button). Canvas/Chat now belong exclusively to the Agent part, so
+		// strip any AgentStudioEditorInput out of the File part and drop the
+		// emptied non-root groups.
+		const fileMainPart = editorParts.mainPart;
+		// Only act when stale Canvas/Chat are actually present in the File
+		// part — otherwise leave the user's legitimate file-editor splits
+		// untouched. (After the first post-refactor launch the persisted
+		// state no longer carries Canvas/Chat, so this becomes a no-op.)
+		const fileHasStale = fileMainPart.groups.some(g =>
+			g.editors.some(ed => ed instanceof AgentStudioEditorInput)
+		);
+		if (fileHasStale) {
+			// Step 1 — collapse every File group into the active root group.
+			// The old persisted grid (saved while Canvas/Chat still lived in
+			// this shared part) carries several groups, including empty ones
+			// and stale Canvas/Chat duplicates. `mergeAllGroups` is
+			// synchronous and guarantees the middle column ends up with
+			// exactly one editor area.
+			if (fileMainPart.groups.length > 1) {
+				fileMainPart.mergeAllGroups(fileMainPart.activeGroup);
 			}
-			// Unknown pre-existing group — default to file zone.
-			fileZoneGroupIds.add(g.id);
+			// Step 2 — strip the stale AgentStudioEditorInput (old Canvas/Chat,
+			// whose Chat tab also surfaces the "New Session" session title)
+			// out of the single remaining File group. Canvas/Chat belong
+			// exclusively to the Agent part now.
+			const fileRootGroup = fileMainPart.activeGroup;
+			const staleEditors = fileRootGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput);
+			if (staleEditors.length > 0) {
+				fileRootGroup.closeEditors(staleEditors, { preserveFocus: true });
+			}
 		}
 
-		// ── Global zone API ─────────────────────────────────────────────
-		// Expose a single, unified drag-gate predicate that upstream VS Code
-		// workbench code (editorDropTarget, multiEditorTabsControl) can call
-		// without importing anything from `sessions/`.
-		//
-		// API surface (globalThis):
-		//   __sarosisIsAgentStudioGroup__(groupId)  → boolean
-		//     True if the group belongs to the agent-studio zone (right).
-		//
-		//   __sarosisCrossZoneDragBlocked__(sourceGroupId, targetGroupId)
-		//     True if a drag from source → target crosses the zone boundary.
-		//     Returns false (= allowed) for same-zone operations, unknown
-		//     groups, or when the predicate is not installed.
-		//
-		// Zone-internal drags (same zone, any direction / dock position) are
-		// ALWAYS allowed — the upstream code only needs to call the gate on
-		// cross-group operations and skip the drag when it returns true.
+		// The Agent zone's root group (always present on a freshly-created
+		// EditorPart). Lock it so file editors can never be implicitly
+		// routed here via "open to side" and friends.
+		const canvasGroup = agentPart.activeGroup;
+		canvasGroup.lock(true);
 
-		const agentStudioKey = '__sarosisIsAgentStudioGroup__';
-		const crossZoneKey = '__sarosisCrossZoneDragBlocked__';
-
-		(globalThis as any)[agentStudioKey] = (groupId: number | undefined): boolean => {
-			return typeof groupId === 'number' && agentStudioGroupIds.has(groupId);
-		};
-
-		(globalThis as any)[crossZoneKey] = (sourceGroupId: number | undefined, targetGroupId: number | undefined): boolean => {
-			if (typeof sourceGroupId !== 'number' || typeof targetGroupId !== 'number') {
-				return false; // unknown → allow
-			}
-			const sourceInAgent = agentStudioGroupIds.has(sourceGroupId);
-			const targetInAgent = agentStudioGroupIds.has(targetGroupId);
-			// Same zone → allow; cross zone → block
-			return sourceInAgent !== targetInAgent;
-		};
-
-		this._register({
-			dispose: () => {
-				delete (globalThis as any)[agentStudioKey];
-				delete (globalThis as any)[crossZoneKey];
-			}
-		});
-
-		// ── Workspace Toolbar ──────────────────────────────────────────
-		// The toolbar is placed as an absolute overlay on mainContainer,
-		// positioned above the editor part (overlapping the titlebar area).
-		// It tracks the agent zone's horizontal position via the editor
-		// part's getBoundingClientRect(). The editor part no longer reserves
-		// space for the toolbar — it fills its full grid-allocated area.
+		// ── Workspace Toolbar overlay (right column) ─────────────────────
+		// Absolute overlay on mainContainer, positioned in the band above
+		// the Agent editor part. Tracks the agent part's bounding rect so it
+		// always spans the right column. (Stage 3 will fold this into the
+		// right-column titlebar with the workspace dropdown + window
+		// controls; for now it floats above the agent part.)
 		const TOOLBAR_HEIGHT = SessionsMainEditorPart.TOOLBAR_HEIGHT;
-		const editorPartContainer = this.getPart(Parts.EDITOR_PART).getContainer();
+		const agentPartContainer = this.getPart(Parts.AGENT_EDITOR_PART).getContainer();
 
-		if (editorPartContainer) {
+		if (agentPartContainer) {
 			const toolbar = new AgentStudioWorkspaceToolbar(this.mainContainer);
 			this._register(toolbar);
 			toolbar.element.style.position = 'absolute';
@@ -1139,9 +1143,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 			const updateToolbarPosition = () => {
 				const mainRect = this.mainContainer.getBoundingClientRect();
-				const partRect = editorPartContainer.getBoundingClientRect();
-				// Toolbar sits in the reserved space above the editor part,
-				// spanning from the editor part's left edge to the right edge.
+				const partRect = agentPartContainer.getBoundingClientRect();
 				toolbar.element.style.left = `${partRect.left - mainRect.left}px`;
 				toolbar.element.style.top = `${partRect.top - mainRect.top - TOOLBAR_HEIGHT}px`;
 				toolbar.element.style.width = `${partRect.width}px`;
@@ -1149,10 +1151,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			updateToolbarPosition();
 
 			const ro = new ResizeObserver(updateToolbarPosition);
-			ro.observe(editorPartContainer);
+			ro.observe(agentPartContainer);
 			this._register({ dispose: () => ro.disconnect() });
-
-			console.log('[workbench] Toolbar mounted in reserved space above editor part');
 
 			const connectService = () => {
 				try {
@@ -1179,234 +1179,79 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			connectFileSvc();
 		}
 
-		// ── Close-guard for the three Agent Studio panels ────────────────
-		// Prevent the *last* AgentStudioEditorInput of any panelType in
-		// the entire agent-studio zone from disappearing — re-open it
-		// immediately. Closing a copy that exists in another sub-group of
-		// the same zone is fine (the editor is just being moved within
-		// the zone).
-		const reopenIfLastInZone = (panelType: string) => {
-			// Check ALL groups (including modal editor parts, auxiliary
-			// windows, etc.). When the user clicks "Open in Modal Editor",
-			// the editor is moved out of the agent zone into a modal part —
-			// that must not trigger a re-open.
-			const stillExistsAnywhere = this.editorGroupService.groups.some(g =>
+		// ── Close-guard for Canvas / Chat ────────────────────────────────
+		// Re-open the last instance of a panel type if it is closed inside
+		// the agent part. Membership is trivial now: every group on
+		// `agentPart` belongs to the agent zone.
+		const reopenIfLast = (panelType: string) => {
+			const stillExists = agentPart.groups.some(g =>
 				g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
 			);
-			if (stillExistsAnywhere) {
+			if (stillExists) {
 				return;
 			}
-			// Re-open in the agent-zone root if it still exists; otherwise
-			// pick any agent-studio group as a fallback target.
-			const target = this.editorGroupService.getGroup(agentRootGroup.id)
-				?? this.editorGroupService.groups.find(g => agentStudioGroupIds.has(g.id))
-				?? agentRootGroup;
+			const target = agentPart.activeGroup;
 			const input = AgentStudioEditorInput.getOrCreate(panelType as any);
-			this.editorService.openEditor(input, { pinned: true, sticky: true }, target.id);
+			target.openEditor(input, { pinned: true, sticky: true });
 		};
-
 		const installCloseGuard = (group: IEditorGroup) => {
 			this._register(group.onDidCloseEditor(e => {
 				if (e.editor instanceof AgentStudioEditorInput) {
-					// Defer so that any in-flight moveEditor (close-then-open
-					// across groups within the zone) can settle before we
-					// decide whether to re-open.
 					const panelType = e.editor.panelType;
-					queueMicrotask(() => reopenIfLastInZone(panelType));
+					queueMicrotask(() => reopenIfLast(panelType));
 				}
 			}));
 		};
 
-		// ── Cross-zone editor relocation guard ──────────────────────────
-		// If editors somehow end up in the wrong zone (extension, command,
-		// edge-case drop), move them back. The drop-target interceptors
-		// already block most cases at drag time, but state restoration
-		// and programmatic API calls can bypass them, so we double-check
-		// at the model level.
-		const installRelocationGuard = (group: IEditorGroup) => {
-			this._register(group.onDidModelChange(e => {
-				if (e.kind !== GroupModelChangeKind.EDITOR_OPEN && e.kind !== GroupModelChangeKind.EDITOR_MOVE) {
-					return;
-				}
-				const editor = e.editor;
-				if (!editor) {
-					return;
-				}
-				const isAgentStudioEditor = editor instanceof AgentStudioEditorInput;
-				const inAgentZone = agentStudioGroupIds.has(group.id);
-				const inFileZone = fileZoneGroupIds.has(group.id);
+		installCloseGuard(canvasGroup);
 
-				// Foreign editor in agent-studio zone → relocate to file root.
-				if (inAgentZone && !isAgentStudioEditor) {
-					queueMicrotask(() => {
-						if (!group.editors.includes(editor)) {
-							return;
-						}
-						const target = this.editorGroupService.getGroup(fileRootGroup.id) ?? fileRootGroup;
-						if (target.id === group.id) {
-							return;
-						}
-						group.moveEditor(editor, target);
-					});
-					return;
-				}
-
-				// AgentStudioEditorInput in file zone → relocate back to agent root.
-				if (inFileZone && isAgentStudioEditor) {
-					queueMicrotask(() => {
-						if (!group.editors.includes(editor)) {
-							return;
-						}
-						const target = this.editorGroupService.getGroup(agentRootGroup.id) ?? agentRootGroup;
-						if (target.id === group.id) {
-							return;
-						}
-						group.moveEditor(editor, target);
-					});
-					return;
-				}
-			}));
-		};
-
-		// Always guard the two zone roots. Sub-groups (chat group on first
-		// launch, restored sub-groups on subsequent launches) are guarded
-		// in the branches below.
-		installCloseGuard(agentRootGroup);
-		installRelocationGuard(fileRootGroup);
-		installRelocationGuard(agentRootGroup);
-
-		// ── Open Agent Studio editors in the default layout ──────────────
-		// Default layout (used only on first launch / when persisted state
-		// is missing or invalid):
+		// ── Default Canvas | Chat layout (first launch only) ─────────────
 		//   ┌──────────────────┬──────────────┐
 		//   │ Workspace Canvas │  Agent Chat   │
-		//   │  (full height)   │  (full height)│
 		//   └──────────────────┴──────────────┘
-		//
-		// When the editor part has been restored from a previous session
-		// (zonesRestoredFromState === true) we MUST NOT re-create the
-		// default split — the upstream EditorPart.applyState() already
-		// recreated every group with the user's chosen sizes / splits,
-		// and the editor inputs themselves are restored by
-		// EditorPart.restoreEditors(). Re-running the default layout
-		// here would duplicate the chat group and re-open Canvas/Chat
-		// in the wrong groups.
-		if (!editorPart.zonesRestoredFromState) {
-			const chatInput = AgentStudioEditorInput.getOrCreate('chat');
+		// On a restored session the upstream EditorPart.applyState() already
+		// recreated the agent part's groups + editors, so we must NOT
+		// re-create the split — only re-guard the existing groups.
+		const alreadyOpen = agentPart.groups.some(g =>
+			g.editors.some(ed => ed instanceof AgentStudioEditorInput)
+		);
+
+		if (!alreadyOpen) {
 			const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
+			const chatInput = AgentStudioEditorInput.getOrCreate('chat');
 
-			// Open Canvas in the agent root group (left)
-			this.editorService.openEditor(canvasInput, { pinned: true, sticky: true }, agentRootGroup.id);
+			// Canvas on the left of the agent zone.
+			canvasGroup.openEditor(canvasInput, { pinned: true, sticky: true });
 
-			// Split right → Chat group (right, full height)
-			const chatGroup = this.editorGroupService.addGroup(agentRootGroup, GroupDirection.RIGHT);
-			this.editorService.openEditor(chatInput, { pinned: true, sticky: true }, chatGroup.id);
-			agentStudioGroupIds.add(chatGroup.id);
-
-			// Focus back to chat
-			chatGroup.focus();
-
+			// Split right → Chat group (right, full height).
+			const chatGroup = agentPart.addGroup(canvasGroup, GroupDirection.RIGHT);
+			chatGroup.lock(true);
+			chatGroup.openEditor(chatInput, { pinned: true, sticky: true });
 			installCloseGuard(chatGroup);
-			installRelocationGuard(chatGroup);
+
+			chatGroup.focus();
 		} else {
-			// Restored path — every group that survived the save/restore
-			// round-trip already exists. We need to:
-			//   0. Drop empty non-root sub-groups left over from the
-			//      previous session. They appear when a group's only
-			//      editors failed to deserialize (input factory missing,
-			//      transient editor, etc.) — without this cleanup we
-			//      end up showing ghost editor groups with no tabs.
-			//   1. Classify every remaining restored group as belonging
-			//      to the file zone or the agent zone (membership of
-			//      the two zone roots was established above; here we
-			//      extend that to every other group).
-			//   2. Install the close-guard on each non-root group so
-			//      closing the last copy of a panel type re-opens it.
-			//   3. Install the relocation-guard on each non-root group.
-			//
-			// Heuristic for membership: a group that contains any
-			// AgentStudioEditorInput belongs to the agent zone; every
-			// other group belongs to the file zone. This matches the
-			// cross-zone relocation guard's invariant.
-
-			// Step 0: remove ghost (empty, non-root) groups. The
-			// `removeGroup()` override on MainEditorPart already
-			// protects the two zone roots, but we double-check the id
-			// here defensively.
-			for (const g of [...this.editorGroupService.groups]) {
-				if (g.id === fileRootGroup.id || g.id === agentRootGroup.id) {
-					continue;
-				}
-				if (g.count === 0) {
-					this.editorGroupService.removeGroup(g);
+			// Restored path — guard every existing agent group and make sure
+			// both panel types are present.
+			for (const g of agentPart.groups) {
+				if (g.id !== canvasGroup.id) {
+					installCloseGuard(g);
 				}
 			}
-
-			for (const g of this.editorGroupService.groups) {
-				if (g.id === fileRootGroup.id || g.id === agentRootGroup.id) {
-					continue; // already classified above
-				}
-				const hasAgentEditor = g.editors.some(ed => ed instanceof AgentStudioEditorInput);
-				if (hasAgentEditor) {
-					agentStudioGroupIds.add(g.id);
-					fileZoneGroupIds.delete(g.id); // override the earlier default-to-file
-				} else {
-					fileZoneGroupIds.add(g.id);
-				}
-				installCloseGuard(g);
-				installRelocationGuard(g);
-			}
-
-			// Safety net: ensure each panel type still has at least one
-			// open instance somewhere. If a previous session lost one
-			// (e.g. crash mid-restore) reopen it in the agent root.
 			for (const panelType of ['canvas', 'chat'] as const) {
-				const stillExists = this.editorGroupService.groups.some(g =>
+				const stillExists = agentPart.groups.some(g =>
 					g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
 				);
 				if (!stillExists) {
 					const input = AgentStudioEditorInput.getOrCreate(panelType);
-					this.editorService.openEditor(input, { pinned: true, sticky: true }, agentRootGroup.id);
+					agentPart.activeGroup.openEditor(input, { pinned: true, sticky: true });
 				}
 			}
 		}
 
-		// ── Track newly-created groups (split / drag) ────────────────────
-		// Inherit zone membership from the *active* group at the moment
-		// the new group appears. The active group is the source of the
-		// split (focus moves to it before the split fires) for both drag
-		// and command-driven splits, so this gives correct membership in
-		// all observed paths.
-		this._register(this.editorGroupService.onDidAddGroup(newGroup => {
-			if (agentStudioGroupIds.has(newGroup.id) || fileZoneGroupIds.has(newGroup.id)) {
-				return; // already tracked
-			}
-
-			// Ignore groups created inside modal editor parts — they are
-			// not part of the main dual-zone layout and should not be
-			// tracked, guarded, or receive close/relocation guards.
-			const isInModalPart = this.editorGroupService.activeModalEditorPart?.groups.some(
-				g => g.id === newGroup.id
-			);
-			if (isInModalPart) {
-				return;
-			}
-
-			const source = this.editorGroupService.activeGroup;
-			if (source && agentStudioGroupIds.has(source.id)) {
-				agentStudioGroupIds.add(newGroup.id);
-			} else {
-				// Default everything else to the file zone.
-				fileZoneGroupIds.add(newGroup.id);
-			}
+		// Guard groups added later within the agent part (user splits).
+		this._register(agentPart.onDidAddGroup(newGroup => {
 			installCloseGuard(newGroup);
-			installRelocationGuard(newGroup);
-		}));
-
-		// Track group disposal — drop the id from whichever set held it.
-		this._register(this.editorGroupService.onDidRemoveGroup(removed => {
-			fileZoneGroupIds.delete(removed.id);
-			agentStudioGroupIds.delete(removed.id);
 		}));
 	}
 
@@ -1486,17 +1331,20 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	createWorkbenchLayout(): void {
 		const titleBar = this.getPart(Parts.TITLEBAR_PART);
 		const editorPart = this.getPart(Parts.EDITOR_PART);
+		const agentEditorPart = this.getPart(Parts.AGENT_EDITOR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
 
 		// View references for parts in the grid
 		this.titleBarPartView = titleBar;
 		this.sideBarPartView = sideBar;
 		this.editorPartView = editorPart;
+		this.agentEditorPartView = agentEditorPart;
 
 		const viewMap: { [key: string]: ISerializableView } = {
 			[Parts.TITLEBAR_PART]: this.titleBarPartView,
 			[Parts.SIDEBAR_PART]: this.sideBarPartView,
-			[Parts.EDITOR_PART]: this.editorPartView
+			[Parts.EDITOR_PART]: this.editorPartView,
+			[Parts.AGENT_EDITOR_PART]: this.agentEditorPartView
 		};
 
 		const fromJSON = ({ type }: { type: string }) => viewMap[type];
@@ -1512,12 +1360,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.workbenchGrid.edgeSnapping = this.mainWindowFullscreen;
 
 		// Listen for part visibility changes (for parts in grid)
-		for (const part of [titleBar, sideBar, editorPart]) {
+		for (const part of [titleBar, sideBar, editorPart, agentEditorPart]) {
 			this._register(part.onDidVisibilityChange(visible => {
 				if (part === sideBar) {
 					this.setSideBarHidden(!visible);
 				} else if (part === editorPart) {
 					this.setPartHidden(!visible, Parts.EDITOR_PART);
+				} else if (part === agentEditorPart) {
+					this.setPartHidden(!visible, Parts.AGENT_EDITOR_PART);
 				}
 
 				this._onDidChangePartVisibility.fire({ partId: part.getId(), visible });
@@ -1593,7 +1443,13 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		// Calculate main content area dimensions
 		const contentHeight = Math.max(0, height - titleBarHeight);
-		const editorWidth = Math.max(300, width - sideBarSize);
+		// [Sarosis] The editor row is now split into two physically
+		// independent EditorPart columns:
+		//   - File zone (middle)  → gets the larger share
+		//   - Agent zone (right)  → Canvas + Chat, ~40% of the editor band
+		const editorBandWidth = Math.max(300, width - sideBarSize);
+		const agentEditorWidth = Math.max(360, Math.round(editorBandWidth * 0.42));
+		const editorWidth = Math.max(300, editorBandWidth - agentEditorWidth);
 
 		const isPhone = this.layoutPolicy.viewportClass.get() === 'phone';
 
@@ -1603,8 +1459,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		//   ├─ TitleBar [height=titleBarHeight]
 		//   └─ mainRow (branch) [height=contentHeight]:
 		//       → HORIZONTAL
-		//       ├─ Sidebar [width=sideBarSize]
-		//       └─ Editor [width=editorWidth]
+		//       ├─ Sidebar     [width=sideBarSize]
+		//       ├─ File editor [width=editorWidth]   (middle)
+		//       └─ Agent editor[width=agentEditorWidth] (right)
 
 		const titleBarNode: ISerializedLeafNode = {
 			type: 'leaf',
@@ -1627,10 +1484,17 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			visible: true
 		};
 
-		// Level 1 (HORIZONTAL): Sidebar | Editor
+		const agentEditorNode: ISerializedLeafNode = {
+			type: 'leaf',
+			data: { type: Parts.AGENT_EDITOR_PART },
+			size: agentEditorWidth,
+			visible: true
+		};
+
+		// Level 1 (HORIZONTAL): Sidebar | File editor | Agent editor
 		const mainRow: ISerializedNode = {
 			type: 'branch',
-			data: [sideBarNode, editorNode],
+			data: [sideBarNode, editorNode, agentEditorNode],
 			size: contentHeight
 		};
 
@@ -1827,6 +1691,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			case Parts.EDITOR_PART:
 				this.editorGroupService.activeGroup.focus();
 				break;
+			case Parts.AGENT_EDITOR_PART:
+				(this.editorGroupService as SessionsEditorParts).agentPart.activeGroup.focus();
+				break;
 			case Parts.SIDEBAR_PART:
 				this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)?.focus();
 				break;
@@ -1893,6 +1760,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				return true;
 			case Parts.EDITOR_PART:
 				return true; // Editor is always visible in this layout
+			case Parts.AGENT_EDITOR_PART:
+				return true; // Agent editor (right column) is always visible
 			case Parts.AUXILIARYBAR_PART:
 			case Parts.PANEL_PART:
 			case Parts.CHATBAR_PART:
@@ -1911,6 +1780,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				break;
 			case Parts.EDITOR_PART:
 				// Editor cannot be hidden in this layout
+				break;
+			case Parts.AGENT_EDITOR_PART:
+				// Agent editor (right column) cannot be hidden in this layout
 				break;
 			// Panel, AuxiliaryBar, ChatBar are not in this layout - no-op
 		}
@@ -2034,6 +1906,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				return this.sideBarPartView;
 			case Parts.EDITOR_PART:
 				return this.editorPartView;
+			case Parts.AGENT_EDITOR_PART:
+				return this.agentEditorPartView;
 			default:
 				return undefined;
 		}

@@ -91,6 +91,14 @@ export interface IWorktreeService {
 	getRepositoryRoot(): Promise<string | undefined>;
 
 	/**
+	 * Get ALL repository root paths for the current workspace.
+	 * Scans every workspace folder (home dir + related code folders + worktree)
+	 * and returns those that contain a `.git` entry. Used by the Worktree view
+	 * to list worktrees across all related repositories, not just the first.
+	 */
+	getAllRepositoryRoots(): Promise<string[]>;
+
+	/**
 	 * Get the current lifecycle status of a worktree by its directory path.
 	 */
 	getWorktreeState(directory: string): WorktreeStatus;

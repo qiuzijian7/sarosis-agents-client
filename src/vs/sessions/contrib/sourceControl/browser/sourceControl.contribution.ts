@@ -29,6 +29,7 @@ import { SCMRepositoriesViewPane } from '../../../../workbench/contrib/scm/brows
 import { SCMHistoryViewPane } from '../../../../workbench/contrib/scm/browser/scmHistoryViewPane.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IAgentStudioService } from '../../agentStudio/common/agentStudio.js';
@@ -204,6 +205,7 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		@IFileService private readonly fileService: IFileService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 	) {
 		super();
 
@@ -312,6 +314,26 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			return;
 		}
 
+		// CRITICAL: Mark every target root as workspace-trusted BEFORE injecting them
+		// as workspace folders. The git extension's openRepository() gates on
+		// workspace.requestResourceTrust(); in the Sessions window the synthetic
+		// in-memory workspace never auto-trusts these roots, so the trust request
+		// returns a pending promise that no dialog ever resolves — openRepository
+		// bails out, no SCM provider is registered, and the Changes view shows
+		// "No Git repository found" even though .git exists. Trusting the roots up
+		// front makes getUriTrustInfo() return trusted=true synchronously, so the
+		// git extension can open the repositories on the subsequent folder change.
+		try {
+			const urisToTrust = targets
+				.map(t => t.uri)
+				.filter(uri => !this._isUriTrusted(uri));
+			if (urisToTrust.length > 0) {
+				await this.workspaceTrustManagementService.setUrisTrust(urisToTrust, true);
+			}
+		} catch (err) {
+			console.warn('[SourceControlWorkspaceSync] Failed to mark workspace roots as trusted:', err);
+		}
+
 		const currentFolders = this.workspaceContextService.getWorkspace().folders;
 
 		// Skip the folder update if the current root set already matches the target set
@@ -369,6 +391,13 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 				// Ignore
 			}
 		}
+	}
+
+	/** Whether the given URI is already marked as workspace-trusted. */
+	private _isUriTrusted(uri: URI): boolean {
+		return this.workspaceTrustManagementService
+			.getTrustedUris()
+			.some(trustedUri => this.uriIdentityService.extUri.isEqual(trustedUri, uri));
 	}
 }
 

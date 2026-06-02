@@ -109,6 +109,37 @@ export class WorktreeItem {
 }
 
 /**
+ * A tree item representing a repository group (parent node). Only used when the
+ * workspace contains more than one related git repository — each group holds the
+ * worktrees discovered under one repository root.
+ */
+export class WorktreeRepoGroup {
+	constructor(
+		/** Absolute path to the repository root */
+		readonly repoRoot: string,
+		/** Display label (folder basename) */
+		readonly repoLabel: string,
+		/** Worktrees discovered under this repository */
+		readonly worktrees: WorktreeItem[],
+	) { }
+
+	get id(): string {
+		return `worktree-repo:${this.repoRoot}`;
+	}
+
+	get label(): string {
+		return this.repoLabel;
+	}
+}
+
+/** Union of tree element types rendered by the worktree view. */
+export type WorktreeTreeElement = WorktreeRepoGroup | WorktreeItem;
+
+export function isWorktreeRepoGroup(element: WorktreeTreeElement): element is WorktreeRepoGroup {
+	return element instanceof WorktreeRepoGroup;
+}
+
+/**
  * Tree data provider for the worktree view
  */
 export class WorktreeTreeDataProvider extends Disposable {
@@ -117,6 +148,7 @@ export class WorktreeTreeDataProvider extends Disposable {
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
 	private worktrees: WorktreeItem[] = [];
+	private groups: WorktreeRepoGroup[] = [];
 	private readonly refreshDelayer = this._register(new ThrottledDelayer<void>(200));
 	private refreshPromise: Promise<void> | undefined;
 
@@ -161,30 +193,58 @@ export class WorktreeTreeDataProvider extends Disposable {
 
 	private async doRefresh(): Promise<void> {
 		try {
-			const repoRoot = await this.worktreeService.getRepositoryRoot();
-			if (!repoRoot) {
+			const repoRoots = await this.worktreeService.getAllRepositoryRoots();
+			if (!repoRoots || repoRoots.length === 0) {
 				this.worktrees = [];
+				this.groups = [];
 				this.hasWorktreesKey.set(false);
 				this.worktreeCountKey.set(0);
 				this._onDidChangeTreeData.fire();
 				return;
 			}
 
-			const details = await this.worktreeService.listWorktrees(repoRoot);
-
 			// Get the active worktree path from IWorktreeService state tracking
 			const activePath = this._getActiveWorktreePath();
 
-			this.worktrees = details.map(d => {
-				const isActive = activePath ? d.path === activePath : false;
-				const sessionCount = isActive ? 1 : 0; // TODO: integrate with session service for accurate count
-				return new WorktreeItem(d, sessionCount, isActive);
-			});
-			this.hasWorktreesKey.set(this.worktrees.length > 0);
-			this.worktreeCountKey.set(this.worktrees.length);
+			const groups: WorktreeRepoGroup[] = [];
+			const allWorktrees: WorktreeItem[] = [];
+			const seenPaths = new Set<string>();
+
+			for (const repoRoot of repoRoots) {
+				const details = await this.worktreeService.listWorktrees(repoRoot);
+				const items = details.map(d => {
+					const isActive = activePath ? d.path === activePath : false;
+					const sessionCount = isActive ? 1 : 0; // TODO: integrate with session service for accurate count
+					return new WorktreeItem(d, sessionCount, isActive);
+				});
+				if (items.length === 0) {
+					continue;
+				}
+				// De-dup across repos (a worktree path should only appear once)
+				const deduped: WorktreeItem[] = [];
+				for (const it of items) {
+					const norm = it.path.replace(/[\\/]+$/, '').toLowerCase();
+					if (seenPaths.has(norm)) {
+						continue;
+					}
+					seenPaths.add(norm);
+					deduped.push(it);
+					allWorktrees.push(it);
+				}
+				if (deduped.length > 0) {
+					const repoLabel = repoRoot.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || repoRoot;
+					groups.push(new WorktreeRepoGroup(repoRoot, repoLabel, deduped));
+				}
+			}
+
+			this.groups = groups;
+			this.worktrees = allWorktrees;
+			this.hasWorktreesKey.set(allWorktrees.length > 0);
+			this.worktreeCountKey.set(allWorktrees.length);
 			this._onDidChangeTreeData.fire();
 		} catch (e) {
 			this.worktrees = [];
+			this.groups = [];
 			this.hasWorktreesKey.set(false);
 			this.worktreeCountKey.set(0);
 			this._onDidChangeTreeData.fire();
@@ -210,6 +270,18 @@ export class WorktreeTreeDataProvider extends Disposable {
 			await this.refresh();
 		}
 		return this.worktrees;
+	}
+
+	/**
+	 * Return the repository groups (one per related git repository that has
+	 * worktrees). The view decides whether to render a flat list (single repo)
+	 * or a grouped two-level tree (multiple repos).
+	 */
+	async getGroups(): Promise<WorktreeRepoGroup[]> {
+		if (this.worktrees.length === 0 && !this.refreshPromise) {
+			await this.refresh();
+		}
+		return this.groups;
 	}
 
 	getTreeItem(element: WorktreeItem): WorktreeItem {

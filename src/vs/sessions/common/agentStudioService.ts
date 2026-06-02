@@ -82,6 +82,14 @@ export interface IAgentStudioService {
 	 * Also persists as lastActiveWorkspaceId.
 	 */
 	setActiveWorkspace(workspaceId: string | undefined): Promise<void>;
+	/**
+	 * Resolve the workspace id the webview should default to on launch.
+	 * Resolution order: in-memory active id → reverse-lookup by the IDE's
+	 * currently opened folder → persisted lastActive id → first workspace
+	 * with a bound `path` → workspaces[0]. Returns null when there are no
+	 * workspaces at all.
+	 */
+	resolveDefaultActiveWorkspaceId(): Promise<string | null>;
 
 	// Connections
 	getConnections(workspaceId: string): Promise<Connection[]>;

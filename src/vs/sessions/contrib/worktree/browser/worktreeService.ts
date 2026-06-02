@@ -108,6 +108,39 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		return undefined;
 	}
 
+	async getAllRepositoryRoots(): Promise<string[]> {
+		const folders = this.workspaceContextService.getWorkspace().folders;
+		this.logService.info(`[WorktreeService] getAllRepositoryRoots: workspace folders count=${folders.length}`);
+		if (folders.length === 0) {
+			this.logService.warn('[WorktreeService] getAllRepositoryRoots: no workspace folders');
+			return [];
+		}
+
+		const roots: string[] = [];
+		const seen = new Set<string>();
+		for (const folder of folders) {
+			const fsPath = folder.uri.fsPath;
+			const norm = fsPath.replace(/[\\/]+$/, '').toLowerCase();
+			if (seen.has(norm)) {
+				continue;
+			}
+			const gitPath = URI.joinPath(folder.uri, '.git');
+			try {
+				const stat = await this.fileService.stat(gitPath);
+				if (stat) {
+					seen.add(norm);
+					roots.push(fsPath);
+					this.logService.info(`[WorktreeService] getAllRepositoryRoots: found .git at "${fsPath}"`);
+				}
+			} catch {
+				// No .git in this folder, skip
+			}
+		}
+
+		this.logService.info(`[WorktreeService] getAllRepositoryRoots: ${roots.length} repo root(s)`);
+		return roots;
+	}
+
 	async listWorktrees(repoPath: string): Promise<IWorktreeDetail[]> {
 		try {
 			this.logService.info(`[WorktreeService] listWorktrees: repoPath="${repoPath}"`);

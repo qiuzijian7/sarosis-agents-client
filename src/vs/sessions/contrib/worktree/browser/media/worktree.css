@@ -233,3 +233,49 @@
 .worktree-item.is-deleting {
 	opacity: 0.6;
 }
+
+/* Repository group (parent node) when multiple related repos exist */
+.worktree-repo-group {
+	display: flex;
+	align-items: center;
+	padding: 0 6px;
+	height: 22px;
+	line-height: 22px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-weight: 600;
+}
+
+.worktree-repo-group-icon {
+	flex-shrink: 0;
+	width: 16px;
+	height: 16px;
+	margin-right: 6px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+
+.worktree-repo-group-label {
+	flex-shrink: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.worktree-repo-group-count {
+	flex-shrink: 0;
+	margin-left: 6px;
+	min-width: 16px;
+	height: 16px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	background-color: var(--vscode-badge-background, #4d4d4d);
+	color: var(--vscode-badge-foreground, #ffffff);
+	font-size: 10px;
+	font-weight: 600;
+	padding: 0 5px;
+}

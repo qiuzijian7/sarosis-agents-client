@@ -27,7 +27,7 @@ import { basename } from '../../../../base/common/resources.js';
 import { ViewPane, IViewPaneOptions } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
-import { WorktreeItem, WorktreeTreeDataProvider } from './worktreeDataProvider.js';
+import { WorktreeItem, WorktreeTreeDataProvider, WorktreeRepoGroup, WorktreeTreeElement, isWorktreeRepoGroup } from './worktreeDataProvider.js';
 import { IWorktreeService } from '../common/worktreeService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
@@ -135,15 +135,55 @@ interface IWorktreeTemplateData {
 	readonly actions: HTMLElement;
 }
 
+// --- Repo Group Renderer (parent node when multiple related repos exist) ---
+
+class WorktreeRepoGroupRenderer implements ICompressibleTreeRenderer<WorktreeRepoGroup, void, IWorktreeGroupTemplateData> {
+	static readonly TEMPLATE_ID = 'worktreeRepoGroup';
+
+	get templateId(): string { return WorktreeRepoGroupRenderer.TEMPLATE_ID; }
+
+	renderTemplate(container: HTMLElement): IWorktreeGroupTemplateData {
+		const element = dom.append(container, $('.worktree-repo-group'));
+		const icon = dom.append(element, $('.worktree-repo-group-icon'));
+		const label = dom.append(element, $('.worktree-repo-group-label'));
+		const count = dom.append(element, $('.worktree-repo-group-count'));
+		return { element, icon, label, count };
+	}
+
+	renderElement(node: ITreeNode<WorktreeRepoGroup, void>, _index: number, templateData: IWorktreeGroupTemplateData): void {
+		const group = node.element;
+		templateData.label.textContent = group.label;
+		templateData.count.textContent = String(group.worktrees.length);
+		templateData.icon.className = 'worktree-repo-group-icon ' + ThemeIcon.asClassNameArray(Codicon.repo).join(' ');
+	}
+
+	renderCompressedElements(_node: ITreeNode<ICompressedTreeNode<WorktreeRepoGroup>, void>, _index: number, _templateData: IWorktreeGroupTemplateData): void {
+		// No compression for group nodes
+	}
+
+	disposeTemplate(_templateData: IWorktreeGroupTemplateData): void {
+		// noop
+	}
+}
+
+interface IWorktreeGroupTemplateData {
+	readonly element: HTMLElement;
+	readonly icon: HTMLElement;
+	readonly label: HTMLElement;
+	readonly count: HTMLElement;
+}
+
 // --- Tree Delegate ---
 
-class WorktreeTreeDelegate implements IListVirtualDelegate<WorktreeItem> {
-	getHeight(_element: WorktreeItem): number {
+class WorktreeTreeDelegate implements IListVirtualDelegate<WorktreeTreeElement> {
+	getHeight(_element: WorktreeTreeElement): number {
 		return 22;
 	}
 
-	getTemplateId(_element: WorktreeItem): string {
-		return WorktreeTreeRenderer.TEMPLATE_ID;
+	getTemplateId(element: WorktreeTreeElement): string {
+		return isWorktreeRepoGroup(element)
+			? WorktreeRepoGroupRenderer.TEMPLATE_ID
+			: WorktreeTreeRenderer.TEMPLATE_ID;
 	}
 }
 
@@ -151,9 +191,10 @@ class WorktreeTreeDelegate implements IListVirtualDelegate<WorktreeItem> {
 
 export class WorktreeViewPane extends ViewPane {
 
-	private tree!: WorkbenchCompressibleObjectTree<WorktreeItem, void>;
+	private tree!: WorkbenchCompressibleObjectTree<WorktreeTreeElement, void>;
 	private dataProvider!: WorktreeTreeDataProvider;
 	private renderer: WorktreeTreeRenderer;
+	private groupRenderer: WorktreeRepoGroupRenderer;
 
 	// Create worktree form elements
 	private _createContainer!: HTMLElement;
@@ -193,6 +234,7 @@ export class WorktreeViewPane extends ViewPane {
 			(item) => this.onDeleteWorktree(item),
 			(item) => this.openWorktreeInNewWindow(item),
 		);
+		this.groupRenderer = new WorktreeRepoGroupRenderer();
 	}
 
 	override renderBody(container: HTMLElement): void {
@@ -213,28 +255,30 @@ export class WorktreeViewPane extends ViewPane {
 		// Ensure tree container fills remaining flex space
 		treeContainer.style.flex = '1';
 		treeContainer.style.minHeight = '0';
-		this.tree = <WorkbenchCompressibleObjectTree<WorktreeItem, void>>this.instantiationService.createInstance(
+		this.tree = <WorkbenchCompressibleObjectTree<WorktreeTreeElement, void>>this.instantiationService.createInstance(
 			WorkbenchCompressibleObjectTree,
 			'WorktreeTree',
 			treeContainer,
 			new WorktreeTreeDelegate(),
-			[this.renderer],
+			[this.renderer, this.groupRenderer],
 			{
 				identityProvider: {
-					getId: (element: WorktreeItem) => element.id
+					getId: (element: WorktreeTreeElement) => element.id
 				},
 				horizontalScrolling: false,
 				multipleSelectionSupport: false,
 				compressionEnabled: false,
 				accessibilityProvider: {
-					getAriaLabel: (element: WorktreeItem) => localize('worktreeAriaLabel', 'Worktree {0} at {1}', element.label, element.path),
+					getAriaLabel: (element: WorktreeTreeElement) => isWorktreeRepoGroup(element)
+						? localize('worktreeRepoAriaLabel', 'Repository {0}', element.label)
+						: localize('worktreeAriaLabel', 'Worktree {0} at {1}', element.label, element.path),
 					getWidgetAriaLabel: () => localize('worktreeTreeAriaLabel', 'Worktree List'),
 				},
 			}
 		);
 
 		this._register(this.tree.onDidOpen(e => {
-			if (e.element) {
+			if (e.element && !isWorktreeRepoGroup(e.element)) {
 				this.openWorktree(e.element);
 			}
 		}));
@@ -389,10 +433,23 @@ export class WorktreeViewPane extends ViewPane {
 	}
 
 	private async updateTree(): Promise<void> {
-		const children = await this.dataProvider.getChildren();
-		const treeElements: ICompressedTreeElement<WorktreeItem>[] = children.map(c => ({
-			element: c,
-		}));
+		const groups = await this.dataProvider.getGroups();
+		let treeElements: ICompressedTreeElement<WorktreeTreeElement>[];
+
+		if (groups.length <= 1) {
+			// Single repository (or none) — render a flat list of worktrees.
+			const children = groups.length === 1 ? groups[0].worktrees : [];
+			treeElements = children.map(c => ({ element: c }));
+		} else {
+			// Multiple related repositories — render a grouped two-level tree.
+			treeElements = groups.map(group => ({
+				element: group,
+				collapsible: true,
+				collapsed: false,
+				children: group.worktrees.map(w => ({ element: w })),
+			}));
+		}
+
 		this.tree.setChildren(null, treeElements);
 	}
 
