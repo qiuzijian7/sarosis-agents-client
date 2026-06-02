@@ -24,6 +24,8 @@ interface Workspace {
 	id: string;
 	name: string;
 	description?: string;
+	/** Absolute path of the bound project folder. May be missing on legacy records. */
+	path?: string;
 	/** Git worktree directory for agent isolation */
 	worktreePath?: string;
 	/** Branch name of the associated worktree */
@@ -72,9 +74,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 			let activeWorkspaceId: string | null = null;
 			try {
 				activeWorkspaceId = await sendRequest<unknown, string | null>('workspace.getActive', {});
-				// 验证恢复的 workspace ID 是否有效
-				if (activeWorkspaceId && !workspaces.find(w => w.id === activeWorkspaceId)) {
-					activeWorkspaceId = null;
+				// 验证恢复的 workspace ID 是否有效，且必须有 path（避免历史
+				// 遗留的无 path workspace 被默认激活，导致后续创建 agent 时
+				// 落到一个没有项目根的 workspace 里，进而 chat 报
+				// "Agent has no workspace directory"。）
+				if (activeWorkspaceId) {
+					const ws = workspaces.find(w => w.id === activeWorkspaceId);
+					if (!ws || !ws.path) {
+						console.warn('[WorkspaceStore] persisted activeWorkspaceId is invalid or path-less, ignoring:', activeWorkspaceId);
+						activeWorkspaceId = null;
+					}
 				}
 			} catch {
 				// 获取失败，使用默认行为
@@ -149,7 +158,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 		set({ isLoading: true, activeWorkspaceId: id });
 		try {
 			const workspace = await sendRequest<{ id: string }, any>('workspace.get', { id });
-			
+
 			// Load edges from layout.edges, fallback to connections if layout.edges is empty
 			let edges = workspace?.layout?.edges || [];
 			if (edges.length === 0 && workspace?.connections) {
@@ -162,14 +171,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 					data: { label: conn.label },
 				}));
 			}
-			
+
 			set({
 				nodes: workspace?.layout?.nodes || [],
 				edges: edges,
 				viewport: workspace?.layout?.viewport || { x: 0, y: 0, zoom: 1 },
 				isLoading: false,
 			});
-			
+
 			// 持久化最后活动的工作区ID
 			try {
 				await sendRequest('workspace.setActive', { id });

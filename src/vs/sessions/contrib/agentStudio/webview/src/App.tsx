@@ -80,8 +80,11 @@ function CanvasPanel(): React.ReactElement {
 			const store = useWorkspaceStore.getState();
 			console.log('[CanvasPanel] loadWorkspaces done, workspaces:', store.workspaces.length, 'activeWorkspaceId:', store.activeWorkspaceId);
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				console.log('[CanvasPanel] setting active workspace:', store.workspaces[0].id);
-				store.setActiveWorkspace(store.workspaces[0].id);
+				// Prefer a workspace bound to a project path; fall back to the
+				// first record only if literally none of them have `path`.
+				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
+				console.log('[CanvasPanel] setting active workspace:', pick.id);
+				store.setActiveWorkspace(pick.id);
 			}
 			// Fallback: if no workspaces registered (e.g. workspaces.json was deleted),
 			// try loading employees from the current VS Code folder directly.
@@ -171,7 +174,8 @@ function ChatPanel(): React.ReactElement {
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				store.setActiveWorkspace(store.workspaces[0].id);
+				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
+				store.setActiveWorkspace(pick.id);
 			}
 			// Fallback: if no workspaces registered, try loading employees directly.
 			if (store.workspaces.length === 0) {
@@ -274,7 +278,8 @@ function TaskboardPanel(): React.ReactElement {
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				store.setActiveWorkspace(store.workspaces[0].id);
+				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
+				store.setActiveWorkspace(pick.id);
 			}
 		});
 	}, []);
@@ -344,7 +349,8 @@ function FullLayout(): React.ReactElement {
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				store.setActiveWorkspace(store.workspaces[0].id);
+				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
+				store.setActiveWorkspace(pick.id);
 			}
 		});
 		loadProviders();

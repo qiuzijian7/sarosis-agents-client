@@ -700,6 +700,32 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	async createEmployee(data: Partial<Employee>): Promise<Employee> {
 		const workspaceId = data.workspaceId;
+
+		// Defensive guard: if the caller specified a workspaceId, make sure it
+		// actually exists in workspaces.json AND has a `path` bound. Creating
+		// an agent inside a path-less legacy workspace is the single most
+		// common cause of "Agent has no workspace directory" later on, so
+		// we fail loudly here instead of silently writing into a dead record.
+		if (workspaceId) {
+			try {
+				const workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+				const ws = workspaces.find(w => w.id === workspaceId);
+				if (!ws) {
+					throw new Error(`Workspace not found: ${workspaceId}`);
+				}
+				if (!ws.path) {
+					throw new Error(
+						`Workspace "${ws.name}" (${workspaceId}) has no project path bound. ` +
+						`Agents created here would have no workspace directory and chat would fail. ` +
+						`Please delete this legacy workspace or rebind it to a project folder before creating agents.`
+					);
+				}
+			} catch (err) {
+				this.logService.error(`[AgentStudio] createEmployee: workspace validation failed: ${err instanceof Error ? err.message : String(err)}`);
+				throw err;
+			}
+		}
+
 		const dirUri = await this._resolveDataUri(workspaceId);
 		this.logService.info(`[AgentStudio] createEmployee: workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
 		const filename = DATA_FILE_EMPLOYEES;
@@ -1350,6 +1376,77 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	getActiveWorkspaceId(): string | undefined {
 		return this._activeWorkspaceId;
+	}
+
+	/**
+	 * Resolve the workspace the webview should default to on startup.
+	 *
+	 * Resolution order (each step falls through on miss):
+	 *   1. In-memory active id (already set within this session).
+	 *   2. Reverse-lookup by the currently opened IDE folder path → matches
+	 *      the workspace whose `path` field equals it. This is the single
+	 *      most important rule: when the user opens project X, agent-studio
+	 *      should always land on the workspace bound to X.
+	 *   3. Persisted `last-active-workspace.json` — but only if the entry
+	 *      still exists AND has a non-empty `path` (to avoid resurrecting
+	 *      a stale/orphaned workspace record).
+	 *   4. First workspace in the list that has a `path` field. We
+	 *      explicitly skip path-less legacy entries (e.g. workspaces created
+	 *      before the `path` field existed) because falling back to one of
+	 *      those is the long-standing footgun: new agents would silently be
+	 *      written to a workspace that has no project root, and chat sessions
+	 *      then fail with "Agent has no workspace directory".
+	 *   5. As a last resort, the first workspace overall (preserves legacy
+	 *      behaviour for users who never bound any path).
+	 *
+	 * Returns `null` when there are no workspaces at all.
+	 */
+	async resolveDefaultActiveWorkspaceId(): Promise<string | null> {
+		// (1) In-memory wins.
+		if (this._activeWorkspaceId) {
+			return this._activeWorkspaceId;
+		}
+
+		let workspaces: Workspace[] = [];
+		try {
+			workspaces = await this._readJsonFile<Workspace>(this._getGlobalDataUri(), DATA_FILE_WORKSPACES);
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] resolveDefaultActiveWorkspaceId: workspaces.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+			return null;
+		}
+		if (workspaces.length === 0) {
+			return null;
+		}
+
+		// (2) Match by currently opened IDE folder.
+		const inferred = await this._inferWorkspaceIdFromActiveFolder();
+		if (inferred && workspaces.some(w => w.id === inferred)) {
+			this.logService.info(`[AgentStudio] resolveDefaultActiveWorkspaceId: matched current folder → ${inferred}`);
+			return inferred;
+		}
+
+		// (3) Persisted lastActive — but only if it has a path.
+		try {
+			const lastId = await this.getLastActiveWorkspaceId();
+			if (lastId) {
+				const last = workspaces.find(w => w.id === lastId);
+				if (last && last.path) {
+					this.logService.info(`[AgentStudio] resolveDefaultActiveWorkspaceId: using persisted lastActive → ${lastId}`);
+					return lastId;
+				}
+			}
+		} catch { /* fall through */ }
+
+		// (4) First workspace that has a path (skip legacy path-less entries).
+		const firstWithPath = workspaces.find(w => !!w.path);
+		if (firstWithPath) {
+			this.logService.info(`[AgentStudio] resolveDefaultActiveWorkspaceId: first-with-path fallback → ${firstWithPath.id}`);
+			return firstWithPath.id;
+		}
+
+		// (5) No path-bound workspace exists — preserve legacy behaviour.
+		this.logService.warn(`[AgentStudio] resolveDefaultActiveWorkspaceId: no path-bound workspace exists; falling back to workspaces[0]=${workspaces[0].id}`);
+		return workspaces[0].id;
 	}
 
 	async setActiveWorkspace(workspaceId: string | undefined): Promise<void> {

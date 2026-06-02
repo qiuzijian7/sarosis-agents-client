@@ -650,12 +650,24 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	// Delete employee handler
 	const handleDeleteEmployee = useCallback(async (empId: string) => {
+		// 强化二次确认：明确告知用户对话与记忆会一并清除
+		const emp = employees.find(e => e.id === empId);
+		const name = emp?.name ?? empId;
+		const ok = window.confirm(
+			`确定要删除 Agent "${name}" 吗？\n\n` +
+			`⚠️ 此操作将同时永久删除该 Agent 的：\n` +
+			`  • 全部对话历史（L0）\n` +
+			`  • 全部已提取的长期记忆（L1）\n` +
+			`  • Agent 配置文件目录\n\n` +
+			`此操作不可撤销。`
+		);
+		if (!ok) return;
 		try {
 			await deleteEmployee(empId);
 		} catch (err) {
 			console.error('Failed to delete employee:', err);
 		}
-	}, [deleteEmployee]);
+	}, [deleteEmployee, employees]);
 
 	// Refresh handler
 	const handleRefresh = useCallback(() => {
@@ -673,7 +685,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 
 	// Subscribe to selectedEmployeeId changes to update node selection state
 	const selectedEmployeeId = useEmployeeStore(state => state.selectedEmployeeId);
-	
+
 	useEffect(() => {
 		setNodes(prevNodes => {
 			let changed = false;

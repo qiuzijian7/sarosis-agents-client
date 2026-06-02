@@ -392,8 +392,26 @@ export class AgentStudioWebviewController extends Disposable {
 					p.id as string,
 					p.data as Record<string, unknown>,
 				);
-			case "employees.delete":
-				return this.agentStudioService.deleteEmployee(p.id as string);
+			case "employees.delete": {
+				// 删除 Agent 前，先级联清理其 L0 对话与 L1 记忆。
+				// 设计要点：
+				// 1. 即使 gateway 不可用 / 清理失败，也不应阻断 Agent 删除本身——
+				//    所以这里把记忆清理包在独立的 try/catch 中，仅记录日志。
+				// 2. 顺序：先清理记忆，再删 Agent。否则 Agent 一旦先删除，
+				//    其 employeeId 来源（fileSelectEmployee 等）就消失了，但
+				//    sessionKey 仍可单独从 employeeId 推导，所以顺序不强制；
+				//    放在前面是为了"如果记忆清理出现问题，Agent 还在，方便用户重试"。
+				const employeeId = p.id as string;
+				try {
+					await this._cleanupAgentMemory(employeeId);
+				} catch (err) {
+					this.logService.warn(
+						`[AgentStudioWebviewController] cleanup memory for ${employeeId} failed (non-fatal):`,
+						err,
+					);
+				}
+				return this.agentStudioService.deleteEmployee(employeeId);
+			}
 			case "employees.selected":
 				this.agentStudioService.fireSelectEmployee(
 					((p as Record<string, unknown>).employeeId as string | null) ?? null,
@@ -459,12 +477,23 @@ export class AgentStudioWebviewController extends Disposable {
 					} as never,
 				);
 
-			// ── Persist active workspace ID (used by webview to restore last session) ──
+			// ── Active workspace (used by webview to restore last session) ──
+			case "workspace.getActive":
+				// Resolve the workspace the webview should default to. We
+				// prefer in-memory active id (set within this session), then
+				// reverse-lookup by the IDE's currently opened folder, then
+				// the persisted last-active id, and finally fall back to the
+				// first workspace that has a `path` bound. This eliminates
+				// the long-standing footgun where a stale "Test" workspace
+				// (no `path`) would silently win because it was workspaces[0].
+				return this.agentStudioService.resolveDefaultActiveWorkspaceId();
 			case "workspace.setActive":
-				// Fire-and-forget: store the active workspace ID for session restore.
-				// The webview already sets it in memory; this just persists it.
-				// TODO: integrate with IStorageService when available.
-				return Promise.resolve({ ok: true });
+				// Persist + broadcast active workspace change. This makes the
+				// webview's selection authoritative for native views (sandbox
+				// roots, SCM, ActivityBar) and survives reloads via
+				// last-active-workspace.json.
+				await this.agentStudioService.setActiveWorkspace(p.id as string | undefined);
+				return { ok: true };
 
 			// ── Worktrees ───────────────────────
 			case "worktree.list":
@@ -2669,6 +2698,80 @@ export class AgentStudioWebviewController extends Disposable {
 			deleted: typeof resp.deleted === "number" ? resp.deleted : 0,
 			failed: Array.isArray(resp.failed) ? resp.failed : [],
 		};
+	}
+
+	/**
+	 * 删除指定 Agent 关联的所有 L0 对话与 L1 记忆。
+	 *
+	 * 用于在删除 Agent 时级联清理其记忆痕迹，避免 TDB-AM "所有对话" 视图
+	 * 仍然残留已删除 Agent 的历史。
+	 *
+	 * 实现策略：
+	 *  - sessionKey 取自 {@link _deriveSessionKey}（标准为 `agent:<agentId>`），
+	 *    与 tdb-am-memory 扩展写入时的策略保持一致。
+	 *  - 通过 `/list/conversations` + `/list/memories` 拉取该 sessionKey 下
+	 *    全部 record_id（limit=500，与 tdbam 全量拉取一致），再批量调用
+	 *    `/delete/conversation` 与 `/delete/memory`。
+	 *  - 任意一步失败都不会抛错，只记录日志——Agent 删除流程不应被记忆
+	 *    清理失败阻断（gateway 可能未启动）。
+	 *
+	 * @param employeeId 被删除的 Agent ID
+	 */
+	private async _cleanupAgentMemory(employeeId: string): Promise<void> {
+		if (!employeeId) {
+			return;
+		}
+		const sessionKey = this._deriveSessionKey(employeeId);
+		const FETCH_LIMIT = 500;
+
+		// 1) 收集 L0 record_ids
+		type L0Item = { record_id?: string };
+		type L0Resp = { items?: L0Item[]; error?: string };
+		const l0Resp = await this._gatewayPost<L0Resp>("/list/conversations", {
+			limit: FETCH_LIMIT,
+			session_key: sessionKey,
+		}, "agentStudio.cleanupAgentMemory.listL0");
+		const l0RecordIds = (l0Resp?.items ?? [])
+			.map((r) => r.record_id)
+			.filter((id): id is string => typeof id === "string" && id.length > 0);
+
+		// 2) 收集 L1 record_ids
+		type L1Item = { id?: string };
+		type L1Resp = { items?: L1Item[]; error?: string };
+		const l1Resp = await this._gatewayPost<L1Resp>("/list/memories", {
+			type: "L1",
+			limit: FETCH_LIMIT,
+			session_key: sessionKey,
+		}, "agentStudio.cleanupAgentMemory.listL1");
+		const l1RecordIds = (l1Resp?.items ?? [])
+			.map((r) => r.id)
+			.filter((id): id is string => typeof id === "string" && id.length > 0);
+
+		this.logService.info(
+			`[AgentStudioWebviewController] cleanupAgentMemory(${employeeId}): sessionKey="${sessionKey}", L0=${l0RecordIds.length}, L1=${l1RecordIds.length}`,
+		);
+
+		// 3) 批量删除（每个网关接口一次调用即可批量删）
+		type DelResp = { deleted?: number; failed?: string[]; error?: string };
+		if (l0RecordIds.length > 0) {
+			const resp = await this._gatewayPost<DelResp>("/delete/conversation", {
+				record_ids: l0RecordIds,
+			}, "agentStudio.cleanupAgentMemory.deleteL0");
+			const failed = Array.isArray(resp?.failed) ? resp!.failed!.length : 0;
+			this.logService.info(
+				`[AgentStudioWebviewController] cleanupAgentMemory(${employeeId}): L0 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
+			);
+		}
+		if (l1RecordIds.length > 0) {
+			const resp = await this._gatewayPost<DelResp>("/delete/memory", {
+				type: "L1",
+				record_ids: l1RecordIds,
+			}, "agentStudio.cleanupAgentMemory.deleteL1");
+			const failed = Array.isArray(resp?.failed) ? resp!.failed!.length : 0;
+			this.logService.info(
+				`[AgentStudioWebviewController] cleanupAgentMemory(${employeeId}): L1 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
+			);
+		}
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

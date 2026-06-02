@@ -33,6 +33,7 @@ export type RequestType =
 	| 'workspace.delete'
 	| 'workspace.update'
 	| 'workspace.updateLayout'
+	| 'workspace.getActive'
 	| 'workspace.setActive'
 	| 'workspace.connections.list'
 	| 'workspace.connections.add'
