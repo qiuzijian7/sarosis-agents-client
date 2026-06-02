@@ -20,6 +20,23 @@ import { IExplorerService } from '../../../../workbench/contrib/files/browser/fi
 import { OpenEditorCommandId } from '../../../../workbench/contrib/searchEditor/browser/constants.js';
 import { resolveResourcesForSearchIncludes } from '../../../../workbench/services/search/common/queryBuilder.js';
 import { SESSIONS_FILES_VIEW_ID } from '../../files/browser/filesView.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { ISearchViewModelWorkbenchService } from '../../../../workbench/contrib/search/browser/searchTreeModel/searchViewModelWorkbenchService.js';
+import { SearchViewModelWorkbenchService } from '../../../../workbench/contrib/search/browser/searchTreeModel/searchModel.js';
+
+// [Sarosis] The Sessions window deliberately does NOT import the full workbench
+// `search.contribution.ts` (which would register the native `workbench.view.search`
+// container and clash with our AgentStudio search icon). However, the native
+// `SearchView` — which `AgentStudioSearchViewPane` extends — depends on
+// `ISearchViewModelWorkbenchService`, and that singleton is ONLY registered by
+// the full search.contribution. Without it, constructing AgentStudioSearchViewPane
+// throws an unresolved-dependency error and the search view pane silently fails
+// to render (the container shows "Drag a view here to display.").
+//
+// `IReplaceService` and `ISearchHistoryService` are already registered via
+// `search.common.contribution.ts` (imported in sessions.common.main.ts), so we
+// only need to backfill the view-model service here.
+registerSingleton(ISearchViewModelWorkbenchService, SearchViewModelWorkbenchService, InstantiationType.Delayed);
 
 KeybindingsRegistry.registerKeybindingRule({
 	id: OpenEditorCommandId,
