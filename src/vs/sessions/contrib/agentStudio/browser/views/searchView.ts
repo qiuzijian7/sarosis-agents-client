@@ -134,8 +134,26 @@ export class AgentStudioSearchViewPane extends SearchView {
 		// Render native search view below
 		super.renderBody(parent);
 
+		// [Sarosis] 隐藏原生的 "files to include / files to exclude" 过滤区（含 "..." 切换按钮）。
+		// 搜索范围已自动限定为当前激活 workspace 的路径（通过 include pattern 静默写入），
+		// 不需要再向用户暴露这两个过滤输入框。
+		this._hideQueryDetails();
+
 		// Initial update of search scope based on active workspace
 		this._updateSearchScopeBasedOnActiveWorkspace();
+	}
+
+	private _hideQueryDetails(): void {
+		try {
+			// 原生 SearchView 在 createSearchWidgets() 中创建了 `.query-details` 容器（private 字段），
+			// 包含 toggle 按钮 + `.file-types.includes` + `.file-types.excludes`。整体隐藏即可。
+			const queryDetails = (this as any).queryDetails as HTMLElement | undefined;
+			if (queryDetails) {
+				queryDetails.style.display = 'none';
+			}
+		} catch {
+			// Silently fail if internal API changes
+		}
 	}
 
 	private _renderCurrentWorkspaceInfo(): void {
