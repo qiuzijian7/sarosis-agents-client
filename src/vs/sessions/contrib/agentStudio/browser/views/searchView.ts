@@ -65,6 +65,9 @@ export class AgentStudioSearchViewPane extends SearchView {
 	/** Absolute path of the currently selected worktree (undefined = main repo). */
 	private selectedWorktreePath: string | undefined;
 
+	/** Saved reference to IWorkspaceContextService for comparing target path against active VSCode workspace folders. */
+	private wsContextService!: IWorkspaceContextService;
+
 	constructor(
 		options: IViewPaneOptions,
 		@IFileService fileService: IFileService,
@@ -137,6 +140,9 @@ export class AgentStudioSearchViewPane extends SearchView {
 			this.selectedWorktreePath = undefined;
 			this._updateSearchScopeBasedOnActiveWorkspace();
 		}));
+
+		// 保存 contextService 引用，供 include pattern 计算时比较目标路径与当前 VSCode workspace folder
+		this.wsContextService = contextService;
 
 		// 监听 workspace 列表变化，更新显示的 workspace 名称
 		this._register(this.agentStudioService.onDidChangeWorkspace(() => {
@@ -403,16 +409,81 @@ export class AgentStudioSearchViewPane extends SearchView {
 	}
 
 	private _updateSearchIncludePattern(pattern: string): void {
-		// Access the native search widget's include pattern input via the inherited searchWidget
-		// The SearchView has inputPatternIncludes which is a IncludePatternInputWidget
+		// [Sarosis] 关键修复：对齐 VSCode 原生「在文件夹中查找」逻辑。
+		//
+		// 背景：sessions 窗口中，VSCode 搜索的真实根目录由 active session 注入的 workspace folder
+		// 决定（见 WorkspaceFolderManagementContribution，通过 addFolders/updateFolders 注入，
+		// 且就是当前激活 workspace 的 repo/worktree）。搜索本来就被限定在这个 folder 内。
+		//
+		// 之前的 bug：无条件把原始 Windows 绝对路径（含反斜杠 `\`）写入 include pattern。
+		//   1. 当目标 == 当前 VSCode workspace folder（主仓库常态）时，绝对路径 include 触发
+		//      queryBuilder 的 usingSearchPaths 分支，改变搜索行为；且原始反斜杠在 glob 处理链
+		//      （splitGlobAware/splitGlobFromPath）中是非标准输入，导致 glob 不匹配 → 搜索无结果。
+		//   2. VSCode 原生 resolveResourcesForSearchIncludes 在目标 == 根 folder 时返回空（即不写
+		//      include，依赖 folder 自然限定范围），与我们的做法相反。
+		//
+		// 修复策略：
+		//   - 若目标路径为空，或目标等于当前 VSCode workspace folder（主仓库），则清空 include
+		//     pattern，依赖 active session folder 自然限定搜索范围（与原生一致）。
+		//   - 仅当目标是 folder 之外的路径（如独立 worktree 目录）时，才写入绝对路径 include，
+		//     并将反斜杠规范化为正斜杠（glob 标准），避免转义问题。
 		try {
-			// Use the inherited property to set the include pattern
-			(this as any).inputPatternIncludes?.setValue(pattern);
-			// [Sarosis] 不再强制展开 query details，保持原生紧凑布局（与 VSCode 原生搜索一致）。
-			// include pattern 已静默写入，用户需要时可自行点击 "..." 展开查看/修改。
+			const includeWidget = (this as any).inputPatternIncludes;
+			if (!includeWidget) {
+				return;
+			}
+
+			// 写入用：仅反斜杠转正斜杠 + 去尾斜杠，保留原始大小写（供 ripgrep 使用）
+			const targetForWrite = this._toGlobPath(pattern);
+
+			// 目标为空 → 清空 include，搜索整个 active session folder
+			if (!targetForWrite) {
+				includeWidget.setValue('');
+				return;
+			}
+
+			// 比较用：大小写不敏感（Windows 盘符）
+			const targetForCompare = this._normalizeForCompare(targetForWrite);
+
+			// 比较目标路径与当前 VSCode workspace folders：若目标就是（或等于）某个根 folder，
+			// 则清空 include，让搜索自然覆盖整个 folder（与 VSCode 原生行为一致）。
+			const folders = this.wsContextService.getWorkspace().folders;
+			const targetMatchesRoot = folders.some(folder => {
+				const folderPath = this._normalizeForCompare(this._toGlobPath(folder.uri.fsPath));
+				return folderPath === targetForCompare;
+			});
+
+			if (targetMatchesRoot) {
+				// 主仓库 / 目标即根 folder：不写 include，依赖 folder 限定范围
+				includeWidget.setValue('');
+				return;
+			}
+
+			// 目标在根 folder 之外（独立 worktree 路径）：写入正斜杠规范化的绝对路径（保留大小写）
+			includeWidget.setValue(targetForWrite);
 		} catch {
 			// Silently fail if internal API changes
 		}
+	}
+
+	/**
+	 * 将文件系统路径转为 glob 可用的形式：反斜杠转正斜杠 + 去除尾部斜杠。保留原始大小写。
+	 */
+	private _toGlobPath(p: string | undefined): string {
+		if (!p) {
+			return '';
+		}
+		return p.replace(/\\/g, '/').replace(/\/+$/, '');
+	}
+
+	/**
+	 * 路径比较规范化：Windows 盘符路径转小写（文件系统大小写不敏感），用于判断目标是否等于根 folder。
+	 */
+	private _normalizeForCompare(globPath: string): string {
+		if (/^[a-zA-Z]:\//.test(globPath)) {
+			return globPath.toLowerCase();
+		}
+		return globPath;
 	}
 
 	protected override layoutBody(height: number, width: number): void {
