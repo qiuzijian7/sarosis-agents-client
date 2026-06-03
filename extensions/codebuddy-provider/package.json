@@ -95,13 +95,6 @@
 					}
 				}
 			},
-			"codebuddy.modelJsonPath": {
-				"type": "string",
-				"default": "",
-				"description": "model.json 文件路径，从该文件加载模型配置",
-				"scope": "application",
-				"markdownDescription": "model.json 文件路径。从该文件加载模型配置，文件格式应包含 `models` 数组，每个模型包含完整的配置信息（id、name、maxInputTokens、maxOutputTokens、maxAllowedSize 等）。\n\n如果同时配置了 `codebuddy.models` 和 `codebuddy.modelJsonPath`，两者会合并，modelJsonPath 中的配置优先。"
-			},
 				"codebuddy.timeout": {
 					"type": "number",
 					"default": 60000,

@@ -1,6 +1,9 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Task Board Panel (Kanban)
- *  5-column kanban: todo, running, done, cancelled, archived
+ *  6-column kanban over a 7-status model:
+ *    triage | (todo+ready) | (running+blocked) | done | cancelled | archived
+ *  Columns may aggregate multiple statuses; dropStatus defines the status applied on drop
+ *  (null = column rejects drops, e.g. the running column which holds protected tasks).
  *  Supports drag-and-drop status change, collapse/expand
  *--------------------------------------------------------------------------------------------*/
 
@@ -10,17 +13,32 @@ import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
+import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
+import { useSwarmStore } from '../../store/useSwarmStore';
+import { useBoardStore } from '../../store/useBoardStore';
 import { TaskCard } from './TaskCard';
 import { OrchestrationPlanModal } from '../orchestration/OrchestrationPlanModal';
 import { registerAgentColors } from '../../utils/agentColors';
 
-// Column configuration
-const COLUMNS: { status: TaskBoardStatus; label: string; icon: string; color: string }[] = [
-	{ status: 'todo', label: '待执行', icon: '📋', color: '#f59e0b' },
-	{ status: 'running', label: '执行中', icon: '⚡', color: '#3b82f6' },
-	{ status: 'done', label: '执行结束', icon: '✅', color: '#10b981' },
-	{ status: 'cancelled', label: '取消执行', icon: '⏹', color: '#6b7280' },
-	{ status: 'archived', label: '归档', icon: '📦', color: '#8b5cf6' },
+// Column configuration.
+// - statuses: which task statuses are shown in this column (aggregation)
+// - dropStatus: the status applied when a card is dropped here (null = no drop allowed)
+interface ColumnDef {
+	key: string;
+	statuses: TaskBoardStatus[];
+	dropStatus: TaskBoardStatus | null;
+	label: string;
+	icon: string;
+	color: string;
+}
+
+const COLUMNS: ColumnDef[] = [
+	{ key: 'triage', statuses: ['triage'], dropStatus: 'triage', label: '待规划', icon: '🗂', color: '#a855f7' },
+	{ key: 'todo', statuses: ['todo', 'ready'], dropStatus: 'todo', label: '待执行', icon: '📋', color: '#f59e0b' },
+	{ key: 'running', statuses: ['running', 'blocked'], dropStatus: null, label: '执行中', icon: '⚡', color: '#3b82f6' },
+	{ key: 'done', statuses: ['done'], dropStatus: 'done', label: '执行结束', icon: '✅', color: '#10b981' },
+	{ key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: '取消执行', icon: '⏹', color: '#6b7280' },
+	{ key: 'archived', statuses: ['archived'], dropStatus: 'archived', label: '归档', icon: '📦', color: '#8b5cf6' },
 ];
 
 // Collapse toggle icon
@@ -36,6 +54,18 @@ export function TaskBoardPanel(): React.ReactElement {
 	const { employees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
+	const { diagnostics, isRunning: isDiagnosticsRunning, loadDiagnostics, runDiagnostics } = useDiagnosticsStore();
+	const swarms = useSwarmStore(s => s.swarms);
+	const loadSwarms = useSwarmStore(s => s.loadSwarms);
+	const cancelSwarm = useSwarmStore(s => s.cancelSwarm);
+
+	const boards = useBoardStore(s => s.boards);
+	const loadBoards = useBoardStore(s => s.loadBoards);
+	const createBoard = useBoardStore(s => s.createBoard);
+	const renameBoard = useBoardStore(s => s.renameBoard);
+	const deleteBoard = useBoardStore(s => s.deleteBoard);
+	const switchBoard = useBoardStore(s => s.switchBoard);
+	const activeBoardId = useBoardStore(s => (activeWorkspaceId ? (s.activeByWorkspace[activeWorkspaceId] ?? 'default') : 'default'));
 
 	const handleClosePlanInput = useCallback(() => {
 		useOrchestrationStore.setState({ isPlanDialogOpen: false });
@@ -64,18 +94,21 @@ export function TaskBoardPanel(): React.ReactElement {
 		openPlanDialog();
 	}, [orchestrationPlans, setActivePlan, openPlanDialog]);
 
-	const [dragOverColumn, setDragOverColumn] = useState<TaskBoardStatus | null>(null);
+	const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 	const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
 
-	// Load tasks when workspace changes
+	// Load tasks when workspace or active board changes
 	useEffect(() => {
 		if (activeWorkspaceId) {
+			loadBoards(activeWorkspaceId);
 			loadDelegations(activeWorkspaceId).then(() => {
-				loadTasks(activeWorkspaceId);
+				loadTasks(activeWorkspaceId, activeBoardId);
 			});
 			loadPlans(activeWorkspaceId);
+			loadDiagnostics();
+			loadSwarms(activeWorkspaceId);
 		}
-	}, [activeWorkspaceId, loadDelegations, loadTasks, loadPlans]);
+	}, [activeWorkspaceId, activeBoardId, loadDelegations, loadTasks, loadPlans, loadDiagnostics, loadSwarms, loadBoards]);
 
 	// Register agent colors when employees change (ensures consistent color assignment)
 	useEffect(() => {
@@ -87,11 +120,20 @@ export function TaskBoardPanel(): React.ReactElement {
 	// Listen for task-board changes from host
 	useEffect(() => {
 		const handler = () => {
-			if (activeWorkspaceId) { loadTasks(activeWorkspaceId); }
+			if (activeWorkspaceId) { loadTasks(activeWorkspaceId, activeBoardId); }
 		};
 		window.addEventListener('agentStudio:taskboard-changed', handler);
 		return () => window.removeEventListener('agentStudio:taskboard-changed', handler);
-	}, [activeWorkspaceId, loadTasks]);
+	}, [activeWorkspaceId, activeBoardId, loadTasks]);
+
+	// Listen for board (multi-board) changes from host
+	useEffect(() => {
+		const handler = () => {
+			if (activeWorkspaceId) { loadBoards(activeWorkspaceId); }
+		};
+		window.addEventListener('agentStudio:boards-changed', handler);
+		return () => window.removeEventListener('agentStudio:boards-changed', handler);
+	}, [activeWorkspaceId, loadBoards]);
 
 	// Listen for focusTask messages from host (via custom event dispatched by index.tsx)
 	useEffect(() => {
@@ -114,8 +156,8 @@ export function TaskBoardPanel(): React.ReactElement {
 		return () => window.removeEventListener('agentStudio:focusTask', handler as EventListener);
 	}, [focusTask]);
 
-	const getTasksForColumn = useCallback((status: TaskBoardStatus) => {
-		return tasks.filter(t => t && t.status === status);
+	const getTasksForColumn = useCallback((col: ColumnDef) => {
+		return tasks.filter(t => t && col.statuses.includes(t.status));
 	}, [tasks]);
 
 	// Drag handlers
@@ -130,20 +172,23 @@ export function TaskBoardPanel(): React.ReactElement {
 		setDragTarget(null);
 	}, [setDragTarget]);
 
-	const handleDragOver = useCallback((e: React.DragEvent, status: TaskBoardStatus) => {
+	const handleDragOver = useCallback((e: React.DragEvent, col: ColumnDef) => {
+		if (col.dropStatus === null) { return; }
 		e.preventDefault();
 		e.dataTransfer.dropEffect = 'move';
-		setDragOverColumn(status);
+		setDragOverColumn(col.key);
 	}, []);
 
 	const handleDragLeave = useCallback(() => {
 		setDragOverColumn(null);
 	}, []);
 
-	const handleDrop = useCallback((e: React.DragEvent, targetStatus: TaskBoardStatus) => {
+	const handleDrop = useCallback((e: React.DragEvent, col: ColumnDef) => {
 		e.preventDefault();
 		setDragOverColumn(null);
 
+		const targetStatus = col.dropStatus;
+		if (!targetStatus) { return; }
 		if (!draggingTaskId) { return; }
 		const task = tasks.find(t => t && t.id === draggingTaskId);
 		if (!task || task.status === targetStatus) { return; }
@@ -168,6 +213,47 @@ export function TaskBoardPanel(): React.ReactElement {
 	}, [archiveTask]);
 
 	const totalTasks = tasks.length;
+	const alertCount = diagnostics.length;
+	const hasErrorAlert = diagnostics.some(d => d.severity === 'error' || d.severity === 'critical');
+
+	// ─── Board selector handlers (multi-board isolation) ───────────────────
+	const handleSwitchBoard = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+		if (activeWorkspaceId) { switchBoard(activeWorkspaceId, e.target.value); }
+	}, [activeWorkspaceId, switchBoard]);
+
+	const handleCreateBoard = useCallback((e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (!activeWorkspaceId) { return; }
+		const name = window.prompt('新看板名称：', '新看板');
+		if (name && name.trim()) { void createBoard(name.trim(), activeWorkspaceId); }
+	}, [activeWorkspaceId, createBoard]);
+
+	const handleRenameBoard = useCallback((e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (!activeWorkspaceId) { return; }
+		const current = boards.find(b => b.id === activeBoardId);
+		const name = window.prompt('重命名看板：', current?.name ?? '');
+		if (name && name.trim()) { void renameBoard(activeBoardId, name.trim()); }
+	}, [activeWorkspaceId, activeBoardId, boards, renameBoard]);
+
+	const handleDeleteBoard = useCallback((e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (!activeWorkspaceId || activeBoardId === 'default') { return; }
+		const current = boards.find(b => b.id === activeBoardId);
+		if (window.confirm(`删除看板「${current?.name ?? ''}」？\n其下任务将移回默认看板。`)) {
+			void deleteBoard(activeBoardId, activeWorkspaceId);
+		}
+	}, [activeWorkspaceId, activeBoardId, boards, deleteBoard]);
+
+	// Active swarms for the current workspace (newest first).
+	const swarmList = Object.values(swarms)
+		.filter(s => !activeWorkspaceId || !s.workspaceId || s.workspaceId === activeWorkspaceId)
+		.sort((a, b) => b.createdAt - a.createdAt);
+
+	const handleRunDiagnostics = useCallback((e: React.MouseEvent) => {
+		e.stopPropagation();
+		void runDiagnostics(activeWorkspaceId || undefined);
+	}, [runDiagnostics, activeWorkspaceId]);
 
 	return (
 		<div className="task-board-panel">
@@ -179,6 +265,15 @@ export function TaskBoardPanel(): React.ReactElement {
 					{totalTasks > 0 && <span className="task-board-count">{totalTasks}</span>}
 				</div>
 			<div className="task-board-header-right">
+			<button
+				className={`task-board-diagnostics-btn ${hasErrorAlert ? 'has-error' : alertCount > 0 ? 'has-warning' : ''}`}
+				onClick={handleRunDiagnostics}
+				disabled={isDiagnosticsRunning}
+				title="看板健康巡检 - 检测卡住/失败/不可执行的任务"
+			>
+				{isDiagnosticsRunning ? '⏳ 巡检中' : '🩺 巡检'}
+				{alertCount > 0 && <span className="task-board-alert-badge">{alertCount}</span>}
+			</button>
 			<button
 				className="task-board-orchestrate-btn"
 				onClick={(e) => { e.stopPropagation(); openPlanDialog(); }}
@@ -196,20 +291,86 @@ export function TaskBoardPanel(): React.ReactElement {
 			onClose={handleClosePlanInput}
 		/>
 
+		{/* Board selector bar (multi-board isolation) */}
+		{!isCollapsed && (
+			<div className="task-board-boards">
+				<span className="task-board-boards-label">看板</span>
+				<select
+					className="task-board-boards-select"
+					value={activeBoardId}
+					onChange={handleSwitchBoard}
+					title="切换看板"
+				>
+					{boards.map(b => (
+						<option key={b.id} value={b.id}>{b.name}</option>
+					))}
+				</select>
+				<button
+					className="task-board-boards-btn"
+					onClick={handleCreateBoard}
+					title="新建看板"
+				>＋</button>
+				<button
+					className="task-board-boards-btn"
+					onClick={handleRenameBoard}
+					title="重命名当前看板"
+				>✎</button>
+				<button
+					className="task-board-boards-btn danger"
+					onClick={handleDeleteBoard}
+					disabled={activeBoardId === 'default'}
+					title={activeBoardId === 'default' ? '默认看板不可删除' : '删除当前看板'}
+				>🗑</button>
+			</div>
+		)}
+
+		{/* Active Swarm summary bar (multi-agent collaboration) */}
+		{!isCollapsed && swarmList.length > 0 && (
+			<div className="task-board-swarms">
+				{swarmList.map(s => {
+					const total = s.workers.length + (s.verifier ? 1 : 0) + (s.synthesizer ? 1 : 0);
+					const doneCount =
+						s.workers.filter(w => w.status === 'done').length +
+						(s.verifier?.status === 'done' ? 1 : 0) +
+						(s.synthesizer?.status === 'done' ? 1 : 0);
+					const isActive = s.phase !== 'done' && s.phase !== 'cancelled' && s.phase !== 'failed' && s.phase !== 'interrupted';
+					const phaseLabel: Record<string, string> = {
+						planning: '规划中', running: '执行中', verifying: '校验中',
+						synthesizing: '汇总中', done: '已完成', cancelled: '已取消', failed: '失败', interrupted: '已中断',
+					};
+					return (
+						<div key={s.swarmId} className={`task-board-swarm-item phase-${s.phase}`} title={`Swarm: ${s.title}`}>
+							<span className="task-board-swarm-icon">🐝</span>
+							<span className="task-board-swarm-title">{s.title}</span>
+							<span className={`task-board-swarm-phase phase-${s.phase}`}>{phaseLabel[s.phase] ?? s.phase}</span>
+							<span className="task-board-swarm-progress">{doneCount}/{total}</span>
+							{isActive && (
+								<button
+									className="task-board-swarm-cancel"
+									onClick={(e) => { e.stopPropagation(); void cancelSwarm(s.swarmId); }}
+									title="取消该 Swarm（中断尚未完成的 Worker）"
+								>✕</button>
+							)}
+						</div>
+					);
+				})}
+			</div>
+		)}
+
 		{/* Kanban columns */}
 		{!isCollapsed && (
 			<div className="task-board-columns">
 				{COLUMNS.map(col => {
-					const columnTasks = getTasksForColumn(col.status);
-					const isDragOver = dragOverColumn === col.status;
+					const columnTasks = getTasksForColumn(col);
+					const isDragOver = dragOverColumn === col.key;
 
 					return (
 						<div
-							key={col.status}
+							key={col.key}
 							className={`task-board-column ${isDragOver ? 'drag-over' : ''}`}
-							onDragOver={(e) => handleDragOver(e, col.status)}
+							onDragOver={(e) => handleDragOver(e, col)}
 							onDragLeave={handleDragLeave}
-							onDrop={(e) => handleDrop(e, col.status)}
+							onDrop={(e) => handleDrop(e, col)}
 						>
 							{/* Column header */}
 							<div className="task-column-header">

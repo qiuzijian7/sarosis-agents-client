@@ -158,6 +158,32 @@ export async function previewToFile(employeeId: string): Promise<{ path: string;
 	return r as { path: string; version: number };
 }
 
+/**
+ * ConfigHtml AI box: ask the model (with the `confightml` skill activated and a
+ * dedicated system prompt) to generate a full self-contained HTML document.
+ * Returns the extracted HTML string plus the raw reply.
+ */
+export async function htmlGenerate(
+	employeeId: string,
+	message: string,
+	options?: { currentHtml?: string; model?: string },
+): Promise<{ html: string; raw: string }> {
+	const r = await sendRequest(
+		'configmd.htmlGenerate',
+		{ employeeId, message, currentHtml: options?.currentHtml, model: options?.model },
+		0, // no timeout: model generation can take a while
+	);
+	return r as { html: string; raw: string };
+}
+
+/**
+ * Ask the host to open this agent's config.html (editable) in the right-hand
+ * Canvas panel. The host re-broadcasts the request to the Canvas webview.
+ */
+export async function requestCanvasPreview(employeeId: string): Promise<void> {
+	await sendRequest('configmd.requestCanvasPreview', { employeeId });
+}
+
 export async function fireHtmlEvent(
 	employeeId: string,
 	eventName: string,

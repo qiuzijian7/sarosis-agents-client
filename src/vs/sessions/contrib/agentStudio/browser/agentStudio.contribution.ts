@@ -29,7 +29,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import type { AgentStudioPanelType } from '../common/constants.js';
 
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
-import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService, IConfigMdService } from '../common/agentStudio.js';
+import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgentTaskBoardService, ITaskOrchestrationService, IConfigHtmlService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
@@ -37,7 +37,7 @@ import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { IAgentInstanceService, IAgentGalleryService } from '../common/agentInstance.js';
 import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
-import { ConfigMdService } from './configMdService.js';
+import { ConfigHtmlService } from './configHtmlService.js';
 import { AgentOSService } from './agentOSService.js';
 import { AgentDriverService } from './agentDriverService.js';
 import { ModelSelectorService } from './modelSelectorService.js';
@@ -409,7 +409,7 @@ registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, Instantia
 // the HtmlPreviewEditorPane. Keeping a single instance avoids duplicating
 // the per-employee state cache and lets the preview pane forward webview
 // imgui.submit messages back through the same dispatcher.
-registerSingleton(IConfigMdService, ConfigMdService, InstantiationType.Delayed);
+registerSingleton(IConfigHtmlService, ConfigHtmlService, InstantiationType.Delayed);
 // Workspace lifecycle event bus — generic, decoupled hook system used by
 // CLI/provider extensions (e.g. knot-agui) to react to workspace mutations
 // without any main-repo hardcoding. Eager so its extension-facing commands
@@ -426,6 +426,15 @@ registerSingleton(ISkillLifecycleService, SkillLifecycleService, InstantiationTy
 // rather than appearing as tabs in the Settings page.
 registerSingleton(ISettingsTabRegistry, SettingsTabRegistry, InstantiationType.Delayed);
 registerSingleton(ISelfEvolutionService, SelfEvolutionService, InstantiationType.Delayed);
+// Kanban triage (LLM-driven specify/decompose). Delayed: only instantiated when
+// a triage action is invoked from the board UI or a kanban tool.
+registerSingleton(ITriageService, LlmTriageService, InstantiationType.Delayed);
+// Kanban diagnostics (health scanner). Eager: must start its periodic scan timer
+// and subscribe to task-board change events in the background without an explicit consumer.
+registerSingleton(IKanbanDiagnosticsService, KanbanDiagnosticsService, InstantiationType.Eager);
+// Swarm (multi-agent collaboration). Delayed: only instantiated when a swarm is
+// created from the board UI or the kanban_swarm tool.
+registerSingleton(ISwarmService, SwarmService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -707,6 +716,13 @@ import { SkillRegistry } from './skillRegistryService.js';
 import { ISkillInstallService } from '../common/skillHubTypes.js';
 import { SkillInstallService } from './skillInstallService.js';
 import { BuiltinToolProvider } from './providers/tool/builtinToolProvider.js';
+import { JsonFileKanbanProvider } from './providers/kanban/jsonFileKanbanProvider.js';
+import { ITriageService } from '../common/triageService.js';
+import { LlmTriageService } from './providers/triage/llmTriageService.js';
+import { IKanbanDiagnosticsService } from '../common/kanbanDiagnosticsService.js';
+import { KanbanDiagnosticsService } from './providers/diagnostics/kanbanDiagnosticsService.js';
+import { ISwarmService } from '../common/swarmService.js';
+import { SwarmService } from './providers/swarm/swarmService.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
 import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -727,6 +743,7 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 		@IFileService private readonly fileService: IFileService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IMcpService private readonly mcpService: IMcpService,
+		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		// Touch ISkillRegistry so the singleton is created and starts its filesystem
 		// scan early — `_skillRegistry` is otherwise unused here, but the service
 		// becomes addressable through DI everywhere else (slash commands, UI,
@@ -742,6 +759,7 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 		this._registerBuiltinTools();
 		this._registerMcpTools();
 		this._registerSessionMemory();
+		this._registerKanbanProvider();
 	}
 
 	private _registerBuiltinTools(): void {
@@ -776,6 +794,19 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 			this.logService.info('[BuiltinCapability] SessionMemoryProvider registered');
 		} catch (err) {
 			this.logService.error('[BuiltinCapability] SessionMemoryProvider registration failed', err);
+		}
+	}
+
+	private _registerKanbanProvider(): void {
+		try {
+			// 委托给已稳定运行的 AgentTaskBoardService（共享同一份 taskboard.json），
+			// 激活此前从未被注册的 IKanbanProvider 抽象槽。
+			const provider = new JsonFileKanbanProvider(this.taskBoardService, this.logService);
+			this._register(provider);
+			this._register(this.agentOSService.registerKanbanProvider(provider, 50));
+			this.logService.info('[BuiltinCapability] JsonFileKanbanProvider registered');
+		} catch (err) {
+			this.logService.error('[BuiltinCapability] JsonFileKanbanProvider registration failed', err);
 		}
 	}
 }

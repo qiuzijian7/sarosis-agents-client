@@ -12,7 +12,7 @@ export {
 	IAgentDelegationService,
 	IAgentTaskBoardService,
 	ITaskOrchestrationService,
-	IConfigMdService,
+	IConfigHtmlService,
 } from '../../../common/agentStudioService.js';
 
 // Type-only exports (interfaces)

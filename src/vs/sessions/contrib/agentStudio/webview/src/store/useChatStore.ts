@@ -170,6 +170,17 @@ export interface ChatMessage {
 	subAgents?: SubAgentInfo[];
 	/** Checkpoint data for time-travel navigation (Void-inspired) */
 	checkpoint?: CheckpointData;
+	/** User-uploaded attachments (images/files) - Void-inspired attachment support */
+	attachments?: Array<{
+		id: string;
+		type: 'image' | 'file';
+		name: string;
+		mimeType: string;
+		/** For images: base64 data (without prefix); for text files: raw content */
+		data: string;
+		size: number;
+		isPasted?: boolean;
+	}>;
 }
 
 export interface AgentSessionInfo {
@@ -207,7 +218,15 @@ interface ChatState {
 	loadHistory: (employeeId: string) => Promise<void>;
 	/** Load history for a specific agentSessionId (used by session switching) */
 	loadHistoryForSession: (employeeId: string, agentSessionId?: string) => Promise<void>;
-	sendMessage: (message: string) => Promise<void>;
+	sendMessage: (message: string, attachments?: Array<{
+		id: string;
+		type: 'image' | 'file';
+		name: string;
+		mimeType: string;
+		data: string;
+		size: number;
+		isPasted?: boolean;
+	}>) => Promise<void>;
 	cancelStream: () => void;
 	setInputValue: (value: string) => void;
 	clearMessages: () => void;
@@ -720,9 +739,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}
 		},
 
-		sendMessage: async (message: string) => {
-			// Guard: never send empty or whitespace-only messages to the LLM
-			if (!message || !message.trim()) { return; }
+		sendMessage: async (message: string, attachments?: Array<{
+			id: string;
+			type: 'image' | 'file';
+			name: string;
+			mimeType: string;
+			data: string;
+			size: number;
+			isPasted?: boolean;
+		}>) => {
+			// Guard: never send empty messages without attachments
+			if ((!message || !message.trim()) && (!attachments || attachments.length === 0)) { return; }
 			let { activeEmployeeId, activeAgentSessionId, streamState, chatMode } = get();
 			if (!activeEmployeeId) { return; }
 
@@ -799,6 +826,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				role: 'user',
 				content: message,
 				timestamp: new Date().toISOString(),
+				attachments: attachments && attachments.length > 0 ? attachments : undefined,
 			};
 			set(state => ({
 				messages: [...state.messages, userMessage],
@@ -815,6 +843,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					explicitSkillIds: explicitSkillIds.length > 0 ? explicitSkillIds : undefined,
 					chatMode,
 					reasoning,
+					attachments: attachments && attachments.length > 0 ? attachments : undefined,
 				});
 				// After send completes, refresh session list to update messageCount
 				get().loadAgentSessions(activeEmployeeId!);

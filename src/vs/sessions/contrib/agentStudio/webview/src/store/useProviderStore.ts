@@ -552,7 +552,14 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		if (!provider) {
 			return null;
 		}
-		return provider.models.find(m => m.id === selection.modelId) ?? null;
+		const model = provider.models.find(m => m.id === selection.modelId) ?? null;
+		// [VISION-DEBUG] node 3: webview store — resolved selected model capability
+		console.log(
+			`[VISION-DEBUG][store.currentModelInfo] sel=${selection.providerId}/${selection.modelId} ` +
+			`found=${!!model} supportsImages=${model?.supportsImages} ` +
+			`modelCount=${provider.models.length}`,
+		);
+		return model;
 	},
 
 	currentReasoningConfig: () => {

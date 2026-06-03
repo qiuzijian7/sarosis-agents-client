@@ -18,7 +18,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { IAgentStudioService, IConfigMdService } from '../common/agentStudio.js';
+import { IAgentStudioService, IConfigHtmlService } from '../common/agentStudio.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 
 /**
@@ -63,7 +63,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@IFileService private readonly _fileService: IFileService,
 		@ILogService private readonly _logService: ILogService,
-		@IConfigMdService private readonly _configMdService: IConfigMdService,
+		@IConfigHtmlService private readonly _configHtmlService: IConfigHtmlService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 	) {
 		super(HtmlPreviewEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -145,7 +145,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 			this._logService.info(`[HtmlPreviewEditorPane] resolved employeeId='${this._currentEmployeeId}' for ${input.resource.toString()}`);
 
 			// Forward `imgui.submit` (and other future imgui-style events)
-			// from the preview SDK back to ConfigMdService.handleHtmlEvent.
+			// from the preview SDK back to ConfigHtmlService.handleHtmlEvent.
 			//
 			// We re-attach the captured (workspaceId, agentSessionId) to
 			// every submit payload here on the host side: the SDK script
@@ -174,16 +174,16 @@ export class HtmlPreviewEditorPane extends EditorPane {
 							agentSessionId: this._currentAgentSessionId,
 						},
 					};
-					await this._configMdService.handleHtmlEvent(employeeId, m.type, enriched, this._currentAgentSessionId);
+					await this._configHtmlService.handleHtmlEvent(employeeId, m.type, enriched, this._currentAgentSessionId);
 				} catch (err) {
 					this._logService.error(`[HtmlPreviewEditorPane] handleHtmlEvent failed:`, err);
 				}
 			}));
 
-			// Push host → preview commands. ConfigMdService dispatches these
+			// Push host → preview commands. ConfigHtmlService dispatches these
 			// via its onDidEmitCommand event for any employeeId; we filter
 			// to the currently-loaded preview's employee.
-			this._register(this._configMdService.onDidEmitCommand(({ employeeId, command }) => {
+			this._register(this._configHtmlService.onDidEmitCommand(({ employeeId, command }) => {
 				if (!this._webview) { return; }
 				if (this._currentEmployeeId && employeeId !== this._currentEmployeeId) { return; }
 				if (!command?.name || !command.name.startsWith('imgui.')) { return; }
@@ -260,7 +260,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	/**
 	 * Resolve the owning employee from the preview file's URI.
 	 *
-	 * Path convention (set up by `ConfigMdService.previewToFile`):
+	 * Path convention (set up by `ConfigHtmlService.previewToFile`):
 	 *   <workspacePath>/.sarosisworkspace/agents/<agentDir>/.preview.html
 	 *
 	 * Strategy (in order):

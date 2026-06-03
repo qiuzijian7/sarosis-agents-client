@@ -317,7 +317,7 @@
       "maxInputTokens": 192000,
       "maxAllowedSize": 192000,
       "supportsToolCall": true,
-      "supportsImages": false,
+      "supportsImages": true,
       "disabledMultimodal": false,
       "supportsReasoning": true,
       "temperature": 0.9,

@@ -22,7 +22,7 @@ import {
 	IAgentDelegationService,
 	IAgentTaskBoardService,
 	ITaskOrchestrationService,
-	IConfigMdService,
+	IConfigHtmlService,
 } from "../common/agentStudio.js";
 import { ISkillRegistry } from "../common/skills.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
@@ -74,6 +74,8 @@ import type {
 	IOrchestrationTaskActionPayload,
 	IConfigMdEventPayload,
 	IConfigMdChatSendPayload,
+	IConfigMdHtmlGeneratePayload,
+	IConfigMdCanvasPreviewPayload,
 	IConfigMdWriteSourcePayload,
 	IConfigMdApplyPatchPayload,
 	IConfigMdRenderHtmlPayload,
@@ -132,7 +134,7 @@ export class AgentStudioWebviewController extends Disposable {
 	 * Used (a) to filter `onDidRequestChatSend` events so only the chat
 	 * panel actually showing the target employee handles imgui submits,
 	 * preventing duplicate sends across multiple chat panels, and
-	 * (b) to register into `IConfigMdService.setActiveAgentSession` so
+	 * (b) to register into `IConfigHtmlService.setActiveAgentSession` so
 	 * the preview pane can route imgui submits into the correct Fork
 	 * session.
 	 */
@@ -173,7 +175,7 @@ export class AgentStudioWebviewController extends Disposable {
 		private readonly instantiationService: IInstantiationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IOpenerService private readonly openerService: IOpenerService,
-		@IConfigMdService private readonly _configMdService: IConfigMdService,
+		@IConfigHtmlService private readonly _configHtmlService: IConfigHtmlService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IModelService private readonly modelService: IModelService,
 		@IRequestService private readonly requestService: IRequestService,
@@ -297,6 +299,12 @@ export class AgentStudioWebviewController extends Disposable {
 		window.__AGENT_STUDIO_PANEL_TYPE__ = ${this.panelType ? `'${this.panelType}'` : "undefined"};
 		// Initial theme from configuration
 		window.__AGENT_STUDIO_INITIAL_THEME__ = '${initialTheme}';
+		// Active CSP nonce. Exposed so React-rendered child iframes that use
+		// srcdoc (which INHERITS this webview's nonce-based CSP) can stamp the
+		// same nonce onto any inline <script>/<style> they inject — otherwise
+		// those tags are blocked (the inherited 'nonce-...' policy has no
+		// 'unsafe-inline', and CSP policies only intersect, never widen).
+		window.__AGENT_STUDIO_CSP_NONCE__ = '${nonce}';
 
 		// ── Early diagnostics: catch ALL messages and errors before React loads ──
 		window.__AS_MSG_LOG__ = [];
@@ -789,31 +797,31 @@ export class AgentStudioWebviewController extends Disposable {
 
 			// ─── ConfigMD ─────────────────────────────────────────
 			case "configmd.getResource":
-				return this._configMdService.resolveState(p.employeeId as string);
+				return this._configHtmlService.resolveState(p.employeeId as string);
 			case "configmd.readSource":
-				return this._configMdService.readSource(p.employeeId as string);
+				return this._configHtmlService.readSource(p.employeeId as string);
 			case "configmd.writeSource": {
 				const wp = p as unknown as IConfigMdWriteSourcePayload;
-				return this._configMdService.writeSource(wp.employeeId, wp.markdown, {
+				return this._configHtmlService.writeSource(wp.employeeId, wp.markdown, {
 					origin: wp.origin,
 					baseVersion: wp.baseVersion,
 				});
 			}
 			case "configmd.applyPatch": {
 				const ap = p as unknown as IConfigMdApplyPatchPayload;
-				return this._configMdService.applyPatch(ap.employeeId, ap.patches, {
+				return this._configHtmlService.applyPatch(ap.employeeId, ap.patches, {
 					origin: ap.origin,
 					baseVersion: ap.baseVersion,
 				});
 			}
 			case "configmd.renderHtml": {
 				const rp = p as unknown as IConfigMdRenderHtmlPayload;
-				return this._configMdService.renderHtml(rp.employeeId, rp.markdown);
+				return this._configHtmlService.renderHtml(rp.employeeId, rp.markdown);
 			}
 			case "confightml.event":
 			case "configmd.event": {
 				const ep = p as unknown as IConfigMdEventPayload;
-				return this._configMdService.handleHtmlEvent(
+				return this._configHtmlService.handleHtmlEvent(
 					ep.employeeId,
 					ep.eventName,
 					ep.payload,
@@ -822,7 +830,7 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 			case "configmd.chatSend": {
 				const cp = p as unknown as IConfigMdChatSendPayload;
-				return this._configMdService.handleChatSend(cp.employeeId, cp.message, {
+				return this._configHtmlService.handleChatSend(cp.employeeId, cp.message, {
 					context: cp.context,
 					showInChat: cp.showInChat,
 					agentSessionId: cp.agentSessionId,
@@ -839,23 +847,37 @@ export class AgentStudioWebviewController extends Disposable {
 				);
 				return undefined;
 			case "configmd.uploadParser":
-				return this._configMdService.uploadParser(
+				return this._configHtmlService.uploadParser(
 					p.employeeId as string,
 					p.content as string,
 					p.fileName as string | undefined,
 				);
 			case "configmd.uploadStyles":
-				return this._configMdService.uploadStyles(
+				return this._configHtmlService.uploadStyles(
 					p.employeeId as string,
 					p.content as string,
 					p.fileName as string | undefined,
 				);
 			case "configmd.removeParser":
-				return this._configMdService.removeParser(p.employeeId as string);
+				return this._configHtmlService.removeParser(p.employeeId as string);
 			case "configmd.getInfo":
-				return this._configMdService.getInfo(p.employeeId as string);
+				return this._configHtmlService.getInfo(p.employeeId as string);
 			case "configmd.previewToFile":
-				return this._configMdService.previewToFile(p.employeeId as string);
+				return this._configHtmlService.previewToFile(p.employeeId as string);
+
+			case "configmd.htmlGenerate": {
+				const hp = p as unknown as IConfigMdHtmlGeneratePayload;
+				return this._configHtmlService.htmlGenerate(hp.employeeId, hp.message, {
+					currentHtml: hp.currentHtml,
+					model: hp.model,
+				});
+			}
+
+			case "configmd.requestCanvasPreview": {
+				const cp = p as unknown as IConfigMdCanvasPreviewPayload;
+				await this._configHtmlService.requestCanvasPreview(cp.employeeId);
+				return { ok: true };
+			}
 
 			case "configmd.listAgents": {
 				// List all agents that have config.md configured
@@ -942,7 +964,7 @@ export class AgentStudioWebviewController extends Disposable {
 	/**
 	 * Webview tells us which (employeeId, agentSessionId) is currently
 	 * displayed in this chat panel. We update local state and register
-	 * with `IConfigMdService` so imgui form submits originating in a
+	 * with `IConfigHtmlService` so imgui form submits originating in a
 	 * preview pane can be routed back to the right session.
 	 *
 	 * We also use this to filter `onDidRequestChatSend` events: when
@@ -972,10 +994,10 @@ export class AgentStudioWebviewController extends Disposable {
 		// otherwise the registry would keep pointing at a stale session
 		// for the prior employee.
 		if (prevEmployeeId && prevEmployeeId !== employeeId) {
-			this._configMdService.setActiveAgentSession(prevEmployeeId, undefined);
+			this._configHtmlService.setActiveAgentSession(prevEmployeeId, undefined);
 		}
 		if (employeeId) {
-			this._configMdService.setActiveAgentSession(employeeId, agentSessionId);
+			this._configHtmlService.setActiveAgentSession(employeeId, agentSessionId);
 		}
 	}
 
@@ -1073,7 +1095,7 @@ export class AgentStudioWebviewController extends Disposable {
 			// Mirror chat-input flow: keep the registry & webview in sync
 			// so subsequent imgui submits (and the post-reload history load)
 			// aim at the same session.
-			this._configMdService.setActiveAgentSession(employeeId, agentSessionId);
+			this._configHtmlService.setActiveAgentSession(employeeId, agentSessionId);
 			if (this._activeChatEmployeeId === employeeId) {
 				this._activeChatAgentSessionId = agentSessionId;
 			}
@@ -1206,6 +1228,8 @@ export class AgentStudioWebviewController extends Disposable {
 					agentSessionId,
 					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
 					reasoning: payload.reasoning as { enabled: boolean; budget?: number; effort?: 'low' | 'medium' | 'high' } | undefined,
+					chatMode: payload.chatMode as 'craft' | 'ask' | 'plan' | 'workflow' | undefined,
+					attachments: payload.attachments as import('../../../common/agentStudioService.js').IChatAttachmentSend[] | undefined,
 				},
 				(delta: IChatStreamDelta) => {
 					// Capture provider session ID from metadata (e.g. Knot AG-UI threadId)
@@ -1314,14 +1338,14 @@ export class AgentStudioWebviewController extends Disposable {
 			// non-fatal — the user-visible chat stream has already completed.
 			if (chatMessage?.content) {
 				try {
-					const { patches, commands } = this._configMdService.parseModelOutput(
+					const { patches, commands } = this._configHtmlService.parseModelOutput(
 						chatMessage.content,
 					);
 					if (patches.length > 0) {
 						this.logService.info(
 							`[AgentStudio] Applying ${patches.length} configmd-patch op(s) from assistant reply`,
 						);
-						this._configMdService
+						this._configHtmlService
 							.applyPatch(employeeId, patches, { origin: "model" })
 							.catch((err: unknown) =>
 								this.logService.warn(
@@ -1334,7 +1358,7 @@ export class AgentStudioWebviewController extends Disposable {
 						this.logService.info(
 							`[AgentStudio] Pushing configmd-command '${cmd.name}' from assistant reply`,
 						);
-						this._configMdService.sendCommandToHtml(employeeId, cmd);
+						this._configHtmlService.sendCommandToHtml(employeeId, cmd);
 					}
 				} catch (err) {
 					this.logService.warn("[AgentStudio] parseModelOutput failed:", err);
@@ -2071,6 +2095,19 @@ export class AgentStudioWebviewController extends Disposable {
 			}),
 		);
 
+		// ConfigHtml → Canvas preview bridge. The ConfigHtml editor lives in a
+		// different webview instance than the Canvas, so it cannot talk to the
+		// Canvas store directly. The ConfigHtmlService re-emits a host-level event;
+		// every controller forwards it to its own webview, and only the Canvas
+		// panel reacts (switches to HTML mode + loads this agent).
+		this._register(
+			this._configHtmlService.onDidRequestCanvasPreview(
+				({ employeeId }: { employeeId: string }) => {
+					this._sendEvent("configmd.showInCanvas", { employeeId });
+				},
+			),
+		);
+
 		this._register(
 			this.agentDelegationService.onDidChangeDelegations(() => {
 				this._sendEvent("delegations.changed", {});
@@ -2216,7 +2253,7 @@ export class AgentStudioWebviewController extends Disposable {
 
 		// Listen for ConfigMD source / html / command events to push to WebView
 		this._register(
-			this._configMdService.onDidChangeSource(
+			this._configHtmlService.onDidChangeSource(
 				({ employeeId, markdown, version, origin }) => {
 					this._sendEvent("configmd.sourceChanged", {
 						employeeId,
@@ -2228,7 +2265,7 @@ export class AgentStudioWebviewController extends Disposable {
 			),
 		);
 		this._register(
-			this._configMdService.onDidRenderHtml(
+			this._configHtmlService.onDidRenderHtml(
 				({ employeeId, html, version, stylesContent }) => {
 					this._sendEvent("configmd.htmlRendered", {
 						employeeId,
@@ -2240,7 +2277,7 @@ export class AgentStudioWebviewController extends Disposable {
 			),
 		);
 		this._register(
-			this._configMdService.onDidEmitCommand(({ employeeId, command }) => {
+			this._configHtmlService.onDidEmitCommand(({ employeeId, command }) => {
 				this._sendEvent("configmd.command", { employeeId, command });
 			}),
 		);
@@ -2260,7 +2297,7 @@ export class AgentStudioWebviewController extends Disposable {
 		// explicit `chat.userMessageAppended` event so the webview can mirror
 		// the same optimistic append the chat input would have done.
 		this._register(
-			this._configMdService.onDidRequestChatSend(
+			this._configHtmlService.onDidRequestChatSend(
 				({
 					employeeId,
 					message,
@@ -2381,6 +2418,12 @@ export class AgentStudioWebviewController extends Disposable {
 					vendor: m.vendor,
 					credits: m.credits,
 				}));
+				// [VISION-DEBUG] node 2: Host _handleProvidersList — provider source + per-model supportsImages
+				this.logService.info(
+					`[VISION-DEBUG][Host.providersList] providerId=${provider.id} providerName=${provider.name} ` +
+					`modelCount=${models.length} models=` +
+					JSON.stringify(models.map((m) => ({ id: m.id, vendor: m.vendor, img: m.supportsImages }))),
+				);
 			} catch {
 				// ignore
 			}

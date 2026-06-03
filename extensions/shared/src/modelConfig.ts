@@ -46,6 +46,7 @@ export function createModelInfo(
 	family: string,
 	detail: string,
 	tokenLimits: IModelTokenLimits,
+	capabilities?: { supportsImages?: boolean; supportsToolCall?: boolean },
 ): vscode.LanguageModelChatInformation {
 	const displayName = generateDisplayName(modelName);
 	return {
@@ -57,7 +58,13 @@ export function createModelInfo(
 		maxOutputTokens: tokenLimits.maxOutputTokens,
 		tooltip: displayName,
 		detail,
-		capabilities: {},
+		// Propagate real capability flags from model.json so the renderer-side
+		// metadata.capabilities.vision is populated from authoritative config
+		// instead of being inferred via regex heuristics downstream.
+		capabilities: {
+			imageInput: capabilities?.supportsImages ?? false,
+			toolCalling: capabilities?.supportsToolCall ?? true,
+		},
 	};
 }
 

@@ -13,10 +13,19 @@ import { useChatStore } from '../../store/useChatStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
 import { useProviderStore } from '../../store/useProviderStore';
 import type { ProviderInfo, ProviderModelInfo } from '../../store/useProviderStore';
+import { useAttachmentStore } from '../../store/useAttachmentStore';
 import { sendRequest } from '../../bridge/messageClient';
 
 interface ChatComposerProps {
-	onSend: (message: string) => void;
+	onSend: (message: string, attachments?: Array<{
+		id: string;
+		type: 'image' | 'file';
+		name: string;
+		mimeType: string;
+		data: string;
+		size: number;
+		isPasted?: boolean;
+	}>) => void;
 	onCancel?: () => void;
 	isLoading?: boolean;
 	placeholder?: string;
@@ -83,6 +92,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const { activeEmployeeId, chatMode, setChatMode } = useChatStore();
 	const { employees } = useEmployeeStore();
 	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders, currentModelInfo, currentReasoningConfig, setReasoningConfig } = useProviderStore();
+	const { attachments, addImage, addPastedImage, addFile, removeAttachment, clearAttachments, toPayload, getImageSupportWarning } = useAttachmentStore();
+	const fileInputRef = useRef<HTMLInputElement>(null);
+	const [isDragOver, setIsDragOver] = useState(false);
 
 	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
 	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
@@ -194,6 +206,15 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	);
 	// onlyReasoning 模型不能关闭思考
 	const canToggleReasoning = !currentModel?.onlyReasoning;
+
+	// ── 图片/Vision 支持检测 ──────────────────────────────────────
+	const modelSupportsImages = !!(currentModel?.supportsImages);
+	const visionWarning = getImageSupportWarning(modelSupportsImages);
+	// [VISION-DEBUG] node 4: ChatComposer — final UI decision
+	console.log(
+		`[VISION-DEBUG][ChatComposer] modelId=${currentModel?.id} rawSupportsImages=${currentModel?.supportsImages} ` +
+		`modelSupportsImages=${modelSupportsImages} visionWarning=${JSON.stringify(visionWarning)}`,
+	);
 
 	// ── 上下文使用量（发送按钮左侧圆环进度条）──────────────────────────
 	// 参考 Hermes-Agent 的实时 token 显示设计，分三层估算，确保聊天过程中进度条实时更新：
@@ -393,7 +414,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	}, []);
 
 	const handleSend = useCallback(() => {
-		if (!input.trim()) return;
+		if (!input.trim() && attachments.length === 0) return;
 		// Plan 模式下：消息内容即为要编排的任务目标，直接触发任务编排流程
 		if (chatMode === 'plan' && onCommand) {
 			const goal = input.trim().replace(/^\/plan\s*/, ''); // 去掉可能手动输入的 /plan 前缀
@@ -408,14 +429,85 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		}
 		// 发送前关闭所有弹出菜单
 		closeAllPopups();
-		onSend(input.trim());
+		const payload = toPayload();
+		onSend(input.trim(), payload.length > 0 ? payload : undefined);
 		setInput('');
+		clearAttachments();
 		if (textareaRef.current) {
 			// 发送后清空内容：若用户手动调整过则保留其偏好高度，否则回到默认。
 			const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
 			textareaRef.current.style.height = `${preferred}px`;
 		}
-	}, [input, onSend, onCommand, closeAllPopups, chatMode]);
+	}, [input, attachments.length, onSend, onCommand, closeAllPopups, chatMode, toPayload, clearAttachments]);
+
+	// ── 附件文件选择 ──────────────────────────────────────────────
+	const handleAttachmentClick = useCallback(() => {
+		fileInputRef.current?.click();
+	}, []);
+
+	const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+		const files = e.target.files;
+		if (!files) return;
+		for (const file of Array.from(files)) {
+			try {
+				await addFile(file);
+			} catch (err) {
+				console.error('[ChatComposer] Failed to add file:', err);
+			}
+		}
+		// Reset input so same file can be re-selected
+		e.target.value = '';
+	}, [addFile]);
+
+	// ── 拖放支持 ──────────────────────────────────────────────────
+	const handleDragOver = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setIsDragOver(true);
+	}, []);
+
+	const handleDragLeave = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setIsDragOver(false);
+	}, []);
+
+	const handleDrop = useCallback(async (e: React.DragEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setIsDragOver(false);
+
+		const files = e.dataTransfer.files;
+		for (const file of Array.from(files)) {
+			try {
+				await addFile(file);
+			} catch (err) {
+				console.error('[ChatComposer] Failed to add dropped file:', err);
+			}
+		}
+	}, [addFile]);
+
+	// ── 粘贴图片支持 ──────────────────────────────────────────────
+	const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+		// Check for images in clipboard
+		const items = e.clipboardData?.items;
+		if (!items) return;
+
+		for (const item of Array.from(items)) {
+			if (item.type.startsWith('image/')) {
+				e.preventDefault();
+				try {
+					const file = item.getAsFile();
+					if (file) {
+						await addPastedImage(e.clipboardData);
+					}
+				} catch (err) {
+					console.error('[ChatComposer] Failed to paste image:', err);
+				}
+				return; // Only handle the first image
+			}
+		}
+	}, [addPastedImage]);
 
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
@@ -662,7 +754,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		// 默认处理：Enter 发送，Escape 取消
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			if (isLoading && !input.trim()) { return; }
+			if (isLoading && !input.trim() && attachments.length === 0) { return; }
 			handleSend();
 		}
 		if (e.key === 'Escape' && isLoading && onCancel) {
@@ -673,7 +765,31 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 	return (
 		<div className="chat-input-area">
-			<div className="chat-composer-box">
+			{/* Hidden file input for attachment picker */}
+			<input
+				ref={fileInputRef}
+				type="file"
+				multiple
+				accept="image/*,.txt,.md,.json,.yaml,.yml,.xml,.csv,.ts,.js,.py,.go,.rs,.java,.c,.cpp,.h,.hpp,.css,.html,.sql,.sh,.bash,.zsh,.toml,.ini,.cfg,.log,.env,.dockerfile,.makefile"
+				style={{ display: 'none' }}
+				onChange={handleFileSelect}
+			/>
+			<div
+				className={`chat-composer-box ${isDragOver ? 'drag-over' : ''}`}
+				onDragOver={handleDragOver}
+				onDragLeave={handleDragLeave}
+				onDrop={handleDrop}
+			>
+				{/* 拖放覆盖层 */}
+				{isDragOver && (
+					<div className="chat-drag-overlay">
+						<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+						</svg>
+						<span>拖放文件或图片到此处</span>
+					</div>
+				)}
+
 				{/* 顶部拖动条：手动调整 textarea 高度（最低 60px / 最高 300px） */}
 				<div
 					className="chat-composer-resizer"
@@ -687,6 +803,50 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 					/>
 				</div>
 
+				{/* 附件预览区 */}
+				{attachments.length > 0 && (
+					<div className="chat-attachments-preview">
+						{attachments.map(att => (
+							<div key={att.id} className={`chat-attachment-chip ${att.type}`}>
+								{att.type === 'image' && att.thumbnailUrl ? (
+									<div className="attachment-thumb-wrap">
+										<img
+											src={att.thumbnailUrl}
+											alt={att.name}
+											className="attachment-thumb"
+										/>
+										{!modelSupportsImages && (
+											<svg className="attachment-vision-warn" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+											<title>当前模型不支持图片</title>
+												<path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+											</svg>
+										)}
+									</div>
+								) : (
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<polyline points="14 2 14 8 20 8" />
+									</svg>
+								)}
+								<span className="attachment-name" title={att.name}>{att.name}</span>
+								<button
+									className="attachment-remove"
+									onClick={() => removeAttachment(att.id)}
+									title="移除附件"
+								>
+									<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+										<line x1="18" y1="6" x2="6" y2="18" />
+										<line x1="6" y1="6" x2="18" y2="18" />
+									</svg>
+								</button>
+							</div>
+						))}
+						{visionWarning && (
+							<div className="attachment-warning">{visionWarning}</div>
+						)}
+					</div>
+				)}
+
 				{/* 上方：文本输入 */}
 				<textarea
 					ref={textareaRef}
@@ -694,6 +854,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 					onChange={handleInputChange}
 					onKeyDown={handleKeyDownWithCommands}
 					onInput={handleInput}
+					onPaste={handlePaste}
 					placeholder={composerPlaceholder}
 					rows={1}
 					className="chat-composer-textarea"
@@ -776,10 +937,11 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 					{/* 左侧工具按钮组 */}
 					<div className="chat-toolbar-left">
 						{/* 附件 */}
-						<button className="chat-toolbar-btn" title="上传附件">
+						<button className="chat-toolbar-btn" title="上传附件" onClick={handleAttachmentClick}>
 							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
 								<path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
 							</svg>
+							{attachments.length > 0 && <span className="attachment-badge">{attachments.length}</span>}
 						</button>
 
 						{/* 语音 */}
@@ -1180,10 +1342,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 					{/* 右侧发送/取消按钮 */}
 					<button
-						onClick={isLoading ? (input.trim() ? handleSend : onCancel) : handleSend}
-						disabled={!input.trim() && !isLoading}
-						className={`chat-send-circle ${isLoading && !input.trim() ? 'chat-cancel-circle' : ''}`}
-						title={isLoading ? (input.trim() ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)'}
+						onClick={isLoading ? (input.trim() || attachments.length > 0 ? handleSend : onCancel) : handleSend}
+						disabled={!input.trim() && attachments.length === 0 && !isLoading}
+						className={`chat-send-circle ${isLoading && !input.trim() && attachments.length === 0 ? 'chat-cancel-circle' : ''}`}
+						title={isLoading ? (input.trim() || attachments.length > 0 ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)'}
 					>
 						{isLoading && !input.trim() ? (
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">

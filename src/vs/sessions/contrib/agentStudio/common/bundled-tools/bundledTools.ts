@@ -384,6 +384,27 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		source: 'hermes-bundled',
 	},
 	{
+		name: "kanban_specify",
+		description: "Refine a rough kanban task into a structured specification (Goal / Approach / Acceptance criteria / Out of scope) using an LLM, then move it from triage to todo.",
+		inputSchema: {"type":"object","properties":{"task_id":{"type":"string","description":"Task ID to specify (full or last-6 short ID)"}},"required":["task_id"]},
+		category: "kanban",
+		source: 'hermes-bundled',
+	},
+	{
+		name: "kanban_decompose",
+		description: "Decompose a kanban task into 2-N concrete subtasks using an LLM, creating child tasks with parent dependencies. Use fanout=true for independent/parallel subtasks, false for sequential ones.",
+		inputSchema: {"type":"object","properties":{"task_id":{"type":"string","description":"Parent task ID to decompose (full or last-6 short ID)"},"fanout":{"type":"boolean","description":"true=parallel/independent subtasks (default), false=sequential subtasks"},"max_subtasks":{"type":"number","description":"Maximum number of subtasks (default 6, hard cap 12)"},"assignee":{"type":"string","description":"Default assignee for created subtasks (optional)"}},"required":["task_id"]},
+		category: "kanban",
+		source: 'hermes-bundled',
+	},
+	{
+		name: "kanban_swarm",
+		description: "Spawn a multi-agent swarm to collaboratively accomplish a goal. Creates a kanban topology (root → parallel workers → verifier → synthesizer), runs the workers in parallel as sub-agents, then verifies and synthesizes their outputs into a final result. Workers share a blackboard. Use for complex goals that benefit from parallel specialized agents.",
+		inputSchema: {"type":"object","properties":{"title":{"type":"string","description":"Swarm title (becomes the root task title)"},"goal":{"type":"string","description":"Overall goal description, injected into every worker's context"},"workers":{"type":"array","description":"Worker specs (at least 1)","items":{"type":"object","properties":{"title":{"type":"string","description":"Worker card title"},"body":{"type":"string","description":"What this worker should do"},"profile":{"type":"string","description":"Worker role/persona (optional)"},"priority":{"type":"string","enum":["low","medium","high"],"description":"Scheduling priority"}},"required":["title","body"]}},"enable_verifier":{"type":"boolean","description":"Enable the verifier stage (default true when >=2 workers)"},"enable_synthesizer":{"type":"boolean","description":"Enable the synthesizer stage (default true)"}},"required":["title","workers"]},
+		category: "kanban",
+		source: 'hermes-bundled',
+	},
+	{
 		name: "computer_use",
 		description: "Control a macOS desktop in the background via cua-driver. Supports screenshots, mouse clicks, keyboard input, scrolling, and drag operations without stealing focus.",
 		inputSchema: {"type":"object","properties":{"action":{"type":"string","enum":["screenshot","click","double_click","type","press","scroll","drag","move"],"description":"Action to perform"},"coordinate":{"type":"array","items":{"type":"number"},"description":"X, Y coordinates for click/scroll/drag"},"text":{"type":"string","description":"Text to type (for type action)"},"key":{"type":"string","description":"Key to press (for press action)"},"direction":{"type":"string","enum":["up","down"],"description":"Scroll direction"},"amount":{"type":"number","description":"Scroll amount"}},"required":["action"]},
@@ -632,7 +653,7 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 	},
 	"kanban": {
 		description: "Kanban multi-agent coordination",
-		tools: ["kanban_show","kanban_list","kanban_complete","kanban_block","kanban_heartbeat","kanban_comment","kanban_create","kanban_link","kanban_unblock"],
+		tools: ["kanban_show","kanban_list","kanban_complete","kanban_block","kanban_heartbeat","kanban_comment","kanban_create","kanban_link","kanban_unblock","kanban_specify","kanban_decompose","kanban_swarm"],
 		includes: [],
 	},
 	"computer_use": {

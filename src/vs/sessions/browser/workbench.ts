@@ -296,7 +296,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 * `restoreLayoutPreferences()` / `storeLayoutPreferences()`.
 	 * Default kept at 250 to match the original hard-coded value.
 	 */
-	private _sidebarExpandedWidth = 250;
+	// [Sarosis 2026-06-03] Initial sidebar expanded width — was 250px, trimmed
+	// to 240px so the three-column boot layout (sidebar | file | agent-with-
+	// internal-split) leaves more room for the file editor on small (~1080px)
+	// screens. Users can still resize freely; persisted dragged width takes
+	// precedence over this default once they touch the sash.
+	private _sidebarExpandedWidth = 240;
 
 	private readonly restoredPromise = new DeferredPromise<void>();
 	readonly whenRestored = this.restoredPromise.p;
@@ -1539,11 +1544,29 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		// [Sarosis] The editor row is split into two physically independent
 		// EditorPart columns:
-		//   - File zone (middle)  → gets the larger share
-		//   - Agent zone (right)  → Canvas + Chat, ~40% of the editor band
-		const editorBandWidth = Math.max(300, width - sideBarSize);
-		const agentEditorWidth = Math.max(360, Math.round(editorBandWidth * 0.42));
-		const editorWidth = Math.max(300, editorBandWidth - agentEditorWidth);
+		//   - File zone (middle)  → workspace files
+		//   - Agent zone (right)  → Canvas + Chat side-by-side split
+		//
+		// Per user requirement (2026-06-03): the agent zone takes **exactly
+		// half of the entire window width** at boot. This is measured
+		// against `width` (the whole window), NOT against the editor band,
+		// because users frame the layout in terms of "screen halves" — the
+		// sidebar is taken out of the file zone's budget, not split with
+		// the agent zone.
+		//
+		// Sizing rules:
+		//   - agent zone   = max(480, width / 2)
+		//                    (480 floor keeps both inner panes ≥ 240px on
+		//                     very narrow windows after the Canvas|Chat
+		//                     internal split)
+		//   - file editor  = remainder of the editor band, floor 320px
+		//
+		// Typical results:
+		//   1080px window: sidebar=240, agent=540, file=300→320 (floor)
+		//   1440px window: sidebar=240, agent=720, file=480
+		//   1920px window: sidebar=240, agent=960, file=720
+		const agentEditorWidth = Math.max(480, Math.round(width / 2));
+		const editorWidth = Math.max(320, width - sideBarSize - agentEditorWidth);
 
 		const titleBarNode: ISerializedLeafNode = {
 			type: 'leaf',

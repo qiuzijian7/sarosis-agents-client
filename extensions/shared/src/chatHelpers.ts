@@ -23,6 +23,71 @@ export function extractText(msg: vscode.LanguageModelChatRequestMessage): string
 }
 
 /**
+ * OpenAI Chat Completions multimodal content part.
+ *   • text  → { type: 'text', text }
+ *   • image → { type: 'image_url', image_url: { url: 'data:<mime>;base64,<b64>' } }
+ */
+export type OpenAIContentPart =
+	| { type: 'text'; text: string }
+	| { type: 'image_url'; image_url: { url: string } };
+
+/**
+ * Extract OpenAI-style content from a chat message, preserving image attachments.
+ *
+ * VS Code delivers image attachments to a chat provider as
+ * `LanguageModelDataPart` instances (the exthost converts the internal
+ * `image_url` part into a data part with `.mimeType` + binary `.data`). The
+ * legacy {@link extractText} drops those parts entirely, so any model behind an
+ * OpenAI-compatible endpoint never receives the image and reports it cannot see
+ * it.
+ *
+ * This helper returns:
+ *   • a plain `string` when the message is text-only (keeps the request body
+ *     identical to before for non-image turns — maximum back-compat), or
+ *   • an `OpenAIContentPart[]` when one or more image data parts are present,
+ *     mirroring OpenAI's multimodal `content` array (a leading text part, then
+ *     each image as an `image_url` data URL).
+ *
+ * Image bytes are base64-encoded back into a `data:` URL (OpenAI's expected
+ * transport); non-image data parts are ignored.
+ */
+export function extractMessageContent(
+	msg: vscode.LanguageModelChatRequestMessage,
+): string | OpenAIContentPart[] {
+	const textParts: string[] = [];
+	const imageParts: OpenAIContentPart[] = [];
+
+	for (const part of msg.content) {
+		if (part instanceof vscode.LanguageModelTextPart) {
+			textParts.push(part.value);
+		} else if (part instanceof vscode.LanguageModelDataPart) {
+			const mime = part.mimeType || '';
+			if (mime.startsWith('image/')) {
+				const base64 = Buffer.from(part.data).toString('base64');
+				imageParts.push({
+					type: 'image_url',
+					image_url: { url: `data:${mime};base64,${base64}` },
+				});
+			}
+		}
+	}
+
+	// Text-only → keep the simple string form (unchanged request shape).
+	if (imageParts.length === 0) {
+		return textParts.join('');
+	}
+
+	// Multimodal → OpenAI content array: text first (if any), then images.
+	const out: OpenAIContentPart[] = [];
+	const text = textParts.join('');
+	if (text) {
+		out.push({ type: 'text', text });
+	}
+	out.push(...imageParts);
+	return out;
+}
+
+/**
  * Extract the model name from a full model ID by stripping the vendor prefix.
  * e.g. "codebuddy-claude-4.5" → "claude-4.5"
  *      "codebuddy/claude-4.5" → "claude-4.5"

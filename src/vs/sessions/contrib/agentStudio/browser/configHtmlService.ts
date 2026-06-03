@@ -10,7 +10,7 @@ import { IFileService, FileChangeType } from '../../../../platform/files/common/
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import {
-	IConfigMdService,
+	IConfigHtmlService,
 	IAgentStudioService,
 	IAgentChatService,
 } from '../common/agentStudio.js';
@@ -23,6 +23,15 @@ import type {
 import type { ConfigMdCapability, ChatMessage, Employee } from '../../../common/agentStudioTypes.js';
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
 import { postProcessImguiBlocks, IMGUI_SDK_SCRIPT, IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
+import { IAgentOSService } from '../common/agentOS.js';
+import { ToolSecurityLevel } from '../common/providers.js';
+import type {
+	IModelProvider,
+	IModelDelta,
+	IToolDefinition,
+	IChatMessage,
+	IModelOptions,
+} from '../common/providers.js';
 
 /** Regex for `configmd-patch` JSON code blocks. */
 const PATCH_BLOCK_REGEX = /```configmd-patch\s*\n([\s\S]*?)\n```/g;
@@ -30,6 +39,143 @@ const PATCH_BLOCK_REGEX = /```configmd-patch\s*\n([\s\S]*?)\n```/g;
 const COMMAND_BLOCK_REGEX = /```configmd-command\s*\n([\s\S]*?)\n```/g;
 /** Rate-limit: max chat-send-style calls per agent per minute. */
 const RATE_LIMIT_PER_MINUTE = 30;
+
+/**
+ * Dedicated system prompt for the ConfigHtml AI box. Kept in sync (in spirit)
+ * with `resources/.agents/skills/confightml/SKILL.md`. The skill body is also
+ * injected via `explicitSkillIds: ['confightml']`; this constant is a safety
+ * net so the host still steers the model even if skill resolution fails.
+ */
+const CONFIGHTML_SYSTEM_PROMPT = [
+	'你是 ConfigHtml 面板的页面生成助手。用户描述需求，你产出一个**完整、自包含、零依赖、可在浏览器内编辑**的单文件 HTML 文档。',
+	'',
+	'输出方式（重要）：',
+	'- 你被提供了一个名为 `emit_html` 的工具（function）。你**必须调用该工具**，把完整 HTML 文档作为 `html` 参数传入。',
+	'- 不要把 HTML 写在普通回复文本里；不要做任何解释。直接调用 `emit_html`。',
+	'- 若运行环境不支持函数调用，则退而求其次：只输出**一个** ```html 代码块，块内是从 <!DOCTYPE html> 到 </html> 的完整文档，块外不写任何文字。',
+	'',
+	'HTML 硬性要求：',
+	'1. `html` 参数 / 代码块内是从 <!DOCTYPE html> 到 </html> 的完整文档。',
+	'2. 零外部依赖：禁止任何外链 CSS/JS/字体/图片 CDN。所有 CSS 写进 <style>，所有 JS 写进 <script>，使用系统字体栈。',
+	'3. 不要编写编辑器运行时（拖拽/缩放/撤销等由宿主注入），你只产出内容结构与样式。',
+	'4. 可编辑契约：可编辑文本节点加 `data-edit-slot data-slot-type="text|image|metric|table-cell"`；需要自由拖拽的对象加 `data-slide-object data-oid="唯一id"`；根 <html> 加 `data-template-edit-mode="slots"`。',
+	'5. 结构清晰、语义化标签、合理留白，确保宿主可定位每个可编辑元素。',
+	'',
+	'若用户提供了“当前 config.html 内容”，请在其基础上做增量修改，并输出修改后的完整文档。',
+].join('\n');
+
+/**
+ * The `emit_html` function-calling tool. Forcing the model to return the page
+ * as a STRUCTURED tool-call argument (rather than parsing a ```html fence out
+ * of free text) makes extraction deterministic — this is the root-cause fix
+ * for "模型未返回可用的 HTML": some models wrap the document in prose, omit the
+ * fence, or stream it as tool parts, all of which broke the regex extractor.
+ */
+const EMIT_HTML_TOOL: IToolDefinition = {
+	name: 'emit_html',
+	description:
+		'提交生成好的完整单文件 HTML 文档。必须调用本工具来交付结果，HTML 从 <!DOCTYPE html> 到 </html> 完整放入 html 参数。',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			html: {
+				type: 'string',
+				description:
+					'完整、自包含、零依赖的单文件 HTML 文档（含 <!DOCTYPE html> … </html>）。所有 CSS 写进 <style>，所有 JS 写进 <script>。',
+			},
+		},
+		required: ['html'],
+	},
+	securityLevel: ToolSecurityLevel.Safe,
+};
+
+/**
+ * Extract the first ```html fenced code block from a model reply. Falls back to
+ * the trimmed raw text when no fenced block is present (the model may have
+ * returned bare HTML).
+ */
+function extractHtmlBlock(raw: string): string {
+	if (!raw) {
+		return '';
+	}
+	const fenced = /```html\s*\n([\s\S]*?)\n```/i.exec(raw);
+	if (fenced && fenced[1]) {
+		return fenced[1].trim();
+	}
+	// Fallback: any fenced block, then bare text.
+	const anyFence = /```[a-zA-Z]*\s*\n([\s\S]*?)\n```/.exec(raw);
+	if (anyFence && anyFence[1] && /<[a-zA-Z!]/.test(anyFence[1])) {
+		return anyFence[1].trim();
+	}
+	return raw.trim();
+}
+
+/**
+ * Heuristic: is this source a complete, standalone HTML document (as opposed
+ * to a Markdown panel or an HTML fragment)? Used to decide whether the preview
+ * pipeline should emit the source verbatim (ConfigHtml mode) or run it through
+ * the Markdown renderer + sanitizer + template wrapper (legacy ConfigMD mode).
+ */
+function isFullHtmlDocument(src: string): boolean {
+	if (!src) { return false; }
+	const head = src.slice(0, 600).toLowerCase();
+	return head.includes('<!doctype html') || /<html[\s>]/.test(head);
+}
+
+/**
+ * Default scaffold for a fresh `config.html` panel: a minimal, self-contained,
+ * zero-dependency document that already follows the editable contract
+ * (`data-edit-slot` / `data-template-edit-mode`) so the Canvas runtime can pick
+ * it up immediately.
+ */
+function buildDefaultConfigHtml(agentName: string): string {
+	const safeName = String(agentName || 'Agent')
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;');
+	return `<!DOCTYPE html>
+<html lang="zh-CN" data-template-edit-mode="slots">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${safeName} · Panel</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.6;
+    color: #1f2328;
+    background: #ffffff;
+    padding: 40px 28px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  .lead { color: #57606a; margin: 0 0 28px; }
+  .card {
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 14px 0;
+  }
+  .card h2 { font-size: 17px; margin: 0 0 6px; }
+  .card p { margin: 0; color: #424a53; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 data-edit-slot data-slot-type="text">${safeName} 的面板</h1>
+    <p class="lead" data-edit-slot data-slot-type="text">在上方用 AI 描述你想要的页面，或直接编辑这段 HTML。</p>
+    <div class="card">
+      <h2 data-edit-slot data-slot-type="text">开始使用</h2>
+      <p data-edit-slot data-slot-type="text">这是一个零依赖、可在浏览器内编辑的单文件 HTML 文档。</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+}
 
 /** Per-agent runtime state. */
 interface IAgentMdState {
@@ -320,7 +466,7 @@ function escapeRegExp(s: string): string {
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
-export class ConfigMdService extends Disposable implements IConfigMdService {
+export class ConfigHtmlService extends Disposable implements IConfigHtmlService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _onDidChangeSource = this._register(new Emitter<{ employeeId: string; markdown: string; version: number; origin: ConfigMdChangeOrigin }>());
@@ -337,6 +483,9 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 
 	private readonly _onDidRequestChatSend = this._register(new Emitter<{ employeeId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }>());
 	readonly onDidRequestChatSend: Event<{ employeeId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }> = this._onDidRequestChatSend.event;
+
+	private readonly _onDidRequestCanvasPreview = this._register(new Emitter<{ employeeId: string }>());
+	readonly onDidRequestCanvasPreview: Event<{ employeeId: string }> = this._onDidRequestCanvasPreview.event;
 
 	private readonly _agents = new Map<string, IAgentMdState>();
 	private readonly _rateLimits = new Map<string, { count: number; resetAt: number }>();
@@ -359,6 +508,7 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		@IFileService private readonly fileService: IFileService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
 	) {
 		super();
 	}
@@ -473,17 +623,39 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		if (!agentDirUri) { return null; }
 
 		const cfg = employee.configMd;
-		const mdRel = cfg.mdPath || 'config.md';
+		// ConfigHtml migration: the panel now stores raw HTML in `config.html`.
+		// Resolution order:
+		//   1) explicit cfg.mdPath (respect whatever was configured)
+		//   2) existing config.html on disk (new ConfigHtml panels)
+		//   3) existing config.md on disk (legacy ConfigMD panels — kept as-is)
+		//   4) neither exists → create config.html with an HTML scaffold
+		let mdRel = cfg.mdPath;
+		if (!mdRel) {
+			const htmlUri = URI.joinPath(agentDirUri, 'config.html');
+			const legacyUri = URI.joinPath(agentDirUri, 'config.md');
+			if (await this.fileService.exists(htmlUri)) {
+				mdRel = 'config.html';
+			} else if (await this.fileService.exists(legacyUri)) {
+				mdRel = 'config.md';
+			} else {
+				mdRel = 'config.html';
+			}
+		}
 		const mdUri = URI.joinPath(agentDirUri, mdRel);
+		const isHtmlPanel = mdRel.toLowerCase().endsWith('.html');
 
-		// Read MD (create empty file if missing)
+		// Read source (create a default scaffold if the file is missing)
 		let markdown = '';
 		try {
 			const buf = await this.fileService.readFile(mdUri);
 			markdown = buf.value.toString();
 		} catch {
-			// Create the file with a default scaffold
-			markdown = `# ${employee.name}'s Panel\n\n<!-- agent-state:notes -->\n_(Empty)_\n<!-- /agent-state:notes -->\n`;
+			// Create the file with a default scaffold. HTML panels get a
+			// minimal self-contained document; legacy markdown panels keep the
+			// old anchor-based scaffold.
+			markdown = isHtmlPanel
+				? buildDefaultConfigHtml(employee.name)
+				: `# ${employee.name}'s Panel\n\n<!-- agent-state:notes -->\n_(Empty)_\n<!-- /agent-state:notes -->\n`;
 			try {
 				await this.fileService.writeFile(mdUri, VSBuffer.fromString(markdown));
 			} catch (err) {
@@ -580,6 +752,14 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 	}
 
 	private _renderInternal(markdown: string, parser: IMdParser | undefined, employeeId: string): string {
+		// ConfigHtml mode: a complete, self-contained HTML document is used
+		// VERBATIM as its own rendered output. We must NOT run it through the
+		// Markdown renderer (which would escape the markup) nor `sanitizeHtml`
+		// (which would strip the inlined <style>/<script> that make it
+		// self-contained and, in the Canvas, editable).
+		if (isFullHtmlDocument(markdown)) {
+			return markdown;
+		}
 		let rendered: string;
 		try {
 			if (parser) {
@@ -716,12 +896,19 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		const st = await this._ensureState(employeeId);
 		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
 
-		// Always re-render from current markdown to reflect the latest edits
-		// through the active parser (custom or built-in).
-		const html = this._renderInternal(st.markdown, st.customParser, employeeId);
-		st.html = html;
-
-		const doc = buildStandalonePreviewDoc(html, st.stylesContent);
+		// ConfigHtml mode: when the source is already a complete, self-contained
+		// HTML document (what the `confightml` skill produces), write it out
+		// VERBATIM — no Markdown rendering, no sanitize, no template wrapper.
+		// Sanitizing here would strip the inlined <style>/<script> that make the
+		// document self-contained and (later) editable in the Canvas.
+		let doc: string;
+		if (isFullHtmlDocument(st.markdown)) {
+			doc = st.markdown;
+			st.html = st.markdown;
+		} else {
+			st.html = this._renderInternal(st.markdown, st.customParser, employeeId);
+			doc = buildStandalonePreviewDoc(st.html, st.stylesContent);
+		}
 		const previewUri = URI.joinPath(agentDirUri, '.preview.html');
 		try {
 			await this.fileService.writeFile(previewUri, VSBuffer.fromString(doc));
@@ -1031,6 +1218,270 @@ export class ConfigMdService extends Disposable implements IConfigMdService {
 		for (const cmd of commands) {
 			this.sendCommandToHtml(employeeId, cmd);
 		}
+	}
+
+	/**
+	 * ConfigHtml: send a natural-language request to the model and get back a
+	 * complete single-file HTML document.
+	 *
+	 * Strategy (root-cause fix for "模型未返回可用的 HTML"):
+	 *   1. **Function calling (primary)** — call the active model provider's
+	 *      `chat()` directly with a forced `emit_html` tool (toolChoice:
+	 *      'required'). The model returns the document as a STRUCTURED tool-call
+	 *      argument, so extraction is deterministic and immune to prose-wrapping,
+	 *      missing code fences, or partial markdown that broke the regex parser.
+	 *   2. **Text fallback** — if function calling is unavailable (e.g. the
+	 *      active provider executes tools server-side, has no tools support, or
+	 *      returned nothing usable), fall back to the legacy path:
+	 *      `agentChatService.sendMessage` + `extractHtmlBlock`.
+	 *
+	 * Unlike `handleChatSend`, this does NOT route into the main chat panel — it
+	 * is a self-contained one-shot generation used by the ConfigHtml AI box.
+	 */
+	async htmlGenerate(
+		employeeId: string,
+		message: string,
+		options?: { currentHtml?: string; model?: string },
+	): Promise<{ html: string; raw: string }> {
+		await this.checkCapability(employeeId, 'chat.send');
+		this._checkRateLimit(employeeId);
+		const employee = await this.agentStudioService.getEmployee(employeeId);
+
+		const systemPrompt = CONFIGHTML_SYSTEM_PROMPT;
+		const userMsg = options?.currentHtml && options.currentHtml.trim()
+			? `${message}\n\n---\n当前 config.html 内容（请在此基础上修改并输出完整文档）：\n\n\`\`\`html\n${options.currentHtml}\n\`\`\``
+			: message;
+
+		// ── 1. Function calling (primary path) ──────────────────────────────
+		try {
+			const fc = await this._htmlGenerateViaFunctionCall(
+				employeeId,
+				systemPrompt,
+				userMsg,
+				options?.model,
+			);
+			if (fc && fc.html && fc.html.trim()) {
+				return { html: fc.html.trim(), raw: fc.raw };
+			}
+			this.logService.info(
+				'[ConfigHtml] Function-call path returned no HTML; falling back to text extraction.',
+			);
+		} catch (err) {
+			this.logService.warn(
+				'[ConfigHtml] Function-call generation failed; falling back to text extraction:',
+				err,
+			);
+		}
+
+		// ── 2. Text fallback (legacy path) ──────────────────────────────────
+		const chatMessage = await this.agentChatService.sendMessage(
+			employeeId,
+			userMsg,
+			{
+				systemPrompt,
+				explicitSkillIds: ['confightml'],
+				model: options?.model,
+				workspaceId: employee?.workspaceId,
+				// One-shot generation: no chat history session, no tool loop.
+				chatMode: 'ask',
+			},
+			() => undefined,
+		);
+
+		const raw = chatMessage?.content || '';
+		const html = extractHtmlBlock(raw);
+		return { html, raw };
+	}
+
+	/**
+	 * Drive the active model provider's `chat()` directly with a single forced
+	 * `emit_html` tool, then read the `html` argument out of the resulting
+	 * tool call. Returns `null` when function calling isn't viable (no active
+	 * provider, server-side tool execution, or no tool call produced) so the
+	 * caller can fall back to text extraction.
+	 */
+	private async _htmlGenerateViaFunctionCall(
+		employeeId: string,
+		systemPrompt: string,
+		userMsg: string,
+		model?: string,
+	): Promise<{ html: string; raw: string } | null> {
+		const selection = this.agentOSService.getActiveModelSelection();
+		if (!selection || !selection.providerId) {
+			return null;
+		}
+		const provider: IModelProvider | undefined = this.agentOSService
+			.getModelProviders()
+			.find((p) => p.id === selection.providerId);
+		if (!provider || typeof provider.chat !== 'function') {
+			return null;
+		}
+
+		// Knot (and any provider that executes tools server-side) does NOT
+		// surface the tool-call arguments back to the client — it would run
+		// `emit_html` on the server and swallow the payload. Skip function
+		// calling for those and let the caller fall back to text extraction.
+		if (selection.providerId.toLowerCase().includes('knot')) {
+			this.logService.info(
+				'[ConfigHtml] Active provider is Knot (server-side tools); skipping function-call path.',
+			);
+			return null;
+		}
+
+		const modelId = model || selection.modelId;
+		if (!modelId) {
+			return null;
+		}
+
+		const messages: IChatMessage[] = [{ role: 'user', content: userMsg }];
+		const modelOptions: IModelOptions = {
+			temperature: 0.4,
+			maxTokens: 8192,
+			systemPrompt,
+			tools: [EMIT_HTML_TOOL],
+			// Force the model to call emit_html this turn — guarantees a
+			// structured payload instead of free-form prose.
+			toolChoice: 'required',
+		};
+
+		// Accumulate streamed tool-call argument fragments per tool id. Some
+		// providers stream {name} first then argument chunks; others emit the
+		// whole call in one delta. We key by id (falling back to name) and
+		// concatenate the `arguments` strings.
+		let activeKey = '';
+		const argBuffers = new Map<string, string>();
+		const nameByKey = new Map<string, string>();
+		let textAccum = '';
+
+		const stream = provider.chat(modelId, messages, modelOptions, {
+			agentId: employeeId,
+		});
+		for await (const delta of stream as AsyncIterable<IModelDelta>) {
+			if (delta.type === 'text' && delta.content) {
+				textAccum += delta.content;
+			} else if (delta.type === 'tool_call' && delta.toolCall) {
+				const tc = delta.toolCall;
+				if (tc.name) {
+					// New tool call (first chunk).
+					activeKey = tc.id || tc.name;
+					nameByKey.set(activeKey, tc.name);
+					argBuffers.set(
+						activeKey,
+						(argBuffers.get(activeKey) || '') + (tc.arguments || ''),
+					);
+				} else {
+					// Continuation chunk — append to the active call.
+					const key = tc.id || activeKey;
+					if (key) {
+						argBuffers.set(
+							key,
+							(argBuffers.get(key) || '') + (tc.arguments || ''),
+						);
+					}
+				}
+			} else if (delta.type === 'error') {
+				this.logService.warn(
+					`[ConfigHtml] Function-call stream error: ${delta.error || delta.content || 'unknown'}`,
+				);
+			}
+		}
+
+		// Prefer the emit_html call; otherwise take the first tool call with args.
+		let chosenArgs = '';
+		for (const [key, name] of nameByKey) {
+			if (name === EMIT_HTML_TOOL.name) {
+				chosenArgs = argBuffers.get(key) || '';
+				break;
+			}
+		}
+		if (!chosenArgs) {
+			for (const args of argBuffers.values()) {
+				if (args && args.trim()) {
+					chosenArgs = args;
+					break;
+				}
+			}
+		}
+		if (!chosenArgs || !chosenArgs.trim()) {
+			return null;
+		}
+
+		const html = this._extractHtmlFromToolArgs(chosenArgs);
+		if (!html) {
+			return null;
+		}
+		return { html, raw: textAccum || chosenArgs };
+	}
+
+	/**
+	 * Pull the `html` field out of an emit_html tool call's argument string.
+	 * Tolerates: well-formed JSON, JSON missing a closing brace (truncated
+	 * streams), and a raw HTML string that was passed without JSON wrapping.
+	 */
+	private _extractHtmlFromToolArgs(argsStr: string): string {
+		const trimmed = argsStr.trim();
+		if (!trimmed) {
+			return '';
+		}
+		// 1. Straight JSON parse.
+		try {
+			const obj = JSON.parse(trimmed);
+			if (obj && typeof obj.html === 'string') {
+				return obj.html.trim();
+			}
+		} catch {
+			// fall through to tolerant parsing
+		}
+		// 2. Tolerant: locate the "html" field and decode the JSON string that
+		//    follows it, even if the surrounding object is truncated.
+		const keyIdx = trimmed.search(/"html"\s*:\s*"/);
+		if (keyIdx >= 0) {
+			const startQuote = trimmed.indexOf('"', trimmed.indexOf(':', keyIdx) + 1);
+			if (startQuote >= 0) {
+				let out = '';
+				let escaped = false;
+				for (let i = startQuote + 1; i < trimmed.length; i++) {
+					const ch = trimmed[i];
+					if (escaped) {
+						// Decode standard JSON escapes.
+						out +=
+							ch === 'n' ? '\n'
+								: ch === 't' ? '\t'
+									: ch === 'r' ? '\r'
+										: ch === '"' ? '"'
+											: ch === '\\' ? '\\'
+												: ch === '/' ? '/'
+													: ch;
+						escaped = false;
+					} else if (ch === '\\') {
+						escaped = true;
+					} else if (ch === '"') {
+						break; // end of string
+					} else {
+						out += ch;
+					}
+				}
+				if (out.trim()) {
+					return out.trim();
+				}
+			}
+		}
+		// 3. Last resort: the args were a bare HTML string.
+		if (/<[a-zA-Z!]/.test(trimmed)) {
+			return extractHtmlBlock(trimmed);
+		}
+		return '';
+	}
+
+	async requestCanvasPreview(employeeId: string): Promise<void> {
+		// Make sure the latest source is rendered/persisted so the Canvas
+		// picks up fresh HTML via configmd.getResource.
+		try {
+			await this.resolveState(employeeId);
+		} catch {
+			// best-effort; Canvas will still try to load
+		}
+		this._onDidRequestCanvasPreview.fire({ employeeId });
 	}
 
 	sendCommandToHtml(employeeId: string, command: IConfigMdCommand): void {

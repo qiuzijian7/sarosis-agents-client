@@ -24,6 +24,9 @@ import {
 	IAgentDelegationService,
 	ITaskOrchestrationService,
 } from '../common/agentStudio.js';
+import { ITriageService } from '../common/triageService.js';
+import { IKanbanDiagnosticsService } from '../common/kanbanDiagnosticsService.js';
+import { ISwarmService, SwarmWorkerSpec } from '../common/swarmService.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import type { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
@@ -71,6 +74,9 @@ export class TaskOverviewEditorPane extends EditorPane {
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@IAgentDelegationService private readonly _delegationService: IAgentDelegationService,
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
+		@ITriageService private readonly _triageService: ITriageService,
+		@IKanbanDiagnosticsService private readonly _diagnosticsService: IKanbanDiagnosticsService,
+		@ISwarmService private readonly _swarmService: ISwarmService,
 		@IEditorService private readonly _editorService: IEditorService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -131,6 +137,17 @@ export class TaskOverviewEditorPane extends EditorPane {
 				}
 			}));
 
+			// Push board (multi-board) change events into the webview
+			this._register(this._taskBoardService.onDidChangeBoards(() => {
+				if (this._webview) {
+					void this._webview.postMessage({
+						direction: 'toWebview',
+						type: 'boards.changed',
+						data: {},
+					});
+				}
+			}));
+
 			// Push orchestration plan events into the webview
 			this._register(this._taskOrchestrationService.onDidChangePlan((plan) => {
 				if (this._webview) {
@@ -149,6 +166,37 @@ export class TaskOverviewEditorPane extends EditorPane {
 						direction: 'toWebview',
 						type: 'taskBoard.focusTask',
 						data: { taskTitle },
+					});
+				}
+			}));
+
+			// Push kanban diagnostics (alerts) into the webview
+			this._register(this._diagnosticsService.onDidDetectDiagnostic((diagnostic) => {
+				if (this._webview) {
+					void this._webview.postMessage({
+						direction: 'toWebview',
+						type: 'diagnostics.detected',
+						data: diagnostic,
+					});
+				}
+			}));
+			this._register(this._diagnosticsService.onDidChangeDiagnostics((diagnostics) => {
+				if (this._webview) {
+					void this._webview.postMessage({
+						direction: 'toWebview',
+						type: 'diagnostics.changed',
+						data: diagnostics,
+					});
+				}
+			}));
+
+			// Push swarm status updates into the webview
+			this._register(this._swarmService.onDidUpdateSwarm((status) => {
+				if (this._webview) {
+					void this._webview.postMessage({
+						direction: 'toWebview',
+						type: 'swarm.updated',
+						data: status,
 					});
 				}
 			}));
@@ -222,6 +270,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 	<div id="root"></div>
 	<script nonce="${nonce}">
 		window.__AGENT_STUDIO_PANEL_TYPE__ = 'taskboard';
+		window.__AGENT_STUDIO_CSP_NONCE__ = '${nonce}';
 		window.__AS_BUNDLE_LOADED__ = false;
 	</script>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
@@ -268,7 +317,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 		switch (type) {
 			// ─── Task Board CRUD ──────────────────────────────────
 			case 'taskBoard.list':
-				return this._taskBoardService.getTasks(p.workspaceId as string | undefined);
+				return this._taskBoardService.getTasks(p.workspaceId as string | undefined, p.boardId as string | undefined);
 			case 'taskBoard.create':
 				return this._taskBoardService.createTask(p as Record<string, unknown>);
 			case 'taskBoard.update':
@@ -277,6 +326,29 @@ export class TaskOverviewEditorPane extends EditorPane {
 				return this._taskBoardService.deleteTask(p.id as string);
 			case 'taskBoard.archive':
 				return this._taskBoardService.archiveTask(p.id as string);
+
+			// ─── Board management (multi-board isolation, P2) ─────
+			case 'board.list':
+				return this._taskBoardService.listBoards(p.workspaceId as string | undefined);
+			case 'board.create':
+				return this._taskBoardService.createBoard(p.name as string, p.workspaceId as string);
+			case 'board.rename':
+				return this._taskBoardService.renameBoard(p.boardId as string, p.name as string);
+			case 'board.delete':
+				return this._taskBoardService.deleteBoard(p.boardId as string);
+
+			// ─── Attachments (P2) ─────────────────────────────────
+			case 'attachment.add':
+				return this._taskBoardService.addAttachment(
+					p.taskId as string,
+					p.name as string,
+					p.mimeType as string,
+					p.base64Content as string,
+				);
+			case 'attachment.remove':
+				return this._taskBoardService.removeAttachment(p.taskId as string, p.attachmentId as string);
+			case 'attachment.read':
+				return this._taskBoardService.readAttachment(p.taskId as string, p.attachmentId as string);
 
 			// ─── Workspace ───────────────────────────────────────
 			case 'workspace.list':
@@ -412,6 +484,62 @@ export class TaskOverviewEditorPane extends EditorPane {
 					p.workspaceId as string,
 					p.plannerId as string,
 				);
+
+			// ─── Triage (LLM-driven specify / decompose) ─────────
+			case 'triage.specify':
+				return this._triageService.specify(p.taskId as string);
+			case 'triage.decompose':
+				return this._triageService.decompose(p.taskId as string, {
+					fanout: p.fanout as boolean | undefined,
+					maxSubTasks: p.maxSubTasks as number | undefined,
+					assignee: p.assignee as string | undefined,
+				});
+
+			// ─── Diagnostics / alerts ────────────────────────────
+			case 'diagnostics.run':
+				return this._diagnosticsService.runDiagnostics(p.workspaceId as string | undefined);
+			case 'diagnostics.list':
+				return this._diagnosticsService.getActiveDiagnostics();
+			case 'diagnostics.dismiss':
+				this._diagnosticsService.dismissDiagnostic(p.id as string);
+				return undefined;
+
+			// ─── Swarm (multi-agent collaboration) ───────────────
+			case 'swarm.create': {
+				const workers = Array.isArray(p.workers)
+					? (p.workers as Array<Record<string, unknown>>)
+						.filter((w) => w && typeof w.title === 'string' && typeof w.body === 'string')
+						.map((w): SwarmWorkerSpec => ({
+							title: w.title as string,
+							body: w.body as string,
+							profile: w.profile as string | undefined,
+							skills: Array.isArray(w.skills) ? (w.skills as string[]) : undefined,
+							priority: (w.priority === 'low' || w.priority === 'medium' || w.priority === 'high')
+								? (w.priority as 'low' | 'medium' | 'high')
+								: undefined,
+							maxRuntimeSeconds: typeof w.maxRuntimeSeconds === 'number' ? (w.maxRuntimeSeconds as number) : undefined,
+						}))
+					: [];
+				return this._swarmService.createSwarm({
+					title: p.title as string,
+					goal: p.goal as string | undefined,
+					workspaceId: p.workspaceId as string | undefined,
+					parentTaskId: p.parentTaskId as string | undefined,
+					workers,
+					enableVerifier: p.enableVerifier as boolean | undefined,
+					enableSynthesizer: p.enableSynthesizer as boolean | undefined,
+				});
+			}
+			case 'swarm.status':
+				return this._swarmService.getSwarmStatus(p.swarmId as string);
+			case 'swarm.list':
+				return this._swarmService.listSwarms(p.workspaceId as string | undefined);
+			case 'swarm.blackboard':
+				return this._swarmService.getBlackboard(p.swarmId as string);
+			case 'swarm.cancel':
+				this._swarmService.cancelSwarm(p.swarmId as string);
+				return undefined;
+
 
 			// ─── Open task detail in editor ──────────────────────
 			case 'taskBoard.openTaskDetail': {

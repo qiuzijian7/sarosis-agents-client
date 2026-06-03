@@ -70,11 +70,26 @@ function formatJsonForDisplay(text: string): string {
 	}
 }
 
+/**
+ * Build a usable image src from a persisted attachment.
+ * Stored attachments keep raw base64 (without the data: prefix) plus the mime
+ * type, so we reconstruct the data URL here. If the data already looks like a
+ * full data URL (legacy / pasted), pass it through untouched.
+ */
+function attachmentImageSrc(att: { data: string; mimeType: string }): string {
+	const data = att.data || '';
+	if (data.startsWith('data:')) { return data; }
+	const mime = att.mimeType || 'image/png';
+	return `data:${mime};base64,${data}`;
+}
+
 function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): React.ReactElement {
 	const isUser = message.role === 'user';
 	const isSystemError = message.role === 'system' && message.id.startsWith('error_');
 	const [thinkingCollapsed, setThinkingCollapsed] = useState(true); // Collapsed by default (OpenClaw pattern)
 	const [jsonExpanded, setJsonExpanded] = useState(false);
+	// Lightbox preview for image attachments (Void-inspired full-size viewer)
+	const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
 	// Subscribe to the orchestration plan that this message renders.
 	// ChatMessageRaw is wrapped in React.memo; while the custom comparator
@@ -136,6 +151,34 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	return (
 		<div className={`chat-message ${message.role}`}>
 			<div className={`message-content ${isStreaming ? 'message-streaming' : ''}`}>
+				{/* ── Attachments (Void-inspired): images render as a thumbnail grid,
+				     other files as chips. Shown above the text content. ─────────── */}
+				{message.attachments && message.attachments.length > 0 && (
+					<div className="message-attachments">
+						{message.attachments.map(att => (
+							att.type === 'image' ? (
+								<button
+									key={att.id}
+									type="button"
+									className="message-attachment-image"
+									title={att.name}
+									onClick={() => setLightboxSrc(attachmentImageSrc(att))}
+								>
+									<img src={attachmentImageSrc(att)} alt={att.name} loading="lazy" />
+								</button>
+							) : (
+								<div key={att.id} className="message-attachment-file" title={att.name}>
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<polyline points="14 2 14 8 20 8" />
+									</svg>
+									<span className="message-attachment-name">{att.name}</span>
+								</div>
+							)
+						))}
+					</div>
+				)}
+
 				{/* ── Thinking card (OpenClaw: collapsed by default, Markdown rendered) ─── */}
 				{message.thinking && (
 					<div className={`thinking-card ${isStreaming ? 'active' : ''}`}>
@@ -401,6 +444,28 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 					</span>
 				)}
 			</div>
+
+			{/* ── Lightbox: full-size image preview (Void-inspired) ───────────── */}
+			{lightboxSrc && (
+				<div
+					className="message-image-lightbox"
+					role="dialog"
+					aria-modal="true"
+					onClick={() => setLightboxSrc(null)}
+				>
+					<img src={lightboxSrc} alt="预览" onClick={e => e.stopPropagation()} />
+					<button
+						className="message-image-lightbox-close"
+						onClick={() => setLightboxSrc(null)}
+						title="关闭"
+					>
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+							<line x1="18" y1="6" x2="6" y2="18" />
+							<line x1="6" y1="6" x2="18" y2="18" />
+						</svg>
+					</button>
+				</div>
+			)}
 		</div>
 	);
 }
@@ -432,6 +497,7 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.todos === nm.todos &&
 		pm.tips === nm.tips &&
 		pm.questions === nm.questions &&
+		pm.attachments === nm.attachments &&
 		prev.isStreaming === next.isStreaming
 	);
 });

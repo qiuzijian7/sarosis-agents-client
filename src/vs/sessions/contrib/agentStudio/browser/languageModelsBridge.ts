@@ -27,9 +27,10 @@
 import { Disposable, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { decodeBase64 } from '../../../../base/common/buffer.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
-import { ILanguageModelsService, IChatMessage, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata } from '../../../../workbench/contrib/chat/common/languageModels.js';
+import { ILanguageModelsService, IChatMessage, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import {
 	IModelProvider,
@@ -134,6 +135,13 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// `supportsReasoning: true` and leave `reasoningType` unset so the webview's
 			// `reasoningUIType` falls through to the `'switch'` branch.
 			const supportsReasoning = this._inferSupportsReasoning(id, metadata);
+			const supportsImages = this._inferSupportsImages(id, metadata);
+			// [VISION-DEBUG] node 1: bridge.listModels — raw id → inferred capability
+			// eslint-disable-next-line no-console
+			console.log(
+				`[VISION-DEBUG][bridge.listModels] vendor=${this.vendor} qualifiedId=${id} ` +
+				`bareId=${this._bareModelId(id)} supportsImages=${supportsImages} supportsReasoning=${supportsReasoning}`,
+			);
 			result.push({
 				id,                                       // qualified id, ready for sendChatRequest
 				name: this._friendlyModelName(id, metadata),
@@ -142,6 +150,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				maxInputTokens: metadata.maxInputTokens,
 				capabilities: [ModelCapability.Chat],
 				...(supportsReasoning ? { supportsReasoning: true } : {}),
+				...(supportsImages ? { supportsImages: true } : {}),
 			});
 		}
 		return result;
@@ -157,7 +166,15 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		const slashIdx = qualifiedId.indexOf('/');
 		const rest = slashIdx === -1 ? qualifiedId : qualifiedId.slice(slashIdx + 1);
 		const sepIdx = rest.indexOf('::');
-		return (sepIdx > -1 ? rest.slice(sepIdx + 2) : rest) || qualifiedId;
+		let bare = (sepIdx > -1 ? rest.slice(sepIdx + 2) : rest) || qualifiedId;
+		// Some extensions (e.g. codebuddy) additionally prefix every model name with their
+		// own vendor tag (`codebuddy-claude-opus-4.7`). That extra `<vendor>-` segment breaks
+		// the anchored `/^claude-/`, `/^gpt-/`, … heuristics below, so strip it as well.
+		const vendorPrefix = `${this.vendor}-`;
+		if (bare.toLowerCase().startsWith(vendorPrefix.toLowerCase())) {
+			bare = bare.slice(vendorPrefix.length) || bare;
+		}
+		return bare;
 	}
 
 	/**
@@ -218,6 +235,68 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		// Internal default reasoning model.
 		if (/^default-1\.2/.test(s)) { return true; }
 
+		return false;
+	}
+
+	/**
+	 * Infer whether a bridged LM model supports images/vision from its id.
+	 *
+	 * Rationale: the VSCode LM API metadata (`ILanguageModelChatMetadata`) has no field
+	 * to carry image/vision capability, and provider extensions (codebuddy etc.) lose the
+	 * `supportsImages` flag when they build `LanguageModelChatInformation`. We recover the
+	 * capability by inferring it from the model id, validated against
+	 * `extensions/codebuddy-provider/model.json` (which declares `supportsImages` per model).
+	 *
+	 * Returns `true` for families known to support vision; conservatively `false` otherwise.
+	 */
+	private _inferSupportsImages(qualifiedId: string, metadata: ILanguageModelChatMetadata): boolean {
+		// Prefer the authoritative capability flag carried in the LM metadata.
+		// Provider extensions (e.g. codebuddy) now propagate the real `supportsImages`
+		// switch from model.json into `LanguageModelChatInformation.capabilities.imageInput`,
+		// which the exthost converts to `metadata.capabilities.vision`. When present, trust
+		// it directly; the regex heuristics below are only a fallback for providers that
+		// still omit the capability metadata.
+		const vision = metadata.capabilities?.vision;
+		if (typeof vision === 'boolean') {
+			return vision;
+		}
+
+		const s = this._bareModelId(qualifiedId).toLowerCase();
+
+		// Image-generation / non-chat families never accept image *input* — disable.
+		if (/image/.test(s)) { return false; }
+
+		// Known non-vision models — explicitly disable.
+		if (/^hy3-preview/.test(s)) { return false; }
+
+		// Claude: all shipped families support vision.
+		if (/^claude-/.test(s)) { return true; }
+
+		// GPT-4 / GPT-4o / GPT-4.1 / GPT-4.5 / GPT-5 / Codex families support vision.
+		if (/^gpt-4/.test(s)) { return true; }
+		if (/^gpt-5/.test(s)) { return true; }
+		if (/^gpt-codex/.test(s)) { return true; }
+
+		// Gemini: all shipped chat families support vision.
+		if (/^gemini-/.test(s)) { return true; }
+
+		// DeepSeek: v3-2 supports vision; older v3-1 / r1 do not.
+		if (/^deepseek-v3-2/.test(s)) { return true; }
+		if (/^deepseek-/.test(s)) { return false; }
+
+		// GLM 4.6 / 4.7 / 5.x support vision.
+		if (/^glm-(4\.[67]|5)/.test(s)) { return true; }
+
+		// Kimi K2 supports vision.
+		if (/^kimi-k2/.test(s)) { return true; }
+
+		// MiniMax M-series supports vision.
+		if (/^minimax-m\d/.test(s)) { return true; }
+
+		// Hunyuan 2.x supports vision.
+		if (/^hunyuan-2/.test(s)) { return true; }
+
+		// Default: conservatively false for unknown models.
 		return false;
 	}
 
@@ -405,13 +484,73 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		}
 
 		for (const m of messages) {
+			const role = m.role === 'user' ? ChatMessageRole.User
+				: m.role === 'assistant' ? ChatMessageRole.Assistant
+					: m.role === 'system' ? ChatMessageRole.System
+						: ChatMessageRole.User;
 			out.push({
-				role: m.role === 'user' ? ChatMessageRole.User
-					: m.role === 'assistant' ? ChatMessageRole.Assistant
-						: m.role === 'system' ? ChatMessageRole.System
-							: ChatMessageRole.User,
-				content: [{ type: 'text', value: m.content ?? '' }],
+				role,
+				content: this._toMessageParts(m),
 			});
+		}
+		return out;
+	}
+
+	/**
+	 * Convert an Agent Studio chat message into VS Code's native multimodal
+	 * `IChatMessagePart[]`.
+	 *
+	 * When `contentParts` is present (built upstream in agentDriverService from
+	 * user attachments), each part is mapped to the corresponding native part:
+	 *   • text  → IChatMessageTextPart  ({ type: 'text', value })
+	 *   • image → IChatMessageImagePart ({ type: 'image_url', value: { mimeType, data: VSBuffer } })
+	 *
+	 * Image data in `contentParts` is base64 (no `data:` prefix per providers.ts
+	 * contract). VS Code's IChatImageURLPart explicitly requires raw binary
+	 * (VSBuffer), NOT base64 — so we decode here. A stray `data:<mime>;base64,`
+	 * prefix is stripped defensively before decoding.
+	 *
+	 * Falls back to a single text part (legacy `content` string) when no
+	 * contentParts exist, preserving behaviour for text-only messages.
+	 */
+	private _toMessageParts(m: IAgentChatMessage): IChatMessage['content'] {
+		const parts = m.contentParts;
+		if (!parts || parts.length === 0) {
+			return [{ type: 'text', value: m.content ?? '' }];
+		}
+
+		const out: IChatMessage['content'] = [];
+		for (const p of parts) {
+			if (p.type === 'text') {
+				if (p.text) {
+					out.push({ type: 'text', value: p.text });
+				}
+				continue;
+			}
+			if (p.type === 'image') {
+				try {
+					const raw = p.data || '';
+					// Defensive: strip a data-URL prefix if one slipped through.
+					const base64 = raw.startsWith('data:')
+						? raw.slice(raw.indexOf(',') + 1)
+						: raw;
+					out.push({
+						type: 'image_url',
+						value: {
+							mimeType: p.mimeType as unknown as ChatImageMimeType,
+							data: decodeBase64(base64),
+						},
+					});
+				} catch (err) {
+					this._logService.warn(`[LMBridge] failed to decode image attachment, skipping: ${err}`);
+				}
+			}
+		}
+
+		// Guard: a message must never end up with an empty content array (some
+		// providers reject that). Fall back to the legacy text content.
+		if (out.length === 0) {
+			out.push({ type: 'text', value: m.content ?? '' });
 		}
 		return out;
 	}

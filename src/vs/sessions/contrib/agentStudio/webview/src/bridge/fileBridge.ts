@@ -47,7 +47,7 @@ export async function openAgentConfigMd(employeeId: string, options?: OpenFileOp
  * area (browser-like view, not source code text).
  *
  * `employeeId` is optional — when provided, the host will use it directly to
- * route SDK postMessages back to ConfigMdService (avoiding fragile path-
+ * route SDK postMessages back to ConfigHtmlService (avoiding fragile path-
  * reverse-engineering). Callers that already know the owning agent (e.g.
  * `previewAgentConfigMd`) should always pass it.
  *

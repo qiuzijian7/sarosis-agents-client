@@ -17,6 +17,8 @@ import type {
 	WorkspaceLayout,
 	TaskBoardRecord,
 	TaskBoardStatus,
+	TaskBoard,
+	TaskAttachment,
 	AgentExportData,
 	OrchestrationPlan,
 	PlanTask,
@@ -390,6 +392,25 @@ export interface IChatSendOptions {
 		readonly budget?: number;
 		readonly effort?: 'low' | 'medium' | 'high';
 	};
+	/**
+	 * 用户上传的附件（图片/文件）— Void-inspired image/file upload。
+	 * 图片附件将转换为各 LLM API 的多模态消息格式（OpenAI image_url / Anthropic image source）。
+	 */
+	readonly attachments?: readonly IChatAttachmentSend[];
+}
+
+/**
+ * 附件传输格式 — 从 WebView 经 Host 到 AgentOS 的附件数据。
+ */
+export interface IChatAttachmentSend {
+	readonly id: string;
+	readonly type: 'image' | 'file';
+	readonly name: string;
+	readonly mimeType: string;
+	/** base64 编码内容（图片和二进制文件）或原文（文本文件） */
+	readonly data: string;
+	readonly size: number;
+	readonly isPasted?: boolean;
 }
 
 export interface IAgentChatService {
@@ -460,7 +481,10 @@ export interface IAgentTaskBoardService {
 
 	readonly onDidChangeTaskBoard: Event<void>;
 
-	getTasks(workspaceId?: string): Promise<TaskBoardRecord[]>;
+	/** Fired when boards are created/renamed/deleted (multi-board isolation, P2). */
+	readonly onDidChangeBoards: Event<void>;
+
+	getTasks(workspaceId?: string, boardId?: string): Promise<TaskBoardRecord[]>;
 	getTask(id: string): Promise<TaskBoardRecord | undefined>;
 	createTask(data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord>;
 	updateTask(
@@ -473,6 +497,28 @@ export interface IAgentTaskBoardService {
 	): Promise<TaskBoardRecord>;
 	deleteTask(id: string): Promise<void>;
 	archiveTask(id: string): Promise<TaskBoardRecord>;
+
+	// ─── Board management (multi-board isolation, P2) ───────────────────────
+	/** List boards for a workspace; always includes the implicit default board. */
+	listBoards(workspaceId?: string): Promise<TaskBoard[]>;
+	/** Create a new board within a workspace. */
+	createBoard(name: string, workspaceId: string): Promise<TaskBoard>;
+	/** Rename an existing board (the default board can be renamed too). */
+	renameBoard(boardId: string, name: string): Promise<TaskBoard>;
+	/** Delete a board; its tasks are reassigned to the workspace's default board. */
+	deleteBoard(boardId: string): Promise<void>;
+
+	// ─── Attachments (P2) ───────────────────────────────────────────────────
+	/**
+	 * Attach a file to a task. The binary content is stored in a side file;
+	 * only metadata is returned and persisted on the task record.
+	 * @param base64Content file bytes encoded as base64.
+	 */
+	addAttachment(taskId: string, name: string, mimeType: string, base64Content: string): Promise<TaskAttachment>;
+	/** Remove an attachment from a task and delete its side file. */
+	removeAttachment(taskId: string, attachmentId: string): Promise<void>;
+	/** Read an attachment's content back as base64 (for download/preview). */
+	readAttachment(taskId: string, attachmentId: string): Promise<string>;
 }
 
 // --- Task Orchestration Service ---
@@ -669,10 +715,10 @@ export interface ITaskOrchestrationService {
 	readonly subAgentDispatch: unknown;
 }
 
-// --- ConfigMD Service ---
+// --- ConfigHtml Service ---
 
-export const IConfigMdService =
-	createDecorator<IConfigMdService>("configMdService");
+export const IConfigHtmlService =
+	createDecorator<IConfigHtmlService>("configHtmlService");
 
 /**
  * A patch operation against the canonical MD file.
@@ -722,7 +768,7 @@ export interface IConfigMdState {
  */
 export type ConfigMdChangeOrigin = "editor" | "html" | "model" | "external";
 
-export interface IConfigMdService {
+export interface IConfigHtmlService {
 	readonly _serviceBrand: undefined;
 
 	/**
@@ -783,6 +829,18 @@ export interface IConfigMdService {
 		workspaceSessionId?: string;
 	}>;
 
+	/**
+	 * Fired when the ConfigHtml editor's preview button asks for the agent's
+	 * config.html to be shown (and made editable) inside the right-hand
+	 * Canvas panel. Because the ConfigHtml editor (AgentEditorPane) and the
+	 * Canvas live in DIFFERENT webview instances, this event is the host-side
+	 * bridge: every webview controller subscribes and forwards it to its own
+	 * webview, but only the Canvas panel reacts.
+	 */
+	readonly onDidRequestCanvasPreview: Event<{
+		employeeId: string;
+	}>;
+
 	// --- Resource & State --------------------------------------------------
 
 	/**
@@ -832,6 +890,26 @@ export interface IConfigMdService {
 	 * so callers can open the file in the host editor.
 	 */
 	previewToFile(employeeId: string): Promise<{ path: string; version: number }>;
+
+	/**
+	 * ConfigHtml AI box: send a natural-language request to the model with the
+	 * `confightml` skill activated and a dedicated system prompt, then extract
+	 * the single ```html code block from the reply. Self-contained one-shot
+	 * generation (does NOT route into the main chat panel).
+	 */
+	htmlGenerate(
+		employeeId: string,
+		message: string,
+		options?: { currentHtml?: string; model?: string },
+	): Promise<{ html: string; raw: string }>;
+
+	/**
+	 * Request that the agent's current config.html be opened (editable) inside
+	 * the right-hand Canvas panel. Fires `onDidRequestCanvasPreview` which the
+	 * webview controllers forward to their webviews; the Canvas panel switches
+	 * to HTML display mode and loads this agent's resource.
+	 */
+	requestCanvasPreview(employeeId: string): Promise<void>;
 
 	// --- HTML Event Handling ---------------------------------------------
 

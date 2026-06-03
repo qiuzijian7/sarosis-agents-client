@@ -182,9 +182,69 @@ export interface IChatContext {
 	[key: string]: unknown;
 }
 
+// ─── Chat Attachment Types (Void-inspired image/file upload) ──────────────
+
+/**
+ * 图片 MIME 类型 — 与各 LLM API 支持的图片格式对齐。
+ */
+export type ChatImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp';
+
+/**
+ * 用户上传的附件（图片或文件）。
+ *
+ * 参考 Void 的 IChatRequestVariableEntry / IImageVariableEntry，但简化为
+ * WebView→Host 传输所需的扁平结构：
+ * - 图片附件：`type='image'`，`data` 为 base64 编码，`mimeType` 必填
+ * - 文件附件：`type='file'`，`data` 为文件内容（文本为原文，二进制为 base64），`mimeType` 可选
+ */
+export interface IChatAttachment {
+	/** 附件唯一标识（用于前端删除/去重） */
+	readonly id: string;
+	/** 附件类型：图片 or 文件 */
+	readonly type: 'image' | 'file';
+	/** 原始文件名 */
+	readonly name: string;
+	/** MIME 类型 */
+	readonly mimeType: string;
+	/** 文件/图片内容（图片为 base64，文本文件为原文，二进制文件为 base64） */
+	readonly data: string;
+	/** 文件大小（字节，用于前端限制提示） */
+	readonly size: number;
+	/** 图片附件：是否从剪贴板粘贴 */
+	readonly isPasted?: boolean;
+}
+
+/**
+ * LLM 消息中的多模态内容块 — 替代纯 `content: string`，
+ * 使 IChatMessage 支持 text + image 混合内容。
+ *
+ * 参考 Void 的 IChatMessagePart / IChatMessageImagePart。
+ * 各 Provider 实现（OpenAI / Anthropic / Gemini）将此映射到各自 API 格式。
+ */
+export type IChatContentPart = IChatTextPart | IChatImagePart;
+
+export interface IChatTextPart {
+	readonly type: 'text';
+	readonly text: string;
+}
+
+export interface IChatImagePart {
+	readonly type: 'image';
+	/** base64 编码的图片数据（不含 data: 前缀） */
+	readonly data: string;
+	/** 图片 MIME 类型 */
+	readonly mimeType: ChatImageMimeType;
+}
+
 export interface IChatMessage {
 	readonly role: 'system' | 'user' | 'assistant' | 'tool';
+	/** 纯文本内容（向后兼容，新代码优先使用 contentParts） */
 	readonly content: string;
+	/**
+	 * 多模态内容块（可选）。当存在时，Provider 实现应优先使用 contentParts
+	 * 而非 content，以支持图片/文件等非文本内容。
+	 */
+	readonly contentParts?: IChatContentPart[];
 	readonly toolCalls?: IToolCallInfo[];
 	readonly toolCallId?: string;
 }

@@ -994,10 +994,43 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		message: string,
 		options: IChatSendOptions,
 	): AsyncIterable<IChatStreamDelta> {
+		// Build content parts: text + image attachments
+		const contentParts: Array<import('../common/providers.js').IChatContentPart> = [];
+		if (message.trim()) {
+			contentParts.push({ type: 'text', text: message });
+		}
+		if (options.attachments) {
+			for (const att of options.attachments) {
+				if (att.type === 'image' && att.mimeType.startsWith('image/')) {
+					contentParts.push({
+						type: 'image',
+						data: att.data,
+						mimeType: att.mimeType as import('../common/providers.js').ChatImageMimeType,
+					});
+				}
+				// File attachments: include as text context in the message
+				if (att.type === 'file') {
+					const fileContext = `\n\n--- File: ${att.name} ---\n${att.data}\n--- End of ${att.name} ---`;
+					if (contentParts.length > 0 && contentParts[0].type === 'text') {
+						// Append to existing text part
+						(contentParts[0] as { type: 'text'; text: string }).text += fileContext;
+					} else {
+						contentParts.push({ type: 'text', text: fileContext });
+					}
+				}
+			}
+		}
+
+		const userMessage: import('../common/providers.js').IChatMessage = {
+			role: 'user',
+			content: message,
+			contentParts: contentParts.length > 0 ? contentParts : undefined,
+		};
+
 		const request: IAgentTurnRequest = {
 			agentId: employeeId,
 			sessionId: options.agentSessionId,
-			messages: [{ role: 'user', content: message }],
+			messages: [userMessage],
 			systemPrompt: options.systemPrompt,
 			explicitSkillIds: options.explicitSkillIds,
 			options: {

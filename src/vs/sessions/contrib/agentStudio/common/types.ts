@@ -19,6 +19,7 @@ export {
 	TaskSource,
 	OrchestrationPlanStatus,
 	PlanTaskStatus,
+	DEFAULT_BOARD_ID,
 } from '../../../common/agentStudioTypes.js';
 
 // Function exports - utility helpers
@@ -45,6 +46,8 @@ export type {
 	ISkillDirective,
 	ModelSpec,
 	TaskBoardRecord,
+	TaskBoard,
+	TaskAttachment,
 	ToolCall,
 	RelatedFolder,
 	Workspace,

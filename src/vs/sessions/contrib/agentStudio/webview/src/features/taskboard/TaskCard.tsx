@@ -4,9 +4,11 @@
  *  Enhanced: priority badge, description preview, dependency status, navigate-to-chat
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { type TaskBoardRecord, type TaskBoardStatus, type TaskSource, useTaskBoardStore } from '../../store/useTaskBoardStore';
 import { type Employee, useEmployeeStore } from '../../store/useEmployeeStore';
+import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
+import { useSwarmStore } from '../../store/useSwarmStore';
 import { getAgentColor } from '../../utils/agentColors';
 
 interface TaskCardProps {
@@ -27,6 +29,34 @@ const PRIORITY_CONFIG: Record<string, { label: string; color: string; bg: string
 	low: { label: '低', color: '#6b7280', bg: 'rgba(107, 114, 128, 0.12)' },
 };
 
+// Human-readable labels for diagnostic remediation actions.
+const DIAGNOSTIC_ACTION_LABELS: Record<string, string> = {
+	specify: '✨ 细化',
+	decompose: '🧩 分解',
+	unblock: '🔓 解除阻塞',
+	reclaim: '↩ 重新认领',
+	cancel: '✕ 取消',
+};
+
+// Swarm role badges: which node this task plays in a multi-agent swarm topology.
+const SWARM_ROLE_CONFIG: Record<string, { label: string; icon: string; color: string; bg: string }> = {
+	root: { label: 'Swarm 根', icon: '🐝', color: '#7c3aed', bg: 'rgba(124, 58, 237, 0.12)' },
+	worker: { label: 'Worker', icon: '⚙️', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.12)' },
+	verifier: { label: 'Verifier', icon: '🔍', color: '#0891b2', bg: 'rgba(8, 145, 178, 0.12)' },
+	synthesizer: { label: 'Synthesizer', icon: '🧠', color: '#d97706', bg: 'rgba(217, 119, 6, 0.12)' },
+};
+
+const SWARM_PHASE_LABELS: Record<string, string> = {
+	planning: '规划中',
+	running: '执行中',
+	verifying: '校验中',
+	synthesizing: '汇总中',
+	done: '已完成',
+	cancelled: '已取消',
+	failed: '失败',
+	interrupted: '已中断',
+};
+
 export function TaskCard({
 	task,
 	employees,
@@ -43,11 +73,69 @@ export function TaskCard({
 	const shortId = `#${task.id.slice(-6)}`;
 	const [copied, setCopied] = useState(false);
 
+	// ─── Attachments ──────────────────────────────────────────────────────
+	const addAttachment = useTaskBoardStore(s => s.addAttachment);
+	const removeAttachment = useTaskBoardStore(s => s.removeAttachment);
+	const downloadAttachment = useTaskBoardStore(s => s.downloadAttachment);
+	const fileInputRef = useRef<HTMLInputElement>(null);
+	const [uploading, setUploading] = useState(false);
+	// Attachments only make sense for real (task-board) tasks, not delegation mirrors.
+	const canAttach = task.source === 'task-board';
+
+	const handlePickFile = useCallback((e: React.MouseEvent) => {
+		e.stopPropagation();
+		fileInputRef.current?.click();
+	}, []);
+
+	const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+		const files = e.target.files;
+		if (!files || files.length === 0) { return; }
+		setUploading(true);
+		try {
+			for (let i = 0; i < files.length; i++) {
+				await addAttachment(task.id, files[i]);
+			}
+		} finally {
+			setUploading(false);
+			if (fileInputRef.current) { fileInputRef.current.value = ''; }
+		}
+	}, [task.id, addAttachment]);
+
+	const formatSize = useCallback((bytes: number): string => {
+		if (bytes < 1024) { return `${bytes} B`; }
+		if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}, []);
+
 	const assignee = task.assigneeId ? employees.find(e => e.id === task.assigneeId) : null;
 	const fromEmp = task.fromEmployeeId ? employees.find(e => e.id === task.fromEmployeeId) : null;
 
 	// Cross-reference dependency status
 	const allTasks = useTaskBoardStore(s => s.tasks);
+	const specifyTask = useTaskBoardStore(s => s.specifyTask);
+	const decomposeTask = useTaskBoardStore(s => s.decomposeTask);
+	const triagePendingId = useTaskBoardStore(s => s.triagePendingId);
+	const isTriagePending = triagePendingId === task.id;
+	// Diagnostics attached to this task (alerts)
+	const taskDiagnostics = useDiagnosticsStore(s => s.diagnostics.filter(d => d.taskId === task.id));
+	const dismissDiagnostic = useDiagnosticsStore(s => s.dismissDiagnostic);
+	const applyDiagnosticAction = useDiagnosticsStore(s => s.applyAction);
+	const topDiagnostic = taskDiagnostics.length > 0
+		? (taskDiagnostics.find(d => d.severity === 'critical')
+			?? taskDiagnostics.find(d => d.severity === 'error')
+			?? taskDiagnostics[0])
+		: null;
+
+	// Swarm membership: is this card a node in a multi-agent swarm topology?
+	const swarm = useSwarmStore(s => s.getSwarmForTask(task.id));
+	let swarmRole: 'root' | 'worker' | 'verifier' | 'synthesizer' | null = null;
+	if (swarm) {
+		if (swarm.rootTaskId === task.id) { swarmRole = 'root'; }
+		else if (swarm.verifier?.taskId === task.id) { swarmRole = 'verifier'; }
+		else if (swarm.synthesizer?.taskId === task.id) { swarmRole = 'synthesizer'; }
+		else if (swarm.workers.some(w => w.taskId === task.id)) { swarmRole = 'worker'; }
+	}
+	const swarmRoleInfo = swarmRole ? SWARM_ROLE_CONFIG[swarmRole] : null;
 	const depStatusMap = new Map<string, TaskBoardStatus>();
 	if (task.dependencies && task.dependencies.length > 0) {
 		for (const depId of task.dependencies) {
@@ -90,7 +178,7 @@ export function TaskCard({
 
 	return (
 		<div
-			className={`task-card ${isDragging ? 'dragging' : ''} ${!isDraggable ? 'no-drag' : ''} ${priorityInfo ? `priority-${task.priority}` : ''} ${isFocused ? 'focused' : ''} ${agentColor ? 'has-agent-color' : ''}`}
+			className={`task-card ${isDragging ? 'dragging' : ''} ${!isDraggable ? 'no-drag' : ''} ${priorityInfo ? `priority-${task.priority}` : ''} ${isFocused ? 'focused' : ''} ${agentColor ? 'has-agent-color' : ''} ${topDiagnostic ? `has-diagnostic diagnostic-${topDiagnostic.severity}` : ''}`}
 			data-task-id={task.id}
 			draggable={isDraggable}
 			onDragStart={handleDragStart}
@@ -111,6 +199,15 @@ export function TaskCard({
 					</button>
 				</div>
 				<div className="task-card-header-right">
+					{swarmRoleInfo && (
+						<span
+							className={`task-card-swarm-badge role-${swarmRole}`}
+							style={{ color: swarmRoleInfo.color, backgroundColor: swarmRoleInfo.bg }}
+							title={`Swarm「${swarm!.title}」· ${swarmRoleInfo.label} · 阶段: ${SWARM_PHASE_LABELS[swarm!.phase] ?? swarm!.phase}`}
+						>
+							{swarmRoleInfo.icon} {swarmRoleInfo.label}
+						</span>
+					)}
 					{priorityInfo && (
 						<span className="task-card-priority" style={{ color: priorityInfo.color, backgroundColor: priorityInfo.bg }}>
 							{priorityInfo.label}
@@ -127,6 +224,80 @@ export function TaskCard({
 			{/* Description preview */}
 			{task.description && task.description !== task.title && (
 				<div className="task-card-desc">{task.description.length > 80 ? task.description.slice(0, 80) + '...' : task.description}</div>
+			)}
+
+			{/* Attachments (P2) */}
+			{canAttach && (
+				<div className="task-card-attachments">
+					<div className="task-card-attachments-header">
+						<span className="task-card-attachments-label">
+							📎 附件{task.attachments && task.attachments.length > 0 ? ` (${task.attachments.length})` : ''}
+						</span>
+						<button
+							className="task-card-attach-btn"
+							onClick={handlePickFile}
+							disabled={uploading}
+							title="上传附件"
+						>{uploading ? '⏳' : '＋'}</button>
+						<input
+							ref={fileInputRef}
+							type="file"
+							multiple
+							style={{ display: 'none' }}
+							onChange={handleFileChange}
+						/>
+					</div>
+					{task.attachments && task.attachments.length > 0 && (
+						<div className="task-card-attachment-list">
+							{task.attachments.map(att => (
+								<div className="task-card-attachment" key={att.id} title={`${att.name} · ${formatSize(att.size)}`}>
+									<button
+										className="task-card-attachment-name"
+										onClick={(e) => { e.stopPropagation(); void downloadAttachment(task.id, att); }}
+										title="点击下载"
+									>
+										<span className="task-card-attachment-icon">📄</span>
+										<span className="task-card-attachment-text">{att.name}</span>
+									</button>
+									<span className="task-card-attachment-size">{formatSize(att.size)}</span>
+									<button
+										className="task-card-attachment-remove"
+										onClick={(e) => { e.stopPropagation(); void removeAttachment(task.id, att.id); }}
+										title="删除附件"
+									>✕</button>
+								</div>
+							))}
+						</div>
+					)}
+				</div>
+			)}
+
+			{/* Diagnostic alert banner (kanban health check) */}
+			{topDiagnostic && (
+				<div className={`task-card-diagnostic severity-${topDiagnostic.severity}`} title={topDiagnostic.detail}>
+					<span className="task-card-diagnostic-icon">
+						{topDiagnostic.severity === 'critical' ? '🛑' : topDiagnostic.severity === 'error' ? '⚠️' : '⚡'}
+					</span>
+					<span className="task-card-diagnostic-text">{topDiagnostic.title}</span>
+					<div className="task-card-diagnostic-actions">
+						{topDiagnostic.actions
+							.filter(a => a.type !== 'dismiss')
+							.map((action, i) => (
+								<button
+									key={`${action.type}-${i}`}
+									className={`task-card-diagnostic-btn action-${action.type}`}
+									onClick={(e) => { e.stopPropagation(); void applyDiagnosticAction(topDiagnostic, action); }}
+									disabled={isTriagePending}
+									title={DIAGNOSTIC_ACTION_LABELS[action.type] ?? action.type}
+								>{DIAGNOSTIC_ACTION_LABELS[action.type] ?? action.type}</button>
+							))}
+						<button
+							className="task-card-diagnostic-btn action-dismiss"
+							onClick={(e) => { e.stopPropagation(); void dismissDiagnostic(topDiagnostic.id); }}
+							title="忽略此告警"
+						>忽略</button>
+					</div>
+				</div>
 			)}
 
 			{/* Dependencies display with status */}
@@ -190,8 +361,41 @@ export function TaskCard({
 						title="聊天"
 					>💬</button>
 				)}
-				{/* 执行 */}
+				{/* AI 细化 / 分解：仅 triage 状态、且为 task-board 来源时可用 */}
+				{task.status === 'triage' && task.source === 'task-board' && (
+					<>
+						<button
+							className="task-card-action ai-specify"
+							onClick={() => { if (!isTriagePending) { void specifyTask(task.id); } }}
+							disabled={isTriagePending}
+							title="AI 细化为结构化规格（Goal / Approach / 验收标准），并移入待执行"
+						>{isTriagePending ? '⏳' : '✨'}</button>
+						<button
+							className="task-card-action ai-decompose"
+							onClick={() => { if (!isTriagePending) { void decomposeTask(task.id); } }}
+							disabled={isTriagePending}
+							title="AI 分解为多个可执行子任务"
+						>{isTriagePending ? '⏳' : '🧩'}</button>
+					</>
+				)}
+				{/* 细化完成：triage → todo */}
+				{task.status === 'triage' && (
+					<button
+						className="task-card-action execute"
+						onClick={() => onStatusChange(task.id, 'todo', task.source)}
+						title="完成规划，移入待执行"
+					>📋</button>
+				)}
+				{/* 标记就绪：todo → ready */}
 				{task.status === 'todo' && (
+					<button
+						className="task-card-action ready"
+						onClick={() => onStatusChange(task.id, 'ready', task.source)}
+						title="标记为就绪"
+					>✔</button>
+				)}
+				{/* 执行（todo/ready 可用） */}
+				{(task.status === 'todo' || task.status === 'ready') && (
 					<button
 						className="task-card-action execute"
 						onClick={() => onStatusChange(task.id, 'running', task.source)}
@@ -206,16 +410,24 @@ export function TaskCard({
 						title="暂停"
 					>⏸</button>
 				)}
-				{/* 重试（running/done/cancelled/archived 都可用） */}
-				{(task.status === 'running' || task.status === 'done' || task.status === 'cancelled' || task.status === 'archived') && (
+				{/* 解除阻塞：blocked → todo */}
+				{task.status === 'blocked' && (
+					<button
+						className="task-card-action unblock"
+						onClick={() => onStatusChange(task.id, 'todo', task.source)}
+						title="解除阻塞"
+					>🔓</button>
+				)}
+				{/* 重试（running/blocked/done/cancelled/archived 都可用） */}
+				{(task.status === 'running' || task.status === 'blocked' || task.status === 'done' || task.status === 'cancelled' || task.status === 'archived') && (
 					<button
 						className="task-card-action retry"
 						onClick={() => onStatusChange(task.id, 'todo', task.source)}
 						title="重试"
 					>🔄</button>
 				)}
-				{/* 取消（todo/running 可用） */}
-				{(task.status === 'todo' || task.status === 'running') && (
+				{/* 取消（triage/todo/ready/running/blocked 可用） */}
+				{(task.status === 'triage' || task.status === 'todo' || task.status === 'ready' || task.status === 'running' || task.status === 'blocked') && (
 					<button
 						className="task-card-action cancel"
 						onClick={() => onStatusChange(task.id, 'cancelled', task.source)}

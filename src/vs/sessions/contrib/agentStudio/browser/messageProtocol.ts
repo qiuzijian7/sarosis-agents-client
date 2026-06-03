@@ -55,6 +55,13 @@ export type RequestType =
 	| 'taskBoard.delete'
 	| 'taskBoard.archive'
 	| 'taskBoard.openOverview'
+	| 'board.list'
+	| 'board.create'
+	| 'board.rename'
+	| 'board.delete'
+	| 'attachment.add'
+	| 'attachment.remove'
+	| 'attachment.read'
 	| 'session.list'
 	| 'session.get'
 	| 'session.create'
@@ -105,6 +112,8 @@ export type RequestType =
 	| 'configmd.removeParser'     // restore built-in parser
 	| 'configmd.getInfo'          // get parser/styles info
 	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
+	| 'configmd.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
+	| 'configmd.requestCanvasPreview' // ConfigHtml: open this agent's config.html (editable) in the Canvas panel
 	| 'configmd.listAgents'      // list all agents that have config.md configured
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
@@ -280,6 +289,23 @@ export interface IChatSendPayload {
 	readonly workspaceId?: string;
 	/** Fork-scoped Agent session ID */
 	readonly agentSessionId?: string;
+	/** 用户上传的附件（图片/文件）— Void-inspired image/file upload */
+	readonly attachments?: IChatAttachmentPayload[];
+}
+
+/**
+ * 附件 payload — 跨 WebView→Host 序列化传输。
+ * 与 common/providers.ts 的 IChatAttachment 对齐，但为纯 JSON 可序列化结构。
+ */
+export interface IChatAttachmentPayload {
+	readonly id: string;
+	readonly type: 'image' | 'file';
+	readonly name: string;
+	readonly mimeType: string;
+	/** base64 编码内容（图片和二进制文件）或原文（文本文件） */
+	readonly data: string;
+	readonly size: number;
+	readonly isPasted?: boolean;
 }
 
 export interface IEmployeeCreatePayload {
@@ -529,6 +555,18 @@ export interface IConfigMdChatSendPayload {
 	readonly context?: string;
 	readonly showInChat?: boolean;
 	readonly agentSessionId?: string;
+}
+
+export interface IConfigMdHtmlGeneratePayload {
+	readonly employeeId: string;
+	readonly message: string;
+	/** Current HTML in the editor (so the model can do incremental edits). */
+	readonly currentHtml?: string;
+	readonly model?: string;
+}
+
+export interface IConfigMdCanvasPreviewPayload {
+	readonly employeeId: string;
 }
 
 export interface IConfigMdNotifyPayload {

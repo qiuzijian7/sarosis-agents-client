@@ -912,8 +912,14 @@ export class AgentStudioSession {
 }
 
 export const enum TaskBoardStatus {
+	/** New: awaiting decomposition / refinement before it is actionable */
+	Triage = 'triage',
 	Todo = 'todo',
+	/** New: refined and claimable, ready to start */
+	Ready = 'ready',
 	Running = 'running',
+	/** New: blocked by a dependency or external condition */
+	Blocked = 'blocked',
 	Done = 'done',
 	Cancelled = 'cancelled',
 	Archived = 'archived',
@@ -934,12 +940,61 @@ export interface TaskBoardRecord {
 	assigneeId?: string;
 	assigneeName?: string;
 	workspaceId: string;
+	/**
+	 * Board this task belongs to (multi-board isolation, P2).
+	 * Absent/empty → implicitly belongs to the workspace's DEFAULT_BOARD_ID
+	 * (backward compatible with tasks created before boards existed).
+	 */
+	boardId?: string;
 	priority?: 'low' | 'medium' | 'high';
 	/** IDs of tasks that must complete before this one can start */
 	dependencies?: string[];
+	/**
+	 * File attachments linked to this task (P2). Only metadata is stored inline;
+	 * the binary content lives in a side file under the data dir's `attachments/`
+	 * folder (see AgentTaskBoardService), keyed by task id + attachment id.
+	 */
+	attachments?: TaskAttachment[];
 	createdAt: string;
 	updatedAt: string;
 	completedAt?: string;
+}
+
+/**
+ * Metadata for a file attached to a task (multi-board / attachments, P2).
+ * The actual bytes are persisted in a separate side file, not inline in JSON,
+ * so large uploads never bloat taskboard.json.
+ */
+export interface TaskAttachment {
+	readonly id: string;
+	/** Original file name as uploaded by the user. */
+	name: string;
+	/** MIME type, e.g. 'image/png', 'application/pdf'. */
+	mimeType: string;
+	/** Size in bytes. */
+	size: number;
+	createdAt: string;
+}
+
+/**
+ * The implicit default board every workspace has. Tasks without an explicit
+ * boardId are treated as belonging to this board, so legacy data keeps working.
+ */
+export const DEFAULT_BOARD_ID = 'default';
+
+/**
+ * A board groups task cards within a workspace (multi-board isolation, P2).
+ * Boards are scoped to a workspace: filtering tasks is `workspaceId` + `boardId`.
+ */
+export interface TaskBoard {
+	readonly id: string;
+	name: string;
+	/** Owning workspace; boards never cross workspaces. */
+	workspaceId: string;
+	/** Display order in the board selector (ascending). */
+	order?: number;
+	createdAt: string;
+	updatedAt: string;
 }
 
 // allow-any-unicode-next-line

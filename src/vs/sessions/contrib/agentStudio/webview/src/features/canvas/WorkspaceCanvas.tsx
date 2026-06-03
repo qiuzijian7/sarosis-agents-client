@@ -37,6 +37,8 @@ import { EmployeeListView } from './EmployeeListView';
 import { CreateAgentModal } from '../employees/CreateAgentModal';
 import { SessionSwitcher } from './SessionSwitcher';
 import { ForkReadOnlyBanner } from './ForkReadOnlyBanner';
+import { injectEditorRuntime, CONFIGHTML_EDITOR_SOURCE } from './canvasHtmlEditorRuntime';
+import { writeSource } from '../configmd/configMdBridge';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
 import { useWorkspaceSessionStore } from '../../store/useWorkspaceSessionStore';
@@ -122,6 +124,24 @@ export function WorkspaceCanvas(): React.ReactElement {
 		setSelectedAgentId(agentId);
 	}, []);
 
+	// ConfigHtml preview bridge: the ConfigHtml editor (a different webview
+	// instance) asked — via the host — to show this agent's config.html here.
+	// Switch to HTML display mode and select the agent; the existing effect
+	// below then loads the HTML via configmd.getResource.
+	useEffect(() => {
+		const onShowInCanvas = (e: Event) => {
+			const detail = (e as CustomEvent).detail as { employeeId?: string } | undefined;
+			const employeeId = detail?.employeeId;
+			if (!employeeId) {
+				return;
+			}
+			handleViewModeChange('html');
+			setSelectedAgentId(employeeId);
+		};
+		window.addEventListener('agentStudio:configmd-show-in-canvas', onShowInCanvas);
+		return () => window.removeEventListener('agentStudio:configmd-show-in-canvas', onShowInCanvas);
+	}, [handleViewModeChange]);
+
 	// Load agents with config.md when HTML dropdown opens
 	useEffect(() => {
 		if (isHtmlDropdownOpen) {
@@ -145,7 +165,20 @@ export function WorkspaceCanvas(): React.ReactElement {
 			const loadHtml = async () => {
 				try {
 					const result = await sendRequest('configmd.getResource', { employeeId: selectedAgentId });
-					setHtmlViewContent((result as any)?.html || '');
+					const rawHtml = (result as any)?.html || '';
+					// Inject the in-iframe editable runtime so the preview is
+					// browser-editable (drag/resize objects, edit text slots,
+					// undo/redo, save). The runtime posts the cleaned HTML back
+					// to the parent on save (see the message listener below).
+					//
+					// The Canvas iframe uses `srcdoc`, which INHERITS this
+					// webview's strict nonce-based CSP. CSP policies only
+					// intersect, so the only way the injected inline runtime
+					// <script> is allowed to execute is to carry the SAME nonce
+					// the parent webview uses. The controller surfaces it as
+					// `window.__AGENT_STUDIO_CSP_NONCE__`.
+					const cspNonce = (window as any).__AGENT_STUDIO_CSP_NONCE__ as string | undefined;
+					setHtmlViewContent(rawHtml ? injectEditorRuntime(rawHtml, cspNonce) : '');
 				} catch (err) {
 					console.error('[WorkspaceCanvas] Failed to load HTML content:', err);
 					setHtmlViewContent('');
@@ -159,6 +192,24 @@ export function WorkspaceCanvas(): React.ReactElement {
 			setHtmlViewLoading(false);
 		}
 	}, [displayMode, selectedAgentId]);
+
+	// Listen for save/dirty messages posted by the injected editor runtime
+	// inside the Canvas HTML iframe. On save, persist the edited HTML back to
+	// the agent's config.html via the host.
+	useEffect(() => {
+		const onMessage = (e: MessageEvent) => {
+			const data = e.data as { source?: string; type?: string; html?: string } | undefined;
+			if (!data || data.source !== CONFIGHTML_EDITOR_SOURCE) {
+				return;
+			}
+			if (data.type === 'save' && typeof data.html === 'string' && selectedAgentId) {
+				void writeSource(selectedAgentId, data.html, { origin: 'editor' })
+					.catch((err) => console.error('[WorkspaceCanvas] save edited HTML failed:', err));
+			}
+		};
+		window.addEventListener('message', onMessage);
+		return () => window.removeEventListener('message', onMessage);
+	}, [selectedAgentId]);
 
 	const reactFlowWrapper = useRef<HTMLDivElement>(null);
 

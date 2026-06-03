@@ -146,12 +146,26 @@ export class TaskDetailEditorPane extends EditorPane {
 		actionsSection.appendChild(actionsLabel);
 
 		const actionsBar = $('div.task-detail-actions');
+		if (task.status === TaskBoardStatus.Triage) {
+			this._addActionBtn(actionsBar, '📋 移入待执行', () => this._updateStatus(taskId, TaskBoardStatus.Todo));
+			this._addActionBtn(actionsBar, '❌ 取消', () => this._updateStatus(taskId, TaskBoardStatus.Cancelled));
+		}
 		if (task.status === TaskBoardStatus.Todo) {
+			this._addActionBtn(actionsBar, '✔️ 标记就绪', () => this._updateStatus(taskId, TaskBoardStatus.Ready));
+			this._addActionBtn(actionsBar, '▶️ 开始', () => this._updateStatus(taskId, TaskBoardStatus.Running));
+			this._addActionBtn(actionsBar, '❌ 取消', () => this._updateStatus(taskId, TaskBoardStatus.Cancelled));
+		}
+		if (task.status === TaskBoardStatus.Ready) {
 			this._addActionBtn(actionsBar, '▶️ 开始', () => this._updateStatus(taskId, TaskBoardStatus.Running));
 			this._addActionBtn(actionsBar, '❌ 取消', () => this._updateStatus(taskId, TaskBoardStatus.Cancelled));
 		}
 		if (task.status === TaskBoardStatus.Running) {
 			this._addActionBtn(actionsBar, '✅ 完成', () => this._updateStatus(taskId, TaskBoardStatus.Done));
+			this._addActionBtn(actionsBar, '🚧 阻塞', () => this._updateStatus(taskId, TaskBoardStatus.Blocked));
+			this._addActionBtn(actionsBar, '❌ 取消', () => this._updateStatus(taskId, TaskBoardStatus.Cancelled));
+		}
+		if (task.status === TaskBoardStatus.Blocked) {
+			this._addActionBtn(actionsBar, '🔓 解除阻塞', () => this._updateStatus(taskId, TaskBoardStatus.Todo));
 			this._addActionBtn(actionsBar, '❌ 取消', () => this._updateStatus(taskId, TaskBoardStatus.Cancelled));
 		}
 		if (task.status === TaskBoardStatus.Cancelled) {
@@ -180,8 +194,11 @@ export class TaskDetailEditorPane extends EditorPane {
 
 	private _getStatusLabel(status: TaskBoardStatus): string {
 		switch (status) {
+			case TaskBoardStatus.Triage: return '🗂 待规划';
 			case TaskBoardStatus.Todo: return '⬜ 待执行';
+			case TaskBoardStatus.Ready: return '✔️ 就绪';
 			case TaskBoardStatus.Running: return '⚡ 执行中';
+			case TaskBoardStatus.Blocked: return '🚧 阻塞中';
 			case TaskBoardStatus.Done: return '✅ 已完成';
 			case TaskBoardStatus.Cancelled: return '❌ 已取消';
 			case TaskBoardStatus.Archived: return '📦 已归档';

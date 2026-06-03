@@ -24,7 +24,7 @@ import { IUntypedEditorInput } from '../../../../workbench/common/editor.js';
  *   When the preview is opened from ConfigMD's "preview" button we know
  *   exactly which agent owns it AND which Fork session is active in the
  *   chat panel at that moment. We pass all three through the input so:
- *     - the pane can route SDK postMessages back to ConfigMdService
+ *     - the pane can route SDK postMessages back to ConfigHtmlService
  *       without having to reverse-engineer the file path;
  *     - imgui form submits land in the SAME Fork session the user was
  *       looking at when they opened the preview, even if they later

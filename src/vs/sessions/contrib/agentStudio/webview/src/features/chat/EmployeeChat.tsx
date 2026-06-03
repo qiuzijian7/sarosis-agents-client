@@ -471,9 +471,17 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		}
 	}, [handleChatNameCommit, activeEmployee]);
 
-	const handleSend = useCallback((content: string) => {
-		if (content.trim()) {
-			sendMessage(content);
+	const handleSend = useCallback((content: string, attachments?: Array<{
+		id: string;
+		type: 'image' | 'file';
+		name: string;
+		mimeType: string;
+		data: string;
+		size: number;
+		isPasted?: boolean;
+	}>) => {
+		if (content.trim() || (attachments && attachments.length > 0)) {
+			sendMessage(content, attachments);
 		}
 	}, [sendMessage]);
 

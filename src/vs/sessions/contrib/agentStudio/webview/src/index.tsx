@@ -17,6 +17,8 @@ import { useThemeStore } from './store/useThemeStore.js';
 import { useWorkspaceSessionStore } from './store/useWorkspaceSessionStore.js';
 import { useChatStore } from './store/useChatStore.js';
 import { useOrchestrationStore } from './store/useOrchestrationStore.js';
+import { useDiagnosticsStore } from './store/useDiagnosticsStore.js';
+import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
 import { dispatchConfigMdEvent } from './features/configmd/configMdBridge.js';
 import './styles/globals.css';
@@ -98,9 +100,35 @@ initMessageClient((type, data) => {
 		case 'taskBoard.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:taskboard-changed', { detail: data }));
 			break;
+		case 'boards.changed':
+			// Multi-board list changed (create/rename/delete) — notify the
+			// TaskBoardPanel board selector to re-fetch the board list.
+			window.dispatchEvent(new CustomEvent('agentStudio:boards-changed', { detail: data }));
+			break;
 		case 'taskBoard.focusTask':
 			window.dispatchEvent(new CustomEvent('agentStudio:focusTask', { detail: data }));
 			break;
+		case 'diagnostics.detected': {
+			const diagnostic = data as import('./store/useDiagnosticsStore.js').Diagnostic;
+			if (diagnostic?.id) {
+				useDiagnosticsStore.getState().onDetected(diagnostic);
+				window.dispatchEvent(new CustomEvent('agentStudio:diagnostic-detected', { detail: diagnostic }));
+			}
+			break;
+		}
+		case 'diagnostics.changed': {
+			const diagnostics = data as import('./store/useDiagnosticsStore.js').Diagnostic[];
+			useDiagnosticsStore.getState().onChanged(Array.isArray(diagnostics) ? diagnostics : []);
+			break;
+		}
+		case 'swarm.updated': {
+			const status = data as import('./store/useSwarmStore.js').SwarmStatus;
+			if (status?.swarmId) {
+				useSwarmStore.getState().onUpdated(status);
+				window.dispatchEvent(new CustomEvent('agentStudio:swarm-updated', { detail: status }));
+			}
+			break;
+		}
 		case 'session.activated':
 			window.dispatchEvent(new CustomEvent('agentStudio:session-activated', { detail: data }));
 			break;
@@ -236,6 +264,14 @@ initMessageClient((type, data) => {
 			if (detail?.employeeId) {
 				dispatchConfigMdEvent(detail.employeeId, type, data);
 			}
+			break;
+		}
+		case 'configmd.showInCanvas': {
+			// ConfigHtml preview button → open this agent's config.html (editable)
+			// in the Canvas panel. The Canvas lives in a different webview instance,
+			// so the host re-broadcasts this event to every webview; only the
+			// Canvas panel's listener reacts.
+			window.dispatchEvent(new CustomEvent('agentStudio:configmd-show-in-canvas', { detail: data }));
 			break;
 		}
 		case 'agentSessions.changed': {

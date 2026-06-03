@@ -86,7 +86,26 @@ export class MessageFormatConverter {
 
 				result.push(base as OpenAILLMChatMessage);
 			} else if (m.role === 'user') {
-				result.push({ role: 'user', content: m.content });
+				// Check for multimodal content parts (images/files)
+				if (m.contentParts && m.contentParts.length > 0) {
+					const parts: Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }> = [];
+					for (const part of m.contentParts) {
+						if (part.type === 'text') {
+							parts.push({ type: 'text', text: part.text });
+						} else if (part.type === 'image') {
+							parts.push({
+								type: 'image_url',
+								image_url: {
+									url: `data:${part.mimeType};base64,${part.data}`,
+									detail: 'auto',
+								},
+							});
+						}
+					}
+					result.push({ role: 'user', content: parts as any });
+				} else {
+					result.push({ role: 'user', content: m.content });
+				}
 			} else if (m.role === 'assistant') {
 				const base: Record<string, unknown> = { role: 'assistant', content: m.content };
 
@@ -185,7 +204,28 @@ export class MessageFormatConverter {
 			if (m.role === 'system') { continue; }
 
 			if (m.role === 'user') {
-				result.push({ role: 'user', content: m.content });
+				// Check for multimodal content parts (images)
+				if (m.contentParts && m.contentParts.length > 0) {
+					const blocks: AnthropicUserContentBlock[] = [];
+					for (const part of m.contentParts) {
+						if (part.type === 'text') {
+							blocks.push({ type: 'text', text: part.text });
+						} else if (part.type === 'image') {
+							// Anthropic uses base64 source blocks for images
+							(blocks as any[]).push({
+								type: 'image',
+								source: {
+									type: 'base64',
+									media_type: part.mimeType,
+									data: part.data,
+								},
+							});
+						}
+					}
+					result.push({ role: 'user', content: blocks });
+				} else {
+					result.push({ role: 'user', content: m.content });
+				}
 			} else if (m.role === 'assistant') {
 				const contentBlocks: AnthropicContentBlock[] = [];
 				if (m.content) {
@@ -282,7 +322,26 @@ export class MessageFormatConverter {
 			if (m.role === 'system') { continue; }
 
 			if (m.role === 'user') {
-				result.push({ role: 'user', parts: [{ text: m.content }] });
+				// Check for multimodal content parts (images)
+				if (m.contentParts && m.contentParts.length > 0) {
+					const parts: GeminiPart[] = [];
+					for (const part of m.contentParts) {
+						if (part.type === 'text') {
+							parts.push({ text: part.text });
+						} else if (part.type === 'image') {
+							// Gemini uses inline_data for images
+							(parts as any[]).push({
+								inline_data: {
+									mime_type: part.mimeType,
+									data: part.data,
+								},
+							});
+						}
+					}
+					result.push({ role: 'user', parts });
+				} else {
+					result.push({ role: 'user', parts: [{ text: m.content }] });
+				}
 			} else if (m.role === 'assistant') {
 				const parts: GeminiPart[] = [];
 				if (m.content) {

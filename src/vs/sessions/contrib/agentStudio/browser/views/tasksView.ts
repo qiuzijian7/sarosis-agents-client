@@ -112,8 +112,11 @@ export class TasksViewPane extends ViewPane {
 		const filters = $('div.tasks-status-filters');
 		const statuses: Array<{ label: string; value: TaskBoardStatus | 'all'; icon: string }> = [
 			{ label: 'All', value: 'all', icon: '📋' },
+			{ label: 'Triage', value: TaskBoardStatus.Triage, icon: '🗂' },
 			{ label: 'Todo', value: TaskBoardStatus.Todo, icon: '⬜' },
+			{ label: 'Ready', value: TaskBoardStatus.Ready, icon: '✔️' },
 			{ label: 'Running', value: TaskBoardStatus.Running, icon: '⚡' },
+			{ label: 'Blocked', value: TaskBoardStatus.Blocked, icon: '🚧' },
 			{ label: 'Done', value: TaskBoardStatus.Done, icon: '✅' },
 			{ label: 'Cancelled', value: TaskBoardStatus.Cancelled, icon: '❌' },
 		];
@@ -253,8 +256,11 @@ export class TasksViewPane extends ViewPane {
 
 	private _getStatusIcon(status: TaskBoardStatus): string {
 		switch (status) {
+			case TaskBoardStatus.Triage: return '🗂';
 			case TaskBoardStatus.Todo: return '⬜';
+			case TaskBoardStatus.Ready: return '✔️';
 			case TaskBoardStatus.Running: return '⚡';
+			case TaskBoardStatus.Blocked: return '🚧';
 			case TaskBoardStatus.Done: return '✅';
 			case TaskBoardStatus.Cancelled: return '❌';
 			case TaskBoardStatus.Archived: return '📦';

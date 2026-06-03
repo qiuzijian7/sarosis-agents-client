@@ -14,13 +14,10 @@ import {
 	onSourceChanged,
 	writeSource,
 	postSyncToIframe,
-	renderHtml,
-	previewToFile,
+	requestCanvasPreview,
 } from '../configmd/configMdBridge';
-import { openHtmlPreview, openUntitledText } from '../../bridge/fileBridge';
-import { MarkdownEditor } from '../configmd/MarkdownEditor';
-import { ConfigMdSettings } from '../configmd/ConfigMdSettings';
-import { CONFIG_MD_DEMO } from '../configmd/configMdDemo';
+import { HtmlEditor } from '../configmd/HtmlEditor';
+import { ConfigHtmlChatBox } from '../configmd/ConfigHtmlChatBox';
 import { sendRequest } from '../../bridge/messageClient';
 
 /* ── Tab definitions ─────────────────────────────────────────── */
@@ -40,7 +37,7 @@ const TABS: TabDef[] = [
 	{ id: 'tools',     label: 'Tool 配置',    icon: '🔧' },
 	{ id: 'mcp',       label: 'MCP 配置',    icon: '🔌' },
 	{ id: 'rules',     label: 'Rule 配置',    icon: '📏' },
-	{ id: 'configmd',  label: 'ConfigMD',    icon: '📝' },
+	{ id: 'configmd',  label: 'ConfigHtml',  icon: '📝' },
 ];
 
 /* ── Props ─────────────────────────────────────────────────────── */
@@ -76,7 +73,7 @@ function SkillsDragDropPanel({ employeeId, agentSkillIds, onUpdateSkills, allSki
 	// Right: agent skills (look up names from allSkills)
 	const installedSkills = agentSkillIds
 		.map(id => allSkills.find(s => s.id === id))
-		.filter((s): s is NonNullable<typeof s> => !!s && s.name && s.name.toLowerCase().includes(rightFilter.toLowerCase()));
+		.filter((s): s is NonNullable<typeof s> => !!s && !!s.name && s.name.toLowerCase().includes(rightFilter.toLowerCase()));
 
 	const handleDragStart = (e: React.DragEvent, skill: { id: string; name: string; category: string; activation: string; description?: string }, from: 'left' | 'right') => {
 		e.dataTransfer.setData('application/json', JSON.stringify({ skill, from }));
@@ -1087,7 +1084,6 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 	const configMdState = useConfigMdStore((s) => s.byAgent[employeeId]);
 	const setMdState = useConfigMdStore((s) => s.setState);
 	const updateMdLocal = useConfigMdStore((s) => s.updateMarkdownLocal);
-	const [showMdConfig, setShowMdConfig] = useState(false);
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const debounceRef = useRef<number | null>(null);
 
@@ -1229,7 +1225,29 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		}, 300);
 	}, [employeeId, setMdState, updateMdLocal]);
 
-	// ── ConfigMD preview doc ───────────────────────────────────────
+	// ── ConfigHtml AI box → editor write-back ──────────────────────
+	// The AI chat box returns a complete HTML document; write it into the
+	// editor (local store) and immediately persist it to disk, reusing the
+	// same debounced write path semantics as manual edits (but flushing now).
+	const handleHtmlGenerated = useCallback((html: string) => {
+		updateMdLocal(employeeId, html);
+		if (debounceRef.current) {
+			window.clearTimeout(debounceRef.current);
+			debounceRef.current = null;
+		}
+		const cur = useConfigMdStore.getState().byAgent[employeeId];
+		const opts: { origin: 'editor'; baseVersion?: number } = { origin: 'editor' };
+		if (cur && cur.loaded && cur.version > 0) {
+			opts.baseVersion = cur.version;
+		}
+		writeSource(employeeId, html, opts)
+			.then((r) => {
+				setMdState(employeeId, { version: r.version, dirty: false, loaded: true });
+			})
+			.catch((err) => {
+				console.error('[ConfigHtml] write generated HTML failed:', err);
+			});
+	}, [employeeId, setMdState, updateMdLocal]);
 	// Show the preview as soon as html exists, regardless of the explicit
 	// `loaded` flag — this avoids a chicken-and-egg state where the agent
 	// has just been enabled and html arrives via a renderHtml RPC before
@@ -1354,11 +1372,11 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 						{!employee?.configMd ? (
 							<div className="configmd-empty-state">
 								<div className="configmd-empty-icon">📝</div>
-								<div className="configmd-empty-title">ConfigMD 未启用</div>
+								<div className="configmd-empty-title">ConfigHtml 未启用</div>
 								<div className="configmd-empty-desc">
-									启用后，Agent 将拥有一个 Markdown 配置文件，
-									可在右侧实时渲染为 HTML 面板，
-									支持双向同步、自定义解析器与样式。
+									启用后，Agent 将拥有一个 HTML 配置文件，
+									可用 AI 直接生成页面，在 Canvas 中预览，
+									并支持浏览器内可视化编辑。
 								</div>
 								<button
 									type="button"
@@ -1366,7 +1384,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 									onClick={() => {
 										void updateEmployee(employeeId, {
 											configMd: {
-												mdPath: 'config.md',
+												mdPath: 'config.html',
 												displayMode: 'side',
 												defaultView: 'split',
 												editable: true,
@@ -1383,59 +1401,21 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 												],
 											},
 										}).catch((err) => {
-											console.error('[ConfigMD] enable failed:', err);
+											console.error('[ConfigHtml] enable failed:', err);
 										});
 									}}
 								>
-									✨ 启用 ConfigMD
+									✨ 启用 ConfigHtml
 								</button>
 								<div className="configmd-empty-hint">
-									启用后将在 Agent 目录下创建 <code>config.md</code> 文件
+									启用后将在 Agent 目录下创建 <code>config.html</code> 文件
 								</div>
 							</div>
 						) : (
 						<>
 						<div className="configmd-toolbar">
 							<div className="configmd-toolbar-left">
-								<button
-									className={`configmd-icon-btn ${showMdConfig ? 'active' : ''}`}
-									onClick={() => setShowMdConfig(true)}
-									title="配置：上传自定义解析器 / 样式"
-									aria-label="设置"
-								>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-										<circle cx="12" cy="12" r="3" />
-										<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-									</svg>
-								</button>
-								<button
-									className="configmd-icon-btn"
-									onClick={() => {
-										// Open the demo source in an untitled markdown editor
-										// in the host's center editor area, so the user can
-										// inspect / copy from it without overwriting the
-										// agent's real ConfigMD. This was previously a
-										// destructive "load into agent" action gated by a
-										// two-step confirm; now it's purely read-only.
-										void openUntitledText(CONFIG_MD_DEMO, {
-											languageId: 'markdown',
-											title: 'ConfigMD Demo',
-											preserveFocus: false,
-											pinned: true,
-										}).catch((err) => {
-											console.error('[ConfigMD] open demo failed:', err);
-										});
-									}}
-									title="打开内置示例 Markdown（独立的只读编辑器，不会覆盖当前 Agent 的 ConfigMD）"
-									aria-label="示例"
-								>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-										<path d="M14 2v6h6" />
-										<path d="M16 13H8M16 17H8M10 9H8" />
-									</svg>
-									<span className="configmd-icon-btn-text">Demo</span>
-								</button>
+								<span className="configmd-toolbar-label">config.html</span>
 							</div>
 							<div className="configmd-toolbar-right">
 								<button
@@ -1459,16 +1439,15 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 												})
 												.catch(() => undefined)
 											: Promise.resolve();
-										// 2) After the source is on disk, render & write the
-										//    standalone .preview.html, then open it in the host editor.
+										// 2) After the source is on disk, ask the host to open
+										//    this agent's config.html (editable) in the Canvas panel.
 										void flushed
-											.then(() => previewToFile(employeeId))
-											.then((r) => openHtmlPreview(r.path, { preserveFocus: false, pinned: true }))
+											.then(() => requestCanvasPreview(employeeId))
 											.catch((err) => {
-												console.error('[ConfigMD] open preview failed:', err);
+												console.error('[ConfigHtml] open canvas preview failed:', err);
 											});
 									}}
-									title="渲染预览并在左侧编辑器中打开 .preview.html"
+									title="在右侧 Canvas 中预览并编辑该 HTML"
 									aria-label="预览"
 								>
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1480,27 +1459,26 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 							</div>
 						</div>
 
-						{/* MD-only editor — full width, no split. Preview is delegated
-						    to the host editor via the toolbar's preview button. */}
+						{/* AI chat box ABOVE the editor: generates a full HTML
+						    document via the `confightml` skill and writes it into
+						    the editor below. */}
+						<ConfigHtmlChatBox
+							employeeId={employeeId}
+							getCurrentHtml={() => useConfigMdStore.getState().byAgent[employeeId]?.markdown ?? ''}
+							onHtmlGenerated={handleHtmlGenerated}
+						/>
+
+						{/* HTML source editor — full width, no split. Preview is
+						    delegated to the Canvas via the toolbar's preview button. */}
 						<div className="configmd-editor-body view-source">
 							<div className="configmd-source">
-								<MarkdownEditor
+								<HtmlEditor
 									value={configMdState?.markdown ?? ''}
 									onChange={handleConfigMdChange}
-									placeholder="# Markdown 配置..."
+									placeholder="<!DOCTYPE html> ... 在上方用 AI 生成，或直接编辑 HTML"
 								/>
 							</div>
 						</div>
-
-						{showMdConfig && (
-							<ConfigMdSettings
-								employeeId={employeeId}
-								onClose={() => setShowMdConfig(false)}
-								onChanged={() => {
-									void renderHtml(employeeId).catch(() => undefined);
-								}}
-							/>
-						)}
 						</>
 						)}
 					</div>
