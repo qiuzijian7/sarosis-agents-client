@@ -322,6 +322,10 @@ export interface IModelUsage {
 	readonly cachedTokens?: number;
 	/** 写入缓存的 token 数（来自 Anthropic cache_creation_input_tokens） */
 	readonly cacheWriteTokens?: number;
+	/** 总 token 数（部分网关在末块 usage 直接给出 total_tokens；缺省时可由 input+output 推导） */
+	readonly totalTokens?: number;
+	/** 本次调用消耗的计费额度 / 积分（来自 CodeBuddy 网关末块 usage.credit 等字段） */
+	readonly credit?: number;
 }
 
 // ─── Memory Provider Interface ────────────────────────────────────────────────

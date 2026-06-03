@@ -5,8 +5,9 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
+import { Queue } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { IFileService, FileSystemProviderCapabilities } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -21,6 +22,14 @@ const DATA_FILE_TASKBOARD = 'taskboard.json';
 const DATA_FILE_BOARDS = 'boards.json';
 const ATTACHMENTS_DIR = 'attachments';
 
+/**
+ * When the persisted task count crosses this threshold, the JSON-file storage
+ * starts to feel the cost of full read/serialize/write on every mutation.
+ * We log a one-time warning as a signal to revisit the storage backend
+ * (see the JSON-vs-SQLite decision: JSON is intentional below this scale).
+ */
+const TASK_COUNT_WARN_THRESHOLD = 500;
+
 export class AgentTaskBoardService extends Disposable implements IAgentTaskBoardService {
 	declare readonly _serviceBrand: undefined;
 
@@ -31,6 +40,17 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	readonly onDidChangeBoards: Event<void> = this._onDidChangeBoards.event;
 
 	private _dataUri: URI | undefined;
+
+	/**
+	 * Serialize all read-modify-write cycles so concurrent mutations cannot
+	 * interleave and clobber each other (the one real risk of JSON-file
+	 * storage). Tasks and boards live in separate files, hence two queues.
+	 */
+	private readonly _taskWriteQueue = new Queue<unknown>();
+	private readonly _boardWriteQueue = new Queue<unknown>();
+
+	/** One-time guard so the high-task-count warning does not spam the log. */
+	private _warnedHighTaskCount = false;
 
 	/** Lazy references to break cyclic dependency (agentTaskBoardService ↔ taskOrchestrationService) */
 	private _orchestrationService: ITaskOrchestrationService | undefined;
@@ -77,10 +97,31 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		}
 	}
 
+	/**
+	 * Write content to a file, preferring an atomic temp-file+rename when the
+	 * underlying provider supports it (avoids leaving a half-written / corrupt
+	 * JSON file if the process dies mid-write). Falls back to a plain write.
+	 */
+	private async _atomicWriteFile(uri: URI, content: VSBuffer): Promise<void> {
+		if (this.fileService.hasCapability(uri, FileSystemProviderCapabilities.FileAtomicWrite)) {
+			await this.fileService.writeFile(uri, content, { atomic: { postfix: '.vsctmp' } });
+		} else {
+			await this.fileService.writeFile(uri, content);
+		}
+	}
+
 	private async _writeTasks(tasks: TaskBoardRecord[]): Promise<void> {
 		const uri = URI.joinPath(this._getDataUri(), DATA_FILE_TASKBOARD);
 		const content = VSBuffer.fromString(JSON.stringify(tasks, null, 2));
-		await this.fileService.writeFile(uri, content);
+		await this._atomicWriteFile(uri, content);
+
+		// Signal-light for the storage backend: JSON is intentional below this
+		// scale; past the threshold the full read/serialize/write per mutation
+		// starts to matter, so flag it once.
+		if (!this._warnedHighTaskCount && tasks.length > TASK_COUNT_WARN_THRESHOLD) {
+			this._warnedHighTaskCount = true;
+			this.logService.warn(`[AgentStudio] TaskBoard: task count (${tasks.length}) exceeded ${TASK_COUNT_WARN_THRESHOLD}; JSON-file storage may degrade — consider migrating IAgentTaskBoardService to a database-backed provider.`);
+		}
 	}
 
 	private async _readBoards(): Promise<TaskBoard[]> {
@@ -97,7 +138,32 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	private async _writeBoards(boards: TaskBoard[]): Promise<void> {
 		const uri = URI.joinPath(this._getDataUri(), DATA_FILE_BOARDS);
 		const content = VSBuffer.fromString(JSON.stringify(boards, null, 2));
-		await this.fileService.writeFile(uri, content);
+		await this._atomicWriteFile(uri, content);
+	}
+
+	/**
+	 * Run a read-modify-write cycle against the task list under the task write
+	 * queue so it cannot interleave with any other task mutation. The mutator
+	 * receives the current tasks, mutates them (in place or by returning a new
+	 * array), and the result is persisted; its return value is forwarded.
+	 */
+	private _withTasks<R>(mutate: (tasks: TaskBoardRecord[]) => Promise<R> | R): Promise<R> {
+		return this._taskWriteQueue.queue(async () => {
+			const tasks = await this._readTasks();
+			const result = await mutate(tasks);
+			await this._writeTasks(tasks);
+			return result;
+		}) as Promise<R>;
+	}
+
+	/** Same as {@link _withTasks} but for the boards list / queue. */
+	private _withBoards<R>(mutate: (boards: TaskBoard[]) => Promise<R> | R): Promise<R> {
+		return this._boardWriteQueue.queue(async () => {
+			const boards = await this._readBoards();
+			const result = await mutate(boards);
+			await this._writeBoards(boards);
+			return result;
+		}) as Promise<R>;
 	}
 
 	private _generateId(): string {
@@ -132,7 +198,6 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	async createTask(data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord> {
-		const tasks = await this._readTasks();
 		const now = new Date().toISOString();
 		const newTask: TaskBoardRecord = {
 			id: this._generateId(),
@@ -150,41 +215,43 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			createdAt: now,
 			updatedAt: now,
 		};
-		tasks.push(newTask);
-		await this._writeTasks(tasks);
+		await this._withTasks(tasks => { tasks.push(newTask); });
 		this._onDidChangeTaskBoard.fire();
 		this.logService.trace(`[AgentStudio] TaskBoard: created task ${newTask.id}`);
 		return newTask;
 	}
 
 	async updateTask(id: string, data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord> {
-		const tasks = await this._readTasks();
-		const index = tasks.findIndex(t => t.id === id);
-		if (index === -1) {
-			throw new Error(`Task not found: ${id}`);
-		}
-
 		const now = new Date().toISOString();
-		const updated: TaskBoardRecord = {
-			...tasks[index],
-			...data,
-			id,
-			updatedAt: now,
-		};
 
-		// Set completedAt when transitioning to Done/Cancelled/Archived;
-		// clear it when transitioning back to a non-terminal status (retry / unblock / redo).
-		if (data.status) {
-			const terminalStatuses: TaskBoardStatus[] = [TaskBoardStatus.Done, TaskBoardStatus.Cancelled, TaskBoardStatus.Archived];
-			if (terminalStatuses.includes(data.status)) {
-				updated.completedAt = now;
-			} else {
-				updated.completedAt = undefined;
+		// Phase 1 — persist the field changes atomically under the write queue.
+		const updated = await this._withTasks(tasks => {
+			const index = tasks.findIndex(t => t.id === id);
+			if (index === -1) {
+				throw new Error(`Task not found: ${id}`);
 			}
-		}
+			const next: TaskBoardRecord = {
+				...tasks[index],
+				...data,
+				id,
+				updatedAt: now,
+			};
+			// Set completedAt when transitioning to Done/Cancelled/Archived;
+			// clear it when transitioning back to a non-terminal status (retry / unblock / redo).
+			if (data.status) {
+				const terminalStatuses: TaskBoardStatus[] = [TaskBoardStatus.Done, TaskBoardStatus.Cancelled, TaskBoardStatus.Archived];
+				next.completedAt = terminalStatuses.includes(data.status) ? now : undefined;
+			}
+			tasks[index] = next;
+			return next;
+		});
+		this._onDidChangeTaskBoard.fire();
+		this.logService.trace(`[AgentStudio] TaskBoard: updated task ${id}`);
 
-		// When task transitions to Running, ensure an agent is assigned.
-		// If no agent exists, find or create one before executing.
+		// Phase 2 — when a task transitions to Running, ensure an agent is
+		// assigned. This is deliberately OUTSIDE the write queue: ensureTaskAgent
+		// may be slow (network / spawn) and must not block other task mutations.
+		// The agent assignment is persisted via a second small queued update.
 		if (data.status === TaskBoardStatus.Running && updated.workspaceId) {
 			try {
 				const result = await this.orchestrationService.ensureTaskAgent(
@@ -203,6 +270,15 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 					updated.assigneeName = result.assigneeName;
 					this.logService.info(`[AgentStudio] TaskBoard: ensured agent "${result.assigneeName}" (${result.assigneeId}) for task ${id}`);
 
+					// Persist the assignment (queued, so it won't clobber concurrent edits).
+					await this._withTasks(tasks => {
+						const i = tasks.findIndex(t => t.id === id);
+						if (i !== -1) {
+							tasks[i] = { ...tasks[i], assigneeId: result.assigneeId, assigneeName: result.assigneeName, updatedAt: new Date().toISOString() };
+						}
+					});
+					this._onDidChangeTaskBoard.fire();
+
 					// Fire-and-forget: invoke the agent to actually execute the task
 					this.orchestrationService.executeTaskForBoard(
 						updated.workspaceId!,
@@ -219,10 +295,6 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			}
 		}
 
-		tasks[index] = updated;
-		await this._writeTasks(tasks);
-		this._onDidChangeTaskBoard.fire();
-		this.logService.trace(`[AgentStudio] TaskBoard: updated task ${id}`);
 		return updated;
 	}
 
@@ -231,10 +303,14 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	async deleteTask(id: string): Promise<void> {
-		const tasks = await this._readTasks();
-		const filtered = tasks.filter(t => t.id !== id);
-		await this._writeTasks(filtered);
-		// Best-effort cleanup of the task's attachment side files.
+		await this._withTasks(tasks => {
+			const index = tasks.findIndex(t => t.id === id);
+			if (index !== -1) {
+				tasks.splice(index, 1);
+			}
+		});
+		// Best-effort cleanup of the task's attachment side files (separate dir,
+		// not the JSON — safe to do outside the write queue).
 		try {
 			const dir = URI.joinPath(this._getDataUri(), ATTACHMENTS_DIR, id);
 			if (await this.fileService.exists(dir)) {
@@ -286,48 +362,52 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	async createBoard(name: string, workspaceId: string): Promise<TaskBoard> {
-		const boards = await this._readBoards();
 		const now = new Date().toISOString();
-		const siblingCount = boards.filter(b => b.workspaceId === workspaceId).length;
-		const board: TaskBoard = {
-			id: this._generateBoardId(),
-			name: name.trim() || '新看板',
-			workspaceId,
-			order: siblingCount + 1,
-			createdAt: now,
-			updatedAt: now,
-		};
-		boards.push(board);
-		await this._writeBoards(boards);
+		const board = await this._withBoards(boards => {
+			const siblingCount = boards.filter(b => b.workspaceId === workspaceId).length;
+			const created: TaskBoard = {
+				id: this._generateBoardId(),
+				name: name.trim() || '新看板',
+				workspaceId,
+				order: siblingCount + 1,
+				createdAt: now,
+				updatedAt: now,
+			};
+			boards.push(created);
+			return created;
+		});
 		this._onDidChangeBoards.fire();
 		this.logService.trace(`[AgentStudio] Board: created ${board.id} (${board.name}) in workspace ${workspaceId}`);
 		return board;
 	}
 
 	async renameBoard(boardId: string, name: string): Promise<TaskBoard> {
-		const boards = await this._readBoards();
 		const now = new Date().toISOString();
-		const index = boards.findIndex(b => b.id === boardId);
 
-		if (index === -1) {
-			// Renaming the implicit (never-persisted) default board → persist it now.
-			if (boardId === DEFAULT_BOARD_ID) {
-				// We need a workspaceId; infer from any existing task's board, else fail gracefully.
-				const tasks = await this._readTasks();
-				const sample = tasks.find(t => this._effectiveBoardId(t) === DEFAULT_BOARD_ID);
-				const workspaceId = sample?.workspaceId ?? '';
-				const board: TaskBoard = { ...this._defaultBoard(workspaceId), name: name.trim() || '默认看板', updatedAt: now };
-				boards.push(board);
-				await this._writeBoards(boards);
-				this._onDidChangeBoards.fire();
-				return board;
-			}
-			throw new Error(`Board not found: ${boardId}`);
+		// If renaming the implicit (never-persisted) default board, we need a
+		// workspaceId to materialize it. Infer it from any task on that board
+		// before entering the write queue (read-only, safe outside).
+		let inferredDefaultWorkspaceId = '';
+		if (boardId === DEFAULT_BOARD_ID) {
+			const tasks = await this._readTasks();
+			inferredDefaultWorkspaceId = tasks.find(t => this._effectiveBoardId(t) === DEFAULT_BOARD_ID)?.workspaceId ?? '';
 		}
 
-		const updated: TaskBoard = { ...boards[index], name: name.trim() || boards[index].name, updatedAt: now };
-		boards[index] = updated;
-		await this._writeBoards(boards);
+		const updated = await this._withBoards(boards => {
+			const index = boards.findIndex(b => b.id === boardId);
+			if (index === -1) {
+				// Renaming the implicit default board → persist it now.
+				if (boardId === DEFAULT_BOARD_ID) {
+					const board: TaskBoard = { ...this._defaultBoard(inferredDefaultWorkspaceId), name: name.trim() || '默认看板', updatedAt: now };
+					boards.push(board);
+					return board;
+				}
+				throw new Error(`Board not found: ${boardId}`);
+			}
+			const next: TaskBoard = { ...boards[index], name: name.trim() || boards[index].name, updatedAt: now };
+			boards[index] = next;
+			return next;
+		});
 		this._onDidChangeBoards.fire();
 		this.logService.trace(`[AgentStudio] Board: renamed ${boardId} → ${updated.name}`);
 		return updated;
@@ -337,23 +417,32 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		if (boardId === DEFAULT_BOARD_ID) {
 			throw new Error('The default board cannot be deleted.');
 		}
-		const boards = await this._readBoards();
-		const target = boards.find(b => b.id === boardId);
-		const filtered = boards.filter(b => b.id !== boardId);
-		await this._writeBoards(filtered);
 
-		// Reassign all tasks of the deleted board back to the workspace's default board.
-		const tasks = await this._readTasks();
-		let touched = 0;
-		for (const t of tasks) {
-			if (this._effectiveBoardId(t) === boardId) {
-				t.boardId = DEFAULT_BOARD_ID;
-				t.updatedAt = new Date().toISOString();
-				touched++;
+		// Remove the board record (queued on the board file).
+		const target = await this._withBoards(boards => {
+			const found = boards.find(b => b.id === boardId);
+			const index = boards.findIndex(b => b.id === boardId);
+			if (index !== -1) {
+				boards.splice(index, 1);
 			}
-		}
+			return found;
+		});
+
+		// Reassign all tasks of the deleted board back to the workspace's
+		// default board (queued on the task file).
+		const touched = await this._withTasks(tasks => {
+			let count = 0;
+			const now = new Date().toISOString();
+			for (const t of tasks) {
+				if (this._effectiveBoardId(t) === boardId) {
+					t.boardId = DEFAULT_BOARD_ID;
+					t.updatedAt = now;
+					count++;
+				}
+			}
+			return count;
+		});
 		if (touched > 0) {
-			await this._writeTasks(tasks);
 			this._onDidChangeTaskBoard.fire();
 		}
 		this._onDidChangeBoards.fire();
@@ -371,9 +460,10 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	async addAttachment(taskId: string, name: string, mimeType: string, base64Content: string): Promise<TaskAttachment> {
-		const tasks = await this._readTasks();
-		const index = tasks.findIndex(t => t.id === taskId);
-		if (index === -1) {
+		// Fail fast if the task does not exist (read-only, outside the write queue)
+		// so we never leave an orphan side-file behind.
+		const existing = await this._readTasks();
+		if (!existing.some(t => t.id === taskId)) {
 			throw new Error(`Task not found: ${taskId}`);
 		}
 
@@ -387,27 +477,29 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		};
 
 		// Persist the binary content to a side file (never inline in JSON).
+		// The side-file is an independent resource, so it stays outside the JSON
+		// write queue; only the metadata mutation below is serialized.
 		const uri = this._attachmentUri(taskId, attachment.id);
 		await this.fileService.writeFile(uri, buffer);
 
-		// Append metadata to the task record.
-		const task = tasks[index];
-		const attachments = task.attachments ? [...task.attachments, attachment] : [attachment];
-		tasks[index] = { ...task, attachments, updatedAt: new Date().toISOString() };
-		await this._writeTasks(tasks);
+		// Append metadata to the task record (serialized through the write queue).
+		await this._withTasks(tasks => {
+			const index = tasks.findIndex(t => t.id === taskId);
+			if (index === -1) {
+				throw new Error(`Task not found: ${taskId}`);
+			}
+			const task = tasks[index];
+			const attachments = task.attachments ? [...task.attachments, attachment] : [attachment];
+			tasks[index] = { ...task, attachments, updatedAt: new Date().toISOString() };
+		});
 		this._onDidChangeTaskBoard.fire();
 		this.logService.trace(`[AgentStudio] TaskBoard: added attachment ${attachment.id} (${attachment.name}, ${attachment.size}B) to task ${taskId}`);
 		return attachment;
 	}
 
 	async removeAttachment(taskId: string, attachmentId: string): Promise<void> {
-		const tasks = await this._readTasks();
-		const index = tasks.findIndex(t => t.id === taskId);
-		if (index === -1) {
-			throw new Error(`Task not found: ${taskId}`);
-		}
-
-		// Delete the side file (best-effort).
+		// Delete the side file first (best-effort, outside the write queue —
+		// it is an independent resource, not part of the JSON document).
 		try {
 			const uri = this._attachmentUri(taskId, attachmentId);
 			if (await this.fileService.exists(uri)) {
@@ -417,10 +509,16 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			this.logService.warn(`[AgentStudio] TaskBoard: failed to delete attachment file ${attachmentId}:`, err);
 		}
 
-		const task = tasks[index];
-		const attachments = (task.attachments ?? []).filter(a => a.id !== attachmentId);
-		tasks[index] = { ...task, attachments, updatedAt: new Date().toISOString() };
-		await this._writeTasks(tasks);
+		// Drop the metadata from the task record (serialized through the write queue).
+		await this._withTasks(tasks => {
+			const index = tasks.findIndex(t => t.id === taskId);
+			if (index === -1) {
+				throw new Error(`Task not found: ${taskId}`);
+			}
+			const task = tasks[index];
+			const attachments = (task.attachments ?? []).filter(a => a.id !== attachmentId);
+			tasks[index] = { ...task, attachments, updatedAt: new Date().toISOString() };
+		});
 		this._onDidChangeTaskBoard.fire();
 		this.logService.trace(`[AgentStudio] TaskBoard: removed attachment ${attachmentId} from task ${taskId}`);
 	}

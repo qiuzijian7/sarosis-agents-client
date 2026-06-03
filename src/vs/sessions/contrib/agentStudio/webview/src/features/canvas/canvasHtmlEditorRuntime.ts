@@ -81,8 +81,14 @@ const RUNTIME_CSS = `
   --che-chrome-surface: rgba(255, 255, 255, 0.08);
   --che-chrome-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 }
+/* Positioned at the top-RIGHT, pushed down below the React "Root (editable)"
+   bar that floats above the iframe (.canvas-view-toggle, top:8px right:8px,
+   ~36px tall). The two bars live in different documents (this toolbar is
+   inside the srcdoc iframe; the Root bar is in the parent React layer), so we
+   can't nest them — instead we align this one right and drop it just under the
+   Root bar so it visually sits directly beneath it. */
 #che-toolbar {
-  position: fixed; top: 12px; left: 12px; z-index: 2147483600;
+  position: fixed; top: 44px; right: 8px; left: auto; z-index: 2147483600;
   display: flex; align-items: center; gap: 4px;
   padding: 4px; border-radius: 10px;
   background: var(--che-chrome-bg);
@@ -157,7 +163,78 @@ body.che-edit a { pointer-events: auto; }
 .che-guide.che-guide-v { width: 1px; top: 0; bottom: 0; }
 .che-guide.che-guide-h { height: 1px; left: 0; right: 0; }
 
-@media print { #che-toolbar, #che-overlay, #che-hover, .che-guide { display: none !important; } }
+/* ── Rich-text format toolbar (drawer-style, ported from
+   frontend-slides-editable's #rteToolbar). Shows whenever a text element is
+   being edited inline (NOT only when a run is selected). Main row = B/I/U +
+   "字体"/"字号"/"颜色" drawer triggers; clicking a trigger expands a card below
+   with the detailed choices. Supports a COLLAPSED caret (apply style without
+   pre-selecting text — wraps an invisible zero-width <span>). Applies styles by
+   wrapping the range in <span style="…">. Lives in the chrome z-stack. */
+#che-rte {
+  position: fixed; z-index: 2147483550; display: none;
+  flex-direction: column; align-items: stretch; gap: 0;
+  min-width: 188px; max-width: min(320px, 92vw);
+  padding: 6px; border-radius: 10px;
+  background: var(--che-chrome-bg); border: 1px solid var(--che-chrome-border);
+  box-shadow: var(--che-chrome-shadow); color: var(--che-chrome-text);
+  font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-user-select: none; user-select: none;
+}
+#che-rte.che-rte-show { display: flex; }
+#che-rte-main { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+#che-rte button {
+  appearance: none; border: 1px solid var(--che-chrome-border);
+  background: var(--che-chrome-surface); color: var(--che-chrome-text);
+  cursor: pointer; border-radius: 6px; padding: 4px 8px; font-size: 12px;
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+#che-rte button:hover { border-color: var(--che-chrome-accent); }
+#che-rte button.che-active { background: var(--che-chrome-accent); color: #fff; border-color: var(--che-chrome-accent); }
+#che-rte .che-rte-b { font-weight: 700; }
+#che-rte .che-rte-i { font-style: italic; font-family: Georgia, serif; }
+#che-rte .che-rte-u { text-decoration: underline; }
+#che-rte .che-rte-trigger { font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+#che-rte .che-rte-trigger.is-open {
+  background: var(--che-chrome-accent); color: #fff; border-color: var(--che-chrome-accent);
+}
+#che-rte-panels { display: flex; flex-direction: column; gap: 0; }
+#che-rte .che-rte-card {
+  margin-top: 6px; padding: 8px; border-radius: 8px;
+  border: 1px solid var(--che-chrome-border); background: var(--che-chrome-surface);
+}
+#che-rte .che-rte-card[hidden] { display: none !important; }
+#che-rte .che-rte-card-inner { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+#che-rte .che-rte-card-inner.che-rte-card-font { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#che-rte .che-rte-card-inner button { padding: 6px 6px; font-size: 11px; }
+#che-rte .che-rte-meta {
+  grid-column: 1 / -1; margin-bottom: 2px; font-size: 10px;
+  color: var(--che-chrome-text); opacity: 0.6; text-transform: uppercase; letter-spacing: 0.06em;
+}
+#che-rte .che-rte-px-custom {
+  grid-column: 1 / -1; display: none; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--che-chrome-border);
+}
+#che-rte .che-rte-px-custom.is-open { display: flex; }
+#che-rte .che-rte-px-custom input[type="number"] {
+  width: 4.5rem; padding: 4px 6px; border-radius: 6px; font-size: 12px;
+  border: 1px solid var(--che-chrome-border); background: var(--che-chrome-bg); color: var(--che-chrome-text);
+}
+/* Color drawer: swatches grid + native picker */
+#che-rte .che-rte-card-color { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+#che-rte .che-rte-swatch {
+  width: 100%; height: 22px; padding: 0; border-radius: 5px; cursor: pointer;
+  border: 1px solid rgba(128,128,128,0.35);
+}
+#che-rte .che-rte-color-pick {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  padding-top: 6px; border-top: 1px solid var(--che-chrome-border);
+}
+#che-rte .che-rte-color-pick input[type="color"] {
+  width: 28px; height: 24px; padding: 0; border: 1px solid var(--che-chrome-border);
+  border-radius: 5px; background: var(--che-chrome-bg); cursor: pointer;
+}
+
+@media print { #che-toolbar, #che-overlay, #che-hover, .che-guide, #che-rte { display: none !important; } }
 `;
 
 /**
@@ -270,8 +347,14 @@ const RUNTIME_JS = `
 
   // ── Chrome refs ──────────────────────────────────────────────────
   var overlay, ovResize, ovDelete, hoverBox;
+  // Rich-text format bar refs + last good selection range (see RTE section).
+  var rteBar, rteBtnB, rteBtnI, rteBtnU, rteColorInput;
+  // Stashed selection (captured on pointerdown over the bar so a focus-stealing
+  // control — number/color input — can restore it) + which drawer is open.
+  var rteFormatStash = null;
+  var rteOpenDrawer = null;
   function isChrome(node) {
-    return node && node.closest && node.closest('#che-toolbar, #che-overlay, #che-hover, .che-guide');
+    return node && node.closest && node.closest('#che-toolbar, #che-overlay, #che-hover, .che-guide, #che-rte');
   }
 
   // ── Selection ────────────────────────────────────────────────────
@@ -317,7 +400,7 @@ const RUNTIME_JS = `
   function onPointerDown(e) {
     if (!editMode) return;
     var t = e.target;
-    if (t.closest && t.closest('#che-toolbar')) return;
+    if (t.closest && t.closest('#che-toolbar, #che-rte')) return;
     // Resize handle?
     if (t === ovResize) {
       if (!primaryEl) return;
@@ -498,6 +581,7 @@ const RUNTIME_JS = `
     endTextEdit();
     cheId(el);
     textEditState = { el: el, before: el.innerHTML };
+    rtePendingBefore = null;
     el.setAttribute('contenteditable', 'true');
     el.classList.add('che-text-editing');
     el.focus();
@@ -506,6 +590,9 @@ const RUNTIME_JS = `
       var sel = window.getSelection();
       if (sel && sel.rangeCount === 0) { var rng = document.createRange(); rng.selectNodeContents(el); rng.collapse(false); sel.addRange(rng); }
     } catch (err) {}
+    // Refresh toolbar state. On entering edit the caret is collapsed, so the
+    // bar stays hidden — it only appears once the user actually selects text.
+    updateRteToolbar();
   }
   function endTextEdit() {
     if (!textEditState) return;
@@ -516,7 +603,13 @@ const RUNTIME_JS = `
     if (after !== textEditState.before) {
       pushHistory({ type: 'text', id: el.getAttribute('data-che-id'), before: textEditState.before, after: after });
     }
+    // Close the rich-text history session: any further edit on the same element
+    // starts a NEW undo entry instead of mutating this one.
+    var top = undoStack[undoStack.length - 1];
+    if (top && top._rteSession) { top._rteSession = false; }
+    rtePendingBefore = null;
     textEditState = null;
+    hideRteBar();
     repositionOverlay();
   }
   function onDblClick(e) {
@@ -527,6 +620,305 @@ const RUNTIME_JS = `
     selectElement(el, false);
     beginTextEdit(el);
   }
+
+  // ── Rich-text format bar (font-size / color / font-family / B,I,U) ──
+  //
+  // While editing text inline (contenteditable), selecting a run of characters
+  // pops a small floating bar above the selection. Bold/italic/underline use
+  // execCommand (it already wraps/unwraps cleanly); font-size/color/family use
+  // a Range+<span style> wrap (execCommand('fontSize') only supports the legacy
+  // 1-7 scale, so we apply CSS directly — ported from the reference runtime's
+  // _applyInlineStyle). Every change re-snapshots the editing element's
+  // innerHTML into ONE pending text-history entry so undo/redo stays coherent.
+  var rtePendingBefore = null; // innerHTML snapshot when the current edit began
+
+  var RTE_FONTS = [
+    { label: '默认', value: '' },
+    { label: '无衬线', value: '-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif' },
+    { label: '衬线', value: 'Georgia,"Times New Roman","Songti SC",serif' },
+    { label: '等宽', value: '"SF Mono","Cascadia Code",Consolas,"Courier New",monospace' },
+    { label: '楷体', value: '"Kaiti SC","STKaiti",KaiTi,serif' },
+    { label: '黑体', value: '"Heiti SC","PingFang SC","Microsoft YaHei",sans-serif' }
+  ];
+  var RTE_SIZES = ['12', '14', '16', '18', '20', '24', '28', '32', '40', '48', '64', '96'];
+  var RTE_SWATCHES = ['#1e1e1e', '#ffffff', '#e2503f', '#e8833a', '#f5b400', '#3aa15a',
+    '#2f80ed', '#7b5bd6', '#d6457b', '#888888', '#c0392b', '#16a085'];
+
+  // Build the drawer-style toolbar: main row (B/I/U + 字体/字号/颜色 triggers) +
+  // a panels column where each trigger expands a card with the choices.
+  function buildRteBar() {
+    rteBar = document.createElement('div'); rteBar.id = 'che-rte';
+
+    var main = document.createElement('div'); main.id = 'che-rte-main';
+    rteBtnB = mkRteBtn('che-rte-b', 'B', '加粗 (Ctrl+B)', function () { execInline('bold'); });
+    rteBtnI = mkRteBtn('che-rte-i', 'I', '斜体 (Ctrl+I)', function () { execInline('italic'); });
+    rteBtnU = mkRteBtn('che-rte-u', 'U', '下划线 (Ctrl+U)', function () { execInline('underline'); });
+    var trgFont = mkTrigger('font', '字体');
+    var trgSize = mkTrigger('size', '字号');
+    var trgColor = mkTrigger('color', '颜色');
+    main.appendChild(rteBtnB); main.appendChild(rteBtnI); main.appendChild(rteBtnU);
+    main.appendChild(trgFont); main.appendChild(trgSize); main.appendChild(trgColor);
+    rteBar.appendChild(main);
+
+    var panels = document.createElement('div'); panels.id = 'che-rte-panels';
+
+    // Font drawer
+    var cardFont = mkCard('font');
+    var innerFont = document.createElement('div'); innerFont.className = 'che-rte-card-inner che-rte-card-font';
+    innerFont.appendChild(mkMeta('字体'));
+    RTE_FONTS.forEach(function (f) {
+      innerFont.appendChild(mkChoice(f.label, function () { applyInlineStyle({ fontFamily: f.value }); }));
+    });
+    cardFont.appendChild(innerFont); panels.appendChild(cardFont);
+
+    // Size drawer
+    var cardSize = mkCard('size');
+    var innerSize = document.createElement('div'); innerSize.className = 'che-rte-card-inner';
+    innerSize.appendChild(mkMeta('字号 (px)'));
+    RTE_SIZES.forEach(function (s) {
+      innerSize.appendChild(mkChoice(s, function () { applyInlineStyle({ fontSize: s + 'px' }); }));
+    });
+    // Custom px row
+    var customWrap = document.createElement('div'); customWrap.className = 'che-rte-px-custom';
+    var customInput = document.createElement('input');
+    customInput.type = 'number'; customInput.min = '8'; customInput.max = '400'; customInput.step = '1';
+    customInput.placeholder = '8–400'; customInput.setAttribute('inputmode', 'numeric');
+    var customApply = mkChoice('应用', function () {
+      var n = Math.round(Number(customInput.value));
+      if (isFinite(n) && n >= 8 && n <= 400) applyInlineStyle({ fontSize: n + 'px' });
+    });
+    customInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); customApply.click(); }
+    });
+    var customBtn = mkChoice('自定义…', function () { customWrap.classList.toggle('is-open'); if (customWrap.classList.contains('is-open')) customInput.focus(); });
+    innerSize.appendChild(customBtn);
+    customWrap.appendChild(customInput); customWrap.appendChild(customApply);
+    innerSize.appendChild(customWrap);
+    cardSize.appendChild(innerSize); panels.appendChild(cardSize);
+
+    // Color drawer
+    var cardColor = mkCard('color');
+    var innerColor = document.createElement('div'); innerColor.className = 'che-rte-card-inner che-rte-card-color';
+    innerColor.appendChild(mkMeta('文字颜色'));
+    RTE_SWATCHES.forEach(function (c) {
+      var b = document.createElement('button'); b.type = 'button';
+      b.className = 'che-rte-swatch'; b.style.background = c; b.title = c;
+      b.addEventListener('mousedown', function (ev) { ev.preventDefault(); applyInlineStyle({ color: c }); });
+      innerColor.appendChild(b);
+    });
+    var pick = document.createElement('div'); pick.className = 'che-rte-color-pick';
+    var pickLabel = mkMeta('自定义'); pickLabel.style.gridColumn = 'auto'; pickLabel.style.margin = '0';
+    rteColorInput = document.createElement('input'); rteColorInput.type = 'color'; rteColorInput.value = '#e2503f';
+    rteColorInput.addEventListener('input', function () { applyInlineStyle({ color: rteColorInput.value }); });
+    pick.appendChild(pickLabel); pick.appendChild(rteColorInput);
+    innerColor.appendChild(pick);
+    cardColor.appendChild(innerColor); panels.appendChild(cardColor);
+
+    rteBar.appendChild(panels);
+    document.body.appendChild(rteBar);
+  }
+  function mkRteBtn(cls, label, title, fn) {
+    var b = document.createElement('button'); b.type = 'button';
+    b.className = cls; b.textContent = label; b.title = title;
+    // mousedown + preventDefault: act BEFORE the contenteditable blurs so the
+    // caret/selection stays alive.
+    b.addEventListener('mousedown', function (ev) { ev.preventDefault(); fn(); });
+    return b;
+  }
+  function mkTrigger(drawer, label) {
+    var b = document.createElement('button'); b.type = 'button';
+    b.className = 'che-rte-trigger'; b.textContent = label;
+    b.setAttribute('data-rte-drawer', drawer);
+    b.addEventListener('mousedown', function (ev) { ev.preventDefault(); toggleRteDrawer(drawer); });
+    return b;
+  }
+  function mkCard(drawer) {
+    var c = document.createElement('div'); c.className = 'che-rte-card';
+    c.setAttribute('data-rte-panel', drawer); c.hidden = true;
+    return c;
+  }
+  function mkMeta(text) { var s = document.createElement('span'); s.className = 'che-rte-meta'; s.textContent = text; return s; }
+  function mkChoice(label, fn) {
+    var b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+    b.addEventListener('mousedown', function (ev) { ev.preventDefault(); fn(); });
+    return b;
+  }
+
+  // Open/close one drawer card (accordion: opening one closes the others).
+  function toggleRteDrawer(drawer) {
+    var willOpen = rteOpenDrawer !== drawer;
+    rteOpenDrawer = willOpen ? drawer : null;
+    if (!rteBar) return;
+    rteBar.querySelectorAll('.che-rte-card').forEach(function (c) {
+      c.hidden = c.getAttribute('data-rte-panel') !== rteOpenDrawer;
+    });
+    rteBar.querySelectorAll('.che-rte-trigger').forEach(function (t) {
+      t.classList.toggle('is-open', t.getAttribute('data-rte-drawer') === rteOpenDrawer);
+    });
+    positionRteBar();
+  }
+  function closeRteDrawers() {
+    rteOpenDrawer = null;
+    if (!rteBar) return;
+    rteBar.querySelectorAll('.che-rte-card').forEach(function (c) { c.hidden = true; });
+    rteBar.querySelectorAll('.che-rte-trigger').forEach(function (t) { t.classList.remove('is-open'); });
+  }
+
+  // Stash the caret/selection while it still lives in the editable element, so a
+  // focus-stealing control (number/color input) can restore it before applying.
+  // Bound at document level on pointerdown (capture) — see boot().
+  function rtePointerStash(e) {
+    if (!editMode || !textEditState || !e.target || !e.target.closest) return;
+    if (!e.target.closest('#che-rte')) return;
+    stashRteSelection();
+  }
+  function stashRteSelection() {
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    var r = sel.getRangeAt(0);
+    if (textEditState && textEditState.el.contains(r.commonAncestorContainer)) {
+      try { rteFormatStash = r.cloneRange(); } catch (_) { rteFormatStash = null; }
+    }
+  }
+  function restoreRteSelection() {
+    if (!rteFormatStash || !textEditState) return false;
+    try {
+      textEditState.el.focus();
+      var sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(rteFormatStash);
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // Wrap the current selection in <span style=…> applying the CSS patch. Works
+  // even with a COLLAPSED caret: inserts an invisible zero-width span so the
+  // next typed characters inherit the style (ported from reference runtime).
+  function applyInlineStyle(patch) {
+    if (!textEditState) return;
+    var host = textEditState.el;
+    restoreRteSelection();
+    host.focus();
+    var sel = window.getSelection();
+    var range;
+    if (!sel) return;
+    if (!sel.rangeCount) {
+      range = document.createRange(); range.selectNodeContents(host); range.collapse(false);
+      sel.removeAllRanges(); sel.addRange(range);
+    } else {
+      range = sel.getRangeAt(0);
+      if (!host.contains(range.commonAncestorContainer)) {
+        range = document.createRange(); range.selectNodeContents(host); range.collapse(false);
+        sel.removeAllRanges(); sel.addRange(range);
+      }
+    }
+    var span = document.createElement('span');
+    Object.keys(patch).forEach(function (k) { span.style[k] = patch[k]; });
+    try {
+      if (range.collapsed) {
+        span.appendChild(document.createTextNode('\\u200b'));
+        range.insertNode(span);
+        var cr = document.createRange();
+        cr.setStart(span.firstChild, 1); cr.collapse(true);
+        sel.removeAllRanges(); sel.addRange(cr);
+      } else {
+        var contents = range.extractContents();
+        span.appendChild(contents);
+        range.insertNode(span);
+        var nr = document.createRange(); nr.selectNodeContents(span);
+        sel.removeAllRanges(); sel.addRange(nr);
+        rteFormatStash = nr.cloneRange();
+      }
+    } catch (err) { return; }
+    host.normalize();
+    commitTextSnapshot(host);
+    positionRteBar();
+    syncRteState();
+  }
+  // execCommand path for bold/italic/underline (toggles cleanly).
+  function execInline(cmd) {
+    if (!textEditState) return;
+    var host = textEditState.el;
+    restoreRteSelection();
+    host.focus();
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    if (!host.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
+    try { document.execCommand('styleWithCSS', false, 'true'); } catch (e) {}
+    try { document.execCommand(cmd, false, null); } catch (e2) { return; }
+    stashRteSelection();
+    commitTextSnapshot(host);
+    syncRteState();
+  }
+  // Fold the latest innerHTML into the single pending text-history entry so the
+  // whole inline-editing session (typing + formatting) is ONE undo step until
+  // the user leaves the element.
+  function commitTextSnapshot(host) {
+    if (!textEditState) return;
+    cheId(host);
+    var id = host.getAttribute('data-che-id');
+    var before = rtePendingBefore != null ? rtePendingBefore : textEditState.before;
+    var top = undoStack[undoStack.length - 1];
+    if (top && top.type === 'text' && top.id === id && top._rteSession) {
+      top.after = host.innerHTML;
+    } else {
+      pushHistory({ type: 'text', id: id, before: before, after: host.innerHTML, _rteSession: true });
+    }
+    rtePendingBefore = before;
+    textEditState.before = host.innerHTML;
+  }
+
+  // Reflect the selection's current bold/italic/underline into the bar.
+  function syncRteState() {
+    if (!rteBar) return;
+    try {
+      if (rteBtnB) rteBtnB.classList.toggle('che-active', document.queryCommandState('bold'));
+      if (rteBtnI) rteBtnI.classList.toggle('che-active', document.queryCommandState('italic'));
+      if (rteBtnU) rteBtnU.classList.toggle('che-active', document.queryCommandState('underline'));
+    } catch (e) {}
+  }
+
+  function positionRteBar() {
+    if (!rteBar || !textEditState) return;
+    rteBar.classList.add('che-rte-show');
+    var sel = window.getSelection();
+    var rect = textEditState.el.getBoundingClientRect();
+    if (sel && sel.rangeCount) {
+      var r = sel.getRangeAt(0).getBoundingClientRect();
+      if (r && r.width > 1 && r.height > 1) rect = r;
+    }
+    var bw = rteBar.offsetWidth || 200, bh = rteBar.offsetHeight || 34;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = rect.left + rect.width / 2 - bw / 2;
+    left = Math.max(6, Math.min(left, vw - bw - 6));
+    var top = rect.top - bh - 8;
+    if (top < 6) top = Math.min(rect.bottom + 8, vh - bh - 6); // flip below if no room above
+    rteBar.style.left = left + 'px';
+    rteBar.style.top = top + 'px';
+  }
+  function hideRteBar() { if (rteBar) rteBar.classList.remove('che-rte-show'); closeRteDrawers(); rteFormatStash = null; }
+
+  // Driven by selectionchange (bound in boot): the toolbar is shown ONLY when
+  // there is a real (non-collapsed) text selection inside the element being
+  // edited. Merely placing/picking the caret (collapsed selection) hides it —
+  // the bar appears once the user actually selects text, and disappears again
+  // when the selection collapses.
+  function updateRteToolbar() {
+    if (!editMode || !textEditState) { hideRteBar(); return; }
+    // If a toolbar control itself holds focus (color/number input steals focus
+    // and collapses the document selection), keep the bar open — the stashed
+    // selection is what the format will apply to.
+    var ae = document.activeElement;
+    if (rteBar && ae && rteBar.contains(ae)) { return; }
+    var sel = window.getSelection();
+    var hasTextSelection = !!(sel && sel.rangeCount && !sel.isCollapsed &&
+      textEditState.el.contains(sel.getRangeAt(0).commonAncestorContainer));
+    if (!hasTextSelection) { hideRteBar(); return; }
+    // Keep the stash fresh while a real selection is active.
+    stashRteSelection();
+    positionRteBar();
+    syncRteState();
+  }
+  function onSelectionChange() { updateRteToolbar(); }
 
   // ── Toolbar ──────────────────────────────────────────────────────
   var btnEdit, btnUndo, btnRedo, hint;
@@ -540,7 +932,7 @@ const RUNTIME_JS = `
     var btnSave = mkBtn('\\u2913 保存', save); btnSave.title = '保存 (Ctrl+S)';
     var dot = document.createElement('span'); dot.className = 'che-dirty-dot';
     hint = document.createElement('span'); hint.className = 'che-hint';
-    hint.textContent = '点击选中 · 拖动移动 · 双击改文字 · Del 删除';
+    hint.textContent = '点击选中 · 拖动移动 · 双击改文字 · 选中文字调格式 · Del 删除';
     hint.style.display = 'none';
     bar.appendChild(btnEdit); bar.appendChild(sep1);
     bar.appendChild(btnUndo); bar.appendChild(btnRedo); bar.appendChild(sep2);
@@ -558,6 +950,9 @@ const RUNTIME_JS = `
     hoverBox = document.createElement('div'); hoverBox.id = 'che-hover';
     document.body.appendChild(hoverBox);
 
+    // Rich-text selection format bar.
+    buildRteBar();
+
     syncButtons();
   }
   function mkBtn(label, fn) { var b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); return b; }
@@ -571,7 +966,7 @@ const RUNTIME_JS = `
   function toggleEdit() {
     editMode = !editMode;
     document.body.classList.toggle('che-edit', editMode);
-    if (!editMode) { endTextEdit(); clearSelection(); if (hoverBox) hoverBox.style.display = 'none'; }
+    if (!editMode) { endTextEdit(); clearSelection(); if (hoverBox) hoverBox.style.display = 'none'; hideRteBar(); }
     btnEdit.textContent = editMode ? '\\u2713 完成' : '\\u270e 编辑';
     if (hint) hint.style.display = editMode ? 'inline' : 'none';
     syncButtons();
@@ -580,7 +975,7 @@ const RUNTIME_JS = `
   // ── Serialize + save ─────────────────────────────────────────────
   function cleanedHtml() {
     var clone = document.documentElement.cloneNode(true);
-    clone.querySelectorAll('#che-toolbar, #che-overlay, #che-hover, .che-guide, #che-runtime-style, #che-runtime-script, #${BASE_STYLE_ID}').forEach(function (n) { n.remove(); });
+    clone.querySelectorAll('#che-toolbar, #che-overlay, #che-hover, #che-rte, .che-guide, #che-runtime-style, #che-runtime-script, #${BASE_STYLE_ID}').forEach(function (n) { n.remove(); });
     clone.querySelectorAll('.che-multi-selected').forEach(function (n) { n.classList.remove('che-multi-selected'); });
     clone.querySelectorAll('.che-text-editing').forEach(function (n) { n.classList.remove('che-text-editing'); });
     clone.querySelectorAll('[contenteditable]').forEach(function (n) { n.removeAttribute('contenteditable'); });
@@ -619,6 +1014,13 @@ const RUNTIME_JS = `
     if (mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); save(); return; }
     // When typing inside contenteditable/input, only Esc is meaningful.
     if (textEditState && e.key === 'Escape') { e.preventDefault(); endTextEdit(); return; }
+    // Bold / italic / underline shortcuts while editing text inline.
+    if (textEditState && mod && !e.shiftKey && !e.altKey) {
+      var k = (e.key || '').toLowerCase();
+      if (k === 'b') { e.preventDefault(); execInline('bold'); return; }
+      if (k === 'i') { e.preventDefault(); execInline('italic'); return; }
+      if (k === 'u') { e.preventDefault(); execInline('underline'); return; }
+    }
     if (isTyping(e)) return;
     // 'E' toggles edit mode (no modifier).
     if (!mod && (e.key === 'e' || e.key === 'E')) { e.preventDefault(); toggleEdit(); return; }
@@ -648,13 +1050,19 @@ const RUNTIME_JS = `
   function boot() {
     buildChrome();
     document.addEventListener('pointerdown', onPointerDown, true);
+    // Stash the live selection BEFORE a toolbar control (number/color input)
+    // steals focus and collapses it. Capture-phase, runs ahead of onPointerDown
+    // (which early-returns for #che-rte targets, so no conflict).
+    document.addEventListener('pointerdown', rtePointerStash, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('dblclick', onDblClick, true);
     document.addEventListener('pointerover', onPointerOver, true);
     document.addEventListener('pointerout', onPointerOut, true);
     document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('selectionchange', onSelectionChange);
     window.addEventListener('resize', repositionOverlay, true);
     window.addEventListener('scroll', repositionOverlay, true);
+    window.addEventListener('scroll', function () { if (textEditState) positionRteBar(); }, true);
     post('ready', { editable: true });
   }
 

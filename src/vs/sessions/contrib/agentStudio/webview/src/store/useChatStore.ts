@@ -148,6 +148,8 @@ export interface ChatMessage {
 		cached?: number;
 		/** KV Cache: tokens written to cache (Anthropic cache_creation_input_tokens). */
 		cacheWrite?: number;
+		/** Billing credits consumed by this turn (gateway final-chunk usage.credit). */
+		credit?: number;
 	};
 	timestamp: string;
 	/** Structured error info for system error messages (VS Code Copilot Chat pattern) */
@@ -1166,12 +1168,26 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		jumpToCheckpoint: (checkpointId: string) => {
-			// Send a request to the host to restore the checkpoint state
-			sendRequest('chat.jumpToCheckpoint', { checkpointId }).catch(err => {
+			const state = get();
+			const employeeId = state.activeEmployeeId;
+			const sessionId = state.activeAgentSessionId;
+			// Send a request to the host to restore the checkpoint state (file
+			// contents on disk). The host scopes storage by employeeId+sessionId.
+			sendRequest('chat.jumpToCheckpoint', {
+				checkpointId,
+				employeeId: employeeId ?? '',
+				sessionId: sessionId ?? '',
+			}).catch(err => {
 				console.error('[ChatStore] jumpToCheckpoint failed:', err);
 			});
-			// Mark all checkpoints after the target as ghost
-			setActiveCheckpoint(checkpointId);
+			// Mark all checkpoints after the target as ghost, and truncate the
+			// chat history back to the checkpoint (Void-inspired time travel).
+			get().setActiveCheckpoint(checkpointId);
+			set(state => {
+				const targetIdx = state.messages.findIndex(m => m.id === checkpointId);
+				if (targetIdx < 0) { return state; }
+				return { messages: state.messages.slice(0, targetIdx + 1) };
+			});
 		},
 
 		setActiveCheckpoint: (checkpointId: string) => {

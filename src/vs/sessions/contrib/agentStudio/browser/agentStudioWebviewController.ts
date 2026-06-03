@@ -100,6 +100,7 @@ import type {
 import type {
 	ICheckpoint,
 } from "../common/checkpointTypes.js";
+import { ICheckpointService } from "../common/checkpointService.js";
 import {
 	WorkspaceSessionService,
 	type IWorkspaceSessionService,
@@ -181,6 +182,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IRequestService private readonly requestService: IRequestService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
+		@ICheckpointService private readonly checkpointService: ICheckpointService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(
@@ -211,6 +213,25 @@ export class AgentStudioWebviewController extends Disposable {
 		};
 		this.agentOSService.setToolApprovalHandler(approvalHandler);
 		this.logService.info('[AgentStudioWebviewController] Tool approval handler registered');
+
+		// Checkpoint: forward newly created checkpoints to the webview so it can
+		// render an inline checkpoint card without an extra round-trip.
+		this._register(
+			this.checkpointService.onDidCreateCheckpoint((checkpoint) => {
+				this._sendEvent('chat.checkpointCreated', {
+					id: checkpoint.id,
+					employeeId: checkpoint.employeeId,
+					sessionId: checkpoint.sessionId,
+					type: checkpoint.type,
+					label: checkpoint.label,
+					description: checkpoint.description,
+					createdAt: checkpoint.createdAt,
+					fileSnapshotIds: checkpoint.fileSnapshotIds,
+					isGhost: checkpoint.isGhost,
+					messageId: checkpoint.messageId,
+				});
+			}),
+		);
 	}
 
 	private _getMediaUri(): URI {
@@ -1038,6 +1059,10 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 
 		// Persist the user message to chat history so it survives refreshes.
+		// IMPORTANT: appendMessage MUST complete (cache populated) BEFORE
+		// _runChatStream → agentChatService.sendMessage runs its dedup guard,
+		// otherwise sendMessage won't see this message in _historyCache and will
+		// persist a SECOND copy → duplicate user message after reload.
 		const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
 		{
 			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
@@ -1047,16 +1072,17 @@ export class AgentStudioWebviewController extends Disposable {
 			agentSessionId,
 			timestamp: new Date().toISOString(),
 		};
-		this.agentChatService
-			.appendMessage(employeeId, userMessage)
-			.catch((err) =>
+		void (async () => {
+			try {
+				await this.agentChatService.appendMessage(employeeId, userMessage);
+			} catch (err) {
 				this.logService.error(
 					"[AgentStudio] Failed to persist user message:",
 					err,
-				),
-			);
-
-		this._runChatStream(employeeId, message, payload);
+				);
+			}
+			this._runChatStream(employeeId, message, payload);
+		})();
 
 		return { status: "streaming", employeeId };
 	}
@@ -1105,6 +1131,8 @@ export class AgentStudioWebviewController extends Disposable {
 			});
 
 			// Persist the user message under the resolved session.
+			// Await before streaming so sendMessage's dedup guard sees it (see
+			// _handleChatSend note) — prevents a duplicate user message on reload.
 			const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
 			{
 				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
@@ -1114,14 +1142,14 @@ export class AgentStudioWebviewController extends Disposable {
 				agentSessionId,
 				timestamp: new Date().toISOString(),
 			};
-			this.agentChatService
-				.appendMessage(employeeId, userMessage)
-				.catch((err) =>
-					this.logService.error(
-						"[AgentStudio] Failed to persist user message:",
-						err,
-					),
+			try {
+				await this.agentChatService.appendMessage(employeeId, userMessage);
+			} catch (err) {
+				this.logService.error(
+					"[AgentStudio] Failed to persist user message:",
+					err,
 				);
+			}
 
 			// Run the chat stream with the resolved agentSessionId.
 			const enrichedPayload = { ...payload, agentSessionId };
@@ -1159,7 +1187,9 @@ export class AgentStudioWebviewController extends Disposable {
 			);
 			const agentSessionId = entry.sessionId;
 
-			// Persist the user message with the resolved agentSessionId
+			// Persist the user message with the resolved agentSessionId.
+			// Await before streaming so sendMessage's dedup guard sees it (see
+			// _handleChatSend note) — prevents a duplicate user message on reload.
 			const userMessage: import("../../../common/agentStudioTypes.js").ChatMessage =
 			{
 				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
@@ -1169,14 +1199,14 @@ export class AgentStudioWebviewController extends Disposable {
 				agentSessionId,
 				timestamp: new Date().toISOString(),
 			};
-			this.agentChatService
-				.appendMessage(employeeId, userMessage)
-				.catch((err) =>
-					this.logService.error(
-						"[AgentStudio] Failed to persist user message:",
-						err,
-					),
+			try {
+				await this.agentChatService.appendMessage(employeeId, userMessage);
+			} catch (err) {
+				this.logService.error(
+					"[AgentStudio] Failed to persist user message:",
+					err,
 				);
+			}
 
 			// Notify webview of the newly assigned agentSessionId
 			this._sendEvent("workspace.sessionUpdated", {
@@ -1216,6 +1246,32 @@ export class AgentStudioWebviewController extends Disposable {
 		let capturedProviderSessionId: string | undefined;
 		let streamingTextBuffer: string = ''; // 流式文本缓冲区，用于增量工具检测 + 全量快照（参考 Void 的 fullTextSoFar）
 		let streamingThinkingBuffer: string = ''; // 流式推理缓冲区，用于全量快照
+
+		// ── Checkpoint: register the active session (so tool_edit checkpoints
+		//    created deep inside the tool provider can resolve the sessionId) and
+		//    drop a user_edit anchor for this turn (Void-inspired message boundary).
+		if (agentSessionId) {
+			try {
+				this.checkpointService.setActiveSession(employeeId, agentSessionId);
+				// Anchor checkpoint: empty file set — it marks the message boundary;
+				// actual file rollback is provided by the tool_edit checkpoints that
+				// follow whenever the agent writes a file this turn.
+				this.checkpointService
+					.createCheckpoint({
+						employeeId,
+						sessionId: agentSessionId,
+						type: 'user_edit',
+						fileSnapshots: [],
+					})
+					.catch((err) =>
+						this.logService.warn(
+							`[AgentStudio] Failed to create user_edit checkpoint: ${err}`,
+						),
+					);
+			} catch (err) {
+				this.logService.warn(`[AgentStudio] checkpoint anchor setup failed: ${err}`);
+			}
+		}
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
 				employeeId,
@@ -1741,16 +1797,38 @@ export class AgentStudioWebviewController extends Disposable {
 
 	/**
 	 * Navigate to a checkpoint (Void-inspired time-travel navigation).
-	 * TODO: CheckpointService depends on Node.js APIs (fs, sqlite3) and must run
-	 * in the extension host process. Re-implement via IAgentStudioService or IPC.
+	 * Restores file contents from the snapshot and marks subsequent checkpoints
+	 * as ghost. The webview is responsible for truncating chat history.
 	 */
 	private async _handleJumpToCheckpoint(
 		payload: IChatJumpToCheckpointPayload,
 	): Promise<void> {
-		this.logService.warn(
-			'[AgentStudioWebviewController] chat.jumpToCheckpoint is not yet available in browser context',
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.jumpToCheckpoint → ${payload.checkpointId}`,
 		);
-		throw new Error('Checkpoint functionality is not yet available in browser context. Needs Node.js process implementation.');
+		await this.checkpointService.jumpToCheckpoint(
+			payload.employeeId,
+			payload.sessionId,
+			payload.checkpointId,
+		);
+		// Persist the history truncation so the rollback survives a reload.
+		// Without this, the webview truncates in-memory only and the next
+		// loadHistory pulls the removed messages back from disk (Bug: messages
+		// reappear after reload). messageId is the last message to KEEP.
+		if (payload.truncateAfterMessageId) {
+			try {
+				await this.agentChatService.deleteMessagesAfter(
+					payload.employeeId,
+					payload.sessionId,
+					payload.truncateAfterMessageId,
+				);
+			} catch (err) {
+				this.logService.error(
+					"[AgentStudioWebviewController] Failed to truncate history after checkpoint:",
+					err,
+				);
+			}
+		}
 	}
 
 	/**
@@ -1800,56 +1878,59 @@ export class AgentStudioWebviewController extends Disposable {
 
 	/**
 	 * Handle add checkpoint request from webview.
-	 * TODO: CheckpointService depends on Node.js APIs (fs, sqlite3) and must run
-	 * in the extension host process. Re-implement via IAgentStudioService or IPC.
+	 * Reads the current on-disk content of the given files and persists a snapshot.
 	 */
 	private async _handleAddCheckpoint(
 		payload: IChatAddCheckpointPayload,
-	): Promise<void> {
-		this.logService.warn(
-			'[AgentStudioWebviewController] chat.addCheckpoint is not yet available in browser context',
+	): Promise<ICheckpoint | undefined> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.addCheckpoint → ${payload.type} (${payload.fileUris?.length ?? 0} files)`,
 		);
-		throw new Error('Checkpoint functionality is not yet available in browser context. Needs Node.js process implementation.');
+		return this.checkpointService.createCheckpointFromUris(
+			payload.employeeId,
+			payload.sessionId,
+			payload.type,
+			payload.fileUris ?? [],
+			{
+				label: payload.label,
+				description: payload.description,
+				messageId: payload.messageId,
+			},
+		);
 	}
 
 	/**
 	 * Handle get checkpoint request from webview.
-	 * TODO: CheckpointService depends on Node.js APIs (fs, sqlite3) and must run
-	 * in the extension host process. Re-implement via IAgentStudioService or IPC.
 	 */
 	private async _handleGetCheckpoint(
 		payload: IChatGetCheckpointPayload,
 	): Promise<ICheckpoint | undefined> {
-		this.logService.warn(
-			'[AgentStudioWebviewController] chat.getCheckpoint is not yet available in browser context',
+		return this.checkpointService.getCheckpoint(
+			payload.employeeId,
+			payload.sessionId,
+			payload.checkpointId,
 		);
-		return undefined;
 	}
 
 	/**
 	 * Handle list checkpoints request from webview.
-	 * TODO: CheckpointService depends on Node.js APIs (fs, sqlite3) and must run
-	 * in the extension host process. Re-implement via IAgentStudioService or IPC.
 	 */
 	private async _handleListCheckpoints(
 		payload: IChatListCheckpointsPayload,
 	): Promise<ICheckpoint[]> {
-		this.logService.warn(
-			'[AgentStudioWebviewController] chat.listCheckpoints is not yet available in browser context',
-		);
-		return [];
+		return this.checkpointService.listCheckpoints(payload.employeeId, payload.sessionId);
 	}
 
 	/**
 	 * Handle delete checkpoint request from webview.
-	 * TODO: CheckpointService depends on Node.js APIs (fs, sqlite3) and must run
-	 * in the extension host process. Re-implement via IAgentStudioService or IPC.
 	 */
 	private async _handleDeleteCheckpoint(
 		payload: IChatDeleteCheckpointPayload,
 	): Promise<void> {
-		this.logService.warn(
-			'[AgentStudioWebviewController] chat.deleteCheckpoint is not yet available in browser context',
+		await this.checkpointService.deleteCheckpoint(
+			payload.employeeId,
+			payload.sessionId,
+			payload.checkpointId,
 		);
 	}
 

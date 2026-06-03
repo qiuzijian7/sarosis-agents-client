@@ -31,6 +31,7 @@ import { ConfirmationCard } from './ConfirmationCard';
 import { TodoListCard } from './TodoListCard';
 import { TipCard } from './TipCard';
 import { QuestionCarouselCard } from './QuestionCarouselCard';
+import { CheckpointCard } from './CheckpointCard';
 
 interface ChatMessageProps {
 	message: ChatMessage;
@@ -147,6 +148,17 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 		});
 		return cleaned;
 	}, [message.content, isUser]);
+
+	// ── Checkpoint message (Void-inspired time-travel anchor) ──────────────
+	// Rendered as a slim divider card; clicking a ghost checkpoint restores it.
+	if (message.role === 'checkpoint' && message.checkpoint) {
+		return (
+			<CheckpointCard
+				checkpoint={message.checkpoint}
+				onRestore={(checkpointId) => useChatStore.getState().jumpToCheckpoint(checkpointId)}
+			/>
+		);
+	}
 
 	return (
 		<div className={`chat-message ${message.role}`}>
@@ -432,13 +444,19 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 						title={
 							`输入: ${message.tokenUsage.input} / 输出: ${message.tokenUsage.output}` +
 							(message.tokenUsage.cached ? ` / 缓存命中: ${message.tokenUsage.cached}` : '') +
-							(message.tokenUsage.cacheWrite ? ` / 缓存写入: ${message.tokenUsage.cacheWrite}` : '')
+							(message.tokenUsage.cacheWrite ? ` / 缓存写入: ${message.tokenUsage.cacheWrite}` : '') +
+							(message.tokenUsage.credit ? ` / 消耗积分: ${message.tokenUsage.credit}` : '')
 						}
 					>
 						{message.tokenUsage.total} tokens
 						{message.tokenUsage.cached && message.tokenUsage.cached > 0 ? (
 							<span className="message-cache-hit" style={{ marginLeft: 6, opacity: 0.85 }}>
 								🎯 cache {message.tokenUsage.cached}
+							</span>
+						) : null}
+						{message.tokenUsage.credit && message.tokenUsage.credit > 0 ? (
+							<span className="message-credit" style={{ marginLeft: 6, opacity: 0.85 }}>
+								💎 {message.tokenUsage.credit}
 							</span>
 						) : null}
 					</span>
@@ -498,6 +516,7 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.tips === nm.tips &&
 		pm.questions === nm.questions &&
 		pm.attachments === nm.attachments &&
+		pm.checkpoint === nm.checkpoint &&
 		prev.isStreaming === next.isStreaming
 	);
 });

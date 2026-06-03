@@ -14,6 +14,7 @@
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import * as zlib from 'zlib';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -57,6 +58,18 @@ function extractTenantIdFromIss(iss: string): string | undefined {
 
 const VENDOR = 'codebuddy';
 const EXTENSION_ID = 'sarosis.sarosis-codebuddy-provider';
+
+/**
+ * Reasoning/thinking config forwarded from the host bridge through
+ * `modelOptions.reasoning`. Mirrors `IReasoningOptions` in
+ * src/vs/sessions/contrib/agentStudio/common/providers.ts.
+ * ⚠️ Keep field names in sync with that interface (cross-package, hardcoded).
+ */
+interface ReasoningOption {
+	readonly enabled: boolean;
+	readonly budget?: number;
+	readonly effort?: 'low' | 'medium' | 'high';
+}
 
 /** IDE identity headers values (mirrors CodeBuddy IDE CN packet capture) */
 const IDE_TYPE = 'VSCode';
@@ -438,6 +451,17 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
 	private readonly _context: vscode.ExtensionContext;
 
+	/**
+	 * Per-session last response id, for the OpenAI-style `previous_response_id`
+	 * stateful multi-turn association (matches CodeBuddy IDE CN behavior).
+	 * Key = stable sessionId (from modelOptions.sessionId, used as X-Conversation-Id).
+	 * Updated whenever a streamed chunk carries a response id; replayed on the
+	 * next turn of the same session so the gateway can reuse server-side context
+	 * and reasoning cache. Best-effort: when the gateway never returns an id, the
+	 * field is simply omitted and behavior is unchanged.
+	 */
+	private readonly _lastResponseIdBySession = new Map<string, string>();
+
 	constructor(
 		private readonly _auth: CodeBuddyAuth,
 		context: vscode.ExtensionContext,
@@ -552,9 +576,15 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		console.log(`[CodeBuddy] Sending request with token: length=${trimmedToken.length}, prefix=${trimmedToken.substring(0, 10)}...`);
 
 		// Extract tools from modelOptions (set by LMBridge)
-		const tools = (options.modelOptions as Record<string, unknown> | undefined)?.tools as vscode.LanguageModelChatTool[] | undefined;
+		const mo = options.modelOptions as Record<string, unknown> | undefined;
+		const tools = mo?.tools as vscode.LanguageModelChatTool[] | undefined;
+		// Reasoning/thinking config (chat toolbar thinking toggle → LMBridge → here).
+		const reasoning = mo?.reasoning as ReasoningOption | undefined;
+		// Stable session id (LMBridge passes context.sessionId through modelOptions),
+		// used as X-Conversation-Id and as the key for previous_response_id.
+		const sessionId = typeof mo?.sessionId === 'string' ? mo.sessionId : undefined;
 
-		return this._sendCodeBuddyRequest(trimmedToken, selectedModel, messages, tools, progress, cancellationToken);
+		return this._sendCodeBuddyRequest(trimmedToken, selectedModel, messages, tools, reasoning, sessionId, progress, cancellationToken);
 	}
 
 	private async _sendCodeBuddyRequest(
@@ -562,6 +592,8 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		selectedModel: string,
 		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		tools: vscode.LanguageModelChatTool[] | undefined,
+		reasoning: ReasoningOption | undefined,
+		sessionId: string | undefined,
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		cancellationToken: vscode.CancellationToken,
 	): Promise<void> {
@@ -602,22 +634,75 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			max_tokens: 48_000,
 		};
 
+		// Reasoning/thinking parameters (P1) — align with CodeBuddy IDE CN body.
+		// The thinking toggle in the chat toolbar flows here as `reasoning`.
+		// IDE sends BOTH snake_case and camelCase for gateway compatibility, plus
+		// `reasoning_summary: 'auto'`. We only inject when reasoning is enabled, so
+		// non-reasoning turns keep the original body shape unchanged.
+		if (reasoning?.enabled) {
+			// Map to an effort level; default to 'medium' (matches IDE default).
+			const effort = reasoning.effort
+				?? (reasoning.budget != null
+					? (reasoning.budget >= 6144 ? 'high' : reasoning.budget >= 3072 ? 'medium' : 'low')
+					: 'medium');
+			bodyObj.reasoning_effort = effort;
+			bodyObj.reasoningEffort = effort;          // camelCase duplicate (IDE compat)
+			bodyObj.reasoning_summary = 'auto';
+			console.log(`[CodeBuddy] reasoning enabled: effort=${effort}, summary=auto`);
+		}
+
+		// Stateful multi-turn association (P2) — replay last response id for this
+		// session so the gateway can reuse server-side context / reasoning cache.
+		if (sessionId) {
+			const prevId = this._lastResponseIdBySession.get(sessionId);
+			if (prevId) {
+				bodyObj.previous_response_id = prevId;
+				console.log(`[CodeBuddy] previous_response_id=${prevId} (session=${sessionId})`);
+			}
+		}
+
 		// Include tools if available
 		if (openaiTools) {
 			bodyObj.tools = openaiTools;
 			console.log(`[CodeBuddy] Including ${openaiTools.length} tools in request`);
 		}
 
-		const body = JSON.stringify(bodyObj);
+		const bodyJson = JSON.stringify(bodyObj);
 
-		const conversationId = crypto.randomUUID();
+		// Gzip the request body (P2) — CodeBuddy IDE CN sends `Content-Encoding: gzip`.
+		// For long prompts (tens of KB) this materially reduces upload size. We keep a
+		// plaintext fallback if compression throws for any reason.
+		let body: string | Buffer = bodyJson;
+		let bodyGzipped = false;
+		try {
+			body = zlib.gzipSync(Buffer.from(bodyJson, 'utf8'));
+			bodyGzipped = true;
+		} catch (e) {
+			console.warn('[CodeBuddy] gzip failed, sending plaintext body:', e);
+			body = bodyJson;
+		}
+
+		// Stable conversation id (P0) — reuse the session id so the gateway treats
+		// all turns of one chat session as the same conversation (request/message
+		// ids still rotate per turn). Fall back to a fresh uuid when no session id.
+		const conversationId = sessionId || crypto.randomUUID();
 		const requestId = crypto.randomUUID();
+
+		// Zipkin B3 / OpenTelemetry trace context (P2). traceId = 32 hex, spanId = 16 hex.
+		const traceId = crypto.randomBytes(16).toString('hex');
+		const spanId = crypto.randomBytes(8).toString('hex');
+		const parentSpanId = crypto.randomBytes(8).toString('hex');
+
+		// Monitor timing markers (P2) — IDE sends prompt-prepare + http-send epochs (ms).
+		const monitorPromptPrepareStartTime = Date.now();
 
 		// Decode JWT to get user/tenant info (per CodeBuddy IDE CN headers)
 		const jwtPayload = decodeJwtPayload(accessToken);
 		const userId = (jwtPayload?.sub as string) || '';
 		const tenantId = jwtPayload?.iss ? extractTenantIdFromIss(jwtPayload.iss as string) : undefined;
 		const extensionVersion = getExtensionVersion(EXTENSION_ID);
+
+		const monitorHttpSendTime = Date.now();
 
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
@@ -631,6 +716,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			'X-Request-Id': requestId,
 			'X-Model-ID': selectedModel,
 			'X-Agent-Intent': 'craft',
+			'X-Requested-With': 'XMLHttpRequest',
 			'X-IDE-Type': 'CodeBuddyIDE',
 			'X-IDE-Name': 'CodeBuddyIDE',
 			'X-IDE-Version': extensionVersion,
@@ -642,7 +728,22 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			'X-Enterprise-Id': tenantId || '',
 			'X-Tenant-Id': tenantId || '',
 			'User-Agent': `CodeBuddyIDE/${extensionVersion} CodeBuddy/${extensionVersion}`,
+			// ── Distributed tracing (Zipkin B3) ─────────────────────────────
+			'X-Trace-ID': traceId,
+			'b3': `${traceId}-${spanId}-1-${parentSpanId}`,
+			'X-B3-TraceId': traceId,
+			'X-B3-ParentSpanId': parentSpanId,
+			'X-B3-SpanId': spanId,
+			'X-B3-Sampled': '1',
+			// ── Performance monitor markers ─────────────────────────────────
+			'monitor_promptPrepareStartTime': String(monitorPromptPrepareStartTime),
+			'monitor_httpSendTime': String(monitorHttpSendTime),
 		};
+
+		// Advertise gzip encoding only when we actually compressed the body.
+		if (bodyGzipped) {
+			headers['Content-Encoding'] = 'gzip';
+		}
 
 		// Debug: log complete HTTP request
 		const debugHeaders = { ...headers };
@@ -653,8 +754,8 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		console.log(`[CodeBuddy] URL: ${url}`);
 		console.log(`[CodeBuddy] Method: POST`);
 		console.log(`[CodeBuddy] Headers:`, JSON.stringify(debugHeaders, null, 2));
-		console.log(`[CodeBuddy] Body length: ${body.length} chars`);
-		console.log(`[CodeBuddy] Body preview: ${body.substring(0, 500)}...`);
+		console.log(`[CodeBuddy] Body: ${bodyJson.length} chars (raw JSON)${bodyGzipped ? `, ${(body as Buffer).length} bytes (gzip)` : ''}`);
+		console.log(`[CodeBuddy] Body preview: ${bodyJson.substring(0, 500)}...`);
 		console.log(`========== END REQUEST DEBUG ==========\n`);
 
 		const controller = new AbortController();
@@ -663,7 +764,9 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		const response = await fetchWithRetry(url, {
 			method: 'POST',
 			headers,
-			body,
+			// Node's fetch accepts Buffer/Uint8Array bodies; the DOM RequestInit type
+			// does not list Buffer, hence the cast.
+			body: body as unknown as BodyInit,
 			signal: controller.signal,
 		});
 
@@ -673,9 +776,59 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		const toolCallAccumulators = new Map<number, { id: string; name: string; arguments: string }>();
 
 		return parseSSEStream(response, progress, cancellationToken, (event) => {
+			// Capture the gateway response id for stateful multi-turn association (P2).
+			// OpenAI-style chunks carry a top-level `id`; some gateways also use
+			// `response_id`. We stash the latest non-empty id keyed by session so the
+			// next turn replays it as `previous_response_id`. Best-effort only.
+			if (sessionId) {
+				const respId = (typeof event.response_id === 'string' && event.response_id)
+					|| (typeof event.id === 'string' && event.id);
+				if (respId) {
+					this._lastResponseIdBySession.set(sessionId, respId);
+				}
+			}
+
+			// Final chunk usage (OpenAI-compatible). The terminal chunk carries a top-level
+			// `usage` object (sibling of `choices`, which is usually empty in that chunk):
+			//   { choices: [], usage: { prompt_tokens, completion_tokens, total_tokens,
+			//                           prompt_tokens_details?: { cached_tokens }, credit? } }
+			//
+			// A provider extension cannot emit a `step` part (the ExtHost progress layer only
+			// converts Text/ToolCall/Data/Thinking parts), so we tunnel usage through a
+			// `LanguageModelDataPart.json(usage, MIME)`. The renderer-side bridge
+			// (languageModelsBridge `_toModelDelta` → `case 'data'`) recognizes this MIME,
+			// decodes it, and turns it into a `{ type: 'usage' }` delta for Token/billing UI.
+			//
+			// ⚠️ This MIME must stay byte-for-byte identical to `SAROSIS_USAGE_MIME` in
+			// src/vs/sessions/contrib/agentStudio/browser/languageModelsBridge.ts.
+			if (event.usage && typeof event.usage === 'object') {
+				progress.report(
+					vscode.LanguageModelDataPart.json(event.usage, 'application/vnd.sarosis.usage+json'),
+				);
+				// do not return — the usage chunk may have no choices; fall through to the
+				// choices guard which will no-op when choices is empty.
+			}
+
 			// OpenAI: choices[0].delta.content
 			if (event.choices && event.choices[0]) {
 				const choice = event.choices[0];
+
+				// Handle reasoning/thinking content (OpenAI-compatible `reasoning_content`).
+				// Reasoning tokens stream *before* the final text answer. We surface them as a
+				// LanguageModelThinkingPart so the downstream bridge maps them to a `thinking`
+				// delta and the webview renders the chain-of-thought.
+				//
+				// NOTE: report inline (not via the callback `return`) because the callback can
+				// only return a single text/tool-call result per event, and the stable
+				// `LanguageModelResponsePart` union does not include ThinkingPart — hence the cast.
+				if (choice.delta && choice.delta.reasoning_content) {
+					progress.report(
+						new vscode.LanguageModelThinkingPart(choice.delta.reasoning_content) as unknown as vscode.LanguageModelResponsePart,
+					);
+					// fall through: a chunk may carry both reasoning_content and content,
+					// but in practice they are mutually exclusive per delta. If content also
+					// exists we still handle it below.
+				}
 
 				// Handle text content
 				if (choice.delta && choice.delta.content) {

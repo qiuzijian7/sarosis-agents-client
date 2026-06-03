@@ -850,6 +850,8 @@ export interface ChatMessage {
 		cached?: number;
 		/** KV Cache: tokens written to cache (Anthropic cache_creation_input_tokens). */
 		cacheWrite?: number;
+		/** Billing credits consumed by this turn (from gateway final-chunk usage.credit, e.g. CodeBuddy). */
+		credit?: number;
 	};
 	/** Metadata for special message types (e.g., orchestration_plan for inline plan approval) */
 	metadata?: ChatMessageMetadata;

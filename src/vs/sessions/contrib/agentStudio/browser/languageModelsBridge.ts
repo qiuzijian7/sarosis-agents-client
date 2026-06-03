@@ -46,6 +46,19 @@ import {
 } from '../common/providers.js';
 
 /**
+ * Sarosis 约定 MIME：标识由 provider 扩展经 `LanguageModelDataPart.json(usage, MIME)`
+ * 透传的「末块 usage」数据 part。
+ *
+ * 背景：provider 扩展（如 codebuddy-provider）运行在 ExtHost，无法直接 emit `step` part
+ * （extHostLanguageModels 仅转换 Text/ToolCall/Data/Thinking）。因此末块 OpenAI `usage`
+ * 借道 Data part 透传，由本 bridge 的 `_toModelDelta` `case 'data'` 识别此 MIME 并解码。
+ *
+ * ⚠️ 同步约定：此字符串与 `extensions/codebuddy-provider/src/extension.ts` 中
+ * 上报 usage 时使用的 MIME 必须**逐字一致**（跨 npm 包无法共享常量，双方各自硬编码）。
+ */
+export const SAROSIS_USAGE_MIME = 'application/vnd.sarosis.usage+json';
+
+/**
  * One IModelProvider instance per LM vendor.
  *
  * - id:    `lm:<vendor>` so it's distinguishable from BYOK / built-in providers
@@ -442,6 +455,22 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			requestOptions.modelOptions.maxTokens = options.maxTokens;
 		}
 
+		// 透传推理/思考配置给扩展（通过 modelOptions.reasoning）。
+		// 聊天输入框的 thinking 开关 → IModelOptions.reasoning → 这里 → provider 扩展
+		// 映射为 OpenAI 风格 body 的 reasoning_effort / reasoning_summary。
+		// 仅在开启时透传，关闭/缺失时不注入，让 provider 走非推理路径。
+		if (options.reasoning?.enabled) {
+			requestOptions.modelOptions.reasoning = options.reasoning;
+			this._logService.info(`[LMBridge] Passing reasoning to extension: effort=${options.reasoning.effort ?? '(none)'} budget=${options.reasoning.budget ?? '(none)'}`);
+		}
+
+		// 透传稳定的会话 ID 给扩展（通过 modelOptions.sessionId），provider 用作
+		// X-Conversation-Id，使服务端在同一会话内关联多轮上下文/推理缓存。
+		if (context?.sessionId) {
+			requestOptions.modelOptions.sessionId = context.sessionId;
+			this._logService.info(`[LMBridge] Passing stable sessionId to extension: ${context.sessionId}`);
+		}
+
 		try {
 			const response = await this._lmService.sendChatRequest(
 				modelId,
@@ -610,6 +639,46 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						defaultShow,
 					},
 				};
+			}
+			case 'data': {
+				// ── CodeBuddy 末块 usage 透传 ──────────────────────────────────────
+				// CodeBuddy provider 扩展无法 emit `step` part（extHost 仅转换
+				// Text/ToolCall/Data/Thinking），因此它把 OpenAI 末块的 `usage` 对象
+				// 经 `LanguageModelDataPart.json(usage, SAROSIS_USAGE_MIME)` 透传过来。
+				// 这里识别约定 MIME、解码 JSON、转成 IModelDelta usage，使 Token/计费
+				// 指标贯通到 agentChatService 累积与 webview footer。
+				const dataPart = part as { mimeType?: string; data?: { toString(): string } };
+				if (dataPart.mimeType !== SAROSIS_USAGE_MIME || !dataPart.data) {
+					return undefined; // 非 usage data part — 忽略
+				}
+				try {
+					const raw = JSON.parse(dataPart.data.toString());
+					// OpenAI 风格 usage 字段：prompt_tokens / completion_tokens / total_tokens；
+					// 缓存细分在 prompt_tokens_details.cached_tokens；计费在 credit（CodeBuddy 扩展）。
+					const usage: IModelUsage = {
+						inputTokens: typeof raw.prompt_tokens === 'number' ? raw.prompt_tokens : undefined,
+						outputTokens: typeof raw.completion_tokens === 'number' ? raw.completion_tokens : undefined,
+						totalTokens: typeof raw.total_tokens === 'number' ? raw.total_tokens : undefined,
+						cachedTokens: raw.prompt_tokens_details?.cached_tokens != null
+							? raw.prompt_tokens_details.cached_tokens
+							: undefined,
+						cacheWriteTokens: raw.prompt_tokens_details?.cache_write_tokens ?? undefined,
+						credit: typeof raw.credit === 'number' ? raw.credit : undefined,
+					};
+					if (
+						usage.inputTokens !== undefined ||
+						usage.outputTokens !== undefined ||
+						usage.totalTokens !== undefined ||
+						usage.cachedTokens !== undefined ||
+						usage.cacheWriteTokens !== undefined ||
+						usage.credit !== undefined
+					) {
+						return { type: 'usage', usage };
+					}
+				} catch {
+					// 解码失败 — 当作普通 data part 忽略
+				}
+				return undefined;
 			}
 			case 'step': {
 				// ── KnotBridge prompt-cache metric 透传 ──────────────────────────────

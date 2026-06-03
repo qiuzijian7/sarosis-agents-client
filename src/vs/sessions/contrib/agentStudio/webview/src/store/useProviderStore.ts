@@ -576,9 +576,10 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		const key = reasoningKey(selection.providerId, selection.modelId);
 		const saved = reasoningConfig[key];
 		const isEffort = model?.reasoningType === 'effort-slider';
-		// 兜底默认值：onlyReasoning 模型默认开启，否则默认关闭
+		// 兜底默认值：能走到这里的模型都支持思考（前面已对不支持的返回 null），
+		// 因此默认开启思考；仅当用户曾显式保存过配置时才尊重其保存值。
 		return {
-			enabled: saved?.enabled ?? (model?.onlyReasoning ?? false),
+			enabled: saved?.enabled ?? true,
 			budget: saved?.budget ?? (isEffort ? undefined : DEFAULT_REASONING_BUDGET),
 			effort: saved?.effort ?? (isEffort ? DEFAULT_REASONING_EFFORT : undefined),
 		};

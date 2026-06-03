@@ -1183,65 +1183,48 @@ export function WorkspaceCanvas(): React.ReactElement {
 							<div className="canvas-toggle-divider" />
 
 							{/* Conditionally show "Add Agent" button only in Root mode */}
-							{!isReadOnly && (
-								<>
+							<div className="canvas-view-toggle-modes">
+								<div className="canvas-view-toggle-row">
 									<button
-										className="canvas-add-agent-btn"
-										onClick={() => setShowCreateModal(true)}
-										title="添加 Agent"
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'canvas' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('canvas')}
+										title="画布视图"
 									>
 										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
 										</svg>
-										<span className="canvas-add-agent-label">添加 Agent</span>
 									</button>
 									<button
-										className="task-board-orchestrate-btn"
-										onClick={() => openPlanDialog()}
-										title="任务编排 - AI 自动拆分任务、创建 Agent"
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'list' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('list')}
+										title="列表视图"
 									>
-										🎯 任务编排
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+										</svg>
 									</button>
-									<div className="canvas-toggle-divider" />
-								</>
-							)}
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'canvas' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('canvas')}
-								title="画布视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-								</svg>
-							</button>
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'list' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('list')}
-								title="列表视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-								</svg>
-							</button>
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'html' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('html')}
-								title="HTML 视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
-								</svg>
-							</button>
-							<div className="canvas-toggle-divider" />
-							<button
-								className="canvas-html-dropdown-btn"
-								onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
-								title="选择 Agent"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ width: '10px', height: '10px' }}>
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-								</svg>
-							</button>
+								</div>
+								<div className="canvas-view-toggle-row">
+									<button
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'html' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('html')}
+										title="HTML 视图"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
+										</svg>
+									</button>
+									<button
+										className="canvas-html-dropdown-btn"
+										onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
+										title="选择 Agent"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ width: '10px', height: '10px' }}>
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+										</svg>
+									</button>
+								</div>
+							</div>
 							{isHtmlDropdownOpen && (
 								<div className="canvas-html-dropdown">
 									{htmlViewAgents.length === 0 ? (
@@ -1385,65 +1368,48 @@ export function WorkspaceCanvas(): React.ReactElement {
 						<div className="canvas-view-toggle">
 							<SessionSwitcher />
 							<div className="canvas-toggle-divider" />
-							{!isReadOnly && (
-								<>
+							<div className="canvas-view-toggle-modes">
+								<div className="canvas-view-toggle-row">
 									<button
-										className="canvas-add-agent-btn"
-										onClick={() => setShowCreateModal(true)}
-										title="添加 Agent"
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'canvas' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('canvas')}
+										title="画布视图"
 									>
 										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
 										</svg>
-										<span className="canvas-add-agent-label">添加 Agent</span>
 									</button>
 									<button
-										className="task-board-orchestrate-btn"
-										onClick={() => openPlanDialog()}
-										title="任务编排 - AI 自动拆分任务、创建 Agent"
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'list' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('list')}
+										title="列表视图"
 									>
-										🎯 任务编排
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+										</svg>
 									</button>
-									<div className="canvas-toggle-divider" />
-								</>
-							)}
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'canvas' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('canvas')}
-								title="画布视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-								</svg>
-							</button>
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'list' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('list')}
-								title="列表视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-								</svg>
-							</button>
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'html' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('html')}
-								title="HTML 视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
-								</svg>
-							</button>
-							<div className="canvas-toggle-divider" />
-							<button
-								className="canvas-html-dropdown-btn"
-								onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
-								title="选择 Agent"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ width: '10px', height: '10px' }}>
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-								</svg>
-							</button>
+								</div>
+								<div className="canvas-view-toggle-row">
+									<button
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'html' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('html')}
+										title="HTML 视图"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
+										</svg>
+									</button>
+									<button
+										className="canvas-html-dropdown-btn"
+										onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
+										title="选择 Agent"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ width: '10px', height: '10px' }}>
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+										</svg>
+									</button>
+								</div>
+							</div>
 							{isHtmlDropdownOpen && (
 								<div className="canvas-html-dropdown">
 									{htmlViewAgents.length === 0 ? (
@@ -1484,65 +1450,48 @@ export function WorkspaceCanvas(): React.ReactElement {
 							<div className="canvas-toggle-divider" />
 
 							{/* Conditionally show "Add Agent" button only in Root mode */}
-							{!isReadOnly && (
-								<>
+							<div className="canvas-view-toggle-modes">
+								<div className="canvas-view-toggle-row">
 									<button
-										className="canvas-add-agent-btn"
-										onClick={() => setShowCreateModal(true)}
-										title="添加 Agent"
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'canvas' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('canvas')}
+										title="画布视图"
 									>
 										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
 										</svg>
-										<span className="canvas-add-agent-label">添加 Agent</span>
 									</button>
 									<button
-										className="task-board-orchestrate-btn"
-										onClick={() => openPlanDialog()}
-										title="任务编排 - AI 自动拆分任务、创建 Agent"
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'list' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('list')}
+										title="列表视图"
 									>
-										🎯 任务编排
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+										</svg>
 									</button>
-									<div className="canvas-toggle-divider" />
-								</>
-							)}
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'canvas' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('canvas')}
-								title="画布视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-								</svg>
-							</button>
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'list' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('list')}
-								title="列表视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-								</svg>
-							</button>
-							<button
-								className={`canvas-view-toggle-btn ${(displayMode as any) === 'html' ? 'active' : ''}`}
-								onClick={() => handleViewModeChange('html')}
-								title="HTML 视图"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
-								</svg>
-							</button>
-							<div className="canvas-toggle-divider" />
-							<button
-								className="canvas-html-dropdown-btn"
-								onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
-								title="选择 Agent"
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ width: '10px', height: '10px' }}>
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-								</svg>
-							</button>
+								</div>
+								<div className="canvas-view-toggle-row">
+									<button
+										className={`canvas-view-toggle-btn ${(displayMode as any) === 'html' ? 'active' : ''}`}
+										onClick={() => handleViewModeChange('html')}
+										title="HTML 视图"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10l-2 1m0-5v.01M15 21h-6a2 2 0 01-2-2V5a2 2 0 012-2h8a2 2 0 012 2v.01M15 3h-6a2 2 0 00-2 2v14a2 2 0 002 2h6a2 2 0 002-2V5a2 2 0 00-2-2z" />
+										</svg>
+									</button>
+									<button
+										className="canvas-html-dropdown-btn"
+										onClick={() => setIsHtmlDropdownOpen(prev => !prev)}
+										title="选择 Agent"
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ width: '10px', height: '10px' }}>
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+										</svg>
+									</button>
+								</div>
+							</div>
 							{isHtmlDropdownOpen && (
 								<div className="canvas-html-dropdown">
 									{htmlViewAgents.length === 0 ? (

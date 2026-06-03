@@ -464,6 +464,21 @@ html, body, #root {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
+/* View-mode buttons in a single row: canvas + list + HTML(edit entry) +
+   agent dropdown all sit on one line. */
+.canvas-view-toggle-modes {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+}
+
+.canvas-view-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .canvas-view-toggle-btn {
   display: flex;
   align-items: center;

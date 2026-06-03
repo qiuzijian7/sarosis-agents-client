@@ -45,6 +45,7 @@ import { IAgentStudioService, ITaskOrchestrationService, IAgentTaskBoardService 
 import { TaskBoardStatus, TaskSource } from '../../../common/types.js';
 import { ITriageService } from '../../../common/triageService.js';
 import { ISwarmService, SwarmWorkerSpec } from '../../../common/swarmService.js';
+import { ICheckpointService } from '../../../common/checkpointService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
 import { SubAgentType, SubAgentResult, UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
@@ -116,6 +117,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@ITriageService private readonly triageService: ITriageService,
 		@ISwarmService private readonly swarmService: ISwarmService,
+		@ICheckpointService private readonly checkpointService: ICheckpointService,
 	) {
 		super();
 		this._registerCoreTools();
@@ -208,13 +210,18 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 		const normalizedUri = URI.file(resolvedPath);
 		const requestedFsPath = normalizedUri.fsPath;
-		const normalizedRequest = requestedFsPath.replace(/[\\/]+$/, '').toLowerCase();
+		// 归一化路径用于边界比较：统一分隔符为正斜杠 + 去尾斜杠 + 小写。
+		// ⚠️ worktreeRoot/workspace.path 等可能保留正斜杠（如 G:/foo/bar），
+		// 而 path.join + URI.file().fsPath 在 Windows 上产出反斜杠（G:\foo\bar），
+		// 若不统一分隔符，startsWith 比较会因 `\` vs `/` 不一致而误判越界。
+		const canonicalize = (p: string): string =>
+			p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+		const normalizedRequest = canonicalize(requestedFsPath);
 
 		// 检查请求路径是否在任一允许根目录下
 		const isAllowed = uniqueRoots.some(root => {
-			const normalizedRoot = root.toLowerCase();
+			const normalizedRoot = canonicalize(root);
 			return normalizedRequest === normalizedRoot ||
-				normalizedRequest.startsWith(normalizedRoot + '\\') ||
 				normalizedRequest.startsWith(normalizedRoot + '/');
 		});
 
@@ -526,6 +533,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 				const normalizedUri = URI.file(resolvedPath);
 				const content = String(args['content'] ?? '');
+				// Checkpoint (Void-inspired): snapshot the file's current content
+				// BEFORE overwriting, so the user can time-travel back to this state.
+				if (agentId) {
+					await this.checkpointService.captureBeforeToolEdit(agentId, normalizedUri.toString());
+				}
 				await this.fileService.writeFile(normalizedUri, VSBuffer.fromString(content));
 				return text(`wrote ${content.length} chars to ${normalizedUri.fsPath}`);
 			},

@@ -632,9 +632,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			forceToolChoiceNextIteration = false;
 
 			// 调用模型
-			const context: { agentId?: string } = {};
+			// 注意：sessionId 透传给 provider 用作稳定的 X-Conversation-Id。
+			// 真实 CodeBuddy IDE 在同一会话内 conversation-id 保持稳定（仅 request-id /
+			// message-id 每轮变），服务端据此关联多轮上下文与推理缓存。本项目以
+			// agent turn 的 sessionId 作为该稳定 ID 的来源。
+			const context: { agentId?: string; sessionId?: string } = {};
 			if (request.agentId) {
 				context.agentId = request.agentId;
+			}
+			if (request.sessionId) {
+				context.sessionId = request.sessionId;
 			}
 
 			this._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length})`);

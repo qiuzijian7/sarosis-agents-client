@@ -510,6 +510,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let usageOutput = 0;
 		let usageCached = 0;
 		let usageCacheWrite = 0;
+		let usageCredit = 0;
+		let usageTotalReported = 0; // total_tokens as reported by the gateway (preferred over input+output)
 		let usageSeen = false;
 
 		try {
@@ -628,6 +630,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.outputTokens === 'number') { usageOutput += delta.usage.outputTokens; }
 					if (typeof delta.usage.cachedTokens === 'number') { usageCached += delta.usage.cachedTokens; }
 					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
+					if (typeof delta.usage.totalTokens === 'number') { usageTotalReported += delta.usage.totalTokens; }
+					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; }
 				}
 				onDelta(delta);
 			}
@@ -666,9 +670,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					? {
 						input: usageInput,
 						output: usageOutput,
-						total: usageInput + usageOutput,
+						// Prefer the gateway-reported total_tokens when present (it may
+						// account for tokens not split into input/output); otherwise derive.
+						total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
 						cached: usageCached > 0 ? usageCached : undefined,
 						cacheWrite: usageCacheWrite > 0 ? usageCacheWrite : undefined,
+						credit: usageCredit > 0 ? usageCredit : undefined,
 					}
 					: undefined,
 			};

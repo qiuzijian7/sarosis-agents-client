@@ -345,6 +345,43 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'chat.checkpointCreated': {
+			// Host created a checkpoint (user_edit anchor or tool_edit snapshot).
+			// Render an inline checkpoint card so the user can time-travel back.
+			const cp = data as {
+				id: string;
+				employeeId: string;
+				sessionId: string;
+				type: 'user_edit' | 'tool_edit';
+				label?: string;
+				description?: string;
+				createdAt: number;
+				fileSnapshotIds?: string[];
+				isGhost?: boolean;
+				messageId?: string;
+			} | undefined;
+			if (cp?.id) {
+				const chatStore = useChatStore.getState();
+				// Only render for the currently active employee/session to avoid
+				// leaking checkpoints from background agents into the open chat.
+				// Skip user_edit anchors: they carry no file snapshot (empty set)
+				// and exist purely as message-boundary markers for range rollback.
+				// Rendering them would spam an empty card before every turn.
+				// Only tool_edit checkpoints (real file snapshots) get a card.
+				if (chatStore.activeEmployeeId === cp.employeeId && cp.type === 'tool_edit') {
+					console.log(`[AgentStudio] chat.checkpointCreated → ${cp.type} ${cp.id} (${cp.fileSnapshotIds?.length ?? 0} files)`);
+					chatStore.addCheckpoint({
+						id: cp.id,
+						type: cp.type,
+						timestamp: new Date(cp.createdAt).toISOString(),
+						description: cp.description || cp.label,
+						filesChanged: cp.fileSnapshotIds?.length ?? 0,
+						isGhost: cp.isGhost ?? false,
+					});
+				}
+			}
+			break;
+		}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}

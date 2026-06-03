@@ -717,6 +717,12 @@ export interface IChatJumpToCheckpointPayload {
 	readonly employeeId: string;
 	/** The session ID (for multi-session support). */
 	readonly sessionId: string;
+	/**
+	 * The chat message ID to truncate persisted history after (inclusive).
+	 * When provided, the host deletes all messages after this one from disk so
+	 * the rollback survives a window reload. Omitted for pure file-only restores.
+	 */
+	readonly truncateAfterMessageId?: string;
 }
 
 /**
@@ -771,6 +777,10 @@ export interface IChatAddCheckpointPayload {
 export interface IChatGetCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
+	/** The employee ID (for storage scoping). */
+	readonly employeeId: string;
+	/** The session ID (for storage scoping). */
+	readonly sessionId: string;
 }
 
 /**
@@ -789,6 +799,10 @@ export interface IChatListCheckpointsPayload {
 export interface IChatDeleteCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
+	/** The employee ID (for storage scoping). */
+	readonly employeeId: string;
+	/** The session ID (for storage scoping). */
+	readonly sessionId: string;
 }
 
 // ─── Memory inspection (TDB-AM gateway proxy) ─────────────────────────────────

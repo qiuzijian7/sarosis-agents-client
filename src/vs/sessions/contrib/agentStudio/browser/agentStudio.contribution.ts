@@ -728,9 +728,12 @@ import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { ICheckpointService } from '../common/checkpointService.js';
+import { CheckpointService } from './checkpointService.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
 registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
+registerSingleton(ICheckpointService, CheckpointService, InstantiationType.Delayed);
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';

@@ -60,7 +60,6 @@ function estimateTokens(text: string | undefined | null): number {
 
 export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder, onCommand }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
-	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
 	const [showProviderDropdown, setShowProviderDropdown] = useState(false);
 	const [showAgentDropdown, setShowAgentDropdown] = useState(false);
 	const [showModelDropdown, setShowModelDropdown] = useState(false);
@@ -91,7 +90,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const commandMenuRef = useRef<HTMLDivElement>(null);
 	const { activeEmployeeId, chatMode, setChatMode } = useChatStore();
 	const { employees } = useEmployeeStore();
-	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders, currentModelInfo, currentReasoningConfig, setReasoningConfig } = useProviderStore();
+	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders, currentModelInfo } = useProviderStore();
 	const { attachments, addImage, addPastedImage, addFile, removeAttachment, clearAttachments, toPayload, getImageSupportWarning } = useAttachmentStore();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [isDragOver, setIsDragOver] = useState(false);
@@ -182,30 +181,14 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		return currentProvider.models;
 	}, [currentProvider, supportsAgents, selectedAgent]);
 
-	// ── Thinking / Reasoning UI 状态 ────────────────────────────────
-	// 订阅 reasoningConfig 原始 state 以触发重渲染（getter 本身不订阅）。
-	const reasoningConfigMap = useProviderStore(s => s.reasoningConfig);
-	// 当前选中模型的能力信息
+	// ── Thinking / Reasoning 状态 ────────────────────────────────
+	// 思考开关 UI 已从输入框移除：支持思考的模型默认开启思考
+	// （由 useProviderStore.currentReasoningConfig 兜底 enabled:true 负责）。
+	// 这里仅保留模型能力检测，用于其他可能的 UI 提示。
 	const currentModel = useMemo(
 		() => currentModelInfo(),
 		[currentModelInfo, selection?.providerId, selection?.modelId, providers]
 	);
-	// 模型是否支持思考模式
-	const modelSupportsReasoning = !!(currentModel?.supportsReasoning || currentModel?.reasoningType);
-	// 推理 UI 形态：'effort-slider' 显示 Low/Medium/High，'budget-slider' 显示 token 滑块，其余仅开关
-	const reasoningUIType: 'budget-slider' | 'effort-slider' | 'switch' = useMemo(() => {
-		if (currentModel?.reasoningType === 'effort-slider') { return 'effort-slider'; }
-		if (currentModel?.reasoningType === 'budget-slider') { return 'budget-slider'; }
-		return 'switch';
-	}, [currentModel?.reasoningType]);
-	// 当前模型的 thinking 配置（带默认值兜底）
-	const reasoningCfg = useMemo(
-		() => currentReasoningConfig(),
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[currentReasoningConfig, reasoningConfigMap, selection?.providerId, selection?.modelId, currentModel]
-	);
-	// onlyReasoning 模型不能关闭思考
-	const canToggleReasoning = !currentModel?.onlyReasoning;
 
 	// ── 图片/Vision 支持检测 ──────────────────────────────────────
 	const modelSupportsImages = !!(currentModel?.supportsImages);
@@ -295,13 +278,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		inputBaselineTokens,
 	]);
 
-	const [showReasoningPopover, setShowReasoningPopover] = useState(false);
-	const reasoningPopoverRef = useRef<HTMLDivElement>(null);
-	// budget slider 范围（参考 void：1024 ~ 8192）
-	const REASONING_BUDGET_MIN = 1024;
-	const REASONING_BUDGET_MAX = 8192;
-	const REASONING_BUDGET_STEP = 256;
-
 	// 点击外部关闭下拉菜单
 	useEffect(() => {
 		const handleClickOutside = (e: MouseEvent) => {
@@ -326,9 +302,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
 				setShowSkillMenu(false);
 				setSkillFilter('');
-			}
-			if (reasoningPopoverRef.current && !reasoningPopoverRef.current.contains(e.target as Node)) {
-				setShowReasoningPopover(false);
 			}
 		};
 		document.addEventListener('mousedown', handleClickOutside);
@@ -364,7 +337,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		setShowAgentDropdown(false);
 		setShowModelDropdown(false);
 		setShowModeDropdown(false);
-		setShowReasoningPopover(false);
 		setModelSearchQuery('');
 	}, []);
 
@@ -944,30 +916,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 							{attachments.length > 0 && <span className="attachment-badge">{attachments.length}</span>}
 						</button>
 
-						{/* 语音 */}
-						<button className="chat-toolbar-btn" title="语音输入">
-							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-								<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-								<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-								<line x1="12" y1="19" x2="12" y2="23" />
-								<line x1="8" y1="23" x2="16" y2="23" />
-							</svg>
-						</button>
-
-						{/* 联网搜索 */}
-						<button
-							className={`chat-toolbar-btn has-label ${webSearchEnabled ? 'active' : ''}`}
-							title="联网搜索"
-							onClick={() => setWebSearchEnabled(!webSearchEnabled)}
-						>
-							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-								<circle cx="12" cy="12" r="10" />
-								<line x1="2" y1="12" x2="22" y2="12" />
-								<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-							</svg>
-							<span className="toolbar-btn-label">联网</span>
-						</button>
-
 						{/* 分隔线 */}
 						<div className="chat-toolbar-divider" />
 
@@ -1216,95 +1164,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 							)}
 						</div>
 
-						{/* Thinking / 思考模式 控件 — 仅当模型支持时显示 */}
-						{modelSupportsReasoning && (
-							<div className="provider-model-chip-wrap reasoning-chip-wrap" ref={reasoningPopoverRef}>
-								<button
-									className={`chat-toolbar-btn has-label reasoning-tag ${reasoningCfg?.enabled ? 'reasoning-active' : ''}`}
-									title={reasoningCfg?.enabled ? '思考模式已开启 — 点击调整' : '开启思考模式'}
-									onClick={() => {
-										// 纯开关型：直接 toggle，无需弹层；其余形态打开弹层调整
-										if (reasoningUIType === 'switch') {
-											if (canToggleReasoning) {
-												setReasoningConfig({ enabled: !reasoningCfg?.enabled });
-											}
-											return;
-										}
-										const wasOpen = showReasoningPopover;
-										closeAllDropdowns();
-										if (!wasOpen) { setShowReasoningPopover(true); }
-									}}
-								>
-									{/* 灯泡/思考图标 */}
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-										<path d="M9 18h6" />
-										<path d="M10 22h4" />
-										<path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z" />
-									</svg>
-									<span className="toolbar-btn-label">
-										{reasoningCfg?.enabled
-											? (reasoningUIType === 'effort-slider'
-												? `思考·${reasoningCfg.effort === 'high' ? '高' : reasoningCfg.effort === 'medium' ? '中' : '低'}`
-												: reasoningUIType === 'budget-slider'
-													? `思考·${((reasoningCfg.budget ?? 0) / 1024).toFixed(1)}K`
-													: '思考')
-											: '思考'}
-									</span>
-									{reasoningUIType !== 'switch' && (
-										<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-											<path d="M6 9l6 6 6-6" />
-										</svg>
-									)}
-								</button>
-								{showReasoningPopover && reasoningUIType !== 'switch' && (
-									<div className="provider-dropdown reasoning-popover">
-										{/* 开关行 */}
-										<div className="reasoning-popover-row">
-											<span className="reasoning-popover-label">思考模式</span>
-											<button
-												className={`reasoning-switch ${reasoningCfg?.enabled ? 'on' : ''}`}
-												disabled={!canToggleReasoning}
-												onClick={() => setReasoningConfig({ enabled: !reasoningCfg?.enabled })}
-												title={canToggleReasoning ? '开启/关闭思考' : '该模型仅思考模式，无法关闭'}
-											>
-												<span className="reasoning-switch-knob" />
-											</button>
-										</div>
-
-										{/* effort 三档 */}
-										{reasoningUIType === 'effort-slider' && reasoningCfg?.enabled && (
-											<div className="reasoning-popover-row reasoning-effort-row">
-												{(['low', 'medium', 'high'] as const).map(lv => (
-													<button
-														key={lv}
-														className={`reasoning-effort-btn ${reasoningCfg.effort === lv ? 'active' : ''}`}
-														onClick={() => setReasoningConfig({ effort: lv })}
-													>
-														{lv === 'high' ? '高' : lv === 'medium' ? '中' : '低'}
-													</button>
-												))}
-											</div>
-										)}
-
-										{/* budget 滑块 */}
-										{reasoningUIType === 'budget-slider' && reasoningCfg?.enabled && (
-											<div className="reasoning-popover-row reasoning-budget-row">
-												<input
-													type="range"
-													min={REASONING_BUDGET_MIN}
-													max={REASONING_BUDGET_MAX}
-													step={REASONING_BUDGET_STEP}
-													value={reasoningCfg.budget ?? REASONING_BUDGET_MIN}
-													onChange={(e) => setReasoningConfig({ budget: Number(e.target.value) })}
-													className="reasoning-budget-slider"
-												/>
-												<span className="reasoning-budget-value">{reasoningCfg.budget ?? REASONING_BUDGET_MIN} tokens</span>
-											</div>
-										)}
-									</div>
-								)}
-							</div>
-						)}
+						{/* Thinking / 思考模式：已移除手动开关。
+						    对支持思考的模型，默认开启思考（由 useProviderStore.currentReasoningConfig 兜底 enabled:true 负责），
+						    无需在输入框暴露按钮。 */}
 					</div>
 
 					{/* 上下文使用量圆环进度条（发送按钮左侧）*/}
