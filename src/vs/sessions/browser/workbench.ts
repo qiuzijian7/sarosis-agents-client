@@ -1012,7 +1012,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		agentEditorPartContainer.setAttribute('role', 'main');
 
 		mark('code/willCreatePart/workbench.parts.agentEditor');
-		agentPart.create(agentEditorPartContainer, { restorePreviousState: true });
+		// [Sarosis] The Agent zone is a *fixed* Canvas+Chat two-tab layout —
+		// it must NOT restore a persisted grid. Older builds persisted the
+		// pair as two separate locked groups (one editor each → no tab bar),
+		// or even leaked Canvas into the File part. Restoring that broken
+		// state is exactly what caused "only Chat shows / no tabs". We always
+		// rebuild the layout deterministically in `_openAgentStudioEditors`,
+		// so start the agent part from a clean single empty group.
+		agentPart.create(agentEditorPartContainer, { restorePreviousState: false });
 		mark('code/didCreatePart/workbench.parts.agentEditor');
 
 		this.mainContainer.appendChild(agentEditorPartContainer);
@@ -1054,7 +1061,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		//   - AGENT_EDITOR_PART → Agent zone (right column: Canvas + Chat)
 		// Physical isolation makes cross-zone drags impossible, so no
 		// drag-gate / relocation guard is needed — only a close-guard.
-		this._openAgentStudioEditors();
+		// Fire-and-forget: the method is async (it awaits stale-purge +
+		// deterministic editor opens) but restoreParts itself is sync.
+		this._openAgentStudioEditors().catch(err => console.error('[Sarosis] Failed to open Agent Studio editors', err));
 
 		// [Sarosis] Now that every part is wired up and the editor grid
 		// has been (re)built, apply persisted layout preferences that
@@ -1062,7 +1071,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.applyRestoredLayoutPreferences();
 	}
 
-	private _openAgentStudioEditors(): void {
+	private async _openAgentStudioEditors(): Promise<void> {
 		// ── Physical two-part model ──────────────────────────────────────
 		// After the path-A refactor the editor area is split into two
 		// *physically independent* EditorPart instances that share the main
@@ -1114,10 +1123,18 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			// whose Chat tab also surfaces the "New Session" session title)
 			// out of the single remaining File group. Canvas/Chat belong
 			// exclusively to the Agent part now.
+			//
+			// IMPORTANT — must AWAIT the close. `AgentStudioEditorInput` is a
+			// singleton (getOrCreate returns the same instance per panelType).
+			// If we re-open Canvas/Chat in the Agent part while the File part
+			// still holds a pending async close of the *same instance*, the
+			// editor service races and the panel ends up only half-opened
+			// (the "only Chat shows, no Canvas" symptom). Awaiting guarantees
+			// the singleton is fully detached from the File part first.
 			const fileRootGroup = fileMainPart.activeGroup;
 			const staleEditors = fileRootGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput);
 			if (staleEditors.length > 0) {
-				fileRootGroup.closeEditors(staleEditors, { preserveFocus: true });
+				await fileRootGroup.closeEditors(staleEditors, { preserveFocus: true });
 			}
 		}
 
@@ -1146,14 +1163,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			const updateToolbarPosition = () => {
 				const mainRect = this.mainContainer.getBoundingClientRect();
 				const partRect = agentPartContainer.getBoundingClientRect();
-				// The full-width titlebar is gone, so the agent part starts at
-				// the very top of the window. Clamp the toolbar's top to >= 0
-				// so it overlays the inner top band of the right column rather
-				// than being pushed off-screen above it. (Stage 3 will replace
-				// this floating overlay with a real right-column titlebar.)
-				const desiredTop = partRect.top - mainRect.top - TOOLBAR_HEIGHT;
+				// AgentEditorPart reserves a TOOLBAR_HEIGHT band at the top
+				// of its content (see agentEditorPart.ts: createContentArea
+				// shifts `.content` down by `TOOLBAR_HEIGHT`, layout() trims
+				// the grid by the same amount). The toolbar therefore
+				// anchors at `partRect.top` (the freed band) — no clamping,
+				// no negative offset needed.
 				toolbar.element.style.left = `${partRect.left - mainRect.left}px`;
-				toolbar.element.style.top = `${Math.max(0, desiredTop)}px`;
+				toolbar.element.style.top = `${partRect.top - mainRect.top}px`;
 				toolbar.element.style.width = `${partRect.width}px`;
 			};
 			updateToolbarPosition();
@@ -1195,17 +1212,20 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			const stillExists = agentPart.groups.some(g =>
 				g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
 			);
+			console.warn(`[Sarosis][AgentEditor] reopenIfLast(${panelType}) stillExists=${stillExists}`);
 			if (stillExists) {
 				return;
 			}
 			const target = agentPart.activeGroup;
 			const input = AgentStudioEditorInput.getOrCreate(panelType as any);
+			console.warn(`[Sarosis][AgentEditor] reopenIfLast → re-opening '${panelType}' in group ${target.id}`);
 			target.openEditor(input, { pinned: true, sticky: true });
 		};
 		const installCloseGuard = (group: IEditorGroup) => {
 			this._register(group.onDidCloseEditor(e => {
 				if (e.editor instanceof AgentStudioEditorInput) {
 					const panelType = e.editor.panelType;
+					console.warn(`[Sarosis][AgentEditor] onDidCloseEditor fired: panelType='${panelType}' group=${group.id} → scheduling reopenIfLast`);
 					queueMicrotask(() => reopenIfLast(panelType));
 				}
 			}));
@@ -1213,49 +1233,97 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		installCloseGuard(canvasGroup);
 
-		// ── Default Canvas | Chat layout (first launch only) ─────────────
-		//   ┌──────────────────┬──────────────┐
-		//   │ Workspace Canvas │  Agent Chat   │
-		//   └──────────────────┴──────────────┘
-		// On a restored session the upstream EditorPart.applyState() already
-		// recreated the agent part's groups + editors, so we must NOT
-		// re-create the split — only re-guard the existing groups.
-		const alreadyOpen = agentPart.groups.some(g =>
-			g.editors.some(ed => ed instanceof AgentStudioEditorInput)
-		);
-
-		if (!alreadyOpen) {
-			const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
-			const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-
-			// Canvas on the left of the agent zone.
-			canvasGroup.openEditor(canvasInput, { pinned: true, sticky: true });
-
-			// Split right → Chat group (right, full height).
-			const chatGroup = agentPart.addGroup(canvasGroup, GroupDirection.RIGHT);
-			chatGroup.lock(true);
-			chatGroup.openEditor(chatInput, { pinned: true, sticky: true });
-			installCloseGuard(chatGroup);
-
-			chatGroup.focus();
-		} else {
-			// Restored path — guard every existing agent group and make sure
-			// both panel types are present.
-			for (const g of agentPart.groups) {
-				if (g.id !== canvasGroup.id) {
-					installCloseGuard(g);
-				}
-			}
-			for (const panelType of ['canvas', 'chat'] as const) {
-				const stillExists = agentPart.groups.some(g =>
-					g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
-				);
-				if (!stillExists) {
-					const input = AgentStudioEditorInput.getOrCreate(panelType);
-					agentPart.activeGroup.openEditor(input, { pinned: true, sticky: true });
-				}
-			}
+		// ── Deterministic Canvas | Chat split layout (every launch) ──────
+		// The Agent part is created with `restorePreviousState: false`, so it
+		// always boots as a single empty group. We rebuild the fixed
+		// **side-by-side split** layout from scratch:
+		//
+		//   ┌─ Workspace Canvas ──┬─ Agent Chat ─┐
+		//   │  (left group)       │ (right group)│
+		//   └─────────────────────┴──────────────┘
+		//
+		// Canvas occupies the existing root group (left), Chat lives in a
+		// new group spawned to the RIGHT. Each group holds a single editor
+		// (no tab bar inside the group — the split itself is the layout).
+		// Users can still drag tabs across or merge groups freely afterwards.
+		if (agentPart.groups.length > 1) {
+			agentPart.mergeAllGroups(canvasGroup);
 		}
+		const leftGroup = agentPart.activeGroup;
+
+		// ── Diagnostic logging helper ────────────────────────────────────
+		const dumpAgent = (tag: string) => {
+			const groupsInfo = agentPart.groups.map(g => {
+				const eds = g.editors.map(ed => ed instanceof AgentStudioEditorInput ? `AS:${ed.panelType}` : ed.typeId).join(', ');
+				return `  group#${g.id} (active=${g.id === agentPart.activeGroup.id}) [${g.editors.length}]: ${eds}`;
+			}).join('\n');
+			console.warn(`[Sarosis][AgentEditor] === ${tag} ===\n  agentPart.groups.length=${agentPart.groups.length}\n${groupsInfo}`);
+		};
+
+		// Surface the relevant editor-tab configuration values that decide
+		// whether a tab bar shows and whether editors get auto-closed.
+		try {
+			const cfg = this.instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
+			console.warn(`[Sarosis][AgentEditor] config: showTabs=${JSON.stringify(cfg.getValue('workbench.editor.showTabs'))}, limit.enabled=${JSON.stringify(cfg.getValue('workbench.editor.limit.enabled'))}, limit.value=${JSON.stringify(cfg.getValue('workbench.editor.limit.value'))}, limit.perEditorGroup=${JSON.stringify(cfg.getValue('workbench.editor.limit.perEditorGroup'))}`);
+		} catch (e) {
+			console.warn('[Sarosis][AgentEditor] failed to read editor config', e);
+		}
+
+		dumpAgent('BEFORE rebuild');
+
+		// Remove any stale AgentStudioEditorInput already sitting in the left
+		// group (shouldn't happen with restore disabled, but keep it
+		// deterministic).
+		const existingAgentEditors = leftGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput);
+		if (existingAgentEditors.length > 0) {
+			console.warn(`[Sarosis][AgentEditor] purging ${existingAgentEditors.length} pre-existing AS editor(s) from left group`);
+			await leftGroup.closeEditors(existingAgentEditors, { preserveFocus: true });
+		}
+
+		const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
+		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
+		console.warn(`[Sarosis][AgentEditor] inputs: canvas.matches(chat)=${canvasInput.matches(chatInput)}, canvas.resource=${canvasInput.resource?.toString()}, chat.resource=${chatInput.resource?.toString()}`);
+
+		// Step 1 — open Canvas in the left (root) group.
+		// `sticky: true` so the global `editor.limit` mechanism
+		// (EditorsObserver.ensureOpenedEditorsLimit) can NEVER auto-close it.
+		try {
+			await leftGroup.openEditor(canvasInput, { pinned: true, sticky: true });
+			dumpAgent('AFTER open canvas (left)');
+		} catch (e) {
+			console.error('[Sarosis][AgentEditor] openEditor(canvas) threw', e);
+		}
+
+		// Step 2 — spawn a NEW group to the RIGHT and open Chat there. This
+		// is the actual side-by-side split. `addGroup` returns the new
+		// group; install the close-guard immediately so onDidAddGroup race
+		// cannot drop the guard for this initial group.
+		const rightGroup = agentPart.addGroup(leftGroup, GroupDirection.RIGHT);
+		rightGroup.lock(true);
+		// IMPORTANT — manually install the close-guard on the freshly-spawned
+		// rightGroup. The `agentPart.onDidAddGroup` listener that auto-installs
+		// the guard on user-spawned groups is registered LATER in this function
+		// (right after `dumpAgent('POST-microtask (final)')`); since the event
+		// has already fired here, we must register the guard imperatively.
+		installCloseGuard(rightGroup);
+		console.warn(`[Sarosis][AgentEditor] spawned right group #${rightGroup.id} for Chat`);
+
+		try {
+			await rightGroup.openEditor(chatInput, { pinned: true, sticky: true });
+			dumpAgent('AFTER open chat (right)');
+		} catch (e) {
+			console.error('[Sarosis][AgentEditor] openEditor(chat) threw', e);
+		}
+
+		// Activate the LEFT (Canvas) group so initial focus lands there —
+		// matches the user-requested entry experience (Canvas visible &
+		// focused, Chat parked on the right).
+		leftGroup.focus();
+		dumpAgent('AFTER focus left group');
+
+		// Final post-microtask snapshot — catches any async close-guard
+		// flip-flop that fires right after we finish opening.
+		queueMicrotask(() => dumpAgent('POST-microtask (final)'));
 
 		// Guard groups added later within the agent part (user splits).
 		this._register(agentPart.onDidAddGroup(newGroup => {

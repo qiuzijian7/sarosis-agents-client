@@ -1,16 +1,16 @@
 {
   "win32-x64-user": {
-    "version": "0000000000000000000000000000000000000000",
-    "productVersion": "0.0.0",
-    "url": "https://github.com/qiuzijian7/sarosis-agents-client/releases/download/v0.0.0/VsSarosisUserSetup.exe",
-    "sha256hash": "",
-    "timestamp": 0
+    "version": "d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3",
+    "productVersion": "1.120.0",
+    "url": "http://21.91.41.66:3030/downloads/VsSarosisUserSetup.exe",
+    "sha256hash": "3369FEE8E9E7209946EA19F556261632EB23BDC1097D2A7DC54EC20B72F52595",
+    "timestamp": 1717372800000
   },
   "win32-x64": {
-    "version": "0000000000000000000000000000000000000000",
-    "productVersion": "0.0.0",
-    "url": "https://github.com/qiuzijian7/sarosis-agents-client/releases/download/v0.0.0/VsSarosisSetup.exe",
+    "version": "d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3",
+    "productVersion": "1.120.0",
+    "url": "http://21.91.41.66:3030/downloads/VsSarosisSetup.exe",
     "sha256hash": "",
-    "timestamp": 0
+    "timestamp": 1717372800000
   }
 }

@@ -6,7 +6,7 @@
 	"sharedDataFolderName": ".vssarosis-shared",
 	"win32MutexName": "vssarosis",
 	"quality": "sarosis",
-	"updateUrl": "https://vssarosis-update.example.workers.dev",
+	"updateUrl": "http://zijianqiu-any1.devcloud.woa.com:3030",
 	"licenseName": "MIT",
 	"licenseUrl": "https://github.com/microsoft/vscode/blob/main/LICENSE.txt",
 	"serverLicenseUrl": "https://github.com/microsoft/vscode/blob/main/LICENSE.txt",

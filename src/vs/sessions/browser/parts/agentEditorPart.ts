@@ -5,7 +5,7 @@
 
 import { mainWindow } from '../../../base/browser/window.js';
 import { EditorPart } from '../../../workbench/browser/parts/editor/editorPart.js';
-import { IEditorPartsView } from '../../../workbench/browser/parts/editor/editor.js';
+import { IEditorPartsView, IEditorPartCreationOptions } from '../../../workbench/browser/parts/editor/editor.js';
 import { Parts } from '../../../workbench/services/layout/browser/layoutService.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
 import { IThemeService } from '../../../platform/theme/common/themeService.js';
@@ -14,6 +14,7 @@ import { IStorageService } from '../../../platform/storage/common/storage.js';
 import { IWorkbenchLayoutService } from '../../../workbench/services/layout/browser/layoutService.js';
 import { IHostService } from '../../../workbench/services/host/browser/host.js';
 import { IContextKeyService } from '../../../platform/contextkey/common/contextkey.js';
+import { MainEditorPart as SessionsMainEditorPart } from './editorPart.js';
 
 /**
  * [Sarosis] AgentEditorPart — the second main-window-level EditorPart that
@@ -45,5 +46,72 @@ export class AgentEditorPart extends EditorPart {
 		@IContextKeyService contextKeyService: IContextKeyService
 	) {
 		super(editorPartsView, Parts.AGENT_EDITOR_PART, '', mainWindow.vscodeWindowId, instantiationService, themeService, configurationService, storageService, layoutService, hostService, contextKeyService);
+
+		// [Sarosis] ROOT CAUSE FIX for "Canvas/Chat show no tab bar".
+		//
+		// The base EditorPart only renders a tab bar when its part option
+		// `showTabs === 'multiple'` (see editorPart.ts: the line that does
+		// `editorTabsVisibleContext.set(this.partOptions.showTabs === 'multiple')`).
+		// That option is derived from the GLOBAL user setting
+		// `workbench.editor.showTabs`. If the user has it set to 'single' or
+		// 'none' (a very common preference), the Agent zone group — even with
+		// Canvas + Chat both present — only renders the single active editor,
+		// which is exactly the reported "only the last-opened panel shows /
+		// no tabs" symptom (and why it flip-flopped between Canvas and Chat).
+		//
+		// The Agent zone is a *fixed* two-tab layout by product design, so we
+		// force `showTabs: 'multiple'` on THIS part only, regardless of the
+		// user's global preference. `enforcePartOptions` re-applies on every
+		// option recompute, so a later config change can't revert it.
+		this.enforcePartOptions({
+			showTabs: 'multiple',
+			limit: { enabled: false, value: 10, perEditorGroup: false, excludeDirty: false }
+		});
+	}
+
+	/**
+	 * [Sarosis] Reserve a 32-px band at the top of the agent part for the
+	 * `AgentStudioWorkspaceToolbar` overlay (workbench.ts).
+	 *
+	 * The overlay is an `absolute`/`z-index:15` element sitting on
+	 * `mainContainer`, NOT a child of this part's grid. Without this
+	 * override, the part's grid view (and therefore the EditorGroupView's
+	 * tab bar) is rendered at `top = partRect.top` — i.e. exactly where the
+	 * toolbar overlay paints, so the tab bar is hidden behind the toolbar.
+	 *
+	 * Strategy:
+	 *   1. After `createContentArea` builds the inner `.content` element,
+	 *      we shift it down by `TOOLBAR_HEIGHT` via inline `top` (it is
+	 *      positioned by `size()` width/height only, so we are free to set
+	 *      its top without breaking upstream metrics).
+	 *   2. In `layout()` we forward a `height - TOOLBAR_HEIGHT` to the
+	 *      base class so the grid sizes itself for the freed area; the
+	 *      `top` argument is informational for the grid (it doesn't
+	 *      DOM-position the part container) so we leave it alone.
+	 *
+	 * The matching change in workbench.ts stops clamping `desiredTop` to
+	 * `>= 0`, so the toolbar overlay now anchors to `partRect.top` —
+	 * exactly the band we just freed.
+	 */
+	protected override createContentArea(parent: HTMLElement, options?: IEditorPartCreationOptions): HTMLElement {
+		const result = super.createContentArea(parent, options);
+		// `this.container` is the inner `.content` element (created via
+		// `$('.content')`); `size()` from `dom.ts` only writes width/height,
+		// so it's safe to anchor it 32px below the part's top edge.
+		const reserved = SessionsMainEditorPart.TOOLBAR_HEIGHT;
+		(result as HTMLElement).style.position = 'absolute';
+		(result as HTMLElement).style.top = `${reserved}px`;
+		(result as HTMLElement).style.left = '0';
+		return result;
+	}
+
+	override layout(width: number, height: number, top: number, left: number): void {
+		const reserved = SessionsMainEditorPart.TOOLBAR_HEIGHT;
+		super.layout(
+			width,
+			Math.max(0, height - reserved),
+			top,
+			left
+		);
 	}
 }
