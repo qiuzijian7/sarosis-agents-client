@@ -130,6 +130,20 @@ export interface IWorktreeService {
 	getAllRepositoryRoots(): Promise<string[]>;
 
 	/**
+	 * Filter the given candidate directory paths down to those that are git
+	 * repository roots (contain a `.git` entry), de-duplicated and order-preserving.
+	 *
+	 * Unlike {@link getAllRepositoryRoots} this does NOT read the global VS Code
+	 * workspace folders — the caller supplies the exact candidate set. The
+	 * Worktree view uses this to scope the list to ONLY the active workspace's
+	 * related code repositories, instead of whatever mixed roots happen to be
+	 * injected into the global folder set (home dir, sibling worktrees, etc.).
+	 *
+	 * @param candidatePaths Absolute directory paths to probe.
+	 */
+	filterGitRepositoryRoots(candidatePaths: readonly string[]): Promise<string[]>;
+
+	/**
 	 * Get the current lifecycle status of a worktree by its directory path.
 	 */
 	getWorktreeState(directory: string): WorktreeStatus;

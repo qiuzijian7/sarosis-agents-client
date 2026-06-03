@@ -30,6 +30,10 @@ import { CodeWindow, mainWindow } from '../../../base/browser/window.js';
 import { safeIntl } from '../../../base/common/date.js';
 import { ITitlebarPart, ITitleProperties, ITitleVariable, IAuxiliaryTitlebarPart } from '../../../workbench/browser/parts/titlebar/titlebarPart.js';
 import { Menus } from '../menus.js';
+import { AgentStudioWorkspaceToolbar } from '../../contrib/agentStudio/browser/agentStudioWorkspaceToolbar.js';
+import { IAgentStudioService } from '../../contrib/agentStudio/common/agentStudio.js';
+import { IFileDialogService } from '../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../platform/files/common/files.js';
 
 /**
  * Simplified agent sessions titlebar part.
@@ -88,6 +92,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 	private leftToolbarContentWidth: number = 0;
 	private lastSideBarWidth: number = 0;
 	private leftSpacerWidth: number = 0;
+	private _workspaceSelectorContainer: HTMLElement | undefined;
 
 	private readonly titleBarStyle: TitlebarStyle;
 	private isInactive: boolean = false;
@@ -209,6 +214,12 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 			this.updateLeftContentWidth();
 		}));
 
+		// Workspace selector — absolutely positioned to the right side of the
+		// titlebar-left band (which tracks the sidebar width). Using absolute
+		// positioning so it does NOT participate in the flex flow and cannot
+		// interfere with the sidebar/activitybar layout.
+		this._createWorkspaceToolbar();
+
 		// Center toolbar - command center (renders session picker via IActionViewItemService)
 		// Uses .window-title > .command-center nesting to match default workbench CSS selectors
 		const windowTitle = append(this.centerContent, $('div.window-title'));
@@ -247,6 +258,47 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		this.updateStyles();
 
 		return this.element;
+	}
+
+	/**
+	 * Create workspace selector toolbar inside titlebar-left, absolutely
+	 * positioned to the right side. This avoids flex flow interference that
+	 * previously caused the activitybar to disappear. The container is placed
+	 * inside `.titlebar-left` (which has inline width = sidebar width), so
+	 * `right:0` aligns it to the right edge of the sidebar.
+	 */
+	private _createWorkspaceToolbar(): void {
+		const container = append(this.leftContent, $('div.titlebar-workspace-selector'));
+		this._workspaceSelectorContainer = container;
+		const toolbar = this._register(new AgentStudioWorkspaceToolbar(container, {
+			variant: 'titlebar',
+			showBadge: false,
+			insertMode: 'append',
+		}));
+
+		const connectService = () => {
+			try {
+				const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
+				toolbar.connectService(agentStudioService);
+			} catch { setTimeout(connectService, 2000); }
+		};
+		connectService();
+
+		const connectFileDialog = () => {
+			try {
+				const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
+				toolbar.connectFileDialogService(fileDialogService);
+			} catch { setTimeout(connectFileDialog, 2000); }
+		};
+		connectFileDialog();
+
+		const connectFileSvc = () => {
+			try {
+				const fileService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileService));
+				toolbar.connectFileService(fileService);
+			} catch { setTimeout(connectFileSvc, 2000); }
+		};
+		connectFileSvc();
 	}
 
 	override updateStyles(): void {
@@ -304,6 +356,12 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		this.sideBarPartResizeObserver = new ResizeObserver(entries => {
 			this.lastSideBarWidth = entries[0].contentRect.width;
 			this.updateLeftContentWidth();
+
+			// Hide workspace selector when sidebar is collapsed (width ≈ 0)
+			if (this._workspaceSelectorContainer) {
+				const isCollapsed = entries[0].contentRect.width < 50;
+				this._workspaceSelectorContainer.classList.toggle('hidden', isCollapsed);
+			}
 		});
 		this.sideBarPartResizeObserver.observe(sideBarContainer);
 		this._register({ dispose: () => this.sideBarPartResizeObserver?.disconnect() });

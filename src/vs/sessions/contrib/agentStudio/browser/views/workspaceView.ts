@@ -706,6 +706,16 @@ export class WorkspaceViewPane extends ViewPane {
 				run: () => this._startRename(element),
 			}));
 		}
+		// Related-folder roots get a dedicated "remove association" action.
+		// This only detaches the folder from the workspace metadata — it never
+		// touches files on disk (unlike the regular delete below).
+		if (element.isWorkspaceRoot && element.isRelatedFolder) {
+			actions.push(toAction({
+				id: 'agentStudio.workspace.removeRelatedFolder',
+				label: localize('removeRelatedFolder', "移除关联仓库"),
+				run: () => this._removeRelatedFolder(element),
+			}));
+		}
 		// Allow deleting real files/dirs but not workspace roots (those are
 		// detached via the workspace/related-folder management flow).
 		if (!element.isWorkspaceRoot) {
@@ -768,6 +778,43 @@ export class WorkspaceViewPane extends ViewPane {
 		} catch (err) {
 			this.logService.error('[WorkspaceViewPane] Delete failed:', err);
 			this.notificationService.error(localize('deleteError', "删除失败: {0}", (err as Error)?.message ?? String(err)));
+		}
+	}
+
+	/**
+	 * Detach a related folder (an additional code repository) from its
+	 * workspace after explicit confirmation. This only edits workspace
+	 * metadata via {@link IAgentStudioService.removeRelatedFolder}; the folder
+	 * and its files on disk are left untouched.
+	 */
+	private async _removeRelatedFolder(element: IWorkspaceExplorerElement): Promise<void> {
+		const workspaceId = element.workspaceId;
+		if (!workspaceId) {
+			this.logService.warn('[WorkspaceViewPane] removeRelatedFolder: element has no workspaceId');
+			return;
+		}
+		const folderPath = element.resource.fsPath;
+
+		const confirmed = await this.dialogService.confirm({
+			type: 'warning',
+			message: localize('confirmRemoveRelated', "确定要移除关联仓库 \"{0}\" 吗？", element.name),
+			detail: localize('confirmRemoveRelatedDetail', "此操作仅解除该目录与工作区的关联，不会删除磁盘上的文件。"),
+			primaryButton: localize('removeRelatedButton', "移除"),
+		});
+		if (!confirmed.confirmed) {
+			return;
+		}
+
+		try {
+			await this.agentStudioService.removeRelatedFolder(workspaceId, folderPath);
+			this.logService.info(`[WorkspaceViewPane] Removed related folder "${folderPath}" from workspace ${workspaceId}`);
+			this.notificationService.info(localize('removeRelatedDone', "已移除关联仓库: {0}", element.name));
+			// onDidChangeActiveWorkspace will trigger a reload, but refresh
+			// explicitly to be safe.
+			await this._loadWorkspaceRoots();
+		} catch (err) {
+			this.logService.error('[WorkspaceViewPane] removeRelatedFolder failed:', err);
+			this.notificationService.error(localize('removeRelatedError', "移除关联仓库失败: {0}", (err as Error)?.message ?? String(err)));
 		}
 	}
 
@@ -1104,17 +1151,20 @@ export class WorkspaceViewPane extends ViewPane {
 		}
 		const { name, homeUri } = result;
 
-		// Warn (but don't block) if the chosen directory is non-empty, since
-		// the workspace metadata (.sarosisworkspace) will be written into it.
+		// The chosen directory may be empty OR already contain files (e.g. an
+		// existing code repository the user wants to adopt as the home dir).
+		// Both are allowed — we only surface an informational confirm so the
+		// user knows workspace metadata (.sarosisworkspace) will be written
+		// alongside any existing content. This is NOT a hard requirement.
 		try {
 			const stat = await this.fileService.resolve(homeUri);
 			const nonEmpty = stat.isDirectory && !!stat.children && stat.children.length > 0;
 			if (nonEmpty) {
 				const confirmed = await this.dialogService.confirm({
-					type: 'warning',
-					message: localize('createWorkspaceNonEmpty', "所选主目录非空"),
-					detail: localize('createWorkspaceNonEmptyDetail', "工作区元数据（.sarosisworkspace）将写入其中，可能与已有文件混合。建议选择一个空文件夹。是否仍要继续？"),
-					primaryButton: localize('createWorkspaceContinue', "仍要继续"),
+					type: 'info',
+					message: localize('createWorkspaceNonEmpty', "所选文件夹已包含文件"),
+					detail: localize('createWorkspaceNonEmptyDetail', "工作区元数据（.sarosisworkspace）将写入该文件夹，与已有文件共存（不会删除或修改它们）。空文件夹和非空文件夹都可以作为工作区主目录。是否继续？"),
+					primaryButton: localize('createWorkspaceContinue', "继续"),
 				});
 				if (!confirmed.confirmed) {
 					return;
@@ -1238,7 +1288,7 @@ export class WorkspaceViewPane extends ViewPane {
 
 			disposables.add(browseButton.onDidClick(async () => {
 				const picked = await this.fileDialogService.showOpenDialog({
-					title: localize('createWorkspaceFolderTitle', "选择工作区主目录（建议为空文件夹）"),
+					title: localize('createWorkspaceFolderTitle', "选择工作区主目录（空文件夹或已有代码库均可）"),
 					canSelectFolders: true,
 					canSelectFiles: false,
 					canSelectMany: false,

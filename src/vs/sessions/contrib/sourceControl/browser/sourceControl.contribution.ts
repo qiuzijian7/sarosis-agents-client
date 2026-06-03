@@ -27,6 +27,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { SCMViewPane, ContextKeys } from '../../../../workbench/contrib/scm/browser/scmViewPane.js';
 import { SCMRepositoriesViewPane } from '../../../../workbench/contrib/scm/browser/scmRepositoriesViewPane.js';
 import { SCMHistoryViewPane } from '../../../../workbench/contrib/scm/browser/scmHistoryViewPane.js';
+import { ISCMViewService, ISCMService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -196,6 +197,13 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 	private _activeWorkspaceId: string | undefined;
 	private readonly _domEventHandler: (e: Event) => void;
 	private _hasGitRepoKey: IContextKey<boolean>;
+	/**
+	 * The active workspace's target roots from the most recent sync. Used by the
+	 * onDidAddRepository listener so that a repository registered asynchronously
+	 * (after the folder change) is immediately reconciled against the current
+	 * workspace without waiting for the next switch.
+	 */
+	private _currentAllowedRoots: readonly URI[] = [];
 
 	constructor(
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
@@ -206,6 +214,8 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@ISCMViewService private readonly scmViewService: ISCMViewService,
+		@ISCMService private readonly scmService: ISCMService,
 	) {
 		super();
 
@@ -248,6 +258,17 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			this._updateGitContextKey();
 		}));
 
+		// When a repository is registered asynchronously (the git extension opens
+		// SCM providers after a folder change, and sessions opens some explicitly),
+		// reconcile it against the active workspace's roots right away. This is the
+		// event-driven complement to the setTimeout reconciles in
+		// _pruneVisibleRepositories and covers the case where a repo registers
+		// later than the t+1000ms window.
+		this._register(this.scmService.onDidAddRepository(repo => {
+			console.log(`[SourceControlWorkspaceSync] onDidAddRepository root=${repo.provider.rootUri?.fsPath ?? '<no-root>'} — reconciling against current allowedRoots`);
+			this._pruneVisibleRepositories(this._currentAllowedRoots);
+		}));
+
 		// Initial sync: resolve the first workspace if none is active yet
 		this._initialSync();
 	}
@@ -274,8 +295,10 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 	}
 
 	private async _syncWorkspaceFolder(workspaceId: string): Promise<void> {
+		console.log(`[SourceControlWorkspaceSync] _syncWorkspaceFolder ENTER workspaceId=${workspaceId}`);
 		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
 		if (!workspace) {
+			console.log(`[SourceControlWorkspaceSync] _syncWorkspaceFolder workspace not found, hiding all`);
 			this._hasGitRepoKey.set(false);
 			return;
 		}
@@ -311,6 +334,9 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		if (targets.length === 0) {
 			this._hasGitRepoKey.set(false);
+			// No roots for this workspace (e.g. empty folder with no git) — hide any
+			// stale SCM repositories left visible from a previously active workspace.
+			this._pruneVisibleRepositories([]);
 			return;
 		}
 
@@ -336,12 +362,15 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		const currentFolders = this.workspaceContextService.getWorkspace().folders;
 
+		const targetUris = targets.map(t => t.uri);
+
 		// Skip the folder update if the current root set already matches the target set
 		// (same length, same order, same URIs) — avoids redundant churn & git re-scan.
 		const sameAsCurrent = currentFolders.length === targets.length &&
 			currentFolders.every((cf, i) => this.uriIdentityService.extUri.isEqual(cf.uri, targets[i].uri));
 		if (sameAsCurrent) {
 			await this._updateGitContextKey();
+			this._pruneVisibleRepositories(targetUris);
 			return;
 		}
 
@@ -357,6 +386,95 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		// After folder sync, update git context key
 		await this._updateGitContextKey();
+
+		// Folder sync replaced the VS Code workspace folders, but the git extension
+		// does NOT close SCM providers for removed folders (and sessions opens some
+		// repositories explicitly via gitService.openRepository, which are never
+		// auto-closed). Hide any visible repository whose root is not part of the
+		// active workspace's target roots so the Changes view never shows another
+		// workspace's repositories. New repositories for the active workspace are
+		// registered asynchronously, so also prune on the next registrations.
+		this._pruneVisibleRepositories(targetUris);
+	}
+
+	/**
+	 * Reconcile the SCM Changes/Graph views so they show EXACTLY the repositories
+	 * that belong to the active workspace's target roots. A repository "belongs"
+	 * if its provider rootUri equals, or is nested under, one of the target roots.
+	 *
+	 * This is an *alignment* operation, not a one-way prune:
+	 *   - REMOVE visible repositories that don't belong to the active workspace, AND
+	 *   - ADD already-registered repositories that DO belong but aren't currently
+	 *     visible.
+	 *
+	 * The "add" half is the critical fix for the switch-back bug: sessions opens
+	 * git repositories explicitly via gitService.openRepository and NEVER closes
+	 * them. The git extension only fires onDidAddRepository on the *first*
+	 * registration, so once a repo has been pruned out of visibleRepositories
+	 * (because another workspace was active), switching back will NOT re-fire
+	 * onDidAddRepository — nothing would ever add it back, leaving Changes empty
+	 * and Graph showing "no history items". By scanning ISCMService.repositories
+	 * (the full registry) we can re-show repos that are already registered.
+	 *
+	 * This does NOT close the underlying SCM provider (IGitService exposes no
+	 * close API) — it only adjusts ISCMViewService.visibleRepositories, which is
+	 * what the native SCMViewPane / SCMHistoryViewPane render. An empty allowed
+	 * set hides everything (used for git-less workspaces such as an empty folder).
+	 */
+	private _pruneVisibleRepositories(allowedRoots: readonly URI[]): void {
+		// Remember the active workspace's roots so the onDidAddRepository listener
+		// can reconcile late-registering repositories against the current target.
+		this._currentAllowedRoots = allowedRoots;
+		const tag = '[SourceControlWorkspaceSync]';
+		const fmt = (u: URI | undefined) => u ? u.fsPath : '<no-root>';
+		const reconcile = (phase: string) => {
+			const belongs = (repo: ISCMRepository): boolean => {
+				const root = repo.provider.rootUri;
+				if (!root) {
+					// Providers without a root (e.g. virtual) are not workspace-scoped; hide them.
+					return false;
+				}
+				return allowedRoots.some(allowed =>
+					this.uriIdentityService.extUri.isEqual(allowed, root) ||
+					this.uriIdentityService.extUri.isEqualOrParent(root, allowed));
+			};
+
+			// All repositories currently registered with the SCM service (sessions
+			// opens these explicitly and never closes them).
+			const allRepos = Array.from(this.scmService.repositories);
+			const currentVisible = this.scmViewService.visibleRepositories;
+			const currentVisibleSet = new Set(currentVisible);
+
+			// Desired visible set = every registered repo that belongs, preserving
+			// registry order for determinism.
+			const desired = allRepos.filter(belongs);
+			const desiredSet = new Set(desired);
+
+			const toAdd = desired.filter(r => !currentVisibleSet.has(r));
+			const toRemove = currentVisible.filter(r => !desiredSet.has(r));
+
+			console.log(`${tag} reconcile[${phase}] allowedRoots=[${allowedRoots.map(fmt).join(', ')}]`);
+			console.log(`${tag}   registered(${allRepos.length})=[${allRepos.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.log(`${tag}   visibleBefore(${currentVisible.length})=[${currentVisible.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.log(`${tag}   desired(${desired.length})=[${desired.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.log(`${tag}   toAdd(${toAdd.length})=[${toAdd.map(r => fmt(r.provider.rootUri)).join(', ')}] toRemove(${toRemove.length})=[${toRemove.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+
+			if (toAdd.length === 0 && toRemove.length === 0) {
+				console.log(`${tag}   reconcile[${phase}] no change`);
+				return;
+			}
+			// Assign the fully-aligned desired set in registry order. Setting the
+			// array wholesale (rather than add/remove deltas) guarantees the view
+			// ends up showing exactly the active workspace's repositories.
+			this.scmViewService.visibleRepositories = desired;
+			console.log(`${tag}   reconcile[${phase}] APPLIED visibleAfter(${desired.length})=[${desired.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+		};
+		// Reconcile now for repositories already registered…
+		reconcile('immediate');
+		// …and again shortly after, to catch repositories whose SCM providers the
+		// git extension registers asynchronously following the folder change.
+		setTimeout(() => reconcile('t+300'), 300);
+		setTimeout(() => reconcile('t+1000'), 1000);
 	}
 
 	private async _updateGitContextKey(): Promise<void> {

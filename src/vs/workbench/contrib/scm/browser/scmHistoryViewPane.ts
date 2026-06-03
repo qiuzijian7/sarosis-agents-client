@@ -1164,7 +1164,39 @@ class SCMHistoryViewModel extends Disposable {
 			return this._scmViewService.activeRepository.read(reader)?.repository;
 		});
 
-		this.repository = latestChangedValue(this, [firstRepository, graphRepository]);
+		const autoRepository = latestChangedValue(this, [firstRepository, graphRepository]);
+
+		// The Graph view's auto repository selection reads the raw registered
+		// repository list (firstRepository = Iterable.first(scmService.repositories))
+		// which IGNORES visibleRepositories. In a synthetic sessions workspace,
+		// repositories are opened explicitly (gitService.openRepository) and are
+		// never closed (IGitService exposes no close API), so a previously active
+		// workspace's repository stays registered and the Graph would keep showing
+		// its history even after switching to another (or git-less) workspace.
+		// Constrain the selection to the per-workspace visible repository set
+		// maintained by SourceControlWorkspaceSync._pruneVisibleRepositories so the
+		// Graph stays in lockstep with the Changes view.
+		const visibleRepositories = observableFromEvent(this,
+			this._scmViewService.onDidChangeVisibleRepositories,
+			() => this._scmViewService.visibleRepositories);
+
+		this.repository = derived(reader => {
+			const visible = visibleRepositories.read(reader);
+			const candidate = autoRepository.read(reader);
+			// Keep the auto/selected repository when it is still visible for the
+			// active workspace.
+			let result: ISCMRepository | undefined;
+			if (candidate && visible.includes(candidate)) {
+				result = candidate;
+			} else {
+				// Otherwise fall back to the first visible repository. An empty
+				// visible set (e.g. a git-less workspace) yields undefined,
+				// clearing the Graph.
+				result = visible.length > 0 ? visible[0] : undefined;
+			}
+			console.log(`[SCMGraphDebug] this.repository derived RECOMPUTE: visible=${visible.length}[${visible.map(r => r.provider.rootUri?.fsPath ?? '<no-root>').join(', ')}] candidate=${candidate?.provider.rootUri?.fsPath ?? '<none>'} => result=${result?.provider.rootUri?.fsPath ?? 'undefined'}`);
+			return result;
+		});
 
 		const closedRepository = observableFromEvent(this,
 			this._scmService.onDidRemoveRepository,
@@ -1248,6 +1280,7 @@ class SCMHistoryViewModel extends Disposable {
 		const historyItemRemoteRef = historyProvider?.historyItemRemoteRef.get();
 
 		if (!repository || !historyProvider) {
+			console.log(`[SCMGraphDebug] getHistoryItems: NO repository/historyProvider => returning [] (tree should clear)`);
 			this._scmHistoryItemCountCtx.set(0);
 			this.isViewModelEmpty.set(true, undefined);
 			return [];
@@ -1766,12 +1799,28 @@ export class SCMHistoryViewPane extends ViewPane {
 
 			// Repository change
 			let isFirstRun = true;
+			let hadRepository = false;
 			this._visibilityDisposables.add(autorun(reader => {
 				const repository = this._treeViewModel.repository.read(reader);
 				const historyProvider = repository?.provider.historyProvider.read(reader);
+				console.log(`[SCMGraphDebug] "Repository change" autorun FIRED: repository=${repository?.provider.rootUri?.fsPath ?? 'undefined'} historyProvider=${historyProvider ? 'yes' : 'no'} hadRepository=${hadRepository}`);
 				if (!repository || !historyProvider) {
+					// The active repository was cleared (e.g. switched to a git-less
+					// workspace, where SourceControlWorkspaceSync prunes
+					// visibleRepositories to empty). The tree input is only set once,
+					// so without an explicit refresh the previously rendered commit
+					// graph would stay on screen. Refresh once to clear it
+					// (getHistoryItems returns [] when there is no repository).
+					if (hadRepository) {
+						hadRepository = false;
+						console.log(`[SCMGraphDebug]   -> cleared branch: calling refresh() to clear the tree`);
+						this.refresh();
+					} else {
+						console.log(`[SCMGraphDebug]   -> cleared branch but hadRepository=false, NOT refreshing (this may be the bug if tree still shows old commits)`);
+					}
 					return;
 				}
+				hadRepository = true;
 
 				// HistoryItemId changed (checkout)
 				const historyItemRefId = derived(reader => {
@@ -1904,6 +1953,7 @@ export class SCMHistoryViewPane extends ViewPane {
 			return;
 		}
 
+		console.log(`[SCMGraphDebug] _refresh: clearing repository state + updating children (repository=${this._treeViewModel?.repository.get()?.provider.rootUri?.fsPath ?? 'undefined'})`);
 		this._treeViewModel.clearRepositoryState();
 		await this._updateChildren();
 

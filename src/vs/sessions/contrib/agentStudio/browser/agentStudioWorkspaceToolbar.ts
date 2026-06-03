@@ -35,7 +35,32 @@ function _svgIcon(width: number, height: number, paths: string[], cls?: string):
 }
 
 /**
- * Global Workspace Toolbar — rendered above the Agent Studio editor group tab bar.
+ * Visual variant of the workspace toolbar.
+ *  - `overlay`  : floating bar above the Agent Studio editor group (legacy default).
+ *                 Uses a forced dark inline style and shows the employee badge.
+ *  - `titlebar` : embedded inside a host title area (e.g. the sidebar titlebar).
+ *                 Drops the forced background/border + badge so it inherits the
+ *                 surrounding theme, and anchors its dropdown with `fixed`
+ *                 positioning so it is not clipped by an `overflow:hidden` host.
+ */
+export type WorkspaceToolbarVariant = 'overlay' | 'titlebar';
+
+export interface IWorkspaceToolbarOptions {
+	/** Visual variant. Defaults to `overlay` for backwards compatibility. */
+	readonly variant?: WorkspaceToolbarVariant;
+	/** Whether to show the employee-count badge. Defaults to true. */
+	readonly showBadge?: boolean;
+	/**
+	 * Where to insert the toolbar element relative to `parentElement`.
+	 *  - `prepend` (default): insert as the first child (overlay legacy behavior).
+	 *  - `append`           : append as the last child.
+	 */
+	readonly insertMode?: 'prepend' | 'append';
+}
+
+/**
+ * Global Workspace Toolbar — rendered above the Agent Studio editor group tab bar,
+ * or embedded inside the sidebar titlebar (see {@link WorkspaceToolbarVariant}).
  * Allows switching workspaces across all Agent Studio panels (Chat, TaskBoard, Canvas).
  *
  * **Important**: The toolbar DOM is created and inserted immediately in the constructor,
@@ -44,6 +69,9 @@ function _svgIcon(width: number, height: number, paths: string[], cls?: string):
  */
 export class AgentStudioWorkspaceToolbar extends Disposable {
 
+	private readonly _variant: WorkspaceToolbarVariant;
+	private readonly _showBadge: boolean;
+
 	private readonly _element: HTMLElement;
 
 	/** The root DOM element of the toolbar. */
@@ -51,12 +79,14 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 	private readonly _selectButton: HTMLElement;
 	private readonly _dropdownContainer: HTMLElement;
+	private readonly _searchInput: HTMLInputElement;
 	private readonly _listElement: HTMLElement;
 	private readonly _badgeElement: HTMLElement;
 
 	private _workspaces: Workspace[] = [];
 	private _activeWorkspaceId: string | undefined;
 	private _isDropdownOpen = false;
+	private _searchQuery = '';
 	private _agentStudioService: IAgentStudioService | undefined;
 	private _fileDialogService: IFileDialogService | undefined;
 	private _fileService: IFileService | undefined;
@@ -71,30 +101,50 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 	 */
 	constructor(
 		parentElement: HTMLElement,
+		options?: IWorkspaceToolbarOptions,
 	) {
 		super();
 
+		this._variant = options?.variant ?? 'overlay';
+		this._showBadge = options?.showBadge ?? (this._variant === 'overlay');
+		const isTitlebar = this._variant === 'titlebar';
+
 		// Create the toolbar element
 		this._element = document.createElement('div');
-		this._element.className = 'agent-studio-workspace-toolbar';
-		// [DEBUG] Inline style to force visibility regardless of CSS
-		this._element.style.cssText = [
-			'display:flex',
-			'align-items:center',
-			'justify-content:space-between',
-			'height:32px',
-			'min-height:32px',
-			'padding:0 8px',
-			'background:#1f2937',
-			'border-bottom:1px solid #374151',
-			'box-sizing:border-box',
-			'flex-shrink:0',
-			'position:relative',
-			'z-index:10',
-			'color:#e5e7eb',
-			'font-size:12px',
-		].join(';');
-		console.log('[AgentStudioWorkspaceToolbar] constructor called, parent:', parentElement);
+		this._element.className = 'agent-studio-workspace-toolbar' + (isTitlebar ? ' astb-variant-titlebar' : '');
+		if (isTitlebar) {
+			// Titlebar variant: inherit the host theme. Keep layout-only inline
+			// styles (no forced colors / borders) so it blends into the sidebar
+			// title area. The dropdown anchors with `fixed` (see _openDropdown).
+			this._element.style.cssText = [
+				'display:flex',
+				'align-items:center',
+				'flex:1 1 auto',
+				'min-width:0',
+				'height:100%',
+				'box-sizing:border-box',
+				'position:relative',
+			].join(';');
+		} else {
+			// [DEBUG] Inline style to force visibility regardless of CSS
+			this._element.style.cssText = [
+				'display:flex',
+				'align-items:center',
+				'justify-content:space-between',
+				'height:32px',
+				'min-height:32px',
+				'padding:0 8px',
+				'background:#1f2937',
+				'border-bottom:1px solid #374151',
+				'box-sizing:border-box',
+				'flex-shrink:0',
+				'position:relative',
+				'z-index:10',
+				'color:#e5e7eb',
+				'font-size:12px',
+			].join(';');
+		}
+		console.log('[AgentStudioWorkspaceToolbar] constructor called, variant:', this._variant, 'parent:', parentElement);
 
 		// Left section: icon + select button + employee count badge
 		const leftSection = document.createElement('div');
@@ -119,7 +169,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		this._selectButton.addEventListener('click', () => this._toggleDropdown());
 		leftSection.appendChild(this._selectButton);
 
-		// Badge (pure DOM — no innerHTML)
+		// Badge (pure DOM — no innerHTML). Hidden in titlebar variant to save space.
 		this._badgeElement = document.createElement('div');
 		this._badgeElement.className = 'astb-badge';
 		this._badgeElement.appendChild(_svgIcon(12, 12, [
@@ -129,13 +179,39 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		badgeCount.className = 'astb-badge-count';
 		badgeCount.textContent = '0';
 		this._badgeElement.appendChild(badgeCount);
-		leftSection.appendChild(this._badgeElement);
+		if (this._showBadge) {
+			leftSection.appendChild(this._badgeElement);
+		}
 
 		this._element.appendChild(leftSection);
 
 		// Dropdown (positioned absolutely below the toolbar)
 		this._dropdownContainer = document.createElement('div');
 		this._dropdownContainer.className = 'astb-dropdown hidden';
+
+		// Search input at the top of the dropdown
+		const searchWrapper = document.createElement('div');
+		searchWrapper.className = 'astb-dropdown-search';
+		this._searchInput = document.createElement('input');
+		this._searchInput.type = 'text';
+		this._searchInput.className = 'astb-search-input';
+		this._searchInput.placeholder = '搜索工作区...';
+		this._searchInput.addEventListener('input', () => {
+			this._searchQuery = this._searchInput.value;
+			this._renderDropdownList();
+		});
+		this._searchInput.addEventListener('keydown', (e) => {
+			if (e.key === 'Escape') {
+				this._closeDropdown();
+			}
+		});
+		const searchIcon = _svgIcon(14, 14, [
+			'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z',
+		]);
+		searchIcon.setAttribute('class', 'astb-search-icon');
+		searchWrapper.appendChild(searchIcon);
+		searchWrapper.appendChild(this._searchInput);
+		this._dropdownContainer.appendChild(searchWrapper);
 
 		this._listElement = document.createElement('div');
 		this._listElement.className = 'astb-dropdown-list';
@@ -153,8 +229,12 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 		this._element.appendChild(this._dropdownContainer);
 
-		// Insert toolbar as the first child of the parent element (above the tab bar)
-		if (parentElement.firstChild) {
+		// Insert toolbar relative to the parent element.
+		//  - overlay  (default): as the first child (floats above the tab bar)
+		//  - titlebar : as the last child unless caller asks otherwise, so it
+		//               sits after the title label inside the host title area.
+		const insertMode = options?.insertMode ?? (isTitlebar ? 'append' : 'prepend');
+		if (insertMode === 'prepend' && parentElement.firstChild) {
 			parentElement.insertBefore(this._element, parentElement.firstChild);
 		} else {
 			parentElement.appendChild(this._element);
@@ -164,7 +244,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 		// Close dropdown on outside click
 		this._disposables.add(DOM.addDisposableListener(document, 'mousedown', (e: MouseEvent) => {
-			if (this._isDropdownOpen && !this._element.contains(e.target as Node)) {
+			if (this._isDropdownOpen && !this._element.contains(e.target as Node) && !this._dropdownContainer.contains(e.target as Node)) {
 				this._closeDropdown();
 			}
 		}));
@@ -177,10 +257,26 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 	connectService(service: IAgentStudioService): void {
 		this._agentStudioService = service;
 
-		// Listen for workspace changes from service
+		// Listen for workspace data changes (create/update/delete)
 		this._disposables.add(this._agentStudioService.onDidChangeWorkspace(() => {
 			this._loadWorkspaces();
 		}));
+
+		// Listen for active workspace switches from other UI surfaces (e.g.,
+		// workspace view pane, overlay toolbar, or programmatic calls to
+		// setActiveWorkspace). Syncs the highlighted item and button label.
+		if (this._agentStudioService.onDidChangeActiveWorkspace) {
+			this._disposables.add(this._agentStudioService.onDidChangeActiveWorkspace((newId) => {
+				if (newId !== this._activeWorkspaceId) {
+					this._activeWorkspaceId = newId;
+					this._updateUI();
+					// Re-render dropdown list if it's open (to update active highlight)
+					if (this._isDropdownOpen) {
+						this._renderDropdownList();
+					}
+				}
+			}));
+		}
 
 		// Initial load
 		this._loadWorkspaces();
@@ -317,7 +413,37 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		this._isDropdownOpen = true;
 		this._dropdownContainer.classList.remove('hidden');
 		this._selectButton.querySelector('.astb-chevron')?.classList.add('rotate');
+
+		// Reset search state
+		this._searchQuery = '';
+		this._searchInput.value = '';
+
+		// Titlebar variant: the sidebar part clips overflow, so an absolutely
+		// positioned dropdown would be cut off. Pin it with `fixed` coordinates
+		// anchored to the select button instead, and keep it in sync while open.
+		if (this._variant === 'titlebar') {
+			this._positionFixedDropdown();
+			this._disposables.add(DOM.addDisposableListener(DOM.getWindow(this._element), 'resize', () => {
+				if (this._isDropdownOpen) {
+					this._positionFixedDropdown();
+				}
+			}));
+		}
+
 		this._renderDropdownList();
+
+		// Focus search input for immediate typing
+		setTimeout(() => this._searchInput.focus(), 0);
+	}
+
+	/** Pin the dropdown below the select button using fixed coordinates. */
+	private _positionFixedDropdown(): void {
+		const rect = this._selectButton.getBoundingClientRect();
+		this._dropdownContainer.style.position = 'fixed';
+		this._dropdownContainer.style.top = `${Math.round(rect.bottom + 4)}px`;
+		this._dropdownContainer.style.left = `${Math.round(rect.left)}px`;
+		this._dropdownContainer.style.minWidth = `${Math.max(220, Math.round(rect.width))}px`;
+		this._dropdownContainer.style.zIndex = '2000';
 	}
 
 	private _closeDropdown(): void {
@@ -335,7 +461,15 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 	private _renderDropdownList(): void {
 		DOM.clearNode(this._listElement);
 
-		for (const ws of this._workspaces) {
+		// Filter workspaces by search query
+		const query = this._searchQuery.toLowerCase().trim();
+		const filtered = query
+			? this._workspaces.filter(ws =>
+				ws.name.toLowerCase().includes(query) ||
+				(ws.path && ws.path.toLowerCase().includes(query)))
+			: this._workspaces;
+
+		for (const ws of filtered) {
 			const item = document.createElement('div');
 			item.className = `astb-dropdown-item${ws.id === this._activeWorkspaceId ? ' active' : ''}`;
 
@@ -358,21 +492,26 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 
 			item.appendChild(textContainer);
 
+			// Right side: check icon (active) + delete button
+			const actionsContainer = document.createElement('div');
+			actionsContainer.className = 'astb-dropdown-item-actions';
+
 			if (ws.id === this._activeWorkspaceId) {
-				const checkSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-				checkSvg.setAttribute('viewBox', '0 0 24 24');
-				checkSvg.setAttribute('fill', 'none');
-				checkSvg.setAttribute('stroke', 'currentColor');
-				checkSvg.setAttribute('width', '14');
-				checkSvg.setAttribute('height', '14');
-				const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-				path.setAttribute('stroke-linecap', 'round');
-				path.setAttribute('stroke-linejoin', 'round');
-				path.setAttribute('stroke-width', '2');
-				path.setAttribute('d', 'M5 13l4 4L19 7');
-				checkSvg.appendChild(path);
-				item.appendChild(checkSvg);
+				actionsContainer.appendChild(_svgIcon(14, 14, ['M5 13l4 4L19 7']));
 			}
+
+			// Delete button
+			const deleteBtn = document.createElement('button');
+			deleteBtn.className = 'astb-dropdown-item-delete';
+			deleteBtn.title = '删除工作区';
+			deleteBtn.appendChild(_svgIcon(12, 12, ['M6 18L18 6M6 6l12 12']));
+			deleteBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this._confirmDeleteWorkspace(ws);
+			});
+			actionsContainer.appendChild(deleteBtn);
+
+			item.appendChild(actionsContainer);
 
 			item.addEventListener('click', () => {
 				this._activeWorkspaceId = ws.id;
@@ -383,11 +522,45 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 			this._listElement.appendChild(item);
 		}
 
-		if (this._workspaces.length === 0) {
+		if (filtered.length === 0) {
 			const empty = document.createElement('div');
 			empty.className = 'astb-dropdown-empty';
-			empty.textContent = '暂无工作区';
+			empty.textContent = query ? '没有匹配的工作区' : '暂无工作区';
 			this._listElement.appendChild(empty);
+		}
+	}
+
+	/**
+	 * Confirm and delete a workspace.
+	 */
+	private async _confirmDeleteWorkspace(ws: Workspace): Promise<void> {
+		const confirmed = window.confirm(`确定要删除工作区「${ws.name}」吗？此操作不可撤销。`);
+		if (!confirmed) {
+			return;
+		}
+
+		if (!this._agentStudioService) {
+			console.error('[AgentStudioWorkspaceToolbar] Cannot delete: service not connected');
+			return;
+		}
+
+		try {
+			await this._agentStudioService.deleteWorkspace(ws.id);
+
+			// If we deleted the active workspace, switch to another one
+			if (ws.id === this._activeWorkspaceId) {
+				const remaining = this._workspaces.filter(w => w.id !== ws.id);
+				if (remaining.length > 0) {
+					this._activeWorkspaceId = remaining[0].id;
+					await this._switchWorkspace(remaining[0].id);
+				} else {
+					this._activeWorkspaceId = undefined;
+				}
+			}
+
+			await this._loadWorkspaces();
+		} catch (err) {
+			console.error('[AgentStudioWorkspaceToolbar] Failed to delete workspace:', err);
 		}
 	}
 

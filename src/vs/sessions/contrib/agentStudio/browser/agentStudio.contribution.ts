@@ -20,7 +20,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
-import { Action2, registerAction2, MenuRegistry, MenuId } from '../../../../platform/actions/common/actions.js';
+import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
@@ -133,7 +133,7 @@ import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { ClawChatViewPane } from './views/clawChatView.js';
-import { WorkspaceViewPane, WORKSPACE_SELECTOR_ACTION_ID } from './views/workspaceView.js';
+import { WorkspaceViewPane } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { SkillsViewPane } from './views/skillsView.js';
 import { TasksViewPane } from './views/tasksView.js';
@@ -1725,46 +1725,12 @@ registerAction2(class extends Action2 {
 	}
 });
 
-// Surface the "create workspace" command as an icon button in the Workspace
-// view's title bar (right of the workspace selector dropdown).
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: {
-		id: CREATE_WORKSPACE_COMMAND_ID,
-		title: localize2('agentStudio.createWorkspace', "创建工作区"),
-		icon: Codicon.newFolder,
-	},
-	when: ContextKeyExpr.equals('view', AGENT_STUDIO_WORKSPACE_VIEW_ID),
-	group: 'navigation',
-	order: 1,
-});
-
-// ─── Workspace Selector (active-workspace dropdown in the title bar) ─────────
-// A placeholder action whose only job is to claim a title-bar slot left of the
-// "+" button (order 0 < 1). `WorkspaceViewPane.createActionViewItem` swaps it
-// for a SelectBox dropdown; the action's `run` is intentionally a no-op.
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: WORKSPACE_SELECTOR_ACTION_ID,
-			title: localize2('agentStudio.workspaceSelector', "切换工作区"),
-			icon: Codicon.listFlat,
-		});
-	}
-	async run(): Promise<void> {
-		// No-op: interaction is handled by the custom SelectBox view item.
-	}
-});
-
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: {
-		id: WORKSPACE_SELECTOR_ACTION_ID,
-		title: localize2('agentStudio.workspaceSelector', "切换工作区"),
-		icon: Codicon.listFlat,
-	},
-	when: ContextKeyExpr.equals('view', AGENT_STUDIO_WORKSPACE_VIEW_ID),
-	group: 'navigation',
-	order: 0,
-});
+// ─── Workspace Selector & Create Button ─────────────────────────────────────
+// The active-workspace dropdown and "create workspace" button now live in the
+// top titlebar (right of the sidebar toggle button) — see
+// `TitlebarPart._createWorkspaceToolbar`. The old title-bar selector and create
+// button that used to sit in the workspace view's title have been removed to
+// avoid duplicate controls.
 
 // ─── Workspace Folder Sync ──────────────────────────────────────────────────
 // NOTE: VS Code workspace-folder synchronization for the active AgentStudio

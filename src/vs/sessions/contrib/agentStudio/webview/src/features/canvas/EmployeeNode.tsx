@@ -43,7 +43,7 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 	const [isEditingName, setIsEditingName] = useState(false);
 	const [editName, setEditName] = useState(employee.name);
 	const [showSkillMissingDialog, setShowSkillMissingDialog] = useState(false);
-	const [worktreeList, setWorktreeList] = useState<Array<{ path: string; branch: string }>>([]);
+	const [worktreeList, setWorktreeList] = useState<Array<{ path: string; branch: string; repoName?: string; repoRoot?: string }>>([]);
 	const [isLoadingWorktrees, setIsLoadingWorktrees] = useState(false);
 	const nameInputRef = useRef<HTMLInputElement>(null);
 	const statusInfo = STATUS_MAP[employee.status] || STATUS_MAP.idle;
@@ -96,7 +96,7 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 		if (!employee.workspaceId) { return; }
 
 		setIsLoadingWorktrees(true);
-		sendRequest<{ workspaceId: string }, Array<{ path: string; branch: string }>>('worktree.list', { workspaceId: employee.workspaceId })
+		sendRequest<{ workspaceId: string }, Array<{ path: string; branch: string; repoName?: string; repoRoot?: string }>>('worktree.list', { workspaceId: employee.workspaceId })
 			.then(worktrees => {
 				setWorktreeList(worktrees || []);
 			})
@@ -300,9 +300,27 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 						onClick={(e) => e.stopPropagation()}
 					>
 						<option value="">无 worktree</option>
-						{worktreeList.map(wt => (
-							<option key={wt.path} value={wt.path}>{wt.branch} ({wt.path})</option>
-						))}
+						{(() => {
+							// Group worktrees by their owning repository so that,
+							// when multiple code repos are associated with the
+							// workspace, each worktree is shown under its repo.
+							const repoNames = Array.from(new Set(worktreeList.map(wt => wt.repoName).filter(Boolean))) as string[];
+							const multiRepo = repoNames.length > 1;
+							if (!multiRepo) {
+								return worktreeList.map(wt => (
+									<option key={wt.path} value={wt.path}>{wt.branch} ({wt.path})</option>
+								));
+							}
+							return repoNames.map(repoName => (
+								<optgroup key={repoName} label={repoName}>
+									{worktreeList
+										.filter(wt => wt.repoName === repoName)
+										.map(wt => (
+											<option key={wt.path} value={wt.path}>{wt.branch} ({wt.path})</option>
+										))}
+								</optgroup>
+							));
+						})()}
 					</select>
 					{isLoadingWorktrees && <span className="worktree-loading">加载中...</span>}
 				</div>

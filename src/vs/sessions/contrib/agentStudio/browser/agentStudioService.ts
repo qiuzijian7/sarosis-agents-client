@@ -23,7 +23,7 @@ import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecycl
 import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
 import { IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
-import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent } from '../../worktree/common/worktreeTypes.js';
+import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent, IWorktreeDetail } from '../../worktree/common/worktreeTypes.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
@@ -1125,10 +1125,111 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	async getWorktrees(workspaceId: string): Promise<any[]> {
 		const workspace = await this.getWorkspace(workspaceId);
-		if (!workspace?.path) {
+		if (!workspace) {
 			return [];
 		}
-		return this.worktreeService.listWorktrees(workspace.path);
+
+		// IMPORTANT: `workspace.path` is the workspace HOME/metadata directory
+		// (holds .sarosisworkspace, artifacts) and is NOT a git repository, so
+		// running `git worktree list` there fails and returns []. The actual
+		// code lives in `relatedFolders[].path` (the real git roots).
+		//
+		// A workspace may associate MULTIPLE code repositories (home dir +
+		// every related folder). We aggregate worktrees from ALL git roots so
+		// the agent-card worktree dropdown mirrors the Source Control Worktree
+		// view (which already groups across repos via getAllRepositoryRoots).
+		const repoRoots = await this._resolveAllWorktreeRepoRoots(workspace);
+		if (repoRoots.length === 0) {
+			this.logService.warn(`[AgentStudio] getWorktrees(${workspaceId}): no git repo root resolved (relatedFolders/path all non-git)`);
+			return [];
+		}
+
+		this.logService.info(`[AgentStudio] getWorktrees(${workspaceId}): aggregating worktrees across ${repoRoots.length} repo root(s): ${repoRoots.join(', ')}`);
+		const aggregated: any[] = [];
+		const seen = new Set<string>();
+		for (const repoRoot of repoRoots) {
+			let details: IWorktreeDetail[];
+			try {
+				details = await this.worktreeService.listWorktrees(repoRoot);
+			} catch (err) {
+				this.logService.warn(`[AgentStudio] getWorktrees(${workspaceId}): listWorktrees failed for "${repoRoot}"`, err);
+				continue;
+			}
+			const repoName = repoRoot.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || repoRoot;
+			for (const d of details) {
+				// De-dup by worktree path across repos (a path should appear once).
+				const norm = d.path.replace(/[\\/]+$/, '').toLowerCase();
+				if (seen.has(norm)) {
+					continue;
+				}
+				seen.add(norm);
+				// Annotate each worktree with its owning repository so the UI
+				// can group/label entries when multiple repos are associated.
+				aggregated.push({ ...d, repoRoot, repoName });
+			}
+		}
+		this.logService.info(`[AgentStudio] getWorktrees(${workspaceId}): aggregated ${aggregated.length} worktree(s)`);
+		return aggregated;
+	}
+
+	/**
+	 * Resolve ALL git repository roots for worktree listing across the whole
+	 * workspace. Collects, in priority order and de-duplicated:
+	 *   1. every `relatedFolders[]` entry that is a git repo (the real code
+	 *      repositories where worktrees are created),
+	 *   2. all repo roots the worktree service can probe from the active VS
+	 *      Code workspace folders (getAllRepositoryRoots — home + related +
+	 *      worktree dirs that contain a `.git`),
+	 *   3. `workspace.path` itself if it happens to be a git repo (legacy
+	 *      single-folder workspaces).
+	 *
+	 * Returns the full set so the agent-card worktree dropdown can aggregate
+	 * worktrees from every associated repository — staying in sync as related
+	 * code repositories are imported/removed.
+	 */
+	private async _resolveAllWorktreeRepoRoots(workspace: Workspace): Promise<string[]> {
+		const roots: string[] = [];
+		const seen = new Set<string>();
+		const push = (raw: string | undefined) => {
+			if (!raw) {
+				return;
+			}
+			const norm = raw.replace(/[\\/]+$/, '').toLowerCase();
+			if (!norm || seen.has(norm)) {
+				return;
+			}
+			seen.add(norm);
+			roots.push(raw);
+		};
+
+		// 1. relatedFolders — the real code repositories.
+		for (const folder of workspace.relatedFolders ?? []) {
+			if (!folder?.path) {
+				continue;
+			}
+			if (folder.isGitRepo === true || await this._detectGitRepo(folder.path)) {
+				push(folder.path);
+			}
+		}
+
+		// 2. All git roots the worktree service sees in the active VS Code
+		//    workspace folders (covers cases where the active workspace was
+		//    synced from a different code path than relatedFolders).
+		try {
+			const serviceRoots = await this.worktreeService.getAllRepositoryRoots();
+			for (const r of serviceRoots) {
+				push(r);
+			}
+		} catch (err) {
+			this.logService.warn('[AgentStudio] _resolveAllWorktreeRepoRoots: getAllRepositoryRoots failed', err);
+		}
+
+		// 3. Legacy fallback: workspace.path itself is a git repo.
+		if (workspace.path && await this._detectGitRepo(workspace.path)) {
+			push(workspace.path);
+		}
+
+		return roots;
 	}
 
 	async createWorkspace(data: Partial<Workspace>): Promise<Workspace> {

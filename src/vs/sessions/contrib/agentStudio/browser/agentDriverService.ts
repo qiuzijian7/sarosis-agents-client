@@ -849,13 +849,17 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	/**
 	 * Build a workspace context section for the system prompt.
 	 *
-	 * Uses the Sarosis workspace path associated with the agent instance.
-	 * When the VS Code currently-open folder differs from the stored workspace
-	 * path, the workspace record is automatically updated so it stays in sync
-	 * with reality.
+	 * Working-directory resolution priority:
+	 *   1. `employee.worktreePath` — when the agent instance is bound to a git
+	 *      worktree, that worktree directory IS its working sandbox. The agent
+	 *      operates entirely inside the worktree (its own branch), isolated from
+	 *      the main checkout. This MUST take precedence and MUST NOT be
+	 *      auto-synced away to the VS Code open folder.
+	 *   2. Otherwise the Sarosis workspace path, kept in sync with the VS Code
+	 *      currently-open folder.
 	 *
 	 * Also includes a sandbox rule: the agent may ONLY operate within the
-	 * current workspace directory tree.
+	 * resolved working directory tree.
 	 */
 	private async _buildWorkspaceContext(agentId: string): Promise<string | undefined> {
 		try {
@@ -867,6 +871,17 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			const workspace = await this._agentStudioService.getWorkspace(employee.workspaceId);
 			if (!workspace) {
 				return undefined;
+			}
+
+			// ── 优先：agent 实例绑定的 worktree 即其工作沙盒 ──────────────
+			// 绑定 worktree 的 agent 完全运行在该 worktree 目录（独立分支）内，
+			// 与主仓 checkout 隔离。此时工作根 = worktreePath，且【跳过】下面的
+			// auto-sync（否则会被 VS Code 当前打开文件夹覆盖回去），与工具沙箱
+			// (_resolveAndCheckWorkspacePath) 的判定口径保持一致。
+			const worktreeRoot = employee.worktreePath?.replace(/[\\/]+$/, '');
+			if (worktreeRoot) {
+				this._logService.info(`[AgentDriver] Agent ${agentId} bound to worktree, working dir = "${worktreeRoot}"`);
+				return this._composeWorkspaceContextText(workspace.name, worktreeRoot, /* isWorktree */ true);
 			}
 
 			let workspaceRoot = workspace.path;
@@ -892,52 +907,80 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				return undefined;
 			}
 
-			// ── .sarosis/AGENT.md 人写规则注入（借鉴 Claude Code 双系统设计）──
-			// 用户可以在工作区根目录放置 .sarosis/AGENT.md 文件，写入一锤定音的约束
-			// （例如"永远用 pnpm"、"提交前跑 npm test"），这些规则会无条件覆盖 AI
-			// 自动抽取的偏好，优先级最高。
-			// 参见：doc/Memory-Strategy.md §四.4 / §五.3
-			let agentMdSection = '';
-			try {
-				const agentMdUri = URI.joinPath(URI.file(workspaceRoot), '.sarosis', 'AGENT.md');
-				const exists = await this._fileService.exists(agentMdUri);
-				if (exists) {
-					const buf = await this._fileService.readFile(agentMdUri);
-					const content = buf.value.toString().trim();
-					if (content.length > 0) {
-						agentMdSection = `## Project-level Rules (.sarosis/AGENT.md)\n\nThe following rules were written by the user and MUST be strictly followed:\n\n${content}`;
-						this._logService.info(`[AgentDriver] Loaded .sarosis/AGENT.md (${content.length} chars)`);
-					}
-				}
-			} catch (err) {
-				// 文件不存在或读取失败不影响主流程
-				this._logService.debug(`[AgentDriver] .sarosis/AGENT.md not found or unreadable: ${err instanceof Error ? err.message : String(err)}`);
-			}
-
-			const lines: string[] = [
-				'## Workspace Context',
-				'',
-				`You are operating inside the Sarosis workspace "${workspace.name}".`,
-				`The workspace root directory is: ${workspaceRoot}`,
-				'',
-				'When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,',
-				`they mean this directory: ${workspaceRoot}`,
-				'',
-				'### Security Sandbox',
-				'',
-				`You are ONLY permitted to read, write, search, and execute commands within the workspace directory and its subdirectories.`,
-				`You MUST NOT access, modify, or reference any files or directories outside of: ${workspaceRoot}`,
-				'If a user asks you to operate on a path outside this workspace, refuse and explain that you are sandboxed to the current workspace.',
-			];
-
-			// 把 AGENT.md 的规则放在工作区上下文最前面（最高优先级）
-			const workspaceContextText = lines.join('\n');
-			return agentMdSection
-				? `${agentMdSection}\n\n${workspaceContextText}`
-				: workspaceContextText;
+			return this._composeWorkspaceContextText(workspace.name, workspaceRoot, /* isWorktree */ false);
 		} catch {
 			return undefined;
 		}
+	}
+
+	/**
+	 * Compose the "Workspace Context" system-prompt section for a resolved
+	 * working-directory root. Shared by both the worktree-bound path and the
+	 * regular workspace path so the sandbox wording stays consistent.
+	 *
+	 * @param workspaceName Display name of the Sarosis workspace.
+	 * @param rootDir The resolved working directory (worktree dir or workspace path).
+	 * @param isWorktree Whether `rootDir` is a git worktree the agent is bound to.
+	 */
+	private async _composeWorkspaceContextText(
+		workspaceName: string,
+		rootDir: string,
+		isWorktree: boolean,
+	): Promise<string> {
+		// ── .sarosis/AGENT.md 人写规则注入（借鉴 Claude Code 双系统设计）──
+		// 用户可以在工作区根目录放置 .sarosis/AGENT.md 文件，写入一锤定音的约束
+		// （例如"永远用 pnpm"、"提交前跑 npm test"），这些规则会无条件覆盖 AI
+		// 自动抽取的偏好，优先级最高。
+		// 参见：doc/Memory-Strategy.md §四.4 / §五.3
+		let agentMdSection = '';
+		try {
+			const agentMdUri = URI.joinPath(URI.file(rootDir), '.sarosis', 'AGENT.md');
+			const exists = await this._fileService.exists(agentMdUri);
+			if (exists) {
+				const buf = await this._fileService.readFile(agentMdUri);
+				const content = buf.value.toString().trim();
+				if (content.length > 0) {
+					agentMdSection = `## Project-level Rules (.sarosis/AGENT.md)\n\nThe following rules were written by the user and MUST be strictly followed:\n\n${content}`;
+					this._logService.info(`[AgentDriver] Loaded .sarosis/AGENT.md (${content.length} chars)`);
+				}
+			}
+		} catch (err) {
+			// 文件不存在或读取失败不影响主流程
+			this._logService.debug(`[AgentDriver] .sarosis/AGENT.md not found or unreadable: ${err instanceof Error ? err.message : String(err)}`);
+		}
+
+		const lines: string[] = [
+			'## Workspace Context',
+			'',
+			`You are operating inside the Sarosis workspace "${workspaceName}".`,
+		];
+
+		if (isWorktree) {
+			lines.push(
+				`This agent is bound to a dedicated git worktree. Your working directory is: ${rootDir}`,
+				`You operate on this worktree's own branch, isolated from the main checkout. All file reads/writes, searches and commands run inside this worktree.`,
+			);
+		} else {
+			lines.push(`The workspace root directory is: ${rootDir}`);
+		}
+
+		lines.push(
+			'',
+			'When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,',
+			`they mean this directory: ${rootDir}`,
+			'',
+			'### Security Sandbox',
+			'',
+			`You are ONLY permitted to read, write, search, and execute commands within the working directory and its subdirectories.`,
+			`You MUST NOT access, modify, or reference any files or directories outside of: ${rootDir}`,
+			'If a user asks you to operate on a path outside this directory, refuse and explain that you are sandboxed to the current working directory.',
+		);
+
+		// 把 AGENT.md 的规则放在工作区上下文最前面（最高优先级）
+		const workspaceContextText = lines.join('\n');
+		return agentMdSection
+			? `${agentMdSection}\n\n${workspaceContextText}`
+			: workspaceContextText;
 	}
 
 	// ─── 兼容层：将旧 IChatSendOptions 适配为 IAgentTurnRequest ──

@@ -12,6 +12,7 @@ import { localize } from '../../../../nls.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IWorktreeDetail, WorktreeContextKeys } from '../common/worktreeTypes.js';
 import { IWorktreeService } from '../common/worktreeService.js';
+import { IAgentStudioService } from '../../../common/agentStudioService.js';
 
 /**
  * Tree item types for the worktree tree view
@@ -161,6 +162,7 @@ export class WorktreeTreeDataProvider extends Disposable {
 	constructor(
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 	) {
 		super();
 
@@ -173,6 +175,13 @@ export class WorktreeTreeDataProvider extends Disposable {
 
 		// Also refresh when worktree state changes (pending/ready/failed)
 		this._register(this.worktreeService.onDidChangeWorktreeState(() => {
+			this.scheduleRefresh();
+		}));
+
+		// Re-scope the list when the active workspace switches. The worktree
+		// list is bound to the active workspace's related code repositories,
+		// so switching workspaces must re-resolve the repo roots.
+		this._register(this.agentStudioService.onDidChangeActiveWorkspace(() => {
 			this.scheduleRefresh();
 		}));
 	}
@@ -193,7 +202,7 @@ export class WorktreeTreeDataProvider extends Disposable {
 
 	private async doRefresh(): Promise<void> {
 		try {
-			const repoRoots = await this.worktreeService.getAllRepositoryRoots();
+			const repoRoots = await this._resolveRepositoryRoots();
 			if (!repoRoots || repoRoots.length === 0) {
 				this.worktrees = [];
 				this.groups = [];
@@ -249,6 +258,46 @@ export class WorktreeTreeDataProvider extends Disposable {
 			this.worktreeCountKey.set(0);
 			this._onDidChangeTreeData.fire();
 		}
+	}
+
+	/**
+	 * Resolve the repository roots whose worktrees should be listed.
+	 *
+	 * Priority:
+	 *   1. The ACTIVE workspace's related code repositories
+	 *      (`workspace.relatedFolders[]`), filtered to those that are actually
+	 *      git roots. This is the canonical multi-repo source and the user's
+	 *      expectation: the list shows ONLY the current workspace's repos.
+	 *   2. Fallback to `getAllRepositoryRoots()` (scans the global VS Code
+	 *      workspace folders) for legacy single-folder workspaces or when no
+	 *      active workspace / relatedFolders are available.
+	 *
+	 * Rationale: `getAllRepositoryRoots()` reads the global VS Code folder set,
+	 * which `SourceControlWorkspaceSync` populates with home dir + relatedFolders
+	 * + worktreePath. That mixed set can surface sibling worktrees / unrelated
+	 * roots and is not scoped to the active workspace. Binding directly to the
+	 * active workspace's relatedFolders avoids that cross-talk.
+	 */
+	private async _resolveRepositoryRoots(): Promise<string[]> {
+		try {
+			const activeId = this.agentStudioService.getActiveWorkspaceId();
+			if (activeId) {
+				const workspace = await this.agentStudioService.getWorkspace(activeId);
+				const related = (workspace?.relatedFolders ?? [])
+					.map(rf => rf?.path)
+					.filter((p): p is string => typeof p === 'string' && p.length > 0);
+				if (related.length > 0) {
+					const roots = await this.worktreeService.filterGitRepositoryRoots(related);
+					if (roots.length > 0) {
+						return roots;
+					}
+				}
+			}
+		} catch {
+			// Fall through to the global scan below.
+		}
+		// Fallback: legacy global scan (single-folder workspaces, no active workspace).
+		return this.worktreeService.getAllRepositoryRoots();
 	}
 
 	/**

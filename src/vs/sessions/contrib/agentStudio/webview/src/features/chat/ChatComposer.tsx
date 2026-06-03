@@ -40,6 +40,15 @@ function formatTokens(n: number): string {
 	return String(n);
 }
 
+/**
+ * 粗略 token 估算（参考 Hermes-Agent estimate_tokens_rough：字符数/4 向上取整）。
+ * 不引入 tokenizer，char/4 足以驱动进度条实时变化。空串返回 0。
+ */
+function estimateTokens(text: string | undefined | null): number {
+	if (!text) { return 0; }
+	return Math.ceil(text.length / 4);
+}
+
 export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder, onCommand }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
 	const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -187,28 +196,68 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const canToggleReasoning = !currentModel?.onlyReasoning;
 
 	// ── 上下文使用量（发送按钮左侧圆环进度条）──────────────────────────
-	// 已用 token：流式进行时优先取实时 usage（input+output），否则取最近一条带 tokenUsage 的消息。
+	// 参考 Hermes-Agent 的实时 token 显示设计，分三层估算，确保聊天过程中进度条实时更新：
+	//   1) 输入基线：把已有 messages 历史按 char/4 估算（含 thinking + toolCalls），
+	//      作为本轮请求送入模型的输入占用 —— 发送前进度条就已反映输入体量。
+	//   2) 流式输出增量：phase 活跃时叠加 streamState 的 textBuffer + thinkingBuffer 估算，
+	//      使生成过程中进度条随产出逐字增长（解决"只在 done 跳变"的问题）。
+	//   3) 真值修正：收到真实 usage（seen=true，通常在流末）后用 input+output 覆盖估算值，
+	//      使最终数值精确。done 后该值沉淀到 message.tokenUsage，下一轮成为输入基线的真值来源。
 	const streamUsage = useChatStore(s => s.streamState.usage);
+	const streamPhase = useChatStore(s => s.streamState.phase);
+	const streamTextBuffer = useChatStore(s => s.streamState.textBuffer);
+	const streamThinkingBuffer = useChatStore(s => s.streamState.thinkingBuffer);
 	const messages = useChatStore(s => s.messages);
-	const contextUsage = useMemo(() => {
-		const limit = currentModel?.maxInputTokens || 0;
-		// 1) 流式实时用量（已收到至少一个 usage chunk）
-		let used = 0;
-		if (streamUsage?.seen) {
-			used = (streamUsage.input || 0) + (streamUsage.output || 0);
-		} else {
-			// 2) 回溯最近一条携带 tokenUsage 的消息（通常是最后的 assistant 消息）
-			for (let i = messages.length - 1; i >= 0; i--) {
-				const tu = messages[i]?.tokenUsage;
-				if (tu && tu.total > 0) {
-					used = tu.total;
-					break;
+
+	// 输入基线：累加全部历史消息的估算 token。优先用真实 tokenUsage.total（更准），
+	// 否则按 content + thinking + toolCalls(JSON) 的字符数估算。
+	const inputBaselineTokens = useMemo(() => {
+		let total = 0;
+		for (const m of messages) {
+			if (m.tokenUsage && m.tokenUsage.total > 0) {
+				// 带真实用量的消息：直接采信（该消息往返的真实 token）
+				total += m.tokenUsage.total;
+				continue;
+			}
+			total += estimateTokens(m.content);
+			total += estimateTokens(m.thinking);
+			if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
+				// 工具调用的 name/arguments/result 也占输入 token
+				for (const tc of m.toolCalls) {
+					total += estimateTokens(tc.arguments);
+					total += estimateTokens(tc.result);
+					total += estimateTokens(tc.name);
 				}
 			}
 		}
+		return total;
+	}, [messages]);
+
+	const contextUsage = useMemo(() => {
+		const limit = currentModel?.maxInputTokens || 0;
 		if (limit <= 0) {
 			return null; // 无上限信息，不显示圆环
 		}
+
+		const isStreaming = streamPhase !== 'idle' && streamPhase !== 'error';
+
+		let used: number;
+		if (streamUsage?.seen) {
+			// 3) 真值优先：已收到真实 usage chunk
+			//    流式输出基线(历史输入) + 真实 (input + output)。
+			//    注：真实 input 已含本轮发送的历史，但为避免重复计数，这里直接采用
+			//    真实 input+output 作为"本轮往返总量"，并与历史基线取较大值兜底。
+			const real = (streamUsage.input || 0) + (streamUsage.output || 0);
+			used = Math.max(real, inputBaselineTokens);
+		} else if (isStreaming) {
+			// 2) 流式进行中且尚无真实 usage：输入基线 + 实时输出估算
+			const outputEstimate = estimateTokens(streamTextBuffer) + estimateTokens(streamThinkingBuffer);
+			used = inputBaselineTokens + outputEstimate;
+		} else {
+			// 1) 空闲态：纯输入基线（即当前对话历史占用）
+			used = inputBaselineTokens;
+		}
+
 		const ratio = Math.max(0, Math.min(1, used / limit));
 		return {
 			used,
@@ -216,7 +265,14 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			ratio,
 			percent: Math.round(ratio * 100),
 		};
-	}, [currentModel?.maxInputTokens, streamUsage, messages]);
+	}, [
+		currentModel?.maxInputTokens,
+		streamUsage,
+		streamPhase,
+		streamTextBuffer,
+		streamThinkingBuffer,
+		inputBaselineTokens,
+	]);
 
 	const [showReasoningPopover, setShowReasoningPopover] = useState(false);
 	const reasoningPopoverRef = useRef<HTMLDivElement>(null);
