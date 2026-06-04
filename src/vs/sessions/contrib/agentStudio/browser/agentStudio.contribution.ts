@@ -152,6 +152,8 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import { ChannelViewPane } from './views/channelView.js';
 import { WikiViewPane } from './views/wikiView.js';
+import { IWikiTagService } from './services/wikiTagService.js';
+import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
 import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
@@ -428,6 +430,7 @@ registerSingleton(ISkillLifecycleService, SkillLifecycleService, InstantiationTy
 // Plugin-specific settings (like Knot) now open as independent EditorPanes
 // rather than appearing as tabs in the Settings page.
 registerSingleton(ISettingsTabRegistry, SettingsTabRegistry, InstantiationType.Delayed);
+registerSingleton(IWikiTagService, WikiTagServiceImpl, InstantiationType.Delayed);
 registerSingleton(ISelfEvolutionService, SelfEvolutionService, InstantiationType.Delayed);
 // Kanban triage (LLM-driven specify/decompose). Delayed: only instantiated when
 // a triage action is invoked from the board UI or a kanban tool.

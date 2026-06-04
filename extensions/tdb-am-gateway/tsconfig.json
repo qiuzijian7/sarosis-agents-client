@@ -10,9 +10,6 @@
 			"node",
 			"vscode"
 		],
-		"typeRoots": [
-			"./node_modules/@types"
-		],
 		"outDir": "out",
 		"rootDir": "src",
 		"sourceMap": true,
