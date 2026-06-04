@@ -601,11 +601,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		// 当作最终回复输出，而不实际发出工具调用，导致任务半途而废。检测到这种
 		// "未完成意图"时注入一条续跑提示并重试，用计数器限制连续次数避免死循环。
 		let continuationNudgeCount = 0;
-		const MAX_CONTINUATION_NUDGES = 6;
+		// 续跑兜底上限收紧为 2：超过 2 次仍只输出纯文本的模型，几乎可断定
+		// 它不会再真正调工具，继续 nudge 只是把同样的"宣告意图"文字反复喂回
+		// LLM 形成空转（token 一路累积、对话却毫无进展）。宁可提前收尾，也
+		// 不要无意义烧 token。
+		const MAX_CONTINUATION_NUDGES = 2;
 		// 当上一轮触发了续跑兜底时置位 —— 下一轮 modelOptions 注入
 		// toolChoice='required'，强制模型这一轮必须真正发出工具调用，
 		// 而不是再次用"好的，让我查看…"来回应续跑提示形成空转。
 		let forceToolChoiceNextIteration = false;
+		// 记录"上一轮是否已强制 tool_choice=required"。若强制后这一轮仍然
+		// 没有任何工具调用，说明该模型根本不遵守 required（如 hy3-preview-ioa），
+		// 再 nudge 也是徒劳 —— 直接结束，不再发起新的空转请求。
+		let lastIterationForcedToolChoice = false;
 
 		while (iteration < MAX_TOOL_ITERATIONS) {
 			iteration++;
@@ -629,6 +637,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				this._logService.info(`[AgentOS] Iteration ${iteration}: forcing tool_choice=required (continuation nudge follow-up)`);
 			}
 			// 消费标志位（仅作用于紧接的这一轮）
+			lastIterationForcedToolChoice = forceToolChoiceNextIteration && enabledTools.length > 0;
 			forceToolChoiceNextIteration = false;
 
 			// 调用模型
@@ -841,10 +850,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			// 将助手消息添加到消息历史
-			if (assistantContent || effectiveToolCalls.length > 0) {
+			// 注意用 trim() 判定：被 sanitize 清洗后可能残留纯空白（'   ' / '\n'），
+			// 若原样 push 进历史，下一轮会把这条"空白 assistant 消息"再喂回 LLM
+			// （即用户看到的"发送空消息给 llm"）。纯空白且无工具调用时不入历史。
+			const trimmedAssistantContent = assistantContent.trim();
+			if (trimmedAssistantContent || effectiveToolCalls.length > 0) {
 				const assistantMessage: any = {
 					role: 'assistant',
-					content: assistantContent,
+					// 落库用 trim 后的内容，杜绝纯空白污染历史
+					content: trimmedAssistantContent,
 				};
 				if (effectiveToolCalls.length > 0) {
 					assistantMessage.toolCalls = effectiveToolCalls;
@@ -853,15 +867,27 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			if (effectiveToolCalls.length === 0) {
+				// ─── 强制工具选择无效 → 立即收尾，杜绝空转 ─────────────────────
+				// 上一轮已注入 tool_choice='required' 强制模型必须调工具，但这一轮
+				// 它依旧没有发出任何工具调用（如 hy3-preview-ioa 不遵守 required）。
+				// 再 nudge 也只会把同样的纯文本反复喂回 LLM 形成空转，直接结束。
+				if (lastIterationForcedToolChoice) {
+					this._logService.warn(
+						`[AgentOS] Model ignored tool_choice=required and still produced no tool call — ending to avoid empty-message spin loop`
+					);
+					yield { type: 'done' };
+					break;
+				}
+
 				// ─── 续跑兜底：检测"未完成意图"────────────────────────────────
 				// 模型返回纯文本但文末明显在声明"接下来要做某事"（却没真正发出工具
 				// 调用）时，注入一条续跑提示让它真正去调工具，而不是直接结束。
-				// 仅在：① 本轮无工具调用 ② 有文本 ③ 文末匹配未完成意图
+				// 仅在：① 本轮无工具调用 ② 有非空白文本 ③ 文末匹配未完成意图
 				// ④ 未超过最大续跑次数 时触发。
 				if (
-					assistantContent &&
+					trimmedAssistantContent &&
 					continuationNudgeCount < MAX_CONTINUATION_NUDGES &&
-					this._looksLikeUnfinishedIntent(assistantContent)
+					this._looksLikeUnfinishedIntent(trimmedAssistantContent)
 				) {
 					continuationNudgeCount++;
 					this._logService.info(

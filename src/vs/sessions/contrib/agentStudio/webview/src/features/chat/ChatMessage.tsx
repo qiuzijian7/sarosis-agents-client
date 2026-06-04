@@ -31,7 +31,8 @@ import { ConfirmationCard } from './ConfirmationCard';
 import { TodoListCard } from './TodoListCard';
 import { TipCard } from './TipCard';
 import { QuestionCarouselCard } from './QuestionCarouselCard';
-import { CheckpointCard } from './CheckpointCard';
+// CheckpointCard 已停止在消息流中渲染（改为 CheckpointBar 显示在输入框上方），
+// 此处保留导入会触发 unused-import lint，故移除。如需恢复时间旅行卡片，请重新引入。
 
 interface ChatMessageProps {
 	message: ChatMessage;
@@ -150,14 +151,13 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	}, [message.content, isUser]);
 
 	// ── Checkpoint message (Void-inspired time-travel anchor) ──────────────
-	// Rendered as a slim divider card; clicking a ghost checkpoint restores it.
-	if (message.role === 'checkpoint' && message.checkpoint) {
-		return (
-			<CheckpointCard
-				checkpoint={message.checkpoint}
-				onRestore={(checkpointId) => useChatStore.getState().jumpToCheckpoint(checkpointId)}
-			/>
-		);
+	// 历史决策：曾以内联 CheckpointCard（"工具编辑 | N 文件变更 | <file>"）形式
+	// 渲染在消息流中。但产品决定只保留输入框上方的 CheckpointBar 作为唯一入口
+	// （非常驻摘要 + 保留/撤销/查看变更），消息流里不再展示这类条目，避免视觉重复。
+	// 数据本身保留在 messages 中（CheckpointBar 依赖 messages 派生 latest），
+	// 只是不渲染。如未来需要在消息流中提供时间旅行 UI，再恢复 CheckpointCard。
+	if (message.role === 'checkpoint') {
+		return null as unknown as React.ReactElement;
 	}
 
 	return (

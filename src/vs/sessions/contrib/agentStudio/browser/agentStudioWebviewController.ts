@@ -61,6 +61,7 @@ import {
 	IEditorService,
 	SIDE_GROUP,
 } from "../../../../workbench/services/editor/common/editorService.js";
+import type { IResourceDiffEditorInput } from "../../../../workbench/common/editor.js";
 import {
 	GroupsOrder,
 	IEditorGroupsService,
@@ -83,6 +84,7 @@ import type {
 	IFileOpenUntitledTextPayload,
 	IFileApplyCodePayload,
 	IChatJumpToCheckpointPayload,
+	IChatOpenCheckpointDiffPayload,
 	IChatToolApprovePayload,
 	IChatToolApprovalRequestPayload,
 	IChatAddCheckpointPayload,
@@ -229,6 +231,7 @@ export class AgentStudioWebviewController extends Disposable {
 					fileSnapshotIds: checkpoint.fileSnapshotIds,
 					isGhost: checkpoint.isGhost,
 					messageId: checkpoint.messageId,
+					files: checkpoint.files,
 				});
 			}),
 		);
@@ -948,6 +951,10 @@ export class AgentStudioWebviewController extends Disposable {
 			case "chat.jumpToCheckpoint": {
 				const cp = p as unknown as IChatJumpToCheckpointPayload;
 				return this._handleJumpToCheckpoint(cp);
+			}
+			case "chat.openCheckpointDiff": {
+				const ocp = p as unknown as IChatOpenCheckpointDiffPayload;
+				return this._handleOpenCheckpointDiff(ocp);
 			}
 			case "chat.toolApprove": {
 				const tp = p as unknown as IChatToolApprovePayload;
@@ -2913,6 +2920,75 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────
+
+	// ── Checkpoint Diff ──────────────────────────────
+
+	/**
+	 * Handle "open checkpoint diff" request from the webview.
+	 * Writes the snapshot (checkpoint-time content) to a temp file and opens
+	 * a diff editor (snapshot vs. current file content).
+	 */
+	private async _handleOpenCheckpointDiff(
+		payload: IChatOpenCheckpointDiffPayload,
+	): Promise<void> {
+		const { checkpointId, fileUri, employeeId, sessionId } = payload;
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.openCheckpointDiff → ${checkpointId} file=${fileUri}`,
+		);
+
+		try {
+			// 1. Read snapshot content (checkpoint-time file content).
+			//    取整份快照列表后自行匹配，便于在 URI 不一致时打印诊断信息。
+			const snapshots = await this.checkpointService.getFileSnapshots(
+				employeeId, sessionId, checkpointId,
+			);
+			const matched = snapshots.find(s => s.uri.toString() === fileUri);
+			if (!matched) {
+				this.logService.warn(
+					`[AgentStudioWebviewController] No snapshot matched file=${fileUri} in checkpoint ${checkpointId}. ` +
+					`Available snapshot uris=[${snapshots.map(s => s.uri.toString()).join(', ')}]`,
+				);
+				return;
+			}
+			const snapshotContent = matched.content;
+
+			// 2. Write snapshot to a temp file under workspace home
+			const employee = await this.agentStudioService.getEmployee(employeeId);
+			let baseDir: string;
+			if (employee?.workspaceId) {
+				const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
+				baseDir = workspace?.path ?? (this._environmentService as INativeEnvironmentService).userHome.fsPath;
+			} else {
+				baseDir = (this._environmentService as INativeEnvironmentService).userHome.fsPath;
+			}
+			// 从快照 URI 取文件名（比 split('/') 更健壮，能正确处理 file:/// 等 scheme）。
+			const fileName = matched.uri.path.split('/').filter(Boolean).pop() ?? 'file';
+			const baseDirUri = URI.file(baseDir);
+			const snapshotUri = URI.joinPath(baseDirUri, '.sarosisworkspace', 'checkpoint-diffs', checkpointId, fileName);
+			await this.fileService.writeFile(snapshotUri, VSBuffer.fromString(snapshotContent));
+
+			// 3. Build diff editor input and open
+			const diffInput: IResourceDiffEditorInput = {
+				original: { resource: snapshotUri },
+				modified: { resource: matched.uri },
+				label: `${fileName} (检查点快照)`,
+			};
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this.editorService.openEditor(diffInput, targetGroup);
+			this.logService.info(
+				`[AgentStudioWebviewController] openCheckpointDiff opened diff for ${fileName} (group=${targetGroup === SIDE_GROUP ? 'SIDE' : 'first'})`,
+			);
+
+		} catch (err) {
+			this.logService.error(
+				`[AgentStudioWebviewController] openCheckpointDiff failed for ${fileUri}:`,
+				err,
+			);
+		}
+	}
+
+	// ── Public API ─────────────────────────────────────
 
 	layout(width: number, height: number): void {
 		// WebView auto-fills container, but notify if needed

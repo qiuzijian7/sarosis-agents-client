@@ -4,7 +4,7 @@
  *  Enhanced: priority badge, description preview, dependency status, navigate-to-chat
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { type TaskBoardRecord, type TaskBoardStatus, type TaskSource, useTaskBoardStore } from '../../store/useTaskBoardStore';
 import { type Employee, useEmployeeStore } from '../../store/useEmployeeStore';
 import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
@@ -116,8 +116,17 @@ export function TaskCard({
 	const decomposeTask = useTaskBoardStore(s => s.decomposeTask);
 	const triagePendingId = useTaskBoardStore(s => s.triagePendingId);
 	const isTriagePending = triagePendingId === task.id;
-	// Diagnostics attached to this task (alerts)
-	const taskDiagnostics = useDiagnosticsStore(s => s.diagnostics.filter(d => d.taskId === task.id));
+	// Diagnostics attached to this task (alerts).
+	// IMPORTANT: subscribe to the raw `diagnostics` array (stable reference between
+	// updates) and derive the filtered list with useMemo. Returning the result of
+	// `.filter(...)` directly from a Zustand selector creates a new array on every
+	// render, which trips React 19's getSnapshot equality check and blows up the
+	// kanban with error #185 ("Maximum update depth exceeded").
+	const allDiagnostics = useDiagnosticsStore(s => s.diagnostics);
+	const taskDiagnostics = useMemo(
+		() => allDiagnostics.filter(d => d.taskId === task.id),
+		[allDiagnostics, task.id],
+	);
 	const dismissDiagnostic = useDiagnosticsStore(s => s.dismissDiagnostic);
 	const applyDiagnosticAction = useDiagnosticsStore(s => s.applyAction);
 	const topDiagnostic = taskDiagnostics.length > 0

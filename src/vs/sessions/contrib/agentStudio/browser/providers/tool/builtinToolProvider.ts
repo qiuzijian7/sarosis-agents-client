@@ -535,8 +535,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				const content = String(args['content'] ?? '');
 				// Checkpoint (Void-inspired): snapshot the file's current content
 				// BEFORE overwriting, so the user can time-travel back to this state.
+				// Pass the new content so the checkpoint can compute +N/-N diff stats.
 				if (agentId) {
-					await this.checkpointService.captureBeforeToolEdit(agentId, normalizedUri.toString());
+					await this.checkpointService.captureBeforeToolEdit(agentId, normalizedUri.toString(), content);
 				}
 				await this.fileService.writeFile(normalizedUri, VSBuffer.fromString(content));
 				return text(`wrote ${content.length} chars to ${normalizedUri.fsPath}`);

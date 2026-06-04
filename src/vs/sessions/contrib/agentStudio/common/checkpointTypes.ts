@@ -6,6 +6,22 @@
 import { URI } from '../../../../base/common/uri.js';
 
 /**
+ * Per-file change summary attached to a checkpoint (for the checkpoint bar UI).
+ */
+export interface ICheckpointFileChange {
+	/** Full URI string of the changed file. */
+	readonly uri: string;
+	/** Short file name (last path segment). */
+	readonly fileName: string;
+	/** Full filesystem path (for the hover tooltip / detail row). */
+	readonly fsPath: string;
+	/** Number of added lines (new content vs. pre-edit snapshot). */
+	readonly additions: number;
+	/** Number of removed lines. */
+	readonly deletions: number;
+}
+
+/**
  * Checkpoint entry (Void-inspired).
  * Represents a point in time that can be restored (time-travel navigation).
  */
@@ -21,6 +37,8 @@ export interface ICheckpoint {
 	readonly isGhost: boolean;
 	/** The chat message ID associated with this checkpoint (for time-travel navigation). */
 	readonly messageId: string | undefined;
+	/** Per-file change summary for the checkpoint bar (additions/deletions). */
+	readonly files?: ICheckpointFileChange[];
 }
 
 /**
@@ -47,6 +65,8 @@ export interface ICreateCheckpointPayload {
 	readonly fileSnapshots: IFileSnapshotData[]; // file contents to snapshot
 	/** The chat message ID associated with this checkpoint (for time-travel navigation). */
 	readonly messageId?: string;
+	/** Per-file change summary for the checkpoint bar. */
+	readonly files?: ICheckpointFileChange[];
 }
 
 /**

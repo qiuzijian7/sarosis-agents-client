@@ -124,6 +124,7 @@ export type RequestType =
 	| 'chat.listCheckpoints'     // list checkpoints for a session
 	| 'chat.deleteCheckpoint'     // delete a checkpoint
 	| 'chat.jumpToCheckpoint'     // navigate to a checkpoint (Void-inspired time-travel)
+	| 'chat.openCheckpointDiff'   // open diff editor for a checkpoint file (WebView → Host)
 	| 'chat.toolApprove'          // approve/reject a pending tool call
 	| 'worktree.list'           // list git worktrees for a workspace
 	| 'memory.listL0'           // list L0 raw conversation turns for an agent (TDB-AM)
@@ -723,6 +724,22 @@ export interface IChatJumpToCheckpointPayload {
 	 * the rollback survives a window reload. Omitted for pure file-only restores.
 	 */
 	readonly truncateAfterMessageId?: string;
+}
+
+/**
+ * Open a diff editor for a file at checkpoint time vs. current file content.
+ * WebView sends this when the user clicks a file in the checkpoint popover.
+ * Host handler writes the snapshot content to a temp file and opens a DiffEditorInput.
+ */
+export interface IChatOpenCheckpointDiffPayload {
+	/** The checkpoint ID. */
+	readonly checkpointId: string;
+	/** The file URI (as string) to diff. */
+	readonly fileUri: string;
+	/** The employee ID (for storage scoping). */
+	readonly employeeId: string;
+	/** The session ID (for storage scoping). */
+	readonly sessionId: string;
 }
 
 /**

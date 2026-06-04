@@ -113,6 +113,7 @@ export type RequestType =
 	| 'files.openUntitledText'
 	| 'files.applyCode'
 	| 'chat.jumpToCheckpoint'
+	| 'chat.openCheckpointDiff'
 	| 'chat.toolApprove'
 	| 'worktree.list'
 	| 'memory.listL0'

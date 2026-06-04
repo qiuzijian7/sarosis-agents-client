@@ -50,9 +50,18 @@ interface OrchestrationPlanInlineProps {
 }
 
 export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanInlineProps): React.ReactElement | null {
-	// Use selector so Zustand re-renders this component whenever the matching
-	// plan changes, bypassing any parent memo barriers.
-	const plan = useOrchestrationStore(s => s.plans.find(p => p.id === planId));
+	// IMPORTANT: subscribe to the raw `plans` array (stable reference between
+	// store updates) and derive the matching plan with useMemo. Returning the
+	// result of `.find(...)` directly from a Zustand selector returns a stable
+	// object reference today, but if upstream code ever starts replacing plan
+	// objects on every event update, the selector would return a fresh ref each
+	// render and trip React 19's getSnapshot equality check (error #185
+	// "Maximum update depth exceeded"). useMemo closes that risk.
+	const plans = useOrchestrationStore(s => s.plans);
+	const plan = useMemo(
+		() => plans.find(p => p.id === planId),
+		[plans, planId],
+	);
 	const { isLoading, error, approvePlan, rejectPlan } = useOrchestrationStore();
 	const { employees } = useEmployeeStore();
 

@@ -5,7 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import { ICheckpoint, ICreateCheckpointPayload, IJumpToCheckpointResult } from './checkpointTypes.js';
+import { ICheckpoint, ICreateCheckpointPayload, IJumpToCheckpointResult, IFileSnapshot } from './checkpointTypes.js';
 
 export const ICheckpointService =
 	createDecorator<ICheckpointService>('agentStudioCheckpointService');
@@ -45,8 +45,10 @@ export interface ICheckpointService {
 	 *
 	 * @param employeeId The agent performing the edit.
 	 * @param fileUri The file about to be written (absolute path/URI string).
+	 * @param newContent The content that will be written (used to compute the
+	 *   additions/deletions summary shown in the checkpoint bar). Optional.
 	 */
-	captureBeforeToolEdit(employeeId: string, fileUri: string): Promise<void>;
+	captureBeforeToolEdit(employeeId: string, fileUri: string, newContent?: string): Promise<void>;
 
 	/**
 	 * Create a new checkpoint by persisting the provided file snapshots.
@@ -91,4 +93,22 @@ export interface ICheckpointService {
 
 	/** Delete a checkpoint and its file snapshots. */
 	deleteCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<void>;
+
+	/** Get file snapshots for a checkpoint.
+	 *  Returns the full snapshot objects (id, uri, languageId, content).
+	 *  Browser-layer only; used by the controller to open diff editors. */
+	getFileSnapshots(employeeId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]>;
+
+	/**
+	 * Get the snapshot content for a specific file in a checkpoint.
+	 * Convenience wrapper used by the controller to open a diff editor:
+	 * reads the snapshot JSON from disk and returns the file content at checkpoint time.
+	 * Returns `undefined` if the snapshot or file is not found.
+	 */
+	getSnapshotContentForFile(
+		employeeId: string,
+		sessionId: string,
+		checkpointId: string,
+		fileUri: string,
+	): Promise<string | undefined>;
 }

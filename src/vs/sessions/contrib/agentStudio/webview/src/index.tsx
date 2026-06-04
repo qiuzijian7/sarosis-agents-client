@@ -359,6 +359,13 @@ initMessageClient((type, data) => {
 				fileSnapshotIds?: string[];
 				isGhost?: boolean;
 				messageId?: string;
+				files?: Array<{
+					uri: string;
+					fileName: string;
+					fsPath: string;
+					additions: number;
+					deletions: number;
+				}>;
 			} | undefined;
 			if (cp?.id) {
 				const chatStore = useChatStore.getState();
@@ -369,13 +376,14 @@ initMessageClient((type, data) => {
 				// Rendering them would spam an empty card before every turn.
 				// Only tool_edit checkpoints (real file snapshots) get a card.
 				if (chatStore.activeEmployeeId === cp.employeeId && cp.type === 'tool_edit') {
-					console.log(`[AgentStudio] chat.checkpointCreated → ${cp.type} ${cp.id} (${cp.fileSnapshotIds?.length ?? 0} files)`);
+					console.log(`[AgentStudio] chat.checkpointCreated → ${cp.type} ${cp.id} (${cp.fileSnapshotIds?.length ?? 0} files, files=${cp.files?.length ?? 0})`);
 					chatStore.addCheckpoint({
 						id: cp.id,
 						type: cp.type,
 						timestamp: new Date(cp.createdAt).toISOString(),
 						description: cp.description || cp.label,
-						filesChanged: cp.fileSnapshotIds?.length ?? 0,
+						filesChanged: cp.files?.length ?? cp.fileSnapshotIds?.length ?? 0,
+						files: cp.files,
 						isGhost: cp.isGhost ?? false,
 					});
 				}

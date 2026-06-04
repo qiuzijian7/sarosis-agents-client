@@ -16,8 +16,10 @@ import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import {
 	ICheckpoint,
+	ICheckpointFileChange,
 	ICreateCheckpointPayload,
 	IJumpToCheckpointResult,
+	IFileSnapshot,
 } from '../common/checkpointTypes.js';
 
 /**
@@ -36,6 +38,7 @@ interface IStoredCheckpoint {
 	readonly fileSnapshotIds: string[];
 	isGhost: boolean;
 	readonly messageId: string | undefined;
+	readonly files?: ICheckpointFileChange[];
 }
 
 /** On-disk shape for a single file snapshot. */
@@ -83,7 +86,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		this._activeSessions.set(employeeId, sessionId);
 	}
 
-	async captureBeforeToolEdit(employeeId: string, fileUri: string): Promise<void> {
+	async captureBeforeToolEdit(employeeId: string, fileUri: string, newContent?: string): Promise<void> {
 		const sessionId = this._activeSessions.get(employeeId);
 		if (!sessionId) {
 			// No active session registered → cannot scope storage. Skip silently.
@@ -91,23 +94,68 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		}
 		// Derive a short, human-readable file name for the checkpoint label
 		// instead of dumping the full URI (which is noisy in the card).
-		let shortName = fileUri;
+		let resource: URI;
 		try {
-			const parsed = URI.parse(fileUri);
-			const segments = parsed.path.split('/').filter(Boolean);
-			shortName = segments[segments.length - 1] || fileUri;
+			resource = URI.parse(fileUri);
 		} catch {
-			const segs = fileUri.replace(/\\/g, '/').split('/').filter(Boolean);
-			shortName = segs[segs.length - 1] || fileUri;
+			resource = URI.file(fileUri);
 		}
+		const segments = resource.path.split('/').filter(Boolean);
+		const shortName = segments[segments.length - 1] || fileUri;
+
+		// Compute additions/deletions vs. the file's pre-edit content so the
+		// checkpoint bar can show "+N -N" like Void / GitHub diff stats.
+		let oldContent = '';
+		try {
+			if (await this.fileService.exists(resource)) {
+				oldContent = (await this.fileService.readFile(resource)).value.toString();
+			}
+		} catch {
+			/* treat unreadable as empty (new file) */
+		}
+		const { additions, deletions } = this._computeLineDiff(oldContent, newContent ?? '');
+		const fileChange: ICheckpointFileChange = {
+			uri: resource.toString(),
+			fileName: shortName,
+			fsPath: resource.fsPath,
+			additions,
+			deletions,
+		};
+
 		try {
 			await this.createCheckpointFromUris(employeeId, sessionId, 'tool_edit', [fileUri], {
 				label: `编辑 ${shortName}`,
-				description: `编辑前快照 · ${shortName}`,
+				description: `${shortName} 文件变更`,
+				files: [fileChange],
 			});
 		} catch (err) {
 			this.logService.warn(`[CheckpointService] captureBeforeToolEdit failed for ${fileUri}: ${err}`);
 		}
+	}
+
+	/**
+	 * Compute a coarse line-level diff (added/removed line counts) between two
+	 * text blobs. This is a lightweight LCS-free heuristic sufficient for the
+	 * checkpoint bar's "+N -N" badge: lines present only in `next` count as
+	 * additions, lines present only in `prev` count as deletions (multiset diff).
+	 */
+	private _computeLineDiff(prev: string, next: string): { additions: number; deletions: number } {
+		if (prev === next) {
+			return { additions: 0, deletions: 0 };
+		}
+		const prevLines = prev.length ? prev.split('\n') : [];
+		const nextLines = next.length ? next.split('\n') : [];
+		// Multiset counts so reordering doesn't inflate the diff too much.
+		const count = new Map<string, number>();
+		for (const l of prevLines) { count.set(l, (count.get(l) ?? 0) + 1); }
+		let additions = 0;
+		for (const l of nextLines) {
+			const c = count.get(l) ?? 0;
+			if (c > 0) { count.set(l, c - 1); } else { additions++; }
+		}
+		let deletions = 0;
+		for (const c of count.values()) { deletions += c; }
+		return { additions, deletions };
 	}
 
 	// ─── Storage path resolution ────────────────────────────────────────────
@@ -206,6 +254,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			fileSnapshotIds: stored.fileSnapshotIds,
 			isGhost: stored.isGhost,
 			messageId: stored.messageId,
+			files: stored.files,
 		};
 	}
 
@@ -251,6 +300,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			fileSnapshotIds,
 			isGhost: false,
 			messageId: payload.messageId,
+			files: payload.files,
 		};
 
 		const index = await this._readIndex(sessionDir);
@@ -270,7 +320,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		sessionId: string,
 		type: 'user_edit' | 'tool_edit',
 		fileUris: string[],
-		opts?: { label?: string; description?: string; messageId?: string },
+		opts?: { label?: string; description?: string; messageId?: string; files?: ICheckpointFileChange[] },
 	): Promise<ICheckpoint | undefined> {
 		// Read current on-disk content of each file (skip ones that don't exist).
 		const fileSnapshots = [];
@@ -317,6 +367,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			description: opts?.description,
 			fileSnapshots,
 			messageId: opts?.messageId,
+			files: opts?.files,
 		});
 	}
 
@@ -404,5 +455,46 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		const next = index.filter(cp => cp.id !== checkpointId);
 		await this._writeIndex(sessionDir, next);
 		this.logService.info(`[CheckpointService] Deleted checkpoint ${checkpointId}`);
+	}
+
+	async getFileSnapshots(employeeId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]> {
+		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+		const index = await this._readIndex(sessionDir);
+		const cp = index.find(c => c.id === checkpointId);
+		if (!cp) {
+			return [];
+		}
+		const snapshots: IFileSnapshot[] = [];
+		for (const snapshotId of cp.fileSnapshotIds) {
+			try {
+				const uri = this._snapshotUri(sessionDir, snapshotId);
+				if (!await this.fileService.exists(uri)) {
+					continue;
+				}
+				const raw = (await this.fileService.readFile(uri)).value.toString();
+				const stored: IStoredFileSnapshot = JSON.parse(raw);
+				snapshots.push({
+					id: stored.id,
+					checkpointId: stored.checkpointId,
+					uri: URI.parse(stored.uri),
+					languageId: stored.languageId,
+					content: stored.content,
+				});
+			} catch (err) {
+				this.logService.warn(`[CheckpointService] Failed to read snapshot ${snapshotId}: ${err}`);
+			}
+		}
+		return snapshots;
+	}
+
+	async getSnapshotContentForFile(
+		employeeId: string,
+		sessionId: string,
+		checkpointId: string,
+		fileUri: string,
+	): Promise<string | undefined> {
+		const snapshots = await this.getFileSnapshots(employeeId, sessionId, checkpointId);
+		const found = snapshots.find(s => s.uri.toString() === fileUri);
+		return found?.content;
 	}
 }

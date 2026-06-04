@@ -7,7 +7,7 @@
  *  Supports drag-and-drop status change, collapse/expand
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTaskBoardStore, type TaskBoardStatus, type TaskSource } from '../../store/useTaskBoardStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore } from '../../store/useEmployeeStore';
@@ -15,8 +15,8 @@ import { useDelegationStore } from '../../store/useDelegationStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
 import { useSwarmStore } from '../../store/useSwarmStore';
-import { useBoardStore } from '../../store/useBoardStore';
 import { TaskCard } from './TaskCard';
+import { CreateTaskModal, type CreateTaskFormData } from './CreateTaskModal';
 import { OrchestrationPlanModal } from '../orchestration/OrchestrationPlanModal';
 import { registerAgentColors } from '../../utils/agentColors';
 
@@ -49,8 +49,8 @@ const CollapseIcon = ({ collapsed }: { collapsed: boolean }) => (
 );
 
 export function TaskBoardPanel(): React.ReactElement {
-	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, deleteTask, archiveTask, setDragTarget, focusedTaskId, focusTask } = useTaskBoardStore();
-	const { activeWorkspaceId } = useWorkspaceStore();
+	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, createTask, deleteTask, archiveTask, setDragTarget, focusedTaskId, focusTask } = useTaskBoardStore();
+	const { activeWorkspaceId, workspaces } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
@@ -59,13 +59,37 @@ export function TaskBoardPanel(): React.ReactElement {
 	const loadSwarms = useSwarmStore(s => s.loadSwarms);
 	const cancelSwarm = useSwarmStore(s => s.cancelSwarm);
 
-	const boards = useBoardStore(s => s.boards);
-	const loadBoards = useBoardStore(s => s.loadBoards);
-	const createBoard = useBoardStore(s => s.createBoard);
-	const renameBoard = useBoardStore(s => s.renameBoard);
-	const deleteBoard = useBoardStore(s => s.deleteBoard);
-	const switchBoard = useBoardStore(s => s.switchBoard);
-	const activeBoardId = useBoardStore(s => (activeWorkspaceId ? (s.activeByWorkspace[activeWorkspaceId] ?? 'default') : 'default'));
+	// ─── Filters (board model simplified: one workspace == one board) ──────
+	// The board dropdown is now a pure FILTER, not a CRUD surface. Its value is
+	// either 'all' (show tasks from every workspace) or a specific workspaceId
+	// (show only that workspace's board). Boards are no longer user-creatable
+	// or deletable — each workspace implicitly owns exactly one board.
+	const [boardFilterWsId, setBoardFilterWsId] = useState<string>('all');
+	// Employee filter: 'all' or a specific assigneeId (derived from current tasks).
+	const [employeeFilter, setEmployeeFilter] = useState<string>('all');
+	// Status-column visibility: a column key is hidden when present in this set.
+	// Default = empty (all columns shown). Unchecking a checkbox hides its column.
+	const [hiddenColumnKeys, setHiddenColumnKeys] = useState<Set<string>>(() => new Set());
+
+	// Create-task modal (opened from the 待执行/todo column's + button).
+	const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
+
+	// Submit handler for the create-task form. New tasks land in the todo
+	// column ('todo' status) scoped to the currently-viewed workspace board.
+	const handleCreateTask = useCallback((data: CreateTaskFormData) => {
+		const wsId = boardFilterWsId === 'all' ? (activeWorkspaceId ?? undefined) : boardFilterWsId;
+		void createTask({
+			title: data.title,
+			description: data.description,
+			assigneeId: data.assigneeId,
+			assigneeName: data.assigneeName,
+			priority: data.priority,
+			dependencies: data.dependencies,
+			status: 'todo',
+			source: 'task-board',
+			workspaceId: wsId,
+		});
+	}, [createTask, boardFilterWsId, activeWorkspaceId]);
 
 	const handleClosePlanInput = useCallback(() => {
 		useOrchestrationStore.setState({ isPlanDialogOpen: false });
@@ -96,19 +120,24 @@ export function TaskBoardPanel(): React.ReactElement {
 
 	const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 	const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
+	const [diagnosticsToast, setDiagnosticsToast] = useState<string | null>(null);
 
-	// Load tasks when workspace or active board changes
+	// Load tasks when the board filter changes.
+	// - 'all'  → load tasks across every workspace (no workspaceId filter)
+	// - wsId   → load only that workspace's board
+	// Delegations / plans / diagnostics / swarms remain scoped to the active
+	// workspace (they are not part of the cross-workspace board view).
 	useEffect(() => {
+		const ws = boardFilterWsId === 'all' ? undefined : boardFilterWsId;
+		loadDelegations(activeWorkspaceId ?? undefined).then(() => {
+			loadTasks(ws, undefined);
+		});
 		if (activeWorkspaceId) {
-			loadBoards(activeWorkspaceId);
-			loadDelegations(activeWorkspaceId).then(() => {
-				loadTasks(activeWorkspaceId, activeBoardId);
-			});
 			loadPlans(activeWorkspaceId);
 			loadDiagnostics();
 			loadSwarms(activeWorkspaceId);
 		}
-	}, [activeWorkspaceId, activeBoardId, loadDelegations, loadTasks, loadPlans, loadDiagnostics, loadSwarms, loadBoards]);
+	}, [activeWorkspaceId, boardFilterWsId, loadDelegations, loadTasks, loadPlans, loadDiagnostics, loadSwarms]);
 
 	// Register agent colors when employees change (ensures consistent color assignment)
 	useEffect(() => {
@@ -120,20 +149,12 @@ export function TaskBoardPanel(): React.ReactElement {
 	// Listen for task-board changes from host
 	useEffect(() => {
 		const handler = () => {
-			if (activeWorkspaceId) { loadTasks(activeWorkspaceId, activeBoardId); }
+			const ws = boardFilterWsId === 'all' ? undefined : boardFilterWsId;
+			loadTasks(ws, undefined);
 		};
 		window.addEventListener('agentStudio:taskboard-changed', handler);
 		return () => window.removeEventListener('agentStudio:taskboard-changed', handler);
-	}, [activeWorkspaceId, activeBoardId, loadTasks]);
-
-	// Listen for board (multi-board) changes from host
-	useEffect(() => {
-		const handler = () => {
-			if (activeWorkspaceId) { loadBoards(activeWorkspaceId); }
-		};
-		window.addEventListener('agentStudio:boards-changed', handler);
-		return () => window.removeEventListener('agentStudio:boards-changed', handler);
-	}, [activeWorkspaceId, loadBoards]);
+	}, [boardFilterWsId, loadTasks]);
 
 	// Listen for focusTask messages from host (via custom event dispatched by index.tsx)
 	useEffect(() => {
@@ -157,8 +178,13 @@ export function TaskBoardPanel(): React.ReactElement {
 	}, [focusTask]);
 
 	const getTasksForColumn = useCallback((col: ColumnDef) => {
-		return tasks.filter(t => t && col.statuses.includes(t.status));
-	}, [tasks]);
+		return tasks.filter(t => {
+			if (!t || !col.statuses.includes(t.status)) { return false; }
+			// Employee filter ('all' = no filter, otherwise match assigneeId)
+			if (employeeFilter !== 'all' && t.assigneeId !== employeeFilter) { return false; }
+			return true;
+		});
+	}, [tasks, employeeFilter]);
 
 	// Drag handlers
 	const handleDragStart = useCallback((taskId: string) => {
@@ -216,43 +242,47 @@ export function TaskBoardPanel(): React.ReactElement {
 	const alertCount = diagnostics.length;
 	const hasErrorAlert = diagnostics.some(d => d.severity === 'error' || d.severity === 'critical');
 
-	// ─── Board selector handlers (multi-board isolation) ───────────────────
-	const handleSwitchBoard = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-		if (activeWorkspaceId) { switchBoard(activeWorkspaceId, e.target.value); }
-	}, [activeWorkspaceId, switchBoard]);
-
-	const handleCreateBoard = useCallback((e: React.MouseEvent) => {
-		e.stopPropagation();
-		if (!activeWorkspaceId) { return; }
-		const name = window.prompt('新看板名称：', '新看板');
-		if (name && name.trim()) { void createBoard(name.trim(), activeWorkspaceId); }
-	}, [activeWorkspaceId, createBoard]);
-
-	const handleRenameBoard = useCallback((e: React.MouseEvent) => {
-		e.stopPropagation();
-		if (!activeWorkspaceId) { return; }
-		const current = boards.find(b => b.id === activeBoardId);
-		const name = window.prompt('重命名看板：', current?.name ?? '');
-		if (name && name.trim()) { void renameBoard(activeBoardId, name.trim()); }
-	}, [activeWorkspaceId, activeBoardId, boards, renameBoard]);
-
-	const handleDeleteBoard = useCallback((e: React.MouseEvent) => {
-		e.stopPropagation();
-		if (!activeWorkspaceId || activeBoardId === 'default') { return; }
-		const current = boards.find(b => b.id === activeBoardId);
-		if (window.confirm(`删除看板「${current?.name ?? ''}」？\n其下任务将移回默认看板。`)) {
-			void deleteBoard(activeBoardId, activeWorkspaceId);
+	// ─── Filter derivations ────────────────────────────────────────────────
+	// Employee options derived from the assignees present on current tasks.
+	// We prefer the employee record's name (from useEmployeeStore) but fall
+	// back to the assigneeName stored on the task itself.
+	const employeeOptions = useMemo(() => {
+		const seen = new Map<string, string>();
+		for (const t of tasks) {
+			if (!t || !t.assigneeId) { continue; }
+			if (seen.has(t.assigneeId)) { continue; }
+			const emp = employees.find(e => e.id === t.assigneeId);
+			seen.set(t.assigneeId, emp?.name || t.assigneeName || t.assigneeId);
 		}
-	}, [activeWorkspaceId, activeBoardId, boards, deleteBoard]);
+		return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
+	}, [tasks, employees]);
+
+	// Columns currently visible (a column is hidden when its key is in hiddenColumnKeys).
+	const visibleColumns = useMemo(
+		() => COLUMNS.filter(c => !hiddenColumnKeys.has(c.key)),
+		[hiddenColumnKeys]
+	);
+
+	// Toggle a status-column's visibility. Checkbox checked = visible.
+	const toggleColumnVisibility = useCallback((key: string) => {
+		setHiddenColumnKeys(prev => {
+			const next = new Set(prev);
+			if (next.has(key)) { next.delete(key); } else { next.add(key); }
+			return next;
+		});
+	}, []);
 
 	// Active swarms for the current workspace (newest first).
 	const swarmList = Object.values(swarms)
 		.filter(s => !activeWorkspaceId || !s.workspaceId || s.workspaceId === activeWorkspaceId)
 		.sort((a, b) => b.createdAt - a.createdAt);
 
-	const handleRunDiagnostics = useCallback((e: React.MouseEvent) => {
+	const handleRunDiagnostics = useCallback(async (e: React.MouseEvent) => {
 		e.stopPropagation();
-		void runDiagnostics(activeWorkspaceId || undefined);
+		const list = await runDiagnostics(activeWorkspaceId || undefined);
+		const count = list?.length ?? 0;
+		setDiagnosticsToast(count > 0 ? `巡检完成，发现 ${count} 项问题` : '巡检完成，暂未发现问题');
+		setTimeout(() => setDiagnosticsToast(null), 3000);
 	}, [runDiagnostics, activeWorkspaceId]);
 
 	return (
@@ -285,42 +315,80 @@ export function TaskBoardPanel(): React.ReactElement {
 			</div>
 		</div>
 
+		{/* Diagnostics toast (brief feedback after running health check) */}
+		{diagnosticsToast && (
+			<div className="task-board-toast">{diagnosticsToast}</div>
+		)}
+
 		{/* Orchestration Plan Modal */}
 		<OrchestrationPlanModal
 			isOpen={isPlanDialogOpen}
 			onClose={handleClosePlanInput}
 		/>
 
-		{/* Board selector bar (multi-board isolation) */}
+		{/* Create Task Modal (opened from 待执行 column's + button) */}
+		<CreateTaskModal
+			isOpen={isCreateTaskOpen}
+			onClose={() => setIsCreateTaskOpen(false)}
+			onCreate={handleCreateTask}
+			employees={employees.map(e => ({ id: e.id, name: e.name }))}
+			tasks={tasks.map(t => ({ id: t.id, title: t.title }))}
+		/>
+
+		{/* Filter bar: board(workspace) filter + employee filter + status-column toggles */}
 		{!isCollapsed && (
-			<div className="task-board-boards">
-				<span className="task-board-boards-label">看板</span>
-				<select
-					className="task-board-boards-select"
-					value={activeBoardId}
-					onChange={handleSwitchBoard}
-					title="切换看板"
-				>
-					{boards.map(b => (
-						<option key={b.id} value={b.id}>{b.name}</option>
+			<div className="task-board-filters">
+				{/* Board filter — 'all' or one workspace's board. Each workspace
+				    implicitly owns exactly one board; boards are not creatable/deletable. */}
+				<div className="task-board-filter-group">
+					<span className="task-board-filter-label">看板</span>
+					<select
+						className="task-board-filter-select"
+						value={boardFilterWsId}
+						onChange={e => setBoardFilterWsId(e.target.value)}
+						title="按工作区过滤任务"
+					>
+						<option value="all">全部看板</option>
+						{workspaces.map(ws => (
+							<option key={ws.id} value={ws.id}>{ws.name}工作区的看板</option>
+						))}
+					</select>
+				</div>
+
+				{/* Employee filter — derived from assignees on current tasks. */}
+				<div className="task-board-filter-group">
+					<span className="task-board-filter-label">员工</span>
+					<select
+						className="task-board-filter-select"
+						value={employeeFilter}
+						onChange={e => setEmployeeFilter(e.target.value)}
+						title="按负责员工过滤任务"
+					>
+						<option value="all">全部员工</option>
+						{employeeOptions.map(emp => (
+							<option key={emp.id} value={emp.id}>{emp.name}</option>
+						))}
+					</select>
+				</div>
+
+				{/* Status-column toggles — checked = column visible. */}
+				<div className="task-board-filter-columns">
+					{COLUMNS.map(col => (
+						<label
+							key={col.key}
+							className="task-board-filter-checkbox"
+							title={`显示/隐藏「${col.label}」列`}
+						>
+							<input
+								type="checkbox"
+								checked={!hiddenColumnKeys.has(col.key)}
+								onChange={() => toggleColumnVisibility(col.key)}
+							/>
+							<span className="task-board-filter-checkbox-icon">{col.icon}</span>
+							<span>{col.label}</span>
+						</label>
 					))}
-				</select>
-				<button
-					className="task-board-boards-btn"
-					onClick={handleCreateBoard}
-					title="新建看板"
-				>＋</button>
-				<button
-					className="task-board-boards-btn"
-					onClick={handleRenameBoard}
-					title="重命名当前看板"
-				>✎</button>
-				<button
-					className="task-board-boards-btn danger"
-					onClick={handleDeleteBoard}
-					disabled={activeBoardId === 'default'}
-					title={activeBoardId === 'default' ? '默认看板不可删除' : '删除当前看板'}
-				>🗑</button>
+				</div>
 			</div>
 		)}
 
@@ -360,7 +428,7 @@ export function TaskBoardPanel(): React.ReactElement {
 		{/* Kanban columns */}
 		{!isCollapsed && (
 			<div className="task-board-columns">
-				{COLUMNS.map(col => {
+				{visibleColumns.map(col => {
 					const columnTasks = getTasksForColumn(col);
 					const isDragOver = dragOverColumn === col.key;
 
@@ -379,6 +447,25 @@ export function TaskBoardPanel(): React.ReactElement {
 								<span className="task-column-count" style={{ backgroundColor: col.color + '30', color: col.color }}>
 									{columnTasks.length}
 								</span>
+								{/* 待规划列：+ 打开任务编排 UI；待执行列：+ 打开创建任务 UI */}
+								{col.key === 'triage' && (
+									<button
+										className="task-column-add-btn"
+										onClick={(e) => { e.stopPropagation(); openPlanDialog(); }}
+										title="编排任务 - AI 自动拆分、创建 Agent"
+									>
+										＋
+									</button>
+								)}
+								{col.key === 'todo' && (
+									<button
+										className="task-column-add-btn"
+										onClick={(e) => { e.stopPropagation(); setIsCreateTaskOpen(true); }}
+										title="创建任务"
+									>
+										＋
+									</button>
+								)}
 							</div>
 
 							{/* Cards */}

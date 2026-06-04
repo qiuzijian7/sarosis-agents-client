@@ -5,7 +5,7 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import { create } from 'zustand';
-import { sendRequest } from '../bridge/messageClient';
+import { sendRequest, postMessage } from '../bridge/messageClient';
 import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, buildChatMessagesFromState, type StreamState, type StreamError, isPhaseActive } from '../bridge/streamHandler';
 import { useEmployeeStore } from './useEmployeeStore';
 
@@ -20,6 +20,15 @@ export interface ChatMessageMetadata {
 	planId: string;
 }
 
+// Per-file change summary for the checkpoint bar (matches host ICheckpointFileChange)
+export interface CheckpointFileChange {
+	uri: string;
+	fileName: string;
+	fsPath: string;
+	additions: number;
+	deletions: number;
+}
+
 // Checkpoint data for time-travel navigation (Void-inspired)
 export interface CheckpointData {
 	id: string;
@@ -27,8 +36,12 @@ export interface CheckpointData {
 	timestamp: string;
 	description?: string;
 	filesChanged?: number;
+	/** Detailed per-file changes (additions/deletions) — populated for tool_edit checkpoints. */
+	files?: CheckpointFileChange[];
 	isGhost?: boolean;
 	isDisabled?: boolean;
+	/** Set after the user clicks "保留" — the checkpoint bar should hide itself. */
+	isKept?: boolean;
 }
 
 // Reference item for ReferencesCard
@@ -267,6 +280,12 @@ interface ChatState {
 	jumpToCheckpoint: (checkpointId: string) => void;
 	/** Mark all checkpoints as ghost except the one at the given id */
 	setActiveCheckpoint: (checkpointId: string) => void;
+	/** Mark a checkpoint as "kept" so the checkpoint bar hides itself. */
+	keepCheckpoint: (checkpointId: string) => void;
+	/** Open a diff editor (snapshot vs current) for a checkpoint file. */
+	openCheckpointDiff: (checkpointId: string, fileUri: string) => void;
+	/** Get the latest non-ghost / non-kept tool_edit checkpoint (for the always-floating bar). */
+	getLatestCheckpoint: () => CheckpointData | undefined;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -1190,6 +1209,20 @@ export const useChatStore = create<ChatState>((set, get) => {
 			});
 		},
 
+		openCheckpointDiff: (checkpointId: string, fileUri: string) => {
+			const state = get();
+			// 关键：employeeId / sessionId 取自 store 的 active 字段，而非
+			// checkpoint 对象——CheckpointData 不携带这两个字段（与
+			// jumpToCheckpoint 一致）。否则后端拿到 undefined 找不到快照，
+			// getFileSnapshots 返回空 → 提前 return → diff 打不开。
+			postMessage('chat.openCheckpointDiff', {
+				checkpointId,
+				fileUri,
+				employeeId: state.activeEmployeeId ?? '',
+				sessionId: state.activeAgentSessionId ?? '',
+			});
+		},
+
 		setActiveCheckpoint: (checkpointId: string) => {
 			set(state => {
 				const targetIdx = state.messages.findIndex(m => m.id === checkpointId);
@@ -1207,6 +1240,33 @@ export const useChatStore = create<ChatState>((set, get) => {
 					}),
 				};
 			});
+		},
+
+		keepCheckpoint: (checkpointId: string) => {
+			set(state => ({
+				messages: state.messages.map(m => {
+					if (m.role !== 'checkpoint' || !m.checkpoint) { return m; }
+					if (m.checkpoint.id !== checkpointId) { return m; }
+					return {
+						...m,
+						checkpoint: { ...m.checkpoint, isKept: true },
+					};
+				}),
+			}));
+		},
+
+		getLatestCheckpoint: () => {
+			const { messages } = get();
+			// Walk from newest → oldest to find the most recent renderable tool_edit checkpoint.
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const m = messages[i];
+				if (m.role !== 'checkpoint' || !m.checkpoint) { continue; }
+				const cp = m.checkpoint;
+				if (cp.type !== 'tool_edit') { continue; }
+				if (cp.isGhost || cp.isDisabled || cp.isKept) { continue; }
+				return cp;
+			}
+			return undefined;
 		},
 
 		removeMessagesAfter: (messageId: string) => {

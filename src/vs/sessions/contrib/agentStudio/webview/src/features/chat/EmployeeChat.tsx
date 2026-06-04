@@ -22,6 +22,7 @@ import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { ChatComposer } from './ChatComposer';
+import { CheckpointBar } from './CheckpointBar';
 import { ToolCallCard } from './ToolCallCard';
 import { SubAgentCard } from './SubAgentCard';
 import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRenderer';
@@ -721,6 +722,9 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						</svg>
 					</button>
 				</div>
+
+				{/* Checkpoint info bar (non-persistent — only when a checkpoint exists) */}
+				<CheckpointBar />
 
 				{/* Composer */}
 			<ChatComposer
