@@ -19,6 +19,8 @@ import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.
 import { DelegatedOutputChannelModel, FileOutputChannelModel, IOutputChannelModel, MultiFileOutputChannelModel } from '../common/outputChannelModel.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { OutputViewPane } from './outputView.js';
+import { IEditorGroupsService, GroupLocation } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -30,6 +32,7 @@ import { telemetryLogId } from '../../../../platform/telemetry/common/telemetryU
 import { toLocalISOString } from '../../../../base/common/date.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { IDefaultLogLevelsService } from '../../../services/log/common/defaultLogLevels.js';
+import { OutputEditorInput } from './outputEditorInput.js';
 
 const OUTPUT_ACTIVE_CHANNEL_KEY = 'output.activechannel';
 
@@ -329,6 +332,8 @@ export class OutputService extends Disposable implements IOutputService, ITextMo
 		@ILoggerService private readonly loggerService: ILoggerService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 		@IViewsService private readonly viewsService: IViewsService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IDefaultLogLevelsService private readonly defaultLogLevelsService: IDefaultLogLevelsService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
@@ -339,7 +344,13 @@ export class OutputService extends Disposable implements IOutputService, ITextMo
 		this.activeChannelIdInStorage = this.storageService.get(OUTPUT_ACTIVE_CHANNEL_KEY, StorageScope.WORKSPACE, '');
 		this.activeOutputChannelContext = ACTIVE_OUTPUT_CHANNEL_CONTEXT.bindTo(contextKeyService);
 		this.activeOutputChannelContext.set(this.activeChannelIdInStorage);
-		this._register(this.onActiveOutputChannel(channel => this.activeOutputChannelContext.set(channel)));
+		this._register(this.onActiveOutputChannel(channelId => {
+			this.activeOutputChannelContext.set(channelId);
+			const channel = this.getChannel(channelId);
+			if (channel && this.viewsService.isViewVisible(OUTPUT_VIEW_ID)) {
+				this.viewsService.getActiveViewWithId<OutputViewPane>(OUTPUT_VIEW_ID)?.showChannel(channel, true);
+			}
+		}));
 
 		this.activeFileOutputChannelContext = CONTEXT_ACTIVE_FILE_OUTPUT.bindTo(contextKeyService);
 		this.activeLogOutputChannelContext = CONTEXT_ACTIVE_LOG_FILE_OUTPUT.bindTo(contextKeyService);
@@ -404,15 +415,29 @@ export class OutputService extends Disposable implements IOutputService, ITextMo
 	}
 
 	async showChannel(id: string, preserveFocus?: boolean): Promise<void> {
+		const channel = this.setActiveChannelById(id);
+		if (!channel) {
+			return;
+		}
+
+		const groups = this.editorGroupsService.getGroups(2);
+		const targetGroup = this.editorGroupsService.findGroup({ location: GroupLocation.LAST }) ?? (groups.length <= 1 ? SIDE_GROUP : groups[groups.length - 1]);
+		await this.editorService.openEditor(OutputEditorInput.getInstance(), {
+			pinned: true,
+			preserveFocus: !!preserveFocus,
+			revealIfOpened: true,
+		}, targetGroup);
+	}
+
+	setActiveChannelById(id: string): OutputChannel | undefined {
 		const channel = this.getChannel(id);
 		if (this.activeChannel?.id !== channel?.id) {
 			this.setActiveChannel(channel);
-			this._onActiveOutputChannel.fire(id);
+			if (channel) {
+				this._onActiveOutputChannel.fire(id);
+			}
 		}
-		const outputView = await this.viewsService.openView<OutputViewPane>(OUTPUT_VIEW_ID, !preserveFocus);
-		if (outputView && channel) {
-			outputView.showChannel(channel, !!preserveFocus);
-		}
+		return channel;
 	}
 
 	getChannel(id: string): OutputChannel | undefined {

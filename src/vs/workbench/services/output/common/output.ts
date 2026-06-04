@@ -109,6 +109,11 @@ export interface IOutputService {
 	showChannel(id: string, preserveFocus?: boolean): Promise<void>;
 
 	/**
+	 * Switch the active channel without forcing the output editor to open.
+	 */
+	setActiveChannelById(id: string): IOutputChannel | undefined;
+
+	/**
 	 * Allows to register on active output channel change.
 	 */
 	readonly onActiveOutputChannel: Event<string>;

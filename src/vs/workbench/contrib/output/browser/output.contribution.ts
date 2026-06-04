@@ -14,17 +14,17 @@ import { OUTPUT_MODE_ID, OUTPUT_MIME, OUTPUT_VIEW_ID, IOutputService, CONTEXT_IN
 import { OutputViewPane } from './outputView.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions, IWorkbenchContribution } from '../../../common/contributions.js';
+import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../browser/editor.js';
+import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../common/editor.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ViewContainer, IViewContainersRegistry, ViewContainerLocation, Extensions as ViewContainerExtensions, IViewsRegistry, WindowEnablement } from '../../../common/views.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
-import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IQuickPickItem, IQuickInputService, IQuickPickSeparator, QuickPickInput } from '../../../../platform/quickinput/common/quickInput.js';
 import { AUX_WINDOW_GROUP, AUX_WINDOW_GROUP_TYPE, IEditorService } from '../../../services/editor/common/editorService.js';
 import { ContextKeyExpr, ContextKeyExpression } from '../../../../platform/contextkey/common/contextkey.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
 import { Disposable, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { AccessibilitySignal, IAccessibilitySignalService } from '../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
@@ -45,6 +45,8 @@ import { hasKey } from '../../../../base/common/types.js';
 import { IDefaultLogLevelsService } from '../../../services/log/common/defaultLogLevels.js';
 import { AccessibleViewRegistry } from '../../../../platform/accessibility/browser/accessibleViewRegistry.js';
 import { OutputAccessibilityHelp } from './outputAccessibilityHelp.js';
+import { OutputEditorPane } from './outputEditorPane.js';
+import { OutputEditorInput } from './outputEditorInput.js';
 
 const IMPORTED_LOG_ID_PREFIX = 'importedLog.';
 
@@ -68,47 +70,84 @@ ModesRegistry.registerLanguage({
 	mimetypes: [LOG_MIME]
 });
 
-// register output container
-const outputViewIcon = registerIcon('output-view-icon', Codicon.output, nls.localize('outputViewIcon', 'View icon of the output view.'));
-const VIEW_CONTAINER: ViewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry).registerViewContainer({
-	id: OUTPUT_VIEW_ID,
-	title: nls.localize2('output', "Output"),
-	icon: outputViewIcon,
-	order: 1,
-	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [OUTPUT_VIEW_ID, { mergeViewWithContainerWhenSingleView: true }]),
-	storageId: OUTPUT_VIEW_ID,
-	hideIfEmpty: true,
-	windowEnablement: WindowEnablement.Both
-}, ViewContainerLocation.Panel, { doNotRegisterOpenCommand: true });
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		OutputEditorPane,
+		OutputEditorPane.ID,
+		localize('outputEditor', "Output")
+	),
+	[
+		new SyncDescriptor(OutputEditorInput)
+	]
+);
 
-Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry).registerViews([{
-	id: OUTPUT_VIEW_ID,
-	name: nls.localize2('output', "Output"),
-	containerIcon: outputViewIcon,
-	canMoveView: true,
-	canToggleVisibility: true,
-	ctorDescriptor: new SyncDescriptor(OutputViewPane),
-	openCommandActionDescriptor: {
-		id: 'workbench.action.output.toggleOutput',
-		mnemonicTitle: nls.localize({ key: 'miToggleOutput', comment: ['&& denotes a mnemonic'] }, "&&Output"),
-		keybindings: {
-			primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyU,
-			linux: {
-				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.KeyH)  // On Ubuntu Ctrl+Shift+U is taken by some global OS command
+class OutputEditorInputSerializer implements IEditorSerializer {
+	canSerialize(_editorInput: EditorInput): boolean {
+		return true;
+	}
+
+	serialize(editorInput: EditorInput): string | undefined {
+		if (!(editorInput instanceof OutputEditorInput)) {
+			return undefined;
+		}
+		return '';
+	}
+
+	deserialize(_instantiationService: IInstantiationService): EditorInput | undefined {
+		return OutputEditorInput.getInstance();
+	}
+}
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(OutputEditorInput.TypeID, OutputEditorInputSerializer);
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'workbench.action.output.toggleOutput',
+			title: localize2('toggleOutput', "Toggle Output"),
+			category: Categories.View,
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyU,
+				linux: {
+					primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.KeyH)
+				}
 			}
-		},
-		order: 1,
-	},
-	windowEnablement: WindowEnablement.Both
-}], VIEW_CONTAINER);
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const outputService = accessor.get(IOutputService);
+		const activeChannel = outputService.getActiveChannel();
+		if (activeChannel) {
+			await outputService.showChannel(activeChannel.id);
+			return;
+		}
+
+		const firstChannel = outputService.getChannelDescriptors()[0];
+		if (firstChannel) {
+			await outputService.showChannel(firstChannel.id);
+		}
+	}
+});
 
 class OutputContribution extends Disposable implements IWorkbenchContribution {
 	constructor(
 		@IOutputService private readonly outputService: IOutputService,
 		@IEditorService private readonly editorService: IEditorService,
+		@IViewsService private readonly viewsService: IViewsService,
 	) {
 		super();
 		this.registerActions();
+	}
+
+	private getActiveOutputPaneOrView(): OutputEditorPane | OutputViewPane | undefined {
+		const activeEditorPane = this.editorService.activeEditorPane;
+		if (activeEditorPane instanceof OutputEditorPane) {
+			return activeEditorPane;
+		}
+		return this.viewsService.getActiveViewWithId<OutputViewPane>(OUTPUT_VIEW_ID) ?? undefined;
 	}
 
 	private registerActions(): void {
@@ -140,7 +179,7 @@ class OutputContribution extends Disposable implements IWorkbenchContribution {
 			}
 			async run(accessor: ServicesAccessor, channelId: string): Promise<void> {
 				if (channelId) {
-					accessor.get(IOutputService).showChannel(channelId, true);
+					accessor.get(IOutputService).setActiveChannelById(channelId);
 				}
 			}
 		}));
@@ -172,7 +211,7 @@ class OutputContribution extends Disposable implements IWorkbenchContribution {
 						});
 					}
 					async run(accessor: ServicesAccessor): Promise<void> {
-						return accessor.get(IOutputService).showChannel(channel.id, true);
+						accessor.get(IOutputService).setActiveChannelById(channel.id);
 					}
 				}));
 			}
@@ -342,6 +381,7 @@ class OutputContribution extends Disposable implements IWorkbenchContribution {
 	}
 
 	private registerToggleAutoScrollAction(): void {
+		const that = this;
 		this._register(registerAction2(class extends Action2 {
 			constructor() {
 				super({
@@ -362,9 +402,11 @@ class OutputContribution extends Disposable implements IWorkbenchContribution {
 					}
 				});
 			}
-			async run(accessor: ServicesAccessor): Promise<void> {
-				const outputView = accessor.get(IViewsService).getActiveViewWithId<OutputViewPane>(OUTPUT_VIEW_ID)!;
-				outputView.scrollLock = !outputView.scrollLock;
+			async run(): Promise<void> {
+				const outputPaneOrView = that.getActiveOutputPaneOrView();
+				if (outputPaneOrView) {
+					outputPaneOrView.scrollLock = !outputPaneOrView.scrollLock;
+				}
 			}
 		}));
 	}
@@ -692,7 +734,8 @@ class OutputContribution extends Disposable implements IWorkbenchContribution {
 	}
 
 	private registerClearFilterActions(): void {
-		this._register(registerAction2(class extends ViewAction<OutputViewPane> {
+		const that = this;
+		this._register(registerAction2(class extends Action2 {
 			constructor() {
 				super({
 					id: `workbench.actions.${OUTPUT_VIEW_ID}.clearFilterText`,
@@ -701,12 +744,11 @@ class OutputContribution extends Disposable implements IWorkbenchContribution {
 						when: OUTPUT_FILTER_FOCUS_CONTEXT,
 						weight: KeybindingWeight.WorkbenchContrib,
 						primary: KeyCode.Escape
-					},
-					viewId: OUTPUT_VIEW_ID
+					}
 				});
 			}
-			async runInView(serviceAccessor: ServicesAccessor, outputView: OutputViewPane): Promise<void> {
-				outputView.clearFilterText();
+			async run(): Promise<void> {
+				that.getActiveOutputPaneOrView()?.clearFilterText();
 			}
 		}));
 	}

@@ -178,8 +178,11 @@ export class OutputViewPane extends FilterViewPane {
 
 	private onDidChangeVisibility(visible: boolean): void {
 		this.editor.setVisible(visible);
-		if (!visible) {
-			this.clearInput();
+		if (visible) {
+			const activeChannel = this.outputService.getActiveChannel();
+			if (activeChannel) {
+				this.showChannel(activeChannel, true);
+			}
 		}
 	}
 
@@ -198,12 +201,6 @@ export class OutputViewPane extends FilterViewPane {
 	private checkMoreFilters(): void {
 		const filters = this.outputService.filters;
 		this.filterWidget.checkMoreFilters(!filters.trace || !filters.debug || !filters.info || !filters.warning || !filters.error || (!!this.channelId && filters.categories.includes(`,${this.channelId}:`)));
-	}
-
-	private clearInput(): void {
-		this.channelId = undefined;
-		this.editor.clearInput();
-		this.editorPromise = null;
 	}
 
 	private createInput(channel: IOutputChannel): TextResourceEditorInput {
