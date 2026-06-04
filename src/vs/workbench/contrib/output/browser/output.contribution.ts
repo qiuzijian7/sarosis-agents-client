@@ -94,7 +94,8 @@ class OutputEditorInputSerializer implements IEditorSerializer {
 	}
 
 	deserialize(_instantiationService: IInstantiationService): EditorInput | undefined {
-		return OutputEditorInput.getInstance();
+		// 不在刷新时自动恢复 Output 面板，用户需要通过快捷键手动呼出
+		return undefined;
 	}
 }
 

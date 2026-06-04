@@ -16,3 +16,51 @@
 .monaco-workbench .part.panel > .content .pane-body.output-view .sticky-widget {
 	background-color: var(--vscode-outputViewStickyScroll-background, var(--vscode-panel-background));
 }
+
+/* Output Editor Pane 工具栏样式 */
+.output-editor-pane .output-editor-toolbar {
+	background-color: var(--vscode-editor-background);
+	min-height: 30px;
+}
+
+.output-editor-pane .output-editor-toolbar .output-filter-container .monaco-inputbox {
+	height: 24px;
+	font-size: 12px;
+}
+
+.output-editor-pane .output-editor-toolbar .output-filter-container .monaco-inputbox > .ibwrapper > input {
+	padding: 2px 4px;
+}
+
+.output-editor-pane .output-editor-toolbar .output-channel-select {
+	min-width: 80px;
+}
+
+.output-editor-pane .output-editor-toolbar .output-channel-select .monaco-select-box {
+	height: 24px;
+	font-size: 12px;
+	padding: 2px 4px;
+}
+
+.output-editor-pane .output-editor-toolbar .output-toolbar-action,
+.output-editor-pane .output-editor-toolbar .output-toolbar-actions {
+	display: flex;
+	align-items: center;
+}
+
+.output-editor-pane .output-editor-toolbar .action-bar .action-item .action-label {
+	width: 22px;
+	height: 22px;
+	line-height: 22px;
+	font-size: 14px;
+}
+
+.output-editor-pane .output-editor-content {
+	position: relative;
+}
+
+.output-editor-pane .output-editor-content .monaco-editor,
+.output-editor-pane .output-editor-content .monaco-editor .margin,
+.output-editor-pane .output-editor-content .monaco-editor .monaco-editor-background {
+	background-color: var(--vscode-outputView-background);
+}

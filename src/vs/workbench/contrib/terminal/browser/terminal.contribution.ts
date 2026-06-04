@@ -18,7 +18,7 @@ import { registerTerminalPlatformConfiguration } from '../../../../platform/term
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
-import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
+import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../common/editor.js';
 import { IViewContainersRegistry, IViewsRegistry, Extensions as ViewContainerExtensions, ViewContainerLocation, WindowEnablement } from '../../../common/views.js';
 import { ITerminalProfileService, TERMINAL_VIEW_ID, TerminalCommandId } from '../common/terminal.js';
 import { TerminalEditingService } from './terminalEditingService.js';
@@ -48,6 +48,16 @@ import { TerminalService } from './terminalService.js';
 import { TerminalTelemetryContribution } from './terminalTelemetry.js';
 import { TerminalViewPane } from './terminalView.js';
 import { AgentHostTerminalService, IAgentHostTerminalService } from './agentHostTerminalService.js';
+import { TerminalPanelEditorInput } from './terminalPanelEditorInput.js';
+import { TerminalPanelEditorPane } from './terminalPanelEditorPane.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { registerAction2, Action2 } from '../../../../platform/actions/common/actions.js';
+import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
+import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
+import { IEditorGroupsService, GroupLocation } from '../../../services/editor/common/editorGroupsService.js';
+import { localize2 } from '../../../../nls.js';
 
 // Register services
 registerSingleton(ITerminalLogService, TerminalLogService, InstantiationType.Delayed);
@@ -133,6 +143,80 @@ Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry).registerViews
 		order: 3
 	}
 }], VIEW_CONTAINER);
+
+// Register terminal panel editor pane (可自由拖动的终端面板)
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		TerminalPanelEditorPane,
+		TerminalPanelEditorPane.ID,
+		nls.localize('terminalPanelEditor', "Terminal")
+	),
+	[
+		new SyncDescriptor(TerminalPanelEditorInput)
+	]
+);
+
+class TerminalPanelEditorInputSerializer implements IEditorSerializer {
+	canSerialize(_editorInput: EditorInput): boolean {
+		return true;
+	}
+
+	serialize(editorInput: EditorInput): string | undefined {
+		if (!(editorInput instanceof TerminalPanelEditorInput)) {
+			return undefined;
+		}
+		return '';
+	}
+
+	deserialize(_instantiationService: IInstantiationService): EditorInput | undefined {
+		return TerminalPanelEditorInput.getInstance();
+	}
+}
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(TerminalPanelEditorInput.TypeID, TerminalPanelEditorInputSerializer);
+
+// 注册 Toggle Terminal Panel 命令（快捷键 Ctrl+Shift+`）
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'workbench.action.terminal.toggleTerminalPanel',
+			title: localize2('toggleTerminalPanel', "Toggle Terminal Panel"),
+			category: Categories.View,
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Backquote,
+			}
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+
+		// 如果当前已经打开了终端面板，则关闭它
+		const existingEditor = editorService.editors.find(e => e instanceof TerminalPanelEditorInput);
+		if (existingEditor) {
+			const activeEditorPane = editorService.activeEditorPane;
+			if (activeEditorPane && activeEditorPane.input instanceof TerminalPanelEditorInput) {
+				// 当前聚焦在终端面板上，关闭它
+				await activeEditorPane.group.closeEditor(existingEditor);
+				return;
+			}
+			// 终端面板已打开但不在焦点，聚焦到它
+			await editorService.openEditor(existingEditor, { pinned: true, preserveFocus: false, revealIfOpened: true });
+			return;
+		}
+
+		// 打开终端面板到右侧编辑组
+		const groups = editorGroupsService.getGroups(2);
+		const targetGroup = editorGroupsService.findGroup({ location: GroupLocation.LAST }) ?? (groups.length <= 1 ? SIDE_GROUP : groups[groups.length - 1]);
+		await editorService.openEditor(TerminalPanelEditorInput.getInstance(), {
+			pinned: true,
+			preserveFocus: false,
+		}, targetGroup);
+	}
+});
 
 registerTerminalActions();
 
