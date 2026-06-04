@@ -46,6 +46,8 @@ export const dirs = [
 	'extensions/search-result',
 	'extensions/simple-browser',
 	'extensions/agent-studio',
+	'extensions/codebuddy-provider',
+	'extensions/shared',
 	'extensions/hermes-agent-provider',
 	'extensions/knot-agui',
 	'extensions/tdb-am-gateway',
