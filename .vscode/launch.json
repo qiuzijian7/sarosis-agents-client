@@ -250,6 +250,7 @@
 			"type": "chrome",
 			"request": "launch",
 			"name": "Launch VS Code Internal",
+			"preLaunchTask": "Transpile Client",
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
 			},
@@ -296,6 +297,7 @@
 			"type": "chrome",
 			"request": "launch",
 			"name": "Launch VS Code Agents Internal",
+			"preLaunchTask": "Transpile Client",
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.bat"
 			},
