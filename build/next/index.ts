@@ -845,12 +845,11 @@ function discoverCapabilityPlugins(): CapabilityPluginManifest[] {
 				// is loaded from a different bundle layout than expected). This is
 				// resolved via FileAccess.asBrowserUri at runtime.
 				//
-				// Path convention: prefer the extension's own bundled output
-				// (extensions/<id>/dist/extension.js) if it exists; otherwise fall
-				// back to the standalone tsc output (extensions/<id>/out/extension.js).
-				appResource: fs.existsSync(path.join(extensionsDir, entry.name, 'dist', 'extension.js'))
-					? `vs/../../extensions/${entry.name}/dist/extension.js`
-					: `vs/../../extensions/${entry.name}/out/extension.js`,
+				// Path convention: always point appResource to dist/extension.js which
+				// is the ESM bundle produced by transpileCapabilityPlugins(). This
+				// ensures the fallback (loaded via vscode-file:// in Electron) gets
+				// a valid ESM file, not the CJS output from tsc's out/.
+				appResource: `vs/../../extensions/${entry.name}/dist/extension.js`,
 				capabilities,
 				exportClass: pkgJson.contributes?.agentCapabilities?.[0]?.exportClass,
 			});
@@ -892,6 +891,12 @@ async function transpileCapabilityPlugins(outDir: string): Promise<void> {
 				plugins: [{
 					name: 'resolve-src-imports',
 					setup(build) {
+						// Resolve @sarosis/shared to local source so capability-plugin bundles
+						// do not leave an unresolved bare module specifier in browser runtime.
+						build.onResolve({ filter: /^@sarosis\/shared$/ }, () => ({
+							path: path.join(REPO_ROOT, 'extensions', 'shared', 'src', 'index.ts'),
+						}));
+
 						// Intercept imports that reference ../../../src/vs/... paths
 						// and rewrite them to point to the correct location in out/
 						build.onResolve({ filter: /\.\.\/.*src\/vs\// }, (args) => {
@@ -917,7 +922,7 @@ async function transpileCapabilityPlugins(outDir: string): Promise<void> {
 						}));
 					},
 				}],
-				packages: 'external',
+				external: ['vscode', 'node:*', 'child_process', 'os', 'crypto', 'zlib', 'fs', 'path', 'net', 'http', 'https', 'stream', 'util', 'events'],
 				sourcemap: 'linked',
 				tsconfigRaw: JSON.stringify({
 					compilerOptions: {
@@ -929,6 +934,44 @@ async function transpileCapabilityPlugins(outDir: string): Promise<void> {
 			});
 
 			console.log(`[transpile] Bundled capability plugin: ${extName}`);
+
+			// Also copy the ESM bundle into extensions/<name>/dist/extension.js so the
+			// `appResource` fallback (loaded via vscode-file:// in the renderer) gets a
+			// proper ESM file instead of the CJS output from tsc.
+			const distDir = path.join(REPO_ROOT, 'extensions', extName, 'dist');
+			await fs.promises.mkdir(distDir, { recursive: true });
+			await fs.promises.copyFile(outPath, path.join(distDir, 'extension.js'));
+			if (fs.existsSync(outPath + '.map')) {
+				await fs.promises.copyFile(outPath + '.map', path.join(distDir, 'extension.js.map'));
+			}
+
+			// Additionally, produce a CJS bundle for extensions that declare
+			// package.json "main" (VS Code extension host loads via require()).
+			// This ensures `@sarosis/shared` and other workspace-internal deps
+			// are inlined — only `vscode` is left external.
+			const extPkgPath = path.join(REPO_ROOT, 'extensions', extName, 'package.json');
+			const extPkg = JSON.parse(fs.readFileSync(extPkgPath, 'utf-8'));
+			if (extPkg.main) {
+				const cjsOutPath = path.join(distDir, 'extension.cjs.js');
+				await esbuild.build({
+					entryPoints: [entryPath],
+					outfile: cjsOutPath,
+					bundle: true,
+					format: 'cjs',
+					platform: 'node',
+					target: ['es2022'],
+					external: ['vscode'],
+					sourcemap: 'linked',
+					tsconfigRaw: JSON.stringify({
+						compilerOptions: {
+							experimentalDecorators: true,
+							useDefineForClassFields: false,
+						}
+					}),
+					logLevel: 'warning',
+				});
+				console.log(`[transpile] Bundled CJS (extension host): ${extName}`);
+			}
 		} catch (err) {
 			console.warn(`[transpile] Failed to bundle capability plugin ${extName}:`, err);
 		}

@@ -17,7 +17,7 @@
 	"activationEvents": [
 		"*"
 	],
-	"main": "./out/extension.js",
+	"main": "./dist/extension.cjs.js",
 	"contributes": {
 		"chatPlugins": [
 			{
@@ -148,8 +148,8 @@
 		]
 	},
 	"scripts": {
-		"compile": "tsc -p ./",
-		"watch": "tsc -watch -p ./"
+		"compile": "node ../../node_modules/typescript/bin/tsc -p ./ && node ../../node_modules/esbuild/bin/esbuild src/extension.ts --bundle --format=cjs --platform=node --external:vscode --outfile=dist/extension.cjs.js --sourcemap",
+		"watch": "node ../../node_modules/typescript/bin/tsc -watch -p ./"
 	},
 	"dependencies": {
 		"@sarosis/shared": "file:../shared"
