@@ -1,0 +1,880 @@
+/*---------------------------------------------------------------------------------------------
+ *  Wiki View Styles — 审核/入库/标签树面板
+ *--------------------------------------------------------------------------------------------*/
+
+.wiki-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+	font-size: 13px;
+}
+
+/* ─── Tab bar ─────────────────────────────────────────────────────────── */
+
+.wiki-tabs {
+	display: flex;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.wiki-tab {
+	padding: 8px 16px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	border-bottom: 2px solid transparent;
+	transition: color 0.15s, border-color 0.15s;
+}
+
+.wiki-tab:hover {
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-tab.active {
+	color: var(--vscode-editor-foreground);
+	border-bottom-color: var(--vscode-focusBorder);
+}
+
+.wiki-tab-refresh {
+	padding: 6px 10px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 14px;
+	cursor: pointer;
+	border-bottom: 2px solid transparent;
+	transition: color 0.15s;
+}
+
+.wiki-tab-refresh:hover {
+	color: var(--vscode-editor-foreground);
+}
+
+/* ─── Content area ────────────────────────────────────────────────────── */
+
+.wiki-content {
+	flex: 1;
+	overflow-y: auto;
+	padding: 0;
+	position: relative;
+}
+
+.wiki-content::-webkit-scrollbar {
+	width: 6px;
+}
+
+.wiki-content::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.wiki-content::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background);
+	border-radius: 3px;
+}
+
+/* ─── Collapsible sections ────────────────────────────────────────────── */
+
+.wiki-collapsible {
+	margin-bottom: 4px;
+}
+
+.wiki-collapsible-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background: var(--vscode-sideBar-background);
+	cursor: pointer;
+	user-select: none;
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.wiki-collapsible-header:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wiki-collapsible-arrow {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	width: 12px;
+	text-align: center;
+}
+
+.wiki-collapsible-title {
+	font-weight: 500;
+	font-size: 12px;
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-collapsible-badge {
+	margin-left: auto;
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 10px;
+	font-weight: 500;
+}
+
+.wiki-collapsible-badge.has-items {
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.wiki-collapsible-badge.empty {
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wiki-collapsible-content {
+	padding: 8px 0;
+}
+
+/* ─── Card common ─────────────────────────────────────────────────────── */
+
+.wiki-proposal-card,
+.wiki-staging-card {
+	display: flex;
+	align-items: stretch;
+	gap: 10px;
+	padding: 10px 12px;
+	margin: 0 8px 6px 8px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	background: var(--vscode-editor-background);
+}
+
+.wiki-proposal-card:hover,
+.wiki-staging-card:hover {
+	border-color: var(--vscode-focusBorder);
+}
+
+.wiki-level-bar {
+	width: 4px;
+	border-radius: 2px;
+	flex-shrink: 0;
+}
+
+.wiki-card-content {
+	flex: 1;
+	min-width: 0;
+}
+
+.wiki-card-title-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+
+.wiki-level-label {
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+}
+
+.wiki-card-name {
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wiki-card-desc {
+	margin: 0;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+}
+
+.wiki-card-path {
+	margin: 2px 0 0 0;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.8;
+}
+
+.wiki-card-warning {
+	margin: 4px 0 0 0;
+	font-size: 10px;
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.wiki-card-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+/* ─── Action buttons ──────────────────────────────────────────────────── */
+
+.wiki-btn-approve,
+.wiki-btn-reject,
+.wiki-btn-commit {
+	border: none;
+	border-radius: 4px;
+	padding: 4px 10px;
+	font-size: 11px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: opacity 0.15s;
+	white-space: nowrap;
+}
+
+.wiki-btn-approve:hover,
+.wiki-btn-reject:hover,
+.wiki-btn-commit:hover {
+	opacity: 0.85;
+}
+
+.wiki-btn-approve:disabled,
+.wiki-btn-reject:disabled,
+.wiki-btn-commit:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.wiki-btn-approve {
+	border: 1px solid #1D9E75;
+	color: #1D9E75;
+	background: transparent;
+}
+
+.wiki-btn-reject {
+	border: 1px solid #E24B4A;
+	color: #E24B4A;
+	background: transparent;
+}
+
+.wiki-btn-commit {
+	border: 1px solid #1D9E75;
+	color: #fff;
+	background: #1D9E75;
+}
+
+/* ─── Staging input ───────────────────────────────────────────────────── */
+
+.wiki-staging-input {
+	font-weight: 500;
+	font-size: 12px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	padding: 2px 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	outline: none;
+	width: 160px;
+	max-width: 100%;
+}
+
+.wiki-staging-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ─── Validation status ───────────────────────────────────────────────── */
+
+.wiki-validation-status {
+	margin: 4px 0 0 0;
+	font-size: 10px;
+	line-height: 1.4;
+}
+
+.wiki-validation-status.valid {
+	color: #1D9E75;
+}
+
+.wiki-validation-status.invalid {
+	color: #E24B4A;
+}
+
+/* ─── Tag tree ────────────────────────────────────────────────────────── */
+
+.wiki-tree {
+	padding: 8px 4px;
+}
+
+.wiki-tree-node {
+	margin-bottom: 2px;
+}
+
+.wiki-tree-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	border-radius: 4px;
+}
+
+.wiki-tree-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wiki-tree-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	flex-shrink: 0;
+}
+
+.wiki-tree-dot-sm {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.wiki-tree-arrow {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	width: 12px;
+	text-align: center;
+}
+
+.wiki-tree-arrow.clickable {
+	cursor: pointer;
+}
+
+.wiki-tree-name {
+	font-size: 12px;
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-tree-name.bold {
+	font-weight: 500;
+}
+
+.wiki-tree-level-hint {
+	margin-left: auto;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wiki-tree-children {
+	display: flex;
+	margin-left: 16px;
+	padding-left: 12px;
+}
+
+.wiki-tree-connector {
+	width: 1px;
+	background: var(--vscode-panel-border);
+	flex-shrink: 0;
+	margin-right: 0;
+}
+
+.wiki-tree-child-content {
+	flex: 1;
+}
+
+/* ─── Entity section ──────────────────────────────────────────────────── */
+
+.wiki-tree-separator {
+	height: 1px;
+	background: var(--vscode-panel-border);
+	margin: 12px 8px;
+}
+
+.wiki-tree-entity-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+}
+
+.wiki-tree-entity-label {
+	font-weight: 500;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wiki-tree-entity-list {
+	margin-left: 24px;
+}
+
+.wiki-tree-entity-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 8px;
+	font-size: 12px;
+	color: var(--vscode-editor-foreground);
+	border-radius: 4px;
+	position: relative;
+}
+
+.wiki-tree-entity-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wiki-tree-entity-item:hover .wiki-tree-actions {
+	opacity: 1;
+}
+
+/* ─── Tree node actions (rename / delete) ─────────────────────────────── */
+
+.wiki-tree-actions {
+	display: flex;
+	gap: 2px;
+	margin-left: auto;
+	opacity: 0;
+	transition: opacity 0.12s;
+}
+
+.wiki-tree-row:hover .wiki-tree-actions {
+	opacity: 1;
+}
+
+.wiki-tree-action-btn {
+	width: 20px;
+	height: 20px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.12s, color 0.12s;
+}
+
+.wiki-tree-action-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.15));
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-tree-action-btn.danger:hover {
+	background: rgba(226, 75, 74, 0.12);
+	color: #E24B4A;
+}
+
+/* ─── Rename input (inline) ───────────────────────────────────────────── */
+
+.wiki-tree-rename-input {
+	font-size: 12px;
+	font-weight: 500;
+	border: 1px solid var(--vscode-focusBorder);
+	border-radius: 3px;
+	padding: 1px 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	outline: none;
+	min-width: 60px;
+}
+
+.wiki-tree-rename-input.invalid {
+	border-color: #E24B4A;
+}
+
+.wiki-tree-rename-validation {
+	font-size: 10px;
+	margin-left: 6px;
+	white-space: nowrap;
+}
+
+.wiki-tree-rename-validation.valid {
+	color: #1D9E75;
+}
+
+.wiki-tree-rename-validation.invalid {
+	color: #E24B4A;
+}
+
+/* ─── Delete confirmation overlay ─────────────────────────────────────── */
+
+.wiki-delete-overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.3);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 100;
+}
+
+.wiki-delete-dialog {
+	background: var(--vscode-editor-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	padding: 16px 20px;
+	max-width: 320px;
+	width: 90%;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.wiki-delete-title {
+	font-size: 14px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	margin: 0 0 8px 0;
+}
+
+.wiki-delete-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin: 0 0 10px 0;
+	line-height: 1.5;
+}
+
+.wiki-delete-list {
+	background: var(--vscode-sideBar-background);
+	border-radius: 6px;
+	padding: 8px 10px;
+	margin-bottom: 10px;
+	max-height: 150px;
+	overflow-y: auto;
+}
+
+.wiki-delete-list-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 0;
+	font-size: 11px;
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-delete-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.wiki-delete-info {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin: 0 0 12px 0;
+	line-height: 1.4;
+	opacity: 0.8;
+}
+
+.wiki-delete-btns {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
+.wiki-delete-cancel {
+	padding: 5px 12px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-editor-foreground);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.wiki-delete-cancel:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wiki-delete-confirm {
+	padding: 5px 12px;
+	border: none;
+	border-radius: 4px;
+	background: #E24B4A;
+	color: #fff;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+}
+
+.wiki-delete-confirm:hover {
+	opacity: 0.9;
+}
+
+.wiki-delete-confirm:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* ─── Legend ───────────────────────────────────────────────────────────── */
+
+.wiki-legend {
+	display: flex;
+	gap: 16px;
+	flex-wrap: wrap;
+	padding: 8px 12px;
+	margin: 8px;
+	background: var(--vscode-sideBar-background);
+	border-radius: 6px;
+}
+
+.wiki-legend-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.wiki-legend-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+}
+
+.wiki-legend-label {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ─── States ──────────────────────────────────────────────────────────── */
+
+.wiki-empty-inline {
+	padding: 16px 12px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.wiki-loading {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.wiki-error {
+	padding: 12px;
+	margin: 8px 12px;
+	border-radius: 4px;
+	background: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.1));
+	border: 1px solid var(--vscode-inputValidation-errorBorder, #f00);
+	color: var(--vscode-errorForeground);
+	font-size: 12px;
+}
+
+/* ─── Settings tab ────────────────────────────────────────────────────── */
+
+.wiki-tab-settings {
+	margin-left: auto;
+	padding: 6px 10px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 14px;
+	cursor: pointer;
+	border-bottom: 2px solid transparent;
+	transition: color 0.15s;
+}
+
+.wiki-tab-settings:hover {
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-tab-settings.active {
+	color: var(--vscode-editor-foreground);
+	border-bottom-color: var(--vscode-focusBorder);
+}
+
+.wiki-settings {
+	padding: 16px 12px;
+}
+
+.wiki-settings-title {
+	margin: 0 0 16px 0;
+	font-size: 14px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-settings-field {
+	margin-bottom: 16px;
+}
+
+.wiki-settings-label {
+	display: block;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	margin-bottom: 4px;
+}
+
+.wiki-settings-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	outline: none;
+}
+
+.wiki-settings-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.wiki-settings-hint {
+	margin: 4px 0 0 0;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wiki-settings-actions {
+	margin-top: 20px;
+}
+
+.wiki-settings-msg {
+	margin-top: 12px;
+	padding: 8px 12px;
+	border-radius: 4px;
+	font-size: 12px;
+}
+
+.wiki-settings-msg.success {
+	background: rgba(29, 158, 117, 0.1);
+	color: #1D9E75;
+	border: 1px solid rgba(29, 158, 117, 0.3);
+}
+
+.wiki-settings-msg.error {
+	background: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.1));
+	border: 1px solid var(--vscode-inputValidation-errorBorder, #f00);
+	color: var(--vscode-errorForeground);
+}
+
+/* ─── Reject reason dialog ────────────────────────────────────────────── */
+
+.wiki-reject-overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.3);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 100;
+}
+
+.wiki-reject-dialog {
+	background: var(--vscode-editor-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	padding: 16px 20px;
+	max-width: 340px;
+	width: 90%;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.wiki-reject-title {
+	font-size: 14px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+	margin: 0 0 4px 0;
+}
+
+.wiki-reject-subtitle {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin: 0 0 12px 0;
+}
+
+.wiki-reject-options {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-bottom: 10px;
+}
+
+.wiki-reject-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 0.12s;
+}
+
+.wiki-reject-option:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wiki-reject-radio {
+	width: 14px;
+	height: 14px;
+	margin: 0;
+	flex-shrink: 0;
+	accent-color: #E24B4A;
+}
+
+.wiki-reject-option-text {
+	font-size: 12px;
+	color: var(--vscode-editor-foreground);
+}
+
+.wiki-reject-custom-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	outline: none;
+	margin-bottom: 14px;
+	opacity: 0.6;
+	transition: opacity 0.15s, border-color 0.15s;
+}
+
+.wiki-reject-custom-input:focus,
+.wiki-reject-custom-input.active {
+	border-color: var(--vscode-focusBorder);
+	opacity: 1;
+}
+
+.wiki-reject-btns {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
+.wiki-reject-cancel {
+	padding: 5px 12px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-editor-foreground);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.wiki-reject-cancel:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wiki-reject-confirm {
+	padding: 5px 12px;
+	border: none;
+	border-radius: 4px;
+	background: #E24B4A;
+	color: #fff;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+}
+
+.wiki-reject-confirm:hover {
+	opacity: 0.9;
+}
+
+.wiki-reject-confirm:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}

@@ -76,6 +76,7 @@ import {
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
+	AGENT_STUDIO_WIKI_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
@@ -150,6 +151,7 @@ import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
 import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import { ChannelViewPane } from './views/channelView.js';
+import { WikiViewPane } from './views/wikiView.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
 import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
@@ -188,6 +190,7 @@ const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize(
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
 const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
 const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
+const wikiIcon = registerIcon('agent-studio-wiki', Codicon.book, localize('wikiIcon', "Wiki"));
 
 // --- Configuration ---------------------------------------------------------------
 
@@ -1452,6 +1455,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_CHANNEL_VIEW_ID,
 			order: 75,
 			viewCtor: ChannelViewPane,
+		});
+
+		// 8.7 Wiki (order: 77)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.wiki',
+			title: localize2('agentStudio.wiki.title', "Wiki"),
+			icon: wikiIcon,
+			viewId: AGENT_STUDIO_WIKI_VIEW_ID,
+			order: 77,
+			viewCtor: WikiViewPane,
 		});
 
 		// 9. Search (order: 80) - [Sarosis] Reuse native VSCode SearchView with workspace selector
