@@ -35,7 +35,7 @@ export function isPhaseActive(phase: StreamPhase): boolean {
 }
 
 export interface StreamChunk {
-	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end' | 'phase_change' | 'tool_approval_request' | 'tool_approval_resolved';
+	type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end' | 'phase_change' | 'context_compacted' | 'tool_approval_request' | 'tool_approval_resolved' | 'discard_prior_text';
 	content?: string;
 	toolCallId?: string;
 	toolName?: string;
@@ -98,6 +98,11 @@ export interface StreamChunk {
 		cachedTokens?: number;
 		cacheWriteTokens?: number;
 	};
+	/**
+	 * 上下文压缩后回传的"压缩后估算输入 token"（type === 'context_compacted' 时携带）。
+	 * accumulateChunk 据此把 StreamState.compactedBaseline 下调，让圆环进度条立即回落。
+	 */
+	compactedInputTokens?: number;
 }
 
 /**
@@ -159,6 +164,14 @@ export interface StreamState {
 		cached: number;
 		cacheWrite: number;
 	};
+	/**
+	 * 压缩后估算输入 token 基线（type === 'context_compacted' 时由 Host 回传）。
+	 * 用于让 ChatComposer 圆环进度条在上下文压缩后立即同步回落：前端 messages 历史
+	 * 不会因后端压缩而缩减，故 inputBaselineTokens 仍是旧大值；当 compactedBaseline > 0
+	 * 时圆环优先采用它作为基线。下一轮真实 usage 到来后自然被覆盖（仍取较大值兜底）。
+	 * 0 表示本轮尚未发生压缩。
+	 */
+	compactedBaseline: number;
 }
 
 export interface ToolCallState {
@@ -236,6 +249,7 @@ function createInitialState(): StreamState {
 		errorMessage: null,
 		error: null,
 		usage: { seen: false, input: 0, output: 0, cached: 0, cacheWrite: 0 },
+		compactedBaseline: 0,
 	};
 }
 
@@ -408,6 +422,20 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 				state.isStreaming = true;
 			}
 			break;
+		case 'discard_prior_text':
+			// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────
+			// Host 检测到 fake-completion / unfinished-intent / 空回，准备注入
+			// nudge 续跑前发出此信号，要求 webview **彻底丢弃刚才那段幻觉/过渡文本**。
+			// 与 content_replace（带替换文本）不同，本信号意图是"清空但等待新输出"。
+			// content_replace 已先一步把 textBuffer 替换为简短重试提示（见
+			// agentOSService.ts），因此此处不再重置 textBuffer，仅做语义留痕：
+			// 把 thinkingBuffer 也清掉（避免幻觉 reasoning 残留），保持流式 phase。
+			state.thinkingBuffer = '';
+			if (state.phase === 'idle') {
+				state.phase = 'llm_streaming';
+				state.isStreaming = true;
+			}
+			break;
 		case 'tool_start':
 			state.toolCalls.push({
 				id: chunk.toolCallId ?? '',
@@ -528,6 +556,13 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
 			if (chunk.phase) {
 				state.phase = chunk.phase;
 				state.isStreaming = isPhaseActive(chunk.phase);
+			}
+			break;
+		case 'context_compacted':
+			// 上下文压缩完成：Host 回传压缩后估算输入 token，作为圆环进度条新基线，
+			// 让圆圈在压缩后立即同步回落（前端 messages 历史不缩减，需此信号修正）。
+			if (typeof chunk.compactedInputTokens === 'number' && chunk.compactedInputTokens >= 0) {
+				state.compactedBaseline = chunk.compactedInputTokens;
 			}
 			break;
 		case 'done':

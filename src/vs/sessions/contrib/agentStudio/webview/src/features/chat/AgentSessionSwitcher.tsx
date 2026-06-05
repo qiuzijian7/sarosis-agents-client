@@ -137,7 +137,14 @@ export function AgentSessionSwitcher(): React.ReactElement | null {
 
 					<button
 						className="agent-session-item agent-session-create"
-						onClick={() => { createAgentSession(); setIsOpen(false); }}
+						onClick={() => {
+							console.log('[AgentSessionSwitcher] "+ 新建对话" button clicked');
+							const result = createAgentSession();
+							Promise.resolve(result)
+								.then(() => console.log('[AgentSessionSwitcher] createAgentSession() resolved'))
+								.catch((err) => console.error('[AgentSessionSwitcher] createAgentSession() rejected:', err));
+							setIsOpen(false);
+						}}
 					>
 						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 							<path d="M12 4v16m8-8H4" />

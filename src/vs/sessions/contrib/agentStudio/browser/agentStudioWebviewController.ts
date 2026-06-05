@@ -53,6 +53,7 @@ import { IFileService } from "../../../../platform/files/common/files.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import { VSBuffer } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
+import type { IDiffEditorOptions } from "../../../../editor/common/config/editorOptions.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
 import { IRequestService, asText } from "../../../../platform/request/common/request.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
@@ -61,7 +62,7 @@ import {
 	IEditorService,
 	SIDE_GROUP,
 } from "../../../../workbench/services/editor/common/editorService.js";
-import type { IResourceDiffEditorInput } from "../../../../workbench/common/editor.js";
+import type { IResourceDiffEditorInput, IResourceMultiDiffEditorInput, ITextDiffEditorPane } from "../../../../workbench/common/editor.js";
 import {
 	GroupsOrder,
 	IEditorGroupsService,
@@ -85,6 +86,9 @@ import type {
 	IFileApplyCodePayload,
 	IChatJumpToCheckpointPayload,
 	IChatOpenCheckpointDiffPayload,
+	IChatRevertAllCheckpointsPayload,
+	IChatKeepAllCheckpointsPayload,
+	IChatOpenAllCheckpointsDiffPayload,
 	IChatToolApprovePayload,
 	IChatToolApprovalRequestPayload,
 	IChatAddCheckpointPayload,
@@ -336,7 +340,6 @@ export class AgentStudioWebviewController extends Disposable {
 			var d = e.data;
 			if (d && d.direction === 'toWebview') {
 				window.__AS_MSG_LOG__.push(d.type);
-				console.log('[AS-EARLY] postMessage received: type=' + d.type);
 			}
 		});
 		window.addEventListener('error', function(e) {
@@ -956,6 +959,18 @@ export class AgentStudioWebviewController extends Disposable {
 				const ocp = p as unknown as IChatOpenCheckpointDiffPayload;
 				return this._handleOpenCheckpointDiff(ocp);
 			}
+			case "chat.revertAllCheckpoints": {
+				const rap = p as unknown as IChatRevertAllCheckpointsPayload;
+				return this._handleRevertAllCheckpoints(rap);
+			}
+			case "chat.keepAllCheckpoints": {
+				const kp = p as unknown as IChatKeepAllCheckpointsPayload;
+				return this._handleKeepAllCheckpoints(kp);
+			}
+			case "chat.openAllCheckpointsDiff": {
+				const oap = p as unknown as IChatOpenAllCheckpointsDiffPayload;
+				return this._handleOpenAllCheckpointsDiff(oap);
+			}
 			case "chat.toolApprove": {
 				const tp = p as unknown as IChatToolApprovePayload;
 				return this._handleToolApprove(tp);
@@ -1114,15 +1129,20 @@ export class AgentStudioWebviewController extends Disposable {
 	): Promise<void> {
 		try {
 			const sessionName = message.trim().substring(0, 30) || "新对话";
+			// 🔒 修复（2026-06-05）：之前用 `getOrCreateActiveSession` 在 session
+			// index 非空时会**复用最近一条 existing session**，把整段历史回灌给
+			// 模型（log 里 313 条跨主题/跨 worktree 串台即此故障）。改为
+			// `createAgentSession` 强制新建：用户没有显式选中已有 session 就发消息，
+			// 一律开全新会话，永远不带历史。要恢复旧会话必须从历史列表显式选中。
 			const meta = await (
 				this.agentChatService as any
-			).getOrCreateActiveSession(employeeId, sessionName);
+			).createAgentSession(employeeId, sessionName);
 			const agentSessionId = meta?.id as string | undefined;
 			if (!agentSessionId) {
-				throw new Error("getOrCreateActiveSession returned no id");
+				throw new Error("createAgentSession returned no id");
 			}
 			this.logService.info(
-				`[AgentStudio] _ensureRootSessionAndSend: ensured session ${agentSessionId} for ${employeeId}`,
+				`[AgentStudio] _ensureRootSessionAndSend: created fresh session ${agentSessionId} for ${employeeId}`,
 			);
 
 			// Mirror chat-input flow: keep the registry & webview in sync
@@ -1369,6 +1389,16 @@ export class AgentStudioWebviewController extends Disposable {
 						streamingTextBuffer = safeChunk.content;
 						safeChunk.fullText = streamingTextBuffer;
 					}
+					// 🧹 discard_prior_text：Hermes synthetic-recovery 等价物 —— 丢弃此前的幻觉/过渡文本
+					// 防止 conversation rot（fake-completion / unfinished-intent 文本污染历史并被下一轮喂回模型）
+					if ((safeChunk as any).type === 'discard_prior_text') {
+						const reason = (safeChunk as any).metadata?.reason ?? 'unknown';
+						this.logService.info(
+							`[AgentStudio] 🧹 Received discard_prior_text (reason=${reason}); clearing streaming buffers (text len=${streamingTextBuffer.length}, thinking len=${streamingThinkingBuffer.length})`,
+						);
+						streamingTextBuffer = "";
+						streamingThinkingBuffer = "";
+					}
 
 					this._sendEvent("chat.stream.delta", {
 						employeeId,
@@ -1502,9 +1532,7 @@ export class AgentStudioWebviewController extends Disposable {
 			type: type as IEventMessage["type"],
 			data,
 		};
-		this.logService.info(
-			`[AgentStudio] _sendEvent: type=${type}, hasWebview=${!!this._webview}, panelType=${this.panelType}`,
-		);
+
 		if (this._webview) {
 			const result = this._webview.postMessage(event);
 			if (type.startsWith("chat.stream")) {
@@ -1525,6 +1553,14 @@ export class AgentStudioWebviewController extends Disposable {
 				);
 			}
 		}
+	}
+
+	/**
+	 * Public API for external components (e.g. SessionExplorerViewPane)
+	 * to push events into this webview.
+	 */
+	sendEventToWebview(type: string, data: unknown): void {
+		this._sendEvent(type, data);
 	}
 
 	// ─── Service Event Listeners (push changes to WebView) ──────────────────────
@@ -2975,14 +3011,154 @@ export class AgentStudioWebviewController extends Disposable {
 			};
 			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-			await this.editorService.openEditor(diffInput, targetGroup);
+			const pane = await this.editorService.openEditor(diffInput, targetGroup);
+
+			// 4. Force inline diff rendering (single column with +/- markers),
+			//    覆盖全局 diffEditor.renderSideBySide 配置，匹配期望样式。
+			const diffPane = pane as ITextDiffEditorPane | undefined;
+			const diffControl = diffPane?.getControl?.();
+			diffControl?.updateOptions({
+				renderSideBySide: false,
+				renderMarginRevertIcon: true,
+				hideUnchangedRegions: { enabled: true },
+			} as IDiffEditorOptions);
+
 			this.logService.info(
-				`[AgentStudioWebviewController] openCheckpointDiff opened diff for ${fileName} (group=${targetGroup === SIDE_GROUP ? 'SIDE' : 'first'})`,
+				`[AgentStudioWebviewController] openCheckpointDiff opened inline diff for ${fileName} (group=${targetGroup === SIDE_GROUP ? 'SIDE' : 'first'})`,
 			);
 
 		} catch (err) {
 			this.logService.error(
 				`[AgentStudioWebviewController] openCheckpointDiff failed for ${fileUri}:`,
+				err,
+			);
+		}
+	}
+
+	/**
+	 * 撤销全部检查点：把每个被改过的文件还原到最早一次编辑前的原始内容
+	 * （新建的文件删除），并 ghost 所有检查点。可选地截断持久化历史，使
+	 * 回退在 reload 后仍然生效。
+	 */
+	private async _handleRevertAllCheckpoints(
+		payload: IChatRevertAllCheckpointsPayload,
+	): Promise<void> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.revertAllCheckpoints (employee=${payload.employeeId})`,
+		);
+		await this.checkpointService.revertAllCheckpoints(
+			payload.employeeId,
+			payload.sessionId,
+		);
+		if (payload.truncateAfterMessageId) {
+			try {
+				await this.agentChatService.deleteMessagesAfter(
+					payload.employeeId,
+					payload.sessionId,
+					payload.truncateAfterMessageId,
+				);
+			} catch (err) {
+				this.logService.error(
+					"[AgentStudioWebviewController] revertAll: failed to truncate history:",
+					err,
+				);
+			}
+		}
+	}
+
+	/**
+	 * 保留全部检查点：删除磁盘上所有检查点数据（快照文件 + index）。
+	 * reload 后 listCheckpoints 返回空，CheckpointBar 不会显示。
+	 * webview 侧 messages 中的 checkpoint 消息也已被移除（keepAllCheckpoints action）。
+	 */
+	private async _handleKeepAllCheckpoints(
+		payload: IChatKeepAllCheckpointsPayload,
+	): Promise<void> {
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.keepAllCheckpoints (employee=${payload.employeeId})`,
+		);
+		await this.checkpointService.deleteAllCheckpoints(
+			payload.employeeId,
+			payload.sessionId,
+		);
+	}
+
+	/**
+	 * 在一个多文件 diff 窗口（MultiDiffEditor）中显示所有检查点的全部改动：
+	 * 对每个被改过的文件，original = 最早一次快照（首次编辑前的原始内容），
+	 * modified = 当前磁盘内容。
+	 */
+	private async _handleOpenAllCheckpointsDiff(
+		payload: IChatOpenAllCheckpointsDiffPayload,
+	): Promise<void> {
+		const { employeeId, sessionId } = payload;
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.openAllCheckpointsDiff (employee=${employeeId})`,
+		);
+
+		try {
+			const snapshots = await this.checkpointService.getAggregatedFileSnapshots(
+				employeeId, sessionId,
+			);
+			if (snapshots.length === 0) {
+				this.logService.info('[AgentStudioWebviewController] openAllCheckpointsDiff: no snapshots');
+				return;
+			}
+
+			// 解析临时快照写入根目录（与单文件 diff 一致）。
+			const employee = await this.agentStudioService.getEmployee(employeeId);
+			let baseDir: string;
+			if (employee?.workspaceId) {
+				const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
+				baseDir = workspace?.path ?? (this._environmentService as INativeEnvironmentService).userHome.fsPath;
+			} else {
+				baseDir = (this._environmentService as INativeEnvironmentService).userHome.fsPath;
+			}
+			const baseDirUri = URI.file(baseDir);
+
+			// 为每个文件写出"原始内容"临时文件，并构造 diff 资源项。
+			const resources: IResourceDiffEditorInput[] = [];
+			for (const snap of snapshots) {
+				const fileName = snap.uri.path.split('/').filter(Boolean).pop() ?? 'file';
+				// 用 snapshotId 作为子目录，避免同名文件互相覆盖。
+				const originalUri = URI.joinPath(
+					baseDirUri, '.sarosisworkspace', 'checkpoint-diffs', '__all__', snap.id, fileName,
+				);
+				try {
+					await this.fileService.writeFile(originalUri, VSBuffer.fromString(snap.content));
+				} catch (err) {
+					this.logService.warn(`[AgentStudioWebviewController] openAllCheckpointsDiff: failed to write temp for ${fileName}: ${err}`);
+					continue;
+				}
+				resources.push({
+					original: { resource: originalUri },
+					modified: { resource: snap.uri },
+					label: fileName,
+				});
+			}
+
+			if (resources.length === 0) {
+				this.logService.warn('[AgentStudioWebviewController] openAllCheckpointsDiff: no diff resources built');
+				return;
+			}
+
+			// multiDiffSource 作为该窗口的唯一标识：再次打开会复用同一窗口。
+			const multiDiffInput: IResourceMultiDiffEditorInput = {
+				multiDiffSource: URI.from({ scheme: 'agent-checkpoint-alldiff', path: `/${employeeId}/${sessionId}` }),
+				label: '检查点全部变更',
+				resources,
+				isTransient: true,
+			};
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this.editorService.openEditor(multiDiffInput, targetGroup);
+
+			this.logService.info(
+				`[AgentStudioWebviewController] openAllCheckpointsDiff opened multi-diff with ${resources.length} files`,
+			);
+		} catch (err) {
+			this.logService.error(
+				'[AgentStudioWebviewController] openAllCheckpointsDiff failed:',
 				err,
 			);
 		}

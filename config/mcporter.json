@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "gongfeng": {
+      "baseUrl": "https://mcpgw.knot.woa.com/gongfeng",
+      "headers": {
+        "Authorization": "Bearer tai_pat_QexMBGLpnP4Fp35CfcfIeEwyMWK_x-EfTVMgBub43XU.sOZNYVQ0ZQ8S5JRhLedwyr_B4acdI7pDYSN6XSo-3ew"
+      }
+    }
+  }
+}

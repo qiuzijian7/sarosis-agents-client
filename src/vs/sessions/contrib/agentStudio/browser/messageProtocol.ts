@@ -125,6 +125,9 @@ export type RequestType =
 	| 'chat.deleteCheckpoint'     // delete a checkpoint
 	| 'chat.jumpToCheckpoint'     // navigate to a checkpoint (Void-inspired time-travel)
 	| 'chat.openCheckpointDiff'   // open diff editor for a checkpoint file (WebView → Host)
+	| 'chat.revertAllCheckpoints' // revert ALL checkpoints to earliest snapshots (撤销)
+	| 'chat.keepAllCheckpoints' // delete ALL checkpoints from disk (保留)
+	| 'chat.openAllCheckpointsDiff' // open multi-file diff for all touched files (查看变更)
 	| 'chat.toolApprove'          // approve/reject a pending tool call
 	| 'worktree.list'           // list git worktrees for a workspace
 	| 'memory.listL0'           // list L0 raw conversation turns for an agent (TDB-AM)
@@ -201,7 +204,7 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change' | 'context_compacted' | 'discard_prior_text';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -265,6 +268,12 @@ export interface IChatStreamChunk {
 		readonly cachedTokens?: number;
 		readonly cacheWriteTokens?: number;
 	};
+	/**
+	 * 上下文压缩后回传的"压缩后估算输入 token"（type === 'context_compacted' 时携带）。
+	 * WebView 据此把圆环进度条基线立即下调，实现压缩后圆圈同步回落。
+	 * 详见 common/providers.ts IChatStreamDelta.compactedInputTokens。
+	 */
+	readonly compactedInputTokens?: number;
 }
 
 export interface IChatStreamCompletePayload {
@@ -736,6 +745,45 @@ export interface IChatOpenCheckpointDiffPayload {
 	readonly checkpointId: string;
 	/** The file URI (as string) to diff. */
 	readonly fileUri: string;
+	/** The employee ID (for storage scoping). */
+	readonly employeeId: string;
+	/** The session ID (for storage scoping). */
+	readonly sessionId: string;
+}
+
+/**
+ * Revert ALL checkpoints at once (checkpoint bar 撤销 button). Restores every
+ * touched file to its earliest pre-edit snapshot and ghosts all checkpoints.
+ */
+export interface IChatRevertAllCheckpointsPayload {
+	/** The employee ID (for storage scoping). */
+	readonly employeeId: string;
+	/** The session ID (for storage scoping). */
+	readonly sessionId: string;
+	/**
+	 * The chat message ID to truncate persisted history after (inclusive).
+	 * Typically the user message that preceded the very first checkpoint.
+	 */
+	readonly truncateAfterMessageId?: string;
+}
+
+/**
+ * Payload for "keep all checkpoints": remove all persisted checkpoint data.
+ * After this call the checkpoint bar will never reappear after reload.
+ */
+export interface IChatKeepAllCheckpointsPayload {
+	/** The employee ID (for storage scoping). */
+	readonly employeeId: string;
+	/** The session ID (for storage scoping). */
+	readonly sessionId: string;
+}
+
+/**
+ * Open a single multi-file diff window showing ALL changes across every
+ * checkpoint (checkpoint bar 查看变更 button). Original = earliest snapshot,
+ * modified = current on-disk content.
+ */
+export interface IChatOpenAllCheckpointsDiffPayload {
 	/** The employee ID (for storage scoping). */
 	readonly employeeId: string;
 	/** The session ID (for storage scoping). */

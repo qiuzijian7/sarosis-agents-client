@@ -27,11 +27,17 @@
 import { Disposable, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { decodeBase64 } from '../../../../base/common/buffer.js';
+import { decodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
+import { URI } from '../../../../base/common/uri.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
-import { ILanguageModelsService, IChatMessage, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { ILanguageModelsService, IChatMessage, IChatMessagePart, IChatMessageToolResultPart, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
+import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING, AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING } from '../common/constants.js';
+import { join } from '../../../../base/common/path.js';
 import {
 	IModelProvider,
 	IModelInfo,
@@ -104,6 +110,9 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		readonly vendor: string,
 		private readonly _lmService: ILanguageModelsService,
 		private readonly _logService: ILogService,
+		private readonly _environmentService: IEnvironmentService,
+		private readonly _configurationService: IConfigurationService,
+		private readonly _fileService: IFileService,
 	) {
 		super();
 		this.id = `lm:${vendor}`;
@@ -432,6 +441,10 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		this._logService.info(`[LMBridge] chat() called — vendor=${this.vendor} model=${modelId}, tools=${options.tools?.length ?? 0}`);
 
 		const lmMessages = this._toLanguageModelMessages(messages, options);
+
+		// Debug: write request payload to local file if switch is enabled
+		this._debugWriteRequest(modelId, messages, options, context);
+
 		const cts = new CancellationTokenSource();
 
 		// 将 options 传递给 sendChatRequest，以便扩展可以访问 tools 等配置
@@ -464,11 +477,27 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			this._logService.info(`[LMBridge] Passing reasoning to extension: effort=${options.reasoning.effort ?? '(none)'} budget=${options.reasoning.budget ?? '(none)'}`);
 		}
 
-		// 透传稳定的会话 ID 给扩展（通过 modelOptions.sessionId），provider 用作
-		// X-Conversation-Id，使服务端在同一会话内关联多轮上下文/推理缓存。
-		if (context?.sessionId) {
-			requestOptions.modelOptions.sessionId = context.sessionId;
-			this._logService.info(`[LMBridge] Passing stable sessionId to extension: ${context.sessionId}`);
+		// ── 透传抓包对齐的三个独立会话 id 给扩展（通过 modelOptions）──────────
+		// 抓包证据（CodeBuddy IDE /v2/chat/completions）：三个 id 粒度不同、不可混用：
+		//   conversationId     → X-Conversation-ID（会话级稳定）
+		//   requestId          → X-Conversation-Request-ID（请求级，每轮新）
+		//   previousResponseId → 请求体 previous_response_id（上轮响应 id，链式衔接）
+		// 历史串台 bug：仅用单一 sessionId 当所有 id，服务端 KV 缓存按 conversation-id
+		// 跨会话碰撞。这里把 agentOS 分配好的三 id 分别透传，扩展侧据此设置 header/body。
+		// sessionId 保留透传以兼容旧扩展（等同 conversationId 语义）。
+		const conversationId = context?.conversationId ?? context?.sessionId;
+		if (conversationId) {
+			requestOptions.modelOptions.sessionId = conversationId;       // 兼容旧扩展：当 X-Conversation-Id
+			requestOptions.modelOptions.conversationId = conversationId;  // 新：X-Conversation-ID
+		}
+		if (context?.requestId) {
+			requestOptions.modelOptions.requestId = context.requestId;    // X-Conversation-Request-ID
+		}
+		if (context?.previousResponseId) {
+			requestOptions.modelOptions.previousResponseId = context.previousResponseId; // 请求体 previous_response_id
+		}
+		if (conversationId || context?.requestId || context?.previousResponseId) {
+			this._logService.info(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
 		}
 
 		try {
@@ -480,9 +509,17 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				cts.token,
 			);
 
+			let capturedResponseId: string | undefined;
 			for await (const part of response.stream) {
 				const parts = Array.isArray(part) ? part : [part];
 				for (const p of parts) {
+					// 尝试从 part 上捕获响应流 id（部分扩展会在 part 上挂 id/responseId）。
+					// 抓包证据：响应流 chunk 的 id = 下一次请求的 previous_response_id。
+					const pid = (p as { id?: unknown; responseId?: unknown })?.responseId
+						?? (p as { id?: unknown })?.id;
+					if (typeof pid === 'string' && pid) {
+						capturedResponseId = pid;
+					}
 					const delta = this._toModelDelta(p);
 					if (delta) {
 						yield delta;
@@ -490,7 +527,8 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				}
 			}
 
-			yield { type: 'done' };
+			// 把捕获到的响应 id 随 done 回传给 agentOS，用于下一轮 previous_response_id。
+			yield capturedResponseId ? { type: 'done', responseId: capturedResponseId } : { type: 'done' };
 		} catch (err) {
 			this._logService.error(`[LMBridge] chat() failed for vendor=${this.vendor} model=${modelId}`, err);
 			yield { type: 'error', error: err instanceof Error ? err.message : String(err) };
@@ -500,6 +538,67 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 
 		// silence unused-var warnings for context — reserved for future use (agentId routing etc.)
 		void context;
+	}
+
+	/**
+	 * Debug: write the request payload (messages + options) to a local file
+	 * if the debug switch is enabled.
+	 * Writes to: <logsHome>/chat-streams/<vendor>_<sessionId>_<timestamp>_lm_request.json
+	 */
+	private async _debugWriteRequest(modelId: string, messages: IAgentChatMessage[], options: IModelOptions, context?: IChatContext): Promise<void> {
+		try {
+			const enabled = this._configurationService.getValue<boolean>(AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING);
+			if (!enabled) { return; }
+			const dumpTools = this._configurationService.getValue<boolean>(AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING);
+
+			const logsHome = this._environmentService.logsHome;
+			if (!logsHome) { return; }
+
+			const dirPath = join(logsHome.fsPath, 'chat-streams');
+			const dirUri = URI.file(dirPath);
+			try {
+				await this._fileService.resolve(dirUri);
+			} catch {
+				await this._fileService.createFolder(dirUri);
+			}
+
+			const timestamp = Date.now();
+			const suffix = Math.random().toString(36).slice(2, 7);
+			const sessionId = context?.sessionId || 'nosession';
+			const fileName = `lm_${this.vendor}_${suffix}_${timestamp}_request.json`;
+			const filePath = join(dirPath, fileName);
+			const fileUri = URI.file(filePath);
+
+			const debugObj = {
+				vendor: this.vendor,
+				model: modelId,
+				sessionId,
+				timestamp: new Date(timestamp).toISOString(),
+				messageCount: messages.length,
+				options: {
+					temperature: options.temperature,
+					maxTokens: options.maxTokens,
+					toolChoice: options.toolChoice,
+					reasoning: options.reasoning,
+					// 🔧 dumpTools=true → 完整 tools schema；false → 摘要避免 log 膨胀
+					tools: options.tools
+						? (dumpTools ? options.tools : `(${options.tools.length} tools)`)
+						: '(none)',
+				},
+				messages: messages.map(m => ({
+					role: m.role,
+					content: typeof m.content === 'string' ? m.content : `[${Array.isArray(m.content) ? 'contentParts' : 'unknown'}]`,
+					toolCalls: m.toolCalls,
+					toolCallId: m.toolCallId,
+				})),
+			};
+
+			const content = VSBuffer.fromString(JSON.stringify(debugObj, null, 2));
+			await this._fileService.writeFile(fileUri, content);
+			this._logService.info(`[LMBridge] Debug request written to: ${filePath}`);
+		} catch (err) {
+			this._logService.warn(`[LMBridge] _debugWriteRequest failed:`, err);
+		}
 	}
 
 	private _toLanguageModelMessages(messages: IAgentChatMessage[], options: IModelOptions): IChatMessage[] {
@@ -513,14 +612,50 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		}
 
 		for (const m of messages) {
+			// ── tool result 消息 ──────────────────────────────────────────────
+			// VS Code LanguageModelChatMessage 没有 Tool role，tool result 作为
+			// content 中的 tool_result part，挂在 User role 下。
+			if (m.role === 'tool') {
+				out.push({
+					role: ChatMessageRole.User,
+					content: [{
+						type: 'tool_result',
+						toolCallId: m.toolCallId ?? '',
+						value: [{ type: 'text', value: m.content ?? '' }],
+					} satisfies IChatMessageToolResultPart],
+				});
+				continue;
+			}
+
 			const role = m.role === 'user' ? ChatMessageRole.User
 				: m.role === 'assistant' ? ChatMessageRole.Assistant
 					: m.role === 'system' ? ChatMessageRole.System
 						: ChatMessageRole.User;
-			out.push({
-				role,
-				content: this._toMessageParts(m),
-			});
+
+			const content: IChatMessagePart[] = this._toMessageParts(m);
+
+			// ── assistant tool_calls ──────────────────────────────────────────
+			// IAgentChatMessage.toolCalls → IChatResponseToolUsePart (type:'tool_use')
+			if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+				for (const tc of m.toolCalls) {
+					// arguments 是 JSON 字符串，直接作为 parameters 传递
+					// 扩展端通过 typeof part.input === 'string' 识别并原样使用
+					let params: unknown;
+					try {
+						params = JSON.parse(tc.arguments);
+					} catch {
+						params = tc.arguments;
+					}
+					content.push({
+						type: 'tool_use',
+						name: tc.name,
+						toolCallId: tc.id,
+						parameters: params,
+					} satisfies IChatResponseToolUsePart);
+				}
+			}
+
+			out.push({ role, content });
 		}
 		return out;
 	}
@@ -738,6 +873,9 @@ export class LanguageModelsToAgentOSBridge extends Disposable implements IWorkbe
 		@ILanguageModelsService private readonly _lmService: ILanguageModelsService,
 		@IAgentOSService private readonly _agentOS: IAgentOSService,
 		@ILogService private readonly _logService: ILogService,
+		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
 
@@ -807,7 +945,7 @@ export class LanguageModelsToAgentOSBridge extends Disposable implements IWorkbe
 				this._registered.get(vendor)!.provider.notifyModelsChanged();
 				continue;
 			}
-			const provider = new LanguageModelVendorProvider(vendor, this._lmService, this._logService);
+			const provider = new LanguageModelVendorProvider(vendor, this._lmService, this._logService, this._environmentService, this._configurationService, this._fileService);
 			const registration = this._agentOS.registerModelProvider(provider);
 			this._registered.set(vendor, { provider, registration });
 			this._logService.info(`[LMBridge] Registered vendor as IModelProvider: ${vendor} (id=${provider.id})`);

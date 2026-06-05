@@ -7,12 +7,15 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import {
 	IModelProvider, IModelInfo, ModelAuthStatus,
 	IModelOptions, IModelDelta, IChatMessage, IChatContext,
 	ModelCapability, IModelCapabilityConfig,
 } from '../common/providers.js';
 import { MessageFormatConverter } from '../common/adapters/messageFormatConverter.js';
+import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING } from '../common/constants.js';
+import { join } from '../../../../base/common/path.js';
 
 // ─── Provider Definition ────────────────────────────────────────────────────
 
@@ -91,6 +94,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		private readonly _definition: IBYOKProviderDefinition,
 		private readonly _configurationService: IConfigurationService,
 		private readonly _logService: ILogService,
+		private readonly _environmentService: IEnvironmentService,
 	) {
 		super();
 
@@ -143,7 +147,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		options: IModelOptions,
 		context?: IChatContext,
 	): AsyncIterable<IModelDelta> {
-		return this._streamChat(modelId, messages, options);
+		return this._streamChat(modelId, messages, options, context);
 	}
 
 	// ─── Internal ─────────────────────────────────────────────
@@ -310,6 +314,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		modelId: string,
 		messages: IChatMessage[],
 		options: IModelOptions,
+		context?: IChatContext,
 	): AsyncGenerator<IModelDelta> {
 		const apiKey = this._getApiKey();
 		const baseUrl = this._getBaseUrl();
@@ -325,8 +330,21 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		this._logService.info(`[BYOK:${this.id}] _streamChat: url=${url}, model=${modelId}, messages=${messages.length}`);
 
-		const body = this._buildRequestBody(modelId, messages, options);
-		const response = yield* this._sendRequestWithRetry(url, apiKey, body);
+		const body = this._buildRequestBody(modelId, messages, options, context);
+
+		// Debug: write request body to local file if switch is enabled
+		this._debugWriteRequest(body);
+
+		// 抓包对齐：直连路径下三个会话 id 经 HTTP header 传给网关（与 CodeBuddy IDE 一致）。
+		const idHeaders: Record<string, string> = {};
+		if (context?.conversationId ?? context?.sessionId) {
+			idHeaders['X-Conversation-ID'] = (context?.conversationId ?? context?.sessionId) as string;
+		}
+		if (context?.requestId) {
+			idHeaders['X-Conversation-Request-ID'] = context.requestId;
+		}
+
+		const response = yield* this._sendRequestWithRetry(url, apiKey, body, idHeaders);
 		if (!response) { return; }
 
 		const reader = response.body?.getReader();
@@ -342,6 +360,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		let sseDataFound = false;
 		let fullBodyForFallback = '';
 		let chunkCount = 0;
+		// 抓包对齐：收集所有 SSE chunk 用于响应日志
+		let sseChunks: string[] = [];
+		// 抓包对齐：捕获响应流 chunk 的 id（每个 chunk 的 id 相同），
+		// 它 = 下一次请求的 previous_response_id，随 done 回传给 agentOS。
+		let capturedResponseId: string | undefined;
 
 		try {
 			while (true) {
@@ -353,6 +376,8 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 				const chunk = decoder.decode(value, { stream: true });
 				chunkCount++;
+				// 抓包对齐：收集每个 SSE chunk 用于响应日志
+				sseChunks.push(chunk);
 				if (chunkCount <= 3) {
 					this._logService.info(`[BYOK:${this.id}] _streamChat: chunk[${chunkCount}] (${chunk.length} bytes): ${JSON.stringify(chunk.slice(0, 300))}`);
 				}
@@ -377,6 +402,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					try {
 						const parsed = JSON.parse(jsonPayload);
 						sseDataFound = true;
+
+						// 抓包对齐：捕获响应流 chunk 的 id（= 下一次 previous_response_id）
+						if (typeof parsed.id === 'string' && parsed.id) {
+							capturedResponseId = parsed.id;
+						}
 
 						// Extract token usage
 						const usageDelta = this._extractUsage(parsed);
@@ -433,8 +463,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			this._updateHealthStatus('degraded');
 			yield { type: 'error', error: `${this.name}: Stream error — ${streamErr}` };
 		} finally {
-			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done (yields=${yieldCount})`);
-			yield { type: 'done' };
+			// 抓包对齐：流结束后写入响应日志
+			this._debugWriteResponse(sseChunks, body.model as string);
+			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done (yields=${yieldCount}, responseId=${capturedResponseId ?? '(none)'})`);
+			yield capturedResponseId ? { type: 'done', responseId: capturedResponseId } : { type: 'done' };
 		}
 	}
 
@@ -447,6 +479,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		modelId: string,
 		messages: IChatMessage[],
 		options: IModelOptions,
+		context?: IChatContext,
 	): Record<string, unknown> {
 		const body: Record<string, unknown> = {
 			model: modelId,
@@ -457,6 +490,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			}),
 			stream: true,
 		};
+		// 抓包对齐：注入 previous_response_id（= 上一次响应流 chunk 的 id），
+		// 让服务端按响应链衔接上下文。由 agentOS 经 IChatContext 下传。
+		if (context?.previousResponseId) {
+			body.previous_response_id = context.previousResponseId;
+		}
 		if (options.temperature !== undefined) {
 			body.temperature = options.temperature;
 		}
@@ -510,6 +548,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		url: string,
 		apiKey: string,
 		body: Record<string, unknown>,
+		extraHeaders?: Record<string, string>,
 	): AsyncGenerator<IModelDelta, Response | null, unknown> {
 		let lastError: string = '';
 
@@ -522,6 +561,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				}
 				const headers: Record<string, string> = {
 					'Content-Type': 'application/json',
+					...(extraHeaders ?? {}),
 				};
 				if (apiKey) {
 					headers['Authorization'] = `Bearer ${apiKey}`;
@@ -611,6 +651,100 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		if (this._lastHealthStatus !== status) {
 			this._logService.info(`[BYOK:${this.id}] Health status: ${this._lastHealthStatus} → ${status}`);
 			this._lastHealthStatus = status;
+		}
+	}
+
+	/**
+	 * Debug: write the full request body to a local file if the debug switch is enabled.
+	 * Writes to: <logsHome>/chat-streams/<sessionId>_<modelId>_<timestamp>_request.json
+	 */
+	private async _debugWriteRequest(body: Record<string, unknown>): Promise<void> {
+		try {
+			const enabled = this._configurationService.getValue<boolean>(AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING);
+			if (!enabled) { return; }
+
+			const logsHome = this._environmentService.logsHome;
+			if (!logsHome) { return; }
+
+			const dirPath = join(logsHome.fsPath, 'chat-streams');
+			const dirExists = await import('fs/promises').then(fs => fs.access(dirPath).then(() => true).catch(() => false));
+			if (!dirExists) {
+				await import('fs').then(fs => fs.promises.mkdir(dirPath, { recursive: true }));
+			}
+
+			const timestamp = Date.now();
+			const suffix = Math.random().toString(36).slice(2, 7);
+			const fileName = `byok_${this.id}_${suffix}_${timestamp}_request.json`;
+			const filePath = join(dirPath, fileName);
+
+			const debugObj = {
+				provider: this.id,
+				model: body.model,
+				timestamp: new Date(timestamp).toISOString(),
+				messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+				tools: body.tools ? `(${Array.isArray(body.tools) ? body.tools.length : 'unknown'} tools)` : '(none)',
+				body,
+			};
+
+			const { writeFile } = await import('fs/promises');
+			await writeFile(filePath, JSON.stringify(debugObj, null, 2), 'utf-8');
+			this._logService.info(`[BYOK:${this.id}] Debug request written to: ${filePath}`);
+		} catch (err) {
+			this._logService.warn(`[BYOK:${this.id}] _debugWriteRequest failed:`, err);
+		}
+	}
+
+	/**
+	 * Debug: write the SSE response chunks to a local file if the debug switch is enabled.
+	 * Writes to: <logsHome>/chat-streams/<sessionId>_<modelId>_<timestamp>_response.json
+	 */
+	private async _debugWriteResponse(sseChunks: string[], model: string): Promise<void> {
+		try {
+			const enabled = this._configurationService.getValue<boolean>(AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING);
+			if (!enabled) { return; }
+
+			const logsHome = this._environmentService.logsHome;
+			if (!logsHome) { return; }
+
+			const dirPath = join(logsHome.fsPath, 'chat-streams');
+			const dirExists = await import('fs/promises').then(fs => fs.access(dirPath).then(() => true).catch(() => false));
+			if (!dirExists) {
+				await import('fs').then(fs => fs.promises.mkdir(dirPath, { recursive: true }));
+			}
+
+			const timestamp = Date.now();
+			const suffix = Math.random().toString(36).slice(2, 7);
+			const fileName = `byok_${this.id}_${suffix}_${timestamp}_response.json`;
+			const filePath = join(dirPath, fileName);
+
+			// 将所有 SSE chunk 拼接后按行解析，收集每个 data: 行 payload
+			const allText = sseChunks.join('');
+			const lines = allText.split('\n');
+			const dataLines: string[] = [];
+			for (const line of lines) {
+				const trimmed = line.trim();
+				if (!trimmed) { continue; }
+				if (trimmed.startsWith('data:')) {
+					dataLines.push(trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5));
+				} else if (trimmed.startsWith('{')) {
+					dataLines.push(trimmed);
+				}
+			}
+
+			const debugObj = {
+				provider: this.id,
+				model,
+				timestamp: new Date(timestamp).toISOString(),
+				chunkCount: sseChunks.length,
+				totalBytes: sseChunks.reduce((sum, c) => sum + c.length, 0),
+				dataLines,
+			};
+
+			const { writeFile } = await import('fs/promises');
+			await writeFile(filePath, JSON.stringify(debugObj, null, 2), 'utf-8');
+			this._logService.info(`[BYOK:${this.id}] Debug response written to: ${filePath}`);
+		} catch (err) {
+			this._logService.warn(`[BYOK:${this.id}] _debugWriteResponse failed:`, err);
 		}
 	}
 

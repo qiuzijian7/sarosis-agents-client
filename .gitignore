@@ -206,3 +206,11 @@ extensions/hermes-agent/hermes
 commit-hermes2.txt
 commit-hermes.txt
 compile_output.txt
+__verify2.cjs
+.worktrees/feat-codegraph
+.worktrees/feat-kanban
+build/sarosis/strip-before-pack.mjs
+build/win32/code.iss
+.worktrees/feat-codegraph
+.worktrees/feat-kanban
+extensions/hermes-agent/hermes

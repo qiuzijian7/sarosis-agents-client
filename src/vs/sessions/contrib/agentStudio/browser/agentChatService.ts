@@ -18,6 +18,7 @@ import type {
 } from "../common/agentStudio.js";
 import { IAgentDriverService } from "../common/agentDriver.js";
 import type { ChatMessage } from "../common/types.js";
+import type { IChatMessage } from "../common/providers.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
@@ -180,6 +181,31 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this.logService.info(
 				`[AgentChatService] Loaded global history: ${this._historyCache.size} keys`,
 			);
+
+			// 🔒 启动期净化（2026-06-05）：noSession 桶（key 不含 `::`，即 `employeeId`
+			// 本身）历史上沉积过 user/assistant/tool 消息，会被 getHistory 在每次 session
+			// 请求时 merge system 消息时报警 dropped X non-system messages，并增加 IO。
+			// 在加载完成后立刻把所有 noSession 桶过滤为仅 system 消息，并回写 global
+			// history 文件，让磁盘也保持干净。
+			let dirty = false;
+			let totalDropped = 0;
+			for (const [key, messages] of this._historyCache) {
+				if (key.includes('::')) { continue; }
+				const systemOnly = messages.filter(m => m.role === 'system');
+				if (systemOnly.length !== messages.length) {
+					totalDropped += messages.length - systemOnly.length;
+					this._historyCache.set(key, systemOnly);
+					dirty = true;
+				}
+			}
+			if (dirty) {
+				this.logService.warn(
+					`[AgentChatService] Startup sanitize: dropped ${totalDropped} non-system messages from noSession buckets`,
+				);
+				this._persistGlobalHistory().catch((err) =>
+					this.logService.error('[AgentChatService] Startup sanitize persist failed:', err),
+				);
+			}
 		} catch (err) {
 			this.logService.error(
 				"[AgentChatService] Failed to load global history:",
@@ -340,11 +366,37 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	async appendMessage(employeeId: string, message: ChatMessage): Promise<void> {
 		await this._ensureHistoryLoaded();
+		// 🔒 严格隔离写入侧（2026-06-05）：
+		// 之前任何 user/assistant/tool 落到 noSession 桶（agentSessionId=undefined）
+		// 都会被 getHistory 整桶 merge 出来污染所有 session。这里在源头拦截：仅
+		// system 消息允许 noSession（task orchestration 全局注入用途），其它角色
+		// 必须带 agentSessionId，否则丢弃并告警，避免日后再次串台。
+		if (!message.agentSessionId && message.role !== 'system') {
+			this.logService.warn(
+				`[AgentChatService] appendMessage: dropping ${message.role} message without agentSessionId for ${employeeId} (cross-session leakage guard) - content="${(message.content || '').substring(0, 60)}"`,
+			);
+			return;
+		}
 		const key = this._cacheKey(employeeId, message.agentSessionId);
 		let messages = this._historyCache.get(key);
 		if (!messages) {
 			messages = [];
 			this._historyCache.set(key, messages);
+		}
+		// 🔒 写入侧去重（2026-06-05）：阻止连续重复的 user 消息落盘。
+		// 历史双写 race（webview controller `_handleChatSend` 先 append 一次，随后
+		// service `sendMessage` 的 5 秒 dedup 守卫在跨时序/进程下偶发失效又 append
+		// 一次）导致 session 文件里同一条 user 消息相邻出现两次。这里在 cache 末尾
+		// 做强一致检查：若新来的 user 消息与**末尾一条** user 消息 content 完全相同，
+		// 直接丢弃，不依赖时间窗口。assistant/tool 不做此限制（同内容可能合法重复）。
+		if (message.role === 'user') {
+			const last = messages[messages.length - 1];
+			if (last && last.role === 'user' && (last.content ?? '') === (message.content ?? '')) {
+				this.logService.warn(
+					`[AgentChatService] appendMessage: dropping consecutive duplicate user message for ${key} - content="${(message.content || '').substring(0, 40)}"`,
+				);
+				return;
+			}
 		}
 		messages.push(message);
 
@@ -385,6 +437,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// agentSessionId=undefined (e.g. task orchestration system messages).
 		// These messages belong to the agent globally, not to any specific session,
 		// so they should appear regardless of which session is active.
+		//
+		// 🔒 严格隔离修复（2026-06-05）：
+		// 历史上 noSession 桶（key === employeeId，无 sessionId）在多条路径下被错误
+		// 写入过 user / assistant / tool 消息（旧 webview controller 首消息分配 session
+		// 之前的临时持久化、错误回收路径、跨 worktree 共用 employeeId 的旧数据等）。
+		// 之前不加过滤地整桶 merge 进来，会让一个全新 sessionId 的会话立即看到
+		// **几百条** 跨主题、跨 worktree 的历史（含重复 user 消息）。
+		//
+		// 真正需要透传的只有 task orchestration 注入的 **system 消息**。其它角色一律
+		// 丢弃，避免污染当前 session 的上下文。
 		if (sessionId) {
 			const noSessionKey = this._cacheKey(employeeId, undefined);
 			let noSessionMessages = this._historyCache.get(noSessionKey);
@@ -392,13 +454,23 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				noSessionMessages = await this._loadFromSessionFile(employeeId, undefined);
 			}
 			if (noSessionMessages && noSessionMessages.length > 0) {
-				// Merge and deduplicate by message id, sorted by timestamp
-				const existingIds = new Set((messages || []).map(m => m.id));
-				const merged = [
-					...(messages || []),
-					...noSessionMessages.filter(m => !existingIds.has(m.id)),
-				].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-				messages = merged;
+				// 仅保留 system 消息（这是注释里声明的合法用途）
+				const systemOnly = noSessionMessages.filter(m => m.role === 'system');
+				const droppedCrossSession = noSessionMessages.length - systemOnly.length;
+				if (droppedCrossSession > 0) {
+					this.logService.warn(
+						`[AgentChatService] getHistory: dropped ${droppedCrossSession} non-system messages from noSession bucket for ${key} (cross-session leakage guard)`,
+					);
+				}
+				if (systemOnly.length > 0) {
+					// Merge and deduplicate by message id, sorted by timestamp
+					const existingIds = new Set((messages || []).map(m => m.id));
+					const merged = [
+						...(messages || []),
+						...systemOnly.filter(m => !existingIds.has(m.id)),
+					].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+					messages = merged;
+				}
 			}
 		}
 
@@ -429,6 +501,146 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				/* ignore */
 			}
 		}
+	}
+
+	// ─── 历史转换：host ChatMessage[] → driver IChatMessage[] ──────────────────
+	//
+	// 背景：后端 turn 此前每轮只收到当前 user 消息（messages=1），长对话上下文
+	// 永远涨不起来，已验证正确的压缩链路（P0/P1/P2）永远不被触发。B 方案让后端
+	// 收到完整历史，这里负责把持久化的 host 历史转换为 driver 消息格式。
+	//
+	// 关键约束（决定 OpenAI 格式是否合法）：
+	//   1. host 的 assistant 消息把工具结果**内嵌**在 toolCalls[].result 里，
+	//      没有独立的 role:'tool' 消息；而 OpenAI 要求 assistant.tool_calls 的每个
+	//      调用都必须有一条配对的 role:'tool' + 同 id 的 tool_call_id 响应，否则
+	//      API 报错。因此对每个**有 result** 的 toolCall，要：
+	//        a) 在 assistant.toolCalls 里保留它（携带 id/name/arguments）
+	//        b) 紧随该 assistant 追加一条 role:'tool'、toolCallId===id 的消息
+	//   2. **没有 result** 的 toolCall（status=running/error 且无结果）必须从
+	//      assistant.toolCalls 中剔除——否则会留下"有 tool_call 但无配对 tool 响应"
+	//      的非法序列。剔除后若该 assistant 还有文本 content 仍保留为纯文本消息。
+	//   3. 历史里的 system 消息按原样转换（system prompt 由后端单独注入，这里
+	//      只透传历史中可能存在的 system 类消息）。
+	//   4. tool 角色的独立历史消息（理论上 host 端不产生，但防御性处理）按其
+	//      自身 content 透传，toolCallId 缺失时用空串（与 MessageFormatConverter
+	//      的容错一致）。
+	/**
+	 * 防御性过滤：检测 assistant content 是否疑似被 fake-completion / unfinished-intent
+	 * 污染（旧 session 残留的"您完全正确！我犯了严重错误..."幻觉道歉模式）。
+	 *
+	 * 即使新机制（discard_prior_text）已阻止新污染，旧 session 已写入的 _historyCache
+	 * 仍含污染条目。这里在组装 priorMessages 时主动跳过/重写这些条目，让旧 session
+	 * 也能立即恢复，无需手动 reset。
+	 *
+	 * 命中规则（任一即视为污染）：
+	 *  - "您完全正确" / "我犯了严重错误" / "让我重新" 开头（fake-completion 模型自我反省语）
+	 *  - 没有 toolCalls 也没有正常文本输出，只是道歉性过渡语
+	 */
+	private _isContaminated(content: string): boolean {
+		if (!content) {
+			return false;
+		}
+		const head = content.slice(0, 80);
+		const patterns = [
+			/^您完全正确/,
+			/^我犯了严重错误/,
+			/^让我重新(?:开始|尝试|执行)/,
+			/^抱歉.{0,10}重新/,
+			/^对不起.{0,10}重新/,
+			/^检测到模型未真正调用工具/, // 我们自己的 nudge 提示，也不应回灌历史
+		];
+		return patterns.some(re => re.test(head));
+	}
+
+	private _toDriverMessages(history: readonly ChatMessage[]): IChatMessage[] {
+		// 🧹 一致性兜底（2026-06-05）：折叠**连续重复的 user 消息**。
+		// 历史 session 文件（如 sess_mpwt6z2s_szhpq3.json）因早期持久化双写 race
+		// （webview controller `_handleChatSend` 与 service `sendMessage` 各 append
+		// 一次，5 秒 dedup 守卫在不同进程/时序下失效），磁盘上已沉淀大量"同一条
+		// user 消息相邻出现 2 次"的脏数据。B 方案每轮把整段历史回灌给模型，会原样
+		// 把重复 user 发出去（log 里 hello×4 / test×2 / createtestN×2）。这里在
+		// 组装 driver messages 的唯一漏斗处做最终去重：相邻且 content 完全相同的
+		// user 消息只保留第一条，杜绝重复输入污染模型上下文。注意只折叠**相邻**
+		// 重复，正常的"用户连续发两条不同消息"不受影响。
+		let collapsedUserDup = 0;
+		const deduped: ChatMessage[] = [];
+		for (const m of history) {
+			const prev = deduped[deduped.length - 1];
+			if (
+				m.role === 'user' &&
+				prev &&
+				prev.role === 'user' &&
+				(prev.content ?? '') === (m.content ?? '')
+			) {
+				collapsedUserDup++;
+				continue;
+			}
+			deduped.push(m);
+		}
+		if (collapsedUserDup > 0) {
+			this.logService.warn(
+				`[AgentChatService] 🧹 _toDriverMessages: collapsed ${collapsedUserDup} consecutive duplicate user message(s) (persist-race / legacy session-file pollution guard)`,
+			);
+		}
+
+		const out: IChatMessage[] = [];
+		let droppedContaminated = 0;
+		for (const m of deduped) {
+			if (m.role === 'user') {
+				out.push({ role: 'user', content: m.content ?? '' });
+			} else if (m.role === 'assistant') {
+				// 仅保留已完成（有 result）的工具调用，保证 tool_call ↔ tool 配对完整
+				const completed = (m.toolCalls ?? []).filter(
+					tc => typeof tc.result === 'string',
+				);
+				// 🧹 防御过滤：assistant 内容疑似污染且**没有任何工具调用**时整条丢弃
+				// （有工具调用的 assistant 必须保留以维持 tool_call ↔ tool 配对完整性，
+				// 但可以把 content 重写为空串，让模型只看到工具调用历史，不再看到道歉语料）
+				const contentRaw = m.content ?? '';
+				const contaminated = this._isContaminated(contentRaw);
+				if (contaminated && completed.length === 0) {
+					droppedContaminated++;
+					continue;
+				}
+				const sanitizedContent = contaminated ? '' : contentRaw;
+				if (contaminated) {
+					droppedContaminated++;
+				}
+				const assistantMsg: IChatMessage = {
+					role: 'assistant',
+					content: sanitizedContent,
+					...(completed.length > 0
+						? {
+								toolCalls: completed.map(tc => ({
+									id: tc.id,
+									name: tc.name,
+									arguments: tc.arguments ?? '{}',
+								})),
+							}
+						: {}),
+				};
+				out.push(assistantMsg);
+				// 为每个已完成工具调用补一条配对的 tool 响应消息
+				for (const tc of completed) {
+					out.push({
+						role: 'tool',
+						content: tc.result ?? '',
+						toolCallId: tc.id,
+					});
+				}
+			} else if (m.role === 'system') {
+				out.push({ role: 'system', content: m.content ?? '' });
+			} else if (m.role === 'tool') {
+				// 防御性：host 端通常不产生独立 tool 消息
+				out.push({ role: 'tool', content: m.content ?? '', toolCallId: '' });
+			}
+		}
+		if (droppedContaminated > 0) {
+			this.logService.info(
+				`[AgentChatService] 🧹 _toDriverMessages: filtered ${droppedContaminated} contaminated assistant messages (fake-completion / unfinished-intent residue)`,
+			);
+		}
+		return out;
 	}
 
 	async deleteMessagesAfter(
@@ -498,6 +710,17 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let fullContent = "";
 		let fullThinking = "";
 		let toolCalls: ChatMessage["toolCalls"];
+		// ─── Hermes-style 回合边界收集（2026-06-05 治本根因修复）──────────────
+		// agentOS 每个 iteration yield 一个 `assistant_turn` 边界事件。我们据此把
+		// 这一回合（同一次用户请求）拆成多条 assistant 消息，每条只含**本 iteration**
+		// 的 content + 本 iteration 发起的 toolCalls，紧跟其 tool 结果落在下一条之前。
+		// 这样持久化的历史与 agentOS loop 内部结构一致，杜绝"先宣告成功、后调用工具"
+		// 的因果倒置范例。turns 为空（无边界事件，旧后端/直连模式）时回退单条逻辑。
+		interface ITurnSnapshot {
+			content: string;
+			toolCallIds: string[];
+		}
+		const turns: ITurnSnapshot[] = [];
 		// Accumulators for new card data (VS Code Copilot Chat pattern)
 		let references: ChatMessage["references"];
 		let progress: ChatMessage["progress"];
@@ -544,10 +767,38 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				this.logService.info(`[AgentChatService] Skipping duplicate user message persist: "${message.substring(0, 40)}..."`);
 			}
 
+			// ─── B 方案：组装完整会话历史传给后端 ─────────────────────────────
+			// 后端 turn 此前每轮只收到当前 user 消息（executeAgentTurn: messages=1），
+			// 长对话上下文涨不起来，已验证正确的压缩链路（P0/P1/P2）永不触发。这里
+			// 取出该 session 全量历史，转换为 driver 消息格式，经 priorMessages 参数
+			// 下发。driver 会在其后追加当前 user 消息，因此先从历史尾部剔除"当前这条
+			// user 消息"避免重复——user 消息在上方 fire-and-forget 持久化，时序上可能
+			// 已写入 _historyCache（末尾即当前消息），也可能尚未写入（末尾是上一轮
+			// assistant）。只检查末尾一条最安全：是当前 user 就剔除，否则不动。
+			let priorMessages: IChatMessage[] | undefined;
+			try {
+				const history = await this.getHistory(employeeId, options.agentSessionId);
+				const trimmed = [...history];
+				const last = trimmed[trimmed.length - 1];
+				if (last && last.role === 'user' && last.content === message) {
+					trimmed.pop();
+				}
+				priorMessages = this._toDriverMessages(trimmed);
+				this.logService.info(
+					`[AgentChatService] Assembled ${priorMessages.length} prior driver messages from ${history.length} history msgs (key=${this._cacheKey(employeeId, options.agentSessionId)})`,
+				);
+			} catch (err) {
+				this.logService.warn(
+					`[AgentChatService] Failed to assemble prior messages (continuing with current message only): ${err}`,
+				);
+				priorMessages = undefined;
+			}
+
 			const stream = this.driverService.executeFromChatOptions(
 				employeeId,
 				message,
 				options,
+				priorMessages,
 			);
 			for await (const delta of stream) {
 				if (controller.signal.aborted) {
@@ -563,6 +814,42 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				// to replace the accumulated fullContent with the cleaned version.
 				if (delta.type === "content_replace") {
 					fullContent = delta.content ?? "";
+				}
+				// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────────
+				// 参考 Hermes `agent/conversation_loop.py:4300-4310` 的 while-pop 模式：
+				// upstream 检测到 fake-completion / unfinished-intent，准备注入 nudge
+				// 续跑时，要求**永远不要把已累计的幻觉文本持久化到 history**——否则下一轮
+				// `_toDriverMessages(history)` 会把它当作 prior driver messages 喂回模型，
+				// 形成 "您完全正确！我犯了严重错误..." 的对话循环（test50 复现的根因）。
+				//
+				// 收到该信号后立即清空 fullContent / fullThinking，让最终持久化的
+				// chatMessage.content 仅包含**信号之后真正成功的那段输出**。
+				if ((delta as any).type === 'discard_prior_text') {
+					const reason = (delta as any).metadata?.reason ?? 'unknown';
+					this.logService.info(
+						`[AgentChatService] 🧹 Received discard_prior_text (reason=${reason}) — clearing fullContent (was len=${fullContent.length}) + fullThinking (was len=${fullThinking.length}) to prevent conversation rot`,
+					);
+					fullContent = "";
+					fullThinking = "";
+					// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
+					onDelta(delta);
+					continue;
+				}
+				// ─── Hermes-style 回合边界事件（治本根因修复）─────────────────
+				// agentOS 在每个 iteration 确定 assistant 消息后发来 `assistant_turn`，
+				// content 为本轮权威文本（已 sanitize+trim），metadata.toolCallIds 为本轮
+				// 工具调用 id。收到后把这一轮快照成一个 turn。注意：此时 toolCalls 里这些
+				// id 的 result 可能尚未回填（tool_result 在 assistant_turn 之后才 yield），
+				// 因此只记录 id，最终持久化时再按 id 从全局 toolCalls 取回填好 result 的副本。
+				// 不向 webview 转发该事件（纯后端边界信号，UI 仍按流式增量渲染）。
+				if ((delta as any).type === 'assistant_turn') {
+					const md = (delta as any).metadata ?? {};
+					const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
+					turns.push({
+						content: (delta as any).content ?? "",
+						toolCallIds: ids,
+					});
+					continue;
 				}
 				if (delta.type === "tool_start" && delta.toolCallId && delta.toolName) {
 					if (!toolCalls) {
@@ -648,44 +935,119 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				}
 			}
 
-			const chatMessage: ChatMessage = {
-				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-				role: "assistant",
-				content: fullContent,
-				employeeId,
-				agentSessionId: options.agentSessionId,
-				thinking: fullThinking || undefined,
-				toolCalls: toolCalls || undefined,
-				timestamp: new Date().toISOString(),
-				// New card data fields (VS Code Copilot Chat pattern)
-				references: references || undefined,
-				progress: progress || undefined,
-				confirmation: confirmation || undefined,
-				todos: todos || undefined,
-				tips: tips || undefined,
-				questions: questions || undefined,
-				// KV Cache: persist token usage so the webview footer can render the
-				// total + cache-hit badge (only emitted when the provider reported usage).
-				tokenUsage: usageSeen
-					? {
-						input: usageInput,
-						output: usageOutput,
-						// Prefer the gateway-reported total_tokens when present (it may
-						// account for tokens not split into input/output); otherwise derive.
-						total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
-						cached: usageCached > 0 ? usageCached : undefined,
-						cacheWrite: usageCacheWrite > 0 ? usageCacheWrite : undefined,
-						credit: usageCredit > 0 ? usageCredit : undefined,
-					}
-					: undefined,
-			};
+			// 共享的 token usage 对象（多条 turn 时仅挂在最后一条上）
+			const sharedTokenUsage = usageSeen
+				? {
+					input: usageInput,
+					output: usageOutput,
+					// Prefer the gateway-reported total_tokens when present (it may
+					// account for tokens not split into input/output); otherwise derive.
+					total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
+					cached: usageCached > 0 ? usageCached : undefined,
+					cacheWrite: usageCacheWrite > 0 ? usageCacheWrite : undefined,
+					credit: usageCredit > 0 ? usageCredit : undefined,
+				}
+				: undefined;
 
-			this.appendMessage(employeeId, chatMessage).catch((err) =>
-				this.logService.error(
-					"[AgentChatService] Failed to persist assistant message:",
-					err,
-				),
-			);
+			let chatMessage: ChatMessage;
+
+			if (turns.length > 0) {
+				// ─── Hermes-style 多条持久化（治本根因修复）──────────────────────
+				// agentOS 发来了逐 iteration 的 `assistant_turn` 边界。按回合切分成
+				// 多条 assistant 消息（共享一个 turnId），每条只含本轮 content + 本轮
+				// 发起的 toolCalls（result 已按 id 回填到全局 toolCalls）。持久化后磁盘
+				// 历史天然呈现 assistant(意图+toolCalls)→tool(结果)→assistant(下轮/总结)
+				// 的正确因果链，回灌时不再出现"先宣告成功、后调用工具"的倒置范例。
+				const turnId = `turn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+				const allToolCalls = toolCalls ?? [];
+				const claimedIds = new Set<string>();
+				const builtMessages: ChatMessage[] = [];
+
+				for (let i = 0; i < turns.length; i++) {
+					const turn = turns[i];
+					const isLast = i === turns.length - 1;
+					// 收集本轮工具调用（按 id 从全局取，已含回填好的 result/status）
+					let turnToolCalls = turn.toolCallIds
+						.map(id => allToolCalls.find(tc => tc.id === id))
+						.filter((tc): tc is NonNullable<typeof tc> => !!tc);
+					for (const tc of turnToolCalls) { claimedIds.add(tc.id); }
+					// 防御：最后一轮兜底接管任何未被任何 turn 认领的工具调用
+					if (isLast) {
+						const orphans = allToolCalls.filter(tc => !claimedIds.has(tc.id));
+						if (orphans.length > 0) {
+							turnToolCalls = [...turnToolCalls, ...orphans];
+							for (const tc of orphans) { claimedIds.add(tc.id); }
+						}
+					}
+					const msg: ChatMessage = {
+						id: `msg_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 7)}`,
+						role: "assistant",
+						content: turn.content,
+						employeeId,
+						agentSessionId: options.agentSessionId,
+						turnId,
+						timestamp: new Date().toISOString(),
+						...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
+						// thinking + 卡片数据 + token usage 都是整回合聚合量，仅挂最后一条，
+						// 避免在多条气泡里重复渲染。
+						...(isLast ? {
+							thinking: fullThinking || undefined,
+							references: references || undefined,
+							progress: progress || undefined,
+							confirmation: confirmation || undefined,
+							todos: todos || undefined,
+							tips: tips || undefined,
+							questions: questions || undefined,
+							tokenUsage: sharedTokenUsage,
+						} : {}),
+					};
+					builtMessages.push(msg);
+				}
+
+				// 顺序持久化（保持磁盘顺序 = 因果顺序）
+				for (const msg of builtMessages) {
+					await this.appendMessage(employeeId, msg).catch((err) =>
+						this.logService.error(
+							"[AgentChatService] Failed to persist assistant turn message:",
+							err,
+						),
+					);
+				}
+				this.logService.info(
+					`[AgentChatService] Persisted ${builtMessages.length} assistant turn message(s) under turnId=${turnId} (Hermes-style boundary)`,
+				);
+				// 返回最后一条（其 content 为最终总结，供 configHtmlService 解析）
+				chatMessage = builtMessages[builtMessages.length - 1];
+			} else {
+				// ─── 回退：无边界事件（直连模式/旧后端）持久化单条 ────────────────
+				chatMessage = {
+					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+					role: "assistant",
+					content: fullContent,
+					employeeId,
+					agentSessionId: options.agentSessionId,
+					thinking: fullThinking || undefined,
+					toolCalls: toolCalls || undefined,
+					timestamp: new Date().toISOString(),
+					// New card data fields (VS Code Copilot Chat pattern)
+					references: references || undefined,
+					progress: progress || undefined,
+					confirmation: confirmation || undefined,
+					todos: todos || undefined,
+					tips: tips || undefined,
+					questions: questions || undefined,
+					// KV Cache: persist token usage so the webview footer can render the
+					// total + cache-hit badge (only emitted when the provider reported usage).
+					tokenUsage: sharedTokenUsage,
+				};
+
+				this.appendMessage(employeeId, chatMessage).catch((err) =>
+					this.logService.error(
+						"[AgentChatService] Failed to persist assistant message:",
+						err,
+					),
+				);
+			}
 
 			return chatMessage;
 		} catch (error) {
@@ -735,8 +1097,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		employeeId: string,
 		name?: string,
 	): Promise<AgentSessionMeta> {
+		this.logService.info(
+			`[AgentChatService] createAgentSession: BEGIN employeeId=${employeeId}, name=${name ?? '(default)'}`,
+		);
 		const paths = await this._resolveAgentPaths(employeeId);
 		if (!paths) {
+			this.logService.error(
+				`[AgentChatService] createAgentSession: FAILED — agent has no workspace directory (employeeId=${employeeId})`,
+			);
 			throw new Error("Agent has no workspace directory");
 		}
 
@@ -763,7 +1131,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		await this._writeSessionIndex(employeeId, index);
 
 		this.logService.info(
-			`[AgentChatService] Created session ${sessionId} for ${employeeId}`,
+			`[AgentChatService] createAgentSession: DONE sessionId=${sessionId}, employeeId=${employeeId}, indexSize=${index.length}`,
 		);
 		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
 		return meta;

@@ -169,7 +169,12 @@ export function ChatHistoryPage({ onClose }: ChatHistoryPageProps): React.ReactE
 	}, []);
 
 	const handleCreateSession = useCallback(() => {
-		createAgentSession();
+		console.log('[ChatHistoryPage] "+ 新建对话" button clicked');
+		const result = createAgentSession();
+		// createAgentSession is async — log the resolution outcome too
+		Promise.resolve(result)
+			.then(() => console.log('[ChatHistoryPage] createAgentSession() resolved'))
+			.catch((err) => console.error('[ChatHistoryPage] createAgentSession() rejected:', err));
 	}, [createAgentSession]);
 
 	return (

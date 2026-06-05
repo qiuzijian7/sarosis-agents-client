@@ -48,6 +48,12 @@ interface IStoredFileSnapshot {
 	readonly uri: string; // URI.toString()
 	readonly languageId: string | undefined;
 	readonly content: string;
+	/**
+	 * Whether the file already existed on disk at snapshot time. `false` →
+	 * the edit created the file, so reverting must delete it. Optional for
+	 * backward-compat (absent = treat as existed → restore-by-write).
+	 */
+	readonly existedBefore?: boolean;
 }
 
 /**
@@ -280,6 +286,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 				uri: fileData.uri.toString(),
 				languageId: fileData.languageId,
 				content: fileData.content,
+				existedBefore: fileData.existedBefore,
 			};
 			try {
 				await this._writeSnapshot(sessionDir, stored);
@@ -339,14 +346,17 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 						uri: resource,
 						languageId: undefined,
 						content: content.value.toString(),
+						existedBefore: true,
 					});
 				} else {
-					// File not yet created — record an empty-content snapshot so that
-					// reverting can delete-to-empty rather than leaving the AI's new file.
+					// File not yet created — record an empty-content snapshot flagged
+					// as existedBefore:false so that reverting DELETES the new file
+					// rather than leaving an empty file behind.
 					fileSnapshots.push({
 						uri: resource,
 						languageId: undefined,
 						content: '',
+						existedBefore: false,
 					});
 				}
 			} catch (err) {
@@ -388,8 +398,18 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			}
 			try {
 				const resource = URI.parse(snapshot.uri);
-				await this.fileService.writeFile(resource, VSBuffer.fromString(snapshot.content));
-				restoredFiles.push(snapshot.uri);
+				// existedBefore === false 表示该文件是这次编辑“新建”的，
+				// 撤销应当删除它，而不是写入空内容（否则会残留一个空文件）。
+				// 旧快照没有该字段（undefined）时按“原本存在”处理，沿用写回逻辑。
+				if (snapshot.existedBefore === false) {
+					if (await this.fileService.exists(resource)) {
+						await this.fileService.del(resource);
+					}
+					restoredFiles.push(snapshot.uri);
+				} else {
+					await this.fileService.writeFile(resource, VSBuffer.fromString(snapshot.content));
+					restoredFiles.push(snapshot.uri);
+				}
 			} catch (err) {
 				this.logService.error(`[CheckpointService] Failed to restore ${snapshot.uri}: ${err}`);
 			}
@@ -414,6 +434,106 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			restoredFiles,
 			removedMessages: removedCount, // host maps this; webview truncates by messageId
 		};
+	}
+
+	/**
+	 * 聚合所有（非 ghost）检查点，对每个被改过的文件取其**最早一次**快照
+	 * （= 第一次被编辑前的原始内容），把文件还原到该最初状态：
+	 *   - `existedBefore === false` 的最早快照 → 该文件是被新建出来的，删除它；
+	 *   - 否则写回最早快照内容。
+	 * 还原完成后把所有检查点标记为 ghost。
+	 *
+	 * 这是"撤销全部修改"的正确语义：不是逐个检查点回退，而是直接回到
+	 * 任何检查点产生之前的最初状态。与单个 {@link jumpToCheckpoint} 不同，
+	 * 后者只还原目标检查点自己的快照。
+	 */
+	async revertAllCheckpoints(employeeId: string, sessionId: string): Promise<IJumpToCheckpointResult> {
+		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+		const index = await this._readIndex(sessionDir);
+		// 仅聚合 tool_edit 且非 ghost 的检查点（ghost = 已被回退，不应再参与）。
+		const active = index
+			.filter(cp => cp.type === 'tool_edit' && !cp.isGhost)
+			.sort((a, b) => a.createdAt - b.createdAt);
+
+		// 每个文件 URI → 其最早一次快照（首次遇到即保留，因为已按时间升序）。
+		const earliestByUri = new Map<string, IStoredFileSnapshot>();
+		for (const cp of active) {
+			for (const snapshotId of cp.fileSnapshotIds) {
+				const snapshot = await this._readSnapshot(sessionDir, snapshotId);
+				if (!snapshot) { continue; }
+				if (!earliestByUri.has(snapshot.uri)) {
+					earliestByUri.set(snapshot.uri, snapshot);
+				}
+			}
+		}
+
+		const restoredFiles: string[] = [];
+		for (const snapshot of earliestByUri.values()) {
+			try {
+				const resource = URI.parse(snapshot.uri);
+				if (snapshot.existedBefore === false) {
+					// 文件是被新建出来的 → 撤销即删除。
+					if (await this.fileService.exists(resource)) {
+						await this.fileService.del(resource);
+					}
+					restoredFiles.push(snapshot.uri);
+				} else {
+					await this.fileService.writeFile(resource, VSBuffer.fromString(snapshot.content));
+					restoredFiles.push(snapshot.uri);
+				}
+			} catch (err) {
+				this.logService.error(`[CheckpointService] revertAll: failed to restore ${snapshot.uri}: ${err}`);
+			}
+		}
+
+		// 全部标 ghost（已回退，不再可达）。
+		let ghosted = 0;
+		for (const cp of index) {
+			if (!cp.isGhost) { cp.isGhost = true; ghosted++; }
+		}
+		await this._writeIndex(sessionDir, index);
+
+		this.logService.info(
+			`[CheckpointService] revertAllCheckpoints: restored ${restoredFiles.length} files to original, ghosted ${ghosted} checkpoints`,
+		);
+
+		return {
+			checkpointId: '',
+			restoredFiles,
+			removedMessages: ghosted,
+		};
+	}
+
+	/**
+	 * 聚合所有（非 ghost）tool_edit 检查点，返回每个被改过文件的**最早一次**
+	 * 快照（首次编辑前的原始内容）。供"查看全部变更"在一个多文件 diff 窗口
+	 * 中对比"最初内容 vs 当前内容"。
+	 */
+	async getAggregatedFileSnapshots(employeeId: string, sessionId: string): Promise<IFileSnapshot[]> {
+		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+		const index = await this._readIndex(sessionDir);
+		const active = index
+			.filter(cp => cp.type === 'tool_edit' && !cp.isGhost)
+			.sort((a, b) => a.createdAt - b.createdAt);
+
+		const earliestByUri = new Map<string, IFileSnapshot>();
+		for (const cp of active) {
+			for (const snapshotId of cp.fileSnapshotIds) {
+				const stored = await this._readSnapshot(sessionDir, snapshotId);
+				if (!stored) { continue; }
+				if (!earliestByUri.has(stored.uri)) {
+					earliestByUri.set(stored.uri, {
+						id: stored.id,
+						checkpointId: stored.checkpointId,
+						uri: URI.parse(stored.uri),
+						languageId: stored.languageId,
+						content: stored.content,
+						existedBefore: stored.existedBefore,
+					});
+				}
+			}
+		}
+		return [...earliestByUri.values()];
 	}
 
 	async getCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<ICheckpoint | undefined> {
@@ -457,6 +577,31 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		this.logService.info(`[CheckpointService] Deleted checkpoint ${checkpointId}`);
 	}
 
+	async deleteAllCheckpoints(employeeId: string, sessionId: string): Promise<void> {
+		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+		const index = await this._readIndex(sessionDir);
+		if (index.length === 0) {
+			return;
+		}
+
+		// Delete all snapshot files.
+		for (const cp of index) {
+			for (const snapshotId of cp.fileSnapshotIds) {
+				const uri = this._snapshotUri(sessionDir, snapshotId);
+				try {
+					if (await this.fileService.exists(uri)) {
+						await this.fileService.del(uri);
+					}
+				} catch (err) {
+					this.logService.warn(`[CheckpointService] Failed to delete snapshot ${uri.toString()}: ${err}`);
+				}
+			}
+		}
+
+		await this._writeIndex(sessionDir, []);
+		this.logService.info(`[CheckpointService] Deleted all ${index.length} checkpoints for session ${sessionId}`);
+	}
+
 	async getFileSnapshots(employeeId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]> {
 		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
 		const index = await this._readIndex(sessionDir);
@@ -479,6 +624,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 					uri: URI.parse(stored.uri),
 					languageId: stored.languageId,
 					content: stored.content,
+					existedBefore: stored.existedBefore,
 				});
 			} catch (err) {
 				this.logService.warn(`[CheckpointService] Failed to read snapshot ${snapshotId}: ${err}`);

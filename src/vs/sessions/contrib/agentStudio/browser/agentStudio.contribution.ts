@@ -62,7 +62,6 @@ import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
 	AGENT_STUDIO_SESSIONS_VIEW_ID,
-	AGENT_STUDIO_WORKSPACES_VIEW_ID,
 	AGENT_STUDIO_CLAW_CHAT_VIEW_ID,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
 	AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
@@ -80,6 +79,7 @@ import {
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
+	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
@@ -121,7 +121,7 @@ import {
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
-import { AgentStudioSidebarView } from './agentStudioSidebarView.js';
+import { SessionExplorerViewPane } from './views/sessionExplorerView.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
@@ -195,7 +195,7 @@ const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, loca
 const wikiIcon = registerIcon('agent-studio-wiki', Codicon.book, localize('wikiIcon', "Wiki"));
 
 // --- Configuration ---------------------------------------------------------------
-
+//qiuzijian debug
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'sessions',
 	properties: {
@@ -204,11 +204,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			description: localize('agentStudio.enabled', "Enable Agent Studio multi-agent workspace in the Sessions window."),
 		},
-	[AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING]: {
-		type: 'boolean',
-		default: true,
-		description: localize('agentStudio.chatStreamLog.enabled', "Enable chat stream logging for debugging. Logs are saved to the workspace logs/chat-streams directory."),
-	},
+		[AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.chatStreamLog.enabled', "Enable chat stream logging for debugging. Logs are saved to the workspace logs/chat-streams directory."),
+		},
+		[AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.chatStreamLog.dumpTools', "Dump full tools schema in chat stream logs. When false (default), tools are summarized as '(N tools)' to keep log size small. Enable to inspect provider-side tool registration."),
+		},
 		// --- Preferences ---
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
 			type: 'string',
@@ -688,6 +693,7 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@ILogService private readonly logService: ILogService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		super();
 
@@ -696,7 +702,7 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 		}
 
 		for (const def of BUILTIN_BYOK_PROVIDERS) {
-			const provider = this._register(new BuiltInBYOKModelProvider(def, this.configurationService, this.logService));
+			const provider = this._register(new BuiltInBYOKModelProvider(def, this.configurationService, this.logService, this.environmentService));
 			this._register(this.agentOSService.registerModelProvider(provider));
 			this.logService.info(`[BYOK] Registered built-in provider: ${def.id}`);
 		}
@@ -1331,20 +1337,10 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 			{
 				id: AGENT_STUDIO_SESSIONS_VIEW_ID,
 				name: localize2('agentStudio.sessionsView', "Sessions"),
-				ctorDescriptor: new SyncDescriptor(AgentStudioSidebarView),
+				ctorDescriptor: new SyncDescriptor(SessionExplorerViewPane),
 				canToggleVisibility: true,
 				canMoveView: true,
 				order: 0,
-				when: ContextKeyExpr.equals(AGENT_STUDIO_ACTIVE_CONTEXT_KEY, true),
-				windowEnablement: WindowEnablement.Sessions,
-			},
-			{
-				id: AGENT_STUDIO_WORKSPACES_VIEW_ID,
-				name: localize2('agentStudio.workspacesView', "Workspaces"),
-				ctorDescriptor: new SyncDescriptor(AgentStudioSidebarView),
-				canToggleVisibility: true,
-				canMoveView: true,
-				order: 1,
 				when: ContextKeyExpr.equals(AGENT_STUDIO_ACTIVE_CONTEXT_KEY, true),
 				windowEnablement: WindowEnablement.Sessions,
 			},

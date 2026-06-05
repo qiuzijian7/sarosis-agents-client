@@ -2073,11 +2073,8 @@
 .checkpoint-bar {
 	position: relative;
 	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
+	flex-direction: column;
 	margin: 0 12px 6px 12px;
-	padding: 6px 10px;
 	background: var(--as-bg-secondary, var(--vscode-editorWidget-background, #2a2d2e));
 	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.25));
 	border-radius: 8px;
@@ -2087,13 +2084,44 @@
 	flex-shrink: 0;
 }
 
+/* 主体行：左侧 文件数 / 检查点切换；右侧 保留/撤销/查看变更。 */
+.checkpoint-bar-main {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+}
+
+.checkpoint-bar-spacer {
+	flex: 1 1 auto;
+}
+
+/* 检查点切换按钮（主体行中部，点开向上的选择器）。 */
+.checkpoint-bar-cp-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	background: transparent;
+	border: none;
+	padding: 2px 6px;
+	margin: 0;
+	cursor: pointer;
+	color: inherit;
+	font: inherit;
+	border-radius: 4px;
+}
+.checkpoint-bar-cp-toggle:hover {
+	background: var(--as-bg-hover, rgba(255, 255, 255, 0.06));
+}
+
+/* 文件数展开按钮（主体行左侧，点开向下的文件列表）。 */
 .checkpoint-bar-summary {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
 	background: transparent;
 	border: none;
-	padding: 2px 4px;
+	padding: 2px 6px;
 	margin: 0;
 	cursor: pointer;
 	color: inherit;
@@ -2104,36 +2132,12 @@
 	background: var(--as-bg-hover, rgba(255, 255, 255, 0.06));
 }
 
-.checkpoint-bar-summary svg {
-	flex-shrink: 0;
-	color: var(--as-accent, #3b82f6);
-}
-
 .checkpoint-bar-files-label {
 	font-weight: 500;
 }
 
-.checkpoint-bar-divider {
-	opacity: 0.5;
-}
-
 .checkpoint-bar-checkpoint-label {
 	opacity: 0.85;
-}
-
-.checkpoint-bar-diff-stats {
-	display: inline-flex;
-	gap: 4px;
-	margin-left: 4px;
-	font-variant-numeric: tabular-nums;
-}
-
-.checkpoint-bar-additions {
-	color: var(--vscode-gitDecoration-addedResourceForeground, #5fb878);
-}
-
-.checkpoint-bar-deletions {
-	color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
 }
 
 .checkpoint-bar-chevron {
@@ -2180,7 +2184,15 @@
 	background: rgba(241, 76, 76, 0.12);
 }
 
-.checkpoint-bar-popover {
+.checkpoint-bar-action-view {
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+}
+
+/* ── Checkpoint 选择器（向上弹出 popover）──────────────────────────────
+ * 列出全部检查点，每项两行（标题 + 用户输入预览）；当前选中项右侧 ✓，
+ * 其余项 hover 显示「回退」。点击某项 → 选中 + 滚动到对应用户输入点。
+ * ─────────────────────────────────────────────────────────────────── */
+.checkpoint-bar-picker {
 	position: absolute;
 	left: 0;
 	right: 0;
@@ -2189,39 +2201,88 @@
 	border: 1px solid var(--as-border, rgba(128, 128, 128, 0.3));
 	border-radius: 8px;
 	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-	max-height: 280px;
+	max-height: 320px;
 	overflow-y: auto;
 	z-index: 50;
-	padding: 8px 0;
+	padding: 4px 0;
 }
 
-.checkpoint-bar-popover-header {
+.checkpoint-bar-cp-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.checkpoint-bar-cp-item {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	padding: 4px 12px 6px 12px;
-	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
-	font-size: 11px;
-	font-weight: 600;
-	opacity: 0.85;
-}
-
-.checkpoint-bar-popover-close {
-	background: transparent;
-	border: none;
-	color: inherit;
+	gap: 10px;
+	padding: 9px 14px;
 	cursor: pointer;
-	font-size: 16px;
-	line-height: 1;
-	padding: 0 4px;
-	border-radius: 4px;
+	border-bottom: 1px solid var(--as-border-soft, rgba(128, 128, 128, 0.08));
 }
-.checkpoint-bar-popover-close:hover {
-	background: var(--as-bg-hover, rgba(255, 255, 255, 0.08));
+.checkpoint-bar-cp-item:last-child {
+	border-bottom: none;
+}
+.checkpoint-bar-cp-item:hover {
+	background: var(--as-bg-hover, rgba(255, 255, 255, 0.06));
+}
+.checkpoint-bar-cp-item.is-selected {
+	background: var(--as-bg-hover, rgba(255, 255, 255, 0.05));
+}
+.checkpoint-bar-cp-item.is-kept {
+	opacity: 0.55;
 }
 
-.checkpoint-bar-popover-empty {
-	padding: 10px 12px;
+.checkpoint-bar-cp-main {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.checkpoint-bar-cp-title {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+}
+
+.checkpoint-bar-cp-preview {
+	font-size: 12px;
+	opacity: 0.6;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.checkpoint-bar-cp-check {
+	flex-shrink: 0;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #a0a0a0));
+}
+
+.checkpoint-bar-cp-revert {
+	flex-shrink: 0;
+	font-size: 11px;
+	opacity: 0;
+	color: var(--as-accent, #3b82f6);
+	transition: opacity 0.12s;
+}
+.checkpoint-bar-cp-item:hover .checkpoint-bar-cp-revert {
+	opacity: 0.9;
+}
+
+/* ── 文件变更列表（点击文件数后向下展开）──────────────────────────────
+ * 聚合去重的全部修改文件；点击某行打开该文件的 diff。
+ * ─────────────────────────────────────────────────────────────────── */
+.checkpoint-bar-files {
+	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.18));
+	max-height: 320px;
+	overflow-y: auto;
+}
+
+.checkpoint-bar-files-empty {
+	padding: 10px 14px;
 	font-size: 12px;
 	opacity: 0.7;
 }
@@ -2235,23 +2296,49 @@
 .checkpoint-bar-file-item {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	padding: 6px 12px;
+	gap: 8px;
+	padding: 6px 14px;
 	font-size: 12px;
-	border-bottom: 1px solid var(--as-border-soft, rgba(128, 128, 128, 0.1));
-}
-.checkpoint-bar-file-item:last-child {
-	border-bottom: none;
+	cursor: pointer;
 }
 .checkpoint-bar-file-item:hover {
 	background: var(--as-bg-hover, rgba(255, 255, 255, 0.05));
 }
 
+.checkpoint-bar-file-icon {
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	border-radius: 3px;
+	font-size: 8px;
+	font-weight: 700;
+	text-transform: uppercase;
+	background: var(--as-bg-hover, rgba(128, 128, 128, 0.18));
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #a0a0a0));
+}
+
 .checkpoint-bar-file-name {
+	flex-shrink: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	max-width: 70%;
+	max-width: 30%;
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+}
+
+.checkpoint-bar-file-path {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	direction: rtl;
+	text-align: left;
+	font-size: 11px;
+	opacity: 0.5;
 }
 
 .checkpoint-bar-file-stats {
@@ -2260,5 +2347,23 @@
 	font-variant-numeric: tabular-nums;
 	font-size: 11px;
 	flex-shrink: 0;
+}
+
+.checkpoint-bar-additions {
+	color: var(--vscode-gitDecoration-addedResourceForeground, #5fb878);
+}
+
+.checkpoint-bar-deletions {
+	color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+}
+
+/* 选择器跳转后，被定位的消息短暂高亮。 */
+.chat-message-jump-highlight {
+	animation: checkpoint-jump-flash 1.2s ease-out;
+	border-radius: 8px;
+}
+@keyframes checkpoint-jump-flash {
+	0% { background: rgba(59, 130, 246, 0.22); }
+	100% { background: transparent; }
 }
 

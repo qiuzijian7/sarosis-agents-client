@@ -160,6 +160,8 @@ export class ExecutionProvider implements IExecutionProvider {
 		// 5. 初始化上下文管理器
 		const contextManager = new ContextManager(modelProvider, this._getModelId(slots));
 		let modelId = this._getModelId(slots);
+		// 真实上下文窗口：优先读模型 maxInputTokens / contextWindow，取不到回退 _contextWindow（128000）。
+		const compressionWindow = await this._resolveContextWindow(modelProvider, modelId);
 
 		// 6. 初始化并行工具执行器
 		const parallelExecutor = new ParallelToolExecutor();
@@ -167,6 +169,9 @@ export class ExecutionProvider implements IExecutionProvider {
 		// 7. Agent 主循环
 		try {
 			let iterationCount = 0;
+			// P1: 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
+			// compressContext 优先用它判定，取代低估的 char/4 粗估。首轮=0 自动退回粗估。
+			let lastRealPromptTokens = 0;
 			while (budget.hasRemaining()) {
 				iterationCount++;
 				this._logService.debug(`[ExecutionProvider] Iteration ${budget.consumed + 1}/${budget.maxIterations}`);
@@ -192,18 +197,38 @@ export class ExecutionProvider implements IExecutionProvider {
 					const compressionResult = await contextManager.compressContext(
 						messages as unknown as ReadonlyArray<ChatMessage>,
 						undefined,
-						this._contextWindow
+						compressionWindow,
+						lastRealPromptTokens
 					);
 					const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
+					// ─── 压缩判定诊断日志（与 AgentOS Path 1 一致）──────────────
+					const cmpMeta = compressionResult.metadata ?? {};
+					this._logService.info(
+						`[ExecutionProvider][Compression] didCompress=${didCompress} ` +
+						`skipped=${JSON.stringify(cmpMeta.skipped ?? null)} ` +
+						`tokenSource=${cmpMeta.tokenSource ?? 'n/a'} ` +
+						`effectiveTokens=${cmpMeta.effectiveTokens ?? 'n/a'} ` +
+						`realPromptTokens=${cmpMeta.realPromptTokens ?? 'n/a'} ` +
+						`estimatedTokens=${cmpMeta.estimatedTokens ?? 'n/a'} ` +
+						`thresholdTokens=${cmpMeta.thresholdTokens ?? 'n/a'} ` +
+						`effectiveWindow=${cmpMeta.effectiveWindow ?? 'n/a'} ` +
+						`compressionWindow=${compressionWindow} ` +
+						`messageCount=${cmpMeta.messageCount ?? messages.length} ` +
+						`minMessagesToCompress=${cmpMeta.minMessagesToCompress ?? 'n/a'} ` +
+						`ineffectiveCompressionCount=${cmpMeta.ineffectiveCompressionCount ?? 'n/a'} ` +
+						`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
+					);
 					if (didCompress) {
 						// 压缩真正发生：通知 UI 进入压缩态（仅在确实压缩时发，避免无谓闪烁）
 						yield { type: 'phase_change', phase: 'compressing' };
 						messages = [...compressionResult.compressedMessages] as unknown as IChatMessage[];
 						this._logService.info(
 							`[ExecutionProvider] Context compressed: ${compressionResult.originalMessageCount} → ` +
-							`${compressionResult.compressedMessageCount} msgs, ` +
+							`${compressionResult.compressedMessageCount} msgs (window=${compressionWindow}), ` +
 							`tokens ${JSON.stringify(compressionResult.metadata?.tokensSaved ?? 'n/a')} saved`
 						);
+						// 回传压缩后估算输入 token，让聊天框圆环进度条立即同步回落。
+						yield { type: 'context_compacted', compactedInputTokens: this._estimateMessagesTokens(messages) };
 						// 压缩完成，切回流式输出态
 						yield { type: 'phase_change', phase: 'llm_streaming' };
 					}
@@ -258,6 +283,18 @@ export class ExecutionProvider implements IExecutionProvider {
 						assistantContent += delta.content;
 					} else if (delta.type === 'tool_call' && delta.toolCall) {
 						assistantToolCalls.push(delta.toolCall);
+					} else if (delta.type === 'usage' && delta.usage) {
+						// P1: 截获真实 prompt token，供下一轮 compressContext 优先判定。
+						// 完整 prompt = inputTokens + 缓存读 + 缓存写（缓存 token 同样占窗口）。
+						const u = delta.usage;
+						const realPrompt = (u.inputTokens ?? 0) + (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+						if (realPrompt > 0) {
+							lastRealPromptTokens = realPrompt;
+							this._logService.info(
+								`[ExecutionProvider][Compression] captured real prompt usage: inputTokens=${u.inputTokens ?? 0} ` +
+								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens}`
+							);
+						}
 					}
 
 					modelResponse.push(delta);
@@ -495,5 +532,53 @@ export class ExecutionProvider implements IExecutionProvider {
 		// Fallback: try the default model from the first provider
 		this._logService.warn('[ExecutionProvider] No active model selection found, falling back to gpt-4o');
 		return 'gpt-4o';
+	}
+
+	/**
+	 * 解析模型真实上下文窗口（token）。优先 maxInputTokens，其次 contextWindow，
+	 * 取不到时回退到 _contextWindow（128000）。查询失败也回退，绝不抛出。
+	 */
+	private async _resolveContextWindow(provider: { listModels?: () => Promise<ReadonlyArray<{ id: string; maxInputTokens?: number; contextWindow?: number }>> }, modelId: string): Promise<number> {
+		try {
+			const models = await provider.listModels?.();
+			const info = models?.find(m => m.id === modelId);
+			const win = info?.maxInputTokens ?? info?.contextWindow;
+			if (typeof win === 'number' && win > 0) {
+				return win;
+			}
+		} catch (err) {
+			this._logService.warn(`[ExecutionProvider] _resolveContextWindow failed for ${modelId}, falling back to ${this._contextWindow}: ${err}`);
+		}
+		return this._contextWindow;
+	}
+
+	/**
+	 * 粗略估算消息输入 token（char/4，与 ContextManager._estimateTokens 口径一致：
+	 * 序列化整条消息以涵盖 content/contentParts/thinking/tool_result 等所有字段，
+	 * 图片 base64 剥离后按 1500/张平摊）。
+	 * 用于压缩后回传 context_compacted 让圆环基线同步回落。
+	 */
+	private _estimateMessagesTokens(messages: ReadonlyArray<any>): number {
+		const IMAGE_TOKEN_COST = 1500;
+		let totalChars = 0;
+		let imageTokens = 0;
+		for (const m of messages) {
+			if (!m) { continue; }
+			const shadow: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+				if (k === 'contentParts' && Array.isArray(v)) {
+					shadow[k] = v.map((p: any) => (p && p.type === 'image' ? { type: 'image', data: '[stripped]' } : p));
+					imageTokens += v.filter((p: any) => p && p.type === 'image').length * IMAGE_TOKEN_COST;
+				} else {
+					shadow[k] = v;
+				}
+			}
+			try {
+				totalChars += JSON.stringify(shadow).length;
+			} catch {
+				totalChars += (typeof m.content === 'string' ? m.content.length : 0);
+			}
+		}
+		return Math.ceil(totalChars / 4) + imageTokens;
 	}
 }

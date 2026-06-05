@@ -153,6 +153,13 @@ export interface ChatMessage {
 	content: string;
 	thinking?: string;
 	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string; serverExecuted?: boolean; textPosition?: number }[];
+	/**
+	 * Hermes-style 回合标识（2026-06-05 治本根因修复）。
+	 * 同一次用户请求触发的多轮 agentOS loop 会持久化多条 assistant 消息共享同一
+	 * turnId。EmployeeChat 渲染时把相邻同 turnId 的 assistant 消息聚合成一个气泡，
+	 * 保持 UI 外观不变。旧数据无此字段时每条独立成气泡（向后兼容）。
+	 */
+	turnId?: string;
 	tokenUsage?: {
 		input: number;
 		output: number;
@@ -284,6 +291,15 @@ interface ChatState {
 	keepCheckpoint: (checkpointId: string) => void;
 	/** Open a diff editor (snapshot vs current) for a checkpoint file. */
 	openCheckpointDiff: (checkpointId: string, fileUri: string) => void;
+	/**
+	 * 撤销全部检查点：把所有被改过的文件还原到最初状态，并隐藏 bar。
+	 * 作用于所有 tool_edit 检查点（而非单个）。
+	 */
+	undoAllCheckpoints: () => void;
+	/** 保留全部检查点：移除所有 checkpoint 消息，bar 隐藏，文件保持当前状态。 */
+	keepAllCheckpoints: () => void;
+	/** 在一个多文件 diff 窗口中显示所有检查点的全部变更。 */
+	openAllCheckpointsDiff: () => void;
 	/** Get the latest non-ghost / non-kept tool_edit checkpoint (for the always-floating bar). */
 	getLatestCheckpoint: () => CheckpointData | undefined;
 }
@@ -593,21 +609,27 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// Fork mode: directly load fork session
 				get().loadHistoryForSession(employeeId, forkSessionId);
 			} else {
-				// Root mode: load existing sessions list, pick the most recent one if any.
-				// Do NOT auto-create here — let sendMessage create with the first message as name.
+				// Root mode: load sessions list ONLY (for sidebar display).
+				// 🔒 修复（2026-06-05）：之前会自动把 `activeAgentSessionId` 设到
+				// sessions[0]（最近一条）并 loadHistoryForSession，导致用户切到
+				// employee 那一刻就隐式"恢复"了上一次几百轮的旧 session，再发消息
+				// 时 sendMessage 看到 activeAgentSessionId 非空就直接复用，整段历史
+				// 被回灌给模型（log 里 305 条跨主题/跨 worktree 串台即此故障——
+				// 之前修的 sendMessage 兜底分支根本走不到，因为 activeAgentSessionId
+				// 早被这里自动激活了）。
+				//
+				// 新行为：只把 sessions 列表填到侧边栏，**不自动激活最近一条**。
+				// activeAgentSessionId 保持 null，sendMessage 会走 `agentSession.create`
+				// 开全新空 session。要恢复旧会话必须从历史列表显式点选。
 				sendRequest<{ employeeId: string }, AgentSessionInfo[]>(
 					'agentSession.list',
 					{ employeeId },
 				).then(sessions => {
 					if (get().activeEmployeeId !== employeeId) { return; }
 					set({ agentSessions: sessions || [] });
-					if (sessions && sessions.length > 0) {
-						const latest = sessions[0]; // already sorted by updatedAt desc from host
-						set({ activeAgentSessionId: latest.id });
-						get().loadHistoryForSession(employeeId, latest.id);
-					}
-					// If no sessions exist, leave activeAgentSessionId null.
-					// sendMessage will auto-create on first message.
+					// Intentionally do NOT auto-activate sessions[0]. Leave
+					// activeAgentSessionId === null so the next sendMessage opens
+					// a fresh empty session with no historical context.
 				}).catch(err => {
 					console.error('[ChatStore] Failed to load agent sessions:', err);
 				});
@@ -753,6 +775,75 @@ export const useChatStore = create<ChatState>((set, get) => {
 					return m;
 				});
 
+				// ── Re-hydrate persisted checkpoints (fix: CheckpointBar disappears
+				// after reload) ──────────────────────────────────────────────────
+				// Checkpoint cards are normally created live via the
+				// `chat.checkpointCreated` push event and only ever live in this
+				// store's in-memory `messages`. `chat.history` does NOT return
+				// checkpoint messages — checkpoints are persisted separately by the
+				// host CheckpointService (scoped by employeeId+sessionId). So after
+				// a window reload there are zero `role:'checkpoint'` messages and the
+				// bar (which requires at least one tool_edit checkpoint) renders null.
+				// Here we pull the persisted checkpoints back and merge the tool_edit
+				// ones in as checkpoint messages so the bar survives reloads.
+				try {
+					const persisted = await sendRequest<
+						{ employeeId: string; sessionId: string },
+						Array<{
+							id: string;
+							type: 'user_edit' | 'tool_edit';
+							createdAt: number;
+							label?: string;
+							description?: string;
+							isGhost?: boolean;
+							messageId?: string;
+							files?: CheckpointFileChange[];
+							fileSnapshotIds?: string[];
+						}>
+					>('chat.listCheckpoints', { employeeId, sessionId: agentSessionId ?? '' });
+
+					// Bail if the active employee changed while awaiting.
+					if (get().activeEmployeeId !== employeeId) {
+						set({ isLoading: false });
+						return;
+					}
+
+					if (Array.isArray(persisted) && persisted.length > 0) {
+						const existingIds = new Set(finalMessages.map(m => m.id));
+						const cpMessages: ChatMessage[] = [];
+						for (const cp of persisted) {
+							// Only tool_edit checkpoints get a bar card (user_edit are
+							// empty message-boundary anchors). Skip duplicates already
+							// present (e.g. live-created during the same session).
+							if (cp.type !== 'tool_edit') { continue; }
+							if (existingIds.has(cp.id)) { continue; }
+							cpMessages.push({
+								id: cp.id,
+								role: 'checkpoint',
+								content: '',
+								timestamp: new Date(cp.createdAt).toISOString(),
+								checkpoint: {
+									id: cp.id,
+									type: 'tool_edit',
+									timestamp: new Date(cp.createdAt).toISOString(),
+									description: cp.description || cp.label,
+									filesChanged: cp.files?.length ?? cp.fileSnapshotIds?.length ?? 0,
+									files: cp.files,
+									isGhost: cp.isGhost ?? false,
+								},
+							});
+						}
+						if (cpMessages.length > 0) {
+							console.log(`[ChatStore] loadHistoryForSession: re-hydrated ${cpMessages.length} checkpoint(s)`);
+							finalMessages = [...finalMessages, ...cpMessages];
+							// Re-sort so checkpoints land right after their triggering turn.
+							finalMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+						}
+					}
+				} catch (err) {
+					console.warn('[ChatStore] loadHistoryForSession: failed to re-hydrate checkpoints:', err);
+				}
+
 				set({ messages: finalMessages, isLoading: false });
 			} catch (err) {
 				console.error('[ChatStore] Failed to load history:', err);
@@ -796,11 +887,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			const sessionName = message.trim().substring(0, 30);
 
-			// If no session assigned yet, auto-create one with message as name
+			// If no session assigned yet, create a FRESH one (don't reuse latest).
+			// 🔒 修复（2026-06-05）：之前用 `agentSession.getActive` →
+			// 后端 `getOrCreateActiveSession` 只要 index 非空就返回最近一条 existing
+			// session，导致"无 active session 发消息"会复用最近一条几百轮的旧 session，
+			// 把整段历史回灌给模型（log 里 313 条跨主题/跨 worktree 串台即此故障）。
+			// 改为 `agentSession.create` 明确新建：用户没有显式选择 session 时永远开
+			// 新会话，不带任何历史。要恢复旧会话必须显式从历史列表选中。
 			if (!activeAgentSessionId) {
 				try {
 					const meta = await sendRequest<{ employeeId: string; name?: string }, AgentSessionInfo>(
-						'agentSession.getActive',
+						'agentSession.create',
 						{ employeeId: activeEmployeeId, name: sessionName },
 					);
 					if (meta?.id) {
@@ -815,8 +912,38 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// Session exists — if this is the first message (no messages yet),
 				// rename the session to the user's first message
 				const currentMessages = get().messages;
-				if (currentMessages.length === 0 && sessionName) {
-					get().renameAgentSession(activeAgentSessionId, sessionName);
+				if (currentMessages.length === 0) {
+					// 🔒 防御性兜底（2026-06-05）：messages 为空 ≠ session 在磁盘上为空。
+					// 例如用户点 "+ 新建对话" 时若 store.createAgentSession 因某种原因没真正
+					// 把 RPC 发到 host（看到的现象：log 里完全没有 agentSession.create 调用，
+					// 但 sessionId 仍指向上一条几轮历史的 session），sendMessage 会误以为这
+					// 是新会话，走 rename 分支，把当前 user 消息追加到旧 session 末尾，导致
+					// 整段旧历史被 B 方案重新回灌给模型。
+					// 这里检查 agentSessions 列表里当前 session 的 messageCount——如果
+					// 磁盘上已有消息，说明视图清空与底层 session 不一致，强制开全新会话。
+					const { agentSessions: list } = get();
+					const meta = list.find(s => s.id === activeAgentSessionId);
+					const diskMessageCount = (meta as any)?.messageCount ?? 0;
+					if (diskMessageCount > 0) {
+						console.warn(
+							`[ChatStore] sendMessage: messages=[] but session ${activeAgentSessionId} has ${diskMessageCount} msgs on disk — forcing fresh session to avoid history bleed`,
+						);
+						try {
+							const fresh = await sendRequest<{ employeeId: string; name?: string }, AgentSessionInfo>(
+								'agentSession.create',
+								{ employeeId: activeEmployeeId, name: sessionName },
+							);
+							if (fresh?.id) {
+								activeAgentSessionId = fresh.id;
+								set({ activeAgentSessionId: fresh.id });
+								get().loadAgentSessions(activeEmployeeId);
+							}
+						} catch (err) {
+							console.error('[ChatStore] Defensive create-fresh-session failed:', err);
+						}
+					} else if (sessionName) {
+						get().renameAgentSession(activeAgentSessionId, sessionName);
+					}
 				}
 			}
 
@@ -983,21 +1110,38 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		createAgentSession: async () => {
-			const { activeEmployeeId } = get();
-			if (!activeEmployeeId) { return; }
+			const { activeEmployeeId, activeAgentSessionId: prevSessionId, messages: prevMessages } = get();
+			console.log(
+				`[ChatStore] createAgentSession: BEGIN employeeId=${activeEmployeeId} ` +
+				`prevSessionId=${prevSessionId} prevMessagesCount=${prevMessages.length}`,
+			);
+			if (!activeEmployeeId) {
+				console.warn('[ChatStore] createAgentSession: aborted — no activeEmployeeId');
+				return;
+			}
 			try {
+				console.log('[ChatStore] createAgentSession: sending RPC agentSession.create...');
 				const meta = await sendRequest<{ employeeId: string }, AgentSessionInfo>(
 					'agentSession.create',
 					{ employeeId: activeEmployeeId },
 				);
+				console.log(
+					`[ChatStore] createAgentSession: RPC returned meta=${JSON.stringify(meta)}`,
+				);
 				if (meta?.id) {
 					const newStreamState = switchActiveStream(activeEmployeeId, meta.id);
 					set({ activeAgentSessionId: meta.id, messages: [], streamState: newStreamState });
+					console.log(
+						`[ChatStore] createAgentSession: state updated activeAgentSessionId=${meta.id} messages=[]`,
+					);
 					get().loadHistoryForSession(activeEmployeeId, meta.id);
 					get().loadAgentSessions(activeEmployeeId);
+					console.log('[ChatStore] createAgentSession: DONE (loadHistory + loadSessions dispatched)');
+				} else {
+					console.warn('[ChatStore] createAgentSession: meta has no id, skip state update');
 				}
 			} catch (err) {
-				console.error('[ChatStore] Failed to create agent session:', err);
+				console.error('[ChatStore] createAgentSession: FAILED', err);
 			}
 		},
 
@@ -1205,7 +1349,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 			set(state => {
 				const targetIdx = state.messages.findIndex(m => m.id === checkpointId);
 				if (targetIdx < 0) { return state; }
-				return { messages: state.messages.slice(0, targetIdx + 1) };
+				// 截断到目标检查点（含）。同时把目标检查点本身标记为 isKept，
+				// 否则 CheckpointBar.latest 仍会选中它（其过滤条件是
+				// isGhost||isDisabled||isKept），导致“撤销”后 bar 不消失。
+				// 撤销 = 该检查点的变更已回滚，bar 不应再悬浮提示。
+				const truncated = state.messages.slice(0, targetIdx + 1).map((m, idx) => {
+					if (idx === targetIdx && m.role === 'checkpoint' && m.checkpoint) {
+						return { ...m, checkpoint: { ...m.checkpoint, isKept: true } };
+					}
+					return m;
+				});
+				return { messages: truncated };
 			});
 		},
 
@@ -1218,6 +1372,83 @@ export const useChatStore = create<ChatState>((set, get) => {
 			postMessage('chat.openCheckpointDiff', {
 				checkpointId,
 				fileUri,
+				employeeId: state.activeEmployeeId ?? '',
+				sessionId: state.activeAgentSessionId ?? '',
+			});
+		},
+
+		undoAllCheckpoints: () => {
+			const state = get();
+			const employeeId = state.activeEmployeeId;
+			const sessionId = state.activeAgentSessionId;
+
+			// 找到第一个 tool_edit 检查点，及其之前最近的一条 user 消息
+			// （= 触发全部编辑的最初输入点）。撤销 = 回到该输入点之后、
+			// 任何编辑发生之前的状态，所以截断保留到那条 user 消息（含）。
+			const msgs = state.messages;
+			let firstCpIdx = -1;
+			for (let i = 0; i < msgs.length; i++) {
+				const m = msgs[i];
+				if (m.role === 'checkpoint' && m.checkpoint && m.checkpoint.type === 'tool_edit') {
+					firstCpIdx = i;
+					break;
+				}
+			}
+			let truncateAfterMessageId: string | undefined;
+			if (firstCpIdx >= 0) {
+				for (let i = firstCpIdx - 1; i >= 0; i--) {
+					if (msgs[i].role === 'user') {
+						truncateAfterMessageId = msgs[i].id;
+						break;
+					}
+				}
+			}
+
+			// 通知 host 把所有文件还原到最初状态并 ghost 全部检查点。
+			sendRequest('chat.revertAllCheckpoints', {
+				employeeId: employeeId ?? '',
+				sessionId: sessionId ?? '',
+				truncateAfterMessageId,
+			}).catch(err => {
+				console.error('[ChatStore] undoAllCheckpoints failed:', err);
+			});
+
+			// 本地截断聊天历史：保留到最初 user 输入点（含）。若找不到锚点
+			// （无 user 消息），则退化为移除所有 checkpoint 消息使 bar 消失。
+			set(state => {
+				if (truncateAfterMessageId) {
+					const idx = state.messages.findIndex(m => m.id === truncateAfterMessageId);
+					if (idx >= 0) {
+						return { messages: state.messages.slice(0, idx + 1) };
+					}
+				}
+				return {
+					messages: state.messages.filter(
+						m => !(m.role === 'checkpoint' && m.checkpoint?.type === 'tool_edit')
+					),
+				};
+			});
+		},
+
+		/** 保留全部检查点：移除 checkpoint 消息 + 删除磁盘数据，reload 后不重现。 */
+		keepAllCheckpoints: () => {
+			const state = get();
+			// Remove checkpoint messages from store (bar disappears immediately).
+			set(state => ({
+				messages: state.messages.filter(m =>
+					!(m.role === 'checkpoint' && m.checkpoint?.type === 'tool_edit'),
+				),
+			}));
+			// Delete all on-disk checkpoint data so reload will not re-show the bar.
+			postMessage('chat.keepAllCheckpoints', {
+				employeeId: state.activeEmployeeId ?? '',
+				sessionId: state.activeAgentSessionId ?? '',
+			});
+		},
+
+		openAllCheckpointsDiff: () => {
+			const state = get();
+			postMessage('chat.openAllCheckpointsDiff', {
 				employeeId: state.activeEmployeeId ?? '',
 				sessionId: state.activeAgentSessionId ?? '',
 			});

@@ -161,7 +161,10 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	}
 
 	return (
-		<div className={`chat-message ${message.role}`}>
+		// data-message-id：供 CheckpointBar 的 checkpoint 选择器定位滚动锚点用。
+		// 切换 checkpoint item 时，会 querySelector(`[data-message-id="..."]`)
+		// 找到对应用户输入点并 scrollIntoView。
+		<div className={`chat-message ${message.role}`} data-message-id={message.id}>
 			<div className={`message-content ${isStreaming ? 'message-streaming' : ''}`}>
 				{/* ── Attachments (Void-inspired): images render as a thumbnail grid,
 				     other files as chips. Shown above the text content. ─────────── */}

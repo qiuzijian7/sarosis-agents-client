@@ -17,7 +17,7 @@ export default function Footer() {
           <div className="flex items-center gap-6 text-sm text-[#6c7086]">
             <a href="#features" className="hover:text-white transition-colors">特色</a>
             <a href="#download" className="hover:text-white transition-colors">下载</a>
-            <a href="#feedback" className="hover:text-white transition-colors">反馈</a>
+            <a href="https://git.woa.com/zijianqiu/vssarosis_issue/issues?state=opened&sort=created_desc&page=1" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">反馈</a>
             <span>|</span>
             <span>MIT License</span>
           </div>

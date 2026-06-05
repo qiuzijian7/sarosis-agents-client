@@ -842,6 +842,15 @@ export interface ChatMessage {
 	toolCalls?: ToolCall[];
 	thinking?: string;
 	timestamp: string;
+	/**
+	 * Hermes-style 回合标识（2026-06-05 治本根因修复）。
+	 * 同一次用户请求触发的 agentOS 多轮 loop 会持久化多条 assistant 消息
+	 * （每个 iteration 一条，content+toolCalls 紧跟其 tool 结果），它们共享
+	 * 同一个 turnId。webview 据此把多条 assistant 聚合成一个气泡（UI 外观不变），
+	 * 而磁盘/回灌时保持 assistant→tool→assistant 的正确因果链。
+	 * 旧数据无此字段时，每条 assistant 各自独立成一个气泡（向后兼容）。
+	 */
+	turnId?: string;
 	tokenUsage?: {
 		input: number;
 		output: number;

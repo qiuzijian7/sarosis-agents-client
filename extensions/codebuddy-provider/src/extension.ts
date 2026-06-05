@@ -34,6 +34,13 @@ import {
 } from '@sarosis/shared';
 import { CodeBuddyAuth } from './auth';
 
+// ── Compile-time macro switches ───────────────────────────────────────────────
+// 调试构建时改为 true，可绕过 runtime config 强制开启文件日志。
+// 生产构建保持 false。
+//qiuzijian debug
+const FORCE_FILE_LOGGING = false;
+const FORCE_FILE_LOGGING_PATH = ''; // 空=用 globalStorageUri/http-debug-{date}.log
+
 /** Decode JWT payload (without verification) to extract claims */
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
 	try {
@@ -144,6 +151,99 @@ interface IModelsCacheEntry {
 }
 let _modelsCache: IModelsCacheEntry | undefined;
 const MODELS_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+
+/**
+ * Look up the **server-authoritative** reasoning defaults for a model id from
+ * the latest /v3/config snapshot. Each model entry from the gateway already
+ * carries the recommended `reasoning.effort` (e.g. "medium" / "high") and an
+ * optional `reasoning.summary`. We treat this as the canonical default — it's
+ * what the gateway/model team picked for the model and must NOT be silently
+ * overridden by a local budget→effort mapping.
+ *
+ * Returns `undefined` for models that don't ship reasoning defaults (e.g. the
+ * cache is cold, the model isn't in the catalogue, or it's a non-reasoning
+ * model). Callers should treat undefined as "no server default available" and
+ * fall through to the next priority (UI effort > budget mapping > 'medium').
+ */
+function getServerModelReasoningDefaults(modelId: string): { effort?: 'low' | 'medium' | 'high'; summary?: string } | undefined {
+	if (!_modelsCache) { return undefined; }
+	const cfg = _modelsCache.models.find(m => m.id === modelId);
+	if (!cfg || !cfg.reasoning) { return undefined; }
+	const rawEffort = cfg.reasoning.effort;
+	const effort: 'low' | 'medium' | 'high' | undefined =
+		rawEffort === 'low' || rawEffort === 'medium' || rawEffort === 'high' ? rawEffort : undefined;
+	return { effort, summary: cfg.reasoning.summary };
+}
+
+/**
+ * Look up the full cached model config (from /v3/config 或 model.json fallback)
+ * by model id. Body 组装时用它的 `temperature` / `maxOutputTokens` 等参数，
+ * 避免对全部模型硬编码同一组值（不同模型的 max_tokens / temperature 各不相同）。
+ *
+ * 返回 `undefined` 表示缓存里没有该模型（冷缓存 / 未命中），调用方应回退到内置默认。
+ */
+function getServerModelConfig(modelId: string): IModelConfig | undefined {
+	if (!_modelsCache) { return undefined; }
+	return _modelsCache.models.find(m => m.id === modelId);
+}
+
+// ── HTTP Debug File Logging ───────────────────────────────────────────────────
+
+/**
+ * 追加一行（或多行）到 HTTP 调试日志文件。
+ *
+ * 文件路径优先级：
+ *   1. codebuddy.debugHttpLogPath 配置（用户显式指定）
+ *   2. codebuddy.globalStorageUri/http-debug-{date}.log
+ *
+ * 单个文件无限大（append 模式），由用户自行清理。日志内容包含：
+ *   - 时间戳
+ *   - 调用方 sessionId（脱敏）
+ *   - 具体日志行
+ *
+ * 注意：写入失败时打印 warn，不影响主流程。
+ */
+function appendHttpDebugLog(
+	logLines: string[],
+	context: vscode.ExtensionContext,
+	sessionId: string | undefined,
+	forcePath?: string,
+): void {
+	// ── 诊断：强制写文件时打印路径解析过程 ────────────────────────────────
+	if (FORCE_FILE_LOGGING) {
+		console.log(`[CodeBuddy] appendHttpDebugLog called: forcePath=${forcePath ?? 'none'}, globalStorageUri=${context.globalStorageUri.fsPath}`);
+	}
+	try {
+		let filePath: string;
+		if (forcePath) {
+			filePath = forcePath;
+		} else {
+			const config = vscode.workspace.getConfiguration('codebuddy');
+			const logPath = config.get<string>('debugHttpLogPath', '').trim();
+			if (logPath) {
+				filePath = logPath;
+			} else {
+				const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+				const dir = context.globalStorageUri.fsPath;
+				filePath = path.join(dir, `http-debug-${dateStr}.log`);
+			}
+		}
+
+		console.log(`[CodeBuddy] appendHttpDebugLog: writing to ${filePath}`);
+		// Ensure directory exists
+		fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+		const ts = new Date().toISOString();
+		const sidTag = sessionId ? `[sid=${sessionId.slice(0, 12)}...]` : '[no-sid]';
+		const header = `\n--- ${ts} ${sidTag} ---\n`;
+		const content = header + logLines.join('\n') + '\n';
+
+		fs.appendFileSync(filePath, content, 'utf8');
+		console.log(`[CodeBuddy] appendHttpDebugLog: wrote ${content.length} bytes to ${filePath}`);
+	} catch (err) {
+		console.warn(`[CodeBuddy] Failed to write HTTP debug log: ${err}`);
+	}
+}
 
 /**
  * Determine whether a raw /v3/config model entry is usable as a chat model.
@@ -390,7 +490,7 @@ async function loadModelsFromConfig(config: vscode.WorkspaceConfiguration): Prom
 	// Migration: support both old format (string) and new format (IModelConfig[])
 	let modelConfigs: IModelConfig[];
 	const rawModelsConfig = config.get('models');
-	
+
 	if (Array.isArray(rawModelsConfig)) {
 		// New format: array of IModelConfig
 		modelConfigs = rawModelsConfig.length > 0 ? rawModelsConfig : CODEBUDDY_DEFAULT_MODEL_CONFIGS;
@@ -412,7 +512,7 @@ async function loadModelsFromConfig(config: vscode.WorkspaceConfiguration): Prom
 		// No config or empty - use defaults
 		modelConfigs = CODEBUDDY_DEFAULT_MODEL_CONFIGS;
 	}
-	
+
 	return modelConfigs;
 }
 
@@ -535,6 +635,17 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 
 		console.log(`[CodeBuddy] provideLanguageModelChatInformation returning ${modelConfigs.length} models:`, modelConfigs.map(m => m.id));
 
+		// 确保 _modelsCache 在 fallback 路径下也被填充：
+		// /v3/config 成功时 fetchModelsFromConfigApi 内部已写缓存（含完整 reasoning/
+		// temperature/maxOutputTokens）；但 model.json / config 兜底路径不经过那里，
+		// 若不补写，body 组装时 getServerModelConfig / getServerModelReasoningDefaults
+		// 会全部落空 → 退回硬编码默认。这里仅在缓存为空时补写，避免覆盖更权威的
+		// 服务端数据。
+		if (!_modelsCache) {
+			_modelsCache = { models: modelConfigs, fetchedAt: Date.now() };
+			console.log(`[CodeBuddy] Seeded _modelsCache from fallback path with ${modelConfigs.length} models`);
+		}
+
 		return modelConfigs.map(modelConfig =>
 			createModelInfo(
 				modelConfig.id,
@@ -578,38 +689,173 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// Extract tools from modelOptions (set by LMBridge)
 		const mo = options.modelOptions as Record<string, unknown> | undefined;
 		const tools = mo?.tools as vscode.LanguageModelChatTool[] | undefined;
+		// tool_choice：由上层 AgentOS 续跑兜底 / configHtmlService 等流程透传。
+		// 'required' 表示本轮必须调用至少一个工具（治本手段，对抗模型\"宣告完成却不调工具\"）。
+		// 缺失时由 _sendCodeBuddyRequest 默认走 'auto'。
+		const toolChoiceRaw = mo?.toolChoice;
+		const toolChoice: 'auto' | 'required' | 'none' | undefined =
+			toolChoiceRaw === 'auto' || toolChoiceRaw === 'required' || toolChoiceRaw === 'none'
+				? toolChoiceRaw
+				: undefined;
 		// Reasoning/thinking config (chat toolbar thinking toggle → LMBridge → here).
 		const reasoning = mo?.reasoning as ReasoningOption | undefined;
+		// Server-authoritative reasoning defaults from /v3/config metadata
+		// (e.g. minimax-m2.7-ioa ships `reasoning.effort='medium', summary='auto'`).
+		// These are the values the gateway/model team picked for this model and
+		// MUST be preferred over any local budget→effort heuristic.
+		const serverReasoningDefault = getServerModelReasoningDefaults(selectedModel);
 		// Stable session id (LMBridge passes context.sessionId through modelOptions),
 		// used as X-Conversation-Id and as the key for previous_response_id.
 		const sessionId = typeof mo?.sessionId === 'string' ? mo.sessionId : undefined;
 
-		return this._sendCodeBuddyRequest(trimmedToken, selectedModel, messages, tools, reasoning, sessionId, progress, cancellationToken);
+		return this._sendCodeBuddyRequest(this._context, trimmedToken, selectedModel, messages, tools, toolChoice, reasoning, serverReasoningDefault, sessionId, progress, cancellationToken);
 	}
 
 	private async _sendCodeBuddyRequest(
+		context: vscode.ExtensionContext,
 		accessToken: string,
 		selectedModel: string,
 		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		tools: vscode.LanguageModelChatTool[] | undefined,
+		toolChoice: 'auto' | 'required' | 'none' | undefined,
 		reasoning: ReasoningOption | undefined,
+		serverReasoningDefault: { effort?: 'low' | 'medium' | 'high'; summary?: string } | undefined,
 		sessionId: string | undefined,
 		progress: vscode.Progress<vscode.LanguageModelResponsePart>,
 		cancellationToken: vscode.CancellationToken,
 	): Promise<void> {
 		const config = vscode.workspace.getConfiguration('codebuddy');
 		const serverUrl = config.get<string>('endpoint') || 'https://copilot.tencent.com';
+		//qiuzijian debug
+		const debugHttp = config.get<boolean>('debugHttp') ?? false;
+		const debugHttpLogFile = config.get<boolean>('debugHttpLogFile') ?? false;
 		const url = `${serverUrl}/v2/chat/completions`;
 
 		// Convert messages to OpenAI format
 		const { systemText, conversationMessages } = separateSystemMessage(messages);
-		// Use multimodal extraction so image attachments survive as OpenAI
-		// `image_url` content parts (data URLs). Text-only messages still yield a
-		// plain string, keeping the request body unchanged for non-image turns.
-		const apiMessages = conversationMessages.map(msg => ({
-			role: msg.role === vscode.LanguageModelChatMessageRole.Assistant ? 'assistant' as const : 'user' as const,
-			content: extractMessageContent(msg),
-		}));
+		// 工具调用历史的合法编码 —— 这是模型能否真正调用工具的关键。
+		//
+		// OpenAI Chat Completions 协议下：
+		//   • assistant 消息：{ role:'assistant', content:string|null,
+		//                       tool_calls?: [{id, type:'function', function:{name, arguments}}] }
+		//   • tool 消息：     { role:'tool', tool_call_id:string, content:string }
+		//
+		// 历史 bug：之前所有消息都按 `{role, content: extractMessageContent(msg)}`
+		// 输出，把 LanguageModelToolCallPart / LanguageModelToolResultPart 默默丢弃，
+		// 导致模型从历史里只看到"用文本伪造工具结果"的样本，触发 fake-completion
+		// 死循环。修正后：识别两种 part，输出合法的 OpenAI 工具调用序列。
+		//
+		// 单条 LM message 可能携带多个 ToolResultPart（一个 assistant 多个 tool_call
+		// 对应多个 tool result，被打包进同一条 user 消息）。这里把每个 ToolResultPart
+		// 单独拆成一条 role:'tool' 消息，保持与 OpenAI 协议 1:1 配对。
+		const apiMessages: Array<Record<string, unknown>> = [];
+		for (const msg of conversationMessages) {
+			const isAssistant = msg.role === vscode.LanguageModelChatMessageRole.Assistant;
+
+			// 收集本条消息中的各类 part
+			const toolCalls: Array<{
+				id: string;
+				type: 'function';
+				function: { name: string; arguments: string };
+			}> = [];
+			const toolResults: Array<{ tool_call_id: string; content: string }> = [];
+			const textParts: string[] = [];
+			const imageParts: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
+
+			for (const part of msg.content) {
+				if (part instanceof vscode.LanguageModelToolCallPart) {
+					// assistant 工具调用：聚合到 tool_calls[]
+					let argsStr: string;
+					try {
+						argsStr = typeof part.input === 'string'
+							? part.input
+							: JSON.stringify(part.input ?? {});
+					} catch {
+						argsStr = '{}';
+					}
+					toolCalls.push({
+						id: part.callId,
+						type: 'function',
+						function: { name: part.name, arguments: argsStr },
+					});
+				} else if (part instanceof vscode.LanguageModelToolResultPart) {
+					// 工具结果：拆成独立的 role:'tool' 消息
+					const contentParts: string[] = [];
+					for (const inner of part.content) {
+						if (inner instanceof vscode.LanguageModelTextPart) {
+							contentParts.push(inner.value);
+						}
+						// PromptTsxPart / DataPart 在 tool result 里少见，跳过即可
+					}
+					toolResults.push({
+						tool_call_id: part.callId,
+						content: contentParts.join('') || '',
+					});
+				} else if (part instanceof vscode.LanguageModelTextPart) {
+					textParts.push(part.value);
+				} else if (part instanceof vscode.LanguageModelDataPart) {
+					const mime = part.mimeType || '';
+					if (mime.startsWith('image/')) {
+						const base64 = Buffer.from(part.data).toString('base64');
+						imageParts.push({
+							type: 'image_url',
+							image_url: { url: `data:${mime};base64,${base64}` },
+						});
+					}
+				}
+			}
+
+			// 1) 工具结果消息先发（OpenAI 要求 tool 消息紧跟在对应 assistant tool_calls
+			//    之后；这里按历史顺序遍历，所以前一条 assistant 已经入队，把当前 user
+			//    消息里携带的 tool_result 立刻发出即可）
+			for (const tr of toolResults) {
+				apiMessages.push({
+					role: 'tool',
+					tool_call_id: tr.tool_call_id,
+					content: tr.content,
+				});
+			}
+
+			// 2) assistant 消息：text + tool_calls 合并
+			if (isAssistant) {
+				// 即使 toolCalls.length>0，OpenAI 也允许 content 同时存在（前缀文本）。
+				// content 必须有值；若文本为空且有 tool_calls，content 设为空字符串而
+				// 不是 null（部分网关对 null 容忍度差）。
+				const text = textParts.join('');
+				const assistantMsg: Record<string, unknown> = {
+					role: 'assistant',
+					content: text,
+				};
+				if (toolCalls.length > 0) {
+					assistantMsg.tool_calls = toolCalls;
+				}
+				// assistant 不允许携带 image part；如果出现就忽略（理论上不会发生）
+				apiMessages.push(assistantMsg);
+				continue;
+			}
+
+			// 3) user 消息：当只有 tool_result 时已经在步骤 1 处理完毕，跳过
+			if (textParts.length === 0 && imageParts.length === 0) {
+				continue;
+			}
+
+			// 多模态拼装（与原 extractMessageContent 一致）
+			const text = textParts.join('');
+			let userContent: string | Array<Record<string, unknown>>;
+			if (imageParts.length === 0) {
+				userContent = text;
+			} else {
+				const arr: Array<Record<string, unknown>> = [];
+				if (text) {
+					arr.push({ type: 'text', text });
+				}
+				arr.push(...imageParts);
+				userContent = arr;
+			}
+			apiMessages.push({ role: 'user', content: userContent });
+		}
+		// silence unused import warning (kept for API compat / future fallback paths)
+		void extractMessageContent;
 
 		// Convert VS Code LanguageModelChatTool[] to OpenAI tools format
 		const openaiTools = tools && tools.length > 0
@@ -623,6 +869,18 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			}))
 			: undefined;
 
+		// ── 模型级参数（temperature / max_tokens）从 model 信息读取 ──────────
+		// 抓包对齐：CodeBuddy IDE 的 body 里 temperature / max_tokens 来自该模型的
+		// catalog 元数据（model.json / /v3/config 的 `temperature` / `maxOutputTokens`），
+		// 而非对所有模型写死同一组值。历史 bug：硬编码 temperature:1 / max_tokens:48000
+		// 对 glm-5.1-ioa 恰好吻合，但其它模型（如 maxOutputTokens=32000 的 DeepSeek）
+		// 会发出错误的上限。这里按 selectedModel 查缓存里的 config，缺失时回退默认。
+		const modelCfg = getServerModelConfig(selectedModel);
+		const bodyTemperature = modelCfg?.temperature ?? 1;
+		const bodyMaxTokens = modelCfg?.maxOutputTokens
+			?? getModelTokenLimits(selectedModel).maxOutputTokens
+			?? 48_000;
+
 		const bodyObj: Record<string, unknown> = {
 			model: selectedModel,
 			messages: [
@@ -630,9 +888,10 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				...apiMessages,
 			],
 			stream: true,
-			temperature: 1,
-			max_tokens: 48_000,
+			temperature: bodyTemperature,
+			max_tokens: bodyMaxTokens,
 		};
+		console.log(`[CodeBuddy] body params from model(${selectedModel}): temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens}${modelCfg ? '' : ' (model cfg MISS — using defaults)'}`);
 
 		// Reasoning/thinking parameters (P1) — align with CodeBuddy IDE CN body.
 		// The thinking toggle in the chat toolbar flows here as `reasoning`.
@@ -640,15 +899,45 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// `reasoning_summary: 'auto'`. We only inject when reasoning is enabled, so
 		// non-reasoning turns keep the original body shape unchanged.
 		if (reasoning?.enabled) {
-			// Map to an effort level; default to 'medium' (matches IDE default).
-			const effort = reasoning.effort
-				?? (reasoning.budget != null
-					? (reasoning.budget >= 6144 ? 'high' : reasoning.budget >= 3072 ? 'medium' : 'low')
-					: 'medium');
+			// Effort priority (高→低)，**UI 显式输入永远优先于 server-default**：
+			//   1. UI 显式 effort（effort-slider 模型，用户在工具栏拨过的值）
+			//   2. UI 显式 budget（budget-slider 模型，UI 把 thinking 开关展开成
+			//      预算滑块；UI 默认 1024 → 'medium'，用户拨高才走 'high'）
+			//   3. 服务端 /v3/config 给的 model.reasoning.effort（catalog 推荐
+			//      默认值，例如 hy3-preview-agent-ioa 出厂带 effort='high'）
+			//   4. 最终默认 'medium'
+			//
+			// ⚠️ Bug 修正：之前把 server-default 排在 budget 映射前，导致
+			//   budget-slider 模型（hy3 这种）哪怕 UI 明明传了 budget=1024，
+			//   也被 server-default='high' 覆盖。配合 hy3 + 80 tools，
+			//   reasoning=high 会让模型把工具调用"想"在 reasoning_content 里、
+			//   visible content 只描述不发 tool_calls 字段，触发 fake-completion
+			//   nudge 死循环。修正后：用户在 UI 拨过的任何值（effort 或
+			//   budget）都先于 server-default 起作用，server-default 只在
+			//   "UI 完全没传"的边界情况下兜底。
+			const budgetMappedEffort: 'low' | 'medium' | 'high' | undefined =
+				reasoning.budget != null
+					? (reasoning.budget >= 6144 ? 'high' : reasoning.budget >= 1024 ? 'medium' : 'low')
+					: undefined;
+			const effort: 'low' | 'medium' | 'high' =
+				reasoning.effort
+				?? budgetMappedEffort
+				?? serverReasoningDefault?.effort
+				?? 'medium';
+			// Effort source tag for diagnostic logging (no behavior impact).
+			const effortSource = reasoning.effort
+				? 'ui-effort'
+				: budgetMappedEffort
+					? 'ui-budget'
+					: serverReasoningDefault?.effort
+						? 'server-default'
+						: 'hardcoded-medium';
+			// Summary preference: prefer server-default summary (e.g. 'auto'),
+			// fall back to 'auto' to match IDE behavior.
+			const summary = serverReasoningDefault?.summary ?? 'auto';
 			bodyObj.reasoning_effort = effort;
-			bodyObj.reasoningEffort = effort;          // camelCase duplicate (IDE compat)
-			bodyObj.reasoning_summary = 'auto';
-			console.log(`[CodeBuddy] reasoning enabled: effort=${effort}, summary=auto`);
+			bodyObj.reasoning_summary = summary;
+			console.log(`[CodeBuddy] reasoning enabled: effort=${effort} (source=${effortSource}), summary=${summary}`);
 		}
 
 		// Stateful multi-turn association (P2) — replay last response id for this
@@ -665,6 +954,14 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		if (openaiTools) {
 			bodyObj.tools = openaiTools;
 			console.log(`[CodeBuddy] Including ${openaiTools.length} tools in request`);
+			// tool_choice：仅在有 tools 时生效。'required' 表示本轮必须发起至少一个
+			// 工具调用（治本对抗 hy3-preview-agent-ioa 等模型\"宣告完成却不调工具\"
+			// 的幻觉）；'auto'（默认）让模型自行判断；'none' 禁止本轮调用工具。
+			const tc = toolChoice ?? 'auto';
+			bodyObj.tool_choice = tc;
+			if (tc !== 'auto') {
+				console.log(`[CodeBuddy] tool_choice=${tc} (forced by upstream)`);
+			}
 		}
 
 		const bodyJson = JSON.stringify(bodyObj);
@@ -745,18 +1042,23 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			headers['Content-Encoding'] = 'gzip';
 		}
 
-		// Debug: log complete HTTP request
+		// ── HTTP 请求 Debug（不受 debugHttp 限制，内容始终完整收集）────────────────
+		// 注意：此处 token 为原始值，仅限调试用途，勿提交到版本控制。
 		const debugHeaders = { ...headers };
-		debugHeaders['Authorization'] = `Bearer ${accessToken.substring(0, 20)}...[${accessToken.length}chars]`;
-		// Note: X-API-Key header removed (CodeBuddy IDE CN doesn't send it)
+		debugHeaders['Authorization'] = `Bearer ${accessToken}`;
 
-		console.log(`\n========== [CodeBuddy] HTTP REQUEST DEBUG ==========`);
-		console.log(`[CodeBuddy] URL: ${url}`);
-		console.log(`[CodeBuddy] Method: POST`);
-		console.log(`[CodeBuddy] Headers:`, JSON.stringify(debugHeaders, null, 2));
-		console.log(`[CodeBuddy] Body: ${bodyJson.length} chars (raw JSON)${bodyGzipped ? `, ${(body as Buffer).length} bytes (gzip)` : ''}`);
-		console.log(`[CodeBuddy] Body preview: ${bodyJson.substring(0, 500)}...`);
-		console.log(`========== END REQUEST DEBUG ==========\n`);
+		const reqLines: string[] = [];
+		reqLines.push(`========== HTTP REQUEST DEBUG ==========`);
+		reqLines.push(`URL: ${url}`);
+		reqLines.push(`Method: POST`);
+		reqLines.push(`Headers: ${JSON.stringify(debugHeaders, null, 2)}`);
+		reqLines.push(`Body: ${bodyJson.length} chars (raw JSON)${bodyGzipped ? `, ${(body as Buffer).length} bytes (gzip)` : ''}`);
+		reqLines.push(`Body:\n${bodyJson}`);
+		reqLines.push(`========== END REQUEST DEBUG ==========`);
+		if (debugHttp) { console.log(`\n${reqLines.join('\n')}\n`); }
+		if (FORCE_FILE_LOGGING || debugHttpLogFile) {
+			appendHttpDebugLog(reqLines, context, sessionId, FORCE_FILE_LOGGING_PATH || undefined);
+		}
 
 		const controller = new AbortController();
 		cancellationToken.onCancellationRequested(() => controller.abort());
@@ -770,12 +1072,53 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			signal: controller.signal,
 		});
 
+		// ── HTTP 响应 Debug（受 codebuddy.debugHttp 开关控制）──────────────────
+		// SSE 流式响应无法直接重放，这里记录：
+		//   1. status + headers（最关键）
+		//   2. 每种 SSE data 事件的样本（前 300 字符截断）
+		//   3. 结束时汇总计数
+		let _debugSseCount = 0;
+		let _debugSseBytes = 0;
+		const _debugSseSamples: string[] = [];
+		const _debugSseMaxSamples = 500;
+		const _debugRespLines: string[] = [];
+
+		// 响应 headers：无论 debugHttp 是否开启，只要 FORCE_FILE_LOGGING 就写文件
+		if (FORCE_FILE_LOGGING || debugHttp) {
+			const respHeaders: Record<string, string> = {};
+			response.headers.forEach((v, k) => { respHeaders[k] = v; });
+			const statusLine = `[CodeBuddy] Response status: ${response.status} ${response.statusText}`;
+			const headersLine = `[CodeBuddy] Response headers: ${JSON.stringify(respHeaders)}`;
+			if (debugHttp) {
+				console.log(statusLine);
+				console.log(headersLine);
+			}
+			_debugRespLines.push(statusLine, headersLine);
+		}
+
 		// Parse OpenAI SSE stream — supports both text content and tool_calls
 		// OpenAI tool_calls are streamed incrementally: first chunk has name + id,
 		// subsequent chunks append arguments fragments.
 		const toolCallAccumulators = new Map<number, { id: string; name: string; arguments: string }>();
 
-		return parseSSEStream(response, progress, cancellationToken, (event) => {
+		await parseSSEStream(response, progress, cancellationToken, (event) => {
+			// ── SSE 事件采样（受 debugHttp + FORCE_FILE_LOGGING 开关控制）──────────
+			if (debugHttp || FORCE_FILE_LOGGING) {
+				_debugSseCount++;
+				const raw = JSON.stringify(event);
+				_debugSseBytes += raw.length;
+				if (_debugSseSamples.length < _debugSseMaxSamples) {
+					_debugSseSamples.push(raw); // 完整记录，无截断
+					_debugRespLines.push(`[SSE sample ${_debugSseSamples.length}] ${_debugSseSamples[_debugSseSamples.length - 1]}`);
+				}
+				// 每 20 个事件打一行进度，避免太吵
+				if (_debugSseCount % 20 === 0) {
+					const progressLine = `[CodeBuddy] SSE stream: ${_debugSseCount} events, ${_debugSseBytes} bytes so far...`;
+					if (debugHttp) { console.log(progressLine); }
+					_debugRespLines.push(progressLine);
+				}
+			}
+
 			// Capture the gateway response id for stateful multi-turn association (P2).
 			// OpenAI-style chunks carry a top-level `id`; some gateways also use
 			// `response_id`. We stash the latest non-empty id keyed by session so the
@@ -881,6 +1224,38 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			}
 			return null;
 		}, '[CodeBuddy]');
+
+		// ── SSE Debug 汇总（FORCE_FILE_LOGGING 可独立于 debugHttp 触发文件写入）──
+		const summaryLines: string[] = [];
+		const summary0 = `[CodeBuddy] SSE stream complete: total=${_debugSseCount} events, ${_debugSseBytes} bytes`;
+		if (debugHttp) {
+			console.log(summary0);
+		}
+		summaryLines.push(summary0);
+		if (_debugSseSamples.length > 0) {
+			const sampleHeader = `[CodeBuddy] SSE event samples (first ${_debugSseSamples.length}):`;
+			if (debugHttp) {
+				console.log(sampleHeader);
+			}
+			summaryLines.push(sampleHeader);
+			_debugSseSamples.forEach((s, i) => {
+				const sampleLine = `  [${i + 1}] ${s}`;
+				if (debugHttp) {
+					console.log(sampleLine);
+				}
+				summaryLines.push(sampleLine);
+			});
+		}
+		const endLine = `========== END HTTP DEBUG ==========`;
+		if (debugHttp) {
+			console.log(`${endLine}\n`);
+		}
+		summaryLines.push(endLine);
+		// 文件写入：不受 debugHttp 限制，FORCE_FILE_LOGGING 宏可独立触发
+		console.log('[CodeBuddy] REACHED: SSE stream done, about to write response log. FORCE_FILE_LOGGING=' + FORCE_FILE_LOGGING + ', _debugRespLines.length=' + _debugRespLines.length + ', summaryLines.length=' + summaryLines.length);
+		if (FORCE_FILE_LOGGING || debugHttpLogFile) {
+			appendHttpDebugLog([..._debugRespLines, ...summaryLines], context, sessionId, FORCE_FILE_LOGGING_PATH || undefined);
+		}
 	}
 
 	async provideTokenCount(

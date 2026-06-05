@@ -114,6 +114,10 @@ export type RequestType =
 	| 'files.applyCode'
 	| 'chat.jumpToCheckpoint'
 	| 'chat.openCheckpointDiff'
+	| 'chat.listCheckpoints'
+	| 'chat.revertAllCheckpoints'
+	| 'chat.keepAllCheckpoints'
+	| 'chat.openAllCheckpointsDiff'
 	| 'chat.toolApprove'
 	| 'worktree.list'
 	| 'memory.listL0'
@@ -205,9 +209,7 @@ export function initMessageClient(onEvent: (type: string, data: unknown) => void
 
 			// Otherwise it's an event (unsolicited push from Host)
 			// Log stream-related events for debugging
-			if (message.type?.startsWith('chat.stream')) {
-				console.log(`[MessageClient] Event received: type=${message.type}, dataKeys=${Object.keys(message.data || {}).join(',')}`);
-			}
+
 			onEvent(message.type, message.data);
 		}
 	});

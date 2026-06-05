@@ -80,7 +80,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const [showCommandMenu, setShowCommandMenu] = useState(false);
 	const [commandFilter, setCommandFilter] = useState('');
 	const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
-	
+
 	// 技能菜单状态
 	const [showSkillMenu, setShowSkillMenu] = useState(false);
 	const [skills, setSkills] = useState<Array<{ id: string; name: string }>>([]);
@@ -193,40 +193,46 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	// ── 图片/Vision 支持检测 ──────────────────────────────────────
 	const modelSupportsImages = !!(currentModel?.supportsImages);
 	const visionWarning = getImageSupportWarning(modelSupportsImages);
-	// [VISION-DEBUG] node 4: ChatComposer — final UI decision
-	console.log(
-		`[VISION-DEBUG][ChatComposer] modelId=${currentModel?.id} rawSupportsImages=${currentModel?.supportsImages} ` +
-		`modelSupportsImages=${modelSupportsImages} visionWarning=${JSON.stringify(visionWarning)}`,
-	);
+
 
 	// ── 上下文使用量（发送按钮左侧圆环进度条）──────────────────────────
-	// 参考 Hermes-Agent 的实时 token 显示设计，分三层估算，确保聊天过程中进度条实时更新：
-	//   1) 输入基线：把已有 messages 历史按 char/4 估算（含 thinking + toolCalls），
-	//      作为本轮请求送入模型的输入占用 —— 发送前进度条就已反映输入体量。
-	//   2) 流式输出增量：phase 活跃时叠加 streamState 的 textBuffer + thinkingBuffer 估算，
-	//      使生成过程中进度条随产出逐字增长（解决"只在 done 跳变"的问题）。
-	//   3) 真值修正：收到真实 usage（seen=true，通常在流末）后用 input+output 覆盖估算值，
-	//      使最终数值精确。done 后该值沉淀到 message.tokenUsage，下一轮成为输入基线的真值来源。
+	// 方案 B：取最后一轮有 tokenUsage 的消息的 (input + output) 作为当前基线。
+	// 原理：每轮 API 的 input 已包含完整历史 tokenized，因此最后一轮的 input+output
+	// 就是下一次请求会发送的全部上下文大小。不再逐条累加（会重复计数）。
+	// 分三层实时更新：
+	//   1) 空闲态：inputBaselineTokens（最后一轮真值 or 降级字符估算）
+	//   2) 流式中：基线 + streamTextBuffer + streamThinkingBuffer 实时估算
+	//   3) 真值修正：收到本轮 usage.seen 后用真实 input+output 覆盖
 	const streamUsage = useChatStore(s => s.streamState.usage);
 	const streamPhase = useChatStore(s => s.streamState.phase);
 	const streamTextBuffer = useChatStore(s => s.streamState.textBuffer);
 	const streamThinkingBuffer = useChatStore(s => s.streamState.thinkingBuffer);
+	const compactedBaseline = useChatStore(s => s.streamState.compactedBaseline);
 	const messages = useChatStore(s => s.messages);
 
-	// 输入基线：累加全部历史消息的估算 token。优先用真实 tokenUsage.total（更准），
-	// 否则按 content + thinking + toolCalls(JSON) 的字符数估算。
+	// 输入基线（方案 B）：取最后一轮有 tokenUsage 的消息的 input+output 作为当前基线。
+	// 原因：每一轮 API 调用的 input 已包含全部历史消息的 tokenized 大小，
+	// 再加上该轮 output = 下一轮发送时这些历史消息的实际 token 占用。
+	// 旧逻辑（逐条累加 total）会导致重复计数——因为每轮 input 已含之前所有历史。
 	const inputBaselineTokens = useMemo(() => {
+		// 从后往前找到最近一条有真实 tokenUsage 的消息
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const m = messages[i];
+			if (m.tokenUsage && (m.tokenUsage.input > 0 || m.tokenUsage.total > 0)) {
+				// input+output = 下一轮请求会发送的完整历史大小
+				if (m.tokenUsage.input > 0) {
+					return m.tokenUsage.input + (m.tokenUsage.output || 0);
+				}
+				// 兼容：部分 provider 只返回 total 不拆分 input/output
+				return m.tokenUsage.total;
+			}
+		}
+		// 无真实 usage（新对话或首条消息）：降级为逐条字符估算
 		let total = 0;
 		for (const m of messages) {
-			if (m.tokenUsage && m.tokenUsage.total > 0) {
-				// 带真实用量的消息：直接采信（该消息往返的真实 token）
-				total += m.tokenUsage.total;
-				continue;
-			}
 			total += estimateTokens(m.content);
 			total += estimateTokens(m.thinking);
 			if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
-				// 工具调用的 name/arguments/result 也占输入 token
 				for (const tc of m.toolCalls) {
 					total += estimateTokens(tc.arguments);
 					total += estimateTokens(tc.result);
@@ -245,21 +251,28 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 		const isStreaming = streamPhase !== 'idle' && streamPhase !== 'error';
 
+		// 有效输入基线：上下文压缩后，后端 messages 已缩减，但前端 messages 历史不变，
+		// 故 inputBaselineTokens 仍是压缩前的旧大值。当本轮收到 compactedBaseline（>0）
+		// 时改用它作为基线，让圆环立即随压缩回落。下一轮真实 usage 到来后自然覆盖。
+		const effectiveBaseline = compactedBaseline > 0
+			? Math.min(compactedBaseline, inputBaselineTokens)
+			: inputBaselineTokens;
+
 		let used: number;
 		if (streamUsage?.seen) {
 			// 3) 真值优先：已收到真实 usage chunk
 			//    流式输出基线(历史输入) + 真实 (input + output)。
 			//    注：真实 input 已含本轮发送的历史，但为避免重复计数，这里直接采用
-			//    真实 input+output 作为"本轮往返总量"，并与历史基线取较大值兜底。
+			//    真实 input+output 作为"本轮往返总量"，并与有效基线取较大值兜底。
 			const real = (streamUsage.input || 0) + (streamUsage.output || 0);
-			used = Math.max(real, inputBaselineTokens);
+			used = Math.max(real, effectiveBaseline);
 		} else if (isStreaming) {
 			// 2) 流式进行中且尚无真实 usage：输入基线 + 实时输出估算
 			const outputEstimate = estimateTokens(streamTextBuffer) + estimateTokens(streamThinkingBuffer);
-			used = inputBaselineTokens + outputEstimate;
+			used = effectiveBaseline + outputEstimate;
 		} else {
 			// 1) 空闲态：纯输入基线（即当前对话历史占用）
-			used = inputBaselineTokens;
+			used = effectiveBaseline;
 		}
 
 		const ratio = Math.max(0, Math.min(1, used / limit));
@@ -276,6 +289,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		streamTextBuffer,
 		streamThinkingBuffer,
 		inputBaselineTokens,
+		compactedBaseline,
 	]);
 
 	// 点击外部关闭下拉菜单
@@ -544,8 +558,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const filteredCommands = useMemo(() => {
 		if (!commandFilter.trim()) return commands;
 		const filter = commandFilter.toLowerCase();
-		return commands.filter(cmd => 
-			cmd && cmd.id && cmd.name && (cmd.id.toLowerCase().includes(filter) || 
+		return commands.filter(cmd =>
+			cmd && cmd.id && cmd.name && (cmd.id.toLowerCase().includes(filter) ||
 			cmd.name.toLowerCase().includes(filter))
 		);
 	}, [commands, commandFilter]);
@@ -554,8 +568,8 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const filteredSkills = useMemo(() => {
 		if (!skillFilter.trim()) return skills;
 		const filter = skillFilter.toLowerCase();
-		return skills.filter(skill => 
-			skill && skill.id && skill.name && (skill.id.toLowerCase().includes(filter) || 
+		return skills.filter(skill =>
+			skill && skill.id && skill.name && (skill.id.toLowerCase().includes(filter) ||
 			skill.name.toLowerCase().includes(filter))
 		);
 	}, [skills, skillFilter]);
@@ -583,11 +597,11 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		const value = e.target.value;
 		setInput(value);
-		
+
 		// 检查是否刚刚输入了 '/'（当前光标位置前一个字符是 '/'）
 		const cursorPos = e.target.selectionStart;
 		const lastSlashIndex = value.lastIndexOf('/');
-		
+
 		if (showCommandMenu) {
 			// 命令菜单显示中：更新过滤条件或关闭菜单
 			if (lastSlashIndex >= 0) {
@@ -635,14 +649,14 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		if (showCommandMenu) {
 			if (e.key === 'ArrowDown') {
 				e.preventDefault();
-				setSelectedCommandIndex(prev => 
+				setSelectedCommandIndex(prev =>
 					prev < filteredCommands.length - 1 ? prev + 1 : 0
 				);
 				return;
 			}
 			if (e.key === 'ArrowUp') {
 				e.preventDefault();
-				setSelectedCommandIndex(prev => 
+				setSelectedCommandIndex(prev =>
 					prev > 0 ? prev - 1 : filteredCommands.length - 1
 				);
 				return;
@@ -684,19 +698,19 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			// But if the input no longer looks like a command (has space after command word), close the menu
 			return;
 		}
-		
+
 		// 如果技能菜单显示，处理菜单导航
 		if (showSkillMenu) {
 			if (e.key === 'ArrowDown') {
 				e.preventDefault();
-				setSelectedSkillIndex(prev => 
+				setSelectedSkillIndex(prev =>
 					prev < filteredSkills.length - 1 ? prev + 1 : 0
 				);
 				return;
 			}
 			if (e.key === 'ArrowUp') {
 				e.preventDefault();
-				setSelectedSkillIndex(prev => 
+				setSelectedSkillIndex(prev =>
 					prev > 0 ? prev - 1 : filteredSkills.length - 1
 				);
 				return;
@@ -722,7 +736,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			}
 			return;
 		}
-		
+
 		// 默认处理：Enter 发送，Escape 取消
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
@@ -831,7 +845,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 					rows={1}
 					className="chat-composer-textarea"
 				/>
-				
+
 				{/* 命令菜单 */}
 				{showCommandMenu && filteredCommands.length > 0 && (
 					<div className="command-menu" ref={commandMenuRef}>
@@ -866,7 +880,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 						))}
 					</div>
 				)}
-				
+
 				{/* 技能菜单 */}
 				{showSkillMenu && (
 					<div className="skill-menu" ref={skillMenuRef}>

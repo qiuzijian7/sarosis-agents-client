@@ -30,7 +30,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IFileService, FileChangesEvent } from '../../../../../platform/files/common/files.js';
 import { IWorkingCopyFileService } from '../../../../../workbench/services/workingCopy/common/workingCopyFileService.js';
 import { IEditableData } from '../../../../../workbench/common/views.js';
 import { IFileDialogService, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -389,6 +389,22 @@ export class WorkspaceViewPane extends ViewPane {
 	private editableElementResource: string | undefined;
 	private editableData: IEditableData | undefined;
 
+	/**
+	 * Filesystem watchers for the currently displayed real workspace roots.
+	 * Recreated on every {@link _loadWorkspaceRoots} so they always track the
+	 * active workspace's home + related folders. Cleared on dispose with the view.
+	 */
+	private readonly _fsWatchers = this._register(new DisposableStore());
+	/**
+	 * The real (scheme === 'file') root elements currently rendered, used to
+	 * scope on-disk change events back to a specific subtree to refresh.
+	 */
+	private _watchedRoots: IWorkspaceExplorerElement[] = [];
+	/** Roots accumulated between debounce ticks, refreshed together on the next tick. */
+	private readonly _pendingRefreshRoots = new Set<IWorkspaceExplorerElement>();
+	/** Debounce handle coalescing a burst of filesystem events into a single refresh. */
+	private _fsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
 	constructor(
 		options: IViewPaneOptions,
 		@IKeybindingService keybindingService: IKeybindingService,
@@ -468,6 +484,18 @@ export class WorkspaceViewPane extends ViewPane {
 			}));
 		} catch (err) {
 			this.logService.warn('[WorkspaceViewPane] Could not subscribe to workspace changes:', err);
+		}
+
+		// ─── Subscribe to on-disk file changes ────────────────────────
+		// Native VS Code Explorer refreshes via IFileService.onDidFilesChange.
+		// We do the same so that files created/deleted directly on disk (e.g.
+		// by an AI tool writing test13.txt) show up without a manual reload.
+		// The actual recursive watch() registrations on each root are (re)made
+		// in _loadWorkspaceRoots; this listener just reacts to their events.
+		try {
+			this._register(this.fileService.onDidFilesChange(e => this._onDidFilesChange(e)));
+		} catch (err) {
+			this.logService.warn('[WorkspaceViewPane] Could not subscribe to file changes:', err);
 		}
 	}
 
@@ -938,6 +966,97 @@ export class WorkspaceViewPane extends ViewPane {
 		await this._loadWorkspaceRoots();
 	}
 
+	/**
+	 * (Re)install recursive filesystem watchers for the given real workspace
+	 * roots. Clears any previous watchers first so we never leak handles or
+	 * watch a stale workspace's directories. Only real (scheme === 'file')
+	 * roots are watched — virtual roots have no backing directory.
+	 */
+	private _installRootWatchers(roots: IWorkspaceExplorerElement[]): void {
+		// Drop previous watchers and pending work for the old root set.
+		this._fsWatchers.clear();
+		this._pendingRefreshRoots.clear();
+		if (this._fsRefreshTimer !== undefined) {
+			clearTimeout(this._fsRefreshTimer);
+			this._fsRefreshTimer = undefined;
+		}
+
+		const realRoots = roots.filter(r => !r.isVirtualWorkspace && r.resource.scheme === 'file');
+		this._watchedRoots = realRoots;
+
+		for (const root of realRoots) {
+			try {
+				// Recursive watch so nested creates/deletes (any depth) surface.
+				// node_modules/.git etc. are noisy but harmless — the change
+				// handler filters by visible roots and the tree refresh is cheap
+				// and scoped. We keep excludes minimal to avoid missing events.
+				this._fsWatchers.add(this.fileService.watch(root.resource, { recursive: true, excludes: [] }));
+			} catch (err) {
+				this.logService.warn(`[WorkspaceViewPane] Failed to watch root "${root.resource.toString()}":`, err);
+			}
+		}
+	}
+
+	/**
+	 * React to on-disk file changes. Determine which watched root subtrees are
+	 * affected and schedule a debounced, scoped refresh of just those subtrees
+	 * (preserving expansion/selection state, like the native Explorer).
+	 */
+	private _onDidFilesChange(e: FileChangesEvent): void {
+		if (this._watchedRoots.length === 0) {
+			return;
+		}
+
+		let matched = false;
+		for (const root of this._watchedRoots) {
+			// affects() matches the root itself or any descendant change.
+			if (e.affects(root.resource)) {
+				this._pendingRefreshRoots.add(root);
+				matched = true;
+			}
+		}
+		if (!matched) {
+			return;
+		}
+
+		// Debounce: filesystem operations often emit several events in quick
+		// succession (write temp → rename, etc.). Coalesce into one refresh.
+		if (this._fsRefreshTimer !== undefined) {
+			clearTimeout(this._fsRefreshTimer);
+		}
+		this._fsRefreshTimer = setTimeout(() => {
+			this._fsRefreshTimer = undefined;
+			void this._flushPendingRefresh();
+		}, 300);
+	}
+
+	/**
+	 * Refresh the subtrees accumulated since the last debounce tick. Uses
+	 * updateChildren(root, recursive, rerender) which re-resolves children via
+	 * the data source while preserving the tree's expansion and selection
+	 * state — so a newly created file simply appears in place.
+	 */
+	private async _flushPendingRefresh(): Promise<void> {
+		if (!this.tree) {
+			return;
+		}
+		const roots = Array.from(this._pendingRefreshRoots);
+		this._pendingRefreshRoots.clear();
+
+		for (const root of roots) {
+			// The node may have been removed by a concurrent reload — guard it.
+			if (!this.tree.hasNode(root)) {
+				continue;
+			}
+			try {
+				await this.tree.updateChildren(root, /* recursive */ true, /* rerender */ false);
+				this.logService.trace(`[WorkspaceViewPane] Refreshed subtree after fs change: ${root.name}`);
+			} catch (err) {
+				this.logService.warn(`[WorkspaceViewPane] Failed to refresh subtree "${root.name}" after fs change:`, err);
+			}
+		}
+	}
+
 	private async _loadWorkspaceRoots(): Promise<void> {
 		this.logService.info('[WorkspaceViewPane] Loading workspace roots');
 		this.wsProgressBar.infinite().show(100);
@@ -1014,6 +1133,11 @@ export class WorkspaceViewPane extends ViewPane {
 
 			await this.tree.setInput(virtualRoot);
 			this.logService.info('[WorkspaceViewPane] setInput completed for virtual root');
+
+			// (Re)install recursive filesystem watchers for the real roots so
+			// on-disk changes (file create/delete by AI tools, terminal, etc.)
+			// trigger an automatic tree refresh.
+			this._installRootWatchers(workspaceRoots);
 
 			// Auto-expand each workspace root so users see the file tree immediately
 			for (const root of workspaceRoots) {
@@ -1459,6 +1583,10 @@ export class WorkspaceViewPane extends ViewPane {
 	}
 
 	override dispose(): void {
+		if (this._fsRefreshTimer !== undefined) {
+			clearTimeout(this._fsRefreshTimer);
+			this._fsRefreshTimer = undefined;
+		}
 		super.dispose();
 	}
 }

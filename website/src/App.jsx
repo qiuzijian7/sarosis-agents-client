@@ -3,8 +3,8 @@ import Header from './components/Header'
 import Hero from './components/Hero'
 import Features from './components/Features'
 import Download from './components/Download'
-import Feedback from './components/Feedback'
 import Footer from './components/Footer'
+import Issues from './components/Issues'
 
 export default function App() {
   const [scrollY, setScrollY] = useState(0)
@@ -22,7 +22,7 @@ export default function App() {
         <Hero />
         <Features />
         <Download />
-        <Feedback />
+        <Issues />
       </main>
       <Footer />
     </div>

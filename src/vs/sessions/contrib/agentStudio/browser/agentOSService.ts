@@ -73,6 +73,40 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	/** 用于构建统一 ChatMessage 格式的流适配器（AG-UI → ChatMessage） */
 	private _chatMessageStream: AGUIChatMessageBuilder | undefined;
 
+	// ─── 抓包对齐的会话 id 状态（按 sessionId 隔离）────────────────────────
+	// 抓包证据（CodeBuddy IDE /v2/chat/completions）：
+	//   - X-Conversation-ID 会话级稳定不变  → 同一 sessionId 复用同一 conversationId
+	//   - X-Conversation-Request-ID 每次 API 调用都换  → 每轮 iteration 生成新 requestId
+	//   - 请求体 previous_response_id = 上一次响应流 chunk 的 id  → 每轮捕获并记下，
+	//     下一轮带上，让服务端做链式上下文衔接
+	// 历史串台 bug 根因：仅用单一 sessionId 当所有 id，服务端 KV 缓存按 conversation-id
+	// 跨会话碰撞。此处把三个 id 分离：conversationId 稳定、requestId 每轮新。
+	/** sessionId → 稳定 conversationId（会话内不变） */
+	private readonly _conversationIdBySession = new Map<string, string>();
+	/** sessionId → 上一次响应流的 id（作为下一轮请求的 previous_response_id） */
+	private readonly _lastResponseIdBySession = new Map<string, string>();
+
+	/** 取（或惰性创建）某会话的稳定 conversationId。无 sessionId 时回退到随机串。 */
+	private _getOrCreateConversationId(sessionId: string | undefined): string {
+		const key = sessionId || '__nosession__';
+		let cid = this._conversationIdBySession.get(key);
+		if (!cid) {
+			// 32 位 hex，与抓包 X-Conversation-ID 形态一致
+			cid = this._generateHexId();
+			this._conversationIdBySession.set(key, cid);
+		}
+		return cid;
+	}
+
+	/** 生成 32 位十六进制 id（用于 conversationId / requestId）。 */
+	private _generateHexId(): string {
+		let s = '';
+		for (let i = 0; i < 8; i++) {
+			s += Math.floor((1 + Math.random()) * 0x10000).toString(16).slice(1);
+		}
+		return s;
+	}
+
 	// Events
 	private readonly _onDidChangeModelProviders = this._register(new Emitter<void>());
 	readonly onDidChangeModelProviders = this._onDidChangeModelProviders.event;
@@ -641,19 +675,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			forceToolChoiceNextIteration = false;
 
 			// 调用模型
-			// 注意：sessionId 透传给 provider 用作稳定的 X-Conversation-Id。
-			// 真实 CodeBuddy IDE 在同一会话内 conversation-id 保持稳定（仅 request-id /
-			// message-id 每轮变），服务端据此关联多轮上下文与推理缓存。本项目以
-			// agent turn 的 sessionId 作为该稳定 ID 的来源。
-			const context: { agentId?: string; sessionId?: string } = {};
+			// 注意：抓包对齐的三个独立 id（不可混用）：
+			//   conversationId  会话级稳定（同一 sessionId 复用同一个）→ X-Conversation-ID
+			//   requestId       请求级，每轮 iteration 都重新生成      → X-Conversation-Request-ID
+			//   previousResponseId  上一轮响应流的 id（链式衔接）        → 请求体 previous_response_id
+			// 历史串台 bug：仅用单一 sessionId 当所有 id，服务端 KV 缓存按 conversation-id
+			// 跨会话碰撞 → 命中旧上下文、忽略本地 priorMessages。此处分离三 id 杜绝碰撞。
+			const conversationId = this._getOrCreateConversationId(request.sessionId);
+			const requestId = this._generateHexId();
+			const previousResponseId = request.sessionId
+				? this._lastResponseIdBySession.get(request.sessionId)
+				: undefined;
+			const context: { agentId?: string; sessionId?: string; conversationId?: string; requestId?: string; previousResponseId?: string } = {};
 			if (request.agentId) {
 				context.agentId = request.agentId;
 			}
 			if (request.sessionId) {
 				context.sessionId = request.sessionId;
 			}
+			context.conversationId = conversationId;
+			context.requestId = requestId;
+			if (previousResponseId) {
+				context.previousResponseId = previousResponseId;
+			}
 
-			this._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length})`);
+			this._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length}) convId=${conversationId} reqId=${requestId} prevRespId=${previousResponseId ?? '(none)'}`);
 
 			// 收集模型响应
 			let assistantContent = '';
@@ -679,6 +725,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			try {
 				const stream = modelProvider.chat(selection.modelId, messages, modelOptions, context);
 				for await (const delta of stream) {
+					// ─── 捕获响应流 id（抓包对齐）──────────────────────────────
+					// 抓包证据：响应流每个 chunk 的 id 相同，且 = 下一次请求的
+					// previous_response_id。任意 delta 携带 responseId 即记下，供下一轮
+					// （或下一条用户消息）作 previousResponseId 链式衔接。
+					if (delta.responseId && request.sessionId) {
+						this._lastResponseIdBySession.set(request.sessionId, delta.responseId);
+					}
 					// 收集完整的助手消息数据
 					if (delta.type === 'text' && delta.content) {
 						assistantContent += delta.content;
@@ -864,6 +917,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					assistantMessage.toolCalls = effectiveToolCalls;
 				}
 				messages.push(assistantMessage);
+
+				// ─── Hermes-style 消息边界事件（治本根因修复）─────────────────
+				// 把"本 iteration 的 assistant 边界"显式告知下游持久化层，让 chatService
+				// 不再 `fullContent += delta` 把多轮文本压扁成一条。content 为本轮权威
+				// 文本（已 sanitize+trim），toolCallIds 为本轮工具调用 id。后续 tool_result
+				// 仍按 id 跨事件回填，因此这里只需声明归属关系。
+				yield {
+					type: 'assistant_turn' as any,
+					content: trimmedAssistantContent,
+					metadata: {
+						turnIndex: iteration,
+						toolCallIds: effectiveToolCalls.map(tc => tc.id),
+					},
+				};
 			}
 
 			if (effectiveToolCalls.length === 0) {
@@ -1947,6 +2014,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 清理被 </think> 等标签污染的内容（取第一个有效工具名）
 			const cleanContent = content.split(/\s*<\//)[0].trim();
 
+			// 优先：从 <arg_key>...</arg_value> 格式中提取参数（不依赖 split 丢失子标签）
+			const argsFromNested: Record<string, string> = {};
+			const nestedArgRegex = /<arg_key>\s*([^<]+?)\s*<\/arg_key>\s*<arg_value>\s*([^<]*?)\s*<\/arg_value>/gi;
+			let nMatch: RegExpExecArray | null;
+			while ((nMatch = nestedArgRegex.exec(content)) !== null) {
+				argsFromNested[nMatch[1].trim()] = nMatch[2].trim();
+			}
+
 			// 新增：尝试使用 SurroundingsRemover 解析 XML 内容（参考 Void 的 parseXMLPrefixToToolCall）
 			const xmlParsed = this._tryParseXmlWithSurroundingsRemover(cleanContent);
 			if (xmlParsed) {
@@ -1954,7 +2029,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				results.push({
 					id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 					name: xmlParsed.name,
-					arguments: xmlParsed.args,
+					arguments: xmlParsed.args === '{}' && Object.keys(argsFromNested).length > 0
+						? JSON.stringify(argsFromNested)
+						: xmlParsed.args,
 				});
 				return; // 解析成功，提前返回
 			}
@@ -1966,6 +2043,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				let args = '{}';
 				if (argsMatch) {
 					try { JSON.parse(argsMatch[1]); args = argsMatch[1]; } catch { /* use default */ }
+				} else if (Object.keys(argsFromNested).length > 0) {
+					args = JSON.stringify(argsFromNested);
 				}
 				results.push({
 					id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -1978,7 +2057,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				results.push({
 					id: `xml_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
 					name: cleanContent,
-					arguments: '{}',
+					arguments: Object.keys(argsFromNested).length > 0 ? JSON.stringify(argsFromNested) : '{}',
 				});
 			} else {
 				this._logService.info(`[AgentOS] _extractToolCallsFromXml: unprocessable content for <${tag}>: "${cleanContent.substring(0, 60)}"`);

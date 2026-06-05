@@ -1,0 +1,41 @@
+{
+  "$schema": "https://workbuddy.dev/schemas/project-mcp-manifest.json",
+  "description": "项目所需 MCP 连接器清单（声明式）。WorkBuddy 实际生效的配置仍读取用户级 ~/.workbuddy/mcp.json；本文件用于团队成员快速对齐：哪些连接器必须装、装到哪里。",
+  "required": {
+    "gongfeng": {
+      "purpose": "工蜂（git.woa.com）API：发版时创建 Release、上传安装包资产、查 MR/issue/commit。",
+      "usedBy": [
+        "resources/.agents/agents/vssarosis-release-bot.md",
+        "resources/.agents/skills/vssarosis-release-pipeline/SKILL.md"
+      ],
+      "userLevelConfig": {
+        "path": "~/.workbuddy/mcp.json",
+        "entry": {
+          "mcpServers": {
+            "gongfeng": {
+              "url": "https://mcpgw.knot.woa.com/gongfeng"
+            }
+          }
+        }
+      },
+      "marketplaceConnector": "gongfeng-woa",
+      "trustRequired": true,
+      "setupSteps": [
+        "1. 打开 WorkBuddy → 自定义连接器面板（右上角）",
+        "2. 找到 gongfeng-woa 连接器并点击 Trust",
+        "3. 验证：在任意 WorkBuddy 会话调用 gongfeng MCP 工具应返回非空"
+      ]
+    }
+  },
+  "recommended": {
+    "github": {
+      "purpose": "GitHub API：备份仓库 Release、PR、issue 操作。",
+      "fallback": "未启用时使用本地 gh CLI"
+    }
+  },
+  "notes": [
+    "VS Code 工作区自身的 MCP 配置位于 .vscode/mcp.json（servers 字段，VS Code 格式）。",
+    "WorkBuddy 助手用的 MCP 配置位于 ~/.workbuddy/mcp.json（mcpServers 字段），是用户级，不放仓库。",
+    "如需团队共享，请按本文件 setupSteps 自行在用户级配置一次。"
+  ]
+}

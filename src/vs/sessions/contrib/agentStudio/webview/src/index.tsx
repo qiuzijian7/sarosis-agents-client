@@ -288,6 +288,22 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'chat.switchToSession': {
+			// Host requests switching to a specific agent session
+			// (e.g. from the SessionExplorerViewPane in the sidebar)
+			const detail = data as { employeeId: string; agentSessionId: string } | undefined;
+			if (detail?.employeeId && detail?.agentSessionId) {
+				const chatStore = useChatStore.getState();
+				// First select the employee if not already active
+				if (chatStore.activeEmployeeId !== detail.employeeId) {
+					chatStore.setActiveEmployee(detail.employeeId);
+				}
+				// Then switch to the session
+				chatStore.switchAgentSession(detail.agentSessionId);
+				console.log(`[AgentStudio] chat.switchToSession → switched to session ${detail.agentSessionId} for employee ${detail.employeeId}`);
+			}
+			break;
+		}
 		case 'chat.toolApprovalRequest': {
 			// Host requests tool approval UI — find the tool call and set status to 'approval_required'
 			const payload = data as {

@@ -51,6 +51,14 @@ export interface IFileSnapshot {
 	readonly uri: URI;
 	readonly languageId: string | undefined;
 	readonly content: string; // full file content at snapshot time
+	/**
+	 * Whether the file already existed on disk at snapshot time.
+	 * `false` means the file was newly created by the edit, so reverting
+	 * (jumpToCheckpoint) must DELETE the file rather than write empty content.
+	 * Optional for backward-compat with snapshots created before this field
+	 * existed (treated as `true` → restore-by-write).
+	 */
+	readonly existedBefore?: boolean;
 }
 
 /**
@@ -76,6 +84,8 @@ export interface IFileSnapshotData {
 	readonly uri: URI;
 	readonly languageId: string | undefined;
 	readonly content: string;
+	/** Whether the file already existed on disk at snapshot time. See IFileSnapshot.existedBefore. */
+	readonly existedBefore?: boolean;
 }
 
 /**

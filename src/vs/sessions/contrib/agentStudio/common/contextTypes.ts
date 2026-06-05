@@ -547,11 +547,16 @@ export interface IContextManager {
 	 * Compress context to reduce token usage
 	 * @param messages Messages to compress
 	 * @param config Compression configuration
+	 * @param contextWindow 模型上下文窗口大小（token），用于计算压缩阈值
+	 * @param realPromptTokens 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
+	 *                         P1：触发判定优先采用真实值，>0 时生效，缺省退回粗估。
 	 * @returns Compression result with compressed messages
 	 */
 	compressContext(
 		messages: ReadonlyArray<ChatMessage>,
-		config?: Partial<IContextCompressionConfig>
+		config?: Partial<IContextCompressionConfig>,
+		contextWindow?: number,
+		realPromptTokens?: number
 	): Promise<IContextCompressionResult>;
 
 	/**

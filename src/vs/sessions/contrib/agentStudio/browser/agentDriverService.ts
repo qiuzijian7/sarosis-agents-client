@@ -390,6 +390,20 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 								'Example (wrong, do NOT use): <tool_call>file_list</tool_call>',
 								'Never output tool calls as plain text explanations or code blocks without the proper format.',
 								'',
+								'## CRITICAL ANTI-HALLUCINATION RULES (MUST FOLLOW)',
+								'',
+								'1. **NEVER claim you have done something without actually calling a tool.** If the user asks you to create/modify/delete a file, run a command, or perform any side-effect, you MUST emit an actual tool call. Phrases like "文件已创建成功", "已完成", "I have created the file", "Done!" are STRICTLY FORBIDDEN unless they appear AFTER a real tool call returned a successful result.',
+								'2. **NEVER fabricate tool execution.** Do not write narrative descriptions like "让我使用 file_write 工具" or "I will use the file_write tool" as a substitute for an actual tool call. Either emit the structured tool call, or do not claim the action was taken.',
+								'3. **For ANY filesystem write / command execution / external side-effect: a tool call is MANDATORY.** No exceptions. If you cannot determine the correct tool or arguments, ask the user — do not pretend the action succeeded.',
+								'4. **Output format priority** (in order):',
+								'   a. PREFERRED: native OpenAI function-call format via the `tools` parameter (the API will route this automatically).',
+								'   b. FALLBACK (only if native function-call is unavailable): emit a JSON object in a fenced code block:',
+								'      ```json',
+								'      {"name": "file_write", "arguments": {"path": "g:/example/test.txt", "content": ""}}',
+								'      ```',
+								'5. **Do not narrate the tool call.** Do not write "I am calling file_write now" before emitting it. Just emit the tool call directly.',
+								'6. **After a tool returns:** you may then summarize what happened in natural language, citing the actual tool result.',
+								'',
 							);
 
 							const toolSectionStr = toolSection.join('\n');
@@ -549,9 +563,23 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 				// 解析 memoryConfig 中的策略 / 上限，向下游 AgentOS 传递。
 				// 注意：旧值 'sliding_window' 视为 'full'（参见 useEmployeeStore.ts MemoryConfig 注释）。
+				//
+				// 【B 方案兼容】当 priorMessages 已将完整会话历史灌入 messages 时，
+				// L0 短期记忆（即最近几轮 user+assistant 原文）与 messages 中的历史
+				// 完全重叠。若仍按 'full' 策略注入 L0，模型会看到两份相同的对话内容
+				// → 混淆 → 在回复中重复/回显之前的内容。因此当有历史灌入时，强制
+				// 切换为 'summary'（仅注入 L1 长期摘要），避免重复。
 				const rawStrategy = employee?.memoryConfig?.strategy;
+				const hasHistoryInMessages = mergedMessages.length > 1;
 				const memoryStrategy: 'summary' | 'full' =
-					rawStrategy === 'summary' ? 'summary' : 'full';
+					hasHistoryInMessages ? 'summary'
+						: rawStrategy === 'summary' ? 'summary' : 'full';
+				if (hasHistoryInMessages && rawStrategy !== 'summary') {
+					this._logService.info(
+						`[AgentDriver] B-plan override: memoryStrategy forced to 'summary' ` +
+						`(messages=${mergedMessages.length}, L0 would duplicate history)`,
+					);
+				}
 				const memoryMaxEntries = (
 					typeof employee?.memoryConfig?.maxEntries === 'number' &&
 					employee.memoryConfig.maxEntries > 0
@@ -709,6 +737,24 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					assistantChunks.length = 0;
 					assistantChunks.push(cleanContent);
 					yield { ...delta, content: cleanContent };
+				} else if ((delta as any).type === 'discard_prior_text') {
+					// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────
+					// 参考 Hermes `conversation_loop.py` 的 `_empty_recovery_synthetic`
+					// + while-pop 模式：upstream 检测到 fake-completion / unfinished-intent /
+					// 空回，准备注入 nudge 续跑时，要求下游**完全丢弃刚才那段幻觉/过渡文本**，
+					// 不能让它进入 memory provider（L0 capture）和 chatService.history。
+					//
+					// 否则下一轮 `_toDriverMessages(history)` 会把"您完全正确！我犯了严重错误..."
+					// 这种道歉幻觉作为 prior driver messages 喂回模型，形成对话循环。
+					rawDeltaChunks.length = 0;
+					assistantChunks.length = 0;
+					tagBuffer = '';
+					const reason = (delta as any).metadata?.reason ?? 'unknown';
+					this._logService.info(
+						`[AgentDriver] 🧹 Received discard_prior_text signal (reason=${reason}) — cleared rawDeltaChunks + assistantChunks to prevent conversation rot`,
+					);
+					// 把信号原样向上游 yield（chatService 同样需要清空 fullContent/fullThinking）
+					yield delta;
 				} else if (delta.type === 'done') {
 					// 流结束：刷新缓冲区，未完成的标签当普通文本处理
 					const flushed = flushTagBuffer();
@@ -993,6 +1039,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		employeeId: string,
 		message: string,
 		options: IChatSendOptions,
+		priorMessages?: import('../common/providers.js').IChatMessage[],
 	): AsyncIterable<IChatStreamDelta> {
 		// Build content parts: text + image attachments
 		const contentParts: Array<import('../common/providers.js').IChatContentPart> = [];
@@ -1030,7 +1077,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		const request: IAgentTurnRequest = {
 			agentId: employeeId,
 			sessionId: options.agentSessionId,
-			messages: [userMessage],
+			// 完整会话历史（由 chatService 从持久化历史转换并去重当前 user 消息后传入）
+			// + 本轮 user 消息。priorMessages 缺省时退化为仅当前消息（旧行为）。
+			messages: [...(priorMessages ?? []), userMessage],
 			systemPrompt: options.systemPrompt,
 			explicitSkillIds: options.explicitSkillIds,
 			options: {

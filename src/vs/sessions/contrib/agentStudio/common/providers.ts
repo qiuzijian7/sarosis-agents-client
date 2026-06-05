@@ -179,6 +179,19 @@ export interface IModelProvider {
 export interface IChatContext {
 	readonly agentId?: string;       // 选中的 Agent ID
 	readonly sessionId?: string;     // 会话 ID
+	// ─── 抓包对齐的三个独立 id（CodeBuddy IDE /v2/chat/completions 协议）──────
+	// 抓包证据：HTTP header 携带三个粒度不同、绝不可混用的 id：
+	//   X-Conversation-ID    会话级，整段稳定不变  ← conversationId
+	//   X-Conversation-Request-ID  请求级，每次 API 调用都换  ← requestId
+	//   X-Conversation-Message-ID  消息级，每条消息不同（暂由 provider 自生成）
+	// 历史 bug：仅用单一 sessionId 当所有 id → 服务端 KV 缓存按 conversation-id
+	// 跨会话碰撞 → 命中旧上下文、忽略本地 priorMessages → 第三轮串台。
+	/** 会话级稳定 id（→ X-Conversation-ID），同一会话内不变 */
+	readonly conversationId?: string;
+	/** 请求级 id（→ X-Conversation-Request-ID），每轮 API 调用都重新生成 */
+	readonly requestId?: string;
+	/** 上一次响应流 chunk 的 id（→ 请求体 previous_response_id），用于服务端链式上下文衔接 */
+	readonly previousResponseId?: string;
 	[key: string]: unknown;
 }
 
@@ -287,6 +300,18 @@ export interface IModelOptions {
 	 * 当 enabled 为 false 或字段缺失时，provider 不应注入任何 thinking 参数。
 	 */
 	readonly reasoning?: IReasoningOptions;
+	/**
+	 * 抓包对齐的会话/请求 id（由 agentOS 经 IChatContext 下传，bridge 转写入此处
+	 * 再透传给 provider 扩展，最终映射为 HTTP header / 请求体字段）：
+	 *   sessionId          → X-Conversation-Id（保留兼容，等同 conversationId）
+	 *   conversationId     → X-Conversation-ID（会话级稳定）
+	 *   requestId          → X-Conversation-Request-ID（请求级，每轮新）
+	 *   previousResponseId → 请求体 previous_response_id（上轮响应 id）
+	 */
+	readonly sessionId?: string;
+	readonly conversationId?: string;
+	readonly requestId?: string;
+	readonly previousResponseId?: string;
 }
 
 /**
@@ -308,6 +333,13 @@ export interface IModelDelta {
 	readonly error?: string;
 	/** Token 使用量（type === 'usage' 时携带） */
 	readonly usage?: IModelUsage;
+	/**
+	 * 本次响应流的 id（来自 SSE chunk 的 `id` 字段）。
+	 * 抓包证据：响应流每个 chunk 的 id 相同，且 = 下一次请求体的 previous_response_id。
+	 * provider 解析到 chunk.id 时通过任意 delta（通常 'done'）回传，
+	 * agentOS 据此更新会话的 previousResponseId，实现服务端链式上下文衔接。
+	 */
+	readonly responseId?: string;
 }
 
 /**
@@ -664,8 +696,34 @@ export type StreamPhase =
 
 export interface IChatStreamDelta {
 	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace'
-	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage' | 'phase_change'
-	| 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end';
+	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage' | 'phase_change' | 'context_compacted'
+	| 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end'
+	// ─── Hermes-style synthetic-recovery signal ─────────────────────────────
+	// 参考 Hermes `agent/conversation_loop.py` 的 `_empty_recovery_synthetic` /
+	// `_thinking_prefill` / `_empty_terminal_sentinel` 三类合成消息标记。
+	// 当 host 检测到 fake-completion / unfinished-intent / 空回等"非真实模型输出"
+	// 并准备注入 nudge 续跑时，先 yield 一个 `discard_prior_text`：
+	//   - 下游 driver / chatService 收到后，**清空已累计的 text+thinking 缓冲**
+	//   - 下游不持久化已被丢弃的幻觉文本，避免其作为 `prior driver messages`
+	//     污染下一轮模型上下文（test49→test50 复现的 conversation rot 根因）。
+	// reason 通过 metadata.reason 传递（'fake-completion' | 'unfinished-intent' | 'empty-recovery'）。
+	| 'discard_prior_text'
+	// ─── Hermes-style 消息边界事件（2026-06-05 治本根因修复）───────────────
+	// 参考 Hermes `chat_completion_helpers.py:build_assistant_message()` 的铁律：
+	// 消息边界 = 单次 API 响应。agentOS 多轮 loop 内部每个 iteration 把当前
+	// content+toolCalls push 成独立一条 assistant 消息（紧跟 tool 结果），这个
+	// 正确的 iteration 边界此前在 chatService 持久化时被 `fullContent += delta`
+	// 压扁成一条，导致历史里出现"先宣告成功、后调用工具"的因果倒置范例，教坏
+	// 模型在第二轮不再调工具。
+	//
+	// agentOS 在每个 iteration 确定 assistant 消息后 yield 一个 `assistant_turn`：
+	//   - content：该轮经 sanitize+trim 的权威文本（chatService 据此切分，不再自行累加压扁）
+	//   - metadata.toolCallIds：该轮的工具调用 id 列表（chatService 据此把 current
+	//     toolCalls 归属到该 turn，后续 tool_result 仍可按 id 跨 turn 回填）
+	//   - metadata.turnIndex：iteration 序号（调试用）
+	// chatService 收到后把"当前累加器"快照成一条 turn，重置进入下一轮；done 后
+	// 按 turn 持久化多条 ChatMessage（同回合共享 turnId），历史因果天然正确。
+	| 'assistant_turn';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -682,6 +740,15 @@ export interface IChatStreamDelta {
 	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
 	 */
 	readonly phase?: StreamPhase;
+	/**
+	 * 上下文压缩后回传的"压缩后估算输入 token"（type === 'context_compacted' 时携带）。
+	 *
+	 * 背景：上下文压缩只缩减 Host 端 messages 数组，WebView store 的 messages 历史不变，
+	 * 因此 ChatComposer 圆环进度条的 inputBaselineTokens 仍是压缩前的旧大值，圆圈压不下来。
+	 * Host 在压缩成功后 yield 此事件，携带压缩后的估算输入 token，WebView 据此把圆环基线
+	 * 立即下调（compactedBaseline），实现"压缩后圆圈同步回落"。下一轮真实 usage 回来后自然覆盖。
+	 */
+	readonly compactedInputTokens?: number;
 	/**
 	 * Sub-agent lifecycle fields. Carried on `sub_agent_start | sub_agent_progress | sub_agent_end`
 	 * delta types so that the Host can drive the WebView's SubAgentCard. Field names are kept

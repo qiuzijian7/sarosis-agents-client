@@ -234,9 +234,12 @@ export interface IChatStreamDelta {
 	| "questions"
 	| "usage"
 	| "phase_change"
+	| "context_compacted"
 	| "sub_agent_start"
 	| "sub_agent_progress"
-	| "sub_agent_end";
+	| "sub_agent_end"
+	| "discard_prior_text" // Hermes synthetic-recovery 等价物：丢弃此前的幻觉/过渡文本，防止 conversation rot
+	| "assistant_turn"; // Hermes-style 消息边界：agentOS 每个 iteration 的 assistant 边界，供 chatService 按回合切分持久化
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -252,6 +255,13 @@ export interface IChatStreamDelta {
 	 * Phases: 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error'
 	 */
 	readonly phase?: StreamPhase;
+	/**
+	 * 上下文压缩后回传的"压缩后估算输入 token"（type === 'context_compacted' 时携带）。
+	 * 镜像于 contrib/agentStudio/common/providers.ts IChatStreamDelta.compactedInputTokens —
+	 * 因 common/ 不能 import contrib/，此处内联同一字段。WebView 据此把圆环进度条基线
+	 * 立即下调，实现压缩后圆圈同步回落。
+	 */
+	readonly compactedInputTokens?: number;
 	/**
 	 * Sub-agent lifecycle fields (carried on `sub_agent_*` delta types).
 	 * Kept 1:1 aligned with the WebView-side StreamChunk so the controller can

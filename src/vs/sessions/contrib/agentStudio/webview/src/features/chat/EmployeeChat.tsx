@@ -560,6 +560,70 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 	const taskCount = messages.filter(m => m.role === 'assistant').length;
 
+	// ─── Hermes-style 回合聚合（2026-06-05 治本根因修复，方案 C）──────────────
+	// 后端现在把同一次用户请求的 agentOS 多轮 loop 持久化为**多条** assistant 消息
+	// （每个 iteration 一条，共享同一 turnId），以保证磁盘/回灌时的 assistant→tool→
+	// assistant 因果链正确。但 UI 上这些应聚合成**一个**气泡，保持外观不变。
+	// 这里把相邻、同 turnId 的 assistant 消息合并成一条虚拟消息：
+	//   - content：各轮文本按顺序拼接（空文本轮跳过，避免多余空行）
+	//   - toolCalls：各轮工具卡按顺序合并，并通过 textPosition 让工具卡插入到
+	//     **该轮文本结尾**，从而在一个气泡里呈现 "文本1 → 工具卡1 → 文本2 → 工具卡2"
+	//     的正确时序（InterleavedMarkdownRenderer 据 textPosition 定位）。
+	// 无 turnId（旧数据 / 直连单条）时原样透传，不受影响。
+	const displayMessages = useMemo(() => {
+		const out: ChatMessage[] = [];
+		let i = 0;
+		while (i < messages.length) {
+			const m = messages[i];
+			// 仅聚合带 turnId 的 assistant；其它消息原样透传
+			if (m.role !== 'assistant' || !m.turnId) {
+				out.push(m);
+				i++;
+				continue;
+			}
+			// 收集相邻同 turnId 的 assistant 连续段
+			const group: ChatMessage[] = [];
+			let j = i;
+			while (
+				j < messages.length &&
+				messages[j].role === 'assistant' &&
+				messages[j].turnId === m.turnId
+			) {
+				group.push(messages[j]);
+				j++;
+			}
+			if (group.length === 1) {
+				// 单条无需合并
+				out.push(group[0]);
+			} else {
+				// 合并多条：拼接文本，工具卡定位到各自轮次文本结尾
+				let mergedContent = '';
+				const mergedToolCalls: NonNullable<ChatMessage['toolCalls']> = [];
+				for (const g of group) {
+					const text = (g.content ?? '').trim();
+					if (text) {
+						if (mergedContent) { mergedContent += '\n\n'; }
+						mergedContent += text;
+					}
+					const tcs = Array.isArray(g.toolCalls) ? g.toolCalls : [];
+					const anchor = mergedContent.length; // 该轮文本结尾偏移
+					for (const tc of tcs) {
+						mergedToolCalls.push({ ...tc, textPosition: anchor });
+					}
+				}
+				// 卡片数据 / token usage 取最后一条（后端已仅挂在最后一条上）
+				const last = group[group.length - 1];
+				out.push({
+					...last,
+					content: mergedContent,
+					toolCalls: mergedToolCalls.length > 0 ? mergedToolCalls : undefined,
+				});
+			}
+			i = j;
+		}
+		return out;
+	}, [messages]);
+
 	// Click handler to switch to another agent's chat
 	const handleSwitchAgent = useCallback((employeeId: string) => {
 		if (employeeId === activeEmployeeId) { return; }
@@ -690,7 +754,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				{/* Message List Container: wraps the scrollable list + scroll-down button */}
 				<div className="chat-messages-container">
 					<div className="chat-messages" ref={chatMessagesRef}>
-						{messages.map((msg) => (
+						{displayMessages.map((msg) => (
 							<ChatMessageComponent key={msg.id} message={msg} />
 						))}
 

@@ -5,7 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import type { IAgentTurnRequest, IChatStreamDelta } from './providers.js';
+import type { IAgentTurnRequest, IChatMessage, IChatStreamDelta } from './providers.js';
 import type { IChatSendOptions } from './agentStudio.js';
 
 // ─── Agent Driver Service ─────────────────────────────────────────
@@ -36,11 +36,16 @@ export interface IAgentDriverService {
 
 	/**
 	 * 兼容层：将旧 IChatSendOptions 适配为 IAgentTurnRequest
+	 *
+	 * @param priorMessages 可选的会话历史消息（driver 格式）。由 chatService
+	 *   从持久化历史转换后传入，用于让后端 turn 收到完整上下文而非仅当前 user
+	 *   消息——长对话上下文才能涨起来并触发压缩。当前 user 消息会追加在其后。
 	 */
 	executeFromChatOptions(
 		employeeId: string,
 		message: string,
 		options: IChatSendOptions,
+		priorMessages?: IChatMessage[],
 	): AsyncIterable<IChatStreamDelta>;
 
 	/**

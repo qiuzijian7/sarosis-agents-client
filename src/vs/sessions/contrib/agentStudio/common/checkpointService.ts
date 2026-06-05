@@ -85,6 +85,22 @@ export interface ICheckpointService {
 	 */
 	jumpToCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<IJumpToCheckpointResult>;
 
+	/**
+	 * Revert ALL (non-ghost) tool_edit checkpoints at once: for each modified
+	 * file, restore it to the content of its EARLIEST snapshot (the original
+	 * pre-edit state); newly-created files are deleted. All checkpoints are then
+	 * ghosted. Unlike {@link jumpToCheckpoint} (single checkpoint), this is the
+	 * "undo everything" operation backing the checkpoint bar's 撤销 button.
+	 */
+	revertAllCheckpoints(employeeId: string, sessionId: string): Promise<IJumpToCheckpointResult>;
+
+	/**
+	 * Get the earliest snapshot of every file touched across all (non-ghost)
+	 * tool_edit checkpoints. Backs the "查看全部变更" multi-file diff window
+	 * (original content vs current on-disk content).
+	 */
+	getAggregatedFileSnapshots(employeeId: string, sessionId: string): Promise<IFileSnapshot[]>;
+
 	/** Get a single checkpoint by id. */
 	getCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<ICheckpoint | undefined>;
 
@@ -93,6 +109,14 @@ export interface ICheckpointService {
 
 	/** Delete a checkpoint and its file snapshots. */
 	deleteCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<void>;
+
+	/**
+	 * Delete ALL checkpoints for an employee + session and their snapshots.
+	 * Used when the user clicks 保留 or 撤销 — after a checkpoint bar action,
+	 * the on-disk checkpoint data is no longer needed and must be removed so
+	 * that reload will not re-show the bar.
+	 */
+	deleteAllCheckpoints(employeeId: string, sessionId: string): Promise<void>;
 
 	/** Get file snapshots for a checkpoint.
 	 *  Returns the full snapshot objects (id, uri, languageId, content).

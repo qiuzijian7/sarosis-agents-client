@@ -3,10 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Configuration keys — feature toggles
+// Configuration keys — feature toggles qiuzijian debug
 export const AGENT_STUDIO_ENABLED_SETTING = 'sessions.agentStudio.enabled';
 export const AGENT_STUDIO_DATA_PATH_SETTING = 'sessions.agentStudio.dataPath';
 export const AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING = 'sessions.agentStudio.chatStreamLog.enabled';
+export const AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING = 'sessions.agentStudio.chatStreamLog.dumpTools';
 
 // NOTE: Knot AG-UI configuration keys are defined in the knot-agui extension's
 // package.json (contributes.configuration) and discovered at runtime via

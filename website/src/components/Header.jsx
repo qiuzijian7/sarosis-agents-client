@@ -30,7 +30,7 @@ export default function Header({ scrollY }) {
           <a href="#download" className="text-sm text-[#8888a0] hover:text-white transition-colors">
             下载
           </a>
-          <a href="#feedback" className="text-sm text-[#8888a0] hover:text-white transition-colors">
+          <a href="https://git.woa.com/zijianqiu/vssarosis_issue/issues?state=opened&sort=created_desc&page=1" target="_blank" rel="noopener noreferrer" className="text-sm text-[#8888a0] hover:text-white transition-colors">
             问题反馈
           </a>
           <a
