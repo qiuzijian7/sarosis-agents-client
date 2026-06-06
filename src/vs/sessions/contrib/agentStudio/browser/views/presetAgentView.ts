@@ -1566,6 +1566,56 @@ Uses a confidence scoring system (0-100) to filter out false positives and low-v
 		},
 	},
 
+	{
+		id: 'workflow-agent', name: 'Workflow Agent', role: 'Workflow Orchestrator',
+		description: 'Executes multi-step workflows defined in the Workflow editor. Each workflow is bound to an instance of this agent; running a workflow drives this agent to carry out its steps in order, displaying all progress in the chat.',
+		icon: '🧩', model: 'claude-sonnet-4-20250514',
+		skills: ['workflow-execution', 'task-orchestration'],
+		tools: ['read_file', 'list_dir', 'search_files', 'grep_search', 'write_to_file', 'replace_in_file', 'terminal', 'use_mcp_tool', 'use_skill'],
+		category: 'Management',
+		systemPrompt: `You are a Workflow Orchestrator agent. You execute structured, multi-step workflows on behalf of the user.
+
+## Core Responsibilities
+- You are given a workflow definition consisting of an ordered list of steps.
+- Execute each step in sequence, respecting its type (task / condition / parallel / loop).
+- After each step, briefly report what was done before moving to the next step.
+- When a step has a condition, evaluate it based on the prior step's results and branch accordingly.
+- When a step is a loop, iterate over the specified items.
+- When a step is parallel, address the listed sub-steps together.
+
+## Execution Principles
+- **Stay on track**: Follow the workflow's declared order. Do not skip steps unless a condition dictates it.
+- **Be transparent**: Narrate your progress so the user can follow along in the chat.
+- **Pass context forward**: Each step may rely on outputs of earlier steps — carry that context.
+- **Summarize at the end**: When all steps complete, give a concise summary of the whole run.
+
+## Output Format
+For each step, output:
+1. A short header: \`Step N: <name> (<type>)\`
+2. The actions you take and their results.
+3. A one-line status: completed / skipped / failed.
+
+If the workflow has no steps yet, explain that the workflow is empty and ask the user what steps to add.`,
+		temperature: 0.3,
+		visibility: { userInvocable: true, agentInvocable: true },
+		bootstrapTemplates: {
+			agentsMd: `# AGENTS.md - Workflow Agent
+
+## Role
+Workflow Orchestrator
+
+## Instructions
+You execute multi-step workflows defined in the Workflow editor. Run each step in order, narrate progress, carry context forward, and summarize at the end.
+
+## Workflow Step Types
+- **task**: Perform a concrete action.
+- **condition**: Evaluate a condition and branch.
+- **parallel**: Address multiple sub-steps together.
+- **loop**: Iterate over a set of items.
+`,
+		},
+	},
+
 ];
 
 export const PRESET_CATEGORIES: { id: PresetCategory | 'All'; label: string }[] = [

@@ -5,13 +5,13 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import type { IWorkflow } from '../common/crewTeam.js';
+import type { IStoredWorkflow } from '../common/workflowStorage.js';
 
 /**
  * EditorInput for workflow detail editor.
  *
- * Carries an IWorkflow object so the editor pane can render
- * the workflow's details (name, description, steps, etc.).
+ * Carries an IStoredWorkflow object so the editor pane can pass
+ * the workflow data to the webview-based ReactFlow editor.
  */
 export class WorkflowEditorInput extends EditorInput {
 
@@ -25,21 +25,18 @@ export class WorkflowEditorInput extends EditorInput {
 		return WorkflowEditorInput.ID;
 	}
 
-	private readonly _workflow: IWorkflow;
+	private readonly _workflow: IStoredWorkflow;
 
-	constructor(workflow: IWorkflow) {
+	constructor(workflow: IStoredWorkflow) {
 		super();
 		this._workflow = workflow;
 	}
 
-	get workflow(): IWorkflow {
+	get workflow(): IStoredWorkflow {
 		return this._workflow;
 	}
 
 	override get resource(): URI {
-		// Use a synthetic URI since workflows are not file-based.
-		// The URI includes the workflow ID so different workflows
-		// produce different resources (enabling side-by-side).
 		return URI.from({ scheme: 'sarosis-workflow', path: `/${this._workflow.id}` });
 	}
 

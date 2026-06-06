@@ -590,7 +590,7 @@ export const CHANNEL_DEFINITIONS: IChannelDefinition[] = [
 
 // Panel types (passed to WebView to select which React component to render)
 // 'settings' is rendered natively (no WebView) via SettingsEditorPane.
-export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard' | 'settings';
+export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard' | 'workflow-editor' | 'settings';
 
 // Provider ID
 export const AGENT_STUDIO_PROVIDER_ID = 'agentStudio';

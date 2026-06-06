@@ -17,6 +17,7 @@ import { EmployeeChat } from './features/chat/EmployeeChat';
 import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
 import { CreateAgentModal } from './features/employees/CreateAgentModal';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
+import { WorkflowEditorPanel } from './features/workflowEditor/WorkflowEditorPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
 import { useProviderStore } from './store/useProviderStore';
@@ -24,7 +25,7 @@ import { useChatStore } from './store/useChatStore';
 import { sendRequest } from './bridge/messageClient';
 
 // Read the panel type injected by the VS Code host
-type PanelType = 'canvas' | 'chat' | 'taskboard' | undefined;
+type PanelType = 'canvas' | 'chat' | 'taskboard' | 'workflow-editor' | undefined;
 const panelType: PanelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__ as PanelType;
 
 /* ── Error Boundary for debugging render crashes ─────────────── */
@@ -454,6 +455,8 @@ export function App(): React.ReactElement {
 			return <ChatPanel />;
 		case 'taskboard':
 			return <TaskboardPanel />;
+		case 'workflow-editor':
+			return <WorkflowEditorPanel />;
 		default:
 			return <FullLayout />;
 	}

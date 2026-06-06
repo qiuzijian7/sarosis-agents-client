@@ -25,6 +25,7 @@ import {
 	IConfigHtmlService,
 } from "../common/agentStudio.js";
 import { ISkillRegistry } from "../common/skills.js";
+import { IWorkflowStorageService } from "../common/workflowStorage.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
 import type { AgentExportData } from "../../../common/agentStudioTypes.js";
 import {
@@ -154,6 +155,7 @@ export class AgentStudioWebviewController extends Disposable {
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly panelType: AgentStudioPanelType | undefined,
+		private readonly initialData: unknown = undefined,
 		@IWebviewService private readonly webviewService: IWebviewService,
 		@ILogService private readonly logService: ILogService,
 		@IEnvironmentService
@@ -189,6 +191,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
+		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(
@@ -321,7 +324,11 @@ export class AgentStudioWebviewController extends Disposable {
 	</style>
 </head>
 <body>
-	<div id="root"></div>
+	<div id="root">
+		<div id="as-preload" style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family);font-size:13px;letter-spacing:0.3px;">
+			Loading...
+		</div>
+	</div>
 	<script nonce="${nonce}">
 		// Tell the React app which panel to render
 		window.__AGENT_STUDIO_PANEL_TYPE__ = ${this.panelType ? `'${this.panelType}'` : "undefined"};
@@ -333,6 +340,8 @@ export class AgentStudioWebviewController extends Disposable {
 		// those tags are blocked (the inherited 'nonce-...' policy has no
 		// 'unsafe-inline', and CSP policies only intersect, never widen).
 		window.__AGENT_STUDIO_CSP_NONCE__ = '${nonce}';
+		// Optional initial data for the panel (e.g., workflow data for workflow-editor)
+		window.__AGENT_STUDIO_INITIAL_DATA__ = ${this.initialData ? JSON.stringify(this.initialData) : 'null'};
 
 		// ── Early diagnostics: catch ALL messages and errors before React loads ──
 		window.__AS_MSG_LOG__ = [];
@@ -979,6 +988,16 @@ export class AgentStudioWebviewController extends Disposable {
 			// ─── Skills ────────────────────────────────────────────
 			case "skills.list":
 				return this._handleSkillsList();
+
+			// ─── Workflow Editor ──────────────────────────────────
+			case "workflow.get": {
+				const wp = p as unknown as { id: string; workspaceId?: string };
+				return this._handleWorkflowGet(wp);
+			}
+			case "workflow.save": {
+				const ws = p as unknown as { workflow: Record<string, unknown>; workspaceId?: string };
+				return this._handleWorkflowSave(ws);
+			}
 
 			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
 			case "memory.listL0": {
@@ -3165,6 +3184,43 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	// ── Public API ─────────────────────────────────────
+
+	// ── Workflow Editor handlers ──────────────────────
+
+	/**
+	 * Handle `workflow.get` — webview requests workflow data by ID.
+	 */
+	private async _handleWorkflowGet(payload: { id: string; workspaceId?: string }): Promise<Record<string, unknown> | null> {
+		try {
+			const wf = await this.workflowStorageService.getWorkflow(payload.id, payload.workspaceId);
+			if (!wf) {
+				return null;
+			}
+			return wf as unknown as Record<string, unknown>;
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.get failed', err);
+			return null;
+		}
+	}
+
+	/**
+	 * Handle `workflow.save` — webview sends updated workflow data to persist.
+	 */
+	private async _handleWorkflowSave(payload: { workflow: Record<string, unknown>; workspaceId?: string }): Promise<{ success: boolean }> {
+		try {
+			const wf = payload.workflow as { id: string };
+			if (!wf.id) {
+				return { success: false };
+			}
+			await this.workflowStorageService.updateWorkflow(wf.id, payload.workflow, payload.workspaceId);
+			// Also fire an event so the workflow list sidebar refreshes
+			this._sendEvent('workflow.saved', { id: wf.id });
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.save failed', err);
+			return { success: false };
+		}
+	}
 
 	layout(width: number, height: number): void {
 		// WebView auto-fills container, but notify if needed

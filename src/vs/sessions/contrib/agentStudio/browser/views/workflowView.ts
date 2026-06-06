@@ -13,27 +13,36 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
-import { $ } from '../../../../../base/browser/dom.js';
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { $, clearNode } from '../../../../../base/browser/dom.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { ICrewTeamService, type ICrew, type IWorkflow } from '../../common/crewTeam.js';
+import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
+import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/workflowStorage.js';
+import { IAgentStudioService } from '../../common/agentStudio.js';
+import type { Employee } from '../../../../common/agentStudioTypes.js';
+import { IModelSelectorService } from '../../common/modelSelector.js';
+import { AGENT_STUDIO_CHAT_VIEW_ID, AGENT_STUDIO_CLAW_CHAT_VIEW_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
+import { BUILTIN_PRESETS, type AgentPreset } from './presetAgentView.js';
+import type { ClawChatViewPane } from './clawChatView.js';
+
+const WORKFLOW_PRESET_ID = 'workflow-agent';
 
 /**
  * Workflow View - 工作流管理面板 (ActivityBar Sidebar)
  *
  * 功能：
- * - 显示当前 active workspace 下所有 Crew 的工作流列表
- * - 支持刷新
+ * - 显示当前工作区 `.sarosisworkspace/workflows/` 下所有工作流（文件存储）
+ * - 创建工作流：默认绑定 "Workflow Agent" 预设
  * - 点击工作流 item 在编辑器区域打开 Workflow EditorPane
- * - 空状态提示
+ * - 执行工作流：确保对应 Agent 存在 → 选中 → 打开聊天框 → 注入执行指令
  */
 export class WorkflowViewPane extends ViewPane {
 
 	private _root!: HTMLElement;
 	private _listContainer!: HTMLElement;
 	private _headerContainer!: HTMLElement;
-	private _workflows: IWorkflow[] = [];
-	private _crews: ICrew[] = [];
+	private _workflows: IStoredWorkflow[] = [];
 	private _loading = false;
 	private _creating = false;
 
@@ -49,9 +58,18 @@ export class WorkflowViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@IEditorService private readonly editorService: IEditorService,
-		@ICrewTeamService private readonly crewTeamService: ICrewTeamService,
+		@IViewsService private readonly viewsService: IViewsService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+
+		// 工作流文件变化时刷新列表
+		this._register(this.workflowStorage.onDidChangeWorkflows(() => {
+			void this._reload();
+		}));
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -102,19 +120,9 @@ export class WorkflowViewPane extends ViewPane {
 		this._renderLoading();
 
 		try {
-			// Gather workflows from all crews
-			const allWorkflows: IWorkflow[] = [];
-			const crews = await this.crewTeamService.listCrews();
-			for (const crew of crews) {
-				const workflows = await this.crewTeamService.listWorkflows(crew.id);
-				for (const wf of workflows) {
-					allWorkflows.push({ ...wf, _crewName: crew.name } as IWorkflow & { _crewName: string });
-				}
-			}
-
-			this._workflows = allWorkflows;
-			if (allWorkflows.length === 0) {
-				this._renderEmpty('No workflows found');
+			this._workflows = await this.workflowStorage.listWorkflows();
+			if (this._workflows.length === 0) {
+				this._renderEmpty('No workflows yet. Click "+ Create" to add one.');
 			} else {
 				this._renderList();
 			}
@@ -127,29 +135,43 @@ export class WorkflowViewPane extends ViewPane {
 	}
 
 	private _renderLoading(): void {
-		this._listContainer.innerHTML = '';
+		clearNode(this._listContainer);
 		const loading = $('div.workflow-loading');
 		loading.textContent = 'Loading...';
 		this._listContainer.appendChild(loading);
 	}
 
 	private _renderEmpty(message: string): void {
-		this._listContainer.innerHTML = '';
+		clearNode(this._listContainer);
 		const empty = $('div.workflow-empty');
 		empty.textContent = message;
 		this._listContainer.appendChild(empty);
 	}
 
 	private _renderList(): void {
-		this._listContainer.innerHTML = '';
+		clearNode(this._listContainer);
 
 		for (const wf of this._workflows) {
 			const item = $('div.workflow-item');
 			item.title = wf.description || wf.name;
 
+			// ── Main row: name + run button ──
+			const topRow = $('div.workflow-item-top');
+
 			const nameEl = $('div.workflow-item-name');
 			nameEl.textContent = wf.name;
-			item.appendChild(nameEl);
+			topRow.appendChild(nameEl);
+
+			const runBtn = $('button.workflow-run-btn');
+			runBtn.textContent = '▶ Run';
+			runBtn.title = 'Execute this workflow in the agent chat';
+			runBtn.onclick = (e) => {
+				e.stopPropagation();
+				void this._runWorkflow(wf);
+			};
+			topRow.appendChild(runBtn);
+
+			item.appendChild(topRow);
 
 			if (wf.description) {
 				const descEl = $('div.workflow-item-desc');
@@ -161,9 +183,8 @@ export class WorkflowViewPane extends ViewPane {
 
 			const metaEl = $('div.workflow-item-meta');
 			const stepCount = wf.steps?.length ?? 0;
-			const crewName = (wf as any)._crewName;
 			const parts: string[] = [];
-			if (crewName) { parts.push(crewName); }
+			parts.push('Workflow Agent');
 			parts.push(`${stepCount} steps`);
 			parts.push(wf.isActive ? 'Active' : 'Inactive');
 			metaEl.textContent = parts.join(' · ');
@@ -174,9 +195,45 @@ export class WorkflowViewPane extends ViewPane {
 		}
 	}
 
-	private _openWorkflow(wf: IWorkflow): void {
+	/**
+	 * 打开工作流编辑器 + 同步在右侧聊天框显示对应 workflow agent 的聊天内容。
+	 *
+	 * 执行流程：
+	 * 1. 打开 WorkflowEditorPane（文本编辑器区域）
+	 * 2. 确保 workflow agent（Employee）存在
+	 * 3. 选中该 agent（modelSelectorService）
+	 * 4. 打开右侧 ClawChat 视图 — 聊天框切换到该 agent
+	 */
+	private _openWorkflow(wf: IStoredWorkflow): void {
+		// 1. Open the editor
 		const input = new WorkflowEditorInput(wf);
 		this.editorService.openEditor(input, { pinned: true });
+
+		// 2-4. Select the corresponding agent and open the chat view (no prompt sent)
+		void this._selectWorkflowAgentInChat(wf);
+	}
+
+	/**
+	 * Open the ClawChat view with the workflow agent selected, but do NOT send any message.
+	 */
+	private async _selectWorkflowAgentInChat(wf: IStoredWorkflow): Promise<void> {
+		try {
+			const employee = await this._ensureWorkflowAgent(wf);
+			if (!employee) { return; }
+
+			// Persist agentId binding (first time)
+			if (wf.agentId !== employee.id) {
+				try {
+					await this.workflowStorage.updateWorkflow(wf.id, { agentId: employee.id });
+				} catch { /* non-fatal */ }
+			}
+
+			// Select the agent and open the chat view (no prompt) — use webview-based Agent Chat (right sidebar)
+			this.modelSelectorService.setSelectedAgentId(employee.id);
+			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
+		} catch {
+			// Silently fail — the editor is already open
+		}
 	}
 
 	// ─── Create Workflow ────────────────────────────────────────
@@ -184,29 +241,16 @@ export class WorkflowViewPane extends ViewPane {
 	private _buildCreateForm(): HTMLElement {
 		const form = $('div.workflow-create-form');
 
-		// Crew selector
-		const crewRow = $('div.workflow-form-row');
-		const crewLabel = $('label.workflow-form-label');
-		crewLabel.textContent = 'Crew';
-		crewRow.appendChild(crewLabel);
-		const crewSelect = $('select.workflow-form-select') as HTMLSelectElement;
-		crewSelect.id = 'workflow-create-crew';
-		// Populate crew options
-		if (this._crews.length === 0) {
-			const opt = document.createElement('option');
-			opt.textContent = 'No Crews available';
-			opt.disabled = true;
-			crewSelect.appendChild(opt);
-		} else {
-			for (const crew of this._crews) {
-				const opt = document.createElement('option');
-				opt.value = crew.id;
-				opt.textContent = crew.name;
-				crewSelect.appendChild(opt);
-			}
-		}
-		crewRow.appendChild(crewSelect);
-		form.appendChild(crewRow);
+		// Agent (preset) — fixed to Workflow Agent, shown read-only
+		const agentRow = $('div.workflow-form-row');
+		const agentLabel = $('label.workflow-form-label');
+		agentLabel.textContent = 'Agent';
+		agentRow.appendChild(agentLabel);
+		const agentValue = $('div.workflow-form-static');
+		const preset = this._getWorkflowPreset();
+		agentValue.textContent = preset ? `${preset.icon} ${preset.name}` : 'Workflow Agent';
+		agentRow.appendChild(agentValue);
+		form.appendChild(agentRow);
 
 		// Name input
 		const nameRow = $('div.workflow-form-row');
@@ -250,16 +294,13 @@ export class WorkflowViewPane extends ViewPane {
 
 	/**
 	 * Insert the create form into the DOM right after the header.
-	 * Uses dynamic insertion (not pre-built + toggle) to avoid
-	 * stale-element bugs when renderBody is called multiple times.
+	 * Dynamic insertion avoids stale-element bugs when renderBody runs again.
 	 */
 	private _insertCreateForm(form: HTMLElement): void {
-		// Remove any existing create form first
 		const existing = this._root.querySelector('.workflow-create-form');
 		if (existing) {
 			existing.remove();
 		}
-		// Insert after header, before list
 		if (this._headerContainer?.nextSibling) {
 			this._root.insertBefore(form, this._headerContainer.nextSibling);
 		} else {
@@ -271,15 +312,12 @@ export class WorkflowViewPane extends ViewPane {
 		if (this._creating) { return; }
 		this._creating = true;
 
-		// Load crews for the selector
-		this._crews = [];
-		try {
-			this._crews = await this.crewTeamService.listCrews();
-		} catch { /* ignore — selector will be empty */ }
-
-		// Build and insert form dynamically into current DOM root
 		const form = this._buildCreateForm();
 		this._insertCreateForm(form);
+
+		// Focus name input
+		const nameInput = this._root.querySelector('#workflow-create-name') as HTMLInputElement;
+		nameInput?.focus();
 	}
 
 	private _hideCreateForm(): void {
@@ -291,34 +329,40 @@ export class WorkflowViewPane extends ViewPane {
 	}
 
 	private async _handleCreate(): Promise<void> {
-		const crewSelect = this._root.querySelector('#workflow-create-crew') as HTMLSelectElement;
 		const nameInput = this._root.querySelector('#workflow-create-name') as HTMLInputElement;
 		const descInput = this._root.querySelector('#workflow-create-desc') as HTMLInputElement;
 
-		const crewId = crewSelect?.value;
 		const name = nameInput?.value?.trim();
 		const description = descInput?.value?.trim();
 
-		if (!crewId) {
-			this._flashMessage('Please select a Crew');
-			return;
-		}
 		if (!name) {
 			this._flashMessage('Please enter a name');
 			return;
 		}
 
 		try {
-			await this.crewTeamService.defineWorkflow(crewId, name, description || '', []);
+			const wf = await this.workflowStorage.createWorkflow({
+				name,
+				description: description || '',
+				presetId: WORKFLOW_PRESET_ID,
+				steps: [],
+			});
 			this._hideCreateForm();
-			await this._reload();
+
+			// NOTE: createWorkflow 内部已经 fire onDidChangeWorkflows，会触发
+			// _reload()。但该 _reload() 是 async 的，且与下面可能发生竞态：
+			//   事件 handler 设 _loading=true 后，本方法的 _reload() 会被跳过。
+			//
+			// 为幂等起见，这里不依赖事件链，直接把返回的 workflow 插入
+			// 本地状态并 render，确保列表立即显示。
+			this._workflows = [wf, ...this._workflows];
+			this._renderList();
 		} catch (err) {
-			this._flashMessage('Failed to create workflow');
+			this._flashMessage(err instanceof Error ? err.message : 'Failed to create workflow');
 		}
 	}
 
 	private _flashMessage(message: string): void {
-		// Find or create a flash message element
 		let flash = this._root.querySelector('.workflow-flash-msg') as HTMLElement;
 		if (!flash) {
 			flash = $('div.workflow-flash-msg');
@@ -329,6 +373,124 @@ export class WorkflowViewPane extends ViewPane {
 		setTimeout(() => {
 			flash.classList.remove('visible');
 		}, 2500);
+	}
+
+	// ─── Execute Workflow ───────────────────────────────────────
+
+	private _getWorkflowPreset(): AgentPreset | undefined {
+		return BUILTIN_PRESETS.find(p => p.id === WORKFLOW_PRESET_ID);
+	}
+
+	/**
+	 * 执行工作流：
+	 * 1. 确保该工作流对应的 Agent（Employee）存在；不存在则按预设部署
+	 * 2. 选中该 Agent
+	 * 3. 打开聊天框（Claw Chat View）
+	 * 4. 将工作流执行指令注入聊天框并发送，所有内容在聊天框中显示
+	 */
+	private async _runWorkflow(wf: IStoredWorkflow): Promise<void> {
+		try {
+			// 1. 确保 Agent 存在
+			const employee = await this._ensureWorkflowAgent(wf);
+			if (!employee) {
+				this.notificationService.error('Failed to prepare the Workflow Agent. Please make sure a workspace is selected.');
+				return;
+			}
+
+			// 持久化 agentId 绑定（首次执行后记录）
+			if (wf.agentId !== employee.id) {
+				try {
+					await this.workflowStorage.updateWorkflow(wf.id, { agentId: employee.id });
+				} catch { /* non-fatal */ }
+			}
+
+			// 2. 选中该 Agent
+			this.modelSelectorService.setSelectedAgentId(employee.id);
+
+			// 3. 打开聊天框
+			const chatView = await this.viewsService.openView<ClawChatViewPane>(AGENT_STUDIO_CLAW_CHAT_VIEW_ID, true);
+
+			// 4. 注入执行指令
+			const prompt = this._buildExecutionPrompt(wf);
+			if (chatView && typeof (chatView as ClawChatViewPane).runPrompt === 'function') {
+				await (chatView as ClawChatViewPane).runPrompt(prompt);
+			} else {
+				this.notificationService.warn('Opened the chat, but could not auto-send the workflow prompt. Please paste it manually.');
+			}
+		} catch (err) {
+			this.notificationService.error(`Failed to run workflow: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/**
+	 * 确保工作流对应的 Agent 存在。
+	 * - 优先用 wf.agentId 查已部署 Employee
+	 * - 否则在当前工作区查找同名/同 presetId 的 Employee
+	 * - 都没有则按 workflow-agent 预设新建一个
+	 */
+	private async _ensureWorkflowAgent(wf: IStoredWorkflow): Promise<Employee | undefined> {
+		// (a) 已记录 agentId
+		if (wf.agentId) {
+			const existing = await this.agentStudioService.getEmployee(wf.agentId);
+			if (existing) { return existing; }
+		}
+
+		const workspaceId = this.agentStudioService.getActiveWorkspaceId()
+			?? wf.workspaceId;
+
+		// (b) 工作区内查找已部署的 workflow-agent
+		const employees = await this.agentStudioService.getEmployees(workspaceId);
+		const matched = employees.find(e => e.presetId === WORKFLOW_PRESET_ID);
+		if (matched) { return matched; }
+
+		// (c) 按预设部署一个新的
+		const preset = this._getWorkflowPreset();
+		if (!preset) { return undefined; }
+
+		const employeeData: Partial<Employee> = {
+			name: preset.name,
+			role: preset.role,
+			presetId: preset.id,
+			model: preset.model,
+			customPrompt: preset.systemPrompt,
+			skills: [...preset.skills],
+			tools: preset.tools ? [...preset.tools] : undefined,
+			visibility: preset.visibility,
+			bootstrapTemplates: preset.bootstrapTemplates,
+			temperature: preset.temperature,
+			workspaceId,
+		};
+		return await this.agentStudioService.createEmployee(employeeData);
+	}
+
+	/**
+	 * 构造工作流执行指令文本。
+	 */
+	private _buildExecutionPrompt(wf: IStoredWorkflow): string {
+		const lines: string[] = [];
+		lines.push(`# Execute Workflow: ${wf.name}`);
+		lines.push('');
+		if (wf.description) {
+			lines.push(wf.description);
+			lines.push('');
+		}
+
+		if (wf.steps && wf.steps.length > 0) {
+			lines.push('## Steps');
+			wf.steps.forEach((step, i) => {
+				lines.push(`${i + 1}. **${step.name}** (${step.type})`);
+				if (step.executorId) { lines.push(`   - Executor: ${step.executorId}`); }
+				if (step.type === 'condition' && step.condition) { lines.push(`   - Condition: ${step.condition}`); }
+				if (step.type === 'loop' && step.loopConfig) { lines.push(`   - Loop over: ${step.loopConfig.items} as ${step.loopConfig.itemVariable}`); }
+				if (step.type === 'parallel' && step.parallelSteps) { lines.push(`   - Parallel: ${step.parallelSteps.join(', ')}`); }
+			});
+			lines.push('');
+			lines.push('Please execute these steps in order, narrating your progress, and summarize at the end.');
+		} else {
+			lines.push('This workflow has no steps defined yet. Ask me what steps to add, or proceed based on the name and description above.');
+		}
+
+		return lines.join('\n');
 	}
 
 	private _getScopedCSS(): string {
@@ -400,11 +562,35 @@ export class WorkflowViewPane extends ViewPane {
 			.workflow-item:hover {
 				background: var(--vscode-list-hoverBackground);
 			}
+			.workflow-item-top {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 8px;
+			}
 			.workflow-item-name {
 				font-weight: 600;
 				font-size: 13px;
 				margin-bottom: 2px;
 				color: var(--vscode-foreground);
+				flex: 1;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.workflow-run-btn {
+				flex-shrink: 0;
+				background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+				border: none;
+				color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+				padding: 2px 8px;
+				border-radius: 3px;
+				cursor: pointer;
+				font-size: 10px;
+				font-weight: 600;
+			}
+			.workflow-run-btn:hover {
+				background: var(--vscode-button-hoverBackground);
 			}
 			.workflow-item-desc {
 				font-size: 11px;
@@ -443,6 +629,12 @@ export class WorkflowViewPane extends ViewPane {
 				font-weight: 600;
 				color: var(--vscode-descriptionForeground);
 				text-align: right;
+			}
+			.workflow-form-static {
+				flex: 1;
+				font-size: 12px;
+				color: var(--vscode-foreground);
+				padding: 4px 0;
 			}
 			.workflow-form-select,
 			.workflow-form-text {

@@ -134,7 +134,9 @@ export type RequestType =
 	| 'memory.listL1'           // list L1 distilled memories for an agent (TDB-AM)
 	| 'memory.deleteL0'         // hard-delete L0 record(s) by id
 	| 'memory.deleteL1'         // hard-delete L1 record(s) by id
-	| 'skills.list';              // list all registered skills
+	| 'skills.list'
+	| 'workflow.get'
+	| 'workflow.save';              // save workflow nodes+connections from webview editor
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -165,7 +167,9 @@ export type EventType =
 	| 'configmd.command'          // model-issued command for HTML view
 	| 'configmd.message'          // model-issued message for HTML view
 	| 'configmd.error'           // sync/render error
-	| 'chat.toolApprovalRequest'; // request webview to show tool approval UI
+	| 'chat.toolApprovalRequest'
+	| 'workflow.loaded'          // host sends workflow data to webview editor
+	| 'workflow.saved';          // host confirms save to webview
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 

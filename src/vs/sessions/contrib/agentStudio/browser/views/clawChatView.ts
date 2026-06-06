@@ -262,6 +262,29 @@ export class ClawChatViewPane extends ViewPane {
 
 	// ─── 消息发送（使用选中的 Provider/Model）──────────────────
 
+	/**
+	 * 外部触发入口：以编程方式向聊天框注入一条消息并发送。
+	 *
+	 * 用于「执行工作流」——工作流的执行指令通过此方法进入聊天框，
+	 * 所有响应内容都在该聊天框中流式显示。
+	 *
+	 * @param text 要发送的消息内容
+	 */
+	public async runPrompt(text: string): Promise<void> {
+		// renderBody 可能尚未执行（视图刚被 openView 创建），稍等一帧重试
+		if (!this.inputElement || !this.sendButton) {
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			if (!this.inputElement) {
+				return;
+			}
+		}
+		if (this.isStreaming) {
+			return;
+		}
+		this.inputElement.value = text;
+		await this._sendMessage();
+	}
+
 	private async _sendMessage(): Promise<void> {
 		const text = this.inputElement.value.trim();
 		if (!text || this.isStreaming) {

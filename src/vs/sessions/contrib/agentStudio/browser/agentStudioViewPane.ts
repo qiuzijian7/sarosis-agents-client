@@ -60,7 +60,7 @@ export class AgentStudioViewPane extends ViewPane {
 
 		// Initialize WebView controller with the panel type
 		this._webviewController = this._register(
-			this.instantiationService.createInstance(AgentStudioWebviewController, this._webviewContainer, this.panelType)
+			this.instantiationService.createInstance(AgentStudioWebviewController, this._webviewContainer, this.panelType, undefined)
 		);
 	}
 

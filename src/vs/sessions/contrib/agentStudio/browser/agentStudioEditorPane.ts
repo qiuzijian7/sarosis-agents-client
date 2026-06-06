@@ -75,7 +75,7 @@ export class AgentStudioEditorPane extends EditorPane {
 
 		if (this._container) {
 			this._webviewController = this.instantiationService.createInstance(
-				AgentStudioWebviewController, this._container, panelType
+				AgentStudioWebviewController, this._container, panelType, undefined
 			);
 			console.log('[AgentStudioEditorPane] WebviewController created for', panelType);
 		} else {
