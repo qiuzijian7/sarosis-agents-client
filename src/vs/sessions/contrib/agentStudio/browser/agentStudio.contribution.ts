@@ -74,6 +74,7 @@ import {
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
+	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
 	AGENT_STUDIO_WIKI_VIEW_ID,
 	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
@@ -152,6 +153,7 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import { ChannelViewPane } from './views/channelView.js';
 import { WikiViewPane } from './views/wikiView.js';
+import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
 import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
@@ -169,6 +171,8 @@ import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { HtmlPreviewEditorPane } from './htmlPreviewEditorPane.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
+import { WorkflowEditorPane } from './workflowEditorPane.js';
+import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { ISelfEvolutionService } from '../common/selfEvolution.js';
 import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
@@ -193,6 +197,7 @@ const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, locali
 const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
 const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
 const wikiIcon = registerIcon('agent-studio-wiki', Codicon.book, localize('wikiIcon', "Wiki"));
+const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, localize('workflowIcon', "Workflow"));
 
 // --- Configuration ---------------------------------------------------------------
 //qiuzijian debug
@@ -564,6 +569,19 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(HtmlPreviewEditorInput)
+	]
+);
+
+// Register WorkflowEditorPane — renders workflow details in the editor area.
+// Clicking a workflow in the Workflow sidebar view opens its detail view.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		WorkflowEditorPane,
+		WorkflowEditorPane.ID,
+		localize('workflowEditor', "Workflow Detail"),
+	),
+	[
+		new SyncDescriptor(WorkflowEditorInput)
 	]
 );
 
@@ -1504,6 +1522,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
 			order: 92,
 			viewCtor: EvolutionViewPane,
+		});
+
+		// 12. Workflow (order: 93)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.workflow',
+			title: localize2('agentStudio.workflow.title', "Workflow"),
+			icon: workflowIcon,
+			viewId: AGENT_STUDIO_WORKFLOW_VIEW_ID,
+			order: 93,
+			viewCtor: WorkflowViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //

@@ -100,6 +100,7 @@ export const AGENT_STUDIO_PROVIDER_VIEW_ID = 'agentStudio.providerView';
 export const AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID = 'agentStudio.healthMonitorView';
 export const AGENT_STUDIO_CREW_TEAM_VIEW_ID = 'agentStudio.crewTeamView';
 export const AGENT_STUDIO_EVOLUTION_VIEW_ID = 'agentStudio.evolutionView';
+export const AGENT_STUDIO_WORKFLOW_VIEW_ID = 'agentStudio.workflowView';
 export const AGENT_STUDIO_CHANNEL_VIEW_ID = 'agentStudio.channelView';
 export const AGENT_STUDIO_WIKI_VIEW_ID = 'agentStudio.wikiView';
 export const AGENT_STUDIO_WIKI_ROOT_SETTING = 'agentStudio.wiki.root';
