@@ -385,27 +385,20 @@ export class TaskOverviewEditorPane extends EditorPane {
 			case 'workspace.active':
 				return { workspaceId: undefined };
 
-			// ─── Employees ───────────────────────────────────────
-			case 'employees.list':
-				return this._agentStudioService.getEmployees(p.workspaceId as string | undefined);
-			case 'employees.listAll':
-				return this._agentStudioService.getAllEmployees();
-			case 'employees.get':
-				return this._agentStudioService.getEmployee(p.id as string);
-			case 'employees.create':
-				return this._agentStudioService.createEmployee(p as Record<string, unknown>);
-			case 'employees.update':
-				return this._agentStudioService.updateEmployee(p.id as string, p.data as Record<string, unknown>);
-			case 'employees.delete':
-				return this._agentStudioService.deleteEmployee(p.id as string);
-			case 'employees.export':
-				return this._agentStudioService.exportEmployee(p.id as string);
-			case 'employees.import':
-				return this._agentStudioService.importEmployee(
-					p.exportData as any,
-					p.workspaceId as string | undefined,
-				);
-			case 'employees.selected':
+			// ─── Agents ───────────────────────────────────────────
+			case 'agents.list':
+				return this._agentStudioService.getAgents();
+			case 'agents.get':
+				return this._agentStudioService.getAgent(p.id as string);
+			case 'agents.create':
+				return this._agentStudioService.createAgent(p as Record<string, unknown>);
+			case 'agents.update':
+				return this._agentStudioService.updateAgent(p.id as string, p.data as Record<string, unknown>);
+			case 'agents.delete':
+				return this._agentStudioService.deleteAgent(p.id as string);
+			case 'agents.getLastSelected':
+				return { agentId: await this._agentStudioService.getLastSelectedAgentId() };
+			case 'agents.selected':
 				this._agentStudioService.fireSelectEmployee(p.agentId as string | null);
 				return undefined;
 

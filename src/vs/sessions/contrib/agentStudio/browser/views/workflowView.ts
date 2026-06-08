@@ -19,7 +19,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
 import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/workflowStorage.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
-import type { Employee } from '../../../../common/agentStudioTypes.js';
+import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
 import { AGENT_STUDIO_CHAT_VIEW_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
@@ -419,43 +419,25 @@ export class WorkflowViewPane extends ViewPane {
 
 	/**
 	 * 确保工作流对应的 Agent 存在。
-	 * - 优先用 wf.agentId 查已部署 Employee
-	 * - 否则在当前工作区查找同名/同 presetId 的 Employee
-	 * - 都没有则按 workflow-agent 预设新建一个
+	 * Agent 模型下，`workflow-agent` 是一个全局 builtin Agent（builtinAgents.ts），
+	 * 始终存在、无需"部署/创建"实例。解析顺序：
+	 * - 优先用 wf.agentId 查 Agent 定义
+	 * - 否则回退到 builtin 的 `workflow-agent`
 	 */
-	private async _ensureWorkflowAgent(wf: IStoredWorkflow): Promise<Employee | undefined> {
+	private async _ensureWorkflowAgent(wf: IStoredWorkflow): Promise<Agent | undefined> {
 		// (a) 已记录 agentId
 		if (wf.agentId) {
-			const existing = await this.agentStudioService.getEmployee(wf.agentId);
+			const existing = await this.agentStudioService.getAgent(wf.agentId);
 			if (existing) { return existing; }
 		}
 
-		const workspaceId = this.agentStudioService.getActiveWorkspaceId()
-			?? wf.workspaceId;
+		// (b) 回退到 builtin workflow-agent（全局 Agent，始终存在）
+		const builtin = await this.agentStudioService.getAgent(WORKFLOW_PRESET_ID);
+		if (builtin) { return builtin; }
 
-		// (b) 工作区内查找已部署的 workflow-agent
-		const employees = await this.agentStudioService.getEmployees(workspaceId);
-		const matched = employees.find(e => e.presetId === WORKFLOW_PRESET_ID);
-		if (matched) { return matched; }
-
-		// (c) 按预设部署一个新的
-		const preset = this._getWorkflowPreset();
-		if (!preset) { return undefined; }
-
-		const employeeData: Partial<Employee> = {
-			name: preset.name,
-			role: preset.role,
-			presetId: preset.id,
-			model: preset.model,
-			customPrompt: preset.systemPrompt,
-			skills: [...preset.skills],
-			tools: preset.tools ? [...preset.tools] : undefined,
-			visibility: preset.visibility,
-			bootstrapTemplates: preset.bootstrapTemplates,
-			temperature: preset.temperature,
-			workspaceId,
-		};
-		return await this.agentStudioService.createEmployee(employeeData);
+		// (c) 极端兜底：在全部 Agent 中按 id 匹配
+		const agents = await this.agentStudioService.getAgents();
+		return agents.find(a => a.id === WORKFLOW_PRESET_ID);
 	}
 
 	/**

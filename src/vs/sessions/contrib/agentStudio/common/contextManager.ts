@@ -51,7 +51,7 @@ import {
 	ContextTemplateNotFoundError,
 	ContextValidationError,
 } from './contextTypes.js';
-import type { Employee, ChatMessage, PlanTask, PlanTaskStatus } from './types.js';
+import type { Agent, ChatMessage, PlanTask, PlanTaskStatus } from './types.js';
 import type { IAgentStudioService } from '../../../common/agentStudioService.js';
 import type { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 
@@ -543,21 +543,20 @@ export class ContextManager implements IContextManager {
 		// Try to get agent from AgentStudioService
 		if (this._agentStudioService) {
 			try {
-				const employee = await this._agentStudioService.getEmployee(agentId);
-				if (employee) {
+				const agent = await this._agentStudioService.getAgent(agentId);
+				if (agent) {
 					return {
-						agentId: employee.id,
-						agentName: employee.name || employee.id,
-						agentRole: employee.role || 'worker',
-						agentType: employee.agentType,
-						model: typeof employee.model === 'string' ? employee.model : (Array.isArray(employee.model) ? employee.model[0] : employee.model?.primary),
-						provider: employee.provider,
-						skills: employee.skills ? [...employee.skills] : undefined,
-						status: employee.status || 'idle',
+						agentId: agent.id,
+						agentName: agent.name || agent.id,
+						agentRole: agent.role || 'worker',
+						agentType: agent.agentType,
+						model: agent.model,
+						skills: agent.skills ? [...agent.skills] : undefined,
+						status: agent.status || 'idle',
 					};
 				}
 			} catch (error) {
-				console.error('[ContextManager] Failed to get employee:', error);
+				console.error('[ContextManager] Failed to get agent:', error);
 			}
 		}
 
@@ -614,25 +613,25 @@ export class ContextManager implements IContextManager {
 	}
 
 	/**
-	 * Fetch employee objects by IDs
+	 * Fetch agent definitions by IDs (for workspace context).
 	 */
-	private async _fetchEmployees(agentIds: ReadonlyArray<string>): Promise<Employee[]> {
+	private async _fetchEmployees(agentIds: ReadonlyArray<string>): Promise<Agent[]> {
 		if (!this._agentStudioService || !agentIds || agentIds.length === 0) {
 			return [];
 		}
 
-		const employees: Employee[] = [];
+		const agents: Agent[] = [];
 		for (const id of agentIds) {
 			try {
-				const emp = await this._agentStudioService.getEmployee(id);
-				if (emp) {
-					employees.push(emp);
+				const agent = await this._agentStudioService.getAgent(id);
+				if (agent) {
+					agents.push(agent);
 				}
 			} catch (error) {
-				console.error(`[ContextManager] Failed to get employee ${id}:`, error);
+				console.error(`[ContextManager] Failed to get agent ${id}:`, error);
 			}
 		}
-		return employees;
+		return agents;
 	}
 
 	private async _buildProjectContext(workspace: IWorkspaceContext): Promise<IProjectContext | undefined> {

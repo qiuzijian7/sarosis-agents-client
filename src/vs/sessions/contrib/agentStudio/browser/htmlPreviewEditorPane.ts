@@ -297,13 +297,13 @@ export class HtmlPreviewEditorPane extends EditorPane {
 			const target = norm(workspacePath);
 			const ws = workspaces.find(w => norm(w.path) === target);
 			if (ws) {
-				const employees = await this._agentStudioService.getEmployees(ws.id);
-				const found = employees.find(e => e.agentDir === agentDir);
+				const bindings = await this._agentStudioService.getAgentBindings(ws.id);
+				const found = bindings.find(b => b.agentDir === agentDir);
 				if (found) {
-					return found.id;
+					return found.agentId;
 				}
 				this._logService.warn(
-					`[HtmlPreviewEditorPane] resolveEmployeeId: workspace '${ws.id}' (${ws.path}) has no employee with agentDir='${agentDir}' (${employees.length} employees)`,
+					`[HtmlPreviewEditorPane] resolveEmployeeId: workspace '${ws.id}' (${ws.path}) has no agent binding with agentDir='${agentDir}' (${bindings.length} bindings)`,
 				);
 			}
 		} catch (err) {
@@ -314,29 +314,32 @@ export class HtmlPreviewEditorPane extends EditorPane {
 		try {
 			const workspaces = await this._agentStudioService.getWorkspaces();
 			for (const ws of workspaces) {
-				const employees = await this._agentStudioService.getEmployees(ws.id);
-				const found = employees.find(e => e.agentDir === agentDir);
+				const bindings = await this._agentStudioService.getAgentBindings(ws.id);
+				const found = bindings.find(b => b.agentDir === agentDir);
 				if (found) {
 					this._logService.info(
-						`[HtmlPreviewEditorPane] resolveEmployeeId: matched via cross-workspace scan — workspace='${ws.id}' employee='${found.id}'`,
+						`[HtmlPreviewEditorPane] resolveEmployeeId: matched via cross-workspace scan — workspace='${ws.id}' agent='${found.agentId}'`,
 					);
-					return found.id;
+					return found.agentId;
 				}
 			}
 		} catch (err) {
 			this._logService.warn(`[HtmlPreviewEditorPane] resolveEmployeeId: cross-workspace scan failed:`, err);
 		}
 
-		// Step 3: last resort — global/folder-derived employees list.
+		// Step 3: last resort — active workspace's agent bindings.
 		try {
-			const employees = await this._agentStudioService.getEmployees();
-			const found = employees.find(e => e.agentDir === agentDir);
-			if (found) {
-				return found.id;
+			const activeWsId = this._agentStudioService.getActiveWorkspaceId();
+			if (activeWsId) {
+				const bindings = await this._agentStudioService.getAgentBindings(activeWsId);
+				const found = bindings.find(b => b.agentDir === agentDir);
+				if (found) {
+					return found.agentId;
+				}
+				this._logService.warn(
+					`[HtmlPreviewEditorPane] resolveEmployeeId: no agent binding with agentDir='${agentDir}' (workspacePath='${workspacePath}', active workspace '${activeWsId}' has ${bindings.length} bindings: ${bindings.map(b => `${b.agentId}→${b.agentDir}`).join(', ')})`,
+				);
 			}
-			this._logService.warn(
-				`[HtmlPreviewEditorPane] resolveEmployeeId: no employee with agentDir='${agentDir}' (workspacePath='${workspacePath}', global fallback has ${employees.length} employees: ${employees.map(e => `${e.id}→${e.agentDir}`).join(', ')})`,
-			);
 		} catch (err) {
 			this._logService.error(`[HtmlPreviewEditorPane] resolveEmployeeId: global fallback failed:`, err);
 		}

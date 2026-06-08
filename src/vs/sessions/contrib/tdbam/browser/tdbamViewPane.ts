@@ -740,7 +740,7 @@ export class TdbamViewPane extends ViewPane {
 			return this._workspaceAgentsLoading;
 		}
 		const p = (async () => {
-			const employees = await this._agentStudioService.getEmployees();
+			const employees = await this._agentStudioService.getAgents();
 			const ids = new Set<string>();
 			for (const emp of employees) {
 				if (emp && typeof emp.id === 'string' && emp.id) {

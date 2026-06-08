@@ -17,7 +17,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { Employee } from '../../../common/agentStudioTypes.js';
+import type { Agent } from '../../../common/agentStudioTypes.js';
 import {
 	AgentMarketEditorInput
 } from './agentMarketEditorInput.js';
@@ -284,18 +284,11 @@ export class AgentMarketEditorPane extends EditorPane {
 		btn.disabled = true;
 
 		try {
-			let workspaceId: string | undefined;
-			const workspaces = await this.agentStudioService.getWorkspaces();
-			if (workspaces.length > 0) {
-				workspaceId = workspaces[0].id;
-			}
-
-			const employeeData: Partial<Employee> = {
+			const agentData: Partial<Agent> = {
 				name: preset.name,
 				role: preset.role,
-				presetId: preset.id,
 				model: preset.model,
-				customPrompt: preset.systemPrompt,
+				systemPrompt: preset.systemPrompt,
 				skills: [...preset.skills],
 				tools: preset.tools ? [...preset.tools] : undefined,
 				handOffs: preset.handOffs,
@@ -304,11 +297,9 @@ export class AgentMarketEditorPane extends EditorPane {
 				agents: preset.agents,
 				confidenceThreshold: preset.confidenceThreshold,
 				parallelStrategy: preset.parallelStrategy,
-				bootstrapTemplates: preset.bootstrapTemplates,
-				workspaceId,
 			};
 
-			await this.agentStudioService.createEmployee(employeeData);
+			await this.agentStudioService.createAgent(agentData);
 			this.notificationService.info(`智能体 "${preset.name}" 已成功部署到当前工作区。`);
 
 			btn.textContent = '✓ 已部署';

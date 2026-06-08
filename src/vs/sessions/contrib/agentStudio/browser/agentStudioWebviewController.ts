@@ -27,7 +27,6 @@ import {
 import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
-import type { AgentExportData } from "../../../common/agentStudioTypes.js";
 import {
 	IEnvironmentService,
 	type INativeEnvironmentService,
@@ -71,8 +70,6 @@ import {
 import type {
 	IProviderInfo,
 	IProviderSelectPayload,
-	IEmployeeExportPayload,
-	IEmployeeImportPayload,
 	IWorkspaceSessionCreatePayload,
 	IOrchestrationTaskActionPayload,
 	IConfigMdEventPayload,
@@ -504,8 +501,20 @@ export class AgentStudioWebviewController extends Disposable {
 				return this.agentStudioService.createAgent(p as Record<string, unknown>);
 			case "agents.update":
 				return this.agentStudioService.updateAgent(p.id as string, p.data as Record<string, unknown>);
-			case "agents.delete":
-				return this.agentStudioService.deleteAgent(p.id as string);
+			case "agents.delete": {
+				// 删除 Agent 前，先级联清理其 L0 对话与 L1 记忆。
+				// 即使记忆清理失败也不阻断 Agent 删除本身（独立 try/catch，仅记日志）。
+				const agentId = p.id as string;
+				try {
+					await this._cleanupAgentMemory(agentId);
+				} catch (err) {
+					this.logService.warn(
+						`[AgentStudioWebviewController] cleanup memory for ${agentId} failed (non-fatal):`,
+						err,
+					);
+				}
+				return this.agentStudioService.deleteAgent(agentId);
+			}
 			case "agents.getLastSelected":
 				return { agentId: await this.agentStudioService.getLastSelectedAgentId() };
 			case "agents.selected":
@@ -521,81 +530,6 @@ export class AgentStudioWebviewController extends Disposable {
 				const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 				const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 				await this.editorService.openEditor(input, { pinned: true }, targetGroup);
-				return undefined;
-			}
-
-			// ─── Employees ──────────────────────────────────────────
-			case "employees.list":
-				return this.agentStudioService.getEmployees(
-					p.workspaceId as string | undefined,
-				);
-			case "employees.listAll":
-				return this.agentStudioService.getAllEmployees();
-			case "employees.get":
-				return this.agentStudioService.getEmployee(p.id as string);
-			case "employees.create":
-				return this.agentStudioService.createEmployee(
-					p as Record<string, unknown>,
-				);
-			case "employees.update":
-				return this.agentStudioService.updateEmployee(
-					p.id as string,
-					p.data as Record<string, unknown>,
-				);
-			case "employees.delete": {
-				// 删除 Agent 前，先级联清理其 L0 对话与 L1 记忆。
-				// 设计要点：
-				// 1. 即使 gateway 不可用 / 清理失败，也不应阻断 Agent 删除本身——
-				//    所以这里把记忆清理包在独立的 try/catch 中，仅记录日志。
-				// 2. 顺序：先清理记忆，再删 Agent。否则 Agent 一旦先删除，
-				//    其 agentId 来源（fileSelectEmployee 等）就消失了，但
-				//    sessionKey 仍可单独从 agentId 推导，所以顺序不强制；
-				//    放在前面是为了"如果记忆清理出现问题，Agent 还在，方便用户重试"。
-				const agentId = p.id as string;
-				try {
-					await this._cleanupAgentMemory(agentId);
-				} catch (err) {
-					this.logService.warn(
-						`[AgentStudioWebviewController] cleanup memory for ${agentId} failed (non-fatal):`,
-						err,
-					);
-				}
-				return this.agentStudioService.deleteEmployee(agentId);
-			}
-			case "employees.selected":
-				this.agentStudioService.fireSelectEmployee(
-					((p as Record<string, unknown>).agentId as string | null) ?? null,
-				);
-				return undefined;
-			case "employees.export":
-				return this.agentStudioService.exportEmployee(
-					(p as unknown as IEmployeeExportPayload).id,
-				);
-			case "employees.import":
-				return this.agentStudioService.importEmployee(
-					(p as unknown as IEmployeeImportPayload)
-						.exportData as unknown as AgentExportData,
-					(p as unknown as IEmployeeImportPayload).workspaceId,
-				);
-			case "employees.syncPositions": {
-				// Sync multiple agent positions to agent.yaml + employees.json
-				const positions = p.positions as Array<{
-					id: string;
-					position: { x: number; y: number };
-				}>;
-				if (positions && Array.isArray(positions)) {
-					const promises = positions.map(({ id, position }) =>
-						this.agentStudioService
-							.updateEmployeePosition(id, position)
-							.catch((err) =>
-								this.logService.debug(
-									`[AgentStudio] syncPositions: failed for ${id}`,
-									err,
-								),
-							),
-					);
-					await Promise.all(promises);
-				}
 				return undefined;
 			}
 
@@ -1020,15 +954,23 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 
 			case "configmd.listAgents": {
-				// List all agents that have config.md configured
-				const employees = await this.agentStudioService.getEmployees(undefined);
-				const configMdAgents = employees.filter(emp => emp.configMd && emp.agentDir);
-				return configMdAgents.map(emp => ({
-					id: emp.id,
-					name: emp.name,
-					role: emp.role,
-					workspaceId: emp.workspaceId,
-				}));
+				// List all agents that have config.md configured AND a bound agentDir
+				// in the active workspace. configMd is a DEFINITION field (on Agent);
+				// agentDir is RUNTIME state (on AgentBinding).
+				const agents = await this.agentStudioService.getAgents();
+				const wsId = this.agentStudioService.getActiveWorkspaceId();
+				const bindings = wsId
+					? await this.agentStudioService.getAgentBindings(wsId)
+					: [];
+				const bindingByAgent = new Map(bindings.map(b => [b.agentId, b]));
+				return agents
+					.filter(a => a.configMd && bindingByAgent.get(a.id)?.agentDir)
+					.map(a => ({
+						id: a.id,
+						name: a.name,
+						role: a.role,
+						workspaceId: wsId,
+					}));
 			}
 			// ─── Files ────────────────────────────────────────────
 			case "files.open": {
@@ -1702,28 +1644,28 @@ export class AgentStudioWebviewController extends Disposable {
 
 		const resolvedAgentId = payload.agentId;
 		if (!absPath && resolvedAgentId) {
-			const employee = await this.agentStudioService.getEmployee(
-				resolvedAgentId,
-			);
-			if (!employee) {
-				throw new Error(`Employee '${resolvedAgentId}' not found`);
+			const agent = await this.agentStudioService.getAgent(resolvedAgentId);
+			if (!agent) {
+				throw new Error(`Agent '${resolvedAgentId}' not found`);
 			}
-			if (!employee.agentDir) {
-				throw new Error(`Agent '${employee.name}' has no agentDir`);
+			const wsId = this.agentStudioService.getActiveWorkspaceId();
+			if (!wsId) {
+				throw new Error(`Agent '${agent.name}' has no active workspace`);
 			}
-			if (!employee.workspaceId) {
-				throw new Error(`Agent '${employee.name}' has no workspaceId`);
+			const binding = await this.agentStudioService.getAgentBinding(wsId, resolvedAgentId);
+			if (!binding?.agentDir) {
+				throw new Error(`Agent '${agent.name}' has no agentDir`);
 			}
 			const agentDirUri = await this._resolveAgentDirUri(
-				employee.workspaceId,
-				employee.agentDir,
+				wsId,
+				binding.agentDir,
 			);
 			if (!agentDirUri) {
 				throw new Error(
-					`Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`,
+					`Workspace '${wsId}' has no path; cannot resolve agent dir for ${agent.id}`,
 				);
 			}
-			const cfg = employee.configMd;
+			const cfg = agent.configMd;
 			let rel: string | undefined;
 			switch (payload.kind || "configMd") {
 				case "configMd":
@@ -1870,9 +1812,12 @@ export class AgentStudioWebviewController extends Disposable {
 		let wsId = workspaceId;
 		try {
 			if (agentId) {
-				const employee = await this.agentStudioService.getEmployee(agentId);
-				if (!wsId) { wsId = employee?.workspaceId; }
-				pushRoot(employee?.worktreePath);
+				const resolvedWsId = wsId ?? this.agentStudioService.getActiveWorkspaceId();
+				if (resolvedWsId) {
+					const binding = await this.agentStudioService.getAgentBinding(resolvedWsId, agentId);
+					if (!wsId) { wsId = binding?.workspaceId ?? resolvedWsId; }
+					pushRoot(binding?.worktreePath);
+				}
 			}
 		} catch {
 			/* ignore */
@@ -2164,25 +2109,28 @@ export class AgentStudioWebviewController extends Disposable {
 		let absPath: string | undefined = payload.path;
 		const resolvedAgentId = payload.agentId;
 		if (!absPath && resolvedAgentId) {
-			const employee = await this.agentStudioService.getEmployee(
-				resolvedAgentId,
-			);
-			if (!employee?.agentDir) {
+			const agent = await this.agentStudioService.getAgent(resolvedAgentId);
+			if (!agent) {
+				throw new Error(`Agent '${resolvedAgentId}' not found`);
+			}
+			const wsId = this.agentStudioService.getActiveWorkspaceId();
+			if (!wsId) {
+				throw new Error(`Agent '${agent.name}' has no active workspace`);
+			}
+			const binding = await this.agentStudioService.getAgentBinding(wsId, resolvedAgentId);
+			if (!binding?.agentDir) {
 				throw new Error(`Agent '${resolvedAgentId}' has no agentDir`);
 			}
-			if (!employee.workspaceId) {
-				throw new Error(`Agent '${(payload.agentId)}' has no workspaceId`);
-			}
 			const agentDirUri = await this._resolveAgentDirUri(
-				employee.workspaceId,
-				employee.agentDir,
+				wsId,
+				binding.agentDir,
 			);
 			if (!agentDirUri) {
 				throw new Error(
-					`Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`,
+					`Workspace '${wsId}' has no path; cannot resolve agent dir for ${agent.id}`,
 				);
 			}
-			const cfg = employee.configMd;
+			const cfg = agent.configMd;
 			let rel: string | undefined;
 			switch (payload.kind || "configMd") {
 				case "configMd":
@@ -3028,10 +2976,10 @@ export class AgentStudioWebviewController extends Disposable {
 			const snapshotContent = matched.content;
 
 			// 2. Write snapshot to a temp file under workspace home
-			const employee = await this.agentStudioService.getEmployee(agentId);
+			const wsId = this.agentStudioService.getActiveWorkspaceId();
 			let baseDir: string;
-			if (employee?.workspaceId) {
-				const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
+			if (wsId) {
+				const workspace = await this.agentStudioService.getWorkspace(wsId);
 				baseDir = workspace?.path ?? (this._environmentService as INativeEnvironmentService).userHome.fsPath;
 			} else {
 				baseDir = (this._environmentService as INativeEnvironmentService).userHome.fsPath;
@@ -3146,10 +3094,10 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 
 			// 解析临时快照写入根目录（与单文件 diff 一致）。
-			const employee = await this.agentStudioService.getEmployee(agentId);
+			const wsId = this.agentStudioService.getActiveWorkspaceId();
 			let baseDir: string;
-			if (employee?.workspaceId) {
-				const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
+			if (wsId) {
+				const workspace = await this.agentStudioService.getWorkspace(wsId);
 				baseDir = workspace?.path ?? (this._environmentService as INativeEnvironmentService).userHome.fsPath;
 			} else {
 				baseDir = (this._environmentService as INativeEnvironmentService).userHome.fsPath;

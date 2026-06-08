@@ -30,7 +30,7 @@ import { WorkbenchCompressibleAsyncDataTree } from '../../../../../platform/list
 import { createFileIconThemableTreeContainerScope } from '../../../../../workbench/contrib/files/browser/views/explorerView.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { IAgentChatService } from '../../common/agentStudio.js';
-import type { Employee } from '../../common/types.js';
+import type { Agent } from '../../common/types.js';
 import type { AgentSessionMeta } from '../agentChatService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -45,7 +45,7 @@ export const enum SessionExplorerItemType { AgentGroup, Session }
 
 export interface IAgentGroupElement {
 	readonly type: SessionExplorerItemType.AgentGroup;
-	readonly employee: Employee;
+	readonly employee: Agent;
 	readonly sessionCount: number;
 }
 
@@ -163,8 +163,8 @@ class SessionExplorerDataSource implements IAsyncDataSource<null, SessionExplore
 		const filterId = this.getFilterId();
 		if (e === null) {
 			const wsId = this.svc.getActiveWorkspaceId();
-			const emps = await this.svc.getEmployees(wsId);
-			this.logService.info(`[SessionExplorer] getChildren(root): wsId=${wsId}, employees=${emps.length}, filterId=${filterId ?? '(all)'}`);
+			const emps = await this.svc.getAgents();
+			this.logService.info(`[SessionExplorer] getChildren(root): wsId=${wsId}, agents=${emps.length}, filterId=${filterId ?? '(all)'}`);
 			const filtered = filterId ? emps.filter(emp => emp.id === filterId) : emps;
 			const out: IAgentGroupElement[] = [];
 			for (const emp of filtered) {
@@ -198,7 +198,7 @@ class SessionExplorerA11y implements IListAccessibilityProvider<SessionExplorerE
 export class SessionExplorerViewPane extends ViewPane {
 	private tree!: WorkbenchCompressibleAsyncDataTree<null, SessionExplorerElement, FuzzyScore>;
 	private filterEmployeeId: string | null = null;
-	private employees: Employee[] = [];
+	private employees: Agent[] = [];
 	private seHeaderContainer!: HTMLElement;
 	private filterSelect!: HTMLSelectElement;
 
@@ -318,12 +318,17 @@ export class SessionExplorerViewPane extends ViewPane {
 
 	private async _openSession(element: ISessionElement): Promise<void> {
 		try {
-			const employee = await this._studioService.getEmployee(element.agentId);
-			if (!employee?.agentDir || !employee.workspaceId) {
+			const wsId = this._studioService.getActiveWorkspaceId();
+			if (!wsId) {
+				this._notificationService.warn(localize('sessionNoWorkspace', "无法获取工作区路径"));
+				return;
+			}
+			const binding = await this._studioService.getAgentBinding(wsId, element.agentId);
+			if (!binding?.agentDir) {
 				this._notificationService.warn(localize('sessionNoPath', "无法定位会话文件路径"));
 				return;
 			}
-			const workspace = await this._studioService.getWorkspace(employee.workspaceId);
+			const workspace = await this._studioService.getWorkspace(wsId);
 			if (!workspace?.path) {
 				this._notificationService.warn(localize('sessionNoWorkspace', "无法获取工作区路径"));
 				return;
@@ -332,7 +337,7 @@ export class SessionExplorerViewPane extends ViewPane {
 				URI.file(workspace.path),
 				WORKSPACE_DATA_DIR,
 				AGENTS_DIR,
-				employee.agentDir,
+				binding.agentDir,
 				'sessions',
 				`${element.session.id}.json`,
 			);
@@ -367,8 +372,7 @@ export class SessionExplorerViewPane extends ViewPane {
 		});
 		if (!c.confirmed) return;
 		try {
-			const wsId = this._studioService.getActiveWorkspaceId();
-			for (const emp of await this._studioService.getEmployees(wsId)) {
+			for (const emp of await this._studioService.getAgents()) {
 				const ss = await (this._chatService as any).listAgentSessions(emp.id) as AgentSessionMeta[];
 				for (const s of ss) await (this._chatService as any).deleteAgentSession(emp.id, s.id);
 			}
@@ -380,8 +384,8 @@ export class SessionExplorerViewPane extends ViewPane {
 
 	async refresh(): Promise<void> {
 		const wsId = this._studioService.getActiveWorkspaceId();
-		this.employees = await this._studioService.getEmployees(wsId);
-		this._logService.info(`[SessionExplorer] refresh: wsId=${wsId}, employees=${this.employees.length}`);
+		this.employees = await this._studioService.getAgents();
+		this._logService.info(`[SessionExplorer] refresh: wsId=${wsId}, agents=${this.employees.length}`);
 		this._updateFilterDropdown();
 		if (!this._treeInputSet) {
 			await this.tree?.setInput(null);

@@ -20,7 +20,7 @@ import type {
 	IConfigMdState,
 	ConfigMdChangeOrigin,
 } from '../common/agentStudio.js';
-import type { ConfigMdCapability, ChatMessage, Employee } from '../../../common/agentStudioTypes.js';
+import type { ConfigMdCapability, ChatMessage, AgentConfigMd } from '../../../common/agentStudioTypes.js';
 import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
 import { postProcessImguiBlocks, IMGUI_SDK_SCRIPT, IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 import { IAgentOSService } from '../common/agentOS.js';
@@ -39,6 +39,19 @@ const PATCH_BLOCK_REGEX = /```configmd-patch\s*\n([\s\S]*?)\n```/g;
 const COMMAND_BLOCK_REGEX = /```configmd-command\s*\n([\s\S]*?)\n```/g;
 /** Rate-limit: max chat-send-style calls per agent per minute. */
 const RATE_LIMIT_PER_MINUTE = 30;
+
+/**
+ * Fused agent view used by ConfigMD: agent DEFINITION (name/configMd) merged
+ * with per-workspace RUNTIME state (agentDir/workspaceId from the binding).
+ * Replaces the legacy unified `Employee` shape after Employee retirement.
+ */
+interface AgentRuntimeView {
+	id: string;
+	name: string;
+	configMd?: AgentConfigMd;
+	agentDir?: string;
+	workspaceId?: string;
+}
 
 /**
  * Dedicated system prompt for the ConfigHtml AI box. Kept in sync (in spirit)
@@ -550,9 +563,9 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── Capability Check ──────────────────────────────────────────────────
 
 	async checkCapability(agentId: string, capability: ConfigMdCapability): Promise<void> {
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		if (!employee) {
-			throw new Error(`Employee '${agentId}' not found`);
+			throw new Error(`Agent '${agentId}' not found`);
 		}
 		const allowed = employee.configMd?.capabilities;
 		// If capabilities is not configured, allow read-only and chat capabilities by default
@@ -587,34 +600,63 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── State Resolution ──────────────────────────────────────────────────
 
 	/**
-	 * Resolve the absolute filesystem URI for an employee's agent directory.
+	 * Fused runtime view of an agent, replacing the legacy `getEmployee()` call.
 	 *
-	 * `employee.agentDir` is just the leaf folder name (e.g. `researcher-nlmniq3`),
+	 * The old `Employee` record co-located DEFINITION fields (name/configMd) and
+	 * per-workspace RUNTIME fields (agentDir/workspaceId). Those are now split:
+	 *   - definition  → `getAgent(agentId)`            (global, custom-agents.json + builtins)
+	 *   - runtime     → `getAgentBinding(wsId, agentId)` (per-workspace, agent-bindings.json)
+	 *
+	 * This helper recombines them into the shape ConfigMD code already consumes
+	 * (`.name`, `.configMd`, `.agentDir`, `.workspaceId`), so call sites stay
+	 * unchanged. Returns `undefined` when the agent definition is missing.
+	 */
+	private async _resolveAgentView(agentId: string): Promise<AgentRuntimeView | undefined> {
+		const agent = await this.agentStudioService.getAgent(agentId);
+		if (!agent) { return undefined; }
+		const workspaceId = this.agentStudioService.getActiveWorkspaceId();
+		let binding: { agentDir?: string } | undefined;
+		if (workspaceId) {
+			binding = await this.agentStudioService.getAgentBinding(workspaceId, agentId);
+		}
+		return {
+			id: agent.id,
+			name: agent.name,
+			configMd: agent.configMd,
+			agentDir: binding?.agentDir,
+			workspaceId,
+		};
+	}
+
+	/**
+	 * Resolve the absolute filesystem URI for an agent's instance directory.
+	 *
+	 * `view.agentDir` is just the leaf folder name (e.g. `researcher-nlmniq3`),
 	 * NOT an absolute path. The actual location is
-	 *   `<workspace.path>/<WORKSPACE_DATA_DIR>/<AGENTS_DIR>/<employee.agentDir>/`
+	 *   `<workspace.path>/<WORKSPACE_DATA_DIR>/<AGENTS_DIR>/<view.agentDir>/`
 	 *
-	 * Returns `undefined` when the employee has no `agentDir` or the workspace
+	 * Returns `undefined` when the agent has no bound `agentDir` or the workspace
 	 * has no `path` (e.g. global/in-memory workspaces).
 	 */
-	private async _resolveAgentDirUri(employee: Employee): Promise<URI | undefined> {
-		if (!employee.agentDir) { return undefined; }
-		if (!employee.workspaceId) {
-			this.logService.warn(`[ConfigMD] Employee '${employee.id}' has no workspaceId; cannot resolve agent dir`);
+	private async _resolveAgentDirUri(view: AgentRuntimeView): Promise<URI | undefined> {
+		if (!view.agentDir) { return undefined; }
+		if (!view.workspaceId) {
+			this.logService.warn(`[ConfigMD] Agent '${view.id}' has no workspaceId; cannot resolve agent dir`);
 			return undefined;
 		}
-		const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
+		const workspace = await this.agentStudioService.getWorkspace(view.workspaceId);
 		if (!workspace?.path) {
-			this.logService.warn(`[ConfigMD] Workspace '${employee.workspaceId}' has no path; cannot resolve agent dir for ${employee.id}`);
+			this.logService.warn(`[ConfigMD] Workspace '${view.workspaceId}' has no path; cannot resolve agent dir for ${view.id}`);
 			return undefined;
 		}
-		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir);
+		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, view.agentDir);
 	}
 
 	private async _ensureState(agentId: string): Promise<IAgentMdState | null> {
 		const existing = this._agents.get(agentId);
 		if (existing) { return existing; }
 
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		if (!employee?.configMd || !employee.agentDir) {
 			return null;
 		}
@@ -885,7 +927,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 * and a small set of default styles. It is regenerated on every call.
 	 */
 	async previewToFile(agentId: string): Promise<{ path: string; version: number }> {
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		if (!employee?.agentDir) {
 			throw new Error(`Agent directory not found for ${agentId}`);
 		}
@@ -941,7 +983,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		const wrapped = `[ConfigMD HTML Event: ${eventName}]\n${JSON.stringify(payload, null, 2)}`;
 		try {
-			const employee = await this.agentStudioService.getEmployee(agentId);
+			const employee = await this._resolveAgentView(agentId);
 			const chatMessage = await this.agentChatService.sendMessage(
 				agentId,
 				wrapped,
@@ -1190,7 +1232,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	): Promise<ChatMessage> {
 		await this.checkCapability(agentId, 'chat.send');
 		this._checkRateLimit(agentId);
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		const fullMsg = options?.context
 			? `[Context from ConfigMD]\n${options.context}\n\n${message}`
 			: message;
@@ -1245,7 +1287,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	): Promise<{ html: string; raw: string }> {
 		await this.checkCapability(agentId, 'chat.send');
 		this._checkRateLimit(agentId);
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 
 		const systemPrompt = CONFIGHTML_SYSTEM_PROMPT;
 		const userMsg = options?.currentHtml && options.currentHtml.trim()
@@ -1491,7 +1533,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── Custom Parser / Styles Management ────────────────────────────────
 
 	async uploadParser(agentId: string, content: string, fileName?: string): Promise<{ parserPath: string }> {
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		if (!employee?.agentDir) {
 			throw new Error(`Agent directory not found for ${agentId}`);
 		}
@@ -1514,7 +1556,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		// Persist parserPath to employee record
 		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
 		cfg.parserPath = relPath;
-		await this.agentStudioService.updateEmployee(agentId, { configMd: cfg });
+		await this.agentStudioService.updateAgent(agentId, { configMd: cfg });
 
 		// Update in-memory state and re-render
 		const st = this._agents.get(agentId);
@@ -1530,7 +1572,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async uploadStyles(agentId: string, content: string, fileName?: string): Promise<{ stylesPath: string }> {
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		if (!employee?.agentDir) {
 			throw new Error(`Agent directory not found for ${agentId}`);
 		}
@@ -1546,7 +1588,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
 		cfg.stylesPath = relPath;
-		await this.agentStudioService.updateEmployee(agentId, { configMd: cfg });
+		await this.agentStudioService.updateAgent(agentId, { configMd: cfg });
 
 		const st = this._agents.get(agentId);
 		if (st) {
@@ -1560,11 +1602,11 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async removeParser(agentId: string): Promise<void> {
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		if (!employee?.configMd) { return; }
 		const cfg = { ...employee.configMd };
 		delete cfg.parserPath;
-		await this.agentStudioService.updateEmployee(agentId, { configMd: cfg });
+		await this.agentStudioService.updateAgent(agentId, { configMd: cfg });
 
 		const st = this._agents.get(agentId);
 		if (st) {
@@ -1577,7 +1619,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async getInfo(agentId: string): Promise<{ parserSource: 'builtin' | 'custom'; parserPath?: string; stylesPath?: string; hasStyles: boolean }> {
-		const employee = await this.agentStudioService.getEmployee(agentId);
+		const employee = await this._resolveAgentView(agentId);
 		const cfg = employee?.configMd;
 		const st = this._agents.get(agentId);
 		const parserSource: 'builtin' | 'custom' = st?.customParser ? 'custom' : (cfg?.parserPath ? 'custom' : 'builtin');

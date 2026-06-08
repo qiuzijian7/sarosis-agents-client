@@ -164,7 +164,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 	private async _selectAndLoadEmployee(agentId: string): Promise<void> {
 		try {
-			const emp = await this._agentStudioService.getEmployee(agentId);
+			const emp = await this._agentStudioService.getAgent(agentId);
 			if (emp && this._employeeChatPanel) {
 				this._employeeChatPanel.setEmployee({
 					id: emp.id,
@@ -172,22 +172,22 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 					role: emp.role,
 					avatarUrl: emp.avatar,
 					status: emp.status,
-					isPM: emp.presetId === 'pm' || emp.role?.toLowerCase().includes('project manager'),
-					customPrompt: emp.customPrompt,
-					model: typeof emp.model === 'string' ? emp.model : (Array.isArray(emp.model) ? emp.model[0] : emp.model?.primary),
+					isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
+					customPrompt: emp.systemPrompt,
+					model: emp.model,
 					provider: undefined,
 				});
 				// Load chat history
 				// TODO: const history = await this._agentChatService.getHistory(agentId);
 			}
 		} catch (err) {
-			// Employee not found or service error — ignore
+			// Agent not found or service error — ignore
 		}
 	}
 
 	private async _loadAvailableEmployees(): Promise<void> {
 		try {
-			const employees = await this._agentStudioService.getEmployees();
+			const employees = await this._agentStudioService.getAgents();
 			if (this._employeeChatPanel && employees) {
 				this._employeeChatPanel.setAvailableEmployees(
 					employees.map(emp => ({
@@ -196,9 +196,9 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						role: emp.role,
 						avatarUrl: emp.avatar,
 						status: emp.status,
-						isPM: emp.presetId === 'pm' || emp.role?.toLowerCase().includes('project manager'),
-						customPrompt: emp.customPrompt,
-						model: typeof emp.model === 'string' ? emp.model : (Array.isArray(emp.model) ? emp.model[0] : emp.model?.primary),
+						isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
+						customPrompt: emp.systemPrompt,
+						model: emp.model,
 						provider: undefined,
 					}))
 				);

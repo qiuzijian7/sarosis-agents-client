@@ -189,39 +189,34 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			this.logService.warn('[AgentStudioService] _clearWorktreeBindings: failed to enumerate workspaces:', err);
 		}
 
-		// 2. Clear matching employee-level bindings (across all workspaces + global).
-		//    Employees may set their own worktreePath that overrides the workspace.
+		// 2. Clear matching agent-binding-level worktree paths (per-workspace).
+		//    An AgentBinding may set its own worktreePath that overrides the
+		//    workspace-level worktree, so we scan every workspace's bindings.
 		try {
 			const workspaces = await this.getWorkspaces().catch(() => [] as Workspace[]);
-			const scopes: (string | undefined)[] = [undefined, ...workspaces.map(ws => ws.id)];
-			const seenEmployeeIds = new Set<string>();
-			for (const scope of scopes) {
-				let employees: Employee[];
+			for (const ws of workspaces) {
+				let bindings: AgentBinding[];
 				try {
-					employees = await this.getEmployees(scope);
+					bindings = await this.getAgentBindings(ws.id);
 				} catch {
 					continue;
 				}
-				for (const emp of employees) {
-					if (seenEmployeeIds.has(emp.id)) {
-						continue;
-					}
-					seenEmployeeIds.add(emp.id);
-					if (normalize(emp.worktreePath) === target) {
+				for (const binding of bindings) {
+					if (normalize(binding.worktreePath) === target) {
 						try {
-							await this.updateEmployee(emp.id, {
+							await this.upsertAgentBinding(ws.id, binding.agentId, {
 								worktreePath: undefined,
 								worktreeBranch: undefined,
 							});
-							this.logService.info(`[AgentStudioService] _clearWorktreeBindings: cleared employee ${emp.id} (${emp.name})`);
+							this.logService.info(`[AgentStudioService] _clearWorktreeBindings: cleared binding ${binding.agentId} in workspace ${ws.id}`);
 						} catch (err) {
-							this.logService.warn(`[AgentStudioService] _clearWorktreeBindings: failed to clear employee ${emp.id}:`, err);
+							this.logService.warn(`[AgentStudioService] _clearWorktreeBindings: failed to clear binding ${binding.agentId} in workspace ${ws.id}:`, err);
 						}
 					}
 				}
 			}
 		} catch (err) {
-			this.logService.warn('[AgentStudioService] _clearWorktreeBindings: failed to enumerate employees:', err);
+			this.logService.warn('[AgentStudioService] _clearWorktreeBindings: failed to enumerate agent bindings:', err);
 		}
 	}
 

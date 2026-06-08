@@ -3,7 +3,7 @@
  *  Inspired by Paperclip's multi-level context management system
  *--------------------------------------------------------------------------------------------*/
 
-import type { Employee, ChatMessage, PlanTaskStatus } from './types.js';
+import type { Agent, ChatMessage, PlanTaskStatus } from './types.js';
 import type { AgentType } from '../../../common/agentStudioTypes.js';
 
 // ─── Context Levels (from bottom to top) ───────────────────────────────────────────
@@ -15,7 +15,7 @@ export interface IWorkspaceContext {
 	readonly workspaceId: string;
 	readonly workspaceName: string;
 	readonly workspacePath?: string;
-	readonly employees: ReadonlyArray<Employee>;
+	readonly employees: ReadonlyArray<Agent>;
 	readonly connections: ReadonlyArray<WorkspaceConnection>;
 	readonly layout?: WorkspaceLayout;
 	/** Root/Fork management info */
