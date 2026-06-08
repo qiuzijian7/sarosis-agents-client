@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
 import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, buildChatMessagesFromState, type StreamState, type StreamError, isPhaseActive } from '../bridge/streamHandler';
-import { useEmployeeStore } from './useEmployeeStore';
+import { useAgentStore } from './useAgentStore';
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -314,12 +314,12 @@ interface ChatState {
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
-	// Helper: update the active agent's status in the employee store
+	// Helper: update the active agent's status in the agent store
 	function syncAgentStatus(status: 'idle' | 'thinking' | 'working') {
 		const activeId = get().activeAgentId;
 		if (!activeId) return;
-		useEmployeeStore.setState(state => ({
-			employees: state.employees.map(e =>
+		useAgentStore.setState(state => ({
+			agents: state.agents.map(e =>
 				e.id === activeId ? { ...e, status } : e
 			),
 		}));
@@ -1281,10 +1281,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 			const autoExecute = buttonId === 'approve-execute';
 
 			try {
-				const { useEmployeeStore } = await import('./useEmployeeStore');
+				const { useAgentStore } = await import('./useAgentStore');
 				const { useWorkspaceStore } = await import('./useWorkspaceStore');
-				const employee = useEmployeeStore.getState().employees.find(e => e.id === activeAgentId);
-				const workspaceId = employee?.workspaceId || useWorkspaceStore.getState().activeWorkspaceId;
+				const agent = useAgentStore.getState().agents.find(e => e.id === activeAgentId);
+				const workspaceId = agent?.workspaceId || useWorkspaceStore.getState().activeWorkspaceId;
 
 				if (!workspaceId) {
 					console.error('[ChatStore] approvePlanConfirmation: no workspaceId found');

@@ -6,7 +6,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 
 interface WorkspaceToolbarProps {
 	onAddEmployee: () => void;
@@ -22,7 +22,7 @@ export function WorkspaceToolbar({
 	onImport,
 }: WorkspaceToolbarProps): React.ReactElement {
 	const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, deleteWorkspace } = useWorkspaceStore();
-	const { employees } = useEmployeeStore();
+	const { agents } = useAgentStore();
 	const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 	const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
 	const [isCreating, setIsCreating] = useState(false);
@@ -34,7 +34,7 @@ export function WorkspaceToolbar({
 	const inputRef = useRef<HTMLInputElement>(null);
 
 	const currentWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
-	const employeeCount = employees.filter(e => e.workspaceId === activeWorkspaceId).length;
+	const employeeCount = agents.length;
 
 	// Close dropdown on outside click
 	useEffect(() => {

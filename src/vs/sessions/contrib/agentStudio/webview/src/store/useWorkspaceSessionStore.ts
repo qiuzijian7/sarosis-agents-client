@@ -22,18 +22,18 @@ function getChatStore() {
 	return _chatStore;
 }
 
-let _employeeStore: { getState: () => any; setState: (updater: any) => void } | null = null;
-function getEmployeeStore() {
-	if (!_employeeStore) {
+let _agentStore: { getState: () => any; setState: (updater: any) => void } | null = null;
+function getAgentStore() {
+	if (!_agentStore) {
 		try {
-			const mod = require('./useEmployeeStore');
-			_employeeStore = mod.useEmployeeStore;
+			const mod = require('./useAgentStore');
+			_agentStore = mod.useAgentStore;
 		} catch (err) {
-			console.warn('[WorkspaceSessionStore] Failed to load useEmployeeStore:', err);
+			console.warn('[WorkspaceSessionStore] Failed to load useAgentStore:', err);
 			return null;
 		}
 	}
-	return _employeeStore;
+	return _agentStore;
 }
 
 // ─── Types (mirroring host-side types for webview) ─────────────────────────
@@ -166,8 +166,8 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
 			await sendRequest('workspaceSession.switch', { workspaceId, sessionId }).catch(() => {});
 		}
 
-		// Reload chat for currently selected employee with fork's session
-		const selectedId = getEmployeeStore()?.getState()?.selectedEmployeeId;
+		// Reload chat for currently selected agent with fork's session
+		const selectedId = getAgentStore()?.getState()?.selectedAgentId;
 		if (selectedId) {
 			const agentSessionId = get().getAgentSessionId(selectedId);
 			getChatStore()?.getState()?.loadHistoryForSession(selectedId, agentSessionId ?? undefined);
@@ -193,8 +193,8 @@ export const useWorkspaceSessionStore = create<WorkspaceSessionState>((set, get)
 			await sendRequest('workspaceSession.switchRoot', { workspaceId }).catch(() => {});
 		}
 
-		// Reload chat for currently selected employee (default session)
-		const selectedId = getEmployeeStore()?.getState()?.selectedEmployeeId;
+		// Reload chat for currently selected agent (default session)
+		const selectedId = getAgentStore()?.getState()?.selectedAgentId;
 		if (selectedId) {
 			getChatStore()?.getState()?.loadHistoryForSession(selectedId, undefined);
 		}

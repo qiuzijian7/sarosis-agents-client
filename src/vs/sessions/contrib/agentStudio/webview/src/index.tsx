@@ -12,7 +12,6 @@ import { App } from './App.js';
 import { perfTrace } from './utils/perfTrace.js';
 import { initMessageClient } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError, applyToolApprovalRequest } from './bridge/streamHandler.js';
-import { useEmployeeStore } from './store/useEmployeeStore.js';
 import { useAgentStore } from './store/useAgentStore.js';
 import { useProviderStore } from './store/useProviderStore.js';
 import { useThemeStore } from './store/useThemeStore.js';
@@ -76,8 +75,7 @@ initMessageClient((type, data) => {
 			console.log(`[AgentStudio] received 'employee.selected' event: agentId=${agentId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
 			if (agentId !== undefined) {
 				// Update the Agent store directly (bypass postMessage to avoid echo loop).
-				// NOTE: useAgentStore is the canonical agent store that EmployeeChat reads from.
-				// useEmployeeStore is a LEGACY store — writing to it has no effect on the chat panel.
+				// NOTE: useAgentStore is the canonical agent store that the chat panel reads from.
 				console.log(`[AgentStudio] → useAgentStore.setState({ selectedAgentId: '${agentId}' })`);
 				useAgentStore.setState({ selectedAgentId: agentId });
 			} else {
@@ -271,14 +269,11 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
-		case 'configmd.showInCanvas': {
-			// ConfigHtml preview button → open this agent's config.html (editable)
-			// in the Canvas panel. The Canvas lives in a different webview instance,
-			// so the host re-broadcasts this event to every webview; only the
-			// Canvas panel's listener reacts.
-			window.dispatchEvent(new CustomEvent('agentStudio:configmd-show-in-canvas', { detail: data }));
-			break;
-		}
+		// NOTE: 'configmd.showInCanvas' handler removed — the WorkspaceCanvas
+		// panel (its only listener) has been retired. The host-side
+		// ConfigHtml→Canvas preview bridge (configHtmlService.requestCanvasPreview)
+		// is intentionally kept for now; this event simply has no webview
+		// consumer anymore, so the previous re-dispatch was dead code.
 		case 'agentSessions.changed': {
 			// Agent session list changed (created/renamed/deleted/updated).
 			// Refresh the session list in the chat store if the affected employee

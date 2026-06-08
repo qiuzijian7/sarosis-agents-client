@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { sendRequest } from '../../bridge/messageClient';
 
@@ -14,7 +14,7 @@ interface WorktreeInfo {
 }
 
 export function WorktreeSwitcher(): React.ReactElement | null {
-	const { selectedEmployeeId: activeAgentId, employees, updateEmployee } = useEmployeeStore();
+	const { selectedAgentId: activeAgentId, agents, updateAgent } = useAgentStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
 
 	const [isOpen, setIsOpen] = useState(false);
@@ -22,7 +22,7 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	const [isLoading, setIsLoading] = useState(false);
 	const dropdownRef = useRef<HTMLDivElement>(null);
 
-	const activeAgent = employees.find(e => e.id === activeAgentId);
+	const activeAgent = agents.find(e => e.id === activeAgentId);
 	const currentWorktreePath = activeAgent?.worktreePath;
 	const currentWorktreeBranch = activeAgent?.worktreeBranch;
 
@@ -78,7 +78,7 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	const handleSelectWorktree = async (path: string) => {
 		if (!activeAgentId) { return; }
 		const selectedWt = worktreeList.find(wt => wt.path === path);
-		await updateEmployee(activeAgentId, {
+		await updateAgent(activeAgentId, {
 			worktreePath: path || undefined,
 			worktreeBranch: selectedWt?.branch,
 		});
@@ -87,7 +87,7 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 
 	const handleClearWorktree = async () => {
 		if (!activeAgentId) { return; }
-		await updateEmployee(activeAgentId, {
+		await updateAgent(activeAgentId, {
 			worktreePath: undefined,
 			worktreeBranch: undefined,
 		});

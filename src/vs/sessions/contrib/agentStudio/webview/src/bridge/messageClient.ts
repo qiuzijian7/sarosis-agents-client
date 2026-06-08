@@ -135,6 +135,7 @@ export type RequestType =
 	| 'agents.import'
 	| 'agents.selected'
 	| 'agents.getLastSelected'
+	| 'agents.openSettings'
 	| 'orchestration.approveWithoutExecute'
 	| 'orchestration.approveTask'
 	| 'orchestration.rejectTask'

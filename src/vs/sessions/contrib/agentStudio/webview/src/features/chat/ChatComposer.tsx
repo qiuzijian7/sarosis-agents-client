@@ -10,7 +10,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { useState, useRef, useCallback, KeyboardEvent, useEffect, useMemo } from 'react';
 import { useChatStore } from '../../store/useChatStore';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 import { useProviderStore } from '../../store/useProviderStore';
 import type { ProviderInfo, ProviderModelInfo } from '../../store/useProviderStore';
 import { useAttachmentStore } from '../../store/useAttachmentStore';
@@ -89,13 +89,13 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const skillMenuRef = useRef<HTMLDivElement>(null);
 	const commandMenuRef = useRef<HTMLDivElement>(null);
 	const { activeAgentId, chatMode, setChatMode } = useChatStore();
-	const { employees } = useEmployeeStore();
+	const { agents } = useAgentStore();
 	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders, currentModelInfo } = useProviderStore();
 	const { attachments, addImage, addPastedImage, addFile, removeAttachment, clearAttachments, toPayload, getImageSupportWarning } = useAttachmentStore();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [isDragOver, setIsDragOver] = useState(false);
 
-	const activeAgent = employees.find(e => e.id === activeAgentId);
+	const activeAgent = agents.find(e => e.id === activeAgentId);
 	const composerPlaceholder = placeholder || (activeAgent ? `Message ${activeAgent.name}...` : '输入消息...');
 
 	// Mode options — with descriptions and icons (ref: CodeBuddy-IDE-模式分析.md)

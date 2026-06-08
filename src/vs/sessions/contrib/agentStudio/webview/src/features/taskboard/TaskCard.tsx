@@ -6,14 +6,14 @@
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { type TaskBoardRecord, type TaskBoardStatus, type TaskSource, useTaskBoardStore } from '../../store/useTaskBoardStore';
-import { type Employee, useEmployeeStore } from '../../store/useEmployeeStore';
+import { type Agent, useAgentStore } from '../../store/useAgentStore';
 import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
 import { useSwarmStore } from '../../store/useSwarmStore';
 import { getAgentColor } from '../../utils/agentColors';
 
 interface TaskCardProps {
 	task: TaskBoardRecord;
-	employees: Employee[];
+	employees: Agent[];
 	onStatusChange: (taskId: string, status: TaskBoardStatus, source: TaskSource) => void;
 	onDelete: (taskId: string, source: TaskSource) => void;
 	onArchive: (taskId: string, source: TaskSource) => void;
@@ -176,7 +176,7 @@ export function TaskCard({
 
 	const handleNavigateChat = useCallback(() => {
 		if (task.assigneeId) {
-			useEmployeeStore.getState().selectEmployee(task.assigneeId);
+			useAgentStore.getState().selectAgent(task.assigneeId);
 		}
 	}, [task.assigneeId]);
 

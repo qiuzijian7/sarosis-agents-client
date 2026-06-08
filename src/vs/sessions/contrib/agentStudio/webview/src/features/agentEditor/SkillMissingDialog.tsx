@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useState, useCallback } from 'react';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 
 interface SkillMissingDialogProps {
 	employeeId: string;
@@ -52,7 +52,7 @@ export function SkillMissingDialog({
 			<div className="employee-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
 				<h3 style={{ margin: '0 0 8px', fontSize: '14px' }}>技能缺失警告</h3>
 				<p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginBottom: '16px' }}>
-					代理 "{useEmployeeStore.getState().employees.find(e => e.id === employeeId)?.name || employeeId}" 引用了以下缺失的技能：
+					代理 "{useAgentStore.getState().agents.find(e => e.id === employeeId)?.name || employeeId}" 引用了以下缺失的技能：
 				</p>
 
 				<div className="form-field">

@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTaskBoardStore, type TaskBoardStatus, type TaskSource } from '../../store/useTaskBoardStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
@@ -51,9 +51,10 @@ const CollapseIcon = ({ collapsed }: { collapsed: boolean }) => (
 export function TaskBoardPanel(): React.ReactElement {
 	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, createTask, deleteTask, archiveTask, setDragTarget, focusedTaskId, focusTask } = useTaskBoardStore();
 	const { activeWorkspaceId, workspaces } = useWorkspaceStore();
-	const { employees } = useEmployeeStore();
-	const loadAllEmployees = useEmployeeStore(s => s.loadAllEmployees);
-	const allEmployees = useEmployeeStore(s => s.allEmployees);
+	const { agents } = useAgentStore();
+	const loadAgents = useAgentStore(s => s.loadAgents);
+	// All agents are global (no per-workspace filtering) — `agents` already holds the full list.
+	const allEmployees = agents;
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
 	const { diagnostics, isRunning: isDiagnosticsRunning, loadDiagnostics, runDiagnostics } = useDiagnosticsStore();
@@ -141,18 +142,18 @@ export function TaskBoardPanel(): React.ReactElement {
 		}
 	}, [activeWorkspaceId, boardFilterWsId, loadDelegations, loadTasks, loadPlans, loadDiagnostics, loadSwarms]);
 
-	// Load all employees (across all workspaces) so the create-task modal's
-	// assignee dropdown shows every available agent, not just workspace-scoped ones.
+	// Load all agents (global definitions) so the create-task modal's
+	// assignee dropdown shows every available agent.
 	useEffect(() => {
-		loadAllEmployees();
-	}, [loadAllEmployees]);
+		loadAgents();
+	}, [loadAgents]);
 
-	// Register agent colors when employees change (ensures consistent color assignment)
+	// Register agent colors when agents change (ensures consistent color assignment)
 	useEffect(() => {
-		if (employees.length > 0) {
-			registerAgentColors(employees.map(e => e.id));
+		if (agents.length > 0) {
+			registerAgentColors(agents.map(e => e.id));
 		}
-	}, [employees]);
+	}, [agents]);
 
 	// Listen for task-board changes from host
 	useEffect(() => {
@@ -259,11 +260,11 @@ export function TaskBoardPanel(): React.ReactElement {
 		for (const t of tasks) {
 			if (!t || !t.assigneeId) { continue; }
 			if (seen.has(t.assigneeId)) { continue; }
-			const emp = employees.find(e => e.id === t.assigneeId);
+			const emp = agents.find(e => e.id === t.assigneeId);
 			seen.set(t.assigneeId, emp?.name || t.assigneeName || t.assigneeId);
 		}
 		return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
-	}, [tasks, employees]);
+	}, [tasks, agents]);
 
 	// Columns currently visible (a column is hidden when its key is in hiddenColumnKeys).
 	const visibleColumns = useMemo(
@@ -482,7 +483,7 @@ export function TaskBoardPanel(): React.ReactElement {
 									<TaskCard
 										key={task.id}
 										task={task}
-										employees={employees}
+										employees={agents}
 										onStatusChange={handleStatusChange}
 										onDelete={handleDelete}
 										onArchive={handleArchive}

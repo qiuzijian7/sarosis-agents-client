@@ -8,13 +8,13 @@ import { sendRequest, postMessage } from '../bridge/messageClient';
 
 // Lazy-loaded stores to avoid circular dependency
 let _agentStore: { getState: () => any; setState: (updater: any) => void } | null = null;
-function getEmployeeStore() {
+function getAgentStore() {
 	if (!_agentStore) {
 		try {
-			const mod = require('./useEmployeeStore');
-			_agentStore = mod.useEmployeeStore;
+			const mod = require('./useAgentStore');
+			_agentStore = mod.useAgentStore;
 		} catch (err) {
-			console.warn('[ProviderStore] Failed to load useEmployeeStore:', err);
+			console.warn('[ProviderStore] Failed to load useAgentStore:', err);
 			return null;
 		}
 	}
@@ -315,7 +315,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 				agentId: firstAgent?.id,
 			});
 			// Also reflect on the agent card immediately
-			getEmployeeStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
+			getAgentStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
 				agents: state.agents.map((e: { id: string; provider?: string; model?: string }) =>
 					e.id === agentId
 						? { ...e, provider: first.id, model: firstModel.id }
@@ -437,7 +437,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		// Sync the active agent's model/provider fields so that
 		// EmployeeCard and chat header update in real-time
 		if (activeAgentId) {
-			getEmployeeStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
+			getAgentStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
 				agents: state.agents.map((e: { id: string; provider?: string; model?: string }) =>
 					e.id === activeAgentId
 						? { ...e, provider: providerId, model: bareModelId }

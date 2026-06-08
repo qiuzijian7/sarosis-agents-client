@@ -5,7 +5,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
+import { useAgentStore, type Agent } from '../../store/useAgentStore';
 import { sendRequest } from '../../bridge/messageClient';
 
 // Icons as inline SVG for zero-dependency rendering
@@ -27,7 +27,7 @@ const AddIcon = () => (
 
 interface WorkspaceGroupProps {
 	workspace: { id: string; name: string; description?: string };
-	employees: Employee[];
+	employees: Agent[];
 	isActive: boolean;
 	isExpanded: boolean;
 	onToggle: () => void;
@@ -107,7 +107,7 @@ function WorkspaceGroup({
 
 export function WorkspaceSidebar(): React.ReactElement {
 	const { workspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
-	const { employees, selectedEmployeeId, selectEmployee, searchQuery, setSearchQuery } = useEmployeeStore();
+	const { agents, selectedAgentId, selectAgent, searchQuery, setSearchQuery } = useAgentStore();
 	const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
 	// Auto-expand active workspace
@@ -130,17 +130,18 @@ export function WorkspaceSidebar(): React.ReactElement {
 	}, []);
 
 	const handleSelectEmployee = useCallback((empId: string) => {
-		selectEmployee(empId);
+		selectAgent(empId);
 		// Open agent settings in the editor area
-		const employeeName = useEmployeeStore.getState().employees.find(e => e.id === empId)?.name;
-		sendRequest('agents.openSettings', { agentId: empId, agentName: employeeName }).catch(err =>
+		const agentName = useAgentStore.getState().agents.find(a => a.id === empId)?.name;
+		sendRequest('agents.openSettings', { agentId: empId, agentName }).catch(err =>
 			console.warn('[WorkspaceSidebar] agents.openSettings failed:', err)
 		);
-	}, [selectEmployee]);
+	}, [selectAgent]);
 
-	// Group employees by workspace
-	const getEmployeesForWorkspace = (wsId: string): Employee[] => {
-		let filtered = employees.filter(e => e.workspaceId === wsId);
+	// Agents are global definitions, visible across all workspaces.
+	// Each workspace group lists every global agent (filtered by search).
+	const getFilteredAgents = (): Agent[] => {
+		let filtered = agents;
 		if (searchQuery) {
 			const q = searchQuery.toLowerCase();
 			filtered = filtered.filter(e =>
@@ -149,18 +150,6 @@ export function WorkspaceSidebar(): React.ReactElement {
 		}
 		return filtered;
 	};
-
-	// Employees not assigned to any workspace
-	const unassignedEmployees = (() => {
-		let filtered = employees.filter(e => !e.workspaceId);
-		if (searchQuery) {
-			const q = searchQuery.toLowerCase();
-			filtered = filtered.filter(e =>
-				e?.name?.toLowerCase().includes(q) || e?.role?.toLowerCase().includes(q)
-			);
-		}
-		return filtered;
-	})();
 
 	return (
 		<div className="workspace-sidebar">
@@ -189,32 +178,18 @@ export function WorkspaceSidebar(): React.ReactElement {
 					<WorkspaceGroup
 						key={ws.id}
 						workspace={ws}
-						employees={getEmployeesForWorkspace(ws.id)}
+						employees={getFilteredAgents()}
 						isActive={ws.id === activeWorkspaceId}
 						isExpanded={expandedIds.has(ws.id)}
 						onToggle={() => toggleExpand(ws.id)}
 						onSelect={() => setActiveWorkspace(ws.id)}
-						selectedEmployeeId={selectedEmployeeId}
+						selectedEmployeeId={selectedAgentId}
 						onSelectEmployee={handleSelectEmployee}
 					/>
 				))}
 
-				{/* Unassigned employees */}
-				{unassignedEmployees.length > 0 && (
-					<WorkspaceGroup
-						workspace={{ id: '__unassigned__', name: 'Unassigned' }}
-						employees={unassignedEmployees}
-						isActive={false}
-						isExpanded={expandedIds.has('__unassigned__')}
-						onToggle={() => toggleExpand('__unassigned__')}
-						onSelect={() => {}}
-						selectedEmployeeId={selectedEmployeeId}
-						onSelectEmployee={handleSelectEmployee}
-					/>
-				)}
-
 				{/* Empty state */}
-				{workspaces.length === 0 && employees.length === 0 && (
+				{workspaces.length === 0 && agents.length === 0 && (
 					<div className="sidebar-empty">
 						<p>No workspaces yet</p>
 						<p className="sidebar-empty-hint">Create a workspace to get started</p>

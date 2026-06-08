@@ -5,8 +5,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useEmployeeStore, type Employee, type MemoryConfig, type MemoryEntry, type KnowledgeConfig, type KnowledgeSource } from '../../store/useEmployeeStore';
-import { useAgentStore } from '../../store/useAgentStore';
+import { useAgentStore, type MemoryConfig, type MemoryEntry, type KnowledgeConfig, type KnowledgeSource } from '../../store/useAgentStore';
 import { useConfigMdStore } from '../../store/useConfigMdStore';
 import {
 	bindIframeChannel,
@@ -1079,67 +1078,63 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		`Δ${sinceLastRender.toFixed(1)}ms since last render | agentId=${agentId}`
 	);
 
-	const { employees, updateEmployee } = useEmployeeStore();
-	const { agents } = useAgentStore();
+	const { agents, updateAgent } = useAgentStore();
 
 	const t0Resolve = nowMs();
-	const employee = employees.find(e => e.id === agentId) ?? null;
 	// Agent (from useAgentStore) carries systemPrompt & skills for builtin/custom agents
 	const agent = agents.find(a => a.id === agentId);
 	const resolveMs = nowMs() - t0Resolve;
 
 	// Log store resolution on first render where data is available
-	if (!perfRef.current.loggedStoreState && (employees.length > 0 || agents.length > 0)) {
+	if (!perfRef.current.loggedStoreState && agents.length > 0) {
 		perfRef.current.loggedStoreState = true;
 		console.log(
 			`${PERF_TAG} STORE_RESOLVE | ${nowLabel()} | ` +
-			`employees.length=${employees.length}, agents.length=${agents.length}, ` +
-			`found employee=${!!employee}, found agent=${!!agent}, ` +
+			`agents.length=${agents.length}, ` +
+			`found agent=${!!agent}, ` +
 			`resolve took=${resolveMs.toFixed(1)}ms`
 		);
 	}
 	// Log store empty state (data hasn't arrived yet)
-	if (!perfRef.current.loggedStoreState && employees.length === 0 && agents.length === 0 && perfRef.current.renderCount === 1) {
+	if (!perfRef.current.loggedStoreState && agents.length === 0 && perfRef.current.renderCount === 1) {
 		console.log(
 			`${PERF_TAG} STORE_EMPTY | ${nowLabel()} | ` +
-			`Both stores are empty on first render — data has not arrived from host yet`
+			`Agent store is empty on first render — data has not arrived from host yet`
 		);
 	}
 
 	// DEBUG: Log actual data values for this agent on every render (not just first)
 	console.log(
 		`${PERF_TAG} AGENT_DATA | ${nowLabel()} | agentId=${agentId} | ` +
-		`foundAgent=${!!agent} foundEmployee=${!!employee} | ` +
+		`foundAgent=${!!agent} | ` +
 		`agent.systemPromptLen=${agent?.systemPrompt?.length || 0} ` +
-		`agent.skillsLen=${agent?.skills?.length || 0} ` +
-		`employee.customPromptLen=${employee?.customPrompt?.length || 0} ` +
-		`employee.skillsLen=${employee?.skills?.length || 0}`
+		`agent.skillsLen=${agent?.skills?.length || 0}`
 	);
 
 	const [activeTab, setActiveTab] = useState<TabId>('prompt');
 
 	// ── System Prompt state ──────────────────────────────────────────
-	// Prefer agent.systemPrompt (builtin default), fallback to employee.customPrompt (user override)
-	const initialPrompt = agent?.customPrompt || agent?.systemPrompt || employee?.customPrompt || '';
+	// Prefer agent.customPrompt (user override), fallback to agent.systemPrompt (builtin default)
+	const initialPrompt = agent?.customPrompt || agent?.systemPrompt || '';
 	const [prompt, setPrompt] = useState(initialPrompt);
 	const [promptDirty, setPromptDirty] = useState(false);
 
-	// ── Skills state (from agent.skills or employee.skills) ──────────
+	// ── Skills state (from agent.skills) ──────────
 	// Skills may be strings or objects {id, name, enabled, description}
 	const normalizeSkills = (skills: any[]): string[] =>
 		(skills || []).map(s => typeof s === 'string' ? s : s.id).filter(Boolean);
 	const [skills, setSkills] = useState<string[]>(
-		normalizeSkills(agent?.skills || employee?.skills || []),
+		normalizeSkills(agent?.skills || []),
 	);
 
 	// ── Memory state ──────────────────────────────────────────────────
 	const [memoryConfig, setMemoryConfig] = useState<MemoryConfig>(
-		employee?.memoryConfig || agent?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] },
+		agent?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] },
 	);
 
 	// ── Knowledge state ───────────────────────────────────────────────
 	const [knowledgeConfig, setKnowledgeConfig] = useState<KnowledgeConfig>(
-		employee?.knowledgeConfig || agent?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] },
+		agent?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] },
 	);
 
 	// ── All Skills state (loaded dynamically from host) ───────────────────────
@@ -1154,34 +1149,34 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const debounceRef = useRef<number | null>(null);
 
-	// Sync agent/employee changes — updates form when data loads
+	// Sync agent changes — updates form when data loads
 	useEffect(() => {
 		const t0 = nowMs();
 		console.log(
 			`${PERF_TAG} EFFECT:sync | ${nowLabel()} | ` +
-			`agentId=${agentId}, hasEmployee=${!!employee}, hasAgent=${!!agent}`
+			`agentId=${agentId}, hasAgent=${!!agent}`
 		);
-		if (agent || employee) {
-			const newPrompt = agent?.customPrompt || agent?.systemPrompt || employee?.customPrompt || '';
-			const promptSource = agent?.customPrompt ? 'agent.customPrompt' : agent?.systemPrompt ? 'agent.systemPrompt' : employee?.customPrompt ? 'employee.customPrompt' : 'none';
+		if (agent) {
+			const newPrompt = agent?.customPrompt || agent?.systemPrompt || '';
+			const promptSource = agent?.customPrompt ? 'agent.customPrompt' : agent?.systemPrompt ? 'agent.systemPrompt' : 'none';
 			setPrompt(newPrompt);
 			setPromptDirty(false);
-			setSkills(normalizeSkills(agent?.skills || employee?.skills || []));
-			setMemoryConfig(employee?.memoryConfig || agent?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] });
-			setKnowledgeConfig(employee?.knowledgeConfig || agent?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
+			setSkills(normalizeSkills(agent?.skills || []));
+			setMemoryConfig(agent?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] });
+			setKnowledgeConfig(agent?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
 			console.log(
 				`${PERF_TAG} EFFECT:sync DONE | ${nowLabel()} | ` +
 				`took=${(nowMs() - t0).toFixed(1)}ms ` +
 				`promptLen=${newPrompt.length} promptSource=${promptSource} ` +
-				`skills=${JSON.stringify(normalizeSkills(agent?.skills || employee?.skills || []))}`
+				`skills=${JSON.stringify(normalizeSkills(agent?.skills || []))}`
 			);
 		} else {
 			console.log(
 				`${PERF_TAG} EFFECT:sync SKIP | ${nowLabel()} | ` +
-				`No employee/agent data yet, took=${(nowMs() - t0).toFixed(1)}ms`
+				`No agent data yet, took=${(nowMs() - t0).toFixed(1)}ms`
 			);
 		}
-	}, [agentId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig, agent?.systemPrompt, agent?.customPrompt, agent?.skills, agent?.memoryConfig, agent?.knowledgeConfig]);
+	}, [agentId, agent?.systemPrompt, agent?.customPrompt, agent?.skills, agent?.memoryConfig, agent?.knowledgeConfig]);
 
 	// ── Skills: load all skills from host ─────────────────────────────
 	useEffect(() => {
@@ -1221,11 +1216,11 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 
 	// ── ConfigMD: load on mount / agentId / configMd-enabled change ─
 	useEffect(() => {
-		if (!employee?.configMd) {
+		if (!agent?.configMd) {
 			// Not configured yet — clear any stale loaded flag
 			console.log(
 				`${PERF_TAG} EFFECT:fetchState:skip | ${nowLabel()} | ` +
-				`employee.configMd not configured for agentId=${agentId}`
+				`agent.configMd not configured for agentId=${agentId}`
 			);
 			return;
 		}
@@ -1234,7 +1229,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		const t0 = Date.now();
 		console.log(
 			`${PERF_TAG} EFFECT:fetchState:start | ${nowLabel()} | ` +
-			`agentId=${agentId}, mdPath=${employee.configMd.mdPath}, timeout=8000ms`
+			`agentId=${agentId}, mdPath=${agent.configMd.mdPath}, timeout=8000ms`
 		);
 		// 8s safety timeout — if the host hangs we still surface a clear error
 		// instead of leaving the user with a frozen-looking blank panel.
@@ -1279,7 +1274,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 			);
 		});
 		return () => { cancelled = true; };
-	}, [agentId, !!employee?.configMd, setMdState]);
+	}, [agentId, !!agent?.configMd, setMdState]);
 
 	// ── ConfigMD: subscribe to host pushes ─────────────────────────
 	useEffect(() => {
@@ -1313,9 +1308,9 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 	// ── Handlers ───────────────────────────────────────────────────
 	const handleSavePrompt = useCallback(() => {
 		if (!agentId) return;
-		updateEmployee(agentId, { customPrompt: prompt });
+		updateAgent(agentId, { customPrompt: prompt });
 		setPromptDirty(false);
-	}, [agentId, prompt, updateEmployee]);
+	}, [agentId, prompt, updateAgent]);
 
 
 
@@ -1398,7 +1393,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 							const t0 = nowMs();
 							console.log(
 								`${PERF_TAG} TAB_CLICK | ${nowLabel()} | ` +
-								`${activeTab} → ${tab.id}, agentId=${agentId}, hasConfigMd=${!!employee?.configMd}`
+								`${activeTab} → ${tab.id}, agentId=${agentId}, hasConfigMd=${!!agent?.configMd}`
 							);
 							setActiveTab(tab.id);
 							// Use requestAnimationFrame to capture the time of the *next* paint triggered by this tab switch.
@@ -1455,7 +1450,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 					allSkills={allSkills}
 					onUpdateSkills={(next) => {
 						setSkills(next);
-						updateEmployee(agentId, { skills: next });
+						updateAgent(agentId, { skills: next });
 					}}
 				/>
 			)}
@@ -1471,7 +1466,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 							config={memoryConfig}
 							onUpdate={(next) => {
 								setMemoryConfig(next);
-								updateEmployee(agentId, { memoryConfig: next });
+								updateAgent(agentId, { memoryConfig: next });
 							}}
 						/>
 					</div>
@@ -1488,7 +1483,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 							config={knowledgeConfig}
 							onUpdate={(next) => {
 								setKnowledgeConfig(next);
-								updateEmployee(agentId, { knowledgeConfig: next });
+								updateAgent(agentId, { knowledgeConfig: next });
 							}}
 						/>
 					</div>
@@ -1498,7 +1493,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 				{activeTab === 'configmd' && (
 					<TabErrorBoundary label="ConfigMD">
 					<div className="editor-tab-body configmd-tab-body">
-						{!employee?.configMd ? (
+						{!agent?.configMd ? (
 							<div className="configmd-empty-state">
 								<div className="configmd-empty-icon">📝</div>
 								<div className="configmd-empty-title">ConfigHtml 未启用</div>
@@ -1511,7 +1506,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 									type="button"
 									className="configmd-empty-btn"
 									onClick={() => {
-										void updateEmployee(agentId, {
+										void updateAgent(agentId, {
 											configMd: {
 												mdPath: 'config.html',
 												displayMode: 'side',

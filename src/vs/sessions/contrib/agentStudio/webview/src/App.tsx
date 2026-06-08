@@ -16,7 +16,6 @@ import { WorkflowEditorPanel } from './features/workflowEditor/WorkflowEditorPan
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 import { useAgentStore } from './store/useAgentStore';
 import { useProviderStore } from './store/useProviderStore';
-import { useEmployeeStore } from './store/useEmployeeStore';
 import { useChatStore } from './store/useChatStore';
 import { sendRequest } from './bridge/messageClient';
 import { perfTrace } from './utils/perfTrace';
@@ -305,7 +304,6 @@ function FullLayout(): React.ReactElement {
 function AgentSettingsPanel(): React.ReactElement {
 	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
 	const { loadProviders } = useProviderStore();
-	const { loadEmployees } = useEmployeeStore();
 
 	// Read the agentId from host-injected initial data
 	const [agentId, setAgentId] = useState<string | null>(null);
@@ -334,15 +332,11 @@ function AgentSettingsPanel(): React.ReactElement {
 			const { agents } = useAgentStore.getState();
 			console.log('[AgentSettingsPanel] loadAgents completed, agents count:', agents.length);
 		});
-		// Load employees so AgentEditorPane can find the agent
-		console.log('[AgentSettingsPanel] calling loadEmployees...');
-		loadEmployees();
 	}, []);
 
 	useEffect(() => {
 		if (activeWorkspaceId) {
 			useAgentStore.getState().loadAgents(activeWorkspaceId);
-			loadEmployees(activeWorkspaceId);
 		}
 	}, [activeWorkspaceId]);
 
@@ -350,7 +344,6 @@ function AgentSettingsPanel(): React.ReactElement {
 		const onEmployeesChanged = () => {
 			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
 			useAgentStore.getState().loadAgents(currentActiveId || undefined);
-			loadEmployees(currentActiveId || undefined);
 		};
 		const onActiveWorkspaceChanged = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
@@ -364,7 +357,7 @@ function AgentSettingsPanel(): React.ReactElement {
 			window.removeEventListener('agentStudio:employees-changed', onEmployeesChanged);
 			window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
 		};
-	}, [setActiveWorkspace, loadEmployees]);
+	}, [setActiveWorkspace]);
 
 	const handleClose = useCallback(() => {
 		// Post a message to the host to close the editor pane

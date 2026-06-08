@@ -6,7 +6,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
+import { useAgentStore, type Agent } from '../../store/useAgentStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 
 /* ── Built-in Presets ────────────────────────────────────────────────────────── */
@@ -601,7 +601,7 @@ interface CreateAgentModalProps {
 type Step = 'preset' | 'custom';
 
 export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentModalProps): React.ReactElement | null {
-	const { createEmployee } = useEmployeeStore();
+	const { createAgent } = useAgentStore();
 	const [step, setStep] = useState<Step>('preset');
 	const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
 	const [isSubmitting, setIsSubmitting] = useState(false);
@@ -686,7 +686,7 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 			selectedPreset?.skills?.forEach(pushSkill);
 			PRESET_DEFAULT_SKILL_IDS.forEach(pushSkill);
 
-			const data: Partial<Employee> = {
+			const data: Partial<Agent> = {
 				name: name.trim(),
 				role: role.trim(),
 				model,
@@ -704,18 +704,18 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 			// Pass bootstrapTemplates as a separate property — the host service
 			// will use these to populate the agent directory's Markdown files.
 			// We use (data as any) because bootstrapTemplates is transient and not
-			// in the persisted Employee interface on the WebView side.
+			// in the persisted Agent interface on the WebView side.
 			if (selectedPreset?.bootstrapTemplates) {
 				(data as any).bootstrapTemplates = selectedPreset.bootstrapTemplates;
 			}
-			await createEmployee(data);
+			await createAgent(data);
 			onClose();
 		} catch (err) {
-			console.error('[CreateAgentModal] Failed to create employee:', err);
+			console.error('[CreateAgentModal] Failed to create agent:', err);
 		} finally {
 			setIsSubmitting(false);
 		}
-	}, [name, role, agentType, model, provider, customPrompt, temperature, maxTokens, workspaceId, isSubmitting, createEmployee, onClose, selectedPreset]);
+	}, [name, role, agentType, model, provider, customPrompt, temperature, maxTokens, workspaceId, isSubmitting, createAgent, onClose, selectedPreset]);
 
 	// Filter presets by search
 	const filteredPresets = AGENT_PRESETS.filter(p => {

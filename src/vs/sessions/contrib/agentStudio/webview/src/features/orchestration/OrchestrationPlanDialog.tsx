@@ -12,7 +12,7 @@ import {
 	type PlanTaskStatus,
 } from '../../store/useOrchestrationStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 
 // ─── Status styling ─────────────────────────────────────────────────────────
 
@@ -334,7 +334,7 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 		decomposeTask,
 	} = useOrchestrationStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
-	const { employees, getPlanners } = useEmployeeStore();
+	const { agents, getPlanners } = useAgentStore();
 
 	const [goal, setGoal] = useState('');
 	const [selectedPlannerId, setSelectedPlannerId] = useState<string>('');
@@ -347,7 +347,7 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	const isExecuting = activePlan?.status === 'executing' || activePlan?.status === 'approved';
 
 	// Available planners
-	const planners = useMemo(() => getPlanners(), [employees]);
+	const planners = useMemo(() => getPlanners(), [agents]);
 	const hasPlanners = planners.length > 0;
 
 	// Auto-select the first planner if only one
@@ -447,7 +447,7 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 
 	// Find planner name for display
 	const plannerName = activePlan
-		? employees.find(e => e.id === activePlan.plannerId)?.name || 'Unknown Planner'
+		? agents.find(e => e.id === activePlan.plannerId)?.name || 'Unknown Planner'
 		: '';
 
 	// Statistics
@@ -635,7 +635,7 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 											showActions={isExecuting}
 											onAction={handleTaskAction}
 											isEditable={isPendingApproval}
-											employees={employees}
+											employees={agents}
 											onUpdate={handleUpdateTask}
 											onDecompose={handleDecomposeTask}
 											isDecomposing={decomposingTaskId === task.id}

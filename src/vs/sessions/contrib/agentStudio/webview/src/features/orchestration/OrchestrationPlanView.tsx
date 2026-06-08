@@ -11,7 +11,7 @@ import {
 	type PlanTask,
 } from '../../store/useOrchestrationStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 
 // ─── Status styling ─────────────────────────────────────────────────────────
 
@@ -363,7 +363,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 		onClose?.();
 	}, [activePlan, rejectPlan, closePlanDialog, onClose]);
 	const { activeWorkspaceId } = useWorkspaceStore();
-	const { employees, getPlanners } = useEmployeeStore();
+	const { agents, getPlanners } = useAgentStore();
 
 	const [goal, setGoal] = useState('');
 	const [selectedPlannerId, setSelectedPlannerId] = useState<string>('');
@@ -375,7 +375,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 	const isPendingApproval = activePlan?.status === 'pending_approval';
 	const isExecuting = activePlan?.status === 'executing' || activePlan?.status === 'approved';
 
-	const planners = useMemo(() => getPlanners(), [employees]);
+	const planners = useMemo(() => getPlanners(), [agents]);
 	const hasPlanners = planners.length > 0;
 
 	useEffect(() => {
@@ -465,7 +465,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 	const planStatusConfig = activePlan ? PLAN_STATUS_CONFIG[activePlan.status] : null;
 
 	const plannerName = activePlan
-		? employees.find(e => e.id === activePlan.plannerId)?.name || 'Unknown Planner'
+		? agents.find(e => e.id === activePlan.plannerId)?.name || 'Unknown Planner'
 		: '';
 
 	const stats = useMemo(() => {
@@ -647,7 +647,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 								showActions={isExecuting}
 								onAction={handleTaskAction}
 								isEditable={isPendingApproval}
-								employees={employees}
+								employees={agents}
 								onUpdate={handleUpdateTask}
 								onDecompose={handleDecomposeTask}
 								isDecomposing={decomposingTaskId === task.id}

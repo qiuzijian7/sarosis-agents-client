@@ -10,7 +10,7 @@ import {
 	type OrchestrationPlan,
 	type PlanTask,
 } from '../../store/useOrchestrationStore';
-import { useEmployeeStore } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 import { sendRequest } from '../../bridge/messageClient';
 
 // ─── Status styling ─────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 		[plans, planId],
 	);
 	const { isLoading, error, approvePlan, rejectPlan } = useOrchestrationStore();
-	const { employees } = useEmployeeStore();
+	const { agents } = useAgentStore();
 
 	// Fallback: subscribe to the custom event dispatched by index.tsx when
 	// the host pushes an orchestration.planUpdated event. This ensures the
@@ -98,7 +98,7 @@ export function OrchestrationPlanInline({ planId, onClose }: OrchestrationPlanIn
 	const planStatusConfig = plan ? PLAN_STATUS_CONFIG[plan.status] : null;
 
 	const plannerName = plan
-		? employees.find(e => e.id === plan.plannerId)?.name || 'Unknown Planner'
+		? agents.find(e => e.id === plan.plannerId)?.name || 'Unknown Planner'
 		: '';
 
 	const stats = useMemo(() => {

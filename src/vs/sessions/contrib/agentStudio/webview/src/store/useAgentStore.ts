@@ -74,22 +74,10 @@ export interface Agent {
 	};
 
 	// ── Memory ──────────────────────────────────────
-	memoryConfig?: {
-		enabled: boolean;
-		maxEntries: number;
-		strategy: 'summary' | 'full' | 'sliding_window';
-		windowSize?: number;
-		scope?: 'agent' | 'workspace' | 'global';
-		entries: MemoryEntry[];
-	};
+	memoryConfig?: MemoryConfig;
 
 	// ── Knowledge ───────────────────────────────────
-	knowledgeConfig?: {
-		enabled: boolean;
-		retrievalStrategy: 'keyword' | 'semantic' | 'hybrid';
-		maxResults: number;
-		sources: KnowledgeSource[];
-	};
+	knowledgeConfig?: KnowledgeConfig;
 
 	// ── ConfigMD ────────────────────────────────────
 	configMd?: {
@@ -120,6 +108,24 @@ export interface MemoryEntry {
 	category?: string;
 	createdAt?: string;
 	updatedAt?: string;
+}
+
+/** Memory configuration (mirrors AgentBinding.memoryConfig on the host) */
+export interface MemoryConfig {
+	enabled: boolean;
+	maxEntries: number;
+	strategy: 'summary' | 'full' | 'sliding_window';
+	windowSize?: number;
+	scope?: 'agent' | 'workspace' | 'global';
+	entries: MemoryEntry[];
+}
+
+/** Knowledge base configuration */
+export interface KnowledgeConfig {
+	enabled: boolean;
+	retrievalStrategy: 'keyword' | 'semantic' | 'hybrid';
+	maxResults: number;
+	sources: KnowledgeSource[];
 }
 
 export interface KnowledgeSource {
