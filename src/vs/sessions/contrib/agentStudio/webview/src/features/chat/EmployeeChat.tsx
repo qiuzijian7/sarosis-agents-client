@@ -33,6 +33,7 @@ import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assis
 import type { StreamError, StreamPhase } from '../../bridge/streamHandler';
 import { isPhaseActive, toolCallStateToToolMessage } from '../../bridge/streamHandler';
 import { ChatHistoryPage } from './ChatHistoryPage';
+import { perfTrace } from '../../utils/perfTrace';
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -660,6 +661,21 @@ export function AgentChat(): React.ReactElement {
 		selectAgent(agentId, true);
 		setActiveAgent(agentId);
 	}, [activeAgentId, selectAgent, setActiveAgent]);
+
+	// ── Perf: mark the FIRST successful chat paint ──────────────────────────
+	// The terminal node of the first-load timeline. Fires once, when the real
+	// chat UI (header + composer) is about to render — i.e. activeAgent and
+	// selectedAgentId are both ready (before this we show the empty/loading
+	// state). requestAnimationFrame defers to after the browser paints the
+	// committed DOM so the measured time reflects what the user actually sees.
+	const firstPaintRef = useRef(false);
+	useEffect(() => {
+		if (firstPaintRef.current) { return; }
+		if (activeAgent && selectedAgentId) {
+			firstPaintRef.current = true;
+			requestAnimationFrame(() => perfTrace.finish('chat-first-paint'));
+		}
+	}, [activeAgent, selectedAgentId]);
 
 	// Empty state - no employee selected
 	if (!activeAgent || !selectedAgentId) {

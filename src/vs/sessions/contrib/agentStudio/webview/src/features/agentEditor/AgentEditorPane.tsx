@@ -6,6 +6,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useEmployeeStore, type Employee, type MemoryConfig, type MemoryEntry, type KnowledgeConfig, type KnowledgeSource } from '../../store/useEmployeeStore';
+import { useAgentStore } from '../../store/useAgentStore';
 import { useConfigMdStore } from '../../store/useConfigMdStore';
 import {
 	bindIframeChannel,
@@ -19,6 +20,19 @@ import {
 import { HtmlEditor } from '../configmd/HtmlEditor';
 import { ConfigHtmlChatBox } from '../configmd/ConfigHtmlChatBox';
 import { sendRequest } from '../../bridge/messageClient';
+
+/* ── Perf logging helpers ─────────────────────────────────────── */
+const PERF_TAG = '[AgentEditorPane.Perf]';
+
+/** Returns a compact ms-since-epoch string for correlating timestamps. */
+function nowLabel(): string {
+	return `t=${Date.now()}`;
+}
+
+/** Returns a high-resolution ms-since-epoch (truncated to 2 decimal places). */
+function nowMs(): number {
+	return Math.round(performance.now() * 100) / 100;
+}
 
 /* ── Tab definitions ─────────────────────────────────────────── */
 type TabId = 'prompt' | 'skills' | 'memory' | 'knowledge' | 'configmd' | 'tools' | 'mcp' | 'rules';
@@ -1048,31 +1062,84 @@ class TabErrorBoundary extends React.Component<TabErrorBoundaryProps, TabErrorBo
  *  AgentEditorPane Component
  * ═════════════════════════════════════════════════════════════════════ */
 export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): React.ReactElement {
+	/* ── Perf: render‑count & timing refs (don't trigger re‑renders) ── */
+	const perfRef = useRef({
+		renderCount: 0,
+		lastRenderMs: nowMs(),
+		mountMs: nowMs(),
+		loggedStoreState: false,
+	});
+
+	perfRef.current.renderCount++;
+	const renderStartMs = nowMs();
+	const sinceLastRender = renderStartMs - perfRef.current.lastRenderMs;
+
+	console.log(
+		`${PERF_TAG} RENDER #${perfRef.current.renderCount} | ${nowLabel()} | ` +
+		`Δ${sinceLastRender.toFixed(1)}ms since last render | agentId=${agentId}`
+	);
+
 	const { employees, updateEmployee } = useEmployeeStore();
+	const { agents } = useAgentStore();
+
+	const t0Resolve = nowMs();
 	const employee = employees.find(e => e.id === agentId) ?? null;
+	// Agent (from useAgentStore) carries systemPrompt & skills for builtin/custom agents
+	const agent = agents.find(a => a.id === agentId);
+	const resolveMs = nowMs() - t0Resolve;
+
+	// Log store resolution on first render where data is available
+	if (!perfRef.current.loggedStoreState && (employees.length > 0 || agents.length > 0)) {
+		perfRef.current.loggedStoreState = true;
+		console.log(
+			`${PERF_TAG} STORE_RESOLVE | ${nowLabel()} | ` +
+			`employees.length=${employees.length}, agents.length=${agents.length}, ` +
+			`found employee=${!!employee}, found agent=${!!agent}, ` +
+			`resolve took=${resolveMs.toFixed(1)}ms`
+		);
+	}
+	// Log store empty state (data hasn't arrived yet)
+	if (!perfRef.current.loggedStoreState && employees.length === 0 && agents.length === 0 && perfRef.current.renderCount === 1) {
+		console.log(
+			`${PERF_TAG} STORE_EMPTY | ${nowLabel()} | ` +
+			`Both stores are empty on first render — data has not arrived from host yet`
+		);
+	}
+
+	// DEBUG: Log actual data values for this agent on every render (not just first)
+	console.log(
+		`${PERF_TAG} AGENT_DATA | ${nowLabel()} | agentId=${agentId} | ` +
+		`foundAgent=${!!agent} foundEmployee=${!!employee} | ` +
+		`agent.systemPromptLen=${agent?.systemPrompt?.length || 0} ` +
+		`agent.skillsLen=${agent?.skills?.length || 0} ` +
+		`employee.customPromptLen=${employee?.customPrompt?.length || 0} ` +
+		`employee.skillsLen=${employee?.skills?.length || 0}`
+	);
 
 	const [activeTab, setActiveTab] = useState<TabId>('prompt');
 
 	// ── System Prompt state ──────────────────────────────────────────
-	const [prompt, setPrompt] = useState(employee?.customPrompt || '');
+	// Prefer agent.systemPrompt (builtin default), fallback to employee.customPrompt (user override)
+	const initialPrompt = agent?.customPrompt || agent?.systemPrompt || employee?.customPrompt || '';
+	const [prompt, setPrompt] = useState(initialPrompt);
 	const [promptDirty, setPromptDirty] = useState(false);
 
-	// ── Skills state (from employee.skills[]) ───────────────────────
+	// ── Skills state (from agent.skills or employee.skills) ──────────
 	// Skills may be strings or objects {id, name, enabled, description}
 	const normalizeSkills = (skills: any[]): string[] =>
 		(skills || []).map(s => typeof s === 'string' ? s : s.id).filter(Boolean);
 	const [skills, setSkills] = useState<string[]>(
-		normalizeSkills(employee?.skills || []),
+		normalizeSkills(agent?.skills || employee?.skills || []),
 	);
 
 	// ── Memory state ──────────────────────────────────────────────────
 	const [memoryConfig, setMemoryConfig] = useState<MemoryConfig>(
-		employee?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] },
+		employee?.memoryConfig || agent?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] },
 	);
 
 	// ── Knowledge state ───────────────────────────────────────────────
 	const [knowledgeConfig, setKnowledgeConfig] = useState<KnowledgeConfig>(
-		employee?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] },
+		employee?.knowledgeConfig || agent?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] },
 	);
 
 	// ── All Skills state (loaded dynamically from host) ───────────────────────
@@ -1087,32 +1154,64 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const debounceRef = useRef<number | null>(null);
 
-	// Sync employee changes
+	// Sync agent/employee changes — updates form when data loads
 	useEffect(() => {
-		if (employee) {
-			setPrompt(employee.customPrompt || '');
+		const t0 = nowMs();
+		console.log(
+			`${PERF_TAG} EFFECT:sync | ${nowLabel()} | ` +
+			`agentId=${agentId}, hasEmployee=${!!employee}, hasAgent=${!!agent}`
+		);
+		if (agent || employee) {
+			const newPrompt = agent?.customPrompt || agent?.systemPrompt || employee?.customPrompt || '';
+			const promptSource = agent?.customPrompt ? 'agent.customPrompt' : agent?.systemPrompt ? 'agent.systemPrompt' : employee?.customPrompt ? 'employee.customPrompt' : 'none';
+			setPrompt(newPrompt);
 			setPromptDirty(false);
-			setSkills(normalizeSkills(employee.skills || []));
-		setMemoryConfig(employee.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] });
-			setKnowledgeConfig(employee.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
+			setSkills(normalizeSkills(agent?.skills || employee?.skills || []));
+			setMemoryConfig(employee?.memoryConfig || agent?.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] });
+			setKnowledgeConfig(employee?.knowledgeConfig || agent?.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
+			console.log(
+				`${PERF_TAG} EFFECT:sync DONE | ${nowLabel()} | ` +
+				`took=${(nowMs() - t0).toFixed(1)}ms ` +
+				`promptLen=${newPrompt.length} promptSource=${promptSource} ` +
+				`skills=${JSON.stringify(normalizeSkills(agent?.skills || employee?.skills || []))}`
+			);
+		} else {
+			console.log(
+				`${PERF_TAG} EFFECT:sync SKIP | ${nowLabel()} | ` +
+				`No employee/agent data yet, took=${(nowMs() - t0).toFixed(1)}ms`
+			);
 		}
-	}, [agentId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig]);
+	}, [agentId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig, agent?.systemPrompt, agent?.customPrompt, agent?.skills, agent?.memoryConfig, agent?.knowledgeConfig]);
 
 	// ── Skills: load all skills from host ─────────────────────────────
 	useEffect(() => {
 		let cancelled = false;
+		const t0 = nowMs();
+		console.log(
+			`${PERF_TAG} EFFECT:skills:start | ${nowLabel()} | ` +
+			`Loading skills from host via sendRequest('skills.list')`
+		);
 		setSkillsLoading(true);
 		setSkillsError(null);
 
 		sendRequest<unknown, Array<{ id: string; name: string; category: string; activation: string; description?: string }>>('skills.list', {})
 			.then((skills) => {
 				if (cancelled) return;
+				const elapsed = nowMs() - t0;
+				console.log(
+					`${PERF_TAG} EFFECT:skills:done | ${nowLabel()} | ` +
+					`Received ${skills.length} skills, took=${elapsed.toFixed(1)}ms`
+				);
 				setAllSkills(skills);
 				setSkillsLoading(false);
 			})
 			.catch((err) => {
 				if (cancelled) return;
-				console.error('[AgentEditorPane] Failed to load skills:', err);
+				const elapsed = nowMs() - t0;
+				console.error(
+					`${PERF_TAG} EFFECT:skills:fail | ${nowLabel()} | ` +
+					`Failed after ${elapsed.toFixed(1)}ms:`, err
+				);
 				setSkillsError(err instanceof Error ? err.message : String(err));
 				setSkillsLoading(false);
 			});
@@ -1124,12 +1223,19 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 	useEffect(() => {
 		if (!employee?.configMd) {
 			// Not configured yet — clear any stale loaded flag
+			console.log(
+				`${PERF_TAG} EFFECT:fetchState:skip | ${nowLabel()} | ` +
+				`employee.configMd not configured for agentId=${agentId}`
+			);
 			return;
 		}
 		let cancelled = false;
 		let done = false;
 		const t0 = Date.now();
-		console.log(`[AgentEditorPane] fetchState start: agentId=${agentId}`);
+		console.log(
+			`${PERF_TAG} EFFECT:fetchState:start | ${nowLabel()} | ` +
+			`agentId=${agentId}, mdPath=${employee.configMd.mdPath}, timeout=8000ms`
+		);
 		// 8s safety timeout — if the host hangs we still surface a clear error
 		// instead of leaving the user with a frozen-looking blank panel.
 		// Note: we track `done` separately from `cancelled` so a successful
@@ -1138,14 +1244,22 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		const timeoutPromise = new Promise<null>((resolve) => {
 			window.setTimeout(() => {
 				if (cancelled || done) { return; }
-				console.warn(`[AgentEditorPane] fetchState timeout after 8s for ${agentId}`);
+				console.warn(
+					`${PERF_TAG} EFFECT:fetchState:timeout | ${nowLabel()} | ` +
+					`fetchState timed out after 8s for agentId=${agentId}`
+				);
 				resolve(null);
 			}, 8000);
 		});
 		Promise.race([fetchState(agentId), timeoutPromise]).then((s) => {
 			done = true;
 			if (cancelled) return;
-			console.log(`[AgentEditorPane] fetchState done: agentId=${agentId}, hasState=${!!s}, took=${Date.now() - t0}ms`);
+			const elapsed = Date.now() - t0;
+			console.log(
+				`${PERF_TAG} EFFECT:fetchState:done | ${nowLabel()} | ` +
+				`agentId=${agentId}, hasState=${!!s}, markdownLen=${s?.markdown?.length ?? 0}, ` +
+				`htmlLen=${s?.html?.length ?? 0}, version=${s?.version ?? 'N/A'}, took=${elapsed}ms`
+			);
 			if (s) {
 				setMdState(agentId, {
 					markdown: s.markdown,
@@ -1158,7 +1272,11 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 			}
 		}).catch((err) => {
 			done = true;
-			console.error(`[AgentEditorPane] fetchState failed for ${agentId}:`, err);
+			const elapsed = Date.now() - t0;
+			console.error(
+				`${PERF_TAG} EFFECT:fetchState:fail | ${nowLabel()} | ` +
+				`agentId=${agentId}, took=${elapsed}ms:`, err
+			);
 		});
 		return () => { cancelled = true; };
 	}, [agentId, !!employee?.configMd, setMdState]);
@@ -1255,6 +1373,19 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 	// (Preview iframe was removed; preview is now opened to the host editor
 	//  via the toolbar button using `previewToFile`.)
 
+	// ── Perf: record render completion ──────────────────────────────
+	const renderEndMs = nowMs();
+	const renderDuration = renderEndMs - renderStartMs;
+	if (perfRef.current.renderCount <= 5 || renderDuration > 8) {
+		// Log first few renders and any slow render (>8ms) for visibility
+		console.log(
+			`${PERF_TAG} RENDER_DONE #${perfRef.current.renderCount} | ${nowLabel()} | ` +
+			`duration=${renderDuration.toFixed(1)}ms, activeTab=${activeTab}, ` +
+			`skillsLoading=${skillsLoading}, hasMdState=${!!configMdState?.loaded}`
+		);
+	}
+	perfRef.current.lastRenderMs = renderStartMs;
+
 	return (
 		<div className="agent-editor-pane">
 			{/* ── Tab Bar ────────────────────────────────────────── */}
@@ -1264,8 +1395,21 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 						key={tab.id}
 						className={`agent-editor-tab ${activeTab === tab.id ? 'active' : ''}`}
 						onClick={() => {
-							console.log(`[AgentEditorPane] tab click: ${activeTab} → ${tab.id} (agentId=${agentId}, hasConfigMd=${!!employee?.configMd})`);
+							const t0 = nowMs();
+							console.log(
+								`${PERF_TAG} TAB_CLICK | ${nowLabel()} | ` +
+								`${activeTab} → ${tab.id}, agentId=${agentId}, hasConfigMd=${!!employee?.configMd}`
+							);
 							setActiveTab(tab.id);
+							// Use requestAnimationFrame to capture the time of the *next* paint triggered by this tab switch.
+							// Note: requestAnimationFrame fires before the actual paint, so the elapsed time is a lower bound.
+							requestAnimationFrame(() => {
+								const elapsed = nowMs() - t0;
+								console.log(
+									`${PERF_TAG} TAB_SWITCH_PAINT | ${nowLabel()} | ` +
+									`${tab.id}, paint-Δt≈${elapsed.toFixed(1)}ms (lower bound)`
+								);
+							});
 						}}
 					>
 						<span className="tab-icon">{tab.icon}</span>

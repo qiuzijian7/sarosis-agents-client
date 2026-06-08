@@ -153,6 +153,13 @@ export class AgentStudioWebviewController extends Disposable {
 	/** Pending tool approval requests: toolCallId → resolve function */
 	private readonly _pendingToolApprovals = new Map<string, { resolve: (decision: ToolApprovalDecision) => void }>();
 
+	/**
+	 * Perf instrumentation: epoch ms when this controller was constructed
+	 * (i.e. when the host started opening this panel). Injected into the
+	 * webview HTML so the React app can measure program-start → first-paint.
+	 */
+	private readonly _perfCreateTs = Date.now();
+
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly panelType: AgentStudioPanelType | undefined,
@@ -283,7 +290,13 @@ export class AgentStudioWebviewController extends Disposable {
 		this._webview.mountTo(this.container, mainWindow);
 
 		// Set HTML content that loads the React bundle
+		const _perfHtmlStart = Date.now();
 		this._webview.setHtml(this._getWebviewHtml());
+		this.logService.info(
+			`[AS-PERF][host] panelType=${this.panelType} controller→createWebview ` +
+			`+${_perfHtmlStart - this._perfCreateTs}ms, setHtml took ` +
+			`${Date.now() - _perfHtmlStart}ms (bundle download/parse happens in webview after this)`,
+		);
 
 		// Listen for messages from WebView
 		this._register(
@@ -344,6 +357,15 @@ export class AgentStudioWebviewController extends Disposable {
 		// Optional initial data for the panel (e.g., workflow data for workflow-editor)
 		window.__AGENT_STUDIO_INITIAL_DATA__ = ${this.initialData ? JSON.stringify(this.initialData) : 'null'};
 
+		// ── Perf base timestamps (epoch ms, comparable across host/webview) ──
+		// Renderer navigation start ≈ VS Code window/program start. Used by the
+		// webview perfTrace as the "program start" origin.
+		window.__AS_PERF_RENDERER_ORIGIN__ = ${Math.round((mainWindow.performance?.timeOrigin ?? Date.now()))};
+		// When the host started opening this chat panel (controller construction).
+		window.__AS_PERF_HOST_CREATE_TS__ = ${this._perfCreateTs};
+		// When the host finished generating this HTML (just before bundle load).
+		window.__AS_PERF_HTML_TS__ = ${Date.now()};
+
 		// ── Early diagnostics: catch ALL messages and errors before React loads ──
 		window.__AS_MSG_LOG__ = [];
 		window.addEventListener('message', function(e) {
@@ -356,21 +378,13 @@ export class AgentStudioWebviewController extends Disposable {
 			console.error('[AS-EARLY] Script error:', e.message, e.filename, e.lineno);
 		});
 		console.log('[AS-EARLY] Inline script executed, panelType=' + window.__AGENT_STUDIO_PANEL_TYPE__);
+		// Perf: when the webview actually started executing the injected HTML.
+		// Gap from __AS_PERF_HTML_TS__ ≈ webview element creation + HTML transport.
+		window.__AS_PERF_INLINE_TS__ = Date.now();
 		// Track whether the bundle script fires
 		window.__AS_BUNDLE_LOADED__ = false;
 	</script>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
-	<script nonce="${nonce}">
-		// ── Post-bundle diagnostics ──
-		if (window.__AS_BUNDLE_LOADED__) {
-			console.log('[AS-EARLY] webview.js bundle executed successfully');
-		} else {
-			console.error('[AS-EARLY] webview.js bundle DID NOT execute — likely a load error (CSP? 404? syntax?)');
-			console.error('[AS-EARLY] scriptUri was: ${scriptUri}');
-		}
-		// Also check if acquireVsCodeApi exists
-		console.log('[AS-EARLY] acquireVsCodeApi exists:', typeof acquireVsCodeApi);
-	</script>
 </body>
 </html>`;
 	}
@@ -398,21 +412,79 @@ export class AgentStudioWebviewController extends Disposable {
 			return;
 		}
 
+		// ── Perf relay from webview ──────────────────────────────────────
+		// The webview pushes its first-load timeline here so the full
+		// host→webview chain is visible in one log. Short-circuit before
+		// dispatch (it is not a real RequestType).
+		if (type === 'perf.report') {
+			this._logPerfReport(payload);
+			return;
+		}
+
+		// ── Perf: log incoming message with timing for key types ─────────
+		const perfTypes = new Set(['agents.list', 'employees.list', 'skills.list', 'memory.listL0', 'memory.listL1']);
+		const t0 = perfTypes.has(type) ? Date.now() : 0;
+
 		this.logService.info(
 			`[AgentStudio] _handleMessage: type=${type}, id=${id}, panelType=${this.panelType}, payload=${JSON.stringify(payload)?.slice(0, 200)}`,
 		);
 
 		try {
 			const result = await this._dispatch(type as RequestType, payload);
+			if (perfTypes.has(type)) {
+				const elapsed = Date.now() - t0;
+				this.logService.info(
+					`[AS-PERF][host] _handleMessage '${type}' completed in ${elapsed}ms, ` +
+					`resultSize=${JSON.stringify(result)?.length ?? 0}`
+				);
+			}
 			if (id) {
 				this._sendResponse(id, type as RequestType, result);
 			}
 		} catch (err: unknown) {
+			if (perfTypes.has(type)) {
+				const elapsed = Date.now() - t0;
+				this.logService.warn(
+					`[AS-PERF][host] _handleMessage '${type}' FAILED after ${elapsed}ms`
+				);
+			}
 			const error = err instanceof Error ? err : new Error(String(err));
 			this.logService.error(`[AgentStudio] Error handling ${type}:`, error);
 			if (id) {
 				this._sendError(id, type as RequestType, error.message);
 			}
+		}
+	}
+
+	/**
+	 * Format the webview-reported first-load timeline into the host log so the
+	 * complete program-start → chat-first-paint chain is visible in one place.
+	 */
+	private _logPerfReport(payload: unknown): void {
+		try {
+			const p = payload as {
+				origin?: number;
+				total?: number;
+				slowest?: { label: string; ms: number } | null;
+				marks?: { label: string; sinceOrigin: number; sincePrev: number }[];
+			};
+			const marks = p?.marks ?? [];
+			const timeline = marks
+				.map((m) => `${m.label}=+${m.sinceOrigin}ms(\u0394${m.sincePrev}ms)`)
+				.join('  ->  ');
+			this.logService.info(
+				`[AS-PERF][webview] panelType=${this.panelType} TOTAL program-start->chat-first-paint = ${p?.total ?? '?'}ms`,
+			);
+			if (timeline) {
+				this.logService.info(`[AS-PERF][webview] timeline: ${timeline}`);
+			}
+			if (p?.slowest) {
+				this.logService.warn(
+					`[AS-PERF][webview] SLOWEST stage = "${p.slowest.label}" took ${p.slowest.ms}ms`,
+				);
+			}
+		} catch (err) {
+			this.logService.warn(`[AS-PERF][webview] failed to log perf report: ${err}`);
 		}
 	}
 
@@ -2686,21 +2758,23 @@ export class AgentStudioWebviewController extends Disposable {
 	 * Returns all registered skills in a format suitable for the webview.
 	 */
 	private async _handleSkillsList(): Promise<Array<{ id: string; name: string; category: string; activation: string; description?: string }>> {
-		console.error('[AgentStudioWebviewController._handleSkillsList] called');
+		const t0 = Date.now();
+		this.logService.info(`[AS-PERF][host] _handleSkillsList: waiting for skillRegistry.whenReady()...`);
 		await this.skillRegistry.whenReady();
-		console.error('[AgentStudioWebviewController._handleSkillsList] whenReady resolved');
+		const t1 = Date.now();
+		this.logService.info(`[AS-PERF][host] _handleSkillsList: whenReady resolved in ${t1 - t0}ms`);
 		const skills = this.skillRegistry.getSkills();
-		console.error(`[AgentStudioWebviewController._handleSkillsList] got ${skills.length} skills`);
-		for (const s of skills) {
-			console.error(`[AgentStudioWebviewController._handleSkillsList] skill: ${s.id} (${s.name})`);
-		}
-		return skills.map(skill => ({
+		const result = skills.map(skill => ({
 			id: skill.id,
 			name: skill.name,
 			category: skill.category || 'uncategorized',
 			activation: skill.activation,
 			description: skill.description || undefined,
 		}));
+		this.logService.info(
+			`[AS-PERF][host] _handleSkillsList: done in ${Date.now() - t0}ms, returned ${result.length} skills`
+		);
+		return result;
 	}
 
 	// ─── Memory inspection helpers (TDB-AM gateway proxy) ──────────────────────

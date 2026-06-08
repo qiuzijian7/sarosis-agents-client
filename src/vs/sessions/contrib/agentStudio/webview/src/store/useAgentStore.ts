@@ -177,11 +177,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
 	loadAgents: async (workspaceId?: string) => {
 		set({ isLoading: true });
+		console.log('[AgentStore] loadAgents START', { workspaceId });
 		try {
 			const agents = await sendRequest<{ workspaceId?: string }, Agent[]>(
 				'agents.list',
 				{ workspaceId }
 			);
+			console.log('[AgentStore] loadAgents OK:', {
+				totalAgents: agents?.length || 0,
+				firstAgent: agents?.[0] ? {
+					id: agents[0].id,
+					name: agents[0].name,
+					hasSystemPrompt: !!(agents[0] as any).systemPrompt,
+					systemPromptLen: (agents[0] as any).systemPrompt?.length || 0,
+					skillsLen: agents[0].skills?.length || 0,
+				} : null,
+			});
 			set({ agents, isLoading: false });
 		} catch (err) {
 			console.error('[AgentStore] Failed to load agents:', err);

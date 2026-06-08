@@ -19,6 +19,7 @@ import { useProviderStore } from './store/useProviderStore';
 import { useEmployeeStore } from './store/useEmployeeStore';
 import { useChatStore } from './store/useChatStore';
 import { sendRequest } from './bridge/messageClient';
+import { perfTrace } from './utils/perfTrace';
 
 // Read the panel type injected by the VS Code host
 type PanelType = 'chat' | 'taskboard' | 'workflow-editor' | 'agent-settings' | undefined;
@@ -71,7 +72,9 @@ function ChatPanel(): React.ReactElement {
 
 	useEffect(() => {
 		// Load workspaces and providers; agents will be loaded once activeWorkspaceId is set
+		perfTrace.mark('chat-panel-mount');
 		loadWorkspaces().then(() => {
+			perfTrace.mark('workspaces-loaded');
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
 				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
@@ -79,7 +82,7 @@ function ChatPanel(): React.ReactElement {
 			}
 			// Fallback: if no workspaces registered, try loading agents directly.
 			if (store.workspaces.length === 0) {
-				useAgentStore.getState().loadAgents();
+				useAgentStore.getState().loadAgents().then(() => perfTrace.mark('agents-loaded'));
 			}
 		});
 		loadProviders();
@@ -87,7 +90,7 @@ function ChatPanel(): React.ReactElement {
 
 	useEffect(() => {
 		if (activeWorkspaceId) {
-			useAgentStore.getState().loadAgents(activeWorkspaceId);
+			useAgentStore.getState().loadAgents(activeWorkspaceId).then(() => perfTrace.mark('agents-loaded'));
 		}
 	}, [activeWorkspaceId]);
 
@@ -316,6 +319,7 @@ function AgentSettingsPanel(): React.ReactElement {
 	}, []);
 
 	useEffect(() => {
+		console.log('[AgentSettingsPanel] init useEffect fired');
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
@@ -324,7 +328,14 @@ function AgentSettingsPanel(): React.ReactElement {
 			}
 		});
 		loadProviders();
+		// Load agents so AgentEditorPane can read systemPrompt/skills
+		console.log('[AgentSettingsPanel] calling loadAgents...');
+		useAgentStore.getState().loadAgents().then(() => {
+			const { agents } = useAgentStore.getState();
+			console.log('[AgentSettingsPanel] loadAgents completed, agents count:', agents.length);
+		});
 		// Load employees so AgentEditorPane can find the agent
+		console.log('[AgentSettingsPanel] calling loadEmployees...');
 		loadEmployees();
 	}, []);
 

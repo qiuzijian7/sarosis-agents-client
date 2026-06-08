@@ -25,8 +25,7 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useMemo } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { LazySyntaxHighlighter } from './LazySyntaxHighlighter';
 import { sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import { openFile, type OpenFileOptions } from '../../bridge/fileBridge';
 import { sendRequest } from '../../bridge/messageClient';
@@ -572,23 +571,18 @@ function TerminalBody({ tool }: { tool: NormalizedTool }): React.ReactElement {
 	return (
 		<ToolChildrenWrapper className="tool-children-terminal">
 			<div className="tool-terminal-code">
-				<SyntaxHighlighter
-					style={oneDark}
+				<LazySyntaxHighlighter
+					code={text}
 					language="shellscript"
-					PreTag="div"
+					lineCount={0}
+					wrapLongLines={false}
+					codeTagProps={{ style: { fontFamily: 'var(--vscode-editor-font-family, monospace)' } }}
 					customStyle={{
-						margin: 0,
 						padding: '6px 8px',
 						borderRadius: '3px',
 						background: 'transparent',
-						fontSize: '12px',
-						lineHeight: '1.5',
 					}}
-					codeTagProps={{ style: { fontFamily: 'var(--vscode-editor-font-family, monospace)' } }}
-					wrapLongLines={false}
-				>
-					{text}
-				</SyntaxHighlighter>
+				/>
 			</div>
 			{tool.exitCode !== undefined && (
 				<div className={`tool-exit-code ${isNonZero ? 'tool-exit-code-nonzero' : 'tool-exit-code-zero'}`}>

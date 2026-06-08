@@ -36,8 +36,44 @@ async function main() {
 		await ctx.watch();
 		console.log('Watching for changes...');
 	} else {
-		await esbuild.build(buildOptions);
+		const result = await esbuild.build({
+			...buildOptions,
+			metafile: true,
+		});
 		console.log('Build complete.');
+
+		// Analyze and print top-30 largest modules
+		const meta = result.metafile;
+		const inputs = Object.entries(meta.inputs)
+			.map(([path, info]) => ({ path, bytes: info.bytes }))
+			.sort((a, b) => b.bytes - a.bytes)
+			.slice(0, 30);
+
+		console.log('\n--- Top 30 modules by size ---');
+		for (const { path, bytes } of inputs) {
+			const kb = (bytes / 1024).toFixed(1);
+			console.log(`  ${kb.padStart(7)} KB  ${path}`);
+		}
+
+		// Group by package for summary
+		/** @type {Record<string, number>} */
+		const pkgTotals = {};
+		for (const [path, info] of Object.entries(meta.inputs)) {
+			const match = path.match(/node_modules\/(@[^/]+\/[^/]+|[^/]+)/);
+			const pkg = match ? match[1] : '(project src)';
+			pkgTotals[pkg] = (pkgTotals[pkg] || 0) + info.bytes;
+		}
+		const sortedPkgs = Object.entries(pkgTotals)
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 15);
+
+		console.log('\n--- Top 15 packages by total size ---');
+		const totalAll = Object.values(pkgTotals).reduce((s, v) => s + v, 0);
+		for (const [pkg, bytes] of sortedPkgs) {
+			const kb = (bytes / 1024).toFixed(1);
+			const pct = ((bytes / totalAll) * 100).toFixed(1);
+			console.log(`  ${kb.padStart(7)} KB  (${pct.padStart(5)}%)  ${pkg}`);
+		}
 	}
 }
 

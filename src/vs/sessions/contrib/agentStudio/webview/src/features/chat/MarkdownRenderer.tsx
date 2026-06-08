@@ -15,10 +15,14 @@
 import React, { memo, useCallback, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { sendRequest } from '../../bridge/messageClient';
 import { openFile } from '../../bridge/fileBridge';
+import { LazySyntaxHighlighter } from './LazySyntaxHighlighter';
+
+// ── Lazy-loaded syntax highlighting (~47% of bundle) ───────────────
+// SyntaxHighlighter drags in highlight.js (1369 KB) + refractor (922 KB).
+// The chat first-paint has no code blocks yet, so LazySyntaxHighlighter
+// defers these heavy libraries until a code block is actually rendered.
 
 /* ── Constants ────────────────────────────────────────────────── */
 
@@ -399,21 +403,7 @@ export function CodeBlockWithCollapse({
 				</button>
 			</div>
 			{expanded && (
-				<SyntaxHighlighter
-					style={oneDark}
-					language={language}
-					PreTag="div"
-					customStyle={{
-						margin: 0,
-						borderRadius: '0 0 6px 6px',
-						fontSize: '12px',
-						lineHeight: '1.5',
-					}}
-					showLineNumbers={lineCount > 10}
-					wrapLongLines={true}
-				>
-					{code}
-				</SyntaxHighlighter>
+				<LazySyntaxHighlighter code={code} language={language} lineCount={lineCount} />
 			)}
 		</div>
 	);

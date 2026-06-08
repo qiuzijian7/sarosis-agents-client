@@ -24,6 +24,7 @@ import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } f
 import { IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent, IWorktreeDetail } from '../../worktree/common/worktreeTypes.js';
+import { getBuiltinAgents } from '../common/builtinAgents.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
@@ -454,18 +455,26 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	// ─── Employees ──────────────────────────────────────────────────────────────
 
 	async getEmployees(workspaceId?: string): Promise<Employee[]> {
+		const t0 = Date.now();
 		const dirUri = await this._resolveDataUri(workspaceId);
-		this.logService.info(`[AgentStudio] getEmployees: workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
+		const t1 = Date.now();
+		this.logService.info(`[AS-PERF][service] getEmployees: _resolveDataUri took ${t1 - t0}ms, workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
 		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
-		this.logService.info(`[AgentStudio] getEmployees: found ${employees.length} employees from employees.json`);
+		const t2 = Date.now();
+		this.logService.info(`[AS-PERF][service] getEmployees: _readJsonFile took ${t2 - t1}ms, found ${employees.length} employees`);
 		// Lazy migration: backfill missing `workspaceId` (caused by older bug
 		// where createEmployee accepted undefined and JSON.stringify dropped it).
 		const wsMigrated = await this._ensureWorkspaceIdInDir(dirUri, employees, workspaceId);
+		const t3 = Date.now();
 		const afterWsMigration = wsMigrated || employees;
 		// Lazy migration: backfill default skills (e.g. `configmd`) onto
 		// existing agents that pre-date the default-skill bundling. Runs
 		// at most once per dataDir per session.
 		const migrated = await this._ensureDefaultSkillsInDir(dirUri, afterWsMigration);
+		const t4 = Date.now();
+		if (wsMigrated || migrated) {
+			this.logService.info(`[AS-PERF][service] getEmployees: migrations took ${t4 - t2}ms (wsMigration=${t3 - t2}ms, skillMigration=${t4 - t3}ms)`);
+		}
 		const result = migrated || afterWsMigration;
 
 		// Calculate skillErrorCount and missingSkillIds for each employee
@@ -474,43 +483,30 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			emp.skillErrorCount = errorCount;
 			emp.missingSkillIds = missingSkillIds;
 		}
+		const t5 = Date.now();
 
+		this.logService.info(
+			`[AS-PERF][service] getEmployees: TOTAL ${t5 - t0}ms, returned ${result.length} employees`
+		);
 		return result;
 	}
 
 	private _getBuiltinAgents(): Agent[] {
-		const now = new Date().toISOString();
-		const LOBSTER_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Crect%20width%3D%22100%22%20height%3D%22100%22%20rx%3D%2225%22%20fill%3D%22%232196F3%22%2F%3E%3Ctext%20y%3D%2272%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2260%22%3E%F0%9F%A6%9E%3C%2Ftext%3E%3C%2Fsvg%3E';
-		const def = (id: string, name: string, role: string, desc: string, icon: string, cat: string, avatar?: string): Agent => ({
-			id, name, role, description: desc, icon, avatar, model: 'claude-sonnet-4-20250514',
-			skills: [], category: cat, source: 'builtin', createdAt: now, updatedAt: now,
-		});
-		return [
-			def('sarosis-claw', 'Sarosis Claw', 'AI Assistant', 'General-purpose AI assistant.', '🦞', 'General', LOBSTER_AVATAR),
-			def('coder', 'Coder', 'Software Engineer', 'Code generation, debugging, refactoring.', '👨‍💻', 'Development'),
-			def('researcher', 'Researcher', 'Research Analyst', 'Deep-dive research and analysis.', '🔬', 'Research'),
-			def('writer', 'Writer', 'Content Writer', 'Documentation, articles, copy.', '✍️', 'Creative'),
-			def('designer', 'Designer', 'UI/UX Designer', 'Interface mockups and design systems.', '🎨', 'Creative'),
-			def('planner', 'Planner', 'Project Manager', 'Multi-step workflow planning.', '📋', 'Management'),
-			def('tester', 'Tester', 'QA Engineer', 'Test generation and bug analysis.', '🧪', 'Development'),
-			def('devops', 'DevOps', 'DevOps Engineer', 'Infrastructure and deployment.', '🚀', 'DevOps'),
-			def('version-manager', 'Version Manager', 'Release Manager', 'Release management.', '📦', 'DevOps'),
-			def('data', 'Data Analyst', 'Data Scientist', 'Data analysis and visualization.', '📊', 'Analytics'),
-			def('code-explorer', 'Code Explorer', 'Code Exploration Agent', 'Search and understand codebases.', '🔍', 'Development'),
-			def('code-architect', 'Code Architect', 'Architecture Design Agent', 'System architecture design.', '🏗️', 'Development'),
-			def('code-reviewer', 'Code Reviewer', 'Code Quality Review Agent', 'Code review and best practices.', '👀', 'Development'),
-			def('workflow-agent', 'Workflow Agent', 'Workflow Orchestrator', 'Multi-step workflow execution.', '🔄', 'Management'),
-		];
+		// Delegate to the canonical builtin agent definitions which include
+		// systemPrompt, skills, and tools — the old stub was missing these fields.
+		return getBuiltinAgents();
 	}
 
 	// ── Agent CRUD ──────────────────────────────────────────────────────────
 
 	async getAgents(): Promise<Agent[]> {
+		const t0 = Date.now();
 		const builtins = this._getBuiltinAgents();
 		let customs: Agent[] = [];
 		try {
 			customs = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
 		} catch { /* file doesn't exist yet */ }
+		const t1 = Date.now();
 
 		// custom-agents.json may contain two kinds of rows:
 		//   1. Pure-custom agents (their own id).
@@ -535,6 +531,24 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		for (const c of customById.values()) {
 			result.push(c);
 		}
+		const t2 = Date.now();
+		// DEBUG: Log first builtin agent to verify systemPrompt/skills are populated
+		if (builtins.length > 0) {
+			const first = builtins[0];
+			this.logService.info(
+				`[AgentStudio] getAgents DEBUG: first builtin agent ` +
+				`id="${first.id}" name="${first.name}" ` +
+				`hasSystemPrompt=${!!(first as any).systemPrompt} ` +
+				`systemPromptLen=${((first as any).systemPrompt as string)?.length || 0} ` +
+				`skillsLen=${first.skills?.length || 0} ` +
+				`toolsLen=${first.tools?.length || 0}`
+			);
+		}
+		this.logService.info(
+			`[AS-PERF][service] getAgents: TOTAL ${t2 - t0}ms ` +
+			`(jsonRead=${t1 - t0}ms, merge=${t2 - t1}ms), ` +
+			`builtins=${builtins.length}, customs=${customs.length}, result=${result.length}`
+		);
 		return result;
 	}
 

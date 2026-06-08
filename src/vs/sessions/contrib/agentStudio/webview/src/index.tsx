@@ -9,6 +9,7 @@ console.log('[AS-BUNDLE] index.tsx: module execution started');
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
+import { perfTrace } from './utils/perfTrace.js';
 import { initMessageClient } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError, applyToolApprovalRequest } from './bridge/streamHandler.js';
 import { useEmployeeStore } from './store/useEmployeeStore.js';
@@ -31,6 +32,7 @@ import './styles/agent-editor.css';
 import './styles/void-tool-card.css';
 
 // Initialize the message bridge (must happen before React mounts)
+perfTrace.mark('bundle-eval');
 initMessageClient((type, data) => {
 	switch (type) {
 		case 'chat.stream.delta':
@@ -423,6 +425,7 @@ if (container) {
 	const initialTheme = (window as any).__AGENT_STUDIO_INITIAL_THEME__ as string | undefined;
 	useThemeStore.getState().setTheme(initialTheme || '');
 
+	perfTrace.mark('react-render');
 	const root = createRoot(container);
 	root.render(React.createElement(App));
 }

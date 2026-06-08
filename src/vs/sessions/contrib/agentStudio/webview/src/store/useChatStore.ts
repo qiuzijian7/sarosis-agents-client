@@ -232,6 +232,13 @@ interface ChatState {
 	 * back to a planner chat.
 	 */
 	decompositionProgress: Record<string, ChatMessage[]>;
+	/**
+	 * Cached chat messages per agent, keyed by agentId.
+	 * When switching between agents, the current agent's messages are saved
+	 * here so the user can switch back without losing chat context.
+	 * NOT persisted — cleared on page reload.
+	 */
+	cachedMessages: Record<string, ChatMessage[]>;
 	/** Current chat mode: craft / ask / plan / workflow */
 	chatMode: 'craft' | 'ask' | 'plan' | 'workflow';
 
@@ -577,6 +584,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		activeAgentSessionId: null,
 		agentSessions: [],
 		decompositionProgress: {},
+		cachedMessages: {},
 		chatMode: 'craft',
 
 		setActiveAgent: (agentId: string) => {
@@ -597,14 +605,24 @@ export const useChatStore = create<ChatState>((set, get) => {
 			// Must be done atomically with updating activeAgentId so subscribeStream
 			// doesn't discard the restored stream due to stale activeAgentId.
 			const newStreamState = switchActiveStream(agentId, forkSessionId);
+
+			// Save current agent's messages to cache, restore cached messages for target agent
+			const { messages: currentMessages, cachedMessages } = get();
+			const newCache = { ...cachedMessages };
+			if (current && currentMessages.length > 0) {
+				newCache[current] = currentMessages;
+			}
+			const restoredMessages = newCache[agentId] || [];
+
 			set({
 				activeAgentId: agentId,
 				activeAgentSessionId: forkSessionId,
-				messages: [],
+				messages: restoredMessages,
 				inputValue: '',
 				agentSessions: [],
 				streamState: newStreamState,
 				chatMode: 'craft',
+				cachedMessages: newCache,
 			});
 
 			if (forkSessionId) {
@@ -1075,8 +1093,15 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 		clearMessages: () => {
 			console.log('[ChatStore] clearMessages called');
+			const { activeAgentId, cachedMessages } = get();
 			resetStream();
-			set({ messages: [] });
+			if (activeAgentId) {
+				const newCache = { ...cachedMessages };
+				delete newCache[activeAgentId];
+				set({ messages: [], cachedMessages: newCache });
+			} else {
+				set({ messages: [] });
+			}
 		},
 
 		appendExternalUserMessage: (agentId, message) => {
@@ -1112,7 +1137,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		createAgentSession: async () => {
-			const { activeAgentId, activeAgentSessionId: prevSessionId, messages: prevMessages } = get();
+			const { activeAgentId, activeAgentSessionId: prevSessionId, messages: prevMessages, cachedMessages } = get();
 			console.log(
 				`[ChatStore] createAgentSession: BEGIN agentId=${activeAgentId} ` +
 				`prevSessionId=${prevSessionId} prevMessagesCount=${prevMessages.length}`,
@@ -1132,7 +1157,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 				);
 				if (meta?.id) {
 					const newStreamState = switchActiveStream(activeAgentId, meta.id);
-					set({ activeAgentSessionId: meta.id, messages: [], streamState: newStreamState });
+					// Clear cached messages for this agent — creating a new session invalidates the cache
+					const newCache = { ...cachedMessages };
+					delete newCache[activeAgentId];
+					set({ activeAgentSessionId: meta.id, messages: [], streamState: newStreamState, cachedMessages: newCache });
 					console.log(
 						`[ChatStore] createAgentSession: state updated activeAgentSessionId=${meta.id} messages=[]`,
 					);
@@ -1148,10 +1176,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		switchAgentSession: async (sessionId: string) => {
-			const { activeAgentId } = get();
+			const { activeAgentId, cachedMessages } = get();
 			if (!activeAgentId) { return; }
 			const newStreamState = switchActiveStream(activeAgentId, sessionId);
-			set({ activeAgentSessionId: sessionId, messages: [], streamState: newStreamState });
+			// Clear cached messages for this agent — switching sessions invalidates the cache
+			const newCache = { ...cachedMessages };
+			delete newCache[activeAgentId];
+			set({ activeAgentSessionId: sessionId, messages: [], streamState: newStreamState, cachedMessages: newCache });
 			get().loadHistoryForSession(activeAgentId, sessionId);
 		},
 
@@ -1176,7 +1207,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		deleteAgentSession: async (sessionId: string) => {
-			const { activeAgentId, activeAgentSessionId } = get();
+			const { activeAgentId, activeAgentSessionId, cachedMessages } = get();
 			if (!activeAgentId) { return; }
 			try {
 				await sendRequest('agentSession.delete', {
@@ -1186,7 +1217,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// If we deleted the active session, switch back to default
 				if (activeAgentSessionId === sessionId) {
 					const newStreamState = switchActiveStream(activeAgentId, null);
-					set({ activeAgentSessionId: null, messages: [], streamState: newStreamState });
+					// Clear cached messages — deleting the active session invalidates the cache
+					const newCache = { ...cachedMessages };
+					delete newCache[activeAgentId];
+					set({ activeAgentSessionId: null, messages: [], streamState: newStreamState, cachedMessages: newCache });
 					get().loadHistoryForSession(activeAgentId, undefined);
 				}
 				// Reload session list
