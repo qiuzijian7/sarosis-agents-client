@@ -388,6 +388,8 @@ export class TaskOverviewEditorPane extends EditorPane {
 			// ─── Employees ───────────────────────────────────────
 			case 'employees.list':
 				return this._agentStudioService.getEmployees(p.workspaceId as string | undefined);
+			case 'employees.listAll':
+				return this._agentStudioService.getAllEmployees();
 			case 'employees.get':
 				return this._agentStudioService.getEmployee(p.id as string);
 			case 'employees.create':

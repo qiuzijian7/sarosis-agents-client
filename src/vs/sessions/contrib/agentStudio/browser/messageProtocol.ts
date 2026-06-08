@@ -27,6 +27,7 @@ export type RequestType =
 	| 'agents.getLastSelected'
 	| 'agents.openSettings'
 	| 'employees.list'
+	| 'employees.listAll'
 	| 'employees.get'
 	| 'employees.create'
 	| 'employees.update'

@@ -2141,14 +2141,6 @@ export class PresetAgentViewPane extends ViewPane {
 		console.log(`[PresetAgentView] Loaded ${this.customPresets.length} custom presets from ${source}`);
 	}
 
-	private _deleteCustomPreset(id: string): void {
-		this.customPresets = this.customPresets.filter(p => p.id !== id);
-		this._saveCustomPresets(); // fire-and-forget async save
-		this._updateCustomTabCount();
-		this._renderPresets();
-		this.notificationService.info('Custom preset deleted');
-	}
-
 	private _updateCustomTabCount(): void {
 		const tab = this.element?.querySelectorAll('.preset-tab')[1];
 		if (tab) {
@@ -2165,10 +2157,6 @@ export class PresetAgentViewPane extends ViewPane {
 
 	private _openCreateDialog(): void {
 		this._showPresetDialog(null);
-	}
-
-	private _openEditDialog(preset: AgentPreset): void {
-		this._showPresetDialog(preset);
 	}
 
 	private _showPresetDialog(existingPreset: AgentPreset | null): void {

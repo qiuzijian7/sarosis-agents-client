@@ -167,12 +167,16 @@ export interface AgentExportData {
 
 interface EmployeeState {
 	employees: Employee[];
+	/** All employees across all workspaces (not filtered by workspaceId), for assignee dropdowns etc. */
+	allEmployees: Employee[];
 	selectedEmployeeId: string | null;
 	searchQuery: string;
 	isLoading: boolean;
 
 	// Actions
 	loadEmployees: (workspaceId?: string) => Promise<void>;
+	/** Load all employees across all workspaces (no workspaceId filter). */
+	loadAllEmployees: () => Promise<void>;
 	selectEmployee: (id: string | null, _skipBroadcast?: boolean) => void;
 	setSearchQuery: (query: string) => void;
 	createEmployee: (data: Partial<Employee>) => Promise<Employee>;
@@ -191,6 +195,7 @@ interface EmployeeState {
 
 export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 	employees: [],
+	allEmployees: [],
 	selectedEmployeeId: null,
 	searchQuery: '',
 	isLoading: false,
@@ -205,6 +210,20 @@ export const useEmployeeStore = create<EmployeeState>((set, get) => ({
 			set({ employees, isLoading: false });
 		} catch (err) {
 			console.error('[EmployeeStore] Failed to load employees:', err);
+			set({ isLoading: false });
+		}
+	},
+
+	loadAllEmployees: async () => {
+		set({ isLoading: true });
+		try {
+			const allEmployees = await sendRequest<{}, Employee[]>(
+				'employees.listAll',
+				{}
+			);
+			set({ allEmployees, isLoading: false });
+		} catch (err) {
+			console.error('[EmployeeStore] Failed to load all employees:', err);
 			set({ isLoading: false });
 		}
 	},

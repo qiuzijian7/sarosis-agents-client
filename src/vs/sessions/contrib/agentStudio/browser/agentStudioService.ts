@@ -491,6 +491,60 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return result;
 	}
 
+	/**
+	 * Load all employees across ALL workspaces (unfiltered by workspaceId).
+	 * Used by task-board create-task modal to show the full agent/employee list
+	 * as assignable candidates.
+	 */
+	async getAllEmployees(): Promise<Employee[]> {
+		const t0 = Date.now();
+		const seen = new Set<string>();
+		const results: Employee[] = [];
+
+		// Collect from all known workspaces
+		const workspaces = await this.getWorkspaces();
+		for (const ws of workspaces) {
+			const dirUri = await this._getWorkspaceDataUri(ws.id);
+			const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+			const wsMigrated = await this._ensureWorkspaceIdInDir(dirUri, employees, ws.id);
+			const afterWs = wsMigrated || employees;
+			const migrated = await this._ensureDefaultSkillsInDir(dirUri, afterWs);
+			const list = migrated || afterWs;
+			for (const emp of list) {
+				if (!seen.has(emp.id)) {
+					seen.add(emp.id);
+					const { errorCount, missingSkillIds } = this._calculateSkillErrorInfo(emp);
+					results.push({ ...emp, skillErrorCount: errorCount, missingSkillIds });
+				}
+			}
+		}
+
+		// Also collect from the VS Code workspace folder (may have employees
+		// without a formal workspace record, i.e. legacy data).
+		const folderUri = this._getFirstWorkspaceFolderUri();
+		if (folderUri) {
+			const localDirUri = URI.joinPath(folderUri, WORKSPACE_DATA_DIR);
+			const localEmployees = await this._readJsonFile<Employee>(localDirUri, DATA_FILE_EMPLOYEES);
+			const wsMigrated = await this._ensureWorkspaceIdInDir(localDirUri, localEmployees);
+			const afterWs = wsMigrated || localEmployees;
+			const migrated = await this._ensureDefaultSkillsInDir(localDirUri, afterWs);
+			const list = migrated || afterWs;
+			for (const emp of list) {
+				if (!seen.has(emp.id)) {
+					seen.add(emp.id);
+					const { errorCount, missingSkillIds } = this._calculateSkillErrorInfo(emp);
+					results.push({ ...emp, skillErrorCount: errorCount, missingSkillIds });
+				}
+			}
+		}
+
+		const t1 = Date.now();
+		this.logService.info(
+			`[AS-PERF][service] getAllEmployees: TOTAL ${t1 - t0}ms, returned ${results.length} employees across ${workspaces.length + (folderUri ? 1 : 0)} data dirs`
+		);
+		return results;
+	}
+
 	private _getBuiltinAgents(): Agent[] {
 		// Delegate to the canonical builtin agent definitions which include
 		// systemPrompt, skills, and tools — the old stub was missing these fields.

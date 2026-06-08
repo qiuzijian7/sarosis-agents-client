@@ -529,6 +529,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return this.agentStudioService.getEmployees(
 					p.workspaceId as string | undefined,
 				);
+			case "employees.listAll":
+				return this.agentStudioService.getAllEmployees();
 			case "employees.get":
 				return this.agentStudioService.getEmployee(p.id as string);
 			case "employees.create":

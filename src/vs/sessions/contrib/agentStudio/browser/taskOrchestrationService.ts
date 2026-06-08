@@ -710,19 +710,19 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	private async _decomposeSingleTaskWithAI(
 		task: PlanTask,
 		workspaceId: string,
-		employees: Agent[],
+		agents: Agent[],
 		plannerId?: string,
 	): Promise<PlanTask[]> {
 		this.logService.info(`[Orchestration] Decomposing task "${task.title}" with AI (plannerId=${plannerId || 'default'})`);
 
 		// Resolve planner agent for its preset configuration
-		let plannerEmployee: Agent | undefined;
+		let plannerAgent: Agent | undefined;
 		let agentId: string;
 		if (plannerId) {
-			plannerEmployee = await this.agentStudioService.getAgent(plannerId);
-			if (plannerEmployee) {
-				agentId = plannerEmployee.id;
-				this.logService.info(`[Orchestration] Using planner agent "${plannerEmployee.name}" (${plannerEmployee.id}) for decomposition`);
+			plannerAgent = await this.agentStudioService.getAgent(plannerId);
+			if (plannerAgent) {
+				agentId = plannerAgent.id;
+				this.logService.info(`[Orchestration] Using planner agent "${plannerAgent.name}" (${plannerAgent.id}) for decomposition`);
 			} else {
 				this.logService.warn(`[Orchestration] Planner agent ${plannerId} not found, falling back to default`);
 				agentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
@@ -734,21 +734,21 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		// Fire progress: starting decomposition
 		this._fireDecompositionProgress({
 			plannerId: plannerId || agentId,
-			plannerName: plannerEmployee?.name,
+			plannerName: plannerAgent?.name,
 			stage: 'start',
-			message: plannerEmployee
-				? `🔄 正在使用 ${plannerEmployee.name} 分析并拆解任务「${task.title}」...`
+			message: plannerAgent
+				? `🔄 正在使用 ${plannerAgent.name} 分析并拆解任务「${task.title}」...`
 				: `🔄 正在分析并拆解任务「${task.title}」...`,
 			taskTitle: task.title,
 		});
 
-		const employeeContext = employees.length > 0
-			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
+		const agentContext = agents.length > 0
+			? `Available team members:\n${agents.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
 			: 'No team members available.';
 
 		// Build system prompt: prepend planner's systemPrompt if available
-		const plannerContext = plannerEmployee?.systemPrompt
-			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.systemPrompt}\n--- End Planner Context ---\n\n`
+		const plannerContext = plannerAgent?.systemPrompt
+			? `\n\n--- Planner Agent Context ---\n${plannerAgent.systemPrompt}\n--- End Planner Context ---\n\n`
 			: '';
 
 		const systemPrompt = `${plannerContext}You are a task decomposition expert. Your ONLY job is to output valid JSON.
@@ -767,7 +767,7 @@ REQUIRED OUTPUT FORMAT:
 FIELD NAMES (case-sensitive):
 - "id", "title", "description", "suggestedRole", "suggestedAssignee", "dependencies", "priority"
 
-${employeeContext}
+${agentContext}
 
 OUTPUT ONLY JSON. START WITH { AND END WITH }.`;
 
@@ -787,20 +787,20 @@ RULES:
 - Each sub-task should be independently executable
 - Use suggestedAssignee field with existing team member names when appropriate`;
 
-		const employeeNameToId = new Map<string, string>();
-		employees.forEach(e => {
+		const agentNameToId = new Map<string, string>();
+		agents.forEach(e => {
 			if (e.name && e.id) {
-				employeeNameToId.set(e.name.toLowerCase(), e.id);
+				agentNameToId.set(e.name.toLowerCase(), e.id);
 			}
 		});
 
 		// Fire progress: calling AI model
 		this._fireDecompositionProgress({
 			plannerId: plannerId || agentId,
-			plannerName: plannerEmployee?.name,
+			plannerName: plannerAgent?.name,
 			stage: 'calling_ai',
-			message: plannerEmployee
-				? `🤖 ${plannerEmployee.name} 正在思考如何拆解任务「${task.title}」...`
+			message: plannerAgent
+				? `🤖 ${plannerAgent.name} 正在思考如何拆解任务「${task.title}」...`
 				: `🤖 AI 正在思考如何拆解任务「${task.title}」...`,
 			taskTitle: task.title,
 		});
@@ -810,7 +810,7 @@ RULES:
 			sessionId: workspaceId,
 			messages: [{ role: 'user', content: userMessage }],
 			systemPrompt,
-			explicitSkillIds: plannerEmployee?.skills?.filter((s): s is string => typeof s === 'string') || [],
+			explicitSkillIds: plannerAgent?.skills?.filter((s): s is string => typeof s === 'string') || [],
 		};
 
 		const stream = this.agentOSService.executeAgentTurn(request);
@@ -824,7 +824,7 @@ RULES:
 		// Fire progress: parsing results
 		this._fireDecompositionProgress({
 			plannerId: plannerId || agentId,
-			plannerName: plannerEmployee?.name,
+			plannerName: plannerAgent?.name,
 			stage: 'parsing',
 			message: `📋 正在解析 AI 拆解结果...`,
 			taskTitle: task.title,
@@ -832,16 +832,16 @@ RULES:
 
 		const subTasks = this._convertParsedTasksToPlanTasks(
 			this._outputParser.parseTaskDecomposition(responseText).tasks,
-			employeeNameToId,
+			agentNameToId,
 		);
 
 		// Fire progress: decomposition complete
 		this._fireDecompositionProgress({
 			plannerId: plannerId || agentId,
-			plannerName: plannerEmployee?.name,
+			plannerName: plannerAgent?.name,
 			stage: 'complete',
-			message: plannerEmployee
-				? `✅ ${plannerEmployee.name} 已将任务「${task.title}」拆解为 ${subTasks.length} 个子任务`
+			message: plannerAgent
+				? `✅ ${plannerAgent.name} 已将任务「${task.title}」拆解为 ${subTasks.length} 个子任务`
 				: `✅ 已将任务「${task.title}」拆解为 ${subTasks.length} 个子任务`,
 			taskTitle: task.title,
 			subTaskCount: subTasks.length,
@@ -922,7 +922,7 @@ RULES:
 	 * 2. Uses StructuredOutputParser instead of fragile hand-written JSON extraction
 	 * 3. Supports parallel explore sub-agents (inspired by OpenCode Phase 1)
 	 */
-	private async _decomposeGoalWithAI(goal: string, workspaceId: string, employees: Agent[], plannerId?: string): Promise<PlanTask[]> {
+	private async _decomposeGoalWithAI(goal: string, workspaceId: string, agents: Agent[], plannerId?: string): Promise<PlanTask[]> {
 		this.logService.info(`[Orchestration] Starting AI-based goal decomposition for: "${goal}" (plannerId=${plannerId || 'default'})`);
 
 		// Fire progress: starting goal decomposition
@@ -955,7 +955,7 @@ RULES:
 
 			// Step 1: Call AI model (with codebase context)
 			this.logService.info(`[Orchestration] Calling AI model for task decomposition`);
-			const aiResponse = await this._callAIModelForDecomposition(goal, workspaceId, employees, plannerId, repoContext);
+			const aiResponse = await this._callAIModelForDecomposition(goal, workspaceId, agents, plannerId, repoContext);
 			this.logService.info(`[Orchestration] AI response received, length=${aiResponse.length}`);
 
 			// Step 2: Parse AI response into PlanTask[] using StructuredOutputParser
@@ -976,14 +976,14 @@ RULES:
 			this.logService.info(`[Orchestration] Parsed ${parsedTasks.length} tasks from AI response`);
 
 			// Step 3: Convert parsed tasks to PlanTask[]
-			const employeeNameToId = new Map<string, string>();
-			employees.forEach(e => {
+			const agentNameToId = new Map<string, string>();
+			agents.forEach(e => {
 				if (e.name && e.id) {
-					employeeNameToId.set(e.name.toLowerCase(), e.id);
+					agentNameToId.set(e.name.toLowerCase(), e.id);
 				}
 			});
 
-			const tasks = this._convertParsedTasksToPlanTasks(parsedTasks, employeeNameToId);
+			const tasks = this._convertParsedTasksToPlanTasks(parsedTasks, agentNameToId);
 			this.logService.info(`[Orchestration] Converted ${tasks.length} tasks to PlanTask[]`);
 
 			// Fire progress: decomposition complete
@@ -1013,7 +1013,7 @@ RULES:
 
 			this.logService.info(`[Orchestration] Falling back to rule-based decomposition`);
 			// Fallback to rule-based decomposition
-			const existingNames = new Set(employees.map(e => e.name.toLowerCase()));
+			const existingNames = new Set(agents.map(e => e.name.toLowerCase()));
 			return this._decomposer.decomposeGoal(goal, existingNames);
 		}
 	}
@@ -1025,17 +1025,17 @@ RULES:
 	 *
 	 * Improvement: now accepts optional repoContext for codebase-aware decomposition.
 	 */
-	private async _callAIModelForDecomposition(goal: string, workspaceId: string, employees: Agent[], plannerId?: string, repoContext?: string): Promise<string> {
+	private async _callAIModelForDecomposition(goal: string, workspaceId: string, agents: Agent[], plannerId?: string, repoContext?: string): Promise<string> {
 		this.logService.info(`[Orchestration] _callAIModelForDecomposition: goal="${goal}", plannerId=${plannerId || 'default'}`);
 
 		// Resolve planner agent for its preset configuration
-		let plannerEmployee: Agent | undefined;
+		let plannerAgent: Agent | undefined;
 		let agentId: string;
 		if (plannerId) {
-			plannerEmployee = await this.agentStudioService.getAgent(plannerId);
-			if (plannerEmployee) {
-				agentId = plannerEmployee.id;
-				this.logService.info(`[Orchestration] Using planner agent "${plannerEmployee.name}" (${plannerEmployee.id}) for goal decomposition`);
+			plannerAgent = await this.agentStudioService.getAgent(plannerId);
+			if (plannerAgent) {
+				agentId = plannerAgent.id;
+				this.logService.info(`[Orchestration] Using planner agent "${plannerAgent.name}" (${plannerAgent.id}) for goal decomposition`);
 			} else {
 				this.logService.warn(`[Orchestration] Planner agent ${plannerId} not found, falling back to default`);
 				agentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
@@ -1047,22 +1047,22 @@ RULES:
 		// Fire progress: calling AI model
 		this._fireDecompositionProgress({
 			plannerId: plannerId || agentId,
-			plannerName: plannerEmployee?.name,
+			plannerName: plannerAgent?.name,
 			stage: 'calling_ai',
-			message: plannerEmployee
-				? `🤖 ${plannerEmployee.name} 正在分析目标并生成任务拆解方案...`
+			message: plannerAgent
+				? `🤖 ${plannerAgent.name} 正在分析目标并生成任务拆解方案...`
 				: `🤖 AI 正在分析目标并生成任务拆解方案...`,
 			goal,
 		});
 
-		// Build employee context string
-		const employeeContext = employees.length > 0
-			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
+		// Build agent context string
+		const agentContext = agents.length > 0
+			? `Available team members:\n${agents.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
 			: 'No team members available.';
 
 		// Build system prompt: prepend planner's systemPrompt if available
-		const plannerContext = plannerEmployee?.systemPrompt
-			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.systemPrompt}\n--- End Planner Context ---\n\n`
+		const plannerContext = plannerAgent?.systemPrompt
+			? `\n\n--- Planner Agent Context ---\n${plannerAgent.systemPrompt}\n--- End Planner Context ---\n\n`
 			: '';
 
 		// Build system prompt - EXTREMELY STRICT JSON OUTPUT REQUIRED
@@ -1097,7 +1097,7 @@ FIELD NAMES - USE EXACTLY THESE (case-sensitive):
 - "priority" (not "priority_level")
 
 AVAILABLE TEAM MEMBERS:
-${employeeContext}
+${agentContext}
 
 EXAMPLE CONVERSATION:
 User: Goal: Build a login page
@@ -1129,7 +1129,7 @@ Goal: ${goal}`;
 				{ role: 'user', content: userMessage }
 			],
 			systemPrompt,
-			explicitSkillIds: plannerEmployee?.skills?.filter((s): s is string => typeof s === 'string') || [],
+			explicitSkillIds: plannerAgent?.skills?.filter((s): s is string => typeof s === 'string') || [],
 		};
 
 		const stream = this.agentOSService.executeAgentTurn(request);
@@ -1167,7 +1167,7 @@ Goal: ${goal}`;
 			dependencies: string[];
 			priority: number;
 		}>,
-		employeeNameToId: Map<string, string>,
+		agentNameToId: Map<string, string>,
 	): PlanTask[] {
 		const now = new Date().toISOString();
 		const tasks: PlanTask[] = [];
@@ -1180,7 +1180,7 @@ Goal: ${goal}`;
 			// Resolve assignee
 			let assigneeId = '';
 			if (taskData.suggestedAssignee) {
-				const resolvedId = employeeNameToId.get(taskData.suggestedAssignee.toLowerCase());
+				const resolvedId = agentNameToId.get(taskData.suggestedAssignee.toLowerCase());
 				if (resolvedId) {
 					assigneeId = resolvedId;
 				}
@@ -1624,9 +1624,9 @@ Goal: ${goal}`;
 
 		while (queue.length > 0) {
 			const currentId = queue.shift()!;
-			const emp = await this.agentStudioService.getAgent(currentId);
-			if (emp) {
-				ordered.push(emp);
+			const agent = await this.agentStudioService.getAgent(currentId);
+			if (agent) {
+				ordered.push(agent);
 			}
 
 			// Find direct downstream agents
@@ -1882,8 +1882,8 @@ Goal: ${goal}`;
 
 		// Strategy 0: Already has a valid assignee — verify it still exists
 		if (currentAssigneeId) {
-			const employees = await this.agentStudioService.getAgents();
-			const existing = employees.find(e => e.id === currentAssigneeId);
+			const agents = await this.agentStudioService.getAgents();
+			const existing = agents.find(e => e.id === currentAssigneeId);
 			if (existing) {
 				this.logService.info(`[Orchestration] ensureTaskAgent: Task "${taskTitle}" already has valid agent "${existing.name}" (${existing.id})`);
 				return { assigneeId: existing.id, assigneeName: existing.name };
@@ -1899,8 +1899,8 @@ Goal: ${goal}`;
 			if (found) { planTask = found; break; }
 		}
 
-		const employees = await this.agentStudioService.getAgents();
-		const existingByName = new Map(employees.map(e => [e.name.toLowerCase(), e]));
+		const agents = await this.agentStudioService.getAgents();
+		const existingByName = new Map(agents.map(e => [e.name.toLowerCase(), e]));
 		const taskRole = planTask?.assigneeRole || currentAssigneeName || 'Agent';
 		const taskAssigneeName = planTask?.assigneeName || currentAssigneeName;
 
@@ -1919,14 +1919,14 @@ Goal: ${goal}`;
 		}
 
 		// Strategy 2: Score-based selection from existing agents
-		const candidates = employees.filter(e =>
+		const candidates = agents.filter(e =>
 			e.status !== 'offline'
 		);
 		if (candidates.length > 0) {
 			let best: Agent | undefined;
 			let bestScore = -1;
-			for (const emp of candidates) {
-				const agentRole = (emp.role || '').toLowerCase();
+			for (const agent of candidates) {
+				const agentRole = (agent.role || '').toLowerCase();
 				const required = taskRole.toLowerCase().trim();
 				let score = 0.3;
 				if (required && agentRole === required) { score = 1.0; }
@@ -1937,12 +1937,12 @@ Goal: ${goal}`;
 						score = Math.max(0.1, matched / keywords.length);
 					}
 				}
-				if (emp.status === 'idle') { score += 0.3; }
-				else if (emp.status === 'working') { score += 0.1; }
+				if (agent.status === 'idle') { score += 0.3; }
+				else if (agent.status === 'working') { score += 0.1; }
 
 				if (score > bestScore) {
 					bestScore = score;
-					best = emp;
+					best = agent;
 				}
 			}
 			if (best && bestScore >= 0.1) {
@@ -1960,19 +1960,19 @@ Goal: ${goal}`;
 		const agentName = taskAssigneeName || `Agent-${taskTitle.slice(0, 20)}`;
 		try {
 			this.logService.info(`[Orchestration] ensureTaskAgent: [Auto-create] Creating agent "${agentName}" for task "${taskTitle}"`);
-			const newEmp = await this.agentStudioService.createAgent({
+			const newAgent = await this.agentStudioService.createAgent({
 				name: agentName,
 				role: taskRole || 'Agent',
 				agentType: AgentType.Worker,
 				workspaceId,
 			} as Partial<Agent>);
 			if (planTask) {
-				planTask.assigneeId = newEmp.id;
-				planTask.assigneeName = newEmp.name;
+				planTask.assigneeId = newAgent.id;
+				planTask.assigneeName = newAgent.name;
 				await this._writePlans(plans);
 			}
-			this.logService.info(`[Orchestration] ensureTaskAgent: Created agent "${newEmp.name}" (${newEmp.id}) for task "${taskTitle}"`);
-			return { assigneeId: newEmp.id, assigneeName: newEmp.name };
+			this.logService.info(`[Orchestration] ensureTaskAgent: Created agent "${newAgent.name}" (${newAgent.id}) for task "${taskTitle}"`);
+			return { assigneeId: newAgent.id, assigneeName: newAgent.name };
 		} catch (err) {
 			this.logService.error(`[Orchestration] ensureTaskAgent: Failed to create agent: ${err}`);
 			return undefined;

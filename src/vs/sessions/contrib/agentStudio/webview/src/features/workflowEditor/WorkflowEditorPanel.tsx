@@ -13,7 +13,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import { NodePalette } from './NodePalette';
 import { PropertyPanel } from './PropertyPanel';
-import { useWorkflowEditorStore } from './store';
+import { useWorkflowEditorStore, undo as doUndo, redo as doRedo } from './store';
 import { sendRequest } from '../../bridge/messageClient';
 import type { IStoredWorkflow } from '../../types/workflowStorage';
 
@@ -22,6 +22,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const [loaded, setLoaded] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+	const [validationMsg, setValidationMsg] = useState<string | null>(null);
 
 	const loadWorkflow = useWorkflowEditorStore(s => s.loadWorkflow);
 	const workflowId = useWorkflowEditorStore(s => s.workflowId);
@@ -76,6 +77,19 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 	}, [saving, workflowId, toWorkflowData]);
 
+	const handleValidate = useCallback(() => {
+		const result = useWorkflowEditorStore.getState().validateWorkflow();
+		if (result.valid && result.issues.length === 0) {
+			setValidationMsg('✓ Workflow is valid');
+		} else {
+			const errors = result.issues.filter(i => i.level === 'error').length;
+			const warnings = result.issues.filter(i => i.level === 'warning').length;
+			const first = result.issues[0]?.message ?? '';
+			setValidationMsg(`${errors} error(s), ${warnings} warning(s) · ${first}`);
+		}
+		setTimeout(() => setValidationMsg(null), 5000);
+	}, []);
+
 	return (
 		<ReactFlowProvider>
 			<div style={{
@@ -101,9 +115,14 @@ export const WorkflowEditorPanel: React.FC = () => {
 						</span>
 					</div>
 					<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-						<span style={{ fontSize: '11px', color: saveStatus === 'saved' ? '#22c55e' : saveStatus === 'error' ? '#ef4444' : 'var(--vscode-descriptionForeground)' }}>
-							{saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : saveStatus === 'error' ? 'Save failed' : ''}
+						<span style={{ fontSize: '11px', color: validationMsg?.startsWith('✓') ? '#22c55e' : validationMsg ? '#f59e0b' : saveStatus === 'saved' ? '#22c55e' : saveStatus === 'error' ? '#ef4444' : 'var(--vscode-descriptionForeground)' }}>
+							{validationMsg
+								? validationMsg
+								: saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : saveStatus === 'error' ? 'Save failed' : ''}
 						</span>
+						<button onClick={() => doUndo()} title="Undo (Ctrl+Z)" style={iconBtnStyle}>↶</button>
+						<button onClick={() => doRedo()} title="Redo (Ctrl+Shift+Z)" style={iconBtnStyle}>↷</button>
+						<button onClick={handleValidate} title="Validate workflow" style={iconBtnStyle}>✓</button>
 						<button onClick={handleSave} disabled={saving}
 							style={{
 								padding: '4px 12px',
@@ -131,4 +150,18 @@ export const WorkflowEditorPanel: React.FC = () => {
 			</div>
 		</ReactFlowProvider>
 	);
+};
+
+const iconBtnStyle: React.CSSProperties = {
+	width: '26px',
+	height: '26px',
+	display: 'flex',
+	alignItems: 'center',
+	justifyContent: 'center',
+	border: '1px solid var(--vscode-button-border)',
+	borderRadius: '4px',
+	backgroundColor: 'transparent',
+	color: 'var(--vscode-foreground)',
+	cursor: 'pointer',
+	fontSize: '14px',
 };

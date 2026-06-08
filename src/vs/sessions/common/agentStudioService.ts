@@ -56,6 +56,7 @@ export interface IAgentStudioService {
 
 	// Employees (DEPRECATED — use Agents below)
 	getEmployees(workspaceId?: string): Promise<Employee[]>;
+	getAllEmployees(): Promise<Employee[]>;
 	getEmployee(id: string): Promise<Employee | undefined>;
 	createEmployee(data: Partial<Employee>): Promise<Employee>;
 	updateEmployee(id: string, data: Partial<Employee>): Promise<Employee>;

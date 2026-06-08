@@ -52,6 +52,8 @@ export function TaskBoardPanel(): React.ReactElement {
 	const { tasks, isCollapsed, isLoading, toggleCollapse, loadTasks, updateTaskStatus, createTask, deleteTask, archiveTask, setDragTarget, focusedTaskId, focusTask } = useTaskBoardStore();
 	const { activeWorkspaceId, workspaces } = useWorkspaceStore();
 	const { employees } = useEmployeeStore();
+	const loadAllEmployees = useEmployeeStore(s => s.loadAllEmployees);
+	const allEmployees = useEmployeeStore(s => s.allEmployees);
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
 	const { diagnostics, isRunning: isDiagnosticsRunning, loadDiagnostics, runDiagnostics } = useDiagnosticsStore();
@@ -138,6 +140,12 @@ export function TaskBoardPanel(): React.ReactElement {
 			loadSwarms(activeWorkspaceId);
 		}
 	}, [activeWorkspaceId, boardFilterWsId, loadDelegations, loadTasks, loadPlans, loadDiagnostics, loadSwarms]);
+
+	// Load all employees (across all workspaces) so the create-task modal's
+	// assignee dropdown shows every available agent, not just workspace-scoped ones.
+	useEffect(() => {
+		loadAllEmployees();
+	}, [loadAllEmployees]);
 
 	// Register agent colors when employees change (ensures consistent color assignment)
 	useEffect(() => {
@@ -331,7 +339,7 @@ export function TaskBoardPanel(): React.ReactElement {
 			isOpen={isCreateTaskOpen}
 			onClose={() => setIsCreateTaskOpen(false)}
 			onCreate={handleCreateTask}
-			employees={employees.map(e => ({ id: e.id, name: e.name }))}
+			employees={allEmployees.map(e => ({ id: e.id, name: e.name }))}
 			tasks={tasks.map(t => ({ id: t.id, title: t.title }))}
 		/>
 
