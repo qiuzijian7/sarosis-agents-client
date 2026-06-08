@@ -52,7 +52,7 @@ export interface IAgentGroupElement {
 export interface ISessionElement {
 	readonly type: SessionExplorerItemType.Session;
 	readonly session: AgentSessionMeta;
-	readonly employeeId: string;
+	readonly agentId: string;
 	readonly employeeName: string;
 }
 
@@ -77,7 +77,7 @@ interface IAgentGroupTemplate {
 class AgentGroupRenderer implements ICompressibleTreeRenderer<IAgentGroupElement, FuzzyScore, IAgentGroupTemplate> {
 	static readonly TEMPLATE_ID = 'sessionExplorer.agentGroup';
 	readonly templateId = AgentGroupRenderer.TEMPLATE_ID;
-	constructor(private readonly onDeleteAll: (employeeId: string) => void) { }
+	constructor(private readonly onDeleteAll: (agentId: string) => void) { }
 
 	renderTemplate(container: HTMLElement): IAgentGroupTemplate {
 		container.classList.add('session-group');
@@ -115,7 +115,7 @@ interface ISessionTemplate {
 class SessionItemRenderer implements ICompressibleTreeRenderer<ISessionElement, FuzzyScore, ISessionTemplate> {
 	static readonly TEMPLATE_ID = 'sessionExplorer.sessionItem';
 	readonly templateId = SessionItemRenderer.TEMPLATE_ID;
-	constructor(private readonly onDelete: (employeeId: string, sessionId: string) => void) { }
+	constructor(private readonly onDelete: (agentId: string, sessionId: string) => void) { }
 
 	renderTemplate(container: HTMLElement): ISessionTemplate {
 		container.classList.add('session-item');
@@ -133,7 +133,7 @@ class SessionItemRenderer implements ICompressibleTreeRenderer<ISessionElement, 
 		t.disposables.clear(); t.actionBar.clear();
 		t.actionBar.push(toAction({
 			id: `se.delete.${s.session.id}`, label: localize('delete', "删除"), class: ThemeIcon.asClassName(Codicon.close),
-			run: () => this.onDelete(s.employeeId, s.session.id),
+			run: () => this.onDelete(s.agentId, s.session.id),
 		}), { icon: true, label: false });
 	}
 
@@ -177,7 +177,7 @@ class SessionExplorerDataSource implements IAsyncDataSource<null, SessionExplore
 		}
 		if (e.type === SessionExplorerItemType.AgentGroup) {
 			const ss = await (this.chat as any).listAgentSessions(e.employee.id) as AgentSessionMeta[];
-			return ss.map(s => ({ type: SessionExplorerItemType.Session, session: s, employeeId: e.employee.id, employeeName: e.employee.name }));
+			return ss.map(s => ({ type: SessionExplorerItemType.Session, session: s, agentId: e.employee.id, employeeName: e.employee.name }));
 		}
 		return [];
 	}
@@ -318,7 +318,7 @@ export class SessionExplorerViewPane extends ViewPane {
 
 	private async _openSession(element: ISessionElement): Promise<void> {
 		try {
-			const employee = await this._studioService.getEmployee(element.employeeId);
+			const employee = await this._studioService.getEmployee(element.agentId);
 			if (!employee?.agentDir || !employee.workspaceId) {
 				this._notificationService.warn(localize('sessionNoPath', "无法定位会话文件路径"));
 				return;
@@ -343,19 +343,19 @@ export class SessionExplorerViewPane extends ViewPane {
 		} catch (err) { this._notificationService.error(String(err)); }
 	}
 
-	private async _deleteSession(employeeId: string, sessionId: string): Promise<void> {
+	private async _deleteSession(agentId: string, sessionId: string): Promise<void> {
 		const c = await this._dialogService.confirm({ message: localize('confirmDel', "确定删除此会话？"), primaryButton: localize('del', "&&删除") });
 		if (!c.confirmed) return;
-		try { await (this._chatService as any).deleteAgentSession(employeeId, sessionId); } catch (e) { this._notificationService.error(String(e)); }
+		try { await (this._chatService as any).deleteAgentSession(agentId, sessionId); } catch (e) { this._notificationService.error(String(e)); }
 		this.refresh();
 	}
 
-	private async _deleteAllSessionsForAgent(employeeId: string): Promise<void> {
+	private async _deleteAllSessionsForAgent(agentId: string): Promise<void> {
 		const c = await this._dialogService.confirm({ message: localize('confirmClearAgent', "确定清空此 Agent 的所有会话？"), primaryButton: localize('clear', "&&清空") });
 		if (!c.confirmed) return;
 		try {
-			const ss = await (this._chatService as any).listAgentSessions(employeeId) as AgentSessionMeta[];
-			for (const s of ss) await (this._chatService as any).deleteAgentSession(employeeId, s.id);
+			const ss = await (this._chatService as any).listAgentSessions(agentId) as AgentSessionMeta[];
+			for (const s of ss) await (this._chatService as any).deleteAgentSession(agentId, s.id);
 		} catch (e) { this._notificationService.error(String(e)); }
 		this.refresh();
 	}

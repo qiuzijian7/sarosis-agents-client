@@ -121,7 +121,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 	 */
 	createWorkspaceWithWorktree: async (name: string, options?: { mode?: 'main' | 'create' | 'existing'; worktreeName?: string; existingPath?: string; detached?: boolean }) => {
 		try {
-			const result = await sendRequest<{ name: string; mode?: string; name?: string; existingPath?: string; detached?: boolean }, { id: string }>(
+			const result = await sendRequest<{ name: string; mode?: string; worktreeName?: string; existingPath?: string; detached?: boolean }, { id: string }>(
 				'workspace.createWithWorktree',
 				{ name, ...options },
 			);

@@ -7,18 +7,18 @@ import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
 
 // Lazy-loaded stores to avoid circular dependency
-let _employeeStore: { getState: () => any; setState: (updater: any) => void } | null = null;
+let _agentStore: { getState: () => any; setState: (updater: any) => void } | null = null;
 function getEmployeeStore() {
-	if (!_employeeStore) {
+	if (!_agentStore) {
 		try {
 			const mod = require('./useEmployeeStore');
-			_employeeStore = mod.useEmployeeStore;
+			_agentStore = mod.useEmployeeStore;
 		} catch (err) {
 			console.warn('[ProviderStore] Failed to load useEmployeeStore:', err);
 			return null;
 		}
 	}
-	return _employeeStore;
+	return _agentStore;
 }
 
 let _chatStore: { getState: () => any } | null = null;
@@ -128,7 +128,7 @@ interface ProviderState {
 
 	// Actions
 	loadProviders: () => Promise<void>;
-	loadSelectionForEmployee: (employeeId: string) => Promise<void>;
+	loadSelectionForAgent: (agentId: string) => Promise<void>;
 	selectProvider: (providerId: string, modelId: string, agentId?: string) => void;
 	updateProviders: (providers: ProviderInfo[]) => void;
 	openProviderSettings: (providerId?: string) => void;
@@ -158,21 +158,21 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			);
 			set({ providers, isLoading: false });
 
-		// Try to restore selection from the active employee's agent.yaml first,
+		// Try to restore selection from the active agent's agent.yaml first,
 		// then fall back to the global selection saved in settings.json
-		const activeEmployeeId = getChatStore()?.getState()?.activeEmployeeId;
-		console.log(`[ProviderStore] loadProviders: activeEmployeeId=${activeEmployeeId}`);
+		const activeAgentId = getChatStore()?.getState()?.activeAgentId;
+		console.log(`[ProviderStore] loadProviders: activeAgentId=${activeAgentId}`);
 
 			try {
 				let savedSelection: { providerId: string; modelId: string; agentId?: string } | null = null;
 
-				if (activeEmployeeId) {
-					// Prefer employee-specific selection from agent.yaml
-					savedSelection = await sendRequest<{ employeeId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
+				if (activeAgentId) {
+					// Prefer agent-specific selection from agent.yaml
+					savedSelection = await sendRequest<{ agentId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
 						'providers.getSelectionForEmployee',
-						{ employeeId: activeEmployeeId }
+						{ agentId: activeAgentId }
 					);
-					console.log(`[ProviderStore] loadProviders: agent.yaml selection for ${activeEmployeeId}:`, savedSelection);
+					console.log(`[ProviderStore] loadProviders: agent.yaml selection for ${activeAgentId}:`, savedSelection);
 				}
 
 				if (!savedSelection) {
@@ -207,7 +207,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 						providerId: savedSelection.providerId,
 						modelId: savedSelection.modelId,
 						agentId: savedSelection.agentId,
-						employeeId: activeEmployeeId || undefined,
 					});
 					console.log(
 						`[ProviderStore] loadProviders: restored selection → ${savedSelection.providerId}/${savedSelection.modelId} ` +
@@ -248,7 +247,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 							providerId: first.id,
 							modelId: firstModel.id,
 							agentId: firstAgent?.id,
-							employeeId: activeEmployeeId || undefined,
 						});
 						console.log(`[ProviderStore] loadProviders: auto-selected first authenticated → ${first.id}/${firstModel.id}`);
 					}
@@ -261,10 +259,10 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 	},
 
 	/**
-	 * Load the provider/model selection for a specific employee from agent.yaml.
-	 * Called when the active employee changes (after setActiveEmployee).
+	 * Load the provider/model selection for a specific agent from agent.yaml.
+	 * Called when the active agent changes (after setActiveAgent).
 	 * This fixes the race condition where loadProviders() runs before
-	 * activeEmployeeId is set, causing agent.yaml config to be missed.
+	 * activeAgentId is set, causing agent.yaml config to be missed.
 	 *
 	 * Resolution priority:
 	 *   1. agent.yaml has a valid + authenticated provider → use it.
@@ -273,14 +271,14 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 	 *        new selection back to agent.yaml so future opens are stable.
 	 *   3. agent.yaml has no model section → same as (2).
 	 */
-	loadSelectionForEmployee: async (employeeId: string) => {
+	loadSelectionForAgent: async (agentId: string) => {
 		const { providers } = get();
-		if (!employeeId || providers.length === 0) {
-			console.log(`[ProviderStore] loadSelectionForEmployee: skipped (employeeId=${employeeId}, providers=${providers.length})`);
+		if (!agentId || providers.length === 0) {
+			console.log(`[ProviderStore] loadSelectionForAgent: skipped (agentId=${agentId}, providers=${providers.length})`);
 			return;
 		}
 
-		console.log(`[ProviderStore] loadSelectionForEmployee: loading for ${employeeId}`);
+		console.log(`[ProviderStore] loadSelectionForAgent: loading for ${agentId}`);
 
 		const applySelection = (
 			providerId: string,
@@ -295,7 +293,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		const pickAndPersistFallback = (reason: string) => {
 			const authenticated = providers.filter(p => p.authStatus === 'authenticated');
 			if (authenticated.length === 0) {
-				console.log(`[ProviderStore] loadSelectionForEmployee: ${reason}, but no authenticated provider available`);
+				console.log(`[ProviderStore] loadSelectionForAgent: ${reason}, but no authenticated provider available`);
 				set({ selection: null });
 				return;
 			}
@@ -303,11 +301,11 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			const firstModel = first.models[0];
 			const firstAgent = first.agents?.[0];
 			if (!firstModel) {
-				console.log(`[ProviderStore] loadSelectionForEmployee: ${reason}, first authenticated provider has no models`);
+				console.log(`[ProviderStore] loadSelectionForAgent: ${reason}, first authenticated provider has no models`);
 				return;
 			}
 			applySelection(first.id, first.name, firstModel.id, firstAgent?.id);
-			console.log(`[ProviderStore] loadSelectionForEmployee: ${reason} → auto-picked ${first.id}/${firstModel.id} and persisting back to agent.yaml`);
+			console.log(`[ProviderStore] loadSelectionForAgent: ${reason} → auto-picked ${first.id}/${firstModel.id} and persisting back to agent.yaml`);
 			// Persist the auto-picked selection to agent.yaml so the chat bar
 			// and canvas card stay in sync next time and don't drift to a
 			// stale global fallback again.
@@ -315,12 +313,11 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 				providerId: first.id,
 				modelId: firstModel.id,
 				agentId: firstAgent?.id,
-				employeeId,
 			});
-			// Also reflect on the employee card immediately
-			getEmployeeStore()?.setState(state => ({
-				employees: state.employees.map(e =>
-					e.id === employeeId
+			// Also reflect on the agent card immediately
+			getEmployeeStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
+				agents: state.agents.map((e: { id: string; provider?: string; model?: string }) =>
+					e.id === agentId
 						? { ...e, provider: first.id, model: firstModel.id }
 						: e
 				),
@@ -328,10 +325,10 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		};
 
 		try {
-			// Read the employee's agent.yaml model config
-			const savedSelection = await sendRequest<{ employeeId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
+			// Read the agent's agent.yaml model config
+			const savedSelection = await sendRequest<{ agentId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
 				'providers.getSelectionForEmployee',
-				{ employeeId }
+				{ agentId }
 			);
 
 			if (savedSelection && savedSelection.providerId && savedSelection.modelId) {
@@ -345,7 +342,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 						savedSelection.modelId,
 						savedSelection.agentId,
 					);
-					console.log(`[ProviderStore] loadSelectionForEmployee: restored → ${savedSelection.providerId}/${savedSelection.modelId}` +
+					console.log(`[ProviderStore] loadSelectionForAgent: restored → ${savedSelection.providerId}/${savedSelection.modelId}` +
 						(savedSelection.agentId ? ` [agent: ${savedSelection.agentId}]` : ''));
 
 					// ── Critical: sync the restored selection back to the Host ──
@@ -354,12 +351,11 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 					// `executeAgentTurn` actually uses to route chat requests)
 					// would still hold the previous/global selection, causing
 					// messages to be sent via the wrong provider (e.g. OpenRouter
-					// instead of the employee's configured Knot provider).
+					// instead of the agent's configured Knot provider).
 					postMessage('providers.select', {
 						providerId: savedSelection.providerId,
 						modelId: savedSelection.modelId,
 						agentId: savedSelection.agentId,
-						employeeId,
 					});
 
 					return;
@@ -385,7 +381,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 						savedSelection.agentId,
 					);
 					console.log(
-						`[ProviderStore] loadSelectionForEmployee: provider '${savedSelection.providerId}' ` +
+						`[ProviderStore] loadSelectionForAgent: provider '${savedSelection.providerId}' ` +
 						`registered but authStatus='${provider.authStatus}' — keeping selection, waiting for providers.changed.`,
 					);
 					// Optimistically sync to host as well; the host's chat path
@@ -395,7 +391,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 						providerId: savedSelection.providerId,
 						modelId: savedSelection.modelId,
 						agentId: savedSelection.agentId,
-						employeeId,
 					});
 					return;
 				}
@@ -410,9 +405,9 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			}
 
 			// No valid model section in agent.yaml at all
-			pickAndPersistFallback(`no valid model config in agent.yaml for ${employeeId}`);
+			pickAndPersistFallback(`no valid model config in agent.yaml for ${agentId}`);
 		} catch (err) {
-			console.warn(`[ProviderStore] loadSelectionForEmployee: failed for ${employeeId}`, err);
+			console.warn(`[ProviderStore] loadSelectionForAgent: failed for ${agentId}`, err);
 		}
 	},
 
@@ -433,18 +428,18 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			},
 		});
 
-		// Include the active employeeId so that the host can persist to agent.yaml
-		const activeEmployeeId = getChatStore()?.getState()?.activeEmployeeId;
+		// Include the active agentId so that the host can persist to agent.yaml
+		const activeAgentId = getChatStore()?.getState()?.activeAgentId;
 
 		// Notify host to persist the selection (both global + agent.yaml)
-		postMessage('providers.select', { providerId, modelId, agentId, employeeId: activeEmployeeId });
+		postMessage('providers.select', { providerId, modelId, agentId });
 
-		// Sync the active employee's model/provider fields so that
+		// Sync the active agent's model/provider fields so that
 		// EmployeeCard and chat header update in real-time
-		if (activeEmployeeId) {
-			getEmployeeStore()?.setState(state => ({
-				employees: state.employees.map(e =>
-					e.id === activeEmployeeId
+		if (activeAgentId) {
+			getEmployeeStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
+				agents: state.agents.map((e: { id: string; provider?: string; model?: string }) =>
+					e.id === activeAgentId
 						? { ...e, provider: providerId, model: bareModelId }
 						: e
 				),
@@ -461,11 +456,11 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		const { selection } = get();
 		set({ providers });
 
-		// ── Guard: respect employee-level selection ──────────────────
+		// ── Guard: respect agent-level selection ──────────────────
 		// When a providers.changed event fires (e.g. because a provider's
 		// auth status transitions through 'validating' → 'authenticated'
 		// during async initialisation), we must NOT blindly replace the
-		// current employee-level selection with the "first authenticated
+		// current agent-level selection with the "first authenticated
 		// provider".  The previous code matched on
 		//   `p.id === selection.providerId && p.authStatus === 'authenticated'`
 		// which meant a temporarily-validating provider (like Knot during

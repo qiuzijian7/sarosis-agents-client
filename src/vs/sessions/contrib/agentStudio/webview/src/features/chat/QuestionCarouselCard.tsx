@@ -63,7 +63,7 @@ export const QuestionCarouselCard = memo(function QuestionCarouselCard({
 						<button
 							key={cat}
 							className={`category-btn ${selectedCategory === cat ? 'active' : ''}`}
-							onClick={() => setSelectedCategory(cat)}
+							onClick={() => setSelectedCategory(cat ?? null)}
 						>
 							{cat}
 						</button>

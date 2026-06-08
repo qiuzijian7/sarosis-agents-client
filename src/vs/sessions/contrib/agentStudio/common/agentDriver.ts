@@ -42,7 +42,7 @@ export interface IAgentDriverService {
 	 *   消息——长对话上下文才能涨起来并触发压缩。当前 user 消息会追加在其后。
 	 */
 	executeFromChatOptions(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options: IChatSendOptions,
 		priorMessages?: IChatMessage[],
@@ -50,7 +50,7 @@ export interface IAgentDriverService {
 
 	/**
 	 * 取消正在执行的轮次
-	 * @param turnId - 轮次 ID（通常为 employeeId）
+	 * @param turnId - 轮次 ID（通常为 agentId）
 	 */
 	cancelTurn(turnId: string): void;
 

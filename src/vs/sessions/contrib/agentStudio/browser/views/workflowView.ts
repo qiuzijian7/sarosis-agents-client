@@ -21,10 +21,9 @@ import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/work
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import type { Employee } from '../../../../common/agentStudioTypes.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
-import { AGENT_STUDIO_CHAT_VIEW_ID, AGENT_STUDIO_CLAW_CHAT_VIEW_ID } from '../../common/constants.js';
+import { AGENT_STUDIO_CHAT_VIEW_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
 import { BUILTIN_PRESETS, type AgentPreset } from './presetAgentView.js';
-import type { ClawChatViewPane } from './clawChatView.js';
 
 const WORKFLOW_PRESET_ID = 'workflow-agent';
 
@@ -408,15 +407,11 @@ export class WorkflowViewPane extends ViewPane {
 			this.modelSelectorService.setSelectedAgentId(employee.id);
 
 			// 3. 打开聊天框
-			const chatView = await this.viewsService.openView<ClawChatViewPane>(AGENT_STUDIO_CLAW_CHAT_VIEW_ID, true);
+			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
 
-			// 4. 注入执行指令
+			// 4. 注入执行指令（Claw Chat 已移除，手动粘贴提示词）
 			const prompt = this._buildExecutionPrompt(wf);
-			if (chatView && typeof (chatView as ClawChatViewPane).runPrompt === 'function') {
-				await (chatView as ClawChatViewPane).runPrompt(prompt);
-			} else {
-				this.notificationService.warn('Opened the chat, but could not auto-send the workflow prompt. Please paste it manually.');
-			}
+			this.notificationService.info('Workflow prompt is ready. Please paste it into the chat manually:\n\n' + prompt);
 		} catch (err) {
 			this.notificationService.error(`Failed to run workflow: ${err instanceof Error ? err.message : String(err)}`);
 		}

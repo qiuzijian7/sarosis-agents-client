@@ -107,7 +107,12 @@ export class MessageFormatConverter {
 					result.push({ role: 'user', content: m.content });
 				}
 			} else if (m.role === 'assistant') {
-				const base: Record<string, unknown> = { role: 'assistant', content: m.content };
+				// ReAct: 合并 reasoning 到 content（模型在下一轮迭代中可"看见"自己的思考过程）
+				const fullContent = m.reasoning
+					? `<thinking>\n${m.reasoning}\n</thinking>\n\n${m.content}`
+					: m.content;
+
+				const base: Record<string, unknown> = { role: 'assistant', content: fullContent };
 
 				// 工具调用转换
 				if (m.toolCalls && m.toolCalls.length > 0) {
@@ -228,6 +233,11 @@ export class MessageFormatConverter {
 				}
 			} else if (m.role === 'assistant') {
 				const contentBlocks: AnthropicContentBlock[] = [];
+
+				// ReAct: reasoning → <thinking> block prepended before visible content
+				if (m.reasoning) {
+					contentBlocks.push({ type: 'text', text: `<thinking>\n${m.reasoning}\n</thinking>` });
+				}
 				if (m.content) {
 					contentBlocks.push({ type: 'text', text: m.content });
 				}
@@ -344,6 +354,11 @@ export class MessageFormatConverter {
 				}
 			} else if (m.role === 'assistant') {
 				const parts: GeminiPart[] = [];
+
+				// ReAct: reasoning → thinking block prepended before visible content
+				if (m.reasoning) {
+					parts.push({ text: `<thinking>\n${m.reasoning}\n</thinking>` });
+				}
 				if (m.content) {
 					parts.push({ text: m.content });
 				}

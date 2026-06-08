@@ -53,7 +53,10 @@ export function EmployeeCard({ employee, isSelected, onClick }: EmployeeCardProp
 
 			{/* Avatar */}
 			<img
-				src={employee.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`}
+				src={employee.avatar
+					|| (employee.avatarStyle && employee.avatarSeed
+						? `https://api.dicebear.com/7.x/${employee.avatarStyle}/svg?seed=${employee.avatarSeed}`
+						: `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`)}
 				alt=""
 				style={{ width: '24px', height: '24px', borderRadius: '50%' }}
 			/>

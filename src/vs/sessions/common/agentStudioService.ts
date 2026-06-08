@@ -9,6 +9,8 @@ import { createDecorator } from "../../platform/instantiation/common/instantiati
 import { Event } from "../../base/common/event.js";
 import type {
 	Employee,
+	Agent,
+	AgentBinding,
 	Workspace,
 	Delegation,
 	ChatMessage,
@@ -39,6 +41,8 @@ export interface IAgentStudioService {
 	readonly onDidChangeWorkspace: Event<string>;
 	readonly onDidChangeSessions: Event<void>;
 	readonly onDidSelectEmployee: Event<string | null>;
+	/** Fired when agents change (custom agent CRUD). */
+	readonly onDidChangeAgents: Event<void>;
 	/**
 	 * Fired when the active (currently selected) workspace changes.
 	 * Payload is the active workspace id, or undefined when cleared.
@@ -47,15 +51,38 @@ export interface IAgentStudioService {
 	 */
 	readonly onDidChangeActiveWorkspace: Event<string | undefined>;
 
-	// Employee selection
-	fireSelectEmployee(employeeId: string | null): void;
+	// Agent selection
+	fireSelectEmployee(agentId: string | null): void;
 
-	// Employees
+	// Employees (DEPRECATED — use Agents below)
 	getEmployees(workspaceId?: string): Promise<Employee[]>;
 	getEmployee(id: string): Promise<Employee | undefined>;
 	createEmployee(data: Partial<Employee>): Promise<Employee>;
 	updateEmployee(id: string, data: Partial<Employee>): Promise<Employee>;
 	deleteEmployee(id: string): Promise<void>;
+
+	// Agents — chat-ready agent definitions (builtins + custom presets)
+	getAgents(): Promise<Agent[]>;
+	getAgent(id: string): Promise<Agent | undefined>;
+	createAgent(data: Partial<Agent>): Promise<Agent>;
+	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
+	deleteAgent(id: string): Promise<void>;
+	getLastSelectedAgentId(): Promise<string | null>;
+	setLastSelectedAgentId(id: string | null): Promise<void>;
+
+	// Agent Bindings — per-(workspace × agent) runtime instance state.
+	// `Agent` is a global definition; bindings hold workspace-local runtime
+	// state (worktree, agentDir, memoryConfig) so the same agent running in two
+	// workspaces never clobbers the other. Persisted at
+	// `{workspace}/.sarosisworkspace/agent-bindings.json` keyed by agentId.
+	/** All bindings for a workspace. */
+	getAgentBindings(workspaceId: string): Promise<AgentBinding[]>;
+	/** A single binding, or undefined if the agent has never run in this workspace. */
+	getAgentBinding(workspaceId: string, agentId: string): Promise<AgentBinding | undefined>;
+	/** Create or merge-update a binding (partial patch on the existing record). */
+	upsertAgentBinding(workspaceId: string, agentId: string, patch: Partial<AgentBinding>): Promise<AgentBinding>;
+	/** Remove a binding (e.g. when the worktree is torn down). */
+	deleteAgentBinding(workspaceId: string, agentId: string): Promise<void>;
 
 	// Workspaces
 	getWorkspaces(): Promise<Workspace[]>;
@@ -107,27 +134,16 @@ export interface IAgentStudioService {
 	createSession(data: Partial<AgentStudioSession>): Promise<AgentStudioSession>;
 	deleteSession(id: string): Promise<void>;
 
-	// Agent Model Config — persist provider/model/agent selection to agent.yaml
-	updateEmployeeModelConfig(
-		employeeId: string,
-		config: { providerId: string; modelId: string; agentId?: string },
-	): Promise<void>;
-	getEmployeeModelConfig(
-		employeeId: string,
-	): Promise<
-		{ providerId: string; modelId: string; agentId?: string } | undefined
-	>;
-
 	// Agent Canvas Position & Connections — persist to agent.yaml for reload survival
 	updateEmployeePosition(
-		employeeId: string,
+		agentId: string,
 		position: { x: number; y: number },
 	): Promise<void>;
 	getEmployeePosition(
-		employeeId: string,
+		agentId: string,
 	): Promise<{ x: number; y: number } | undefined>;
 	updateEmployeeConnections(
-		employeeId: string,
+		agentId: string,
 		connections: Array<{
 			id: string;
 			sourceId: string;
@@ -167,10 +183,10 @@ export interface IAgentStudioService {
 	): Promise<void>;
 
 	/**
-	 * Get the effective worktree path for an employee.
+	 * Get the effective worktree path for an agent.
 	 * Returns Employee.worktreePath if set, otherwise falls back to Workspace.worktreePath.
 	 */
-	getEffectiveWorktreePath(employeeId: string): Promise<string | undefined>;
+	getEffectiveWorktreePath(agentId: string): Promise<string | undefined>;
 
 	/**
 	 * Reset the worktree associated with a workspace to its default state.
@@ -429,29 +445,29 @@ export interface IAgentChatService {
 	/**
 	 * Fired when the agent session list for any employee changes
 	 * (session created, renamed, deleted, or updated).
-	 * The payload carries the employeeId whose sessions changed.
+	 * The payload carries the agentId whose sessions changed.
 	 */
-	readonly onDidChangeAgentSessions: Event<{ employeeId: string }>;
+	readonly onDidChangeAgentSessions: Event<{ agentId: string }>;
 
 	sendMessage(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options: IChatSendOptions,
 		onDelta: (delta: IChatStreamDelta) => void,
 	): Promise<ChatMessage>;
 
-	getHistory(employeeId: string, sessionId?: string): Promise<ChatMessage[]>;
-	clearHistory(employeeId: string, sessionId?: string): Promise<void>;
-	cancelStream(employeeId: string, agentSessionId?: string): void;
+	getHistory(agentId: string, sessionId?: string): Promise<ChatMessage[]>;
+	clearHistory(agentId: string, sessionId?: string): Promise<void>;
+	cancelStream(agentId: string, agentSessionId?: string): void;
 
-	/** Append a message to the chat history for an employee and persist. */
-	appendMessage(employeeId: string, message: ChatMessage): Promise<void>;
+	/** Append a message to the chat history for an agent and persist. */
+	appendMessage(agentId: string, message: ChatMessage): Promise<void>;
 
 	/**
 	 * Delete chat messages after a given message ID (for checkpoint time-travel).
 	 * Keeps messages up to and including the target message.
 	 */
-	deleteMessagesAfter(employeeId: string, sessionId: string | undefined, messageId: string): Promise<void>;
+	deleteMessagesAfter(agentId: string, sessionId: string | undefined, messageId: string): Promise<void>;
 }
 
 // --- Agent Delegation Service ---
@@ -786,7 +802,7 @@ export interface IConfigHtmlService {
 	 * Subscribers should NOT trigger another write with the same content.
 	 */
 	readonly onDidChangeSource: Event<{
-		employeeId: string;
+		agentId: string;
 		markdown: string;
 		version: number;
 		origin: ConfigMdChangeOrigin;
@@ -796,7 +812,7 @@ export interface IConfigHtmlService {
 	 * Fired when a new HTML render is available (after MD changes or explicit re-render).
 	 */
 	readonly onDidRenderHtml: Event<{
-		employeeId: string;
+		agentId: string;
 		html: string;
 		version: number;
 		stylesContent?: string;
@@ -806,7 +822,7 @@ export interface IConfigHtmlService {
 	 * Fired when a model-issued command should be pushed to the HTML view.
 	 */
 	readonly onDidEmitCommand: Event<{
-		employeeId: string;
+		agentId: string;
 		command: IConfigMdCommand;
 	}>;
 
@@ -814,7 +830,7 @@ export interface IConfigHtmlService {
 	 * Fired when an HTML view sends a custom event back to the agent.
 	 */
 	readonly onDidReceiveHtmlEvent: Event<{
-		employeeId: string;
+		agentId: string;
 		eventName: string;
 		payload: unknown;
 	}>;
@@ -832,7 +848,7 @@ export interface IConfigHtmlService {
 	 * would silently be persisted to the wrong (Root) session.
 	 */
 	readonly onDidRequestChatSend: Event<{
-		employeeId: string;
+		agentId: string;
 		message: string;
 		agentSessionId?: string;
 		workspaceId?: string;
@@ -848,7 +864,7 @@ export interface IConfigHtmlService {
 	 * webview, but only the Canvas panel reacts.
 	 */
 	readonly onDidRequestCanvasPreview: Event<{
-		employeeId: string;
+		agentId: string;
 	}>;
 
 	// --- Resource & State --------------------------------------------------
@@ -857,13 +873,13 @@ export interface IConfigHtmlService {
 	 * Resolve and load the ConfigMD state for an agent (reads MD file, parser, styles).
 	 * Sets up the file watcher on first call.
 	 */
-	resolveState(employeeId: string): Promise<IConfigMdState | null>;
+	resolveState(agentId: string): Promise<IConfigMdState | null>;
 
 	/**
 	 * Read the raw MD source for an agent.
 	 */
 	readSource(
-		employeeId: string,
+		agentId: string,
 	): Promise<{ markdown: string; version: number }>;
 
 	/**
@@ -871,7 +887,7 @@ export interface IConfigHtmlService {
 	 * Optimistic concurrency: if `baseVersion` is provided and stale, throws.
 	 */
 	writeSource(
-		employeeId: string,
+		agentId: string,
 		markdown: string,
 		options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
 	): Promise<{ version: number }>;
@@ -880,7 +896,7 @@ export interface IConfigHtmlService {
 	 * Apply a sequence of patches to the MD source.
 	 */
 	applyPatch(
-		employeeId: string,
+		agentId: string,
 		patches: IConfigMdPatchOp[],
 		options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
 	): Promise<{ version: number; markdown: string }>;
@@ -890,7 +906,7 @@ export interface IConfigHtmlService {
 	 * If `markdown` provided, render it without persisting.
 	 */
 	renderHtml(
-		employeeId: string,
+		agentId: string,
 		markdown?: string,
 	): Promise<{ html: string; version: number }>;
 
@@ -899,7 +915,7 @@ export interface IConfigHtmlService {
 	 * it to `<agentDir>/.preview.html`. Returns the absolute filesystem path
 	 * so callers can open the file in the host editor.
 	 */
-	previewToFile(employeeId: string): Promise<{ path: string; version: number }>;
+	previewToFile(agentId: string): Promise<{ path: string; version: number }>;
 
 	/**
 	 * ConfigHtml AI box: send a natural-language request to the model with the
@@ -908,7 +924,7 @@ export interface IConfigHtmlService {
 	 * generation (does NOT route into the main chat panel).
 	 */
 	htmlGenerate(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options?: { currentHtml?: string; model?: string },
 	): Promise<{ html: string; raw: string }>;
@@ -919,7 +935,7 @@ export interface IConfigHtmlService {
 	 * webview controllers forward to their webviews; the Canvas panel switches
 	 * to HTML display mode and loads this agent's resource.
 	 */
-	requestCanvasPreview(employeeId: string): Promise<void>;
+	requestCanvasPreview(agentId: string): Promise<void>;
 
 	// --- HTML Event Handling ---------------------------------------------
 
@@ -927,7 +943,7 @@ export interface IConfigHtmlService {
 	 * Forward a custom HTML event to the agent's chat (and parse model commands).
 	 */
 	handleHtmlEvent(
-		employeeId: string,
+		agentId: string,
 		eventName: string,
 		payload: unknown,
 		agentSessionId?: string,
@@ -937,7 +953,7 @@ export interface IConfigHtmlService {
 	 * Send a chat message from the HTML view (capability: chat.send).
 	 */
 	handleChatSend(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options?: {
 			context?: string;
@@ -948,7 +964,7 @@ export interface IConfigHtmlService {
 
 	// --- Push to HTML view ----------------------------------------------
 
-	sendCommandToHtml(employeeId: string, command: IConfigMdCommand): void;
+	sendCommandToHtml(agentId: string, command: IConfigMdCommand): void;
 
 	// --- Active Agent Session Registry -----------------------------------
 
@@ -967,7 +983,7 @@ export interface IConfigHtmlService {
 	 * most recently focused panel.
 	 */
 	setActiveAgentSession(
-		employeeId: string,
+		agentId: string,
 		agentSessionId: string | undefined,
 	): void;
 
@@ -975,12 +991,12 @@ export interface IConfigHtmlService {
 	 * Read the currently registered active agent session for an employee,
 	 * or `undefined` if no chat panel has registered one.
 	 */
-	getActiveAgentSession(employeeId: string): string | undefined;
+	getActiveAgentSession(agentId: string): string | undefined;
 
 	// --- Capability Check -----------------------------------------------
 
 	checkCapability(
-		employeeId: string,
+		agentId: string,
 		capability: ConfigMdCapability,
 	): Promise<void>;
 
@@ -991,7 +1007,7 @@ export interface IConfigHtmlService {
 	 * updates agent.yaml.configMd.parserPath, and triggers a re-render.
 	 */
 	uploadParser(
-		employeeId: string,
+		agentId: string,
 		content: string,
 		fileName?: string,
 	): Promise<{ parserPath: string }>;
@@ -1001,7 +1017,7 @@ export interface IConfigHtmlService {
 	 * updates agent.yaml.configMd.stylesPath, and triggers a re-render.
 	 */
 	uploadStyles(
-		employeeId: string,
+		agentId: string,
 		content: string,
 		fileName?: string,
 	): Promise<{ stylesPath: string }>;
@@ -1009,12 +1025,12 @@ export interface IConfigHtmlService {
 	/**
 	 * Remove the custom parser, fall back to built-in parser, and trigger re-render.
 	 */
-	removeParser(employeeId: string): Promise<void>;
+	removeParser(agentId: string): Promise<void>;
 
 	/**
 	 * Get current parser/styles info for the agent.
 	 */
-	getInfo(employeeId: string): Promise<{
+	getInfo(agentId: string): Promise<{
 		parserSource: "builtin" | "custom";
 		parserPath?: string;
 		stylesPath?: string;
@@ -1036,6 +1052,6 @@ export interface IConfigHtmlService {
 	/**
 	 * Dispose any per-agent watchers/state.
 	 */
-	disposeAgent(employeeId: string): void;
+	disposeAgent(agentId: string): void;
 }
 

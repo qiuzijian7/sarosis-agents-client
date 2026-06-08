@@ -1,6 +1,6 @@
 
 /*---------------------------------------------------------------------------------------------
- *  Agent Studio WebView - Employee Chat Panel
+ *  Agent Studio WebView - Agent Chat Panel
  *
  *  Full-featured chat panel supporting:
  *  - Chat header with provider icon + avatar + name + status
@@ -9,15 +9,16 @@
  *  - Enhanced streaming indicator with thinking card, tool calls, streaming text
  *  - Full Composer with provider/model pill
  *
- *  Ref: sarosis-webui EmployeeChat.tsx main chat layout
+ *  Ref: sarosis-webui AgentChat.tsx main chat layout
  *--------------------------------------------------------------------------------------------*/
 
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore, type ChatMessage } from '../../store/useChatStore';
-import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
+import { useAgentStore, type Agent } from '../../store/useAgentStore';
 import { useProviderStore } from '../../store/useProviderStore';
+import { sendRequest } from '../../bridge/messageClient';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { ChatMessageComponent } from './ChatMessage';
@@ -115,7 +116,7 @@ const StreamingBubble = memo(function StreamingBubble({
 
 				{/* Streaming sub-agents */}
 				{subAgents && subAgents.length > 0 && (
-					<SubAgentCard subAgents={subAgents} isStreaming={true} />
+					<SubAgentCard subAgents={subAgents as any} isStreaming={true} />
 				)}
 
 				{/* Streaming text content + tool calls (interleaved) */}
@@ -201,15 +202,10 @@ const StreamingBubble = memo(function StreamingBubble({
 	);
 });
 
-/* ── Props ───────────────────────────────────────────────────── */
-interface EmployeeChatProps {
-	onOpenEditorPane?: (employeeId: string) => void;
-}
-
-export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.ReactElement {
-	const { messages, streamState, sendMessage, cancelStream, activeEmployeeId, setActiveEmployee, isLoading, chatMode } = useChatStore();
-	const { employees, selectedEmployeeId, selectEmployee } = useEmployeeStore();
-	const { selection, loadSelectionForEmployee } = useProviderStore();
+export function AgentChat(): React.ReactElement {
+	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode } = useChatStore();
+	const { agents, selectedAgentId, selectAgent } = useAgentStore();
+	const { selection, loadSelectionForAgent } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatMessagesRef = useRef<HTMLDivElement>(null);
 	/** Track whether we just loaded history (vs. a new message arriving).
@@ -222,7 +218,12 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	// History page visibility
 	const [showHistory, setShowHistory] = useState(false);
 	// Track previous employee to detect employee switches (used by useLayoutEffect below)
-	const prevEmployeeIdRef = useRef<string | null>(activeEmployeeId);
+	const prevAgentIdRef = useRef<string | null>(activeAgentId);
+	// Agent selector dropdown
+	const [dropdownOpen, setDropdownOpen] = useState(false);
+	const [dropdownFilter, setDropdownFilter] = useState('');
+	const dropdownRef = useRef<HTMLDivElement>(null);
+	const dropdownTriggerRef = useRef<HTMLDivElement>(null);
 	// Pending plan info: when /plan is sent, we store goal/planId here until the plan
 	// status changes from pending_approval to approved/executing/rejected.
 	// The dialog lives in the Task Board panel; chat only shows the result.
@@ -240,17 +241,17 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 	// Sync selected employee with chat
 	useEffect(() => {
-		if (selectedEmployeeId && selectedEmployeeId !== activeEmployeeId) {
-			setActiveEmployee(selectedEmployeeId);
+		if (selectedAgentId && selectedAgentId !== activeAgentId) {
+			setActiveAgent(selectedAgentId);
 		}
-	}, [selectedEmployeeId, activeEmployeeId, setActiveEmployee]);
+	}, [selectedAgentId, activeAgentId, setActiveAgent]);
 
-	// When activeEmployeeId changes, load the provider/model selection from agent.yaml
+	// When activeAgentId changes, load the provider/model selection from agent.yaml
 	useEffect(() => {
-		if (activeEmployeeId) {
-			loadSelectionForEmployee(activeEmployeeId);
+		if (activeAgentId) {
+			loadSelectionForAgent(activeAgentId);
 		}
-	}, [activeEmployeeId, loadSelectionForEmployee]);
+	}, [activeAgentId, loadSelectionForAgent]);
 
 	// Track loading state for scroll behavior
 	useEffect(() => {
@@ -267,9 +268,9 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 		// Detect employee switch: force scroll to bottom on all subsequent renders
 		// until new messages are loaded (wasLoadingRef ensures instant scroll when they arrive).
-		const isEmployeeSwitch = prevEmployeeIdRef.current !== activeEmployeeId;
-		if (isEmployeeSwitch) {
-			prevEmployeeIdRef.current = activeEmployeeId;
+		const isAgentSwitch = prevAgentIdRef.current !== activeAgentId;
+		if (isAgentSwitch) {
+			prevAgentIdRef.current = activeAgentId;
 			wasLoadingRef.current = true; // ensures instant scroll when messages load
 		}
 
@@ -291,11 +292,11 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		updateScrollDownButton(atBottom);
 		if (!atBottom) { return; }
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls, updateScrollDownButton, activeEmployeeId]);
+	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls, updateScrollDownButton, activeAgentId]);
 
 	// Listen to scroll events on the message list — mirrors VS Code's onDidScroll handler.
 	// This is the sole authority for button visibility (just like VS Code).
-	// IMPORTANT: activeEmployeeId in deps so listener re-binds when employee changes
+	// IMPORTANT: activeAgentId in deps so listener re-binds when employee changes
 	// (on first mount the ref may be null if no employee is selected yet).
 	useEffect(() => {
 		const el = chatMessagesRef.current;
@@ -311,7 +312,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		handleScroll();
 		el.addEventListener('scroll', handleScroll, { passive: true });
 		return () => { el.removeEventListener('scroll', handleScroll); };
-	}, [updateScrollDownButton, activeEmployeeId]);
+	}, [updateScrollDownButton, activeAgentId]);
 
 	// Scroll to bottom handler — mirrors VS Code's scrollDownButton.onDidClick
 	const handleScrollToBottom = useCallback(() => {
@@ -321,7 +322,17 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		setShowScrollBtn(false);
 	}, []);
 
-	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
+	const activeAgent = agents.find(a => a.id === activeAgentId);
+
+	// Filtered agents for dropdown search
+	const filteredAgents = useMemo(() => {
+		const filter = dropdownFilter.toLowerCase().trim();
+		if (!filter) { return agents; }
+		return agents.filter(a =>
+			a.name.toLowerCase().includes(filter) ||
+			(a.role && a.role.toLowerCase().includes(filter))
+		);
+	}, [agents, dropdownFilter]);
 
 	// Rename state for chat header
 	const [isEditingChatName, setIsEditingChatName] = useState(false);
@@ -334,6 +345,22 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 			chatNameInputRef.current.select();
 		}
 	}, [isEditingChatName]);
+
+	// Close agent dropdown on outside click
+	useEffect(() => {
+		if (!dropdownOpen) { return; }
+		const handleClickOutside = (e: MouseEvent) => {
+			if (
+				dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
+				dropdownTriggerRef.current && !dropdownTriggerRef.current.contains(e.target as Node)
+			) {
+				setDropdownOpen(false);
+				setDropdownFilter('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		return () => document.removeEventListener('mousedown', handleClickOutside);
+	}, [dropdownOpen]);
 
 	// Listen for AI decomposition progress events and display in chat
 	useEffect(() => {
@@ -351,7 +378,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 			// Only show progress for the currently active planner/employee
 			// or if no specific planner is targeted
-			if (detail.plannerId && activeEmployeeId && detail.plannerId !== activeEmployeeId) {
+			if (detail.plannerId && activeAgentId && detail.plannerId !== activeAgentId) {
 				return;
 			}
 
@@ -360,29 +387,29 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				role: 'system',
 				content: detail.message,
 				metadata: {
-					type: 'decomposition_progress',
+					type: 'decomposition_progress' as any,
 					stage: detail.stage,
 					plannerName: detail.plannerName,
 					taskTitle: detail.taskTitle,
 					goal: detail.goal,
 					subTaskCount: detail.subTaskCount,
-				},
+				} as any,
 				timestamp: new Date().toISOString(),
 			};
 			useChatStore.setState(state => ({
 				messages: [...state.messages, progressMessage]
 			}));
 			// Also persist so it survives chat-tab switches
-			const targetEmployeeId = detail.plannerId || activeEmployeeId;
-			if (targetEmployeeId) {
-				useChatStore.getState().addDecompositionProgress(targetEmployeeId, progressMessage);
+			const targetAgentId = detail.plannerId || activeAgentId;
+			if (targetAgentId) {
+				useChatStore.getState().addDecompositionProgress(targetAgentId, progressMessage);
 				// Clear progress history when decomposition finishes so old
 				// progress messages don't pile up across multiple /plan calls.
 				if (detail.stage === 'complete' || detail.stage === 'error' || detail.stage === 'fallback') {
 					useChatStore.setState(state => ({
 						decompositionProgress: {
 							...state.decompositionProgress,
-							[targetEmployeeId]: [progressMessage],
+							[targetAgentId]: [progressMessage],
 						},
 					}));
 				}
@@ -391,7 +418,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 
 		window.addEventListener('agentStudio:decomposition-progress', handleDecompositionProgress);
 		return () => window.removeEventListener('agentStudio:decomposition-progress', handleDecompositionProgress);
-	}, [activeEmployeeId]);
+	}, [activeAgentId]);
 
 	// Watch for plan status changes: when a /plan command's plan moves from
 	// pending_approval to approved/executing/rejected, add the result messages to chat.
@@ -444,33 +471,33 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 	}, [orchestrationPlans]);
 
 	const handleChatNameDoubleClick = useCallback(() => {
-		if (!activeEmployee) { return; }
-		setEditChatName(activeEmployee.name);
+		if (!activeAgent) { return; }
+		setEditChatName(activeAgent.name);
 		setIsEditingChatName(true);
-	}, [activeEmployee]);
+	}, [activeAgent]);
 
 	const handleChatNameCommit = useCallback(async () => {
 		const trimmed = editChatName.trim();
-		if (activeEmployee && trimmed && trimmed !== activeEmployee.name) {
+		if (activeAgent && trimmed && trimmed !== activeAgent.name) {
 			try {
-				await useEmployeeStore.getState().updateEmployee(activeEmployee.id, { name: trimmed });
+				await useAgentStore.getState().updateAgent(activeAgent.id, { name: trimmed });
 			} catch (err) {
-				console.error('[EmployeeChat] rename failed:', err);
-				setEditChatName(activeEmployee.name);
+				console.error('[AgentChat] rename failed:', err);
+				setEditChatName(activeAgent.name);
 			}
 		}
 		setIsEditingChatName(false);
-	}, [activeEmployee, editChatName]);
+	}, [activeAgent, editChatName]);
 
 	const handleChatNameKeyDown = useCallback((e: React.KeyboardEvent) => {
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			handleChatNameCommit();
 		} else if (e.key === 'Escape') {
-			setEditChatName(activeEmployee?.name || '');
+			setEditChatName(activeAgent?.name || '');
 			setIsEditingChatName(false);
 		}
-	}, [handleChatNameCommit, activeEmployee]);
+	}, [handleChatNameCommit, activeAgent]);
 
 	const handleSend = useCallback((content: string, attachments?: Array<{
 		id: string;
@@ -490,13 +517,13 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		if (commandId === 'plan') {
 			const goal = args || '默认目标';
 			const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
-			const plannerId = activeEmployeeId;
+			const plannerId = activeAgentId;
 			if (!workspaceId) {
-				console.error('[EmployeeChat] No active workspace for plan command');
+				console.error('[AgentChat] No active workspace for plan command');
 				return;
 			}
 			if (!plannerId) {
-				console.error('[EmployeeChat] No active employee for plan command');
+				console.error('[AgentChat] No active employee for plan command');
 				return;
 			}
 
@@ -523,7 +550,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 					}));
 				}
 			} catch (err) {
-				console.error('[EmployeeChat] Failed to create plan:', err);
+				console.error('[AgentChat] Failed to create plan:', err);
 				// On failure, add error message immediately
 				const errorMessage: ChatMessage = {
 					id: `error_${Date.now()}`,
@@ -536,27 +563,15 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				}));
 			}
 		}
-	}, [activeEmployeeId]);
+	}, [activeAgentId]);
 
 	// Compute superior and subordinates from connections + subagentOf
 	const { superior, subordinates } = useMemo(() => {
-		if (!activeEmployee) { return { superior: undefined as Employee | undefined, subordinates: [] as Employee[] }; }
-		const conns = activeEmployee.connections || [];
-		// Superior: connection where current agent is the target (subagent)
-		let superiorId = activeEmployee.subagentOf || undefined;
-		if (!superiorId) {
-			const supConn = conns.find(c => c.type === 'subagent' && c.targetId === activeEmployee.id);
-			if (supConn) { superiorId = supConn.sourceId; }
-		}
-		const superior = superiorId ? employees.find(e => e.id === superiorId) : undefined;
-		// Subordinates: connections where current agent is the source
-		const subIds = new Set<string>();
-		conns.filter(c => c.type === 'subagent' && c.sourceId === activeEmployee.id).forEach(c => subIds.add(c.targetId));
-		// Also include agents whose subagentOf points to current agent
-		employees.forEach(e => { if (e.subagentOf === activeEmployee.id) { subIds.add(e.id); } });
-		const subordinates = Array.from(subIds).map(id => employees.find(e => e.id === id)).filter(Boolean) as Employee[];
-		return { superior, subordinates };
-	}, [activeEmployee, employees]);
+		if (!activeAgent) { return { superior: undefined as Agent | undefined, subordinates: [] as Agent[] }; }
+		const conns = activeAgent.connections || [];
+		// Agents (presets) don't have sub-agent relationships — return empty.
+		return { superior: undefined, subordinates: [] };
+	}, [activeAgent, agents]);
 
 	const taskCount = messages.filter(m => m.role === 'assistant').length;
 
@@ -624,15 +639,30 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		return out;
 	}, [messages]);
 
+	// Auto-init: select Sarosis Claw by default on startup
+	const autoInitRef = useRef(false);
+	useEffect(() => {
+		if (autoInitRef.current) { return; }
+		if (!agents || agents.length === 0) { return; }
+		if (activeAgentId || selectedAgentId) { return; }
+		autoInitRef.current = true;
+
+		const claw = agents.find(a => a.id === 'sarosis-claw' || a.name === 'Sarosis Claw');
+		if (claw) {
+			console.log('[AgentChat] Auto-selecting Sarosis Claw:', claw.id);
+			selectAgent(claw.id, true);
+		}
+	}, [agents, activeAgentId, selectedAgentId, selectAgent]);
+
 	// Click handler to switch to another agent's chat
-	const handleSwitchAgent = useCallback((employeeId: string) => {
-		if (employeeId === activeEmployeeId) { return; }
-		selectEmployee(employeeId, true);
-		setActiveEmployee(employeeId);
-	}, [activeEmployeeId, selectEmployee, setActiveEmployee]);
+	const handleSwitchAgent = useCallback((agentId: string) => {
+		if (agentId === activeAgentId) { return; }
+		selectAgent(agentId, true);
+		setActiveAgent(agentId);
+	}, [activeAgentId, selectAgent, setActiveAgent]);
 
 	// Empty state - no employee selected
-	if (!activeEmployee || !selectedEmployeeId) {
+	if (!activeAgent || !selectedAgentId) {
 		return (
 			<div className="chat-empty">
 				<div className="chat-empty-inner">
@@ -644,17 +674,17 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 		);
 	}
 
-	const statusText = activeEmployee.status === 'idle' ? '空闲'
-		: activeEmployee.status === 'working' ? '工作中'
-			: activeEmployee.status === 'thinking' ? '思考中'
-				: activeEmployee.status === 'error' ? '错误'
-					: activeEmployee.status === 'offline' ? '离线'
-						: activeEmployee.status;
+	const statusText = activeAgent.status === 'idle' ? '空闲'
+		: activeAgent.status === 'working' ? '工作中'
+			: activeAgent.status === 'thinking' ? '思考中'
+				: activeAgent.status === 'error' ? '错误'
+					: activeAgent.status === 'offline' ? '离线'
+						: activeAgent.status;
 
-	const statusClass = activeEmployee.status === 'idle' ? 'status-idle'
-		: activeEmployee.status === 'working' ? 'status-working'
-			: activeEmployee.status === 'thinking' ? 'status-thinking'
-				: activeEmployee.status === 'error' ? 'status-error'
+	const statusClass = activeAgent.status === 'idle' ? 'status-idle'
+		: activeAgent.status === 'working' ? 'status-working'
+			: activeAgent.status === 'thinking' ? 'status-thinking'
+				: activeAgent.status === 'error' ? 'status-error'
 					: 'status-offline';
 
 	// NOTE: ConfigMD is no longer shown in the chat panel. It now lives only
@@ -668,31 +698,97 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 				{/* Chat Header */}
 				<div className="chat-header">
 
-
-					<img
-						src={activeEmployee.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeEmployee.id}`}
-						alt={activeEmployee.name}
-						className="chat-header-avatar"
-					/>
-					<div className="chat-header-info">
-						{isEditingChatName ? (
-							<input
-								ref={chatNameInputRef}
-								className="chat-header-name-input"
-								value={editChatName}
-								onChange={(e) => setEditChatName(e.target.value)}
-								onBlur={handleChatNameCommit}
-								onKeyDown={handleChatNameKeyDown}
-								maxLength={50}
-							/>
-						) : (
-							<span className="chat-header-name" onDoubleClick={handleChatNameDoubleClick} title="双击重命名">{activeEmployee.name}</span>
-						)}
-						<span className="chat-header-role">
-							{activeEmployee.role}
-							<span className={`chat-header-status ${statusClass}`}>{statusText}</span>
-						</span>
+					{/* Agent selector trigger (dropdown) */}
+					<div
+						className={`chat-header-agent-selector ${dropdownOpen ? 'open' : ''}`}
+						ref={dropdownTriggerRef}
+						onClick={() => { if (!isEditingChatName) { setDropdownOpen(!dropdownOpen); } }}
+					>
+						<img
+							src={activeAgent.avatar
+								|| (activeAgent.avatarStyle && activeAgent.avatarSeed
+									? `https://api.dicebear.com/7.x/${activeAgent.avatarStyle}/svg?seed=${activeAgent.avatarSeed}`
+									: `https://api.dicebear.com/7.x/bottts/svg?seed=${activeAgent.id}`)}
+							alt={activeAgent.name}
+							className="chat-header-avatar"
+						/>
+						<div className="chat-header-info">
+							{isEditingChatName ? (
+								<input
+									ref={chatNameInputRef}
+									className="chat-header-name-input"
+									value={editChatName}
+									onChange={(e) => setEditChatName(e.target.value)}
+									onBlur={handleChatNameCommit}
+									onKeyDown={handleChatNameKeyDown}
+									onClick={(e) => e.stopPropagation()}
+									maxLength={50}
+								/>
+							) : (
+								<span className="chat-header-name" onDoubleClick={handleChatNameDoubleClick} title="双击重命名">{activeAgent.name}</span>
+							)}
+							<span className="chat-header-role">
+								{activeAgent.role}
+								<span className={`chat-header-status ${statusClass}`}>{statusText}</span>
+							</span>
+						</div>
+						<svg className="chat-header-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="6 9 12 15 18 9" />
+						</svg>
 					</div>
+
+					{/* Agent dropdown */}
+					{dropdownOpen && (
+						<div className="chat-agent-dropdown" ref={dropdownRef}>
+							<div className="chat-agent-dropdown-search">
+								<svg className="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+									<circle cx="11" cy="11" r="8" />
+									<line x1="21" y1="21" x2="16.65" y2="16.65" />
+								</svg>
+								<input
+									className="chat-agent-dropdown-input"
+									type="text"
+									placeholder="搜索 Agent..."
+									value={dropdownFilter}
+									onChange={(e) => setDropdownFilter(e.target.value)}
+									onKeyDown={(e) => { if (e.key === 'Escape') { setDropdownOpen(false); setDropdownFilter(''); } }}
+									autoFocus
+								/>
+							</div>
+							<div className="chat-agent-dropdown-list">
+								{filteredAgents.length === 0 ? (
+									<div className="chat-agent-dropdown-no-results">未找到匹配的 Agent</div>
+								) : (
+									filteredAgents.map(agent => (
+										<div
+											key={agent.id}
+											className={`chat-agent-dropdown-item ${agent.id === activeAgentId ? 'active' : ''}`}
+											onClick={() => {
+												selectAgent(agent.id, true);
+												setActiveAgent(agent.id);
+												setDropdownOpen(false);
+												setDropdownFilter('');
+											}}
+										>
+											<img
+												className="chat-agent-dropdown-avatar"
+												src={agent.avatar
+													|| (agent.avatarStyle && agent.avatarSeed
+														? `https://api.dicebear.com/7.x/${agent.avatarStyle}/svg?seed=${agent.avatarSeed}`
+														: `https://api.dicebear.com/7.x/bottts/svg?seed=${agent.id}`)}
+												alt={agent.name}
+											/>
+											<div className="chat-agent-dropdown-info">
+												<span className="chat-agent-dropdown-name">{agent.name}</span>
+												<span className="chat-agent-dropdown-role">{agent.role || ''}</span>
+											</div>
+										</div>
+									))
+									)}
+							</div>
+						</div>
+					)}
+
 					<div className="chat-header-actions">
 						<WorktreeSwitcher />
 						<button className="chat-header-btn" title="创建会话" onClick={() => { useChatStore.getState().clearMessages(); }}>
@@ -706,7 +802,13 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 								<polyline points="12 6 12 12 16 14" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
 							</svg>
 						</button>
-						<button className="chat-header-btn" title="设置" onClick={() => onOpenEditorPane?.(activeEmployee?.id || '')}>
+						<button className="chat-header-btn" title="设置" onClick={() => {
+							if (activeAgent?.id) {
+								sendRequest('agents.openSettings', { agentId: activeAgent.id, agentName: activeAgent.name }).catch(err =>
+									console.warn('[AgentChat] agents.openSettings failed:', err)
+								);
+							}
+						}}>
 							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -759,7 +861,7 @@ export function EmployeeChat({ onOpenEditorPane }: EmployeeChatProps): React.Rea
 						))}
 
 						{/* ── Streaming indicator (VS Code-inspired: memoized component) ────── */}
-						{isPhaseActive(streamState.phase) && streamState.employeeId === activeEmployeeId && (
+						{isPhaseActive(streamState.phase) && streamState.agentId === activeAgentId && (
 							<StreamingBubble
 								textBuffer={streamState.textBuffer}
 								thinkingBuffer={streamState.thinkingBuffer}

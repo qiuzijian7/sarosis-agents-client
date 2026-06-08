@@ -14,7 +14,7 @@ interface WorktreeInfo {
 }
 
 export function WorktreeSwitcher(): React.ReactElement | null {
-	const { activeEmployeeId, employees, updateEmployee } = useEmployeeStore();
+	const { selectedEmployeeId: activeAgentId, employees, updateEmployee } = useEmployeeStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
 
 	const [isOpen, setIsOpen] = useState(false);
@@ -22,9 +22,9 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	const [isLoading, setIsLoading] = useState(false);
 	const dropdownRef = useRef<HTMLDivElement>(null);
 
-	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
-	const currentWorktreePath = activeEmployee?.worktreePath;
-	const currentWorktreeBranch = activeEmployee?.worktreeBranch;
+	const activeAgent = employees.find(e => e.id === activeAgentId);
+	const currentWorktreePath = activeAgent?.worktreePath;
+	const currentWorktreeBranch = activeAgent?.worktreeBranch;
 
 	// Load worktree list when dropdown opens
 	const fetchWorktrees = useCallback(() => {
@@ -76,9 +76,9 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	}, []);
 
 	const handleSelectWorktree = async (path: string) => {
-		if (!activeEmployeeId) { return; }
+		if (!activeAgentId) { return; }
 		const selectedWt = worktreeList.find(wt => wt.path === path);
-		await updateEmployee(activeEmployeeId, {
+		await updateEmployee(activeAgentId, {
 			worktreePath: path || undefined,
 			worktreeBranch: selectedWt?.branch,
 		});
@@ -86,8 +86,8 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	};
 
 	const handleClearWorktree = async () => {
-		if (!activeEmployeeId) { return; }
-		await updateEmployee(activeEmployeeId, {
+		if (!activeAgentId) { return; }
+		await updateEmployee(activeAgentId, {
 			worktreePath: undefined,
 			worktreeBranch: undefined,
 		});
@@ -101,7 +101,7 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 			? `📁 ${currentWorktreePath.split('/').pop() || currentWorktreePath}`
 			: '📁 主仓库';
 
-	if (!activeEmployee) { return null; }
+	if (!activeAgent) { return null; }
 
 	return (
 		<div className="worktree-switcher" ref={dropdownRef}>

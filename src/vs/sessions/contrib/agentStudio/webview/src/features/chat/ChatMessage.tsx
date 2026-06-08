@@ -101,7 +101,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	// force this component to re-render whenever the plan is
 	// approved/rejected/updated, bypassing the memo barrier entirely.
 	const _orchPlanStatus = message.metadata?.type === 'orchestration_plan'
-		? useOrchestrationStore(s => s.plans.find(p => p.id === message.metadata.planId)?.status)
+		? useOrchestrationStore(s => s.plans.find(p => p.id === message.metadata!.planId)?.status)
 		: undefined;
 	void _orchPlanStatus; // subscription side-effect is the only purpose
 
@@ -248,26 +248,30 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 				{/* ── Progress card (VS Code: chatProgressContentPart pattern) ─── */}
 				{message.progress && (
 					<ProgressCard
-						progress={message.progress}
-						showSpinner={isStreaming}
-						collapsible={Array.isArray(message.progress) && message.progress.length > 1}
-						defaultExpanded={true}
+						{...({
+							progress: message.progress,
+							showSpinner: isStreaming,
+							collapsible: Array.isArray(message.progress) && message.progress.length > 1,
+							defaultExpanded: true,
+						} as any)}
 					/>
 				)}
 
 				{/* ── Confirmation card (VS Code: chatConfirmationContentPart pattern) ─── */}
 				{message.confirmation && (
 					<ConfirmationCard
-						confirmation={message.confirmation}
-						onApprove={(buttonId) => {
-							console.log('[ChatMessage] Confirmation approved:', buttonId);
-							// TODO: Handle confirmation approve
-						}}
-						onReject={() => {
-							console.log('[ChatMessage] Confirmation rejected');
-							// TODO: Handle confirmation reject
-						}}
-						collapsed={false}
+						{...({
+							confirmation: message.confirmation,
+							onApprove: (buttonId: string) => {
+								console.log('[ChatMessage] Confirmation approved:', buttonId);
+								// TODO: Handle confirmation approve
+							},
+							onReject: () => {
+								console.log('[ChatMessage] Confirmation rejected');
+								// TODO: Handle confirmation reject
+							},
+							collapsed: false,
+						} as any)}
 					/>
 				)}
 
@@ -291,7 +295,7 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 						) : message.metadata?.type === 'decomposition_progress' ? (
 							// Decomposition progress message with styled indicator
 							<div className="decomposition-progress-msg">
-								<span className={`decomposition-stage decomposition-stage-${(message.metadata.stage as string) || 'info'}`}>
+								<span className={`decomposition-stage decomposition-stage-${((message.metadata as any).stage as string) || 'info'}`}>
 									{displayContent}
 								</span>
 							</div>

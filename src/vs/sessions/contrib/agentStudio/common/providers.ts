@@ -254,6 +254,13 @@ export interface IChatMessage {
 	/** 纯文本内容（向后兼容，新代码优先使用 contentParts） */
 	readonly content: string;
 	/**
+	 * ReAct 推理内容（可选）。当模型输出 native thinking（如 qwen 的思考链路、
+	 * Claude 的 extended thinking）时，此字段保存推理文本。后续迭代中会合并到
+	 * assistant 消息的 content 中发回模型，实现完整 ReAct（模型能"看见"自己
+	 * 上一轮的思考过程）。
+	 */
+	readonly reasoning?: string;
+	/**
 	 * 多模态内容块（可选）。当存在时，Provider 实现应优先使用 contentParts
 	 * 而非 content，以支持图片/文件等非文本内容。
 	 */

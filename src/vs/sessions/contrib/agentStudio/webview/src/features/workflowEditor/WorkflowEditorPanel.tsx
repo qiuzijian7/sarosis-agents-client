@@ -15,7 +15,7 @@ import { NodePalette } from './NodePalette';
 import { PropertyPanel } from './PropertyPanel';
 import { useWorkflowEditorStore } from './store';
 import { sendRequest } from '../../bridge/messageClient';
-import type { IStoredWorkflow } from '../../../../../common/workflowStorage';
+import type { IStoredWorkflow } from '../../types/workflowStorage';
 
 export const WorkflowEditorPanel: React.FC = () => {
 	const [paletteCollapsed, setPaletteCollapsed] = useState(false);
@@ -33,7 +33,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// Load initial data from the host-injected __AGENT_STUDIO_INITIAL_DATA__
 	useEffect(() => {
 		if (loaded) { return; }
-		const initialData = (window as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
+		const initialData = (window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
 			{ type: string; workflow: IStoredWorkflow } | null | undefined;
 
 		if (initialData?.type === 'workflow' && initialData.workflow) {

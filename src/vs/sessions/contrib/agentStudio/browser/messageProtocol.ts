@@ -18,6 +18,14 @@ export const MessageDirection = {
 
 // Request types (WebView → Host)
 export type RequestType =
+	| 'agents.list'
+	| 'agents.get'
+	| 'agents.create'
+	| 'agents.update'
+	| 'agents.delete'
+	| 'agents.selected'
+	| 'agents.getLastSelected'
+	| 'agents.openSettings'
 	| 'employees.list'
 	| 'employees.get'
 	| 'employees.create'
@@ -42,7 +50,7 @@ export type RequestType =
 	| 'chat.history'
 	| 'chat.clear'
 	| 'chat.cancel'
-	| 'chat.activeSessionChanged'  // webview tells host which (employeeId,agentSessionId) is currently visible
+	| 'chat.activeSessionChanged'  // webview tells host which (agentId,agentSessionId) is currently visible
 	| 'delegation.list'
 	| 'delegation.get'
 	| 'delegation.create'
@@ -202,8 +210,8 @@ export interface IProtocolError {
 // ─── Stream Event Payloads ──────────────────────────────────────────────────────
 
 export interface IChatStreamDeltaPayload {
-	readonly employeeId: string;
-	readonly sessionId: string;
+	readonly agentId: string;
+		readonly sessionId: string;
 	readonly chunks: IChatStreamChunk[];
 }
 
@@ -281,22 +289,22 @@ export interface IChatStreamChunk {
 }
 
 export interface IChatStreamCompletePayload {
-	readonly employeeId: string;
-	readonly sessionId: string;
+	readonly agentId: string;
+		readonly sessionId: string;
 	readonly message: unknown; // ChatMessage
 }
 
 export interface IChatStreamErrorPayload {
-	readonly employeeId: string;
-	readonly sessionId: string;
+	readonly agentId: string;
+		readonly sessionId: string;
 	readonly error: string;
 }
 
 // ─── Request Payloads ───────────────────────────────────────────────────────────
 
 export interface IChatSendPayload {
-	readonly employeeId: string;
-	readonly message: string;
+	readonly agentId: string;
+		readonly message: string;
 	readonly model?: string;
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
@@ -408,10 +416,9 @@ export interface IProviderAgentInfo {
 export interface IProviderSelectPayload {
 	readonly providerId: string;
 	readonly modelId: string;
+	/** Agent ID identifying which agent's selection target. */
 	readonly agentId?: string;
-	/** The active employee whose agent.yaml should be updated with the selection */
-	readonly employeeId?: string;
-}
+	}
 
 // ─── Workspace Session (Fork) Payloads ──────────────────────────────────────
 
@@ -506,16 +513,16 @@ export interface ITaskBoardOpenOverviewPayload {
 // ─── ConfigMD Payloads ──────────────────────────────────────────────────────
 
 export interface IConfigMdResourcePayload {
-	readonly employeeId: string;
-}
+	readonly agentId: string;
+	}
 
 export interface IConfigMdReadSourcePayload {
-	readonly employeeId: string;
-}
+	readonly agentId: string;
+	}
 
 export interface IConfigMdWriteSourcePayload {
-	readonly employeeId: string;
-	readonly markdown: string;
+	readonly agentId: string;
+		readonly markdown: string;
 	/** Origin of the change to suppress echo loops */
 	readonly origin?: 'editor' | 'html' | 'model' | 'external';
 	/** Monotonic version supplied by client; rejected if stale (optimistic concurrency) */
@@ -545,69 +552,69 @@ export interface IConfigMdPatchOp {
 }
 
 export interface IConfigMdApplyPatchPayload {
-	readonly employeeId: string;
-	readonly patches: IConfigMdPatchOp[];
+	readonly agentId: string;
+		readonly patches: IConfigMdPatchOp[];
 	readonly origin?: 'editor' | 'html' | 'model' | 'external';
 	readonly baseVersion?: number;
 }
 
 export interface IConfigMdRenderHtmlPayload {
-	readonly employeeId: string;
-	readonly markdown?: string;  // optional override; defaults to current file
+	readonly agentId: string;
+		readonly markdown?: string;  // optional override; defaults to current file
 }
 
 export interface IConfigMdEventPayload {
-	readonly employeeId: string;
-	readonly eventName: string;
+	readonly agentId: string;
+		readonly eventName: string;
 	readonly payload?: unknown;
 	readonly agentSessionId?: string;
 }
 
 export interface IConfigMdChatSendPayload {
-	readonly employeeId: string;
-	readonly message: string;
+	readonly agentId: string;
+		readonly message: string;
 	readonly context?: string;
 	readonly showInChat?: boolean;
 	readonly agentSessionId?: string;
 }
 
 export interface IConfigMdHtmlGeneratePayload {
-	readonly employeeId: string;
-	readonly message: string;
+	readonly agentId: string;
+		readonly message: string;
 	/** Current HTML in the editor (so the model can do incremental edits). */
 	readonly currentHtml?: string;
 	readonly model?: string;
 }
 
 export interface IConfigMdCanvasPreviewPayload {
-	readonly employeeId: string;
-}
+	readonly agentId: string;
+	}
 
 export interface IConfigMdNotifyPayload {
-	readonly employeeId: string;
-	readonly message: string;
+	readonly agentId: string;
+		readonly message: string;
 	readonly level?: 'info' | 'success' | 'warning' | 'error';
 }
 
 // ─── ConfigMD Event Payloads (Host → WebView) ───────────────────────────────
 
 export interface IConfigMdSourceChangedPayload {
-	readonly employeeId: string;
-	readonly markdown: string;
+	readonly agentId: string;
+		readonly markdown: string;
 	readonly version: number;
 	readonly origin: 'editor' | 'html' | 'model' | 'external';
 }
 
 export interface IConfigMdHtmlRenderedPayload {
-	readonly employeeId: string;
-	readonly html: string;
+	readonly agentId: string;
+		readonly html: string;
 	readonly version: number;
 	readonly stylesContent?: string;
 }
 
 export interface IConfigMdCommandPayload {
-	readonly employeeId: string;
-	readonly command: {
+	readonly agentId: string;
+		readonly command: {
 		readonly name: string;
 		readonly params: Record<string, unknown>;
 		readonly id: string;
@@ -615,24 +622,24 @@ export interface IConfigMdCommandPayload {
 }
 
 export interface IConfigMdUploadParserPayload {
-	readonly employeeId: string;
-	readonly content: string;
+	readonly agentId: string;
+		readonly content: string;
 	readonly fileName?: string;
 }
 
 export interface IConfigMdUploadStylesPayload {
-	readonly employeeId: string;
-	readonly content: string;
+	readonly agentId: string;
+		readonly content: string;
 	readonly fileName?: string;
 }
 
 export interface IConfigMdRemoveParserPayload {
-	readonly employeeId: string;
-}
+	readonly agentId: string;
+	}
 
 export interface IConfigMdInfoPayload {
-	readonly employeeId: string;
-}
+	readonly agentId: string;
+	}
 
 export interface IConfigMdInfo {
 	readonly parserSource: 'builtin' | 'custom';
@@ -651,8 +658,8 @@ export interface IFileOpenPayload {
 	/** Absolute filesystem path (preferred). */
 	readonly path?: string;
 	/** Alternative: employee id + relative kind, resolved by host. */
-	readonly employeeId?: string;
-	/** Which configMd-related file to open (only used when employeeId is present). */
+		readonly agentId?: string;
+	/** Which configMd-related file to open (only used when agentId is present). */
 	readonly kind?: 'configMd' | 'configMdParser' | 'configMdStyles';
 	/** Whether to keep focus on the current view. Default: false. */
 	readonly preserveFocus?: boolean;
@@ -728,8 +735,8 @@ export interface IChatJumpToCheckpointPayload {
 	/** The checkpoint ID to restore. */
 	readonly checkpointId: string;
 	/** The employee ID (for multi-agent support). */
-	readonly employeeId: string;
-	/** The session ID (for multi-session support). */
+	readonly agentId: string;
+		/** The session ID (for multi-session support). */
 	readonly sessionId: string;
 	/**
 	 * The chat message ID to truncate persisted history after (inclusive).
@@ -750,8 +757,8 @@ export interface IChatOpenCheckpointDiffPayload {
 	/** The file URI (as string) to diff. */
 	readonly fileUri: string;
 	/** The employee ID (for storage scoping). */
-	readonly employeeId: string;
-	/** The session ID (for storage scoping). */
+	readonly agentId: string;
+		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
 }
 
@@ -761,8 +768,8 @@ export interface IChatOpenCheckpointDiffPayload {
  */
 export interface IChatRevertAllCheckpointsPayload {
 	/** The employee ID (for storage scoping). */
-	readonly employeeId: string;
-	/** The session ID (for storage scoping). */
+	readonly agentId: string;
+		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
 	/**
 	 * The chat message ID to truncate persisted history after (inclusive).
@@ -777,8 +784,8 @@ export interface IChatRevertAllCheckpointsPayload {
  */
 export interface IChatKeepAllCheckpointsPayload {
 	/** The employee ID (for storage scoping). */
-	readonly employeeId: string;
-	/** The session ID (for storage scoping). */
+	readonly agentId: string;
+		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
 }
 
@@ -789,8 +796,8 @@ export interface IChatKeepAllCheckpointsPayload {
  */
 export interface IChatOpenAllCheckpointsDiffPayload {
 	/** The employee ID (for storage scoping). */
-	readonly employeeId: string;
-	/** The session ID (for storage scoping). */
+	readonly agentId: string;
+		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
 }
 
@@ -825,8 +832,8 @@ export interface IChatToolApprovePayload {
  */
 export interface IChatAddCheckpointPayload {
 	/** The employee ID. */
-	readonly employeeId: string;
-	/** The session ID. */
+	readonly agentId: string;
+		/** The session ID. */
 	readonly sessionId: string;
 	/** Checkpoint type. */
 	readonly type: 'user_edit' | 'tool_edit';
@@ -847,8 +854,8 @@ export interface IChatGetCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
 	/** The employee ID (for storage scoping). */
-	readonly employeeId: string;
-	/** The session ID (for storage scoping). */
+	readonly agentId: string;
+		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
 }
 
@@ -857,8 +864,8 @@ export interface IChatGetCheckpointPayload {
  */
 export interface IChatListCheckpointsPayload {
 	/** The employee ID. */
-	readonly employeeId: string;
-	/** The session ID. */
+	readonly agentId: string;
+		/** The session ID. */
 	readonly sessionId: string;
 }
 
@@ -869,8 +876,8 @@ export interface IChatDeleteCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
 	/** The employee ID (for storage scoping). */
-	readonly employeeId: string;
-	/** The session ID (for storage scoping). */
+	readonly agentId: string;
+		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
 }
 

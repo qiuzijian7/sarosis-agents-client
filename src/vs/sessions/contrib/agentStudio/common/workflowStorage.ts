@@ -15,7 +15,7 @@
 // - WorkflowStorageService 直接用 IFileService 写文件到 .sarosisworkspace/workflows/，
 //   每个工作流一个 `{id}.json` 文件，可被版本管理 / 团队共享。
 //
-// 设计: 每个工作流默认绑定一个 Agent（presetId + 部署后的 employeeId），
+// 设计: 每个工作流默认绑定一个 Agent（presetId + 部署后的 agentId），
 //       执行工作流即执行该 Agent，所有内容在 Agent 的聊天框中显示。
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';

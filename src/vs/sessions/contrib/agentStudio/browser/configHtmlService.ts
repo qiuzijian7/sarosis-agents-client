@@ -193,8 +193,8 @@ interface IAgentMdState {
 
 /** Custom parser API contract. */
 interface IMdParser {
-	parse(markdown: string, ctx?: { employeeId: string }): string;
-	applyHtmlPatch?(markdown: string, patch: unknown, ctx?: { employeeId: string }): string;
+	parse(markdown: string, ctx?: { agentId: string }): string;
+	applyHtmlPatch?(markdown: string, patch: unknown, ctx?: { agentId: string }): string;
 }
 
 /**
@@ -469,29 +469,29 @@ function escapeRegExp(s: string): string {
 export class ConfigHtmlService extends Disposable implements IConfigHtmlService {
 	declare readonly _serviceBrand: undefined;
 
-	private readonly _onDidChangeSource = this._register(new Emitter<{ employeeId: string; markdown: string; version: number; origin: ConfigMdChangeOrigin }>());
-	readonly onDidChangeSource: Event<{ employeeId: string; markdown: string; version: number; origin: ConfigMdChangeOrigin }> = this._onDidChangeSource.event;
+	private readonly _onDidChangeSource = this._register(new Emitter<{ agentId: string; markdown: string; version: number; origin: ConfigMdChangeOrigin }>());
+	readonly onDidChangeSource: Event<{ agentId: string; markdown: string; version: number; origin: ConfigMdChangeOrigin }> = this._onDidChangeSource.event;
 
-	private readonly _onDidRenderHtml = this._register(new Emitter<{ employeeId: string; html: string; version: number; stylesContent?: string }>());
-	readonly onDidRenderHtml: Event<{ employeeId: string; html: string; version: number; stylesContent?: string }> = this._onDidRenderHtml.event;
+	private readonly _onDidRenderHtml = this._register(new Emitter<{ agentId: string; html: string; version: number; stylesContent?: string }>());
+	readonly onDidRenderHtml: Event<{ agentId: string; html: string; version: number; stylesContent?: string }> = this._onDidRenderHtml.event;
 
-	private readonly _onDidEmitCommand = this._register(new Emitter<{ employeeId: string; command: IConfigMdCommand }>());
-	readonly onDidEmitCommand: Event<{ employeeId: string; command: IConfigMdCommand }> = this._onDidEmitCommand.event;
+	private readonly _onDidEmitCommand = this._register(new Emitter<{ agentId: string; command: IConfigMdCommand }>());
+	readonly onDidEmitCommand: Event<{ agentId: string; command: IConfigMdCommand }> = this._onDidEmitCommand.event;
 
-	private readonly _onDidReceiveHtmlEvent = this._register(new Emitter<{ employeeId: string; eventName: string; payload: unknown }>());
-	readonly onDidReceiveHtmlEvent: Event<{ employeeId: string; eventName: string; payload: unknown }> = this._onDidReceiveHtmlEvent.event;
+	private readonly _onDidReceiveHtmlEvent = this._register(new Emitter<{ agentId: string; eventName: string; payload: unknown }>());
+	readonly onDidReceiveHtmlEvent: Event<{ agentId: string; eventName: string; payload: unknown }> = this._onDidReceiveHtmlEvent.event;
 
-	private readonly _onDidRequestChatSend = this._register(new Emitter<{ employeeId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }>());
-	readonly onDidRequestChatSend: Event<{ employeeId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }> = this._onDidRequestChatSend.event;
+	private readonly _onDidRequestChatSend = this._register(new Emitter<{ agentId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }>());
+	readonly onDidRequestChatSend: Event<{ agentId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }> = this._onDidRequestChatSend.event;
 
-	private readonly _onDidRequestCanvasPreview = this._register(new Emitter<{ employeeId: string }>());
-	readonly onDidRequestCanvasPreview: Event<{ employeeId: string }> = this._onDidRequestCanvasPreview.event;
+	private readonly _onDidRequestCanvasPreview = this._register(new Emitter<{ agentId: string }>());
+	readonly onDidRequestCanvasPreview: Event<{ agentId: string }> = this._onDidRequestCanvasPreview.event;
 
 	private readonly _agents = new Map<string, IAgentMdState>();
 	private readonly _rateLimits = new Map<string, { count: number; resetAt: number }>();
 
 	/**
-	 * `employeeId → agentSessionId` for the agent session currently visible
+	 * `agentId → agentSessionId` for the agent session currently visible
 	 * in a chat panel. Populated by chat panel controllers via
 	 * {@link setActiveAgentSession}; consumed by `_handleImguiSubmit` so that
 	 * imgui form submits land in the same Fork session the user is looking
@@ -520,39 +520,39 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		super.dispose();
 	}
 
-	disposeAgent(employeeId: string): void {
-		const st = this._agents.get(employeeId);
+	disposeAgent(agentId: string): void {
+		const st = this._agents.get(agentId);
 		if (st) {
 			st.disposables.dispose();
-			this._agents.delete(employeeId);
+			this._agents.delete(agentId);
 		}
 	}
 
 	// ─── Active Agent Session Registry ─────────────────────────────────────
 
-	setActiveAgentSession(employeeId: string, agentSessionId: string | undefined): void {
-		if (!employeeId) { return; }
-		const prev = this._activeAgentSessions.get(employeeId);
+	setActiveAgentSession(agentId: string, agentSessionId: string | undefined): void {
+		if (!agentId) { return; }
+		const prev = this._activeAgentSessions.get(agentId);
 		if (agentSessionId) {
 			if (prev === agentSessionId) { return; }
-			this._activeAgentSessions.set(employeeId, agentSessionId);
+			this._activeAgentSessions.set(agentId, agentSessionId);
 		} else {
 			if (prev === undefined) { return; }
-			this._activeAgentSessions.delete(employeeId);
+			this._activeAgentSessions.delete(agentId);
 		}
-		this.logService.info(`[ConfigMD] active session: ${employeeId} ${prev || '<none>'} → ${agentSessionId || '<none>'}`);
+		this.logService.info(`[ConfigMD] active session: ${agentId} ${prev || '<none>'} → ${agentSessionId || '<none>'}`);
 	}
 
-	getActiveAgentSession(employeeId: string): string | undefined {
-		return this._activeAgentSessions.get(employeeId);
+	getActiveAgentSession(agentId: string): string | undefined {
+		return this._activeAgentSessions.get(agentId);
 	}
 
 	// ─── Capability Check ──────────────────────────────────────────────────
 
-	async checkCapability(employeeId: string, capability: ConfigMdCapability): Promise<void> {
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+	async checkCapability(agentId: string, capability: ConfigMdCapability): Promise<void> {
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		if (!employee) {
-			throw new Error(`Employee '${employeeId}' not found`);
+			throw new Error(`Employee '${agentId}' not found`);
 		}
 		const allowed = employee.configMd?.capabilities;
 		// If capabilities is not configured, allow read-only and chat capabilities by default
@@ -571,16 +571,16 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		}
 	}
 
-	private _checkRateLimit(employeeId: string): void {
+	private _checkRateLimit(agentId: string): void {
 		const now = Date.now();
-		let entry = this._rateLimits.get(employeeId);
+		let entry = this._rateLimits.get(agentId);
 		if (!entry || now > entry.resetAt) {
 			entry = { count: 0, resetAt: now + 60_000 };
-			this._rateLimits.set(employeeId, entry);
+			this._rateLimits.set(agentId, entry);
 		}
 		entry.count++;
 		if (entry.count > RATE_LIMIT_PER_MINUTE) {
-			throw new Error(`ConfigMD rate limit exceeded for agent '${employeeId}'`);
+			throw new Error(`ConfigMD rate limit exceeded for agent '${agentId}'`);
 		}
 	}
 
@@ -610,11 +610,11 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, employee.agentDir);
 	}
 
-	private async _ensureState(employeeId: string): Promise<IAgentMdState | null> {
-		const existing = this._agents.get(employeeId);
+	private async _ensureState(agentId: string): Promise<IAgentMdState | null> {
+		const existing = this._agents.get(agentId);
 		if (existing) { return existing; }
 
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		if (!employee?.configMd || !employee.agentDir) {
 			return null;
 		}
@@ -681,14 +681,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			try {
 				const pUri = URI.joinPath(agentDirUri, cfg.parserPath);
 				const pBuf = await this.fileService.readFile(pUri);
-				customParser = this._loadParserScript(pBuf.value.toString(), employeeId);
+				customParser = this._loadParserScript(pBuf.value.toString(), agentId);
 			} catch (err) {
 				this.logService.warn(`[ConfigMD] Failed to load custom parser ${cfg.parserPath}:`, err);
 			}
 		}
 
 		// Initial render
-		const html = this._renderInternal(markdown, customParser, employeeId);
+		const html = this._renderInternal(markdown, customParser, agentId);
 
 		// File watcher
 		const disposables = new DisposableStore();
@@ -708,7 +708,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			disposables,
 			selfWriteEpoch: 0,
 		};
-		this._agents.set(employeeId, state);
+		this._agents.set(agentId, state);
 
 		// Subscribe to file changes (external edits)
 		disposables.add(
@@ -721,14 +721,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 					state.pendingWriteOrigin = undefined;
 					return;
 				}
-				void this._onExternalChange(employeeId);
+				void this._onExternalChange(agentId);
 			}),
 		);
 
 		return state;
 	}
 
-	private _loadParserScript(source: string, employeeId: string): IMdParser | undefined {
+	private _loadParserScript(source: string, agentId: string): IMdParser | undefined {
 		try {
 			// Provide a minimal CommonJS-like environment.
 			// Custom parsers may reference the global `marked` if they bring it themselves.
@@ -744,14 +744,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			if (candidate && typeof (candidate as IMdParser).parse === 'function') {
 				return candidate as IMdParser;
 			}
-			this.logService.warn(`[ConfigMD] Custom parser for ${employeeId} did not export parse()`);
+			this.logService.warn(`[ConfigMD] Custom parser for ${agentId} did not export parse()`);
 		} catch (err) {
-			this.logService.warn(`[ConfigMD] Failed to evaluate custom parser for ${employeeId}:`, err);
+			this.logService.warn(`[ConfigMD] Failed to evaluate custom parser for ${agentId}:`, err);
 		}
 		return undefined;
 	}
 
-	private _renderInternal(markdown: string, parser: IMdParser | undefined, employeeId: string): string {
+	private _renderInternal(markdown: string, parser: IMdParser | undefined, agentId: string): string {
 		// ConfigHtml mode: a complete, self-contained HTML document is used
 		// VERBATIM as its own rendered output. We must NOT run it through the
 		// Markdown renderer (which would escape the markup) nor `sanitizeHtml`
@@ -763,7 +763,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		let rendered: string;
 		try {
 			if (parser) {
-				rendered = parser.parse(markdown, { employeeId });
+				rendered = parser.parse(markdown, { agentId: agentId });
 			} else {
 				rendered = builtInRenderMarkdown(markdown);
 			}
@@ -781,8 +781,8 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		return postProcessImguiBlocks(sanitized);
 	}
 
-	private async _onExternalChange(employeeId: string): Promise<void> {
-		const st = this._agents.get(employeeId);
+	private async _onExternalChange(agentId: string): Promise<void> {
+		const st = this._agents.get(agentId);
 		if (!st) { return; }
 		try {
 			const buf = await this.fileService.readFile(st.mdUri);
@@ -790,16 +790,16 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			if (md === st.markdown) { return; }
 			st.markdown = md;
 			st.version++;
-			st.html = this._renderInternal(md, st.customParser, employeeId);
-			this._onDidChangeSource.fire({ employeeId, markdown: md, version: st.version, origin: 'external' });
-			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+			st.html = this._renderInternal(md, st.customParser, agentId);
+			this._onDidChangeSource.fire({ agentId: agentId, markdown: md, version: st.version, origin: 'external' });
+			this._onDidRenderHtml.fire({ agentId: agentId, html: st.html, version: st.version, stylesContent: st.stylesContent });
 		} catch (err) {
 			this.logService.warn(`[ConfigMD] external change re-read failed:`, err);
 		}
 	}
 
-	async resolveState(employeeId: string): Promise<IConfigMdState | null> {
-		const st = await this._ensureState(employeeId);
+	async resolveState(agentId: string): Promise<IConfigMdState | null> {
+		const st = await this._ensureState(agentId);
 		if (!st) { return null; }
 		return {
 			markdown: st.markdown,
@@ -810,21 +810,21 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		};
 	}
 
-	async readSource(employeeId: string): Promise<{ markdown: string; version: number }> {
-		await this.checkCapability(employeeId, 'md.read');
-		const st = await this._ensureState(employeeId);
-		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
+	async readSource(agentId: string): Promise<{ markdown: string; version: number }> {
+		await this.checkCapability(agentId, 'md.read');
+		const st = await this._ensureState(agentId);
+		if (!st) { throw new Error(`ConfigMD not configured for ${agentId}`); }
 		return { markdown: st.markdown, version: st.version };
 	}
 
 	async writeSource(
-		employeeId: string,
+		agentId: string,
 		markdown: string,
 		options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
 	): Promise<{ version: number }> {
-		await this.checkCapability(employeeId, 'md.write');
-		const st = await this._ensureState(employeeId);
-		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
+		await this.checkCapability(agentId, 'md.write');
+		const st = await this._ensureState(agentId);
+		if (!st) { throw new Error(`ConfigMD not configured for ${agentId}`); }
 		const origin = options?.origin || 'editor';
 		if (options?.baseVersion != null && options.baseVersion !== st.version) {
 			throw new Error(`Stale write: baseVersion=${options.baseVersion}, current=${st.version}`);
@@ -842,37 +842,37 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			this.logService.error(`[ConfigMD] Failed to write ${st.mdUri.fsPath}:`, err);
 			throw err;
 		}
-		st.html = this._renderInternal(markdown, st.customParser, employeeId);
-		this._onDidChangeSource.fire({ employeeId, markdown, version: st.version, origin });
-		this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+		st.html = this._renderInternal(markdown, st.customParser, agentId);
+		this._onDidChangeSource.fire({ agentId: agentId, markdown, version: st.version, origin });
+		this._onDidRenderHtml.fire({ agentId: agentId, html: st.html, version: st.version, stylesContent: st.stylesContent });
 		return { version: st.version };
 	}
 
 	async applyPatch(
-		employeeId: string,
+		agentId: string,
 		patches: IConfigMdPatchOp[],
 		options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
 	): Promise<{ version: number; markdown: string }> {
-		await this.checkCapability(employeeId, 'md.write');
-		const st = await this._ensureState(employeeId);
-		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
+		await this.checkCapability(agentId, 'md.write');
+		const st = await this._ensureState(agentId);
+		if (!st) { throw new Error(`ConfigMD not configured for ${agentId}`); }
 		if (options?.baseVersion != null && options.baseVersion !== st.version) {
 			throw new Error(`Stale patch: baseVersion=${options.baseVersion}, current=${st.version}`);
 		}
 		const newMd = applyPatchOps(st.markdown, patches);
-		const res = await this.writeSource(employeeId, newMd, { origin: options?.origin || 'html' });
+		const res = await this.writeSource(agentId, newMd, { origin: options?.origin || 'html' });
 		return { version: res.version, markdown: newMd };
 	}
 
-	async renderHtml(employeeId: string, markdown?: string): Promise<{ html: string; version: number }> {
-		const st = await this._ensureState(employeeId);
-		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
+	async renderHtml(agentId: string, markdown?: string): Promise<{ html: string; version: number }> {
+		const st = await this._ensureState(agentId);
+		if (!st) { throw new Error(`ConfigMD not configured for ${agentId}`); }
 		const md = markdown ?? st.markdown;
-		const html = this._renderInternal(md, st.customParser, employeeId);
+		const html = this._renderInternal(md, st.customParser, agentId);
 		if (markdown === undefined) {
 			st.html = html;
 		}
-		this._onDidRenderHtml.fire({ employeeId, html, version: st.version, stylesContent: st.stylesContent });
+		this._onDidRenderHtml.fire({ agentId: agentId, html, version: st.version, stylesContent: st.stylesContent });
 		return { html, version: st.version };
 	}
 
@@ -884,17 +884,17 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 * The generated file is self-contained: it inlines stylesContent (if any)
 	 * and a small set of default styles. It is regenerated on every call.
 	 */
-	async previewToFile(employeeId: string): Promise<{ path: string; version: number }> {
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+	async previewToFile(agentId: string): Promise<{ path: string; version: number }> {
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		if (!employee?.agentDir) {
-			throw new Error(`Agent directory not found for ${employeeId}`);
+			throw new Error(`Agent directory not found for ${agentId}`);
 		}
 		const agentDirUri = await this._resolveAgentDirUri(employee);
 		if (!agentDirUri) {
-			throw new Error(`Cannot resolve agent directory for ${employeeId} (workspace has no path)`);
+			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
 		}
-		const st = await this._ensureState(employeeId);
-		if (!st) { throw new Error(`ConfigMD not configured for ${employeeId}`); }
+		const st = await this._ensureState(agentId);
+		if (!st) { throw new Error(`ConfigMD not configured for ${agentId}`); }
 
 		// ConfigHtml mode: when the source is already a complete, self-contained
 		// HTML document (what the `confightml` skill produces), write it out
@@ -906,7 +906,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			doc = st.markdown;
 			st.html = st.markdown;
 		} else {
-			st.html = this._renderInternal(st.markdown, st.customParser, employeeId);
+			st.html = this._renderInternal(st.markdown, st.customParser, agentId);
 			doc = buildStandalonePreviewDoc(st.html, st.stylesContent);
 		}
 		const previewUri = URI.joinPath(agentDirUri, '.preview.html');
@@ -923,36 +923,36 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── HTML Event Handling ───────────────────────────────────────────────
 
 	async handleHtmlEvent(
-		employeeId: string,
+		agentId: string,
 		eventName: string,
 		payload: unknown,
 		agentSessionId?: string,
 	): Promise<void> {
-		await this.checkCapability(employeeId, 'chat.send');
-		this._checkRateLimit(employeeId);
-		this._onDidReceiveHtmlEvent.fire({ employeeId, eventName, payload });
+		await this.checkCapability(agentId, 'chat.send');
+		this._checkRateLimit(agentId);
+		this._onDidReceiveHtmlEvent.fire({ agentId: agentId, eventName, payload });
 
 		// imgui.submit: a button in an `imgui` block was clicked. Route by
 		// `payload.action` instead of wrapping the event blindly.
 		if (eventName === 'imgui.submit') {
-			await this._handleImguiSubmit(employeeId, payload, agentSessionId);
+			await this._handleImguiSubmit(agentId, payload, agentSessionId);
 			return;
 		}
 
 		const wrapped = `[ConfigMD HTML Event: ${eventName}]\n${JSON.stringify(payload, null, 2)}`;
 		try {
-			const employee = await this.agentStudioService.getEmployee(employeeId);
+			const employee = await this.agentStudioService.getEmployee(agentId);
 			const chatMessage = await this.agentChatService.sendMessage(
-				employeeId,
+				agentId,
 				wrapped,
 				{ agentSessionId, workspaceId: employee?.workspaceId },
 				() => undefined,
 			);
 			if (chatMessage?.content) {
-				await this._consumeModelOutput(employeeId, chatMessage.content);
+				await this._consumeModelOutput(agentId, chatMessage.content);
 			}
 		} catch (err) {
-			this.logService.error(`[ConfigMD] handleHtmlEvent failed for ${employeeId}:`, err);
+			this.logService.error(`[ConfigMD] handleHtmlEvent failed for ${agentId}:`, err);
 		}
 	}
 
@@ -990,7 +990,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 *                  SDK already handled (currently unused, reserved).
 	 */
 	private async _handleImguiSubmit(
-		employeeId: string,
+		agentId: string,
 		payload: unknown,
 		agentSessionId?: string,
 	): Promise<void> {
@@ -1006,9 +1006,9 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			stateAnchor?: string;
 			payload?: unknown;
 			/** Trusted ctx re-attached by the host pane (preferred). */
-			_ctx?: { employeeId?: string; workspaceId?: string; workspaceSessionId?: string; agentSessionId?: string };
+			_ctx?: { agentId?: string; workspaceId?: string; workspaceSessionId?: string; agentSessionId?: string };
 			/** Untrusted ctx echoed by the SDK. Fallback only. */
-			ctx?: { employeeId?: string; workspaceId?: string; workspaceSessionId?: string; agentSessionId?: string };
+			ctx?: { agentId?: string; workspaceId?: string; workspaceSessionId?: string; agentSessionId?: string };
 		};
 		const action = p.action || 'send_to_chat';
 
@@ -1030,12 +1030,12 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			ctxTrusted.agentSessionId
 			|| agentSessionId
 			|| ctxEcho.agentSessionId
-			|| this._activeAgentSessions.get(employeeId);
+			|| this._activeAgentSessions.get(agentId);
 		const resolvedWorkspaceId = ctxTrusted.workspaceId || ctxEcho.workspaceId;
 		const resolvedWorkspaceSessionId = ctxTrusted.workspaceSessionId || ctxEcho.workspaceSessionId;
 
 		this.logService.info(
-			`[ConfigMD] imgui.submit ${employeeId} form=${p.formId} button=${p.buttonId} action=${action} `
+			`[ConfigMD] imgui.submit ${agentId} form=${p.formId} button=${p.buttonId} action=${action} `
 			+ `→ ws=${resolvedWorkspaceId || '<none>'} forkSession=${resolvedWorkspaceSessionId || '<none>'} `
 			+ `agentSession=${resolvedSessionId || '<none>'}`
 		);
@@ -1058,7 +1058,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			const snapshot = '```json\n' + JSON.stringify(p.values, null, 2) + '\n```';
 			try {
 				await this.applyPatch(
-					employeeId,
+					agentId,
 					[{ op: 'replace-anchor', anchor: stateAnchor, content: snapshot }],
 					{ origin: 'html' },
 				);
@@ -1075,7 +1075,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 					this.logService.warn(`[ConfigMD] imgui send_to_chat: empty message (button has no template?), dropping`);
 					return;
 				}
-				this._sendChatMessage(employeeId, message, resolvedSessionId, resolvedWorkspaceId, resolvedWorkspaceSessionId);
+				this._sendChatMessage(agentId, message, resolvedSessionId, resolvedWorkspaceId, resolvedWorkspaceSessionId);
 				return;
 			}
 			case 'run_skill': {
@@ -1088,7 +1088,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 				const message = body
 					? `[skill:${skill}] ${body}`
 					: `[skill:${skill}] 请使用此 skill 完成相关任务。`;
-				this._sendChatMessage(employeeId, message, resolvedSessionId, resolvedWorkspaceId, resolvedWorkspaceSessionId);
+				this._sendChatMessage(agentId, message, resolvedSessionId, resolvedWorkspaceId, resolvedWorkspaceSessionId);
 				return;
 			}
 			case 'set_state': {
@@ -1100,12 +1100,12 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 				const content = p.message || '';
 				try {
 					await this.applyPatch(
-						employeeId,
+						agentId,
 						[{ op: 'replace-anchor', anchor, content }],
 						{ origin: 'html' },
 					);
 				} catch (err) {
-					this.logService.error(`[ConfigMD] imgui set_state failed for ${employeeId} anchor=${anchor}:`, err);
+					this.logService.error(`[ConfigMD] imgui set_state failed for ${agentId} anchor=${anchor}:`, err);
 				}
 				return;
 			}
@@ -1121,17 +1121,17 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 					return;
 				}
 				try {
-					await this.applyPatch(employeeId, ops as IConfigMdPatchOp[], { origin: 'html' });
+					await this.applyPatch(agentId, ops as IConfigMdPatchOp[], { origin: 'html' });
 				} catch (err) {
-					this.logService.error(`[ConfigMD] imgui patch failed for ${employeeId}:`, err);
+					this.logService.error(`[ConfigMD] imgui patch failed for ${agentId}:`, err);
 				}
 				return;
 			}
 			case 'clear_chat': {
 				try {
-					await this.agentChatService.clearHistory(employeeId, resolvedSessionId);
+					await this.agentChatService.clearHistory(agentId, resolvedSessionId);
 				} catch (err) {
-					this.logService.error(`[ConfigMD] imgui clear_chat failed for ${employeeId}:`, err);
+					this.logService.error(`[ConfigMD] imgui clear_chat failed for ${agentId}:`, err);
 				}
 				return;
 			}
@@ -1164,18 +1164,18 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 * submits land in the Fork session the user is actually looking at.
 	 */
 	private _sendChatMessage(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		agentSessionId?: string,
 		workspaceId?: string,
 		workspaceSessionId?: string,
 	): void {
-		const resolvedSessionId = agentSessionId || this._activeAgentSessions.get(employeeId);
+		const resolvedSessionId = agentSessionId || this._activeAgentSessions.get(agentId);
 		if (!agentSessionId && resolvedSessionId) {
-			this.logService.info(`[ConfigMD] _sendChatMessage: resolved sessionId from registry: ${employeeId} → ${resolvedSessionId}`);
+			this.logService.info(`[ConfigMD] _sendChatMessage: resolved sessionId from registry: ${agentId} → ${resolvedSessionId}`);
 		}
 		this._onDidRequestChatSend.fire({
-			employeeId,
+			agentId: agentId,
 			message,
 			agentSessionId: resolvedSessionId,
 			workspaceId,
@@ -1184,39 +1184,39 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async handleChatSend(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options?: { context?: string; showInChat?: boolean; agentSessionId?: string },
 	): Promise<ChatMessage> {
-		await this.checkCapability(employeeId, 'chat.send');
-		this._checkRateLimit(employeeId);
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+		await this.checkCapability(agentId, 'chat.send');
+		this._checkRateLimit(agentId);
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		const fullMsg = options?.context
 			? `[Context from ConfigMD]\n${options.context}\n\n${message}`
 			: message;
 		const chatMessage = await this.agentChatService.sendMessage(
-			employeeId,
+			agentId,
 			fullMsg,
 			{ agentSessionId: options?.agentSessionId, workspaceId: employee?.workspaceId },
 			() => undefined,
 		);
 		if (chatMessage?.content) {
-			await this._consumeModelOutput(employeeId, chatMessage.content);
+			await this._consumeModelOutput(agentId, chatMessage.content);
 		}
 		return chatMessage;
 	}
 
-	private async _consumeModelOutput(employeeId: string, content: string): Promise<void> {
+	private async _consumeModelOutput(agentId: string, content: string): Promise<void> {
 		const { patches, commands } = this.parseModelOutput(content);
 		if (patches.length > 0) {
 			try {
-				await this.applyPatch(employeeId, patches, { origin: 'model' });
+				await this.applyPatch(agentId, patches, { origin: 'model' });
 			} catch (err) {
 				this.logService.warn(`[ConfigMD] Failed to apply model patches:`, err);
 			}
 		}
 		for (const cmd of commands) {
-			this.sendCommandToHtml(employeeId, cmd);
+			this.sendCommandToHtml(agentId, cmd);
 		}
 	}
 
@@ -1239,13 +1239,13 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 * is a self-contained one-shot generation used by the ConfigHtml AI box.
 	 */
 	async htmlGenerate(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options?: { currentHtml?: string; model?: string },
 	): Promise<{ html: string; raw: string }> {
-		await this.checkCapability(employeeId, 'chat.send');
-		this._checkRateLimit(employeeId);
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+		await this.checkCapability(agentId, 'chat.send');
+		this._checkRateLimit(agentId);
+		const employee = await this.agentStudioService.getEmployee(agentId);
 
 		const systemPrompt = CONFIGHTML_SYSTEM_PROMPT;
 		const userMsg = options?.currentHtml && options.currentHtml.trim()
@@ -1255,7 +1255,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		// ── 1. Function calling (primary path) ──────────────────────────────
 		try {
 			const fc = await this._htmlGenerateViaFunctionCall(
-				employeeId,
+				agentId,
 				systemPrompt,
 				userMsg,
 				options?.model,
@@ -1275,7 +1275,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		// ── 2. Text fallback (legacy path) ──────────────────────────────────
 		const chatMessage = await this.agentChatService.sendMessage(
-			employeeId,
+			agentId,
 			userMsg,
 			{
 				systemPrompt,
@@ -1301,7 +1301,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 * caller can fall back to text extraction.
 	 */
 	private async _htmlGenerateViaFunctionCall(
-		employeeId: string,
+		agentId: string,
 		systemPrompt: string,
 		userMsg: string,
 		model?: string,
@@ -1354,7 +1354,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		let textAccum = '';
 
 		const stream = provider.chat(modelId, messages, modelOptions, {
-			agentId: employeeId,
+			agentId: agentId,
 		});
 		for await (const delta of stream as AsyncIterable<IModelDelta>) {
 			if (delta.type === 'text' && delta.content) {
@@ -1473,38 +1473,38 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		return '';
 	}
 
-	async requestCanvasPreview(employeeId: string): Promise<void> {
+	async requestCanvasPreview(agentId: string): Promise<void> {
 		// Make sure the latest source is rendered/persisted so the Canvas
 		// picks up fresh HTML via configmd.getResource.
 		try {
-			await this.resolveState(employeeId);
+			await this.resolveState(agentId);
 		} catch {
 			// best-effort; Canvas will still try to load
 		}
-		this._onDidRequestCanvasPreview.fire({ employeeId });
+		this._onDidRequestCanvasPreview.fire({ agentId: agentId });
 	}
 
-	sendCommandToHtml(employeeId: string, command: IConfigMdCommand): void {
-		this._onDidEmitCommand.fire({ employeeId, command });
+	sendCommandToHtml(agentId: string, command: IConfigMdCommand): void {
+		this._onDidEmitCommand.fire({ agentId: agentId, command });
 	}
 
 	// ─── Custom Parser / Styles Management ────────────────────────────────
 
-	async uploadParser(employeeId: string, content: string, fileName?: string): Promise<{ parserPath: string }> {
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+	async uploadParser(agentId: string, content: string, fileName?: string): Promise<{ parserPath: string }> {
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		if (!employee?.agentDir) {
-			throw new Error(`Agent directory not found for ${employeeId}`);
+			throw new Error(`Agent directory not found for ${agentId}`);
 		}
 		const agentDirUri = await this._resolveAgentDirUri(employee);
 		if (!agentDirUri) {
-			throw new Error(`Cannot resolve agent directory for ${employeeId} (workspace has no path)`);
+			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
 		}
 		const safeName = (fileName || 'parser.js').replace(/[^\w.\-]/g, '_');
 		const relPath = `ui/${safeName.endsWith('.js') ? safeName : safeName + '.js'}`;
 		const targetUri = URI.joinPath(agentDirUri, relPath);
 
 		// Validate the script can be loaded
-		const candidate = this._loadParserScript(content, employeeId);
+		const candidate = this._loadParserScript(content, agentId);
 		if (!candidate) {
 			throw new Error('解析器脚本无效：必须导出包含 parse(markdown, ctx) 的对象');
 		}
@@ -1514,29 +1514,29 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		// Persist parserPath to employee record
 		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
 		cfg.parserPath = relPath;
-		await this.agentStudioService.updateEmployee(employeeId, { configMd: cfg });
+		await this.agentStudioService.updateEmployee(agentId, { configMd: cfg });
 
 		// Update in-memory state and re-render
-		const st = this._agents.get(employeeId);
+		const st = this._agents.get(agentId);
 		if (st) {
 			st.customParser = candidate;
-			st.html = this._renderInternal(st.markdown, st.customParser, employeeId);
+			st.html = this._renderInternal(st.markdown, st.customParser, agentId);
 			st.version++;
-			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+			this._onDidRenderHtml.fire({ agentId: agentId, html: st.html, version: st.version, stylesContent: st.stylesContent });
 		}
 
-		this.logService.info(`[ConfigMD] Uploaded custom parser to ${relPath} for ${employeeId}`);
+		this.logService.info(`[ConfigMD] Uploaded custom parser to ${relPath} for ${agentId}`);
 		return { parserPath: relPath };
 	}
 
-	async uploadStyles(employeeId: string, content: string, fileName?: string): Promise<{ stylesPath: string }> {
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+	async uploadStyles(agentId: string, content: string, fileName?: string): Promise<{ stylesPath: string }> {
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		if (!employee?.agentDir) {
-			throw new Error(`Agent directory not found for ${employeeId}`);
+			throw new Error(`Agent directory not found for ${agentId}`);
 		}
 		const agentDirUri = await this._resolveAgentDirUri(employee);
 		if (!agentDirUri) {
-			throw new Error(`Cannot resolve agent directory for ${employeeId} (workspace has no path)`);
+			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
 		}
 		const safeName = (fileName || 'styles.css').replace(/[^\w.\-]/g, '_');
 		const relPath = `ui/${safeName.endsWith('.css') ? safeName : safeName + '.css'}`;
@@ -1546,40 +1546,40 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
 		cfg.stylesPath = relPath;
-		await this.agentStudioService.updateEmployee(employeeId, { configMd: cfg });
+		await this.agentStudioService.updateEmployee(agentId, { configMd: cfg });
 
-		const st = this._agents.get(employeeId);
+		const st = this._agents.get(agentId);
 		if (st) {
 			st.stylesContent = content;
 			st.version++;
-			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+			this._onDidRenderHtml.fire({ agentId: agentId, html: st.html, version: st.version, stylesContent: st.stylesContent });
 		}
 
-		this.logService.info(`[ConfigMD] Uploaded custom styles to ${relPath} for ${employeeId}`);
+		this.logService.info(`[ConfigMD] Uploaded custom styles to ${relPath} for ${agentId}`);
 		return { stylesPath: relPath };
 	}
 
-	async removeParser(employeeId: string): Promise<void> {
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+	async removeParser(agentId: string): Promise<void> {
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		if (!employee?.configMd) { return; }
 		const cfg = { ...employee.configMd };
 		delete cfg.parserPath;
-		await this.agentStudioService.updateEmployee(employeeId, { configMd: cfg });
+		await this.agentStudioService.updateEmployee(agentId, { configMd: cfg });
 
-		const st = this._agents.get(employeeId);
+		const st = this._agents.get(agentId);
 		if (st) {
 			st.customParser = undefined;
-			st.html = this._renderInternal(st.markdown, undefined, employeeId);
+			st.html = this._renderInternal(st.markdown, undefined, agentId);
 			st.version++;
-			this._onDidRenderHtml.fire({ employeeId, html: st.html, version: st.version, stylesContent: st.stylesContent });
+			this._onDidRenderHtml.fire({ agentId: agentId, html: st.html, version: st.version, stylesContent: st.stylesContent });
 		}
-		this.logService.info(`[ConfigMD] Removed custom parser for ${employeeId}, fallback to built-in`);
+		this.logService.info(`[ConfigMD] Removed custom parser for ${agentId}, fallback to built-in`);
 	}
 
-	async getInfo(employeeId: string): Promise<{ parserSource: 'builtin' | 'custom'; parserPath?: string; stylesPath?: string; hasStyles: boolean }> {
-		const employee = await this.agentStudioService.getEmployee(employeeId);
+	async getInfo(agentId: string): Promise<{ parserSource: 'builtin' | 'custom'; parserPath?: string; stylesPath?: string; hasStyles: boolean }> {
+		const employee = await this.agentStudioService.getEmployee(agentId);
 		const cfg = employee?.configMd;
-		const st = this._agents.get(employeeId);
+		const st = this._agents.get(agentId);
 		const parserSource: 'builtin' | 'custom' = st?.customParser ? 'custom' : (cfg?.parserPath ? 'custom' : 'builtin');
 		return {
 			parserSource,

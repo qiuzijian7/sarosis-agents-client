@@ -218,9 +218,10 @@ export class WorkspaceSessionService extends Disposable implements IWorkspaceSes
 			throw new Error(`Workspace ${workspaceId} has no path — cannot create session`);
 		}
 
-		// Get current agent list for snapshot
-		const employees = await this._studioService.getEmployees(workspaceId);
-		const snapshotAgentIds = employees.map(e => e.id);
+		// Get current agent list for snapshot.
+		// Agents are global definitions; the snapshot captures all available agents.
+		const agents = await this._studioService.getAgents();
+		const snapshotAgentIds = agents.map(e => e.id);
 
 		const now = new Date().toISOString();
 		const sessionId = `workspace_session_${this._generateShortId()}`;

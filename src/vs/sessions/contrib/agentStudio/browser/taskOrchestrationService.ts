@@ -27,7 +27,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService, IAgentChatService } from '../common/agentStudio.js';
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
-import type { OrchestrationPlan, PlanTask, Employee, ChatMessage } from '../common/types.js';
+import type { OrchestrationPlan, PlanTask, Agent, ChatMessage } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
 import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING } from '../common/constants.js';
@@ -357,7 +357,7 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 									id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 									role: 'system' as const,
 									content: `⏱️ 任务执行超时: ${task.title}\n\n超时时间: ${Math.round(elapsed / 1000)}s\n任务ID: ${task.id}\n错误: ${task.error}`,
-									employeeId: task.assigneeId,
+									agentId: task.assigneeId,
 									agentSessionId: undefined,
 									timestamp: new Date().toISOString(),
 								};
@@ -500,8 +500,8 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 								id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 								role: 'system' as const,
 								content: `🚀 自动执行: ${task.title}\n\nAgent空闲，自动启动待执行任务`,
-								employeeId: task.assigneeId,
-								agentSessionId: undefined,
+							agentId: task.assigneeId,
+							agentSessionId: undefined,
 								timestamp: new Date().toISOString(),
 							};
 							await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
@@ -659,15 +659,15 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		const originalTask = plan.tasks.find(t => t.id === taskId);
 		if (!originalTask) { throw new Error(`Task not found: ${taskId}`); }
 
-		const employees = await this.agentStudioService.getEmployees(workspaceId);
-		const employeeNameToId = new Map<string, string>();
-		employees.forEach(e => {
+		const agents = await this.agentStudioService.getAgents();
+		const agentNameToId = new Map<string, string>();
+		agents.forEach(e => {
 			if (e.name && e.id) {
-				employeeNameToId.set(e.name.toLowerCase(), e.id);
+				agentNameToId.set(e.name.toLowerCase(), e.id);
 			}
 		});
 
-		const subTasks = await this._decomposeSingleTaskWithAI(originalTask, workspaceId, employees, plannerId);
+		const subTasks = await this._decomposeSingleTaskWithAI(originalTask, workspaceId, agents, plannerId);
 
 		const originalIndex = plan.tasks.findIndex(t => t.id === taskId);
 		const lastSubTaskId = subTasks[subTasks.length - 1]?.id;
@@ -710,16 +710,16 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	private async _decomposeSingleTaskWithAI(
 		task: PlanTask,
 		workspaceId: string,
-		employees: Employee[],
+		employees: Agent[],
 		plannerId?: string,
 	): Promise<PlanTask[]> {
 		this.logService.info(`[Orchestration] Decomposing task "${task.title}" with AI (plannerId=${plannerId || 'default'})`);
 
 		// Resolve planner agent for its preset configuration
-		let plannerEmployee: Employee | undefined;
+		let plannerEmployee: Agent | undefined;
 		let agentId: string;
 		if (plannerId) {
-			plannerEmployee = await this.agentStudioService.getEmployee(plannerId);
+			plannerEmployee = await this.agentStudioService.getAgent(plannerId);
 			if (plannerEmployee) {
 				agentId = plannerEmployee.id;
 				this.logService.info(`[Orchestration] Using planner agent "${plannerEmployee.name}" (${plannerEmployee.id}) for decomposition`);
@@ -746,9 +746,9 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
 			: 'No team members available.';
 
-		// Build system prompt: prepend planner's customPrompt if available
-		const plannerContext = plannerEmployee?.customPrompt
-			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.customPrompt}\n--- End Planner Context ---\n\n`
+		// Build system prompt: prepend planner's systemPrompt if available
+		const plannerContext = plannerEmployee?.systemPrompt
+			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.systemPrompt}\n--- End Planner Context ---\n\n`
 			: '';
 
 		const systemPrompt = `${plannerContext}You are a task decomposition expert. Your ONLY job is to output valid JSON.
@@ -853,7 +853,7 @@ RULES:
 	async createPlan(goal: string, workspaceId: string, plannerId: string): Promise<OrchestrationPlan> {
 		this.logService.info(`[Orchestration] Creating plan for goal: "${goal}" in workspace: ${workspaceId}, planner: ${plannerId}`);
 
-		const planner = await this.agentStudioService.getEmployee(plannerId);
+		const planner = await this.agentStudioService.getAgent(plannerId);
 		if (!planner) { throw new Error(`Planner agent not found: ${plannerId}`); }
 		const isPlanner = planner.agentType === AgentType.Planner
 			|| (planner as any).presetId === 'planner'
@@ -863,11 +863,13 @@ RULES:
 			throw new Error(`Agent "${planner.name}" is not a planner (type: ${planner.agentType || 'worker'}).`);
 		}
 
-		const existingEmployees = await this.agentStudioService.getEmployees(workspaceId);
+		// Agents are global definitions; all are candidates for decomposition
+		// (per-workspace runtime binding is resolved later at dispatch time).
+		const existingAgents = await this.agentStudioService.getAgents();
 
 		// Use AI-based decomposition
 		this.logService.info(`[Orchestration] Using AI-based decomposition for goal: "${goal}"`);
-		const tasks = await this._decomposeGoalWithAI(goal, workspaceId, existingEmployees, plannerId);
+		const tasks = await this._decomposeGoalWithAI(goal, workspaceId, existingAgents, plannerId);
 
 		// Validate DAG — topological sort will throw on cycle
 		this._topologicalSort(tasks);
@@ -897,7 +899,7 @@ RULES:
 				id: `plan_${plan.id}`,
 				role: 'system',
 				content: `✅ 任务计划已创建，请在下方面板中审批：`,
-				employeeId: plannerId,
+			agentId: plannerId,
 				metadata: { type: 'orchestration_plan', planId: plan.id },
 				timestamp: now,
 			};
@@ -920,13 +922,13 @@ RULES:
 	 * 2. Uses StructuredOutputParser instead of fragile hand-written JSON extraction
 	 * 3. Supports parallel explore sub-agents (inspired by OpenCode Phase 1)
 	 */
-	private async _decomposeGoalWithAI(goal: string, workspaceId: string, employees: Employee[], plannerId?: string): Promise<PlanTask[]> {
+	private async _decomposeGoalWithAI(goal: string, workspaceId: string, employees: Agent[], plannerId?: string): Promise<PlanTask[]> {
 		this.logService.info(`[Orchestration] Starting AI-based goal decomposition for: "${goal}" (plannerId=${plannerId || 'default'})`);
 
 		// Fire progress: starting goal decomposition
 		let plannerName: string | undefined;
 		if (plannerId) {
-			const planner = await this.agentStudioService.getEmployee(plannerId);
+			const planner = await this.agentStudioService.getAgent(plannerId);
 			plannerName = planner?.name;
 		}
 		this._fireDecompositionProgress({
@@ -1023,14 +1025,14 @@ RULES:
 	 *
 	 * Improvement: now accepts optional repoContext for codebase-aware decomposition.
 	 */
-	private async _callAIModelForDecomposition(goal: string, workspaceId: string, employees: Employee[], plannerId?: string, repoContext?: string): Promise<string> {
+	private async _callAIModelForDecomposition(goal: string, workspaceId: string, employees: Agent[], plannerId?: string, repoContext?: string): Promise<string> {
 		this.logService.info(`[Orchestration] _callAIModelForDecomposition: goal="${goal}", plannerId=${plannerId || 'default'}`);
 
 		// Resolve planner agent for its preset configuration
-		let plannerEmployee: Employee | undefined;
+		let plannerEmployee: Agent | undefined;
 		let agentId: string;
 		if (plannerId) {
-			plannerEmployee = await this.agentStudioService.getEmployee(plannerId);
+			plannerEmployee = await this.agentStudioService.getAgent(plannerId);
 			if (plannerEmployee) {
 				agentId = plannerEmployee.id;
 				this.logService.info(`[Orchestration] Using planner agent "${plannerEmployee.name}" (${plannerEmployee.id}) for goal decomposition`);
@@ -1058,9 +1060,9 @@ RULES:
 			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
 			: 'No team members available.';
 
-		// Build system prompt: prepend planner's customPrompt if available
-		const plannerContext = plannerEmployee?.customPrompt
-			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.customPrompt}\n--- End Planner Context ---\n\n`
+		// Build system prompt: prepend planner's systemPrompt if available
+		const plannerContext = plannerEmployee?.systemPrompt
+			? `\n\n--- Planner Agent Context ---\n${plannerEmployee.systemPrompt}\n--- End Planner Context ---\n\n`
 			: '';
 
 		// Build system prompt - EXTREMELY STRICT JSON OUTPUT REQUIRED
@@ -1335,7 +1337,7 @@ Goal: ${goal}`;
 				id: `reject_${plan.id}_${Date.now()}`,
 				role: 'system',
 				content: `❌ 任务计划「${plan.goal}」已被拒绝。您可以重新发送 /plan 命令来创建新的计划。`,
-				employeeId: plan.plannerId,
+			agentId: plan.plannerId,
 				timestamp: plan.updatedAt,
 			};
 			await this.agentChatService.appendMessage(plan.plannerId, rejectMessage);
@@ -1491,7 +1493,7 @@ Goal: ${goal}`;
 		this.logService.info(`[Orchestration] executeWorkflow: agentId=${agentId}, workspaceId=${workspaceId}`);
 
 		// ── Step 1: Get the starting agent ──
-		const startAgent = await this.agentStudioService.getEmployee(agentId);
+		const startAgent = await this.agentStudioService.getAgent(agentId);
 		if (!startAgent) {
 			throw new Error(`Agent not found: ${agentId}`);
 		}
@@ -1612,17 +1614,17 @@ Goal: ${goal}`;
 	/**
 	 * Build a chain of agents starting from the given agent, following
 	 * downstream 'subagent' connections (BFS traversal).
-	 * Returns an array of Employee objects in topological order.
+	 * Returns an array of Agent objects in topological order.
 	 */
-	private async _buildDownstreamChain(startAgentId: string, subagentConns: { sourceId: string; targetId: string }[]): Promise<Employee[]> {
+	private async _buildDownstreamChain(startAgentId: string, subagentConns: { sourceId: string; targetId: string }[]): Promise<Agent[]> {
 		const visited = new Set<string>();
-		const ordered: Employee[] = [];
+		const ordered: Agent[] = [];
 		const queue: string[] = [startAgentId];
 		visited.add(startAgentId);
 
 		while (queue.length > 0) {
 			const currentId = queue.shift()!;
-			const emp = await this.agentStudioService.getEmployee(currentId);
+			const emp = await this.agentStudioService.getAgent(currentId);
 			if (emp) {
 				ordered.push(emp);
 			}
@@ -1699,7 +1701,7 @@ Goal: ${goal}`;
 				(delta) => {
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {
-							employeeId: task.assigneeId,
+							agentId: task.assigneeId,
 							sessionId: sessionIdForEvent,
 							chunks: [delta],
 						});
@@ -1713,7 +1715,7 @@ Goal: ${goal}`;
 			// Notify the webview that the stream completed
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.complete', {
-					employeeId: task.assigneeId,
+					agentId: task.assigneeId,
 					sessionId: sessionIdForEvent,
 					message: chatMessage,
 				});
@@ -1734,7 +1736,7 @@ Goal: ${goal}`;
 			// Notify the webview about the error
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.error', {
-					employeeId: task.assigneeId,
+					agentId: task.assigneeId,
 					sessionId: sessionIdForEvent,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -1797,8 +1799,8 @@ Goal: ${goal}`;
 					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: 'system' as const,
 					content: `✅ 任务执行完成: ${task.title}\n\n${result ? `执行结果: ${result}` : '任务已完成'}\n任务ID: ${task.id}`,
-					employeeId: task.assigneeId,
-					agentSessionId: undefined,
+				agentId: task.assigneeId,
+				agentSessionId: undefined,
 					timestamp: new Date().toISOString(),
 				};
 				await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
@@ -1880,7 +1882,7 @@ Goal: ${goal}`;
 
 		// Strategy 0: Already has a valid assignee — verify it still exists
 		if (currentAssigneeId) {
-			const employees = await this.agentStudioService.getEmployees(workspaceId);
+			const employees = await this.agentStudioService.getAgents();
 			const existing = employees.find(e => e.id === currentAssigneeId);
 			if (existing) {
 				this.logService.info(`[Orchestration] ensureTaskAgent: Task "${taskTitle}" already has valid agent "${existing.name}" (${existing.id})`);
@@ -1897,7 +1899,7 @@ Goal: ${goal}`;
 			if (found) { planTask = found; break; }
 		}
 
-		const employees = await this.agentStudioService.getEmployees(workspaceId);
+		const employees = await this.agentStudioService.getAgents();
 		const existingByName = new Map(employees.map(e => [e.name.toLowerCase(), e]));
 		const taskRole = planTask?.assigneeRole || currentAssigneeName || 'Agent';
 		const taskAssigneeName = planTask?.assigneeName || currentAssigneeName;
@@ -1921,7 +1923,7 @@ Goal: ${goal}`;
 			e.status !== 'offline'
 		);
 		if (candidates.length > 0) {
-			let best: Employee | undefined;
+			let best: Agent | undefined;
 			let bestScore = -1;
 			for (const emp of candidates) {
 				const agentRole = (emp.role || '').toLowerCase();
@@ -1958,12 +1960,12 @@ Goal: ${goal}`;
 		const agentName = taskAssigneeName || `Agent-${taskTitle.slice(0, 20)}`;
 		try {
 			this.logService.info(`[Orchestration] ensureTaskAgent: [Auto-create] Creating agent "${agentName}" for task "${taskTitle}"`);
-			const newEmp = await this.agentStudioService.createEmployee({
+			const newEmp = await this.agentStudioService.createAgent({
 				name: agentName,
 				role: taskRole || 'Agent',
 				agentType: AgentType.Worker,
 				workspaceId,
-			} as Partial<Employee>);
+			} as Partial<Agent>);
 			if (planTask) {
 				planTask.assigneeId = newEmp.id;
 				planTask.assigneeName = newEmp.name;
@@ -2043,7 +2045,7 @@ Goal: ${goal}`;
 				(delta) => {
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {
-							employeeId: assigneeId,
+							agentId: assigneeId,
 							sessionId: sessionIdForEvent,
 							chunks: [delta],
 						});
@@ -2056,7 +2058,7 @@ Goal: ${goal}`;
 			// Notify the webview that the stream completed
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.complete', {
-					employeeId: assigneeId,
+					agentId: assigneeId,
 					sessionId: sessionIdForEvent,
 					message: chatMessage,
 				});
@@ -2084,7 +2086,7 @@ Goal: ${goal}`;
 
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.error', {
-					employeeId: assigneeId,
+					agentId: assigneeId,
 					sessionId: sessionIdForEvent,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -2507,7 +2509,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 					// Forward stream deltas to the webview
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {
-							employeeId: task.assigneeId,
+							agentId: task.assigneeId,
 							sessionId: sessionIdForEvent,
 							chunks: [delta],
 						});
@@ -2522,7 +2524,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 			// Notify the webview that the stream completed
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.complete', {
-					employeeId: task.assigneeId,
+					agentId: task.assigneeId,
 					sessionId: sessionIdForEvent,
 					message: chatMessage,
 				});
@@ -2545,7 +2547,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 			// Notify the webview about the error
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.error', {
-					employeeId: task.assigneeId,
+					agentId: task.assigneeId,
 					sessionId: sessionIdForEvent,
 					error: err instanceof Error ? err.message : String(err),
 				});

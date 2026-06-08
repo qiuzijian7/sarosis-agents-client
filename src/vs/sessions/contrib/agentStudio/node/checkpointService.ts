@@ -49,7 +49,13 @@ export class CheckpointService {
 	 * @returns The created checkpoint.
 	 */
 	async createCheckpoint(payload: ICreateCheckpointPayload): Promise<ICheckpoint> {
-		this.logService.info(`[CheckpointService] Creating checkpoint: ${payload.type} for ${payload.employeeId}/${payload.sessionId}`);
+		// Batch 9.2: agentId is the primary identity. Resolve once at entry to handle legacy
+		// callers that still send only employeeId.
+		const agentId = payload.agentId ?? payload.employeeId;
+		if (!agentId) {
+			throw new Error('[CheckpointService] createCheckpoint: agentId (or legacy employeeId) is required');
+		}
+		this.logService.info(`[CheckpointService] Creating checkpoint: ${payload.type} for ${agentId}/${payload.sessionId}`);
 
 		// 1. Read file contents
 		const fileSnapshots: IFileSnapshotData[] = [];
@@ -67,10 +73,10 @@ export class CheckpointService {
 			}
 		}
 
-		// 2. Create checkpoint entity
+		// 2. Create checkpoint entity (Batch 9.2: agentId is canonical; employeeId omitted for new rows)
 		const checkpoint: ICheckpoint = {
 			id: generateUuid(),
-			employeeId: payload.employeeId,
+			agentId,
 			sessionId: payload.sessionId,
 			type: payload.type,
 			label: payload.label || this.getDefaultLabel(payload.type),
@@ -117,7 +123,7 @@ export class CheckpointService {
 		}
 
 		// 3. Mark checkpoints after this one as "ghost" (unreachable)
-		await this.markSubsequentCheckpointsAsGhost(checkpoint.employeeId, checkpoint.sessionId, checkpoint.createdAt);
+		await this.markSubsequentCheckpointsAsGhost(checkpoint.agentId, checkpoint.sessionId, checkpoint.createdAt);
 
 		this.logService.info(`[CheckpointService] Jumped to checkpoint: ${checkpointId}, restored ${restoredFiles.length} files`);
 
@@ -137,10 +143,10 @@ export class CheckpointService {
 	}
 
 	/**
-	 * List all checkpoints for an employee+session.
+	 * List all checkpoints for an agent+session.
 	 */
-	async listCheckpoints(employeeId: string, sessionId: string): Promise<ICheckpoint[]> {
-		return this.storage.listCheckpoints(employeeId, sessionId);
+	async listCheckpoints(agentId: string, sessionId: string): Promise<ICheckpoint[]> {
+		return this.storage.listCheckpoints(agentId, sessionId);
 	}
 
 	/**

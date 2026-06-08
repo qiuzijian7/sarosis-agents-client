@@ -247,10 +247,10 @@ export class ProjectContextInjector {
 	 * this method returns a fresh context string computed from the *current*
 	 * workspace state — reflecting file changes, active editor, and recent activity.
 	 *
-	 * @param employeeId The agent requesting context (for per-agent customization)
+	 * @param agentId The agent requesting context (for per-agent customization)
 	 * @returns A Markdown-formatted context block, or empty string if no workspace
 	 */
-	async computeRealtimeContext(employeeId?: string): Promise<string> {
+	async computeRealtimeContext(agentId?: string): Promise<string> {
 		const context = await this.collectContext();
 		if (context.name === 'unknown' && context.languages.length === 0) {
 			return ''; // No project detected

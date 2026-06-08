@@ -18,7 +18,7 @@ import { DATA_FILE_DELEGATIONS, AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEF
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IAgentTurnRequest } from '../common/providers.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { Employee } from '../../../common/agentStudioTypes.js';
+import type { Agent } from '../../../common/agentStudioTypes.js';
 import { StructuredOutputParser } from './structuredOutputParser.js';
 import { ITaskOrchestrationService } from '../common/agentStudio.js';
 
@@ -151,26 +151,27 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 		this.logService.info(`[AgentStudio] ===== Auto-Plan START for goal: "${goal}" =====`);
 
 		try {
-			// Step 0: Get workspace context (available employees/agents)
+			// Step 0: Get workspace context (available agents)
+			// Agents are global definitions; all are available in every workspace.
 			this.logService.info(`[AgentStudio] [Step 0] Fetching workspace context: ${workspaceId}`);
-			const employees = await this.agentStudioService.getEmployees(workspaceId);
-			this.logService.info(`[AgentStudio] [Step 0] Found ${employees.length} employees`);
-			employees.forEach((e, i) => {
-				this.logService.info(`[AgentStudio] [Step 0] Employee[${i}]: id=${e.id}, name="${e.name}", type=${e.agentType || 'unknown'}`);
+			const agents = await this.agentStudioService.getAgents();
+			this.logService.info(`[AgentStudio] [Step 0] Found ${agents.length} agents`);
+			agents.forEach((a, i) => {
+				this.logService.info(`[AgentStudio] [Step 0] Agent[${i}]: id=${a.id}, name="${a.name}", type=${a.agentType || 'unknown'}`);
 			});
 
 			// Create name-to-id mapping for assignee resolution
-			const employeeNameToId = new Map<string, string>();
-			employees.forEach(e => {
-				if (e.name && e.id) {
-					employeeNameToId.set(e.name.toLowerCase(), e.id);
+			const agentNameToId = new Map<string, string>();
+			agents.forEach(a => {
+				if (a.name && a.id) {
+					agentNameToId.set(a.name.toLowerCase(), a.id);
 				}
 			});
-			this.logService.info(`[AgentStudio] [Step 0] Built employeeNameToId map with ${employeeNameToId.size} entries`);
+			this.logService.info(`[AgentStudio] [Step 0] Built agentNameToId map with ${agentNameToId.size} entries`);
 
 			// Step 1: Call AI model to decompose the goal into sub-tasks
 			this.logService.info(`[AgentStudio] [Step 1] Calling AI model for task decomposition`);
-			const aiResponse = await this._callAIModel(goal, workspaceId, employees);
+			const aiResponse = await this._callAIModel(goal, workspaceId, agents);
 			this.logService.info(`[AgentStudio] [Step 1] AI response received, length=${aiResponse.length}`);
 			
 			// Step 2: Parse AI response using StructuredOutputParser
@@ -194,7 +195,7 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 			for (const task of parsedTasks) {
 				// Resolve assignee ID
 				const assigneeId = task.suggestedAssignee
-					? (employeeNameToId.get(task.suggestedAssignee.toLowerCase()) || '')
+					? (agentNameToId.get(task.suggestedAssignee.toLowerCase()) || '')
 					: '';
 
 				this.logService.info(`[AgentStudio] [Step 3] Creating delegation: title="${task.title}", assigneeId="${assigneeId}"`);
@@ -245,16 +246,16 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 	 * Call AI model to decompose goal into sub-tasks.
 	 * Reference: Paperclip's task decomposition principles from skills/paperclip-converting-plans-to-tasks/SKILL.md
 	 */
-	private async _callAIModel(goal: string, workspaceId: string, employees: Employee[]): Promise<string> {
+	private async _callAIModel(goal: string, workspaceId: string, agents: Agent[]): Promise<string> {
 		this.logService.info(`[AgentStudio] Calling AI model for goal: "${goal}"`);
 		
 		// Get default agent ID from configuration
 		const defaultAgentId = this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_AGENT_SETTING) || 'default';
 		this.logService.info(`[AgentStudio] Using agentId: ${defaultAgentId}`);
 		
-		// Build employee context string
-		const employeeContext = employees.length > 0 
-			? `Available team members:\n${employees.map(e => `- ${e.name} (${e.agentType || 'worker'})`).join('\n')}`
+		// Build agent context string
+		const agentContext = agents.length > 0 
+			? `Available team members:\n${agents.map(a => `- ${a.name} (${a.agentType || 'worker'})`).join('\n')}`
 			: 'No team members available.';
 		
 		// Build concise system prompt following Paperclip's principles
@@ -265,7 +266,7 @@ Principles:
 2. Know your team - consider required roles and available team members
 3. Assign for specialty - match tasks to roles/team members
 
-${employeeContext}
+${agentContext}
 
 Output JSON format:
 {
@@ -275,7 +276,7 @@ Output JSON format:
       "title": "Task title",
       "description": "Detailed description",
       "suggestedRole": "Developer",
-      "suggestedAssignee": "employee-name", 
+      "suggestedAssignee": "agent-name", 
       "dependencies": [],
       "priority": 1
     }

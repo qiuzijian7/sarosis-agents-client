@@ -114,6 +114,7 @@ import {
 } from "./workspaceSessionService.js";
 import { HtmlPreviewEditorInput } from "./htmlPreviewEditorInput.js";
 import { TaskOverviewEditorInput } from "./taskOverviewEditorInput.js";
+import { AgentSettingsEditorInput } from "./agentSettingsEditorInput.js";
 
 interface IIncomingMessage {
 	readonly id?: string;
@@ -135,7 +136,7 @@ export class AgentStudioWebviewController extends Disposable {
 	private readonly _sessionService: IWorkspaceSessionService;
 
 	/**
-	 * The (employeeId, agentSessionId) pair this chat panel is currently
+	 * The (agentId, agentSessionId) pair this chat panel is currently
 	 * showing. Updated by the webview via `chat.activeSessionChanged`
 	 * whenever the user picks a different employee or switches session.
 	 *
@@ -229,7 +230,7 @@ export class AgentStudioWebviewController extends Disposable {
 			this.checkpointService.onDidCreateCheckpoint((checkpoint) => {
 				this._sendEvent('chat.checkpointCreated', {
 					id: checkpoint.id,
-					employeeId: checkpoint.employeeId,
+					agentId: checkpoint.agentId,
 					sessionId: checkpoint.sessionId,
 					type: checkpoint.type,
 					label: checkpoint.label,
@@ -422,6 +423,35 @@ export class AgentStudioWebviewController extends Disposable {
 		const p = payload as Record<string, unknown>;
 
 		switch (type) {
+			// ─── Agents ────────────────────────────────────────────
+			case "agents.list":
+				return this.agentStudioService.getAgents();
+			case "agents.get":
+				return this.agentStudioService.getAgent(p.id as string);
+			case "agents.create":
+				return this.agentStudioService.createAgent(p as Record<string, unknown>);
+			case "agents.update":
+				return this.agentStudioService.updateAgent(p.id as string, p.data as Record<string, unknown>);
+			case "agents.delete":
+				return this.agentStudioService.deleteAgent(p.id as string);
+			case "agents.getLastSelected":
+				return { agentId: await this.agentStudioService.getLastSelectedAgentId() };
+			case "agents.selected":
+				this.agentStudioService.fireSelectEmployee(
+					((p as Record<string, unknown>).agentId as string) ?? null,
+				);
+				return undefined;
+			case "agents.openSettings": {
+				const agentId = (p as Record<string, unknown>).agentId as string | undefined;
+				const agentName = (p as Record<string, unknown>).agentName as string | undefined;
+				if (!agentId) { return undefined; }
+				const input = new AgentSettingsEditorInput(agentId, agentName);
+				const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+				const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+				await this.editorService.openEditor(input, { pinned: true }, targetGroup);
+				return undefined;
+			}
+
 			// ─── Employees ──────────────────────────────────────────
 			case "employees.list":
 				return this.agentStudioService.getEmployees(
@@ -444,23 +474,23 @@ export class AgentStudioWebviewController extends Disposable {
 				// 1. 即使 gateway 不可用 / 清理失败，也不应阻断 Agent 删除本身——
 				//    所以这里把记忆清理包在独立的 try/catch 中，仅记录日志。
 				// 2. 顺序：先清理记忆，再删 Agent。否则 Agent 一旦先删除，
-				//    其 employeeId 来源（fileSelectEmployee 等）就消失了，但
-				//    sessionKey 仍可单独从 employeeId 推导，所以顺序不强制；
+				//    其 agentId 来源（fileSelectEmployee 等）就消失了，但
+				//    sessionKey 仍可单独从 agentId 推导，所以顺序不强制；
 				//    放在前面是为了"如果记忆清理出现问题，Agent 还在，方便用户重试"。
-				const employeeId = p.id as string;
+				const agentId = p.id as string;
 				try {
-					await this._cleanupAgentMemory(employeeId);
+					await this._cleanupAgentMemory(agentId);
 				} catch (err) {
 					this.logService.warn(
-						`[AgentStudioWebviewController] cleanup memory for ${employeeId} failed (non-fatal):`,
+						`[AgentStudioWebviewController] cleanup memory for ${agentId} failed (non-fatal):`,
 						err,
 					);
 				}
-				return this.agentStudioService.deleteEmployee(employeeId);
+				return this.agentStudioService.deleteEmployee(agentId);
 			}
 			case "employees.selected":
 				this.agentStudioService.fireSelectEmployee(
-					((p as Record<string, unknown>).employeeId as string | null) ?? null,
+					((p as Record<string, unknown>).agentId as string | null) ?? null,
 				);
 				return undefined;
 			case "employees.export":
@@ -567,17 +597,17 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleChatSend(p);
 			case "chat.history":
 				return this.agentChatService.getHistory(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.sessionId as string | undefined,
 				);
 			case "chat.clear":
 				return this.agentChatService.clearHistory(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.sessionId as string | undefined,
 				);
 			case "chat.cancel":
 				this.agentChatService.cancelStream(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.agentSessionId as string | undefined,
 				);
 				// Also cancel the OS-level agent loop (active tool executions, etc.)
@@ -654,7 +684,7 @@ export class AgentStudioWebviewController extends Disposable {
 				return this._handleProvidersGetSelection();
 			case "providers.getSelectionForEmployee":
 				return this._handleProvidersGetSelectionForEmployee(
-					p.employeeId as string,
+					(p.agentId) as string,
 				);
 			case "providers.openSettings":
 				return this._handleProvidersOpenSettings(p as { providerId?: string });
@@ -709,27 +739,27 @@ export class AgentStudioWebviewController extends Disposable {
 			// ─── Agent Sessions (per-agent, Root mode) ─────────────
 			case "agentSession.list":
 				return (this.agentChatService as any).listAgentSessions(
-					p.employeeId as string,
+					(p.agentId) as string,
 				);
 			case "agentSession.create":
 				return (this.agentChatService as any).createAgentSession(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.name as string | undefined,
 				);
 			case "agentSession.rename":
 				return (this.agentChatService as any).renameAgentSession(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.sessionId as string,
 					p.name as string,
 				);
 			case "agentSession.delete":
 				return (this.agentChatService as any).deleteAgentSession(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.sessionId as string,
 				);
 			case "agentSession.getActive":
 				return (this.agentChatService as any).getOrCreateActiveSession(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.name as string | undefined,
 				);
 
@@ -833,32 +863,32 @@ export class AgentStudioWebviewController extends Disposable {
 
 			// ─── ConfigMD ─────────────────────────────────────────
 			case "configmd.getResource":
-				return this._configHtmlService.resolveState(p.employeeId as string);
+				return this._configHtmlService.resolveState((p.agentId) as string);
 			case "configmd.readSource":
-				return this._configHtmlService.readSource(p.employeeId as string);
+				return this._configHtmlService.readSource((p.agentId) as string);
 			case "configmd.writeSource": {
 				const wp = p as unknown as IConfigMdWriteSourcePayload;
-				return this._configHtmlService.writeSource(wp.employeeId, wp.markdown, {
+				return this._configHtmlService.writeSource((wp.agentId), wp.markdown, {
 					origin: wp.origin,
 					baseVersion: wp.baseVersion,
 				});
 			}
 			case "configmd.applyPatch": {
 				const ap = p as unknown as IConfigMdApplyPatchPayload;
-				return this._configHtmlService.applyPatch(ap.employeeId, ap.patches, {
+				return this._configHtmlService.applyPatch(ap.agentId, ap.patches, {
 					origin: ap.origin,
 					baseVersion: ap.baseVersion,
 				});
 			}
 			case "configmd.renderHtml": {
 				const rp = p as unknown as IConfigMdRenderHtmlPayload;
-				return this._configHtmlService.renderHtml(rp.employeeId, rp.markdown);
+				return this._configHtmlService.renderHtml((rp.agentId), rp.markdown);
 			}
 			case "confightml.event":
 			case "configmd.event": {
 				const ep = p as unknown as IConfigMdEventPayload;
 				return this._configHtmlService.handleHtmlEvent(
-					ep.employeeId,
+					(ep.agentId),
 					ep.eventName,
 					ep.payload,
 					ep.agentSessionId,
@@ -866,7 +896,7 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 			case "configmd.chatSend": {
 				const cp = p as unknown as IConfigMdChatSendPayload;
-				return this._configHtmlService.handleChatSend(cp.employeeId, cp.message, {
+				return this._configHtmlService.handleChatSend((cp.agentId), cp.message, {
 					context: cp.context,
 					showInChat: cp.showInChat,
 					agentSessionId: cp.agentSessionId,
@@ -874,36 +904,36 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 			case "configmd.chatHistory":
 				return this.agentChatService.getHistory(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.sessionId as string | undefined,
 				);
 			case "configmd.notify":
 				this.logService.info(
-					`[ConfigMD] Notification from ${p.employeeId}: ${p.message} [${p.level || "info"}]`,
+					`[ConfigMD] Notification from ${(p.agentId)}: ${p.message} [${p.level || "info"}]`,
 				);
 				return undefined;
 			case "configmd.uploadParser":
 				return this._configHtmlService.uploadParser(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.content as string,
 					p.fileName as string | undefined,
 				);
 			case "configmd.uploadStyles":
 				return this._configHtmlService.uploadStyles(
-					p.employeeId as string,
+					(p.agentId) as string,
 					p.content as string,
 					p.fileName as string | undefined,
 				);
 			case "configmd.removeParser":
-				return this._configHtmlService.removeParser(p.employeeId as string);
+				return this._configHtmlService.removeParser((p.agentId) as string);
 			case "configmd.getInfo":
-				return this._configHtmlService.getInfo(p.employeeId as string);
+				return this._configHtmlService.getInfo((p.agentId) as string);
 			case "configmd.previewToFile":
-				return this._configHtmlService.previewToFile(p.employeeId as string);
+				return this._configHtmlService.previewToFile((p.agentId) as string);
 
 			case "configmd.htmlGenerate": {
 				const hp = p as unknown as IConfigMdHtmlGeneratePayload;
-				return this._configHtmlService.htmlGenerate(hp.employeeId, hp.message, {
+				return this._configHtmlService.htmlGenerate((hp.agentId), hp.message, {
 					currentHtml: hp.currentHtml,
 					model: hp.model,
 				});
@@ -911,7 +941,7 @@ export class AgentStudioWebviewController extends Disposable {
 
 			case "configmd.requestCanvasPreview": {
 				const cp = p as unknown as IConfigMdCanvasPreviewPayload;
-				await this._configHtmlService.requestCanvasPreview(cp.employeeId);
+				await this._configHtmlService.requestCanvasPreview((cp.agentId));
 				return { ok: true };
 			}
 
@@ -1024,14 +1054,14 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
-	 * Webview tells us which (employeeId, agentSessionId) is currently
+	 * Webview tells us which (agentId, agentSessionId) is currently
 	 * displayed in this chat panel. We update local state and register
 	 * with `IConfigHtmlService` so imgui form submits originating in a
 	 * preview pane can be routed back to the right session.
 	 *
 	 * We also use this to filter `onDidRequestChatSend` events: when
 	 * multiple chat panels are open (different Forks), only the one
-	 * whose registered employeeId matches will respond — otherwise the
+	 * whose registered agentId matches will respond — otherwise the
 	 * same imgui submit would be sent twice.
 	 */
 	private _handleChatActiveSessionChanged(
@@ -1042,32 +1072,32 @@ export class AgentStudioWebviewController extends Disposable {
 			return;
 		}
 		const prevEmployeeId = this._activeChatEmployeeId;
-		const employeeId =
-			(payload.employeeId as string | null | undefined) || undefined;
+		const agentId =
+			((payload.agentId) as string | null | undefined) || undefined;
 		const agentSessionId =
 			(payload.agentSessionId as string | null | undefined) || undefined;
-		this._activeChatEmployeeId = employeeId;
+		this._activeChatEmployeeId = agentId;
 		this._activeChatAgentSessionId = agentSessionId;
 		this.logService.info(
-			`[AgentStudio] chat.activeSessionChanged: employeeId=${employeeId || "<none>"} ` +
+			`[AgentStudio] chat.activeSessionChanged: agentId=${agentId || "<none>"} ` +
 			`agentSessionId=${agentSessionId || "<none>"} (panelType=${this.panelType})`,
 		);
 		// Clear the previous registration if the employee changed,
 		// otherwise the registry would keep pointing at a stale session
 		// for the prior employee.
-		if (prevEmployeeId && prevEmployeeId !== employeeId) {
+		if (prevEmployeeId && prevEmployeeId !== agentId) {
 			this._configHtmlService.setActiveAgentSession(prevEmployeeId, undefined);
 		}
-		if (employeeId) {
-			this._configHtmlService.setActiveAgentSession(employeeId, agentSessionId);
+		if (agentId) {
+			this._configHtmlService.setActiveAgentSession(agentId, agentSessionId);
 		}
 	}
 
 	private _handleChatSend(payload: Record<string, unknown>): {
 		status: string;
-		employeeId: string;
+		agentId: string;
 	} {
-		const employeeId = payload.employeeId as string;
+		const agentId = (payload.agentId) as string;
 		const message = payload.message as string;
 		let agentSessionId = payload.agentSessionId as string | undefined;
 		const workspaceSessionId = payload.workspaceSessionId as string | undefined;
@@ -1076,13 +1106,13 @@ export class AgentStudioWebviewController extends Disposable {
 		// If we're in a Fork but no agentSessionId was provided, lazily create one
 		if (workspaceId && workspaceSessionId && !agentSessionId) {
 			this._ensureAgentSessionAndSend(
-				employeeId,
+				agentId,
 				message,
 				workspaceId,
 				workspaceSessionId,
 				payload,
 			);
-			return { status: "streaming", employeeId };
+			return { status: "streaming", agentId };
 		}
 
 		// Root mode without an agentSessionId: lazily create one. This path
@@ -1091,12 +1121,12 @@ export class AgentStudioWebviewController extends Disposable {
 		// imgui-form submits arrive here directly via `onDidRequestChatSend`
 		// and may carry no sessionId at all when the user has never sent a
 		// message yet. Without this branch, the user message would be
-		// persisted under cache key `employeeId` (no session suffix) and
+		// persisted under cache key `agentId` (no session suffix) and
 		// `_persistToSessionFile` would skip writing to disk entirely —
 		// causing the message to vanish on the next reload.
 		if (!agentSessionId) {
-			this._ensureRootSessionAndSend(employeeId, message, payload);
-			return { status: "streaming", employeeId };
+			this._ensureRootSessionAndSend(agentId, message, payload);
+			return { status: "streaming", agentId };
 		}
 
 		// Persist the user message to chat history so it survives refreshes.
@@ -1109,23 +1139,23 @@ export class AgentStudioWebviewController extends Disposable {
 			id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
 			role: "user",
 			content: message,
-			employeeId,
+			agentId,
 			agentSessionId,
 			timestamp: new Date().toISOString(),
 		};
 		void (async () => {
 			try {
-				await this.agentChatService.appendMessage(employeeId, userMessage);
+				await this.agentChatService.appendMessage(agentId, userMessage);
 			} catch (err) {
 				this.logService.error(
 					"[AgentStudio] Failed to persist user message:",
 					err,
 				);
 			}
-			this._runChatStream(employeeId, message, payload);
+			this._runChatStream(agentId, message, payload);
 		})();
 
-		return { status: "streaming", employeeId };
+		return { status: "streaming", agentId };
 	}
 
 	/**
@@ -1142,7 +1172,7 @@ export class AgentStudioWebviewController extends Disposable {
 	 * and miss the message we just persisted.
 	 */
 	private async _ensureRootSessionAndSend(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		payload: Record<string, unknown>,
 	): Promise<void> {
@@ -1155,24 +1185,24 @@ export class AgentStudioWebviewController extends Disposable {
 			// 一律开全新会话，永远不带历史。要恢复旧会话必须从历史列表显式选中。
 			const meta = await (
 				this.agentChatService as any
-			).createAgentSession(employeeId, sessionName);
+			).createAgentSession(agentId, sessionName);
 			const agentSessionId = meta?.id as string | undefined;
 			if (!agentSessionId) {
 				throw new Error("createAgentSession returned no id");
 			}
 			this.logService.info(
-				`[AgentStudio] _ensureRootSessionAndSend: created fresh session ${agentSessionId} for ${employeeId}`,
+				`[AgentStudio] _ensureRootSessionAndSend: created fresh session ${agentSessionId} for ${agentId}`,
 			);
 
 			// Mirror chat-input flow: keep the registry & webview in sync
 			// so subsequent imgui submits (and the post-reload history load)
 			// aim at the same session.
-			this._configHtmlService.setActiveAgentSession(employeeId, agentSessionId);
-			if (this._activeChatEmployeeId === employeeId) {
+			this._configHtmlService.setActiveAgentSession(agentId, agentSessionId);
+			if (this._activeChatEmployeeId === agentId) {
 				this._activeChatAgentSessionId = agentSessionId;
 			}
 			this._sendEvent("workspace.sessionUpdated", {
-				agentId: employeeId,
+				agentId,
 				agentSessionId,
 			});
 
@@ -1184,12 +1214,12 @@ export class AgentStudioWebviewController extends Disposable {
 				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
 				role: "user",
 				content: message,
-				employeeId,
+				agentId,
 				agentSessionId,
 				timestamp: new Date().toISOString(),
 			};
 			try {
-				await this.agentChatService.appendMessage(employeeId, userMessage);
+				await this.agentChatService.appendMessage(agentId, userMessage);
 			} catch (err) {
 				this.logService.error(
 					"[AgentStudio] Failed to persist user message:",
@@ -1199,14 +1229,14 @@ export class AgentStudioWebviewController extends Disposable {
 
 			// Run the chat stream with the resolved agentSessionId.
 			const enrichedPayload = { ...payload, agentSessionId };
-			this._runChatStream(employeeId, message, enrichedPayload);
+			this._runChatStream(agentId, message, enrichedPayload);
 		} catch (err) {
 			this.logService.error(
 				"[AgentStudio] _ensureRootSessionAndSend failed:",
 				err,
 			);
 			this._sendEvent("chat.stream.error", {
-				employeeId,
+				agentId,
 				sessionId: "",
 				error: `Failed to ensure agent session: ${err instanceof Error ? err.message : String(err)}`,
 			});
@@ -1219,7 +1249,7 @@ export class AgentStudioWebviewController extends Disposable {
 	 * assigned an agentSessionId yet (first message for this Agent in this Fork).
 	 */
 	private async _ensureAgentSessionAndSend(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		workspaceId: string,
 		workspaceSessionId: string,
@@ -1229,7 +1259,7 @@ export class AgentStudioWebviewController extends Disposable {
 			const entry = await this._sessionService.ensureAgentSession(
 				workspaceId,
 				workspaceSessionId,
-				employeeId,
+				agentId,
 			);
 			const agentSessionId = entry.sessionId;
 
@@ -1241,12 +1271,12 @@ export class AgentStudioWebviewController extends Disposable {
 				id: `msg_${Date.now()}_user_${Math.random().toString(36).substring(2, 9)}`,
 				role: "user",
 				content: message,
-				employeeId,
+				agentId,
 				agentSessionId,
 				timestamp: new Date().toISOString(),
 			};
 			try {
-				await this.agentChatService.appendMessage(employeeId, userMessage);
+				await this.agentChatService.appendMessage(agentId, userMessage);
 			} catch (err) {
 				this.logService.error(
 					"[AgentStudio] Failed to persist user message:",
@@ -1258,20 +1288,20 @@ export class AgentStudioWebviewController extends Disposable {
 			this._sendEvent("workspace.sessionUpdated", {
 				workspaceId,
 				sessionId: workspaceSessionId,
-				agentId: employeeId,
+				agentId,
 				agentSessionId,
 			});
 
 			// Run the chat stream with the resolved agentSessionId
 			const enrichedPayload = { ...payload, agentSessionId };
-			this._runChatStream(employeeId, message, enrichedPayload);
+			this._runChatStream(agentId, message, enrichedPayload);
 		} catch (err) {
 			this.logService.error(
 				"[AgentStudio] _ensureAgentSessionAndSend failed:",
 				err,
 			);
 			this._sendEvent("chat.stream.error", {
-				employeeId,
+				agentId,
 				sessionId: "",
 				error: `Failed to create agent session: ${err instanceof Error ? err.message : String(err)}`,
 			});
@@ -1283,7 +1313,7 @@ export class AgentStudioWebviewController extends Disposable {
 	 * the webview's perspective — all results flow through events.
 	 */
 	private async _runChatStream(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		payload: Record<string, unknown>,
 	): Promise<void> {
@@ -1298,13 +1328,13 @@ export class AgentStudioWebviewController extends Disposable {
 		//    drop a user_edit anchor for this turn (Void-inspired message boundary).
 		if (agentSessionId) {
 			try {
-				this.checkpointService.setActiveSession(employeeId, agentSessionId);
+				this.checkpointService.setActiveSession(agentId, agentSessionId);
 				// Anchor checkpoint: empty file set — it marks the message boundary;
 				// actual file rollback is provided by the tool_edit checkpoints that
 				// follow whenever the agent writes a file this turn.
 				this.checkpointService
 					.createCheckpoint({
-						employeeId,
+						agentId,
 						sessionId: agentSessionId,
 						type: 'user_edit',
 						fileSnapshots: [],
@@ -1320,13 +1350,14 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 		try {
 			const chatMessage = await this.agentChatService.sendMessage(
-				employeeId,
+				agentId,
 				message,
 				{
 					model: payload.model as string | undefined,
 					systemPrompt: payload.systemPrompt as string | undefined,
 					temperature: payload.temperature as number | undefined,
 					workspaceId: payload.workspaceId as string | undefined,
+					agentId,
 					agentSessionId,
 					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
 					reasoning: payload.reasoning as { enabled: boolean; budget?: number; effort?: 'low' | 'medium' | 'high' } | undefined,
@@ -1420,7 +1451,7 @@ export class AgentStudioWebviewController extends Disposable {
 					}
 
 					this._sendEvent("chat.stream.delta", {
-						employeeId,
+						agentId,
 						sessionId: sessionIdForEvent,
 						chunks: chunksToSend,
 					});
@@ -1431,7 +1462,7 @@ export class AgentStudioWebviewController extends Disposable {
 			if (capturedProviderSessionId && agentSessionId) {
 				(this.agentChatService as any)
 					.updateProviderSessionId(
-						employeeId,
+						agentId,
 						agentSessionId,
 						capturedProviderSessionId,
 					)
@@ -1458,7 +1489,7 @@ export class AgentStudioWebviewController extends Disposable {
 							`[AgentStudio] Applying ${patches.length} configmd-patch op(s) from assistant reply`,
 						);
 						this._configHtmlService
-							.applyPatch(employeeId, patches, { origin: "model" })
+							.applyPatch(agentId, patches, { origin: "model" })
 							.catch((err: unknown) =>
 								this.logService.warn(
 									`[AgentStudio] applyPatch from model failed:`,
@@ -1470,7 +1501,7 @@ export class AgentStudioWebviewController extends Disposable {
 						this.logService.info(
 							`[AgentStudio] Pushing configmd-command '${cmd.name}' from assistant reply`,
 						);
-						this._configHtmlService.sendCommandToHtml(employeeId, cmd);
+						this._configHtmlService.sendCommandToHtml(agentId, cmd);
 					}
 				} catch (err) {
 					this.logService.warn("[AgentStudio] parseModelOutput failed:", err);
@@ -1478,25 +1509,25 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 
 			this._sendEvent("chat.stream.complete", {
-				employeeId,
+				agentId,
 				sessionId: sessionIdForEvent,
 				message: chatMessage,
 			});
 		} catch (error) {
 			const errMsg = error instanceof Error ? error.message : String(error);
 			this.logService.error(
-				`[AgentStudio] _runChatStream error for ${employeeId}:`,
+				`[AgentStudio] _runChatStream error for ${agentId}:`,
 				error,
 			);
 
 			this._sendEvent("chat.stream.error", {
-				employeeId,
+				agentId,
 				sessionId: sessionIdForEvent,
 				error: errMsg,
 			});
 
 			this._sendEvent("chat.stream.complete", {
-				employeeId,
+				agentId,
 				sessionId: sessionIdForEvent,
 				message: { content: "", error: errMsg },
 			});
@@ -1595,12 +1626,13 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleOpenFile(payload: IFileOpenPayload): Promise<void> {
 		let absPath: string | undefined = payload.path;
 
-		if (!absPath && payload.employeeId) {
+		const resolvedAgentId = payload.agentId;
+		if (!absPath && resolvedAgentId) {
 			const employee = await this.agentStudioService.getEmployee(
-				payload.employeeId,
+				resolvedAgentId,
 			);
 			if (!employee) {
-				throw new Error(`Employee '${payload.employeeId}' not found`);
+				throw new Error(`Employee '${resolvedAgentId}' not found`);
 			}
 			if (!employee.agentDir) {
 				throw new Error(`Agent '${employee.name}' has no agentDir`);
@@ -1637,7 +1669,7 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 
 		if (!absPath) {
-			throw new Error("files.open requires path or employeeId");
+			throw new Error("files.open requires path or agentId");
 		}
 
 		// Resolve relative paths against the owning workspace root. Tool cards
@@ -1658,7 +1690,7 @@ export class AgentStudioWebviewController extends Disposable {
 			const resolved = await this._resolveRelativeOpenPath(
 				absPath,
 				payload.workspaceId,
-				payload.employeeId,
+				(payload.agentId),
 			);
 			if (resolved) {
 				absPath = resolved;
@@ -1737,7 +1769,7 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _resolveRelativeOpenPath(
 		relPath: string,
 		workspaceId: string | undefined,
-		employeeId: string | undefined,
+		agentId: string | undefined,
 	): Promise<string | undefined> {
 		const segments = relPath.split(/[\\/]+/).filter(Boolean);
 		if (segments.length === 0) {
@@ -1763,8 +1795,8 @@ export class AgentStudioWebviewController extends Disposable {
 		// 2 & 3. Sarosis workspace.path + agent worktreePath.
 		let wsId = workspaceId;
 		try {
-			if (employeeId) {
-				const employee = await this.agentStudioService.getEmployee(employeeId);
+			if (agentId) {
+				const employee = await this.agentStudioService.getEmployee(agentId);
 				if (!wsId) { wsId = employee?.workspaceId; }
 				pushRoot(employee?.worktreePath);
 			}
@@ -1869,7 +1901,7 @@ export class AgentStudioWebviewController extends Disposable {
 			`[AgentStudioWebviewController] chat.jumpToCheckpoint → ${payload.checkpointId}`,
 		);
 		await this.checkpointService.jumpToCheckpoint(
-			payload.employeeId,
+			(payload.agentId),
 			payload.sessionId,
 			payload.checkpointId,
 		);
@@ -1880,7 +1912,7 @@ export class AgentStudioWebviewController extends Disposable {
 		if (payload.truncateAfterMessageId) {
 			try {
 				await this.agentChatService.deleteMessagesAfter(
-					payload.employeeId,
+					(payload.agentId),
 					payload.sessionId,
 					payload.truncateAfterMessageId,
 				);
@@ -1949,7 +1981,7 @@ export class AgentStudioWebviewController extends Disposable {
 			`[AgentStudioWebviewController] chat.addCheckpoint → ${payload.type} (${payload.fileUris?.length ?? 0} files)`,
 		);
 		return this.checkpointService.createCheckpointFromUris(
-			payload.employeeId,
+			(payload.agentId),
 			payload.sessionId,
 			payload.type,
 			payload.fileUris ?? [],
@@ -1968,7 +2000,7 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IChatGetCheckpointPayload,
 	): Promise<ICheckpoint | undefined> {
 		return this.checkpointService.getCheckpoint(
-			payload.employeeId,
+			(payload.agentId),
 			payload.sessionId,
 			payload.checkpointId,
 		);
@@ -1980,7 +2012,7 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleListCheckpoints(
 		payload: IChatListCheckpointsPayload,
 	): Promise<ICheckpoint[]> {
-		return this.checkpointService.listCheckpoints(payload.employeeId, payload.sessionId);
+		return this.checkpointService.listCheckpoints((payload.agentId), payload.sessionId);
 	}
 
 	/**
@@ -1990,7 +2022,7 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IChatDeleteCheckpointPayload,
 	): Promise<void> {
 		await this.checkpointService.deleteCheckpoint(
-			payload.employeeId,
+			(payload.agentId),
 			payload.sessionId,
 			payload.checkpointId,
 		);
@@ -2054,17 +2086,18 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleOpenHtmlPreview(
 		payload: IFileOpenPayload,
 	): Promise<void> {
-		// Reuse _handleOpenFile's path-resolution logic (path or employeeId+kind)
+		// Reuse _handleOpenFile's path-resolution logic (path or agentId+kind)
 		let absPath: string | undefined = payload.path;
-		if (!absPath && payload.employeeId) {
+		const resolvedAgentId = payload.agentId;
+		if (!absPath && resolvedAgentId) {
 			const employee = await this.agentStudioService.getEmployee(
-				payload.employeeId,
+				resolvedAgentId,
 			);
 			if (!employee?.agentDir) {
-				throw new Error(`Agent '${payload.employeeId}' has no agentDir`);
+				throw new Error(`Agent '${resolvedAgentId}' has no agentDir`);
 			}
 			if (!employee.workspaceId) {
-				throw new Error(`Agent '${payload.employeeId}' has no workspaceId`);
+				throw new Error(`Agent '${(payload.agentId)}' has no workspaceId`);
 			}
 			const agentDirUri = await this._resolveAgentDirUri(
 				employee.workspaceId,
@@ -2094,7 +2127,7 @@ export class AgentStudioWebviewController extends Disposable {
 			absPath = URI.joinPath(agentDirUri, rel).fsPath;
 		}
 		if (!absPath) {
-			throw new Error("files.openHtmlPreview requires path or employeeId");
+			throw new Error("files.openHtmlPreview requires path or agentId");
 		}
 
 		const fileUri = URI.file(absPath);
@@ -2124,7 +2157,7 @@ export class AgentStudioWebviewController extends Disposable {
 				HtmlPreviewEditorInput,
 				fileUri,
 				this._titleForPath(absPath),
-				payload.employeeId,
+				(payload.agentId),
 				payload.workspaceId,
 				payload.workspaceSessionId,
 				payload.agentSessionId,
@@ -2223,11 +2256,11 @@ export class AgentStudioWebviewController extends Disposable {
 
 		this._register(
 			this.agentStudioService.onDidSelectEmployee(
-				(employeeId: string | null) => {
+				(agentId: string | null) => {
 					this.logService.info(
-						`[AgentStudio] onDidSelectEmployee → _sendEvent('employee.selected', {employeeId=${employeeId}}) panelType=${this.panelType}`,
+						`[AgentStudio] onDidSelectEmployee → _sendEvent('employee.selected', {agentId=${agentId}}) panelType=${this.panelType}`,
 					);
-					this._sendEvent("employee.selected", { employeeId });
+					this._sendEvent("employee.selected", { agentId });
 				},
 			),
 		);
@@ -2245,8 +2278,8 @@ export class AgentStudioWebviewController extends Disposable {
 		// panel reacts (switches to HTML mode + loads this agent).
 		this._register(
 			this._configHtmlService.onDidRequestCanvasPreview(
-				({ employeeId }: { employeeId: string }) => {
-					this._sendEvent("configmd.showInCanvas", { employeeId });
+				({ agentId }: { agentId: string }) => {
+					this._sendEvent("configmd.showInCanvas", { agentId });
 				},
 			),
 		);
@@ -2267,11 +2300,11 @@ export class AgentStudioWebviewController extends Disposable {
 		// and push agentSessions.changed to the webview so the L0 panel refreshes automatically.
 		this._register(
 			this.agentChatService.onDidChangeAgentSessions(
-				({ employeeId }: { employeeId: string }) => {
+				({ agentId }: { agentId: string }) => {
 					this.logService.info(
-						`[AgentStudio] agentSessions changed for ${employeeId}, notifying webview`,
+						`[AgentStudio] agentSessions changed for ${agentId}, notifying webview`,
 					);
-					this._sendEvent("agentSessions.changed", { employeeId });
+					this._sendEvent("agentSessions.changed", { agentId });
 				},
 			),
 		);
@@ -2397,9 +2430,9 @@ export class AgentStudioWebviewController extends Disposable {
 		// Listen for ConfigMD source / html / command events to push to WebView
 		this._register(
 			this._configHtmlService.onDidChangeSource(
-				({ employeeId, markdown, version, origin }) => {
+				({ agentId, markdown, version, origin }) => {
 					this._sendEvent("configmd.sourceChanged", {
-						employeeId,
+						agentId,
 						markdown,
 						version,
 						origin,
@@ -2409,9 +2442,9 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 		this._register(
 			this._configHtmlService.onDidRenderHtml(
-				({ employeeId, html, version, stylesContent }) => {
+				({ agentId, html, version, stylesContent }) => {
 					this._sendEvent("configmd.htmlRendered", {
-						employeeId,
+						agentId,
 						html,
 						version,
 						stylesContent,
@@ -2420,8 +2453,8 @@ export class AgentStudioWebviewController extends Disposable {
 			),
 		);
 		this._register(
-			this._configHtmlService.onDidEmitCommand(({ employeeId, command }) => {
-				this._sendEvent("configmd.command", { employeeId, command });
+			this._configHtmlService.onDidEmitCommand(({ agentId, command }) => {
+				this._sendEvent("configmd.command", { agentId, command });
 			}),
 		);
 
@@ -2442,7 +2475,7 @@ export class AgentStudioWebviewController extends Disposable {
 		this._register(
 			this._configHtmlService.onDidRequestChatSend(
 				({
-					employeeId,
+					agentId,
 					message,
 					agentSessionId,
 					workspaceId,
@@ -2459,10 +2492,10 @@ export class AgentStudioWebviewController extends Disposable {
 					// broken for the very first imgui submit after open.
 					if (
 						this._activeChatEmployeeId &&
-						this._activeChatEmployeeId !== employeeId
+						this._activeChatEmployeeId !== agentId
 					) {
 						this.logService.info(
-							`[AgentStudioWebviewController] imgui→chat.send for ${employeeId} ignored by panel ` +
+							`[AgentStudioWebviewController] imgui→chat.send for ${agentId} ignored by panel ` +
 							`showing ${this._activeChatEmployeeId}`,
 						);
 						return;
@@ -2475,19 +2508,19 @@ export class AgentStudioWebviewController extends Disposable {
 						this._activeChatAgentSessionId !== agentSessionId
 					) {
 						this.logService.info(
-							`[AgentStudioWebviewController] imgui→chat.send for ${employeeId}/${agentSessionId} ignored by panel ` +
+							`[AgentStudioWebviewController] imgui→chat.send for ${agentId}/${agentSessionId} ignored by panel ` +
 							`with session ${this._activeChatAgentSessionId}`,
 						);
 						return;
 					}
 					this.logService.info(
-						`[AgentStudioWebviewController] imgui→chat.send ${employeeId} ` +
+						`[AgentStudioWebviewController] imgui→chat.send ${agentId} ` +
 						`(workspaceId=${workspaceId || "<none>"}, sessionId=${agentSessionId || "<none>"})`,
 					);
 					// 1) Notify webview UI to append the user bubble (mirrors what
 					//    the chat input would have done before sending).
 					this._sendEvent("chat.userMessageAppended", {
-						employeeId,
+						agentId,
 						agentSessionId,
 						message: {
 							id: `msg_${Date.now()}_user_imgui_${Math.random().toString(36).substring(2, 9)}`,
@@ -2504,7 +2537,7 @@ export class AgentStudioWebviewController extends Disposable {
 					//    against the Root default session and "vanish" relative to
 					//    the Fork's view.
 					void this._handleChatSend({
-						employeeId,
+						agentId,
 						message,
 						agentSessionId,
 						workspaceId,
@@ -2600,87 +2633,22 @@ export class AgentStudioWebviewController extends Disposable {
 	private _handleProvidersSelect(payload: IProviderSelectPayload): void {
 		this.logService.info(
 			`[AgentStudio] _handleProvidersSelect: providerId=${payload.providerId}, modelId=${payload.modelId}, ` +
-			`agentId=${payload.agentId}, employeeId=${payload.employeeId}, panelType=${this.panelType}`,
+			`agentId=${(payload.agentId)}, panelType=${this.panelType}`,
 		);
 
 		this.modelSelectorService.setSelection({
 			providerId: payload.providerId,
 			modelId: payload.modelId,
-			agentId: payload.agentId,
+			agentId: (payload.agentId),
 		});
-		if (payload.agentId) {
-			this.modelSelectorService.setSelectedAgentId(payload.agentId);
+		if ((payload.agentId)) {
+			this.modelSelectorService.setSelectedAgentId((payload.agentId));
 		}
 
-		// Persist provider/model/agent selection to the active employee's agent.yaml
-		// and update the employee record in employees.json so it survives window reload
-		if (payload.employeeId) {
-			this._persistProviderSelection(payload).catch((err) => {
-				this.logService.error(
-					"[AgentStudio] _persistProviderSelection failed",
-					err,
-				);
-			});
-		} else {
-			this.logService.warn(
-				"[AgentStudio] _handleProvidersSelect: no employeeId — skipping persistence",
-			);
-		}
-	}
-
-	/**
-	 * Persist provider selection to both agent.yaml and employees.json.
-	 * Runs sequentially to avoid race conditions between file writes and
-	 * the employees.changed event that triggers a UI reload.
-	 */
-	private async _persistProviderSelection(
-		payload: IProviderSelectPayload,
-	): Promise<void> {
-		const { employeeId, providerId, agentId } = payload;
-		let { modelId } = payload;
-
-		// Normalize modelId: strip knot-style prefix like "knot/<uuid>::" so that
-		// only the bare model name (e.g. "deepseek-v3.1") is persisted.
-		if (modelId && modelId.includes("::")) {
-			const bare = modelId.split("::").pop()!;
-			this.logService.info(
-				`[AgentStudio] Normalizing modelId: "${modelId}" → "${bare}"`,
-			);
-			modelId = bare;
-		}
-
-		// 1) Write to agent.yaml first (does NOT fire employees.changed)
-		try {
-			await this.agentStudioService.updateEmployeeModelConfig(employeeId!, {
-				providerId,
-				modelId,
-				agentId,
-			});
-			this.logService.info(
-				`[AgentStudio] agent.yaml updated for employee ${employeeId}`,
-			);
-		} catch (err) {
-			this.logService.error(
-				"[AgentStudio] Failed to persist model config to agent.yaml",
-				err,
-			);
-		}
-
-		// 2) Update employees.json (fires employees.changed → triggers UI reload)
-		try {
-			await this.agentStudioService.updateEmployee(employeeId!, {
-				provider: providerId,
-				model: modelId,
-			});
-			this.logService.info(
-				`[AgentStudio] employees.json updated for employee ${employeeId}: provider=${providerId}, model=${modelId}`,
-			);
-		} catch (err) {
-			this.logService.error(
-				"[AgentStudio] Failed to update employee provider/model",
-				err,
-			);
-		}
+		// Provider selection is managed by ModelSelectorService in-memory.
+		// Persistence to agent.yaml / employees.json is handled by the new
+		// agent system (AgentInstanceService) — the legacy employee storage
+		// path has been removed.
 	}
 
 	private _handleProvidersGetSelection(): IProviderSelectPayload | null {
@@ -2696,39 +2664,14 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
-	 * Read provider/model/agent selection from the employee's agent.yaml.
-	 * Falls back to the global ModelSelectorService selection if agent.yaml
-	 * doesn't have valid model config.
+	 * @deprecated Legacy employee-based provider/model selection restore.
+	 * The new agent system handles this via AgentInstanceService.
+	 * Falls back to the global ModelSelectorService selection.
 	 */
 	private async _handleProvidersGetSelectionForEmployee(
-		employeeId: string,
+		agentId: string,
 	): Promise<IProviderSelectPayload | null> {
-		if (!employeeId) {
-			return this._handleProvidersGetSelection();
-		}
-
-		try {
-			const config =
-				await this.agentStudioService.getEmployeeModelConfig(employeeId);
-			if (config && config.providerId && config.modelId) {
-				this.logService.info(
-					`[AgentStudio] Restored model selection from agent.yaml for employee ${employeeId}: ` +
-					`${config.providerId}/${config.modelId}${config.agentId ? ` [agent: ${config.agentId}]` : ""}`,
-				);
-				return {
-					providerId: config.providerId,
-					modelId: config.modelId,
-					agentId: config.agentId,
-				};
-			}
-		} catch (err) {
-			this.logService.debug(
-				"[AgentStudio] Could not read model config from agent.yaml, falling back to global",
-				err,
-			);
-		}
-
-		// Fallback to global selection
+		// Legacy employee system is deprecated — always fall back to global selection
 		return this._handleProvidersGetSelection();
 	}
 
@@ -2915,13 +2858,13 @@ export class AgentStudioWebviewController extends Disposable {
 	 *  - 任意一步失败都不会抛错，只记录日志——Agent 删除流程不应被记忆
 	 *    清理失败阻断（gateway 可能未启动）。
 	 *
-	 * @param employeeId 被删除的 Agent ID
+	 * @param agentId 被删除的 Agent ID
 	 */
-	private async _cleanupAgentMemory(employeeId: string): Promise<void> {
-		if (!employeeId) {
+	private async _cleanupAgentMemory(agentId: string): Promise<void> {
+		if (!agentId) {
 			return;
 		}
-		const sessionKey = this._deriveSessionKey(employeeId);
+		const sessionKey = this._deriveSessionKey(agentId);
 		const FETCH_LIMIT = 500;
 
 		// 1) 收集 L0 record_ids
@@ -2948,7 +2891,7 @@ export class AgentStudioWebviewController extends Disposable {
 			.filter((id): id is string => typeof id === "string" && id.length > 0);
 
 		this.logService.info(
-			`[AgentStudioWebviewController] cleanupAgentMemory(${employeeId}): sessionKey="${sessionKey}", L0=${l0RecordIds.length}, L1=${l1RecordIds.length}`,
+			`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): sessionKey="${sessionKey}", L0=${l0RecordIds.length}, L1=${l1RecordIds.length}`,
 		);
 
 		// 3) 批量删除（每个网关接口一次调用即可批量删）
@@ -2959,7 +2902,7 @@ export class AgentStudioWebviewController extends Disposable {
 			}, "agentStudio.cleanupAgentMemory.deleteL0");
 			const failed = Array.isArray(resp?.failed) ? resp!.failed!.length : 0;
 			this.logService.info(
-				`[AgentStudioWebviewController] cleanupAgentMemory(${employeeId}): L0 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
+				`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): L0 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
 			);
 		}
 		if (l1RecordIds.length > 0) {
@@ -2969,7 +2912,7 @@ export class AgentStudioWebviewController extends Disposable {
 			}, "agentStudio.cleanupAgentMemory.deleteL1");
 			const failed = Array.isArray(resp?.failed) ? resp!.failed!.length : 0;
 			this.logService.info(
-				`[AgentStudioWebviewController] cleanupAgentMemory(${employeeId}): L1 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
+				`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): L1 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
 			);
 		}
 	}
@@ -2986,7 +2929,8 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleOpenCheckpointDiff(
 		payload: IChatOpenCheckpointDiffPayload,
 	): Promise<void> {
-		const { checkpointId, fileUri, employeeId, sessionId } = payload;
+		const { checkpointId, fileUri, sessionId } = payload;
+		const agentId = payload.agentId;
 		this.logService.info(
 			`[AgentStudioWebviewController] chat.openCheckpointDiff → ${checkpointId} file=${fileUri}`,
 		);
@@ -2995,7 +2939,7 @@ export class AgentStudioWebviewController extends Disposable {
 			// 1. Read snapshot content (checkpoint-time file content).
 			//    取整份快照列表后自行匹配，便于在 URI 不一致时打印诊断信息。
 			const snapshots = await this.checkpointService.getFileSnapshots(
-				employeeId, sessionId, checkpointId,
+				agentId, sessionId, checkpointId,
 			);
 			const matched = snapshots.find(s => s.uri.toString() === fileUri);
 			if (!matched) {
@@ -3008,7 +2952,7 @@ export class AgentStudioWebviewController extends Disposable {
 			const snapshotContent = matched.content;
 
 			// 2. Write snapshot to a temp file under workspace home
-			const employee = await this.agentStudioService.getEmployee(employeeId);
+			const employee = await this.agentStudioService.getEmployee(agentId);
 			let baseDir: string;
 			if (employee?.workspaceId) {
 				const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
@@ -3063,16 +3007,16 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IChatRevertAllCheckpointsPayload,
 	): Promise<void> {
 		this.logService.info(
-			`[AgentStudioWebviewController] chat.revertAllCheckpoints (employee=${payload.employeeId})`,
+			`[AgentStudioWebviewController] chat.revertAllCheckpoints (employee=${(payload.agentId)})`,
 		);
 		await this.checkpointService.revertAllCheckpoints(
-			payload.employeeId,
+			(payload.agentId),
 			payload.sessionId,
 		);
 		if (payload.truncateAfterMessageId) {
 			try {
 				await this.agentChatService.deleteMessagesAfter(
-					payload.employeeId,
+					(payload.agentId),
 					payload.sessionId,
 					payload.truncateAfterMessageId,
 				);
@@ -3094,10 +3038,10 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IChatKeepAllCheckpointsPayload,
 	): Promise<void> {
 		this.logService.info(
-			`[AgentStudioWebviewController] chat.keepAllCheckpoints (employee=${payload.employeeId})`,
+			`[AgentStudioWebviewController] chat.keepAllCheckpoints (employee=${(payload.agentId)})`,
 		);
 		await this.checkpointService.deleteAllCheckpoints(
-			payload.employeeId,
+			(payload.agentId),
 			payload.sessionId,
 		);
 	}
@@ -3110,14 +3054,15 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleOpenAllCheckpointsDiff(
 		payload: IChatOpenAllCheckpointsDiffPayload,
 	): Promise<void> {
-		const { employeeId, sessionId } = payload;
+		const { sessionId } = payload;
+		const agentId = payload.agentId;
 		this.logService.info(
-			`[AgentStudioWebviewController] chat.openAllCheckpointsDiff (employee=${employeeId})`,
+			`[AgentStudioWebviewController] chat.openAllCheckpointsDiff (employee=${agentId})`,
 		);
 
 		try {
 			const snapshots = await this.checkpointService.getAggregatedFileSnapshots(
-				employeeId, sessionId,
+				agentId, sessionId,
 			);
 			if (snapshots.length === 0) {
 				this.logService.info('[AgentStudioWebviewController] openAllCheckpointsDiff: no snapshots');
@@ -3125,7 +3070,7 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 
 			// 解析临时快照写入根目录（与单文件 diff 一致）。
-			const employee = await this.agentStudioService.getEmployee(employeeId);
+			const employee = await this.agentStudioService.getEmployee(agentId);
 			let baseDir: string;
 			if (employee?.workspaceId) {
 				const workspace = await this.agentStudioService.getWorkspace(employee.workspaceId);
@@ -3163,7 +3108,7 @@ export class AgentStudioWebviewController extends Disposable {
 
 			// multiDiffSource 作为该窗口的唯一标识：再次打开会复用同一窗口。
 			const multiDiffInput: IResourceMultiDiffEditorInput = {
-				multiDiffSource: URI.from({ scheme: 'agent-checkpoint-alldiff', path: `/${employeeId}/${sessionId}` }),
+				multiDiffSource: URI.from({ scheme: 'agent-checkpoint-alldiff', path: `/${agentId}/${sessionId}` }),
 				label: '检查点全部变更',
 				resources,
 				isTransient: true,

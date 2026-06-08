@@ -211,7 +211,7 @@ export const enum AgentSource {
 	Imported = 'imported',
 }
 
-export const enum EmployeeStatus {
+export const enum AgentStatus {
 	Idle = 'idle',
 	Working = 'working',
 	Thinking = 'thinking',
@@ -287,6 +287,124 @@ export interface AgentBootstrapTemplates {
 	toolsMd?: string;
 	/** MEMORY.md — Initial long-term memory */
 	memoryMd?: string;
+}
+
+/**
+ * Agent — a chat-ready agent definition.  Replaces the old Employee model.
+ * Agents come from two sources: builtin (hardcoded preset definitions) and
+ * custom (user-created, persisted in custom-agents.json).
+ *
+ * Unlike the old Employee model, Agents are NOT instantiated from presets —
+ * the preset IS the agent.  There is no separate "deploy" / "create instance"
+ * step; selecting an agent opens its chat directly.
+ */
+export interface Agent {
+	readonly id: string;
+	name: string;
+	role: string;
+	description: string;
+	icon: string;
+	avatar?: string;
+	model: string;
+	skills: string[];
+	tools?: string[];
+	category: string;
+	systemPrompt?: string;
+	temperature?: number;
+	handOffs?: IAgentHandOff[];
+	hooks?: IAgentHooks;
+	visibility?: IAgentVisibility;
+	agents?: string[];
+	confidenceThreshold?: number;
+	parallelStrategy?: 'voting' | 'coverage';
+	source: 'builtin' | 'custom';
+	status?: AgentStatus;
+	sortOrder?: number;
+
+	/** Agent type: planner (can orchestrate) or worker (default). */
+	agentType?: AgentType;
+
+	// ── ⚠️ DO NOT add per-workspace runtime fields here ─────────────────────
+	// `Agent` is a GLOBAL singleton definition: a given agent id (e.g. 'coder')
+	// has exactly ONE record shared across every workspace. Per-(workspace×agent)
+	// runtime state — workspaceId / worktreePath / worktreeBranch / agentDir /
+	// memoryConfig.entries — is INSTANCE state and lives on `AgentBinding`
+	// (persisted per workspace in agent-bindings.json). Putting instance state
+	// on the global record causes last-write-wins corruption when the same agent
+	// runs in multiple workspaces. See AgentBinding below.
+
+	/**
+	 * config.md driven HTML config view.
+	 * The MD file is the single source of truth for the agent's interactive
+	 * config panel; HTML interactions are translated into patches on it.
+	 * NOTE: this is part of the agent DEFINITION (same in every workspace),
+	 * so it correctly belongs on the global Agent, not on AgentBinding.
+	 */
+	configMd?: AgentConfigMd;
+
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * AgentBinding — the per-(workspace × agent) runtime instance state.
+ *
+ * `Agent` is a global singleton definition; `AgentBinding` is the workspace-local
+ * record that captures everything specific to running that agent inside ONE
+ * workspace. Persisted at `{workspace}/.sarosisworkspace/agent-bindings.json`
+ * keyed by agentId, so two workspaces running the same agent never clobber each
+ * other's worktree / memory / instance dir.
+ *
+ * Resolution at runtime: the driver only has `agentId` + `sessionId`; it resolves
+ * the owning workspace via `getSession(sessionId).workspaceId`, then loads the
+ * binding via `getAgentBinding(workspaceId, agentId)`.
+ */
+export interface AgentBinding {
+	/** The global agent this binding instantiates. */
+	readonly agentId: string;
+	/** Workspace this binding belongs to. */
+	readonly workspaceId: string;
+	/** Git worktree directory this agent works in within this workspace (its isolated sandbox root). */
+	worktreePath?: string;
+	/** Branch name of the agent's worktree. */
+	worktreeBranch?: string;
+	/** Directory under {workspace}/.sarosisworkspace/agents/{slug}/ holding instance files. */
+	agentDir?: string;
+	/**
+	 * Memory configuration — controls L0/L1 recall + Persona injection at runtime.
+	 * Per-workspace because persona `entries` and recall `scope` are instance state.
+	 */
+	memoryConfig?: AgentMemoryConfig;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * Memory configuration shared by Agent (and historically Employee).
+ * Controls how the agent's L0/L1 memory is loaded and injected into prompts,
+ * plus the user-maintained Persona Memory entries.
+ */
+export interface AgentMemoryConfig {
+	enabled: boolean;
+	maxEntries: number;
+	strategy: 'summary' | 'full' | 'sliding_window';
+	windowSize?: number;
+	/**
+	 * Recall scope:
+	 *   - 'agent'     → only this agent's own L1 memory (strictest isolation)
+	 *   - 'workspace' → shared across all agents in the workspace
+	 *   - 'global'    → whole-library (legacy behavior)
+	 * Defaults to 'agent' when undefined.
+	 */
+	scope?: 'agent' | 'workspace' | 'global';
+	entries: Array<{
+		id: string;
+		key: string;
+		value: string;
+		category?: string;
+		createdAt?: string;
+		updatedAt?: string;
+	}>;
 }
 
 export interface Employee {
@@ -395,7 +513,7 @@ export interface Employee {
 	 * Aligned with VS Code's ICustomAgent.sessionTypes.
 	 */
 	sessionTypes?: string[];
-	status: EmployeeStatus;
+	status: AgentStatus;
 	/**
 	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
 	 * Defaults to 'worker' if unset.
@@ -834,7 +952,16 @@ export interface ChatMessage {
 	readonly id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
 	content: string;
-	employeeId: string;
+	/**
+	 * @deprecated 2026-06-07 起逐步迁移到 agentId。新代码请用 agentId；
+	 * 当前两个字段同值共存，待全部消费方迁移完成后将删除 employeeId。
+	 */
+	employeeId?: string;
+	/**
+	 * Agent 实例 ID（= 旧 employeeId 的值）。新代码请使用此字段。
+	 * 重构期间作为可选字段，迁移结束后将变为必填并删除 employeeId。
+	 */
+	agentId?: string;
 	/** Workspace Session (Fork) ID */
 	sessionId?: string;
 	/** Agent-level session ID within a Fork */

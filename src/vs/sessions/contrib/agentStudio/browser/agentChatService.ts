@@ -77,9 +77,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private _globalDataUri: URI | undefined;
 
 	private readonly _onDidChangeAgentSessionsEmitter = this._register(
-		new Emitter<{ employeeId: string }>(),
+		new Emitter<{ agentId: string }>(),
 	);
-	readonly onDidChangeAgentSessions: Event<{ employeeId: string }> =
+	readonly onDidChangeAgentSessions: Event<{ agentId: string }> =
 		this._onDidChangeAgentSessionsEmitter.event;
 
 	constructor(
@@ -121,28 +121,37 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	/**
-	 * Resolve agent's sessions directory URI + sessions.json index URI.
-	 * Returns null if agent/workspace has no disk path.
+	 * Resolve the sessions directory and index file URI for an agent.
+	 *
+	 * Pure agent model — there is NO employee/instance indirection:
+	 *   - The agent's own id is the on-disk directory name.
+	 *   - The storage root follows the currently active workspace
+	 *     (workspace.path), falling back to the global data dir when no
+	 *     workspace is active or it has no disk path.
+	 *
+	 * Layout: {root}/data/agents/{agentId}/sessions(.json)
 	 */
-	private async _resolveAgentPaths(employeeId: string): Promise<{
+	private async _resolveAgentPaths(agentId: string): Promise<{
 		sessionsDirUri: URI;
 		indexUri: URI;
-	} | null> {
-		const employee = await this.studioService.getEmployee(employeeId);
-		if (!employee?.agentDir || !employee.workspaceId) {
-			return null;
+	}> {
+		// Determine the storage root from the active workspace, if any.
+		let rootUri: URI;
+		const activeWorkspaceId = this.studioService.getActiveWorkspaceId();
+		if (activeWorkspaceId) {
+			const workspace = await this.studioService.getWorkspace(activeWorkspaceId);
+			rootUri = workspace?.path
+				? URI.file(workspace.path)
+				: this._getGlobalDataUri();
+		} else {
+			rootUri = this._getGlobalDataUri();
 		}
-		const workspace = await this.studioService.getWorkspace(
-			employee.workspaceId,
-		);
-		if (!workspace?.path) {
-			return null;
-		}
+
 		const agentUri = URI.joinPath(
-			URI.file(workspace.path),
+			rootUri,
 			WORKSPACE_DATA_DIR,
 			AGENTS_DIR,
-			employee.agentDir,
+			agentId,
 		);
 		return {
 			sessionsDirUri: URI.joinPath(agentUri, "sessions"),
@@ -154,8 +163,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		return URI.joinPath(sessionsDirUri, `${sessionId}.json`);
 	}
 
-	private _cacheKey(employeeId: string, sessionId?: string): string {
-		return sessionId ? `${employeeId}::${sessionId}` : employeeId;
+	private _cacheKey(agentId: string, sessionId?: string): string {
+		return sessionId ? `${agentId}::${sessionId}` : agentId;
 	}
 
 	// ─── Global history (fallback) ───────────────────────────────────────────
@@ -182,7 +191,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				`[AgentChatService] Loaded global history: ${this._historyCache.size} keys`,
 			);
 
-			// 🔒 启动期净化（2026-06-05）：noSession 桶（key 不含 `::`，即 `employeeId`
+			// 🔒 启动期净化（2026-06-05）：noSession 桶（key 不含 `::`，即 `agentId`
 			// 本身）历史上沉积过 user/assistant/tool 消息，会被 getHistory 在每次 session
 			// 请求时 merge system 消息时报警 dropped X non-system messages，并增加 IO。
 			// 在加载完成后立刻把所有 noSession 桶过滤为仅 system 消息，并回写 global
@@ -239,7 +248,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	// ─── Per-agent session file persistence ──────────────────────────────────
 
 	private async _persistToSessionFile(
-		employeeId: string,
+		agentId: string,
 		sessionId: string | undefined,
 		messages: ChatMessage[],
 	): Promise<void> {
@@ -247,11 +256,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			return;
 		} // No session assigned yet — skip per-file persist
 		try {
-			const paths = await this._resolveAgentPaths(employeeId);
-			if (!paths) {
-				return;
-			}
-			const { sessionsDirUri } = paths;
+			const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
 			if (!(await this.fileService.exists(sessionsDirUri))) {
 				await this.fileService.createFolder(sessionsDirUri);
 			}
@@ -260,7 +265,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				fileUri,
 				VSBuffer.fromString(JSON.stringify(messages, null, 2)),
 			);
-			await this._updateSessionIndex(employeeId, sessionId, messages.length);
+			await this._updateSessionIndex(agentId, sessionId, messages.length);
 		} catch (err) {
 			this.logService.error(
 				"[AgentChatService] _persistToSessionFile failed:",
@@ -270,17 +275,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	private async _loadFromSessionFile(
-		employeeId: string,
+		agentId: string,
 		sessionId?: string,
 	): Promise<ChatMessage[]> {
 		if (!sessionId) {
 			return [];
 		} // No session specified — nothing to load
 		try {
-			const paths = await this._resolveAgentPaths(employeeId);
-			if (!paths) {
-				return [];
-			}
+			const paths = await this._resolveAgentPaths(agentId);
 			const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
 			if (!(await this.fileService.exists(fileUri))) {
 				return [];
@@ -295,13 +297,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	// ─── Session Index (sessions.json) ───────────────────────────────────────
 
 	private async _readSessionIndex(
-		employeeId: string,
+		agentId: string,
 	): Promise<AgentSessionMeta[]> {
 		try {
-			const paths = await this._resolveAgentPaths(employeeId);
-			if (!paths) {
-				return [];
-			}
+			const paths = await this._resolveAgentPaths(agentId);
 			if (!(await this.fileService.exists(paths.indexUri))) {
 				return [];
 			}
@@ -313,14 +312,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	private async _writeSessionIndex(
-		employeeId: string,
+		agentId: string,
 		index: AgentSessionMeta[],
 	): Promise<void> {
 		try {
-			const paths = await this._resolveAgentPaths(employeeId);
-			if (!paths) {
-				return;
-			}
+			const paths = await this._resolveAgentPaths(agentId);
 			await this.fileService.writeFile(
 				paths.indexUri,
 				VSBuffer.fromString(JSON.stringify(index, null, 2)),
@@ -338,11 +334,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * If the session doesn't exist yet, auto-create it (supports first-message auto-create).
 	 */
 	private async _updateSessionIndex(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		messageCount: number,
 	): Promise<void> {
-		const index = await this._readSessionIndex(employeeId);
+		const index = await this._readSessionIndex(agentId);
 		const now = new Date().toISOString();
 		let entry = index.find((s) => s.id === sessionId);
 		if (!entry) {
@@ -358,13 +354,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			entry.messageCount = messageCount;
 			entry.updatedAt = now;
 		}
-		await this._writeSessionIndex(employeeId, index);
-		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
+		await this._writeSessionIndex(agentId, index);
+		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
 	}
 
 	// ─── Public: appendMessage ───────────────────────────────────────────────
 
-	async appendMessage(employeeId: string, message: ChatMessage): Promise<void> {
+	async appendMessage(agentId: string, message: ChatMessage): Promise<void> {
 		await this._ensureHistoryLoaded();
 		// 🔒 严格隔离写入侧（2026-06-05）：
 		// 之前任何 user/assistant/tool 落到 noSession 桶（agentSessionId=undefined）
@@ -373,11 +369,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 必须带 agentSessionId，否则丢弃并告警，避免日后再次串台。
 		if (!message.agentSessionId && message.role !== 'system') {
 			this.logService.warn(
-				`[AgentChatService] appendMessage: dropping ${message.role} message without agentSessionId for ${employeeId} (cross-session leakage guard) - content="${(message.content || '').substring(0, 60)}"`,
+				`[AgentChatService] appendMessage: dropping ${message.role} message without agentSessionId for ${agentId} (cross-session leakage guard) - content="${(message.content || '').substring(0, 60)}"`,
 			);
 			return;
 		}
-		const key = this._cacheKey(employeeId, message.agentSessionId);
+		const key = this._cacheKey(agentId, message.agentSessionId);
 		let messages = this._historyCache.get(key);
 		if (!messages) {
 			messages = [];
@@ -405,7 +401,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this.logService.error("[AgentChatService] Global persist failed:", err),
 		);
 		this._persistToSessionFile(
-			employeeId,
+			agentId,
 			message.agentSessionId,
 			messages,
 		).catch((err) =>
@@ -419,15 +415,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	// ─── Public: getHistory / clearHistory ────────────────────────────────────
 
 	async getHistory(
-		employeeId: string,
+		agentId: string,
 		sessionId?: string,
 	): Promise<ChatMessage[]> {
 		await this._ensureHistoryLoaded();
-		const key = this._cacheKey(employeeId, sessionId);
+		const key = this._cacheKey(agentId, sessionId);
 		let messages = this._historyCache.get(key);
 
 		if (!messages || messages.length === 0) {
-			messages = await this._loadFromSessionFile(employeeId, sessionId);
+			messages = await this._loadFromSessionFile(agentId, sessionId);
 			if (messages.length > 0) {
 				this._historyCache.set(key, messages);
 			}
@@ -439,19 +435,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// so they should appear regardless of which session is active.
 		//
 		// 🔒 严格隔离修复（2026-06-05）：
-		// 历史上 noSession 桶（key === employeeId，无 sessionId）在多条路径下被错误
+		// 历史上 noSession 桶（key === agentId，无 sessionId）在多条路径下被错误
 		// 写入过 user / assistant / tool 消息（旧 webview controller 首消息分配 session
-		// 之前的临时持久化、错误回收路径、跨 worktree 共用 employeeId 的旧数据等）。
+		// 之前的临时持久化、错误回收路径、跨 worktree 共用 agentId 的旧数据等）。
 		// 之前不加过滤地整桶 merge 进来，会让一个全新 sessionId 的会话立即看到
 		// **几百条** 跨主题、跨 worktree 的历史（含重复 user 消息）。
 		//
 		// 真正需要透传的只有 task orchestration 注入的 **system 消息**。其它角色一律
 		// 丢弃，避免污染当前 session 的上下文。
 		if (sessionId) {
-			const noSessionKey = this._cacheKey(employeeId, undefined);
+			const noSessionKey = this._cacheKey(agentId, undefined);
 			let noSessionMessages = this._historyCache.get(noSessionKey);
 			if (!noSessionMessages || noSessionMessages.length === 0) {
-				noSessionMessages = await this._loadFromSessionFile(employeeId, undefined);
+				noSessionMessages = await this._loadFromSessionFile(agentId, undefined);
 			}
 			if (noSessionMessages && noSessionMessages.length > 0) {
 				// 仅保留 system 消息（这是注释里声明的合法用途）
@@ -480,22 +476,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		return messages || [];
 	}
 
-	async clearHistory(employeeId: string, sessionId?: string): Promise<void> {
+	async clearHistory(agentId: string, sessionId?: string): Promise<void> {
 		await this._ensureHistoryLoaded();
-		const key = this._cacheKey(employeeId, sessionId);
+		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.delete(key);
 		await this._persistGlobalHistory();
 		if (sessionId) {
 			try {
-				const paths = await this._resolveAgentPaths(employeeId);
-				if (paths) {
-					const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
-					if (await this.fileService.exists(fileUri)) {
-						await this.fileService.writeFile(
-							fileUri,
-							VSBuffer.fromString("[]"),
-						);
-					}
+				const paths = await this._resolveAgentPaths(agentId);
+				const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+				if (await this.fileService.exists(fileUri)) {
+					await this.fileService.writeFile(
+						fileUri,
+						VSBuffer.fromString("[]"),
+					);
 				}
 			} catch {
 				/* ignore */
@@ -644,16 +638,16 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	async deleteMessagesAfter(
-		employeeId: string,
+		agentId: string,
 		sessionId: string | undefined,
 		messageId: string,
 	): Promise<void> {
 		await this._ensureHistoryLoaded();
-		const key = this._cacheKey(employeeId, sessionId);
+		const key = this._cacheKey(agentId, sessionId);
 		let messages = this._historyCache.get(key);
 
 		if (!messages || messages.length === 0) {
-			messages = await this._loadFromSessionFile(employeeId, sessionId);
+			messages = await this._loadFromSessionFile(agentId, sessionId);
 		}
 		if (!messages || messages.length === 0) {
 			this.logService.info(`[AgentChatService] deleteMessagesAfter: no messages found for ${key}`);
@@ -679,7 +673,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this.logService.error("[AgentChatService] Global persist failed:", err),
 		);
 		this._persistToSessionFile(
-			employeeId,
+			agentId,
 			sessionId,
 			updatedMessages,
 		).catch((err) =>
@@ -690,18 +684,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	// ─── Public: sendMessage ─────────────────────────────────────────────────
 
 	async sendMessage(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options: IChatSendOptions,
 		onDelta: (delta: IChatStreamDelta) => void,
 	): Promise<ChatMessage> {
 		this.logService.info(
-			`[CoderTrace] AgentChatService.sendMessage: employeeId=${employeeId}, messageLen=${message.length}, model=${options.model}, chatMode=${options.chatMode}, explicitSkillIds=${JSON.stringify(options.explicitSkillIds)}`,
+			`[CoderTrace] AgentChatService.sendMessage: agentId=${agentId}, messageLen=${message.length}, model=${options.model}, chatMode=${options.chatMode}, explicitSkillIds=${JSON.stringify(options.explicitSkillIds)}`,
 		);
 
 		const streamKey = options.agentSessionId
-			? `${employeeId}::${options.agentSessionId}`
-			: employeeId;
+			? `${agentId}::${options.agentSessionId}`
+			: agentId;
 		this.cancelStream(streamKey);
 
 		const controller = new AbortController();
@@ -741,7 +735,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// Persist user message (fire-and-forget, don't block AI response)
 			// Defensive: check if an identical user message was already persisted
 			// in the last 5 seconds (e.g. by the webview controller or another caller).
-			const key = this._cacheKey(employeeId, options.agentSessionId);
+			const key = this._cacheKey(agentId, options.agentSessionId);
 			const existingMessages = this._historyCache.get(key) || [];
 			const now = Date.now();
 			const alreadyPersisted = existingMessages.some(m =>
@@ -756,11 +750,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: 'user',
 					content: message,
-					employeeId,
+					agentId,
 					agentSessionId: options.agentSessionId,
 					timestamp: new Date().toISOString(),
 				};
-				this.appendMessage(employeeId, userMessage).catch(err =>
+				this.appendMessage(agentId, userMessage).catch(err =>
 					this.logService.error('[AgentChatService] Failed to persist user message:', err)
 				);
 			} else {
@@ -777,7 +771,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// assistant）。只检查末尾一条最安全：是当前 user 就剔除，否则不动。
 			let priorMessages: IChatMessage[] | undefined;
 			try {
-				const history = await this.getHistory(employeeId, options.agentSessionId);
+				const history = await this.getHistory(agentId, options.agentSessionId);
 				const trimmed = [...history];
 				const last = trimmed[trimmed.length - 1];
 				if (last && last.role === 'user' && last.content === message) {
@@ -785,7 +779,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				}
 				priorMessages = this._toDriverMessages(trimmed);
 				this.logService.info(
-					`[AgentChatService] Assembled ${priorMessages.length} prior driver messages from ${history.length} history msgs (key=${this._cacheKey(employeeId, options.agentSessionId)})`,
+					`[AgentChatService] Assembled ${priorMessages.length} prior driver messages from ${history.length} history msgs (key=${this._cacheKey(agentId, options.agentSessionId)})`,
 				);
 			} catch (err) {
 				this.logService.warn(
@@ -795,7 +789,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 
 			const stream = this.driverService.executeFromChatOptions(
-				employeeId,
+				agentId,
 				message,
 				options,
 				priorMessages,
@@ -983,7 +977,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						id: `msg_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 7)}`,
 						role: "assistant",
 						content: turn.content,
-						employeeId,
+						agentId,
 						agentSessionId: options.agentSessionId,
 						turnId,
 						timestamp: new Date().toISOString(),
@@ -1006,7 +1000,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 				// 顺序持久化（保持磁盘顺序 = 因果顺序）
 				for (const msg of builtMessages) {
-					await this.appendMessage(employeeId, msg).catch((err) =>
+					await this.appendMessage(agentId, msg).catch((err) =>
 						this.logService.error(
 							"[AgentChatService] Failed to persist assistant turn message:",
 							err,
@@ -1024,7 +1018,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: "assistant",
 					content: fullContent,
-					employeeId,
+					agentId,
 					agentSessionId: options.agentSessionId,
 					thinking: fullThinking || undefined,
 					toolCalls: toolCalls || undefined,
@@ -1041,7 +1035,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					tokenUsage: sharedTokenUsage,
 				};
 
-				this.appendMessage(employeeId, chatMessage).catch((err) =>
+				this.appendMessage(agentId, chatMessage).catch((err) =>
 					this.logService.error(
 						"[AgentChatService] Failed to persist assistant message:",
 						err,
@@ -1052,7 +1046,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			return chatMessage;
 		} catch (error) {
 			this.logService.error(
-				`[AgentChatService] sendMessage failed for ${employeeId}:`,
+				`[AgentChatService] sendMessage failed for ${agentId}:`,
 				error,
 			);
 			onDelta({ type: "error", content: String(error) });
@@ -1062,12 +1056,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 	}
 
-	cancelStream(employeeId: string, agentSessionId?: string): void {
+	cancelStream(agentId: string, agentSessionId?: string): void {
 		// The stream is stored under a composite key when agentSessionId exists
 		// (see sendMessage line ~297).  We must look up the same key to abort it.
 		const streamKey = agentSessionId
-			? `${employeeId}::${agentSessionId}`
-			: employeeId;
+			? `${agentId}::${agentSessionId}`
+			: agentId;
 		const controller = this._activeStreams.get(streamKey);
 		if (controller) {
 			controller.abort();
@@ -1081,8 +1075,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * List all sessions for an agent.
 	 * Reads from sessions.json index (fast, no file scanning).
 	 */
-	async listAgentSessions(employeeId: string): Promise<AgentSessionMeta[]> {
-		const index = await this._readSessionIndex(employeeId);
+	async listAgentSessions(agentId: string): Promise<AgentSessionMeta[]> {
+		const index = await this._readSessionIndex(agentId);
 		index.sort(
 			(a, b) =>
 				new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
@@ -1094,19 +1088,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * Create a new session. Returns the full AgentSessionMeta.
 	 */
 	async createAgentSession(
-		employeeId: string,
+		agentId: string,
 		name?: string,
 	): Promise<AgentSessionMeta> {
 		this.logService.info(
-			`[AgentChatService] createAgentSession: BEGIN employeeId=${employeeId}, name=${name ?? '(default)'}`,
+			`[AgentChatService] createAgentSession: BEGIN agentId=${agentId}, name=${name ?? '(default)'}`,
 		);
-		const paths = await this._resolveAgentPaths(employeeId);
-		if (!paths) {
-			this.logService.error(
-				`[AgentChatService] createAgentSession: FAILED — agent has no workspace directory (employeeId=${employeeId})`,
-			);
-			throw new Error("Agent has no workspace directory");
-		}
+		const paths = await this._resolveAgentPaths(agentId);
 
 		const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
 		const now = new Date().toISOString();
@@ -1126,14 +1114,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			VSBuffer.fromString("[]"),
 		);
 
-		const index = await this._readSessionIndex(employeeId);
+		const index = await this._readSessionIndex(agentId);
 		index.push(meta);
-		await this._writeSessionIndex(employeeId, index);
+		await this._writeSessionIndex(agentId, index);
 
 		this.logService.info(
-			`[AgentChatService] createAgentSession: DONE sessionId=${sessionId}, employeeId=${employeeId}, indexSize=${index.length}`,
+			`[AgentChatService] createAgentSession: DONE sessionId=${sessionId}, agentId=${agentId}, indexSize=${index.length}`,
 		);
-		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
+		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
 		return meta;
 	}
 
@@ -1141,19 +1129,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * Rename a session.
 	 */
 	async renameAgentSession(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		newName: string,
 	): Promise<void> {
-		const index = await this._readSessionIndex(employeeId);
+		const index = await this._readSessionIndex(agentId);
 		const entry = index.find((s) => s.id === sessionId);
 		if (!entry) {
 			throw new Error(`Session ${sessionId} not found`);
 		}
 		entry.name = newName;
 		entry.updatedAt = new Date().toISOString();
-		await this._writeSessionIndex(employeeId, index);
-		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
+		await this._writeSessionIndex(agentId, index);
+		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
 	}
 
 	/**
@@ -1161,32 +1149,30 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * (user will get a new session auto-created on next message).
 	 */
 	async deleteAgentSession(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 	): Promise<void> {
-		const paths = await this._resolveAgentPaths(employeeId);
-		if (paths) {
-			const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
-			try {
-				await this.fileService.del(fileUri);
-			} catch {
-				/* ignore */
-			}
+		const paths = await this._resolveAgentPaths(agentId);
+		const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+		try {
+			await this.fileService.del(fileUri);
+		} catch {
+			/* ignore */
 		}
 
-		const index = await this._readSessionIndex(employeeId);
+		const index = await this._readSessionIndex(agentId);
 		const filtered = index.filter((s) => s.id !== sessionId);
-		await this._writeSessionIndex(employeeId, filtered);
+		await this._writeSessionIndex(agentId, filtered);
 
 		// Remove from memory cache
-		const key = this._cacheKey(employeeId, sessionId);
+		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.delete(key);
 		await this._persistGlobalHistory();
 
 		this.logService.info(
-			`[AgentChatService] Deleted session ${sessionId} for ${employeeId}`,
+			`[AgentChatService] Deleted session ${sessionId} for ${agentId}`,
 		);
-		this._onDidChangeAgentSessionsEmitter.fire({ employeeId });
+		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
 	}
 
 	/**
@@ -1195,10 +1181,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * Returns the AgentSessionMeta of the active session.
 	 */
 	async getOrCreateActiveSession(
-		employeeId: string,
+		agentId: string,
 		name?: string,
 	): Promise<AgentSessionMeta> {
-		const index = await this._readSessionIndex(employeeId);
+		const index = await this._readSessionIndex(agentId);
 		if (index.length > 0) {
 			index.sort(
 				(a, b) =>
@@ -1206,7 +1192,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			);
 			return index[0];
 		}
-		return this.createAgentSession(employeeId, name || "新对话");
+		return this.createAgentSession(agentId, name || "新对话");
 	}
 
 	/**
@@ -1214,11 +1200,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * into the agent session metadata so it can be sent on subsequent requests.
 	 */
 	async updateProviderSessionId(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		providerSessionId: string,
 	): Promise<void> {
-		const index = await this._readSessionIndex(employeeId);
+		const index = await this._readSessionIndex(agentId);
 		const entry = index.find((s) => s.id === sessionId);
 		if (!entry) {
 			return;
@@ -1228,7 +1214,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 		entry.providerSessionId = providerSessionId;
 		entry.updatedAt = new Date().toISOString();
-		await this._writeSessionIndex(employeeId, index);
+		await this._writeSessionIndex(agentId, index);
 		this.logService.info(
 			`[AgentChatService] Stored providerSessionId=${providerSessionId} for session ${sessionId}`,
 		);

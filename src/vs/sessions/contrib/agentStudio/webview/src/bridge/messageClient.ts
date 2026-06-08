@@ -124,7 +124,28 @@ export type RequestType =
 	| 'memory.listL1'
 	| 'memory.deleteL0'
 	| 'memory.deleteL1'
-	| 'skills.list';
+	| 'skills.list'
+	| 'chat.activeSessionChanged'
+	| 'workflow.save'
+	| 'agents.list'
+	| 'agents.create'
+	| 'agents.update'
+	| 'agents.delete'
+	| 'agents.export'
+	| 'agents.import'
+	| 'agents.selected'
+	| 'agents.getLastSelected'
+	| 'orchestration.approveWithoutExecute'
+	| 'orchestration.approveTask'
+	| 'orchestration.rejectTask'
+	| 'orchestration.commentTask'
+	| 'orchestration.blockTask'
+	| 'orchestration.unblockTask'
+	| 'orchestration.updatePlan'
+	| 'orchestration.updateTask'
+	| 'orchestration.decomposeTask'
+	| 'workspace.getActive'
+	| 'workspace.setActive';
 
 interface PendingRequest {
 	resolve: (data: unknown) => void;

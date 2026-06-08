@@ -64,7 +64,6 @@ import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
 	AGENT_STUDIO_SESSIONS_VIEW_ID,
-	AGENT_STUDIO_CLAW_CHAT_VIEW_ID,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
 	AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
 	AGENT_STUDIO_SKILLS_VIEW_ID,
@@ -134,9 +133,10 @@ import { PluginDetailEditorPane } from './pluginDetailEditorPane.js';
 import { PluginDetailEditorInput } from './pluginDetailEditorInput.js';
 import { AgentMarketEditorPane } from './agentMarketEditorPane.js';
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
+import { AgentSettingsEditorPane } from './agentSettingsEditorPane.js';
+import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
-import { ClawChatViewPane } from './views/clawChatView.js';
 import { WorkspaceViewPane } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { SkillsViewPane } from './views/skillsView.js';
@@ -186,7 +186,6 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 const agentStudioIcon = registerIcon('agent-studio', Codicon.hubot, localize('agentStudioIcon', "Icon for Agent Studio."));
 
 // Toolbar icons
-const clawChatIcon = registerIcon('agent-studio-claw-chat', Codicon.comment, localize('clawChatIcon', "Claw Chat"));
 const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.repo, localize('workspaceIcon', "Workspace"));
 const presetAgentIcon = registerIcon('agent-studio-preset-agent', Codicon.robot, localize('presetAgentIcon', "Preset Agent"));
 const skillsIcon = registerIcon('agent-studio-skills', Codicon.lightbulb, localize('skillsIcon', "Skills"));
@@ -585,6 +584,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(WorkflowEditorInput)
+	]
+);
+
+// Register AgentSettingsEditorPane — renders agent settings (System Prompt,
+// Skills, Memory, Knowledge, ConfigMD, Tools, MCP, Rules) in the editor area.
+// Opened by clicking an agent in the Agent sidebar view.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		AgentSettingsEditorPane,
+		AgentSettingsEditorPane.ID,
+		localize('agentSettingsEditor', "Agent Settings"),
+	),
+	[
+		new SyncDescriptor(AgentSettingsEditorInput)
 	]
 );
 
@@ -1385,19 +1398,9 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
 		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
 
-		// --- Top-aligned icons (order: 0-90) ---------------------------------
+		// --- ActivityBar icons (workspace → search → sourcecontrol → tasks → agents → workflow → skills → tools → mcp → plugins) ---
 
-		// 1. Claw Chat (order: 0)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.clawChat',
-			title: localize2('agentStudio.clawChat.title', "Claw Chat"),
-			icon: clawChatIcon,
-			viewId: AGENT_STUDIO_CLAW_CHAT_VIEW_ID,
-			order: 0,
-			viewCtor: ClawChatViewPane,
-		});
-
-		// 2. Workspace (order: 10)
+		// 1. Workspace (order: 10)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.workspace',
 			title: localize2('agentStudio.workspace.title', "Workspace"),
@@ -1407,27 +1410,19 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: WorkspaceViewPane,
 		});
 
-		// 3. Preset Agent (order: 20)
+		// 2. Search (order: 20) - [Sarosis] Reuse native VSCode SearchView with workspace selector
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.presetAgent',
-			title: localize2('agentStudio.presetAgent.title', "Preset Agent"),
-			icon: presetAgentIcon,
-			viewId: AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
+			id: 'agentStudio.search',
+			title: localize2('agentStudio.search.title', "Search"),
+			icon: searchIcon,
+			viewId: AGENT_STUDIO_SEARCH_VIEW_ID,
 			order: 20,
-			viewCtor: PresetAgentViewPane,
+			viewCtor: AgentStudioSearchViewPane,
 		});
 
-		// 4. Skills (order: 30)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.skills',
-			title: localize2('agentStudio.skills.title', "Skills"),
-			icon: skillsIcon,
-			viewId: AGENT_STUDIO_SKILLS_VIEW_ID,
-			order: 30,
-			viewCtor: SkillsViewPane,
-		});
+		// Note: SourceControl (order: 30) — registered in sourceControl.contribution.ts
 
-		// 5. Tasks (order: 40)
+		// 3. Tasks (order: 40)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.tasks',
 			title: localize2('agentStudio.tasks.title', "Tasks"),
@@ -1437,104 +1432,116 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: TasksViewPane,
 		});
 
-		// 6. Schedule (order: 50)
+		// 4. Agents (order: 50)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.schedule',
-			title: localize2('agentStudio.schedule.title', "Schedule"),
-			icon: scheduleIcon,
-			viewId: AGENT_STUDIO_SCHEDULE_VIEW_ID,
+			id: 'agentStudio.presetAgent',
+			title: localize2('agentStudio.presetAgent.title', "Agents"),
+			icon: presetAgentIcon,
+			viewId: AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
 			order: 50,
-			viewCtor: ScheduleViewPane,
+			viewCtor: PresetAgentViewPane,
 		});
 
-		// 7. Tools (order: 60)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.tools',
-			title: localize2('agentStudio.tools.title', "Tools"),
-			icon: toolsIcon,
-			viewId: AGENT_STUDIO_TOOLS_VIEW_ID,
-			order: 60,
-			viewCtor: ToolsViewPane,
-		});
-
-		// 7.5 MCP (order: 65)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.mcp',
-			title: localize2('agentStudio.mcp.title', "MCP"),
-			icon: mcpIcon,
-			viewId: AGENT_STUDIO_MCP_VIEW_ID,
-			order: 65,
-			viewCtor: McpViewPane,
-		});
-
-		// 8.5 Channel (order: 75)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.channel',
-			title: localize2('agentStudio.channel.title', "Channel"),
-			icon: channelIcon,
-			viewId: AGENT_STUDIO_CHANNEL_VIEW_ID,
-			order: 75,
-			viewCtor: ChannelViewPane,
-		});
-
-		// 8.7 Wiki (order: 77)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.wiki',
-			title: localize2('agentStudio.wiki.title', "Wiki"),
-			icon: wikiIcon,
-			viewId: AGENT_STUDIO_WIKI_VIEW_ID,
-			order: 77,
-			viewCtor: WikiViewPane,
-		});
-
-		// 9. Search (order: 80) - [Sarosis] Reuse native VSCode SearchView with workspace selector
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.search',
-			title: localize2('agentStudio.search.title', "Search"),
-			icon: searchIcon,
-			viewId: AGENT_STUDIO_SEARCH_VIEW_ID,
-			order: 80,
-			viewCtor: AgentStudioSearchViewPane,
-		});
-
-		// 10. Plugins (order: 90)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.plugins',
-			title: localize2('agentStudio.plugins.title', "Plugins"),
-			icon: pluginsIcon,
-			viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
-			order: 90,
-			viewCtor: PluginsViewPane,
-		});
-
-		// 11. Health Monitor (order: 85)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.healthMonitor',
-			title: localize2('agentStudio.healthMonitor.title', "Health Monitor"),
-			icon: Codicon.pulse,
-			viewId: AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
-			order: 85,
-			viewCtor: HealthMonitorViewPane,
-		});
-
-		// 11. Self-Evolution (order: 92)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.evolution',
-			title: localize2('agentStudio.evolution.title', "Self-Evolution"),
-			icon: evolutionIcon,
-			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
-			order: 92,
-			viewCtor: EvolutionViewPane,
-		});
-
-		// 12. Workflow (order: 93)
+		// 5. Workflow (order: 60)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.workflow',
 			title: localize2('agentStudio.workflow.title', "Workflow"),
 			icon: workflowIcon,
 			viewId: AGENT_STUDIO_WORKFLOW_VIEW_ID,
-			order: 93,
+			order: 60,
 			viewCtor: WorkflowViewPane,
+		});
+
+		// 6. Skills (order: 70)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.skills',
+			title: localize2('agentStudio.skills.title', "Skills"),
+			icon: skillsIcon,
+			viewId: AGENT_STUDIO_SKILLS_VIEW_ID,
+			order: 70,
+			viewCtor: SkillsViewPane,
+		});
+
+		// 7. Tools (order: 80)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.tools',
+			title: localize2('agentStudio.tools.title', "Tools"),
+			icon: toolsIcon,
+			viewId: AGENT_STUDIO_TOOLS_VIEW_ID,
+			order: 80,
+			viewCtor: ToolsViewPane,
+		});
+
+		// 8. MCP (order: 90)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.mcp',
+			title: localize2('agentStudio.mcp.title', "MCP"),
+			icon: mcpIcon,
+			viewId: AGENT_STUDIO_MCP_VIEW_ID,
+			order: 90,
+			viewCtor: McpViewPane,
+		});
+
+		// 9. Plugins (order: 100)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.plugins',
+			title: localize2('agentStudio.plugins.title', "Plugins"),
+			icon: pluginsIcon,
+			viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
+			order: 100,
+			viewCtor: PluginsViewPane,
+		});
+
+		// --- Remaining icons (after Plugins) ---
+
+		// Schedule (order: 110)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.schedule',
+			title: localize2('agentStudio.schedule.title', "Schedule"),
+			icon: scheduleIcon,
+			viewId: AGENT_STUDIO_SCHEDULE_VIEW_ID,
+			order: 110,
+			viewCtor: ScheduleViewPane,
+		});
+
+		// Channel (order: 120)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.channel',
+			title: localize2('agentStudio.channel.title', "Channel"),
+			icon: channelIcon,
+			viewId: AGENT_STUDIO_CHANNEL_VIEW_ID,
+			order: 120,
+			viewCtor: ChannelViewPane,
+		});
+
+		// Wiki (order: 130)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.wiki',
+			title: localize2('agentStudio.wiki.title', "Wiki"),
+			icon: wikiIcon,
+			viewId: AGENT_STUDIO_WIKI_VIEW_ID,
+			order: 130,
+			viewCtor: WikiViewPane,
+		});
+
+		// Health Monitor (order: 140)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.healthMonitor',
+			title: localize2('agentStudio.healthMonitor.title', "Health Monitor"),
+			icon: Codicon.pulse,
+			viewId: AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
+			order: 140,
+			viewCtor: HealthMonitorViewPane,
+		});
+
+		// Self-Evolution (order: 150)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.evolution',
+			title: localize2('agentStudio.evolution.title', "Self-Evolution"),
+			icon: evolutionIcon,
+			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
+			order: 150,
+			viewCtor: EvolutionViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //

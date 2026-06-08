@@ -5,7 +5,6 @@
 
 import './media/toolbarViews.css';
 
-export { ClawChatViewPane } from './clawChatView.js';
 export { WorkspaceViewPane } from './workspaceView.js';
 export { PresetAgentViewPane } from './presetAgentView.js';
 export { SkillsViewPane } from './skillsView.js';

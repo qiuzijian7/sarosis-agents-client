@@ -743,7 +743,7 @@ function InterleavedMarkdownRendererInner({ content, className, showCursor, tool
 		// Build map: toolCallId -> card node
 		React.Children.forEach(cards, (node) => {
 			if (React.isValidElement(node)) {
-				const tcId = node.props?.toolCall?.id ?? node.key;
+				const tcId = (node.props as any)?.toolCall?.id ?? node.key;
 				if (tcId && typeof tcId === 'string') {
 					cardMap.set(tcId, node);
 				}
@@ -805,7 +805,7 @@ function InterleavedMarkdownRendererInner({ content, className, showCursor, tool
 		for (let i = 0; i < cards.length; i++) {
 			const node = cards[i];
 			if (React.isValidElement(node)) {
-				const tcId = node.props?.toolCall?.id ?? node.key;
+				const tcId = (node.props as any)?.toolCall?.id ?? node.key;
 				if (tcId && typeof tcId === 'string' && !renderedIds.has(tcId)) {
 					sequence.push(<React.Fragment key={`tc-${tcId}-orphan`}>{node}</React.Fragment>);
 					renderedIds.add(tcId);
@@ -832,7 +832,7 @@ function InterleavedMarkdownRendererInner({ content, className, showCursor, tool
 		const cardMap = new Map<string, React.ReactNode>();
 		React.Children.forEach(cards, (node) => {
 			if (React.isValidElement(node)) {
-				const tcId = node.props?.toolCall?.id ?? node.key;
+				const tcId = (node.props as any)?.toolCall?.id ?? node.key;
 				if (tcId && typeof tcId === 'string') {
 					cardMap.set(tcId, node);
 				}
@@ -902,7 +902,7 @@ function InterleavedMarkdownRendererInner({ content, className, showCursor, tool
 			for (let i = 0; i < cards.length; i++) {
 				const node = cards[i];
 				if (React.isValidElement(node)) {
-					const tcId = node.props?.toolCall?.id ?? node.key;
+					const tcId = (node.props as any)?.toolCall?.id ?? node.key;
 					if (tcId && typeof tcId === 'string' && !renderedIds.has(tcId)) {
 						sequence.push(<React.Fragment key={`tc-${tcId}-orphan`}>{node}</React.Fragment>);
 						renderedIds.add(tcId);

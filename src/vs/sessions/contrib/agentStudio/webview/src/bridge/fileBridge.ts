@@ -117,7 +117,7 @@ export async function previewAgentConfigMd(
 			// Only attach a session id if the chat panel is showing the
 			// same employee — otherwise the captured id would be for an
 			// unrelated agent and would silently mis-route imgui submits.
-			if (cs.activeEmployeeId === employeeId) {
+			if (cs.activeAgentId === agentId) {
 				agentSessionId = cs.activeAgentSessionId ?? undefined;
 			}
 		} catch { /* store unavailable */ }

@@ -139,7 +139,7 @@ export interface StreamState {
 	phase: StreamPhase;
 	/** @deprecated Use `isPhaseActive(phase)` or `phase !== 'idle'` instead */
 	isStreaming: boolean;
-	employeeId: string | null;
+	agentId: string | null;
 	sessionId: string | null;
 	textBuffer: string;
 	thinkingBuffer: string;
@@ -220,18 +220,18 @@ let currentState: StreamState = createInitialState();
 let pendingRafId: number | null = null;
 
 /**
- * The employeeId that the UI is currently displaying.
+ * The agentId that the UI is currently displaying.
  * Set by switchActiveStream() — used by handleStreamDelta() Case 4 to decide
  * whether a brand-new stream should become the foreground `currentState` or be
  * placed into background.  Without this guard, a late-arriving first delta for
- * a previously-active employee would hijack `currentState`, causing its notify
- * snapshots to be discarded by subscribeStream (employee mismatch) while also
+ * a previously-active agent would hijack `currentState`, causing its notify
+ * snapshots to be discarded by subscribeStream (agent mismatch) while also
  * preventing the real background accumulation path from being used.
  */
-let activeEmployeeId: string | null = null;
+let activeAgentId: string | null = null;
 
-/** Per-employee stream states for employees that are not currently displayed.
- *  When the user switches away from a streaming employee, the stream state
+/** Per-agent stream states for agents that are not currently displayed.
+ *  When the user switches away from a streaming agent, the stream state
  *  is saved here so it can be restored when they switch back. */
 const backgroundStreams = new Map<string, StreamState>();
 
@@ -239,7 +239,7 @@ function createInitialState(): StreamState {
 	return {
 		phase: 'idle',
 		isStreaming: false, // deprecated mirror
-		employeeId: null,
+		agentId: null,
 		sessionId: null,
 		textBuffer: '',
 		thinkingBuffer: '',
@@ -281,13 +281,13 @@ function parseStreamError(errorStr: string): StreamError {
 	};
 }
 
-/** Build a map key from employeeId only.
+/** Build a map key from agentId only.
  *  We intentionally ignore sessionId because the Host may send deltas
  *  with a sessionId that changes during the stream (e.g. from null to
- *  an actual value). Using employeeId alone is safe because a given
- *  employee can only have one active stream at a time in the webview. */
-function streamKey(employeeId: string | null): string {
-	return employeeId ?? '';
+ *  an actual value). Using agentId alone is safe because a given
+ *  agent can only have one active stream at a time in the webview. */
+function streamKey(agentId: string | null): string {
+	return agentId ?? '';
 }
 
 /**
@@ -613,22 +613,22 @@ function accumulateChunk(state: StreamState, chunk: StreamChunk): void {
  * Called by the message event handler in messageClient.
  *
  * Supports background stream accumulation: if the delta belongs to a
- * different employee/session than the currently displayed one, the chunks
+ * different agent/session than the currently displayed one, the chunks
  * are accumulated into a background stream stored in `backgroundStreams`.
- * When the user switches back to that employee, the background stream is
+ * When the user switches back to that agent, the background stream is
  * restored so no content is lost.
  */
 export function handleStreamDelta(data: {
-	employeeId: string;
+	agentId: string;
 	sessionId: string;
 	chunks: StreamChunk[];
 }): void {
-	const deltaKey = streamKey(data.employeeId);
-	const currentKey = streamKey(currentState.employeeId);
+	const deltaKey = streamKey(data.agentId);
+	const currentKey = streamKey(currentState.agentId);
 
-	// ── Case 1: Delta matches the currently displayed stream (same employee) ──
-	// We match by employeeId only, because the Host may change sessionId mid-stream.
-	if (isPhaseActive(currentState.phase) && data.employeeId === currentState.employeeId) {
+	// ── Case 1: Delta matches the currently displayed stream (same agent) ──
+	// We match by agentId only, because the Host may change sessionId mid-stream.
+	if (isPhaseActive(currentState.phase) && data.agentId === currentState.agentId) {
 		// Keep sessionId in sync if the Host sent a different one
 		if (data.sessionId !== currentState.sessionId) {
 			currentState.sessionId = data.sessionId;
@@ -641,19 +641,19 @@ export function handleStreamDelta(data: {
 		return;
 	}
 
-	// ── Case 2: Delta is for a different employee (background stream) ──
-	if (isPhaseActive(currentState.phase) && data.employeeId !== currentState.employeeId) {
+	// ── Case 2: Delta is for a different agent (background stream) ──
+	if (isPhaseActive(currentState.phase) && data.agentId !== currentState.agentId) {
 		let bg = backgroundStreams.get(deltaKey);
 		if (!bg) {
 			bg = {
 				...createInitialState(),
 				phase: 'llm_streaming',
 				isStreaming: true,
-				employeeId: data.employeeId,
+				agentId: data.agentId,
 				sessionId: data.sessionId,
 			};
 			backgroundStreams.set(deltaKey, bg);
-			console.log(`[StreamHandler] Background stream started for employee=${data.employeeId}, sessionId=${data.sessionId}`);
+			console.log(`[StreamHandler] Background stream started for agent=${data.agentId}, sessionId=${data.sessionId}`);
 		}
 		for (const chunk of data.chunks) {
 			accumulateChunk(bg, chunk);
@@ -672,25 +672,25 @@ export function handleStreamDelta(data: {
 	}
 
 	// ── Case 4: No current stream, no background stream ──
-	// If the delta belongs to the currently active employee (or no employee is
+	// If the delta belongs to the currently active agent (or no agent is
 	// active yet), start it as the foreground stream.  Otherwise, this is a
-	// late-arriving delta for a non-displayed employee — place it into
+	// late-arriving delta for a non-displayed agent — place it into
 	// background so it doesn't hijack `currentState` and produce notify()
-	// snapshots that subscribeStream will just discard (employee mismatch).
-	if (activeEmployeeId && data.employeeId !== activeEmployeeId) {
+	// snapshots that subscribeStream will just discard (agent mismatch).
+	if (activeAgentId && data.agentId !== activeAgentId) {
 		// Start as background stream
 		const bg: StreamState = {
 			...createInitialState(),
 			phase: 'llm_streaming',
 			isStreaming: true,
-			employeeId: data.employeeId,
+			agentId: data.agentId,
 			sessionId: data.sessionId,
 		};
 		for (const chunk of data.chunks) {
 			accumulateChunk(bg, chunk);
 		}
 		backgroundStreams.set(deltaKey, bg);
-		console.log(`[StreamHandler] Late delta → started background stream for employee=${data.employeeId} (active=${activeEmployeeId})`);
+		console.log(`[StreamHandler] Late delta → started background stream for agent=${data.agentId} (active=${activeAgentId})`);
 		return;
 	}
 
@@ -700,10 +700,10 @@ export function handleStreamDelta(data: {
 		...createInitialState(),
 		phase: 'llm_streaming',
 		isStreaming: true,
-		employeeId: data.employeeId,
+		agentId: data.agentId,
 		sessionId: data.sessionId,
 	};
-	console.log(`[StreamHandler] Stream started for employee=${data.employeeId}`);
+	console.log(`[StreamHandler] Stream started for agent=${data.agentId}`);
 
 	for (const chunk of data.chunks) {
 		accumulateChunk(currentState, chunk);
@@ -799,20 +799,20 @@ function scheduleNotify(): void {
  * Handle stream completion.
  */
 export function handleStreamComplete(data: {
-	employeeId: string;
+	agentId: string;
 	sessionId: string;
 	message: unknown;
 }): void {
-	const key = streamKey(data.employeeId);
-	const currentKey = streamKey(currentState.employeeId);
+	const key = streamKey(data.agentId);
+	const currentKey = streamKey(currentState.agentId);
 
 	// ── Check if this completion is for a background stream ──
 	const bg = backgroundStreams.get(key);
 	if (bg && key !== currentKey) {
-		console.log(`[StreamHandler] Background stream completed for employee=${data.employeeId}, sessionId=${data.sessionId}`);
+		console.log(`[StreamHandler] Background stream completed for agent=${data.agentId}, sessionId=${data.sessionId}`);
 		backgroundStreams.delete(key);
 		// The host has persisted the message. When the user switches back
-		// to this employee, loadHistoryForSession will fetch it.
+		// to this agent, loadHistoryForSession will fetch it.
 		// No callbacks fired — the stream was not being displayed.
 		return;
 	}
@@ -901,23 +901,23 @@ export function handleStreamComplete(data: {
  * Handle stream error.
  */
 export function handleStreamError(data: {
-	employeeId: string;
+	agentId: string;
 	sessionId: string;
 	error: string;
 }): void {
-	const key = streamKey(data.employeeId);
-	const currentKey = streamKey(currentState.employeeId);
+	const key = streamKey(data.agentId);
+	const currentKey = streamKey(currentState.agentId);
 
 	// ── Check if this error is for a background stream ──
 	const bg = backgroundStreams.get(key);
 	if (bg && key !== currentKey) {
-		console.log(`[StreamHandler] Background stream error for employee=${data.employeeId}: "${data.error}"`);
+		console.log(`[StreamHandler] Background stream error for agent=${data.agentId}: "${data.error}"`);
 		backgroundStreams.delete(key);
 		return;
 	}
 
 	// ── Error for the currently displayed stream ──
-	console.error(`[StreamHandler] handleStreamError: employee=${data.employeeId}, ` +
+	console.error(`[StreamHandler] handleStreamError: agent=${data.agentId}, ` +
 		`wasStreaming=${isPhaseActive(currentState.phase)}, deltaCount=${deltaEventCount}, error="${data.error}"`);
 
 	// Cancel any pending RAF from the last delta
@@ -952,7 +952,7 @@ export function handleStreamError(data: {
 }
 
 /**
- * Reset stream state (e.g., when switching employees).
+ * Reset stream state (e.g., when switching agents).
  */
 export function resetStream(): void {
 	if (pendingRafId !== null) {
@@ -984,52 +984,52 @@ export function resetStreamSilent(): void {
 
 /**
  * Switch the active stream context when the user switches to a different
- * employee/session. Saves the current stream (if active) to the background
+ * agent/session. Saves the current stream (if active) to the background
  * map and restores any previously saved stream for the new context.
  *
  * Does NOT notify listeners — the caller should set the returned StreamState
- * in the store alongside updating activeEmployeeId in a single atomic set()
- * call, so React never sees an intermediate state where the employee has
+ * in the store alongside updating activeAgentId in a single atomic set()
+ * call, so React never sees an intermediate state where the agent has
  * changed but the stream hasn't.
  *
  * Returns the StreamState that should be displayed for the new context.
  */
-export function switchActiveStream(employeeId: string | null, sessionId: string | null): StreamState {
+export function switchActiveStream(agentId: string | null, sessionId: string | null): StreamState {
 	// Cancel any pending RAF
 	if (pendingRafId !== null) {
 		cancelAnimationFrame(pendingRafId);
 		pendingRafId = null;
 	}
 
-	// Update the active employee marker FIRST — this ensures that any delta
-	// arriving after this point for the OLD employee will be routed to
+	// Update the active agent marker FIRST — this ensures that any delta
+	// arriving after this point for the OLD agent will be routed to
 	// background (Case 2/3/4-bg) instead of hijacking currentState.
-	activeEmployeeId = employeeId;
+	activeAgentId = agentId;
 
 	// Save current stream to background if it's active
-	if (isPhaseActive(currentState.phase) && currentState.employeeId) {
-		const currentKey = streamKey(currentState.employeeId);
+	if (isPhaseActive(currentState.phase) && currentState.agentId) {
+		const currentKey = streamKey(currentState.agentId);
 		backgroundStreams.set(currentKey, {
 			...currentState,
 			toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),
 			subAgents: (currentState.subAgents || []).map(sa => ({ ...sa })),
 		});
-		console.log(`[StreamHandler] Saved current stream to background: employee=${currentState.employeeId}, sessionId=${currentState.sessionId}`);
+		console.log(`[StreamHandler] Saved current stream to background: agent=${currentState.agentId}, sessionId=${currentState.sessionId}`);
 	}
 
 	// Check if there's a background stream for the new context
-	const newKey = streamKey(employeeId);
+	const newKey = streamKey(agentId);
 	const saved = backgroundStreams.get(newKey);
 	if (saved) {
 		backgroundStreams.delete(newKey);
 		currentState = saved;
-		console.log(`[StreamHandler] Restored background stream for employee=${employeeId}, sessionId=${sessionId} ` +
+		console.log(`[StreamHandler] Restored background stream for agent=${agentId}, sessionId=${sessionId} ` +
 			`(textLen=${saved.textBuffer.length}, thinkingLen=${saved.thinkingBuffer.length})`);
 	} else {
 		currentState = createInitialState();
 	}
 
-	// Do NOT notify here — the caller will set streamState atomically with activeEmployeeId
+	// Do NOT notify here — the caller will set streamState atomically with activeAgentId
 	return {
 		...currentState,
 		toolCalls: currentState.toolCalls.map(tc => ({ ...tc })),

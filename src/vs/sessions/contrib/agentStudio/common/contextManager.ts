@@ -616,13 +616,13 @@ export class ContextManager implements IContextManager {
 	/**
 	 * Fetch employee objects by IDs
 	 */
-	private async _fetchEmployees(employeeIds: ReadonlyArray<string>): Promise<Employee[]> {
-		if (!this._agentStudioService || !employeeIds || employeeIds.length === 0) {
+	private async _fetchEmployees(agentIds: ReadonlyArray<string>): Promise<Employee[]> {
+		if (!this._agentStudioService || !agentIds || agentIds.length === 0) {
 			return [];
 		}
 
 		const employees: Employee[] = [];
-		for (const id of employeeIds) {
+		for (const id of agentIds) {
 			try {
 				const emp = await this._agentStudioService.getEmployee(id);
 				if (emp) {

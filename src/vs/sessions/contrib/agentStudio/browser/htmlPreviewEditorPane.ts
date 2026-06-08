@@ -136,13 +136,13 @@ export class HtmlPreviewEditorPane extends EditorPane {
 			// engineering it from the file path so direct file opens still
 			// work, but the input route is preferred and the only one that
 			// works for in-memory / global workspaces.
-			this._logService.info(`[HtmlPreviewEditorPane] setInput: input.employeeId='${input.employeeId}' workspaceId='${input.workspaceId}' workspaceSessionId='${input.workspaceSessionId}' agentSessionId='${input.agentSessionId}' resource=${input.resource.toString()}`);
-			this._currentEmployeeId = input.employeeId
+			this._logService.info(`[HtmlPreviewEditorPane] setInput: input.agentId='${input.agentId}' workspaceId='${input.workspaceId}' workspaceSessionId='${input.workspaceSessionId}' agentSessionId='${input.agentSessionId}' resource=${input.resource.toString()}`);
+			this._currentEmployeeId = input.agentId
 				?? await this._resolveEmployeeIdFromUri(input.resource);
 			this._currentWorkspaceId = input.workspaceId;
 			this._currentWorkspaceSessionId = input.workspaceSessionId;
 			this._currentAgentSessionId = input.agentSessionId;
-			this._logService.info(`[HtmlPreviewEditorPane] resolved employeeId='${this._currentEmployeeId}' for ${input.resource.toString()}`);
+			this._logService.info(`[HtmlPreviewEditorPane] resolved agentId='${this._currentEmployeeId}' for ${input.resource.toString()}`);
 
 			// Forward `imgui.submit` (and other future imgui-style events)
 			// from the preview SDK back to ConfigHtmlService.handleHtmlEvent.
@@ -157,10 +157,10 @@ export class HtmlPreviewEditorPane extends EditorPane {
 				if (!m || typeof m.type !== 'string') { return; }
 				if (m.type !== 'imgui.submit') { return; }
 				try {
-					const employeeId = this._currentEmployeeId
+					const agentId = this._currentEmployeeId
 						?? await this._resolveEmployeeIdFromUri(input.resource);
-					if (!employeeId) {
-						this._logService.warn(`[HtmlPreviewEditorPane] could not resolve employeeId from ${input.resource.toString()}`);
+					if (!agentId) {
+						this._logService.warn(`[HtmlPreviewEditorPane] could not resolve agentId from ${input.resource.toString()}`);
 						return;
 					}
 					// Augment payload with the captured ctx so the service
@@ -168,24 +168,24 @@ export class HtmlPreviewEditorPane extends EditorPane {
 					const enriched = {
 						...(typeof m.payload === 'object' && m.payload !== null ? m.payload as Record<string, unknown> : {}),
 						_ctx: {
-							employeeId,
+							agentId,
 							workspaceId: this._currentWorkspaceId,
 							workspaceSessionId: this._currentWorkspaceSessionId,
 							agentSessionId: this._currentAgentSessionId,
 						},
 					};
-					await this._configHtmlService.handleHtmlEvent(employeeId, m.type, enriched, this._currentAgentSessionId);
+					await this._configHtmlService.handleHtmlEvent(agentId, m.type, enriched, this._currentAgentSessionId);
 				} catch (err) {
 					this._logService.error(`[HtmlPreviewEditorPane] handleHtmlEvent failed:`, err);
 				}
 			}));
 
 			// Push host → preview commands. ConfigHtmlService dispatches these
-			// via its onDidEmitCommand event for any employeeId; we filter
+			// via its onDidEmitCommand event for any agentId; we filter
 			// to the currently-loaded preview's employee.
-			this._register(this._configHtmlService.onDidEmitCommand(({ employeeId, command }) => {
+			this._register(this._configHtmlService.onDidEmitCommand(({ agentId, command }) => {
 				if (!this._webview) { return; }
-				if (this._currentEmployeeId && employeeId !== this._currentEmployeeId) { return; }
+				if (this._currentEmployeeId && agentId !== this._currentEmployeeId) { return; }
 				if (!command?.name || !command.name.startsWith('imgui.')) { return; }
 				const payload = { type: command.name, ...(command.params || {}) };
 				void this._webview.postMessage(payload);
@@ -204,7 +204,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 			// re-attaches ctx independently as a trust anchor.
 			void this._webview.postMessage({
 				type: 'imgui.ctx',
-				employeeId: this._currentEmployeeId,
+				agentId: this._currentEmployeeId,
 				workspaceId: this._currentWorkspaceId,
 				workspaceSessionId: this._currentWorkspaceSessionId,
 				agentSessionId: this._currentAgentSessionId,

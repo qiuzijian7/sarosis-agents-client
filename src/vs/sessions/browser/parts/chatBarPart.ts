@@ -136,19 +136,61 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onToggleCollapse: () => {
 				// TODO: Wire to layout toggle
 			},
+			onSelectEmployee: (agentId: string) => {
+				this._selectAndLoadEmployee(agentId);
+			},
 		}));
 		parent.appendChild(this._employeeChatPanel.element);
 
+		// Load available employees for the agent dropdown
+		this._loadAvailableEmployees();
+
 		// Listen for employee selection from agentStudio webview
-		this._register(this._agentStudioService.onDidSelectEmployee(async (employeeId) => {
-			if (!employeeId) {
+		this._register(this._agentStudioService.onDidSelectEmployee(async (agentId) => {
+			if (!agentId) {
 				this._employeeChatPanel?.setEmployee(null);
 				return;
 			}
-			try {
-				const emp = await this._agentStudioService.getEmployee(employeeId);
-				if (emp && this._employeeChatPanel) {
-					this._employeeChatPanel.setEmployee({
+			await this._selectAndLoadEmployee(agentId);
+		}));
+
+		// Relayout when session bar visibility changes
+		this._register(this._sessionCompositeBar.onDidChangeVisibility(() => {
+			if (this._lastLayout) {
+				this.layout(this._lastLayout.width, this._lastLayout.height, this._lastLayout.top, this._lastLayout.left);
+			}
+		}));
+	}
+
+	private async _selectAndLoadEmployee(agentId: string): Promise<void> {
+		try {
+			const emp = await this._agentStudioService.getEmployee(agentId);
+			if (emp && this._employeeChatPanel) {
+				this._employeeChatPanel.setEmployee({
+					id: emp.id,
+					name: emp.name,
+					role: emp.role,
+					avatarUrl: emp.avatar,
+					status: emp.status,
+					isPM: emp.presetId === 'pm' || emp.role?.toLowerCase().includes('project manager'),
+					customPrompt: emp.customPrompt,
+					model: typeof emp.model === 'string' ? emp.model : (Array.isArray(emp.model) ? emp.model[0] : emp.model?.primary),
+					provider: undefined,
+				});
+				// Load chat history
+				// TODO: const history = await this._agentChatService.getHistory(agentId);
+			}
+		} catch (err) {
+			// Employee not found or service error — ignore
+		}
+	}
+
+	private async _loadAvailableEmployees(): Promise<void> {
+		try {
+			const employees = await this._agentStudioService.getEmployees();
+			if (this._employeeChatPanel && employees) {
+				this._employeeChatPanel.setAvailableEmployees(
+					employees.map(emp => ({
 						id: emp.id,
 						name: emp.name,
 						role: emp.role,
@@ -158,21 +200,12 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						customPrompt: emp.customPrompt,
 						model: typeof emp.model === 'string' ? emp.model : (Array.isArray(emp.model) ? emp.model[0] : emp.model?.primary),
 						provider: undefined,
-					});
-					// Load chat history
-					// TODO: const history = await this._agentChatService.getHistory(employeeId);
-				}
-			} catch (err) {
-				// Employee not found or service error — ignore
+					}))
+				);
 			}
-		}));
-
-		// Relayout when session bar visibility changes
-		this._register(this._sessionCompositeBar.onDidChangeVisibility(() => {
-			if (this._lastLayout) {
-				this.layout(this._lastLayout.width, this._lastLayout.height, this._lastLayout.top, this._lastLayout.left);
-			}
-		}));
+		} catch (err) {
+			// Ignore errors loading employee list
+		}
 	}
 
 	override updateStyles(): void {

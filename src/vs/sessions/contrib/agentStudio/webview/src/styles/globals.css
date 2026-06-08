@@ -3137,6 +3137,7 @@ html, body, #root {
   border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
   flex-shrink: 0;
   background-color: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground));
+  position: relative;
 }
 
 /* Provider icon (⚡) */
@@ -3283,6 +3284,185 @@ html, body, #root {
 .chat-header-btn:hover {
   background-color: var(--vscode-list-hoverBackground);
   color: var(--vscode-foreground);
+}
+
+/* ─── Agent Selector Dropdown ────────────────────────────────────────────── */
+
+.chat-header-agent-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 2px 6px 2px 2px;
+  border-radius: 6px;
+  transition: background-color 0.12s ease;
+  user-select: none;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-header-agent-selector:hover {
+  background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.chat-header-agent-selector.open {
+  background-color: var(--vscode-list-activeSelectionBackground, rgba(255, 255, 255, 0.08));
+}
+
+.chat-header-chevron {
+  color: var(--vscode-descriptionForeground);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+  margin-left: -2px;
+}
+
+.chat-header-agent-selector.open .chat-header-chevron {
+  transform: rotate(180deg);
+  color: var(--vscode-foreground);
+}
+
+/* Dropdown panel */
+.chat-agent-dropdown {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 8px;
+  right: 8px;
+  max-height: 280px;
+  background-color: var(--as-bg-tertiary, var(--vscode-dropdown-background, #1e1e1e));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: agent-dropdown-in 0.15s ease-out;
+}
+
+@keyframes agent-dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Search area */
+.chat-agent-dropdown-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.15)));
+  flex-shrink: 0;
+}
+
+.chat-agent-dropdown-search .search-icon {
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+.chat-agent-dropdown-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.chat-agent-dropdown-input::placeholder {
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.6;
+}
+
+/* Agent list */
+.chat-agent-dropdown-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.chat-agent-dropdown-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-agent-dropdown-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-agent-dropdown-list::-webkit-scrollbar-thumb {
+  background: var(--as-border, rgba(128, 128, 128, 0.3));
+  border-radius: 2px;
+}
+
+/* Agent item */
+.chat-agent-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.chat-agent-dropdown-item:hover {
+  background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.chat-agent-dropdown-item.active {
+  background-color: var(--vscode-list-activeSelectionBackground, rgba(255, 255, 255, 0.08));
+}
+
+.chat-agent-dropdown-item.active .chat-agent-dropdown-name {
+  color: var(--as-accent, var(--vscode-focusBorder, #007fd4));
+}
+
+/* Item avatar */
+.chat-agent-dropdown-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--as-border, rgba(128, 128, 128, 0.2));
+  flex-shrink: 0;
+}
+
+/* Item info */
+.chat-agent-dropdown-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.chat-agent-dropdown-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-agent-dropdown-role {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* No results */
+.chat-agent-dropdown-no-results {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
 }
 
 /* ─── Session Info Bar ───────────────────────────────────────────────────── */

@@ -280,7 +280,7 @@ export function TaskBoardPanel(): React.ReactElement {
 	const handleRunDiagnostics = useCallback(async (e: React.MouseEvent) => {
 		e.stopPropagation();
 		const list = await runDiagnostics(activeWorkspaceId || undefined);
-		const count = list?.length ?? 0;
+		const count = (list as unknown as unknown[])?.length ?? 0;
 		setDiagnosticsToast(count > 0 ? `巡检完成，发现 ${count} 项问题` : '巡检完成，暂未发现问题');
 		setTimeout(() => setDiagnosticsToast(null), 3000);
 	}, [runDiagnostics, activeWorkspaceId]);

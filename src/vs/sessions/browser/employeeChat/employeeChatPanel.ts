@@ -21,7 +21,7 @@ import {
 	IModelInfo,
 	STATUS_MAP,
 	HeaderPanelType,
-	EmployeeStatus,
+	AgentStatus,
 } from "./employeeChatTypes.js";
 
 // EmployeeChatPanel -- Full chat panel matching sarosis-webui layout
@@ -68,18 +68,30 @@ export class EmployeeChatPanel extends Disposable {
 	private _activeHeaderPanel: HeaderPanelType = null;
 	private _abortController: AbortController | null = null;
 
+	// -- Agent dropdown state --
+	private _availableEmployees: IEmployeeInfo[] = [];
+	private _dropdownOpen = false;
+	private _dropdownFilter = "";
+	private _agentDropdownEl: HTMLElement | null = null;
+	private _agentSearchInput: HTMLInputElement | null = null;
+	private _agentDropdownList: HTMLElement | null = null;
+	private _agentSelectorTrigger: HTMLElement | null = null;
+
 	// -- Callbacks --
 	private readonly _onSendMessage: (text: string) => void;
 	private readonly _onCancelExecution: () => void;
+	private readonly _onSelectEmployee: (id: string) => void;
 
 	constructor(opts: {
 		onSendMessage: (text: string) => void;
 		onCancelExecution: () => void;
 		onToggleCollapse: () => void;
+		onSelectEmployee: (id: string) => void;
 	}) {
 		super();
 		this._onSendMessage = opts.onSendMessage;
 		this._onCancelExecution = opts.onCancelExecution;
+		this._onSelectEmployee = opts.onSelectEmployee;
 		this._container = $(".chat-container");
 	}
 
@@ -92,6 +104,10 @@ export class EmployeeChatPanel extends Disposable {
 	setEmployee(employee: IEmployeeInfo | null): void {
 		this._employee = employee;
 		this._render();
+	}
+
+	setAvailableEmployees(employees: IEmployeeInfo[]): void {
+		this._availableEmployees = employees;
 	}
 
 	setMessages(messages: IEmployeeChatMessage[]): void {
@@ -145,6 +161,8 @@ export class EmployeeChatPanel extends Disposable {
 	// Rendering — Full render
 
 	private _render(): void {
+		// Close dropdown before re-render (dropdown is outside container)
+		this._closeAgentDropdown();
 		clearNode(this._container);
 
 		if (!this._employee) {
@@ -195,15 +213,18 @@ export class EmployeeChatPanel extends Disposable {
 	private _renderHeader(): void {
 		const emp = this._employee!;
 		const status = emp.status as keyof typeof STATUS_MAP;
-		const statusInfo = STATUS_MAP[status] || STATUS_MAP[EmployeeStatus.Idle];
+		const statusInfo = STATUS_MAP[status] || STATUS_MAP[AgentStatus.Idle];
 
 		const header = append(this._container, $(".chat-header"));
 
-		// Left: avatar + name/status
+		// Left: agent selector dropdown trigger
 		const left = append(header, $(".chat-header-left"));
 
+		// Agent selector trigger (clickable, replaces static avatar+name)
+		this._agentSelectorTrigger = append(left, $(".chat-header-agent-selector"));
+
 		// Avatar with status dot
-		const avatarWrap = append(left, $(".chat-header-avatar-wrap"));
+		const avatarWrap = append(this._agentSelectorTrigger, $(".chat-header-avatar-wrap"));
 		const avatarBorder = append(avatarWrap, $(".chat-header-avatar-border"));
 		if (emp.avatarUrl) {
 			const img = append(
@@ -223,7 +244,7 @@ export class EmployeeChatPanel extends Disposable {
 		}
 
 		// Name + role
-		const info = append(left, $(".chat-header-info"));
+		const info = append(this._agentSelectorTrigger, $(".chat-header-info"));
 		append(info, $("span.chat-header-name", undefined, emp.name));
 		const roleText = emp.role?.split(/[，,]/)[0] || "";
 		append(
@@ -233,6 +254,34 @@ export class EmployeeChatPanel extends Disposable {
 				undefined,
 				`${roleText} · ${statusInfo.label}`,
 			),
+		);
+
+		// Chevron icon for dropdown
+		const chevronWrap = append(this._agentSelectorTrigger, $(".chat-header-dropdown-chevron"));
+		const chevronSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		chevronSvg.setAttribute("width", "12");
+		chevronSvg.setAttribute("height", "12");
+		chevronSvg.setAttribute("viewBox", "0 0 24 24");
+		chevronSvg.setAttribute("fill", "none");
+		chevronSvg.setAttribute("stroke", "currentColor");
+		chevronSvg.setAttribute("stroke-width", "2.5");
+		chevronSvg.setAttribute("stroke-linecap", "round");
+		chevronSvg.setAttribute("stroke-linejoin", "round");
+		const chevronPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		chevronPath.setAttribute("d", "M6 9l6 6 6-6");
+		chevronSvg.appendChild(chevronPath);
+		chevronWrap.appendChild(chevronSvg);
+
+		// Click handler for dropdown toggle
+		this._register(
+			addDisposableListener(this._agentSelectorTrigger, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._dropdownOpen) {
+					this._closeAgentDropdown();
+				} else {
+					this._openAgentDropdown();
+				}
+			}),
 		);
 
 		// Auto-orchestrate toggle (PM only)
@@ -348,6 +397,170 @@ export class EmployeeChatPanel extends Disposable {
 					this._activeHeaderPanel =
 						this._activeHeaderPanel === btn.key ? null : btn.key;
 					this._render();
+				}),
+			);
+		}
+	}
+
+	// Agent dropdown — open / close / render
+
+	private _openAgentDropdown(): void {
+		if (this._dropdownOpen) { return; }
+		this._dropdownOpen = true;
+		this._dropdownFilter = "";
+
+		// Toggle chevron rotation via class
+		if (this._agentSelectorTrigger) {
+			this._agentSelectorTrigger.classList.add("open");
+		}
+
+		// Create dropdown panel on document.body to avoid any overflow:hidden clipping
+		this._agentDropdownEl = append(mainWindow.document.body, $(".chat-agent-dropdown"));
+
+		// Fixed position aligned to the chat container
+		const containerRect = this._container.getBoundingClientRect();
+		const headerHeight = 52; // approximate header height (padding + content + border)
+		this._agentDropdownEl.style.position = "fixed";
+		this._agentDropdownEl.style.top = (containerRect.top + headerHeight) + "px";
+		this._agentDropdownEl.style.left = (containerRect.left + 14) + "px";
+		this._agentDropdownEl.style.width = (containerRect.width - 28) + "px";
+		this._agentDropdownEl.style.maxHeight = Math.min(320, containerRect.bottom - containerRect.top - headerHeight - 20) + "px";
+
+		this._renderAgentDropdownContent();
+
+		// Close on outside click
+		const outsideHandler = addDisposableListener(mainWindow.document.body, EventType.CLICK, (e) => {
+			if (this._agentDropdownEl && !this._agentDropdownEl.contains(e.target as Node) &&
+				this._agentSelectorTrigger && !this._agentSelectorTrigger.contains(e.target as Node)) {
+				this._closeAgentDropdown();
+			}
+		});
+		this._register(outsideHandler);
+
+		// Auto-focus search
+		if (this._agentSearchInput) {
+			this._agentSearchInput.focus();
+		}
+	}
+
+	private _closeAgentDropdown(): void {
+		if (!this._dropdownOpen) { return; }
+		this._dropdownOpen = false;
+
+		if (this._agentSelectorTrigger) {
+			this._agentSelectorTrigger.classList.remove("open");
+		}
+
+		if (this._agentDropdownEl) {
+			this._agentDropdownEl.remove();
+			this._agentDropdownEl = null;
+		}
+		this._agentSearchInput = null;
+		this._agentDropdownList = null;
+		this._dropdownFilter = "";
+	}
+
+	private _renderAgentDropdownContent(): void {
+		if (!this._agentDropdownEl) { return; }
+
+		// Search input
+		const searchWrap = append(this._agentDropdownEl, $(".chat-agent-dropdown-search"));
+		const searchIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		searchIcon.setAttribute("width", "14");
+		searchIcon.setAttribute("height", "14");
+		searchIcon.setAttribute("viewBox", "0 0 24 24");
+		searchIcon.setAttribute("fill", "none");
+		searchIcon.setAttribute("stroke", "currentColor");
+		searchIcon.setAttribute("stroke-width", "2");
+		searchIcon.classList.add("search-icon");
+		const circleEl = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		circleEl.setAttribute("cx", "11");
+		circleEl.setAttribute("cy", "11");
+		circleEl.setAttribute("r", "8");
+		searchIcon.appendChild(circleEl);
+		const lineEl = document.createElementNS("http://www.w3.org/2000/svg", "line");
+		lineEl.setAttribute("x1", "21");
+		lineEl.setAttribute("y1", "21");
+		lineEl.setAttribute("x2", "16.65");
+		lineEl.setAttribute("y2", "16.65");
+		searchIcon.appendChild(lineEl);
+		searchWrap.appendChild(searchIcon);
+
+		this._agentSearchInput = append(searchWrap, $("input.chat-agent-dropdown-input")) as HTMLInputElement;
+		this._agentSearchInput.placeholder = "搜索 Agent...";
+		this._agentSearchInput.value = this._dropdownFilter;
+
+		this._register(
+			addDisposableListener(this._agentSearchInput, EventType.INPUT, () => {
+				this._dropdownFilter = this._agentSearchInput?.value || "";
+				this._renderAgentList();
+			}),
+		);
+
+		// Prevent Enter key from bubbling up
+		this._register(
+			addDisposableListener(this._agentSearchInput, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+				if (e.key === "Escape") {
+					this._closeAgentDropdown();
+				}
+				e.stopPropagation();
+			}),
+		);
+
+		// Agent list
+		this._agentDropdownList = append(this._agentDropdownEl, $(".chat-agent-dropdown-list"));
+		this._renderAgentList();
+	}
+
+	private _renderAgentList(): void {
+		if (!this._agentDropdownList) { return; }
+		clearNode(this._agentDropdownList);
+
+		const filter = this._dropdownFilter.toLowerCase().trim();
+		const filtered = filter
+			? this._availableEmployees.filter(e =>
+				e.name.toLowerCase().includes(filter) ||
+				e.role.toLowerCase().includes(filter)
+			)
+			: this._availableEmployees;
+
+		if (filtered.length === 0) {
+			const noResults = append(this._agentDropdownList, $(".chat-agent-dropdown-no-results"));
+			noResults.textContent = "未找到匹配的 Agent";
+			return;
+		}
+
+		for (const agent of filtered) {
+			const item = append(this._agentDropdownList, $(".chat-agent-dropdown-item"));
+			if (this._employee?.id === agent.id) {
+				item.classList.add("active");
+			}
+
+			// Mini avatar
+			const miniAvatar = append(item, $(".chat-agent-dropdown-item-avatar"));
+			if (agent.avatarUrl) {
+				const img = append(miniAvatar, $("img")) as HTMLImageElement;
+				img.src = agent.avatarUrl;
+				img.alt = agent.name;
+			} else {
+				const fallback = append(miniAvatar, $(".chat-agent-dropdown-item-avatar-fallback"));
+				fallback.textContent = agent.name.charAt(0).toUpperCase();
+			}
+
+			// Name + role
+			const itemInfo = append(item, $(".chat-agent-dropdown-item-info"));
+			append(itemInfo, $(".chat-agent-dropdown-item-name", undefined, agent.name));
+			const roleText = agent.role?.split(/[，,]/)[0] || "";
+			append(itemInfo, $(".chat-agent-dropdown-item-role", undefined, roleText));
+
+			// Click to select
+			this._register(
+				addDisposableListener(item, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					this._closeAgentDropdown();
+					if (agent.id !== this._employee?.id) {
+						this._onSelectEmployee(agent.id);
+					}
 				}),
 			);
 		}
@@ -1073,6 +1286,7 @@ export class EmployeeChatPanel extends Disposable {
 	}
 
 	override dispose(): void {
+		this._closeAgentDropdown();
 		this._abortController?.abort();
 		super.dispose();
 	}

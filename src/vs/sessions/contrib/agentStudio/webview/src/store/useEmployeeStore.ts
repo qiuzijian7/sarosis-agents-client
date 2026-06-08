@@ -44,8 +44,6 @@ export interface Employee {
 	connections?: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>;
 	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
 	agentDir?: string;
-	/** Number of skills that are missing from the skill library (for UI warning badge) */
-	skillErrorCount?: number;
 	/** Missing skill IDs - for UI dialog display */
 	missingSkillIds?: string[];
 	/** Git worktree directory this agent works in (inherits from workspace if not set) */

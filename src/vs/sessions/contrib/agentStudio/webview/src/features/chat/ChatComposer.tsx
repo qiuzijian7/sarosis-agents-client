@@ -88,15 +88,15 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const [selectedSkillIndex, setSelectedSkillIndex] = useState(0);
 	const skillMenuRef = useRef<HTMLDivElement>(null);
 	const commandMenuRef = useRef<HTMLDivElement>(null);
-	const { activeEmployeeId, chatMode, setChatMode } = useChatStore();
+	const { activeAgentId, chatMode, setChatMode } = useChatStore();
 	const { employees } = useEmployeeStore();
 	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders, currentModelInfo } = useProviderStore();
 	const { attachments, addImage, addPastedImage, addFile, removeAttachment, clearAttachments, toPayload, getImageSupportWarning } = useAttachmentStore();
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [isDragOver, setIsDragOver] = useState(false);
 
-	const activeEmployee = employees.find(e => e.id === activeEmployeeId);
-	const composerPlaceholder = placeholder || (activeEmployee ? `Message ${activeEmployee.name}...` : '输入消息...');
+	const activeAgent = employees.find(e => e.id === activeAgentId);
+	const composerPlaceholder = placeholder || (activeAgent ? `Message ${activeAgent.name}...` : '输入消息...');
 
 	// Mode options — with descriptions and icons (ref: CodeBuddy-IDE-模式分析.md)
 	const modeOptions = useMemo(() => {
@@ -126,20 +126,20 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 				icon: 'M22 11.08V12a10 10 0 11-5.93-9.14M22 4L12 14.01l-3-3',
 			},
 		];
-		const isPlanner = activeEmployee?.agentType === 'planner'
-			|| activeEmployee?.presetId === 'planner'
-			|| activeEmployee?.role?.toLowerCase().includes('planner')
-			|| activeEmployee?.name?.toLowerCase() === 'planner';
+		const isPlanner = activeAgent?.agentType === 'planner'
+			|| activeAgent?.presetId === 'planner'
+			|| activeAgent?.role?.toLowerCase().includes('planner')
+			|| activeAgent?.name?.toLowerCase() === 'planner';
 		if (!isPlanner) {
 			return all.filter(m => m.id !== 'plan');
 		}
 		return all;
-	}, [activeEmployee]);
+	}, [activeAgent]);
 
 	// 从 provider store 获取当前选中的 Provider/Model 名称
 	// 使用 store 的计算属性 authenticatedProviders 确保过滤逻辑一致
 	const authenticatedProviders = getAuthenticatedProviders();
-	const providerDisplay = selection?.providerName || activeEmployee?.provider;
+	const providerDisplay = selection?.providerName || activeAgent?.provider;
 
 	// 获取当前选中 Provider 的可用模型/Agent 列表
 	const currentProvider = selection
@@ -161,10 +161,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	// 优先从 currentProvider.models 查找它对应的友好显示名，避免下拉/已选状态出现 qualified id。
 	const modelDisplay = useMemo(() => {
 		const id = selection?.modelId;
-		if (!id) { return activeEmployee?.model || 'Model'; }
+		if (!id) { return activeAgent?.model || 'Model'; }
 		const meta = currentProvider?.models.find(m => m.id === id);
 		return meta?.name || id;
-	}, [selection?.modelId, currentProvider?.models, activeEmployee?.model]);
+	}, [selection?.modelId, currentProvider?.models, activeAgent?.model]);
 
 	// 当前 agent 支持的 models（用于 model 下拉菜单过滤）
 	const availableModels = useMemo(() => {

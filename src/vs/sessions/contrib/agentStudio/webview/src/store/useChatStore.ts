@@ -220,14 +220,14 @@ interface ChatState {
 	streamState: StreamState;
 	inputValue: string;
 	isLoading: boolean;
-	activeEmployeeId: string | null;
+	activeAgentId: string | null;
 	/** Current agent session ID (null = 'default') */
 	activeAgentSessionId: string | null;
 	/** List of sessions for the current agent (Root mode) */
 	agentSessions: AgentSessionInfo[];
 	/**
-	 * Decomposition progress messages per employee, keyed by employeeId.
-	 * These are NOT persisted to the host; they survive employee switches
+	 * Decomposition progress messages per agent, keyed by agentId.
+	 * These are NOT persisted to the host; they survive agent switches
 	 * so the user still sees "analyzing goal..." progress after switching
 	 * back to a planner chat.
 	 */
@@ -236,10 +236,10 @@ interface ChatState {
 	chatMode: 'craft' | 'ask' | 'plan' | 'workflow';
 
 	// Actions
-	setActiveEmployee: (employeeId: string) => void;
-	loadHistory: (employeeId: string) => Promise<void>;
+	setActiveAgent: (agentId: string) => void;
+	loadHistory: (agentId: string) => Promise<void>;
 	/** Load history for a specific agentSessionId (used by session switching) */
-	loadHistoryForSession: (employeeId: string, agentSessionId?: string) => Promise<void>;
+	loadHistoryForSession: (agentId: string, agentSessionId?: string) => Promise<void>;
 	sendMessage: (message: string, attachments?: Array<{
 		id: string;
 		type: 'image' | 'file';
@@ -260,11 +260,11 @@ interface ChatState {
 	 * kicked off a `chat.stream.*` cycle; this method just mirrors the
 	 * optimistic local append that `sendMessage` performs for typed input,
 	 * so the user sees a bubble for what they sent. Scoped by
-	 * `employeeId`: ignored if it doesn't match the active employee.
+	 * `agentId`: ignored if it doesn't match the active agent.
 	 */
-	appendExternalUserMessage: (employeeId: string, message: ChatMessage) => void;
+	appendExternalUserMessage: (agentId: string, message: ChatMessage) => void;
 	/** Load all sessions for the current agent */
-	loadAgentSessions: (employeeId: string) => Promise<void>;
+	loadAgentSessions: (agentId: string) => Promise<void>;
 	/** Create a new session for the current agent and switch to it */
 	createAgentSession: () => Promise<void>;
 	/** Switch to a different session for the current agent */
@@ -273,8 +273,10 @@ interface ChatState {
 	renameAgentSession: (sessionId: string, newName: string) => Promise<void>;
 	/** Delete an agent session */
 	deleteAgentSession: (sessionId: string) => Promise<void>;
-	/** Append a decomposition progress message for the given employee */
-	addDecompositionProgress: (employeeId: string, message: ChatMessage) => void;
+	/** Reorder agent sessions in the current order array (UI-only, no persistence yet) */
+	reorderAgentSessions: (orderedIds: string[]) => void;
+	/** Append a decomposition progress message for the given agent */
+	addDecompositionProgress: (agentId: string, message: ChatMessage) => void;
 	/** Set the current chat mode */
 	setChatMode: (mode: 'craft' | 'ask' | 'plan' | 'workflow') => void;
 	/** Approve a plan-approval confirmation card → create OrchestrationPlan → auto-execute */
@@ -305,9 +307,9 @@ interface ChatState {
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
-	// Helper: update the active employee's status in the employee store
-	function syncEmployeeStatus(status: 'idle' | 'thinking' | 'working') {
-		const activeId = get().activeEmployeeId;
+	// Helper: update the active agent's status in the employee store
+	function syncAgentStatus(status: 'idle' | 'thinking' | 'working') {
+		const activeId = get().activeAgentId;
 		if (!activeId) return;
 		useEmployeeStore.setState(state => ({
 			employees: state.employees.map(e =>
@@ -318,11 +320,11 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 	// Subscribe to stream state updates (live streaming indicator)
 	subscribeStream((streamState) => {
-		// Ignore stream updates that don't belong to the currently active employee/session.
+		// Ignore stream updates that don't belong to the currently active agent/session.
 		// This prevents stale deltas from a previous chat from leaking into the
 		// currently displayed chat after the user switches employees.
-		const { activeEmployeeId, activeAgentSessionId } = get();
-		if (isPhaseActive(streamState.phase) && streamState.employeeId && streamState.employeeId !== activeEmployeeId) {
+		const { activeAgentId, activeAgentSessionId } = get();
+		if (isPhaseActive(streamState.phase) && streamState.agentId && streamState.agentId !== activeAgentId) {
 			return;
 		}
 		if (isPhaseActive(streamState.phase) && streamState.sessionId && activeAgentSessionId &&
@@ -337,25 +339,25 @@ export const useChatStore = create<ChatState>((set, get) => {
 			switch (streamState.phase) {
 				case 'llm_streaming':
 					if (streamState.thinkingBuffer && !streamState.textBuffer) {
-						syncEmployeeStatus('thinking');
+						syncAgentStatus('thinking');
 					} else {
-						syncEmployeeStatus('working');
+						syncAgentStatus('working');
 					}
 					break;
 				case 'tool_executing':
-					syncEmployeeStatus('working');
+					syncAgentStatus('working');
 					break;
 				case 'awaiting_approval':
-					syncEmployeeStatus('thinking'); // "waiting for input" → thinking indicator
+					syncAgentStatus('thinking'); // "waiting for input" → thinking indicator
 					break;
 				case 'compressing':
-					syncEmployeeStatus('thinking');
+					syncAgentStatus('thinking');
 					break;
 				case 'error':
-					syncEmployeeStatus('idle');
+					syncAgentStatus('idle');
 					break;
 				default:
-					syncEmployeeStatus('thinking');
+					syncAgentStatus('thinking');
 			}
 		}
 	});
@@ -385,13 +387,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 		// Guard: discard completion events for a different employee/session
 		// than the one currently active. This can happen when a stream
 		// from a previous chat finishes after the user has switched.
-		const { activeEmployeeId, activeAgentSessionId } = get();
-		if (finalState.employeeId && finalState.employeeId !== activeEmployeeId) {
-			console.warn(`[ChatStore] onStreamComplete: discarding message for different employee ` +
-				`(streamEmployee=${finalState.employeeId}, activeEmployee=${activeEmployeeId})`);
+		const { activeAgentId, activeAgentSessionId } = get();
+		if (finalState.agentId && finalState.agentId !== activeAgentId) {
+			console.warn(`[ChatStore] onStreamComplete: discarding message for different agent ` +
+				`(streamAgent=${finalState.agentId}, activeAgent=${activeAgentId})`);
 			resetStreamSilent();
 			set({ streamState: getStreamState() });
-			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+			try { syncAgentStatus('idle'); } catch { /* ignore */ }
 			return;
 		}
 		if (finalState.sessionId && activeAgentSessionId && finalState.sessionId !== activeAgentSessionId) {
@@ -399,7 +401,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				`(streamSession=${finalState.sessionId}, activeSession=${activeAgentSessionId})`);
 			resetStreamSilent();
 			set({ streamState: getStreamState() });
-			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+			try { syncAgentStatus('idle'); } catch { /* ignore */ }
 			return;
 		}
 
@@ -435,7 +437,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				streamState: getStreamState(),
 			}));
 			// Restore employee status AFTER messages are committed
-			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+			try { syncAgentStatus('idle'); } catch { /* ignore */ }
 			console.log('[ChatStore] Error message committed', { level: structuredError.level, retryable: structuredError.retryable });
 			return;
 		}
@@ -562,7 +564,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		// Restore employee status AFTER messages and streamState are committed.
 		// This must come last to avoid triggering React re-renders that could
 		// see an intermediate state where streaming stopped but no message exists.
-		try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+		try { syncAgentStatus('idle'); } catch { /* ignore */ }
 		console.log('[ChatStore] onStreamComplete done, employee status restored to idle');
 	});
 
@@ -571,16 +573,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 		streamState: getStreamState(),
 		inputValue: '',
 		isLoading: false,
-		activeEmployeeId: null,
+		activeAgentId: null,
 		activeAgentSessionId: null,
 		agentSessions: [],
 		decompositionProgress: {},
 		chatMode: 'craft',
 
-		setActiveEmployee: (employeeId: string) => {
-			const current = get().activeEmployeeId;
-			console.log(`[ChatStore] setActiveEmployee: ${current} → ${employeeId}`);
-			if (current === employeeId) {
+		setActiveAgent: (agentId: string) => {
+			const current = get().activeAgentId;
+			console.log(`[ChatStore] setActiveAgent: ${current} → ${agentId}`);
+			if (current === agentId) {
 				return;
 			}
 
@@ -588,15 +590,15 @@ export const useChatStore = create<ChatState>((set, get) => {
 			let forkSessionId: string | null = null;
 			try {
 				const { useWorkspaceSessionStore } = require('./useWorkspaceSessionStore');
-				forkSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(employeeId);
+				forkSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(agentId);
 			} catch { /* store not available */ }
 
 			// Save current stream to background and restore any saved stream for the new employee.
-			// Must be done atomically with updating activeEmployeeId so subscribeStream
-			// doesn't discard the restored stream due to stale activeEmployeeId.
-			const newStreamState = switchActiveStream(employeeId, forkSessionId);
+			// Must be done atomically with updating activeAgentId so subscribeStream
+			// doesn't discard the restored stream due to stale activeAgentId.
+			const newStreamState = switchActiveStream(agentId, forkSessionId);
 			set({
-				activeEmployeeId: employeeId,
+				activeAgentId: agentId,
 				activeAgentSessionId: forkSessionId,
 				messages: [],
 				inputValue: '',
@@ -607,7 +609,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			if (forkSessionId) {
 				// Fork mode: directly load fork session
-				get().loadHistoryForSession(employeeId, forkSessionId);
+				get().loadHistoryForSession(agentId, forkSessionId);
 			} else {
 				// Root mode: load sessions list ONLY (for sidebar display).
 				// 🔒 修复（2026-06-05）：之前会自动把 `activeAgentSessionId` 设到
@@ -621,11 +623,11 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// 新行为：只把 sessions 列表填到侧边栏，**不自动激活最近一条**。
 				// activeAgentSessionId 保持 null，sendMessage 会走 `agentSession.create`
 				// 开全新空 session。要恢复旧会话必须从历史列表显式点选。
-				sendRequest<{ employeeId: string }, AgentSessionInfo[]>(
+				sendRequest<{ agentId: string }, AgentSessionInfo[]>(
 					'agentSession.list',
-					{ employeeId },
+					{ agentId },
 				).then(sessions => {
-					if (get().activeEmployeeId !== employeeId) { return; }
+					if (get().activeAgentId !== agentId) { return; }
 					set({ agentSessions: sessions || [] });
 					// Intentionally do NOT auto-activate sessions[0]. Leave
 					// activeAgentSessionId === null so the next sendMessage opens
@@ -636,35 +638,35 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}
 		},
 
-		loadHistory: async (employeeId: string) => {
-			return get().loadHistoryForSession(employeeId, get().activeAgentSessionId ?? undefined);
+		loadHistory: async (agentId: string) => {
+			return get().loadHistoryForSession(agentId, get().activeAgentSessionId ?? undefined);
 		},
 
-		loadHistoryForSession: async (employeeId: string, agentSessionId?: string) => {
-			console.log(`[ChatStore] loadHistoryForSession: employeeId=${employeeId}, agentSessionId=${agentSessionId}`);
+		loadHistoryForSession: async (agentId: string, agentSessionId?: string) => {
+			console.log(`[ChatStore] loadHistoryForSession: agentId=${agentId}, agentSessionId=${agentSessionId}`);
 			set({ isLoading: true, activeAgentSessionId: agentSessionId ?? null });
 			try {
-				const messages = await sendRequest<{ employeeId: string; sessionId?: string }, ChatMessage[]>(
+				const messages = await sendRequest<{ agentId: string; sessionId?: string }, ChatMessage[]>(
 					'chat.history',
-					{ employeeId, sessionId: agentSessionId }
+					{ agentId, sessionId: agentSessionId }
 				);
-				// Guard: don't overwrite messages if the active employee has changed
-				const currentActive = get().activeEmployeeId;
-				if (currentActive !== employeeId) {
-					console.warn(`[ChatStore] loadHistoryForSession: active employee changed (${currentActive} vs ${employeeId}), discarding stale history`);
+				// Guard: don't overwrite messages if the active agent has changed
+				const currentActive = get().activeAgentId;
+				if (currentActive !== agentId) {
+					console.warn(`[ChatStore] loadHistoryForSession: active agent changed (${currentActive} vs ${agentId}), discarding stale history`);
 					set({ isLoading: false });
 					return;
 				}
-				console.log(`[ChatStore] loadHistoryForSession: received ${messages?.length ?? 0} messages for ${employeeId}`);
+				console.log(`[ChatStore] loadHistoryForSession: received ${messages?.length ?? 0} messages for ${agentId}`);
 
 				// ── Filter out orchestration_plan messages that don't belong to this agent ──
 				let finalMessages = (messages || []).filter(m => {
 					if (m.metadata?.type === 'orchestration_plan') {
 						// Only keep plan messages whose plannerId matches the current agent
 						const { useOrchestrationStore } = require('./useOrchestrationStore');
-						const plan = useOrchestrationStore.getState().plans.find(p => p.id === m.metadata!.planId);
-						if (plan && plan.plannerId !== employeeId) {
-							console.log(`[ChatStore] Filtering out plan ${plan.id} (plannerId=${plan.plannerId}) from agent ${employeeId}`);
+						const plan = useOrchestrationStore.getState().plans.find((p: { id: string; plannerId?: string }) => p.id === m.metadata!.planId);
+						if (plan && plan.plannerId !== agentId) {
+							console.log(`[ChatStore] Filtering out plan ${plan.id} (plannerId=${plan.plannerId}) from agent ${agentId}`);
 							return false;
 						}
 					}
@@ -709,10 +711,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 					}
 
 					const plans = useOrchestrationStore.getState().plans;
-					console.log(`[ChatStore] loadHistoryForSession: plans count=${plans.length}, statuses=${plans.map(p => p.status).join(',')}`);
+					console.log(`[ChatStore] loadHistoryForSession: plans count=${plans.length}, statuses=${plans.map((p: { status: string }) => p.status).join(',')}`);
 					// Include all non-rejected plans (pending_approval, approved, executing, completed)
 					// so the plan UI doesn't disappear when switching back to the planner chat.
-					const activePlans = plans.filter(p =>
+					const activePlans = plans.filter((p: { status: string }) =>
 						p.status !== 'rejected' && p.status !== 'error'
 					);
 					console.log(`[ChatStore] loadHistoryForSession: activePlans count=${activePlans.length}`);
@@ -726,7 +728,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 					for (const plan of activePlans) {
 						// 只有当前 agent 是该 plan 的 planner 时才显示任务计划卡片
-						if (plan.plannerId !== employeeId) { continue; }
+						if (plan.plannerId !== agentId) { continue; }
 						if (existingPlanIds.has(plan.id)) { continue; }
 						console.log(`[ChatStore] Re-creating orchestration_plan message for plan ${plan.id} (status=${plan.status})`);
 						const statusText = plan.status === 'pending_approval' ? '任务计划已创建，请在下方面板中审批：'
@@ -748,12 +750,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 				// Restore any decomposition progress messages for this employee
 				// so "analyzing goal..." hints survive chat-tab switches.
-				const progressMsgs = get().decompositionProgress[employeeId] || [];
+				const progressMsgs = get().decompositionProgress[agentId] || [];
 				if (progressMsgs.length > 0) {
 					const existingIds = new Set(finalMessages.map(m => m.id));
 					const newProgress = progressMsgs.filter(m => !existingIds.has(m.id));
 					if (newProgress.length > 0) {
-						console.log(`[ChatStore] Restoring ${newProgress.length} decomposition progress messages for ${employeeId}`);
+						console.log(`[ChatStore] Restoring ${newProgress.length} decomposition progress messages for ${agentId}`);
 						finalMessages = [...finalMessages, ...newProgress];
 					}
 				}
@@ -781,14 +783,14 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// `chat.checkpointCreated` push event and only ever live in this
 				// store's in-memory `messages`. `chat.history` does NOT return
 				// checkpoint messages — checkpoints are persisted separately by the
-				// host CheckpointService (scoped by employeeId+sessionId). So after
+				// host CheckpointService (scoped by agentId+sessionId). So after
 				// a window reload there are zero `role:'checkpoint'` messages and the
 				// bar (which requires at least one tool_edit checkpoint) renders null.
 				// Here we pull the persisted checkpoints back and merge the tool_edit
 				// ones in as checkpoint messages so the bar survives reloads.
 				try {
 					const persisted = await sendRequest<
-						{ employeeId: string; sessionId: string },
+						{ agentId: string; sessionId: string },
 						Array<{
 							id: string;
 							type: 'user_edit' | 'tool_edit';
@@ -800,10 +802,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 							files?: CheckpointFileChange[];
 							fileSnapshotIds?: string[];
 						}>
-					>('chat.listCheckpoints', { employeeId, sessionId: agentSessionId ?? '' });
+					>('chat.listCheckpoints', { agentId, sessionId: agentSessionId ?? '' });
 
-					// Bail if the active employee changed while awaiting.
-					if (get().activeEmployeeId !== employeeId) {
+					// Bail if the active agent changed while awaiting.
+					if (get().activeAgentId !== agentId) {
 						set({ isLoading: false });
 						return;
 					}
@@ -862,8 +864,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 		}>) => {
 			// Guard: never send empty messages without attachments
 			if ((!message || !message.trim()) && (!attachments || attachments.length === 0)) { return; }
-			let { activeEmployeeId, activeAgentSessionId, streamState, chatMode } = get();
-			if (!activeEmployeeId) { return; }
+			let { activeAgentId, activeAgentSessionId, streamState, chatMode } = get();
+			if (!activeAgentId) { return; }
 
 			// ── 解析 /skill <id> 命令，提取显式激活的技能 ID ──
 			const explicitSkillIds: string[] = [];
@@ -896,14 +898,14 @@ export const useChatStore = create<ChatState>((set, get) => {
 			// 新会话，不带任何历史。要恢复旧会话必须显式从历史列表选中。
 			if (!activeAgentSessionId) {
 				try {
-					const meta = await sendRequest<{ employeeId: string; name?: string }, AgentSessionInfo>(
+					const meta = await sendRequest<{ agentId: string; name?: string }, AgentSessionInfo>(
 						'agentSession.create',
-						{ employeeId: activeEmployeeId, name: sessionName },
+						{ agentId: activeAgentId, name: sessionName },
 					);
 					if (meta?.id) {
 						activeAgentSessionId = meta.id;
 						set({ activeAgentSessionId: meta.id });
-						get().loadAgentSessions(activeEmployeeId);
+						get().loadAgentSessions(activeAgentId);
 					}
 				} catch (err) {
 					console.error('[ChatStore] Failed to auto-create session before send:', err);
@@ -929,14 +931,14 @@ export const useChatStore = create<ChatState>((set, get) => {
 							`[ChatStore] sendMessage: messages=[] but session ${activeAgentSessionId} has ${diskMessageCount} msgs on disk — forcing fresh session to avoid history bleed`,
 						);
 						try {
-							const fresh = await sendRequest<{ employeeId: string; name?: string }, AgentSessionInfo>(
+							const fresh = await sendRequest<{ agentId: string; name?: string }, AgentSessionInfo>(
 								'agentSession.create',
-								{ employeeId: activeEmployeeId, name: sessionName },
+								{ agentId: activeAgentId, name: sessionName },
 							);
 							if (fresh?.id) {
 								activeAgentSessionId = fresh.id;
 								set({ activeAgentSessionId: fresh.id });
-								get().loadAgentSessions(activeEmployeeId);
+								get().loadAgentSessions(activeAgentId);
 							}
 						} catch (err) {
 							console.error('[ChatStore] Defensive create-fresh-session failed:', err);
@@ -983,7 +985,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			try {
 				await sendRequest('chat.send', {
-					employeeId: activeEmployeeId,
+					agentId: activeAgentId,
 					message,
 					agentSessionId: activeAgentSessionId ?? undefined,
 					workspaceSessionId,
@@ -994,7 +996,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					attachments: attachments && attachments.length > 0 ? attachments : undefined,
 				});
 				// After send completes, refresh session list to update messageCount
-				get().loadAgentSessions(activeEmployeeId!);
+				get().loadAgentSessions(activeAgentId!);
 			} catch (err) {
 				console.error('[ChatStore] Failed to send message:', err);
 				const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1010,8 +1012,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		cancelStream: () => {
-			const { activeEmployeeId, activeAgentSessionId, streamState } = get();
-			console.log(`[ChatStore] cancelStream: activeEmployeeId=${activeEmployeeId}, activeAgentSessionId=${activeAgentSessionId}`);
+			const { activeAgentId, activeAgentSessionId, streamState } = get();
+			console.log(`[ChatStore] cancelStream: activeAgentId=${activeAgentId}, activeAgentSessionId=${activeAgentSessionId}`);
 
 			// ── Preserve already-generated content (VS Code Copilot Chat pattern) ──
 			// Instead of discarding everything, commit partial content as a cancelled message.
@@ -1061,12 +1063,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}
 
 			// Notify host to abort the upstream stream
-			if (activeEmployeeId) {
-				sendRequest('chat.cancel', { employeeId: activeEmployeeId, agentSessionId: activeAgentSessionId ?? undefined }).catch(() => { });
+			if (activeAgentId) {
+				sendRequest('chat.cancel', { agentId: activeAgentId, agentSessionId: activeAgentSessionId ?? undefined }).catch(() => { });
 			}
 
 			// Restore employee status
-			try { syncEmployeeStatus('idle'); } catch { /* ignore */ }
+			try { syncAgentStatus('idle'); } catch { /* ignore */ }
 		},
 
 		setInputValue: (value) => set({ inputValue: value }),
@@ -1077,13 +1079,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 			set({ messages: [] });
 		},
 
-		appendExternalUserMessage: (employeeId, message) => {
-			const { activeEmployeeId, messages } = get();
+		appendExternalUserMessage: (agentId, message) => {
+			const { activeAgentId, messages } = get();
 			// Only mirror the bubble if it belongs to the currently visible
 			// employee — otherwise the user would see a phantom message in
 			// an unrelated chat pane.
-			if (activeEmployeeId !== employeeId) {
-				console.log(`[ChatStore] appendExternalUserMessage skipped: target=${employeeId} active=${activeEmployeeId}`);
+			if (activeAgentId !== agentId) {
+				console.log(`[ChatStore] appendExternalUserMessage skipped: target=${agentId} active=${activeAgentId}`);
 				return;
 			}
 			// De-dupe by id in case the same event arrives twice (e.g. fast
@@ -1091,17 +1093,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 			if (messages.some(m => m.id === message.id)) {
 				return;
 			}
-			console.log(`[ChatStore] appendExternalUserMessage: ${employeeId} id=${message.id} len=${message.content.length}`);
+			console.log(`[ChatStore] appendExternalUserMessage: ${agentId} id=${message.id} len=${message.content.length}`);
 			set(state => ({ messages: [...state.messages, message] }));
 		},
 
 		// ─── Agent Session Management (Root mode) ───
 
-		loadAgentSessions: async (employeeId: string) => {
+		loadAgentSessions: async (agentId: string) => {
 			try {
-				const sessions = await sendRequest<{ employeeId: string }, AgentSessionInfo[]>(
+				const sessions = await sendRequest<{ agentId: string }, AgentSessionInfo[]>(
 					'agentSession.list',
-					{ employeeId },
+					{ agentId },
 				);
 				set({ agentSessions: sessions || [] });
 			} catch (err) {
@@ -1110,32 +1112,32 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		createAgentSession: async () => {
-			const { activeEmployeeId, activeAgentSessionId: prevSessionId, messages: prevMessages } = get();
+			const { activeAgentId, activeAgentSessionId: prevSessionId, messages: prevMessages } = get();
 			console.log(
-				`[ChatStore] createAgentSession: BEGIN employeeId=${activeEmployeeId} ` +
+				`[ChatStore] createAgentSession: BEGIN agentId=${activeAgentId} ` +
 				`prevSessionId=${prevSessionId} prevMessagesCount=${prevMessages.length}`,
 			);
-			if (!activeEmployeeId) {
-				console.warn('[ChatStore] createAgentSession: aborted — no activeEmployeeId');
+			if (!activeAgentId) {
+				console.warn('[ChatStore] createAgentSession: aborted — no activeAgentId');
 				return;
 			}
 			try {
 				console.log('[ChatStore] createAgentSession: sending RPC agentSession.create...');
-				const meta = await sendRequest<{ employeeId: string }, AgentSessionInfo>(
+				const meta = await sendRequest<{ agentId: string }, AgentSessionInfo>(
 					'agentSession.create',
-					{ employeeId: activeEmployeeId },
+					{ agentId: activeAgentId },
 				);
 				console.log(
 					`[ChatStore] createAgentSession: RPC returned meta=${JSON.stringify(meta)}`,
 				);
 				if (meta?.id) {
-					const newStreamState = switchActiveStream(activeEmployeeId, meta.id);
+					const newStreamState = switchActiveStream(activeAgentId, meta.id);
 					set({ activeAgentSessionId: meta.id, messages: [], streamState: newStreamState });
 					console.log(
 						`[ChatStore] createAgentSession: state updated activeAgentSessionId=${meta.id} messages=[]`,
 					);
-					get().loadHistoryForSession(activeEmployeeId, meta.id);
-					get().loadAgentSessions(activeEmployeeId);
+					get().loadHistoryForSession(activeAgentId, meta.id);
+					get().loadAgentSessions(activeAgentId);
 					console.log('[ChatStore] createAgentSession: DONE (loadHistory + loadSessions dispatched)');
 				} else {
 					console.warn('[ChatStore] createAgentSession: meta has no id, skip state update');
@@ -1146,19 +1148,19 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		switchAgentSession: async (sessionId: string) => {
-			const { activeEmployeeId } = get();
-			if (!activeEmployeeId) { return; }
-			const newStreamState = switchActiveStream(activeEmployeeId, sessionId);
+			const { activeAgentId } = get();
+			if (!activeAgentId) { return; }
+			const newStreamState = switchActiveStream(activeAgentId, sessionId);
 			set({ activeAgentSessionId: sessionId, messages: [], streamState: newStreamState });
-			get().loadHistoryForSession(activeEmployeeId, sessionId);
+			get().loadHistoryForSession(activeAgentId, sessionId);
 		},
 
 		renameAgentSession: async (sessionId: string, newName: string) => {
-			const { activeEmployeeId } = get();
-			if (!activeEmployeeId) { return; }
+			const { activeAgentId } = get();
+			if (!activeAgentId) { return; }
 			try {
 				await sendRequest('agentSession.rename', {
-					employeeId: activeEmployeeId,
+					agentId: activeAgentId,
 					sessionId,
 					name: newName,
 				});
@@ -1174,29 +1176,42 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		deleteAgentSession: async (sessionId: string) => {
-			const { activeEmployeeId, activeAgentSessionId } = get();
-			if (!activeEmployeeId) { return; }
+			const { activeAgentId, activeAgentSessionId } = get();
+			if (!activeAgentId) { return; }
 			try {
 				await sendRequest('agentSession.delete', {
-					employeeId: activeEmployeeId,
+					agentId: activeAgentId,
 					sessionId,
 				});
 				// If we deleted the active session, switch back to default
 				if (activeAgentSessionId === sessionId) {
-					const newStreamState = switchActiveStream(activeEmployeeId, null);
+					const newStreamState = switchActiveStream(activeAgentId, null);
 					set({ activeAgentSessionId: null, messages: [], streamState: newStreamState });
-					get().loadHistoryForSession(activeEmployeeId, undefined);
+					get().loadHistoryForSession(activeAgentId, undefined);
 				}
 				// Reload session list
-				get().loadAgentSessions(activeEmployeeId);
+				get().loadAgentSessions(activeAgentId);
 			} catch (err) {
 				console.error('[ChatStore] Failed to delete agent session:', err);
 			}
 		},
 
-		addDecompositionProgress: (employeeId: string, message: ChatMessage) => {
+		reorderAgentSessions: (orderedIds: string[]) => {
 			set(state => {
-				const existing = state.decompositionProgress[employeeId] || [];
+				const map = new Map(state.agentSessions.map(s => [s.id, s]));
+				const reordered = orderedIds
+					.map(id => map.get(id))
+					.filter((s): s is AgentSessionInfo => !!s);
+				// Append any sessions missing from orderedIds (defensive)
+				const seen = new Set(orderedIds);
+				const trailing = state.agentSessions.filter(s => !seen.has(s.id));
+				return { agentSessions: [...reordered, ...trailing] };
+			});
+		},
+
+		addDecompositionProgress: (agentId: string, message: ChatMessage) => {
+			set(state => {
+				const existing = state.decompositionProgress[agentId] || [];
 				// Avoid duplicates by id
 				if (existing.some(m => m.id === message.id)) {
 					return state;
@@ -1204,7 +1219,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				return {
 					decompositionProgress: {
 						...state.decompositionProgress,
-						[employeeId]: [...existing, message],
+						[agentId]: [...existing, message],
 					},
 				};
 			});
@@ -1217,8 +1232,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 		approvePlanConfirmation: async (confirmation: ConfirmationRequest, buttonId: string) => {
 			if (confirmation.type !== 'plan-approval') { return; }
 
-			const { activeEmployeeId } = get();
-			if (!activeEmployeeId) { return; }
+			const { activeAgentId } = get();
+			if (!activeAgentId) { return; }
 
 			// 1. Mark the confirmation as approved in local state
 			set(state => ({
@@ -1234,7 +1249,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 			try {
 				const { useEmployeeStore } = await import('./useEmployeeStore');
 				const { useWorkspaceStore } = await import('./useWorkspaceStore');
-				const employee = useEmployeeStore.getState().employees.find(e => e.id === activeEmployeeId);
+				const employee = useEmployeeStore.getState().employees.find(e => e.id === activeAgentId);
 				const workspaceId = employee?.workspaceId || useWorkspaceStore.getState().activeWorkspaceId;
 
 				if (!workspaceId) {
@@ -1250,7 +1265,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				>('orchestration.plan', {
 					goal: planGoal,
 					workspaceId,
-					plannerId: activeEmployeeId,
+					plannerId: activeAgentId,
 				}, 0); // no timeout — plan creation may take a while
 
 				if (!plan?.id) {
@@ -1332,13 +1347,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 		jumpToCheckpoint: (checkpointId: string) => {
 			const state = get();
-			const employeeId = state.activeEmployeeId;
+			const agentId = state.activeAgentId;
 			const sessionId = state.activeAgentSessionId;
 			// Send a request to the host to restore the checkpoint state (file
-			// contents on disk). The host scopes storage by employeeId+sessionId.
+			// contents on disk). The host scopes storage by agentId+sessionId.
 			sendRequest('chat.jumpToCheckpoint', {
 				checkpointId,
-				employeeId: employeeId ?? '',
+				agentId: agentId ?? '',
 				sessionId: sessionId ?? '',
 			}).catch(err => {
 				console.error('[ChatStore] jumpToCheckpoint failed:', err);
@@ -1365,21 +1380,21 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 		openCheckpointDiff: (checkpointId: string, fileUri: string) => {
 			const state = get();
-			// 关键：employeeId / sessionId 取自 store 的 active 字段，而非
+			// 关键：agentId / sessionId 取自 store 的 active 字段，而非
 			// checkpoint 对象——CheckpointData 不携带这两个字段（与
 			// jumpToCheckpoint 一致）。否则后端拿到 undefined 找不到快照，
 			// getFileSnapshots 返回空 → 提前 return → diff 打不开。
 			postMessage('chat.openCheckpointDiff', {
 				checkpointId,
 				fileUri,
-				employeeId: state.activeEmployeeId ?? '',
+				agentId: state.activeAgentId ?? '',
 				sessionId: state.activeAgentSessionId ?? '',
 			});
 		},
 
 		undoAllCheckpoints: () => {
 			const state = get();
-			const employeeId = state.activeEmployeeId;
+			const agentId = state.activeAgentId;
 			const sessionId = state.activeAgentSessionId;
 
 			// 找到第一个 tool_edit 检查点，及其之前最近的一条 user 消息
@@ -1406,7 +1421,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 			// 通知 host 把所有文件还原到最初状态并 ghost 全部检查点。
 			sendRequest('chat.revertAllCheckpoints', {
-				employeeId: employeeId ?? '',
+				agentId: agentId ?? '',
 				sessionId: sessionId ?? '',
 				truncateAfterMessageId,
 			}).catch(err => {
@@ -1441,7 +1456,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 			}));
 			// Delete all on-disk checkpoint data so reload will not re-show the bar.
 			postMessage('chat.keepAllCheckpoints', {
-				employeeId: state.activeEmployeeId ?? '',
+				agentId: state.activeAgentId ?? '',
 				sessionId: state.activeAgentSessionId ?? '',
 			});
 		},
@@ -1449,7 +1464,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		openAllCheckpointsDiff: () => {
 			const state = get();
 			postMessage('chat.openAllCheckpointsDiff', {
-				employeeId: state.activeEmployeeId ?? '',
+				agentId: state.activeAgentId ?? '',
 				sessionId: state.activeAgentSessionId ?? '',
 			});
 		},

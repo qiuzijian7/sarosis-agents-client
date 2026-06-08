@@ -885,7 +885,7 @@ export function WorkspaceCanvas(): React.ReactElement {
 			// Update store nodes/edges with the new data
 			const currentStoreNodes = useWorkspaceStore.getState().nodes;
 			const currentStoreEdges = useWorkspaceStore.getState().edges;
-			updateNodes([...currentStoreNodes, ...newNodes.map(n => ({ id: n.id, position: n.position }))]);
+			updateNodes([...currentStoreNodes, ...newNodes.map(n => ({ id: n.id, position: n.position } as any))]);
 			updateEdges([...currentStoreEdges, ...newEdges.map(e => ({
 				id: e.id, source: e.source, target: e.target, type: e.type, data: e.data,
 			}))]);

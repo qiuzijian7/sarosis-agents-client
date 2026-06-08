@@ -413,7 +413,7 @@ export class ClawChatViewPane extends ViewPane {
 			id: crypto.randomUUID(),
 			role,
 			content,
-			employeeId: this.modelSelectorService.getSelection()?.providerId || 'claw-default',
+		agentId: this.modelSelectorService.getSelection()?.providerId || 'claw-default',
 			timestamp: new Date().toISOString(),
 		});
 	}

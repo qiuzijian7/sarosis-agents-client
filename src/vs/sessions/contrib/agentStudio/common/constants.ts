@@ -589,8 +589,9 @@ export const CHANNEL_DEFINITIONS: IChannelDefinition[] = [
 ];
 
 // Panel types (passed to WebView to select which React component to render)
+// 'agent-settings' renders AgentEditorPane in the editor area.
 // 'settings' is rendered natively (no WebView) via SettingsEditorPane.
-export type AgentStudioPanelType = 'canvas' | 'chat' | 'taskboard' | 'workflow-editor' | 'settings';
+export type AgentStudioPanelType = 'chat' | 'taskboard' | 'workflow-editor' | 'agent-settings' | 'settings';
 
 // Provider ID
 export const AGENT_STUDIO_PROVIDER_ID = 'agentStudio';
@@ -608,6 +609,9 @@ export const DATA_FILE_DELEGATIONS = 'delegations.json';
 export const DATA_FILE_SESSIONS = 'sessions.json';
 export const DATA_FILE_CHAT_HISTORY = 'chat-history.json';
 export const DATA_FILE_LAST_ACTIVE_WORKSPACE = 'last-active-workspace.json';
+export const DATA_FILE_LAST_ACTIVE_AGENT = 'last-active-agent.json';
+export const DATA_FILE_CUSTOM_AGENTS = 'custom-agents.json';
+export const DATA_FILE_AGENT_BINDINGS = 'agent-bindings.json';
 
 // Workspace-local data directory name (stored inside the workspace folder)
 export const WORKSPACE_DATA_DIR = '.sarosisworkspace';

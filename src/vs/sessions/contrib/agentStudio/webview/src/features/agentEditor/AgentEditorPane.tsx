@@ -42,7 +42,7 @@ const TABS: TabDef[] = [
 
 /* ── Props ─────────────────────────────────────────────────────── */
 interface AgentEditorPaneProps {
-	employeeId: string;
+	agentId: string;
 	onClose: () => void;
 }
 
@@ -51,13 +51,13 @@ interface AgentEditorPaneProps {
  * ═════════════════════════════════════════════════════════════════════ */
 
 interface SkillsDragDropPanelProps {
-	employeeId: string;
+	agentId: string;
 	agentSkillIds: string[];
 	onUpdateSkills: (skillIds: string[]) => void;
 	allSkills: Array<{ id: string; name: string; category: string; activation: string; description?: string }>;
 }
 
-function SkillsDragDropPanel({ employeeId, agentSkillIds, onUpdateSkills, allSkills }: SkillsDragDropPanelProps): React.ReactElement {
+function SkillsDragDropPanel({ agentId, agentSkillIds, onUpdateSkills, allSkills }: SkillsDragDropPanelProps): React.ReactElement {
 	const [leftFilter, setLeftFilter] = useState('');
 	const [rightFilter, setRightFilter] = useState('');
 	const [dragOverSide, setDragOverSide] = useState<'left' | 'right' | null>(null);
@@ -370,12 +370,12 @@ function toPreview(text: string, maxLen: number = 200): string {
 const FETCH_LIMIT = 200;
 
 interface TdbamMemorySectionProps {
-	employeeId: string;
+	agentId: string;
 	strategy: 'summary' | 'full';
 	enabled: boolean;
 }
 
-function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectionProps): React.ReactElement {
+function TdbamMemorySection({ agentId, strategy, enabled }: TdbamMemorySectionProps): React.ReactElement {
 	const [turns, setTurns] = useState<Turn[]>([]);
 	const [l1Items, setL1Items] = useState<L1Item[]>([]);
 	const [loading, setLoading] = useState(false);
@@ -388,14 +388,14 @@ function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectio
 	const layer: 'L0' | 'L1' = strategy === 'summary' ? 'L1' : 'L0';
 
 	const refresh = useCallback(async () => {
-		if (!employeeId) return;
+		if (!agentId) return;
 		setLoading(true);
 		setError(null);
 		try {
 			if (layer === 'L0') {
 				const resp = await sendRequest<{ agentId: string; limit: number }, { items: L0Item[]; total: number }>(
 					'memory.listL0',
-					{ agentId: employeeId, limit: FETCH_LIMIT },
+					{ agentId, limit: FETCH_LIMIT },
 				);
 				const items = resp?.items ?? [];
 				setTurns(pairTurns(items));
@@ -405,7 +405,7 @@ function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectio
 			} else {
 				const resp = await sendRequest<{ agentId: string; limit: number }, { items: L1Item[]; total: number }>(
 					'memory.listL1',
-					{ agentId: employeeId, limit: FETCH_LIMIT },
+					{ agentId, limit: FETCH_LIMIT },
 				);
 				setL1Items(resp?.items ?? []);
 				setTotal(resp?.total ?? 0);
@@ -415,7 +415,7 @@ function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectio
 		} finally {
 			setLoading(false);
 		}
-	}, [employeeId, layer]);
+	}, [agentId, layer]);
 
 	// 切换 agent / 切换策略 / 切到 Memory tab 时自动刷新一次
 	useEffect(() => {
@@ -436,7 +436,7 @@ function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectio
 		try {
 			const resp = await sendRequest<{ agentId: string; recordIds: string[] }, { deleted: number; failed: string[] }>(
 				channel,
-				{ agentId: employeeId, recordIds },
+				{ agentId, recordIds },
 			);
 			if (!resp || resp.deleted === 0) {
 				const detail = resp?.failed?.length ? `失败：${resp.failed.join(', ')}` : '网关未确认删除';
@@ -455,7 +455,7 @@ function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectio
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
 		}
-	}, [employeeId, layer]);
+	}, [agentId, layer]);
 
 	const toggleExpand = useCallback((id: string) => {
 		setExpandedTurns(prev => {
@@ -597,12 +597,12 @@ function TdbamMemorySection({ employeeId, strategy, enabled }: TdbamMemorySectio
 }
 
 interface MemoryConfigPanelProps {
-	employeeId: string;
+	agentId: string;
 	config: MemoryConfig | undefined;
 	onUpdate: (config: MemoryConfig) => void;
 }
 
-function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelProps): React.ReactElement {
+function MemoryConfigPanel({ agentId, config, onUpdate }: MemoryConfigPanelProps): React.ReactElement {
 	const rawCfg = config || DEFAULT_MEMORY_CONFIG;
 	// 迁移展示：旧值 sliding_window 统一视为 full。
 	const cfg: MemoryConfig = { ...rawCfg, strategy: normalizeStrategy(rawCfg.strategy) };
@@ -703,7 +703,7 @@ function MemoryConfigPanel({ employeeId, config, onUpdate }: MemoryConfigPanelPr
 			</div>
 
 			<TdbamMemorySection
-				employeeId={employeeId}
+				agentId={agentId}
 				strategy={cfg.strategy as 'summary' | 'full'}
 				enabled={cfg.enabled}
 			/>
@@ -806,12 +806,12 @@ const DEFAULT_KNOWLEDGE_CONFIG: KnowledgeConfig = {
 };
 
 interface KnowledgeConfigPanelProps {
-	employeeId: string;
+	agentId: string;
 	config: KnowledgeConfig | undefined;
 	onUpdate: (config: KnowledgeConfig) => void;
 }
 
-function KnowledgeConfigPanel({ employeeId, config, onUpdate }: KnowledgeConfigPanelProps): React.ReactElement {
+function KnowledgeConfigPanel({ agentId, config, onUpdate }: KnowledgeConfigPanelProps): React.ReactElement {
 	const cfg = config || DEFAULT_KNOWLEDGE_CONFIG;
 	const [newSourceType, setNewSourceType] = useState<KnowledgeSource['type']>('text');
 	const [newSourceName, setNewSourceName] = useState('');
@@ -1047,9 +1047,9 @@ class TabErrorBoundary extends React.Component<TabErrorBoundaryProps, TabErrorBo
 /* ═════════════════════════════════════════════════════════════════════
  *  AgentEditorPane Component
  * ═════════════════════════════════════════════════════════════════════ */
-export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): React.ReactElement {
+export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): React.ReactElement {
 	const { employees, updateEmployee } = useEmployeeStore();
-	const employee = employees.find(e => e.id === employeeId) ?? null;
+	const employee = employees.find(e => e.id === agentId) ?? null;
 
 	const [activeTab, setActiveTab] = useState<TabId>('prompt');
 
@@ -1081,7 +1081,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 	const [skillsError, setSkillsError] = useState<string | null>(null);
 
 	// ── ConfigMD state (reuse configMdStore) ──────────────────────
-	const configMdState = useConfigMdStore((s) => s.byAgent[employeeId]);
+	const configMdState = useConfigMdStore((s) => s.byAgent[agentId]);
 	const setMdState = useConfigMdStore((s) => s.setState);
 	const updateMdLocal = useConfigMdStore((s) => s.updateMarkdownLocal);
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -1096,7 +1096,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		setMemoryConfig(employee.memoryConfig || { enabled: true, maxEntries: 100, strategy: 'full', entries: [] });
 			setKnowledgeConfig(employee.knowledgeConfig || { enabled: true, retrievalStrategy: 'hybrid', maxResults: 5, sources: [] });
 		}
-	}, [employeeId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig]);
+	}, [agentId, employee?.customPrompt, employee?.skills, employee?.memoryConfig, employee?.knowledgeConfig]);
 
 	// ── Skills: load all skills from host ─────────────────────────────
 	useEffect(() => {
@@ -1120,7 +1120,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		return () => { cancelled = true; };
 	}, []);
 
-	// ── ConfigMD: load on mount / employeeId / configMd-enabled change ─
+	// ── ConfigMD: load on mount / agentId / configMd-enabled change ─
 	useEffect(() => {
 		if (!employee?.configMd) {
 			// Not configured yet — clear any stale loaded flag
@@ -1129,7 +1129,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		let cancelled = false;
 		let done = false;
 		const t0 = Date.now();
-		console.log(`[AgentEditorPane] fetchState start: employeeId=${employeeId}`);
+		console.log(`[AgentEditorPane] fetchState start: agentId=${agentId}`);
 		// 8s safety timeout — if the host hangs we still surface a clear error
 		// instead of leaving the user with a frozen-looking blank panel.
 		// Note: we track `done` separately from `cancelled` so a successful
@@ -1138,16 +1138,16 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 		const timeoutPromise = new Promise<null>((resolve) => {
 			window.setTimeout(() => {
 				if (cancelled || done) { return; }
-				console.warn(`[AgentEditorPane] fetchState timeout after 8s for ${employeeId}`);
+				console.warn(`[AgentEditorPane] fetchState timeout after 8s for ${agentId}`);
 				resolve(null);
 			}, 8000);
 		});
-		Promise.race([fetchState(employeeId), timeoutPromise]).then((s) => {
+		Promise.race([fetchState(agentId), timeoutPromise]).then((s) => {
 			done = true;
 			if (cancelled) return;
-			console.log(`[AgentEditorPane] fetchState done: employeeId=${employeeId}, hasState=${!!s}, took=${Date.now() - t0}ms`);
+			console.log(`[AgentEditorPane] fetchState done: agentId=${agentId}, hasState=${!!s}, took=${Date.now() - t0}ms`);
 			if (s) {
-				setMdState(employeeId, {
+				setMdState(agentId, {
 					markdown: s.markdown,
 					html: s.html,
 					stylesContent: s.stylesContent,
@@ -1158,23 +1158,23 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			}
 		}).catch((err) => {
 			done = true;
-			console.error(`[AgentEditorPane] fetchState failed for ${employeeId}:`, err);
+			console.error(`[AgentEditorPane] fetchState failed for ${agentId}:`, err);
 		});
 		return () => { cancelled = true; };
-	}, [employeeId, !!employee?.configMd, setMdState]);
+	}, [agentId, !!employee?.configMd, setMdState]);
 
 	// ── ConfigMD: subscribe to host pushes ─────────────────────────
 	useEffect(() => {
-		const offSrc = onSourceChanged(employeeId, (evt) => {
-			const cur = useConfigMdStore.getState().byAgent[employeeId];
+		const offSrc = onSourceChanged(agentId, (evt) => {
+			const cur = useConfigMdStore.getState().byAgent[agentId];
 			if (cur && evt.markdown === cur.markdown && evt.version === cur.version) return;
 			// Mark as loaded — receiving a source push proves the host has resolved state.
-			setMdState(employeeId, { markdown: evt.markdown, version: evt.version, dirty: false, loaded: true });
+			setMdState(agentId, { markdown: evt.markdown, version: evt.version, dirty: false, loaded: true });
 			postSyncToIframe(iframeRef.current, { markdown: evt.markdown, version: evt.version, origin: evt.origin });
 		});
-		const offHtml = onHtmlRendered(employeeId, (evt) => {
+		const offHtml = onHtmlRendered(agentId, (evt) => {
 			// Mark as loaded — receiving HTML render means the panel is ready.
-			setMdState(employeeId, {
+			setMdState(agentId, {
 				html: evt.html,
 				version: evt.version,
 				stylesContent: evt.stylesContent,
@@ -1182,32 +1182,32 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			});
 		});
 		return () => { offSrc(); offHtml(); };
-	}, [employeeId, setMdState]);
+	}, [agentId, setMdState]);
 
 	// ── ConfigMD: iframe channel bind ─────────────────────────────
 	useEffect(() => {
 		const iframe = iframeRef.current;
 		if (!iframe) return;
-		const unbind = bindIframeChannel(iframe, employeeId);
+		const unbind = bindIframeChannel(iframe, agentId);
 		return () => unbind();
-	}, [employeeId, configMdState?.loaded]);
+	}, [agentId, configMdState?.loaded]);
 
 	// ── Handlers ───────────────────────────────────────────────────
 	const handleSavePrompt = useCallback(() => {
-		if (!employeeId) return;
-		updateEmployee(employeeId, { customPrompt: prompt });
+		if (!agentId) return;
+		updateEmployee(agentId, { customPrompt: prompt });
 		setPromptDirty(false);
-	}, [employeeId, prompt, updateEmployee]);
+	}, [agentId, prompt, updateEmployee]);
 
 
 
 	const handleConfigMdChange = useCallback((value: string) => {
-		updateMdLocal(employeeId, value);
+		updateMdLocal(agentId, value);
 		if (debounceRef.current) {
 			window.clearTimeout(debounceRef.current);
 		}
 		debounceRef.current = window.setTimeout(() => {
-			const cur = useConfigMdStore.getState().byAgent[employeeId];
+			const cur = useConfigMdStore.getState().byAgent[agentId];
 			if (!cur) return;
 			// Only pass baseVersion when state is actually loaded — otherwise the
 			// host will reject with "Stale write" because its initial version is 1.
@@ -1215,39 +1215,39 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			if (cur.loaded && cur.version > 0) {
 				opts.baseVersion = cur.version;
 			}
-			writeSource(employeeId, cur.markdown, opts)
+			writeSource(agentId, cur.markdown, opts)
 				.then((r) => {
-					setMdState(employeeId, { version: r.version, dirty: false, loaded: true });
+					setMdState(agentId, { version: r.version, dirty: false, loaded: true });
 				})
 				.catch((err) => {
 					console.error('[ConfigMD] writeSource failed:', err);
 				});
 		}, 300);
-	}, [employeeId, setMdState, updateMdLocal]);
+	}, [agentId, setMdState, updateMdLocal]);
 
 	// ── ConfigHtml AI box → editor write-back ──────────────────────
 	// The AI chat box returns a complete HTML document; write it into the
 	// editor (local store) and immediately persist it to disk, reusing the
 	// same debounced write path semantics as manual edits (but flushing now).
 	const handleHtmlGenerated = useCallback((html: string) => {
-		updateMdLocal(employeeId, html);
+		updateMdLocal(agentId, html);
 		if (debounceRef.current) {
 			window.clearTimeout(debounceRef.current);
 			debounceRef.current = null;
 		}
-		const cur = useConfigMdStore.getState().byAgent[employeeId];
+		const cur = useConfigMdStore.getState().byAgent[agentId];
 		const opts: { origin: 'editor'; baseVersion?: number } = { origin: 'editor' };
 		if (cur && cur.loaded && cur.version > 0) {
 			opts.baseVersion = cur.version;
 		}
-		writeSource(employeeId, html, opts)
+		writeSource(agentId, html, opts)
 			.then((r) => {
-				setMdState(employeeId, { version: r.version, dirty: false, loaded: true });
+				setMdState(agentId, { version: r.version, dirty: false, loaded: true });
 			})
 			.catch((err) => {
 				console.error('[ConfigHtml] write generated HTML failed:', err);
 			});
-	}, [employeeId, setMdState, updateMdLocal]);
+	}, [agentId, setMdState, updateMdLocal]);
 	// Show the preview as soon as html exists, regardless of the explicit
 	// `loaded` flag — this avoids a chicken-and-egg state where the agent
 	// has just been enabled and html arrives via a renderHtml RPC before
@@ -1255,23 +1255,8 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 	// (Preview iframe was removed; preview is now opened to the host editor
 	//  via the toolbar button using `previewToFile`.)
 
-	const agentName = employee?.name || 'Unknown';
-
 	return (
 		<div className="agent-editor-pane">
-			{/* ── Header ─────────────────────────────────────────── */}
-			<div className="agent-editor-header">
-				<div className="agent-editor-title">
-					<span className="agent-editor-icon">⚙</span>
-					<span>{agentName} · 配置</span>
-				</div>
-				<button className="agent-editor-close" onClick={onClose} title="关闭配置面板">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
-						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-					</svg>
-				</button>
-			</div>
-
 			{/* ── Tab Bar ────────────────────────────────────────── */}
 			<div className="agent-editor-tabs">
 				{TABS.map(tab => (
@@ -1279,7 +1264,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 						key={tab.id}
 						className={`agent-editor-tab ${activeTab === tab.id ? 'active' : ''}`}
 						onClick={() => {
-							console.log(`[AgentEditorPane] tab click: ${activeTab} → ${tab.id} (employeeId=${employeeId}, hasConfigMd=${!!employee?.configMd})`);
+							console.log(`[AgentEditorPane] tab click: ${activeTab} → ${tab.id} (agentId=${agentId}, hasConfigMd=${!!employee?.configMd})`);
 							setActiveTab(tab.id);
 						}}
 					>
@@ -1321,12 +1306,12 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 			{/* ── Tab: Skills (drag & drop) ─────────────── */}
 			{activeTab === 'skills' && (
 				<SkillsDragDropPanel
-					employeeId={employeeId}
+					agentId={agentId}
 					agentSkillIds={skills}
 					allSkills={allSkills}
 					onUpdateSkills={(next) => {
 						setSkills(next);
-						updateEmployee(employeeId, { skills: next });
+						updateEmployee(agentId, { skills: next });
 					}}
 				/>
 			)}
@@ -1338,11 +1323,11 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 							管理 Agent 的记忆配置。Memory 使 Agent 能够跨会话保留和检索信息，提升上下文连续性。
 						</div>
 						<MemoryConfigPanel
-							employeeId={employeeId}
+							agentId={agentId}
 							config={memoryConfig}
 							onUpdate={(next) => {
 								setMemoryConfig(next);
-								updateEmployee(employeeId, { memoryConfig: next });
+								updateEmployee(agentId, { memoryConfig: next });
 							}}
 						/>
 					</div>
@@ -1355,11 +1340,11 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 							配置 Agent 的知识库。知识库为 Agent 提供外部知识来源，支持文件、URL、文本和向量库等多种知识源。
 						</div>
 						<KnowledgeConfigPanel
-							employeeId={employeeId}
+							agentId={agentId}
 							config={knowledgeConfig}
 							onUpdate={(next) => {
 								setKnowledgeConfig(next);
-								updateEmployee(employeeId, { knowledgeConfig: next });
+								updateEmployee(agentId, { knowledgeConfig: next });
 							}}
 						/>
 					</div>
@@ -1382,7 +1367,7 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 									type="button"
 									className="configmd-empty-btn"
 									onClick={() => {
-										void updateEmployee(employeeId, {
+										void updateEmployee(agentId, {
 											configMd: {
 												mdPath: 'config.html',
 												displayMode: 'side',
@@ -1427,22 +1412,22 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 											window.clearTimeout(debounceRef.current);
 											debounceRef.current = null;
 										}
-										const cur = useConfigMdStore.getState().byAgent[employeeId];
+										const cur = useConfigMdStore.getState().byAgent[agentId];
 										const flushed = cur
-											? writeSource(employeeId, cur.markdown, {
+											? writeSource(agentId, cur.markdown, {
 												origin: 'editor',
 												// only pass baseVersion when loaded
 												...(cur.loaded && cur.version > 0 ? { baseVersion: cur.version } : {}),
 											})
 												.then((r) => {
-													setMdState(employeeId, { version: r.version, dirty: false, loaded: true });
+													setMdState(agentId, { version: r.version, dirty: false, loaded: true });
 												})
 												.catch(() => undefined)
 											: Promise.resolve();
 										// 2) After the source is on disk, ask the host to open
 										//    this agent's config.html (editable) in the Canvas panel.
 										void flushed
-											.then(() => requestCanvasPreview(employeeId))
+											.then(() => requestCanvasPreview(agentId))
 											.catch((err) => {
 												console.error('[ConfigHtml] open canvas preview failed:', err);
 											});
@@ -1463,8 +1448,8 @@ export function AgentEditorPane({ employeeId, onClose }: AgentEditorPaneProps): 
 						    document via the `confightml` skill and writes it into
 						    the editor below. */}
 						<ConfigHtmlChatBox
-							employeeId={employeeId}
-							getCurrentHtml={() => useConfigMdStore.getState().byAgent[employeeId]?.markdown ?? ''}
+							agentId={agentId}
+							getCurrentHtml={() => useConfigMdStore.getState().byAgent[agentId]?.markdown ?? ''}
 							onHtmlGenerated={handleHtmlGenerated}
 						/>
 

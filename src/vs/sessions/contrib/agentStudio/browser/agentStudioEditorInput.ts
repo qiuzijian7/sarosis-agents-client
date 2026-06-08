@@ -92,7 +92,6 @@ export class AgentStudioEditorInput extends EditorInput {
 
 	override getName(): string {
 		switch (this._panelType) {
-			case 'canvas': return 'Workspace Canvas';
 			case 'chat': return 'Agent Chat';
 			case 'taskboard': return 'Task Board';
 			case 'settings': return 'Settings';

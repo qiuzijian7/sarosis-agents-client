@@ -515,13 +515,13 @@ function unescapeHtmlEntities(s: string): string {
  */
 export const IMGUI_SDK_SCRIPT = `(function(){
 	// Cached context injected by the host pane on mount (imgui.ctx event).
-	// Carries the (employeeId, workspaceId, workspaceSessionId,
+	// Carries the (agentId, workspaceId, workspaceSessionId,
 	// agentSessionId) tuple captured at the moment the preview was opened.
 	// We attach it to every submit payload so the host can route imgui.submit
 	// → chat.send to the exact session the user expects, even after they
 	// switch employees / Forks in the chat panel.
 	var __imguiCtx = {
-		employeeId: undefined,
+		agentId: undefined,
 		workspaceId: undefined,
 		workspaceSessionId: undefined,
 		agentSessionId: undefined
@@ -598,7 +598,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 				badge.className = 'imgui-ctx-badge';
 				document.body.appendChild(badge);
 			}
-			var emp = __imguiCtx.employeeId || '—';
+			var emp = __imguiCtx.agentId || '—';
 			var ws  = __imguiCtx.workspaceId || '—';
 			var fsn = __imguiCtx.workspaceSessionId || '';
 			var asn = __imguiCtx.agentSessionId || '—';
@@ -756,7 +756,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 				// — and any future SDK-level features that depend on
 				// session — much easier.
 				ctx: {
-					employeeId: __imguiCtx.employeeId,
+					agentId: __imguiCtx.agentId,
 					workspaceId: __imguiCtx.workspaceId,
 					workspaceSessionId: __imguiCtx.workspaceSessionId,
 					agentSessionId: __imguiCtx.agentSessionId
@@ -779,7 +779,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 			// agent session) this preview is bound to. Cache it for
 			// subsequent submits.
 			__imguiCtx = {
-				employeeId: m.employeeId,
+				agentId: m.agentId,
 				workspaceId: m.workspaceId,
 				workspaceSessionId: m.workspaceSessionId,
 				agentSessionId: m.agentSessionId

@@ -35,7 +35,7 @@ export interface ICheckpointService {
 	 * (created deep inside the tool provider, which only knows the agentId) use
 	 * this mapping to resolve the sessionId for storage scoping.
 	 */
-	setActiveSession(employeeId: string, sessionId: string): void;
+	setActiveSession(agentId: string, sessionId: string): void;
 
 	/**
 	 * Convenience capture point for tool edits: the builtin tool provider calls
@@ -43,12 +43,12 @@ export interface ICheckpointService {
 	 * agent, snapshots the file's current (pre-write) content, and creates a
 	 * tool_edit checkpoint. No-op if no active session is registered.
 	 *
-	 * @param employeeId The agent performing the edit.
+	 * @param agentId The agent performing the edit.
 	 * @param fileUri The file about to be written (absolute path/URI string).
 	 * @param newContent The content that will be written (used to compute the
 	 *   additions/deletions summary shown in the checkpoint bar). Optional.
 	 */
-	captureBeforeToolEdit(employeeId: string, fileUri: string, newContent?: string): Promise<void>;
+	captureBeforeToolEdit(agentId: string, fileUri: string, newContent?: string): Promise<void>;
 
 	/**
 	 * Create a new checkpoint by persisting the provided file snapshots.
@@ -64,14 +64,14 @@ export interface ICheckpointService {
 	 *
 	 * Files that cannot be read (e.g. not yet created) are skipped silently.
 	 *
-	 * @param employeeId The agent/employee owning the checkpoint.
+	 * @param agentId The agent owning the checkpoint.
 	 * @param sessionId The chat session.
 	 * @param type Whether this is a user_edit or tool_edit checkpoint.
 	 * @param fileUris Absolute file URIs (string form) to snapshot.
 	 * @param opts Optional label / description / messageId.
 	 */
 	createCheckpointFromUris(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		type: 'user_edit' | 'tool_edit',
 		fileUris: string[],
@@ -83,7 +83,7 @@ export interface ICheckpointService {
 	 * and marks subsequent checkpoints as ghost (unreachable).
 	 * @returns Restored file URIs (caller truncates chat history).
 	 */
-	jumpToCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<IJumpToCheckpointResult>;
+	jumpToCheckpoint(agentId: string, sessionId: string, checkpointId: string): Promise<IJumpToCheckpointResult>;
 
 	/**
 	 * Revert ALL (non-ghost) tool_edit checkpoints at once: for each modified
@@ -92,36 +92,36 @@ export interface ICheckpointService {
 	 * ghosted. Unlike {@link jumpToCheckpoint} (single checkpoint), this is the
 	 * "undo everything" operation backing the checkpoint bar's 撤销 button.
 	 */
-	revertAllCheckpoints(employeeId: string, sessionId: string): Promise<IJumpToCheckpointResult>;
+	revertAllCheckpoints(agentId: string, sessionId: string): Promise<IJumpToCheckpointResult>;
 
 	/**
 	 * Get the earliest snapshot of every file touched across all (non-ghost)
 	 * tool_edit checkpoints. Backs the "查看全部变更" multi-file diff window
 	 * (original content vs current on-disk content).
 	 */
-	getAggregatedFileSnapshots(employeeId: string, sessionId: string): Promise<IFileSnapshot[]>;
+	getAggregatedFileSnapshots(agentId: string, sessionId: string): Promise<IFileSnapshot[]>;
 
 	/** Get a single checkpoint by id. */
-	getCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<ICheckpoint | undefined>;
+	getCheckpoint(agentId: string, sessionId: string, checkpointId: string): Promise<ICheckpoint | undefined>;
 
-	/** List all checkpoints for an employee + session, ordered by createdAt asc. */
-	listCheckpoints(employeeId: string, sessionId: string): Promise<ICheckpoint[]>;
+	/** List all checkpoints for an agent + session, ordered by createdAt asc. */
+	listCheckpoints(agentId: string, sessionId: string): Promise<ICheckpoint[]>;
 
 	/** Delete a checkpoint and its file snapshots. */
-	deleteCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<void>;
+	deleteCheckpoint(agentId: string, sessionId: string, checkpointId: string): Promise<void>;
 
 	/**
-	 * Delete ALL checkpoints for an employee + session and their snapshots.
+	 * Delete ALL checkpoints for an agent + session and their snapshots.
 	 * Used when the user clicks 保留 or 撤销 — after a checkpoint bar action,
 	 * the on-disk checkpoint data is no longer needed and must be removed so
 	 * that reload will not re-show the bar.
 	 */
-	deleteAllCheckpoints(employeeId: string, sessionId: string): Promise<void>;
+	deleteAllCheckpoints(agentId: string, sessionId: string): Promise<void>;
 
 	/** Get file snapshots for a checkpoint.
 	 *  Returns the full snapshot objects (id, uri, languageId, content).
 	 *  Browser-layer only; used by the controller to open diff editors. */
-	getFileSnapshots(employeeId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]>;
+	getFileSnapshots(agentId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]>;
 
 	/**
 	 * Get the snapshot content for a specific file in a checkpoint.
@@ -130,7 +130,7 @@ export interface ICheckpointService {
 	 * Returns `undefined` if the snapshot or file is not found.
 	 */
 	getSnapshotContentForFile(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		checkpointId: string,
 		fileUri: string,

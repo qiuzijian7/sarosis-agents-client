@@ -19,7 +19,7 @@ import type { AgentStudioPanelType } from '../common/constants.js';
 /**
  * Base ViewPane for Agent Studio panels.
  * Each panel hosts a WebView instance with a specific panelType so the React
- * app knows which component to render (canvas / chat / taskboard).
+ * app knows which component to render (chat / taskboard).
  */
 export class AgentStudioViewPane extends ViewPane {
 
@@ -76,14 +76,6 @@ export class AgentStudioViewPane extends ViewPane {
 }
 
 // ─── Specialized Panel ViewPanes ─────────────────────────────────────────────
-
-/**
- * Canvas ViewPane — shows the agent workspace canvas (React Flow graph).
- * Can be freely docked anywhere in the workbench.
- */
-export class AgentStudioCanvasViewPane extends AgentStudioViewPane {
-	protected override get panelType(): AgentStudioPanelType { return 'canvas'; }
-}
 
 /**
  * Chat ViewPane — shows the employee chat interface.

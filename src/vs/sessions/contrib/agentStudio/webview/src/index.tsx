@@ -12,6 +12,7 @@ import { App } from './App.js';
 import { initMessageClient } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError, applyToolApprovalRequest } from './bridge/streamHandler.js';
 import { useEmployeeStore } from './store/useEmployeeStore.js';
+import { useAgentStore } from './store/useAgentStore.js';
 import { useProviderStore } from './store/useProviderStore.js';
 import { useThemeStore } from './store/useThemeStore.js';
 import { useWorkspaceSessionStore } from './store/useWorkspaceSessionStore.js';
@@ -39,7 +40,7 @@ initMessageClient((type, data) => {
 			const completeData = data as Parameters<typeof handleStreamComplete>[0];
 			const msg = completeData.message as Record<string, unknown> | undefined;
 			console.log(`[AgentStudio] Routing chat.stream.complete → handleStreamComplete, ` +
-				`employeeId=${completeData.employeeId}, ` +
+				`agentId=${completeData.agentId}, ` +
 				`hostMsg.contentLen=${typeof msg?.content === 'string' ? msg.content.length : 'N/A'}, ` +
 				`hostMsg.error=${msg?.error ?? 'none'}`);
 			handleStreamComplete(completeData);
@@ -48,7 +49,7 @@ initMessageClient((type, data) => {
 		case 'chat.stream.error': {
 			const errData = data as Parameters<typeof handleStreamError>[0];
 			console.error(`[AgentStudio] Routing chat.stream.error → handleStreamError, ` +
-				`employeeId=${errData.employeeId}, error="${errData.error}"`);
+				`agentId=${errData.agentId}, error="${errData.error}"`);
 			handleStreamError(errData);
 			break;
 		}
@@ -57,26 +58,28 @@ initMessageClient((type, data) => {
 			// messages that originated outside the chat input (currently only
 			// imgui form submits routed via the host controller).
 			const detail = data as {
-				employeeId: string;
+				agentId: string;
 				agentSessionId?: string;
 				message: { id: string; role: 'user'; content: string; timestamp: string };
 			} | undefined;
-			if (detail?.employeeId && detail.message) {
+			if (detail?.agentId && detail.message) {
 				console.log(`[AgentStudio] Routing chat.userMessageAppended → store: ` +
-					`employeeId=${detail.employeeId}, id=${detail.message.id}, len=${detail.message.content.length}`);
-				useChatStore.getState().appendExternalUserMessage(detail.employeeId, detail.message);
+					`agentId=${detail.agentId}, id=${detail.message.id}, len=${detail.message.content.length}`);
+				useChatStore.getState().appendExternalUserMessage(detail.agentId, detail.message);
 			}
 			break;
 		}
 		case 'employee.selected': {
-			const { employeeId } = (data as { employeeId: string | null }) ?? {};
-			console.log(`[AgentStudio] received 'employee.selected' event: employeeId=${employeeId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
-			if (employeeId !== undefined) {
-				// Update the store directly (bypass postMessage to avoid echo loop)
-				console.log(`[AgentStudio] → useEmployeeStore.setState({ selectedEmployeeId: '${employeeId}' })`);
-				useEmployeeStore.setState({ selectedEmployeeId: employeeId });
+			const { agentId } = (data as { agentId: string | null }) ?? {};
+			console.log(`[AgentStudio] received 'employee.selected' event: agentId=${agentId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
+			if (agentId !== undefined) {
+				// Update the Agent store directly (bypass postMessage to avoid echo loop).
+				// NOTE: useAgentStore is the canonical agent store that EmployeeChat reads from.
+				// useEmployeeStore is a LEGACY store — writing to it has no effect on the chat panel.
+				console.log(`[AgentStudio] → useAgentStore.setState({ selectedAgentId: '${agentId}' })`);
+				useAgentStore.setState({ selectedAgentId: agentId });
 			} else {
-				console.warn(`[AgentStudio] employee.selected event missing employeeId, data=`, data);
+				console.warn(`[AgentStudio] employee.selected event missing agentId, data=`, data);
 			}
 			break;
 		}
@@ -164,7 +167,7 @@ initMessageClient((type, data) => {
 			// pick it up so the next history reload aims at the same session.
 			if (detail.agentId && detail.agentSessionId) {
 				const chatStore = useChatStore.getState();
-				if (chatStore.activeEmployeeId === detail.agentId) {
+				if (chatStore.activeAgentId === detail.agentId) {
 					if (chatStore.activeAgentSessionId !== detail.agentSessionId) {
 						console.log(
 							`[AgentStudio] workspace.sessionUpdated → chatStore.activeAgentSessionId = ${detail.agentSessionId} ` +
@@ -260,9 +263,9 @@ initMessageClient((type, data) => {
 		case 'configmd.htmlRendered':
 		case 'configmd.command':
 		case 'configmd.error': {
-			const detail = data as { employeeId: string };
-			if (detail?.employeeId) {
-				dispatchConfigMdEvent(detail.employeeId, type, data);
+			const detail = data as { agentId: string };
+			if (detail?.agentId) {
+				dispatchConfigMdEvent(detail.agentId, type, data);
 			}
 			break;
 		}
@@ -278,12 +281,12 @@ initMessageClient((type, data) => {
 			// Agent session list changed (created/renamed/deleted/updated).
 			// Refresh the session list in the chat store if the affected employee
 			// is currently active so the L0 panel updates automatically.
-			const detail = data as { employeeId: string } | undefined;
-			if (detail?.employeeId) {
+			const detail = data as { agentId: string } | undefined;
+			if (detail?.agentId) {
 				const chatStore = useChatStore.getState();
-				if (chatStore.activeEmployeeId === detail.employeeId) {
-					console.log(`[AgentStudio] agentSessions.changed → reloading sessions for ${detail.employeeId}`);
-					chatStore.loadAgentSessions(detail.employeeId);
+				if (chatStore.activeAgentId === detail.agentId) {
+					console.log(`[AgentStudio] agentSessions.changed → reloading sessions for ${detail.agentId}`);
+					chatStore.loadAgentSessions(detail.agentId);
 				}
 			}
 			break;
@@ -291,16 +294,16 @@ initMessageClient((type, data) => {
 		case 'chat.switchToSession': {
 			// Host requests switching to a specific agent session
 			// (e.g. from the SessionExplorerViewPane in the sidebar)
-			const detail = data as { employeeId: string; agentSessionId: string } | undefined;
-			if (detail?.employeeId && detail?.agentSessionId) {
+			const detail = data as { agentId: string; agentSessionId: string } | undefined;
+			if (detail?.agentId && detail?.agentSessionId) {
 				const chatStore = useChatStore.getState();
 				// First select the employee if not already active
-				if (chatStore.activeEmployeeId !== detail.employeeId) {
-					chatStore.setActiveEmployee(detail.employeeId);
+				if (chatStore.activeAgentId !== detail.agentId) {
+					chatStore.setActiveAgent(detail.agentId);
 				}
 				// Then switch to the session
 				chatStore.switchAgentSession(detail.agentSessionId);
-				console.log(`[AgentStudio] chat.switchToSession → switched to session ${detail.agentSessionId} for employee ${detail.employeeId}`);
+				console.log(`[AgentStudio] chat.switchToSession → switched to session ${detail.agentSessionId} for employee ${detail.agentId}`);
 			}
 			break;
 		}
@@ -366,7 +369,9 @@ initMessageClient((type, data) => {
 			// Render an inline checkpoint card so the user can time-travel back.
 			const cp = data as {
 				id: string;
-				employeeId: string;
+				/** @deprecated legacy alias; new code should read agentId. */
+				employeeId?: string;
+				agentId?: string;
 				sessionId: string;
 				type: 'user_edit' | 'tool_edit';
 				label?: string;
@@ -391,7 +396,7 @@ initMessageClient((type, data) => {
 				// and exist purely as message-boundary markers for range rollback.
 				// Rendering them would spam an empty card before every turn.
 				// Only tool_edit checkpoints (real file snapshots) get a card.
-				if (chatStore.activeEmployeeId === cp.employeeId && cp.type === 'tool_edit') {
+				if (chatStore.activeAgentId === (cp.agentId ?? cp.employeeId) && cp.type === 'tool_edit') {
 					console.log(`[AgentStudio] chat.checkpointCreated → ${cp.type} ${cp.id} (${cp.fileSnapshotIds?.length ?? 0} files, files=${cp.files?.length ?? 0})`);
 					chatStore.addCheckpoint({
 						id: cp.id,

@@ -111,13 +111,13 @@ suite('Agent Driver Service (Phase 2)', () => {
 
 	test('executeFromChatOptions adapts options correctly', () => {
 		const executeFromChatOptions = (
-			employeeId: string,
+			agentId: string,
 			message: string,
 			options: any,
 		) => {
 			// 将 IChatSendOptions 适配为 IAgentTurnRequest
 			return {
-				agentId: employeeId,
+				agentId,
 				messages: [{ role: 'user', content: message }],
 				options: {
 					temperature: options.temperature,

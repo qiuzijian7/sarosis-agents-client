@@ -6,7 +6,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IAgentStudioService } from '../common/agentStudio.js';
-import type { Employee, OrchestrationPlan } from '../common/types.js';
+import type { Agent, OrchestrationPlan } from '../common/types.js';
 import { AgentType, PlanTaskStatus } from '../common/types.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
@@ -42,7 +42,7 @@ export class AgentFactory {
 	 * Enforces the visibility.agentInvocable rule (aligned with VS Code's
 	 * runSubagentTool which checks ICustomAgent.visibility.agentInvocable).
 	 */
-	isAgentInvocable(agent: Employee): boolean {
+	isAgentInvocable(agent: Agent): boolean {
 		if (!agent.visibility) { return true; }
 		return agent.visibility.agentInvocable;
 	}
@@ -50,7 +50,7 @@ export class AgentFactory {
 	/**
 	 * Check if an agent can be invoked by a user.
 	 */
-	isAgentUserInvocable(agent: Employee): boolean {
+	isAgentUserInvocable(agent: Agent): boolean {
 		if (!agent.visibility) { return true; }
 		return agent.visibility.userInvocable;
 	}
@@ -59,7 +59,7 @@ export class AgentFactory {
 	 * Check if a parent agent is allowed to invoke a specific child agent.
 	 * Enforces the parent's `agents` allowlist (aligned with ICustomAgent.agents).
 	 */
-	isSubagentAllowed(parent: Employee, childName: string): boolean {
+	isSubagentAllowed(parent: Agent, childName: string): boolean {
 		if (!parent.agents || parent.agents.length === 0 || parent.agents.includes('*')) {
 			return true;
 		}
@@ -71,7 +71,7 @@ export class AgentFactory {
 	 * the child's agentInvocable and the parent's agents allowlist.
 	 * @throws Error if the invocation is not permitted
 	 */
-	validateSubagentInvocation(parent: Employee, child: Employee): void {
+	validateSubagentInvocation(parent: Agent, child: Agent): void {
 		if (!this.isAgentInvocable(child)) {
 			throw new Error(
 				`Agent "${child.name}" is not invocable as a sub-agent (visibility.agentInvocable=false).`
@@ -100,12 +100,13 @@ export class AgentFactory {
 	 * 3. Auto-creates agents when no suitable candidate exists.
 	 */
 	async assignAgents(plan: OrchestrationPlan): Promise<void> {
-		const existingEmployees = await this.agentStudioService.getEmployees(plan.workspaceId);
+		// Agents are global definitions; all are candidates across workspaces.
+		const existingAgents = await this.agentStudioService.getAgents();
 		// Defensive: filter out any null/undefined entries from the service
-		const validEmployees = existingEmployees.filter(e => e && e.id);
-		const existingByName = new Map(validEmployees.map(e => [e.name.toLowerCase(), e]));
+		const validAgents = existingAgents.filter(e => e && e.id);
+		const existingByName = new Map(validAgents.map(e => [e.name.toLowerCase(), e]));
 
-		this.logService.info(`[AgentFactory] assignAgents: workspaceId=${plan.workspaceId}, tasks=${plan.tasks.length}, existingEmployees=${existingEmployees.length}, usedAgentIds=${this._usedAgentIds.size}`);
+		this.logService.info(`[AgentFactory] assignAgents: workspaceId=${plan.workspaceId}, tasks=${plan.tasks.length}, existingAgents=${existingAgents.length}, usedAgentIds=${this._usedAgentIds.size}`);
 
 		for (const task of plan.tasks) {
 			if (task.status === PlanTaskStatus.Done || task.status === PlanTaskStatus.Cancelled) {
@@ -128,15 +129,15 @@ export class AgentFactory {
 					this.logService.info(`[AgentFactory] [Strategy 1] Reused agent "${existing.name}" (id=${existing.id}) for task "${task.title}"`);
 					continue;
 				} else {
-					this.logService.info(`[AgentFactory] [Strategy 1] No name match for "${task.assigneeName}" in existing agents: [${existingEmployees.map(e => e.name).join(', ')}]`);
+					this.logService.info(`[AgentFactory] [Strategy 1] No name match for "${task.assigneeName}" in existing agents: [${existingAgents.map(e => e.name).join(', ')}]`);
 				}
 			}
 
 		// Strategy 2: Score-based selection - 从已有agent中选择评分最高的
 		// 只有当 autoCreateAgent 为 false 时才尝试评分匹配，否则直接创建新 agent
 		if (!task.autoCreateAgent) {
-			const allEmps = await this.agentStudioService.getEmployees(plan.workspaceId);
-			const best = this._selectBestAgent(allEmps, task.assigneeRole || '', this._usedAgentIds);
+			const allAgents = await this.agentStudioService.getAgents();
+			const best = this._selectBestAgent(allAgents, task.assigneeRole || '', this._usedAgentIds);
 			if (best) {
 				task.assigneeId = best.id;
 				task.assigneeName = best.name;
@@ -156,17 +157,17 @@ export class AgentFactory {
 				try {
 					const agentName = task.assigneeName || `Agent-${task.title.slice(0, 20)}`;
 					this.logService.info(`[AgentFactory] [Strategy 3] Auto-creating agent "${agentName}" for task "${task.title}" (autoCreateAgent=${task.autoCreateAgent}, not found in existing=${!existingByName.has((task.assigneeName || '').toLowerCase())})`);
-					const newEmp = await this.agentStudioService.createEmployee({
+					const newAgent = await this.agentStudioService.createAgent({
 						name: agentName,
 						role: task.assigneeRole || 'Agent',
 						agentType: AgentType.Worker,
 						workspaceId: plan.workspaceId,
-					} as Partial<Employee>);
-					task.assigneeId = newEmp.id;
-					task.assigneeName = newEmp.name;
-					this._usedAgentIds.add(newEmp.id);
-					existingByName.set(newEmp.name.toLowerCase(), newEmp);
-					this.logService.info(`[AgentFactory] [Strategy 3] Created agent "${newEmp.name}" (id=${newEmp.id}) for task "${task.title}"`);
+					} as Partial<Agent>);
+					task.assigneeId = newAgent.id;
+					task.assigneeName = newAgent.name;
+					this._usedAgentIds.add(newAgent.id);
+					existingByName.set(newAgent.name.toLowerCase(), newAgent);
+					this.logService.info(`[AgentFactory] [Strategy 3] Created agent "${newAgent.name}" (id=${newAgent.id}) for task "${task.title}"`);
 				} catch (err) {
 					task.status = PlanTaskStatus.Error;
 					task.error = `Failed to create agent: ${String(err)}`;
@@ -228,7 +229,7 @@ export class AgentFactory {
 	 * Multi-dimensional agent score. Returns a number in [0, 1]. Higher = better fit.
 	 * Dimensions: capability (0.40) + load (0.30) + availability (0.30)
 	 */
-	private _scoreAgent(agent: Employee, taskRole: string): number {
+	private _scoreAgent(agent: Agent, taskRole: string): number {
 		const capabilityScore = this._calcCapabilityScore(agent, taskRole);
 
 		// Load: fewer tasks = higher score (simplified; no real-time load tracking yet)
@@ -260,7 +261,7 @@ export class AgentFactory {
 	 * - Tool match bonus: +0.1 per matching tool (capped at +0.3)
 	 * - No match = 0.1 (baseline)
 	 */
-	private _calcCapabilityScore(agent: Employee, taskRole: string): number {
+	private _calcCapabilityScore(agent: Agent, taskRole: string): number {
 		const agentRole = (agent.role || '').toLowerCase();
 		const required = taskRole.toLowerCase().trim();
 
@@ -310,24 +311,24 @@ export class AgentFactory {
 	/**
 	 * Select the best available agent from a pool using scoring.
 	 * Excludes already-used agents and PM agents (PMs don't execute tasks).
-	 * Returns the employee or undefined if none suitable.
+	 * Returns the agent or undefined if none suitable.
 	 */
-	private _selectBestAgent(employees: Employee[], taskRole: string, excludeIds: Set<string>): Employee | undefined {
-		const candidates = employees.filter(e =>
+	private _selectBestAgent(agents: Agent[], taskRole: string, excludeIds: Set<string>): Agent | undefined {
+		const candidates = agents.filter(e =>
 			e && e.id &&
 			!excludeIds.has(e.id) &&
 			e.status !== 'offline' &&
 			this.isAgentInvocable(e)  // Exclude agents that can't be invoked as sub-agents
 		);
 
-		this.logService.info(`[AgentFactory] _selectBestAgent: taskRole=${taskRole}, total=${employees.length}, candidates=${candidates.length}, excluded=${excludeIds.size}`);
+		this.logService.info(`[AgentFactory] _selectBestAgent: taskRole=${taskRole}, total=${agents.length}, candidates=${candidates.length}, excluded=${excludeIds.size}`);
 
 		if (candidates.length === 0) {
 			this.logService.info(`[AgentFactory] _selectBestAgent: No candidates available. Excluded IDs: [${Array.from(excludeIds).join(', ')}]`);
 			return undefined;
 		}
 
-		let best: Employee | undefined;
+		let best: Agent | undefined;
 		let bestScore = -1;
 
 		for (const emp of candidates) {

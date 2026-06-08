@@ -185,12 +185,12 @@ export class TdbamViewPane extends ViewPane {
 	private _disposed = false;
 	/** 当前 L0 面板激活的 tab：'agent' 只看当前 Agent，'workspace' 看当前 Workspace 全部 Agent，'all' 看全部 */
 	private _l0ActiveTab: 'agent' | 'workspace' | 'all' = 'workspace';
-	/** 当前 Workspace 下的 employeeId 集合（懒加载缓存）。undefined = 未加载 */
-	private _workspaceEmployeeIds: Set<string> | undefined;
-	/** 是否正在加载 workspace employees（避免并发） */
-	private _workspaceEmployeesLoading: Promise<Set<string>> | undefined;
-	/** 当前活跃的 employeeId（从 onDidChangeTurnStatus 的 turnId 提取，用于 L0 过滤） */
-	private _activeEmployeeId: string | undefined;
+	/** 当前 Workspace 下的 agentId 集合（懒加载缓存）。undefined = 未加载 */
+	private _workspaceAgentIds: Set<string> | undefined;
+	/** 是否正在加载 workspace agents（避免并发） */
+	private _workspaceAgentsLoading: Promise<Set<string>> | undefined;
+	/** 当前活跃的 agentId（从 onDidChangeTurnStatus 的 turnId 提取，用于 L0 过滤） */
+	private _activeAgentId: string | undefined;
 	/** 当前活跃的 Knot agentSessionId（如 "1779700214535-einbd4x"），用于精确匹配 L0 sessionKey 前缀 */
 	private _activeAgentSessionId: string | undefined;
 	/** L1 重蒸是否正在进行中（跨 tab 切换保持状态） */
@@ -219,11 +219,11 @@ export class TdbamViewPane extends ViewPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
-		// 监听 Canvas 中 Agent 选中事件（employeeId 如 "coder-4fuqqp3"）
-		// 这是 L0 过滤最可靠的来源，因为 L0 写入时用的就是 employeeId
-		this._register(this._agentStudioService.onDidSelectEmployee(employeeId => {
-			if (employeeId) {
-				this._activeEmployeeId = employeeId;
+		// 监听 Canvas 中 Agent 选中事件（agentId 如 "coder-4fuqqp3"）
+		// 这是 L0 过滤最可靠的来源，因为 L0 写入时用的就是 agentId
+		this._register(this._agentStudioService.onDidSelectEmployee(agentId => {
+			if (agentId) {
+				this._activeAgentId = agentId;
 				// 如果 L0 已展开，立即刷新以展示新 Agent 的对话
 				if (this._expandedLayers.has('L0')) {
 					const l0Body = this._layerBodies.get('L0');
@@ -234,15 +234,15 @@ export class TdbamViewPane extends ViewPane {
 			}
 		}));
 		// 监听对话轮次完成事件，自动刷新已展开的记忆面板
-		// turnId 格式：`${sessionId}::${employeeId}` 或 `${employeeId}`
-		// 从 turnId 提取 employeeId，作为 onDidSelectEmployee 的补充（agent 执行时更新）
+		// turnId 格式：`${sessionId}::${agentId}` 或 `${agentId}`
+		// 从 turnId 提取 agentId，作为 onDidSelectEmployee 的补充（agent 执行时更新）
 		this._register(this._agentDriverService.onDidChangeTurnStatus(({ status, turnId }) => {
-			// 提取 employeeId 和 agentSessionId：turnId 可能是 "sessionId::employeeId" 或 "employeeId"
+			// 提取 agentId 和 agentSessionId：turnId 可能是 "sessionId::agentId" 或 "agentId"
 			const parts = turnId.split('::');
-			const employeeId = parts.length >= 2 ? parts[parts.length - 1] : parts[0];
+			const agentId = parts.length >= 2 ? parts[parts.length - 1] : parts[0];
 			const agentSessionId = parts.length >= 2 ? parts[0] : undefined;
-			if (employeeId) {
-				this._activeEmployeeId = employeeId;
+			if (agentId) {
+				this._activeAgentId = agentId;
 			}
 			if (agentSessionId) {
 				this._activeAgentSessionId = agentSessionId;
@@ -262,8 +262,8 @@ export class TdbamViewPane extends ViewPane {
 		}));
 		// 监听 employees 变更：当前 Workspace 下 agent 列表变了，需要清缓存并刷新
 		this._register(this._agentStudioService.onDidChangeEmployees(() => {
-			this._workspaceEmployeeIds = undefined;
-			this._workspaceEmployeesLoading = undefined;
+			this._workspaceAgentIds = undefined;
+			this._workspaceAgentsLoading = undefined;
 			if (this._l0ActiveTab === 'workspace' && this._expandedLayers.has('L0')) {
 				const l0Body = this._layerBodies.get('L0');
 				if (l0Body) {
@@ -507,9 +507,9 @@ export class TdbamViewPane extends ViewPane {
 	 *  - Tab "所有对话"：展示全部对话
 	 */
 	private _renderL0WithTabs(body: HTMLElement, result: TurnResult): void {
-		// 优先用从 turnId 提取的 employeeId（写入 L0 时用的 agentId）
+		// 优先用从 turnId 提取的 agentId（写入 L0 时用的 agentId）
 		// 兜底用 modelSelectorService.getSelectedAgentId()（Knot Agent ID，可能不匹配）
-		const agentId = this._activeEmployeeId ?? this._modelSelectorService.getSelectedAgentId();
+		const agentId = this._activeAgentId ?? this._modelSelectorService.getSelectedAgentId();
 		// agentSessionId 用于精确匹配 L0 sessionKey 前缀（如 "1779700214535-einbd4x"）
 		const agentSessionId = this._activeAgentSessionId;
 
@@ -573,8 +573,8 @@ export class TdbamViewPane extends ViewPane {
 
 		const renderWorkspaceTab = (sourceResult: TurnResult) => {
 			clearNode(tabContent);
-			if (this._workspaceEmployeeIds) {
-				const filteredResult = this._filterTurnsByWorkspace(sourceResult, this._workspaceEmployeeIds);
+			if (this._workspaceAgentIds) {
+				const filteredResult = this._filterTurnsByWorkspace(sourceResult, this._workspaceAgentIds);
 				this._renderTurnItems(tabContent, filteredResult);
 				return;
 			}
@@ -608,7 +608,7 @@ export class TdbamViewPane extends ViewPane {
 			if (tab === 'agent') {
 				clearNode(tabContent);
 				// 优先用 agentSessionId 精确匹配（如 "1779700214535-einbd4x:*"）
-				// 兜底用 employeeId 后缀匹配（如 "*-4fuqqp3:*"）
+				// 兜底用 agentId 后缀匹配（如 "*-4fuqqp3:*"）
 				const filteredResult = this._filterTurnsByAgent(result, agentId, agentSessionId);
 				this._renderTurnItems(tabContent, filteredResult);
 			} else if (tab === 'workspace') {
@@ -663,11 +663,11 @@ export class TdbamViewPane extends ViewPane {
 	 *
 	 * session_key 实际格式（来自 tdb-am-memory 扩展 deriveSessionKey）：
 	 *  - `${agentSessionId}:${sessionId}`  最常见，如 "1779682088105-4fuqqp3:sess_mpkotbsf_b7izzc"
-	 *    其中 agentSessionId = `${timestamp}-${employeeIdSuffix}`
+	 *    其中 agentSessionId = `${timestamp}-${agentIdSuffix}`
 	 *  - `agent:${agentId}`（无 sessionId 时的兜底格式）
 	 *  - `${agentId}:${sessionId}`（agentId 直接作为前缀）
 	 *
-	 * 匹配规则：sessionKey 的冒号前部分包含 employeeId 后缀（-${agentId} 结尾）
+	 * 匹配规则：sessionKey 的冒号前部分包含 agentId 后缀（-${agentId} 结尾）
 	 * 或者直接以 agentId 开头，或者是 agent:agentId 格式。
 	 */
 	private _filterTurnsByAgent(result: TurnResult, agentId: string | undefined, agentSessionId?: string): TurnResult {
@@ -681,7 +681,7 @@ export class TdbamViewPane extends ViewPane {
 			const prefix = colonIdx >= 0 ? t.sessionKey.slice(0, colonIdx) : t.sessionKey;
 			// 优先：agentSessionId 精确匹配前缀（最可靠）
 			if (agentSessionId && prefix === agentSessionId) return true;
-			// 兜底：employeeId 后缀匹配（"timestamp-employeeId:sessionId"）
+			// 兜底：agentId 后缀匹配（"timestamp-agentId:sessionId"）
 			if (agentId) {
 				if (prefix.endsWith(`-${agentId}`)) return true;
 				if (prefix === agentId) return true;
@@ -693,35 +693,35 @@ export class TdbamViewPane extends ViewPane {
 	}
 
 	/**
-	 * 按当前 Workspace 下的 employeeId 集合过滤 TurnResult。
+	 * 按当前 Workspace 下的 agentId 集合过滤 TurnResult。
 	 *
 	 * 复用 {@link _filterTurnsByAgent} 的 sessionKey 拆解规则：
-	 *  - prefix 形如 "timestamp-employeeId" → 取 "-" 之后的后缀与集合比对
-	 *  - prefix 直接等于某个 employeeId
-	 *  - sessionKey 形如 "agent:employeeId"
+	 *  - prefix 形如 "timestamp-agentId" → 取 "-" 之后的后缀与集合比对
+	 *  - prefix 直接等于某个 agentId
+	 *  - sessionKey 形如 "agent:agentId"
 	 *
 	 * 集合为空 → 返回空结果（workspace 内尚无 agent，明确没有对话归属于此 workspace）。
 	 */
-	private _filterTurnsByWorkspace(result: TurnResult, employeeIds: Set<string>): TurnResult {
-		if (employeeIds.size === 0) {
+	private _filterTurnsByWorkspace(result: TurnResult, agentIds: Set<string>): TurnResult {
+		if (agentIds.size === 0) {
 			return { turns: [], totalMessages: result.totalMessages };
 		}
 		const filtered = result.turns.filter(t => {
 			if (!t.sessionKey) return false;
 			const colonIdx = t.sessionKey.indexOf(':');
 			const prefix = colonIdx >= 0 ? t.sessionKey.slice(0, colonIdx) : t.sessionKey;
-			// "agent:${employeeId}" 兜底格式
+			// "agent:${agentId}" 兜底格式
 			if (colonIdx >= 0 && prefix === 'agent') {
-				const empId = t.sessionKey.slice(colonIdx + 1);
-				if (employeeIds.has(empId)) return true;
+				const aid = t.sessionKey.slice(colonIdx + 1);
+				if (agentIds.has(aid)) return true;
 			}
-			// prefix 直接等于 employeeId
-			if (employeeIds.has(prefix)) return true;
-			// prefix = "timestamp-employeeId"，取最后一个 "-" 之后的部分
+			// prefix 直接等于 agentId
+			if (agentIds.has(prefix)) return true;
+			// prefix = "timestamp-agentId"，取最后一个 "-" 之后的部分
 			const dashIdx = prefix.lastIndexOf('-');
 			if (dashIdx >= 0) {
 				const suffix = prefix.slice(dashIdx + 1);
-				if (employeeIds.has(suffix)) return true;
+				if (agentIds.has(suffix)) return true;
 			}
 			return false;
 		});
@@ -729,15 +729,15 @@ export class TdbamViewPane extends ViewPane {
 	}
 
 	/**
-	 * 懒加载当前 Workspace 下的 employeeId 集合，结果缓存到 {@link _workspaceEmployeeIds}。
+	 * 懒加载当前 Workspace 下的 agentId 集合，结果缓存到 {@link _workspaceAgentIds}。
 	 * 并发调用共享同一个 Promise，避免重复请求 employees.json。
 	 */
 	private _loadWorkspaceEmployeeIds(): Promise<Set<string>> {
-		if (this._workspaceEmployeeIds) {
-			return Promise.resolve(this._workspaceEmployeeIds);
+		if (this._workspaceAgentIds) {
+			return Promise.resolve(this._workspaceAgentIds);
 		}
-		if (this._workspaceEmployeesLoading) {
-			return this._workspaceEmployeesLoading;
+		if (this._workspaceAgentsLoading) {
+			return this._workspaceAgentsLoading;
 		}
 		const p = (async () => {
 			const employees = await this._agentStudioService.getEmployees();
@@ -747,13 +747,13 @@ export class TdbamViewPane extends ViewPane {
 					ids.add(emp.id);
 				}
 			}
-			this._workspaceEmployeeIds = ids;
+			this._workspaceAgentIds = ids;
 			return ids;
 		})();
-		this._workspaceEmployeesLoading = p;
+		this._workspaceAgentsLoading = p;
 		p.finally(() => {
-			if (this._workspaceEmployeesLoading === p) {
-				this._workspaceEmployeesLoading = undefined;
+			if (this._workspaceAgentsLoading === p) {
+				this._workspaceAgentsLoading = undefined;
 			}
 		});
 		return p;
@@ -1520,7 +1520,7 @@ export class TdbamViewPane extends ViewPane {
 	 * 在 L1 面板顶部渲染一个工具栏：↻ 补写 L1 按钮（从 L0 扫描 memory_extract 标签直接写入，不调 LLM）。
 	 */
 	private _renderL1Toolbar(body: HTMLElement): void {
-		const employeeId = this._activeEmployeeId ?? this._modelSelectorService.getSelectedAgentId();
+		const agentId = this._activeAgentId ?? this._modelSelectorService.getSelectedAgentId();
 
 		const bar = append(body, $('div.tdbam-l1-toolbar'));
 		bar.style.display = 'flex';
@@ -1561,7 +1561,7 @@ export class TdbamViewPane extends ViewPane {
 
 		reextractBtn.addEventListener('click', () => {
 			if (this._l1Reextracting) return;
-			void this._triggerL1Reextract(employeeId, reextractBtn, status);
+			void this._triggerL1Reextract(agentId, reextractBtn, status);
 		});
 	}
 
@@ -1572,7 +1572,7 @@ export class TdbamViewPane extends ViewPane {
 	 * gateway 侧遍历 L0 assistant 消息，解析标签后直接写入 L1。
 	 */
 	private async _triggerL1Reextract(
-		employeeId: string | undefined,
+		agentId: string | undefined,
 		btn: HTMLElement,
 		status: HTMLElement,
 	): Promise<void> {
@@ -1585,10 +1585,10 @@ export class TdbamViewPane extends ViewPane {
 
 		const startMs = Date.now();
 		try {
-			// 若有 employeeId，先查出对应的 sessionKey 列表，逐一扫描；否则全量扫描（不传 session_key）
+			// 若有 agentId，先查出对应的 sessionKey 列表，逐一扫描；否则全量扫描（不传 session_key）
 			let targetKeys: (string | undefined)[] = [undefined]; // undefined = 全量
 
-			if (employeeId) {
+			if (agentId) {
 				const listUrl = `${this._gatewayBaseUrl()}/list/conversations`;
 				const listCtx = await this._requestService.request({
 					type: 'POST',
@@ -1607,7 +1607,7 @@ export class TdbamViewPane extends ViewPane {
 				const filtered = allKeys.filter(k => {
 					const colonIdx = k.indexOf(':');
 					const prefix = colonIdx >= 0 ? k.slice(0, colonIdx) : k;
-					return prefix.endsWith(`-${employeeId}`) || prefix === employeeId || k === `agent:${employeeId}`;
+					return prefix.endsWith(`-${agentId}`) || prefix === agentId || k === `agent:${agentId}`;
 				});
 				if (filtered.length > 0) {
 					targetKeys = filtered;

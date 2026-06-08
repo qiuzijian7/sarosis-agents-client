@@ -6,6 +6,7 @@
 import React, { useState, useCallback } from 'react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEmployeeStore, type Employee } from '../../store/useEmployeeStore';
+import { sendRequest } from '../../bridge/messageClient';
 
 // Icons as inline SVG for zero-dependency rendering
 const ChevronDown = () => (
@@ -83,7 +84,10 @@ function WorkspaceGroup({
 							/>
 							<img
 								className="employee-avatar"
-								src={emp.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${emp.id}`}
+								src={emp.avatar
+									|| (emp.avatarStyle && emp.avatarSeed
+										? `https://api.dicebear.com/7.x/${emp.avatarStyle}/svg?seed=${emp.avatarSeed}`
+										: `https://api.dicebear.com/7.x/bottts/svg?seed=${emp.id}`)}
 								alt=""
 							/>
 							<div className="employee-info">
@@ -127,6 +131,11 @@ export function WorkspaceSidebar(): React.ReactElement {
 
 	const handleSelectEmployee = useCallback((empId: string) => {
 		selectEmployee(empId);
+		// Open agent settings in the editor area
+		const employeeName = useEmployeeStore.getState().employees.find(e => e.id === empId)?.name;
+		sendRequest('agents.openSettings', { agentId: empId, agentName: employeeName }).catch(err =>
+			console.warn('[WorkspaceSidebar] agents.openSettings failed:', err)
+		);
 	}, [selectEmployee]);
 
 	// Group employees by workspace

@@ -29,6 +29,8 @@ export function Tooltip({
 	const triggerRef = useRef<HTMLElement>(null);
 	const tooltipRef = useRef<HTMLDivElement>(null);
 	const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+	const tooltipIdRef = useRef<string>(`tip-${Math.random().toString(36).slice(2, 9)}`);
+	const tooltipId = tooltipIdRef.current;
 
 	const showTooltip = useCallback(() => {
 		if (timeoutRef.current) {
@@ -99,7 +101,7 @@ export function Tooltip({
 
 	// Clone children with ref and event handlers
 	const child = React.Children.only(children);
-	const childWithProps = React.cloneElement(child, {
+	const childWithProps = React.cloneElement(child, ({
 		ref: (node: HTMLElement | null) => {
 			// Combine refs
 			triggerRef.current = node;
@@ -127,7 +129,7 @@ export function Tooltip({
 			(child.props as any).onBlur?.(e);
 		},
 		'aria-describedby': visible ? `tooltip-${tooltipId}` : undefined,
-	});
+	}) as any);
 
 	return (
 		<>

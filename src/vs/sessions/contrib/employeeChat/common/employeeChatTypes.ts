@@ -32,7 +32,7 @@ export interface IToolCall {
 }
 
 /** Employee status info */
-export type EmployeeStatus = 'idle' | 'working' | 'thinking' | 'error' | 'offline';
+export type AgentStatus = 'idle' | 'working' | 'thinking' | 'error' | 'offline';
 
 /** Status display mapping */
 export const STATUS_MAP: Record<string, { label: string; color: string; bg: string; dot: string; animated: boolean }> = {
@@ -49,7 +49,7 @@ export interface IEmployeeInfo {
 	readonly name: string;
 	readonly role: string;
 	readonly avatarUrl?: string;
-	readonly status: EmployeeStatus;
+	readonly status: AgentStatus;
 	readonly isPM?: boolean;
 	readonly customPrompt?: string;
 	readonly model?: string;

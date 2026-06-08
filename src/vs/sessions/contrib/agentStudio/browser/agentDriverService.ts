@@ -68,7 +68,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		const rawDeltaChunks: string[] = [];
 
 		// Step 1 计算出的召回作用域选项 —— 同时被 Step 1 (loadContext) 和
-		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 employee 配置。
+		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 agent 配置。
 		let resolvedMemoryScope: 'agent' | 'workspace' | 'global' = 'agent';
 		let resolvedMemoryAllowedKeys: readonly string[] | undefined;
 
@@ -99,16 +99,22 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					// Memory-Strategy.md §recall-scope 对齐。
 					let recallOptions: { scope: 'agent' | 'workspace' | 'global'; allowedSessionKeys?: readonly string[] } | undefined;
 					try {
-						const employeeForScope = await this._agentStudioService.getEmployee(request.agentId);
+						// Recall scope + sibling enumeration are per-workspace runtime
+						// state → read from the AgentBinding, not the global Agent.
+						const wsId = await this._resolveWorkspaceId(request.sessionId);
+						const binding = wsId
+							? await this._agentStudioService.getAgentBinding(wsId, request.agentId)
+							: undefined;
 						const scope: 'agent' | 'workspace' | 'global' =
-							employeeForScope?.memoryConfig?.scope ?? 'agent';
+							binding?.memoryConfig?.scope ?? 'agent';
 
 						if (scope === 'workspace') {
-							// 拿当前 workspace 下所有 agent 的 sessionKey（agent:<id>）
-							const wsId = employeeForScope?.workspaceId;
-							const siblings = wsId ? await this._agentStudioService.getEmployees(wsId) : [];
+							// 拿当前 workspace 下所有有绑定的 agent 的 sessionKey（agent:<id>）
+							const siblings = wsId
+								? await this._agentStudioService.getAgentBindings(wsId)
+								: [];
 							const siblingKeys = siblings
-								.map(s => s.id)
+								.map(s => s.agentId)
 								.filter((id): id is string => typeof id === 'string' && id.length > 0)
 								.map(id => `agent:${id}`);
 							// 兜底：若 workspace 拉不到任何 sibling（不该发生），至少包含自己
@@ -181,10 +187,12 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				// 只在 systemPrompt 中放 name + description + id，让模型通过 read_skill 工具按需读取全文
 
 				// 【关键修复】仅注入 agent 实例中配置的技能，未配置的不要注入
-				const employee = await this._agentStudioService.getEmployee(request.agentId);
+				const agent = await this._agentStudioService.getAgent(request.agentId);
+				// Persona memory entries are per-workspace runtime state → from the binding.
+				const personaBinding = await this._resolveBinding(request.agentId, request.sessionId);
 
 				// 规范化 skills 格式：处理旧格式（对象数组）和新格式（字符串数组）的混合情况
-				const rawSkills = employee?.skills || [];
+				const rawSkills = agent?.skills || [];
 				const agentSkillIds = new Set(
 					rawSkills.map(s => {
 						if (typeof s === 'string') {
@@ -231,8 +239,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				//
 				// 仅当 memoryConfig.enabled !== false 且 entries 非空时注入。
 				try {
-					const personaEntries = (employee?.memoryConfig?.enabled !== false)
-						? (employee?.memoryConfig?.entries || [])
+					const personaEntries = (personaBinding?.memoryConfig?.enabled !== false)
+						? (personaBinding?.memoryConfig?.entries || [])
 						: [];
 					if (personaEntries.length > 0) {
 						const lines: string[] = [
@@ -272,7 +280,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 
 				// 注入工作区上下文，让模型始终知晓当前工作区信息
-				const workspaceContext = await this._buildWorkspaceContext(request.agentId);
+				const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId);
 				if (workspaceContext) {
 					mergedSystemPrompt = mergedSystemPrompt + '\n\n' + workspaceContext;
 				}
@@ -562,14 +570,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 
 				// 解析 memoryConfig 中的策略 / 上限，向下游 AgentOS 传递。
-				// 注意：旧值 'sliding_window' 视为 'full'（参见 useEmployeeStore.ts MemoryConfig 注释）。
+				// 注意：旧值 'sliding_window' 视为 'full'（参见 Agent.memoryConfig 注释）。
 				//
 				// 【B 方案兼容】当 priorMessages 已将完整会话历史灌入 messages 时，
 				// L0 短期记忆（即最近几轮 user+assistant 原文）与 messages 中的历史
 				// 完全重叠。若仍按 'full' 策略注入 L0，模型会看到两份相同的对话内容
 				// → 混淆 → 在回复中重复/回显之前的内容。因此当有历史灌入时，强制
 				// 切换为 'summary'（仅注入 L1 长期摘要），避免重复。
-				const rawStrategy = employee?.memoryConfig?.strategy;
+				const rawStrategy = personaBinding?.memoryConfig?.strategy;
 				const hasHistoryInMessages = mergedMessages.length > 1;
 				const memoryStrategy: 'summary' | 'full' =
 					hasHistoryInMessages ? 'summary'
@@ -581,9 +589,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					);
 				}
 				const memoryMaxEntries = (
-					typeof employee?.memoryConfig?.maxEntries === 'number' &&
-					employee.memoryConfig.maxEntries > 0
-				) ? employee.memoryConfig.maxEntries : undefined;
+					typeof personaBinding?.memoryConfig?.maxEntries === 'number' &&
+					personaBinding.memoryConfig.maxEntries > 0
+				) ? personaBinding.memoryConfig.maxEntries : undefined;
 
 				enrichedRequest = {
 					...request,
@@ -893,38 +901,80 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	}
 
 	/**
+	 * Resolve the workspace that owns a given turn.
+	 *
+	 * `IAgentTurnRequest` only carries agentId + sessionId, never workspaceId.
+	 * The owning workspace is recovered via the session record
+	 * (`getSession(sessionId).workspaceId`). When there is no sessionId (e.g.
+	 * a probe turn) we fall back to the currently-active workspace.
+	 *
+	 * Returns undefined only when neither path yields a workspace.
+	 */
+	private async _resolveWorkspaceId(sessionId?: string): Promise<string | undefined> {
+		if (sessionId) {
+			try {
+				const session = await this._agentStudioService.getSession(sessionId);
+				if (session?.workspaceId) { return session.workspaceId; }
+			} catch (err) {
+				this._logService.debug(`[AgentDriver] _resolveWorkspaceId: getSession(${sessionId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		const active = this._agentStudioService.getActiveWorkspaceId();
+		return active ?? undefined;
+	}
+
+	/**
+	 * Resolve the per-workspace runtime binding for an agent in the turn's
+	 * workspace. Returns undefined if the agent has never run in this workspace
+	 * (no worktree / memoryConfig persisted yet) — callers must treat that as
+	 * "use defaults", never as an error.
+	 */
+	private async _resolveBinding(agentId: string, sessionId?: string) {
+		const workspaceId = await this._resolveWorkspaceId(sessionId);
+		if (!workspaceId) { return undefined; }
+		try {
+			return await this._agentStudioService.getAgentBinding(workspaceId, agentId);
+		} catch (err) {
+			this._logService.debug(`[AgentDriver] _resolveBinding(${agentId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+	}
+
+	/**
 	 * Build a workspace context section for the system prompt.
 	 *
 	 * Working-directory resolution priority:
-	 *   1. `employee.worktreePath` — when the agent instance is bound to a git
-	 *      worktree, that worktree directory IS its working sandbox. The agent
-	 *      operates entirely inside the worktree (its own branch), isolated from
-	 *      the main checkout. This MUST take precedence and MUST NOT be
-	 *      auto-synced away to the VS Code open folder.
+	 *   1. `binding.worktreePath` — when the agent is bound to a git
+	 *      worktree in this workspace, that worktree directory IS its working
+	 *      sandbox. The agent operates entirely inside the worktree (its own
+	 *      branch), isolated from the main checkout. This MUST take precedence
+	 *      and MUST NOT be auto-synced away to the VS Code open folder.
 	 *   2. Otherwise the Sarosis workspace path, kept in sync with the VS Code
 	 *      currently-open folder.
 	 *
 	 * Also includes a sandbox rule: the agent may ONLY operate within the
 	 * resolved working directory tree.
 	 */
-	private async _buildWorkspaceContext(agentId: string): Promise<string | undefined> {
+	private async _buildWorkspaceContext(agentId: string, sessionId?: string): Promise<string | undefined> {
 		try {
-			const employee = await this._agentStudioService.getEmployee(agentId);
-			if (!employee?.workspaceId) {
+			const workspaceId = await this._resolveWorkspaceId(sessionId);
+			if (!workspaceId) {
 				return undefined;
 			}
 
-			const workspace = await this._agentStudioService.getWorkspace(employee.workspaceId);
+			const workspace = await this._agentStudioService.getWorkspace(workspaceId);
 			if (!workspace) {
 				return undefined;
 			}
+
+			const binding = await this._resolveBinding(agentId, sessionId);
 
 			// ── 优先：agent 实例绑定的 worktree 即其工作沙盒 ──────────────
 			// 绑定 worktree 的 agent 完全运行在该 worktree 目录（独立分支）内，
 			// 与主仓 checkout 隔离。此时工作根 = worktreePath，且【跳过】下面的
 			// auto-sync（否则会被 VS Code 当前打开文件夹覆盖回去），与工具沙箱
 			// (_resolveAndCheckWorkspacePath) 的判定口径保持一致。
-			const worktreeRoot = employee.worktreePath?.replace(/[\\/]+$/, '');
+			const worktreeRoot = binding?.worktreePath?.replace(/[\\/]+$/, '');
 			if (worktreeRoot) {
 				this._logService.info(`[AgentDriver] Agent ${agentId} bound to worktree, working dir = "${worktreeRoot}"`);
 				return this._composeWorkspaceContextText(workspace.name, worktreeRoot, /* isWorktree */ true);
@@ -942,7 +992,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					`[AgentDriver] Syncing workspace path: "${workspaceRoot}" → "${vsCodeFolder}"`
 				);
 				try {
-					await this._agentStudioService.updateWorkspace(employee.workspaceId, { path: vsCodeFolder });
+					await this._agentStudioService.updateWorkspace(workspaceId, { path: vsCodeFolder });
 				} catch (err) {
 					this._logService.warn('[AgentDriver] Failed to sync workspace path:', err);
 				}
@@ -1036,7 +1086,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 * Phase 2 中 agentChatService 将委托此方法
 	 */
 	async *executeFromChatOptions(
-		employeeId: string,
+		agentId: string,
 		message: string,
 		options: IChatSendOptions,
 		priorMessages?: import('../common/providers.js').IChatMessage[],
@@ -1075,7 +1125,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		};
 
 		const request: IAgentTurnRequest = {
-			agentId: employeeId,
+			agentId: agentId,
 			sessionId: options.agentSessionId,
 			// 完整会话历史（由 chatService 从持久化历史转换并去重当前 user 消息后传入）
 			// + 本轮 user 消息。priorMessages 缺省时退化为仅当前消息（旧行为）。

@@ -1147,6 +1147,23 @@ button.primary:hover,
 	transition: transform 0.15s;
 }
 
+/* Header chat button (inline in card header) */
+.preset-header-chat-btn {
+	flex-shrink: 0;
+	padding: 3px 8px;
+	margin-left: auto;
+	font-size: 11px;
+	border: none;
+	border-radius: 4px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	cursor: pointer;
+}
+
+.preset-header-chat-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
 .preset-skills {
 	display: flex;
 	flex-wrap: wrap;

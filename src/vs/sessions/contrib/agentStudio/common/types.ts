@@ -13,7 +13,7 @@ export {
 	AgentSource,
 	ConnectionType,
 	DelegationStatus,
-	EmployeeStatus,
+	AgentStatus,
 	SandboxMode,
 	TaskBoardStatus,
 	TaskSource,
@@ -30,6 +30,9 @@ export {
 
 // Type-only exports (interfaces) - erased at runtime, must use 'export type'
 export type {
+	Agent,
+	AgentBinding,
+	AgentMemoryConfig,
 	AgentBootstrapTemplates,
 	AgentExportData,
 	ChatMessage,

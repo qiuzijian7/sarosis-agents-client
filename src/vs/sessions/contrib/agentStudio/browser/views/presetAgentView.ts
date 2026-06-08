@@ -21,7 +21,10 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { $ } from '../../../../../base/browser/dom.js';
-import type { Employee, AgentBootstrapTemplates, IAgentHandOff, IAgentHooks, IAgentVisibility } from '../../../../common/agentStudioTypes.js';
+import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
+import { GroupsOrder, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { AgentSettingsEditorInput } from '../agentSettingsEditorInput.js';
+import type { AgentBootstrapTemplates, IAgentHandOff, IAgentHooks, IAgentVisibility } from '../../../../common/agentStudioTypes.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
@@ -1702,18 +1705,15 @@ export class PresetAgentViewPane extends ViewPane {
 	private customPresets: AgentPreset[] = [];
 	private activeCategory: PresetCategory | 'All' = 'All';
 	private activeTab: 'builtin' | 'custom' = 'builtin';
-	private expandedPresetId: string | null = null;
 	private isDeploying = false;
 
 	/** Dialog overlay elements */
 	private dialogOverlay: HTMLElement | null = null;
 
 	/**
-	 * Tracks the active workspace ID from the Canvas toolbar's
-	 * `agent-studio:active-workspace-changed` custom event so that
-	 * _deployPreset writes into the correct workspace directory.
+	 * @deprecated Unused field — tracked via workspace change event but never read.
+	 * Kept for documenting the workspace tracking intent.
 	 */
-	private _activeWorkspaceId: string | undefined;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -1731,6 +1731,8 @@ export class PresetAgentViewPane extends ViewPane {
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._loadCustomPresets();
@@ -1746,7 +1748,7 @@ export class PresetAgentViewPane extends ViewPane {
 		const handler = (e: Event) => {
 			const detail = (e as CustomEvent).detail;
 			if (detail?.workspaceId) {
-				this._activeWorkspaceId = detail.workspaceId;
+				// _activeWorkspaceId removed — workspace tracking handled by AgentInstanceService
 			}
 		};
 		document.addEventListener('agent-studio:active-workspace-changed', handler);
@@ -1769,7 +1771,7 @@ export class PresetAgentViewPane extends ViewPane {
 
 			// If there's exactly one workspace, just use it
 			if (workspaces.length === 1) {
-				this._activeWorkspaceId = workspaces[0].id;
+				// _activeWorkspaceId removed — workspace tracking handled by AgentInstanceService
 				return;
 			}
 
@@ -1781,7 +1783,7 @@ export class PresetAgentViewPane extends ViewPane {
 				ws.path && ws.path.toLowerCase() === folderPath.toLowerCase()
 			);
 			if (match) {
-				this._activeWorkspaceId = match.id;
+				// _activeWorkspaceId removed — workspace tracking handled by AgentInstanceService
 			}
 		} catch {
 			// best-effort
@@ -1983,11 +1985,7 @@ export class PresetAgentViewPane extends ViewPane {
 	}
 
 	private _createPresetCard(preset: AgentPreset): HTMLElement {
-		const isExpanded = this.expandedPresetId === preset.id;
-		const isCustom = this.activeTab === 'custom';
-
 		const card = $('div.preset-card');
-		if (isExpanded) { card.classList.add('expanded'); }
 
 		// ── Card Header (always visible) ─────────────────────────────────
 		const cardHeader = $('div.preset-card-header');
@@ -2004,172 +2002,65 @@ export class PresetAgentViewPane extends ViewPane {
 		const roleEl = $('div.preset-role');
 		roleEl.textContent = preset.role;
 		info.appendChild(roleEl);
-
-		const descEl = $('div.preset-desc');
-		descEl.textContent = preset.description;
-		info.appendChild(descEl);
 		cardHeader.appendChild(info);
 
-		// Expand/collapse chevron
-		const chevron = $('div.preset-chevron');
-		chevron.textContent = isExpanded ? '▾' : '▸';
-		cardHeader.appendChild(chevron);
+		// Chat button in header
+		const chatBtn = $('button.preset-header-chat-btn');
+		chatBtn.textContent = '💬';
+		chatBtn.title = `Chat with ${preset.name}`;
+		chatBtn.onclick = (e) => {
+			e.stopPropagation();
+			this._chatWithPreset(preset);
+		};
+		cardHeader.appendChild(chatBtn);
 
+		// Card header click → open agent settings in editor pane
 		cardHeader.onclick = () => {
-			this.expandedPresetId = this.expandedPresetId === preset.id ? null : preset.id;
-			this._renderPresets();
+			this._openPresetEditor(preset);
 		};
 
 		card.appendChild(cardHeader);
 
-		// ── Skills Row (always visible) ──────────────────────────────────
-		const skillsEl = $('div.preset-skills');
-		for (const skill of preset.skills) {
-			const tag = $('span.skill-tag');
-			tag.textContent = skill;
-			skillsEl.appendChild(tag);
-		}
-		card.appendChild(skillsEl);
-
-		// ── Expanded Details ─────────────────────────────────────────────
-		if (isExpanded) {
-			const details = $('div.preset-details');
-
-			// Model
-			const modelRow = $('div.preset-detail-row');
-			const modelLabel = $('span.preset-detail-label');
-			modelLabel.textContent = 'Model';
-			modelRow.appendChild(modelLabel);
-			const modelValue = $('span.preset-detail-value');
-			const modelInfo = AVAILABLE_MODELS.find(m => m.id === preset.model);
-			modelValue.textContent = modelInfo?.label ?? preset.model;
-			modelRow.appendChild(modelValue);
-			details.appendChild(modelRow);
-
-			// Temperature
-			if (preset.temperature !== undefined) {
-				const tempRow = $('div.preset-detail-row');
-				const tempLabel = $('span.preset-detail-label');
-				tempLabel.textContent = 'Temperature';
-				tempRow.appendChild(tempLabel);
-				const tempValue = $('span.preset-detail-value');
-				tempValue.textContent = String(preset.temperature);
-				tempRow.appendChild(tempValue);
-				details.appendChild(tempRow);
-			}
-
-			// System Prompt
-			if (preset.systemPrompt) {
-				const promptSection = $('div.preset-detail-prompt');
-				const promptLabel = $('div.preset-detail-label');
-				promptLabel.textContent = 'System Prompt';
-				promptSection.appendChild(promptLabel);
-				const promptText = $('div.preset-detail-prompt-text');
-				promptText.textContent = preset.systemPrompt;
-				promptSection.appendChild(promptText);
-				details.appendChild(promptSection);
-			}
-
-			// Action buttons
-			const actions = $('div.preset-detail-actions');
-
-			const deployBtn = $('button.preset-deploy-btn');
-			deployBtn.textContent = '▶ Deploy Agent';
-			deployBtn.onclick = (e) => {
-				e.stopPropagation();
-				this._deployPreset(preset);
-			};
-			actions.appendChild(deployBtn);
-
-			if (isCustom) {
-				const editBtn = $('button.preset-edit-btn');
-				editBtn.textContent = '✏ Edit';
-				editBtn.onclick = (e) => {
-					e.stopPropagation();
-					this._openEditDialog(preset);
-				};
-				actions.appendChild(editBtn);
-
-				const deleteBtn = $('button.preset-delete-btn');
-				deleteBtn.textContent = '🗑 Delete';
-				deleteBtn.onclick = (e) => {
-					e.stopPropagation();
-					this._deleteCustomPreset(preset.id);
-				};
-				actions.appendChild(deleteBtn);
-			}
-
-			details.appendChild(actions);
-			card.appendChild(details);
-		}
-
-		// ── Quick Deploy (when not expanded) ─────────────────────────────
-		if (!isExpanded) {
-			const quickActions = $('div.preset-quick-actions');
-			const deployBtn = $('button.preset-quick-deploy');
-			deployBtn.textContent = '▶';
-			deployBtn.title = `Deploy ${preset.name}`;
-			deployBtn.onclick = (e) => {
-				e.stopPropagation();
-				this._deployPreset(preset);
-			};
-			quickActions.appendChild(deployBtn);
-			card.appendChild(quickActions);
-		}
-
 		return card;
 	}
 
-	// ── Deploy ───────────────────────────────────────────────────────────────
+	// ── Chat ─────────────────────────────────────────────────────────────────
 
-	private async _deployPreset(preset: AgentPreset): Promise<void> {
+	private async _chatWithPreset(preset: AgentPreset): Promise<void> {
 		if (this.isDeploying) { return; }
 		this.isDeploying = true;
 
 		try {
-			// Use the tracked activeWorkspaceId (kept in sync via the
-			// agent-studio:active-workspace-changed event from the toolbar).
-			// If undefined, try to resolve from service.
-			let workspaceId = this._activeWorkspaceId;
-			if (!workspaceId) {
-				const workspaces = await this.agentStudioService.getWorkspaces();
-				if (workspaces.length === 1) {
-					workspaceId = workspaces[0].id;
-				} else if (workspaces.length > 1) {
-					// Use the first workspace as fallback
-					workspaceId = workspaces[0].id;
-				}
-				// Update tracked value so future deploys work
-				this._activeWorkspaceId = workspaceId;
-			}
-
-			const employeeData: Partial<Employee> = {
-				name: preset.name,
-				role: preset.role,
-				presetId: preset.id,
-				model: preset.model,
-				customPrompt: preset.systemPrompt,
-				skills: [...preset.skills],
-				tools: preset.tools ? [...preset.tools] : undefined,
-				handOffs: preset.handOffs,
-				hooks: preset.hooks,
-				visibility: preset.visibility,
-				agents: preset.agents,
-				confidenceThreshold: preset.confidenceThreshold,
-				parallelStrategy: preset.parallelStrategy,
-				bootstrapTemplates: preset.bootstrapTemplates,
-				workspaceId,
-			};
-			const employee = await this.agentStudioService.createEmployee(employeeData);
+			// Directly select the preset by ID — builtin agents share the same ID.
+			this.agentStudioService.fireSelectEmployee(preset.id);
 			this.notificationService.info(
-				`Agent "${preset.name}" deployed successfully (ID: ${employee.id.slice(0, 8)}...)`
+				`Chatting with "${preset.name}".`
 			);
 		} catch (err) {
 			this.notificationService.error(
-				`Failed to deploy agent "${preset.name}": ${err instanceof Error ? err.message : String(err)}`
+				`Failed to start chat with "${preset.name}": ${err instanceof Error ? err.message : String(err)}`
 			);
 		} finally {
 			this.isDeploying = false;
+		}
+	}
+
+	// ── Open Preset Editor ──────────────────────────────────────────────────
+
+	private async _openPresetEditor(preset: AgentPreset): Promise<void> {
+		// Open the agent settings editor pane only.
+		// NOTE: do NOT call fireSelectEmployee() here — that would switch the
+		// main chat panel to chat with this agent, which is NOT what the user
+		// wants. The click should only open the independent editor pane.
+		try {
+			const input = new AgentSettingsEditorInput(preset.id, preset.name);
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this.editorService.openEditor(input, { pinned: true }, targetGroup);
+		} catch (err) {
+			this.notificationService.error(
+				`Failed to open settings for "${preset.name}": ${err instanceof Error ? err.message : String(err)}`
+			);
 		}
 	}
 
@@ -2253,9 +2144,6 @@ export class PresetAgentViewPane extends ViewPane {
 	private _deleteCustomPreset(id: string): void {
 		this.customPresets = this.customPresets.filter(p => p.id !== id);
 		this._saveCustomPresets(); // fire-and-forget async save
-		if (this.expandedPresetId === id) {
-			this.expandedPresetId = null;
-		}
 		this._updateCustomTabCount();
 		this._renderPresets();
 		this.notificationService.info('Custom preset deleted');

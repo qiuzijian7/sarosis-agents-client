@@ -145,17 +145,26 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		const allowedRoots: string[] = [];
 
 		// ─── 优先判定：worktree 独占沙箱 ───────────────────────────────
-		// 沙箱边界【只】取决于 Employee.worktreePath（agent 实例级 worktree）。
-		// 这是一条独立逻辑——表示"该 agent 实例运行时被限制在此 worktree 内"。
+		// 沙箱边界【只】取决于 AgentBinding.worktreePath（per-workspace × agent
+		// 的运行时实例状态）。Agent 本身是全局定义，不携带 worktreePath；
+		// 同一 agent 在不同 workspace 下可绑定不同 worktree，故必须按
+		// (workspaceId × agentId) 查 binding。
+		// 这是一条独立逻辑——表示"该 agent 运行时被限制在此 worktree 内"。
 		// 切勿 fallback 到 Workspace.worktreePath：后者是【另一条独立逻辑】
 		// （用户切换当前工作区的 SCM 视角，由 sourceControl.contribution 处理），
-		// 与 agent 实例沙箱无关，二者不可耦合。
+		// 与 agent 沙箱无关，二者不可耦合。
+		// 工具执行无 sessionId 上下文，按 Q2 兜底用 getActiveWorkspaceId() 解析
+		// 当前运行 workspace。
 		let worktreeRoot: string | undefined;
+		let activeWsId: string | undefined;
 		if (agentId) {
 			try {
-				const employee = await this.studioService.getEmployee(agentId);
-				if (employee?.worktreePath) {
-					worktreeRoot = employee.worktreePath.replace(/[\\/]+$/, '');
+				activeWsId = this.studioService.getActiveWorkspaceId();
+				if (activeWsId) {
+					const binding = await this.studioService.getAgentBinding(activeWsId, agentId);
+					if (binding?.worktreePath) {
+						worktreeRoot = binding.worktreePath.replace(/[\\/]+$/, '');
+					}
 				}
 			} catch (err) {
 				this.logService.warn(`[BuiltinTools] Failed to resolve worktree for agent ${agentId}:`, err);
@@ -174,20 +183,18 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
 			}
 
-			// 2. Sarosis Agent 工作区路径
-			if (agentId) {
+			// 2. Sarosis Agent 工作区路径（agent 是全局，运行 workspace 取自
+			//    getActiveWorkspaceId — 已在上面解析为 activeWsId）。
+			if (activeWsId) {
 				try {
-					const employee = await this.studioService.getEmployee(agentId);
-					if (employee?.workspaceId) {
-						const workspace = await this.studioService.getWorkspace(employee.workspaceId);
-						if (workspace?.path) {
-							allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
-						}
-						// 关联代码仓库（多仓库管理）— 全部纳入沙箱允许根
-						for (const rf of workspace?.relatedFolders ?? []) {
-							if (rf?.path) {
-								allowedRoots.push(rf.path.replace(/[\\/]+$/, ''));
-							}
+					const workspace = await this.studioService.getWorkspace(activeWsId);
+					if (workspace?.path) {
+						allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
+					}
+					// 关联代码仓库（多仓库管理）— 全部纳入沙箱允许根
+					for (const rf of workspace?.relatedFolders ?? []) {
+						if (rf?.path) {
+							allowedRoots.push(rf.path.replace(/[\\/]+$/, ''));
 						}
 					}
 				} catch (err) {
@@ -1196,16 +1203,18 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *  - kanban_comment：向任务追加一条结构化评论（写入 description）
 	 *  - kanban_link：建立父子依赖（child.dependencies += parent）
 	 *
-	 * agentId → workspaceId 通过 studioService.getEmployee(agentId) 解析。
+	 * agentId → workspaceId 通过 studioService.getAgent(agentId) 解析。
 	 */
 	private _registerKanbanTools(): void {
-		// 辅助：从 agentId 解析当前 employee 及其 workspaceId
+		// 辅助：从 agentId 解析当前 agent 及其运行 workspaceId
+		// （agent 是全局定义，运行 workspace 取自 getActiveWorkspaceId）。
 		const resolveWorkspaceId = async (agentId: string | undefined): Promise<{ workspaceId: string; assigneeId?: string; assigneeName?: string } | undefined> => {
 			if (!agentId) { return undefined; }
 			try {
-				const employee = await this.studioService.getEmployee(agentId);
-				if (employee?.workspaceId) {
-					return { workspaceId: employee.workspaceId, assigneeId: employee.id, assigneeName: employee.name };
+				const workspaceId = this.studioService.getActiveWorkspaceId();
+				if (workspaceId) {
+					const agent = await this.studioService.getAgent(agentId);
+					return { workspaceId, assigneeId: agent?.id ?? agentId, assigneeName: agent?.name };
 				}
 			} catch (err) {
 				this.logService.warn(`[BuiltinTools] kanban: failed to resolve workspace for agent ${agentId}:`, err);
@@ -1566,8 +1575,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					let authorName = 'agent';
 					if (agentId) {
 						try {
-							const employee = await this.studioService.getEmployee(agentId);
-							if (employee?.name) { authorName = employee.name; }
+							const agent = await this.studioService.getAgent(agentId);
+							if (agent?.name) { authorName = agent.name; }
 						} catch { /* ignore */ }
 					}
 					void ctx;
@@ -1808,11 +1817,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		if (exact) { return exact.id; }
 
 		// 2. 短 ID（末 6 位）后缀匹配，限定在当前 workspace 内
+		// （agent 全局，运行 workspace 取自 getActiveWorkspaceId）。
 		let workspaceId: string | undefined;
 		if (agentId) {
 			try {
-				const employee = await this.studioService.getEmployee(agentId);
-				workspaceId = employee?.workspaceId;
+				workspaceId = this.studioService.getActiveWorkspaceId();
 			} catch { /* ignore */ }
 		}
 		const all = await this.taskBoardService.getTasks(workspaceId);
@@ -1829,8 +1838,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private async _resolveKanbanWorkspaceId(agentId: string | undefined): Promise<string | undefined> {
 		if (!agentId) { return undefined; }
 		try {
-			const employee = await this.studioService.getEmployee(agentId);
-			return employee?.workspaceId;
+			// agent 是全局定义；运行 workspace 取自 getActiveWorkspaceId。
+			return this.studioService.getActiveWorkspaceId();
 		} catch {
 			return undefined;
 		}

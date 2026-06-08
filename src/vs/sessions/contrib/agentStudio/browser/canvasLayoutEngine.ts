@@ -33,7 +33,8 @@ export class CanvasLayoutEngine {
 	 */
 	async autoArrangeCanvas(plan: OrchestrationPlan): Promise<void> {
 		try {
-			const employees = await this.agentStudioService.getEmployees(plan.workspaceId);
+			// Agents are global definitions; all are candidates for the canvas.
+			const agents = await this.agentStudioService.getAgents();
 			const workspace = await this.agentStudioService.getWorkspace(plan.workspaceId);
 			if (!workspace) { return; }
 
@@ -68,7 +69,7 @@ export class CanvasLayoutEngine {
 					if (existing) {
 						existing.position = { x, y };
 					} else {
-						const emp = employees.find(e => e.id === agentId);
+						const emp = agents.find(e => e.id === agentId);
 						nodes.push({ id: agentId, type: 'employee', position: { x, y }, data: emp ? { employee: emp } : {} });
 					}
 				});

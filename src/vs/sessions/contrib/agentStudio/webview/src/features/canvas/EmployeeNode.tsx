@@ -156,7 +156,7 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 			? `https://api.dicebear.com/7.x/${employee.avatarStyle}/svg?seed=${employee.avatarSeed}`
 			: `https://api.dicebear.com/7.x/bottts/svg?seed=${employee.id}`);
 
-	const primaryModel = typeof employee.model === 'string' ? employee.model : (Array.isArray(employee.model) ? employee.model[0] : employee.model?.primary);
+	const primaryModel = typeof employee.model === 'string' ? employee.model : (Array.isArray(employee.model) ? employee.model[0] : (employee.model as any)?.primary);
 	const modelLabel = primaryModel ? primaryModel.split('/').pop()?.slice(0, 12) || '' : '';
 
 	// Token usage: support both number and object formats
@@ -166,7 +166,7 @@ function EmployeeNodeComponent({ id, data }: NodeProps & { data: EmployeeNodeDat
 
 		// Skills may be strings or objects {id, name, enabled, description}
 	const skillIds = (employee.skills || [])
-		.map(s => typeof s === 'string' ? s : s.id)
+		.map(s => typeof s === 'string' ? s : (s as { id: string }).id)
 		.filter(Boolean) as string[];
 
 	const agentColor = getAgentColor(employee.id);

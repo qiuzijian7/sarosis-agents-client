@@ -12,7 +12,7 @@ import type {
 	IStoredWorkflow,
 	WorkflowGraphNode,
 	WorkflowGraphConnection,
-} from '../../../../../common/workflowStorage';
+} from '../../types/workflowStorage';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -46,6 +46,10 @@ export const nodeTypeSelectors: Array<{ type: string; label: string; description
 
 // ─── Store Interface ─────────────────────────────────────────────────────────
 
+export type InteractionMode = 'pan' | 'select';
+export type ScrollMode = 'classic' | 'pan';
+export type MinimapMode = 'hidden' | 'auto' | 'always';
+
 interface WorkflowEditorState {
 	// ReactFlow state
 	nodes: Node[];
@@ -59,6 +63,10 @@ interface WorkflowEditorState {
 
 	// UI state
 	isPropertyPanelOpen: boolean;
+	interactionMode: InteractionMode;
+	scrollMode: ScrollMode;
+	isEdgeAnimationEnabled: boolean;
+	minimapMode: MinimapMode;
 
 	// ReactFlow handlers
 	onNodesChange: OnNodesChange;
@@ -70,6 +78,10 @@ interface WorkflowEditorState {
 	addNode: (type: string, position: { x: number; y: number }) => void;
 	removeNode: (id: string) => void;
 	updateNodeData: (id: string, data: Record<string, unknown>) => void;
+	toggleInteractionMode: () => void;
+	toggleScrollMode: () => void;
+	toggleEdgeAnimation: () => void;
+	setMinimapMode: (mode: MinimapMode) => void;
 
 	// Load / Serialize
 	loadWorkflow: (wf: IStoredWorkflow) => void;
@@ -86,6 +98,10 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>((set, get) => 
 	workflowName: '',
 	workflowDescription: '',
 	isPropertyPanelOpen: false,
+	interactionMode: 'pan' as InteractionMode,
+	scrollMode: 'classic' as ScrollMode,
+	isEdgeAnimationEnabled: true,
+	minimapMode: 'auto' as MinimapMode,
 
 	// ── ReactFlow handlers ──
 
@@ -261,4 +277,9 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>((set, get) => 
 
 		return { nodes: graphNodes, connections };
 	},
+
+	toggleInteractionMode: () => set(state => ({ interactionMode: state.interactionMode === 'pan' ? 'select' : 'pan' })),
+	toggleScrollMode: () => set(state => ({ scrollMode: state.scrollMode === 'classic' ? 'pan' : 'classic' })),
+	toggleEdgeAnimation: () => set(state => ({ isEdgeAnimationEnabled: !state.isEdgeAnimationEnabled })),
+	setMinimapMode: (mode: MinimapMode) => set({ minimapMode: mode }),
 }));

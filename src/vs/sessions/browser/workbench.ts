@@ -18,7 +18,7 @@ import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.j
 import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
 import { DEFAULT_CUSTOM_TITLEBAR_HEIGHT } from '../../platform/window/common/window.js';
-import { IEditorGroupsService, IEditorGroup, GroupDirection } from '../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroupsService, IEditorGroup } from '../../workbench/services/editor/common/editorGroupsService.js';
 import { MainEditorPart as SessionsMainEditorPart } from './parts/editorPart.js';
 import { EditorParts as SessionsEditorParts } from './parts/editorParts.js';
 import { IEditorService } from '../../workbench/services/editor/common/editorService.js';
@@ -1238,19 +1238,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		installCloseGuard(canvasGroup);
 
-		// ── Deterministic Canvas | Chat split layout (every launch) ──────
+		// ── Single Chat layout (every launch) ────────────────────────────
 		// The Agent part is created with `restorePreviousState: false`, so it
-		// always boots as a single empty group. We rebuild the fixed
-		// **side-by-side split** layout from scratch:
-		//
-		//   ┌─ Workspace Canvas ──┬─ Agent Chat ─┐
-		//   │  (left group)       │ (right group)│
-		//   └─────────────────────┴──────────────┘
-		//
-		// Canvas occupies the existing root group (left), Chat lives in a
-		// new group spawned to the RIGHT. Each group holds a single editor
-		// (no tab bar inside the group — the split itself is the layout).
-		// Users can still drag tabs across or merge groups freely afterwards.
+		// always boots as a single empty group. Chat occupies the full width.
+		// Users can split the group manually via the editor UI.
 		if (agentPart.groups.length > 1) {
 			agentPart.mergeAllGroups(canvasGroup);
 		}
@@ -1285,50 +1276,16 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			await leftGroup.closeEditors(existingAgentEditors, { preserveFocus: true });
 		}
 
-		const canvasInput = AgentStudioEditorInput.getOrCreate('canvas');
 		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-		console.warn(`[Sarosis][AgentEditor] inputs: canvas.matches(chat)=${canvasInput.matches(chatInput)}, canvas.resource=${canvasInput.resource?.toString()}, chat.resource=${chatInput.resource?.toString()}`);
 
-		// Step 1 — open Canvas in the left (root) group.
-		// `sticky: true` so the global `editor.limit` mechanism
-		// (EditorsObserver.ensureOpenedEditorsLimit) can NEVER auto-close it.
+		// Open Chat in the single group (no Canvas side-by-side).
 		try {
-			await leftGroup.openEditor(canvasInput, { pinned: true, sticky: true });
-			dumpAgent('AFTER open canvas (left)');
-		} catch (e) {
-			console.error('[Sarosis][AgentEditor] openEditor(canvas) threw', e);
-		}
-
-		// Step 2 — spawn a NEW group to the RIGHT and open Chat there. This
-		// is the actual side-by-side split. `addGroup` returns the new
-		// group; install the close-guard immediately so onDidAddGroup race
-		// cannot drop the guard for this initial group.
-		const rightGroup = agentPart.addGroup(leftGroup, GroupDirection.RIGHT);
-		rightGroup.lock(true);
-		// IMPORTANT — manually install the close-guard on the freshly-spawned
-		// rightGroup. The `agentPart.onDidAddGroup` listener that auto-installs
-		// the guard on user-spawned groups is registered LATER in this function
-		// (right after `dumpAgent('POST-microtask (final)')`); since the event
-		// has already fired here, we must register the guard imperatively.
-		installCloseGuard(rightGroup);
-		console.warn(`[Sarosis][AgentEditor] spawned right group #${rightGroup.id} for Chat`);
-
-		try {
-			await rightGroup.openEditor(chatInput, { pinned: true, sticky: true });
-			dumpAgent('AFTER open chat (right)');
+			await leftGroup.openEditor(chatInput, { pinned: true, sticky: true });
 		} catch (e) {
 			console.error('[Sarosis][AgentEditor] openEditor(chat) threw', e);
 		}
 
-		// Activate the LEFT (Canvas) group so initial focus lands there —
-		// matches the user-requested entry experience (Canvas visible &
-		// focused, Chat parked on the right).
 		leftGroup.focus();
-		dumpAgent('AFTER focus left group');
-
-		// Final post-microtask snapshot — catches any async close-guard
-		// flip-flop that fires right after we finish opening.
-		queueMicrotask(() => dumpAgent('POST-microtask (final)'));
 
 		// Guard groups added later within the agent part (user splits).
 		this._register(agentPart.onDidAddGroup(newGroup => {

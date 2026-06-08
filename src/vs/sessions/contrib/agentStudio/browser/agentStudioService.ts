@@ -13,11 +13,11 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { Employee, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
+import type { Employee, Agent, AgentBinding, Workspace, Connection, AgentStudioSession, WorkspaceLayout, AgentBootstrapTemplates, AgentExportData } from '../../../common/agentStudioTypes.js';
 import { ConnectionType } from '../../../common/agentStudioTypes.js';
 import { migrateWorkspace } from '../../../common/agentStudioTypes.js';
-import { EmployeeStatus } from '../../../common/agentStudioTypes.js';
-import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
+import { AgentStatus } from '../../../common/agentStudioTypes.js';
+import { DATA_FILE_EMPLOYEES, DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_CUSTOM_AGENTS, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_CONFIG_FILE, AGENT_AGENTS_MD, AGENT_SOUL_MD, AGENT_IDENTITY_MD, AGENT_TOOLS_MD, AGENT_MEMORY_MD } from '../common/constants.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
 import { ISkillLifecycleService, SkillLifecycleEvent, ISkillLifecyclePayload } from '../common/skillLifecycle.js';
@@ -46,6 +46,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidSelectEmployee = this._register(new Emitter<string | null>());
 	readonly onDidSelectEmployee: Event<string | null> = this._onDidSelectEmployee.event;
 
+	private readonly _onDidChangeAgents = this._register(new Emitter<void>());
+	readonly onDidChangeAgents: Event<void> = this._onDidChangeAgents.event;
+
 	private readonly _onDidChangeWorktreeState = this._register(new Emitter<{ workspaceId: string; status: string; message?: string }>());
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }> = this._onDidChangeWorktreeState.event;
 
@@ -69,9 +72,13 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/** Fire the employee-selected event (called by webview controller) */
-	fireSelectEmployee(employeeId: string | null): void {
-		this.logService.info(`[AgentStudioService] fireSelectEmployee(employeeId=${employeeId})`);
-		this._onDidSelectEmployee.fire(employeeId);
+	fireSelectEmployee(agentId: string | null): void {
+		this.logService.info(`[AgentStudioService] fireSelectEmployee(agentId=${agentId})`);
+		this._onDidSelectEmployee.fire(agentId);
+		// Persist so the chat panel restores this agent on next startup
+		this.setLastSelectedAgentId(agentId).catch(err =>
+			this.logService.warn('[AgentStudioService] Failed to persist last agent:', err),
+		);
 	}
 
 	private _globalDataUri: URI | undefined;
@@ -91,6 +98,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * to `createEmployee`, which then got JSON-stringify-stripped).
 	 */
 	private readonly _migratedWorkspaceIdDirs = new Set<string>();
+
+	/** Tracks workspace data dirs already migrated for agent-bindings.json (legacy employees.json runtime fields). */
+	private readonly _migratedBindingDirs = new Set<string>();
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -378,6 +388,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		await this.fileService.writeFile(uri, content);
 	}
 
+	/**
+	 * Read agent bindings. These key on `agentId` (not `id`), so they can't go
+	 * through the generic `_readJsonFile` (which filters by `item.id`).
+	 */
+	private async _readBindings(dirUri: URI): Promise<AgentBinding[]> {
+		try {
+			const uri = URI.joinPath(dirUri, DATA_FILE_AGENT_BINDINGS);
+			const content = await this.fileService.readFile(uri);
+			const parsed = JSON.parse(content.value.toString()) as AgentBinding[];
+			return Array.isArray(parsed)
+				? parsed.filter(item => item && typeof item === 'object' && item.agentId && item.workspaceId)
+				: [];
+		} catch {
+			return [];
+		}
+	}
+
 	private _generateId(): string {
 		return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 	}
@@ -430,7 +457,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const dirUri = await this._resolveDataUri(workspaceId);
 		this.logService.info(`[AgentStudio] getEmployees: workspaceId=${workspaceId}, dirUri=${dirUri.toString()}`);
 		const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
-		this.logService.info(`[AgentStudio] getEmployees: found ${employees.length} employees`);
+		this.logService.info(`[AgentStudio] getEmployees: found ${employees.length} employees from employees.json`);
 		// Lazy migration: backfill missing `workspaceId` (caused by older bug
 		// where createEmployee accepted undefined and JSON.stringify dropped it).
 		const wsMigrated = await this._ensureWorkspaceIdInDir(dirUri, employees, workspaceId);
@@ -451,8 +478,287 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return result;
 	}
 
+	private _getBuiltinAgents(): Agent[] {
+		const now = new Date().toISOString();
+		const LOBSTER_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Crect%20width%3D%22100%22%20height%3D%22100%22%20rx%3D%2225%22%20fill%3D%22%232196F3%22%2F%3E%3Ctext%20y%3D%2272%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2260%22%3E%F0%9F%A6%9E%3C%2Ftext%3E%3C%2Fsvg%3E';
+		const def = (id: string, name: string, role: string, desc: string, icon: string, cat: string, avatar?: string): Agent => ({
+			id, name, role, description: desc, icon, avatar, model: 'claude-sonnet-4-20250514',
+			skills: [], category: cat, source: 'builtin', createdAt: now, updatedAt: now,
+		});
+		return [
+			def('sarosis-claw', 'Sarosis Claw', 'AI Assistant', 'General-purpose AI assistant.', '🦞', 'General', LOBSTER_AVATAR),
+			def('coder', 'Coder', 'Software Engineer', 'Code generation, debugging, refactoring.', '👨‍💻', 'Development'),
+			def('researcher', 'Researcher', 'Research Analyst', 'Deep-dive research and analysis.', '🔬', 'Research'),
+			def('writer', 'Writer', 'Content Writer', 'Documentation, articles, copy.', '✍️', 'Creative'),
+			def('designer', 'Designer', 'UI/UX Designer', 'Interface mockups and design systems.', '🎨', 'Creative'),
+			def('planner', 'Planner', 'Project Manager', 'Multi-step workflow planning.', '📋', 'Management'),
+			def('tester', 'Tester', 'QA Engineer', 'Test generation and bug analysis.', '🧪', 'Development'),
+			def('devops', 'DevOps', 'DevOps Engineer', 'Infrastructure and deployment.', '🚀', 'DevOps'),
+			def('version-manager', 'Version Manager', 'Release Manager', 'Release management.', '📦', 'DevOps'),
+			def('data', 'Data Analyst', 'Data Scientist', 'Data analysis and visualization.', '📊', 'Analytics'),
+			def('code-explorer', 'Code Explorer', 'Code Exploration Agent', 'Search and understand codebases.', '🔍', 'Development'),
+			def('code-architect', 'Code Architect', 'Architecture Design Agent', 'System architecture design.', '🏗️', 'Development'),
+			def('code-reviewer', 'Code Reviewer', 'Code Quality Review Agent', 'Code review and best practices.', '👀', 'Development'),
+			def('workflow-agent', 'Workflow Agent', 'Workflow Orchestrator', 'Multi-step workflow execution.', '🔄', 'Management'),
+		];
+	}
+
+	// ── Agent CRUD ──────────────────────────────────────────────────────────
+
+	async getAgents(): Promise<Agent[]> {
+		const builtins = this._getBuiltinAgents();
+		let customs: Agent[] = [];
+		try {
+			customs = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
+		} catch { /* file doesn't exist yet */ }
+
+		// custom-agents.json may contain two kinds of rows:
+		//   1. Pure-custom agents (their own id).
+		//   2. Override rows for a builtin id — carrying DEFINITION overrides
+		//      (name / systemPrompt / skills / model …). We merge them ONTO the
+		//      builtin definition so getAgent() returns the customized definition
+		//      while keeping source:'builtin'.
+		// Per-workspace runtime state (worktree / agentDir / memoryConfig) is NOT
+		// here anymore — it lives on AgentBinding (agent-bindings.json).
+		const customById = new Map(customs.map(c => [c.id, c]));
+		const result: Agent[] = [];
+		for (const b of builtins) {
+			const override = customById.get(b.id);
+			if (override) {
+				result.push({ ...b, ...override, source: 'builtin' });
+				customById.delete(b.id);
+			} else {
+				result.push(b);
+			}
+		}
+		// remaining rows are genuine custom agents
+		for (const c of customById.values()) {
+			result.push(c);
+		}
+		return result;
+	}
+
+	async getAgent(id: string): Promise<Agent | undefined> {
+		const agents = await this.getAgents();
+		return agents.find(a => a.id === id);
+	}
+
+	async createAgent(data: Partial<Agent>): Promise<Agent> {
+		// The caller may also supply per-workspace runtime fields (workspaceId /
+		// worktreePath / worktreeBranch / agentDir / memoryConfig). These are NOT
+		// part of the global Agent definition — they are extracted here and
+		// persisted as an AgentBinding instead.
+		const runtime = data as Partial<Agent> & {
+			workspaceId?: string; worktreePath?: string; worktreeBranch?: string;
+			agentDir?: string; memoryConfig?: AgentBinding['memoryConfig'];
+		};
+		const now = new Date().toISOString();
+		const id = data.id || this._generateId();
+		const agent: Agent = {
+			id, name: data.name || 'New Agent', role: data.role || 'assistant',
+			description: data.description || '', icon: data.icon || '🤖',
+			model: data.model || 'claude-sonnet-4-20250514',
+			skills: data.skills || [], tools: data.tools,
+			category: data.category || 'General',
+			systemPrompt: data.systemPrompt, temperature: data.temperature,
+			handOffs: data.handOffs, hooks: data.hooks,
+			visibility: data.visibility, agents: data.agents,
+			confidenceThreshold: data.confidenceThreshold,
+			parallelStrategy: data.parallelStrategy,
+			// Agent type is part of the global definition (planner vs worker).
+			agentType: data.agentType,
+			// config.md binding is part of the definition (same across workspaces).
+			configMd: data.configMd,
+			sortOrder: data.sortOrder,
+			status: data.status,
+			source: 'custom', createdAt: now, updatedAt: now,
+		};
+		// NOTE: per-workspace runtime state (workspaceId / worktreePath /
+		// worktreeBranch / agentDir / memoryConfig) is intentionally NOT written
+		// here — it now lives on AgentBinding. If the caller supplied any of
+		// those, persist them as a binding for the target workspace instead.
+		const agents = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
+		agents.push(agent);
+		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
+		if (runtime.workspaceId) {
+			try {
+				await this.upsertAgentBinding(runtime.workspaceId, id, {
+					worktreePath: runtime.worktreePath,
+					worktreeBranch: runtime.worktreeBranch,
+					agentDir: runtime.agentDir,
+					memoryConfig: runtime.memoryConfig,
+				});
+			} catch (err) {
+				this.logService.warn(`[AgentStudio] createAgent: failed to persist binding for ${id} in ${runtime.workspaceId}: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		this._onDidChangeAgents.fire();
+		return agent;
+	}
+
+	async updateAgent(id: string, data: Partial<Agent>): Promise<void> {
+		// Split incoming patch: definition fields go to custom-agents.json,
+		// per-workspace runtime fields go to the agent binding.
+		const { workspaceId, worktreePath, worktreeBranch, agentDir, memoryConfig, ...defPatch } = data as Partial<Agent> & {
+			workspaceId?: string; worktreePath?: string; worktreeBranch?: string; agentDir?: string; memoryConfig?: AgentBinding['memoryConfig'];
+		};
+
+		const hasRuntimePatch = worktreePath !== undefined || worktreeBranch !== undefined || agentDir !== undefined || memoryConfig !== undefined;
+		if (hasRuntimePatch) {
+			if (workspaceId) {
+				await this.upsertAgentBinding(workspaceId, id, { worktreePath, worktreeBranch, agentDir, memoryConfig });
+			} else {
+				this.logService.warn(`[AgentStudio] updateAgent(${id}): runtime fields provided without workspaceId — binding not updated. Pass workspaceId to persist per-workspace state.`);
+			}
+		}
+
+		// If only runtime fields were provided, we're done.
+		if (Object.keys(defPatch).length === 0) {
+			if (hasRuntimePatch) { this._onDidChangeAgents.fire(); }
+			return;
+		}
+
+		const agents = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
+		const idx = agents.findIndex(a => a.id === id);
+		if (idx === -1) {
+			// No custom row yet. If `id` is a builtin agent, create an override
+			// row carrying just the changed DEFINITION fields. getAgents()
+			// merges this back onto the builtin definition.
+			const builtin = this._getBuiltinAgents().find(a => a.id === id);
+			if (!builtin) { throw new Error(`Agent not found: ${id}`); }
+			const now = new Date().toISOString();
+			agents.push({ ...builtin, ...defPatch, id, source: 'builtin', updatedAt: now });
+			await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
+			this._onDidChangeAgents.fire();
+			return;
+		}
+		agents[idx] = { ...agents[idx], ...defPatch, updatedAt: new Date().toISOString() };
+		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
+		this._onDidChangeAgents.fire();
+	}
+
+	// ─── Agent Bindings (per-workspace runtime instance state) ──────────────
+
+	async getAgentBindings(workspaceId: string): Promise<AgentBinding[]> {
+		const dirUri = await this._resolveDataUri(workspaceId);
+		const bindings = await this._readBindings(dirUri);
+		// Lazy migration: backfill bindings from legacy employees.json runtime
+		// fields the first time a workspace is read, so existing worktree/memory
+		// state isn't lost when upgrading from the global-Agent model.
+		const migrated = await this._ensureBindingsFromLegacyEmployees(workspaceId, dirUri, bindings);
+		return migrated || bindings;
+	}
+
+	async getAgentBinding(workspaceId: string, agentId: string): Promise<AgentBinding | undefined> {
+		const bindings = await this.getAgentBindings(workspaceId);
+		return bindings.find(b => b.agentId === agentId);
+	}
+
+	async upsertAgentBinding(workspaceId: string, agentId: string, patch: Partial<AgentBinding>): Promise<AgentBinding> {
+		const dirUri = await this._resolveDataUri(workspaceId);
+		const bindings = await this._readBindings(dirUri);
+		const now = new Date().toISOString();
+		const idx = bindings.findIndex(b => b.agentId === agentId);
+		let result: AgentBinding;
+		if (idx === -1) {
+			result = {
+				agentId, workspaceId,
+				worktreePath: patch.worktreePath,
+				worktreeBranch: patch.worktreeBranch,
+				agentDir: patch.agentDir,
+				memoryConfig: patch.memoryConfig,
+				createdAt: now, updatedAt: now,
+			};
+			bindings.push(result);
+		} else {
+			// Merge patch, but never let agentId/workspaceId/createdAt be overwritten.
+			const { agentId: _a, workspaceId: _w, createdAt: _c, ...rest } = patch;
+			result = { ...bindings[idx], ...rest, agentId, workspaceId, updatedAt: now };
+			bindings[idx] = result;
+		}
+		await this._writeJsonFile(dirUri, DATA_FILE_AGENT_BINDINGS, bindings);
+		return result;
+	}
+
+	async deleteAgentBinding(workspaceId: string, agentId: string): Promise<void> {
+		const dirUri = await this._resolveDataUri(workspaceId);
+		const bindings = await this._readBindings(dirUri);
+		const filtered = bindings.filter(b => b.agentId !== agentId);
+		if (filtered.length === bindings.length) { return; }
+		await this._writeJsonFile(dirUri, DATA_FILE_AGENT_BINDINGS, filtered);
+	}
+
 	/**
-	 * Calculate the number of skills that are missing from the skill registry
+	 * One-shot lazy migration: when a workspace's agent-bindings.json is read and
+	 * the legacy employees.json still holds runtime fields (worktreePath /
+	 * agentDir / memoryConfig), synthesize bindings for any agent that doesn't
+	 * already have one. Runs at most once per dataDir per session.
+	 */
+	private async _ensureBindingsFromLegacyEmployees(
+		workspaceId: string,
+		dirUri: URI,
+		existing: AgentBinding[],
+	): Promise<AgentBinding[] | null> {
+		const key = `bindings:${dirUri.toString()}`;
+		if (this._migratedBindingDirs.has(key)) { return null; }
+		this._migratedBindingDirs.add(key);
+		try {
+			const employees = await this._readJsonFile<Employee>(dirUri, DATA_FILE_EMPLOYEES);
+			if (employees.length === 0) { return null; }
+			const have = new Set(existing.map(b => b.agentId));
+			const now = new Date().toISOString();
+			let added = 0;
+			const next = [...existing];
+			for (const e of employees) {
+				if (have.has(e.id)) { continue; }
+				const hasRuntime = !!(e.worktreePath || e.agentDir || e.memoryConfig);
+				if (!hasRuntime) { continue; }
+				next.push({
+					agentId: e.id,
+					workspaceId,
+					worktreePath: e.worktreePath,
+					worktreeBranch: e.worktreeBranch,
+					agentDir: e.agentDir,
+					memoryConfig: e.memoryConfig,
+					createdAt: now, updatedAt: now,
+				});
+				added++;
+			}
+			if (added === 0) { return null; }
+			await this._writeJsonFile(dirUri, DATA_FILE_AGENT_BINDINGS, next);
+			this.logService.info(`[AgentStudio] migrated ${added} legacy employee runtime field(s) into agent-bindings.json for workspace ${workspaceId}`);
+			return next;
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] _ensureBindingsFromLegacyEmployees failed for ${workspaceId}: ${err instanceof Error ? err.message : String(err)}`);
+			return null;
+		}
+	}
+
+	async deleteAgent(id: string): Promise<void> {
+		const agents = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
+		const filtered = agents.filter(a => a.id !== id);
+		if (filtered.length === agents.length) { return; }
+		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, filtered);
+		this._onDidChangeAgents.fire();
+	}
+
+	async getLastSelectedAgentId(): Promise<string | null> {
+		try {
+			const uri = URI.joinPath(this._getGlobalDataUri(), DATA_FILE_LAST_ACTIVE_AGENT);
+			const content = await this.fileService.readFile(uri);
+			const data = JSON.parse(content.value.toString());
+			return data.lastAgentId || null;
+		} catch { return null; }
+	}
+
+	async setLastSelectedAgentId(id: string | null): Promise<void> {
+		const uri = URI.joinPath(this._getGlobalDataUri(), DATA_FILE_LAST_ACTIVE_AGENT);
+		await this._ensureDir(this._getGlobalDataUri());
+		const content = VSBuffer.fromString(JSON.stringify({ lastAgentId: id }, null, 2));
+		await this.fileService.writeFile(uri, content);
+	}
+
+	/**
 	 * for a given employee, and return the list of missing skill IDs.
 	 */
 	private _calculateSkillErrorInfo(employee: Employee): { errorCount: number; missingSkillIds: string[] } {
@@ -767,7 +1073,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			hooks: (data as Record<string, unknown>).hooks as Employee['hooks'],
 			visibility: (data as Record<string, unknown>).visibility as Employee['visibility'],
 			agents: (data as Record<string, unknown>).agents as Employee['agents'],
-			status: EmployeeStatus.Idle,
+			status: AgentStatus.Idle,
 			agentType: (data as Record<string, unknown>).agentType as Employee['agentType'],
 			teamId: data.teamId,
 			workspaceId: data.workspaceId,
@@ -1746,72 +2052,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		this._onDidChangeSessions.fire();
 	}
 
-	// ─── Agent Model Config Persistence ─────────────────────────────────────────
-	// Write / read provider + model + agent selection to / from agent.yaml so
-	// that the chat-bar selection survives a window reload.
-
-	async updateEmployeeModelConfig(
-		employeeId: string,
-		config: { providerId: string; modelId: string; agentId?: string },
-	): Promise<void> {
-		this.logService.info(`[AgentStudio] updateEmployeeModelConfig: employeeId=${employeeId}, config=${JSON.stringify(config)}`);
-
-		const employee = await this.getEmployee(employeeId);
-		if (!employee || !employee.agentDir) {
-			this.logService.warn(`[AgentStudio] updateEmployeeModelConfig: employee not found or no agentDir (id=${employeeId}, found=${!!employee}, agentDir=${employee?.agentDir})`);
-			return;
-		}
-
-		const workspaceId = employee.workspaceId;
-		const dirUri = await this._resolveDataUri(workspaceId);
-		const configFileUri = URI.joinPath(dirUri, AGENTS_DIR, employee.agentDir, AGENT_CONFIG_FILE);
-		this.logService.info(`[AgentStudio] updateEmployeeModelConfig: configFileUri=${configFileUri.toString()}`);
-
-		try {
-			// Read existing config
-			const raw = await this.fileService.readFile(configFileUri);
-			const agentConfig = JSON.parse(raw.value.toString());
-
-			// Update model section
-			agentConfig.model = {
-				...(agentConfig.model || {}),
-				providerId: config.providerId,
-				modelId: config.modelId,
-				...(config.agentId ? { agentId: config.agentId } : {}),
-			};
-			// Remove agentId from model if it's undefined/cleared
-			if (!config.agentId) {
-				delete agentConfig.model.agentId;
-			}
-
-			agentConfig.updatedAt = new Date().toISOString();
-
-			await this.fileService.writeFile(
-				configFileUri,
-				VSBuffer.fromString(JSON.stringify(agentConfig, null, 2)),
-			);
-
-			this.logService.info(
-				`[AgentStudio] Updated agent.yaml model config for employee ${employeeId}: `
-				+ `${config.providerId}/${config.modelId}${config.agentId ? ` [agent: ${config.agentId}]` : ''}`,
-			);
-		} catch (err) {
-			this.logService.error(`[AgentStudio] Failed to update agent.yaml for employee ${employeeId} at ${configFileUri.toString()}`, err);
-		}
-	}
-
 	// ─── Agent Position & Connection Persistence (employees.json) ───────────────
 
 	/**
 	 * Persist position to employees.json so that canvas layout survives a window reload.
 	 */
 	async updateEmployeePosition(
-		employeeId: string,
+		agentId: string,
 		position: { x: number; y: number },
 	): Promise<void> {
-		this.logService.info(`[AgentStudio] updateEmployeePosition: employeeId=${employeeId}, pos=(${position.x}, ${position.y})`);
+		this.logService.info(`[AgentStudio] updateEmployeePosition: agentId=${agentId}, pos=(${position.x}, ${position.y})`);
 
-		const locateResult = await this._locateEmployee(employeeId);
+		const locateResult = await this._locateEmployee(agentId);
 		if (locateResult) {
 			const { dirUri, employees, index } = locateResult;
 			employees[index] = {
@@ -1827,9 +2079,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * Read position from employees.json.
 	 */
 	async getEmployeePosition(
-		employeeId: string,
+		agentId: string,
 	): Promise<{ x: number; y: number } | undefined> {
-		const employee = await this.getEmployee(employeeId);
+		const employee = await this.getEmployee(agentId);
 		return employee?.position;
 	}
 
@@ -1838,12 +2090,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * Each agent stores the connections it participates in (as source or target).
 	 */
 	async updateEmployeeConnections(
-		employeeId: string,
+		agentId: string,
 		connections: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>,
 	): Promise<void> {
-		this.logService.info(`[AgentStudio] updateEmployeeConnections: employeeId=${employeeId}, count=${connections.length}`);
+		this.logService.info(`[AgentStudio] updateEmployeeConnections: agentId=${agentId}, count=${connections.length}`);
 
-		const locateResult = await this._locateEmployee(employeeId);
+		const locateResult = await this._locateEmployee(agentId);
 		if (locateResult) {
 			const { dirUri, employees, index } = locateResult;
 			employees[index] = {
@@ -1922,45 +2174,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		if (changed) {
 			await this._writeJsonFile(dirUri, DATA_FILE_EMPLOYEES, employees);
 		}
-	}
-
-	async getEmployeeModelConfig(
-		employeeId: string,
-	): Promise<{ providerId: string; modelId: string; agentId?: string } | undefined> {
-		const employee = await this.getEmployee(employeeId);
-		if (!employee || !employee.agentDir) {
-			return undefined;
-		}
-
-		const workspaceId = employee.workspaceId;
-		const dirUri = await this._resolveDataUri(workspaceId);
-		const configFileUri = URI.joinPath(dirUri, AGENTS_DIR, employee.agentDir, AGENT_CONFIG_FILE);
-
-		try {
-			const raw = await this.fileService.readFile(configFileUri);
-			const agentConfig = JSON.parse(raw.value.toString());
-			const model = agentConfig.model;
-
-			// Treat legacy placeholder values ('default', 'gpt-4o' written by
-			// older versions) as "no real config" so that callers fall back to
-			// the global selection / auto-pick logic instead of trying to
-			// resolve a non-existent provider id.
-			const providerId = model?.providerId;
-			const modelId = model?.modelId;
-			const isPlaceholder = providerId === 'default' || !providerId || !modelId;
-
-			if (model && !isPlaceholder) {
-				return {
-					providerId: providerId,
-					modelId: modelId,
-					agentId: model.agentId,
-				};
-			}
-		} catch (err) {
-			this.logService.debug(`[AgentStudio] Could not read agent.yaml model config for employee ${employeeId}`, err);
-		}
-
-		return undefined;
 	}
 
 	// ─── Agent Instance Import / Export ─────────────────────────────────────────
@@ -2073,7 +2286,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			provider: data.employee.provider,
 			customPrompt: data.employee.customPrompt,
 			skills: this._mergeWithDefaultSkills(data.employee.skills),
-			status: EmployeeStatus.Idle,
+			status: AgentStatus.Idle,
 			workspaceId,
 			position: this._computeNonOverlappingPosition(existingEmployees),
 			tokenUsage: 0,
@@ -2601,7 +2814,7 @@ button(id="send", label="💬 发送", action="send_to_chat", variant="primary",
 // just emit standard markdown HTML and let the host take care of the rest.
 //
 // \`ctx\` includes:
-//   { employeeId: string }   // identifier of the agent owning this panel
+//   { agentId: string }   // identifier of the agent owning this panel
 //
 // Failure mode:
 //   If \`parse\` throws or returns a non-string, the host falls back to its
@@ -2735,8 +2948,8 @@ ${IMGUI_SDK_STYLES}
 		});
 	}
 
-	async getEffectiveWorktreePath(employeeId: string): Promise<string | undefined> {
-		const employee = await this.getEmployee(employeeId);
+	async getEffectiveWorktreePath(agentId: string): Promise<string | undefined> {
+		const employee = await this.getEmployee(agentId);
 		if (!employee) {
 			return undefined;
 		}

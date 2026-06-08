@@ -55,6 +55,44 @@ export const checkpointDatabaseMigrations: readonly ICheckpointDatabaseMigration
 				ON checkpoints(employee_id, session_id)`,
 		].join(';\n'),
 	},
+	{
+		// v2 (Batch 9.1): introduce agent_id alongside legacy employee_id.
+		// Strategy: ADD COLUMN with default '', backfill from employee_id, add new index.
+		version: 2,
+		sql: [
+			`ALTER TABLE checkpoints ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+			`UPDATE checkpoints SET agent_id = employee_id WHERE agent_id = ''`,
+			`CREATE INDEX IF NOT EXISTS idx_checkpoints_agent_session
+				ON checkpoints(agent_id, session_id)`,
+		].join(';\n'),
+	},
+	{
+		// v3 (Batch 9.3a): drop legacy employee_id column. agent_id is now the sole identity.
+		// We use the table-rebuild pattern (CREATE NEW + COPY + DROP + RENAME) for compatibility
+		// with SQLite < 3.35 (which lacks `ALTER TABLE ... DROP COLUMN`). All operations are
+		// performed inside a transaction by the migration runner.
+		version: 3,
+		sql: [
+			`CREATE TABLE checkpoints_new (
+				id            TEXT PRIMARY KEY NOT NULL,
+				agent_id      TEXT NOT NULL,
+				session_id    TEXT NOT NULL,
+				type          TEXT NOT NULL,
+				label         TEXT NOT NULL,
+				description   TEXT,
+				created_at    INTEGER NOT NULL,
+				is_ghost      INTEGER NOT NULL DEFAULT 0,
+				message_id    TEXT
+			)`,
+			`INSERT INTO checkpoints_new (id, agent_id, session_id, type, label, description, created_at, is_ghost, message_id)
+				SELECT id, agent_id, session_id, type, label, description, created_at, is_ghost, message_id FROM checkpoints`,
+			`DROP INDEX IF EXISTS idx_checkpoints_employee_session`,
+			`DROP INDEX IF EXISTS idx_checkpoints_agent_session`,
+			`DROP TABLE checkpoints`,
+			`ALTER TABLE checkpoints_new RENAME TO checkpoints`,
+			`CREATE INDEX idx_checkpoints_agent_session ON checkpoints(agent_id, session_id)`,
+		].join(';\n'),
+	},
 ];
 
 // ---- Promise wrappers around callback-based @vscode/sqlite3 API -------------------
@@ -202,14 +240,14 @@ export class CheckpointStorage {
 
 		await dbExec(this.db, 'BEGIN');
 		try {
-			// Insert checkpoint
+			// Insert checkpoint (Batch 9.3a: employee_id column dropped; agent_id is sole identity).
 			await dbRun(
 				this.db,
-				`INSERT INTO checkpoints (id, employee_id, session_id, type, label, description, created_at, is_ghost, message_id)
+				`INSERT INTO checkpoints (id, agent_id, session_id, type, label, description, created_at, is_ghost, message_id)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					checkpoint.id,
-					checkpoint.employeeId,
+					checkpoint.agentId,
 					checkpoint.sessionId,
 					checkpoint.type,
 					checkpoint.label,
@@ -269,9 +307,10 @@ export class CheckpointStorage {
 	}
 
 	/**
-	 * Get all checkpoints for an employee+sesssion.
+	 * Get all checkpoints for an agent+session.
+	 * Batch 9.3a: employee_id column dropped; query by agent_id only.
 	 */
-	async listCheckpoints(employeeId: string, sessionId: string): Promise<ICheckpoint[]> {
+	async listCheckpoints(agentId: string, sessionId: string): Promise<ICheckpoint[]> {
 		if (!this.db) {
 			throw new Error('Database not initialized');
 		}
@@ -279,9 +318,9 @@ export class CheckpointStorage {
 		const rows = await dbAll(
 			this.db,
 			`SELECT * FROM checkpoints
-			 WHERE employee_id = ? AND session_id = ?
+			 WHERE agent_id = ? AND session_id = ?
 			 ORDER BY created_at ASC`,
-			[employeeId, sessionId],
+			[agentId, sessionId],
 		);
 
 		return rows.map(row => this.rowToCheckpoint(row));
@@ -388,9 +427,10 @@ export class CheckpointStorage {
 	// ---- Helper methods -------------------------------------------------------
 
 	private rowToCheckpoint(row: Record<string, unknown>): ICheckpoint {
+		// Batch 9.3a: employee_id column dropped; agent_id is sole identity.
 		return {
 			id: row.id as string,
-			employeeId: row.employee_id as string,
+			agentId: row.agent_id as string,
 			sessionId: row.session_id as string,
 			type: row.type as 'user_edit' | 'tool_edit',
 			label: row.label as string,

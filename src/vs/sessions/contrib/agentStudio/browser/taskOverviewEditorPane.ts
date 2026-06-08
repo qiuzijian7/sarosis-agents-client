@@ -404,7 +404,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 					p.workspaceId as string | undefined,
 				);
 			case 'employees.selected':
-				this._agentStudioService.fireSelectEmployee(p.employeeId as string | null);
+				this._agentStudioService.fireSelectEmployee(p.agentId as string | null);
 				return undefined;
 
 			// ─── Delegations ─────────────────────────────────────

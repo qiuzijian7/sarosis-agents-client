@@ -6,7 +6,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useState, useRef } from 'react';
-import { useChatStore, type AgentSession } from '../../store/useChatStore';
+import { useChatStore, type AgentSessionInfo as AgentSession } from '../../store/useChatStore';
 
 /* ── Props ─────────────────────────────────────────────────────── */
 interface ChatHistoryPageProps {
@@ -21,7 +21,7 @@ export function ChatHistoryPage({ onClose }: ChatHistoryPageProps): React.ReactE
 	const {
 		agentSessions,
 		activeAgentSessionId,
-		activeEmployeeId,
+		activeAgentId,
 		switchAgentSession,
 		renameAgentSession,
 		deleteAgentSession,
@@ -45,10 +45,10 @@ export function ChatHistoryPage({ onClose }: ChatHistoryPageProps): React.ReactE
 
 	// Load sessions on mount
 	useEffect(() => {
-		if (activeEmployeeId) {
-			loadAgentSessions(activeEmployeeId);
+		if (activeAgentId) {
+			loadAgentSessions(activeAgentId);
 		}
-	}, [loadAgentSessions, activeEmployeeId]);
+	}, [loadAgentSessions, activeAgentId]);
 
 	// Focus edit input when entering edit mode
 	useEffect(() => {

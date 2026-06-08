@@ -20,7 +20,7 @@ import { IUntypedEditorInput } from '../../../../workbench/common/editor.js';
  *   chat panel already uses successfully — i.e. a regular DOM-mounted
  *   iframe with no anchor-positioning involvement.
  *
- * Carrying context (employeeId / workspaceId / agentSessionId):
+ * Carrying context (agentId / workspaceId / agentSessionId):
  *   When the preview is opened from ConfigMD's "preview" button we know
  *   exactly which agent owns it AND which Fork session is active in the
  *   chat panel at that moment. We pass all three through the input so:
@@ -57,7 +57,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 	constructor(
 		resource: URI,
 		title: string,
-		employeeId?: string,
+		agentId?: string,
 		workspaceId?: string,
 		workspaceSessionId?: string,
 		agentSessionId?: string,
@@ -65,7 +65,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 		super();
 		this._resource = resource;
 		this._title = title;
-		this._employeeId = employeeId;
+		this._employeeId = agentId;
 		this._workspaceId = workspaceId;
 		this._workspaceSessionId = workspaceSessionId;
 		this._agentSessionId = agentSessionId;
@@ -79,6 +79,11 @@ export class HtmlPreviewEditorInput extends EditorInput {
 		return this._title;
 	}
 
+	get agentId(): string | undefined {
+		return this._employeeId;
+	}
+
+	/** @deprecated 重构期间保留，待全部消费方迁移到 agentId 后删除。 */
 	get employeeId(): string | undefined {
 		return this._employeeId;
 	}

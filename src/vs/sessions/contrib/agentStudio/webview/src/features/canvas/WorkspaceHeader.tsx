@@ -100,7 +100,7 @@ export function WorkspaceHeader({
 			const loadAgents = async () => {
 				try {
 					const result = await sendRequest('configmd.listAgents', {});
-					setHtmlViewAgents(result || []);
+					setHtmlViewAgents((result as any) || []);
 				} catch (err) {
 					console.error('Failed to load agents with config.md:', err);
 					setHtmlViewAgents([]);

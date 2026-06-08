@@ -64,7 +64,7 @@ const sourceControlViewContainer = viewContainerRegistry.registerViewContainer({
 	id: SESSIONS_SOURCE_CONTROL_CONTAINER_ID,
 	title: localize2('agentStudioSourceControl', 'Source Control'),
 	icon: sourceControlViewIcon,
-	order: 3,
+	order: 30,
 	ctorDescriptor: new SyncDescriptor(SourceControlViewPaneContainer),
 	storageId: SESSIONS_SOURCE_CONTROL_CONTAINER_ID,
 	alwaysUseContainerInfo: true,
@@ -74,7 +74,7 @@ const sourceControlViewContainer = viewContainerRegistry.registerViewContainer({
 		title: localize2('agentStudioSourceControl', 'Source Control'),
 		mnemonicTitle: localize({ key: 'miAgentStudioSourceControl', comment: ['&& denotes a mnemonic'] }, 'Source &&Control'),
 		keybindings: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyG },
-		order: 3,
+		order: 30,
 	},
 	windowEnablement: WindowEnablement.Sessions,
 }, ViewContainerLocation.Sidebar);

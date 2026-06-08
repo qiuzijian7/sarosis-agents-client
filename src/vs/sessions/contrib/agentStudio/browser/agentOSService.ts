@@ -913,6 +913,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					// 落库用 trim 后的内容，杜绝纯空白污染历史
 					content: trimmedAssistantContent,
 				};
+				// ReAct: 将 native thinking 注入 reasoning 字段。
+				// messageFormatConverter 会在转 OpenAI/Anthropic/Gemini 格式时
+				// 将其合并到 content 中（<thinking>...</thinking> 前缀），使模型在
+				// 下一轮迭代中能"看见"自己的思考过程。
+				if (thinkingContent) {
+					assistantMessage.reasoning = thinkingContent;
+				}
 				if (effectiveToolCalls.length > 0) {
 					assistantMessage.toolCalls = effectiveToolCalls;
 				}

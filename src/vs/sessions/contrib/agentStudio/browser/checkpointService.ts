@@ -29,7 +29,7 @@ import {
  */
 interface IStoredCheckpoint {
 	readonly id: string;
-	readonly employeeId: string;
+	readonly agentId: string;
 	readonly sessionId: string;
 	readonly type: 'user_edit' | 'tool_edit';
 	readonly label: string;
@@ -60,8 +60,8 @@ interface IStoredFileSnapshot {
  * Browser-layer checkpoint service backed by {@link IFileService} + JSON.
  *
  * Storage layout (under the workspace home dir):
- *   <home>/.sarosisworkspace/checkpoints/<employeeId>/<sessionId>/index.json
- *   <home>/.sarosisworkspace/checkpoints/<employeeId>/<sessionId>/snapshots/<snapshotId>.json
+ *   <home>/.sarosisworkspace/checkpoints/<agentId>/<sessionId>/index.json
+ *   <home>/.sarosisworkspace/checkpoints/<agentId>/<sessionId>/snapshots/<snapshotId>.json
  *
  * The index file holds the ordered checkpoint metadata array; each snapshot is
  * its own file. When no workspace home dir can be resolved we fall back to the
@@ -74,7 +74,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	private readonly _onDidCreateCheckpoint = this._register(new Emitter<ICheckpoint>());
 	readonly onDidCreateCheckpoint: Event<ICheckpoint> = this._onDidCreateCheckpoint.event;
 
-	/** employeeId → active sessionId, set by the controller when streaming starts. */
+	/** agentId → active sessionId, set by the controller when streaming starts. */
 	private readonly _activeSessions = new Map<string, string>();
 
 	constructor(
@@ -88,12 +88,12 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 
 	// ─── Active session tracking (for tool-edit capture) ──────────────────────
 
-	setActiveSession(employeeId: string, sessionId: string): void {
-		this._activeSessions.set(employeeId, sessionId);
+	setActiveSession(agentId: string, sessionId: string): void {
+		this._activeSessions.set(agentId, sessionId);
 	}
 
-	async captureBeforeToolEdit(employeeId: string, fileUri: string, newContent?: string): Promise<void> {
-		const sessionId = this._activeSessions.get(employeeId);
+	async captureBeforeToolEdit(agentId: string, fileUri: string, newContent?: string): Promise<void> {
+		const sessionId = this._activeSessions.get(agentId);
 		if (!sessionId) {
 			// No active session registered → cannot scope storage. Skip silently.
 			return;
@@ -129,7 +129,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		};
 
 		try {
-			await this.createCheckpointFromUris(employeeId, sessionId, 'tool_edit', [fileUri], {
+			await this.createCheckpointFromUris(agentId, sessionId, 'tool_edit', [fileUri], {
 				label: `编辑 ${shortName}`,
 				description: `${shortName} 文件变更`,
 				files: [fileChange],
@@ -167,22 +167,33 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	// ─── Storage path resolution ────────────────────────────────────────────
 
 	/**
-	 * Resolve the base directory for an employee's checkpoint storage.
+	 * Resolve the base directory for an agent's checkpoint storage.
 	 * Prefers the workspace home dir (Workspace.path); falls back to the
 	 * environment user-data dir.
 	 */
-	private async _resolveSessionDir(employeeId: string, sessionId: string): Promise<URI> {
+	private async _resolveSessionDir(agentId: string, sessionId: string): Promise<URI> {
 		let baseDir: URI | undefined;
 		try {
-			const employee = await this.studioService.getEmployee(employeeId);
-			if (employee?.workspaceId) {
-				const workspace = await this.studioService.getWorkspace(employee.workspaceId);
+			// Agent is global; the runtime workspace is resolved from the session
+			// (sessionId → session.workspaceId), falling back to the active workspace.
+			let workspaceId: string | undefined;
+			try {
+				const session = await this.studioService.getSession(sessionId);
+				workspaceId = session?.workspaceId;
+			} catch {
+				// ignore — fall through to active workspace
+			}
+			if (!workspaceId) {
+				workspaceId = this.studioService.getActiveWorkspaceId();
+			}
+			if (workspaceId) {
+				const workspace = await this.studioService.getWorkspace(workspaceId);
 				if (workspace?.path) {
 					baseDir = URI.file(workspace.path);
 				}
 			}
 		} catch (err) {
-			this.logService.warn(`[CheckpointService] Failed to resolve workspace home for ${employeeId}: ${err}`);
+			this.logService.warn(`[CheckpointService] Failed to resolve workspace home for ${agentId}: ${err}`);
 		}
 
 		if (!baseDir) {
@@ -190,7 +201,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			baseDir = joinPath(this.environmentService.userRoamingDataHome, 'sarosis-checkpoints');
 		}
 
-		return joinPath(baseDir, '.sarosisworkspace', 'checkpoints', employeeId, sessionId);
+		return joinPath(baseDir, '.sarosisworkspace', 'checkpoints', agentId, sessionId);
 	}
 
 	private _indexUri(sessionDir: URI): URI {
@@ -249,9 +260,10 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	// ─── Mapping helpers ──────────────────────────────────────────────────────
 
 	private _toCheckpoint(stored: IStoredCheckpoint): ICheckpoint {
+		// Batch 9.2: only emit agentId; consumers should never read employeeId from new objects.
 		return {
 			id: stored.id,
-			employeeId: stored.employeeId,
+			agentId: stored.agentId,
 			sessionId: stored.sessionId,
 			type: stored.type,
 			label: stored.label,
@@ -273,7 +285,13 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	// ─── Public API ────────────────────────────────────────────────────────────
 
 	async createCheckpoint(payload: ICreateCheckpointPayload): Promise<ICheckpoint> {
-		const sessionDir = await this._resolveSessionDir(payload.employeeId, payload.sessionId);
+		// Batch 9.2: agentId is the canonical identity; fall back to legacy employeeId for callers
+		// that haven't migrated yet.
+		const agentId = payload.agentId ?? payload.employeeId;
+		if (!agentId) {
+			throw new Error('[CheckpointService] createCheckpoint: agentId (or legacy employeeId) is required');
+		}
+		const sessionDir = await this._resolveSessionDir(agentId, payload.sessionId);
 		const checkpointId = generateUuid();
 
 		// Persist each file snapshot as its own file.
@@ -298,7 +316,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 
 		const stored: IStoredCheckpoint = {
 			id: checkpointId,
-			employeeId: payload.employeeId,
+			agentId,
 			sessionId: payload.sessionId,
 			type: payload.type,
 			label: payload.label || this._getDefaultLabel(payload.type),
@@ -323,7 +341,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	}
 
 	async createCheckpointFromUris(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		type: 'user_edit' | 'tool_edit',
 		fileUris: string[],
@@ -370,7 +388,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		}
 
 		return this.createCheckpoint({
-			employeeId,
+			agentId,
 			sessionId,
 			type,
 			label: opts?.label,
@@ -381,8 +399,8 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		});
 	}
 
-	async jumpToCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<IJumpToCheckpointResult> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async jumpToCheckpoint(agentId: string, sessionId: string, checkpointId: string): Promise<IJumpToCheckpointResult> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		const target = index.find(cp => cp.id === checkpointId);
 		if (!target) {
@@ -447,8 +465,8 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	 * 任何检查点产生之前的最初状态。与单个 {@link jumpToCheckpoint} 不同，
 	 * 后者只还原目标检查点自己的快照。
 	 */
-	async revertAllCheckpoints(employeeId: string, sessionId: string): Promise<IJumpToCheckpointResult> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async revertAllCheckpoints(agentId: string, sessionId: string): Promise<IJumpToCheckpointResult> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		// 仅聚合 tool_edit 且非 ghost 的检查点（ghost = 已被回退，不应再参与）。
 		const active = index
@@ -509,8 +527,8 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	 * 快照（首次编辑前的原始内容）。供"查看全部变更"在一个多文件 diff 窗口
 	 * 中对比"最初内容 vs 当前内容"。
 	 */
-	async getAggregatedFileSnapshots(employeeId: string, sessionId: string): Promise<IFileSnapshot[]> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async getAggregatedFileSnapshots(agentId: string, sessionId: string): Promise<IFileSnapshot[]> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		const active = index
 			.filter(cp => cp.type === 'tool_edit' && !cp.isGhost)
@@ -536,15 +554,15 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		return [...earliestByUri.values()];
 	}
 
-	async getCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<ICheckpoint | undefined> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async getCheckpoint(agentId: string, sessionId: string, checkpointId: string): Promise<ICheckpoint | undefined> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		const found = index.find(cp => cp.id === checkpointId);
 		return found ? this._toCheckpoint(found) : undefined;
 	}
 
-	async listCheckpoints(employeeId: string, sessionId: string): Promise<ICheckpoint[]> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async listCheckpoints(agentId: string, sessionId: string): Promise<ICheckpoint[]> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		return index
 			.slice()
@@ -552,8 +570,8 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 			.map(cp => this._toCheckpoint(cp));
 	}
 
-	async deleteCheckpoint(employeeId: string, sessionId: string, checkpointId: string): Promise<void> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async deleteCheckpoint(agentId: string, sessionId: string, checkpointId: string): Promise<void> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		const target = index.find(cp => cp.id === checkpointId);
 		if (!target) {
@@ -577,8 +595,8 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		this.logService.info(`[CheckpointService] Deleted checkpoint ${checkpointId}`);
 	}
 
-	async deleteAllCheckpoints(employeeId: string, sessionId: string): Promise<void> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async deleteAllCheckpoints(agentId: string, sessionId: string): Promise<void> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		if (index.length === 0) {
 			return;
@@ -602,8 +620,8 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		this.logService.info(`[CheckpointService] Deleted all ${index.length} checkpoints for session ${sessionId}`);
 	}
 
-	async getFileSnapshots(employeeId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]> {
-		const sessionDir = await this._resolveSessionDir(employeeId, sessionId);
+	async getFileSnapshots(agentId: string, sessionId: string, checkpointId: string): Promise<IFileSnapshot[]> {
+		const sessionDir = await this._resolveSessionDir(agentId, sessionId);
 		const index = await this._readIndex(sessionDir);
 		const cp = index.find(c => c.id === checkpointId);
 		if (!cp) {
@@ -634,12 +652,12 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	}
 
 	async getSnapshotContentForFile(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		checkpointId: string,
 		fileUri: string,
 	): Promise<string | undefined> {
-		const snapshots = await this.getFileSnapshots(employeeId, sessionId, checkpointId);
+		const snapshots = await this.getFileSnapshots(agentId, sessionId, checkpointId);
 		const found = snapshots.find(s => s.uri.toString() === fileUri);
 		return found?.content;
 	}

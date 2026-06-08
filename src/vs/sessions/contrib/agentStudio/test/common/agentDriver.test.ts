@@ -16,7 +16,7 @@ suite('Agent Driver Service - Interface Definitions (Phase 2)', () => {
 			executeTurn: async function* (request: any) {
 				yield { type: 'text', content: 'test' };
 			},
-			executeFromChatOptions: async function* (employeeId: string, message: string, options: any) {
+			executeFromChatOptions: async function* (agentId: string, message: string, options: any) {
 				yield { type: 'text', content: 'test' };
 			},
 			cancelTurn: (turnId: string) => {},
@@ -76,7 +76,7 @@ suite('Agent Driver Service - Interface Definitions (Phase 2)', () => {
 	});
 
 	test('executeFromChatOptions adapter', () => {
-		const employeeId = 'emp-1';
+		const agentId = 'emp-1';
 		const message = 'Hello, agent!';
 		const options = {
 			temperature: 0.5,
@@ -85,12 +85,12 @@ suite('Agent Driver Service - Interface Definitions (Phase 2)', () => {
 
 		// 验证适配器能正确转换格式
 		const request = {
-			agentId: employeeId,
+			agentId,
 			messages: [{ role: 'user', content: message }],
 			options,
 		};
 
-		assert.strictEqual(request.agentId, employeeId);
+		assert.strictEqual(request.agentId, agentId);
 		assert.strictEqual(request.messages[0].content, message);
 		assert.strictEqual(request.options.temperature, 0.5);
 	});
