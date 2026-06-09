@@ -407,23 +407,6 @@ export function App(): React.ReactElement {
 			setPanelType(newType === '__pooled__' ? undefined : newType);
 		};
 		window.addEventListener('agentStudio:pool-activate', onPoolActivate);
-
-		// ── RACE FIX: pool.activate may have already fired before this effect ──
-		// The host sends pool.activate immediately after we post pool.ready
-		// (right after root.render). But React defers effects until after the
-		// first paint, so this listener can register *after* index.tsx already
-		// dispatched the 'agentStudio:pool-activate' event — in which case the
-		// event is lost and the App stays stuck on the '__pooled__' skeleton
-		// ("Agent Studio (warming...)" forever).
-		//
-		// index.tsx updates window.__AGENT_STUDIO_PANEL_TYPE__ *synchronously*
-		// before dispatching the event, so re-read it on mount: if activation
-		// already happened (no longer '__pooled__'), apply the real type now.
-		const current = (window as any).__AGENT_STUDIO_PANEL_TYPE__ as PanelType;
-		if (current !== '__pooled__') {
-			setPanelType(prev => (prev === current ? prev : current));
-		}
-
 		return () => window.removeEventListener('agentStudio:pool-activate', onPoolActivate);
 	}, []);
 

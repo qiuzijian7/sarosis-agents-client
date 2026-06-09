@@ -14,7 +14,7 @@ import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensi
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
-import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ILocalizedString, localize, localize2 } from '../../../../nls.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -22,8 +22,6 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
-import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
@@ -64,6 +62,8 @@ import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
+	AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
+	AGENT_STUDIO_SESSIONS_VIEW_ID,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
 	AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
 	AGENT_STUDIO_SKILLS_VIEW_ID,
@@ -78,6 +78,7 @@ import {
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
 	AGENT_STUDIO_WIKI_VIEW_ID,
+	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
@@ -122,6 +123,7 @@ import {
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
+import { SessionExplorerViewPane } from './views/sessionExplorerView.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
@@ -180,6 +182,8 @@ import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/edito
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 // --- Icons -----------------------------------------------------------------------
+
+const agentStudioIcon = registerIcon('agent-studio', Codicon.hubot, localize('agentStudioIcon', "Icon for Agent Studio."));
 
 // Toolbar icons
 const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.repo, localize('workspaceIcon', "Workspace"));
@@ -772,12 +776,10 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
-import { IAgentStudioWebviewPool, AgentStudioWebviewPool } from './agentStudioWebviewPool.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
 registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
 registerSingleton(ICheckpointService, CheckpointService, InstantiationType.Delayed);
-registerSingleton(IAgentStudioWebviewPool, AgentStudioWebviewPool, InstantiationType.Delayed);
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';
@@ -1339,6 +1341,9 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 			return;
 		}
 
+		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
+		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
+
 		// --- Layout Reference: Two-Column Layout ---------------------------------
 		// [Sarosis] Two-column layout:
 		//   Left: Sidebar (activity bar icons + content panel)
@@ -1349,11 +1354,31 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 		// NOTE: Agent Chat, Task Board, and Canvas are now registered as EditorPanes
 		// (see AgentStudioEditorPane / AgentStudioEditorInput) and open in the editor area.
 		// The AuxiliaryBar registrations below are kept for supplementary views only.
-		//
-		// The legacy agentStudio.sidebar container (Agent Studio Sessions) has been
-		// removed — it was a hidden container (hideIfEmpty:true, order:0) that
-		// interfered with getDefaultViewContainer() by being the first isDefault
-		// container and causing the Workspace icon to not be default-selected.
+
+		// --- Sidebar View Container ---------------------------------------------
+		const sidebarContainer = viewContainerRegistry.registerViewContainer({
+			id: AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
+			title: localize2('agentStudio.sidebar.title', "Agent Studio Sessions"),
+			icon: agentStudioIcon,
+			ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: false }]),
+			storageId: AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
+			hideIfEmpty: true,
+			order: 0,
+			windowEnablement: WindowEnablement.Sessions,
+		}, ViewContainerLocation.Sidebar, { isDefault: true });
+
+		viewsRegistry.registerViews([
+			{
+				id: AGENT_STUDIO_SESSIONS_VIEW_ID,
+				name: localize2('agentStudio.sessionsView', "Sessions"),
+				ctorDescriptor: new SyncDescriptor(SessionExplorerViewPane),
+				canToggleVisibility: true,
+				canMoveView: true,
+				order: 0,
+				when: ContextKeyExpr.equals(AGENT_STUDIO_ACTIVE_CONTEXT_KEY, true),
+				windowEnablement: WindowEnablement.Sessions,
+			},
+		], sidebarContainer);
 	}
 }
 
@@ -1373,13 +1398,9 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
 		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
 
-		// --- ActivityBar icons (order from low to high; first-launch layout) ---
-		// Final order: workspace → search → sourcecontrol → agents → workflow → tasks →
-		//              skills → tools → mcp → plugin → (other built-ins)
-		// Order 10..100 are the user-facing top slots; >=110 are reserved for the
-		// remaining built-in icons that appear after the plugin icon.
+		// --- ActivityBar icons (workspace → search → sourcecontrol → tasks → agents → workflow → skills → tools → mcp → plugins) ---
 
-		// 1. Workspace (order: 10) — default selected on first launch
+		// 1. Workspace (order: 10)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.workspace',
 			title: localize2('agentStudio.workspace.title', "Workspace"),
@@ -1401,34 +1422,34 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 		// Note: SourceControl (order: 30) — registered in sourceControl.contribution.ts
 
-		// 3. Agents (order: 40) — [First-launch layout] sits between SourceControl and Workflow
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.presetAgent',
-			title: localize2('agentStudio.presetAgent.title', "Agents"),
-			icon: presetAgentIcon,
-			viewId: AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
-			order: 40,
-			viewCtor: PresetAgentViewPane,
-		});
-
-		// 4. Workflow (order: 50) — [First-launch layout] sits between Agents and Tasks
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.workflow',
-			title: localize2('agentStudio.workflow.title', "Workflow"),
-			icon: workflowIcon,
-			viewId: AGENT_STUDIO_WORKFLOW_VIEW_ID,
-			order: 50,
-			viewCtor: WorkflowViewPane,
-		});
-
-		// 5. Tasks (order: 60) — [First-launch layout] sits between Workflow and Skills
+		// 3. Tasks (order: 40)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.tasks',
 			title: localize2('agentStudio.tasks.title', "Tasks"),
 			icon: tasksIcon,
 			viewId: AGENT_STUDIO_TASKS_VIEW_ID,
-			order: 60,
+			order: 40,
 			viewCtor: TasksViewPane,
+		});
+
+		// 4. Agents (order: 50)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.presetAgent',
+			title: localize2('agentStudio.presetAgent.title', "Agents"),
+			icon: presetAgentIcon,
+			viewId: AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
+			order: 50,
+			viewCtor: PresetAgentViewPane,
+		});
+
+		// 5. Workflow (order: 60)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.workflow',
+			title: localize2('agentStudio.workflow.title', "Workflow"),
+			icon: workflowIcon,
+			viewId: AGENT_STUDIO_WORKFLOW_VIEW_ID,
+			order: 60,
+			viewCtor: WorkflowViewPane,
 		});
 
 		// 6. Skills (order: 70)
@@ -1852,97 +1873,3 @@ class SettingsEditorRedirectContribution extends Disposable implements IWorkbenc
 }
 
 registerWorkbenchContribution2(SettingsEditorRedirectContribution.ID, SettingsEditorRedirectContribution, WorkbenchPhase.Eventually);
-
-// ─── WebView Pre-warm Contribution ───────────────────────────────────────
-// Delegates to the AgentStudioWebviewPool service to pre-create a fully
-// bootstrapped webview instance (HTML rendered, React bundle loaded) in an
-// off-screen container. When the user opens the chat panel, the panel
-// acquires the hot instance from the pool (0ms spawn cost) instead of paying
-// the 25-40s cold renderer-spawn + bootstrap stall.
-
-class AgentStudioWebviewPreWarmContribution extends Disposable implements IWorkbenchContribution {
-	static readonly ID = 'sessions.agentStudioWebviewPreWarm';
-
-	constructor(
-		@IAgentStudioWebviewPool private readonly pool: IAgentStudioWebviewPool,
-		@ILogService private readonly logService: ILogService,
-		@IConfigurationService configurationService: IConfigurationService,
-	) {
-		super();
-
-		if (!configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
-			return;
-		}
-
-		// Start pool warming as early as possible. The off-screen renderer
-		// spawn is the long pole (~14-20s in dev), so we MUST begin it before
-		// the chat editor is restored/opened, otherwise the spawn lands fully
-		// on the critical path and the pool delivers ZERO benefit (observed:
-		// "pool idle, triggering warm-up now" → panel waits ~14.8s for the
-		// just-started spawn, acquiring an instance that was "warm for 1ms").
-		//
-		// This contribution therefore registers at WorkbenchPhase.BlockStartup
-		// (phase 1) — strictly earlier than editor restore (BlockRestore,
-		// phase 2) — and kicks warming SYNCHRONOUSLY in the constructor.
-		//
-		// Why NOT setTimeout(0): phase transitions (BlockStartup → BlockRestore
-		// → editor restore → chat webview creation) frequently advance within a
-		// single macrotask. A setTimeout(0) here is therefore deferred until
-		// AFTER the chat panel's `_createWebviewAsync` has already run, so the
-		// panel observes "pool idle, triggering warm-up now" and kicks the warm
-		// ITSELF — the pre-warm contribution loses the race and provides ~0 head
-		// start (observed: warm started lazily at panel-open, panel waited the
-		// full ~13s spawn).
-		//
-		// Calling startWarming() directly is safe for first paint: the only
-		// heavy work (createElement + mountTo + setHtml) happens AFTER the first
-		// `await this._ensureBundles()` (async file read), i.e. off the
-		// synchronous startup path. The synchronous cost paid here is just a
-		// couple of field assignments before that await.
-		//
-		// The cold-path chat webview also proactively triggers + waits for the
-		// pool (see _createWebviewAsync), so even if the user opens the panel
-		// before warming finishes, only ONE renderer is ever spawned (no
-		// competing cold-path renderer → no contention).
-		(this.pool as AgentStudioWebviewPool).startWarming().catch(err => {
-			this.logService.warn('[AgentStudioPreWarm] pool warming failed:', err);
-		});
-	}
-}
-
-// NOTE: phase = BlockStartup (1), NOT BlockRestore (2). The renderer spawn must
-// begin BEFORE the chat editor is restored, otherwise warming starts lazily at
-// panel-open and the full ~14s spawn is on the critical path (pool benefit = 0).
-registerWorkbenchContribution2(AgentStudioWebviewPreWarmContribution.ID, AgentStudioWebviewPreWarmContribution, WorkbenchPhase.BlockStartup);
-
-// ─── First-Run Workspace Wizard ──────────────────────────────────────────────
-// On a fresh install (no workspace, no `FIRST_RUN_WORKSPACE_DONE_KEY`), this
-// contribution activates the Workspace icon and pops the Create Workspace
-// dialog so first-time users are guided into picking a workspace. The dialog
-// itself is provided by `agentStudio.workspace.createWorkspace`; this
-// contribution only sequences the activation + dispatch.
-//
-// Registered via side-effect import below — keep the import at the bottom so
-// all earlier contributions (which the wizard may depend on transitively) are
-// already wired up.
-import './firstRunWorkspaceContribution.js';
-
-// ─── Unlock DevTools (Ctrl+Shift+I) in packaged builds ──────────────────────
-// The native `ToggleDevTools` action (workbench.action.toggleDevTools) only
-// registers its keybinding with `when: IsDevelopmentContext`, which evaluates
-// to `false` in a packaged exe (isBuilt=true → isDevelopment=false). Without
-// this override, end users cannot open Chrome DevTools in production builds.
-//
-// We register a secondary keybinding rule for the same command id — with
-// `when: undefined` — so that Ctrl+Shift+I always works, regardless of build
-// type. No new command id, no duplicate handler, no conflict.
-{
-	const DEVTOOLS_COMMAND_ID = 'workbench.action.toggleDevTools';
-	KeybindingsRegistry.registerKeybindingRule({
-		id: DEVTOOLS_COMMAND_ID,
-		weight: KeybindingWeight.WorkbenchContrib + 60,
-		when: undefined,                                                 // ← removed IsDevelopmentContext gate
-		primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyI,
-		mac: { primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyI },
-	});
-}

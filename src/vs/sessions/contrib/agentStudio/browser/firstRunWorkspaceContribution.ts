@@ -4,9 +4,9 @@
  *  Runs once on the very first launch of a fresh install (when no workspace
  *  exists yet and this contribution has never triggered before). It:
  *    1. Activates the Workspace icon in the ActivityBar (so it appears
- *       highlighted/selected as the default view container).
- *    2. Pops up the "Create Workspace" dialog full-screen so the user is
- *       guided into choosing a workspace immediately.
+ *       highlighted/selected instead of the hidden `agentStudio.sidebar`).
+ *    2. Pops up the "Create Workspace" dialog so the user is guided into
+ *       choosing a workspace immediately.
  *    3. Persists a completion marker so the dialog never auto-pops again.
  *
  *  Uses a dedicated marker (`FIRST_RUN_WORKSPACE_DONE_KEY`) that is
@@ -46,19 +46,14 @@ export class FirstRunWorkspaceContribution extends Disposable implements IWorkbe
 	) {
 		super();
 
-		// Diagnostic: confirm the contribution was constructed.
-		console.log('[FirstRunWorkspace] contribution constructed');
-
 		// Run async; never block workbench restoration on this.
 		void this._maybeRun();
 	}
 
 	private async _maybeRun(): Promise<void> {
-		console.log('[FirstRunWorkspace] _maybeRun started');
 		try {
 			// Already handled on a previous launch — skip silently.
-			if (this.storageService.getBoolean(FIRST_RUN_WORKSPACE_DONE_KEY, StorageScope.PROFILE, false)) {
-				console.log('[FirstRunWorkspace] already done — skipping');
+			if (this.storageService.getBoolean(FIRST_RUN_WORKSPACE_DONE_KEY, StorageScope.APPLICATION, false)) {
 				return;
 			}
 
@@ -68,7 +63,6 @@ export class FirstRunWorkspaceContribution extends Disposable implements IWorkbe
 			await this._yieldToEventLoop();
 
 			const workspaces = await this.agentStudioService.getWorkspaces();
-			console.log('[FirstRunWorkspace] workspaces.length =', workspaces.length);
 			if (workspaces.length > 0) {
 				// Edge case: profile was migrated / restored from a backup that
 				// already contains workspaces. No need to pop the wizard.
@@ -96,7 +90,6 @@ export class FirstRunWorkspaceContribution extends Disposable implements IWorkbe
 
 			this._markDone();
 		} catch (err) {
-			console.error('[FirstRunWorkspace] handler failed:', err);
 			this.logService.error('[FirstRunWorkspace] First-run handler failed:', err);
 			// Always mark done on failure so we don't loop on every start.
 			this._markDone();
@@ -107,8 +100,8 @@ export class FirstRunWorkspaceContribution extends Disposable implements IWorkbe
 		this.storageService.store(
 			FIRST_RUN_WORKSPACE_DONE_KEY,
 			true,
-			StorageScope.PROFILE,
-			StorageTarget.USER,
+			StorageScope.APPLICATION,
+			StorageTarget.MACHINE,
 		);
 	}
 

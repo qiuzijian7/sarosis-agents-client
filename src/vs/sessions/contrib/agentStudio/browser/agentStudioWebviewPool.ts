@@ -54,18 +54,6 @@ export interface IAgentStudioWebviewPool {
 	 * Fired when a new warm webview becomes available in the pool.
 	 */
 	readonly onDidBecomeAvailable: Event<void>;
-
-	/**
-	 * Ensure a warm webview is being prepared. No-op if one is already warm
-	 * or currently warming. Returns synchronously; callers observe progress
-	 * via `isWarming` / `hasWarmWebview` / `onDidBecomeAvailable`.
-	 *
-	 * Used by the chat panel cold-path to avoid spawning a competing renderer
-	 * process when the pre-warm contribution hasn't kicked in yet (startup
-	 * race): instead of paying a second ~20s renderer spawn, the panel kicks
-	 * the pool and waits for the single shared instance.
-	 */
-	ensureWarming(): void;
 }
 
 /**
@@ -148,13 +136,6 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 		}
 	}
 
-	ensureWarming(): void {
-		// Fire-and-forget. startWarming() is a no-op if already warm/warming
-		// and synchronously flips `_isWarming` before its first await, so
-		// callers can immediately observe `isWarming === true`.
-		void this.startWarming();
-	}
-
 	acquire(): IPooledWebview | undefined {
 		const instance = this._warmInstance;
 		if (!instance) {
@@ -210,32 +191,13 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 
 		const mediaUri = this._getMediaUri();
 
-		// Create the warming container.
-		//
-		// IMPORTANT: do NOT warm fully off-screen (e.g. left:-9999px) or at a
-		// 1px×1px size. Chromium applies "rendering throttling for offscreen
-		// iframes" based on viewport intersection — a frame that does not
-		// intersect the viewport (or has ~zero area) gets its rAF/paint/timers
-		// throttled, which can ~2x the bundle bootstrap time. Since a webview
-		// is an iframe, an off-screen warm instance bootstraps much slower than
-		// a visible one.
-		//
-		// To avoid that while staying invisible to the user, we keep the
-		// container INSIDE the viewport at a real size, but make it fully
-		// transparent (`opacity:0`) and click-through (`pointer-events:none`).
-		// opacity:0 still intersects the viewport, so Chromium renders it at
-		// full speed; the user sees nothing and cannot interact with it.
-		//
-		// On acquire(), the controller resets opacity/pointer-events and mirrors
-		// the real panel geometry onto this container.
+		// Create off-screen container
 		const container = document.createElement('div');
 		container.style.position = 'fixed';
-		container.style.left = '0';
-		container.style.top = '0';
-		container.style.width = '1200px';
-		container.style.height = '800px';
-		container.style.opacity = '0';
-		container.style.pointerEvents = 'none';
+		container.style.left = '-9999px';
+		container.style.top = '-9999px';
+		container.style.width = '1px';
+		container.style.height = '1px';
 		container.style.overflow = 'hidden';
 		container.style.zIndex = '10'; // Ensure overlay visibility when activated
 		container.setAttribute('data-agent-studio-pool', 'warming');

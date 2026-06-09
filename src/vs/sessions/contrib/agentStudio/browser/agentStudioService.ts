@@ -304,11 +304,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const uri = URI.joinPath(dirUri, filename);
 		const content = VSBuffer.fromString(JSON.stringify(data, null, 2));
 		await this.fileService.writeFile(uri, content);
-		// Keep the in-memory custom-agents cache consistent: any write to
-		// custom-agents.json invalidates it so the next getAgents() re-reads.
-		if (filename === DATA_FILE_CUSTOM_AGENTS) {
-			this._customAgentsCache = undefined;
-		}
 	}
 
 	/**
@@ -342,31 +337,13 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	// ── Agent CRUD ──────────────────────────────────────────────────────────
 
-	/**
-	 * In-memory cache of custom-agents.json contents. Avoids re-reading the
-	 * file from disk on every getAgents() call (it is hit ~5x during startup,
-	 * and disk IO under startup contention measured 70–900ms per read).
-	 * Invalidated by `_writeJsonFile` whenever custom-agents.json is written.
-	 */
-	private _customAgentsCache: Agent[] | undefined;
-
-	/** Read custom agents, served from cache when available. */
-	private async _readCustomAgentsCached(): Promise<Agent[]> {
-		if (this._customAgentsCache) {
-			return this._customAgentsCache;
-		}
+	async getAgents(): Promise<Agent[]> {
+		const t0 = Date.now();
+		const builtins = this._getBuiltinAgents();
 		let customs: Agent[] = [];
 		try {
 			customs = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
 		} catch { /* file doesn't exist yet */ }
-		this._customAgentsCache = customs;
-		return customs;
-	}
-
-	async getAgents(): Promise<Agent[]> {
-		const t0 = Date.now();
-		const builtins = this._getBuiltinAgents();
-		const customs = await this._readCustomAgentsCached();
 		const t1 = Date.now();
 
 		// custom-agents.json may contain two kinds of rows:
