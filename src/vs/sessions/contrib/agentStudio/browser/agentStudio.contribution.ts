@@ -776,10 +776,14 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
+import { IAgentStudioWebviewPool, AgentStudioWebviewPool } from './agentStudioWebviewPool.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
 registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
 registerSingleton(ICheckpointService, CheckpointService, InstantiationType.Delayed);
+// Re-added to repair partial-revert state: AgentStudioWebviewController injects
+// IAgentStudioWebviewPool, so the DI must have a registration for it.
+registerSingleton(IAgentStudioWebviewPool, AgentStudioWebviewPool, InstantiationType.Delayed);
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';
