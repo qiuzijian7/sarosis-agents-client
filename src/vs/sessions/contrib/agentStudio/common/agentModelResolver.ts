@@ -3,7 +3,7 @@
  *
  *  Provides dynamic model resolution with three-level fallback:
  *  1. Explicit model parameter (highest priority)
- *  2. Agent-configured model[] (from Employee or Preset)
+ *  2. Agent-configured model[] (from Agent or Preset)
  *  3. Parent/default model (lowest priority)
  *
  *  Also includes cost-tier validation to prevent sub-agents from using
@@ -63,7 +63,7 @@ export interface IAgentModelResolver {
 	 * 2. Agent-configured model[] (try each in order until found)
 	 * 3. Parent/default model (lowest priority)
 	 *
-	 * @param agentModels - Model qualified names from the agent config (Employee.model or Preset.model)
+	 * @param agentModels - Model qualified names from the agent config (Agent.model or Preset.model)
 	 * @param parentModelId - The parent agent's model identifier
 	 * @param explicitModel - Optional explicit model qualified name (e.g. "GPT-5 (copilot)")
 	 * @returns Resolved model information

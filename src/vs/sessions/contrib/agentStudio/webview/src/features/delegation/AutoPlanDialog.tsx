@@ -26,11 +26,11 @@ export function AutoPlanDialog({ onClose }: AutoPlanDialogProps): React.ReactEle
 	}, [goal, activeWorkspaceId, executePlan, onClose]);
 
 	return (
-		<div className="employee-form-overlay" onClick={onClose}>
-			<div className="employee-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
+		<div className="agent-form-overlay" onClick={onClose}>
+			<div className="agent-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
 				<h3 style={{ margin: '0 0 8px', fontSize: '14px' }}>Auto-Plan</h3>
 				<p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginBottom: '16px' }}>
-					Describe your goal. AI will decompose it into tasks and assign them to employees.
+					Describe your goal. AI will decompose it into tasks and assign them to agents.
 				</p>
 
 				<div className="form-field">

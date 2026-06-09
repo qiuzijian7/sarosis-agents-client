@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Agent Store (Zustand)
- *  v3: unified agent store — replaces useEmployeeStore entirely
+ *  v3: unified agent store (the single source of truth for agent definitions)
  *--------------------------------------------------------------------------------------------*/
 
 import { create } from 'zustand';

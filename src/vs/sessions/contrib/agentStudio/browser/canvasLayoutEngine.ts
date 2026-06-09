@@ -70,12 +70,9 @@ export class CanvasLayoutEngine {
 						existing.position = { x, y };
 					} else {
 						const agent = agents.find(e => e.id === agentId);
-						// NOTE: the node `type` literal and the `data.employee` key are a
-						// webview-wide ReactFlow rendering contract (nodeTypes registry +
-						// EmployeeNode component + canvas CSS). They are NOT orchestration
-						// vocabulary, so they stay as-is here; renaming them is a separate
-						// UI refactor that must update the whole canvas in lockstep.
-						nodes.push({ id: agentId, type: 'employee', position: { x, y }, data: agent ? { employee: agent } : {} });
+						// ReactFlow canvas node for an agent. Persisted into
+						// `workspace.layout.nodes`.
+						nodes.push({ id: agentId, type: 'agent', position: { x, y }, data: agent ? { agent } : {} });
 					}
 				});
 			}

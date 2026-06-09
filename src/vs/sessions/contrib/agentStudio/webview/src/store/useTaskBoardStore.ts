@@ -28,10 +28,10 @@ export interface TaskBoardRecord {
 	source: TaskSource;
 	assigneeId?: string;
 	assigneeName?: string;
-	fromEmployeeId?: string;
-	fromEmployeeName?: string;
-	toEmployeeId?: string;
-	toEmployeeName?: string;
+	fromAgentId?: string;
+	fromAgentName?: string;
+	toAgentId?: string;
+	toAgentName?: string;
 	workspaceId?: string;
 	boardId?: string;
 	priority?: 'low' | 'medium' | 'high';
@@ -62,7 +62,7 @@ function delegationToRecord(d: Delegation): TaskBoardRecord {
 		status: DELEGATION_STATUS_MAP[d.status] || 'todo',
 		source: 'delegation',
 		assigneeId: d.assigneeId,
-		fromEmployeeId: d.assignerId,
+		fromAgentId: d.assignerId,
 		workspaceId: d.workspaceId,
 		dependencies: d.dependencies,
 		createdAt: d.createdAt,

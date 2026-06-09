@@ -169,7 +169,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 				if (activeAgentId) {
 					// Prefer agent-specific selection from agent.yaml
 					savedSelection = await sendRequest<{ agentId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
-						'providers.getSelectionForEmployee',
+						'providers.getSelectionForAgent',
 						{ agentId: activeAgentId }
 					);
 					console.log(`[ProviderStore] loadProviders: agent.yaml selection for ${activeAgentId}:`, savedSelection);
@@ -327,7 +327,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		try {
 			// Read the agent's agent.yaml model config
 			const savedSelection = await sendRequest<{ agentId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
-				'providers.getSelectionForEmployee',
+				'providers.getSelectionForAgent',
 				{ agentId }
 			);
 
@@ -435,7 +435,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		postMessage('providers.select', { providerId, modelId, agentId });
 
 		// Sync the active agent's model/provider fields so that
-		// EmployeeCard and chat header update in real-time
+		// agent card and chat header update in real-time
 		if (activeAgentId) {
 			getAgentStore()?.setState((state: { agents: Array<{ id: string; provider?: string; model?: string }> }) => ({
 				agents: state.agents.map((e: { id: string; provider?: string; model?: string }) =>

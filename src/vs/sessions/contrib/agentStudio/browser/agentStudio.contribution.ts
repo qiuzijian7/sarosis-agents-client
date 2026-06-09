@@ -424,7 +424,7 @@ registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Del
 registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, InstantiationType.Delayed);
 // ConfigMD service: shared across all webview controllers (chat panels) and
 // the HtmlPreviewEditorPane. Keeping a single instance avoids duplicating
-// the per-employee state cache and lets the preview pane forward webview
+// the per-agent state cache and lets the preview pane forward webview
 // imgui.submit messages back through the same dispatcher.
 registerSingleton(IConfigHtmlService, ConfigHtmlService, InstantiationType.Delayed);
 // Workspace lifecycle event bus — generic, decoupled hook system used by

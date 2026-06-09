@@ -26,16 +26,6 @@ export type RequestType =
 	| 'agents.selected'
 	| 'agents.getLastSelected'
 	| 'agents.openSettings'
-	| 'employees.list'
-	| 'employees.listAll'
-	| 'employees.get'
-	| 'employees.create'
-	| 'employees.update'
-	| 'employees.delete'
-	| 'employees.selected'
-	| 'employees.export'
-	| 'employees.import'
-	| 'employees.syncPositions'
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
@@ -78,7 +68,7 @@ export type RequestType =
 	| 'providers.list'
 	| 'providers.select'
 	| 'providers.getSelection'
-	| 'providers.getSelectionForEmployee'
+	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
@@ -122,7 +112,6 @@ export type RequestType =
 	| 'configmd.getInfo'          // get parser/styles info
 	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
 	| 'configmd.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
-	| 'configmd.requestCanvasPreview' // ConfigHtml: open this agent's config.html (editable) in the Canvas panel
 	| 'configmd.listAgents'      // list all agents that have config.md configured
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
@@ -153,8 +142,8 @@ export type EventType =
 	| 'chat.stream.complete'
 	| 'chat.stream.error'
 	| 'chat.userMessageAppended'
-	| 'employee.selected'
-	| 'employees.changed'
+	| 'agent.selected'
+	| 'agents.changed'
 	| 'workspace.changed'
 	| 'workspace.activeChanged'
 	| 'delegations.changed'
@@ -331,29 +320,6 @@ export interface IChatAttachmentPayload {
 	readonly isPasted?: boolean;
 }
 
-export interface IEmployeeCreatePayload {
-	readonly name: string;
-	readonly role: string;
-	readonly email?: string;
-	readonly presetId?: string;
-	readonly model?: string;
-	readonly customPrompt?: string;
-	readonly workspaceId?: string;
-	/** Bootstrap templates for agent instance directory files (transient, not persisted) */
-	readonly bootstrapTemplates?: {
-		readonly agentsMd?: string;
-		readonly soulMd?: string;
-		readonly identityMd?: string;
-		readonly toolsMd?: string;
-		readonly memoryMd?: string;
-	};
-}
-
-export interface IEmployeeUpdatePayload {
-	readonly id: string;
-	readonly data: Record<string, unknown>;
-}
-
 export interface IWorkspaceLayoutPayload {
 	readonly workspaceId: string;
 	readonly nodes: unknown[];
@@ -375,17 +341,6 @@ export interface IAutoPlanPayload {
 }
 
 // ─── Import / Export Payloads ───────────────────────────────────────────────────
-
-export interface IEmployeeExportPayload {
-	readonly id: string;
-}
-
-export interface IEmployeeImportPayload {
-	/** The full AgentExportData JSON object */
-	readonly exportData: Record<string, unknown>;
-	/** Target workspace to import into */
-	readonly workspaceId?: string;
-}
 
 // ─── Union types for type-safe dispatch ─────────────────────────────────────────
 
@@ -587,10 +542,6 @@ export interface IConfigMdHtmlGeneratePayload {
 	readonly model?: string;
 }
 
-export interface IConfigMdCanvasPreviewPayload {
-	readonly agentId: string;
-	}
-
 export interface IConfigMdNotifyPayload {
 	readonly agentId: string;
 		readonly message: string;
@@ -653,12 +604,12 @@ export interface IConfigMdInfo {
 
 /**
  * Open a file in the host's center editor area.
- * Either an absolute filesystem path or an employee-relative reference may be supplied.
+ * Either an absolute filesystem path or an agent-relative reference may be supplied.
  */
 export interface IFileOpenPayload {
 	/** Absolute filesystem path (preferred). */
 	readonly path?: string;
-	/** Alternative: employee id + relative kind, resolved by host. */
+	/** Alternative: agent id + relative kind, resolved by host. */
 		readonly agentId?: string;
 	/** Which configMd-related file to open (only used when agentId is present). */
 	readonly kind?: 'configMd' | 'configMdParser' | 'configMdStyles';
@@ -735,7 +686,7 @@ export interface IFileApplyCodePayload {
 export interface IChatJumpToCheckpointPayload {
 	/** The checkpoint ID to restore. */
 	readonly checkpointId: string;
-	/** The employee ID (for multi-agent support). */
+	/** The agent ID (for multi-agent support). */
 	readonly agentId: string;
 		/** The session ID (for multi-session support). */
 	readonly sessionId: string;
@@ -757,7 +708,7 @@ export interface IChatOpenCheckpointDiffPayload {
 	readonly checkpointId: string;
 	/** The file URI (as string) to diff. */
 	readonly fileUri: string;
-	/** The employee ID (for storage scoping). */
+	/** The agent ID (for storage scoping). */
 	readonly agentId: string;
 		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
@@ -768,7 +719,7 @@ export interface IChatOpenCheckpointDiffPayload {
  * touched file to its earliest pre-edit snapshot and ghosts all checkpoints.
  */
 export interface IChatRevertAllCheckpointsPayload {
-	/** The employee ID (for storage scoping). */
+	/** The agent ID (for storage scoping). */
 	readonly agentId: string;
 		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
@@ -784,7 +735,7 @@ export interface IChatRevertAllCheckpointsPayload {
  * After this call the checkpoint bar will never reappear after reload.
  */
 export interface IChatKeepAllCheckpointsPayload {
-	/** The employee ID (for storage scoping). */
+	/** The agent ID (for storage scoping). */
 	readonly agentId: string;
 		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
@@ -796,7 +747,7 @@ export interface IChatKeepAllCheckpointsPayload {
  * modified = current on-disk content.
  */
 export interface IChatOpenAllCheckpointsDiffPayload {
-	/** The employee ID (for storage scoping). */
+	/** The agent ID (for storage scoping). */
 	readonly agentId: string;
 		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
@@ -832,7 +783,7 @@ export interface IChatToolApprovePayload {
  * Create a new checkpoint.
  */
 export interface IChatAddCheckpointPayload {
-	/** The employee ID. */
+	/** The agent ID. */
 	readonly agentId: string;
 		/** The session ID. */
 	readonly sessionId: string;
@@ -854,7 +805,7 @@ export interface IChatAddCheckpointPayload {
 export interface IChatGetCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
-	/** The employee ID (for storage scoping). */
+	/** The agent ID (for storage scoping). */
 	readonly agentId: string;
 		/** The session ID (for storage scoping). */
 	readonly sessionId: string;
@@ -864,7 +815,7 @@ export interface IChatGetCheckpointPayload {
  * List checkpoints for a session.
  */
 export interface IChatListCheckpointsPayload {
-	/** The employee ID. */
+	/** The agent ID. */
 	readonly agentId: string;
 		/** The session ID. */
 	readonly sessionId: string;
@@ -876,7 +827,7 @@ export interface IChatListCheckpointsPayload {
 export interface IChatDeleteCheckpointPayload {
 	/** The checkpoint ID. */
 	readonly checkpointId: string;
-	/** The employee ID (for storage scoping). */
+	/** The agent ID (for storage scoping). */
 	readonly agentId: string;
 		/** The session ID (for storage scoping). */
 	readonly sessionId: string;

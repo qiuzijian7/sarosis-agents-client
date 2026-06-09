@@ -14,14 +14,14 @@ import { sendRequest } from '../../bridge/messageClient';
 export type ConfigMdChangeOrigin = 'editor' | 'html' | 'model' | 'external';
 
 export interface ConfigMdSourceChangedEvent {
-	employeeId: string;
+	agentId: string;
 	markdown: string;
 	version: number;
 	origin: ConfigMdChangeOrigin;
 }
 
 export interface ConfigMdHtmlRenderedEvent {
-	employeeId: string;
+	agentId: string;
 	html: string;
 	version: number;
 	stylesContent?: string;
@@ -34,7 +34,7 @@ export interface ConfigMdCommand {
 }
 
 export interface ConfigMdCommandEvent {
-	employeeId: string;
+	agentId: string;
 	command: ConfigMdCommand;
 }
 
@@ -44,49 +44,49 @@ const sourceListeners = new Map<string, Set<Listener<ConfigMdSourceChangedEvent>
 const htmlListeners = new Map<string, Set<Listener<ConfigMdHtmlRenderedEvent>>>();
 const commandListeners = new Map<string, Set<Listener<ConfigMdCommand>>>();
 
-function add<T>(map: Map<string, Set<Listener<T>>>, employeeId: string, fn: Listener<T>): () => void {
-	let set = map.get(employeeId);
+function add<T>(map: Map<string, Set<Listener<T>>>, agentId: string, fn: Listener<T>): () => void {
+	let set = map.get(agentId);
 	if (!set) {
 		set = new Set();
-		map.set(employeeId, set);
+		map.set(agentId, set);
 	}
 	set.add(fn);
 	return () => {
 		set!.delete(fn);
-		if (set!.size === 0) { map.delete(employeeId); }
+		if (set!.size === 0) { map.delete(agentId); }
 	};
 }
 
-export function onSourceChanged(employeeId: string, fn: Listener<ConfigMdSourceChangedEvent>) {
-	return add(sourceListeners, employeeId, fn);
+export function onSourceChanged(agentId: string, fn: Listener<ConfigMdSourceChangedEvent>) {
+	return add(sourceListeners, agentId, fn);
 }
 
-export function onHtmlRendered(employeeId: string, fn: Listener<ConfigMdHtmlRenderedEvent>) {
-	return add(htmlListeners, employeeId, fn);
+export function onHtmlRendered(agentId: string, fn: Listener<ConfigMdHtmlRenderedEvent>) {
+	return add(htmlListeners, agentId, fn);
 }
 
-export function onCommand(employeeId: string, fn: Listener<ConfigMdCommand>) {
-	return add(commandListeners, employeeId, fn);
+export function onCommand(agentId: string, fn: Listener<ConfigMdCommand>) {
+	return add(commandListeners, agentId, fn);
 }
 
 /**
  * Called by index.tsx when host pushes configmd.sourceChanged / htmlRendered / command events.
  */
-export function dispatchConfigMdEvent(employeeId: string, type: string, data: unknown): void {
+export function dispatchConfigMdEvent(agentId: string, type: string, data: unknown): void {
 	switch (type) {
 		case 'configmd.sourceChanged': {
 			const evt = data as ConfigMdSourceChangedEvent;
-			sourceListeners.get(employeeId)?.forEach(fn => fn(evt));
+			sourceListeners.get(agentId)?.forEach(fn => fn(evt));
 			break;
 		}
 		case 'configmd.htmlRendered': {
 			const evt = data as ConfigMdHtmlRenderedEvent;
-			htmlListeners.get(employeeId)?.forEach(fn => fn(evt));
+			htmlListeners.get(agentId)?.forEach(fn => fn(evt));
 			break;
 		}
 		case 'configmd.command': {
 			const evt = data as ConfigMdCommandEvent;
-			commandListeners.get(employeeId)?.forEach(fn => fn(evt.command));
+			commandListeners.get(agentId)?.forEach(fn => fn(evt.command));
 			break;
 		}
 		default:
@@ -96,25 +96,25 @@ export function dispatchConfigMdEvent(employeeId: string, type: string, data: un
 
 // ─── RPC helpers ─────────────────────────────────────────────────────────────
 
-export async function fetchState(employeeId: string): Promise<{
+export async function fetchState(agentId: string): Promise<{
 	markdown: string; html: string; version: number; stylesContent?: string;
 } | null> {
-	const r = await sendRequest('configmd.getResource', { employeeId });
+	const r = await sendRequest('configmd.getResource', { agentId });
 	return r as any;
 }
 
-export async function readSource(employeeId: string): Promise<{ markdown: string; version: number }> {
-	const r = await sendRequest('configmd.readSource', { employeeId });
+export async function readSource(agentId: string): Promise<{ markdown: string; version: number }> {
+	const r = await sendRequest('configmd.readSource', { agentId });
 	return r as any;
 }
 
 export async function writeSource(
-	employeeId: string,
+	agentId: string,
 	markdown: string,
 	options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
 ): Promise<{ version: number }> {
 	const r = await sendRequest('configmd.writeSource', {
-		employeeId,
+		agentId,
 		markdown,
 		origin: options?.origin,
 		baseVersion: options?.baseVersion,
@@ -130,12 +130,12 @@ export interface PatchOp {
 }
 
 export async function applyPatch(
-	employeeId: string,
+	agentId: string,
 	patches: PatchOp[],
 	options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
 ): Promise<{ version: number; markdown: string }> {
 	const r = await sendRequest('configmd.applyPatch', {
-		employeeId,
+		agentId,
 		patches,
 		origin: options?.origin,
 		baseVersion: options?.baseVersion,
@@ -143,8 +143,8 @@ export async function applyPatch(
 	return r as any;
 }
 
-export async function renderHtml(employeeId: string, markdown?: string): Promise<{ html: string; version: number }> {
-	const r = await sendRequest('configmd.renderHtml', { employeeId, markdown });
+export async function renderHtml(agentId: string, markdown?: string): Promise<{ html: string; version: number }> {
+	const r = await sendRequest('configmd.renderHtml', { agentId, markdown });
 	return r as any;
 }
 
@@ -153,8 +153,8 @@ export async function renderHtml(employeeId: string, markdown?: string): Promise
  * `<agentDir>/.preview.html` on disk, and return the absolute path so the
  * caller can open it in the host editor.
  */
-export async function previewToFile(employeeId: string): Promise<{ path: string; version: number }> {
-	const r = await sendRequest('configmd.previewToFile', { employeeId });
+export async function previewToFile(agentId: string): Promise<{ path: string; version: number }> {
+	const r = await sendRequest('configmd.previewToFile', { agentId });
 	return r as { path: string; version: number };
 }
 
@@ -164,41 +164,33 @@ export async function previewToFile(employeeId: string): Promise<{ path: string;
  * Returns the extracted HTML string plus the raw reply.
  */
 export async function htmlGenerate(
-	employeeId: string,
+	agentId: string,
 	message: string,
 	options?: { currentHtml?: string; model?: string },
 ): Promise<{ html: string; raw: string }> {
 	const r = await sendRequest(
 		'configmd.htmlGenerate',
-		{ employeeId, message, currentHtml: options?.currentHtml, model: options?.model },
+		{ agentId, message, currentHtml: options?.currentHtml, model: options?.model },
 		0, // no timeout: model generation can take a while
 	);
 	return r as { html: string; raw: string };
 }
 
-/**
- * Ask the host to open this agent's config.html (editable) in the right-hand
- * Canvas panel. The host re-broadcasts the request to the Canvas webview.
- */
-export async function requestCanvasPreview(employeeId: string): Promise<void> {
-	await sendRequest('configmd.requestCanvasPreview', { employeeId });
-}
-
 export async function fireHtmlEvent(
-	employeeId: string,
+	agentId: string,
 	eventName: string,
 	payload?: unknown,
 	agentSessionId?: string,
 ): Promise<void> {
-	await sendRequest('configmd.event', { employeeId, eventName, payload, agentSessionId }, 0);
+	await sendRequest('configmd.event', { agentId, eventName, payload, agentSessionId }, 0);
 }
 
 export async function chatSend(
-	employeeId: string,
+	agentId: string,
 	message: string,
 	options?: { context?: string; showInChat?: boolean; agentSessionId?: string },
 ): Promise<unknown> {
-	return sendRequest('configmd.chatSend', { employeeId, message, ...options }, 0);
+	return sendRequest('configmd.chatSend', { agentId, message, ...options }, 0);
 }
 
 export interface ConfigMdInfo {
@@ -208,31 +200,31 @@ export interface ConfigMdInfo {
 	hasStyles: boolean;
 }
 
-export async function getInfo(employeeId: string): Promise<ConfigMdInfo> {
-	const r = await sendRequest('configmd.getInfo', { employeeId });
+export async function getInfo(agentId: string): Promise<ConfigMdInfo> {
+	const r = await sendRequest('configmd.getInfo', { agentId });
 	return r as ConfigMdInfo;
 }
 
 export async function uploadParser(
-	employeeId: string,
+	agentId: string,
 	content: string,
 	fileName?: string,
 ): Promise<{ parserPath: string }> {
-	const r = await sendRequest('configmd.uploadParser', { employeeId, content, fileName });
+	const r = await sendRequest('configmd.uploadParser', { agentId, content, fileName });
 	return r as { parserPath: string };
 }
 
 export async function uploadStyles(
-	employeeId: string,
+	agentId: string,
 	content: string,
 	fileName?: string,
 ): Promise<{ stylesPath: string }> {
-	const r = await sendRequest('configmd.uploadStyles', { employeeId, content, fileName });
+	const r = await sendRequest('configmd.uploadStyles', { agentId, content, fileName });
 	return r as { stylesPath: string };
 }
 
-export async function removeParser(employeeId: string): Promise<void> {
-	await sendRequest('configmd.removeParser', { employeeId });
+export async function removeParser(agentId: string): Promise<void> {
+	await sendRequest('configmd.removeParser', { agentId });
 }
 
 // ─── iframe ↔ panel postMessage relay ────────────────────────────────────────
@@ -260,7 +252,7 @@ export interface IframeReply {
  */
 export function bindIframeChannel(
 	iframe: HTMLIFrameElement,
-	employeeId: string,
+	agentId: string,
 	onConnected?: () => void,
 ): () => void {
 	const handler = async (event: MessageEvent) => {
@@ -278,36 +270,36 @@ export function bindIframeChannel(
 			switch (msg.type) {
 				case 'sdk.ready':
 					onConnected?.();
-					reply(true, { employeeId });
+					reply(true, { agentId });
 					break;
 				case 'sdk.event':
-					await fireHtmlEvent(employeeId, msg.eventName, msg.payload);
+					await fireHtmlEvent(agentId, msg.eventName, msg.payload);
 					reply(true);
 					break;
 				case 'sdk.chatSend':
-					await chatSend(employeeId, msg.message, {
+					await chatSend(agentId, msg.message, {
 						context: msg.context,
 						showInChat: msg.showInChat,
 					});
 					reply(true);
 					break;
 				case 'sdk.readMd': {
-					const r = await readSource(employeeId);
+					const r = await readSource(agentId);
 					reply(true, r);
 					break;
 				}
 				case 'sdk.writeMd':
-					await writeSource(employeeId, msg.markdown, { origin: 'html' });
+					await writeSource(agentId, msg.markdown, { origin: 'html' });
 					reply(true);
 					break;
 				case 'sdk.applyPatch': {
-					const r = await applyPatch(employeeId, msg.patches, { origin: 'html' });
+					const r = await applyPatch(agentId, msg.patches, { origin: 'html' });
 					reply(true, r);
 					break;
 				}
 				case 'sdk.notify':
 					await sendRequest('configmd.notify', {
-						employeeId,
+						agentId,
 						message: msg.message,
 						level: msg.level,
 					});

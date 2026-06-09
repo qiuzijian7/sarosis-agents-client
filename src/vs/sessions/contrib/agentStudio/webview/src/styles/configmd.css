@@ -198,7 +198,7 @@
 
 /* ConfigMD is no longer rendered inside the chat panel.
    The chat panel keeps its standard column layout. */
-.employee-chat-root {
+.agent-chat-root {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -208,7 +208,7 @@
 	position: relative;
 }
 
-.employee-chat-root > .employee-chat {
+.agent-chat-root > .agent-chat {
 	flex: 1 1 auto;
 	min-height: 0;
 	min-width: 0;
@@ -227,8 +227,8 @@
 	border: none;
 }
 
-/* ─── EmployeeNode indicator ───────────────────────────────────────── */
-.employee-node-configmd {
+/* ─── agent node indicator ───────────────────────────────────────── */
+.agent-node-configmd {
 	display: flex;
 	align-items: center;
 	gap: 4px;
@@ -243,18 +243,18 @@
 	transition: background 0.15s, transform 0.1s;
 }
 
-.employee-node-configmd:hover {
+.agent-node-configmd:hover {
 	background: linear-gradient(90deg, rgba(78, 161, 255, 0.32), rgba(78, 161, 255, 0.18));
 }
 
-.employee-node-configmd:active {
+.agent-node-configmd:active {
 	transform: scale(0.96);
 }
 
-.employee-node-configmd-icon { font-size: 11px; }
+.agent-node-configmd-icon { font-size: 11px; }
 
-/* ─── EmployeeNode "Open ConfigMD" button (top-right, next to delete) ─ */
-.employee-node-open-md {
+/* ─── agent node "Open ConfigMD" button (top-right, next to delete) ─ */
+.agent-node-open-md {
 	position: absolute;
 	top: 6px;
 	right: 32px; /* delete is at right:6px width:22px → leave 4px gap */
@@ -273,21 +273,21 @@
 	justify-content: center;
 }
 
-.employee-node-open-md svg {
+.agent-node-open-md svg {
 	width: 12px;
 	height: 12px;
 }
 
-.employee-node:hover .employee-node-open-md {
+.agent-node:hover .agent-node-open-md {
 	opacity: 0.7;
 }
 
-.employee-node-open-md:hover {
+.agent-node-open-md:hover {
 	opacity: 1 !important;
 	background-color: rgba(78, 161, 255, 0.18);
 }
 
-/* ─── EmployeeListView "Open ConfigMD" button ───────────────────────── */
+/* ─── AgentListView "Open ConfigMD" button ───────────────────────── */
 .emp-list-action-btn {
 	flex-shrink: 0;
 	width: 26px;

@@ -3,7 +3,7 @@
  *  Matching sarosis-webui workspace canvas layout:
  *  - Workspace Toolbar (top)
  *  - Canvas mode: ReactFlow with MiniMap, Controls, Background
- *  - List mode: PM zone / Employee zone with drag reorder
+ *  - List mode: PM zone / Agent zone with drag reorder
  *  - Chat panel (right side)
  *  - Task board (bottom)
  *  Bridges VS Code CSS custom properties for seamless theme integration.
@@ -176,7 +176,7 @@ html, body, #root {
   transform: rotate(180deg);
 }
 
-/* Employee count badge (in toolbar) */
+/* Agent count badge (in toolbar) */
 .toolbar-ws-emp-count {
   display: flex;
   align-items: center;
@@ -677,9 +677,9 @@ html, body, #root {
   overflow-y: auto;
 }
 
-/* ═══ ② Employee Node (Canvas Mode) ══════════════════════════════════════ */
+/* ═══ ② Agent Node (Canvas Mode) ══════════════════════════════════════ */
 
-.employee-node {
+.agent-node {
   min-width: 220px;
   max-width: 280px;
   border-radius: 12px;
@@ -690,17 +690,17 @@ html, body, #root {
   overflow: visible;
 }
 
-.employee-node:active {
+.agent-node:active {
   cursor: grabbing;
 }
 
-.employee-node:hover {
+.agent-node:hover {
   border-color: rgba(88, 166, 255, 0.4);
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
   transform: translateY(-2px);
 }
 
-.employee-node.selected {
+.agent-node.selected {
   border-color: var(--vscode-focusBorder, #3b82f6) !important;
   border-width: 2px !important;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4), 0 8px 24px rgba(59, 130, 246, 0.2) !important;
@@ -708,7 +708,7 @@ html, body, #root {
   background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0.02) 100%);
 }
 
-.employee-node.status-animated {
+.agent-node.status-animated {
   animation: node-glow 2s ease-in-out infinite;
 }
 
@@ -718,7 +718,7 @@ html, body, #root {
 }
 
 /* Handle styling */
-.employee-node-handle {
+.agent-node-handle {
   background: var(--vscode-textLink-foreground, #3b82f6) !important;
   width: 8px !important;
   height: 8px !important;
@@ -726,7 +726,7 @@ html, body, #root {
 }
 
 /* Node body (vertical layout) */
-.employee-node-body {
+.agent-node-body {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -738,12 +738,12 @@ html, body, #root {
 }
 
 /* Avatar area */
-.employee-node-avatar-area {
+.agent-node-avatar-area {
   position: relative;
   flex-shrink: 0;
 }
 
-.employee-card-avatar {
+.agent-card-avatar {
   width: 48px;
   height: 48px;
   border-radius: 12px;
@@ -752,18 +752,18 @@ html, body, #root {
   transition: border-color 200ms, transform 200ms;
 }
 
-.employee-node:hover .employee-card-avatar {
+.agent-node:hover .agent-card-avatar {
   border-color: rgba(88, 166, 255, 0.5);
   transform: scale(1.05);
 }
 
-.employee-card-avatar-img {
+.agent-card-avatar-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.employee-card-avatar-fallback {
+.agent-card-avatar-fallback {
   width: 100%;
   height: 100%;
   display: flex;
@@ -776,7 +776,7 @@ html, body, #root {
 }
 
 /* Status dot on avatar */
-.employee-status-dot {
+.agent-status-dot {
   position: absolute;
   bottom: -2px;
   right: -2px;
@@ -787,14 +787,14 @@ html, body, #root {
 }
 
 /* Info area */
-.employee-node-info {
+.agent-node-info {
   flex: 1;
   min-width: 0;
   text-align: center;
   width: 100%;
 }
 
-.employee-card-name {
+.agent-card-name {
   font-size: 13px;
   font-weight: 600;
   color: var(--as-fg-primary, var(--vscode-foreground));
@@ -804,11 +804,11 @@ html, body, #root {
   cursor: default;
 }
 
-.employee-card-name:hover {
+.agent-card-name:hover {
   cursor: text;
 }
 
-.employee-card-name-input {
+.agent-card-name-input {
   font-size: 13px;
   font-weight: 600;
   color: var(--as-fg-primary, var(--vscode-foreground));
@@ -822,7 +822,7 @@ html, body, #root {
   box-sizing: border-box;
 }
 
-.employee-card-role {
+.agent-card-role {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
   display: flex;
@@ -833,14 +833,14 @@ html, body, #root {
 }
 
 /* Model badge */
-.employee-card-model-row {
+.agent-card-model-row {
   display: flex;
   justify-content: center;
   margin-top: 4px;
 }
 
 /* Worktree selector dropdown */
-.employee-card-worktree-selector {
+.agent-card-worktree-selector {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -849,7 +849,7 @@ html, body, #root {
   width: 100%;
 }
 
-.employee-card-worktree-selector select {
+.agent-card-worktree-selector select {
   width: 100%;
   max-width: 160px;
   padding: 2px 6px;
@@ -862,11 +862,11 @@ html, body, #root {
   outline: none;
 }
 
-.employee-card-worktree-selector select:focus {
+.agent-card-worktree-selector select:focus {
   border-color: var(--vscode-focusBorder, #0078d4);
 }
 
-.employee-card-worktree-selector select option {
+.agent-card-worktree-selector select option {
   background-color: var(--vscode-dropdown-background, #2c2c2c);
   color: var(--vscode-dropdown-foreground, #cccccc);
   font-size: 10px;
@@ -877,7 +877,7 @@ html, body, #root {
   color: var(--vscode-descriptionForeground, #858585);
 }
 
-.employee-card-badge {
+.agent-card-badge {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -894,7 +894,7 @@ html, body, #root {
 }
 
 /* Delete button */
-.employee-node-delete {
+.agent-node-delete {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -913,22 +913,22 @@ html, body, #root {
   justify-content: center;
 }
 
-.employee-node-delete svg {
+.agent-node-delete svg {
   width: 12px;
   height: 12px;
 }
 
-.employee-node:hover .employee-node-delete {
+.agent-node:hover .agent-node-delete {
   opacity: 0.6;
 }
 
-.employee-node-delete:hover {
+.agent-node-delete:hover {
   opacity: 1 !important;
   background-color: rgba(239, 68, 68, 0.15);
 }
 
 /* Skill error badge - top right */
-.employee-node-skill-error-badge {
+.agent-node-skill-error-badge {
   position: absolute;
   top: 6px;
   right: 32px;
@@ -945,13 +945,13 @@ html, body, #root {
   z-index: 2;
 }
 
-.employee-node-skill-error-badge svg {
+.agent-node-skill-error-badge svg {
   width: 12px;
   height: 12px;
 }
 
 /* Tags bar at bottom */
-.employee-node-tags {
+.agent-node-tags {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -961,7 +961,7 @@ html, body, #root {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
 }
 
-.employee-card-skill {
+.agent-card-skill {
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
@@ -971,13 +971,13 @@ html, body, #root {
   color: var(--vscode-badge-foreground);
 }
 
-.employee-card-skill-more {
+.agent-card-skill-more {
   font-size: 9px;
   color: var(--vscode-descriptionForeground);
   font-weight: 500;
 }
 
-.employee-card-token {
+.agent-card-token {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -990,7 +990,7 @@ html, body, #root {
   height: 10px;
 }
 
-/* ═══ Employee List View (List Mode) ═══════════════════════════════════════ */
+/* ═══ Agent List View (List Mode) ═══════════════════════════════════════ */
 
 .emp-list-container {
   flex: 1;
@@ -1496,7 +1496,7 @@ html, body, #root {
 }
 
 /* Swarm summary bar on the board header */
-/* ─── Filter bar (board / employee / status-column toggles) ──────────── */
+/* ─── Filter bar (board / agent / status-column toggles) ──────────── */
 .task-board-filters {
   display: flex;
   align-items: center;
@@ -3079,9 +3079,9 @@ html, body, #root {
   opacity: 0.7;
 }
 
-/* ═══ ④ Employee Chat ════════════════════════════════════════════════════════ */
+/* ═══ ④ Agent Chat ════════════════════════════════════════════════════════ */
 
-.employee-chat {
+.agent-chat {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -5020,11 +5020,11 @@ html, body, #root {
   line-height: 16px;
 }
 
-.workspace-employees {
+.workspace-agents {
   padding-left: 12px;
 }
 
-.employee-item {
+.agent-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5034,36 +5034,36 @@ html, body, #root {
   transition: background-color 100ms;
 }
 
-.employee-item:hover {
+.agent-item:hover {
   background-color: var(--vscode-list-hoverBackground);
 }
 
-.employee-item.selected {
+.agent-item.selected {
   background-color: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
 }
 
-.employee-status-dot {
+.agent-status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.employee-avatar {
+.agent-avatar {
   width: 22px;
   height: 22px;
   border-radius: 50%;
   background-color: var(--vscode-input-background);
 }
 
-.employee-info {
+.agent-info {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.employee-name {
+.agent-name {
   font-size: 12px;
   font-weight: 500;
   overflow: hidden;
@@ -5071,7 +5071,7 @@ html, body, #root {
   white-space: nowrap;
 }
 
-.employee-role {
+.agent-role {
   font-size: 10px;
   color: var(--vscode-descriptionForeground);
 }
@@ -5170,7 +5170,7 @@ html, body, #root {
 }
 
 /* In standalone mode, chat fills entire height */
-.panel-standalone .employee-chat {
+.panel-standalone .agent-chat {
   height: 100%;
 }
 
@@ -6338,8 +6338,8 @@ html, body, #root {
 }
 
 /* Selected node highlight */
-.employee-node-wrapper.selected,
-.employee-node-wrapper:has(.employee-node-selected) {
+.agent-node-wrapper.selected,
+.agent-node-wrapper:has(.agent-node-selected) {
   box-shadow: 0 0 0 2px var(--vscode-focusBorder, #3b82f6) !important;
   border-radius: 10px;
 }

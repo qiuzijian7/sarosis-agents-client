@@ -221,7 +221,7 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 				isLoading: false,
 			}));
 
-			// Update the plan message metadata so EmployeeChat re-renders the
+			// Update the plan message metadata so AgentChat re-renders the
 			// message list (ChatMessageRaw is memo-wrapped; the list must
 			// re-render for the memo comparator to run). Also append a
 			// rejection system message.

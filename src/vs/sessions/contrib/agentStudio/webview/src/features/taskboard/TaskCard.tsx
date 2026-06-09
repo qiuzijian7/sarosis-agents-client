@@ -13,7 +13,7 @@ import { getAgentColor } from '../../utils/agentColors';
 
 interface TaskCardProps {
 	task: TaskBoardRecord;
-	employees: Agent[];
+	agents: Agent[];
 	onStatusChange: (taskId: string, status: TaskBoardStatus, source: TaskSource) => void;
 	onDelete: (taskId: string, source: TaskSource) => void;
 	onArchive: (taskId: string, source: TaskSource) => void;
@@ -59,7 +59,7 @@ const SWARM_PHASE_LABELS: Record<string, string> = {
 
 export function TaskCard({
 	task,
-	employees,
+	agents,
 	onStatusChange,
 	onDelete,
 	onArchive,
@@ -107,8 +107,8 @@ export function TaskCard({
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}, []);
 
-	const assignee = task.assigneeId ? employees.find(e => e.id === task.assigneeId) : null;
-	const fromEmp = task.fromEmployeeId ? employees.find(e => e.id === task.fromEmployeeId) : null;
+	const assignee = task.assigneeId ? agents.find(e => e.id === task.assigneeId) : null;
+	const fromEmp = task.fromAgentId ? agents.find(e => e.id === task.fromAgentId) : null;
 
 	// Cross-reference dependency status
 	const allTasks = useTaskBoardStore(s => s.tasks);
@@ -350,7 +350,7 @@ export function TaskCard({
 					{assignee.role && <span className="task-card-assignee-role"> · {assignee.role}</span>}
 				</div>
 			)}
-			{/* Show assigneeName even if not found in employees list (e.g. auto-created) */}
+			{/* Show assigneeName even if not found in agents list (e.g. auto-created) */}
 			{!assignee && task.assigneeName && (
 				<div className="task-card-assignee">
 					<span className="task-card-assignee-icon" style={agentColor ? { color: agentColor.primary } : undefined}>🤖</span>

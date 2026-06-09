@@ -431,7 +431,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 				// ── Sync to AgentOSService so executeAgentTurn picks up the
 				//    restored selection immediately, rather than triggering
 				//    _autoSelectDefault which may asynchronously overwrite a
-				//    later employee-level selection.
+				//    later agent-level selection.
 				this._agentOSService.setActiveModelSelection(this._currentSelection);
 				this._logService.info(`[ModelSelector] Loaded selection from config: ${this._currentSelection.providerId}/${this._currentSelection.modelId}`);
 				return;

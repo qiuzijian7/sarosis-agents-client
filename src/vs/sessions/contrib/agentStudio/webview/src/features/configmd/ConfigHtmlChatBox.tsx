@@ -17,7 +17,7 @@ interface ChatTurn {
 }
 
 interface ConfigHtmlChatBoxProps {
-	employeeId: string;
+	agentId: string;
 	/** Current editor contents — passed as the base document for incremental edits. */
 	getCurrentHtml: () => string;
 	/** Called with the extracted HTML when generation succeeds. */
@@ -25,7 +25,7 @@ interface ConfigHtmlChatBoxProps {
 }
 
 export const ConfigHtmlChatBox: React.FC<ConfigHtmlChatBoxProps> = ({
-	employeeId,
+	agentId,
 	getCurrentHtml,
 	onHtmlGenerated,
 }) => {
@@ -49,7 +49,7 @@ export const ConfigHtmlChatBox: React.FC<ConfigHtmlChatBoxProps> = ({
 		setBusy(true);
 		try {
 			const currentHtml = getCurrentHtml();
-			const { html, raw } = await htmlGenerate(employeeId, msg, {
+			const { html, raw } = await htmlGenerate(agentId, msg, {
 				currentHtml: currentHtml && currentHtml.trim() ? currentHtml : undefined,
 			});
 			if (html && html.trim()) {
@@ -70,7 +70,7 @@ export const ConfigHtmlChatBox: React.FC<ConfigHtmlChatBoxProps> = ({
 			// Restore focus to the input for rapid iteration.
 			requestAnimationFrame(() => taRef.current?.focus());
 		}
-	}, [input, busy, employeeId, getCurrentHtml, onHtmlGenerated]);
+	}, [input, busy, agentId, getCurrentHtml, onHtmlGenerated]);
 
 	const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
 		// Enter sends; Shift+Enter inserts a newline.

@@ -37,7 +37,7 @@ function _svgIcon(width: number, height: number, paths: string[], cls?: string):
 /**
  * Visual variant of the workspace toolbar.
  *  - `overlay`  : floating bar above the Agent Studio editor group (legacy default).
- *                 Uses a forced dark inline style and shows the employee badge.
+ *                 Uses a forced dark inline style and shows the agent badge.
  *  - `titlebar` : embedded inside a host title area (e.g. the sidebar titlebar).
  *                 Drops the forced background/border + badge so it inherits the
  *                 surrounding theme, and anchors its dropdown with `fixed`
@@ -48,7 +48,7 @@ export type WorkspaceToolbarVariant = 'overlay' | 'titlebar';
 export interface IWorkspaceToolbarOptions {
 	/** Visual variant. Defaults to `overlay` for backwards compatibility. */
 	readonly variant?: WorkspaceToolbarVariant;
-	/** Whether to show the employee-count badge. Defaults to true. */
+	/** Whether to show the agent-count badge. Defaults to true. */
 	readonly showBadge?: boolean;
 	/**
 	 * Where to insert the toolbar element relative to `parentElement`.
@@ -146,7 +146,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		}
 		console.log('[AgentStudioWorkspaceToolbar] constructor called, variant:', this._variant, 'parent:', parentElement);
 
-		// Left section: icon + select button + employee count badge
+		// Left section: icon + select button + agent count badge
 		const leftSection = document.createElement('div');
 		leftSection.className = 'astb-left';
 
@@ -338,11 +338,11 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 			label.textContent = current?.name ?? '选择工作区...';
 		}
 
-		// Update employee count badge
+		// Update agent count badge
 		const countEl = this._badgeElement.querySelector('.astb-badge-count');
 		if (countEl) {
-			const employeeCount = current?.employees?.length ?? 0;
-			countEl.textContent = String(employeeCount);
+			const agentCount = current?.agents?.length ?? 0;
+			countEl.textContent = String(agentCount);
 		}
 
 		// Update worktree status indicator

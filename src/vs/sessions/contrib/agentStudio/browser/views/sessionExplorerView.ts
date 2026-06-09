@@ -45,7 +45,7 @@ export const enum SessionExplorerItemType { AgentGroup, Session }
 
 export interface IAgentGroupElement {
 	readonly type: SessionExplorerItemType.AgentGroup;
-	readonly employee: Agent;
+	readonly agent: Agent;
 	readonly sessionCount: number;
 }
 
@@ -53,7 +53,7 @@ export interface ISessionElement {
 	readonly type: SessionExplorerItemType.Session;
 	readonly session: AgentSessionMeta;
 	readonly agentId: string;
-	readonly employeeName: string;
+	readonly agentName: string;
 }
 
 export type SessionExplorerElement = IAgentGroupElement | ISessionElement;
@@ -93,12 +93,12 @@ class AgentGroupRenderer implements ICompressibleTreeRenderer<IAgentGroupElement
 
 	renderElement(node: ITreeNode<IAgentGroupElement, FuzzyScore>, _: number, t: IAgentGroupTemplate): void {
 		const g = node.element;
-		t.label.textContent = g.employee.name;
+		t.label.textContent = g.agent.name;
 		t.count.textContent = `${g.sessionCount}`;
 		t.disposables.clear(); t.actionBar.clear();
 		t.actionBar.push(toAction({
-			id: `se.clearAll.${g.employee.id}`, label: localize('clearAgent', "清空"), class: ThemeIcon.asClassName(Codicon.trash),
-			run: () => this.onDeleteAll(g.employee.id),
+			id: `se.clearAll.${g.agent.id}`, label: localize('clearAgent', "清空"), class: ThemeIcon.asClassName(Codicon.trash),
+			run: () => this.onDeleteAll(g.agent.id),
 		}), { icon: true, label: false });
 	}
 
@@ -170,14 +170,14 @@ class SessionExplorerDataSource implements IAsyncDataSource<null, SessionExplore
 			for (const emp of filtered) {
 				const ss = await (this.chat as any).listAgentSessions(emp.id) as AgentSessionMeta[];
 				this.logService.info(`[SessionExplorer] agent ${emp.name}(${emp.id}): ${ss.length} sessions`);
-				if (ss.length > 0) out.push({ type: SessionExplorerItemType.AgentGroup, employee: emp, sessionCount: ss.length });
+				if (ss.length > 0) out.push({ type: SessionExplorerItemType.AgentGroup, agent: emp, sessionCount: ss.length });
 			}
 			this.logService.info(`[SessionExplorer] root result: ${out.length} agent groups`);
 			return out;
 		}
 		if (e.type === SessionExplorerItemType.AgentGroup) {
-			const ss = await (this.chat as any).listAgentSessions(e.employee.id) as AgentSessionMeta[];
-			return ss.map(s => ({ type: SessionExplorerItemType.Session, session: s, agentId: e.employee.id, employeeName: e.employee.name }));
+			const ss = await (this.chat as any).listAgentSessions(e.agent.id) as AgentSessionMeta[];
+			return ss.map(s => ({ type: SessionExplorerItemType.Session, session: s, agentId: e.agent.id, agentName: e.agent.name }));
 		}
 		return [];
 	}
@@ -188,7 +188,7 @@ class SessionExplorerA11y implements IListAccessibilityProvider<SessionExplorerE
 	getWidgetAriaLabel(): string { return localize('seAria', "Sessions"); }
 	getAriaLabel(e: SessionExplorerElement): string {
 		return e.type === SessionExplorerItemType.AgentGroup
-			? `Agent ${e.employee.name} ${e.sessionCount} sessions`
+			? `Agent ${e.agent.name} ${e.sessionCount} sessions`
 			: `Session ${e.session.name} ${e.session.messageCount} msgs`;
 	}
 }
@@ -197,8 +197,8 @@ class SessionExplorerA11y implements IListAccessibilityProvider<SessionExplorerE
 
 export class SessionExplorerViewPane extends ViewPane {
 	private tree!: WorkbenchCompressibleAsyncDataTree<null, SessionExplorerElement, FuzzyScore>;
-	private filterEmployeeId: string | null = null;
-	private employees: Agent[] = [];
+	private filterAgentId: string | null = null;
+	private agents: Agent[] = [];
 	private seHeaderContainer!: HTMLElement;
 	private filterSelect!: HTMLSelectElement;
 
@@ -241,7 +241,7 @@ export class SessionExplorerViewPane extends ViewPane {
 		this.filterSelect = document.createElement('select');
 		this.filterSelect.classList.add('session-filter-select');
 		this._register(DOM.addDisposableListener(this.filterSelect, 'change', () => {
-			this.filterEmployeeId = this.filterSelect.value || null;
+			this.filterAgentId = this.filterSelect.value || null;
 			this.refresh();
 		}));
 		this.seHeaderContainer.appendChild(this.filterSelect);
@@ -266,24 +266,24 @@ export class SessionExplorerViewPane extends ViewPane {
 			new SessionExplorerDelegate(),
 			{ isIncompressible: () => true },
 			[new AgentGroupRenderer(id => this._deleteAllSessionsForAgent(id)), new SessionItemRenderer((eid, sid) => this._deleteSession(eid, sid))],
-			new SessionExplorerDataSource(this._studioService, this._chatService, () => this.filterEmployeeId, this._logService),
+			new SessionExplorerDataSource(this._studioService, this._chatService, () => this.filterAgentId, this._logService),
 			{
 				accessibilityProvider: new SessionExplorerA11y(),
 				filter: this.instantiationService.createInstance(SessionExplorerFilter),
 				collapseByDefault: (e: SessionExplorerElement) => e.type === SessionExplorerItemType.AgentGroup ? false : false,
 				multipleSelectionSupport: false,
-				identityProvider: { getId(e: SessionExplorerElement) { return e.type === SessionExplorerItemType.AgentGroup ? e.employee.id : e.session.id; } },
+				identityProvider: { getId(e: SessionExplorerElement) { return e.type === SessionExplorerItemType.AgentGroup ? e.agent.id : e.session.id; } },
 				keyboardNavigationLabelProvider: {
-					getKeyboardNavigationLabel(e: SessionExplorerElement) { return e.type === SessionExplorerItemType.AgentGroup ? e.employee.name : e.session.name; },
-					getCompressedNodeKeyboardNavigationLabel(e: SessionExplorerElement[]) { return e.map(x => x.type === SessionExplorerItemType.AgentGroup ? x.employee.name : x.session.name).join('/'); },
+					getKeyboardNavigationLabel(e: SessionExplorerElement) { return e.type === SessionExplorerItemType.AgentGroup ? e.agent.name : e.session.name; },
+					getCompressedNodeKeyboardNavigationLabel(e: SessionExplorerElement[]) { return e.map(x => x.type === SessionExplorerItemType.AgentGroup ? x.agent.name : x.session.name).join('/'); },
 				},
 			},
 		));
 
 		this._register(this.tree.onDidOpen(e => { if (e.element?.type === SessionExplorerItemType.Session) this._openSession(e.element); }));
 		this._register(this._chatService.onDidChangeAgentSessions(() => this.refresh()));
-		this._register(this._studioService.onDidChangeEmployees(() => this.refresh()));
-		this._register(this._studioService.onDidChangeActiveWorkspace(() => { this.filterEmployeeId = null; this.refresh(); }));
+		this._register(this._studioService.onDidChangeAgents(() => this.refresh()));
+		this._register(this._studioService.onDidChangeActiveWorkspace(() => { this.filterAgentId = null; this.refresh(); }));
 		this.tree.layout();
 		this.refresh();
 	}
@@ -307,7 +307,7 @@ export class SessionExplorerViewPane extends ViewPane {
 		allOpt.value = '';
 		allOpt.textContent = localize('allAgents', "全部 Agent");
 		sel.appendChild(allOpt);
-		for (const emp of this.employees) {
+		for (const emp of this.agents) {
 			const opt = document.createElement('option');
 			opt.value = emp.id;
 			opt.textContent = emp.name;
@@ -384,8 +384,8 @@ export class SessionExplorerViewPane extends ViewPane {
 
 	async refresh(): Promise<void> {
 		const wsId = this._studioService.getActiveWorkspaceId();
-		this.employees = await this._studioService.getAgents();
-		this._logService.info(`[SessionExplorer] refresh: wsId=${wsId}, agents=${this.employees.length}`);
+		this.agents = await this._studioService.getAgents();
+		this._logService.info(`[SessionExplorer] refresh: wsId=${wsId}, agents=${this.agents.length}`);
 		this._updateFilterDropdown();
 		if (!this._treeInputSet) {
 			await this.tree?.setInput(null);

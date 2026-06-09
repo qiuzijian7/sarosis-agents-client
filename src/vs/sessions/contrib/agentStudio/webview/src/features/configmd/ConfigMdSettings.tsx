@@ -18,12 +18,12 @@ import {
 } from './configMdBridge';
 
 interface ConfigMdSettingsProps {
-	employeeId: string;
+	agentId: string;
 	onClose: () => void;
 	onChanged?: () => void;
 }
 
-export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ employeeId, onClose, onChanged }) => {
+export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ agentId, onClose, onChanged }) => {
 	const [info, setInfo] = useState<ConfigMdInfo | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>();
@@ -33,14 +33,14 @@ export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ employeeId, 
 
 	const load = async () => {
 		try {
-			const r = await getInfo(employeeId);
+			const r = await getInfo(agentId);
 			setInfo(r);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
 		}
 	};
 
-	useEffect(() => { void load(); }, [employeeId]);
+	useEffect(() => { void load(); }, [agentId]);
 
 	const handleParserSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
 		const file = e.target.files?.[0];
@@ -54,7 +54,7 @@ export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ employeeId, 
 		setSuccess(undefined);
 		try {
 			const content = await file.text();
-			const r = await uploadParser(employeeId, content, file.name);
+			const r = await uploadParser(agentId, content, file.name);
 			setSuccess(`解析器已上传：${r.parserPath}`);
 			await load();
 			onChanged?.();
@@ -78,7 +78,7 @@ export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ employeeId, 
 		setSuccess(undefined);
 		try {
 			const content = await file.text();
-			const r = await uploadStyles(employeeId, content, file.name);
+			const r = await uploadStyles(agentId, content, file.name);
 			setSuccess(`样式已上传：${r.stylesPath}`);
 			await load();
 			onChanged?.();
@@ -96,7 +96,7 @@ export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ employeeId, 
 		setError(undefined);
 		setSuccess(undefined);
 		try {
-			await removeParser(employeeId);
+			await removeParser(agentId);
 			setSuccess('已恢复内置解析器');
 			await load();
 			onChanged?.();

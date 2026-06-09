@@ -50,7 +50,7 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 	}, [isOpen, fetchWorktrees]);
 
 	// Refresh the worktree list when a worktree is created/removed elsewhere
-	// (e.g. via the EmployeeNode card or worktree view), even if the dropdown
+	// (e.g. via the agent node card or worktree view), even if the dropdown
 	// is currently open.
 	useEffect(() => {
 		const handler = () => {

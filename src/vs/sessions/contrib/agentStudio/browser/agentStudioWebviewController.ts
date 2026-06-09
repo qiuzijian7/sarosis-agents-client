@@ -75,7 +75,6 @@ import type {
 	IConfigMdEventPayload,
 	IConfigMdChatSendPayload,
 	IConfigMdHtmlGeneratePayload,
-	IConfigMdCanvasPreviewPayload,
 	IConfigMdWriteSourcePayload,
 	IConfigMdApplyPatchPayload,
 	IConfigMdRenderHtmlPayload,
@@ -135,16 +134,16 @@ export class AgentStudioWebviewController extends Disposable {
 	/**
 	 * The (agentId, agentSessionId) pair this chat panel is currently
 	 * showing. Updated by the webview via `chat.activeSessionChanged`
-	 * whenever the user picks a different employee or switches session.
+	 * whenever the user picks a different agent or switches session.
 	 *
 	 * Used (a) to filter `onDidRequestChatSend` events so only the chat
-	 * panel actually showing the target employee handles imgui submits,
+	 * panel actually showing the target agent handles imgui submits,
 	 * preventing duplicate sends across multiple chat panels, and
 	 * (b) to register into `IConfigHtmlService.setActiveAgentSession` so
 	 * the preview pane can route imgui submits into the correct Fork
 	 * session.
 	 */
-	private _activeChatEmployeeId: string | undefined;
+	private _activeChatAgentId: string | undefined;
 	private _activeChatAgentSessionId: string | undefined;
 
 	/** Pending tool approval requests: toolCallId → resolve function */
@@ -419,7 +418,7 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 
 		// ── Perf: log incoming message with timing for key types ─────────
-		const perfTypes = new Set(['agents.list', 'employees.list', 'skills.list', 'memory.listL0', 'memory.listL1']);
+		const perfTypes = new Set(['agents.list', 'skills.list', 'memory.listL0', 'memory.listL1']);
 		const t0 = perfTypes.has(type) ? Date.now() : 0;
 
 		this.logService.info(
@@ -518,7 +517,7 @@ export class AgentStudioWebviewController extends Disposable {
 			case "agents.getLastSelected":
 				return { agentId: await this.agentStudioService.getLastSelectedAgentId() };
 			case "agents.selected":
-				this.agentStudioService.fireSelectEmployee(
+				this.agentStudioService.fireSelectAgent(
 					((p as Record<string, unknown>).agentId as string) ?? null,
 				);
 				return undefined;
@@ -690,8 +689,8 @@ export class AgentStudioWebviewController extends Disposable {
 				);
 			case "providers.getSelection":
 				return this._handleProvidersGetSelection();
-			case "providers.getSelectionForEmployee":
-				return this._handleProvidersGetSelectionForEmployee(
+			case "providers.getSelectionForAgent":
+				return this._handleProvidersGetSelectionForAgent(
 					(p.agentId) as string,
 				);
 			case "providers.openSettings":
@@ -947,12 +946,6 @@ export class AgentStudioWebviewController extends Disposable {
 				});
 			}
 
-			case "configmd.requestCanvasPreview": {
-				const cp = p as unknown as IConfigMdCanvasPreviewPayload;
-				await this._configHtmlService.requestCanvasPreview((cp.agentId));
-				return { ok: true };
-			}
-
 			case "configmd.listAgents": {
 				// List all agents that have config.md configured AND a bound agentDir
 				// in the active workspace. configMd is a DEFINITION field (on Agent);
@@ -1087,22 +1080,22 @@ export class AgentStudioWebviewController extends Disposable {
 			// Non-chat panels don't own a chat session.
 			return;
 		}
-		const prevEmployeeId = this._activeChatEmployeeId;
+		const prevAgentId = this._activeChatAgentId;
 		const agentId =
 			((payload.agentId) as string | null | undefined) || undefined;
 		const agentSessionId =
 			(payload.agentSessionId as string | null | undefined) || undefined;
-		this._activeChatEmployeeId = agentId;
+		this._activeChatAgentId = agentId;
 		this._activeChatAgentSessionId = agentSessionId;
 		this.logService.info(
 			`[AgentStudio] chat.activeSessionChanged: agentId=${agentId || "<none>"} ` +
 			`agentSessionId=${agentSessionId || "<none>"} (panelType=${this.panelType})`,
 		);
-		// Clear the previous registration if the employee changed,
+		// Clear the previous registration if the agent changed,
 		// otherwise the registry would keep pointing at a stale session
-		// for the prior employee.
-		if (prevEmployeeId && prevEmployeeId !== agentId) {
-			this._configHtmlService.setActiveAgentSession(prevEmployeeId, undefined);
+		// for the prior agent.
+		if (prevAgentId && prevAgentId !== agentId) {
+			this._configHtmlService.setActiveAgentSession(prevAgentId, undefined);
 		}
 		if (agentId) {
 			this._configHtmlService.setActiveAgentSession(agentId, agentSessionId);
@@ -1214,7 +1207,7 @@ export class AgentStudioWebviewController extends Disposable {
 			// so subsequent imgui submits (and the post-reload history load)
 			// aim at the same session.
 			this._configHtmlService.setActiveAgentSession(agentId, agentSessionId);
-			if (this._activeChatEmployeeId === agentId) {
+			if (this._activeChatAgentId === agentId) {
 				this._activeChatAgentSessionId = agentSessionId;
 			}
 			this._sendEvent("workspace.sessionUpdated", {
@@ -2240,9 +2233,9 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
-	 * Resolve the absolute filesystem URI for an employee's agent directory.
+	 * Resolve the absolute filesystem URI for an agent's directory.
 	 *
-	 * `agentDir` stored on `Employee` is just the leaf folder name (e.g.
+	 * `agentDir` stored on the agent binding is just the leaf folder name (e.g.
 	 * `researcher-nlmniq3`), NOT an absolute path. The actual location is
 	 *   `<workspace.path>/<WORKSPACE_DATA_DIR>/<AGENTS_DIR>/<agentDir>/`
 	 *
@@ -2271,18 +2264,18 @@ export class AgentStudioWebviewController extends Disposable {
 
 	private _registerServiceListeners(): void {
 		this._register(
-			this.agentStudioService.onDidChangeEmployees(() => {
-				this._sendEvent("employees.changed", {});
+			this.agentStudioService.onDidChangeAgents(() => {
+				this._sendEvent("agents.changed", {});
 			}),
 		);
 
 		this._register(
-			this.agentStudioService.onDidSelectEmployee(
+			this.agentStudioService.onDidSelectAgent(
 				(agentId: string | null) => {
 					this.logService.info(
-						`[AgentStudio] onDidSelectEmployee → _sendEvent('employee.selected', {agentId=${agentId}}) panelType=${this.panelType}`,
+						`[AgentStudio] onDidSelectAgent → _sendEvent('agent.selected', {agentId=${agentId}}) panelType=${this.panelType}`,
 					);
-					this._sendEvent("employee.selected", { agentId });
+					this._sendEvent("agent.selected", { agentId });
 				},
 			),
 		);
@@ -2291,19 +2284,6 @@ export class AgentStudioWebviewController extends Disposable {
 			this.agentStudioService.onDidChangeWorkspace((id: string) => {
 				this._sendEvent("workspace.changed", { workspaceId: id });
 			}),
-		);
-
-		// ConfigHtml → Canvas preview bridge. The ConfigHtml editor lives in a
-		// different webview instance than the Canvas, so it cannot talk to the
-		// Canvas store directly. The ConfigHtmlService re-emits a host-level event;
-		// every controller forwards it to its own webview, and only the Canvas
-		// panel reacts (switches to HTML mode + loads this agent).
-		this._register(
-			this._configHtmlService.onDidRequestCanvasPreview(
-				({ agentId }: { agentId: string }) => {
-					this._sendEvent("configmd.showInCanvas", { agentId });
-				},
-			),
 		);
 
 		this._register(
@@ -2332,7 +2312,7 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 
 		// Listen for git worktree list changes (create/remove) and push
-		// worktree.changed so the worktree dropdowns (EmployeeNode card +
+		// worktree.changed so the worktree dropdowns (agent node card +
 		// WorktreeSwitcher) refresh their lists automatically.
 		this._register(
 			this.worktreeService.onDidChangeWorktrees(() => {
@@ -2507,23 +2487,23 @@ export class AgentStudioWebviewController extends Disposable {
 						return;
 					}
 					// Avoid duplicate sends when multiple chat panels are open: only
-					// the panel currently displaying this employee should respond.
+					// the panel currently displaying this agent should respond.
 					// If no panel has registered yet (fresh open, before the webview
 					// has finished sending its first `chat.activeSessionChanged`),
 					// fall through and handle the message — losing it would feel
 					// broken for the very first imgui submit after open.
 					if (
-						this._activeChatEmployeeId &&
-						this._activeChatEmployeeId !== agentId
+						this._activeChatAgentId &&
+						this._activeChatAgentId !== agentId
 					) {
 						this.logService.info(
 							`[AgentStudioWebviewController] imgui→chat.send for ${agentId} ignored by panel ` +
-							`showing ${this._activeChatEmployeeId}`,
+							`showing ${this._activeChatAgentId}`,
 						);
 						return;
 					}
 					// Also avoid duplicate sends when multiple sessions for the same
-					// employee are open: only the panel with the matching agent session
+					// agent are open: only the panel with the matching agent session
 					// should respond.
 					if (
 						this._activeChatAgentSessionId &&
@@ -2668,8 +2648,8 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 
 		// Provider selection is managed by ModelSelectorService in-memory.
-		// Persistence to agent.yaml / employees.json is handled by the new
-		// agent system (AgentInstanceService) — the legacy employee storage
+		// Persistence to agent.yaml is handled by the new
+		// agent system (AgentInstanceService) — the legacy storage
 		// path has been removed.
 	}
 
@@ -2686,14 +2666,14 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
-	 * @deprecated Legacy employee-based provider/model selection restore.
+	 * @deprecated Legacy per-agent provider/model selection restore.
 	 * The new agent system handles this via AgentInstanceService.
 	 * Falls back to the global ModelSelectorService selection.
 	 */
-	private async _handleProvidersGetSelectionForEmployee(
+	private async _handleProvidersGetSelectionForAgent(
 		agentId: string,
 	): Promise<IProviderSelectPayload | null> {
-		// Legacy employee system is deprecated — always fall back to global selection
+		// Per-agent provider selection is deprecated — always fall back to global selection
 		return this._handleProvidersGetSelection();
 	}
 
@@ -3031,7 +3011,7 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IChatRevertAllCheckpointsPayload,
 	): Promise<void> {
 		this.logService.info(
-			`[AgentStudioWebviewController] chat.revertAllCheckpoints (employee=${(payload.agentId)})`,
+			`[AgentStudioWebviewController] chat.revertAllCheckpoints (agent=${(payload.agentId)})`,
 		);
 		await this.checkpointService.revertAllCheckpoints(
 			(payload.agentId),
@@ -3062,7 +3042,7 @@ export class AgentStudioWebviewController extends Disposable {
 		payload: IChatKeepAllCheckpointsPayload,
 	): Promise<void> {
 		this.logService.info(
-			`[AgentStudioWebviewController] chat.keepAllCheckpoints (employee=${(payload.agentId)})`,
+			`[AgentStudioWebviewController] chat.keepAllCheckpoints (agent=${(payload.agentId)})`,
 		);
 		await this.checkpointService.deleteAllCheckpoints(
 			(payload.agentId),
@@ -3081,7 +3061,7 @@ export class AgentStudioWebviewController extends Disposable {
 		const { sessionId } = payload;
 		const agentId = payload.agentId;
 		this.logService.info(
-			`[AgentStudioWebviewController] chat.openAllCheckpointsDiff (employee=${agentId})`,
+			`[AgentStudioWebviewController] chat.openAllCheckpointsDiff (agent=${agentId})`,
 		);
 
 		try {

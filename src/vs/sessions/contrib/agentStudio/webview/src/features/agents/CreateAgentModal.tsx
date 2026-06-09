@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Create Agent Modal
- *  A modal dialog for creating a new Agent (Employee) with configuration fields.
+ *  A modal dialog for creating a new Agent with configuration fields.
  *  Includes: name, role, model, provider, system prompt, temperature, maxTokens.
  *  Also provides a "Quick Create from Preset" section with built-in presets.
  *--------------------------------------------------------------------------------------------*/

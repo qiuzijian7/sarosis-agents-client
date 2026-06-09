@@ -57,7 +57,7 @@ function PlanTaskItem({
 	showActions,
 	onAction,
 	isEditable,
-	employees,
+	agents,
 	onUpdate,
 	onDecompose,
 	isDecomposing,
@@ -67,7 +67,7 @@ function PlanTaskItem({
 	showActions: boolean;
 	onAction?: (taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => void;
 	isEditable?: boolean;
-	employees: { id: string; name: string; role?: string }[];
+	agents: { id: string; name: string; role?: string }[];
 	onUpdate?: (taskId: string, updates: Record<string, unknown>) => void;
 	onDecompose?: (taskId: string) => void;
 	isDecomposing?: boolean;
@@ -83,7 +83,7 @@ function PlanTaskItem({
 
 	const handleSave = useCallback(() => {
 		if (!onUpdate) { return; }
-		const assignee = employees.find(e => e.id === editAssigneeId);
+		const assignee = agents.find(e => e.id === editAssigneeId);
 		onUpdate(task.id, {
 			title: editTitle,
 			description: editDesc,
@@ -94,7 +94,7 @@ function PlanTaskItem({
 			dependencies: editDeps,
 		});
 		setIsEditing(false);
-	}, [onUpdate, task.id, editTitle, editDesc, editAssigneeId, editPriority, editDeps, employees, task.assigneeName, task.assigneeRole]);
+	}, [onUpdate, task.id, editTitle, editDesc, editAssigneeId, editPriority, editDeps, agents, task.assigneeName, task.assigneeRole]);
 
 	const handleCancel = useCallback(() => {
 		setEditTitle(task.title);
@@ -133,7 +133,7 @@ function PlanTaskItem({
 							<label>分配 Agent</label>
 							<select value={editAssigneeId} onChange={(e) => setEditAssigneeId(e.target.value)}>
 								<option value="">-- 自动创建 --</option>
-								{employees.map(e => (
+								{agents.map(e => (
 									<option key={e.id} value={e.id}>{e.name} ({e.role || 'Agent'})</option>
 								))}
 							</select>
@@ -647,7 +647,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 								showActions={isExecuting}
 								onAction={handleTaskAction}
 								isEditable={isPendingApproval}
-								employees={agents}
+								agents={agents}
 								onUpdate={handleUpdateTask}
 								onDecompose={handleDecomposeTask}
 								isDecomposing={decomposingTaskId === task.id}

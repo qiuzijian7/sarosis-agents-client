@@ -199,7 +199,7 @@ export class WorkflowViewPane extends ViewPane {
 	 *
 	 * 执行流程：
 	 * 1. 打开 WorkflowEditorPane（文本编辑器区域）
-	 * 2. 确保 workflow agent（Employee）存在
+	 * 2. 确保 workflow agent 存在
 	 * 3. 选中该 agent（modelSelectorService）
 	 * 4. 打开右侧 ClawChat 视图 — 聊天框切换到该 agent
 	 */
@@ -217,18 +217,18 @@ export class WorkflowViewPane extends ViewPane {
 	 */
 	private async _selectWorkflowAgentInChat(wf: IStoredWorkflow): Promise<void> {
 		try {
-			const employee = await this._ensureWorkflowAgent(wf);
-			if (!employee) { return; }
+			const agent = await this._ensureWorkflowAgent(wf);
+			if (!agent) { return; }
 
 			// Persist agentId binding (first time)
-			if (wf.agentId !== employee.id) {
+			if (wf.agentId !== agent.id) {
 				try {
-					await this.workflowStorage.updateWorkflow(wf.id, { agentId: employee.id });
+					await this.workflowStorage.updateWorkflow(wf.id, { agentId: agent.id });
 				} catch { /* non-fatal */ }
 			}
 
 			// Select the agent and open the chat view (no prompt) — use webview-based Agent Chat (right sidebar)
-			this.modelSelectorService.setSelectedAgentId(employee.id);
+			this.modelSelectorService.setSelectedAgentId(agent.id);
 			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
 		} catch {
 			// Silently fail — the editor is already open
@@ -382,7 +382,7 @@ export class WorkflowViewPane extends ViewPane {
 
 	/**
 	 * 执行工作流：
-	 * 1. 确保该工作流对应的 Agent（Employee）存在；不存在则按预设部署
+	 * 1. 确保该工作流对应的 Agent 存在；不存在则按预设部署
 	 * 2. 选中该 Agent
 	 * 3. 打开聊天框（Claw Chat View）
 	 * 4. 将工作流执行指令注入聊天框并发送，所有内容在聊天框中显示
@@ -390,21 +390,21 @@ export class WorkflowViewPane extends ViewPane {
 	private async _runWorkflow(wf: IStoredWorkflow): Promise<void> {
 		try {
 			// 1. 确保 Agent 存在
-			const employee = await this._ensureWorkflowAgent(wf);
-			if (!employee) {
+			const agent = await this._ensureWorkflowAgent(wf);
+			if (!agent) {
 				this.notificationService.error('Failed to prepare the Workflow Agent. Please make sure a workspace is selected.');
 				return;
 			}
 
 			// 持久化 agentId 绑定（首次执行后记录）
-			if (wf.agentId !== employee.id) {
+			if (wf.agentId !== agent.id) {
 				try {
-					await this.workflowStorage.updateWorkflow(wf.id, { agentId: employee.id });
+					await this.workflowStorage.updateWorkflow(wf.id, { agentId: agent.id });
 				} catch { /* non-fatal */ }
 			}
 
 			// 2. 选中该 Agent
-			this.modelSelectorService.setSelectedAgentId(employee.id);
+			this.modelSelectorService.setSelectedAgentId(agent.id);
 
 			// 3. 打开聊天框
 			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);

@@ -1694,7 +1694,7 @@ const AVAILABLE_TOOLS = [
  * 功能：
  *  - 浏览内置/自定义预设模板（分类筛选 + 搜索）
  *  - 查看预设详情（展开/折叠）
- *  - 一键 Deploy 预设为 Employee
+ *  - 一键 Deploy 预设为 Agent
  *  - 创建自定义预设（内联表单）
  *  - 删除自定义预设
  */
@@ -2032,7 +2032,7 @@ export class PresetAgentViewPane extends ViewPane {
 
 		try {
 			// Directly select the preset by ID — builtin agents share the same ID.
-			this.agentStudioService.fireSelectEmployee(preset.id);
+			this.agentStudioService.fireSelectAgent(preset.id);
 			this.notificationService.info(
 				`Chatting with "${preset.name}".`
 			);
@@ -2049,7 +2049,7 @@ export class PresetAgentViewPane extends ViewPane {
 
 	private async _openPresetEditor(preset: AgentPreset): Promise<void> {
 		// Open the agent settings editor pane only.
-		// NOTE: do NOT call fireSelectEmployee() here — that would switch the
+		// NOTE: do NOT call fireSelectAgent() here — that would switch the
 		// main chat panel to chat with this agent, which is NOT what the user
 		// wants. The click should only open the independent editor pane.
 		try {

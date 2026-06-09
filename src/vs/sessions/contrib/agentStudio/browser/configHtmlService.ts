@@ -43,7 +43,7 @@ const RATE_LIMIT_PER_MINUTE = 30;
 /**
  * Fused agent view used by ConfigMD: agent DEFINITION (name/configMd) merged
  * with per-workspace RUNTIME state (agentDir/workspaceId from the binding).
- * Replaces the legacy unified `Employee` shape after Employee retirement.
+ * Replaces the legacy unified `Agent` shape after Agent retirement.
  */
 interface AgentRuntimeView {
 	id: string;
@@ -497,9 +497,6 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	private readonly _onDidRequestChatSend = this._register(new Emitter<{ agentId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }>());
 	readonly onDidRequestChatSend: Event<{ agentId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }> = this._onDidRequestChatSend.event;
 
-	private readonly _onDidRequestCanvasPreview = this._register(new Emitter<{ agentId: string }>());
-	readonly onDidRequestCanvasPreview: Event<{ agentId: string }> = this._onDidRequestCanvasPreview.event;
-
 	private readonly _agents = new Map<string, IAgentMdState>();
 	private readonly _rateLimits = new Map<string, { count: number; resetAt: number }>();
 
@@ -563,22 +560,22 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── Capability Check ──────────────────────────────────────────────────
 
 	async checkCapability(agentId: string, capability: ConfigMdCapability): Promise<void> {
-		const employee = await this._resolveAgentView(agentId);
-		if (!employee) {
+		const view = await this._resolveAgentView(agentId);
+		if (!view) {
 			throw new Error(`Agent '${agentId}' not found`);
 		}
-		const allowed = employee.configMd?.capabilities;
+		const allowed = view.configMd?.capabilities;
 		// If capabilities is not configured, allow read-only and chat capabilities by default
 		if (!allowed) {
 			const defaultAllowed: ConfigMdCapability[] = ['md.read', 'md.write', 'chat.send', 'chat.history', 'agent.status', 'agent.config'];
 			if (!defaultAllowed.includes(capability)) {
-				throw new Error(`ConfigMD capability '${capability}' not allowed by default for agent '${employee.name}'`);
+				throw new Error(`ConfigMD capability '${capability}' not allowed by default for agent '${view.name}'`);
 			}
 			return;
 		}
 		if (!allowed.includes(capability)) {
 			throw new Error(
-				`ConfigMD capability '${capability}' not allowed for agent '${employee.name}'. `
+				`ConfigMD capability '${capability}' not allowed for agent '${view.name}'. `
 				+ `Allowed: [${allowed.join(', ')}]`,
 			);
 		}
@@ -600,9 +597,9 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── State Resolution ──────────────────────────────────────────────────
 
 	/**
-	 * Fused runtime view of an agent, replacing the legacy `getEmployee()` call.
+	 * Fused runtime view of an agent, replacing the legacy `getAgent()` call.
 	 *
-	 * The old `Employee` record co-located DEFINITION fields (name/configMd) and
+	 * The old `Agent` record co-located DEFINITION fields (name/configMd) and
 	 * per-workspace RUNTIME fields (agentDir/workspaceId). Those are now split:
 	 *   - definition  → `getAgent(agentId)`            (global, custom-agents.json + builtins)
 	 *   - runtime     → `getAgentBinding(wsId, agentId)` (per-workspace, agent-bindings.json)
@@ -656,15 +653,15 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		const existing = this._agents.get(agentId);
 		if (existing) { return existing; }
 
-		const employee = await this._resolveAgentView(agentId);
-		if (!employee?.configMd || !employee.agentDir) {
+		const view = await this._resolveAgentView(agentId);
+		if (!view?.configMd || !view.agentDir) {
 			return null;
 		}
 
-		const agentDirUri = await this._resolveAgentDirUri(employee);
+		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) { return null; }
 
-		const cfg = employee.configMd;
+		const cfg = view.configMd;
 		// ConfigHtml migration: the panel now stores raw HTML in `config.html`.
 		// Resolution order:
 		//   1) explicit cfg.mdPath (respect whatever was configured)
@@ -696,8 +693,8 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			// minimal self-contained document; legacy markdown panels keep the
 			// old anchor-based scaffold.
 			markdown = isHtmlPanel
-				? buildDefaultConfigHtml(employee.name)
-				: `# ${employee.name}'s Panel\n\n<!-- agent-state:notes -->\n_(Empty)_\n<!-- /agent-state:notes -->\n`;
+				? buildDefaultConfigHtml(view.name)
+				: `# ${view.name}'s Panel\n\n<!-- agent-state:notes -->\n_(Empty)_\n<!-- /agent-state:notes -->\n`;
 			try {
 				await this.fileService.writeFile(mdUri, VSBuffer.fromString(markdown));
 			} catch (err) {
@@ -927,11 +924,11 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 * and a small set of default styles. It is regenerated on every call.
 	 */
 	async previewToFile(agentId: string): Promise<{ path: string; version: number }> {
-		const employee = await this._resolveAgentView(agentId);
-		if (!employee?.agentDir) {
+		const view = await this._resolveAgentView(agentId);
+		if (!view?.agentDir) {
 			throw new Error(`Agent directory not found for ${agentId}`);
 		}
-		const agentDirUri = await this._resolveAgentDirUri(employee);
+		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) {
 			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
 		}
@@ -983,11 +980,11 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		const wrapped = `[ConfigMD HTML Event: ${eventName}]\n${JSON.stringify(payload, null, 2)}`;
 		try {
-			const employee = await this._resolveAgentView(agentId);
+			const view = await this._resolveAgentView(agentId);
 			const chatMessage = await this.agentChatService.sendMessage(
 				agentId,
 				wrapped,
-				{ agentSessionId, workspaceId: employee?.workspaceId },
+				{ agentSessionId, workspaceId: view?.workspaceId },
 				() => undefined,
 			);
 			if (chatMessage?.content) {
@@ -1065,7 +1062,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		//      ever sourced from outside the host, but in practice it
 		//      always matches `_ctx` and gives us a sanity-check log.
 		//   4. The active-session registry (chat panel currently showing
-		//      this employee). Last resort.
+		//      this view). Last resort.
 		const ctxTrusted = p._ctx || {};
 		const ctxEcho = p.ctx || {};
 		const resolvedSessionId =
@@ -1232,14 +1229,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	): Promise<ChatMessage> {
 		await this.checkCapability(agentId, 'chat.send');
 		this._checkRateLimit(agentId);
-		const employee = await this._resolveAgentView(agentId);
+		const view = await this._resolveAgentView(agentId);
 		const fullMsg = options?.context
 			? `[Context from ConfigMD]\n${options.context}\n\n${message}`
 			: message;
 		const chatMessage = await this.agentChatService.sendMessage(
 			agentId,
 			fullMsg,
-			{ agentSessionId: options?.agentSessionId, workspaceId: employee?.workspaceId },
+			{ agentSessionId: options?.agentSessionId, workspaceId: view?.workspaceId },
 			() => undefined,
 		);
 		if (chatMessage?.content) {
@@ -1287,7 +1284,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	): Promise<{ html: string; raw: string }> {
 		await this.checkCapability(agentId, 'chat.send');
 		this._checkRateLimit(agentId);
-		const employee = await this._resolveAgentView(agentId);
+		const view = await this._resolveAgentView(agentId);
 
 		const systemPrompt = CONFIGHTML_SYSTEM_PROMPT;
 		const userMsg = options?.currentHtml && options.currentHtml.trim()
@@ -1323,7 +1320,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 				systemPrompt,
 				explicitSkillIds: ['confightml'],
 				model: options?.model,
-				workspaceId: employee?.workspaceId,
+				workspaceId: view?.workspaceId,
 				// One-shot generation: no chat history session, no tool loop.
 				chatMode: 'ask',
 			},
@@ -1515,17 +1512,6 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		return '';
 	}
 
-	async requestCanvasPreview(agentId: string): Promise<void> {
-		// Make sure the latest source is rendered/persisted so the Canvas
-		// picks up fresh HTML via configmd.getResource.
-		try {
-			await this.resolveState(agentId);
-		} catch {
-			// best-effort; Canvas will still try to load
-		}
-		this._onDidRequestCanvasPreview.fire({ agentId: agentId });
-	}
-
 	sendCommandToHtml(agentId: string, command: IConfigMdCommand): void {
 		this._onDidEmitCommand.fire({ agentId: agentId, command });
 	}
@@ -1533,11 +1519,11 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	// ─── Custom Parser / Styles Management ────────────────────────────────
 
 	async uploadParser(agentId: string, content: string, fileName?: string): Promise<{ parserPath: string }> {
-		const employee = await this._resolveAgentView(agentId);
-		if (!employee?.agentDir) {
+		const view = await this._resolveAgentView(agentId);
+		if (!view?.agentDir) {
 			throw new Error(`Agent directory not found for ${agentId}`);
 		}
-		const agentDirUri = await this._resolveAgentDirUri(employee);
+		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) {
 			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
 		}
@@ -1553,8 +1539,8 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
 
-		// Persist parserPath to employee record
-		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
+		// Persist parserPath to view record
+		const cfg = { ...(view.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
 		cfg.parserPath = relPath;
 		await this.agentStudioService.updateAgent(agentId, { configMd: cfg });
 
@@ -1572,11 +1558,11 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async uploadStyles(agentId: string, content: string, fileName?: string): Promise<{ stylesPath: string }> {
-		const employee = await this._resolveAgentView(agentId);
-		if (!employee?.agentDir) {
+		const view = await this._resolveAgentView(agentId);
+		if (!view?.agentDir) {
 			throw new Error(`Agent directory not found for ${agentId}`);
 		}
-		const agentDirUri = await this._resolveAgentDirUri(employee);
+		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) {
 			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
 		}
@@ -1586,7 +1572,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
 
-		const cfg = { ...(employee.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
+		const cfg = { ...(view.configMd || { mdPath: 'config.md', displayMode: 'side' as const }) };
 		cfg.stylesPath = relPath;
 		await this.agentStudioService.updateAgent(agentId, { configMd: cfg });
 
@@ -1602,9 +1588,9 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async removeParser(agentId: string): Promise<void> {
-		const employee = await this._resolveAgentView(agentId);
-		if (!employee?.configMd) { return; }
-		const cfg = { ...employee.configMd };
+		const view = await this._resolveAgentView(agentId);
+		if (!view?.configMd) { return; }
+		const cfg = { ...view.configMd };
 		delete cfg.parserPath;
 		await this.agentStudioService.updateAgent(agentId, { configMd: cfg });
 
@@ -1619,8 +1605,8 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	async getInfo(agentId: string): Promise<{ parserSource: 'builtin' | 'custom'; parserPath?: string; stylesPath?: string; hasStyles: boolean }> {
-		const employee = await this._resolveAgentView(agentId);
-		const cfg = employee?.configMd;
+		const view = await this._resolveAgentView(agentId);
+		const cfg = view?.configMd;
 		const st = this._agents.get(agentId);
 		const parserSource: 'builtin' | 'custom' = st?.customParser ? 'custom' : (cfg?.parserPath ? 'custom' : 'builtin');
 		return {

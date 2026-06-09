@@ -101,7 +101,7 @@ export function getAgentColorCSSProps(agentId: string): Record<string, string> {
 
 /**
  * Pre-register colors for a list of agent IDs (preserving insertion order).
- * Call this when loading employees to ensure consistent color assignment.
+ * Call this when loading agents to ensure consistent color assignment.
  */
 export function registerAgentColors(agentIds: string[]): void {
 	for (const id of agentIds) {

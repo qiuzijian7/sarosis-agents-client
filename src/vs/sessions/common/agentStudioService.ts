@@ -8,7 +8,6 @@
 import { createDecorator } from "../../platform/instantiation/common/instantiation.js";
 import { Event } from "../../base/common/event.js";
 import type {
-	Employee,
 	Agent,
 	AgentBinding,
 	Workspace,
@@ -21,7 +20,6 @@ import type {
 	TaskBoardStatus,
 	TaskBoard,
 	TaskAttachment,
-	AgentExportData,
 	OrchestrationPlan,
 	PlanTask,
 	ConfigMdCapability,
@@ -37,10 +35,9 @@ export interface IAgentStudioService {
 	readonly _serviceBrand: undefined;
 
 	// Events
-	readonly onDidChangeEmployees: Event<void>;
 	readonly onDidChangeWorkspace: Event<string>;
 	readonly onDidChangeSessions: Event<void>;
-	readonly onDidSelectEmployee: Event<string | null>;
+	readonly onDidSelectAgent: Event<string | null>;
 	/** Fired when agents change (custom agent CRUD). */
 	readonly onDidChangeAgents: Event<void>;
 	/**
@@ -52,15 +49,7 @@ export interface IAgentStudioService {
 	readonly onDidChangeActiveWorkspace: Event<string | undefined>;
 
 	// Agent selection
-	fireSelectEmployee(agentId: string | null): void;
-
-	// Employees (DEPRECATED — use Agents below)
-	getEmployees(workspaceId?: string): Promise<Employee[]>;
-	getAllEmployees(): Promise<Employee[]>;
-	getEmployee(id: string): Promise<Employee | undefined>;
-	createEmployee(data: Partial<Employee>): Promise<Employee>;
-	updateEmployee(id: string, data: Partial<Employee>): Promise<Employee>;
-	deleteEmployee(id: string): Promise<void>;
+	fireSelectAgent(agentId: string | null): void;
 
 	// Agents — chat-ready agent definitions (builtins + custom presets)
 	getAgents(): Promise<Agent[]>;
@@ -135,32 +124,6 @@ export interface IAgentStudioService {
 	createSession(data: Partial<AgentStudioSession>): Promise<AgentStudioSession>;
 	deleteSession(id: string): Promise<void>;
 
-	// Agent Canvas Position & Connections — persist to agent.yaml for reload survival
-	updateEmployeePosition(
-		agentId: string,
-		position: { x: number; y: number },
-	): Promise<void>;
-	getEmployeePosition(
-		agentId: string,
-	): Promise<{ x: number; y: number } | undefined>;
-	updateEmployeeConnections(
-		agentId: string,
-		connections: Array<{
-			id: string;
-			sourceId: string;
-			targetId: string;
-			type: string;
-			label?: string;
-		}>,
-	): Promise<void>;
-
-	// Import / Export — portable agent instance bundles
-	exportEmployee(id: string): Promise<AgentExportData>;
-	importEmployee(
-		data: AgentExportData,
-		workspaceId?: string,
-	): Promise<Employee>;
-
 	// --- Worktree Integration (opencode-compatible) -------------------------------------
 
 	/**
@@ -182,12 +145,6 @@ export interface IAgentStudioService {
 		worktreePath: string,
 		worktreeBranch?: string,
 	): Promise<void>;
-
-	/**
-	 * Get the effective worktree path for an agent.
-	 * Returns Employee.worktreePath if set, otherwise falls back to Workspace.worktreePath.
-	 */
-	getEffectiveWorktreePath(agentId: string): Promise<string | undefined>;
 
 	/**
 	 * Reset the worktree associated with a workspace to its default state.
@@ -444,7 +401,7 @@ export interface IAgentChatService {
 	readonly _serviceBrand: undefined;
 
 	/**
-	 * Fired when the agent session list for any employee changes
+	 * Fired when the agent session list for any agent changes
 	 * (session created, renamed, deleted, or updated).
 	 * The payload carries the agentId whose sessions changed.
 	 */
@@ -856,18 +813,6 @@ export interface IConfigHtmlService {
 		workspaceSessionId?: string;
 	}>;
 
-	/**
-	 * Fired when the ConfigHtml editor's preview button asks for the agent's
-	 * config.html to be shown (and made editable) inside the right-hand
-	 * Canvas panel. Because the ConfigHtml editor (AgentEditorPane) and the
-	 * Canvas live in DIFFERENT webview instances, this event is the host-side
-	 * bridge: every webview controller subscribes and forwards it to its own
-	 * webview, but only the Canvas panel reacts.
-	 */
-	readonly onDidRequestCanvasPreview: Event<{
-		agentId: string;
-	}>;
-
 	// --- Resource & State --------------------------------------------------
 
 	/**
@@ -930,14 +875,6 @@ export interface IConfigHtmlService {
 		options?: { currentHtml?: string; model?: string },
 	): Promise<{ html: string; raw: string }>;
 
-	/**
-	 * Request that the agent's current config.html be opened (editable) inside
-	 * the right-hand Canvas panel. Fires `onDidRequestCanvasPreview` which the
-	 * webview controllers forward to their webviews; the Canvas panel switches
-	 * to HTML display mode and loads this agent's resource.
-	 */
-	requestCanvasPreview(agentId: string): Promise<void>;
-
 	// --- HTML Event Handling ---------------------------------------------
 
 	/**
@@ -971,7 +908,7 @@ export interface IConfigHtmlService {
 
 	/**
 	 * Register the agent session a chat panel is currently showing for a
-	 * given employee. The HtmlPreviewEditorPane uses this when forwarding
+	 * given agent. The HtmlPreviewEditorPane uses this when forwarding
 	 * `imgui.submit` so the message lands in the same Fork session the user
 	 * is looking at, instead of falling back to the default session.
 	 *
@@ -989,7 +926,7 @@ export interface IConfigHtmlService {
 	): void;
 
 	/**
-	 * Read the currently registered active agent session for an employee,
+	 * Read the currently registered active agent session for an agent,
 	 * or `undefined` if no chat panel has registered one.
 	 */
 	getActiveAgentSession(agentId: string): string | undefined;

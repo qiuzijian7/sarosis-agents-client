@@ -78,7 +78,7 @@ export class AgentStudioViewPane extends ViewPane {
 // ─── Specialized Panel ViewPanes ─────────────────────────────────────────────
 
 /**
- * Chat ViewPane — shows the employee chat interface.
+ * Chat ViewPane — shows the agent chat interface.
  * Can be freely docked anywhere in the workbench.
  */
 export class AgentStudioChatViewPane extends AgentStudioViewPane {

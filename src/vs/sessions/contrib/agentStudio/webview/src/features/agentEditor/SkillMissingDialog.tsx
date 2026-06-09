@@ -7,7 +7,7 @@ import React, { useState, useCallback } from 'react';
 import { useAgentStore } from '../../store/useAgentStore';
 
 interface SkillMissingDialogProps {
-	employeeId: string;
+	agentId: string;
 	missingSkillIds: string[];
 	onClose: () => void;
 	onIgnore?: () => void;
@@ -15,7 +15,7 @@ interface SkillMissingDialogProps {
 }
 
 export function SkillMissingDialog({ 
-	employeeId, 
+	agentId, 
 	missingSkillIds, 
 	onClose, 
 	onIgnore, 
@@ -48,11 +48,11 @@ export function SkillMissingDialog({
 	}
 
 	return (
-		<div className="employee-form-overlay" onClick={onClose}>
-			<div className="employee-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
+		<div className="agent-form-overlay" onClick={onClose}>
+			<div className="agent-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
 				<h3 style={{ margin: '0 0 8px', fontSize: '14px' }}>技能缺失警告</h3>
 				<p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginBottom: '16px' }}>
-					代理 "{useAgentStore.getState().agents.find(e => e.id === employeeId)?.name || employeeId}" 引用了以下缺失的技能：
+					代理 "{useAgentStore.getState().agents.find(e => e.id === agentId)?.name || agentId}" 引用了以下缺失的技能：
 				</p>
 
 				<div className="form-field">

@@ -35,12 +35,12 @@ import type { IWorkflow } from './crewTeam.js';
  *
  * 每个工作流默认对应一个 Agent：
  * - presetId: 该工作流使用的预设 Agent ID（默认 'workflow-agent'）
- * - agentId: 部署后真实 Employee 的 ID（执行时确保存在）
+ * - agentId: 部署后真实 Agent 的 ID（执行时确保存在）
  */
 export interface IStoredWorkflow extends IWorkflow {
 	/** 关联的预设 Agent ID（默认 'workflow-agent'） */
 	presetId?: string;
-	/** 部署后的真实 Employee ID（执行工作流时使用） */
+	/** 部署后的真实 Agent ID（执行工作流时使用） */
 	agentId?: string;
 	/** 所属工作区 ID */
 	workspaceId?: string;

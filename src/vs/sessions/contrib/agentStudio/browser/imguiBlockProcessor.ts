@@ -519,7 +519,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 	// agentSessionId) tuple captured at the moment the preview was opened.
 	// We attach it to every submit payload so the host can route imgui.submit
 	// → chat.send to the exact session the user expects, even after they
-	// switch employees / Forks in the chat panel.
+	// switch agents / Forks in the chat panel.
 	var __imguiCtx = {
 		agentId: undefined,
 		workspaceId: undefined,
@@ -612,7 +612,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 			}
 			badge.innerHTML =
 				'<span class="imgui-ctx-mode ' + modeClass + '">' + modeLabel + '</span>' +
-				'<span class="imgui-ctx-row" title="employee: ' + escapeAttr(emp) + '">'+
+				'<span class="imgui-ctx-row" title="agent: ' + escapeAttr(emp) + '">'+
 				  '<span class="imgui-ctx-key">agent</span>'+
 				  '<span class="imgui-ctx-val">' + escapeText(shortId(emp, 18)) + '</span>'+
 				'</span>' +
@@ -775,7 +775,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 		var m = e.data;
 		if (!m || typeof m.type !== 'string') return;
 		if (m.type === 'imgui.ctx') {
-			// Host telling us which (employee, workspace, fork session,
+			// Host telling us which (agent, workspace, fork session,
 			// agent session) this preview is bound to. Cache it for
 			// subsequent submits.
 			__imguiCtx = {

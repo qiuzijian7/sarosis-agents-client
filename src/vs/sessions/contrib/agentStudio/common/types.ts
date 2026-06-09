@@ -38,7 +38,6 @@ export type {
 	ChatMessage,
 	Connection,
 	Delegation,
-	Employee,
 	IAgentHandOff,
 	IAgentHooks,
 	IAgentHookEntry,

@@ -575,8 +575,8 @@ export class ContextManager implements IContextManager {
 			try {
 				const workspace = await this._agentStudioService.getWorkspace(workspaceId);
 				if (workspace) {
-					// Fetch employees in this workspace
-					const employees = await this._fetchEmployees(workspace.employees);
+					// Fetch agent definitions in this workspace
+					const agents = await this._fetchAgents(workspace.agents);
 
 					// Map connections
 					const connections: WorkspaceConnection[] = (workspace.connections || []).map(conn => ({
@@ -591,7 +591,7 @@ export class ContextManager implements IContextManager {
 						workspaceId: workspace.id,
 						workspaceName: workspace.name || workspace.id,
 						workspacePath: workspace.path,
-						employees,
+						agents,
 						connections,
 						layout: workspace.layout,
 						// Note: workspace.rootInfo is agentStudioTypes.WorkspaceRootInfo, not contextTypes.WorkspaceRootInfo
@@ -607,7 +607,7 @@ export class ContextManager implements IContextManager {
 		return {
 			workspaceId,
 			workspaceName: 'Unknown Workspace',
-			employees: [],
+			agents: [],
 			connections: [],
 		};
 	}
@@ -615,7 +615,7 @@ export class ContextManager implements IContextManager {
 	/**
 	 * Fetch agent definitions by IDs (for workspace context).
 	 */
-	private async _fetchEmployees(agentIds: ReadonlyArray<string>): Promise<Agent[]> {
+	private async _fetchAgents(agentIds: ReadonlyArray<string>): Promise<Agent[]> {
 		if (!this._agentStudioService || !agentIds || agentIds.length === 0) {
 			return [];
 		}
@@ -723,7 +723,7 @@ export class ContextManager implements IContextManager {
 						metadata: {
 							sessionName: session.name,
 							workspaceId: session.workspaceId,
-							activeEmployeeId: session.activeEmployeeId,
+							activeAgentId: session.activeAgentId,
 							createdAt: session.createdAt,
 							updatedAt: session.updatedAt,
 							archived: session.archived,

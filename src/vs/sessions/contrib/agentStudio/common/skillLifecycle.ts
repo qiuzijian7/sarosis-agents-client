@@ -41,9 +41,9 @@ export interface ISkillLifecyclePayload {
 	readonly workspaceId?: string;
 	/** 工作区在用户磁盘上的根路径 */
 	readonly workspacePath?: string;
-	/** Agent 实例 ID（Employee.id） */
+	/** Agent 实例 ID（Agent.id） */
 	readonly agentId: string;
-	/** Agent 实例目录名（Employee.agentDir） */
+	/** Agent 实例目录名（Agent.agentDir） */
 	readonly agentDir?: string;
 	/** Skill ID */
 	readonly skillId: string;

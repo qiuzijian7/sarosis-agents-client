@@ -70,25 +70,25 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
-		case 'employee.selected': {
+		case 'agent.selected': {
 			const { agentId } = (data as { agentId: string | null }) ?? {};
-			console.log(`[AgentStudio] received 'employee.selected' event: agentId=${agentId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
+			console.log(`[AgentStudio] received 'agent.selected' event: agentId=${agentId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
 			if (agentId !== undefined) {
 				// Update the Agent store directly (bypass postMessage to avoid echo loop).
 				// NOTE: useAgentStore is the canonical agent store that the chat panel reads from.
 				console.log(`[AgentStudio] → useAgentStore.setState({ selectedAgentId: '${agentId}' })`);
 				useAgentStore.setState({ selectedAgentId: agentId });
 			} else {
-				console.warn(`[AgentStudio] employee.selected event missing agentId, data=`, data);
+				console.warn(`[AgentStudio] agent.selected event missing agentId, data=`, data);
 			}
 			break;
 		}
-		case 'employees.changed':
-			window.dispatchEvent(new CustomEvent('agentStudio:employees-changed'));
+		case 'agents.changed':
+			window.dispatchEvent(new CustomEvent('agentStudio:agents-changed'));
 			break;
 		case 'worktree.changed':
 			// Git worktree list changed (create/remove) — notify the worktree
-			// dropdowns (EmployeeNode card + WorktreeSwitcher) to re-fetch.
+			// dropdowns (agent node card + WorktreeSwitcher) to re-fetch.
 			window.dispatchEvent(new CustomEvent('agentStudio:worktree-changed', { detail: data }));
 			break;
 		case 'workspace.changed':
@@ -221,16 +221,16 @@ initMessageClient((type, data) => {
 			window.dispatchEvent(new CustomEvent('agentStudio:orchestration-plan-updated', { detail: plan }));
 
 			// When a plan status changes (e.g. rejected from TaskOverviewEditorPane),
-			// update the matching chat message metadata so EmployeeChat re-renders
+			// update the matching chat message metadata so AgentChat re-renders
 			// its message list.  This is necessary because:
 			//   1. ChatMessageRaw is wrapped in React.memo — the memo comparator
-			//      only runs when the parent (EmployeeChat) re-renders.
+			//      only runs when the parent (AgentChat) re-renders.
 			//   2. The Zustand subscription inside ChatMessageRaw may not fire if
 			//      the plan data in the store doesn't match the message's planId
 			//      (e.g. the host sends a stale or different plan object).
-			//   3. EmployeeChat only re-renders when the messages array changes.
+			//   3. AgentChat only re-renders when the messages array changes.
 			// Mutating the metadata._planStatus forces a new message object ref,
-			// which triggers EmployeeChat → ChatMessageComponent → ChatMessageRaw
+			// which triggers AgentChat → ChatMessageComponent → ChatMessageRaw
 			// → OrchestrationPlanInline to re-render with fresh data.
 			if (plan?.id && plan.status !== 'pending_approval') {
 				useChatStore.setState(state => {
@@ -269,14 +269,9 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
-		// NOTE: 'configmd.showInCanvas' handler removed — the WorkspaceCanvas
-		// panel (its only listener) has been retired. The host-side
-		// ConfigHtml→Canvas preview bridge (configHtmlService.requestCanvasPreview)
-		// is intentionally kept for now; this event simply has no webview
-		// consumer anymore, so the previous re-dispatch was dead code.
 		case 'agentSessions.changed': {
 			// Agent session list changed (created/renamed/deleted/updated).
-			// Refresh the session list in the chat store if the affected employee
+			// Refresh the session list in the chat store if the affected agent
 			// is currently active so the L0 panel updates automatically.
 			const detail = data as { agentId: string } | undefined;
 			if (detail?.agentId) {
@@ -294,13 +289,13 @@ initMessageClient((type, data) => {
 			const detail = data as { agentId: string; agentSessionId: string } | undefined;
 			if (detail?.agentId && detail?.agentSessionId) {
 				const chatStore = useChatStore.getState();
-				// First select the employee if not already active
+				// First select the agent if not already active
 				if (chatStore.activeAgentId !== detail.agentId) {
 					chatStore.setActiveAgent(detail.agentId);
 				}
 				// Then switch to the session
 				chatStore.switchAgentSession(detail.agentSessionId);
-				console.log(`[AgentStudio] chat.switchToSession → switched to session ${detail.agentSessionId} for employee ${detail.agentId}`);
+				console.log(`[AgentStudio] chat.switchToSession → switched to session ${detail.agentSessionId} for agent ${detail.agentId}`);
 			}
 			break;
 		}
@@ -366,8 +361,6 @@ initMessageClient((type, data) => {
 			// Render an inline checkpoint card so the user can time-travel back.
 			const cp = data as {
 				id: string;
-				/** @deprecated legacy alias; new code should read agentId. */
-				employeeId?: string;
 				agentId?: string;
 				sessionId: string;
 				type: 'user_edit' | 'tool_edit';
@@ -387,13 +380,13 @@ initMessageClient((type, data) => {
 			} | undefined;
 			if (cp?.id) {
 				const chatStore = useChatStore.getState();
-				// Only render for the currently active employee/session to avoid
+				// Only render for the currently active agent/session to avoid
 				// leaking checkpoints from background agents into the open chat.
 				// Skip user_edit anchors: they carry no file snapshot (empty set)
 				// and exist purely as message-boundary markers for range rollback.
 				// Rendering them would spam an empty card before every turn.
 				// Only tool_edit checkpoints (real file snapshots) get a card.
-				if (chatStore.activeAgentId === (cp.agentId ?? cp.employeeId) && cp.type === 'tool_edit') {
+				if (chatStore.activeAgentId === cp.agentId && cp.type === 'tool_edit') {
 					console.log(`[AgentStudio] chat.checkpointCreated → ${cp.type} ${cp.id} (${cp.fileSnapshotIds?.length ?? 0} files, files=${cp.files?.length ?? 0})`);
 					chatStore.addCheckpoint({
 						id: cp.id,

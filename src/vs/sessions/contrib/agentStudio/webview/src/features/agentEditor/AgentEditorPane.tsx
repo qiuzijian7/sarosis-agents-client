@@ -14,7 +14,6 @@ import {
 	onSourceChanged,
 	writeSource,
 	postSyncToIframe,
-	requestCanvasPreview,
 } from '../configmd/configMdBridge';
 import { HtmlEditor } from '../configmd/HtmlEditor';
 import { ConfigHtmlChatBox } from '../configmd/ConfigHtmlChatBox';
@@ -1540,46 +1539,6 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 						<div className="configmd-toolbar">
 							<div className="configmd-toolbar-left">
 								<span className="configmd-toolbar-label">config.html</span>
-							</div>
-							<div className="configmd-toolbar-right">
-								<button
-									className="configmd-icon-btn"
-									onClick={() => {
-										// 1) Flush any pending debounced edit immediately so the
-										//    preview reflects the current editor contents.
-										if (debounceRef.current) {
-											window.clearTimeout(debounceRef.current);
-											debounceRef.current = null;
-										}
-										const cur = useConfigMdStore.getState().byAgent[agentId];
-										const flushed = cur
-											? writeSource(agentId, cur.markdown, {
-												origin: 'editor',
-												// only pass baseVersion when loaded
-												...(cur.loaded && cur.version > 0 ? { baseVersion: cur.version } : {}),
-											})
-												.then((r) => {
-													setMdState(agentId, { version: r.version, dirty: false, loaded: true });
-												})
-												.catch(() => undefined)
-											: Promise.resolve();
-										// 2) After the source is on disk, ask the host to open
-										//    this agent's config.html (editable) in the Canvas panel.
-										void flushed
-											.then(() => requestCanvasPreview(agentId))
-											.catch((err) => {
-												console.error('[ConfigHtml] open canvas preview failed:', err);
-											});
-									}}
-									title="在右侧 Canvas 中预览并编辑该 HTML"
-									aria-label="预览"
-								>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-										<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-										<circle cx="12" cy="12" r="3" />
-									</svg>
-									<span className="configmd-icon-btn-text">预览</span>
-								</button>
 							</div>
 						</div>
 

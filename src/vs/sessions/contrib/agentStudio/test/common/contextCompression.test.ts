@@ -82,7 +82,7 @@ suite('Agent Studio - Context Compression (Hermes 三段式)', () => {
 			id: `m${_idSeq++}`,
 			role,
 			content,
-			employeeId: 'emp-1',
+			agentId: 'emp-1',
 			timestamp: new Date().toISOString(),
 			...extra,
 		} as ChatMessage;

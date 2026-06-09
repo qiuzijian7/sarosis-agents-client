@@ -123,7 +123,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	/**
 	 * Resolve the sessions directory and index file URI for an agent.
 	 *
-	 * Pure agent model — there is NO employee/instance indirection:
+	 * Pure agent model — there is NO agent/instance indirection:
 	 *   - The agent's own id is the on-disk directory name.
 	 *   - The storage root follows the currently active workspace
 	 *     (workspace.path), falling back to the global data dir when no

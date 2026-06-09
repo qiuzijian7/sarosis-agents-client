@@ -38,15 +38,15 @@ export async function openFile(path: string, options?: OpenFileOptions): Promise
  * host's center editor area. Edits made there auto-sync back to the panel
  * via the file watcher.
  */
-export async function openAgentConfigMd(employeeId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { employeeId, kind: 'configMd', ...options });
+export async function openAgentConfigMd(agentId: string, options?: OpenFileOptions): Promise<void> {
+	await sendRequest('files.open', { agentId, kind: 'configMd', ...options });
 }
 
 /**
  * Open an HTML file as a rendered webview preview in the host's center editor
  * area (browser-like view, not source code text).
  *
- * `employeeId` is optional — when provided, the host will use it directly to
+ * `agentId` is optional — when provided, the host will use it directly to
  * route SDK postMessages back to ConfigHtmlService (avoiding fragile path-
  * reverse-engineering). Callers that already know the owning agent (e.g.
  * `previewAgentConfigMd`) should always pass it.
@@ -61,7 +61,7 @@ export async function openAgentConfigMd(employeeId: string, options?: OpenFileOp
 export async function openHtmlPreview(
 	path: string,
 	options?: OpenFileOptions & {
-		employeeId?: string;
+		agentId?: string;
 		workspaceId?: string;
 		workspaceSessionId?: string;
 		agentSessionId?: string;
@@ -80,10 +80,10 @@ export async function openHtmlPreview(
  * user changes selection in the chat panel.
  */
 export async function previewAgentConfigMd(
-	employeeId: string,
+	agentId: string,
 	options?: OpenFileOptions,
 ): Promise<string> {
-	const r = await sendRequest('configmd.previewToFile', { employeeId }) as { path: string };
+	const r = await sendRequest('configmd.previewToFile', { agentId }) as { path: string };
 	if (!r?.path) {
 		throw new Error('previewToFile did not return a path');
 	}
@@ -105,7 +105,7 @@ export async function previewAgentConfigMd(
 		workspaceSessionId = sessionStore.activeSessionId ?? undefined;
 		// Prefer the per-Fork agentSessionId mapping if available; this is
 		// how the webview maps (agent, fork) → that fork's chat session.
-		const forkAgentSessionId = sessionStore.getAgentSessionId(employeeId);
+		const forkAgentSessionId = sessionStore.getAgentSessionId(agentId);
 		if (forkAgentSessionId) {
 			agentSessionId = forkAgentSessionId;
 		}
@@ -115,7 +115,7 @@ export async function previewAgentConfigMd(
 			const { useChatStore } = require('../store/useChatStore');
 			const cs = useChatStore.getState();
 			// Only attach a session id if the chat panel is showing the
-			// same employee — otherwise the captured id would be for an
+			// same agent — otherwise the captured id would be for an
 			// unrelated agent and would silently mis-route imgui submits.
 			if (cs.activeAgentId === agentId) {
 				agentSessionId = cs.activeAgentSessionId ?? undefined;
@@ -125,7 +125,7 @@ export async function previewAgentConfigMd(
 
 	await sendRequest('files.openHtmlPreview', {
 		path: r.path,
-		employeeId,
+		agentId,
 		workspaceId,
 		workspaceSessionId,
 		agentSessionId,
@@ -137,15 +137,15 @@ export async function previewAgentConfigMd(
 /**
  * Open the agent's custom parser script (if configured).
  */
-export async function openAgentParser(employeeId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { employeeId, kind: 'configMdParser', ...options });
+export async function openAgentParser(agentId: string, options?: OpenFileOptions): Promise<void> {
+	await sendRequest('files.open', { agentId, kind: 'configMdParser', ...options });
 }
 
 /**
  * Open the agent's custom styles file (if configured).
  */
-export async function openAgentStyles(employeeId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { employeeId, kind: 'configMdStyles', ...options });
+export async function openAgentStyles(agentId: string, options?: OpenFileOptions): Promise<void> {
+	await sendRequest('files.open', { agentId, kind: 'configMdStyles', ...options });
 }
 
 /**

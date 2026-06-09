@@ -221,7 +221,7 @@ export class TdbamViewPane extends ViewPane {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		// 监听 Canvas 中 Agent 选中事件（agentId 如 "coder-4fuqqp3"）
 		// 这是 L0 过滤最可靠的来源，因为 L0 写入时用的就是 agentId
-		this._register(this._agentStudioService.onDidSelectEmployee(agentId => {
+		this._register(this._agentStudioService.onDidSelectAgent(agentId => {
 			if (agentId) {
 				this._activeAgentId = agentId;
 				// 如果 L0 已展开，立即刷新以展示新 Agent 的对话
@@ -235,7 +235,7 @@ export class TdbamViewPane extends ViewPane {
 		}));
 		// 监听对话轮次完成事件，自动刷新已展开的记忆面板
 		// turnId 格式：`${sessionId}::${agentId}` 或 `${agentId}`
-		// 从 turnId 提取 agentId，作为 onDidSelectEmployee 的补充（agent 执行时更新）
+		// 从 turnId 提取 agentId，作为 onDidSelectAgent 的补充（agent 执行时更新）
 		this._register(this._agentDriverService.onDidChangeTurnStatus(({ status, turnId }) => {
 			// 提取 agentId 和 agentSessionId：turnId 可能是 "sessionId::agentId" 或 "agentId"
 			const parts = turnId.split('::');
@@ -260,8 +260,8 @@ export class TdbamViewPane extends ViewPane {
 				}
 			}
 		}));
-		// 监听 employees 变更：当前 Workspace 下 agent 列表变了，需要清缓存并刷新
-		this._register(this._agentStudioService.onDidChangeEmployees(() => {
+		// 监听 agents 变更：当前 Workspace 下 agent 列表变了，需要清缓存并刷新
+		this._register(this._agentStudioService.onDidChangeAgents(() => {
 			this._workspaceAgentIds = undefined;
 			this._workspaceAgentsLoading = undefined;
 			if (this._l0ActiveTab === 'workspace' && this._expandedLayers.has('L0')) {
@@ -578,14 +578,14 @@ export class TdbamViewPane extends ViewPane {
 				this._renderTurnItems(tabContent, filteredResult);
 				return;
 			}
-			// 懒加载 workspace employees
+			// 懒加载 workspace agents
 			const loading = append(tabContent, $('div.tdbam-list-empty'));
 			loading.textContent = '加载 Workspace Agent 列表中…';
 			loading.style.opacity = '0.6';
 			loading.style.fontStyle = 'italic';
 			void (async () => {
 				try {
-					const ids = await this._loadWorkspaceEmployeeIds();
+					const ids = await this._loadWorkspaceAgentIds();
 					if (this._disposed || this._l0ActiveTab !== 'workspace') return;
 					clearNode(tabContent);
 					const filteredResult = this._filterTurnsByWorkspace(sourceResult, ids);
@@ -730,9 +730,9 @@ export class TdbamViewPane extends ViewPane {
 
 	/**
 	 * 懒加载当前 Workspace 下的 agentId 集合，结果缓存到 {@link _workspaceAgentIds}。
-	 * 并发调用共享同一个 Promise，避免重复请求 employees.json。
+	 * 并发调用共享同一个 Promise，避免重复请求 agents.json。
 	 */
-	private _loadWorkspaceEmployeeIds(): Promise<Set<string>> {
+	private _loadWorkspaceAgentIds(): Promise<Set<string>> {
 		if (this._workspaceAgentIds) {
 			return Promise.resolve(this._workspaceAgentIds);
 		}
@@ -740,11 +740,11 @@ export class TdbamViewPane extends ViewPane {
 			return this._workspaceAgentsLoading;
 		}
 		const p = (async () => {
-			const employees = await this._agentStudioService.getAgents();
+			const agents = await this._agentStudioService.getAgents();
 			const ids = new Set<string>();
-			for (const emp of employees) {
-				if (emp && typeof emp.id === 'string' && emp.id) {
-					ids.add(emp.id);
+			for (const agent of agents) {
+				if (agent && typeof agent.id === 'string' && agent.id) {
+					ids.add(agent.id);
 				}
 			}
 			this._workspaceAgentIds = ids;

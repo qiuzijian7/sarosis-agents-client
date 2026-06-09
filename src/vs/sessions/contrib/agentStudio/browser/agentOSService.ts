@@ -248,7 +248,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				if (models && models.length > 0) {
 					// ── Guard: do NOT overwrite an explicit selection ──
 					// The async .then() can resolve after the webview has
-					// already synced an employee-level selection (e.g. Knot)
+					// already synced an agent-level selection (e.g. Knot)
 					// via providers.select → setActiveModelSelection().
 					// Blindly overwriting here would snap the selection back
 					// to a different provider (e.g. OpenRouter).

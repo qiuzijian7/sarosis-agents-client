@@ -28,7 +28,7 @@ import { IUntypedEditorInput } from '../../../../workbench/common/editor.js';
  *       without having to reverse-engineer the file path;
  *     - imgui form submits land in the SAME Fork session the user was
  *       looking at when they opened the preview, even if they later
- *       switch the chat panel to a different employee or session;
+ *       switch the chat panel to a different agent or session;
  *     - multiple parallel Forks for the same agent can each open their
  *       own preview without cross-talk.
  *   When opened generically (e.g. directly clicking a `.html` file),
@@ -49,7 +49,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 
 	private readonly _resource: URI;
 	private readonly _title: string;
-	private readonly _employeeId: string | undefined;
+	private readonly _agentId: string | undefined;
 	private readonly _workspaceId: string | undefined;
 	private readonly _workspaceSessionId: string | undefined;
 	private readonly _agentSessionId: string | undefined;
@@ -65,7 +65,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 		super();
 		this._resource = resource;
 		this._title = title;
-		this._employeeId = agentId;
+		this._agentId = agentId;
 		this._workspaceId = workspaceId;
 		this._workspaceSessionId = workspaceSessionId;
 		this._agentSessionId = agentSessionId;
@@ -80,12 +80,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 	}
 
 	get agentId(): string | undefined {
-		return this._employeeId;
-	}
-
-	/** @deprecated 重构期间保留，待全部消费方迁移到 agentId 后删除。 */
-	get employeeId(): string | undefined {
-		return this._employeeId;
+		return this._agentId;
 	}
 
 	get workspaceId(): string | undefined {

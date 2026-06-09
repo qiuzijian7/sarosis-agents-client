@@ -3,12 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Employee Chat — Type definitions (ported from sarosis-webui)
+// Agent Chat — Type definitions (ported from sarosis-webui)
 
 import { AgentStatus } from '../../common/agentStudioTypes.js';
 
 /** Chat message with streaming/tool-call/thinking support */
-export interface IEmployeeChatMessage {
+export interface IAgentChatMessage {
 	readonly id: string;
 	readonly role: 'user' | 'assistant' | 'system';
 	content: string;
@@ -40,8 +40,8 @@ export const STATUS_MAP: Record<AgentStatus, { label: string; color: string; bg:
 	[AgentStatus.Offline]:   { label: '离线',   color: '#6b7280',  bg: 'rgba(255,255,255,0.02)', dot: 'rgba(255,255,255,0.2)', animated: false },
 };
 
-/** Employee info passed to the chat panel */
-export interface IEmployeeInfo {
+/** Agent info passed to the chat panel */
+export interface IAgentInfo {
 	readonly id: string;
 	readonly name: string;
 	readonly role: string;

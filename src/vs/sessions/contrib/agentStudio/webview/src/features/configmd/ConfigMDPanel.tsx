@@ -42,7 +42,7 @@ interface ConfigMdConfig {
 }
 
 interface ConfigMDPanelProps {
-	employeeId: string;
+	agentId: string;
 	config: ConfigMdConfig;
 	className?: string;
 }
@@ -96,11 +96,11 @@ const sandboxAttr = (level: ConfigMdConfig['sandboxLevel']) => {
 	}
 };
 
-export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config, className }) => {
+export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ agentId, config, className }) => {
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const debounceRef = useRef<number | null>(null);
 
-	const agentState = useConfigMdStore((s) => s.byAgent[employeeId]);
+	const agentState = useConfigMdStore((s) => s.byAgent[agentId]);
 	const setAgentState = useConfigMdStore((s) => s.setState);
 	const setLoading = useConfigMdStore((s) => s.setLoading);
 	const setError = useConfigMdStore((s) => s.setError);
@@ -117,17 +117,17 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 	// ─── Initial load ────────────────────────────────────────────────────
 	useEffect(() => {
 		let cancelled = false;
-		setLoading(employeeId, true);
-		setError(employeeId, undefined);
-		fetchState(employeeId)
+		setLoading(agentId, true);
+		setError(agentId, undefined);
+		fetchState(agentId)
 			.then((s) => {
 				if (cancelled) { return; }
 				if (!s) {
-					setError(employeeId, 'ConfigMD 资源不可用');
-					setLoading(employeeId, false);
+					setError(agentId, 'ConfigMD 资源不可用');
+					setLoading(agentId, false);
 					return;
 				}
-				setAgentState(employeeId, {
+				setAgentState(agentId, {
 					markdown: s.markdown,
 					html: s.html,
 					stylesContent: s.stylesContent,
@@ -135,22 +135,22 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 					loaded: true,
 					dirty: false,
 				});
-				setLoading(employeeId, false);
+				setLoading(agentId, false);
 			})
 			.catch((err) => {
 				if (cancelled) { return; }
-				setError(employeeId, err instanceof Error ? err.message : String(err));
-				setLoading(employeeId, false);
+				setError(agentId, err instanceof Error ? err.message : String(err));
+				setLoading(agentId, false);
 			});
 		return () => { cancelled = true; };
-	}, [employeeId, setAgentState, setError, setLoading]);
+	}, [agentId, setAgentState, setError, setLoading]);
 
 	// ─── Subscribe to host pushes ────────────────────────────────────────
 	useEffect(() => {
-		const offSrc = onSourceChanged(employeeId, (evt) => {
-			const cur = useConfigMdStore.getState().byAgent[employeeId];
+		const offSrc = onSourceChanged(agentId, (evt) => {
+			const cur = useConfigMdStore.getState().byAgent[agentId];
 			if (cur && evt.markdown === cur.markdown && evt.version === cur.version) { return; }
-			setAgentState(employeeId, {
+			setAgentState(agentId, {
 				markdown: evt.markdown,
 				version: evt.version,
 				dirty: false,
@@ -162,8 +162,8 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 				origin: evt.origin,
 			});
 		});
-		const offHtml = onHtmlRendered(employeeId, (evt) => {
-			setAgentState(employeeId, {
+		const offHtml = onHtmlRendered(agentId, (evt) => {
+			setAgentState(agentId, {
 				html: evt.html,
 				version: evt.version,
 				stylesContent: evt.stylesContent,
@@ -174,28 +174,28 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 				iframeRef.current.srcdoc = doc;
 			}
 		});
-		const offCmd = onCommand(employeeId, (cmd) => {
+		const offCmd = onCommand(agentId, (cmd) => {
 			postCommandToIframe(iframeRef.current, cmd);
 		});
 		return () => { offSrc(); offHtml(); offCmd(); };
-	}, [employeeId, setAgentState]);
+	}, [agentId, setAgentState]);
 
 	// ─── Bind iframe channel ─────────────────────────────────────────────
 	useEffect(() => {
 		const iframe = iframeRef.current;
 		if (!iframe) { return; }
-		const unbind = bindIframeChannel(iframe, employeeId);
+		const unbind = bindIframeChannel(iframe, agentId);
 		return () => unbind();
-	}, [employeeId, agentState?.loaded, isPreviewOnly]);
+	}, [agentId, agentState?.loaded, isPreviewOnly]);
 
 	// ─── MD editor change handler (debounced) ────────────────────────────
 	const onEditorChange = useCallback((next: string) => {
-		updateMarkdownLocal(employeeId, next);
+		updateMarkdownLocal(agentId, next);
 		if (debounceRef.current) {
 			window.clearTimeout(debounceRef.current);
 		}
 		debounceRef.current = window.setTimeout(() => {
-			const cur = useConfigMdStore.getState().byAgent[employeeId];
+			const cur = useConfigMdStore.getState().byAgent[agentId];
 			if (!cur) { return; }
 			// Skip optimistic-concurrency check while not yet loaded to avoid
 			// "Stale write" rejections during initial population.
@@ -203,15 +203,15 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 			if (cur.loaded && cur.version > 0) {
 				opts.baseVersion = cur.version;
 			}
-			writeSource(employeeId, cur.markdown, opts)
+			writeSource(agentId, cur.markdown, opts)
 				.then((r) => {
-					setAgentState(employeeId, { version: r.version, dirty: false, loaded: true });
+					setAgentState(agentId, { version: r.version, dirty: false, loaded: true });
 				})
 				.catch((err) => {
-					setError(employeeId, err instanceof Error ? err.message : String(err));
+					setError(agentId, err instanceof Error ? err.message : String(err));
 				});
 		}, debounceMs);
-	}, [employeeId, debounceMs, setAgentState, setError, updateMarkdownLocal]);
+	}, [agentId, debounceMs, setAgentState, setError, updateMarkdownLocal]);
 
 	// ─── Initial iframe doc ──────────────────────────────────────────────
 	// Use html availability rather than the `loaded` flag, so a fresh
@@ -225,13 +225,13 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 	// ─── Toggle preview / split + force re-render through active parser ─
 	const handleTogglePreview = useCallback(() => {
 		const next: 'split' | 'preview' = isPreviewOnly ? 'split' : 'preview';
-		setView(employeeId, next);
+		setView(agentId, next);
 		// Force re-render to ensure preview reflects current MD via the active
 		// parser. Use the returned HTML directly so the iframe updates even if
 		// the host event channel is delayed.
-		void renderHtml(employeeId)
+		void renderHtml(agentId)
 			.then((r) => {
-				setAgentState(employeeId, {
+				setAgentState(agentId, {
 					html: r.html,
 					version: r.version,
 					loaded: true,
@@ -240,18 +240,18 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 			.catch((err) => {
 				console.error('[ConfigMD] renderHtml failed:', err);
 			});
-	}, [employeeId, isPreviewOnly, setView, setAgentState]);
+	}, [agentId, isPreviewOnly, setView, setAgentState]);
 
 	const handleSettingsChanged = useCallback(() => {
 		// After parser/styles change, request a re-render and reload state
-		void renderHtml(employeeId).catch(() => undefined);
-	}, [employeeId]);
+		void renderHtml(agentId).catch(() => undefined);
+	}, [agentId]);
 
 	// ─── Load built-in demo MD into editor (two-step confirmation) ─────
 	const [demoArmed, setDemoArmed] = useState(false);
 	const demoArmTimer = useRef<number | null>(null);
 	const handleLoadDemo = useCallback(() => {
-		const cur = useConfigMdStore.getState().byAgent[employeeId];
+		const cur = useConfigMdStore.getState().byAgent[agentId];
 		const hasContent = !!(cur?.markdown && cur.markdown.trim().length > 0);
 		if (hasContent && !demoArmed) {
 			setDemoArmed(true);
@@ -269,7 +269,7 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 		}
 		setDemoArmed(false);
 		onEditorChange(CONFIG_MD_DEMO);
-	}, [employeeId, onEditorChange, demoArmed]);
+	}, [agentId, onEditorChange, demoArmed]);
 
 	// ─── Header ──────────────────────────────────────────────────────────
 	const renderHeader = () => (
@@ -343,7 +343,7 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 				</div>
 				{showSettings && (
 					<ConfigMdSettings
-						employeeId={employeeId}
+						agentId={agentId}
 						onClose={() => setShowSettings(false)}
 						onChanged={handleSettingsChanged}
 					/>
@@ -375,14 +375,14 @@ export const ConfigMDPanel: React.FC<ConfigMDPanelProps> = ({ employeeId, config
 							ref={iframeRef}
 							sandbox={sandboxAttr(config.sandboxLevel)}
 							srcDoc={previewSrcDoc}
-							title={`ConfigMD-${employeeId}`}
+							title={`ConfigMD-${agentId}`}
 						/>
 					</div>
 				)}
 			</div>
 			{showSettings && (
 				<ConfigMdSettings
-					employeeId={employeeId}
+					agentId={agentId}
 					onClose={() => setShowSettings(false)}
 					onChanged={handleSettingsChanged}
 				/>

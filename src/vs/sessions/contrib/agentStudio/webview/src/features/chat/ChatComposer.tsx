@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Chat Composer
- *  Mirrors sarosis-webui EmployeeChat layout exactly:
+ *  Mirrors sarosis-webui AgentChat layout exactly:
  *  - chat-composer-box (rounded container, textarea on top, toolbar below)
  *  - chat-toolbar-left: attachment / voice / web-search / divider / provider-tag / agent-tag / model-tag
  *  - chat-send-circle (round send button on the right)

@@ -28,11 +28,12 @@ export interface ICheckpointDatabaseMigration {
  */
 export const checkpointDatabaseMigrations: readonly ICheckpointDatabaseMigration[] = [
 	{
+		// v1: checkpoint schema keyed by agent_id (the sole identity field).
 		version: 1,
 		sql: [
 			`CREATE TABLE IF NOT EXISTS checkpoints (
 				id            TEXT PRIMARY KEY NOT NULL,
-				employee_id   TEXT NOT NULL,
+				agent_id      TEXT NOT NULL,
 				session_id    TEXT NOT NULL,
 				type          TEXT NOT NULL,
 				label         TEXT NOT NULL,
@@ -51,46 +52,8 @@ export const checkpointDatabaseMigrations: readonly ICheckpointDatabaseMigration
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_file_snapshots_checkpoint_id
 				ON file_snapshots(checkpoint_id)`,
-			`CREATE INDEX IF NOT EXISTS idx_checkpoints_employee_session
-				ON checkpoints(employee_id, session_id)`,
-		].join(';\n'),
-	},
-	{
-		// v2 (Batch 9.1): introduce agent_id alongside legacy employee_id.
-		// Strategy: ADD COLUMN with default '', backfill from employee_id, add new index.
-		version: 2,
-		sql: [
-			`ALTER TABLE checkpoints ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
-			`UPDATE checkpoints SET agent_id = employee_id WHERE agent_id = ''`,
 			`CREATE INDEX IF NOT EXISTS idx_checkpoints_agent_session
 				ON checkpoints(agent_id, session_id)`,
-		].join(';\n'),
-	},
-	{
-		// v3 (Batch 9.3a): drop legacy employee_id column. agent_id is now the sole identity.
-		// We use the table-rebuild pattern (CREATE NEW + COPY + DROP + RENAME) for compatibility
-		// with SQLite < 3.35 (which lacks `ALTER TABLE ... DROP COLUMN`). All operations are
-		// performed inside a transaction by the migration runner.
-		version: 3,
-		sql: [
-			`CREATE TABLE checkpoints_new (
-				id            TEXT PRIMARY KEY NOT NULL,
-				agent_id      TEXT NOT NULL,
-				session_id    TEXT NOT NULL,
-				type          TEXT NOT NULL,
-				label         TEXT NOT NULL,
-				description   TEXT,
-				created_at    INTEGER NOT NULL,
-				is_ghost      INTEGER NOT NULL DEFAULT 0,
-				message_id    TEXT
-			)`,
-			`INSERT INTO checkpoints_new (id, agent_id, session_id, type, label, description, created_at, is_ghost, message_id)
-				SELECT id, agent_id, session_id, type, label, description, created_at, is_ghost, message_id FROM checkpoints`,
-			`DROP INDEX IF EXISTS idx_checkpoints_employee_session`,
-			`DROP INDEX IF EXISTS idx_checkpoints_agent_session`,
-			`DROP TABLE checkpoints`,
-			`ALTER TABLE checkpoints_new RENAME TO checkpoints`,
-			`CREATE INDEX idx_checkpoints_agent_session ON checkpoints(agent_id, session_id)`,
 		].join(';\n'),
 	},
 ];
@@ -240,7 +203,7 @@ export class CheckpointStorage {
 
 		await dbExec(this.db, 'BEGIN');
 		try {
-			// Insert checkpoint (Batch 9.3a: employee_id column dropped; agent_id is sole identity).
+			// Insert checkpoint (agent_id is the sole identity field).
 			await dbRun(
 				this.db,
 				`INSERT INTO checkpoints (id, agent_id, session_id, type, label, description, created_at, is_ghost, message_id)
@@ -308,7 +271,7 @@ export class CheckpointStorage {
 
 	/**
 	 * Get all checkpoints for an agent+session.
-	 * Batch 9.3a: employee_id column dropped; query by agent_id only.
+	 * Query by agent_id only.
 	 */
 	async listCheckpoints(agentId: string, sessionId: string): Promise<ICheckpoint[]> {
 		if (!this.db) {
@@ -427,7 +390,7 @@ export class CheckpointStorage {
 	// ---- Helper methods -------------------------------------------------------
 
 	private rowToCheckpoint(row: Record<string, unknown>): ICheckpoint {
-		// Batch 9.3a: employee_id column dropped; agent_id is sole identity.
+		// agent_id is the sole identity field.
 		return {
 			id: row.id as string,
 			agentId: row.agent_id as string,

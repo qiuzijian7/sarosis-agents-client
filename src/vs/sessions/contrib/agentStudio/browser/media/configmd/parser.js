@@ -5,7 +5,7 @@
  *
  * The module must export a single `parse(markdown, options)` function.
  *   - markdown: string
- *   - options: { employeeId?: string }
+ *   - options: { agentId?: string }
  *   - returns: HTML string
  *
  * This default implementation supports:

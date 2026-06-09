@@ -46,7 +46,7 @@ import {
 
 interface ToolCallCardProps {
 	/**
-	 * Accepts either a fully-normalized ToolMessage (from EmployeeChat via
+	 * Accepts either a fully-normalized ToolMessage (from AgentChat via
 	 * toolCallStateToToolMessage) OR a raw store tool-call object (from
 	 * ChatMessage, which passes message.toolCalls items directly). The
 	 * normalizer below tolerates both shapes.

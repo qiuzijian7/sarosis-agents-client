@@ -260,7 +260,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	// ─── Mapping helpers ──────────────────────────────────────────────────────
 
 	private _toCheckpoint(stored: IStoredCheckpoint): ICheckpoint {
-		// Batch 9.2: only emit agentId; consumers should never read employeeId from new objects.
+		// Only emit agentId as the canonical identity field.
 		return {
 			id: stored.id,
 			agentId: stored.agentId,
@@ -285,11 +285,9 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	// ─── Public API ────────────────────────────────────────────────────────────
 
 	async createCheckpoint(payload: ICreateCheckpointPayload): Promise<ICheckpoint> {
-		// Batch 9.2: agentId is the canonical identity; fall back to legacy employeeId for callers
-		// that haven't migrated yet.
-		const agentId = payload.agentId ?? payload.employeeId;
+		const agentId = payload.agentId;
 		if (!agentId) {
-			throw new Error('[CheckpointService] createCheckpoint: agentId (or legacy employeeId) is required');
+			throw new Error('[CheckpointService] createCheckpoint: agentId is required');
 		}
 		const sessionDir = await this._resolveSessionDir(agentId, payload.sessionId);
 		const checkpointId = generateUuid();

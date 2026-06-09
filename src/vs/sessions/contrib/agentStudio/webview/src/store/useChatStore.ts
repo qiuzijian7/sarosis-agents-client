@@ -156,7 +156,7 @@ export interface ChatMessage {
 	/**
 	 * Hermes-style 回合标识（2026-06-05 治本根因修复）。
 	 * 同一次用户请求触发的多轮 agentOS loop 会持久化多条 assistant 消息共享同一
-	 * turnId。EmployeeChat 渲染时把相邻同 turnId 的 assistant 消息聚合成一个气泡，
+	 * turnId。AgentChat 渲染时把相邻同 turnId 的 assistant 消息聚合成一个气泡，
 	 * 保持 UI 外观不变。旧数据无此字段时每条独立成气泡（向后兼容）。
 	 */
 	turnId?: string;
@@ -329,7 +329,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 	subscribeStream((streamState) => {
 		// Ignore stream updates that don't belong to the currently active agent/session.
 		// This prevents stale deltas from a previous chat from leaking into the
-		// currently displayed chat after the user switches employees.
+		// currently displayed chat after the user switches agents.
 		const { activeAgentId, activeAgentSessionId } = get();
 		if (isPhaseActive(streamState.phase) && streamState.agentId && streamState.agentId !== activeAgentId) {
 			return;
@@ -341,7 +341,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
 		set({ streamState });
 
-		// Sync employee status based on streaming phase (precise state machine)
+		// Sync agent status based on streaming phase (precise state machine)
 		if (isPhaseActive(streamState.phase)) {
 			switch (streamState.phase) {
 				case 'llm_streaming':
@@ -391,7 +391,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 			} : null,
 		});
 
-		// Guard: discard completion events for a different employee/session
+		// Guard: discard completion events for a different agent/session
 		// than the one currently active. This can happen when a stream
 		// from a previous chat finishes after the user has switched.
 		const { activeAgentId, activeAgentSessionId } = get();
@@ -443,7 +443,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				messages: [...state.messages, errorMessage],
 				streamState: getStreamState(),
 			}));
-			// Restore employee status AFTER messages are committed
+			// Restore agent status AFTER messages are committed
 			try { syncAgentStatus('idle'); } catch { /* ignore */ }
 			console.log('[ChatStore] Error message committed', { level: structuredError.level, retryable: structuredError.retryable });
 			return;
@@ -568,11 +568,11 @@ export const useChatStore = create<ChatState>((set, get) => {
 			set({ streamState: getStreamState() });
 		}
 
-		// Restore employee status AFTER messages and streamState are committed.
+		// Restore agent status AFTER messages and streamState are committed.
 		// This must come last to avoid triggering React re-renders that could
 		// see an intermediate state where streaming stopped but no message exists.
 		try { syncAgentStatus('idle'); } catch { /* ignore */ }
-		console.log('[ChatStore] onStreamComplete done, employee status restored to idle');
+		console.log('[ChatStore] onStreamComplete done, agent status restored to idle');
 	});
 
 	return {
@@ -601,7 +601,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				forkSessionId = useWorkspaceSessionStore.getState().getAgentSessionId(agentId);
 			} catch { /* store not available */ }
 
-			// Save current stream to background and restore any saved stream for the new employee.
+			// Save current stream to background and restore any saved stream for the new agent.
 			// Must be done atomically with updating activeAgentId so subscribeStream
 			// doesn't discard the restored stream due to stale activeAgentId.
 			const newStreamState = switchActiveStream(agentId, forkSessionId);
@@ -632,7 +632,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// Root mode: load sessions list ONLY (for sidebar display).
 				// 🔒 修复（2026-06-05）：之前会自动把 `activeAgentSessionId` 设到
 				// sessions[0]（最近一条）并 loadHistoryForSession，导致用户切到
-				// employee 那一刻就隐式"恢复"了上一次几百轮的旧 session，再发消息
+				// agent 那一刻就隐式"恢复"了上一次几百轮的旧 session，再发消息
 				// 时 sendMessage 看到 activeAgentSessionId 非空就直接复用，整段历史
 				// 被回灌给模型（log 里 305 条跨主题/跨 worktree 串台即此故障——
 				// 之前修的 sendMessage 兜底分支根本走不到，因为 activeAgentSessionId
@@ -766,7 +766,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					console.warn('[ChatStore] Failed to check for active plans:', err);
 				}
 
-				// Restore any decomposition progress messages for this employee
+				// Restore any decomposition progress messages for this agent
 				// so "analyzing goal..." hints survive chat-tab switches.
 				const progressMsgs = get().decompositionProgress[agentId] || [];
 				if (progressMsgs.length > 0) {
@@ -1085,7 +1085,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 				sendRequest('chat.cancel', { agentId: activeAgentId, agentSessionId: activeAgentSessionId ?? undefined }).catch(() => { });
 			}
 
-			// Restore employee status
+			// Restore agent status
 			try { syncAgentStatus('idle'); } catch { /* ignore */ }
 		},
 
@@ -1107,7 +1107,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 		appendExternalUserMessage: (agentId, message) => {
 			const { activeAgentId, messages } = get();
 			// Only mirror the bubble if it belongs to the currently visible
-			// employee — otherwise the user would see a phantom message in
+			// agent — otherwise the user would see a phantom message in
 			// an unrelated chat pane.
 			if (activeAgentId !== agentId) {
 				console.log(`[ChatStore] appendExternalUserMessage skipped: target=${agentId} active=${activeAgentId}`);

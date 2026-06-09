@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Workspace Sidebar
- *  Tree-style sidebar: workspaces as collapsible groups, employees as items.
+ *  Tree-style sidebar: workspaces as collapsible groups, agents as items.
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useState, useCallback } from 'react';
@@ -27,24 +27,24 @@ const AddIcon = () => (
 
 interface WorkspaceGroupProps {
 	workspace: { id: string; name: string; description?: string };
-	employees: Agent[];
+	agents: Agent[];
 	isActive: boolean;
 	isExpanded: boolean;
 	onToggle: () => void;
 	onSelect: () => void;
-	selectedEmployeeId: string | null;
-	onSelectEmployee: (id: string) => void;
+	selectedAgentId: string | null;
+	onSelectAgent: (id: string) => void;
 }
 
 function WorkspaceGroup({
 	workspace,
-	employees,
+	agents,
 	isActive,
 	isExpanded,
 	onToggle,
 	onSelect,
-	selectedEmployeeId,
-	onSelectEmployee,
+	selectedAgentId,
+	onSelectAgent,
 }: WorkspaceGroupProps): React.ReactElement {
 	const statusColor: Record<string, string> = {
 		idle: '#4ade80',
@@ -66,37 +66,37 @@ function WorkspaceGroup({
 				</span>
 				<span className="workspace-icon">📁</span>
 				<span className="workspace-name">{workspace.name}</span>
-				<span className="workspace-count">{employees.length}</span>
+				<span className="workspace-count">{agents.length}</span>
 			</div>
 
-			{/* Employee items */}
+			{/* Agent items */}
 			{isExpanded && (
-				<div className="workspace-employees">
-					{employees.map((emp) => (
+				<div className="workspace-agents">
+					{agents.map((emp) => (
 						<div
 							key={emp.id}
-							className={`employee-item ${emp.id === selectedEmployeeId ? 'selected' : ''}`}
-							onClick={() => onSelectEmployee(emp.id)}
+							className={`agent-item ${emp.id === selectedAgentId ? 'selected' : ''}`}
+							onClick={() => onSelectAgent(emp.id)}
 						>
 							<span
-								className="employee-status-dot"
+								className="agent-status-dot"
 								style={{ backgroundColor: statusColor[emp.status] || '#6b7280' }}
 							/>
 							<img
-								className="employee-avatar"
+								className="agent-avatar"
 								src={emp.avatar
 									|| (emp.avatarStyle && emp.avatarSeed
 										? `https://api.dicebear.com/7.x/${emp.avatarStyle}/svg?seed=${emp.avatarSeed}`
 										: `https://api.dicebear.com/7.x/bottts/svg?seed=${emp.id}`)}
 								alt=""
 							/>
-							<div className="employee-info">
-								<span className="employee-name">{emp.name}</span>
-								<span className="employee-role">{emp.role}</span>
+							<div className="agent-info">
+								<span className="agent-name">{emp.name}</span>
+								<span className="agent-role">{emp.role}</span>
 							</div>
 						</div>
 					))}
-					{employees.length === 0 && (
+					{agents.length === 0 && (
 						<div className="empty-hint">No agents in this workspace</div>
 					)}
 				</div>
@@ -129,7 +129,7 @@ export function WorkspaceSidebar(): React.ReactElement {
 		});
 	}, []);
 
-	const handleSelectEmployee = useCallback((empId: string) => {
+	const handleSelectAgent = useCallback((empId: string) => {
 		selectAgent(empId);
 		// Open agent settings in the editor area
 		const agentName = useAgentStore.getState().agents.find(a => a.id === empId)?.name;
@@ -178,13 +178,13 @@ export function WorkspaceSidebar(): React.ReactElement {
 					<WorkspaceGroup
 						key={ws.id}
 						workspace={ws}
-						employees={getFilteredAgents()}
+						agents={getFilteredAgents()}
 						isActive={ws.id === activeWorkspaceId}
 						isExpanded={expandedIds.has(ws.id)}
 						onToggle={() => toggleExpand(ws.id)}
 						onSelect={() => setActiveWorkspace(ws.id)}
-						selectedEmployeeId={selectedAgentId}
-						onSelectEmployee={handleSelectEmployee}
+						selectedAgentId={selectedAgentId}
+						onSelectAgent={handleSelectAgent}
 					/>
 				))}
 

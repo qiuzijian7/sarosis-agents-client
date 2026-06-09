@@ -31,9 +31,9 @@ import { ActiveChatBarContext, ChatBarFocusContext } from '../../common/contextk
 import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
 // @ts-ignore - TypeScript cannot find type declarations for .ts files imported with .js extension
-// TODO: Create proper type declarations in employeeChatPanel.js.d.ts
-import { EmployeeChatPanel } from '../employeeChat/employeeChatPanel.js';
+import { AgentChatPanel } from '../agentChat/agentChatPanel.js';
 import { IAgentStudioService } from '../../common/agentStudioService.js';
+import type { AgentStatus as AgentChatAgentStatus } from '../agentChat/agentChatTypes.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
 
@@ -61,7 +61,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 	private static readonly SESSION_BAR_HEIGHT = 35;
 
 	private _sessionCompositeBar: ChatCompositeBar | undefined;
-	private _employeeChatPanel: EmployeeChatPanel | undefined;
+	private _agentChatPanel: AgentChatPanel | undefined;
 
 	protected _lastLayout: { readonly width: number; readonly height: number; readonly top: number; readonly left: number } | undefined;
 
@@ -125,8 +125,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		this._sessionCompositeBar = this._register(this.instantiationService.createInstance(ChatCompositeBar));
 		prepend(parent, this._sessionCompositeBar.element);
 
-		// Create the employee chat panel and append after the session composite bar
-		this._employeeChatPanel = this._register(new EmployeeChatPanel({
+		// Create the agent chat panel and append after the session composite bar
+		this._agentChatPanel = this._register(new AgentChatPanel({
 			onSendMessage: async (text: string) => {
 				// TODO: Wire to IAgentChatService for actual message sending
 			},
@@ -136,22 +136,22 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onToggleCollapse: () => {
 				// TODO: Wire to layout toggle
 			},
-			onSelectEmployee: (agentId: string) => {
-				this._selectAndLoadEmployee(agentId);
+			onSelectAgent: (agentId: string) => {
+				this._selectAndLoadAgent(agentId);
 			},
 		}));
-		parent.appendChild(this._employeeChatPanel.element);
+		parent.appendChild(this._agentChatPanel.element);
 
-		// Load available employees for the agent dropdown
-		this._loadAvailableEmployees();
+		// Load available agents for the agent dropdown
+		this._loadAvailableAgents();
 
-		// Listen for employee selection from agentStudio webview
-		this._register(this._agentStudioService.onDidSelectEmployee(async (agentId) => {
+		// Listen for agent selection from agentStudio webview
+		this._register(this._agentStudioService.onDidSelectAgent(async (agentId) => {
 			if (!agentId) {
-				this._employeeChatPanel?.setEmployee(null);
+				this._agentChatPanel?.setAgent(null);
 				return;
 			}
-			await this._selectAndLoadEmployee(agentId);
+			await this._selectAndLoadAgent(agentId);
 		}));
 
 		// Relayout when session bar visibility changes
@@ -162,16 +162,16 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		}));
 	}
 
-	private async _selectAndLoadEmployee(agentId: string): Promise<void> {
+	private async _selectAndLoadAgent(agentId: string): Promise<void> {
 		try {
 			const emp = await this._agentStudioService.getAgent(agentId);
-			if (emp && this._employeeChatPanel) {
-				this._employeeChatPanel.setEmployee({
+			if (emp && this._agentChatPanel) {
+				this._agentChatPanel.setAgent({
 					id: emp.id,
 					name: emp.name,
 					role: emp.role,
 					avatarUrl: emp.avatar,
-					status: emp.status,
+					status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 					isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 					customPrompt: emp.systemPrompt,
 					model: emp.model,
@@ -185,17 +185,17 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		}
 	}
 
-	private async _loadAvailableEmployees(): Promise<void> {
+	private async _loadAvailableAgents(): Promise<void> {
 		try {
-			const employees = await this._agentStudioService.getAgents();
-			if (this._employeeChatPanel && employees) {
-				this._employeeChatPanel.setAvailableEmployees(
-					employees.map(emp => ({
+			const agents = await this._agentStudioService.getAgents();
+			if (this._agentChatPanel && agents) {
+				this._agentChatPanel.setAvailableAgents(
+					agents.map(emp => ({
 						id: emp.id,
 						name: emp.name,
 						role: emp.role,
 						avatarUrl: emp.avatar,
-						status: emp.status,
+						status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 						isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 						customPrompt: emp.systemPrompt,
 						model: emp.model,
@@ -204,7 +204,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				);
 			}
 		} catch (err) {
-			// Ignore errors loading employee list
+			// Ignore errors loading agent list
 		}
 	}
 

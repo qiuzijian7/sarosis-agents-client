@@ -20,13 +20,13 @@ interface CreateTaskModalProps {
 	isOpen: boolean;
 	onClose: () => void;
 	onCreate: (data: CreateTaskFormData) => void;
-	/** Employee options for the assignee dropdown (id + name only are used). */
-	employees: { id: string; name: string }[];
+	/** Agent options for the assignee dropdown (id + name only are used). */
+	agents: { id: string; name: string }[];
 	/** All existing tasks, used to populate the dependency dropdown. */
 	tasks: { id: string; title: string }[];
 }
 
-export function CreateTaskModal({ isOpen, onClose, onCreate, employees, tasks }: CreateTaskModalProps): React.ReactElement | null {
+export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: CreateTaskModalProps): React.ReactElement | null {
 	const [title, setTitle] = useState('');
 	const [description, setDescription] = useState('');
 	const [assigneeId, setAssigneeId] = useState('');
@@ -66,7 +66,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, employees, tasks }:
 
 	const submit = () => {
 		if (!canSubmit) { return; }
-		const emp = employees.find(e => e.id === assigneeId);
+		const emp = agents.find(e => e.id === assigneeId);
 		onCreate({
 			title: title.trim(),
 			description: description.trim() || undefined,
@@ -133,7 +133,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, employees, tasks }:
 								onChange={e => setAssigneeId(e.target.value)}
 							>
 								<option value="">未指派</option>
-								{employees.map(emp => (
+								{agents.map(emp => (
 									<option key={emp.id} value={emp.id}>{emp.name}</option>
 								))}
 							</select>

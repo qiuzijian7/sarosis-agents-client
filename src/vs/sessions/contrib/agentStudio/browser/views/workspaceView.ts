@@ -568,7 +568,7 @@ export class WorkspaceViewPane extends ViewPane {
 			// Mark every node as incompressible so the tree renders a proper
 			// hierarchical structure — just like VS Code's native Explorer.
 			// Without this, the compressible tree merges single-child paths
-			// into flat entries like ".sarosisworkspace/employees.json".
+			// into flat entries like ".sarosisworkspace/agents.json".
 			{ isIncompressible: () => true },
 			[renderer],
 			this.instantiationService.createInstance(WorkspaceExplorerDataSource),

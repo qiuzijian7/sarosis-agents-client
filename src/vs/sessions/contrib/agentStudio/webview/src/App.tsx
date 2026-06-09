@@ -8,9 +8,9 @@
 
 import React, { useEffect, useCallback, useState, Component, type ReactNode } from 'react';
 import { WorkspaceToolbar } from './features/title/WorkspaceToolbar';
-import { AgentChat as EmployeeChat } from './features/chat/EmployeeChat';
+import { AgentChat } from './features/chat/AgentChat';
 import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
-import { CreateAgentModal } from './features/employees/CreateAgentModal';
+import { CreateAgentModal } from './features/agents/CreateAgentModal';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { WorkflowEditorPanel } from './features/workflowEditor/WorkflowEditorPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
@@ -94,7 +94,7 @@ function ChatPanel(): React.ReactElement {
 	}, [activeWorkspaceId]);
 
 	useEffect(() => {
-		const onEmployeesChanged = () => {
+		const onAgentsChanged = () => {
 			// Read activeWorkspaceId from store at event-time (not from stale closure).
 			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
 			useAgentStore.getState().loadAgents(currentActiveId || undefined);
@@ -105,10 +105,10 @@ function ChatPanel(): React.ReactElement {
 				setActiveWorkspace(detail.workspaceId);
 			}
 		};
-		window.addEventListener('agentStudio:employees-changed', onEmployeesChanged);
+		window.addEventListener('agentStudio:agents-changed', onAgentsChanged);
 		window.addEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
 		return () => {
-			window.removeEventListener('agentStudio:employees-changed', onEmployeesChanged);
+			window.removeEventListener('agentStudio:agents-changed', onAgentsChanged);
 			window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
 		};
 	}, [activeWorkspaceId, setActiveWorkspace]);
@@ -160,7 +160,7 @@ function ChatPanel(): React.ReactElement {
 	return (
 		<div className="panel-standalone">
 			<PanelErrorBoundary panelType="ChatPanel">
-				<EmployeeChat />
+				<AgentChat />
 			</PanelErrorBoundary>
 		</div>
 	);
@@ -237,28 +237,28 @@ function FullLayout(): React.ReactElement {
 
 	// Listen for host events
 	useEffect(() => {
-		const onEmployeesChanged = () => {
+		const onAgentsChanged = () => {
 			// Read activeWorkspaceId from store at event-time (not from stale closure).
 			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
 			useAgentStore.getState().loadAgents(currentActiveId || undefined);
 		};
 		const onWorkspaceChanged = () => { loadWorkspaces(); };
 
-		window.addEventListener('agentStudio:employees-changed', onEmployeesChanged);
+		window.addEventListener('agentStudio:agents-changed', onAgentsChanged);
 		window.addEventListener('agentStudio:workspace-changed', onWorkspaceChanged);
 
 		return () => {
-			window.removeEventListener('agentStudio:employees-changed', onEmployeesChanged);
+			window.removeEventListener('agentStudio:agents-changed', onAgentsChanged);
 			window.removeEventListener('agentStudio:workspace-changed', onWorkspaceChanged);
 		};
 	}, [loadWorkspaces, activeWorkspaceId]);
 
 
-	const handleAddEmployee = useCallback(() => {
-		setShowAddEmployeeModal(true);
+	const handleAddAgent = useCallback(() => {
+		setShowAddAgentModal(true);
 	}, []);
 
-	const [showAddEmployeeModal, setShowAddEmployeeModal] = useState(false);
+	const [showAddAgentModal, setShowAddAgentModal] = useState(false);
 
 	const handleRefresh = useCallback(() => {
 		if (activeWorkspaceId) {
@@ -270,7 +270,7 @@ function FullLayout(): React.ReactElement {
 		<div className="app-root">
 			{/* ① Title Bar */}
 			<WorkspaceToolbar
-				onAddEmployee={handleAddEmployee}
+				onAddAgent={handleAddAgent}
 				onRefresh={handleRefresh}
 			/>
 
@@ -278,15 +278,15 @@ function FullLayout(): React.ReactElement {
 			<div className="main-content">
 				{/* ② Chat panel (full width) */}
 				<div className="workspace-panel">
-					<EmployeeChat />
+					<AgentChat />
 				</div>
 			</div>
 
 			{/* Create Agent Modal */}
 			<CreateAgentModal
-				isOpen={showAddEmployeeModal}
+				isOpen={showAddAgentModal}
 				onClose={() => {
-					setShowAddEmployeeModal(false);
+					setShowAddAgentModal(false);
 					if (activeWorkspaceId) {
 						useAgentStore.getState().loadAgents(activeWorkspaceId);
 					}
@@ -341,7 +341,7 @@ function AgentSettingsPanel(): React.ReactElement {
 	}, [activeWorkspaceId]);
 
 	useEffect(() => {
-		const onEmployeesChanged = () => {
+		const onAgentsChanged = () => {
 			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
 			useAgentStore.getState().loadAgents(currentActiveId || undefined);
 		};
@@ -351,10 +351,10 @@ function AgentSettingsPanel(): React.ReactElement {
 				setActiveWorkspace(detail.workspaceId);
 			}
 		};
-		window.addEventListener('agentStudio:employees-changed', onEmployeesChanged);
+		window.addEventListener('agentStudio:agents-changed', onAgentsChanged);
 		window.addEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
 		return () => {
-			window.removeEventListener('agentStudio:employees-changed', onEmployeesChanged);
+			window.removeEventListener('agentStudio:agents-changed', onAgentsChanged);
 			window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
 		};
 	}, [setActiveWorkspace]);

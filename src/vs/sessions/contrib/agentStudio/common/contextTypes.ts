@@ -15,7 +15,7 @@ export interface IWorkspaceContext {
 	readonly workspaceId: string;
 	readonly workspaceName: string;
 	readonly workspacePath?: string;
-	readonly employees: ReadonlyArray<Agent>;
+	readonly agents: ReadonlyArray<Agent>;
 	readonly connections: ReadonlyArray<WorkspaceConnection>;
 	readonly layout?: WorkspaceLayout;
 	/** Root/Fork management info */

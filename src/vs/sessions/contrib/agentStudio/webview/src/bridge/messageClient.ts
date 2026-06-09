@@ -7,12 +7,6 @@
 
 // Mirror of RequestType from the host messageProtocol (kept in sync manually)
 export type RequestType =
-	| 'employees.list'
-	| 'employees.get'
-	| 'employees.create'
-	| 'employees.update'
-	| 'employees.delete'
-	| 'employees.selected'
 	| 'workspace.list'
 	| 'workspace.get'
 	| 'workspace.create'
@@ -56,11 +50,8 @@ export type RequestType =
 	| 'providers.list'
 	| 'providers.select'
 	| 'providers.getSelection'
-	| 'providers.getSelectionForEmployee'
+	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
-	| 'employees.export'
-	| 'employees.import'
-	| 'employees.syncPositions'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'
@@ -106,7 +97,6 @@ export type RequestType =
 	| 'configmd.getInfo'
 	| 'configmd.previewToFile'
 	| 'configmd.htmlGenerate'
-	| 'configmd.requestCanvasPreview'
 	| 'configmd.listAgents'
 	| 'files.open'
 	| 'files.openHtmlPreview'

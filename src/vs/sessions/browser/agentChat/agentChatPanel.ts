@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import "./media/employeeChat.css";
+import "./media/agentChat.css";
 import { Disposable } from "../../../base/common/lifecycle.js";
 import {
 	$,
@@ -14,17 +14,17 @@ import {
 } from "../../../base/browser/dom.js";
 import { mainWindow } from "../../../base/browser/window.js";
 import {
-	IEmployeeChatMessage,
+	IAgentChatMessage,
 	IToolCall,
-	IEmployeeInfo,
+	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
 	STATUS_MAP,
 	HeaderPanelType,
 	AgentStatus,
-} from "./employeeChatTypes.js";
+} from "./agentChatTypes.js";
 
-// EmployeeChatPanel -- Full chat panel matching sarosis-webui layout
+// AgentChatPanel -- Full chat panel matching sarosis-webui layout
 //
 // Structure:
 //   .chat-container
@@ -47,7 +47,7 @@ import {
 //           .chat-toolbar-left (attach, voice, web-search, divider, provider, model)
 //           .chat-send-circle
 
-export class EmployeeChatPanel extends Disposable {
+export class AgentChatPanel extends Disposable {
 	// -- DOM refs --
 	private readonly _container: HTMLElement;
 	private _messagesContainer!: HTMLElement;
@@ -57,8 +57,8 @@ export class EmployeeChatPanel extends Disposable {
 	private _sendBtn!: HTMLElement;
 
 	// -- State --
-	private _messages: IEmployeeChatMessage[] = [];
-	private _employee: IEmployeeInfo | null = null;
+	private _messages: IAgentChatMessage[] = [];
+	private _agent: IAgentInfo | null = null;
 	private _isSending = false;
 	private _showScrollBtn = false;
 	private _autoOrchestrateEnabled = false;
@@ -69,7 +69,7 @@ export class EmployeeChatPanel extends Disposable {
 	private _abortController: AbortController | null = null;
 
 	// -- Agent dropdown state --
-	private _availableEmployees: IEmployeeInfo[] = [];
+	private _availableAgents: IAgentInfo[] = [];
 	private _dropdownOpen = false;
 	private _dropdownFilter = "";
 	private _agentDropdownEl: HTMLElement | null = null;
@@ -80,18 +80,18 @@ export class EmployeeChatPanel extends Disposable {
 	// -- Callbacks --
 	private readonly _onSendMessage: (text: string) => void;
 	private readonly _onCancelExecution: () => void;
-	private readonly _onSelectEmployee: (id: string) => void;
+	private readonly _onSelectAgent: (id: string) => void;
 
 	constructor(opts: {
 		onSendMessage: (text: string) => void;
 		onCancelExecution: () => void;
 		onToggleCollapse: () => void;
-		onSelectEmployee: (id: string) => void;
+		onSelectAgent: (id: string) => void;
 	}) {
 		super();
 		this._onSendMessage = opts.onSendMessage;
 		this._onCancelExecution = opts.onCancelExecution;
-		this._onSelectEmployee = opts.onSelectEmployee;
+		this._onSelectAgent = opts.onSelectAgent;
 		this._container = $(".chat-container");
 	}
 
@@ -101,22 +101,22 @@ export class EmployeeChatPanel extends Disposable {
 
 	// Public API
 
-	setEmployee(employee: IEmployeeInfo | null): void {
-		this._employee = employee;
+	setAgent(agent: IAgentInfo | null): void {
+		this._agent = agent;
 		this._render();
 	}
 
-	setAvailableEmployees(employees: IEmployeeInfo[]): void {
-		this._availableEmployees = employees;
+	setAvailableAgents(agents: IAgentInfo[]): void {
+		this._availableAgents = agents;
 	}
 
-	setMessages(messages: IEmployeeChatMessage[]): void {
+	setMessages(messages: IAgentChatMessage[]): void {
 		this._messages = messages;
 		this._renderMessages();
 		this._scrollToBottom(false);
 	}
 
-	addMessage(message: IEmployeeChatMessage): void {
+	addMessage(message: IAgentChatMessage): void {
 		this._messages.push(message);
 		this._appendMessageDom(message);
 		this._scrollToBottom(true);
@@ -124,7 +124,7 @@ export class EmployeeChatPanel extends Disposable {
 
 	updateMessage(
 		messageId: string,
-		updates: Partial<IEmployeeChatMessage>,
+		updates: Partial<IAgentChatMessage>,
 	): void {
 		const idx = this._messages.findIndex((m) => m.id === messageId);
 		if (idx >= 0) {
@@ -165,7 +165,7 @@ export class EmployeeChatPanel extends Disposable {
 		this._closeAgentDropdown();
 		clearNode(this._container);
 
-		if (!this._employee) {
+		if (!this._agent) {
 			this._renderEmptyState();
 			return;
 		}
@@ -211,7 +211,7 @@ export class EmployeeChatPanel extends Disposable {
 	// Chat Header
 
 	private _renderHeader(): void {
-		const emp = this._employee!;
+		const emp = this._agent!;
 		const status = emp.status as keyof typeof STATUS_MAP;
 		const statusInfo = STATUS_MAP[status] || STATUS_MAP[AgentStatus.Idle];
 
@@ -518,11 +518,11 @@ export class EmployeeChatPanel extends Disposable {
 
 		const filter = this._dropdownFilter.toLowerCase().trim();
 		const filtered = filter
-			? this._availableEmployees.filter(e =>
+			? this._availableAgents.filter(e =>
 				e.name.toLowerCase().includes(filter) ||
 				e.role.toLowerCase().includes(filter)
 			)
-			: this._availableEmployees;
+			: this._availableAgents;
 
 		if (filtered.length === 0) {
 			const noResults = append(this._agentDropdownList, $(".chat-agent-dropdown-no-results"));
@@ -532,7 +532,7 @@ export class EmployeeChatPanel extends Disposable {
 
 		for (const agent of filtered) {
 			const item = append(this._agentDropdownList, $(".chat-agent-dropdown-item"));
-			if (this._employee?.id === agent.id) {
+			if (this._agent?.id === agent.id) {
 				item.classList.add("active");
 			}
 
@@ -558,8 +558,8 @@ export class EmployeeChatPanel extends Disposable {
 				addDisposableListener(item, EventType.CLICK, (e) => {
 					e.stopPropagation();
 					this._closeAgentDropdown();
-					if (agent.id !== this._employee?.id) {
-						this._onSelectEmployee(agent.id);
+					if (agent.id !== this._agent?.id) {
+						this._onSelectAgent(agent.id);
 					}
 				}),
 			);
@@ -640,7 +640,7 @@ export class EmployeeChatPanel extends Disposable {
 		}
 	}
 
-	private _appendMessageDom(msg: IEmployeeChatMessage): void {
+	private _appendMessageDom(msg: IAgentChatMessage): void {
 		if (!this._messagesContainer) {
 			return;
 		}
@@ -648,7 +648,7 @@ export class EmployeeChatPanel extends Disposable {
 		this._messagesContainer.appendChild(el);
 	}
 
-	private _updateMessageDom(idx: number, msg: IEmployeeChatMessage): void {
+	private _updateMessageDom(idx: number, msg: IAgentChatMessage): void {
 		// For simplicity, re-render the full message list
 		// Performance optimization can be done later with keyed updates
 		this._renderMessages();
@@ -656,24 +656,24 @@ export class EmployeeChatPanel extends Disposable {
 
 	// Message element builder
 
-	private _createMessageElement(msg: IEmployeeChatMessage): HTMLElement {
+	private _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 		const isUser = msg.role === "user";
 		const messageEl = $(`.chat-message.${isUser ? "user" : "assistant"}`);
 
 		// Assistant avatar
-		if (!isUser && this._employee) {
+		if (!isUser && this._agent) {
 			const avatarWrap = append(messageEl, $(".chat-message-avatar"));
-			if (this._employee.avatarUrl) {
+			if (this._agent.avatarUrl) {
 				const img = append(avatarWrap, $("img")) as HTMLImageElement;
-				img.src = this._employee.avatarUrl;
-				img.alt = this._employee.name;
+				img.src = this._agent.avatarUrl;
+				img.alt = this._agent.name;
 				img.style.width = "100%";
 				img.style.height = "100%";
 				img.style.objectFit = "cover";
 				img.style.borderRadius = "50%";
 			} else {
 				const fallback = append(avatarWrap, $(".chat-avatar-fallback"));
-				fallback.textContent = this._employee.name.charAt(0).toUpperCase();
+				fallback.textContent = this._agent.name.charAt(0).toUpperCase();
 			}
 		}
 
@@ -747,7 +747,7 @@ export class EmployeeChatPanel extends Disposable {
 
 	// --- Thinking card ----------------------------------------
 
-	private _createThinkingCard(msg: IEmployeeChatMessage): HTMLElement {
+	private _createThinkingCard(msg: IAgentChatMessage): HTMLElement {
 		const card = $(`.thinking-card${msg.isThinking ? ".active" : ""}`);
 
 		// Header
@@ -992,7 +992,7 @@ export class EmployeeChatPanel extends Disposable {
 	// Input area
 
 	private _renderInputArea(): void {
-		const emp = this._employee!;
+		const emp = this._agent!;
 		const inputArea = append(this._container, $(".chat-input-area"));
 
 		// Composer box

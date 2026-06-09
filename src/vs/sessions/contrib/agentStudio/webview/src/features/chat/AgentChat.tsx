@@ -218,7 +218,7 @@ export function AgentChat(): React.ReactElement {
 	const [showScrollBtn, setShowScrollBtn] = useState(false);
 	// History page visibility
 	const [showHistory, setShowHistory] = useState(false);
-	// Track previous employee to detect employee switches (used by useLayoutEffect below)
+	// Track previous agent to detect agent switches (used by useLayoutEffect below)
 	const prevAgentIdRef = useRef<string | null>(activeAgentId);
 	// Agent selector dropdown
 	const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -240,7 +240,7 @@ export function AgentChat(): React.ReactElement {
 		setShowScrollBtn(!atBottom);
 	}, []);
 
-	// Sync selected employee with chat
+	// Sync selected agent with chat
 	useEffect(() => {
 		if (selectedAgentId && selectedAgentId !== activeAgentId) {
 			setActiveAgent(selectedAgentId);
@@ -267,7 +267,7 @@ export function AgentChat(): React.ReactElement {
 		const el = chatMessagesRef.current;
 		if (!el) { return; }
 
-		// Detect employee switch: force scroll to bottom on all subsequent renders
+		// Detect agent switch: force scroll to bottom on all subsequent renders
 		// until new messages are loaded (wasLoadingRef ensures instant scroll when they arrive).
 		const isAgentSwitch = prevAgentIdRef.current !== activeAgentId;
 		if (isAgentSwitch) {
@@ -279,7 +279,7 @@ export function AgentChat(): React.ReactElement {
 		const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 		const atBottom = distFromBottom < THRESHOLD;
 
-		// When loading (employee switch or history load), always scroll to bottom
+		// When loading (agent switch or history load), always scroll to bottom
 		// regardless of current scroll position. Otherwise only scroll if already near bottom.
 		if (wasLoadingRef.current) {
 			isAtBottomRef.current = true;
@@ -297,8 +297,8 @@ export function AgentChat(): React.ReactElement {
 
 	// Listen to scroll events on the message list — mirrors VS Code's onDidScroll handler.
 	// This is the sole authority for button visibility (just like VS Code).
-	// IMPORTANT: activeAgentId in deps so listener re-binds when employee changes
-	// (on first mount the ref may be null if no employee is selected yet).
+	// IMPORTANT: activeAgentId in deps so listener re-binds when agent changes
+	// (on first mount the ref may be null if no agent is selected yet).
 	useEffect(() => {
 		const el = chatMessagesRef.current;
 		if (!el) { return; }
@@ -377,7 +377,7 @@ export function AgentChat(): React.ReactElement {
 			};
 			if (!detail) { return; }
 
-			// Only show progress for the currently active planner/employee
+			// Only show progress for the currently active planner/agent
 			// or if no specific planner is targeted
 			if (detail.plannerId && activeAgentId && detail.plannerId !== activeAgentId) {
 				return;
@@ -524,7 +524,7 @@ export function AgentChat(): React.ReactElement {
 				return;
 			}
 			if (!plannerId) {
-				console.error('[AgentChat] No active employee for plan command');
+				console.error('[AgentChat] No active agent for plan command');
 				return;
 			}
 
@@ -677,7 +677,7 @@ export function AgentChat(): React.ReactElement {
 		}
 	}, [activeAgent, selectedAgentId]);
 
-	// Empty state - no employee selected
+	// Empty state - no agent selected
 	if (!activeAgent || !selectedAgentId) {
 		return (
 			<div className="chat-empty">
@@ -709,8 +709,8 @@ export function AgentChat(): React.ReactElement {
 
 	return (
 		<>
-			<div className="employee-chat-root">
-			<div className="employee-chat">
+			<div className="agent-chat-root">
+			<div className="agent-chat">
 				{/* Chat Header */}
 				<div className="chat-header">
 

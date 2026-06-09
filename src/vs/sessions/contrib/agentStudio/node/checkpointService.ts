@@ -49,11 +49,9 @@ export class CheckpointService {
 	 * @returns The created checkpoint.
 	 */
 	async createCheckpoint(payload: ICreateCheckpointPayload): Promise<ICheckpoint> {
-		// Batch 9.2: agentId is the primary identity. Resolve once at entry to handle legacy
-		// callers that still send only employeeId.
-		const agentId = payload.agentId ?? payload.employeeId;
+		const agentId = payload.agentId;
 		if (!agentId) {
-			throw new Error('[CheckpointService] createCheckpoint: agentId (or legacy employeeId) is required');
+			throw new Error('[CheckpointService] createCheckpoint: agentId is required');
 		}
 		this.logService.info(`[CheckpointService] Creating checkpoint: ${payload.type} for ${agentId}/${payload.sessionId}`);
 
@@ -73,7 +71,7 @@ export class CheckpointService {
 			}
 		}
 
-		// 2. Create checkpoint entity (Batch 9.2: agentId is canonical; employeeId omitted for new rows)
+		// 2. Create checkpoint entity
 		const checkpoint: ICheckpoint = {
 			id: generateUuid(),
 			agentId,
@@ -187,12 +185,12 @@ export class CheckpointService {
 	}
 
 	private async markSubsequentCheckpointsAsGhost(
-		employeeId: string,
+		agentId: string,
 		sessionId: string,
 		createdAt: number,
 	): Promise<void> {
 		// Get all checkpoints after this one
-		const allCheckpoints = await this.storage.listCheckpoints(employeeId, sessionId);
+		const allCheckpoints = await this.storage.listCheckpoints(agentId, sessionId);
 		const subsequent = allCheckpoints.filter(cp => cp.createdAt > createdAt);
 
 		// Mark them as ghost

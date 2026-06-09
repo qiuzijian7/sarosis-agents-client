@@ -100,7 +100,7 @@ export const PropertyPanel: React.FC = () => {
 								value={(data.executorId as string) || ''}
 								onChange={e => handleChange('executorId', e.target.value)}
 								style={inputStyle}
-								placeholder="e.g., employee-123"
+								placeholder="e.g., agent-123"
 							/>
 						</Field>
 						<Field label="Task ID">

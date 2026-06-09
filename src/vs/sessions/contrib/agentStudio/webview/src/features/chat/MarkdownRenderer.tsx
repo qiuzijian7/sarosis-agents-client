@@ -9,7 +9,7 @@
  *  - Tables with wrapper for horizontal scroll
  *  - Task list support
  *
- *  Used by both EmployeeChat.tsx (streaming) and ChatMessage.tsx (completed).
+ *  Used by both AgentChat.tsx (streaming) and ChatMessage.tsx (completed).
  *--------------------------------------------------------------------------------------------*/
 
 import React, { memo, useCallback, useMemo, useState } from 'react';

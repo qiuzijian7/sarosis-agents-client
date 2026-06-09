@@ -27,7 +27,7 @@ export interface ICheckpointFileChange {
  */
 export interface ICheckpoint {
 	readonly id: string;
-	/** Primary identity field (Batch 9.3a: employeeId removed). */
+	/** Primary identity field (the agent instance id). */
 	readonly agentId: string;
 	readonly sessionId: string;
 	readonly type: 'user_edit' | 'tool_edit';
@@ -66,11 +66,8 @@ export interface IFileSnapshot {
  * Payload for creating a new checkpoint.
  */
 export interface ICreateCheckpointPayload {
-	/** @deprecated Batch 9.3a: legacy alias kept for cross-process callers (host RPC payloads).
-	 * New code should use agentId. Will be removed once messageProtocol is fully migrated. */
-	readonly employeeId?: string;
-	/** Primary identity field (Batch 9.1 onward). Required when employeeId is omitted. */
-	readonly agentId?: string;
+	/** Primary identity field (the agent instance id). */
+	readonly agentId: string;
 	readonly sessionId: string;
 	readonly type: 'user_edit' | 'tool_edit';
 	readonly label?: string;

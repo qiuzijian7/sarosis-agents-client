@@ -23,18 +23,18 @@ interface ConfigMdStore {
 	byAgent: Record<string, AgentConfigMdState>;
 	visible: Record<string, boolean>;
 
-	getAgentState: (employeeId: string) => AgentConfigMdState;
-	setVisible: (employeeId: string, v: boolean) => void;
-	isVisible: (employeeId: string) => boolean;
+	getAgentState: (agentId: string) => AgentConfigMdState;
+	setVisible: (agentId: string, v: boolean) => void;
+	isVisible: (agentId: string) => boolean;
 
-	setView: (employeeId: string, view: ConfigMdView) => void;
-	setLoading: (employeeId: string, loading: boolean) => void;
-	setError: (employeeId: string, error?: string) => void;
+	setView: (agentId: string, view: ConfigMdView) => void;
+	setLoading: (agentId: string, loading: boolean) => void;
+	setError: (agentId: string, error?: string) => void;
 	setState: (
-		employeeId: string,
+		agentId: string,
 		patch: Partial<Pick<AgentConfigMdState, 'markdown' | 'html' | 'stylesContent' | 'version' | 'loaded' | 'dirty'>>,
 	) => void;
-	updateMarkdownLocal: (employeeId: string, markdown: string) => void;
+	updateMarkdownLocal: (agentId: string, markdown: string) => void;
 }
 
 const defaultState: AgentConfigMdState = {
@@ -51,45 +51,45 @@ export const useConfigMdStore = create<ConfigMdStore>((set, get) => ({
 	byAgent: {},
 	visible: {},
 
-	getAgentState: (employeeId) => get().byAgent[employeeId] || defaultState,
+	getAgentState: (agentId) => get().byAgent[agentId] || defaultState,
 
-	setVisible: (employeeId, v) => set((s) => ({ visible: { ...s.visible, [employeeId]: v } })),
-	isVisible: (employeeId) => get().visible[employeeId] !== false,
+	setVisible: (agentId, v) => set((s) => ({ visible: { ...s.visible, [agentId]: v } })),
+	isVisible: (agentId) => get().visible[agentId] !== false,
 
-	setView: (employeeId, view) => set((s) => ({
+	setView: (agentId, view) => set((s) => ({
 		byAgent: {
 			...s.byAgent,
-			[employeeId]: { ...(s.byAgent[employeeId] || defaultState), view },
+			[agentId]: { ...(s.byAgent[agentId] || defaultState), view },
 		},
 	})),
 
-	setLoading: (employeeId, loading) => set((s) => ({
+	setLoading: (agentId, loading) => set((s) => ({
 		byAgent: {
 			...s.byAgent,
-			[employeeId]: { ...(s.byAgent[employeeId] || defaultState), loading },
+			[agentId]: { ...(s.byAgent[agentId] || defaultState), loading },
 		},
 	})),
 
-	setError: (employeeId, error) => set((s) => ({
+	setError: (agentId, error) => set((s) => ({
 		byAgent: {
 			...s.byAgent,
-			[employeeId]: { ...(s.byAgent[employeeId] || defaultState), error, lastError: error },
+			[agentId]: { ...(s.byAgent[agentId] || defaultState), error, lastError: error },
 		},
 	})),
 
-	setState: (employeeId, patch) => set((s) => ({
+	setState: (agentId, patch) => set((s) => ({
 		byAgent: {
 			...s.byAgent,
-			[employeeId]: { ...(s.byAgent[employeeId] || defaultState), ...patch },
+			[agentId]: { ...(s.byAgent[agentId] || defaultState), ...patch },
 		},
 	})),
 
-	updateMarkdownLocal: (employeeId, markdown) => set((s) => {
-		const prev = s.byAgent[employeeId] || defaultState;
+	updateMarkdownLocal: (agentId, markdown) => set((s) => {
+		const prev = s.byAgent[agentId] || defaultState;
 		return {
 			byAgent: {
 				...s.byAgent,
-				[employeeId]: { ...prev, markdown, dirty: true },
+				[agentId]: { ...prev, markdown, dirty: true },
 			},
 		};
 	}),

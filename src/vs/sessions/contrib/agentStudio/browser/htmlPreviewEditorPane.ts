@@ -42,7 +42,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _webview: IWebviewElement | undefined;
 	/** Resolved at setInput time; used to filter inbound imgui command pushes. */
-	private _currentEmployeeId: string | undefined;
+	private _currentAgentId: string | undefined;
 	/**
 	 * Captured at preview-open time from the chat panel. Forwarded into the
 	 * preview's imgui SDK and re-attached to every imgui.submit so the host
@@ -130,19 +130,19 @@ export class HtmlPreviewEditorPane extends EditorPane {
 
 			this._register(this._webview);
 
-			// Resolve the owning employee up-front. Prefer the value carried
+			// Resolve the owning agent up-front. Prefer the value carried
 			// by the EditorInput (set by ConfigMD's preview button which
 			// already knows which agent owns it). Fall back to reverse-
 			// engineering it from the file path so direct file opens still
 			// work, but the input route is preferred and the only one that
 			// works for in-memory / global workspaces.
 			this._logService.info(`[HtmlPreviewEditorPane] setInput: input.agentId='${input.agentId}' workspaceId='${input.workspaceId}' workspaceSessionId='${input.workspaceSessionId}' agentSessionId='${input.agentSessionId}' resource=${input.resource.toString()}`);
-			this._currentEmployeeId = input.agentId
-				?? await this._resolveEmployeeIdFromUri(input.resource);
+			this._currentAgentId = input.agentId
+				?? await this._resolveAgentIdFromUri(input.resource);
 			this._currentWorkspaceId = input.workspaceId;
 			this._currentWorkspaceSessionId = input.workspaceSessionId;
 			this._currentAgentSessionId = input.agentSessionId;
-			this._logService.info(`[HtmlPreviewEditorPane] resolved agentId='${this._currentEmployeeId}' for ${input.resource.toString()}`);
+			this._logService.info(`[HtmlPreviewEditorPane] resolved agentId='${this._currentAgentId}' for ${input.resource.toString()}`);
 
 			// Forward `imgui.submit` (and other future imgui-style events)
 			// from the preview SDK back to ConfigHtmlService.handleHtmlEvent.
@@ -157,8 +157,8 @@ export class HtmlPreviewEditorPane extends EditorPane {
 				if (!m || typeof m.type !== 'string') { return; }
 				if (m.type !== 'imgui.submit') { return; }
 				try {
-					const agentId = this._currentEmployeeId
-						?? await this._resolveEmployeeIdFromUri(input.resource);
+					const agentId = this._currentAgentId
+						?? await this._resolveAgentIdFromUri(input.resource);
 					if (!agentId) {
 						this._logService.warn(`[HtmlPreviewEditorPane] could not resolve agentId from ${input.resource.toString()}`);
 						return;
@@ -182,10 +182,10 @@ export class HtmlPreviewEditorPane extends EditorPane {
 
 			// Push host → preview commands. ConfigHtmlService dispatches these
 			// via its onDidEmitCommand event for any agentId; we filter
-			// to the currently-loaded preview's employee.
+			// to the currently-loaded preview's agent.
 			this._register(this._configHtmlService.onDidEmitCommand(({ agentId, command }) => {
 				if (!this._webview) { return; }
-				if (this._currentEmployeeId && agentId !== this._currentEmployeeId) { return; }
+				if (this._currentAgentId && agentId !== this._currentAgentId) { return; }
 				if (!command?.name || !command.name.startsWith('imgui.')) { return; }
 				const payload = { type: command.name, ...(command.params || {}) };
 				void this._webview.postMessage(payload);
@@ -204,7 +204,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 			// re-attaches ctx independently as a trust anchor.
 			void this._webview.postMessage({
 				type: 'imgui.ctx',
-				agentId: this._currentEmployeeId,
+				agentId: this._currentAgentId,
 				workspaceId: this._currentWorkspaceId,
 				workspaceSessionId: this._currentWorkspaceSessionId,
 				agentSessionId: this._currentAgentSessionId,
@@ -235,7 +235,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 
 	override clearInput(): void {
 		this._disposeWebview();
-		this._currentEmployeeId = undefined;
+		this._currentAgentId = undefined;
 		this._currentWorkspaceId = undefined;
 		this._currentWorkspaceSessionId = undefined;
 		this._currentAgentSessionId = undefined;
@@ -258,7 +258,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	}
 
 	/**
-	 * Resolve the owning employee from the preview file's URI.
+	 * Resolve the owning agent from the preview file's URI.
 	 *
 	 * Path convention (set up by `ConfigHtmlService.previewToFile`):
 	 *   <workspacePath>/.sarosisworkspace/agents/<agentDir>/.preview.html
@@ -267,24 +267,24 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	 *   1. Extract `<workspacePath>` and `<agentDir>` from the file path.
 	 *   2. Find the workspace whose `.path` matches `<workspacePath>` (case-
 	 *      insensitive on Windows).
-	 *   3. List employees scoped to that workspaceId and find one with the
+	 *   3. List agents scoped to that workspaceId and find one with the
 	 *      matching `agentDir`.
 	 *   4. Fallback: search across ALL workspaces for the matching `agentDir`
 	 *      — `agentDir` is a globally-unique slug so this is safe.
-	 *   5. Last-resort fallback: list employees with no workspaceId filter
+	 *   5. Last-resort fallback: list agents with no workspaceId filter
 	 *      (legacy behaviour, kept for non-folder-backed workspaces).
 	 *
-	 * The previous single-call `getEmployees()` (no workspaceId) would land
+	 * The previous single-call `getAgents()` (no workspaceId) would land
 	 * on the global fallback data dir when the OSS host has no folder open
 	 * or has a folder different from the workspace that owns the agent —
-	 * this returned an unrelated employee list and produced the
-	 * "no employee with agentDir=..." warnings.
+	 * this returned an unrelated agent list and produced the
+	 * "no agent with agentDir=..." warnings.
 	 */
-	private async _resolveEmployeeIdFromUri(uri: URI): Promise<string | undefined> {
+	private async _resolveAgentIdFromUri(uri: URI): Promise<string | undefined> {
 		const fsPath = uri.fsPath.replace(/\\/g, '/');
 		const m = /^(.+?)\/\.sarosisworkspace\/agents\/([^/]+)\/\.preview\.html$/i.exec(fsPath);
 		if (!m) {
-			this._logService.warn(`[HtmlPreviewEditorPane] resolveEmployeeId: path regex did not match fsPath=${fsPath}`);
+			this._logService.warn(`[HtmlPreviewEditorPane] resolveAgentId: path regex did not match fsPath=${fsPath}`);
 			return undefined;
 		}
 		const workspacePath = m[1];
@@ -303,11 +303,11 @@ export class HtmlPreviewEditorPane extends EditorPane {
 					return found.agentId;
 				}
 				this._logService.warn(
-					`[HtmlPreviewEditorPane] resolveEmployeeId: workspace '${ws.id}' (${ws.path}) has no agent binding with agentDir='${agentDir}' (${bindings.length} bindings)`,
+					`[HtmlPreviewEditorPane] resolveAgentId: workspace '${ws.id}' (${ws.path}) has no agent binding with agentDir='${agentDir}' (${bindings.length} bindings)`,
 				);
 			}
 		} catch (err) {
-			this._logService.warn(`[HtmlPreviewEditorPane] resolveEmployeeId: workspace lookup failed:`, err);
+			this._logService.warn(`[HtmlPreviewEditorPane] resolveAgentId: workspace lookup failed:`, err);
 		}
 
 		// Step 2: search all workspaces (agentDir is globally unique).
@@ -318,13 +318,13 @@ export class HtmlPreviewEditorPane extends EditorPane {
 				const found = bindings.find(b => b.agentDir === agentDir);
 				if (found) {
 					this._logService.info(
-						`[HtmlPreviewEditorPane] resolveEmployeeId: matched via cross-workspace scan — workspace='${ws.id}' agent='${found.agentId}'`,
+						`[HtmlPreviewEditorPane] resolveAgentId: matched via cross-workspace scan — workspace='${ws.id}' agent='${found.agentId}'`,
 					);
 					return found.agentId;
 				}
 			}
 		} catch (err) {
-			this._logService.warn(`[HtmlPreviewEditorPane] resolveEmployeeId: cross-workspace scan failed:`, err);
+			this._logService.warn(`[HtmlPreviewEditorPane] resolveAgentId: cross-workspace scan failed:`, err);
 		}
 
 		// Step 3: last resort — active workspace's agent bindings.
@@ -337,11 +337,11 @@ export class HtmlPreviewEditorPane extends EditorPane {
 					return found.agentId;
 				}
 				this._logService.warn(
-					`[HtmlPreviewEditorPane] resolveEmployeeId: no agent binding with agentDir='${agentDir}' (workspacePath='${workspacePath}', active workspace '${activeWsId}' has ${bindings.length} bindings: ${bindings.map(b => `${b.agentId}→${b.agentDir}`).join(', ')})`,
+					`[HtmlPreviewEditorPane] resolveAgentId: no agent binding with agentDir='${agentDir}' (workspacePath='${workspacePath}', active workspace '${activeWsId}' has ${bindings.length} bindings: ${bindings.map(b => `${b.agentId}→${b.agentDir}`).join(', ')})`,
 				);
 			}
 		} catch (err) {
-			this._logService.error(`[HtmlPreviewEditorPane] resolveEmployeeId: global fallback failed:`, err);
+			this._logService.error(`[HtmlPreviewEditorPane] resolveAgentId: global fallback failed:`, err);
 		}
 		return undefined;
 	}

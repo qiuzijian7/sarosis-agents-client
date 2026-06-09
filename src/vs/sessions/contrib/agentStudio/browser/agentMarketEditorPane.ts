@@ -43,7 +43,7 @@ const { $: $$ } = DOM;
  *   └─────────────────────────────────────────────────────┘
  *
  * Each card shows the agent icon, name, role, description, skill tags and a
- * one-click "部署" (deploy) button that creates an Employee in the active
+ * one-click "部署" (deploy) button that creates an Agent in the active
  * workspace — reusing the same data model as the Preset Agent sidebar view.
  */
 export class AgentMarketEditorPane extends EditorPane {

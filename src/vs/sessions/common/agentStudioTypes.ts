@@ -12,7 +12,7 @@
  * Aligned with VS Code's IHandOff format for .agent.md compatibility.
  */
 export interface IAgentHandOff {
-	/** Target agent name (must match an existing Employee.name or ICustomAgent.name) */
+	/** Target agent name (must match an existing Agent.name or ICustomAgent.name) */
 	readonly agent: string;
 	/** Display label for the hand-off button */
 	readonly label: string;
@@ -145,7 +145,7 @@ export interface IAgentLimits {
 	readonly maxIterations?: number;
 	/** Timeout in seconds for a single agent request (default: 0 = unlimited) */
 	readonly timeoutSecs?: number;
-	/** Maximum tokens for a single model response (overrides Employee.maxTokens if set) */
+	/** Maximum tokens for a single model response (overrides Agent.maxTokens if set) */
 	readonly maxResponseTokens?: number;
 }
 
@@ -247,7 +247,7 @@ export const enum AgentType {
 
 /**
  * Portable export format for an agent instance.
- * Contains the employee metadata and all bootstrap/config files from the agent directory.
+ * Contains the agent definition metadata and all bootstrap/config files from the agent directory.
  * Used for import/export across workspaces.
  */
 export interface AgentExportData {
@@ -255,8 +255,8 @@ export interface AgentExportData {
 	readonly version: 1;
 	/** Timestamp of the export */
 	readonly exportedAt: string;
-	/** Employee record (sensitive fields like id/workspaceId stripped) */
-	readonly employee: Omit<Employee, 'id' | 'workspaceId' | 'agentDir' | 'bootstrapTemplates' | 'status' | 'tokenUsage' | 'position'>;
+	/** Agent definition (instance/runtime fields like id are not exported) */
+	readonly agent: Partial<Agent>;
 	/** agent.yaml content (JSON object) */
 	readonly agentConfig: Record<string, unknown>;
 	/** Bootstrap file contents */
@@ -290,11 +290,11 @@ export interface AgentBootstrapTemplates {
 }
 
 /**
- * Agent — a chat-ready agent definition.  Replaces the old Employee model.
+ * Agent — a chat-ready agent definition.
  * Agents come from two sources: builtin (hardcoded preset definitions) and
  * custom (user-created, persisted in custom-agents.json).
  *
- * Unlike the old Employee model, Agents are NOT instantiated from presets —
+ * Agents are NOT instantiated from presets —
  * the preset IS the agent.  There is no separate "deploy" / "create instance"
  * step; selecting an agent opens its chat directly.
  */
@@ -323,6 +323,14 @@ export interface Agent {
 
 	/** Agent type: planner (can orchestrate) or worker (default). */
 	agentType?: AgentType;
+
+	/**
+	 * Sandbox mode — controls the level of restriction on agent tool access.
+	 * Part of the agent DEFINITION (same in every workspace), so it belongs on
+	 * the global Agent. When set, it takes precedence over `tools` for access
+	 * control (e.g. ReadOnly restricts to read-only tools regardless of `tools`).
+	 */
+	sandbox?: SandboxMode;
 
 	// ── ⚠️ DO NOT add per-workspace runtime fields here ─────────────────────
 	// `Agent` is a GLOBAL singleton definition: a given agent id (e.g. 'coder')
@@ -380,7 +388,7 @@ export interface AgentBinding {
 }
 
 /**
- * Memory configuration shared by Agent (and historically Employee).
+ * Memory configuration shared by Agent.
  * Controls how the agent's L0/L1 memory is loaded and injected into prompts,
  * plus the user-maintained Persona Memory entries.
  */
@@ -405,236 +413,6 @@ export interface AgentMemoryConfig {
 		createdAt?: string;
 		updatedAt?: string;
 	}>;
-}
-
-export interface Employee {
-	readonly id: string;
-	name: string;
-	role: string;
-	email?: string;
-	avatar?: string;
-	presetId?: string;
-	/**
-	 * Model specification — supports single model, fallback chain, or structured chain.
-	 * - Simple: `'claude-sonnet-4-20250514'` (backward compatible)
-	 * - Array: `['claude-sonnet-4-20250514', 'gpt-4o']` (primary + fallbacks)
-	 * - Structured: `{ primary: 'claude-sonnet-4-20250514', fallbacks: ['gpt-4o'] }`
-	 *
-	 * When a model is unavailable, the runtime tries the next model in the chain.
-	 * Aligned with VS Code's `model: string[]` and OpenClaw's `{primary, fallbacks}`.
-	 */
-	model?: ModelSpec;
-	/** @deprecated Use `model` with ModelSpec instead. Kept for serialization compat. */
-	provider?: string;
-	customPrompt?: string;
-	// allow-any-unicode-next-line
-	/** 技能 ID 列表 - agent 引用的技能 */
-	skills?: string[];
-	// allow-any-unicode-next-line
-	/** 技能版本记录 - 记录每个技能的版本号，用于检测更新 */
-	skillVersions?: Record<string, string>;
-	// allow-any-unicode-next-line
-	/** 缺失的技能数量（在技能库中找不到的技能） - 用于 UI 警告徽章 */
-	skillErrorCount?: number;
-	// allow-any-unicode-next-line
-	/** 缺失的技能 ID 列表 - 用于 UI 对话框显示 */
-	missingSkillIds?: string[];
-	/**
-	 * Skill directive files — links this agent to specific SKILL.md files.
-	 * Unlike `skills` (lightweight IDs), directive files contain the full skill
-	 * definition including prompt, triggers, and recommended tools.
-	 * Inspired by Hermes/OpenClaw's SKILL.md format.
-	 */
-	skillDirectives?: ISkillDirective[];
-	/**
-	 * Tool references bound to this agent (Sarosis internal tool names).
-	 * Only declared tools are injected into the LLM; all others are disabled for this agent.
-	 *
-	 * Current tool names (22 total):
-	 *   grep_search, list_dir, search_files, read_file, replace_in_file, edit_file,
-	 *   write_to_file, terminal, use_mcp_tool, fetch_mcp_tools, grep_mcp_tools,
-	 *   use_skill, read_image, capture_screen, web_preview, get_env_info,
-	 *   generate_picture, read_history_context, grep_history_context, cron,
-	 *   notify, display_download_links
-	 *
-	 * Legacy aliases expanded automatically:
-	 *   vscode → write_to_file, list_dir, search_files, read_file
-	 *   read   → read_file, list_dir, search_files, grep_search
-	 *   execute → terminal
-	 * Old internal names also supported:
-	 *   file_read → read_file, file_write → write_to_file, file_list → list_dir,
-	 *   read_skill → use_skill, list_skills → use_skill
-	 *
-	 * If undefined or empty, all tools are allowed (no restriction).
-	 */
-	tools?: string[];
-	/**
-	 * Declarative hand-offs to other agents.
-	 * When this agent completes, it can suggest or auto-trigger a hand-off to another agent
-	 * with a specific prompt. Compatible with VS Code's ICustomAgent.handOffs format.
-	 */
-	handOffs?: IAgentHandOff[];
-	/**
-	 * Lifecycle hooks scoped to this agent.
-	 * Supports Start / Stop / PreRequest / PostRequest hook points.
-	 * Compatible with VS Code's ChatRequestHooks format.
-	 */
-	hooks?: IAgentHooks;
-	/**
-	 * Visibility control: whether the agent is visible in the user picker
-	 * and/or invocable as a sub-agent by other agents.
-	 */
-	visibility?: IAgentVisibility;
-	/**
-	 * Sub-agent allowlist: names of agents this agent can invoke.
-	 * If undefined or ['*'], all agents are available.
-	 * If empty array, no sub-agents can be used.
-	 */
-	agents?: string[];
-	/**
-	 * Target platform for this agent's instructions and tool references.
-	 * Aligned with VS Code's ICustomAgent.target.
-	 * Determines compatibility with different LLM platforms.
-	 * Default: 'universal' (platform-agnostic).
-	 */
-	target?: AgentTarget;
-	/**
-	 * Source tracking — where this agent definition originated.
-	 * Used for trust decisions, security auditing, and UI indicators.
-	 * Aligned with VS Code's IAgentSource.
-	 */
-	source?: AgentSource;
-	/**
-	 * If source is 'extension', the ID of the contributing extension.
-	 */
-	extensionId?: string;
-	/**
-	 * Session types this agent is applicable to (e.g. 'agent-mode', 'edit-mode').
-	 * Aligned with VS Code's ICustomAgent.sessionTypes.
-	 */
-	sessionTypes?: string[];
-	status: AgentStatus;
-	/**
-	 * Agent type: planner (can orchestrate), pm (can dispatch, max 1 per workspace), worker (default).
-	 * Defaults to 'worker' if unset.
-	 */
-	agentType?: AgentType;
-	teamId?: string;
-	workspaceId?: string;
-	position?: { x: number; y: number };
-	/** LLM temperature (0-2), persisted per agent */
-	temperature?: number;
-	/** Max tokens for LLM response, persisted per agent */
-	maxTokens?: number;
-	/**
-	 * Sandbox mode — controls the level of restriction on agent tool access.
-	 * - None: No restrictions (default, backward compatible)
-	 * - ReadOnly: Agent can only read/search, cannot edit or execute
-	 * - Sandboxed: Agent runs in a restricted environment
-	 *
-	 * When SandboxMode is set, it takes precedence over `tools` for access control:
-	 * - ReadOnly automatically restricts to read-only tools regardless of `tools`
-	 * - Sandboxed uses the `tools` list but with additional safety constraints
-	 *
-	 * Inspired by OpenHuman's SandboxMode and OpenClaw's AgentSandboxConfig.
-	 */
-	sandbox?: SandboxMode;
-	/**
-	 * Iteration and timeout limits for this agent's sessions.
-	 * Prevents runaway agents from consuming excessive resources.
-	 * Inspired by OpenHuman's `max_iterations` / `timeout_secs` and Hermes' `max_iterations`.
-	 */
-	limits?: IAgentLimits;
-	/**
-	 * Whether this agent can run in background mode.
-	 * Background agents can continue execution without blocking the user's session.
-	 * Inspired by OpenHuman's `background: bool`.
-	 */
-	background?: boolean;
-	/**
-	 * Connections (edges) this agent participates in (as source or target).
-	 * Persisted to employees.json so hierarchy survives window reload.
-	 */
-	connections?: Array<{ id: string; sourceId: string; targetId: string; type: string; label?: string }>;
-	tokenUsage?: number;
-	/** Path to the agent instance directory under .sarosisworkspace/agents/{slug}/ */
-	agentDir?: string;
-	/**
-	 * Minimum confidence threshold (0-100) for the agent's output to be
-	 * accepted without human review. Inspired by Feature-Dev's
-	 * code-reviewer confidence scoring. Only report findings with
-	 * confidence >= this value.
-	 */
-	confidenceThreshold?: number;
-	/**
-	 * Strategy for parallel execution of multiple instances of this agent.
-	 * - undefined: no parallel strategy (single instance)
-	 * - 'voting': launch N instances, compare results, pick best / merge
-	 * - 'coverage': launch N instances with different focuses, merge all
-	 */
-	parallelStrategy?: 'voting' | 'coverage';
-	/**
-	 * Bootstrap templates from a preset, used when creating the agent instance directory.
-	 * Not persisted to employees.json — only used during creation.
-	 */
-	bootstrapTemplates?: AgentBootstrapTemplates;
-	/**
-	 * Git worktree directory this agent works in.
-	 * Inherits from Workspace.worktreePath if not set.
-	 * Set this only when an agent needs its own isolated worktree.
-	 */
-	worktreePath?: string;
-	/** Branch name of the agent's worktree (overrides workspace-level) */
-	worktreeBranch?: string;
-	/**
-	 * ConfigMD — Markdown file as the canonical data source, rendered as HTML.
-	 * The MD file is the single source of truth; the HTML view is computed from it.
-	 * HTML interactions (clicks, form edits) are translated into patches that mutate
-	 * the MD file, which then triggers re-rendering. Supports custom parser per agent.
-	 */
-	configMd?: AgentConfigMd;
-	/**
-	 * Memory configuration — controls how the agent's L0/L1 memory is loaded
-	 * and injected into prompts at runtime.
-	 *
-	 * Mirrors the WebView-side `MemoryConfig` (see useEmployeeStore.ts):
-	 *   - strategy === 'full'           → 注入 L0（原始对话）
-	 *   - strategy === 'summary'        → 注入 L1（摘要 / 长期记忆）
-	 *   - strategy === 'sliding_window' → 历史遗留值，运行时按 'full' 处理
-	 *
-	 * `entries` 是用户在面板里手动维护的固定记忆条目，host 端目前不读取，
-	 * 仅作为持久化字段透传，避免 WebView 写入后被覆盖丢失。
-	 *
-	 * 注意：与 entries 并行存在另一套"自动召回"机制（L0/L1）——由 TDB-AM
-	 * gateway 在对话流水中自动写入 SQLite，运行时通过 `IMemoryProvider`
-	 * 注入到 prompt。两者互不干扰：`strategy` 字段控制"自动召回"注入
-	 * 的层级（summary→L1 / full→L0），`entries` 永远是手动条目。
-	 * Memory 面板里的"自动召回"分区直接读 gateway，不经过 employees.json。
-	 */
-	memoryConfig?: {
-		enabled: boolean;
-		maxEntries: number;
-		strategy: 'summary' | 'full' | 'sliding_window';
-		windowSize?: number;
-		/**
-		 * 召回作用域（2026-06 新增）。控制本 Agent 在每轮对话开始时的 L1 召回边界：
-		 *   - 'agent'     → 仅本 Agent 自己积累的记忆（最严格隔离）
-		 *   - 'workspace' → 当前 workspace 下所有 agent 共享
-		 *   - 'global'    → 全库共享（旧行为）
-		 * 缺省 / undefined 时按 'agent' 处理（C2 默认严格隔离）。
-		 */
-		scope?: 'agent' | 'workspace' | 'global';
-		entries: Array<{
-			id: string;
-			key: string;
-			value: string;
-			category?: string;
-			createdAt?: string;
-			updatedAt?: string;
-		}>;
-	};
-	createdAt: string;
-	updatedAt: string;
 }
 
 // allow-any-unicode-next-line
@@ -768,7 +546,8 @@ export interface Workspace {
 	 * Defaults to an empty array for legacy data (see migrateWorkspace).
 	 */
 	relatedFolders: RelatedFolder[];
-	employees: string[]; // employee IDs
+	/** Agent definition IDs bound to this workspace. */
+	agents: string[];
 	connections: Connection[];
 	layout?: WorkspaceLayout;
 	createdAt: string;
@@ -811,6 +590,9 @@ export function migrateWorkspace(raw: any): Workspace {
 				addedAt: typeof f.addedAt === 'string' ? f.addedAt : new Date().toISOString(),
 				isGitRepo: typeof f.isGitRepo === 'boolean' ? f.isGitRepo : undefined,
 			}));
+	}
+	if (!Array.isArray(raw.agents)) {
+		raw.agents = [];
 	}
 	return raw as Workspace;
 }
@@ -952,15 +734,7 @@ export interface ChatMessage {
 	readonly id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
 	content: string;
-	/**
-	 * @deprecated 2026-06-07 起逐步迁移到 agentId。新代码请用 agentId；
-	 * 当前两个字段同值共存，待全部消费方迁移完成后将删除 employeeId。
-	 */
-	employeeId?: string;
-	/**
-	 * Agent 实例 ID（= 旧 employeeId 的值）。新代码请使用此字段。
-	 * 重构期间作为可选字段，迁移结束后将变为必填并删除 employeeId。
-	 */
+	/** Agent 实例 ID。 */
 	agentId?: string;
 	/** Workspace Session (Fork) ID */
 	sessionId?: string;
@@ -1025,7 +799,8 @@ export class AgentStudioSession {
 	readonly id: string;
 	name: string;
 	workspaceId: string;
-	activeEmployeeId?: string;
+	/** Currently active agent id in this session. */
+	activeAgentId?: string;
 	createdAt: string;
 	updatedAt: string;
 	archived?: boolean;
@@ -1034,7 +809,7 @@ export class AgentStudioSession {
 		id: string;
 		name: string;
 		workspaceId: string;
-		activeEmployeeId?: string;
+		activeAgentId?: string;
 		createdAt: string;
 		updatedAt: string;
 		archived?: boolean;
@@ -1042,7 +817,7 @@ export class AgentStudioSession {
 		this.id = data.id;
 		this.name = data.name;
 		this.workspaceId = data.workspaceId;
-		this.activeEmployeeId = data.activeEmployeeId;
+		this.activeAgentId = data.activeAgentId;
 		this.createdAt = data.createdAt;
 		this.updatedAt = data.updatedAt;
 		this.archived = data.archived;
@@ -1179,7 +954,7 @@ export const enum WorkspaceSessionStatus {
  * Lazily created — only materialised when the Agent is actually invoked in this Fork.
  */
 export interface AgentSessionEntry {
-	/** Agent instance ID (matches Employee.id) */
+	/** Agent instance ID (matches Agent.id) */
 	readonly agentId: string;
 	/** This Agent's session ID within this Fork */
 	readonly sessionId: string;
@@ -1322,7 +1097,7 @@ export interface PlanTask {
 	status: PlanTaskStatus;
 	/** IDs of tasks that must complete before this one can start */
 	dependencies: string[];
-	/** The agent (employee) assigned to this task — may be auto-created */
+	/** The agent assigned to this task — may be auto-created */
 	assigneeId?: string;
 	/** Display name of the assigned agent */
 	assigneeName?: string;
@@ -1390,7 +1165,7 @@ export interface OrchestrationPlan {
 	tasks: PlanTask[];
 	/** Workspace this plan belongs to */
 	workspaceId: string;
-	/** The planner agent (Employee) who created this plan */
+	/** The planner agent who created this plan */
 	plannerId: string;
 	/** Max number of tasks running concurrently (default: 3) */
 	maxConcurrency: number;

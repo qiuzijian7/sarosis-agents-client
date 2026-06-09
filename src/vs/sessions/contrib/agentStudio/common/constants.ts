@@ -603,7 +603,6 @@ export const AGENT_STUDIO_ACTIVE_CONTEXT_KEY = 'agentStudio.active';
 export const AGENT_STUDIO_WEBVIEW_TYPE = 'agentStudio.webview';
 
 // Data file names
-export const DATA_FILE_EMPLOYEES = 'employees.json';
 export const DATA_FILE_WORKSPACES = 'workspaces.json';
 export const DATA_FILE_DELEGATIONS = 'delegations.json';
 export const DATA_FILE_SESSIONS = 'sessions.json';

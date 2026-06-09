@@ -54,7 +54,7 @@ export function TaskBoardPanel(): React.ReactElement {
 	const { agents } = useAgentStore();
 	const loadAgents = useAgentStore(s => s.loadAgents);
 	// All agents are global (no per-workspace filtering) — `agents` already holds the full list.
-	const allEmployees = agents;
+	const allAgents = agents;
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
 	const { diagnostics, isRunning: isDiagnosticsRunning, loadDiagnostics, runDiagnostics } = useDiagnosticsStore();
@@ -68,8 +68,8 @@ export function TaskBoardPanel(): React.ReactElement {
 	// (show only that workspace's board). Boards are no longer user-creatable
 	// or deletable — each workspace implicitly owns exactly one board.
 	const [boardFilterWsId, setBoardFilterWsId] = useState<string>('all');
-	// Employee filter: 'all' or a specific assigneeId (derived from current tasks).
-	const [employeeFilter, setEmployeeFilter] = useState<string>('all');
+	// Agent filter: 'all' or a specific assigneeId (derived from current tasks).
+	const [agentFilter, setAgentFilter] = useState<string>('all');
 	// Status-column visibility: a column key is hidden when present in this set.
 	// Default = empty (all columns shown). Unchecking a checkbox hides its column.
 	const [hiddenColumnKeys, setHiddenColumnKeys] = useState<Set<string>>(() => new Set());
@@ -189,11 +189,11 @@ export function TaskBoardPanel(): React.ReactElement {
 	const getTasksForColumn = useCallback((col: ColumnDef) => {
 		return tasks.filter(t => {
 			if (!t || !col.statuses.includes(t.status)) { return false; }
-			// Employee filter ('all' = no filter, otherwise match assigneeId)
-			if (employeeFilter !== 'all' && t.assigneeId !== employeeFilter) { return false; }
+			// Agent filter ('all' = no filter, otherwise match assigneeId)
+			if (agentFilter !== 'all' && t.assigneeId !== agentFilter) { return false; }
 			return true;
 		});
-	}, [tasks, employeeFilter]);
+	}, [tasks, agentFilter]);
 
 	// Drag handlers
 	const handleDragStart = useCallback((taskId: string) => {
@@ -252,10 +252,10 @@ export function TaskBoardPanel(): React.ReactElement {
 	const hasErrorAlert = diagnostics.some(d => d.severity === 'error' || d.severity === 'critical');
 
 	// ─── Filter derivations ────────────────────────────────────────────────
-	// Employee options derived from the assignees present on current tasks.
-	// We prefer the employee record's name (from useEmployeeStore) but fall
+	// Agent options derived from the assignees present on current tasks.
+	// We prefer the agent record's name (from useAgentStore) but fall
 	// back to the assigneeName stored on the task itself.
-	const employeeOptions = useMemo(() => {
+	const agentOptions = useMemo(() => {
 		const seen = new Map<string, string>();
 		for (const t of tasks) {
 			if (!t || !t.assigneeId) { continue; }
@@ -340,11 +340,11 @@ export function TaskBoardPanel(): React.ReactElement {
 			isOpen={isCreateTaskOpen}
 			onClose={() => setIsCreateTaskOpen(false)}
 			onCreate={handleCreateTask}
-			employees={allEmployees.map(e => ({ id: e.id, name: e.name }))}
+			agents={allAgents.map(e => ({ id: e.id, name: e.name }))}
 			tasks={tasks.map(t => ({ id: t.id, title: t.title }))}
 		/>
 
-		{/* Filter bar: board(workspace) filter + employee filter + status-column toggles */}
+		{/* Filter bar: board(workspace) filter + agent filter + status-column toggles */}
 		{!isCollapsed && (
 			<div className="task-board-filters">
 				{/* Board filter — 'all' or one workspace's board. Each workspace
@@ -364,17 +364,17 @@ export function TaskBoardPanel(): React.ReactElement {
 					</select>
 				</div>
 
-				{/* Employee filter — derived from assignees on current tasks. */}
+				{/* Agent filter — derived from assignees on current tasks. */}
 				<div className="task-board-filter-group">
 					<span className="task-board-filter-label">员工</span>
 					<select
 						className="task-board-filter-select"
-						value={employeeFilter}
-						onChange={e => setEmployeeFilter(e.target.value)}
+						value={agentFilter}
+						onChange={e => setAgentFilter(e.target.value)}
 						title="按负责员工过滤任务"
 					>
 						<option value="all">全部员工</option>
-						{employeeOptions.map(emp => (
+						{agentOptions.map(emp => (
 							<option key={emp.id} value={emp.id}>{emp.name}</option>
 						))}
 					</select>
@@ -483,7 +483,7 @@ export function TaskBoardPanel(): React.ReactElement {
 									<TaskCard
 										key={task.id}
 										task={task}
-										employees={agents}
+										agents={agents}
 										onStatusChange={handleStatusChange}
 										onDelete={handleDelete}
 										onArchive={handleArchive}

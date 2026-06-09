@@ -399,7 +399,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 			case 'agents.getLastSelected':
 				return { agentId: await this._agentStudioService.getLastSelectedAgentId() };
 			case 'agents.selected':
-				this._agentStudioService.fireSelectEmployee(p.agentId as string | null);
+				this._agentStudioService.fireSelectAgent(p.agentId as string | null);
 				return undefined;
 
 			// ─── Delegations ─────────────────────────────────────

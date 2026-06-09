@@ -64,7 +64,7 @@ body,
   color: var(--as-fg-primary);
 }
 
-.employee-chat {
+.agent-chat {
   background-color: var(--as-bg-primary);
 }
 
@@ -116,21 +116,21 @@ body,
   background: var(--as-bg-primary) !important;
 }
 
-.employee-node {
+.agent-node {
   border-color: var(--as-border);
 }
 
-.employee-node:hover {
+.agent-node:hover {
   border-color: var(--as-accent);
   box-shadow: 0 8px 16px var(--as-shadow);
 }
 
-.employee-node.selected {
+.agent-node.selected {
   border-color: var(--as-border-focus);
   box-shadow: 0 0 0 2px var(--as-accent-bg), 0 8px 16px var(--as-shadow);
 }
 
-.employee-card-avatar-fallback {
+.agent-card-avatar-fallback {
   background: linear-gradient(135deg, var(--as-node-gradient-start), var(--as-node-gradient-end));
 }
 
@@ -241,14 +241,14 @@ body,
 /* ─── Smooth Transition on Theme Switch ────────────────────────────── */
 
 body,
-.employee-chat,
+.agent-chat,
 .workspace-toolbar,
 .chat-header,
 .chat-input-area,
 .chat-composer-box,
 .task-board-panel,
 .task-card,
-.employee-node,
+.agent-node,
 .chat-message .message-content {
   transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }

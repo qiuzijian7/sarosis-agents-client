@@ -1,7 +1,7 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Tool Isolator
  *
- *  Bridges Employee.tools[] to Sarosis internal tool names for real tool isolation.
+ *  Bridges Agent.tools[] to Sarosis internal tool names for real tool isolation.
  *  When an agent sends a chat request, the isolator computes an enabledTools map
  *  that only enables the tools declared in the agent's `tools` field, disabling all others.
  *
@@ -12,7 +12,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import type { Employee } from '../../../common/agentStudioTypes.js';
+import type { Agent } from '../../../common/agentStudioTypes.js';
 import { SandboxMode } from '../../../common/agentStudioTypes.js';
 
 export const IAgentToolIsolator = createDecorator<IAgentToolIsolator>('agentToolIsolator');
@@ -45,19 +45,19 @@ export interface IAgentToolIsolator {
 	 * - Unknown tool references (declared but not in the platform registry) are
 	 *   reported but still enabled in the map so they can be resolved lazily.
 	 *
-	 * @param employee The agent whose tool access to isolate
+	 * @param agent The agent whose tool access to isolate
 	 * @param allRegisteredToolNames All tool names currently registered in the platform
 	 * @returns Isolated tool map, or undefined if no restriction applies
 	 */
-	isolateTools(employee: Employee, allRegisteredToolNames: readonly string[]): IIsolatedTools | undefined;
+	isolateTools(agent: Agent, allRegisteredToolNames: readonly string[]): IIsolatedTools | undefined;
 
 	/**
 	 * Check if a specific tool is allowed for an agent.
-	 * @param employee The agent
+	 * @param agent The agent
 	 * @param toolName The Sarosis internal tool name to check
 	 * @returns true if the tool is allowed, false if blocked
 	 */
-	isToolAllowed(employee: Employee, toolName: string): boolean;
+	isToolAllowed(agent: Agent, toolName: string): boolean;
 
 	/**
 	 * Expand legacy aliases and old internal names to current Sarosis tool names.
@@ -140,7 +140,7 @@ export const SAROSIS_TOOL_NAMES = {
 
 /**
  * Maps legacy VS Code tool IDs and old Sarosis internal names to current tool names.
- * Used for backward compatibility with existing employee configs.
+ * Used for backward compatibility with existing agent configs.
  *
  * Expansion rules:
  *   ── VS Code legacy aliases ──
@@ -236,7 +236,7 @@ export const TOOL_METADATA: Record<string, { label: string; description: string;
 /**
  * Default tool sets for common agent roles.
  * Uses current Sarosis internal tool names directly.
- * Used when creating employees from presets that don't explicitly declare tools.
+ * Used when creating agents from presets that don't explicitly declare tools.
  */
 export const DEFAULT_TOOL_SETS: Record<string, string[]> = {
 	code: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE, SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.TERMINAL, SAROSIS_TOOL_NAMES.SEARCH_FILES, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.GREP_SEARCH, SAROSIS_TOOL_NAMES.REPLACE_IN_FILE],
@@ -300,16 +300,16 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 	 *
 	 * Implementation strategy:
 	 * 1. If SandboxMode.ReadOnly → force read-only tools only, regardless of `tools` field
-	 * 2. If employee.tools is undefined/empty → no restriction (return undefined)
-	 * 3. Expand legacy aliases and old names in employee.tools to current tool names
+	 * 2. If agent.tools is undefined/empty → no restriction (return undefined)
+	 * 3. Expand legacy aliases and old names in agent.tools to current tool names
 	 * 4. Build enabledTools map: declared tools = true, all others = false
 	 * 5. Report unknown tools (declared but not in registered tools)
 	 */
-	isolateTools(employee: Employee, allRegisteredToolNames: readonly string[]): IIsolatedTools | undefined {
+	isolateTools(agent: Agent, allRegisteredToolNames: readonly string[]): IIsolatedTools | undefined {
 		const registeredSet = new Set(allRegisteredToolNames);
 
 		// SandboxMode.ReadOnly overrides everything — only read-only tools allowed
-		if (employee.sandbox === SandboxMode.ReadOnly) {
+		if (agent.sandbox === SandboxMode.ReadOnly) {
 			const declaredTools = [...READ_ONLY_TOOL_NAMES].filter(t => registeredSet.has(t));
 			const disabledTools = [...registeredSet].filter(t => !READ_ONLY_TOOL_NAMES.includes(t));
 
@@ -329,7 +329,7 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 			};
 		}
 
-		const rawTools = employee.tools;
+		const rawTools = agent.tools;
 		if (!rawTools || rawTools.length === 0) {
 			// No tool restriction — agent can use all tools
 			return undefined;
@@ -361,13 +361,13 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 		};
 	}
 
-	isToolAllowed(employee: Employee, toolName: string): boolean {
+	isToolAllowed(agent: Agent, toolName: string): boolean {
 		// SandboxMode.ReadOnly — only read-only tools allowed
-		if (employee.sandbox === SandboxMode.ReadOnly) {
+		if (agent.sandbox === SandboxMode.ReadOnly) {
 			return READ_ONLY_TOOL_NAMES.includes(toolName);
 		}
 
-		const rawTools = employee.tools;
+		const rawTools = agent.tools;
 		if (!rawTools || rawTools.length === 0) {
 			// No restriction — all tools allowed
 			return true;
