@@ -10,7 +10,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { perfTrace } from './utils/perfTrace.js';
-import { initMessageClient } from './bridge/messageClient.js';
+import { initMessageClient, postMessage } from './bridge/messageClient.js';
 import { handleStreamDelta, handleStreamComplete, handleStreamError, applyToolApprovalRequest } from './bridge/streamHandler.js';
 import { useAgentStore } from './store/useAgentStore.js';
 import { useProviderStore } from './store/useProviderStore.js';
@@ -29,6 +29,7 @@ import './styles/chat-cards.css';
 import './styles/configmd.css';
 import './styles/agent-editor.css';
 import './styles/void-tool-card.css';
+import '@xyflow/react/dist/style.css';
 
 // Initialize the message bridge (must happen before React mounts)
 perfTrace.mark('bundle-eval');
@@ -401,6 +402,38 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'pool.activate': {
+			// Hot-path: this webview was pooled and is now being activated by
+			// the host with a real panelType. Update globals and dispatch a
+			// custom event so the App component re-renders with the real panel.
+			const payload = data as {
+				panelType?: string;
+				initialTheme?: string;
+				initialData?: unknown;
+				perfHostCreateTs?: number;
+				perfHtmlTs?: number;
+				perfRendererOrigin?: number;
+			} | undefined;
+			if (payload) {
+				(window as any).__AGENT_STUDIO_PANEL_TYPE__ = payload.panelType ?? undefined;
+				if (payload.initialTheme) {
+					(window as any).__AGENT_STUDIO_INITIAL_THEME__ = payload.initialTheme;
+					useThemeStore.getState().setTheme(payload.initialTheme);
+				}
+				if (payload.initialData !== undefined) {
+					(window as any).__AGENT_STUDIO_INITIAL_DATA__ = payload.initialData;
+				}
+				if (payload.perfHostCreateTs) {
+					(window as any).__AS_PERF_HOST_CREATE_TS__ = payload.perfHostCreateTs;
+				}
+				if (payload.perfHtmlTs) {
+					(window as any).__AS_PERF_HTML_TS__ = payload.perfHtmlTs;
+				}
+				console.log(`[AgentStudio] pool.activate → panelType=${payload.panelType}`);
+				window.dispatchEvent(new CustomEvent('agentStudio:pool-activate', { detail: payload }));
+			}
+			break;
+		}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}
@@ -416,4 +449,9 @@ if (container) {
 	perfTrace.mark('react-render');
 	const root = createRoot(container);
 	root.render(React.createElement(App));
+
+	// Signal to the host that this webview is fully bootstrapped (React mounted,
+	// all stores initialized). For pooled webviews, this lets the pool know it
+	// can be acquired with zero additional startup cost.
+	postMessage('pool.ready', { ts: Date.now() });
 }

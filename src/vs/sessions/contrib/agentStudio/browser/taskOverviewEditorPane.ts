@@ -250,30 +250,40 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 	private _getWebviewHtml(mediaUri: URI): string {
 		const nonce = this._generateNonce();
-		const scriptUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.js')).toString() + '?_=' + Date.now();
-		const styleUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.css')).toString() + '?_=' + Date.now();
+		// NOTE: DO NOT append cache busters — asWebviewUri handles caching internally
+		const scriptUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.js')).toString();
+		const styleUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.css')).toString();
 
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' vscode-webview: vscode-resource:; style-src 'nonce-${nonce}' 'unsafe-inline' vscode-webview: vscode-resource:; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' vscode-webview: vscode-resource:; style-src 'unsafe-inline' vscode-webview: vscode-resource:; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
 	<title>Task Overview</title>
 	<link rel="stylesheet" nonce="${nonce}" href="${styleUri}">
 	<style nonce="${nonce}">
 		body { margin: 0; padding: 0; overflow: hidden; height: 100vh; background: var(--as-bg-primary, var(--vscode-editor-background)); color: var(--as-fg-primary, var(--vscode-foreground)); font-family: var(--vscode-font-family); }
+		@keyframes as-spin { to { transform: rotate(360deg); } }
 		#root { width: 100%; height: 100%; }
 	</style>
 </head>
 <body>
-	<div id="root"></div>
+	<div id="root">
+		<div id="as-preload" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px;color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family);">
+			<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="animation:as-spin 1s linear infinite;opacity:0.7;">
+				<path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+			</svg>
+			<span style="font-size:13px;letter-spacing:0.4px;opacity:0.8;">Task Board 加载中...</span>
+		</div>
+	</div>
 	<script nonce="${nonce}">
 		window.__AGENT_STUDIO_PANEL_TYPE__ = 'taskboard';
 		window.__AGENT_STUDIO_CSP_NONCE__ = '${nonce}';
 		window.__AS_BUNDLE_LOADED__ = false;
 	</script>
-	<script nonce="${nonce}" src="${scriptUri}"></script>
+	<!-- ESM module entry -->
+	<script nonce="${nonce}" type="module" src="${scriptUri}"></script>
 </body>
 </html>`;
 	}

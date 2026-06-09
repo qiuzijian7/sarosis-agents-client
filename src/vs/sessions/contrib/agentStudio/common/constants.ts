@@ -602,6 +602,17 @@ export const AGENT_STUDIO_ACTIVE_CONTEXT_KEY = 'agentStudio.active';
 // WebView
 export const AGENT_STUDIO_WEBVIEW_TYPE = 'agentStudio.webview';
 
+// Stable origin shared by all inline-mode Agent Studio webviews (chat panel +
+// the off-screen pre-warm holder). VS Code defaults each webview to a random
+// UUID origin, which forces Chromium to spawn a brand-new (cold) renderer
+// process per panel — and during dev cold-start that spawn can stall 25-40s.
+// By pinning a single stable origin, all these webviews share ONE renderer
+// process, so once the persistent pre-warm holder has spawned it, the real
+// chat panel reuses the already-hot process instead of spawning its own.
+// NOTE: only safe to share across webviews that have identical service-worker
+// state — we only apply it when disableServiceWorker is true (inline bundles).
+export const AGENT_STUDIO_WEBVIEW_ORIGIN = 'agentstudio-shared-renderer';
+
 // Data file names
 export const DATA_FILE_WORKSPACES = 'workspaces.json';
 export const DATA_FILE_DELEGATIONS = 'delegations.json';

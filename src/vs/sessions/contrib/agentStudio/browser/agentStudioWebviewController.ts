@@ -26,6 +26,7 @@ import {
 } from "../common/agentStudio.js";
 import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
+import { IAgentStudioWebviewPool } from "./agentStudioWebviewPool.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
 import {
 	IEnvironmentService,
@@ -42,7 +43,7 @@ import type {
 	IOrchestrationUnblockTaskPayload,
 } from "./messageProtocol.js";
 import type { AgentStudioPanelType } from "../common/constants.js";
-import { WORKSPACE_DATA_DIR, AGENTS_DIR } from "../common/constants.js";
+import { WORKSPACE_DATA_DIR, AGENTS_DIR, AGENT_STUDIO_WEBVIEW_ORIGIN } from "../common/constants.js";
 import { IModelSelectorService } from "../common/modelSelector.js";
 import { IAgentOSService } from "../common/agentOS.js";
 import { IWorktreeService } from "../../worktree/common/worktreeService.js";
@@ -129,6 +130,7 @@ interface IIncomingMessage {
  */
 export class AgentStudioWebviewController extends Disposable {
 	private _webview: IWebviewElement | undefined;
+
 	private readonly _sessionService: IWorkspaceSessionService;
 
 	/**
@@ -196,6 +198,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
+		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
 	) {
 		super();
 		this._sessionService = new WorkspaceSessionService(
@@ -265,13 +268,154 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	private _createWebview(): void {
+		this._createWebviewAsync();
+	}
+
+	private async _createWebviewAsync(): Promise<void> {
 		const mediaUri = this._getMediaUri();
 
+		// ── WAIT-FOR-POOL: if the pool is currently warming, wait for it ──
+		// Creating a cold-path webview while the pool is spawning a renderer
+		// process causes contention (same shared origin → same Chromium renderer).
+		// Both end up taking 30+ seconds instead of 15. Better to wait for the
+		// pool's instance and use the hot-path.
+		if (!this.webviewPool.hasWarmWebview && this.webviewPool.isWarming) {
+			this.logService.info(
+				`[AS-PERF][wait-for-pool] panelType=${this.panelType} — pool is warming, waiting for hot instance...`
+			);
+			const waitStart = Date.now();
+			const POOL_WAIT_TIMEOUT_MS = 120_000; // 2 minutes max wait
+			const gotInstance = await new Promise<boolean>((resolve) => {
+				const timer = setTimeout(() => {
+					sub.dispose();
+					resolve(false);
+				}, POOL_WAIT_TIMEOUT_MS);
+				const sub = this.webviewPool.onDidBecomeAvailable(() => {
+					clearTimeout(timer);
+					sub.dispose();
+					resolve(true);
+				});
+			});
+			this.logService.info(
+				`[AS-PERF][wait-for-pool] panelType=${this.panelType} — ` +
+				`waited ${Date.now() - waitStart}ms, pool ${gotInstance ? 'delivered' : 'timed out'}`
+			);
+		}
+
+		// ── HOT PATH: try to acquire a pre-warmed webview from the pool ──
+		// The pool holds a fully bootstrapped webview (HTML rendered, React
+		// bundle loaded and mounted). If available, we skip the entire cold
+		// renderer-spawn + HTML parse + bundle-load path (saves 25-40s in dev).
+		const pooled = this.webviewPool.acquire();
+		if (pooled) {
+			this.logService.info(
+				`[AS-PERF][hot-path] panelType=${this.panelType} — acquired warm webview from pool ` +
+				`(was warm for ${Date.now() - pooled.readyTs}ms)`
+			);
+
+			this._webview = pooled.webview;
+			this._register(this._webview);
+
+			// CRITICAL: iframes cannot be re-parented without losing state (Chromium
+			// limitation). Use absolute-position overlay: keep the pool container on
+			// document.body and position it precisely over our panel container.
+			const poolContainer = pooled.container;
+			poolContainer.style.position = 'absolute';
+			poolContainer.style.overflow = '';
+			poolContainer.removeAttribute('data-agent-studio-pool');
+
+			// Track our panel container's geometry and mirror it onto the pool container.
+			const syncLayout = () => {
+				const rect = this.container.getBoundingClientRect();
+				poolContainer.style.left = `${rect.left}px`;
+				poolContainer.style.top = `${rect.top}px`;
+				poolContainer.style.width = `${rect.width}px`;
+				poolContainer.style.height = `${rect.height}px`;
+			};
+			syncLayout();
+
+			// Re-sync on resize / layout changes.
+			const resizeObserver = new ResizeObserver(syncLayout);
+			resizeObserver.observe(this.container);
+			this._register({ dispose: () => resizeObserver.disconnect() });
+			this._register({ dispose: () => poolContainer.remove() });
+
+			// CRITICAL: register the message handler BEFORE sending pool.activate.
+			// When the webview processes pool.activate it will immediately start
+			// making RPC requests (agents.list, workspace.list, etc.) — if the
+			// onMessage handler isn't registered yet, those requests are lost and
+			// the webview shows blank content (pending requests time out).
+			this._register(
+				this._webview.onMessage(async (message) => {
+					await this._handleMessage(message.message as IIncomingMessage);
+				}),
+			);
+
+			// Notify the webview to switch from '__pooled__' to the real panelType
+			// and inject runtime data (theme, initial data, perf timestamps, etc.)
+			this._webview.postMessage({
+				direction: 'toWebview',
+				type: 'pool.activate',
+				data: {
+					panelType: this.panelType ?? undefined,
+					initialTheme: this.workbenchThemeService.getColorTheme().settingsId || '',
+					cspNonce: undefined, // already set from pool HTML
+					initialData: this.initialData ?? null,
+					perfHostCreateTs: this._perfCreateTs,
+					perfHtmlTs: Date.now(),
+					perfRendererOrigin: Math.round((mainWindow.performance?.timeOrigin ?? Date.now())),
+				},
+			});
+			return;
+		}
+
+		// ── COLD PATH: create a new webview from scratch ──
+		this.logService.info(`[AS-PERF][cold-path] panelType=${this.panelType} — no pool instance, creating new webview`);
+
+		// ── Inline bundles: read JS+CSS from disk so we can embed them
+		// directly into the HTML. This lets us use a srcdoc iframe that
+		// bypasses the `vscode-webview://` protocol handler entirely,
+		// eliminating the ~24s cold-start stall during Electron startup.
+		let bundleJs = '';
+		let bundleCss = '';
+		try {
+			const [jsContent, cssContent] = await Promise.all([
+				this.fileService.readFile(URI.joinPath(mediaUri, 'webview.js')),
+				this.fileService.readFile(URI.joinPath(mediaUri, 'webview.css')),
+			]);
+			bundleJs = jsContent.value.toString();
+			bundleCss = cssContent.value.toString();
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] Failed to read inline bundles, falling back to external refs', err);
+		}
+
+		const useInline = bundleJs.length > 0 && bundleCss.length > 0;
+
+		// Always use the standard VS Code webview element for reliable
+		// communication (acquireVsCodeApi / onMessage). When inline bundles
+		// are available, we embed JS+CSS directly in the HTML — this avoids
+		// the slow service-worker-proxied fetch of external resources while
+		// still going through the trusted vscode-webview:// protocol.
+		//
+		// CRITICAL PERF: when `useInline` is true, ALL resources are embedded
+		// directly in the HTML, so the service worker (which only exists to
+		// proxy `vscode-webview-resource://` fetches) is pure overhead. Its
+		// register + update + controllerchange handshake routinely takes
+		// 20+ seconds during VS Code cold start (see workerReady in
+		// `webview/browser/pre/index.html`). Disabling it cuts that out.
 		this._webview = this.webviewService.createWebviewElement({
 			title: "Agent Studio",
+			// Pin a stable origin (only in inline mode, where there is no
+			// service worker / external resource state to conflict). All
+			// inline Agent Studio webviews then share ONE Chromium renderer
+			// process, so the real chat panel can reuse the process already
+			// spawned by the off-screen pre-warm holder instead of paying the
+			// 25-40s cold renderer-spawn cost during dev startup.
+			origin: useInline ? AGENT_STUDIO_WEBVIEW_ORIGIN : undefined,
 			options: {
 				enableFindWidget: false,
 				retainContextWhenHidden: true,
+				disableServiceWorker: useInline,
 			},
 			contentOptions: {
 				allowScripts: true,
@@ -281,20 +425,42 @@ export class AgentStudioWebviewController extends Disposable {
 		});
 
 		this._register(this._webview);
-
-		// Mount WebView to container
+		const _perfMountStart = Date.now();
 		this._webview.mountTo(this.container, mainWindow);
-
-		// Set HTML content that loads the React bundle
-		const _perfHtmlStart = Date.now();
-		this._webview.setHtml(this._getWebviewHtml());
+		const _perfMountEnd = Date.now();
+		this._webview.setHtml(
+			this._getWebviewHtml(
+				useInline ? bundleJs : undefined,
+				useInline ? bundleCss : undefined,
+			),
+		);
+		const _perfSetHtmlEnd = Date.now();
 		this.logService.info(
-			`[AS-PERF][host] panelType=${this.panelType} controller→createWebview ` +
-			`+${_perfHtmlStart - this._perfCreateTs}ms, setHtml took ` +
-			`${Date.now() - _perfHtmlStart}ms (bundle download/parse happens in webview after this)`,
+			`[AS-PERF][host] panelType=${this.panelType} ` +
+			`createWebviewElement+${_perfMountStart - this._perfCreateTs}ms ` +
+			`mountTo=${_perfMountEnd - _perfMountStart}ms ` +
+			`setHtml=${_perfSetHtmlEnd - _perfMountEnd}ms ` +
+			`(inline=${useInline}, swDisabled=${useInline})`,
 		);
 
-		// Listen for messages from WebView
+		// Track when webview iframe element actually becomes ready (DOM 'ready' class)
+		// — this is the moment service-worker handshake / pre/index.html boot finishes
+		// and pending HTML payload gets flushed to the iframe.
+		const _perfWebviewReadyDeadline = Date.now();
+		const checkReady = () => {
+			const el = (this._webview as any)?.element as HTMLIFrameElement | undefined;
+			if (el?.classList.contains('ready')) {
+				this.logService.info(
+					`[AS-PERF][host] webview-iframe became 'ready' +` +
+					`${Date.now() - _perfWebviewReadyDeadline}ms after setHtml ` +
+					`(this is when pre/index.html finished bootstrap and HTML was flushed)`,
+				);
+				return;
+			}
+			setTimeout(checkReady, 50);
+		};
+		setTimeout(checkReady, 50);
+
 		this._register(
 			this._webview.onMessage(async (message) => {
 				await this._handleMessage(message.message as IIncomingMessage);
@@ -302,20 +468,28 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 	}
 
-	private _getWebviewHtml(): string {
+	private _getWebviewHtml(inlineJs?: string, inlineCss?: string): string {
 		// Generate CSP nonce
 		const nonce = this._generateNonce();
 
-		// Convert the media folder URI to a webview-accessible URI
-		const mediaUri = this._getMediaUri();
-		const scriptUri =
-			asWebviewUri(URI.joinPath(mediaUri, "webview.js")).toString() +
-			"?_=" +
-			Date.now();
-		const styleUri =
-			asWebviewUri(URI.joinPath(mediaUri, "webview.css")).toString() +
-			"?_=" +
-			Date.now();
+		const useInline = !!inlineJs && !!inlineCss;
+
+		// Convert the media folder URI to a webview-accessible URI (only used in fallback mode).
+		let scriptTag: string;
+		let styleTag: string;
+
+		if (useInline) {
+			// Inline mode: embed everything directly — no service worker needed.
+			styleTag = `<style nonce="${nonce}">${inlineCss}</style>`;
+			scriptTag = `<script nonce="${nonce}">${inlineJs}</script>`;
+		} else {
+			// Fallback: external refs loaded through service worker.
+			const mediaUri = this._getMediaUri();
+			const scriptUri = asWebviewUri(URI.joinPath(mediaUri, "webview.js")).toString();
+			const styleUri = asWebviewUri(URI.joinPath(mediaUri, "webview.css")).toString();
+			styleTag = `<link rel="stylesheet" nonce="${nonce}" href="${styleUri}">`;
+			scriptTag = `<script nonce="${nonce}" src="${scriptUri}"></script>`;
+		}
 
 		const initialTheme =
 			this.workbenchThemeService.getColorTheme().settingsId || "";
@@ -325,18 +499,25 @@ export class AgentStudioWebviewController extends Disposable {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' vscode-webview: vscode-resource:; style-src 'nonce-${nonce}' 'unsafe-inline' vscode-webview: vscode-resource:; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
 	<title>Agent Studio</title>
-	<link rel="stylesheet" nonce="${nonce}" href="${styleUri}">
+	${styleTag}
 	<style nonce="${nonce}">
+		@keyframes as-spin { to { transform: rotate(360deg); } }
 		body { margin: 0; padding: 0; overflow: hidden; height: 100vh; background: var(--as-bg-primary, var(--vscode-editor-background)); color: var(--as-fg-primary, var(--vscode-foreground)); font-family: var(--vscode-font-family); }
 		#root { width: 100%; height: 100%; }
+		#as-preload { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 16px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-font-family); }
+		#as-preload svg { animation: as-spin 1s linear infinite; opacity: 0.7; }
+		#as-preload span { font-size: 13px; letter-spacing: 0.4px; opacity: 0.8; }
 	</style>
 </head>
 <body>
 	<div id="root">
-		<div id="as-preload" style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family);font-size:13px;letter-spacing:0.3px;">
-			Loading...
+		<div id="as-preload">
+			<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+			</svg>
+			<span>Agent Studio 加载中...</span>
 		</div>
 	</div>
 	<script nonce="${nonce}">
@@ -380,7 +561,9 @@ export class AgentStudioWebviewController extends Disposable {
 		// Track whether the bundle script fires
 		window.__AS_BUNDLE_LOADED__ = false;
 	</script>
-	<script nonce="${nonce}" src="${scriptUri}"></script>
+	<!-- Single IIFE bundle — inlined or loaded externally.
+	     When inlined, no service-worker-proxied fetch is needed. -->
+	${scriptTag}
 </body>
 </html>`;
 	}
@@ -461,6 +644,10 @@ export class AgentStudioWebviewController extends Disposable {
 			const p = payload as {
 				origin?: number;
 				total?: number;
+				bundleLoadMs?: number | null;
+				openToPaintMs?: number | null;
+				spawnMs?: number | null;
+				downloadMs?: number | null;
 				slowest?: { label: string; ms: number } | null;
 				marks?: { label: string; sinceOrigin: number; sincePrev: number }[];
 			};
@@ -468,15 +655,28 @@ export class AgentStudioWebviewController extends Disposable {
 			const timeline = marks
 				.map((m) => `${m.label}=+${m.sinceOrigin}ms(\u0394${m.sincePrev}ms)`)
 				.join('  ->  ');
+			// NOTE: `total` is measured from VS Code program-start and therefore
+			// INCLUDES the user's idle time before the panel was opened. The two
+			// numbers below are the real, actionable latencies.
 			this.logService.info(
-				`[AS-PERF][webview] panelType=${this.panelType} TOTAL program-start->chat-first-paint = ${p?.total ?? '?'}ms`,
+				`[AS-PERF][webview] panelType=${this.panelType} ` +
+				`★ bundle-load (HTML->first-mark) = ${p?.bundleLoadMs ?? '?'}ms, ` +
+				`★ panel-open->first-paint = ${p?.openToPaintMs ?? '?'}ms, ` +
+				`(program-start->first-paint = ${p?.total ?? '?'}ms, includes pre-open idle)`,
+			);
+			// Decisive split: where inside bundle-load the time actually goes.
+			//   process-spawn = webview process spawn + HTML transport (no bundle)
+			//   bundle-download = ESM module waterfall (SW proxy) + parse + eval
+			this.logService.info(
+				`[AS-PERF][webview]   \u21B3 split: process-spawn+html = ${p?.spawnMs ?? '?'}ms ` +
+				`| bundle-download+parse = ${p?.downloadMs ?? '?'}ms`,
 			);
 			if (timeline) {
 				this.logService.info(`[AS-PERF][webview] timeline: ${timeline}`);
 			}
 			if (p?.slowest) {
 				this.logService.warn(
-					`[AS-PERF][webview] SLOWEST stage = "${p.slowest.label}" took ${p.slowest.ms}ms`,
+					`[AS-PERF][webview] SLOWEST post-load stage = "${p.slowest.label}" took ${p.slowest.ms}ms`,
 				);
 			}
 		} catch (err) {
@@ -1552,27 +1752,7 @@ export class AgentStudioWebviewController extends Disposable {
 			type: `${type}.response` as `${RequestType}.response`,
 			data,
 		};
-		if (this._webview) {
-			this._webview.postMessage(response).then(
-				(delivered) => {
-					if (!delivered) {
-						this.logService.warn(
-							`[AgentStudio] _sendResponse FAILED to deliver: type=${type}.response, id=${id}`,
-						);
-					}
-				},
-				(err) => {
-					this.logService.error(
-						`[AgentStudio] _sendResponse REJECTED: type=${type}.response`,
-						err,
-					);
-				},
-			);
-		} else {
-			this.logService.warn(
-				`[AgentStudio] _sendResponse: no webview for type=${type}.response, id=${id}`,
-			);
-		}
+		this._postToWebview(response, `_sendResponse type=${type}.response, id=${id}`);
 	}
 
 	private _sendError(id: string, type: RequestType, message: string): void {
@@ -1582,7 +1762,7 @@ export class AgentStudioWebviewController extends Disposable {
 			type: `${type}.response` as `${RequestType}.response`,
 			error: { code: "ERROR", message },
 		};
-		this._webview?.postMessage(response);
+		this._postToWebview(response, `_sendError type=${type}.response`);
 	}
 
 	private _sendEvent(type: string, data: unknown): void {
@@ -1591,26 +1771,36 @@ export class AgentStudioWebviewController extends Disposable {
 			type: type as IEventMessage["type"],
 			data,
 		};
+		this._postToWebview(event, `_sendEvent type=${type}`, type.startsWith("chat.stream"));
+	}
 
+	/**
+	 * Unified message sender that routes through the standard VS Code webview element.
+	 */
+	private _postToWebview(msg: unknown, debugLabel: string, logDelivery = false): void {
 		if (this._webview) {
-			const result = this._webview.postMessage(event);
-			if (type.startsWith("chat.stream")) {
+			const result = this._webview.postMessage(msg);
+			if (logDelivery) {
 				result.then(
 					(delivered) => {
 						if (!delivered) {
 							this.logService.warn(
-								`[AgentStudio] postMessage FAILED to deliver: type=${type} — webview iframe not ready or missing`,
+								`[AgentStudio] postMessage FAILED to deliver: ${debugLabel} — webview iframe not ready or missing`,
 							);
 						}
 					},
 					(err) => {
 						this.logService.error(
-							`[AgentStudio] postMessage REJECTED: type=${type}`,
+							`[AgentStudio] postMessage REJECTED: ${debugLabel}`,
 							err,
 						);
 					},
 				);
 			}
+		} else {
+			this.logService.warn(
+				`[AgentStudio] _postToWebview: no webview/iframe for ${debugLabel}`,
+			);
 		}
 	}
 

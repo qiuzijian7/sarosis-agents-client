@@ -18,7 +18,7 @@ import { getPathLabel } from '../../base/common/labels.js';
 import { Schemas } from '../../base/common/network.js';
 import { basename, resolve } from '../../base/common/path.js';
 import { mark } from '../../base/common/performance.js';
-import { IProcessEnvironment, isLinux, isMacintosh, isWindows, OS } from '../../base/common/platform.js';
+import { INodeProcess, IProcessEnvironment, isLinux, isMacintosh, isWindows, OS } from '../../base/common/platform.js';
 import { cwd } from '../../base/common/process.js';
 import { rtrim, trim } from '../../base/common/strings.js';
 import { Promises as FSPromises } from '../../base/node/pfs.js';
@@ -102,6 +102,10 @@ class CodeMain {
 
 		// Create services
 		const [instantiationService, instanceEnvironment, environmentMainService, configurationService, stateMainService, bufferLogger, productService, userDataProfilesMainService] = this.createServices();
+
+		// Always run as embedded agents app (Agent Studio)
+		// This ensures the app opens the sessions workbench instead of the normal VS Code workbench.
+		(process as INodeProcess).isEmbeddedApp = true;
 
 		try {
 

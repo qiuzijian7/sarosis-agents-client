@@ -12,8 +12,11 @@ import { AgentChat } from './features/chat/AgentChat';
 import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
 import { CreateAgentModal } from './features/agents/CreateAgentModal';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
-import { WorkflowEditorPanel } from './features/workflowEditor/WorkflowEditorPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
+
+// Lazy-load the workflow editor — it pulls in @xyflow/react (~390 KB input)
+// which is only needed when the user actually opens the workflow editor panel.
+const WorkflowEditorPanel = React.lazy(() => import('./features/workflowEditor/WorkflowEditorPanel'));
 import { useAgentStore } from './store/useAgentStore';
 import { useProviderStore } from './store/useProviderStore';
 import { useChatStore } from './store/useChatStore';
@@ -21,8 +24,8 @@ import { sendRequest } from './bridge/messageClient';
 import { perfTrace } from './utils/perfTrace';
 
 // Read the panel type injected by the VS Code host
-type PanelType = 'chat' | 'taskboard' | 'workflow-editor' | 'agent-settings' | undefined;
-const panelType: PanelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__ as PanelType;
+type PanelType = 'chat' | 'taskboard' | 'workflow-editor' | 'agent-settings' | '__pooled__' | undefined;
+const initialPanelType: PanelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__ as PanelType;
 
 /* ── Error Boundary for debugging render crashes ─────────────── */
 interface ErrorBoundaryProps {
@@ -385,17 +388,48 @@ function AgentSettingsPanel(): React.ReactElement {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
- * App entry — routes to the correct panel based on panelType
+ * App entry — routes to the correct panel based on panelType.
+ * panelType is reactive: when a pooled webview is activated via the
+ * 'agentStudio:pool-activate' custom event, the App re-renders with the
+ * real panel type.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
 export function App(): React.ReactElement {
+	const [panelType, setPanelType] = useState<PanelType>(initialPanelType);
+
+	useEffect(() => {
+		const onPoolActivate = (e: Event) => {
+			const detail = (e as CustomEvent).detail as { panelType?: PanelType };
+			const newType = detail?.panelType ?? undefined;
+			console.log(`[App] pool.activate received, switching panelType: ${panelType} → ${newType}`);
+			// Update the global so any code that reads it directly still works
+			(window as any).__AGENT_STUDIO_PANEL_TYPE__ = newType;
+			setPanelType(newType === '__pooled__' ? undefined : newType);
+		};
+		window.addEventListener('agentStudio:pool-activate', onPoolActivate);
+		return () => window.removeEventListener('agentStudio:pool-activate', onPoolActivate);
+	}, []);
+
+	// While pooled (waiting for activation), render nothing meaningful
+	if (panelType === '__pooled__') {
+		return (
+			<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--vscode-descriptionForeground)' }}>
+				<span style={{ fontSize: 13, opacity: 0.7 }}>Agent Studio (warming...)</span>
+			</div>
+		);
+	}
+
 	switch (panelType) {
 		case 'chat':
 			return <ChatPanel />;
 		case 'taskboard':
 			return <TaskboardPanel />;
 		case 'workflow-editor':
-			return <WorkflowEditorPanel />;
+			return (
+				<React.Suspense fallback={<div style={{ padding: 20, color: 'var(--vscode-descriptionForeground)' }}>Loading workflow editor...</div>}>
+					<WorkflowEditorPanel />
+				</React.Suspense>
+			);
 		case 'agent-settings':
 			return <AgentSettingsPanel />;
 		default:
