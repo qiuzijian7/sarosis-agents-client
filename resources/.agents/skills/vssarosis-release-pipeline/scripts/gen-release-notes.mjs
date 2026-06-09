@@ -115,13 +115,8 @@ for (const c of commits) {
 // ---------- 5) 计算安装包大小 + sha256 ----------
 const setupTargets = [
 	{
-		platform: 'win32-x64',
-		label: 'VsSarosisSetup.exe（系统级）',
-		path: path.join(cwd, '.build', 'win32-x64', 'system-setup', 'VsSarosisSetup.exe')
-	},
-	{
 		platform: 'win32-x64-user',
-		label: 'VsSarosisUserSetup.exe（用户级）',
+		label: 'VsSarosisUserSetup.exe（用户级，无需管理员）',
 		path: path.join(cwd, '.build', 'win32-x64', 'user-setup', 'VsSarosisUserSetup.exe')
 	}
 ];
