@@ -274,32 +274,48 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _createWebviewAsync(): Promise<void> {
 		const mediaUri = this._getMediaUri();
 
-		// ── WAIT-FOR-POOL: if the pool is currently warming, wait for it ──
-		// Creating a cold-path webview while the pool is spawning a renderer
-		// process causes contention (same shared origin → same Chromium renderer).
-		// Both end up taking 30+ seconds instead of 15. Better to wait for the
-		// pool's instance and use the hot-path.
-		if (!this.webviewPool.hasWarmWebview && this.webviewPool.isWarming) {
-			this.logService.info(
-				`[AS-PERF][wait-for-pool] panelType=${this.panelType} — pool is warming, waiting for hot instance...`
-			);
-			const waitStart = Date.now();
-			const POOL_WAIT_TIMEOUT_MS = 120_000; // 2 minutes max wait
-			const gotInstance = await new Promise<boolean>((resolve) => {
-				const timer = setTimeout(() => {
-					sub.dispose();
-					resolve(false);
-				}, POOL_WAIT_TIMEOUT_MS);
-				const sub = this.webviewPool.onDidBecomeAvailable(() => {
-					clearTimeout(timer);
-					sub.dispose();
-					resolve(true);
+		// ── WAIT-FOR-POOL: never spawn a competing cold-path renderer ──
+		// Spawning a webview while the pool is also spawning one causes
+		// contention (same shared origin → same Chromium renderer process),
+		// making BOTH take 30s+ instead of ~20s. So whenever we don't already
+		// hold a warm instance, we route through the pool:
+		//   • pool idle (startup race / previous failure) → kick warming now
+		//   • pool warming                                → just wait
+		// Either way we wait for the single shared instance and use hot-path.
+		if (!this.webviewPool.hasWarmWebview) {
+			if (!this.webviewPool.isWarming) {
+				this.logService.info(
+					`[AS-PERF][wait-for-pool] panelType=${this.panelType} — pool idle, triggering warm-up now`
+				);
+				this.webviewPool.ensureWarming();
+			} else {
+				this.logService.info(
+					`[AS-PERF][wait-for-pool] panelType=${this.panelType} — pool is warming, waiting for hot instance...`
+				);
+			}
+
+			// Only wait if warming actually started (ensureWarming flips
+			// isWarming synchronously before its first await). If it somehow
+			// did not, fall straight through to the cold path below.
+			if (this.webviewPool.isWarming) {
+				const waitStart = Date.now();
+				const POOL_WAIT_TIMEOUT_MS = 120_000; // 2 minutes max wait
+				const gotInstance = await new Promise<boolean>((resolve) => {
+					const timer = setTimeout(() => {
+						sub.dispose();
+						resolve(false);
+					}, POOL_WAIT_TIMEOUT_MS);
+					const sub = this.webviewPool.onDidBecomeAvailable(() => {
+						clearTimeout(timer);
+						sub.dispose();
+						resolve(true);
+					});
 				});
-			});
-			this.logService.info(
-				`[AS-PERF][wait-for-pool] panelType=${this.panelType} — ` +
-				`waited ${Date.now() - waitStart}ms, pool ${gotInstance ? 'delivered' : 'timed out'}`
-			);
+				this.logService.info(
+					`[AS-PERF][wait-for-pool] panelType=${this.panelType} — ` +
+					`waited ${Date.now() - waitStart}ms, pool ${gotInstance ? 'delivered' : 'timed out'}`
+				);
+			}
 		}
 
 		// ── HOT PATH: try to acquire a pre-warmed webview from the pool ──
@@ -322,6 +338,12 @@ export class AgentStudioWebviewController extends Disposable {
 			const poolContainer = pooled.container;
 			poolContainer.style.position = 'absolute';
 			poolContainer.style.overflow = '';
+			// The pool warms the webview in-viewport but transparent + click-through
+			// (opacity:0 / pointer-events:none) so Chromium doesn't throttle the
+			// off-screen iframe. Now that the panel owns it, make it visible and
+			// interactive again.
+			poolContainer.style.opacity = '';
+			poolContainer.style.pointerEvents = '';
 			poolContainer.removeAttribute('data-agent-studio-pool');
 
 			// Track our panel container's geometry and mirror it onto the pool container.

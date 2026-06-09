@@ -25,7 +25,8 @@ import {
 	type Connection,
 	type IsValidConnection,
 } from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
+// NOTE: @xyflow/react styles are imported centrally in index.tsx so they
+// stay in the main CSS bundle rather than being split into a lazy-loaded chunk.
 
 import { StartNode } from './nodes/StartNode';
 import { EndNode } from './nodes/EndNode';

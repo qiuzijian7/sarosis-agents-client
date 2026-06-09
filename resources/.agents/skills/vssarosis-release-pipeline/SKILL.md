@@ -1,6 +1,6 @@
 ---
 name: vssarosis-release-pipeline
-description: 一键完成 VsSarosis（VS Code fork：sarosis-agents-client）端到端发版流程——预检品牌 → 打包 win32-x64 system + user 安装包 → 基于 git log 自动生成 release notes（中文）→ 创建 git tag → 上传到工蜂（origin / git.woa.com）+ GitHub backup 双 Release → 同步更新热更新 manifest。当用户说"打包发版"、"发布新版本"、"出一个 release"、"打 tag 并发布"、"VsSarosis 发版"、"上传 release"、"生成版本说明 / changelog"、"VsSarosis release"、"release pipeline" 时触发。
+description: 一键完成 VsSarosis（VS Code fork：sarosis-agents-client）端到端发版流程——预检品牌 → 打包 win32-x64 用户级安装包（VsSarosisUserSetup.exe）→ 基于 git log 自动生成 release notes（中文）→ 创建 git tag → 上传到工蜂（origin / git.woa.com）+ GitHub backup 双 Release → 同步更新热更新 manifest。当用户说"打包发版"、"发布新版本"、"出一个 release"、"打 tag 并发布"、"VsSarosis 发版"、"上传 release"、"生成版本说明 / changelog"、"VsSarosis release"、"release pipeline" 时触发。
 description_zh: VsSarosis 一键打包发版
 description_en: VsSarosis end-to-end release
 disable: false
@@ -9,7 +9,7 @@ agent_created: true
 
 # vssarosis-release-pipeline
 
-VsSarosis（`sarosis-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client`）端到端发版流程。覆盖：品牌预检 → 双安装包打包 → release notes 生成 → tag → 双远程 Release 上传 → 热更新 manifest 同步。
+VsSarosis（`sarosis-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client`）端到端发版流程。覆盖：品牌预检 → 用户级安装包打包（VsSarosisUserSetup.exe）→ release notes 生成 → tag → 双远程 Release 上传 → 热更新 manifest 同步。
 
 ## When to use（触发场景）
 
@@ -23,8 +23,7 @@ VsSarosis（`sarosis-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\s
 1. **项目根**：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client`
 2. **构建产物父目录**：`G:\CustomWorkspaces\AIProjects\VSCode-win32-x64\`（不在仓库 .build 内）
 3. **安装包输出路径**：
-   - `system → .build/win32-x64/system-setup/VsSarosisSetup.exe`
-   - `user   → .build/win32-x64/user-setup/VsSarosisUserSetup.exe`
+   - `user → .build/win32-x64/user-setup/VsSarosisUserSetup.exe`
 4. **远程**：
    - `origin`  → `https://git.woa.com/zijianqiu/sarosis-agents-client.git`（**工蜂主**）
    - `backup`  → `https://github.com/qiuzijian7/sarosis-agents-client.git`（备份）
@@ -37,7 +36,7 @@ VsSarosis（`sarosis-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\s
 
 ```
 Stage 0  品牌预检（fix-branding）
-Stage 1  双安装包打包（system + user）
+Stage 1  用户级安装包打包（user-setup）
 Stage 2  生成 release notes（基于 git log，中文）
 Stage 3  打 git tag 并 push
 Stage 4  上传到工蜂 + GitHub Release（双远程）
@@ -74,15 +73,13 @@ Get-Process -Name "VsSarosis" -ErrorAction SilentlyContinue | Stop-Process -Forc
 
 ```bash
 # 后台运行，约 3-5 分钟
-npx gulp vscode-win32-x64-system-setup
 npx gulp vscode-win32-x64-user-setup
 ```
 
 **校验产物**：
 
 ```bash
-ls -la .build/win32-x64/system-setup/VsSarosisSetup.exe \
-       .build/win32-x64/user-setup/VsSarosisUserSetup.exe \
+ls -la .build/win32-x64/user-setup/VsSarosisUserSetup.exe \
 | awk '{printf "%s  %.2f MiB\n", $NF, $5/1048576}'
 ```
 
@@ -132,7 +129,6 @@ node resources/.agents/skills/vssarosis-release-pipeline/scripts/gen-release-not
    ## 安装包
    | 包 | 大小 | SHA256 |
    |---|---|---|
-   | VsSarosisSetup.exe | 95.60 MiB | `...` |
    | VsSarosisUserSetup.exe | 95.60 MiB | `...` |
 
    ## 更新方式
@@ -140,7 +136,6 @@ node resources/.agents/skills/vssarosis-release-pipeline/scripts/gen-release-not
    - 新用户：从 Release 直接下载安装
 
    commit: <full-sha>
-   sha256-win32-x64: <hash>
    sha256-win32-x64-user: <hash>
    ```
 7. 末尾的 `commit:` 和 `sha256-*:` 行是**热更新 Worker 解析必需**（见 build/sarosis/update-server/worker.js），不要删
@@ -194,7 +189,6 @@ tag_name:            "v1.2.3"
 name:                "VsSarosis v1.2.3"
 description:         <RELEASE_NOTES.md 全文>
 assets:              [
-  ".build/win32-x64/system-setup/VsSarosisSetup.exe",
   ".build/win32-x64/user-setup/VsSarosisUserSetup.exe"
 ]
 ```
@@ -208,7 +202,6 @@ assets:              [
 glab release create v1.2.3 \
   --repo zijianqiu/sarosis-agents-client \
   --notes-file RELEASE_NOTES.md \
-  ".build/win32-x64/system-setup/VsSarosisSetup.exe" \
   ".build/win32-x64/user-setup/VsSarosisUserSetup.exe"
 ```
 
@@ -223,7 +216,6 @@ gh release create v1.2.3 \
   --repo qiuzijian7/sarosis-agents-client \
   --title "VsSarosis v1.2.3" \
   --notes-file RELEASE_NOTES.md \
-  ".build/win32-x64/system-setup/VsSarosisSetup.exe" \
   ".build/win32-x64/user-setup/VsSarosisUserSetup.exe"
 ```
 
@@ -244,12 +236,6 @@ node build/sarosis/update-server/gen-manifest.mjs \
   --exe ".build/win32-x64/user-setup/VsSarosisUserSetup.exe" \
   --version 1.2.3 \
   --url "https://github.com/qiuzijian7/sarosis-agents-client/releases/download/v1.2.3/VsSarosisUserSetup.exe"
-
-node build/sarosis/update-server/gen-manifest.mjs \
-  --platform win32-x64 \
-  --exe ".build/win32-x64/system-setup/VsSarosisSetup.exe" \
-  --version 1.2.3 \
-  --url "https://github.com/qiuzijian7/sarosis-agents-client/releases/download/v1.2.3/VsSarosisSetup.exe"
 ```
 
 然后提交 manifest 变更：
@@ -272,7 +258,6 @@ npm run verify-branding || npm run fix-branding
 
 # Stage 1
 Get-Process -Name "VsSarosis" -ErrorAction SilentlyContinue | Stop-Process -Force
-npx gulp vscode-win32-x64-system-setup
 npx gulp vscode-win32-x64-user-setup
 
 # Stage 2
@@ -284,16 +269,14 @@ git tag -a v1.2.3 -m "VsSarosis v1.2.3"
 git push origin v1.2.3 && git push backup v1.2.3
 git push origin HEAD && git push backup HEAD
 
-# Stage 4 - 工蜂优先走 gongfeng MCP（已配置），exe 资产可由 MCP 上传或回退 glab
+# Stage 4 - 工蜂优先走 gongfeng MCP（已配置），exe 资产可由 MCP 上传或回退 glab/curl
 # gongfeng MCP: https://mcpgw.knot.woa.com/gongfeng（用户级 ~/.workbuddy/mcp.json 已配置）
 gh release create v1.2.3 --repo qiuzijian7/sarosis-agents-client \
   --title "VsSarosis v1.2.3" --notes-file RELEASE_NOTES.md \
-  .build/win32-x64/system-setup/VsSarosisSetup.exe \
   .build/win32-x64/user-setup/VsSarosisUserSetup.exe
 # 工蜂兜底（MCP 无法上传时使用）
 glab release create v1.2.3 --repo zijianqiu/sarosis-agents-client \
   --notes-file RELEASE_NOTES.md \
-  .build/win32-x64/system-setup/VsSarosisSetup.exe \
   .build/win32-x64/user-setup/VsSarosisUserSetup.exe
 
 # Stage 5（仅本地清单模式）

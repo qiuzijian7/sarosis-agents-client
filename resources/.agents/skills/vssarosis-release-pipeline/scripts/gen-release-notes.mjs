@@ -115,11 +115,6 @@ for (const c of commits) {
 // ---------- 5) 计算安装包大小 + sha256 ----------
 const setupTargets = [
 	{
-		platform: 'win32-x64',
-		label: 'VsSarosisSetup.exe（系统级）',
-		path: path.join(cwd, '.build', 'win32-x64', 'system-setup', 'VsSarosisSetup.exe')
-	},
-	{
 		platform: 'win32-x64-user',
 		label: 'VsSarosisUserSetup.exe（用户级）',
 		path: path.join(cwd, '.build', 'win32-x64', 'user-setup', 'VsSarosisUserSetup.exe')
@@ -166,11 +161,9 @@ for (const r of setupRows) {
 }
 md += '\n';
 
-md += `## 🔄 更新方式\n\n`;
+md += `## 🔧 更新方式\n\n`;
 md += `- **已安装用户**：客户端会在 1 小时内自动检测到新版本并后台静默下载，重启即应用更新\n`;
-md += `- **新用户**：直接从本 Release 页面下载安装包\n`;
-md += `  - 系统级（需管理员）：\`VsSarosisSetup.exe\`\n`;
-md += `  - 用户级（普通权限）：\`VsSarosisUserSetup.exe\`\n\n`;
+md += `- **新用户**：直接从本 Release 页面下载 \`VsSarosisUserSetup.exe\`（用户级，无需管理员权限）\n\n`;
 
 // 末尾的元数据行（热更新 Worker 解析必需）
 md += `---\n\n`;

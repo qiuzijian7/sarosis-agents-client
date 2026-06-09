@@ -1341,7 +1341,9 @@ export class WorkspaceViewPane extends ViewPane {
 			};
 
 			// ─── Overlay + dialog shell ──────────────────────────────────
-			const overlay = DOM.append(this.element, DOM.$('.workspace-create-overlay'));
+			// Attached to document.body so it renders full-screen regardless
+			// of the current sidebar visibility / view-container state.
+			const overlay = DOM.append(document.body, DOM.$('.workspace-create-overlay'));
 			const dialog = DOM.append(overlay, DOM.$('.workspace-create-dialog'));
 
 			const titleEl = DOM.append(dialog, DOM.$('.workspace-create-title'));
