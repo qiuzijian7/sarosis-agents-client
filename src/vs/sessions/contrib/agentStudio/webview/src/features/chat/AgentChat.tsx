@@ -217,6 +217,10 @@ export function AgentChat(): React.ReactElement {
 	const [showScrollBtn, setShowScrollBtn] = useState(false);
 	// History page visibility
 	const [showHistory, setShowHistory] = useState(false);
+	// ── User message list dropdown (会话消息列表) ──────────────────
+	const [showMessageNav, setShowMessageNav] = useState(false);
+	const messageNavRef = useRef<HTMLDivElement>(null);
+	const messageNavTriggerRef = useRef<HTMLButtonElement>(null);
 	// Track previous agent to detect agent switches (used by useLayoutEffect below)
 	const prevAgentIdRef = useRef<string | null>(activeAgentId);
 	// Agent selector dropdown
@@ -371,6 +375,31 @@ export function AgentChat(): React.ReactElement {
 		setShowScrollBtn(false);
 	}, []);
 
+	// 会话消息列表：按时间正序排列的用户消息（含首条关键词摘要）
+	const userMessages = useMemo(() => {
+		return messages
+			.filter(m => m.role === 'user' && m.content.trim())
+			.map(m => ({
+				id: m.id,
+				content: m.content,
+				summary: m.content.trim().slice(0, 80).replace(/\n/g, ' ') + (m.content.length > 80 ? '…' : ''),
+				timestamp: m.timestamp,
+			}));
+	}, [messages]);
+
+	// 滚动到指定消息
+	const handleScrollToMessage = useCallback((msgId: string) => {
+		const container = chatMessagesRef.current;
+		if (!container) { return; }
+		const el = container.querySelector(`[data-message-id="${msgId}"]`) as HTMLElement | null;
+		if (!el) { return; }
+		el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		// 不再自动跟随：滚动到历史消息意味着用户正在查看历史
+		isAtBottomRef.current = false;
+		updateScrollDownButton(false);
+		setShowMessageNav(false);
+	}, [updateScrollDownButton]);
+
 	const activeAgent = agents.find(a => a.id === activeAgentId);
 
 	// Filtered agents for dropdown search
@@ -398,6 +427,21 @@ export function AgentChat(): React.ReactElement {
 		document.addEventListener('mousedown', handleClickOutside);
 		return () => document.removeEventListener('mousedown', handleClickOutside);
 	}, [dropdownOpen]);
+
+	// Close message nav on outside click
+	useEffect(() => {
+		if (!showMessageNav) { return; }
+		const handleClickOutside = (e: MouseEvent) => {
+			if (
+				messageNavRef.current && !messageNavRef.current.contains(e.target as Node) &&
+				messageNavTriggerRef.current && !messageNavTriggerRef.current.contains(e.target as Node)
+			) {
+				setShowMessageNav(false);
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		return () => document.removeEventListener('mousedown', handleClickOutside);
+	}, [showMessageNav]);
 
 	// Listen for AI decomposition progress events and display in chat
 	useEffect(() => {
@@ -800,6 +844,37 @@ export function AgentChat(): React.ReactElement {
 					)}
 
 					<div className="chat-header-actions">
+						{/* 会话消息列表下拉 */}
+						<div className="chat-header-message-nav" style={{ position: 'relative' }}>
+							<button
+								ref={messageNavTriggerRef}
+								className={`chat-header-btn ${showMessageNav ? 'active' : ''}`}
+								title="会话消息列表"
+								onClick={() => setShowMessageNav(!showMessageNav)}
+								disabled={userMessages.length === 0}
+							>
+								<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h10M4 18h16" />
+								</svg>
+							</button>
+							{showMessageNav && userMessages.length > 0 && (
+								<div className="chat-message-nav-dropdown" ref={messageNavRef}>
+									<div className="chat-message-nav-header">会话消息</div>
+									<div className="chat-message-nav-list">
+										{userMessages.map((msg, idx) => (
+											<div
+												key={msg.id}
+												className="chat-message-nav-item"
+												onClick={() => handleScrollToMessage(msg.id)}
+											>
+												<span className="chat-message-nav-index">#{userMessages.length - idx}</span>
+												<span className="chat-message-nav-summary">{msg.summary}</span>
+											</div>
+										))}
+									</div>
+								</div>
+							)}
+						</div>
 						<button className="chat-header-btn" title="创建会话" onClick={() => { useChatStore.getState().clearMessages(); }}>
 							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16M4 12h16" />

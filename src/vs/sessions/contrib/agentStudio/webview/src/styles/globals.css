@@ -3458,6 +3458,75 @@ html, body, #root {
   text-overflow: ellipsis;
 }
 
+/* ── Message Nav Dropdown ──────────────────────────────────── */
+/* 会话消息列表下拉：显示用户所有输入消息，点击滚动定位 */
+
+.chat-message-nav-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: 260px;
+  max-height: 280px;
+  margin-top: 4px;
+  background-color: var(--as-bg-tertiary, var(--vscode-dropdown-background, #1e1e1e));
+  border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: agent-dropdown-in 0.15s ease-out;
+}
+
+.chat-message-nav-header {
+  padding: 8px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground, #999);
+  border-bottom: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.chat-message-nav-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.chat-message-nav-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.chat-message-nav-item:hover {
+  background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.chat-message-nav-index {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #888);
+  font-family: monospace;
+  flex-shrink: 0;
+  min-width: 24px;
+  text-align: right;
+}
+
+.chat-message-nav-summary {
+  font-size: 12px;
+  color: var(--vscode-foreground, #ccc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
 /* No results */
 .chat-agent-dropdown-no-results {
   padding: 16px;

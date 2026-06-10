@@ -7,10 +7,8 @@ import './media/toolbarViews.css';
 
 export { WorkspaceViewPane } from './workspaceView.js';
 export { PresetAgentViewPane } from './presetAgentView.js';
-export { SkillsViewPane } from './skillsView.js';
 export { TasksViewPane } from './tasksView.js';
 export { ScheduleViewPane } from './scheduleView.js';
-export { ToolsViewPane } from './toolsView.js';
 export { ChangesViewPane } from './changesView.js';
 export { AgentStudioSearchViewPane } from './searchView.js';
 export { PluginsViewPane } from './pluginsView.js';
