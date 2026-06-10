@@ -47,7 +47,7 @@ export class WorkspaceViewPane extends ViewPane {
 
 	constructor(
 		options: IViewPaneOptions,
-		@IInstantiationService override readonly instantiationService: IInstantiationService,
+		@IInstantiationService protected override readonly instantiationService: IInstantiationService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IKeybindingService keybindingService: IKeybindingService,
 		@IContextMenuService contextMenuService: IContextMenuService,

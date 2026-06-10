@@ -239,7 +239,7 @@ export class WorktreeViewPane extends ViewPane {
 		this.groupRenderer = new WorktreeRepoGroupRenderer();
 	}
 
-	override renderBody(container: HTMLElement): void {
+	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 
 		// Ensure container uses flex layout so tree fills remaining space
@@ -603,7 +603,7 @@ export class WorktreeViewPane extends ViewPane {
 		}
 	}
 
-	override layoutBody(height: number, width: number): void {
+	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
 		this.tree.layout(height, width);
 	}

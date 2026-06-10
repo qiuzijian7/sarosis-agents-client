@@ -109,7 +109,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IHostService private readonly hostService: IHostService,
-		@IProductService protected readonly productService: IProductService,
+		@IProductService private readonly productService: IProductService,
 	) {
 		super(id, { hasTitle: false }, themeService, storageService, layoutService);
 
