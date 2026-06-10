@@ -2010,6 +2010,18 @@ export class AgentStudioWebviewController extends Disposable {
 			try {
 				const workspace = await this.agentStudioService.getWorkspace(wsId);
 				pushRoot(workspace?.path);
+				// Also try the parent directory of workspace.path. The tool
+				// often returns paths relative to the parent (e.g. the
+				// workspace.path is .../project/.sarosisworkspace, and the
+				// file path is .sarosisworkspace/workflows/...). Without the
+				// parent root, joined paths get a double prefix.
+				if (workspace?.path) {
+					const workspaceUri = URI.file(workspace.path);
+					const parentPath = URI.joinPath(workspaceUri, '..').fsPath;
+					if (parentPath && parentPath !== workspace.path) {
+						pushRoot(parentPath);
+					}
+				}
 			} catch {
 				/* ignore */
 			}
