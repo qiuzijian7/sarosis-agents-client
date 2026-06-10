@@ -441,6 +441,44 @@
 	padding: 4px 8px 2px;
 }
 
+/* ── Skip button for running tools ────────────────────────────── */
+.tool-skip-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px 6px;
+}
+
+.tool-skip-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 3px 10px;
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--void-fg-1);
+	background: color-mix(in srgb, var(--void-fg-1) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--void-fg-1) 16%, transparent);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+}
+
+.tool-skip-btn:hover {
+	background: color-mix(in srgb, var(--void-accent, #4daafc) 15%, transparent);
+	border-color: var(--void-accent, #4daafc);
+	color: var(--void-accent, #4daafc);
+}
+
+.tool-skip-btn:active {
+	background: color-mix(in srgb, var(--void-accent, #4daafc) 22%, transparent);
+}
+
+.tool-skip-hint {
+	font-size: 11px;
+	color: var(--void-fg-5);
+}
+
 /* ═══ File path link inside children ══════════════════════════════════════════ */
 
 .tool-file-link {

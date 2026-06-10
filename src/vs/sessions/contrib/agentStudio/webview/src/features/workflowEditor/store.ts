@@ -7,6 +7,10 @@
  *  Time-travel: wrapped with zundo `temporal` middleware so nodes/edges/metadata
  *  changes can be undone/redone (Ctrl+Z / Ctrl+Shift+Z). Tracking is paused during
  *  node dragging so a drag results in a single undo step.
+ *
+ *  Node categories: Basic Nodes (prompt, agent, skill, tool, task),
+ *  Control Flow (ifElse, switch, condition, loop, parallel, askUser),
+ *  Layout (group).
  *--------------------------------------------------------------------------------------------*/
 
 import { create } from 'zustand';
@@ -40,14 +44,52 @@ const DEFAULT_END: Node = {
 	data: { label: 'End' },
 };
 
-// ─── Selectors ───────────────────────────────────────────────────────────────
+// ─── Node category ──────────────────────────────────────────────────────────
 
-export const nodeTypeSelectors: Array<{ type: string; label: string; description: string; icon: string }> = [
-	{ type: 'task', label: 'Task', description: 'A single task to execute', icon: '📋' },
-	{ type: 'condition', label: 'Condition', description: 'Branch based on a condition', icon: '🔀' },
-	{ type: 'parallel', label: 'Parallel', description: 'Run branches in parallel', icon: '⇉' },
-	{ type: 'loop', label: 'Loop', description: 'Repeat over items', icon: '🔄' },
+export type NodeCategory = 'basic' | 'controlFlow' | 'layout';
+
+export interface NodeTypeSelector {
+	type: string;
+	label: string;
+	description: string;
+	icon: string;
+}
+
+export const nodeCategories: Array<{ category: NodeCategory; label: string; items: NodeTypeSelector[] }> = [
+	{
+		category: 'basic',
+		label: 'Basic Nodes',
+		items: [
+			{ type: 'prompt',     label: 'Prompt',      description: 'Template with variable substitution',  icon: '💬' },
+			{ type: 'agent',      label: 'Agent',        description: 'Execute a specific agent',            icon: '🤖' },
+			{ type: 'skill',      label: 'Skill',        description: 'Execute a skill',                     icon: '⚡' },
+			{ type: 'tool',       label: 'Tool',         description: 'Execute a tool with parameters',      icon: '🔧' },
+			{ type: 'task',       label: 'Task',         description: 'A single task to execute',            icon: '📋' },
+		],
+	},
+	{
+		category: 'controlFlow',
+		label: 'Control Flow',
+		items: [
+			{ type: 'ifElse',     label: 'If/Else',      description: 'Binary conditional (True/False)',     icon: '↔️' },
+			{ type: 'switch',     label: 'Switch',        description: 'Multi-way branching (2-N cases)',     icon: '🔀' },
+			{ type: 'condition',  label: 'Condition',     description: 'Branch based on a condition',        icon: '🔀' },
+			{ type: 'loop',       label: 'Loop',          description: 'Repeat over items',                  icon: '🔄' },
+			{ type: 'parallel',   label: 'Parallel',      description: 'Run branches in parallel',           icon: '⇉' },
+			{ type: 'askUser',    label: 'Ask User',      description: 'Branch based on user selection',     icon: '❓' },
+		],
+	},
+	{
+		category: 'layout',
+		label: 'Layout',
+		items: [
+			{ type: 'group',      label: 'Group',         description: 'Visual grouping container',          icon: '▦' },
+		],
+	},
 ];
+
+/** Flat list for PropertyPanel lookup & StartMenu quick buttons */
+export const nodeTypeSelectors: NodeTypeSelector[] = nodeCategories.flatMap(c => c.items);
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
@@ -86,6 +128,9 @@ interface WorkflowEditorState {
 	isEdgeAnimationEnabled: boolean;
 	minimapMode: MinimapMode;
 
+	// Default agent config for new agent nodes (inherited from workflow's bound agent)
+	defaultAgentConfig: { agentId?: string; providerId?: string; modelId?: string };
+
 	// ReactFlow handlers
 	onNodesChange: OnNodesChange;
 	onEdgesChange: OnEdgesChange;
@@ -106,6 +151,7 @@ interface WorkflowEditorState {
 	// Metadata setters
 	setWorkflowName: (name: string) => void;
 	setWorkflowDescription: (desc: string) => void;
+	setDefaultAgentConfig: (config: { agentId?: string; providerId?: string; modelId?: string }) => void;
 
 	// Interaction
 	toggleInteractionMode: () => void;
@@ -120,6 +166,67 @@ interface WorkflowEditorState {
 	loadWorkflow: (wf: IStoredWorkflow) => void;
 	clearWorkflow: () => void;
 	toWorkflowData: () => { nodes: WorkflowGraphNode[]; connections: WorkflowGraphConnection[] };
+}
+
+// ─── Default data factories per node type ───────────────────────────────────
+
+function defaultDataForType(type: string): Record<string, unknown> {
+	const base: Record<string, unknown> = { label: '' };
+
+	switch (type) {
+		case 'prompt':
+			return { ...base, label: 'Prompt', prompt: '', variables: {} };
+		case 'agent':
+			return { ...base, label: 'Agent', agentId: '', agentConfig: { providerId: '', modelId: '' } };
+		case 'skill':
+			return { ...base, label: 'Skill', skillName: '', skillArgs: {} };
+		case 'tool':
+			return { ...base, label: 'Tool', toolName: '', toolParams: {} };
+		case 'task':
+			return { ...base, label: 'Task', executorId: '', taskId: '' };
+		case 'ifElse':
+			return {
+				...base, label: 'If/Else', evaluationTarget: '',
+				branches: [
+					{ id: uid('branch'), label: 'True', condition: '' },
+					{ id: uid('branch'), label: 'False', condition: '' },
+				],
+			};
+		case 'switch':
+			return {
+				...base, label: 'Switch', evaluationTarget: '',
+				branches: [
+					{ id: uid('branch'), label: 'Case 1', condition: '' },
+					{ id: uid('branch'), label: 'Case 2', condition: '' },
+					{ id: uid('branch'), label: 'Default', condition: '' },
+				],
+			};
+		case 'condition':
+			return {
+				...base, label: 'Condition', condition: '',
+				branches: [
+					{ id: uid('branch'), label: 'True', condition: '' },
+					{ id: uid('branch'), label: 'False', condition: '' },
+				],
+			};
+		case 'loop':
+			return { ...base, label: 'Loop', loopConfig: { items: '', itemVariable: 'item', maxIterations: 10 } };
+		case 'parallel':
+			return { ...base, label: 'Parallel', parallelSteps: [] };
+		case 'askUser':
+			return {
+				...base, label: 'Ask User', questionText: 'Select an option',
+				options: [
+					{ label: 'Option 1', description: '' },
+					{ label: 'Option 2', description: '' },
+				],
+				multiSelect: false, useAiSuggestions: false,
+			};
+		case 'group':
+			return { ...base, label: 'Group', isCollapsed: false };
+		default:
+			return { ...base, label: type };
+	}
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -138,6 +245,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 			scrollMode: 'classic' as ScrollMode,
 			isEdgeAnimationEnabled: true,
 			minimapMode: 'auto' as MinimapMode,
+			defaultAgentConfig: {},
 
 			// ── ReactFlow handlers ──
 
@@ -166,26 +274,27 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 			addNode: (type, position) => {
 				const id = uid(type);
-				const data: Record<string, unknown> = { label: type.charAt(0).toUpperCase() + type.slice(1) };
-				if (type === 'condition') {
-					data.branches = [
-						{ id: uid('branch'), label: 'True', condition: '' },
-						{ id: uid('branch'), label: 'False', condition: '' },
-					];
-					data.condition = '';
-				}
-				if (type === 'task') {
-					data.executorId = '';
-					data.taskId = '';
-				}
-				if (type === 'loop') {
-					data.loopConfig = { items: '', itemVariable: 'item' };
-				}
-				if (type === 'parallel') {
-					data.parallelSteps = [];
+				const data = defaultDataForType(type);
+
+				// Inherit default agent config from the workflow's bound agent
+				if (type === 'agent') {
+					const defCfg = get().defaultAgentConfig;
+					if (defCfg.agentId) {
+						data.agentId = defCfg.agentId;
+					}
+					if (defCfg.providerId || defCfg.modelId) {
+						data.agentConfig = {
+							providerId: (defCfg.providerId || '') as string,
+							modelId: (defCfg.modelId || '') as string,
+						};
+					}
 				}
 
-				const newNode: Node = { id, type, position, data };
+				// Group nodes need a default size
+				const style = type === 'group' ? { width: 400, height: 300 } : undefined;
+				const zIndex = type === 'group' ? -1001 : undefined;
+
+				const newNode: Node = { id, type, position, data, ...(style ? { style } : {}), ...(zIndex !== undefined ? { zIndex } : {}) };
 				set({
 					nodes: [...get().nodes, newNode],
 					selectedNodeId: id,
@@ -212,7 +321,6 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					...source,
 					id: newId,
 					position: { x: source.position.x + 40, y: source.position.y + 40 },
-					// Deep-copy data so edits to the clone don't mutate the source
 					data: JSON.parse(JSON.stringify(source.data ?? {})),
 					selected: false,
 				};
@@ -240,6 +348,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 			setWorkflowName: (name) => set({ workflowName: name }),
 			setWorkflowDescription: (desc) => set({ workflowDescription: desc }),
+			setDefaultAgentConfig: (config) => set({ defaultAgentConfig: config }),
 
 			// ── Interaction ──
 
@@ -266,10 +375,11 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1);
 				}
 
-				// Orphan / dangling node checks (excluding start/end special cases)
 				for (const n of nodes) {
 					const inCount = incoming.get(n.id) ?? 0;
 					const outCount = outgoing.get(n.id) ?? 0;
+					// Group nodes don't need connections
+					if (n.type === 'group') { continue; }
 					if (n.type === 'start') {
 						if (outCount === 0) { issues.push({ level: 'warning', nodeId: n.id, message: 'Start node has no outgoing connection.' }); }
 						continue;
@@ -287,7 +397,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					}
 				}
 
-				// Cycle detection (DFS over directed graph)
+				// Cycle detection
 				const adj = new Map<string, string[]>();
 				for (const e of edges) {
 					const list = adj.get(e.source) ?? [];
@@ -408,7 +518,6 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					selectedNodeId: null,
 					isPropertyPanelOpen: false,
 				});
-				// A fresh load should not be undoable back to the previous workflow.
 				useWorkflowEditorStore.temporal.getState().clear();
 			},
 
@@ -446,7 +555,6 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 			},
 		}),
 		{
-			// Only track graph + metadata in history. UI/selection state is excluded.
 			limit: 50,
 			partialize: (state) => ({
 				nodes: state.nodes,
@@ -454,7 +562,6 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 				workflowName: state.workflowName,
 				workflowDescription: state.workflowDescription,
 			}),
-			// Avoid pushing duplicate history entries for no-op sets.
 			equality: (a, b) => JSON.stringify(a) === JSON.stringify(b),
 		}
 	)
@@ -462,22 +569,18 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 // ─── Temporal helpers ─────────────────────────────────────────────────────────
 
-/** Undo the last tracked change. */
 export function undo(): void {
 	useWorkflowEditorStore.temporal.getState().undo();
 }
 
-/** Redo the last undone change. */
 export function redo(): void {
 	useWorkflowEditorStore.temporal.getState().redo();
 }
 
-/** Pause history tracking (e.g. during a drag gesture). */
 export function pauseTracking(): void {
 	useWorkflowEditorStore.temporal.getState().pause();
 }
 
-/** Resume history tracking and record the resulting state as one step. */
 export function resumeTracking(): void {
 	useWorkflowEditorStore.temporal.getState().resume();
 }

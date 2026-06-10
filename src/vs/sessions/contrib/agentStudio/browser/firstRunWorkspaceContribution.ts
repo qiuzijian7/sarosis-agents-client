@@ -4,7 +4,7 @@
  *  Runs once on the very first launch of a fresh install (when no workspace
  *  exists yet and this contribution has never triggered before). It:
  *    1. Activates the Workspace icon in the ActivityBar (so it appears
- *       highlighted/selected instead of the hidden `agentStudio.sidebar`).
+ *       highlighted/selected.
  *    2. Pops up the "Create Workspace" dialog so the user is guided into
  *       choosing a workspace immediately.
  *    3. Persists a completion marker so the dialog never auto-pops again.

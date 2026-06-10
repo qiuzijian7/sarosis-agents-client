@@ -14,7 +14,7 @@ import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensi
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
-import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ILocalizedString, localize, localize2 } from '../../../../nls.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -62,8 +62,6 @@ import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
-	AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
-	AGENT_STUDIO_SESSIONS_VIEW_ID,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
 	AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
 	AGENT_STUDIO_SKILLS_VIEW_ID,
@@ -78,7 +76,6 @@ import {
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
 	AGENT_STUDIO_WIKI_VIEW_ID,
-	AGENT_STUDIO_ACTIVE_CONTEXT_KEY,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
@@ -123,7 +120,6 @@ import {
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
-import { SessionExplorerViewPane } from './views/sessionExplorerView.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
@@ -182,8 +178,6 @@ import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/edito
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 // --- Icons -----------------------------------------------------------------------
-
-const agentStudioIcon = registerIcon('agent-studio', Codicon.hubot, localize('agentStudioIcon', "Icon for Agent Studio."));
 
 // Toolbar icons
 const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.repo, localize('workspaceIcon', "Workspace"));
@@ -1345,9 +1339,6 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 			return;
 		}
 
-		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
-		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
-
 		// --- Layout Reference: Two-Column Layout ---------------------------------
 		// [Sarosis] Two-column layout:
 		//   Left: Sidebar (activity bar icons + content panel)
@@ -1357,32 +1348,8 @@ class RegisterAgentStudioViewsContribution implements IWorkbenchContribution {
 
 		// NOTE: Agent Chat, Task Board, and Canvas are now registered as EditorPanes
 		// (see AgentStudioEditorPane / AgentStudioEditorInput) and open in the editor area.
-		// The AuxiliaryBar registrations below are kept for supplementary views only.
 
-		// --- Sidebar View Container ---------------------------------------------
-		const sidebarContainer = viewContainerRegistry.registerViewContainer({
-			id: AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
-			title: localize2('agentStudio.sidebar.title', "Agent Studio Sessions"),
-			icon: agentStudioIcon,
-			ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: false }]),
-			storageId: AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID,
-			hideIfEmpty: true,
-			order: 0,
-			windowEnablement: WindowEnablement.Sessions,
-		}, ViewContainerLocation.Sidebar, { isDefault: true });
-
-		viewsRegistry.registerViews([
-			{
-				id: AGENT_STUDIO_SESSIONS_VIEW_ID,
-				name: localize2('agentStudio.sessionsView', "Sessions"),
-				ctorDescriptor: new SyncDescriptor(SessionExplorerViewPane),
-				canToggleVisibility: true,
-				canMoveView: true,
-				order: 0,
-				when: ContextKeyExpr.equals(AGENT_STUDIO_ACTIVE_CONTEXT_KEY, true),
-				windowEnablement: WindowEnablement.Sessions,
-			},
-		], sidebarContainer);
+		// --- Toolbar Icons --- all 12 icons registered as separate sidebar containers
 	}
 }
 

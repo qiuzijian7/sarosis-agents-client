@@ -15,6 +15,7 @@ import { NodePalette } from './NodePalette';
 import { PropertyPanel } from './PropertyPanel';
 import { useWorkflowEditorStore, undo as doUndo, redo as doRedo } from './store';
 import { sendRequest } from '../../bridge/messageClient';
+import { useAgentStore } from '../../store/useAgentStore';
 import type { IStoredWorkflow } from '../../types/workflowStorage';
 
 export const WorkflowEditorPanel: React.FC = () => {
@@ -30,6 +31,10 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const toWorkflowData = useWorkflowEditorStore(s => s.toWorkflowData);
 	const nodes = useWorkflowEditorStore(s => s.nodes);
 	const edges = useWorkflowEditorStore(s => s.edges);
+	const setDefaultAgentConfig = useWorkflowEditorStore(s => s.setDefaultAgentConfig);
+
+	// Agents list (to look up the workflow's bound agent)
+	const agents = useAgentStore(s => s.agents);
 
 	// Load initial data from the host-injected __AGENT_STUDIO_INITIAL_DATA__
 	useEffect(() => {
@@ -42,6 +47,50 @@ export const WorkflowEditorPanel: React.FC = () => {
 			setLoaded(true);
 		}
 	}, [loaded, loadWorkflow]);
+
+	// Sync default agent config from the workflow's bound agent.
+	// When a new agent node is created, it inherits this agent's provider/model.
+	useEffect(() => {
+		const wf = (window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
+			{ type: string; workflow: IStoredWorkflow } | null | undefined;
+		if (!wf?.workflow?.agentId || !agents.length) { return; }
+
+		const workflowAgent = agents.find(a => a.id === wf.workflow.agentId);
+		if (workflowAgent) {
+			setDefaultAgentConfig({
+				agentId: workflowAgent.id,
+				providerId: workflowAgent.providerId || '',
+				modelId: workflowAgent.modelId || (typeof workflowAgent.model === 'string' ? workflowAgent.model as string : ''),
+			});
+		}
+	}, [agents, loaded, setDefaultAgentConfig]);
+
+	// Listen for AI-driven workflow changes pushed from Host
+	useEffect(() => {
+		const handler = (e: Event) => {
+			const detail = (e as CustomEvent).detail as {
+				workflow: IStoredWorkflow;
+				description?: string;
+			} | undefined;
+			if (detail?.workflow) {
+				console.log(`[WorkflowEditor] Received workflow.stateApplied → id=${detail.workflow.id}`);
+				loadWorkflow(detail.workflow);
+				// Re-sync default agent config from the reloaded workflow
+				if (detail.workflow.agentId && agents.length) {
+					const wfAgent = agents.find(a => a.id === detail.workflow.agentId);
+					if (wfAgent) {
+						setDefaultAgentConfig({
+							agentId: wfAgent.id,
+							providerId: wfAgent.providerId || '',
+							modelId: wfAgent.modelId || (typeof wfAgent.model === 'string' ? wfAgent.model as string : ''),
+						});
+					}
+				}
+			}
+		};
+		window.addEventListener('agentStudio:workflow-state-applied', handler);
+		return () => window.removeEventListener('agentStudio:workflow-state-applied', handler);
+	}, [loadWorkflow, agents, setDefaultAgentConfig]);
 
 	// Keyboard shortcut: Ctrl+S to save
 	useEffect(() => {
@@ -165,3 +214,5 @@ const iconBtnStyle: React.CSSProperties = {
 	cursor: 'pointer',
 	fontSize: '14px',
 };
+
+export default WorkflowEditorPanel;

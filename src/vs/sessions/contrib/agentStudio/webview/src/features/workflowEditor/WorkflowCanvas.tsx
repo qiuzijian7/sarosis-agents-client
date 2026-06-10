@@ -33,6 +33,14 @@ import { TaskNode } from './nodes/TaskNode';
 import { ConditionNode } from './nodes/ConditionNode';
 import { ParallelNode } from './nodes/ParallelNode';
 import { LoopNode } from './nodes/LoopNode';
+import { PromptNode } from './nodes/PromptNode';
+import { AgentNode } from './nodes/AgentNode';
+import { SkillNode } from './nodes/SkillNode';
+import { ToolNode } from './nodes/ToolNode';
+import { IfElseNode } from './nodes/IfElseNode';
+import { SwitchNode } from './nodes/SwitchNode';
+import { AskUserNode } from './nodes/AskUserNode';
+import { GroupNode } from './nodes/GroupNode';
 import { DeletableEdge } from './edges/DeletableEdge';
 import { CanvasToolbar } from './CanvasToolbar';
 import { StartMenu } from './StartMenu';
@@ -52,6 +60,14 @@ const nodeTypes: NodeTypes = {
 	condition: ConditionNode,
 	parallel: ParallelNode,
 	loop: LoopNode,
+	prompt: PromptNode,
+	agent: AgentNode,
+	skill: SkillNode,
+	tool: ToolNode,
+	ifElse: IfElseNode,
+	switch: SwitchNode,
+	askUser: AskUserNode,
+	group: GroupNode,
 };
 
 const edgeTypes: EdgeTypes = {
@@ -66,6 +82,14 @@ const nodeColor = (node: Node): string => {
 		case 'condition': return '#f59e0b';
 		case 'parallel': return '#8b5cf6';
 		case 'loop': return '#06b6d4';
+		case 'prompt': return '#8b5cf6';
+		case 'agent': return '#f97316';
+		case 'skill': return '#eab308';
+		case 'tool': return '#10b981';
+		case 'ifElse': return '#ef4444';
+		case 'switch': return '#a855f7';
+		case 'askUser': return '#06b6d4';
+		case 'group': return '#888780';
 		default: return '#888780';
 	}
 };
@@ -210,7 +234,7 @@ export const WorkflowCanvas: React.FC = () => {
 		// The store already reflects removal through onNodesChange; nothing else needed.
 	}, []);
 
-	// Custom delete-key handling with confirmation
+	// Custom delete-key handling with confirmation (supports multi-select)
 	useEffect(() => {
 		const handler = (e: KeyboardEvent) => {
 			if (e.key !== 'Delete' && e.key !== 'Backspace') { return; }
@@ -219,13 +243,19 @@ export const WorkflowCanvas: React.FC = () => {
 				return;
 			}
 			const store = useWorkflowEditorStore.getState();
-			const sel = store.selectedNodeId;
-			if (sel && sel !== 'start' && sel !== 'end') {
-				e.preventDefault();
-				e.stopPropagation();
-				const node = store.nodes.find(n => n.id === sel);
-				const label = (node?.data?.label as string) || sel;
-				setPendingDelete({ ids: [sel], label });
+			// Collect all selected nodes from ReactFlow's selection state (box-select + Ctrl+click)
+			const selectedIds = store.nodes
+				.filter(n => n.selected && n.id !== 'start' && n.id !== 'end')
+				.map(n => n.id);
+			if (selectedIds.length === 0) { return; }
+			e.preventDefault();
+			e.stopPropagation();
+			if (selectedIds.length === 1) {
+				const node = store.nodes.find(n => n.id === selectedIds[0]);
+				const label = (node?.data?.label as string) || selectedIds[0];
+				setPendingDelete({ ids: selectedIds, label });
+			} else {
+				setPendingDelete({ ids: selectedIds, label: `${selectedIds.length} nodes` });
 			}
 		};
 		// Capture phase so we run before ReactFlow's own delete handler
@@ -326,7 +356,11 @@ export const WorkflowCanvas: React.FC = () => {
 			<ConfirmDialog
 				open={!!pendingDelete}
 				title="Delete node?"
-				message={pendingDelete ? `Delete "${pendingDelete.label}"? This will also remove its connections.` : ''}
+				message={pendingDelete
+					? pendingDelete.ids.length > 1
+						? `Delete ${pendingDelete.ids.length} nodes? This will also remove their connections.`
+						: `Delete "${pendingDelete.label}"? This will also remove its connections.`
+					: ''}
 				confirmLabel="Delete"
 				cancelLabel="Cancel"
 				onConfirm={confirmDelete}

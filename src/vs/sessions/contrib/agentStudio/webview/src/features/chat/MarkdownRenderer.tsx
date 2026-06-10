@@ -919,20 +919,34 @@ function InterleavedMarkdownRendererInner({ content, className, showCursor, tool
 
 	// Helper: extract keywords from a tool call card for matching
 	function extractToolKeywords(card: React.ReactNode): string[] {
-		const keyStr = JSON.stringify(card).toLowerCase();
-		const keywords: string[] = [];
-		// Extract tool name patterns
-		const nameMatch = keyStr.match(/"name"\s*:\s*"([^"]+)"/);
-		if (nameMatch) { keywords.push(nameMatch[1]); }
-		// Extract file paths
-		const pathMatches = keyStr.match(/(?:path|filepath|file_path)"?\s*[:=]\s*"([^"]+)"/gi);
-		if (pathMatches) {
-			pathMatches.forEach(m => {
-				const p = m.replace(/.*?"([^"]+)".*/, '$1');
-				if (p) { keywords.push(p.toLowerCase()); }
-			});
+		try {
+			// React elements contain circular refs (__reactFiber); use a safe replacer
+			const keyStr = JSON.stringify(card, (key, value) => {
+				// Skip React internal properties that cause circular references
+				if (key.startsWith('__react') || key === 'ref') { return undefined; }
+				// Skip functions
+				if (typeof value === 'function') { return undefined; }
+				// Skip DOM nodes
+				if (value && typeof value === 'object' && (value as any).nodeType) { return undefined; }
+				return value;
+			}).toLowerCase();
+
+			const keywords: string[] = [];
+			// Extract tool name patterns
+			const nameMatch = keyStr.match(/"name"\s*:\s*"([^"]+)"/);
+			if (nameMatch) { keywords.push(nameMatch[1]); }
+			// Extract file paths
+			const pathMatches = keyStr.match(/(?:path|filepath|file_path)"?\s*[:=]\s*"([^"]+)"/gi);
+			if (pathMatches) {
+				pathMatches.forEach(m => {
+					const p = m.replace(/.*?"([^"]+)".*/, '$1');
+					if (p) { keywords.push(p.toLowerCase()); }
+				});
+			}
+			return keywords;
+		} catch {
+			return [];
 		}
-		return keywords;
 	}
 
 	// Phase 1: Place cards near matching content parts

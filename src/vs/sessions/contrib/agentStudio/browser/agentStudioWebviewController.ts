@@ -49,6 +49,7 @@ import { IAgentOSService } from "../common/agentOS.js";
 import { IWorktreeService } from "../../worktree/common/worktreeService.js";
 import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/providers.js";
 import { ToolApprovalDecision } from "../common/providers.js";
+import { workflowAppliedEmitter } from './providers/tool/builtinToolProvider.js';
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
@@ -2737,6 +2738,26 @@ export class AgentStudioWebviewController extends Disposable {
 					});
 				},
 			),
+		);
+
+		// Listen for AI-driven workflow changes (from workflow_apply tool)
+		// and push the updated state to the webview workflow editor.
+		this._register(
+			workflowAppliedEmitter.event(({ workflow, description }) => {
+				this.logService.info(
+					`[AgentStudio] workflow_apply tool applied changes to ${workflow.id}, notifying webview`,
+				);
+				this._sendEvent('workflow.stateApplied', {
+					workflow: {
+						id: workflow.id,
+						name: workflow.name,
+						description: workflow.description,
+						nodes: workflow.nodes ?? [],
+						connections: workflow.connections ?? [],
+					},
+					description,
+				});
+			}),
 		);
 	}
 

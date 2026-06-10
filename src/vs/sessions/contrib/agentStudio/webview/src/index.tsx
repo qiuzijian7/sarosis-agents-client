@@ -434,6 +434,25 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'workflow.stateApplied': {
+			// AI-driven workflow change — dispatch as custom event so the
+			// WorkflowEditorPanel can reload from the new data.
+			const payload = data as {
+				workflow: {
+					id: string;
+					name?: string;
+					description?: string;
+					nodes?: Array<Record<string, unknown>>;
+					connections?: Array<Record<string, unknown>>;
+				};
+				description?: string;
+			} | undefined;
+			if (payload?.workflow) {
+				console.log(`[AgentStudio] workflow.stateApplied → id=${payload.workflow.id}, nodes=${payload.workflow.nodes?.length ?? 0}`);
+				window.dispatchEvent(new CustomEvent('agentStudio:workflow-state-applied', { detail: payload }));
+			}
+			break;
+		}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}

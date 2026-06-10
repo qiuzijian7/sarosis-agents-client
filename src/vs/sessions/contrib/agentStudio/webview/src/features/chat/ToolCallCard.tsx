@@ -31,6 +31,7 @@ import { openFile, type OpenFileOptions } from '../../bridge/fileBridge';
 import { sendRequest } from '../../bridge/messageClient';
 import { applyToolApprovalResolved } from '../../bridge/streamHandler';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { useChatStore } from '../../store/useChatStore';
 import type { ToolMessage } from '../../types/chatTypes';
 import {
 	ToolHeaderWrapper,
@@ -743,9 +744,45 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 		className: statusClass,
 	};
 
+	// ── Handle skip for running tools ──
+	// Cancels the current agent loop AND auto-sends "继续" to resume execution,
+	// mimicking the user clicking cancel + typing "继续" and pressing Enter.
+	const handleSkipRunning = useCallback(() => {
+		try {
+			const store = useChatStore.getState();
+			store.cancelStream();
+			// Brief delay to let the cancel RPC dispatch before the follow-up
+			setTimeout(() => {
+				try {
+					useChatStore.getState().sendMessage('继续');
+				} catch (sendErr) {
+					console.warn('[ToolCallCard] auto-continue sendMessage failed:', sendErr);
+				}
+			}, 50);
+		} catch (err) {
+			console.warn('[ToolCallCard] cancelStream failed:', err);
+		}
+	}, []);
+
 	return (
 		<>
 			<ToolHeaderWrapper {...headerParams} />
+			{isRunning && (
+				<div className="tool-skip-row">
+					<button
+						className="tool-skip-btn"
+						onClick={handleSkipRunning}
+						title="跳过当前工具并自动继续执行"
+					>
+						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+							<polygon points="5 4 15 12 5 20 5 4" />
+							<line x1="19" y1="5" x2="19" y2="19" />
+						</svg>
+						跳过并继续
+					</button>
+					<span className="tool-skip-hint">将跳过当前工具并自动继续执行</span>
+				</div>
+			)}
 			{isApproval && <ApprovalButtons tool={tool} />}
 			{isRejected && (
 				<div className="tool-rejected-notice">用户已拒绝此工具调用</div>

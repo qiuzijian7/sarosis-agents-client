@@ -174,6 +174,44 @@ export const CRAFT_MODE_SYSTEM_PROMPT = [
 	'- When editing, preserve existing code style and conventions',
 ].join('\n');
 
+/** System prompt suffix injected for WORKFLOW mode. */
+export const WORKFLOW_MODE_SYSTEM_PROMPT = [
+	'',
+	'## Chat Mode: WORKFLOW (Visual Workflow Builder)',
+	'',
+	'You are in WORKFLOW mode — a visual workflow design assistant.',
+	'You help users create and modify AI agent workflow diagrams using a visual canvas.',
+	'',
+	'Available workflow tools:',
+	'- `workflow_list` — List all workflows in the current workspace',
+	'- `workflow_get` — Get the full state of a workflow (nodes, connections, metadata)',
+	'- `workflow_get_schema` — Get available node types and their data schemas',
+	'- `workflow_apply` — Apply a complete workflow definition (replaces all nodes/connections)',
+	'',
+	'Workflow creation process:',
+	'1. If the user asks to create/modify a workflow, first call `workflow_list` to see available workflows',
+	'2. Call `workflow_get_schema` to understand available node types if needed',
+	'3. Call `workflow_get` to see the current state of the target workflow',
+	'4. Generate the complete workflow JSON with all nodes and connections',
+	'5. Call `workflow_apply` with the workflow_id, nodes, connections, and optional name/description',
+	'',
+	'Node types you can create:',
+	'- System: `start`, `end` (every workflow MUST have both)',
+	'- Basic: `prompt`, `agent`, `skill`, `tool`, `task`',
+	'- Control flow: `ifElse`, `switch`, `condition`, `loop`, `parallel`, `askUser`',
+	'- Layout: `group` (visual container, no execution logic)',
+	'',
+	'Guidelines:',
+	'- Every workflow MUST have exactly one `start` node and one `end` node',
+	'- Position nodes with horizontal spacing of ~300px and vertical spacing of ~150px',
+	'- Start node typically at {x: 80, y: 250}',
+	'- Each connection requires: `id` (unique), `from` (source node id), `to` (target node id)',
+	'- Always provide ALL nodes and connections — `workflow_apply` replaces the entire workflow',
+	'- Use descriptive labels for nodes so the workflow is readable',
+	'- For branching nodes (ifElse, switch), include the branches array with unique IDs',
+	'- Explain your changes briefly to the user after applying',
+].join('\n');
+
 /** System prompt suffix injected for PLAN mode. */
 export const PLAN_MODE_SYSTEM_PROMPT = [
 	'',
@@ -221,7 +259,7 @@ export function getModeSystemPrompt(chatMode: ChatMode): string {
 		case 'craft': return CRAFT_MODE_SYSTEM_PROMPT;
 		case 'ask': return ASK_MODE_SYSTEM_PROMPT;
 		case 'plan': return PLAN_MODE_SYSTEM_PROMPT;
-		case 'workflow': return CRAFT_MODE_SYSTEM_PROMPT; // workflow uses craft prompt
+		case 'workflow': return WORKFLOW_MODE_SYSTEM_PROMPT;
 		default: return '';
 	}
 }
@@ -253,5 +291,11 @@ export const CHAT_MODE_INFO: readonly ChatModeInfo[] = [
 		label: 'Plan',
 		description: '计划模式 — 只读探索 + 任务拆解，确认后切换执行模式',
 		icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4', // clipboard list
+	},
+	{
+		id: 'workflow',
+		label: 'Workflow',
+		description: '工作流模式 — AI 辅助可视化工作流设计，通过对话自动创建/修改节点',
+		icon: 'M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm6 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zm0 6a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4zM4 11a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4z', // grid/flow
 	},
 ] as const;

@@ -167,7 +167,8 @@ export type EventType =
 	| 'configmd.error'           // sync/render error
 	| 'chat.toolApprovalRequest'
 	| 'workflow.loaded'          // host sends workflow data to webview editor
-	| 'workflow.saved';          // host confirms save to webview
+	| 'workflow.saved'           // host confirms save to webview
+	| 'workflow.stateApplied';   // host pushes AI-generated workflow state to webview editor
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -893,4 +894,40 @@ export interface IMemoryDeletePayload {
 export interface IMemoryDeleteResponse {
 	readonly deleted: number;
 	readonly failed: readonly string[];
+}
+
+// ─── Workflow AI Editing Payloads ──────────────────────────────────────────
+
+/**
+ * Payload for `workflow.stateApplied` event.
+ * Host pushes AI-generated workflow changes to the webview editor.
+ * The webview's WorkflowEditorPanel loads this data into its Zustand store.
+ */
+export interface IWorkflowStateAppliedPayload {
+	/** The workflow data (matching IStoredWorkflow shape). */
+	readonly workflow: {
+		readonly id: string;
+		readonly name?: string;
+		readonly description?: string;
+		readonly nodes?: ReadonlyArray<{
+			readonly id: string;
+			readonly type: string;
+			readonly name?: string;
+			readonly label?: string;
+			readonly position: { readonly x: number; readonly y: number };
+			readonly data?: Record<string, unknown>;
+			readonly parentId?: string;
+			readonly style?: { readonly width?: number; readonly height?: number };
+		}>;
+		readonly connections?: ReadonlyArray<{
+			readonly id: string;
+			readonly from: string;
+			readonly to: string;
+			readonly fromPort?: string;
+			readonly toPort?: string;
+			readonly condition?: string;
+		}>;
+	};
+	/** Optional description of what changed (for UI feedback). */
+	readonly description?: string;
 }

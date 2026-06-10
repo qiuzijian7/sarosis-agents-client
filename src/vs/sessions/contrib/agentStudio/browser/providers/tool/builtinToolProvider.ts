@@ -49,6 +49,7 @@ import { ICheckpointService } from '../../../common/checkpointService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
 import { SubAgentType, SubAgentResult, UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
+import { IWorkflowStorageService, IStoredWorkflow } from '../../../common/workflowStorage.js';
 
 
 type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<IToolResultContent[]>;
@@ -57,7 +58,7 @@ type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId
  * Kanban 工具中已实现真实 handler 的名字集合。
  * 这些工具由 _registerKanbanTools() 注册，_registerBundledTools() 会跳过它们的 stub。
  */
-const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([
+	const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([
 	'kanban_create',
 	'kanban_complete',
 	'kanban_block',
@@ -71,6 +72,25 @@ const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([
 	'kanban_decompose',
 	'kanban_swarm',
 ]);
+
+/**
+ * Workflow 工具中已实现真实 handler 的名字集合。
+ * 这些工具由 _registerWorkflowTools() 注册，_registerBundledTools() 会跳过它们的 stub。
+ */
+const WORKFLOW_TOOLS_WITH_HANDLER = new Set<string>([
+	'workflow_list',
+	'workflow_get',
+	'workflow_get_schema',
+	'workflow_apply',
+]);
+
+/**
+ * Module-level Emitter for AI-driven workflow changes.
+ * Defined outside the class to avoid TDZ (Temporal Dead Zone) issues
+ * with static field initializers referencing the class itself.
+ * The controller subscribes to `.event`; the workflow_apply handler fires it.
+ */
+export const workflowAppliedEmitter = new Emitter<{ workflow: IStoredWorkflow; description?: string }>();
 
 interface IToolDescriptor {
 	readonly definition: IToolDefinition;
@@ -118,6 +138,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@ITriageService private readonly triageService: ITriageService,
 		@ISwarmService private readonly swarmService: ISwarmService,
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
+		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 	) {
 		super();
 		this._registerCoreTools();
@@ -126,6 +147,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerBundledTools();
 		this._registerDelegationTools();
 		this._registerKanbanTools();
+		this._registerWorkflowTools();
 	}
 
 	// ─── 路径安全校验 ─────────────────────────────────────────────────────
@@ -1071,6 +1093,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			if (KANBAN_TOOLS_WITH_HANDLER.has(def.name)) {
 				continue;
 			}
+			// workflow_* 工具有真实 handler（见 _registerWorkflowTools），不注册 stub
+			if (WORKFLOW_TOOLS_WITH_HANDLER.has(def.name)) {
+				continue;
+			}
 			this.register({
 				definition: { ...def, source: this.id },
 				handler: async () => [{
@@ -1925,6 +1951,378 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		};
 
 		await walk(dir);
+	}
+
+	// ─── Workflow AI Editing Tools ────────────────────────────────────────
+
+	/**
+	 * Workflow node type schema — describes all available node types the AI
+	 * can create when generating workflows.
+	 */
+	private static readonly WORKFLOW_NODE_SCHEMA = {
+		nodeTypes: [
+			{
+				type: 'start', label: 'Start', category: 'system',
+				description: 'Entry point of the workflow. Every workflow must have exactly one Start node.',
+				dataSchema: { label: 'string (default: "Start")' },
+				positionHint: { x: 80, y: 250 },
+			},
+			{
+				type: 'end', label: 'End', category: 'system',
+				description: 'Exit point of the workflow. Every workflow must have exactly one End node.',
+				dataSchema: { label: 'string (default: "End")' },
+				positionHint: { x: 600, y: 250 },
+			},
+			{
+				type: 'prompt', label: 'Prompt', category: 'basic',
+				description: 'A prompt template with variable substitution.',
+				dataSchema: { label: 'string', prompt: 'string (template text)', variables: 'Record<string, string> (optional)' },
+			},
+			{
+				type: 'agent', label: 'Agent', category: 'basic',
+			description: 'Execute a specific agent. Use agentId to reference an existing agent from availableAgents. ' +
+				'IMPORTANT: Also populate agentConfig with { providerId, modelId } from the agent\'s model field.',
+			dataSchema: {
+				label: 'string',
+				agentId: 'string — MUST be one of the availableAgents ids',
+				agentConfig: '{ providerId?: string (preferred), modelId?: string (the agent\'s model) }',
+			},
+		},
+			{
+				type: 'skill', label: 'Skill', category: 'basic',
+				description: 'Execute a named skill with arguments.',
+				dataSchema: { label: 'string', skillName: 'string', skillArgs: 'Record<string, string> (optional)' },
+			},
+			{
+				type: 'tool', label: 'Tool', category: 'basic',
+				description: 'Execute a tool with parameters.',
+				dataSchema: { label: 'string', toolName: 'string', toolParams: 'Record<string, string> (optional)' },
+			},
+			{
+				type: 'task', label: 'Task', category: 'basic',
+				description: 'A discrete task with an optional executor.',
+				dataSchema: { label: 'string', executorId: 'string (optional)', taskId: 'string (optional)' },
+			},
+			{
+			type: 'ifElse', label: 'If/Else', category: 'controlFlow',
+			description: 'Binary conditional branching (True/False). ' +
+				'Output port IDs: "branch-0" (True) and "branch-1" (False). Connections from this node MUST specify fromPort.',
+			dataSchema: {
+				label: 'string',
+				evaluationTarget: 'string',
+				branches: '[{ id: string, label: string, condition: string }] (2 branches: True and False)',
+			},
+			outputPorts: ['branch-0', 'branch-1'],
+		},
+		{
+			type: 'switch', label: 'Switch', category: 'controlFlow',
+			description: 'Multi-way branching with 2-N cases. ' +
+				'Output port IDs: "branch-0", "branch-1", ..., "branch-{N-1}". Last branch is Default. Each connection from this node MUST specify fromPort.',
+			dataSchema: {
+				label: 'string',
+				evaluationTarget: 'string',
+				branches: '[{ id: string, label: string, condition: string }] (N branches, last one is Default)',
+			},
+			outputPortPattern: 'branch-{index}',
+		},
+		{
+			type: 'condition', label: 'Condition', category: 'controlFlow',
+			description: 'Branch based on a condition expression. ' +
+				'Output port IDs: "branch-0" (True) and "branch-1" (False). Connections from this node MUST specify fromPort.',
+			dataSchema: {
+				label: 'string',
+				condition: 'string',
+				branches: '[{ id: string, label: string, condition: string }] (2 branches)',
+			},
+			outputPorts: ['branch-0', 'branch-1'],
+		},
+			{
+				type: 'loop', label: 'Loop', category: 'controlFlow',
+				description: 'Repeat an operation over a collection.',
+				dataSchema: { label: 'string', loopConfig: '{ items: string, itemVariable: string, maxIterations: number }' },
+			},
+			{
+				type: 'parallel', label: 'Parallel', category: 'controlFlow',
+				description: 'Execute multiple branches in parallel.',
+				dataSchema: { label: 'string', parallelSteps: 'string[]' },
+			},
+			{
+			type: 'askUser', label: 'Ask User', category: 'controlFlow',
+			description: 'Present a question and branch based on user selection. ' +
+				'Output port IDs: "option-0", "option-1", ..., "option-{N-1}" (one per option). Each connection from this node MUST specify fromPort.',
+			dataSchema: { label: 'string', questionText: 'string', options: '[{ label: string, description?: string }]', multiSelect: 'boolean (optional)' },
+			outputPortPattern: 'option-{index}',
+		},
+			{
+				type: 'group', label: 'Group', category: 'layout',
+				description: 'Visual grouping container. Does NOT participate in execution logic. Child nodes reference this via parentId.',
+				dataSchema: { label: 'string', style: '{ width?: number, height?: number }' },
+			},
+		],
+		positioningGuidelines: {
+			horizontalSpacing: 300,
+			verticalSpacing: 150,
+			startPosition: { x: 80, y: 250 },
+		},
+		connectionRules: {
+			noSelfLoops: true,
+			startNodeCannotHaveInputs: true,
+			endNodeCannotHaveOutputs: true,
+			noDuplicateEdges: true,
+			portHandlesRequired: 'For multi-port nodes (ifElse, switch, condition, askUser), connections MUST include fromPort. ' +
+				'ifElse/condition: fromPort = "branch-0" or "branch-1". ' +
+				'switch: fromPort = "branch-{index}". ' +
+				'askUser: fromPort = "option-{index}". ' +
+				'Single-port nodes (start, end, task, prompt, agent, skill, tool, loop, parallel) do not need fromPort.',
+		},
+		portNaming: {
+			ifElse: { pattern: 'branch-{index}', ports: ['branch-0 (True)', 'branch-1 (False)'] },
+			switch: { pattern: 'branch-{index}', example: 'branch-0, branch-1, branch-2, ...' },
+			condition: { pattern: 'branch-{index}', ports: ['branch-0 (True)', 'branch-1 (False)'] },
+			askUser: { pattern: 'option-{index}', example: 'option-0, option-1, ...' },
+		},
+	};
+
+	private _registerWorkflowTools(): void {
+		const resolveWorkspaceId = (): string | undefined => {
+			return this.studioService.getActiveWorkspaceId();
+		};
+
+		// ── workflow_list ──────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'workflow_list',
+				description: 'List all workflows in the current workspace. Returns workflow IDs, names, and descriptions.',
+				inputSchema: {
+					type: 'object',
+					properties: {},
+					required: [],
+				},
+				category: 'workflow',
+				source: this.id,
+			},
+			handler: async (_args, _signal, _agentId) => {
+				const wsId = resolveWorkspaceId();
+				if (!wsId) {
+					return [{ type: 'text', text: 'No active workspace. Please select a workspace first.' }];
+				}
+				try {
+					const workflows = await this.workflowStorageService.listWorkflows(wsId);
+					if (workflows.length === 0) {
+						return [{ type: 'text', text: 'No workflows found in the current workspace. Create one first using the Workflow Editor.' }];
+					}
+					const summary = workflows.map(w => ({
+						id: w.id,
+						name: w.name || '(unnamed)',
+						description: w.description || '',
+						nodeCount: w.nodes?.length ?? 0,
+						connectionCount: w.connections?.length ?? 0,
+					}));
+					return [{ type: 'text', text: JSON.stringify(summary, null, 2) }];
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return [{ type: 'text', text: `workflow_list error: ${msg}` }];
+				}
+			},
+		});
+
+		// ── workflow_get ───────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'workflow_get',
+				description: 'Get the full state of a specific workflow by ID. Returns all nodes, edges, and metadata. ' +
+					'Use this before modifying a workflow so you can see the current structure.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						workflow_id: { type: 'string', description: 'The workflow ID (from workflow_list).' },
+					},
+					required: ['workflow_id'],
+				},
+				category: 'workflow',
+				source: this.id,
+			},
+			handler: async (args, _signal, _agentId) => {
+				const wsId = resolveWorkspaceId();
+				if (!wsId) {
+					return [{ type: 'text', text: 'No active workspace.' }];
+				}
+				const workflowId = args['workflow_id'] as string | undefined;
+				if (!workflowId) {
+					return [{ type: 'text', text: 'workflow_get error: workflow_id is required.' }];
+				}
+				try {
+					const wf = await this.workflowStorageService.getWorkflow(workflowId, wsId);
+					if (!wf) {
+						return [{ type: 'text', text: `Workflow "${workflowId}" not found.` }];
+					}
+					// Return a clean summary for AI consumption
+					const summary = {
+						id: wf.id,
+						name: wf.name,
+						description: wf.description,
+						nodes: wf.nodes ?? [],
+						connections: wf.connections ?? [],
+					};
+					return [{ type: 'text', text: JSON.stringify(summary, null, 2) }];
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return [{ type: 'text', text: `workflow_get error: ${msg}` }];
+				}
+			},
+		});
+
+		// ── workflow_get_schema ─────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'workflow_get_schema',
+				description: 'Get the schema of all available workflow node types, INCLUDING the list of ' +
+					'available agents you can reference. Use this to understand what node types are available, ' +
+					'their required data fields, valid agentId values, and positioning guidelines before creating or modifying a workflow.',
+				inputSchema: {
+					type: 'object',
+					properties: {},
+					required: [],
+				},
+				category: 'workflow',
+				source: this.id,
+			},
+			handler: async () => {
+				// Dynamically fetch available agents so the AI knows valid agentId values
+				let availableAgents: Array<{ id: string; name: string; role: string; model: string }> = [];
+				try {
+					const agents = await this.studioService.getAgents();
+					availableAgents = agents.map(a => ({
+						id: a.id,
+						name: a.name,
+						role: a.role,
+						model: a.model,
+					}));
+				} catch (err) {
+					this.logService.warn('[BuiltinTools] workflow_get_schema: failed to fetch agents:', err);
+				}
+
+				// Enhance the agent node type description to reference available agents
+				const enhancedNodeTypes = BuiltinToolProvider.WORKFLOW_NODE_SCHEMA.nodeTypes.map(nt => {
+					if (nt.type === 'agent') {
+						const agentIds = availableAgents.map(a => a.id).join(', ');
+						return {
+							...nt,
+							description: nt.description +
+								` IMPORTANT: agentId MUST be one of: [${agentIds || '(no agents available — ask the user to create one first)'}]. ` +
+								'Use the exact agent.id value. If the user wants an agent node but the right agent does not exist, ' +
+								'ask them to create it first.',
+							dataSchema: {
+								...nt.dataSchema,
+								agentId: `string — one of: [${agentIds || '(none)'}]`,
+								agentConfig: '{ modelId?: string (the model to use for this step), tools?: string[], memory?: string }',
+							},
+						};
+					}
+					return nt;
+				});
+
+				const schema = {
+					...BuiltinToolProvider.WORKFLOW_NODE_SCHEMA,
+					nodeTypes: enhancedNodeTypes,
+					availableAgents,
+				};
+
+				return [{ type: 'text', text: JSON.stringify(schema, null, 2) }];
+			},
+		});
+
+		// ── workflow_apply ──────────────────────────────────────────────
+		this.register({
+			definition: {
+				name: 'workflow_apply',
+				description: 'Apply a complete workflow definition (all nodes and connections) to create or replace a workflow. ' +
+					'IMPORTANT: Always include the Start and End nodes. Provide ALL nodes and connections — this replaces the entire workflow. ' +
+					'Use this for major structural changes. For small edits, get the current workflow via workflow_get, modify it, and apply.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						workflow_id: { type: 'string', description: 'The workflow ID to update (from workflow_list).' },
+						name: { type: 'string', description: 'Workflow name (optional, preserved if omitted).' },
+						description: { type: 'string', description: 'Workflow description (optional, preserved if omitted).' },
+						nodes: {
+							type: 'array',
+							description: 'All nodes in the workflow. Each node must have: id (string), type (from schema), label (string), position ({x, y}).',
+							items: { type: 'object' },
+						},
+						connections: {
+							type: 'array',
+							description: 'All connections (edges) between nodes. Each connection: id (string), from (source node id), to (target node id). ' +
+								'CRITICAL for multi-port nodes (ifElse/switch/condition/askUser): MUST also include fromPort (string). ' +
+								'ifElse/condition: fromPort is "branch-0" or "branch-1". switch: "branch-0", "branch-1", etc. askUser: "option-0", "option-1", etc.',
+							items: { type: 'object' },
+						},
+						change_description: { type: 'string', description: 'Brief description of what changed (for user feedback).' },
+					},
+					required: ['workflow_id', 'nodes', 'connections'],
+				},
+				category: 'workflow',
+				source: this.id,
+			},
+			handler: async (args, _signal, _agentId) => {
+				const wsId = resolveWorkspaceId();
+				if (!wsId) {
+					return [{ type: 'text', text: 'workflow_apply error: No active workspace.' }];
+				}
+
+				const workflowId = args['workflow_id'] as string | undefined;
+				if (!workflowId) {
+					return [{ type: 'text', text: 'workflow_apply error: workflow_id is required.' }];
+				}
+
+				const nodes = args['nodes'] as Array<Record<string, unknown>> | undefined;
+				const connections = args['connections'] as Array<Record<string, unknown>> | undefined;
+				const name = args['name'] as string | undefined;
+				const description = args['description'] as string | undefined;
+				const changeDescription = args['change_description'] as string | undefined;
+
+				if (!Array.isArray(nodes)) {
+					return [{ type: 'text', text: 'workflow_apply error: nodes must be an array.' }];
+				}
+				if (!Array.isArray(connections)) {
+					return [{ type: 'text', text: 'workflow_apply error: connections must be an array.' }];
+				}
+
+				try {
+					// Validate: must have Start and End nodes
+					const hasStart = nodes.some(n => n.type === 'start' || n.id === 'start');
+					const hasEnd = nodes.some(n => n.type === 'end' || n.id === 'end');
+					if (!hasStart || !hasEnd) {
+						return [{ type: 'text', text: 'workflow_apply validation error: Workflow must have both a Start node and an End node.' }];
+					}
+
+					// Build the patch
+					const patch: Partial<IStoredWorkflow> = {
+						nodes: nodes as unknown as IStoredWorkflow['nodes'],
+						connections: connections as unknown as IStoredWorkflow['connections'],
+					};
+					if (name !== undefined) { patch.name = name; }
+					if (description !== undefined) { patch.description = description; }
+
+					const updated = await this.workflowStorageService.updateWorkflow(workflowId, patch, wsId);
+
+					// Notify the controller to push changes to the webview
+					workflowAppliedEmitter.fire({ workflow: updated, description: changeDescription });
+
+					const nodeCount = nodes.length;
+					const connCount = connections.length;
+					return [{
+						type: 'text',
+						text: `Workflow "${updated.name || workflowId}" updated successfully. ${nodeCount} nodes, ${connCount} connections applied.`,
+					}];
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return [{ type: 'text', text: `workflow_apply error: ${msg}` }];
+				}
+			},
+		});
+
+		this.logService.info('[BuiltinTools] _registerWorkflowTools: 4 workflow tools registered (list/get/schema/apply)');
 	}
 }
 

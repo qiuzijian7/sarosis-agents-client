@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
+import { EditorInputCapabilities } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import type { IStoredWorkflow } from '../common/workflowStorage.js';
 
@@ -22,10 +23,14 @@ export class WorkflowEditorInput extends EditorInput {
 	}
 
 	override get editorId(): string | undefined {
-		return WorkflowEditorInput.ID;
+		return 'workbench.editor.agentStudio.workflowPane';
 	}
 
-	private readonly _workflow: IStoredWorkflow;
+	override get capabilities(): EditorInputCapabilities {
+		return 0; // Non-singleton, mutable — each workflow gets its own tab
+	}
+
+	private _workflow: IStoredWorkflow;
 
 	constructor(workflow: IStoredWorkflow) {
 		super();
@@ -34,6 +39,11 @@ export class WorkflowEditorInput extends EditorInput {
 
 	get workflow(): IStoredWorkflow {
 		return this._workflow;
+	}
+
+	/** Update the internal workflow snapshot after a save, so the editor opens fresh data next time. */
+	updateWorkflowData(patch: Partial<IStoredWorkflow>): void {
+		Object.assign(this._workflow, patch);
 	}
 
 	override get resource(): URI {

@@ -162,6 +162,12 @@
 	box-shadow: none;
 }
 
+/* ── Sidebar collapsed: hide titlebar center + right to prevent overflow ── */
+.sidebar-content-collapsed-layout .part.titlebar > .sessions-titlebar-container > .titlebar-center,
+.sidebar-content-collapsed-layout .part.titlebar > .sessions-titlebar-container > .titlebar-right {
+	display: none !important;
+}
+
 /* macOS native: the spacer uses window-controls-container but should not block dragging */
 .agent-sessions-workbench.mac .part.titlebar .window-controls-container {
 	-webkit-app-region: drag;

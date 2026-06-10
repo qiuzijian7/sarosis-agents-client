@@ -1899,8 +1899,21 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			this.mainContainer.classList.remove(LayoutClasses.SIDEBAR_HIDDEN);
 		}
 
+		// [Sarosis] Save auxiliary bar width before sidebar toggle so the freed
+		// horizontal space is absorbed entirely by the editor area, not shared
+		// with the auxiliary bar (which would cause a jarring width jump).
+		const auxiliaryBarWasVisible = this.isVisible(Parts.AUXILIARYBAR_PART);
+		const preToggleAuxWidth: number | undefined = auxiliaryBarWasVisible
+			? this.workbenchGrid.getViewSize(this.auxiliaryBarPartView).width
+			: undefined;
+
 		// Propagate to grid
 		this.workbenchGrid.setViewVisible(this.sideBarPartView, !hidden);
+
+		// Restore auxiliary bar to its pre-toggle width so only the editor resizes.
+		if (preToggleAuxWidth !== undefined && this.isVisible(Parts.AUXILIARYBAR_PART)) {
+			this.workbenchGrid.resizeView(this.auxiliaryBarPartView, { width: preToggleAuxWidth, height: this.workbenchGrid.getViewSize(this.auxiliaryBarPartView).height });
+		}
 
 		// If sidebar becomes hidden, also hide the current active Viewlet if any
 		if (hidden && this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)) {

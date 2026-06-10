@@ -426,9 +426,11 @@ export function App(): React.ReactElement {
 			return <TaskboardPanel />;
 		case 'workflow-editor':
 			return (
-				<React.Suspense fallback={<div style={{ padding: 20, color: 'var(--vscode-descriptionForeground)' }}>Loading workflow editor...</div>}>
-					<WorkflowEditorPanel />
-				</React.Suspense>
+				<div className="panel-standalone" style={{ width: '100vw', height: '100vh' }}>
+					<React.Suspense fallback={<div style={{ padding: 20, color: 'var(--vscode-descriptionForeground)' }}>Loading workflow editor...</div>}>
+						<WorkflowEditorPanel />
+					</React.Suspense>
+				</div>
 			);
 		case 'agent-settings':
 			return <AgentSettingsPanel />;

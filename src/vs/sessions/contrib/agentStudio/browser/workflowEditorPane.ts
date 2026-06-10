@@ -16,6 +16,7 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
+import { IWorkflowStorageService } from '../common/workflowStorage.js';
 
 /**
  * WorkflowEditorPane — WebView-based workflow editor using ReactFlow.
@@ -31,6 +32,7 @@ export class WorkflowEditorPane extends EditorPane {
 
 	private _container: HTMLElement | undefined;
 	private _webviewController: AgentStudioWebviewController | undefined;
+	private _currentWorkflowId: string | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -38,6 +40,7 @@ export class WorkflowEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 	) {
 		super(WorkflowEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -65,10 +68,33 @@ export class WorkflowEditorPane extends EditorPane {
 			return;
 		}
 
-		// Always recreate the webview controller for each open
+		const workflowId = input.workflow.id;
+
+		// If the same workflow tab is being reactivated, keep the webview alive.
+		// Otherwise (first open or different workflow), recreate the webview.
+		if (this._webviewController && this._currentWorkflowId === workflowId) {
+			// Same tab reactivation — the webview already has the latest state
+			return;
+		}
+
+		// Different workflow or first open — dispose old and create new
 		this._disposeWebview();
 
-		const workflowData = input.workflow;
+		this._currentWorkflowId = workflowId;
+
+		// Read the latest workflow data from disk (may have been saved since the
+		// WorkflowEditorInput was created)
+		let workflowData = input.workflow;
+		try {
+			const fresh = await this.workflowStorageService.getWorkflow(workflowId);
+			if (fresh) {
+				workflowData = fresh;
+				// Keep the EditorInput in sync
+				input.updateWorkflowData(fresh);
+			}
+		} catch {
+			// Fall back to the input's snapshot
+		}
 
 		this._webviewController = this.instantiationService.createInstance(
 			AgentStudioWebviewController,

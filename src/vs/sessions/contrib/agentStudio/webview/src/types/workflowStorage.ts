@@ -11,6 +11,26 @@ export const enum WorkflowNodeType {
 	Condition = 'condition',
 	Parallel = 'parallel',
 	Loop = 'loop',
+	// New types — cc-wf-studio inspired
+	Prompt = 'prompt',
+	Agent = 'agent',
+	Skill = 'skill',
+	Tool = 'tool',
+	IfElse = 'ifElse',
+	Switch = 'switch',
+	AskUser = 'askUser',
+	Group = 'group',
+}
+
+export interface BranchDef {
+	id: string;
+	label: string;
+	condition: string;
+}
+
+export interface AskUserOption {
+	label: string;
+	description?: string;
 }
 
 export interface WorkflowNodePosition {
@@ -22,10 +42,31 @@ export interface WorkflowNodeData {
 	label?: string;
 	taskId?: string;
 	condition?: string;
-	branches?: Array<{ id: string; label: string; condition: string }>;
+	branches?: BranchDef[];
 	parallelSteps?: string[];
-	loopConfig?: { items: string; itemVariable: string };
+	loopConfig?: { items: string; itemVariable: string; maxIterations?: number };
 	executorId?: string;
+	// Prompt node
+	prompt?: string;
+	variables?: Record<string, string>;
+	// Agent node
+	agentId?: string;
+	agentConfig?: { providerId?: string; modelId?: string };
+	// Skill node
+	skillName?: string;
+	skillArgs?: Record<string, string>;
+	// Tool node
+	toolName?: string;
+	toolParams?: Record<string, string>;
+	// IfElse / Switch
+	evaluationTarget?: string;
+	// AskUser
+	questionText?: string;
+	options?: AskUserOption[];
+	multiSelect?: boolean;
+	useAiSuggestions?: boolean;
+	// Group
+	isCollapsed?: boolean;
 	[key: string]: unknown;
 }
 

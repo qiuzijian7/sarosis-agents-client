@@ -6,19 +6,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React from 'react';
-import { useWorkflowEditorStore } from './store';
 
 interface StartMenuProps {
 	onAddFirstNode: (type: string) => void;
 }
 
 export const StartMenu: React.FC<StartMenuProps> = ({ onAddFirstNode }) => {
-	const nodes = useWorkflowEditorStore(s => s.nodes);
-	const workflowName = useWorkflowEditorStore(s => s.workflowName);
-
-	// Only show when there are exactly 2 nodes (Start + End) and no user nodes
-	const hasUserNodes = nodes.some(n => n.type !== 'start' && n.type !== 'end');
-	if (hasUserNodes) { return null; }
+	// Disabled by default — the overlay was too intrusive for first-time workflow editing.
+	// Keeping the component code for future re-enablement.
+	return null;
 
 	return (
 		<div style={{
@@ -58,10 +54,12 @@ export const StartMenu: React.FC<StartMenuProps> = ({ onAddFirstNode }) => {
 				</p>
 
 				<div style={{ display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap' }}>
+					<QuickButton icon="💬" label="Prompt" onClick={() => onAddFirstNode('prompt')} />
+					<QuickButton icon="🤖" label="Agent" onClick={() => onAddFirstNode('agent')} />
 					<QuickButton icon="📋" label="Task" onClick={() => onAddFirstNode('task')} />
-					<QuickButton icon="🔀" label="Condition" onClick={() => onAddFirstNode('condition')} />
-					<QuickButton icon="⇉" label="Parallel" onClick={() => onAddFirstNode('parallel')} />
-					<QuickButton icon="🔄" label="Loop" onClick={() => onAddFirstNode('loop')} />
+					<QuickButton icon="↔️" label="If/Else" onClick={() => onAddFirstNode('ifElse')} />
+					<QuickButton icon="🔀" label="Switch" onClick={() => onAddFirstNode('switch')} />
+					<QuickButton icon="❓" label="Ask User" onClick={() => onAddFirstNode('askUser')} />
 				</div>
 
 				<p style={{

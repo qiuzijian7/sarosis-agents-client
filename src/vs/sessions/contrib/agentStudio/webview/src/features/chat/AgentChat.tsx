@@ -28,7 +28,6 @@ import { ToolCallCard } from './ToolCallCard';
 import { SubAgentCard } from './SubAgentCard';
 import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRenderer';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
-import { WorktreeSwitcher } from './WorktreeSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
 import type { StreamError, StreamPhase } from '../../bridge/streamHandler';
 import { isPhaseActive, toolCallStateToToolMessage } from '../../bridge/streamHandler';
@@ -806,7 +805,6 @@ export function AgentChat(): React.ReactElement {
 					)}
 
 					<div className="chat-header-actions">
-						<WorktreeSwitcher />
 						<button className="chat-header-btn" title="创建会话" onClick={() => { useChatStore.getState().clearMessages(); }}>
 							<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16M4 12h16" />

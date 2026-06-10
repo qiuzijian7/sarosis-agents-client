@@ -1898,6 +1898,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 */
 	private handleSidebarContentCollapsed(collapsed: boolean): void {
 		const targetWidth = collapsed ? 48 : this._sidebarExpandedWidth;
+
+		// [Sarosis] Save agent editor width before sidebar toggle so the
+		// freed/consumed space goes entirely to the file editor (middle column)
+		// — the agent editor (right column) keeps its width.
+		const preToggleAgentWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+
 		try {
 			// IViewSize requires both width and height; use a large default for height
 			this.workbenchGrid.resizeView(this.sideBarPartView, { width: targetWidth, height: 1000 });
@@ -1906,6 +1912,16 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			// fall back to a full layout.
 			this.layout();
 		}
+
+		// Restore agent editor to pre-toggle width so only the file editor resizes.
+		try {
+			this.workbenchGrid.resizeView(this.agentEditorPartView, { width: preToggleAgentWidth, height: 1000 });
+		} catch { /* ignore — grid may not be ready */ }
+
+		// [Sarosis] When the sidebar is collapsed (48px), the titlebar in the
+		// left column should only show the sidebar toggle button — the command
+		// center and right actions would overflow and look broken.
+		this.mainContainer.classList.toggle('sidebar-content-collapsed-layout', collapsed);
 	}
 
 	//#endregion
