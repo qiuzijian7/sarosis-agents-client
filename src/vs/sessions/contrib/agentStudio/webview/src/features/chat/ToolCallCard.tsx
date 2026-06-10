@@ -639,6 +639,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 	const isRunning = tool.phase === 'running' || tool.phase === 'pending';
 	const isApproval = tool.phase === 'approval_required';
 	const isSuccess = tool.phase === 'success';
+	const isTerminalTool = TERMINAL_TOOLS.has(key);
 
 	// Status-driven wrapper class (drives accent borders in CSS).
 	const statusClass =
@@ -767,7 +768,7 @@ function ToolCallCardRaw({ toolCall }: ToolCallCardProps): React.ReactElement | 
 	return (
 		<>
 			<ToolHeaderWrapper {...headerParams} />
-			{isRunning && (
+			{isRunning && isTerminalTool && (
 				<div className="tool-skip-row">
 					<button
 						className="tool-skip-btn"

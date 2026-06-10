@@ -1902,7 +1902,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// [Sarosis] Save agent editor width before sidebar toggle so the
 		// freed/consumed space goes entirely to the file editor (middle column)
 		// — the agent editor (right column) keeps its width.
-		const preToggleAgentWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+		let preToggleAgentWidth: number | undefined;
+		try {
+			preToggleAgentWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+		} catch {
+			// Grid may not be fully initialized yet — skip width preservation.
+		}
 
 		try {
 			// IViewSize requires both width and height; use a large default for height
@@ -1914,9 +1919,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 
 		// Restore agent editor to pre-toggle width so only the file editor resizes.
-		try {
-			this.workbenchGrid.resizeView(this.agentEditorPartView, { width: preToggleAgentWidth, height: 1000 });
-		} catch { /* ignore — grid may not be ready */ }
+		if (preToggleAgentWidth !== undefined) {
+			try {
+				this.workbenchGrid.resizeView(this.agentEditorPartView, { width: preToggleAgentWidth, height: 1000 });
+			} catch { /* ignore — grid may not be ready */ }
+		}
 
 		// [Sarosis] When the sidebar is collapsed (48px), the titlebar in the
 		// left column should only show the sidebar toggle button — the command

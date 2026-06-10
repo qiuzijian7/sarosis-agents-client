@@ -1020,8 +1020,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			//   - 发送 tool_result（占位成功结果）+ tool_end(success=true)
 			//   - 不添加到 messages 历史中的 tool 消息（服务端已将结果融入后续文本）
 			//   - 标记 endedToolIds 避免孤儿检测重复发送
-			const serverExecutedCalls = effectiveToolCalls.filter(tc => tc.serverExecuted === true);
-			const localExecutedCalls = effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
+			//
+			// [Sarosis] Known model providers (Knot AG-UI) may not set serverExecuted
+			// on every tool_call delta. When running in direct model mode (active
+			// model explicitly selected), ALL tool calls are server-executed by
+			// definition — the model provider handles tool execution server-side.
+			// We check _activeSelection instead of getActiveExecutionProvider()
+			// because an execution provider may be registered independently.
+			const isDirectMode = !!this._activeSelection?.modelId;
+			const serverExecutedCalls = effectiveToolCalls.filter(tc =>
+				tc.serverExecuted === true || isDirectMode
+			);
+			const localExecutedCalls = isDirectMode
+				? []
+				: effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
 
 			if (serverExecutedCalls.length > 0) {
 				this._logService.info(`[AgentOS] ${serverExecutedCalls.length} tool calls were server-executed (skipping local execution): ${serverExecutedCalls.map(tc => tc.name).join(', ')}`);
@@ -2683,6 +2695,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				if (delta.toolCall.displayName !== undefined) { result.displayName = delta.toolCall.displayName; }
 				if (delta.toolCall.renderType !== undefined) { result.renderType = delta.toolCall.renderType; }
 				if (delta.toolCall.defaultShow !== undefined) { result.defaultShow = delta.toolCall.defaultShow; }
+				if (delta.toolCall.serverExecuted) { result.serverExecuted = true; }
 				this._logService.info(`[AgentOS] _adaptModelDelta tool_start: name=${delta.toolCall.name}, defaultShow=${delta.toolCall.defaultShow}, displayName=${delta.toolCall.displayName}, renderType=${delta.toolCall.renderType}`);
 				return result;
 			}
