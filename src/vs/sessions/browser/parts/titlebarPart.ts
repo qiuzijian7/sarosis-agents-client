@@ -24,6 +24,7 @@ import { Parts, IWorkbenchLayoutService } from '../../../workbench/services/layo
 
 import { IContextKeyService } from '../../../platform/contextkey/common/contextkey.js';
 import { IHostService } from '../../../workbench/services/host/browser/host.js';
+import { IProductService } from '../../../platform/product/common/productService.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../platform/actions/browser/toolbar.js';
 import { IEditorGroupsContainer } from '../../../workbench/services/editor/common/editorGroupsService.js';
 import { CodeWindow, mainWindow } from '../../../base/browser/window.js';
@@ -108,6 +109,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IHostService private readonly hostService: IHostService,
+		@IProductService protected readonly productService: IProductService,
 	) {
 		super(id, { hasTitle: false }, themeService, storageService, layoutService);
 
@@ -219,6 +221,12 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		// positioning so it does NOT participate in the flex flow and cannot
 		// interfere with the sidebar/activitybar layout.
 		this._createWorkspaceToolbar();
+
+		// Version label — shown to the right of the hamburger button
+		const versionLabel = append(this.leftContent, $('span.titlebar-version-label'));
+		const version = this.productService.version || '';
+		versionLabel.textContent = version ? `v${version}` : '';
+		versionLabel.title = `${this.productService.nameLong || 'VsSarosis'} v${version}`;
 
 		// Center toolbar - command center (renders session picker via IActionViewItemService)
 		// Uses .window-title > .command-center nesting to match default workbench CSS selectors
@@ -417,8 +425,9 @@ export class MainTitlebarPart extends TitlebarPart {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IHostService hostService: IHostService,
+		@IProductService productService: IProductService,
 	) {
-		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService);
+		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService);
 	}
 }
 
@@ -442,9 +451,10 @@ export class AuxiliaryTitlebarPart extends TitlebarPart implements IAuxiliaryTit
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IHostService hostService: IHostService,
+		@IProductService productService: IProductService,
 	) {
 		const id = AuxiliaryTitlebarPart.COUNTER++;
-		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService);
+		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService);
 	}
 
 	override get preventZoom(): boolean {

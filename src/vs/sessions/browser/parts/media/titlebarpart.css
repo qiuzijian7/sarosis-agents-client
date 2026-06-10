@@ -129,6 +129,24 @@
 	display: flex;
 }
 
+/* Version label — shown to the right of the hamburger/collapse button */
+.monaco-workbench .part.titlebar > .sessions-titlebar-container > .titlebar-left > .titlebar-version-label {
+	display: flex;
+	align-items: center;
+	flex-grow: 0;
+	flex-shrink: 0;
+	margin-left: 2px;
+	padding: 0 6px;
+	font-size: 11px;
+	font-weight: 400;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.7;
+	-webkit-app-region: no-drag;
+	user-select: none;
+	white-space: nowrap;
+	order: 3;
+}
+
 /* Workspace selector — absolutely positioned to the right side of titlebar-left.
    This approach does NOT participate in the flex flow, so it cannot interfere
    with the sidebar/activitybar layout (which was the root cause of the previous
@@ -162,9 +180,10 @@
 	box-shadow: none;
 }
 
-/* ── Sidebar collapsed: hide titlebar center + right to prevent overflow ── */
+/* ── Sidebar collapsed: hide titlebar center + right + version label to prevent overflow ── */
 .sidebar-content-collapsed-layout .part.titlebar > .sessions-titlebar-container > .titlebar-center,
-.sidebar-content-collapsed-layout .part.titlebar > .sessions-titlebar-container > .titlebar-right {
+.sidebar-content-collapsed-layout .part.titlebar > .sessions-titlebar-container > .titlebar-right,
+.sidebar-content-collapsed-layout .part.titlebar > .sessions-titlebar-container > .titlebar-left > .titlebar-version-label {
 	display: none !important;
 }
 

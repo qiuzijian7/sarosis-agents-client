@@ -39,10 +39,10 @@ export class NativeTitlebarPart extends TitlebarPart {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IHostService hostService: IHostService,
-		@IProductService private readonly productService: IProductService,
+		@IProductService productService: IProductService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 	) {
-		super(id, targetWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService);
+		super(id, targetWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService);
 
 		this.handleWindowsAlwaysOnTop(targetWindow.vscodeWindowId, contextKeyService);
 	}
