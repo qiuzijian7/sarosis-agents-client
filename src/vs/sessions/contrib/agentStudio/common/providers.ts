@@ -164,6 +164,13 @@ export interface IModelProvider {
 	readonly onDidChangeAgents?: Event<void>; // Agent 列表变化事件
 	listAgents?(): Promise<IModelAgentInfo[]>; // 获取 Agent 列表
 
+	// ─── Server-side agent loop ────────────────────────────────
+	// 当 provider 内部封装了完整的 agent 循环（如 Knot AG-UI 在同一次
+	// chat() 流中完成 tool call → execution → response），设为 true。
+	// 此时 AgentOS 不会在本地执行工具调用，而是让 provider 自行管理循环。
+	// CodeBuddy API 等仅返回 tool call 的 provider 应设为 false。
+	readonly isServerSideProvider?: boolean;
+
 	// 推理调用（指定模型，可选指定 Agent）
 	chat(
 		modelId: string,

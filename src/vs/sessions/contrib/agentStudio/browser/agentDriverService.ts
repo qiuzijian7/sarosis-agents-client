@@ -823,52 +823,56 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			// ⚠ 关键：必须连续写两条——user 一条 + assistant 一条，
 			// 这样下游 Memory Provider（如 tdb-am-memory）才能配对成完整一轮，
 			// 用于 vendor /capture 接口的 user_content + assistant_content。
+			//
+			// 🔧 2026-06-10 修复：memory 写回改为 fire-and-forget，不再 await。
+			// 原因：async generator 的 finally 块中 await 会阻塞 generator 的 return，
+			// 进而阻塞 consumer（agentChatService）的 for-await 循环退出。
+			// 当 memoryProvider.writeMemory() 因网络抖动/vendor 超时而长时间
+			// 不返回时，整个聊天流会被卡住——用户看到的表现为 "LLM 返回后 app 卡死"。
+			// fire-and-forget 不阻塞流退出，写失败由 catch 静默记录日志。
 			if (memoryProvider) {
-				try {
-					const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
-					// 【关键】写记忆时优先使用 rawDeltaChunks（剥离前的原始模型输出，含 <memory_extract> 标签）。
-					// memoryProvider 端的 parseAndStripMemoryTags 会负责解析并剥离标签，
-					// 把 L1 记忆注入 vendor /inject/l1，剥离后的纯文本写入 L0 /capture。
-					// 仅当 raw 为空时才回退到 assistantChunks（剥离后的干净文本，作为兜底）。
-					const rawAssistantContent = rawDeltaChunks.join('').trim();
-					const cleanedAssistantContent = assistantChunks.join('').trim();
-					const assistantContent = rawAssistantContent.length > 0 ? rawAssistantContent : cleanedAssistantContent;
-					const ts = Date.now();
-					const sessionMeta: Record<string, unknown> = {
-						owner: 'default',
-						userId: 'default',
-						agentId: request.agentId,
-					};
-					if (request.sessionId) {
-						sessionMeta['sessionId'] = request.sessionId;
-					}
-
-					// 5a. 写 user 端
-					if (lastUserMessage) {
-						await memoryProvider.writeMemory(request.agentId, {
-							id: `memory-user-${ts}`,
-							type: 'short_term',
-							content: lastUserMessage.content,
-							metadata: { ...sessionMeta, role: 'user' },
-							timestamp: ts,
-						});
-					}
-
-					// 5b. 写 assistant 端（累积的 LLM 文本流）
-					if (assistantContent.length > 0) {
-						await memoryProvider.writeMemory(request.agentId, {
-							id: `memory-assistant-${ts + 1}`,
-							type: 'short_term',
-							content: assistantContent,
-							metadata: { ...sessionMeta, role: 'assistant' },
-							timestamp: ts + 1,
-						});
-					}
-
-					this._logService.info(`[AgentDriver] Wrote memory for ${request.agentId} (user=${lastUserMessage ? 'yes' : 'no'}, assistantLen=${assistantContent.length})`);
-				} catch (error) {
-					this._logService.error('[AgentDriver] Failed to write memory:', error);
+				const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
+				const rawAssistantContent = rawDeltaChunks.join('').trim();
+				const cleanedAssistantContent = assistantChunks.join('').trim();
+				const assistantContent = rawAssistantContent.length > 0 ? rawAssistantContent : cleanedAssistantContent;
+				const ts = Date.now();
+				const sessionMeta: Record<string, unknown> = {
+					owner: 'default',
+					userId: 'default',
+					agentId: request.agentId,
+				};
+				if (request.sessionId) {
+					sessionMeta['sessionId'] = request.sessionId;
 				}
+
+				// Fire-and-forget: 不阻塞 generator cleanup / consumer 的 for-await 退出
+				(async () => {
+					try {
+						if (lastUserMessage) {
+							await memoryProvider.writeMemory(request.agentId, {
+								id: `memory-user-${ts}`,
+								type: 'short_term',
+								content: lastUserMessage.content,
+								metadata: { ...sessionMeta, role: 'user' },
+								timestamp: ts,
+							});
+						}
+
+						if (assistantContent.length > 0) {
+							await memoryProvider.writeMemory(request.agentId, {
+								id: `memory-assistant-${ts + 1}`,
+								type: 'short_term',
+								content: assistantContent,
+								metadata: { ...sessionMeta, role: 'assistant' },
+								timestamp: ts + 1,
+							});
+						}
+
+						this._logService.info(`[AgentDriver] Wrote memory for ${request.agentId} (user=${lastUserMessage ? 'yes' : 'no'}, assistantLen=${assistantContent.length})`);
+					} catch (error) {
+						this._logService.error('[AgentDriver] Failed to write memory:', error);
+					}
+				})();
 			}
 		}
 	}

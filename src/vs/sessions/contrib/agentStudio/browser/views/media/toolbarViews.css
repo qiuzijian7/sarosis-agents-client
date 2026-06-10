@@ -18,7 +18,8 @@
 .personal-view,
 .settings-view,
 .provider-view,
-.evolution-view {
+.evolution-view,
+.integration-view {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
@@ -119,7 +120,10 @@ button.primary:hover,
 .search-results,
 .plugins-list,
 .settings-content,
-.provider-list {
+.provider-list,
+#integration-skills-list,
+#integration-tools-list,
+#integration-mcp-list {
 	overflow-y: auto;
 	flex: 1;
 }
@@ -129,6 +133,7 @@ button.primary:hover,
 .skills-filters,
 .tasks-filters,
 .tools-tabs,
+.mcp-tabs,
 .search-filters,
 .plugins-tabs {
 	display: flex;
@@ -2025,6 +2030,232 @@ button.primary:hover,
 	border: 1px solid var(--vscode-panel-border);
 	border-radius: 4px;
 	background: var(--vscode-input-background);
+}
+
+/* ─── Integration View (Skills + Tools + MCP) ─────────────────────────────────── */
+
+.integration-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+	font-size: 13px;
+}
+
+/* Top-level tab bar */
+.integration-tab-bar {
+	display: flex;
+	gap: 0;
+	padding: 0;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+	background: var(--vscode-sideBarSectionHeader-background);
+}
+
+.integration-tab {
+	flex: 1;
+	padding: 8px 12px;
+	font-size: 12px;
+	font-weight: 500;
+	border: none;
+	border-bottom: 2px solid transparent;
+	border-radius: 0;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.integration-tab:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.integration-tab.active {
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+	border-bottom-color: var(--vscode-button-background);
+}
+
+/* Unify section title style across skill/tools/mcp internal headers */
+h3.integration-section-title {
+	font-size: 14px;
+	font-weight: 600;
+	margin: 0;
+}
+
+/* Content area */
+.integration-content {
+	flex: 1;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Ensure skills/tools/mcp lists inside integration view fill properly */
+.integration-content .skills-list,
+.integration-content .tools-list,
+.integration-content .mcp-list,
+#integration-skills-list,
+#integration-tools-list,
+#integration-mcp-list {
+	flex: 1;
+	overflow-y: auto;
+}
+
+/* Integration content scrollbar */
+.integration-content::-webkit-scrollbar,
+#integration-skills-list::-webkit-scrollbar,
+#integration-tools-list::-webkit-scrollbar,
+#integration-mcp-list::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+.integration-content::-webkit-scrollbar-track,
+#integration-skills-list::-webkit-scrollbar-track,
+#integration-tools-list::-webkit-scrollbar-track,
+#integration-mcp-list::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.integration-content::-webkit-scrollbar-thumb,
+#integration-skills-list::-webkit-scrollbar-thumb,
+#integration-tools-list::-webkit-scrollbar-thumb,
+#integration-mcp-list::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background);
+	border-radius: 3px;
+}
+
+.integration-content::-webkit-scrollbar-thumb:hover,
+#integration-skills-list::-webkit-scrollbar-thumb:hover,
+#integration-tools-list::-webkit-scrollbar-thumb:hover,
+#integration-mcp-list::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+/* ─── MCP Add Panel (inside Integration View) ─────────────────────────────────── */
+
+.mcp-add-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	padding: 12px;
+}
+
+.mcp-add-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.mcp-add-header h4 {
+	margin: 0;
+	font-size: 14px;
+}
+
+.mcp-back-btn {
+	font-size: 12px;
+	margin-left: auto;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border: none;
+	border-radius: 4px;
+	padding: 4px 8px;
+	cursor: pointer;
+}
+
+.mcp-back-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.mcp-section-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-editor-foreground);
+	margin-bottom: 8px;
+}
+
+.mcp-preset-section,
+.mcp-custom-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.mcp-preset-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 8px;
+}
+
+.mcp-preset-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+}
+
+.mcp-preset-card:hover {
+	background: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.mcp-preset-name {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-editor-foreground);
+}
+
+.mcp-preset-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.mcp-preset-transport {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.mcp-preset-env {
+	font-size: 10px;
+	color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.mcp-input {
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	outline: none;
+	box-sizing: border-box;
+	font-family: inherit;
+}
+
+.mcp-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.mcp-add-custom-btn {
+	align-self: flex-start;
+	padding: 6px 14px;
+	font-size: 12px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.mcp-add-custom-btn:hover {
+	background: var(--vscode-button-hoverBackground);
 }
 
 .board-card-title {

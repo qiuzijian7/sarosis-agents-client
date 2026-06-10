@@ -64,11 +64,9 @@ import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
 	AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
-	AGENT_STUDIO_SKILLS_VIEW_ID,
 	AGENT_STUDIO_TASKS_VIEW_ID,
 	AGENT_STUDIO_SCHEDULE_VIEW_ID,
-	AGENT_STUDIO_TOOLS_VIEW_ID,
-	AGENT_STUDIO_MCP_VIEW_ID,
+	AGENT_STUDIO_INTEGRATION_VIEW_ID,
 	AGENT_STUDIO_SEARCH_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
@@ -131,19 +129,23 @@ import { AgentMarketEditorPane } from './agentMarketEditorPane.js';
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
 import { AgentSettingsEditorPane } from './agentSettingsEditorPane.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
+import { McpServerEditorPane } from './mcpServerEditorPane.js';
+import { McpServerEditorInput } from './mcpServerEditorInput.js';
+import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
+import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
+import { SkillMarketEditorPane } from './skillMarketEditorPane.js';
+import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { WorkspaceViewPane } from './views/workspaceView.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
-import { SkillsViewPane } from './views/skillsView.js';
 import { TasksViewPane } from './views/tasksView.js';
 import { ScheduleViewPane } from './views/scheduleView.js';
-import { ToolsViewPane } from './views/toolsView.js';
+import { IntegrationViewPane } from './views/integrationView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
 import { HealthMonitorViewPane } from './views/healthMonitorView.js';
-import { McpViewPane } from './views/mcpView.js';
 import { EvolutionViewPane } from './views/evolutionView.js';
 import { EvolutionDetailEditorPane } from './evolutionDetailEditorPane.js';
 import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
@@ -182,11 +184,9 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 // Toolbar icons
 const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.repo, localize('workspaceIcon', "Workspace"));
 const presetAgentIcon = registerIcon('agent-studio-preset-agent', Codicon.robot, localize('presetAgentIcon', "Preset Agent"));
-const skillsIcon = registerIcon('agent-studio-skills', Codicon.lightbulb, localize('skillsIcon', "Skills"));
 const tasksIcon = registerIcon('agent-studio-tasks', Codicon.tasklist, localize('tasksIcon', "Tasks"));
 const scheduleIcon = registerIcon('agent-studio-schedule', Codicon.calendar, localize('scheduleIcon', "Schedule"));
-const toolsIcon = registerIcon('agent-studio-tools', Codicon.tools, localize('toolsIcon', "Tools"));
-const mcpIcon = registerIcon('agent-studio-mcp', Codicon.plug, localize('mcpIcon', "MCP"));
+const integrationIcon = registerIcon('agent-studio-integration', Codicon.extensions, localize('integrationIcon', "Integration"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
 const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
@@ -592,6 +592,48 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(AgentSettingsEditorInput)
+	]
+);
+
+// Register McpServerEditorPane so that the MCP Server management page opens
+// in the editor area. Triggered by clicking "+ Manage Servers" in the
+// Integration sidebar view's MCP tab.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		McpServerEditorPane,
+		McpServerEditorPane.ID,
+		localize('mcpServerEditor', "MCP Servers"),
+	),
+	[
+		new SyncDescriptor(McpServerEditorInput)
+	]
+);
+
+// Register McpDetailEditorPane — single-MCP detail page (icon, intro, usage
+// guide, tools, install/delete button). Triggered by clicking an MCP item in
+// the MCP Servers list page or the Integration sidebar's MCP tab.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		McpDetailEditorPane,
+		McpDetailEditorPane.ID,
+		localize('mcpDetailEditor', "MCP Server Detail"),
+	),
+	[
+		new SyncDescriptor(McpDetailEditorInput)
+	]
+);
+
+// Register SkillMarketEditorPane so that the Skill Marketplace page opens
+// in the editor area. Triggered by clicking "+ Install" in the Integration
+// sidebar view's Skill tab.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		SkillMarketEditorPane,
+		SkillMarketEditorPane.ID,
+		localize('skillMarketEditor', "Skill Marketplace"),
+	),
+	[
+		new SyncDescriptor(SkillMarketEditorInput)
 	]
 );
 
@@ -1369,7 +1411,7 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 		const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry);
 		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
 
-		// --- ActivityBar icons (workspace → search → sourcecontrol → tasks → agents → workflow → skills → tools → mcp → plugins) ---
+		// --- ActivityBar icons (workspace → search → sourcecontrol → tasks → agents → workflow → integration → plugins) ---
 
 		// 1. Workspace (order: 10)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
@@ -1423,95 +1465,75 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: WorkflowViewPane,
 		});
 
-		// 6. Skills (order: 70)
+		// 6. Integration (Skills + Tools + MCP, order: 70)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.skills',
-			title: localize2('agentStudio.skills.title', "Skills"),
-			icon: skillsIcon,
-			viewId: AGENT_STUDIO_SKILLS_VIEW_ID,
+			id: 'agentStudio.integration',
+			title: localize2('agentStudio.integration.title', "Integration"),
+			icon: integrationIcon,
+			viewId: AGENT_STUDIO_INTEGRATION_VIEW_ID,
 			order: 70,
-			viewCtor: SkillsViewPane,
+			viewCtor: IntegrationViewPane,
 		});
 
-		// 7. Tools (order: 80)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.tools',
-			title: localize2('agentStudio.tools.title', "Tools"),
-			icon: toolsIcon,
-			viewId: AGENT_STUDIO_TOOLS_VIEW_ID,
-			order: 80,
-			viewCtor: ToolsViewPane,
-		});
-
-		// 8. MCP (order: 90)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.mcp',
-			title: localize2('agentStudio.mcp.title', "MCP"),
-			icon: mcpIcon,
-			viewId: AGENT_STUDIO_MCP_VIEW_ID,
-			order: 90,
-			viewCtor: McpViewPane,
-		});
-
-		// 9. Plugins (order: 100)
+		// 7. Plugins (order: 80)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.plugins',
 			title: localize2('agentStudio.plugins.title', "Plugins"),
 			icon: pluginsIcon,
 			viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
-			order: 100,
+			order: 80,
 			viewCtor: PluginsViewPane,
 		});
 
 		// --- Remaining icons (after Plugins) ---
 
-		// Schedule (order: 110)
+		// Schedule (order: 90)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.schedule',
 			title: localize2('agentStudio.schedule.title', "Schedule"),
 			icon: scheduleIcon,
 			viewId: AGENT_STUDIO_SCHEDULE_VIEW_ID,
-			order: 110,
+			order: 90,
 			viewCtor: ScheduleViewPane,
 		});
 
-		// Channel (order: 120)
+		// Channel (order: 100)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.channel',
 			title: localize2('agentStudio.channel.title', "Channel"),
 			icon: channelIcon,
 			viewId: AGENT_STUDIO_CHANNEL_VIEW_ID,
-			order: 120,
+			order: 100,
 			viewCtor: ChannelViewPane,
 		});
 
-		// Wiki (order: 130)
+		// Wiki (order: 110)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.wiki',
 			title: localize2('agentStudio.wiki.title', "Wiki"),
 			icon: wikiIcon,
 			viewId: AGENT_STUDIO_WIKI_VIEW_ID,
-			order: 130,
+			order: 110,
 			viewCtor: WikiViewPane,
 		});
 
-		// Health Monitor (order: 140)
+		// Health Monitor (order: 120)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.healthMonitor',
 			title: localize2('agentStudio.healthMonitor.title', "Health Monitor"),
 			icon: Codicon.pulse,
 			viewId: AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
-			order: 140,
+			order: 120,
 			viewCtor: HealthMonitorViewPane,
 		});
 
-		// Self-Evolution (order: 150)
+		// Self-Evolution (order: 130)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.evolution',
 			title: localize2('agentStudio.evolution.title', "Self-Evolution"),
 			icon: evolutionIcon,
 			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
-			order: 150,
+			order: 130,
 			viewCtor: EvolutionViewPane,
 		});
 

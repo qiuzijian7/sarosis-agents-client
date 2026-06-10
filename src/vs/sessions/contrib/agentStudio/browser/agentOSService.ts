@@ -1021,17 +1021,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			//   - 不添加到 messages 历史中的 tool 消息（服务端已将结果融入后续文本）
 			//   - 标记 endedToolIds 避免孤儿检测重复发送
 			//
-			// [Sarosis] Known model providers (Knot AG-UI) may not set serverExecuted
-			// on every tool_call delta. When running in direct model mode (active
-			// model explicitly selected), ALL tool calls are server-executed by
-			// definition — the model provider handles tool execution server-side.
-			// We check _activeSelection instead of getActiveExecutionProvider()
-			// because an execution provider may be registered independently.
-			const isDirectMode = !!this._activeSelection?.modelId;
+			// [Sarosis] Server-executed tool detection:
+			// 由 IModelProvider.isServerSideProvider 决定（不再硬编码 providerId）。
+			// - Knot AG-UI: provider 内部封装了完整 agent 循环，chat() 流中
+			//   包含 tool execution + response → isServerSideProvider = true。
+			// - CodeBuddy API: 仅返回 tool call，需客户端本地执行 → false。
+			// - 其他 BYOK provider: 默认 false。
+			// - Individual tool calls may also carry explicit tc.serverExecuted flag.
+			//
+			// 🔧 2026-06-10 修复：原来的 isDirectMode 将所有直连模式的工具都视为
+			// server-executed，导致 CodeBuddy API 返回的工具调用被跳过，agent loop
+			// 一轮即结束（用户反馈："发一条消息就结束了"）。
+			// 改为读取 provider 自身的 isServerSideProvider 属性。
+			const activeProvider = this._getActiveModelProvider();
+			const isServerSideProvider = activeProvider?.isServerSideProvider === true;
 			const serverExecutedCalls = effectiveToolCalls.filter(tc =>
-				tc.serverExecuted === true || isDirectMode
+				tc.serverExecuted === true || isServerSideProvider
 			);
-			const localExecutedCalls = isDirectMode
+			const localExecutedCalls = isServerSideProvider
 				? []
 				: effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
 

@@ -91,6 +91,7 @@ export const AGENT_STUDIO_TASKS_VIEW_ID = 'agentStudio.tasksView';
 export const AGENT_STUDIO_SCHEDULE_VIEW_ID = 'agentStudio.scheduleView';
 export const AGENT_STUDIO_TOOLS_VIEW_ID = 'agentStudio.toolsView';
 export const AGENT_STUDIO_MCP_VIEW_ID = 'agentStudio.mcpView';
+export const AGENT_STUDIO_INTEGRATION_VIEW_ID = 'agentStudio.integrationView';
 export const AGENT_STUDIO_CHANGES_VIEW_ID = 'agentStudio.changesView';
 export const AGENT_STUDIO_SEARCH_VIEW_ID = 'agentStudio.searchView';
 export const AGENT_STUDIO_PLUGINS_VIEW_ID = 'agentStudio.pluginsView';

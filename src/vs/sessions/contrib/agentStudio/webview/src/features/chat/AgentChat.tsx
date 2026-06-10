@@ -261,7 +261,7 @@ export function AgentChat(): React.ReactElement {
 	}, [isLoading]);
 
 	// Auto-scroll to bottom: instant after history load, smooth for new messages/streaming.
-	// Only auto-scroll if user is already at (or near) the bottom.
+	// Only auto-scroll if user hasn't manually scrolled away (isAtBottomRef tracks this).
 	useLayoutEffect(() => {
 		const el = chatMessagesRef.current;
 		if (!el) { return; }
@@ -274,12 +274,8 @@ export function AgentChat(): React.ReactElement {
 			wasLoadingRef.current = true; // ensures instant scroll when messages load
 		}
 
-		const THRESHOLD = 80;
-		const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-		const atBottom = distFromBottom < THRESHOLD;
-
 		// When loading (agent switch or history load), always scroll to bottom
-		// regardless of current scroll position. Otherwise only scroll if already near bottom.
+		// regardless of current scroll position.
 		if (wasLoadingRef.current) {
 			isAtBottomRef.current = true;
 			setShowScrollBtn(false);
@@ -288,36 +284,89 @@ export function AgentChat(): React.ReactElement {
 			return;
 		}
 
-		isAtBottomRef.current = atBottom;
-		updateScrollDownButton(atBottom);
-		if (!atBottom) { return; }
+		// Only auto-scroll if user is at (or near) the bottom.
+		// isAtBottomRef is the canonical source — managed by scroll/wheel/touch handlers.
+		if (!isAtBottomRef.current) { return; }
+
+		// Verify the DOM confirms we're at bottom (belt-and-suspenders)
+		const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+		if (distFromBottom >= 80) {
+			isAtBottomRef.current = false;
+			updateScrollDownButton(false);
+			return;
+		}
+
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 	}, [messages, streamState.textBuffer, streamState.thinkingBuffer, streamState.toolCalls, updateScrollDownButton, activeAgentId]);
 
-	// Listen to scroll events on the message list — mirrors VS Code's onDidScroll handler.
-	// This is the sole authority for button visibility (just like VS Code).
-	// IMPORTANT: activeAgentId in deps so listener re-binds when agent changes
-	// (on first mount the ref may be null if no agent is selected yet).
+	// ── 智能自动滚动：监听 scroll + wheel 事件 ─────────────────────
+	// 规则：
+	//   1. 用户滚轮向上滚动 → 立即解除自动滚动，显示"回到底部"按钮
+	//   2. 用户手动滚动到底部 → 恢复自动滚动
+	//   3. 点击"回到底部"按钮 → 恢复自动滚动并滚动到底部
+	//   4. LLM 输出时：仅在已到底部的情况下自动滚动
 	useEffect(() => {
 		const el = chatMessagesRef.current;
 		if (!el) { return; }
 		const THRESHOLD = 80; // px from bottom to consider "at bottom"
-		const handleScroll = () => {
+
+		const checkAtBottom = () => {
 			const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-			const atBottom = distFromBottom < THRESHOLD;
-			isAtBottomRef.current = atBottom;
+			return distFromBottom < THRESHOLD;
+		};
+
+		const handleScroll = () => {
+			const atBottom = checkAtBottom();
+			if (atBottom) {
+				// 用户滚到了底部 → 恢复自动滚动
+				isAtBottomRef.current = true;
+			}
 			updateScrollDownButton(atBottom);
 		};
-		// Initialise once so the button shows if content already overflows.
+
+		const handleWheel = (e: WheelEvent) => {
+			// 只关心垂直滚动方向
+			if (Math.abs(e.deltaY) < 1) { return; }
+			if (e.deltaY < 0) {
+				// 向上滚动 → 用户主动查看历史，立即解除自动滚动
+				isAtBottomRef.current = false;
+				updateScrollDownButton(false);
+				// 取消正在进行的 smooth scrollIntoView 动画
+				el.scrollTop = el.scrollTop;
+			} else if (e.deltaY > 0) {
+				// 向下滚动 → 检查是否到了底部
+				// 使用 requestAnimationFrame 等 scroll 事件更新后再判断
+				requestAnimationFrame(() => {
+					if (checkAtBottom()) {
+						isAtBottomRef.current = true;
+						updateScrollDownButton(true);
+					}
+				});
+			}
+		};
+
+		// 触摸设备：用户触碰消息区域时解除自动滚动
+		const handleTouchStart = () => {
+			isAtBottomRef.current = false;
+			updateScrollDownButton(false);
+		};
+
+		// Initialise
 		handleScroll();
 		el.addEventListener('scroll', handleScroll, { passive: true });
-		return () => { el.removeEventListener('scroll', handleScroll); };
+		el.addEventListener('wheel', handleWheel, { passive: true });
+		el.addEventListener('touchstart', handleTouchStart, { passive: true });
+		return () => {
+			el.removeEventListener('scroll', handleScroll);
+			el.removeEventListener('wheel', handleWheel);
+			el.removeEventListener('touchstart', handleTouchStart);
+		};
 	}, [updateScrollDownButton, activeAgentId]);
 
-	// Scroll to bottom handler — mirrors VS Code's scrollDownButton.onDidClick
+	// Scroll to bottom handler — re-enables auto-scroll and scrolls to bottom
 	const handleScrollToBottom = useCallback(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-		// Immediately mark as at-bottom and hide button
+		// Re-enable auto-scroll
 		isAtBottomRef.current = true;
 		setShowScrollBtn(false);
 	}, []);
@@ -333,18 +382,6 @@ export function AgentChat(): React.ReactElement {
 			(a.role && a.role.toLowerCase().includes(filter))
 		);
 	}, [agents, dropdownFilter]);
-
-	// Rename state for chat header
-	const [isEditingChatName, setIsEditingChatName] = useState(false);
-	const [editChatName, setEditChatName] = useState('');
-	const chatNameInputRef = useRef<HTMLInputElement>(null);
-
-	useEffect(() => {
-		if (isEditingChatName && chatNameInputRef.current) {
-			chatNameInputRef.current.focus();
-			chatNameInputRef.current.select();
-		}
-	}, [isEditingChatName]);
 
 	// Close agent dropdown on outside click
 	useEffect(() => {
@@ -469,35 +506,6 @@ export function AgentChat(): React.ReactElement {
 		}
 		// If status changed to something else (e.g. error), don't add messages.
 	}, [orchestrationPlans]);
-
-	const handleChatNameDoubleClick = useCallback(() => {
-		if (!activeAgent) { return; }
-		setEditChatName(activeAgent.name);
-		setIsEditingChatName(true);
-	}, [activeAgent]);
-
-	const handleChatNameCommit = useCallback(async () => {
-		const trimmed = editChatName.trim();
-		if (activeAgent && trimmed && trimmed !== activeAgent.name) {
-			try {
-				await useAgentStore.getState().updateAgent(activeAgent.id, { name: trimmed });
-			} catch (err) {
-				console.error('[AgentChat] rename failed:', err);
-				setEditChatName(activeAgent.name);
-			}
-		}
-		setIsEditingChatName(false);
-	}, [activeAgent, editChatName]);
-
-	const handleChatNameKeyDown = useCallback((e: React.KeyboardEvent) => {
-		if (e.key === 'Enter') {
-			e.preventDefault();
-			handleChatNameCommit();
-		} else if (e.key === 'Escape') {
-			setEditChatName(activeAgent?.name || '');
-			setIsEditingChatName(false);
-		}
-	}, [handleChatNameCommit, activeAgent]);
 
 	const handleSend = useCallback((content: string, attachments?: Array<{
 		id: string;
@@ -717,8 +725,11 @@ export function AgentChat(): React.ReactElement {
 					<div
 						className={`chat-header-agent-selector ${dropdownOpen ? 'open' : ''}`}
 						ref={dropdownTriggerRef}
-						onClick={() => { if (!isEditingChatName) { setDropdownOpen(!dropdownOpen); } }}
+						onClick={() => { setDropdownOpen(!dropdownOpen); }}
 					>
+						<svg className="chat-header-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="6 9 12 15 18 9" />
+						</svg>
 						<img
 							src={activeAgent.avatar
 								|| (activeAgent.avatarStyle && activeAgent.avatarSeed
@@ -728,28 +739,12 @@ export function AgentChat(): React.ReactElement {
 							className="chat-header-avatar"
 						/>
 						<div className="chat-header-info">
-							{isEditingChatName ? (
-								<input
-									ref={chatNameInputRef}
-									className="chat-header-name-input"
-									value={editChatName}
-									onChange={(e) => setEditChatName(e.target.value)}
-									onBlur={handleChatNameCommit}
-									onKeyDown={handleChatNameKeyDown}
-									onClick={(e) => e.stopPropagation()}
-									maxLength={50}
-								/>
-							) : (
-								<span className="chat-header-name" onDoubleClick={handleChatNameDoubleClick} title="双击重命名">{activeAgent.name}</span>
-							)}
+							<span className="chat-header-name">{activeAgent.name}</span>
 							<span className="chat-header-role">
 								{activeAgent.role}
 								<span className={`chat-header-status ${statusClass}`}>{statusText}</span>
 							</span>
 						</div>
-						<svg className="chat-header-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-							<polyline points="6 9 12 15 18 9" />
-						</svg>
 					</div>
 
 					{/* Agent dropdown */}

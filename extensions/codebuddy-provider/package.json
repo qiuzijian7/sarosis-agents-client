@@ -140,7 +140,12 @@
 				"description": "登录状态",
 				"scope": "application",
 				"markdownDescription": "登录状态\n\n[点击登录](command:codebuddy.login)  [点击登出](command:codebuddy.logout)\n\n登录后 token、user、enterpriseId 等字段会自动填充。"
-			}
+			},
+		"codebuddy.isServerSideProvider": {
+			"type": "boolean",
+			"default": false,
+			"description": "标识此 provider 是否在服务端完成 agent 循环。设为 true 时，AgentOS 不会在本地执行工具调用。CodeBuddy API 仅返回 tool call，需客户端本地执行，默认为 false。"
+		}
 		}
 	},
 	"commands": [

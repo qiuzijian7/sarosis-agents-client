@@ -287,30 +287,24 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		try {
 			const candidates: URI[] = [];
 
-			// 候选1：通过 appRoot 的父目录（项目根目录）拼接 resources/.agents/skills
+			// 候选1（最稳）：FileAccess.asFileUri —— 基于 vs 源码根目录推算 resources 兄弟目录
+			// 适用所有运行模式（dev / electron-packaged / browser），与 install 路径解析保持一致
+			try {
+				const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/skills');
+				this.logService.info(`[SkillRegistry] candidate1 (FileAccess): ${uri1.toString()}`);
+				candidates.push(uri1);
+			} catch (e) {
+				this.logService.info(`[SkillRegistry] candidate1 failed: ${e}`);
+			}
+
+			// 候选2：appRoot 直接拼 resources（Electron dev 模式 appRoot ≡ projectRoot）
 			let appRoot: string | undefined;
 			try {
 				appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
 				this.logService.info(`[SkillRegistry] appRoot: ${appRoot}`);
 				if (appRoot) {
-					// appRoot 是 out/ 或 out-build/ 目录，需要往上一级得到项目根目录
-					const projectRoot = path.dirname(appRoot);
-					const uri1 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'skills');
-					this.logService.info(`[SkillRegistry] candidate1 (projectRoot/resources): ${uri1.toString()}`);
-					candidates.push(uri1);
-				}
-			} catch (e) {
-				this.logService.info(`[SkillRegistry] candidate1 failed: ${e}`);
-			}
-
-			// 候选2：开发环境回退到 projectRoot/resources/.agents/skills
-			// 在开发环境中，appRoot 可能指向 out/，但技能文件在 projectRoot/resources/.agents/skills
-			try {
-				if (appRoot) {
-					const projectRoot = path.dirname(appRoot);
-					const uri2 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'skills');
-					this.logService.info(`[SkillRegistry] candidate2 (projectRoot/resources): ${uri2.toString()}`);
-					// 避免重复添加相同的 URI
+					const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'skills');
+					this.logService.info(`[SkillRegistry] candidate2 (appRoot/resources): ${uri2.toString()}`);
 					if (!candidates.some(c => c.toString() === uri2.toString())) {
 						candidates.push(uri2);
 					}
@@ -319,12 +313,15 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				this.logService.info(`[SkillRegistry] candidate2 failed: ${e}`);
 			}
 
-			// 候选3：通过 FileAccess.asFileUri 计算项目根目录（浏览器环境兼容）
+			// 候选3：打包模式下 appRoot 可能是 out/ 子目录，需要往上一级
 			try {
-				const uri3 = FileAccess.asFileUri('vs/../../resources/.agents/skills');
-				this.logService.info(`[SkillRegistry] candidate3 (FileAccess): ${uri3.toString()}`);
-				if (!candidates.some(c => c.toString() === uri3.toString())) {
-					candidates.push(uri3);
+				if (appRoot) {
+					const projectRoot = path.dirname(appRoot);
+					const uri3 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'skills');
+					this.logService.info(`[SkillRegistry] candidate3 (dirname(appRoot)/resources): ${uri3.toString()}`);
+					if (!candidates.some(c => c.toString() === uri3.toString())) {
+						candidates.push(uri3);
+					}
 				}
 			} catch (e) {
 				this.logService.info(`[SkillRegistry] candidate3 failed: ${e}`);
@@ -336,21 +333,21 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			);
 			this.logService.info(`[SkillRegistry] unique candidates: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
 
-			let scanned = false;
+			// 不再 break —— 扫描所有存在的候选目录，避免漏掉错位安装的 skill
+			let scannedAny = false;
 			for (const builtinDir of uniqueCandidates) {
 				this.logService.info(`[SkillRegistry] trying builtin dir: ${builtinDir.toString()}`);
 				try {
 					await this.fileService.stat(builtinDir);
 					this.logService.info(`[SkillRegistry] stat OK, scanning builtin skills: ${builtinDir.toString()}`);
 					await this._scanFolder(builtinDir, 'builtin');
-					this.logService.info(`[SkillRegistry] after builtin scan: ${this._skills.size} skills`);
-					scanned = true;
-					break;
+					this.logService.info(`[SkillRegistry] after builtin scan (${builtinDir.toString()}): ${this._skills.size} skills`);
+					scannedAny = true;
 				} catch (e) {
 					this.logService.info(`[SkillRegistry] builtin dir not found or scan failed: ${builtinDir.toString()}, error: ${e}`);
 				}
 			}
-			if (!scanned) {
+			if (!scannedAny) {
 				this.logService.info(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
 			}
 		} catch (err) {

@@ -3159,8 +3159,8 @@ html, body, #root {
 }
 
 .chat-header-avatar {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
   flex-shrink: 0;
@@ -3169,21 +3169,18 @@ html, body, #root {
 .chat-header-info {
   display: flex;
   flex-direction: column;
-  flex: 1;
   min-width: 0;
+  gap: 1px;
+  overflow: hidden;
 }
 
 .chat-header-name {
   font-weight: 600;
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: default;
-}
-
-.chat-header-name:hover {
-  cursor: text;
+  line-height: 1.2;
 }
 
 .chat-header-name-input {
@@ -3201,14 +3198,15 @@ html, body, #root {
 }
 
 .chat-header-role {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--vscode-descriptionForeground);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+  line-height: 1.1;
 }
 
 /* Status badge in header */
@@ -3265,6 +3263,7 @@ html, body, #root {
   display: flex;
   gap: 2px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .chat-header-btn {
@@ -3289,16 +3288,16 @@ html, body, #root {
 /* ─── Agent Selector Dropdown ────────────────────────────────────────────── */
 
 .chat-header-agent-selector {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   cursor: pointer;
-  padding: 2px 6px 2px 2px;
+  padding: 1px 4px 1px 3px;
   border-radius: 6px;
   transition: background-color 0.12s ease;
   user-select: none;
-  flex: 1;
-  min-width: 0;
+  width: max-content;
+  max-width: 240px;
 }
 
 .chat-header-agent-selector:hover {
@@ -3313,7 +3312,7 @@ html, body, #root {
   color: var(--vscode-descriptionForeground);
   transition: transform 0.2s ease;
   flex-shrink: 0;
-  margin-left: -2px;
+  margin-right: -2px;
 }
 
 .chat-header-agent-selector.open .chat-header-chevron {
@@ -3326,7 +3325,9 @@ html, body, #root {
   position: absolute;
   top: calc(100% - 2px);
   left: 8px;
-  right: 8px;
+  width: max-content;
+  min-width: 200px;
+  max-width: 320px;
   max-height: 280px;
   background-color: var(--as-bg-tertiary, var(--vscode-dropdown-background, #1e1e1e));
   border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
@@ -3931,10 +3932,51 @@ html, body, #root {
   background: var(--as-bg-secondary, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)));
   flex-shrink: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
   /* Ensure the composer never collapses below a usable height when the
      VS Code panel is resized. 130px ≈ textarea-min(52) + toolbar(~36) +
      hint(~16) + padding/margins. */
   min-height: 130px;
+}
+
+/* ── 输入区域顶部分割线拖动条 ────────────────────────────────── */
+/* 位于消息列表与输入区域之间，拖动可调整整个输入区域的高度 */
+
+.chat-input-resizer {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  z-index: 10;
+  transition: background-color 0.15s ease;
+}
+
+.chat-input-resizer:hover {
+  background: var(--as-border-focus, rgba(124, 185, 255, 0.1));
+}
+
+.chat-input-resizer:active {
+  background: var(--as-border-focus, rgba(124, 185, 255, 0.18));
+}
+
+.chat-input-resizer-grip {
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-widget-border, rgba(128, 128, 128, 0.45));
+  opacity: 0.6;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.chat-input-resizer:hover .chat-input-resizer-grip {
+  opacity: 1;
+  background: var(--as-border-focus, rgba(124, 185, 255, 0.8));
 }
 
 /* 组合输入框容器 — 圆角卡片包裹 textarea + toolbar */
@@ -3947,6 +3989,8 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 .chat-composer-box:focus-within {
@@ -3982,6 +4026,7 @@ html, body, #root {
   gap: 6px;
   padding: 8px 12px 2px;
   align-items: flex-start;
+  flex-shrink: 0;
 }
 
 .chat-attachment-chip {
@@ -4094,10 +4139,9 @@ html, body, #root {
   outline: none;
   resize: none;
   line-height: 1.5;
-  /* 高度由 JS 控制（拖动条 / 自动撑高），上下限同步：min 60px / max 300px */
+  /* 弹性占满剩余空间，拖拽输入区域时自动撑开 */
+  flex: 1;
   min-height: 60px;
-  max-height: 300px;
-  height: 60px;
   border-radius: 16px 16px 0 0;
   font-family: inherit;
 }
@@ -4166,6 +4210,7 @@ html, body, #root {
   padding: 6px 8px 8px;
   gap: 4px;
   border-radius: 0 0 16px 16px;
+  flex-shrink: 0;
 }
 
 .chat-toolbar-left {
@@ -4818,6 +4863,7 @@ html, body, #root {
   font-size: 10px;
   color: var(--vscode-descriptionForeground);
   opacity: 0.5;
+  flex-shrink: 0;
 }
 
 /* ─── Animations ──────────────────────────────────────────────────────────── */

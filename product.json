@@ -1,6 +1,7 @@
 {
 	"nameShort": "VsSarosis",
 	"nameLong": "VsSarosis",
+	"version": "2.1.0",
 	"applicationName": "vssarosis",
 	"dataFolderName": ".vssarosis",
 	"sharedDataFolderName": ".vssarosis-shared",

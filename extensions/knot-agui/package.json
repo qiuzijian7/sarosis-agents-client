@@ -63,14 +63,14 @@
 				"knot.agents": {
 					"type": "array",
 					"default": [],
-					"markdownDescription": "Agent 列表，每项 `{ id, name, description?, models? }`。每个 agent 在模型选择器中显示为一个 Knot 模型。",
+					"markdownDescription": "Agent 列表，每项 `{ id, name, description?, models? }`。每个 agent 可配置自己支持的模型列表。",
 					"items": {
 						"type": "object",
 						"properties": {
 							"id": { "type": "string", "description": "Agent ID（用作 model id）" },
 							"name": { "type": "string", "description": "显示名称" },
 							"description": { "type": "string" },
-							"models": { "type": "array", "items": { "type": "string" } }
+							"models": { "type": "array", "items": { "type": "string" }, "description": "该 Agent 支持的模型列表" }
 						}
 					}
 				},
@@ -96,6 +96,11 @@
 				"type": "boolean",
 				"default": true,
 				"description": "启用流式响应。"
+			},
+			"knot.isServerSideProvider": {
+				"type": "boolean",
+				"default": true,
+				"description": "标识此 provider 是否在服务端完成 agent 循环（tool call → execution → response）。设为 true 时，AgentOS 不会在本地执行工具调用。"
 			}
 			}
 		},

@@ -201,8 +201,8 @@ export function isValidVersion(_inputVersion: string | INormalizedVersion, _inpu
 	}
 
 	if (majorBase > desiredMajorBase) {
-		// higher major version
-		return (!majorMustEqual);
+		// higher major version — in our fork, 2.x is compatible with 1.x extensions
+		return true;
 	}
 
 	// at this point, majorBase are equal

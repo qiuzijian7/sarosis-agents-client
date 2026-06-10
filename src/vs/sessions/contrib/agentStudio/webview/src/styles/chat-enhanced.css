@@ -990,6 +990,201 @@
 	font-size: 12px;
 }
 
+/* ── Skill Chips Bar ─────────────────────────────────────── */
+/* 技能芯片栏：位于 textarea 上方，显示用户通过 '/' 菜单选择的技能标签 */
+
+.skill-chips-bar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0 12px 8px 12px;
+	align-items: center;
+	flex-shrink: 0;
+}
+
+.skill-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px 3px 6px;
+	border-radius: 4px;
+	background-color: rgba(0, 127, 212, 0.15);
+	border: 1px solid rgba(0, 127, 212, 0.3);
+	color: var(--vscode-textLink-foreground, #3794ff);
+	font-size: 12px;
+	line-height: 1.4;
+	user-select: none;
+	transition: background-color 0.15s;
+}
+
+.skill-chip:hover {
+	background-color: rgba(0, 127, 212, 0.25);
+}
+
+.skill-chip-icon {
+	font-size: 11px;
+	opacity: 0.8;
+}
+
+.skill-chip-name {
+	font-weight: 500;
+}
+
+.skill-chip-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1px;
+	margin-left: 2px;
+	border: none;
+	border-radius: 3px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	opacity: 0.6;
+	transition: opacity 0.15s, background-color 0.15s;
+}
+
+.skill-chip-remove:hover {
+	opacity: 1;
+	background-color: rgba(0, 127, 212, 0.3);
+}
+
+/* ── Unified Slash Menu ──────────────────────────────────── */
+/* 输入框以 '/' 开头时显示的技能+命令统一菜单 */
+
+.slash-menu {
+	position: absolute;
+	bottom: 100%;
+	left: 0;
+	right: 0;
+	max-height: 320px;
+	overflow-y: auto;
+	background-color: var(--vscode-dropdown-background, #252526);
+	border: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+	border-radius: 6px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+	z-index: 1000;
+	margin-bottom: 4px;
+}
+
+.slash-menu-header {
+	padding: 8px 12px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #999);
+	border-bottom: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	position: sticky;
+	top: 0;
+	background-color: var(--vscode-dropdown-background, #252526);
+	z-index: 1;
+}
+
+.slash-menu-hint {
+	font-size: 10px;
+	font-weight: 400;
+	color: var(--vscode-descriptionForeground, #888);
+	font-family: monospace;
+}
+
+.slash-menu-item {
+	padding: 8px 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	transition: background-color 0.1s;
+}
+
+.slash-menu-item:hover {
+	background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.slash-menu-item.selected {
+	background-color: var(--vscode-list-activeSelectionBackground, #37373d);
+	color: var(--vscode-list-activeSelectionForeground, #fff);
+}
+
+.slash-menu-type-badge {
+	display: inline-block;
+	padding: 1px 6px;
+	border-radius: 3px;
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 1.6;
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+	flex-shrink: 0;
+}
+
+.slash-menu-item.skill-item .slash-menu-type-badge {
+	background-color: rgba(0, 212, 127, 0.15);
+	color: #4ec98b;
+	border: 1px solid rgba(0, 212, 127, 0.25);
+}
+
+.slash-menu-item.command-item .slash-menu-type-badge {
+	background-color: rgba(212, 167, 0, 0.15);
+	color: #e5c07b;
+	border: 1px solid rgba(212, 167, 0, 0.25);
+}
+
+.slash-menu-item.selected .slash-menu-type-badge {
+	/* Let selected state use its own colors */
+	opacity: 0.9;
+}
+
+.slash-menu-name {
+	font-weight: 500;
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.slash-menu-item.command-item .slash-menu-name {
+	color: var(--vscode-foreground, #ccc);
+	font-family: monospace;
+}
+
+.slash-menu-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-left: auto;
+	flex-shrink: 0;
+}
+
+.slash-menu-id {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-left: auto;
+	font-family: monospace;
+	flex-shrink: 0;
+}
+
+.slash-menu-separator {
+	padding: 6px 12px 2px;
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #777);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	border-top: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+	margin-top: 4px;
+}
+
+.slash-menu-empty {
+	padding: 16px 12px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground, #999);
+	font-size: 13px;
+}
+
 /* Ensure the composer box is positioned relatively for absolute-positioned menus */
 .chat-composer-box {
 	position: relative;

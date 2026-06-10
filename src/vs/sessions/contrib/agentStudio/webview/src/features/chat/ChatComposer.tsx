@@ -70,24 +70,33 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const userResizedHeightRef = useRef<number | null>(null);
 	// 拖动状态
 	const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null);
+	// 输入区域整体高度拖动状态
+	const inputAreaRef = useRef<HTMLDivElement>(null);
+	const inputAreaDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+	const userInputAreaHeightRef = useRef<number | null>(null);
 	const providerDropdownRef = useRef<HTMLDivElement>(null);
 	const agentDropdownRef = useRef<HTMLDivElement>(null);
 	const modelDropdownRef = useRef<HTMLDivElement>(null);
 	const modeDropdownRef = useRef<HTMLDivElement>(null);
 	const [showModeDropdown, setShowModeDropdown] = useState(false);
 
-	// 命令系统状态
-	const [showCommandMenu, setShowCommandMenu] = useState(false);
-	const [commandFilter, setCommandFilter] = useState('');
-	const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
-
-	// 技能菜单状态
-	const [showSkillMenu, setShowSkillMenu] = useState(false);
+	// ── 统一的 '/' 斜杠菜单 ──────────────────────────────────────
+	// 当输入框以 '/' 开头时，显示包含所有技能+命令的统一菜单
+	interface SlashMenuItem {
+		type: 'skill' | 'command' | 'separator';
+		id: string;
+		name: string;
+		description?: string;
+		icon?: string;
+	}
+	const [showSlashMenu, setShowSlashMenu] = useState(false);
+	const [slashFilter, setSlashFilter] = useState('');
+	const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
 	const [skills, setSkills] = useState<Array<{ id: string; name: string }>>([]);
-	const [skillFilter, setSkillFilter] = useState('');
-	const [selectedSkillIndex, setSelectedSkillIndex] = useState(0);
-	const skillMenuRef = useRef<HTMLDivElement>(null);
-	const commandMenuRef = useRef<HTMLDivElement>(null);
+	const slashMenuRef = useRef<HTMLDivElement>(null);
+
+	// 技能芯片：用户通过 '/' 菜单选择的技能会渲染为输入框上方的彩色标签
+	const [skillChips, setSkillChips] = useState<Array<{ id: string; name: string }>>([]);
 	const { activeAgentId, chatMode, setChatMode } = useChatStore();
 	const { agents } = useAgentStore();
 	const { providers, selection, selectProvider, openProviderSettings, authenticatedProviders: getAuthenticatedProviders, currentModelInfo } = useProviderStore();
@@ -292,6 +301,12 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		compactedBaseline,
 	]);
 
+	// ── 组件挂载时预加载技能列表 ──
+	useEffect(() => {
+		loadSkills();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	// 点击外部关闭下拉菜单
 	useEffect(() => {
 		const handleClickOutside = (e: MouseEvent) => {
@@ -308,14 +323,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			if (modeDropdownRef.current && !modeDropdownRef.current.contains(e.target as Node)) {
 				setShowModeDropdown(false);
 			}
-			// 命令菜单和技能菜单的点击外部关闭
-			if (commandMenuRef.current && !commandMenuRef.current.contains(e.target as Node)) {
-				setShowCommandMenu(false);
-				setCommandFilter('');
-			}
-			if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
-				setShowSkillMenu(false);
-				setSkillFilter('');
+			// 斜杠菜单的点击外部关闭
+			if (slashMenuRef.current && !slashMenuRef.current.contains(e.target as Node)) {
+				setShowSlashMenu(false);
+				setSlashFilter('');
 			}
 		};
 		document.addEventListener('mousedown', handleClickOutside);
@@ -387,44 +398,51 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 	// 关闭所有弹出菜单（定义在 handleSend 之前，避免 TDZ 错误）
 	const closeAllPopups = useCallback(() => {
-		setShowCommandMenu(false);
-		setShowSkillMenu(false);
+		setShowSlashMenu(false);
 		setShowProviderDropdown(false);
 		setShowAgentDropdown(false);
 		setShowModelDropdown(false);
 		setShowModeDropdown(false);
-		setCommandFilter('');
-		setSkillFilter('');
-		setSelectedCommandIndex(0);
-		setSelectedSkillIndex(0);
+		setSlashFilter('');
+		setSelectedSlashIndex(0);
 	}, []);
 
 	const handleSend = useCallback(() => {
-		if (!input.trim() && attachments.length === 0) return;
+		if (!input.trim() && attachments.length === 0 && skillChips.length === 0) return;
+
+		// 将技能芯片转换为 /skill <id> 前缀
+		let fullMessage = '';
+		for (const chip of skillChips) {
+			fullMessage += '/skill ' + chip.id + ' ';
+		}
+		fullMessage += input.trim();
+
 		// Plan 模式下：消息内容即为要编排的任务目标，直接触发任务编排流程
 		if (chatMode === 'plan' && onCommand) {
-			const goal = input.trim().replace(/^\/plan\s*/, ''); // 去掉可能手动输入的 /plan 前缀
+			const goal = fullMessage.replace(/^\/plan\s*/, ''); // 去掉可能手动输入的 /plan 前缀
 			closeAllPopups();
 			onCommand('plan', goal);
 			setInput('');
+			setSkillChips([]);
 			if (textareaRef.current) {
-				const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
-				textareaRef.current.style.height = `${preferred}px`;
+				textareaRef.current.style.minHeight = `${TEXTAREA_DEFAULT_HEIGHT}px`;
+				userResizedHeightRef.current = null;
 			}
 			return;
 		}
 		// 发送前关闭所有弹出菜单
 		closeAllPopups();
 		const payload = toPayload();
-		onSend(input.trim(), payload.length > 0 ? payload : undefined);
+		onSend(fullMessage, payload.length > 0 ? payload : undefined);
 		setInput('');
+		setSkillChips([]);
 		clearAttachments();
 		if (textareaRef.current) {
-			// 发送后清空内容：若用户手动调整过则保留其偏好高度，否则回到默认。
-			const preferred = userResizedHeightRef.current ?? TEXTAREA_DEFAULT_HEIGHT;
-			textareaRef.current.style.height = `${preferred}px`;
+			// 发送后清空内容：重置为默认最小高度
+			textareaRef.current.style.minHeight = `${TEXTAREA_DEFAULT_HEIGHT}px`;
+			userResizedHeightRef.current = null;
 		}
-	}, [input, attachments.length, onSend, onCommand, closeAllPopups, chatMode, toPayload, clearAttachments]);
+	}, [input, attachments.length, skillChips.length, onSend, onCommand, closeAllPopups, chatMode, toPayload, clearAttachments, skillChips]);
 
 	// ── 附件文件选择 ──────────────────────────────────────────────
 	const handleAttachmentClick = useCallback(() => {
@@ -498,18 +516,17 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
 		if (textarea) {
-			// 自动撑高：以用户偏好高度（若有）为下限，MAX 为上限。
+			// 使用 min-height 而非 height，让 flex:1 在输入区域变高时自然撑满。
+			// scrollHeight 确保内容不会溢出，flex 确保占满可用空间。
+			textarea.style.minHeight = 'auto'; // 先重置以获取准确 scrollHeight
 			const minBase = userResizedHeightRef.current ?? TEXTAREA_MIN_HEIGHT;
-			textarea.style.height = 'auto';
-			const next = Math.min(
-				Math.max(textarea.scrollHeight, minBase),
-				TEXTAREA_MAX_HEIGHT,
-			);
-			textarea.style.height = `${next}px`;
+			const contentHeight = textarea.scrollHeight;
+			const next = Math.min(Math.max(contentHeight, minBase), 800);
+			textarea.style.minHeight = `${next}px`;
 		}
 	}, []);
 
-	// 拖动条：用户按住向上/向下拖动改变 textarea 高度
+	// 拖动条：用户按住向上/向下拖动改变 textarea 最小高度
 	const handleResizerMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
 		const textarea = textareaRef.current;
 		if (!textarea) { return; }
@@ -524,13 +541,12 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		const handleMove = (ev: MouseEvent) => {
 			const ds = dragStateRef.current;
 			if (!ds || !textareaRef.current) { return; }
-			// resizer 在 textarea 上方：向上拖（clientY 减小）→ 高度增加
 			const delta = ds.startY - ev.clientY;
 			const next = Math.min(
 				Math.max(ds.startHeight + delta, TEXTAREA_MIN_HEIGHT),
-				TEXTAREA_MAX_HEIGHT,
+				800, // 移除旧 300px 上限，拖大区域时允许 textarea 更高
 			);
-			textareaRef.current.style.height = `${next}px`;
+			textareaRef.current.style.minHeight = `${next}px`;
 			userResizedHeightRef.current = next;
 		};
 		const handleUp = () => {
@@ -544,47 +560,66 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		document.addEventListener('mouseup', handleUp);
 	}, []);
 
-	// 命令系统：定义可用命令（Plan 模式通过模式选择器触发，不再需要 /plan 命令）
-	const commands = useMemo(() => {
-		const items = [
-			{ id: 'skill', name: '技能', description: '选择并使用技能', icon: '🛠️' },
-			{ id: 'help', name: '帮助', description: '显示帮助信息', icon: '❓' },
-			{ id: 'clear', name: '清除', description: '清除聊天记录', icon: '🗑️' },
-		];
-		return items;
+	// 输入区域整体高度拖动：拖动顶部分割线改变输入区域高度
+	const INPUT_AREA_MIN = 100;
+	const INPUT_AREA_MAX = 500;
+	const handleInputAreaResizerMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+		const inputArea = inputAreaRef.current;
+		if (!inputArea) { return; }
+		e.preventDefault();
+		e.stopPropagation();
+		inputAreaDragRef.current = {
+			startY: e.clientY,
+			startHeight: inputArea.offsetHeight,
+		};
+		document.body.style.cursor = 'ns-resize';
+		document.body.style.userSelect = 'none';
+		const handleMove = (ev: MouseEvent) => {
+			const ds = inputAreaDragRef.current;
+			if (!ds || !inputAreaRef.current) { return; }
+			// 向上拖（clientY 减小）→ 区域高度增加
+			const delta = ds.startY - ev.clientY;
+			const next = Math.min(
+				Math.max(ds.startHeight + delta, INPUT_AREA_MIN),
+				INPUT_AREA_MAX,
+			);
+			inputAreaRef.current.style.height = `${next}px`;
+			inputAreaRef.current.style.minHeight = `${next}px`;
+			userInputAreaHeightRef.current = next;
+		};
+		const handleUp = () => {
+			inputAreaDragRef.current = null;
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+			document.removeEventListener('mousemove', handleMove);
+			document.removeEventListener('mouseup', handleUp);
+		};
+		document.addEventListener('mousemove', handleMove);
+		document.addEventListener('mouseup', handleUp);
 	}, []);
 
-	// 过滤命令列表
-	const filteredCommands = useMemo(() => {
-		if (!commandFilter.trim()) return commands;
-		const filter = commandFilter.toLowerCase();
-		return commands.filter(cmd =>
-			cmd && cmd.id && cmd.name && (cmd.id.toLowerCase().includes(filter) ||
-			cmd.name.toLowerCase().includes(filter))
-		);
-	}, [commands, commandFilter]);
+	// 统一的斜杠菜单项：仅技能（不再包含命令 /help /clear）
+	const slashMenuItems = useMemo((): SlashMenuItem[] => {
+		return skills.map(s => ({ type: 'skill', id: s.id, name: s.name }));
+	}, [skills]);
 
-	// 过滤技能列表
-	const filteredSkills = useMemo(() => {
-		if (!skillFilter.trim()) return skills;
-		const filter = skillFilter.toLowerCase();
-		return skills.filter(skill =>
-			skill && skill.id && skill.name && (skill.id.toLowerCase().includes(filter) ||
-			skill.name.toLowerCase().includes(filter))
-		);
-	}, [skills, skillFilter]);
+	// 过滤统一的斜杠菜单项
+	const filteredSlashItems = useMemo(() => {
+		if (!slashFilter.trim()) return slashMenuItems;
+		const f = slashFilter.toLowerCase();
+		return slashMenuItems.filter(item => {
+			if (item.type === 'separator') return false;
+			return item.id.toLowerCase().includes(f) || item.name.toLowerCase().includes(f);
+		});
+	}, [slashMenuItems, slashFilter]);
 
 	// 加载技能列表
 	const loadSkills = useCallback(async () => {
-		console.error('[ChatComposer] loadSkills() called');
 		try {
 			const result = await sendRequest<{}, Array<{ id: string; name: string }>>('skills.list', {});
-			console.error('[ChatComposer] loadSkills() result:', JSON.stringify(result)?.slice(0, 500));
 			if (result && Array.isArray(result)) {
-				console.error(`[ChatComposer] loadSkills() setting ${result.length} skills`);
 				setSkills(result);
 			} else {
-				console.error('[ChatComposer] loadSkills() result is not an array or is falsy:', typeof result, result);
 				setSkills([]);
 			}
 		} catch (error) {
@@ -593,145 +628,112 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		}
 	}, []);
 
-	// 处理输入框变化：检测 '/' 输入以显示命令菜单，并更新过滤条件
+	// 处理输入框变化：检测 '/' 开头以显示统一的斜杠菜单（技能+命令），并更新过滤条件
 	const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		const value = e.target.value;
 		setInput(value);
 
-		// 检查是否刚刚输入了 '/'（当前光标位置前一个字符是 '/'）
-		const cursorPos = e.target.selectionStart;
-		const lastSlashIndex = value.lastIndexOf('/');
+		// 判断是否应该显示斜杠菜单：输入以 '/' 开头
+		const startsWithSlash = value.startsWith('/');
 
-		if (showCommandMenu) {
-			// 命令菜单显示中：更新过滤条件或关闭菜单
-			if (lastSlashIndex >= 0) {
-				const filterText = value.substring(lastSlashIndex + 1);
-				// If the filter contains a space, the user has typed past a command
-				// (e.g. "/plan test") — close the menu so Enter will send normally
-				if (filterText.includes(' ')) {
-					setShowCommandMenu(false);
-					setCommandFilter('');
-				} else {
-					setCommandFilter(filterText);
-					setSelectedCommandIndex(0);
-				}
-			} else {
-				// 输入中不再有 '/', 关闭菜单
-				setShowCommandMenu(false);
-				setCommandFilter('');
+		if (startsWithSlash) {
+			// '/' 开头 → 显示/保持菜单，文本过滤
+			if (!showSlashMenu) {
+				setShowSlashMenu(true);
 			}
-		} else if (showSkillMenu) {
-			// 技能菜单显示中：更新过滤条件或关闭菜单
-			const skillIndex = value.lastIndexOf('/skill ');
-			if (skillIndex >= 0) {
-				const filterText = value.substring(skillIndex + '/skill '.length);
-				setSkillFilter(filterText);
-				setSelectedSkillIndex(0);
-			} else {
-				// 输入中不再有 '/skill ', 关闭菜单
-				setShowSkillMenu(false);
-				setSkillFilter('');
-			}
-		} else {
-			// 没有菜单显示：检查是否刚刚输入了 '/'
-			if (cursorPos > 0 && cursorPos <= value.length && value[cursorPos - 1] === '/') {
-				// 显示命令菜单
-				setShowCommandMenu(true);
-				setCommandFilter('');
-				setSelectedCommandIndex(0);
-			}
+			setSlashFilter(value.substring(1));
+			setSelectedSlashIndex(0);
+		} else if (showSlashMenu) {
+			// '/' 前缀已删除 → 关闭菜单
+			setShowSlashMenu(false);
+			setSlashFilter('');
 		}
-	}, [showCommandMenu, showSkillMenu]);
+	}, [showSlashMenu]);
 
-	// 处理键盘事件：支持命令菜单和技能菜单中的导航
+	// 处理键盘事件：支持斜杠菜单导航 + Backspace 移除芯片
 	const handleKeyDownWithCommands = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
-		// 如果命令菜单显示，处理菜单导航
-		if (showCommandMenu) {
-			if (e.key === 'ArrowDown') {
-				e.preventDefault();
-				setSelectedCommandIndex(prev =>
-					prev < filteredCommands.length - 1 ? prev + 1 : 0
-				);
-				return;
-			}
-			if (e.key === 'ArrowUp') {
-				e.preventDefault();
-				setSelectedCommandIndex(prev =>
-					prev > 0 ? prev - 1 : filteredCommands.length - 1
-				);
-				return;
-			}
-			if (e.key === 'Enter' || e.key === 'Tab') {
-				e.preventDefault();
-				if (filteredCommands.length > 0) {
-					const selectedCommand = filteredCommands[selectedCommandIndex];
-					if (selectedCommand.id === 'skill') {
-						// 选择 /skill 命令：加载技能并显示技能菜单
-						setShowCommandMenu(false);
-						setShowSkillMenu(true);
-						setSkillFilter('');
-						setSelectedSkillIndex(0);
-						loadSkills();
-					} else {
-						// 所有其他命令（含 /plan）：插入命令到输入框，用户手动补充内容后发送
-						const beforeSlash = input.substring(0, input.lastIndexOf('/'));
-						const newValue = beforeSlash + '/' + selectedCommand.id + ' ';
-						setInput(newValue);
-						setShowCommandMenu(false);
-						setCommandFilter('');
-					}
-				} else {
-					// No matching commands: close menu and send as regular message
-					setShowCommandMenu(false);
-					setCommandFilter('');
-					handleSend();
-				}
-				return;
-			}
-			if (e.key === 'Escape') {
-				e.preventDefault();
-				setShowCommandMenu(false);
-				setCommandFilter('');
-				return;
-			}
-			// For other keys, let the default input behavior handle it (handleInputChange will update filter)
-			// But if the input no longer looks like a command (has space after command word), close the menu
+		// ── Backspace: 输入框为空且有芯片时，删除最后一个芯片 ──
+		if (e.key === 'Backspace' && input === '' && skillChips.length > 0) {
+			e.preventDefault();
+			setSkillChips(prev => prev.slice(0, -1));
 			return;
 		}
 
-		// 如果技能菜单显示，处理菜单导航
-		if (showSkillMenu) {
+		// ── 斜杠菜单导航 ──
+		if (showSlashMenu) {
 			if (e.key === 'ArrowDown') {
 				e.preventDefault();
-				setSelectedSkillIndex(prev =>
-					prev < filteredSkills.length - 1 ? prev + 1 : 0
+				setSelectedSlashIndex(prev =>
+					prev < filteredSlashItems.length - 1 ? prev + 1 : 0
 				);
 				return;
 			}
 			if (e.key === 'ArrowUp') {
 				e.preventDefault();
-				setSelectedSkillIndex(prev =>
-					prev > 0 ? prev - 1 : filteredSkills.length - 1
+				setSelectedSlashIndex(prev =>
+					prev > 0 ? prev - 1 : filteredSlashItems.length - 1
 				);
 				return;
 			}
-			if (e.key === 'Enter' || e.key === 'Tab') {
+			if (e.key === 'Enter') {
 				e.preventDefault();
-				if (filteredSkills.length > 0) {
-					const selectedSkill = filteredSkills[selectedSkillIndex];
-					// 插入选定的技能到输入框
-					const beforeSlash = input.substring(0, input.lastIndexOf('/'));
-					const newValue = beforeSlash + '/skill ' + selectedSkill.id + ' ';
-					setInput(newValue);
-					setShowSkillMenu(false);
-					setSkillFilter('');
+				if (filteredSlashItems.length > 0) {
+					const selected = filteredSlashItems[selectedSlashIndex];
+					if (selected.type === 'skill') {
+						// 选择技能 → 添加芯片，清空 '/' 前缀
+						setSkillChips(prev => {
+							// 避免重复添加同一个技能
+							if (prev.some(c => c.id === selected.id)) return prev;
+							return [...prev, { id: selected.id, name: selected.name }];
+						});
+						setInput('');
+						setShowSlashMenu(false);
+						setSlashFilter('');
+					} else if (selected.type === 'command') {
+						// 选择命令：把 '/' 前缀替换为 '/<command> '
+						setInput('/' + selected.id + ' ');
+						setShowSlashMenu(false);
+						setSlashFilter('');
+					}
+				} else {
+					// 无匹配项 → 关闭菜单，发送当前消息
+					setShowSlashMenu(false);
+					setSlashFilter('');
+					if (input.trim() || skillChips.length > 0) {
+						handleSend();
+					}
+				}
+				return;
+			}
+			if (e.key === 'Tab') {
+				e.preventDefault();
+				if (filteredSlashItems.length > 0) {
+					const selected = filteredSlashItems[selectedSlashIndex];
+					if (selected.type === 'skill') {
+						setSkillChips(prev => {
+							if (prev.some(c => c.id === selected.id)) return prev;
+							return [...prev, { id: selected.id, name: selected.name }];
+						});
+						setInput('');
+						setShowSlashMenu(false);
+						setSlashFilter('');
+					} else if (selected.type === 'command') {
+						setInput('/' + selected.id + ' ');
+						setShowSlashMenu(false);
+						setSlashFilter('');
+					}
+				} else {
+					// Tab with no match → just close menu
+					setShowSlashMenu(false);
+					setSlashFilter('');
 				}
 				return;
 			}
 			if (e.key === 'Escape') {
 				e.preventDefault();
-				setShowSkillMenu(false);
-				setSkillFilter('');
+				setShowSlashMenu(false);
+				setSlashFilter('');
+				// 不清除输入内容，让用户可以重新编辑
 				return;
 			}
 			return;
@@ -740,17 +742,28 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		// 默认处理：Enter 发送，Escape 取消
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			if (isLoading && !input.trim() && attachments.length === 0) { return; }
+			if (isLoading && !input.trim() && attachments.length === 0 && skillChips.length === 0) { return; }
 			handleSend();
 		}
 		if (e.key === 'Escape' && isLoading && onCancel) {
 			e.preventDefault();
 			onCancel();
 		}
-	}, [showCommandMenu, showSkillMenu, filteredCommands, filteredSkills, selectedCommandIndex, selectedSkillIndex, input, isLoading, onCancel, handleSend, onCommand, loadSkills]);
+	}, [showSlashMenu, filteredSlashItems, selectedSlashIndex, input, isLoading, onCancel, handleSend, skillChips.length]);
 
 	return (
-		<div className="chat-input-area">
+		<div className="chat-input-area" ref={inputAreaRef}>
+			{/* 顶部分割线拖动条：拖动改变整个输入区域高度 */}
+			<div
+				className="chat-input-resizer"
+				onMouseDown={handleInputAreaResizerMouseDown}
+				title="拖动调整输入区域高度"
+				role="separator"
+				aria-orientation="horizontal"
+			>
+				<span className="chat-input-resizer-grip" />
+			</div>
+
 			{/* Hidden file input for attachment picker */}
 			<input
 				ref={fileInputRef}
@@ -833,6 +846,28 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 					</div>
 				)}
 
+				{/* 技能芯片栏：用户通过 '/' 选择的技能以彩色标签显示 */}
+				{skillChips.length > 0 && (
+					<div className="skill-chips-bar">
+						{skillChips.map(chip => (
+							<span key={chip.id} className="skill-chip" title={`技能: ${chip.name} (${chip.id})`}>
+								<span className="skill-chip-icon">⚡</span>
+								<span className="skill-chip-name">{chip.name}</span>
+								<button
+									className="skill-chip-remove"
+									onClick={() => setSkillChips(prev => prev.filter(c => c.id !== chip.id))}
+									title="移除技能"
+								>
+									<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+										<line x1="18" y1="6" x2="6" y2="18" />
+										<line x1="6" y1="6" x2="18" y2="18" />
+									</svg>
+								</button>
+							</span>
+						))}
+					</div>
+				)}
+
 				{/* 上方：文本输入 */}
 				<textarea
 					ref={textareaRef}
@@ -846,74 +881,65 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 					className="chat-composer-textarea"
 				/>
 
-				{/* 命令菜单 */}
-				{showCommandMenu && filteredCommands.length > 0 && (
-					<div className="command-menu" ref={commandMenuRef}>
-						<div className="command-menu-header">
-							<span>可用命令</span>
+				{/* 统一的斜杠菜单：技能 + 命令 */}
+				{showSlashMenu && (
+					<div className="slash-menu" ref={slashMenuRef}>
+						<div className="slash-menu-header">
+							<span>可用技能</span>
+							<span className="slash-menu-hint">
+								{filteredSlashItems.length > 0
+									? `↑↓ 导航  ↵ 选择  Esc 关闭`
+									: '无匹配项'}
+							</span>
 						</div>
-						{filteredCommands.map((cmd, index) => (
-							<div
-								key={cmd.id}
-								className={`command-menu-item ${index === selectedCommandIndex ? 'selected' : ''}`}
-								onClick={() => {
-									if (cmd.id === 'skill') {
-										setShowCommandMenu(false);
-										setShowSkillMenu(true);
-										setSkillFilter('');
-										setSelectedSkillIndex(0);
-										loadSkills();
-									} else {
-										// 所有其他命令（含 /plan）：插入命令到输入框，用户手动补充内容后发送
-										const beforeSlash = input.substring(0, input.lastIndexOf('/'));
-										const newValue = beforeSlash + '/' + cmd.id + ' ';
-										setInput(newValue);
-										setShowCommandMenu(false);
-										setCommandFilter('');
-									}
-								}}
-							>
-								<span className="command-menu-icon">{cmd.icon}</span>
-								<span className="command-menu-name">/{cmd.id}</span>
-								<span className="command-menu-desc">{cmd.description}</span>
-							</div>
-						))}
-					</div>
-				)}
-
-				{/* 技能菜单 */}
-				{showSkillMenu && (
-					<div className="skill-menu" ref={skillMenuRef}>
-						<div className="skill-menu-header">
-							<span>选择技能</span>
-							<input
-								type="text"
-								className="skill-menu-search"
-								placeholder="输入过滤技能..."
-								value={skillFilter}
-								readOnly
-								onClick={(e) => e.stopPropagation()}
-							/>
-						</div>
-						{filteredSkills.length > 0 ? (
-							filteredSkills.map((skill, index) => (
-								<div
-									key={skill.id}
-									className={`skill-menu-item ${index === selectedSkillIndex ? 'selected' : ''}`}
-									onClick={() => {
-										const beforeSlash = input.substring(0, input.lastIndexOf('/'));
-										const newValue = beforeSlash + '/skill ' + skill.id + ' ';
-										setInput(newValue);
-										setShowSkillMenu(false);
-										setSkillFilter('');
-									}}
-								>
-									<span className="skill-menu-name">{skill.name}</span>
-									<span className="skill-menu-id">{skill.id}</span>
-								</div>
-							))
+						{filteredSlashItems.length > 0 ? (
+							filteredSlashItems.map((item, index) => {
+								if (item.type === 'separator') {
+									return <div key={item.id} className="slash-menu-separator">{item.name}</div>;
+								}
+								const isSkill = item.type === 'skill';
+								return (
+									<div
+										key={item.type + '-' + item.id}
+										className={`slash-menu-item ${isSkill ? 'skill-item' : 'command-item'} ${index === selectedSlashIndex ? 'selected' : ''}`}
+										onMouseEnter={() => setSelectedSlashIndex(index)}
+										onClick={() => {
+											if (isSkill) {
+												setSkillChips(prev => {
+													if (prev.some(c => c.id === item.id)) return prev;
+													return [...prev, { id: item.id, name: item.name }];
+												});
+												setInput('');
+												setShowSlashMenu(false);
+												setSlashFilter('');
+											} else {
+												setInput('/' + item.id + ' ');
+												setShowSlashMenu(false);
+												setSlashFilter('');
+											}
+										}}
+									>
+										<span className="slash-menu-type-badge">
+											{isSkill ? '技能' : '命令'}
+										</span>
+										<span className="slash-menu-name">
+											{isSkill ? item.name : '/' + item.id}
+										</span>
+										{!isSkill && item.description && (
+											<span className="slash-menu-desc">{item.description}</span>
+										)}
+										{isSkill && (
+											<span className="slash-menu-id">{item.id}</span>
+										)}
+									</div>
+								);
+							})
 						) : (
-							<div className="skill-menu-empty">无可用技能</div>
+							<div className="slash-menu-empty">
+								{slashFilter
+									? `没有匹配 "/${slashFilter}" 的技能`
+									: '暂无可用技能'}
+							</div>
 						)}
 					</div>
 				)}

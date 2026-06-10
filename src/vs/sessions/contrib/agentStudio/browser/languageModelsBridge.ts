@@ -106,6 +106,8 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		return false;
 	}
 
+	readonly isServerSideProvider: boolean;
+
 	constructor(
 		readonly vendor: string,
 		private readonly _lmService: ILanguageModelsService,
@@ -117,6 +119,10 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		super();
 		this.id = `lm:${vendor}`;
 		this.name = vendor.charAt(0).toUpperCase() + vendor.slice(1);
+		// isServerSideProvider 由各 vendor 扩展在自身 configuration 中声明。
+		// 例如 knot-agui 的 package.json 设 knot.isServerSideProvider 默认 true；
+		// codebuddy-provider 设 codebuddy.isServerSideProvider 默认 false。
+		this.isServerSideProvider = this._configurationService.getValue<boolean>(`${vendor}.isServerSideProvider`) === true;
 	}
 
 	getAuthStatus(): ModelAuthStatus {

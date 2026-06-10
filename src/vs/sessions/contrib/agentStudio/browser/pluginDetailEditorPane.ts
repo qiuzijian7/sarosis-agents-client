@@ -357,9 +357,14 @@ export class PluginDetailEditorPane extends EditorPane {
 			const configContainer = $$('div.plugin-detail-config-container');
 
 		for (const prop of configProperties) {
-				// Skip the standalone "models" and "agentId" configs — models are embedded in agents, agentId is removed
+				// Skip standalone "models" configs — models are configured per agent for knot agents
 			// Skip internal agentId (used for identification, not user-configurable)
 			if (prop.key.endsWith('.agentId')) {
+				continue;
+			}
+
+			// Skip standalone knot.models — models are configured per agent in the agents list
+			if (prop.key === 'knot.models') {
 				continue;
 			}
 
@@ -582,7 +587,7 @@ export class PluginDetailEditorPane extends EditorPane {
 				break;
 			}
 		case 'array': {
-				// Special handling for agents list: expandable entries with id, name, models
+				// Special handling for agents list: expandable entries with id, name, per-agent models
 				if (prop.key.endsWith('.agents')) {
 					const agentsContainer = this._renderAgentsExpandableList(prop, value);
 					row.appendChild(agentsContainer);
@@ -623,7 +628,7 @@ export class PluginDetailEditorPane extends EditorPane {
 
 	/**
 	 * Render the agents configuration as an expandable list.
-	 * Each entry has: id, name, models (comma-separated).
+	 * Each entry has: id, name, models.
 	 */
 	private _renderAgentsExpandableList(prop: IPluginConfigProperty, value: unknown): HTMLElement {
 		const container = $$('div.plugin-detail-agents-list');
@@ -638,14 +643,14 @@ export class PluginDetailEditorPane extends EditorPane {
 		const agentsData = agents.map(a => ({
 			id: a.id || '',
 			name: a.name || '',
-			models: Array.isArray(a.models) ? a.models.join(',') : ''
+			models: Array.isArray(a.models) ? a.models.join(',') : '',
 		}));
 
 		const syncToConfig = () => {
 			const result = agentsData.map(a => ({
 				id: a.id,
 				name: a.name,
-				models: a.models ? a.models.split(',').map(m => m.trim()).filter(Boolean) : []
+				models: a.models ? a.models.split(',').map(m => m.trim()).filter(Boolean) : [],
 			}));
 			this._configFieldValues.set(prop.key, result);
 		};
@@ -756,7 +761,7 @@ export class PluginDetailEditorPane extends EditorPane {
 		nameRow.appendChild(nameInput);
 		body.appendChild(nameRow);
 
-		// Models field (comma-separated)
+		// Models field (comma-separated model IDs)
 		const modelsRow = $$('div.plugin-detail-agent-field-row');
 		const modelsLabel = $$('label.plugin-detail-agent-field-label');
 		modelsLabel.textContent = 'Models';
@@ -765,7 +770,7 @@ export class PluginDetailEditorPane extends EditorPane {
 		modelsInput.type = 'text';
 		modelsInput.className = 'plugin-detail-config-input';
 		modelsInput.value = agent.models;
-		modelsInput.placeholder = '模型ID，多个用逗号分隔 (e.g. gpt-4,claude-3)';
+		modelsInput.placeholder = '模型 ID，多个用逗号分隔 (e.g. deepseek-v3.1,glm-5.1)';
 		modelsInput.oninput = () => {
 			agent.models = modelsInput.value;
 			syncToConfig();

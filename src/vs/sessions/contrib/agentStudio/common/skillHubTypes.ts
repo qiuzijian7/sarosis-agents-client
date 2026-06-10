@@ -28,12 +28,13 @@ export interface ISkillHubDefinition {
 	readonly description: string;
 	/**
 	 * Hub 类型：
-	 * - `github`  : GitHub 仓库，通过 GitHub API 获取目录列表
-	 * - `git`     : 通用 Git 仓库，通过 raw URL 获取
-	 * - `url`     : 直接 URL 索引（返回 JSON 目录）
-	 * - `local`   : 本地路径
+	 * - `github`     : GitHub 仓库，通过 GitHub API 获取目录列表
+	 * - `git`        : 通用 Git 仓库，通过 raw URL 获取
+	 * - `url`        : 直接 URL 索引（返回 JSON 目录）
+	 * - `local`      : 本地路径
+	 * - `knot-bundle`: 内置精简的 Knot 商城数据（resources/.agents/knot-skills-market.json）
 	 */
-	readonly type: 'github' | 'git' | 'url' | 'local';
+	readonly type: 'github' | 'git' | 'url' | 'local' | 'knot-bundle';
 	/**
 	 * Hub 地址：
 	 * - github: `owner/repo` 或完整 URL
@@ -75,6 +76,16 @@ export interface ISkillHubEntry {
 	readonly contentUrl: string;
 	/** 是否已安装到本项目中 */
 	installed?: boolean;
+	/** 可选：作者/创建者 */
+	readonly author?: string;
+	/** 可选：版本 */
+	readonly version?: string;
+	/** 可选：下载次数 */
+	readonly downloadCount?: number;
+	/** 可选：图标（emoji 或 URL） */
+	readonly icon?: string;
+	/** 可选：标签列表 */
+	readonly tags?: readonly string[];
 }
 
 /**
@@ -128,6 +139,15 @@ export interface ISkillInstallService {
 // ─── 内置 Hub 预设 ───────────────────────────────────────────────
 
 export const BUILTIN_SKILL_HUBS: readonly ISkillHubDefinition[] = [
+	{
+		id: 'knot-market',
+		name: 'Knot 技能商城',
+		description: 'Knot 智能体平台精选技能 — 按下载量精选 TOP 300，覆盖编码、运维、办公、信息检索等场景',
+		type: 'knot-bundle',
+		url: 'resources/.agents/knot-skills-market.json',
+		icon: '🪢',
+		official: true,
+	},
 	{
 		id: 'anthropic-skills',
 		name: 'Anthropic Skills',
