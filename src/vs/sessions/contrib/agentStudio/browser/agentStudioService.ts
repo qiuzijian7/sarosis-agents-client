@@ -43,6 +43,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidChangeAgents = this._register(new Emitter<void>());
 	readonly onDidChangeAgents: Event<void> = this._onDidChangeAgents.event;
 
+	private readonly _onDidRequestInjectPrompt = this._register(new Emitter<{ agentId: string; message: string }>());
+	readonly onDidRequestInjectPrompt: Event<{ agentId: string; message: string }> = this._onDidRequestInjectPrompt.event;
+
 	private readonly _onDidChangeWorktreeState = this._register(new Emitter<{ workspaceId: string; status: string; message?: string }>());
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }> = this._onDidChangeWorktreeState.event;
 
@@ -54,6 +57,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		this.setLastSelectedAgentId(agentId).catch(err =>
 			this.logService.warn('[AgentStudioService] Failed to persist last agent:', err),
 		);
+	}
+
+	/** Request the chat panel to inject a prompt into the conversation (e.g. workflow run). */
+	requestInjectPrompt(agentId: string, message: string): void {
+		this.logService.info(`[AgentStudioService] requestInjectPrompt(agentId=${agentId}, len=${message.length})`);
+		this._onDidRequestInjectPrompt.fire({ agentId, message });
 	}
 
 	private _globalDataUri: URI | undefined;

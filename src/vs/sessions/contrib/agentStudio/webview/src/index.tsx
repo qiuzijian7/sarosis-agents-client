@@ -84,6 +84,22 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
+		case 'chat.injectPrompt': {
+			// Host injects a prompt into the chat panel (e.g. workflow ▶ Run button).
+			// Only the chat panel should act on this; other panels ignore it.
+			const panelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__;
+			if (panelType !== 'chat') { break; }
+			const { agentId: injectAgentId, message: injectMessage } = (data as { agentId: string; message: string }) ?? {};
+			if (injectAgentId && injectMessage) {
+				console.log(`[AgentStudio] chat.injectPrompt: sending message for agent=${injectAgentId}`);
+				useAgentStore.setState({ selectedAgentId: injectAgentId });
+				// Defer send so React can process the agent switch first
+				setTimeout(() => {
+					void useChatStore.getState().sendMessage(injectMessage);
+				}, 100);
+			}
+			break;
+		}
 		case 'agents.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:agents-changed'));
 			break;

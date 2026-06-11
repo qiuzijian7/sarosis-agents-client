@@ -431,13 +431,14 @@ export class WorkflowViewPane extends ViewPane {
 
 			// 2. 选中该 Agent
 			this.modelSelectorService.setSelectedAgentId(agent.id);
+			this.agentStudioService.fireSelectAgent(agent.id);
 
 			// 3. 打开聊天框
 			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
 
-			// 4. 注入执行指令（Claw Chat 已移除，手动粘贴提示词）
+			// 4. 注入执行指令 → chat panel 自动发送并开始 agent loop
 			const prompt = this._buildExecutionPrompt(wf);
-			this.notificationService.info('Workflow prompt is ready. Please paste it into the chat manually:\n\n' + prompt);
+			this.agentStudioService.requestInjectPrompt(agent.id, prompt);
 		} catch (err) {
 			this.notificationService.error(`Failed to run workflow: ${err instanceof Error ? err.message : String(err)}`);
 		}

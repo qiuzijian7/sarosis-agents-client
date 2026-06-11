@@ -166,6 +166,7 @@ export type EventType =
 	| 'configmd.message'          // model-issued message for HTML view
 	| 'configmd.error'           // sync/render error
 	| 'chat.toolApprovalRequest'
+	| 'chat.injectPrompt'        // host requests webview to inject a prompt into the chat (e.g. workflow run)
 	| 'workflow.loaded'          // host sends workflow data to webview editor
 	| 'workflow.saved'           // host confirms save to webview
 	| 'workflow.stateApplied';   // host pushes AI-generated workflow state to webview editor

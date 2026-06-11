@@ -2483,6 +2483,24 @@ export class AgentStudioWebviewController extends Disposable {
 			),
 		);
 
+		// Handle workflow run → inject execution prompt into chat panel
+		this._register(
+			this.agentStudioService.onDidRequestInjectPrompt(
+				({ agentId, message }) => {
+					// Only the chat panel should handle prompt injection
+					if (this.panelType !== 'chat') { return; }
+					// Only inject if this panel is showing the target agent (or no agent is active yet)
+					if (this._activeChatAgentId && this._activeChatAgentId !== agentId) {
+						return;
+					}
+					this.logService.info(
+						`[AgentStudio] onDidRequestInjectPrompt → _sendEvent('chat.injectPrompt', len=${message.length})`,
+					);
+					this._sendEvent('chat.injectPrompt', { agentId, message });
+				},
+			),
+		);
+
 		this._register(
 			this.agentStudioService.onDidChangeWorkspace((id: string) => {
 				this._sendEvent("workspace.changed", { workspaceId: id });

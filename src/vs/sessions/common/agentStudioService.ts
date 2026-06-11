@@ -38,6 +38,8 @@ export interface IAgentStudioService {
 	readonly onDidChangeWorkspace: Event<string>;
 	readonly onDidChangeSessions: Event<void>;
 	readonly onDidSelectAgent: Event<string | null>;
+	/** Fired when the host needs the chat panel to inject a prompt into the active agent conversation. */
+	readonly onDidRequestInjectPrompt: Event<{ agentId: string; message: string }>;
 	/** Fired when agents change (custom agent CRUD). */
 	readonly onDidChangeAgents: Event<void>;
 	/**
@@ -50,6 +52,8 @@ export interface IAgentStudioService {
 
 	// Agent selection
 	fireSelectAgent(agentId: string | null): void;
+	/** Request the chat panel to inject a prompt into the conversation for the given agent. */
+	requestInjectPrompt(agentId: string, message: string): void;
 
 	// Agents — chat-ready agent definitions (builtins + custom presets)
 	getAgents(): Promise<Agent[]>;
