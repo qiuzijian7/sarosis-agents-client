@@ -79,6 +79,7 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 		const originalProductJsonPath = path.join(sourcePath, versionedResourcesFolder, 'resources/app/product.json');
 		const productJsonPath = path.join(outputPath, 'product.json');
 		const productJson = JSON.parse(fs.readFileSync(originalProductJsonPath, 'utf8'));
+		productJson['version'] = pkg.version;
 		productJson['target'] = target;
 
 		const definitions: Record<string, unknown> = {
