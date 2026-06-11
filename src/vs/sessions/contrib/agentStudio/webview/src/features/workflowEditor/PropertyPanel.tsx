@@ -3,11 +3,13 @@
  *  Supports all 14 node types with type-specific editing forms.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { useWorkflowEditorStore, nodeTypeSelectors } from './store';
 import type { BranchDef, AskUserOption } from '../../types/workflowStorage';
 import { useProviderStore } from '../../store/useProviderStore';
 import { useAgentStore } from '../../store/useAgentStore';
+import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { sendRequest } from '../../bridge/messageClient';
 
 export const PropertyPanel: React.FC = () => {
 	const selectedNodeId = useWorkflowEditorStore(s => s.selectedNodeId);
@@ -34,6 +36,43 @@ export const PropertyPanel: React.FC = () => {
 			loadAgents();
 		}
 	}, [isOpen, agents.length, loadAgents]);
+
+	// Load skills list for skill node dropdown
+	const [skills, setSkills] = useState<Array<{ id: string; name: string; description?: string; category?: string }>>([]);
+	useEffect(() => {
+		if (isOpen && skills.length === 0) {
+			sendRequest<unknown, Array<{ id: string; name: string; description?: string; category?: string }>>('skills.list', {})
+				.then(list => { if (Array.isArray(list)) { setSkills(list); } })
+				.catch(() => { /* skills.list not available */ });
+		}
+	}, [isOpen, skills.length]);
+
+	// Load worktree list for agent node worktree dropdown (current workspace's git worktrees)
+	const activeWorkspaceId = useWorkspaceStore(s => s.activeWorkspaceId);
+	const [worktrees, setWorktrees] = useState<Array<{ path: string; branch: string; repoName?: string }>>([]);
+	useEffect(() => {
+		if (!isOpen) { return; }
+		// Pass workspaceId if available; host falls back to its own active workspace when empty
+		sendRequest<{ workspaceId?: string }, Array<{ path: string; branch: string; repoName?: string }>>(
+			'worktree.list',
+			{ workspaceId: activeWorkspaceId || undefined },
+		).then(list => {
+			setWorktrees(Array.isArray(list) ? list.map(wt => ({ path: wt.path, branch: wt.branch, repoName: wt.repoName })) : []);
+		}).catch(() => { setWorktrees([]); });
+	}, [isOpen, activeWorkspaceId]);
+	// Refresh the worktree list whenever a worktree is created/removed elsewhere
+	useEffect(() => {
+		const handler = () => {
+			sendRequest<{ workspaceId?: string }, Array<{ path: string; branch: string; repoName?: string }>>(
+				'worktree.list',
+				{ workspaceId: activeWorkspaceId || undefined },
+			).then(list => {
+				setWorktrees(Array.isArray(list) ? list.map(wt => ({ path: wt.path, branch: wt.branch, repoName: wt.repoName })) : []);
+			}).catch(() => { /* ignore */ });
+		};
+		window.addEventListener('agentStudio:worktree-changed', handler);
+		return () => window.removeEventListener('agentStudio:worktree-changed', handler);
+	}, [activeWorkspaceId]);
 
 	const selectedNode = nodes.find(n => n.id === selectedNodeId);
 	const data = (selectedNode?.data || {}) as Record<string, unknown>;
@@ -78,7 +117,7 @@ export const PropertyPanel: React.FC = () => {
 						style={inputStyle} placeholder="Node name" />
 				</Field>
 
-				{renderNodeTypeFields(selectedNode.type, data, handleChange, setVersion, providers, agents)}
+				{renderNodeTypeFields(selectedNode.type, data, handleChange, setVersion, providers, agents, skills, worktrees)}
 
 				{isDeletable && (
 					<div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--vscode-panel-border)' }}>
@@ -109,6 +148,8 @@ function renderNodeTypeFields(
 	setVersion: React.Dispatch<React.SetStateAction<number>>,
 	providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>,
 	agents: Array<{ id: string; name: string; icon: string }>,
+	skills: Array<{ id: string; name: string; description?: string; category?: string }>,
+	worktrees: Array<{ path: string; branch: string; repoName?: string }>,
 ): React.ReactNode {
 	if (!type) { return null; }
 
@@ -186,6 +227,29 @@ function renderNodeTypeFields(
 							))}
 						</select>
 					</Field>
+					<Field label="Prompt Template">
+						<textarea
+							value={(data.prompt as string) || ''}
+							onChange={e => handleChange('prompt', e.target.value)}
+							style={{ ...inputStyle, minHeight: '60px', resize: 'vertical' }}
+							placeholder="What should this agent do in this workflow step?"
+						/>
+					</Field>
+					<Field label="Worktree">
+						<select
+							value={(data.worktreePath as string) || ''}
+							onChange={e => handleChange('worktreePath', e.target.value)}
+							style={selectStyle}
+						>
+							<option value="">— None —</option>
+							{worktrees.map(wt => (
+								<option key={wt.path} value={wt.path}>
+									{wt.repoName ? `${wt.repoName} · ` : ''}{wt.branch}
+									{' — '}{wt.path}
+								</option>
+							))}
+						</select>
+					</Field>
 				</>
 			);
 		}
@@ -194,9 +258,11 @@ function renderNodeTypeFields(
 			return (
 				<>
 					<Field label="Skill Name">
-						<input type="text" value={(data.skillName as string) || ''}
-							onChange={e => handleChange('skillName', e.target.value)}
-							style={inputStyle} placeholder="e.g., code-review" />
+						<SkillNameCombobox
+							value={(data.skillName as string) || ''}
+							skills={skills}
+							onChange={(name) => handleChange('skillName', name)}
+						/>
 					</Field>
 				</>
 			);
@@ -294,8 +360,8 @@ function renderNodeTypeFields(
 			return (
 				<>
 					<Field label="Question">
-						<textarea value={(data.questionText as string) || ''}
-							onChange={e => handleChange('questionText', e.target.value)}
+						<textarea value={(data.question as string) || ''}
+							onChange={e => handleChange('question', e.target.value)}
 							style={{ ...inputStyle, minHeight: '48px', resize: 'vertical' }}
 							placeholder="What do you want to ask?" />
 					</Field>
@@ -304,11 +370,6 @@ function renderNodeTypeFields(
 							<input type="checkbox" checked={!!data.multiSelect}
 								onChange={e => handleChange('multiSelect', e.target.checked)} />
 							{' '}Multi-select
-						</label>
-						<label style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>
-							<input type="checkbox" checked={!!data.useAiSuggestions}
-								onChange={e => handleChange('useAiSuggestions', e.target.checked)} />
-							{' '}AI Suggestions
 						</label>
 					</div>
 					<OptionsEditor
@@ -490,4 +551,81 @@ const smallAddBtnStyle: React.CSSProperties = {
 	borderRadius: '4px', backgroundColor: 'var(--vscode-button-background)',
 	color: 'var(--vscode-button-foreground)', cursor: 'pointer',
 	marginTop: '4px',
+};
+
+/** Searchable combobox for selecting a skill by name, with real-time filtering. */
+const SkillNameCombobox: React.FC<{
+	value: string;
+	skills: Array<{ id: string; name: string; description?: string; category?: string }>;
+	onChange: (name: string) => void;
+}> = ({ value, skills, onChange }) => {
+	const [open, setOpen] = useState(false);
+	const inputRef = useRef<HTMLInputElement>(null);
+	const dropdownRef = useRef<HTMLDivElement>(null);
+
+	// Close dropdown on outside click
+	useEffect(() => {
+		if (!open) { return; }
+		const handler = (e: MouseEvent) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
+				inputRef.current && !inputRef.current.contains(e.target as Node)) {
+				setOpen(false);
+			}
+		};
+		document.addEventListener('mousedown', handler);
+		return () => document.removeEventListener('mousedown', handler);
+	}, [open]);
+
+	const filtered = skills.filter(s =>
+		!value || s.name.toLowerCase().includes(value.toLowerCase()) ||
+		(s.description && s.description.toLowerCase().includes(value.toLowerCase()))
+	);
+
+	const comboboxInputStyle: React.CSSProperties = {
+		width: '100%', padding: '6px 8px',
+		background: 'var(--vscode-input-background)', color: 'var(--vscode-input-foreground)',
+		border: '1px solid var(--vscode-input-border)', borderRadius: 3,
+		fontSize: '12px', outline: 'none', boxSizing: 'border-box',
+	};
+
+	return (
+		<div style={{ position: 'relative' }}>
+			<input type="text" ref={inputRef}
+				value={value}
+				onChange={e => { onChange(e.target.value); setOpen(true); }}
+				onFocus={() => setOpen(true)}
+				style={comboboxInputStyle}
+				placeholder="Search or type skill name..."
+				autoComplete="off" />
+			{open && filtered.length > 0 && (
+				<div ref={dropdownRef} style={{
+					position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000,
+					maxHeight: 180, overflowY: 'auto',
+					background: 'var(--vscode-dropdown-background)',
+					border: '1px solid var(--vscode-dropdown-border)',
+					borderRadius: 3, boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+				}}>
+					{filtered.map(skill => (
+						<div key={skill.id}
+							onMouseDown={e => { e.preventDefault(); onChange(skill.name); setOpen(false); }}
+							style={{
+								padding: '6px 10px', cursor: 'pointer', fontSize: '12px',
+								color: 'var(--vscode-dropdown-foreground)',
+								borderBottom: '1px solid var(--vscode-dropdown-border)',
+							}}
+							onMouseEnter={e => (e.currentTarget.style.background = 'var(--vscode-list-hoverBackground)')}
+							onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+						>
+							<div style={{ fontWeight: 500 }}>{skill.name}</div>
+							{skill.description && (
+								<div style={{ fontSize: '10px', color: 'var(--vscode-descriptionForeground)', marginTop: 1 }}>
+									{skill.description}
+								</div>
+							)}
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	);
 };

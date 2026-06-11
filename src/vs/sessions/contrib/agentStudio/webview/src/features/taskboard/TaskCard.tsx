@@ -10,6 +10,7 @@ import { type Agent, useAgentStore } from '../../store/useAgentStore';
 import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
 import { useSwarmStore } from '../../store/useSwarmStore';
 import { getAgentColor } from '../../utils/agentColors';
+import { sendRequest } from '../../bridge/messageClient';
 
 interface TaskCardProps {
 	task: TaskBoardRecord;
@@ -179,6 +180,28 @@ export function TaskCard({
 			useAgentStore.getState().selectAgent(task.assigneeId);
 		}
 	}, [task.assigneeId]);
+
+	// v10: start the associated workflow with the task description as context.
+	const [startingWorkflow, setStartingWorkflow] = useState(false);
+	const handleStartWorkflow = useCallback(async () => {
+		if (!task.workflowId || startingWorkflow) { return; }
+		setStartingWorkflow(true);
+		try {
+			await sendRequest('workflow.execute', {
+				workflowId: task.workflowId,
+				context: {
+					taskTitle: task.title,
+					taskDescription: task.description ?? task.title,
+				},
+			});
+			// Also mark the task as running so it moves to the running column.
+			onStatusChange(task.id, 'running', task.source);
+		} catch (err) {
+			console.error('[TaskCard] Failed to start workflow:', err);
+		} finally {
+			setStartingWorkflow(false);
+		}
+	}, [task.workflowId, task.title, task.description, task.id, task.source, startingWorkflow, onStatusChange]);
 
 	const priorityInfo = task.priority ? PRIORITY_CONFIG[task.priority] : null;
 
@@ -402,6 +425,14 @@ export function TaskCard({
 						onClick={() => onStatusChange(task.id, 'ready', task.source)}
 						title="标记为就绪"
 					>✔</button>
+				)}
+				{/* v10: 执行关联工作流 (todo/ready状态 + 有关联workflowId) */}
+				{task.workflowId && (task.status === 'todo' || task.status === 'ready') && (
+					<button
+						className="task-card-action execute-workflow"
+						onClick={(e) => { e.stopPropagation(); void handleStartWorkflow(); }}
+						title="在工作流中执行此任务"
+					>🔄</button>
 				)}
 				{/* 执行（todo/ready 可用） */}
 				{(task.status === 'todo' || task.status === 'ready') && (

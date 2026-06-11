@@ -703,7 +703,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private async _resolveAllWorktreeRepoRoots(workspace: Workspace): Promise<string[]> {
 		const roots: string[] = [];
 		const seen = new Set<string>();
-		const push = (raw: string | undefined) => {
+		const push = (raw: string | undefined, source: string) => {
 			if (!raw) {
 				return;
 			}
@@ -712,16 +712,19 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				return;
 			}
 			seen.add(norm);
+			this.logService.info(`[AgentStudio] _resolveAllWorktreeRepoRoots: + ${raw} (from ${source})`);
 			roots.push(raw);
 		};
 
 		// 1. relatedFolders — the real code repositories.
-		for (const folder of workspace.relatedFolders ?? []) {
+		const related = workspace.relatedFolders ?? [];
+		this.logService.info(`[AgentStudio] _resolveAllWorktreeRepoRoots: workspace has ${related.length} relatedFolder(s), path="${workspace.path}"`);
+		for (const folder of related) {
 			if (!folder?.path) {
 				continue;
 			}
 			if (folder.isGitRepo === true || await this._detectGitRepo(folder.path)) {
-				push(folder.path);
+				push(folder.path, 'relatedFolder');
 			}
 		}
 
@@ -730,8 +733,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		//    synced from a different code path than relatedFolders).
 		try {
 			const serviceRoots = await this.worktreeService.getAllRepositoryRoots();
+			this.logService.info(`[AgentStudio] _resolveAllWorktreeRepoRoots: getAllRepositoryRoots returned ${serviceRoots.length} repo(s): ${serviceRoots.join(', ')}`);
 			for (const r of serviceRoots) {
-				push(r);
+				push(r, 'getAllRepositoryRoots');
 			}
 		} catch (err) {
 			this.logService.warn('[AgentStudio] _resolveAllWorktreeRepoRoots: getAllRepositoryRoots failed', err);
@@ -739,7 +743,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		// 3. Legacy fallback: workspace.path itself is a git repo.
 		if (workspace.path && await this._detectGitRepo(workspace.path)) {
-			push(workspace.path);
+			push(workspace.path, 'workspace.path');
 		}
 
 		return roots;

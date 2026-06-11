@@ -15,7 +15,7 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useChatStore, type ChatMessage } from '../../store/useChatStore';
+import { useChatStore, type ChatMessage, type LiveWorkflowExecution, type LiveWorkflowSubAgent, type LiveWorkflowAskUser } from '../../store/useChatStore';
 import { useAgentStore, type Agent } from '../../store/useAgentStore';
 import { useProviderStore } from '../../store/useProviderStore';
 import { sendRequest } from '../../bridge/messageClient';
@@ -26,6 +26,8 @@ import { ChatComposer } from './ChatComposer';
 import { CheckpointBar } from './CheckpointBar';
 import { ToolCallCard } from './ToolCallCard';
 import { SubAgentCard } from './SubAgentCard';
+import { AskUserCard } from './AskUserCard';
+import { ExecutionTimelinePanel } from '../workflowEditor/ExecutionTimelinePanel';
 import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRenderer';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
 import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
@@ -202,8 +204,108 @@ const StreamingBubble = memo(function StreamingBubble({
 	);
 });
 
+// ─── P4: Live workflow execution trace (transient, in-memory) ────────────
+
+interface LiveWorkflowTraceViewProps {
+	execution: LiveWorkflowExecution;
+	/** v4: pending AskUser requests for this session (rendered as interactive cards). */
+	askUsers: LiveWorkflowAskUser[];
+}
+
+const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ execution, askUsers }: LiveWorkflowTraceViewProps): React.ReactElement | null {
+	// Only show subagents that are real workflow nodes (skip synthetic root '__workflow__').
+	const subAgents = execution.subAgents.filter(sa => sa.id !== '__workflow__');
+
+	// Filter askUser entries to those that belong to THIS execution (a session
+	// could in theory have multiple executions — render only the current one).
+	const executionAskUsers = askUsers.filter(a => a.executionId === execution.executionId);
+	const hasContent = subAgents.length > 0 || executionAskUsers.length > 0;
+
+	if (!hasContent) {
+		// Show a minimal banner so the user knows a workflow is running.
+		return (
+			<div className="message assistant" style={{ padding: '8px 12px' }}>
+				<div className="workflow-trace-banner">
+					<span className="shimmer">▶ {execution.workflowName}</span>
+					<span className="workflow-trace-status">运行中…</span>
+				</div>
+			</div>
+		);
+	}
+
+	// Map our LiveWorkflowSubAgent → the SubAgentInfo shape SubAgentCard expects.
+	const cardSubAgents = subAgents.map(sa => ({
+		id: sa.id,
+		type: 'general' as const,
+		task: sa.task || sa.name,
+		parentAgentId: undefined,
+		status: sa.status === 'cancelled' ? 'cancelled' as const
+			: sa.status === 'error' ? 'error' as const
+				: sa.status === 'done' ? 'done' as const
+					: 'running' as const,
+		progress: sa.status === 'running' ? (sa.streamedText ? sa.streamedText.slice(-200) : '执行中...') : undefined,
+		output: sa.output ?? (sa.streamedText ? sa.streamedText.slice(0, 4000) : ''),
+		error: sa.error,
+		// P4 v3: pass through thinking + toolTrace so SubAgentCard can render them.
+		thinking: sa.streamedThinking,
+		toolTrace: sa.toolCalls,
+	}));
+
+	const isRunning = execution.status === 'running';
+
+	return (
+		<div className="message assistant" style={{ padding: '8px 12px' }}>
+			<div className="workflow-trace-header" style={{
+				display: 'flex',
+				alignItems: 'center',
+				justifyContent: 'space-between',
+				padding: '4px 8px',
+				marginBottom: '6px',
+				borderRadius: '4px',
+				background: 'var(--vscode-textBlockQuote-background, rgba(127,127,127,0.1))',
+			}}>
+				<span style={{ fontSize: '12px', fontWeight: 600 }}>
+					{isRunning ? <span className="shimmer">▶ 工作流执行中</span> : '✓ 工作流已结束'} — {execution.workflowName}
+				</span>
+				<span style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>
+					{subAgents.length} 节点 · {subAgents.filter(sa => sa.status === 'done').length} 完成
+					{subAgents.filter(sa => sa.status === 'error').length > 0 && ` · ${subAgents.filter(sa => sa.status === 'error').length} 失败`}
+				</span>
+			</div>
+			{subAgents.length > 0 && <SubAgentCard subAgents={cardSubAgents as any} isStreaming={isRunning} />}
+			{/* v4: render pending / answered AskUser cards inline below the SubAgentCard. */}
+			{executionAskUsers.length > 0 && (
+				<div className="askuser-list">
+					{executionAskUsers.map(ask => {
+						// Look up the active sessionId at click time (it can change while
+						// the AskUser is still pending if the user switches sessions).
+						return (
+							<AskUserCard
+								key={ask.id}
+								askUser={ask}
+								onSubmit={(selection) => {
+									const sid = useChatStore.getState().activeAgentSessionId;
+									if (!sid) { return; }
+									void useChatStore.getState().submitAskUser(sid, ask.id, selection);
+								}}
+								onSelectionChange={(idx) => {
+									const sid = useChatStore.getState().activeAgentSessionId;
+									if (!sid) { return; }
+									useChatStore.getState().updateAskUserSelection(sid, ask.id, idx);
+								}}
+							/>
+						);
+					})}
+				</div>
+			)}
+		</div>
+	);
+});
+
+const LiveWorkflowTraceView = LiveWorkflowTraceViewRaw;
+
 export function AgentChat(): React.ReactElement {
-	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode } = useChatStore();
+	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode, activeAgentSessionId, liveWorkflowExecutions, liveAskUsers, liveWorkflowEvents } = useChatStore();
 	const { agents, selectedAgentId, selectAgent } = useAgentStore();
 	const { selection, loadSelectionForAgent } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -221,6 +323,12 @@ export function AgentChat(): React.ReactElement {
 	const [showMessageNav, setShowMessageNav] = useState(false);
 	const messageNavRef = useRef<HTMLDivElement>(null);
 	const messageNavTriggerRef = useRef<HTMLButtonElement>(null);
+	// ── Worktree dropdown (切换 agent 处理的目录) ───────────────────
+	const [worktrees, setWorktrees] = useState<Array<{ path: string; branch: string; repoRoot?: string; repoName?: string }>>([]);
+	const [showWorktreeMenu, setShowWorktreeMenu] = useState(false);
+	const [currentWorktreePath, setCurrentWorktreePath] = useState<string | null>(null);
+	const worktreeMenuRef = useRef<HTMLDivElement>(null);
+	const worktreeMenuTriggerRef = useRef<HTMLButtonElement>(null);
 	// Track previous agent to detect agent switches (used by useLayoutEffect below)
 	const prevAgentIdRef = useRef<string | null>(activeAgentId);
 	// Agent selector dropdown
@@ -442,6 +550,93 @@ export function AgentChat(): React.ReactElement {
 		document.addEventListener('mousedown', handleClickOutside);
 		return () => document.removeEventListener('mousedown', handleClickOutside);
 	}, [showMessageNav]);
+
+	// ── Worktree 列表加载 ─────────────────────────────────────
+	useEffect(() => {
+		let cancelled = false;
+		const loadWorktrees = async () => {
+			const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+			if (!workspaceId) {
+				setWorktrees([]);
+				setCurrentWorktreePath(null);
+				return;
+			}
+			try {
+				const list = await sendRequest<{ workspaceId: string }, Array<{ path: string; branch: string; repoRoot?: string; repoName?: string }>>(
+					'worktree.list', { workspaceId },
+				);
+				if (cancelled) { return; }
+				const wts = Array.isArray(list) ? list : [];
+				setWorktrees(wts);
+				// 默认选中当前 workspace 所在 worktree
+				const ws = useWorkspaceStore.getState().workspaces.find(w => w.id === workspaceId);
+				if (ws?.worktreePath) {
+					setCurrentWorktreePath(ws.worktreePath);
+				} else if (wts.length > 0) {
+					// fallback: main worktree (isMain=true) 或第一条
+					const main = wts.find(w => w.path === ws?.worktreePath) || wts[0];
+					setCurrentWorktreePath(main.path);
+				} else {
+					setCurrentWorktreePath(null);
+				}
+			} catch (err) {
+				console.warn('[AgentChat] worktree.list failed:', err);
+				if (!cancelled) {
+					setWorktrees([]);
+					setCurrentWorktreePath(null);
+				}
+			}
+		};
+		loadWorktrees();
+		return () => { cancelled = true; };
+	}, [activeAgentId]);
+
+	// 监听 worktree.changed / agent.worktree.changed 事件刷新
+	useEffect(() => {
+		const handler = (e: Event) => {
+			const detail = (e as CustomEvent).detail as { workspaceId?: string; agentId?: string; worktreePath?: string; worktreeBranch?: string };
+			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) { return; }
+			if (detail?.worktreePath) { setCurrentWorktreePath(detail.worktreePath); }
+		};
+		window.addEventListener('agentStudio:agent-worktree-changed', handler);
+		window.addEventListener('agentStudio:worktree-changed', handler as EventListener);
+		return () => {
+			window.removeEventListener('agentStudio:agent-worktree-changed', handler);
+			window.removeEventListener('agentStudio:worktree-changed', handler as EventListener);
+		};
+	}, []);
+
+	// Close worktree menu on outside click
+	useEffect(() => {
+		if (!showWorktreeMenu) { return; }
+		const handleClickOutside = (e: MouseEvent) => {
+			if (
+				worktreeMenuRef.current && !worktreeMenuRef.current.contains(e.target as Node) &&
+				worktreeMenuTriggerRef.current && !worktreeMenuTriggerRef.current.contains(e.target as Node)
+			) {
+				setShowWorktreeMenu(false);
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		return () => document.removeEventListener('mousedown', handleClickOutside);
+	}, [showWorktreeMenu]);
+
+	const handleSelectWorktree = useCallback(async (wt: { path: string; branch: string }) => {
+		const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+		if (!workspaceId || !activeAgentId) { return; }
+		setCurrentWorktreePath(wt.path);
+		setShowWorktreeMenu(false);
+		try {
+			await sendRequest('agent.worktree.switch', {
+				workspaceId,
+				agentId: activeAgentId,
+				worktreePath: wt.path,
+				worktreeBranch: wt.branch,
+			});
+		} catch (err) {
+			console.warn('[AgentChat] agent.worktree.switch failed:', err);
+		}
+	}, [activeAgentId]);
 
 	// Listen for AI decomposition progress events and display in chat
 	useEffect(() => {
@@ -844,6 +1039,62 @@ export function AgentChat(): React.ReactElement {
 					)}
 
 					<div className="chat-header-actions">
+						{/* Worktree 下拉：切换 agent 处理的目录 */}
+						<div className="chat-header-worktree" style={{ position: 'relative' }}>
+							<button
+								ref={worktreeMenuTriggerRef}
+								className={`chat-header-worktree-btn ${showWorktreeMenu ? 'active' : ''}`}
+								title={currentWorktreePath ? `当前 Worktree: ${currentWorktreePath}` : '选择 Worktree'}
+								onClick={() => setShowWorktreeMenu(!showWorktreeMenu)}
+								disabled={worktrees.length === 0}
+							>
+								<svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<circle cx="6" cy="6" r="2" strokeWidth={2} strokeLinecap="round" />
+									<circle cx="6" cy="18" r="2" strokeWidth={2} strokeLinecap="round" />
+									<circle cx="18" cy="6" r="2" strokeWidth={2} strokeLinecap="round" />
+									<path strokeWidth={2} strokeLinecap="round" d="M6 8v8M8 6h4a4 4 0 014 4v0" />
+								</svg>
+								<span className="chat-header-worktree-branch">
+									{(() => {
+										const cur = worktrees.find(w => w.path === currentWorktreePath);
+										return cur?.branch || (worktrees[0]?.branch ?? 'Worktree');
+									})()}
+								</span>
+								<svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<polyline points="6 9 12 15 18 9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+								</svg>
+							</button>
+							{showWorktreeMenu && worktrees.length > 0 && (
+								<div className="chat-worktree-dropdown" ref={worktreeMenuRef}>
+									<div className="chat-worktree-dropdown-header">切换 Worktree</div>
+									<div className="chat-worktree-dropdown-list">
+										{worktrees.map(wt => (
+											<div
+												key={wt.path}
+												className={`chat-worktree-dropdown-item ${wt.path === currentWorktreePath ? 'active' : ''}`}
+												onClick={() => handleSelectWorktree(wt)}
+												title={wt.path}
+											>
+												<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+													<circle cx="6" cy="6" r="2" strokeWidth={2} />
+													<circle cx="6" cy="18" r="2" strokeWidth={2} />
+													<path strokeWidth={2} d="M6 8v8" />
+												</svg>
+												<div className="chat-worktree-dropdown-info">
+													<span className="chat-worktree-dropdown-branch">{wt.branch}</span>
+													<span className="chat-worktree-dropdown-path">{wt.path}</span>
+												</div>
+												{wt.path === currentWorktreePath && (
+													<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+														<polyline points="20 6 9 17 4 12" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+													</svg>
+												)}
+											</div>
+										))}
+									</div>
+								</div>
+							)}
+						</div>
 						{/* 会话消息列表下拉 */}
 						<div className="chat-header-message-nav" style={{ position: 'relative' }}>
 							<button
@@ -957,8 +1208,21 @@ export function AgentChat(): React.ReactElement {
 							/>
 						)}
 
+						{/* ── P4: live workflow execution trace (owner-agent chat) ──────── */}
+						{activeAgentSessionId && liveWorkflowExecutions[activeAgentSessionId] && (
+							<LiveWorkflowTraceView
+								execution={liveWorkflowExecutions[activeAgentSessionId]}
+								askUsers={liveAskUsers[activeAgentSessionId] ?? []}
+							/>
+						)}
+
 						<div ref={messagesEndRef} />
 					</div>
+
+					{/* v5b: execution timeline panel (bottom-anchored) */}
+					{activeAgentSessionId && (liveWorkflowEvents[activeAgentSessionId]?.length ?? 0) > 0 && (
+						<ExecutionTimelinePanel sessionId={activeAgentSessionId} />
+					)}
 
 					{/* Scroll-to-bottom button: always in DOM, visibility via React state */}
 					<button

@@ -49,6 +49,13 @@ export interface IStoredWorkflow extends IWorkflow {
 	nodes?: WorkflowGraphNode[];
 	/** 节点图连接列表（ReactFlow 编辑器使用） */
 	connections?: WorkflowGraphConnection[];
+
+	/**
+	 * v5a: workflow-level breakpoints. Persisted to the workflow JSON so
+	 * they survive page reload and apply to every subsequent run.
+	 * nodeIds reference entries in `nodes[].id`.
+	 */
+	breakpoints?: string[];
 }
 
 // ------------------------------------------------------------------------------------------------

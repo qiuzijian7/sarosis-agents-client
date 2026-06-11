@@ -67,6 +67,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		// 标签剥离 + L1 注入，避免本地流式剥离器的格式容错问题导致 L1 抓不到。
 		const rawDeltaChunks: string[] = [];
 
+		// 临时 worktreePath 覆盖的原始值（per-task），finally 块中恢复用。
+		let originalBindingWorktreePath: string | undefined;
+
 		// Step 1 计算出的召回作用域选项 —— 同时被 Step 1 (loadContext) 和
 		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 agent 配置。
 		let resolvedMemoryScope: 'agent' | 'workspace' | 'global' = 'agent';
@@ -280,9 +283,37 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 
 				// 注入工作区上下文，让模型始终知晓当前工作区信息
-				const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId);
+				const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId, request.worktreePath);
 				if (workspaceContext) {
 					mergedSystemPrompt = mergedSystemPrompt + '\n\n' + workspaceContext;
+				}
+
+				// ── 临时覆盖 AgentBinding.worktreePath（per-task 优先）────────────
+				// 当 TaskBoardRecord 指定了 worktreePath 但 agent 绑定未配置时，
+				// 需要临时注入到 binding，使 builtinToolProvider 的工具 cwd 解析
+				// 也跟随任务的工作区，而非绑定的全局配置。
+				// 执行结束后在 finally 中恢复。
+				if (request.worktreePath) {
+					try {
+						const workspaceId = await this._resolveWorkspaceId(request.sessionId);
+						if (workspaceId) {
+							const binding = await this._resolveBinding(request.agentId, request.sessionId);
+							originalBindingWorktreePath = binding?.worktreePath;
+							if (binding && originalBindingWorktreePath !== request.worktreePath) {
+								await this._agentStudioService.upsertAgentBinding(
+									workspaceId,
+									request.agentId,
+									{ worktreePath: request.worktreePath },
+								);
+								this._logService.info(`[AgentDriver] Temporarily set binding.worktreePath="${request.worktreePath}" for task execution`);
+							} else {
+								originalBindingWorktreePath = undefined; // 无需恢复
+							}
+						}
+					} catch (err) {
+						this._logService.warn('[AgentDriver] Failed to temporarily set binding worktreePath:', err);
+						originalBindingWorktreePath = undefined;
+					}
 				}
 
 				if (allSkills.length > 0) {
@@ -819,6 +850,23 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		} finally {
 			this._activeTurns.delete(turnId);
 
+			// ── 恢复 AgentBinding.worktreePath ─────────────────────────
+			if (originalBindingWorktreePath !== undefined) {
+				try {
+					const workspaceId = await this._resolveWorkspaceId(request.sessionId);
+					if (workspaceId) {
+						await this._agentStudioService.upsertAgentBinding(
+							workspaceId,
+							request.agentId,
+							{ worktreePath: originalBindingWorktreePath || undefined },
+						);
+						this._logService.info(`[AgentDriver] Restored binding.worktreePath="${originalBindingWorktreePath || '(none)'}" after task execution`);
+					}
+				} catch (err) {
+					this._logService.warn('[AgentDriver] Failed to restore binding worktreePath:', err);
+				}
+			}
+
 			// Step 5: 写回记忆（放在 finally 确保即使 generator 被外层提前终止也能执行）
 			// ⚠ 关键：必须连续写两条——user 一条 + assistant 一条，
 			// 这样下游 Memory Provider（如 tdb-am-memory）才能配对成完整一轮，
@@ -959,7 +1007,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 * Also includes a sandbox rule: the agent may ONLY operate within the
 	 * resolved working directory tree.
 	 */
-	private async _buildWorkspaceContext(agentId: string, sessionId?: string): Promise<string | undefined> {
+	private async _buildWorkspaceContext(agentId: string, sessionId?: string, taskWorktreePath?: string): Promise<string | undefined> {
 		try {
 			const workspaceId = await this._resolveWorkspaceId(sessionId);
 			if (!workspaceId) {
@@ -973,7 +1021,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 			const binding = await this._resolveBinding(agentId, sessionId);
 
-			// ── 优先：agent 实例绑定的 worktree 即其工作沙盒 ──────────────
+			// ── 最高优先级：per-task worktreePath（来自 TaskBoardRecord）────────
+			if (taskWorktreePath) {
+				const worktreeRoot = taskWorktreePath.replace(/[\\/]+$/, '');
+				this._logService.info(`[AgentDriver] Task overrides worktree for agent ${agentId}, working dir = "${worktreeRoot}"`);
+				return this._composeWorkspaceContextText(workspace.name, worktreeRoot, /* isWorktree */ true);
+			}
+
+			// ── 次优先：agent 实例绑定的 worktree 即其工作沙盒 ──────────────
 			// 绑定 worktree 的 agent 完全运行在该 worktree 目录（独立分支）内，
 			// 与主仓 checkout 隔离。此时工作根 = worktreePath，且【跳过】下面的
 			// auto-sync（否则会被 VS Code 当前打开文件夹覆盖回去），与工具沙箱
@@ -1136,6 +1191,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			messages: [...(priorMessages ?? []), userMessage],
 			systemPrompt: options.systemPrompt,
 			explicitSkillIds: options.explicitSkillIds,
+			worktreePath: options.worktreePath,
 			options: {
 				temperature: options.temperature,
 				reasoning: options.reasoning,

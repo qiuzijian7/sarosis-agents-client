@@ -26,6 +26,7 @@ import {
 } from "../common/agentStudio.js";
 import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
+import { IWorkflowExecutionService } from "../common/workflowExecutionService.js";
 import { IAgentStudioWebviewPool } from "./agentStudioWebviewPool.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
 import {
@@ -199,6 +200,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
+		@IWorkflowExecutionService private readonly workflowExecutionService: IWorkflowExecutionService,
 		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
 	) {
 		super();
@@ -248,6 +250,62 @@ export class AgentStudioWebviewController extends Disposable {
 					messageId: checkpoint.messageId,
 					files: checkpoint.files,
 				});
+			}),
+		);
+
+		// Workflow execution: forward status updates and node state changes to webview
+		// so the editor can show progress (current node, breakpoints, completion).
+		// Always send the full IWorkflowExecutionState snapshot so the webview's
+		// flat-detail handler (executionId/status/currentNodeId/nodeStates/breakpoints)
+		// gets everything it needs in one event.
+		const serializeExecutionState = (state: import('../common/workflowExecutionService.js').IWorkflowExecutionState) => ({
+			executionId: state.executionId,
+			workflowId: state.workflowId,
+			status: state.status,
+			currentNodeId: state.currentNodeId,
+			startTime: state.startTime,
+			endTime: state.endTime,
+			error: state.error,
+			nodeStates: Object.fromEntries(state.nodeStates),
+			breakpoints: state.breakpoints ? Array.from(state.breakpoints) : undefined,
+		});
+
+		const sendFullStateFor = (executionId: string): boolean => {
+			const fullState = this.workflowExecutionService.getExecutionState(executionId);
+			if (!fullState) {
+				return false;
+			}
+			this._sendEvent('workflow.executionUpdate', serializeExecutionState(fullState));
+			return true;
+		};
+
+		this._register(
+			this.workflowExecutionService.onDidExecutionStatusChange((state) => {
+				this._sendEvent('workflow.executionUpdate', serializeExecutionState(state));
+			}),
+		);
+		this._register(
+			this.workflowExecutionService.onDidNodeExecutionStatusChange((e) => {
+				sendFullStateFor(e.executionId);
+			}),
+		);
+		this._register(
+			this.workflowExecutionService.onDidChangeBreakpoints((e) => {
+				if (!sendFullStateFor(e.executionId)) {
+					// No matching execution (e.g. execution already cleared) — send minimal payload
+					this._sendEvent('workflow.executionUpdate', {
+						executionId: e.executionId,
+						breakpoints: e.nodeIds,
+					});
+				}
+			}),
+		);
+
+		// P4: forward fine-grained trace events to webview so the workflow
+		// owner agent's chat can render subagent cards.
+		this._register(
+			this.workflowExecutionService.onDidExecutionTrace((trace) => {
+				this._sendEvent('workflow.executionTrace', { ...trace });
 			}),
 		);
 	}
@@ -780,10 +838,50 @@ export class AgentStudioWebviewController extends Disposable {
 				return { ok: true };
 
 			// ── Worktrees ───────────────────────
-			case "worktree.list":
-				return this.agentStudioService.getWorktrees(
-					p.workspaceId as string,
-				);
+			case "worktree.list": {
+				// Always use the host's active workspace ID instead of what the
+				// webview passes (webview store may lag, or may be a different
+				// workspace from what Source Control uses). This ensures the
+				// dropdown always shows the SAME worktrees as the Source Control
+				// panel (which also uses getActiveWorkspaceId).
+				const wsId = this.agentStudioService.getActiveWorkspaceId()
+					|| (p.workspaceId as string)
+					|| undefined;
+				if (!wsId) {
+					this.logService.warn('[AgentStudio] worktree.list: no workspaceId (host active + webview payload both null)');
+					return [];
+				}
+				const raw = await this.agentStudioService.getWorktrees(wsId);
+				// Normalize IWorktreeDetail → { path, branch, repoRoot?, repoName? }
+				// `branch` is optional (detached HEAD), fall back to `name`.
+				return raw.map((wt: any) => ({
+					path: wt.path,
+					branch: wt.branch || wt.name || 'HEAD',
+					repoRoot: wt.repoRoot,
+					repoName: wt.repoName,
+				}));
+			}
+			case "agent.worktree.switch": {
+				const workspaceId = (p.workspaceId as string) || this.agentStudioService.getActiveWorkspaceId() || undefined;
+				const agentId = (p.agentId as string) || undefined;
+				const worktreePath = p.worktreePath as string | undefined;
+				const worktreeBranch = p.worktreeBranch as string | undefined;
+				if (!workspaceId || !agentId || !worktreePath) {
+					throw new Error('agent.worktree.switch requires workspaceId, agentId, worktreePath');
+				}
+				await this.agentStudioService.upsertAgentBinding(workspaceId, agentId, {
+					worktreePath,
+					worktreeBranch,
+				});
+				// Notify webview so dropdown + other panels refresh
+				this._sendEvent('agent.worktree.changed', {
+					workspaceId,
+					agentId,
+					worktreePath,
+					worktreeBranch,
+				});
+				return undefined;
+			}
 			// ─── Connections ────────────────────────────────────────
 			case "workspace.connections.list":
 				return this.agentStudioService.getConnections(p.workspaceId as string);
@@ -1229,15 +1327,43 @@ export class AgentStudioWebviewController extends Disposable {
 			case "skills.list":
 				return this._handleSkillsList();
 
-			// ─── Workflow Editor ──────────────────────────────────
-			case "workflow.get": {
-				const wp = p as unknown as { id: string; workspaceId?: string };
-				return this._handleWorkflowGet(wp);
-			}
-			case "workflow.save": {
-				const ws = p as unknown as { workflow: Record<string, unknown>; workspaceId?: string };
-				return this._handleWorkflowSave(ws);
-			}
+		// ─── Workflow Editor ──────────────────────────────────
+		case "workflow.get": {
+			const wp = p as unknown as { id: string; workspaceId?: string };
+			return this._handleWorkflowGet(wp);
+		}
+		case "workflow.save": {
+			const ws = p as unknown as { workflow: Record<string, unknown>; workspaceId?: string };
+			return this._handleWorkflowSave(ws);
+		}
+		case "workflow.execute": {
+			const ep = p as unknown as { workflowId: string; agentId?: string; context?: Record<string, unknown> };
+			return this._handleWorkflowExecute(ep);
+		}
+		case "workflow.resume": {
+			const rp = p as unknown as { executionId: string; userInput: string | string[] };
+			return this._handleWorkflowResume(rp);
+		}
+		case "workflow.cancel": {
+			const cp = p as unknown as { executionId: string };
+			return this._handleWorkflowCancel(cp);
+		}
+		case "workflow.breakpoint.set": {
+			const bp = p as unknown as { workflowId: string; nodeId: string; executionId?: string };
+			return this._handleWorkflowBreakpointSet(bp);
+		}
+		case "workflow.breakpoint.clear": {
+			const bp = p as unknown as { workflowId: string; nodeId: string; executionId?: string };
+			return this._handleWorkflowBreakpointClear(bp);
+		}
+		case "workflow.breakpoint.get": {
+			const bp = p as unknown as { workflowId: string };
+			return this._handleWorkflowBreakpointGet(bp);
+		}
+		case "workflow.list": {
+			const lp = p as unknown as { workspaceId?: string };
+			return this._handleWorkflowList(lp);
+		}
 
 			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
 			case "memory.listL0": {
@@ -3398,10 +3524,29 @@ export class AgentStudioWebviewController extends Disposable {
 	 */
 	private async _handleWorkflowSave(payload: { workflow: Record<string, unknown>; workspaceId?: string }): Promise<{ success: boolean }> {
 		try {
-			const wf = payload.workflow as { id: string };
+			const wf = payload.workflow as { id: string; name?: string };
 			if (!wf.id) {
 				return { success: false };
 			}
+
+			// v9: if the name changed, also rename the bound agent so they stay in sync.
+			if (typeof wf.name === 'string') {
+				const existing = await this.workflowStorageService.getWorkflow(wf.id);
+				if (existing && existing.name !== wf.name && existing.agentId) {
+					try {
+						// v9: agent name = workflow name (no suffix)
+						await this.agentStudioService.updateAgent(existing.agentId, {
+							name: wf.name,
+						});
+						this.logService.info(
+							`[AgentStudioWebviewController] Synced agent name: workflow="${existing.name}" → "${wf.name}", agentId=${existing.agentId}`,
+						);
+					} catch (err) {
+						this.logService.warn('[AgentStudioWebviewController] Failed to sync agent name:', err);
+					}
+				}
+			}
+
 			await this.workflowStorageService.updateWorkflow(wf.id, payload.workflow, payload.workspaceId);
 			// Also fire an event so the workflow list sidebar refreshes
 			this._sendEvent('workflow.saved', { id: wf.id });
@@ -3409,6 +3554,114 @@ export class AgentStudioWebviewController extends Disposable {
 		} catch (err) {
 			this.logService.error('[AgentStudioWebviewController] workflow.save failed', err);
 			return { success: false };
+		}
+	}
+
+	/**
+	 * Handle `workflow.execute` — webview asks host to start executing a workflow.
+	 * Returns the execution ID; status updates are pushed via `workflow.executionUpdate` events.
+	 */
+	private async _handleWorkflowExecute(payload: { workflowId: string; agentId?: string; context?: Record<string, unknown> }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.execute: workflowId=${payload.workflowId}, agentId=${payload.agentId}`);
+			const executionId = await this.workflowExecutionService.executeWorkflow(payload.workflowId, {
+				agentId: payload.agentId,
+				context: payload.context,
+			});
+			// P4: include the owner-agent session info so the webview can
+			// auto-switch to the chat panel showing the live trace.
+			const sessionInfo = this.workflowExecutionService.getExecutionSession(executionId);
+			return sessionInfo
+				? { executionId, sessionInfo }
+				: { executionId };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.execute failed', err);
+			throw err;
+		}
+	}
+
+	/**
+	 * Handle `workflow.resume` — webview provides user input for a paused execution
+	 * (e.g. AskUser node response, or resume after breakpoint).
+	 */
+	private async _handleWorkflowResume(payload: { executionId: string; userInput: string | string[] }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.resume: executionId=${payload.executionId}`);
+			await this.workflowExecutionService.resumeExecution(payload.executionId, payload.userInput);
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.resume failed', err);
+			throw err;
+		}
+	}
+
+	/**
+	 * Handle `workflow.cancel` — webview asks host to cancel a running execution.
+	 */
+	private async _handleWorkflowCancel(payload: { executionId: string }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.cancel: executionId=${payload.executionId}`);
+			await this.workflowExecutionService.cancelExecution(payload.executionId);
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.cancel failed', err);
+			throw err;
+		}
+	}
+
+	/**
+	 * v5a: Persist a breakpoint on a workflow node. Optionally applies it to
+	 * a running execution for immediate effect.
+	 */
+	private async _handleWorkflowBreakpointSet(payload: { workflowId: string; nodeId: string; executionId?: string }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.breakpoint.set: workflowId=${payload.workflowId}, nodeId=${payload.nodeId}`);
+			await this.workflowExecutionService.setWorkflowBreakpoint(payload.workflowId, payload.nodeId, payload.executionId);
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.breakpoint.set failed', err);
+			throw err;
+		}
+	}
+
+	private async _handleWorkflowBreakpointClear(payload: { workflowId: string; nodeId: string; executionId?: string }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.breakpoint.clear: workflowId=${payload.workflowId}, nodeId=${payload.nodeId}`);
+			await this.workflowExecutionService.clearWorkflowBreakpoint(payload.workflowId, payload.nodeId, payload.executionId);
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.breakpoint.clear failed', err);
+			throw err;
+		}
+	}
+
+	private async _handleWorkflowBreakpointGet(payload: { workflowId: string }): Promise<Record<string, unknown> | null> {
+		try {
+			const nodeIds = await this.workflowExecutionService.getWorkflowBreakpoints(payload.workflowId);
+			return { success: true, breakpoints: nodeIds };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.breakpoint.get failed', err);
+			throw err;
+		}
+	}
+
+	/**
+	 * v10: Handle `workflow.list` — return all workflows, optionally filtered by workspace.
+	 */
+	private async _handleWorkflowList(payload: { workspaceId?: string }): Promise<Record<string, unknown> | null> {
+		try {
+			const workflows = await this.workflowStorageService.listWorkflows(payload.workspaceId);
+			// Return a minimal subset so the webview dropdown isn't bloated.
+			return {
+				workflows: workflows.map(w => ({
+					id: w.id,
+					name: w.name,
+					agentId: w.agentId,
+				})),
+			};
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.list failed', err);
+			throw err;
 		}
 	}
 

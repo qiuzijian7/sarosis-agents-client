@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 
 /**
  * Workflow Run → Prompt Injection Chain Tests
@@ -59,7 +59,7 @@ class MockWebviewController {
 
 	/** Replicates the subscription in agentStudioWebviewController.ts */
 	subscribeToInjectPrompt(service: MockAgentStudioService): void {
-		service.onDidRequestInjectPrompt(({ agentId, message }) => {
+		service.onDidRequestInjectPrompt(({ agentId, message }: { agentId: string; message: string }) => {
 			// Only the chat panel should handle prompt injection
 			if (this.panelType !== 'chat') { return; }
 			// Only inject if this panel is showing the target agent (or no agent is active yet)
@@ -111,7 +111,7 @@ suite('Workflow Run → Prompt Injection Chain', () => {
 		const service = new MockAgentStudioService();
 		let received: { agentId: string; message: string } | undefined;
 
-		service.onDidRequestInjectPrompt(e => { received = e; });
+		service.onDidRequestInjectPrompt((e: { agentId: string; message: string }) => { received = e; });
 
 		service.requestInjectPrompt('agent-123', '# Execute Workflow: test');
 
@@ -275,7 +275,7 @@ suite('Workflow Run → Prompt Injection Chain', () => {
 		if (node.type === 'agent') {
 			lines.push(`1. 🤖 **${node.data.label}** (Agent)`);
 			lines.push(`   - Agent: ${node.data.agentId}`);
-			lines.push(`   - Model: ${node.data.agentConfig.modelId}`);
+			lines.push(`   - Model: ${node.data.agentConfig?.modelId}`);
 		}
 
 		const prompt = lines.join('\n');
@@ -300,7 +300,7 @@ suite('Workflow Run → Prompt Injection Chain', () => {
 	test('requestInjectPrompt handles large workflow prompts', () => {
 		const service = new MockAgentStudioService();
 		let received = '';
-		service.onDidRequestInjectPrompt(e => { received = e.message; });
+		service.onDidRequestInjectPrompt((e: { agentId: string; message: string }) => { received = e.message; });
 
 		const largePrompt = '# Execute Workflow: Big\n\n' + 'x'.repeat(10000);
 		service.requestInjectPrompt('a', largePrompt);

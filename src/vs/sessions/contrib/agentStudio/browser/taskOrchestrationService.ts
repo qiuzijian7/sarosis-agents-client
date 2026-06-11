@@ -1987,7 +1987,7 @@ Goal: ${goal}`;
 	async executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string },
 	): Promise<void> {
 		const assigneeId = taskInfo?.assigneeId;
 		if (!assigneeId) {
@@ -2041,7 +2041,7 @@ Goal: ${goal}`;
 			const chatMessage = await this.agentChatService.sendMessage(
 				assigneeId,
 				taskPrompt,
-				{ workspaceId, agentSessionId },
+				{ workspaceId, agentSessionId, worktreePath: taskInfo?.worktreePath },
 				(delta) => {
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {

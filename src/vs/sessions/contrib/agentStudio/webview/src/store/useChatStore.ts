@@ -15,6 +15,103 @@ import { useAgentStore } from './useAgentStore';
  */
 const PHANTOM_TOOL_NAMES = new Set<string>([]);
 
+// ─── Live Workflow Execution (P4) ──────────────────────────────────────
+// A workflow run attached to a specific owner-agent chat session. Rendered
+// as a transient <SubAgentCard> at the bottom of the chat messages list.
+// When execution ends, the run is committed as a permanent assistant message
+// with `subAgents[]` so it survives page reload via chat.history.
+
+export interface LiveWorkflowToolCall {
+	id: string;
+	name: string;
+	arguments?: string;
+	result?: string;
+	status?: 'pending' | 'running' | 'done' | 'error';
+}
+
+export interface LiveWorkflowSubAgent {
+	id: string;             // nodeId
+	name: string;           // node label
+	type: string;           // 'agent' | 'task' | 'prompt' | ...
+	task: string;
+	status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+	/** Accumulated plain text from text deltas. */
+	streamedText?: string;
+	/** Accumulated thinking/reasoning content. */
+	streamedThinking?: string;
+	/** Tool calls emitted during this node (only for agent nodes). */
+	toolCalls: LiveWorkflowToolCall[];
+	/** Final output (set on subagent_end). */
+	output?: string;
+	error?: string;
+	startTime: number;
+	endTime?: number;
+}
+
+export interface LiveWorkflowExecution {
+	executionId: string;
+	workflowName: string;
+	status: 'running' | 'completed' | 'failed' | 'cancelled';
+	currentNodeId?: string;
+	subAgents: LiveWorkflowSubAgent[];
+	startTime: number;
+	endTime?: number;
+}
+
+/**
+ * P4 v4: a single AskUser request shown as an interactive card in the workflow
+ * owner agent's chat. While `status === 'pending'` the card lets the user pick
+ * an option (or several) and submit. Once `status === 'answered'` / 'cancelled' /
+ * 'expired' the card flips to a read-only summary.
+ */
+export interface LiveWorkflowAskUser {
+	id: string;              // `${executionId}:${nodeId}` — unique across the session
+	executionId: string;
+	nodeId: string;
+	nodeName: string;
+	question: string;
+	options: IAskUserOption[];
+	multiSelect: boolean;
+	/** Indices into `options` (single-select: length 1, multi-select: ≥ 1). */
+	selectedIndices: number[];
+	status: 'pending' | 'answered' | 'cancelled' | 'expired';
+	/** Final selection (option labels) once answered. */
+	selection?: string | string[];
+	createdAt: number;
+	answeredAt?: number;
+}
+
+/** Lightweight option for AskUser card. Mirrors the host's IAskUserOption. */
+export interface IAskUserOption {
+	label: string;
+	description?: string;
+}
+
+/**
+ * v5b: a single entry in the execution timeline panel. Captured from the
+ * trace event stream (subagent_start / delta / subagent_end / ask_user /
+ * ask_user_end / execution_end). Cleared on page reload.
+ */
+export interface LiveWorkflowEvent {
+	/** Unique id (auto-generated or `${executionId}:${nodeId}:${kind}`). */
+	id: string;
+	executionId: string;
+	sessionId: string;
+	/** Wall-clock time of the event (Date.now() at capture time). */
+	timestamp: number;
+	/** Event kind (mirrors IWorkflowTraceEvent['kind']). */
+	kind: 'subagent_start' | 'delta' | 'subagent_end' | 'ask_user' | 'ask_user_end' | 'execution_end' | 'breakpoint_hit';
+	nodeId: string;
+	nodeName?: string;
+	nodeType?: string;
+	/** Optional human-readable text (delta content, ask question, error, etc.). */
+	summary?: string;
+	/** For subagent_start: the task description. */
+	task?: string;
+	/** For subagent_end: done or error. */
+	status?: string;
+}
+
 export interface ChatMessageMetadata {
 	type: 'orchestration_plan';
 	planId: string;
@@ -145,6 +242,26 @@ export interface SubAgentInfo {
 	error?: string;
 	/** Group ID for parallel batch grouping (e.g., "batch-1") */
 	groupId?: string;
+	/**
+	 * P4 v3: streamed thinking/reasoning content for this sub-agent
+	 * (Phase-2 reasoning text emitted before the final answer).
+	 */
+	thinking?: string;
+	/**
+	 * P4 v3: tool call trace from this sub-agent execution.
+	 * Each entry is a lightweight record (not a full ToolMessage):
+	 * `arguments` and `result` are pre-stringified by the host.
+	 */
+	toolTrace?: SubAgentToolCallTrace[];
+}
+
+/** Lightweight tool-call record attached to a sub-agent trace (P4 v3). */
+export interface SubAgentToolCallTrace {
+	id: string;
+	name: string;
+	arguments?: string;
+	result?: string;
+	status?: 'pending' | 'running' | 'done' | 'error';
 }
 
 export interface ChatMessage {
@@ -190,6 +307,12 @@ export interface ChatMessage {
 	questions?: SuggestedQuestion[];
 	/** Sub-agent executions (parallel or sequential) - VS Code chatSubagentContentPart pattern */
 	subAgents?: SubAgentInfo[];
+	/**
+	 * v5d: answered AskUser cards persisted alongside the workflow run.
+	 * Each entry is a completed (status='answered') LiveWorkflowAskUser.
+	 * Renders as read-only AskUserCard in the assistant message bubble.
+	 */
+	askUsers?: LiveWorkflowAskUser[];
 	/** Checkpoint data for time-travel navigation (Void-inspired) */
 	checkpoint?: CheckpointData;
 	/** User-uploaded attachments (images/files) - Void-inspired attachment support */
@@ -241,6 +364,27 @@ interface ChatState {
 	cachedMessages: Record<string, ChatMessage[]>;
 	/** Current chat mode: craft / ask / plan / workflow */
 	chatMode: 'craft' | 'ask' | 'plan' | 'workflow';
+
+	/**
+	 * P4: live workflow executions keyed by sessionId. Each entry represents
+	 * an in-progress or recently-completed workflow run whose trace is being
+	 * rendered in the chat panel. Cleared on page reload (not persisted).
+	 */
+	liveWorkflowExecutions: Record<string, LiveWorkflowExecution>;
+
+	/**
+	 * P4 v4: pending AskUser requests keyed by sessionId. Each entry is a
+	 * single request waiting for user input. Cleared on page reload (not
+	 * persisted); committed as part of the workflow run on `execution_end`.
+	 */
+	liveAskUsers: Record<string, LiveWorkflowAskUser[]>;
+
+	/**
+	 * v5b: time-ordered log of workflow events for the session timeline panel.
+	 * Capped at MAX_TIMELINE_EVENTS to avoid unbounded growth; oldest events
+	 * are dropped first.
+	 */
+	liveWorkflowEvents: Record<string, LiveWorkflowEvent[]>;
 
 	// Actions
 	setActiveAgent: (agentId: string) => void;
@@ -311,6 +455,53 @@ interface ChatState {
 	openAllCheckpointsDiff: () => void;
 	/** Get the latest non-ghost / non-kept tool_edit checkpoint (for the always-floating bar). */
 	getLatestCheckpoint: () => CheckpointData | undefined;
+
+	// ─── P4: Live workflow execution methods (v2) + AskUser (v4) ───────────
+	/** Begin a new workflow run. Called when the host fires `subagent_start` with
+	 *  the synthetic `__workflow__` root node. */
+	startWorkflowExecution: (executionId: string, sessionId: string, workflowName: string) => void;
+	/** Add a node's subagent entry to the live execution. */
+	startWorkflowSubAgent: (sessionId: string, subAgent: LiveWorkflowSubAgent) => void;
+	/** Append a streaming delta to a node's accumulated text/thinking/toolCalls. */
+	appendWorkflowTraceDelta: (sessionId: string, nodeId: string, delta: unknown) => void;
+	/** Mark a subagent as done/error. */
+	endWorkflowSubAgent: (
+		sessionId: string,
+		nodeId: string,
+		status: 'done' | 'error',
+		output?: string,
+		error?: string,
+	) => void;
+	/** Finalize a workflow run: drop from live map + (if active session matches)
+	 *  append a permanent assistant message with the SubAgentInfo trace. */
+	commitWorkflowExecution: (
+		sessionId: string,
+		status: 'completed' | 'failed' | 'cancelled',
+	) => void;
+	/** Drop a live execution without committing. */
+	discardWorkflowExecution: (sessionId: string) => void;
+
+	// v4 AskUser methods
+	/** Register a new pending AskUser request for the given session. */
+	startAskUser: (
+		sessionId: string,
+		askUser: Omit<LiveWorkflowAskUser, 'id' | 'selectedIndices' | 'status' | 'createdAt'>,
+	) => void;
+	/** Update the locally-selected option indices for a pending AskUser (pure UI). */
+	updateAskUserSelection: (sessionId: string, askUserId: string, selectedIndices: number[]) => void;
+	/** Submit the user's selection (sends `workflow.resume` and optimistically flips the card). */
+	submitAskUser: (sessionId: string, askUserId: string, selection: string | string[]) => Promise<void>;
+	/** Mark a pending AskUser as cancelled or expired. */
+	cancelAskUser: (sessionId: string, askUserId: string, status: 'cancelled' | 'expired') => void;
+
+	// v5b: Execution timeline
+	/**
+	 * Append a new event to the session timeline (capped at MAX_TIMELINE_EVENTS).
+	 * Called by the trace router for delta/subagent_start/subagent_end/ask_user etc.
+	 */
+	appendWorkflowEvent: (sessionId: string, event: Omit<LiveWorkflowEvent, 'id' | 'timestamp'>) => void;
+	/** Clear the timeline (called on execution_end / discard). */
+	clearWorkflowEvents: (sessionId: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -586,6 +777,9 @@ export const useChatStore = create<ChatState>((set, get) => {
 		decompositionProgress: {},
 		cachedMessages: {},
 		chatMode: 'craft',
+		liveWorkflowExecutions: {},
+		liveAskUsers: {},
+		liveWorkflowEvents: {},
 
 		setActiveAgent: (agentId: string) => {
 			const current = get().activeAgentId;
@@ -1557,6 +1751,372 @@ export const useChatStore = create<ChatState>((set, get) => {
 				return {
 					messages: state.messages.slice(0, targetIdx + 1),
 				};
+			});
+		},
+
+		// ─── P4: Live workflow execution handlers ─────────────────────────
+
+		/**
+		 * Begin tracking a new workflow execution. Called on `subagent_start`
+		 * with nodeId='__workflow__' (the workflow-level start event).
+		 */
+		startWorkflowExecution: (executionId: string, sessionId: string, workflowName: string) => {
+			console.log(`[ChatStore] startWorkflowExecution: executionId=${executionId} sessionId=${sessionId}`);
+			set(state => ({
+				liveWorkflowExecutions: {
+					...state.liveWorkflowExecutions,
+					[sessionId]: {
+						executionId,
+						workflowName,
+						status: 'running',
+						subAgents: [],
+						startTime: Date.now(),
+					},
+				},
+			}));
+		},
+
+		/**
+		 * Start a sub-agent (workflow node). Called when host fires
+		 * `subagent_start` with a real nodeId.
+		 */
+		startWorkflowSubAgent: (sessionId: string, subAgent: LiveWorkflowSubAgent) => {
+			console.log(`[ChatStore] startWorkflowSubAgent: sessionId=${sessionId} nodeId=${subAgent.id} name=${subAgent.name}`);
+			set(state => {
+				const exec = state.liveWorkflowExecutions[sessionId];
+				if (!exec) { return state; }
+				// If a previous entry for this node exists (e.g. from a previous run),
+				// replace it. Otherwise append.
+				const existingIdx = exec.subAgents.findIndex(sa => sa.id === subAgent.id);
+				const nextSubAgents = existingIdx >= 0
+					? exec.subAgents.map((sa, i) => i === existingIdx ? subAgent : sa)
+					: [...exec.subAgents, subAgent];
+				return {
+					liveWorkflowExecutions: {
+						...state.liveWorkflowExecutions,
+						[sessionId]: {
+							...exec,
+							currentNodeId: subAgent.id,
+							subAgents: nextSubAgents,
+						},
+					},
+				};
+			});
+		},
+
+		/**
+		 * Append a streaming delta to the active sub-agent. `delta` is a
+		 * sanitized IChatStreamDelta-like object (text/thinking/tool_start/
+		 * tool_args/tool_result/usage).
+		 */
+		appendWorkflowTraceDelta: (sessionId: string, nodeId: string, delta: any) => {
+			set(state => {
+				const exec = state.liveWorkflowExecutions[sessionId];
+				if (!exec) { return state; }
+				const subAgentIdx = exec.subAgents.findIndex(sa => sa.id === nodeId);
+				if (subAgentIdx < 0) { return state; }
+				const subAgent = exec.subAgents[subAgentIdx];
+
+				// Apply delta to the sub-agent (similar logic to AgentChatService).
+				let next: LiveWorkflowSubAgent = { ...subAgent };
+				if (delta.type === 'text' && typeof delta.content === 'string') {
+					next.streamedText = (next.streamedText ?? '') + delta.content;
+				} else if (delta.type === 'thinking' && typeof delta.content === 'string') {
+					next.streamedThinking = (next.streamedThinking ?? '') + delta.content;
+				} else if (delta.type === 'content_replace' && typeof delta.content === 'string') {
+					// upstream extracted tool calls → replace text buffer
+					next.streamedText = delta.content;
+				} else if (delta.type === 'tool_start' && delta.toolCallId && delta.toolName) {
+					const existing = next.toolCalls.find(tc => tc.id === delta.toolCallId);
+					if (!existing) {
+						next.toolCalls = [
+							...next.toolCalls,
+							{
+								id: delta.toolCallId,
+								name: delta.toolName,
+								arguments: '',
+								status: 'running',
+							},
+						];
+					}
+				} else if (delta.type === 'tool_args' && delta.toolCallId && typeof delta.content === 'string') {
+					next.toolCalls = next.toolCalls.map(tc =>
+						tc.id === delta.toolCallId
+							? { ...tc, arguments: (tc.arguments ?? '') + delta.content }
+							: tc,
+					);
+				} else if (delta.type === 'tool_result' && delta.toolCallId) {
+					next.toolCalls = next.toolCalls.map(tc =>
+						tc.id === delta.toolCallId
+							? { ...tc, result: delta.content, status: delta.success === false ? 'error' : 'done' }
+							: tc,
+					);
+				}
+
+				const newSubAgents = exec.subAgents.map((sa, i) => i === subAgentIdx ? next : sa);
+				return {
+					liveWorkflowExecutions: {
+						...state.liveWorkflowExecutions,
+						[sessionId]: {
+							...exec,
+							subAgents: newSubAgents,
+						},
+					},
+				};
+			});
+		},
+
+		/**
+		 * Mark a sub-agent as done (or error). Called on `subagent_end`.
+		 */
+		endWorkflowSubAgent: (sessionId: string, nodeId: string, status: 'done' | 'error', output?: string, error?: string) => {
+			console.log(`[ChatStore] endWorkflowSubAgent: sessionId=${sessionId} nodeId=${nodeId} status=${status}`);
+			set(state => {
+				const exec = state.liveWorkflowExecutions[sessionId];
+				if (!exec) { return state; }
+				const subAgentIdx = exec.subAgents.findIndex(sa => sa.id === nodeId);
+				if (subAgentIdx < 0) { return state; }
+				const subAgent = exec.subAgents[subAgentIdx];
+				const updated: LiveWorkflowSubAgent = {
+					...subAgent,
+					status,
+					output: output ?? subAgent.output,
+					error: error ?? subAgent.error,
+					endTime: Date.now(),
+				};
+				return {
+					liveWorkflowExecutions: {
+						...state.liveWorkflowExecutions,
+						[sessionId]: {
+							...exec,
+							subAgents: exec.subAgents.map((sa, i) => i === subAgentIdx ? updated : sa),
+						},
+					},
+				};
+			});
+		},
+
+		/**
+		 * Commit the live execution as a permanent assistant message and
+		 * remove it from the live map. Called on `execution_end`.
+		 */
+		commitWorkflowExecution: (sessionId: string, status: 'completed' | 'failed' | 'cancelled') => {
+			console.log(`[ChatStore] commitWorkflowExecution: sessionId=${sessionId} status=${status}`);
+			set(state => {
+				const exec = state.liveWorkflowExecutions[sessionId];
+				if (!exec) { return state; }
+
+				// Build a permanent assistant message carrying the subagent trace.
+				// Format subAgents as the existing SubAgentInfo shape so the
+				// SubAgentCard component renders it correctly.
+				const subAgentsForMessage = exec.subAgents
+					.filter(sa => sa.id !== '__workflow__') // skip synthetic root
+					.map(sa => ({
+						id: sa.id,
+						type: 'general' as const,
+						task: sa.task,
+						parentAgentId: state.activeAgentId ?? undefined,
+						status: sa.status === 'cancelled' ? 'cancelled' as const
+							: sa.status === 'error' ? 'error' as const
+								: sa.status === 'done' ? 'done' as const
+									: 'pending' as const,
+						progress: sa.status === 'running' ? sa.streamedText?.slice(-200) : undefined,
+						output: sa.output ?? (sa.streamedText ? sa.streamedText.slice(0, 4000) : ''),
+						error: sa.error,
+						// P4 v3: persist thinking + tool trace so the card still
+						// renders them after page reload / chat history restore.
+						thinking: sa.streamedThinking,
+						toolTrace: sa.toolCalls,
+					}));
+
+				// v5d: also capture answered AskUser cards so the run history can
+				// replay the user's choices. Filter to only 'answered' status
+				// (cancelled/expired are noise; pending would be a bug).
+				const askUsersForMessage = (state.liveAskUsers[sessionId] ?? [])
+					.filter(a => a.status === 'answered');
+
+				const assistantMessage: ChatMessage = {
+					id: `wf_run_${exec.executionId}`,
+					role: 'assistant',
+					content: `▶ Workflow run: **${exec.workflowName}** — ${status === 'completed' ? '✓ 完成' : status === 'failed' ? '✗ 失败' : '已取消'}`,
+					timestamp: new Date(exec.startTime).toISOString(),
+					subAgents: subAgentsForMessage,
+					// v5d: persist only when there are answered AskUser cards
+					// (omit the field entirely when empty to keep messages lean).
+					...(askUsersForMessage.length > 0 ? { askUsers: askUsersForMessage } : {}),
+				};
+
+				// Drop from live map (keep the message permanently in `messages`).
+				const nextLive = { ...state.liveWorkflowExecutions };
+				const nextAsk = { ...state.liveAskUsers };
+				const nextEvents = { ...state.liveWorkflowEvents };
+				delete nextLive[sessionId];
+				delete nextAsk[sessionId];
+				// Keep events for post-mortem viewing; just cap by executionId
+				// when the user navigates away. For now, also clear them so
+				// the panel doesn't show stale data after a fresh run.
+				delete nextEvents[sessionId];
+
+				// Only append if the active session matches; if user switched away
+				// during the run, skip appending to avoid polluting another session.
+				if (state.activeAgentSessionId !== sessionId) {
+					return { liveWorkflowExecutions: nextLive, liveAskUsers: nextAsk, liveWorkflowEvents: nextEvents };
+				}
+				return {
+					messages: [...state.messages, assistantMessage],
+					liveWorkflowExecutions: nextLive,
+					liveAskUsers: nextAsk,
+					liveWorkflowEvents: nextEvents,
+				};
+			});
+		},
+
+		/**
+		 * Drop a live execution without committing (e.g. on user cancel or
+		 * session switch). The execution's trace is lost (not persisted).
+		 */
+		discardWorkflowExecution: (sessionId: string) => {
+			set(state => {
+				if (!state.liveWorkflowExecutions[sessionId]) { return state; }
+				const next = { ...state.liveWorkflowExecutions };
+				const nextAsk = { ...state.liveAskUsers };
+				const nextEvents = { ...state.liveWorkflowEvents };
+				delete next[sessionId];
+				delete nextAsk[sessionId];
+				delete nextEvents[sessionId];
+				return { liveWorkflowExecutions: next, liveAskUsers: nextAsk, liveWorkflowEvents: nextEvents };
+			});
+		},
+
+		// ─── v5b: Execution timeline ─────────────────────────────────────
+
+		/** Cap on the number of events per session — oldest dropped first. */
+		// v5b: kept as a private constant in this module to avoid bloating the API.
+		// v5b note: declared inside the create() closure as a closure-captured const.
+		appendWorkflowEvent: (sessionId: string, event) => {
+			set(state => {
+				const list = state.liveWorkflowEvents[sessionId] ?? [];
+				const id = `${event.executionId}:${event.nodeId}:${event.kind}:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`;
+				const next = [...list, { ...event, id, timestamp: Date.now() }];
+				// Cap at 200 events per session; drop oldest.
+				const MAX_EVENTS = 200;
+				if (next.length > MAX_EVENTS) { next.splice(0, next.length - MAX_EVENTS); }
+				return { liveWorkflowEvents: { ...state.liveWorkflowEvents, [sessionId]: next } };
+			});
+		},
+
+		clearWorkflowEvents: (sessionId: string) => {
+			set(state => {
+				if (!state.liveWorkflowEvents[sessionId]) { return state; }
+				const next = { ...state.liveWorkflowEvents };
+				delete next[sessionId];
+				return { liveWorkflowEvents: next };
+			});
+		},
+
+		// ─── P4 v4: Live AskUser handlers ─────────────────────────────────
+
+		/**
+		 * Register a new pending AskUser request for the given session. The
+		 * caller is the trace router in `webview/src/index.tsx`; the AskUserCard
+		 * will render this entry and post the user's response back via
+		 * `submitAskUser`.
+		 */
+		startAskUser: (sessionId: string, askUser: Omit<LiveWorkflowAskUser, 'id' | 'selectedIndices' | 'status' | 'createdAt'>) => {
+			const id = `${askUser.executionId}:${askUser.nodeId}`;
+			console.log(`[ChatStore] startAskUser: id=${id} sessionId=${sessionId} question="${askUser.question.substring(0, 40)}"`);
+			set(state => {
+				const existing = state.liveAskUsers[sessionId] ?? [];
+				// Dedup: if an entry with the same id is already there, skip.
+				if (existing.some(a => a.id === id)) { return state; }
+				const entry: LiveWorkflowAskUser = {
+					id,
+					...askUser,
+					selectedIndices: [],
+					status: 'pending',
+					createdAt: Date.now(),
+				};
+				return {
+					liveAskUsers: {
+						...state.liveAskUsers,
+						[sessionId]: [...existing, entry],
+					},
+				};
+			});
+		},
+
+		/**
+		 * v4: update the locally-selected option indices for a pending AskUser.
+		 * Pure UI state — no network call. The actual submission happens in
+		 * `submitAskUser`.
+		 */
+		updateAskUserSelection: (sessionId: string, askUserId: string, selectedIndices: number[]) => {
+			set(state => {
+				const list = state.liveAskUsers[sessionId];
+				if (!list) { return state; }
+				const next = list.map(a => a.id === askUserId ? { ...a, selectedIndices } : a);
+				return { liveAskUsers: { ...state.liveAskUsers, [sessionId]: next } };
+			});
+		},
+
+		/**
+		 * v4: submit the user's selection. Sends `workflow.resume` to the host
+		 * (which routes to resumeExecution → unblocks pauseExecution) and
+		 * optimistically flips the card to "answered" state. If the host call
+		 * fails, the card rolls back to "pending".
+		 */
+		submitAskUser: async (sessionId: string, askUserId: string, selection: string | string[]) => {
+			// Optimistic update first.
+			set(state => {
+				const list = state.liveAskUsers[sessionId];
+				if (!list) { return state; }
+				const next = list.map(a => a.id === askUserId
+					? { ...a, status: 'answered' as const, selection, answeredAt: Date.now() }
+					: a);
+				return { liveAskUsers: { ...state.liveAskUsers, [sessionId]: next } };
+			});
+
+			// Find the entry to get executionId.
+			const entry = get().liveAskUsers[sessionId]?.find(a => a.id === askUserId);
+			if (!entry) {
+				console.warn(`[ChatStore] submitAskUser: entry ${askUserId} not found`);
+				return;
+			}
+
+			try {
+				await sendRequest('workflow.resume', {
+					executionId: entry.executionId,
+					userInput: selection,
+				});
+				console.log(`[ChatStore] submitAskUser: sent workflow.resume for ${askUserId}`);
+			} catch (err) {
+				// Rollback on failure.
+				console.error(`[ChatStore] submitAskUser: workflow.resume failed for ${askUserId}`, err);
+				set(state => {
+					const list = state.liveAskUsers[sessionId];
+					if (!list) { return state; }
+					const next = list.map(a => a.id === askUserId
+						? { ...a, status: 'pending' as const, selection: undefined, answeredAt: undefined }
+						: a);
+					return { liveAskUsers: { ...state.liveAskUsers, [sessionId]: next } };
+				});
+			}
+		},
+
+		/**
+		 * v4: mark a pending AskUser as cancelled (host fired ask_user_end
+		 * with status='cancelled', e.g. workflow was cancelled). The card flips
+		 * to a read-only "cancelled" state.
+		 */
+		cancelAskUser: (sessionId: string, askUserId: string, status: 'cancelled' | 'expired') => {
+			console.log(`[ChatStore] cancelAskUser: id=${askUserId} status=${status}`);
+			set(state => {
+				const list = state.liveAskUsers[sessionId];
+				if (!list) { return state; }
+				const next = list.map(a => a.id === askUserId && a.status === 'pending'
+					? { ...a, status, answeredAt: Date.now() }
+					: a);
+				return { liveAskUsers: { ...state.liveAskUsers, [sessionId]: next } };
 			});
 		},
 	};

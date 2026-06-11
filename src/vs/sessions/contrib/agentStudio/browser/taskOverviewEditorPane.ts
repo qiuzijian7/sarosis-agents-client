@@ -561,6 +561,21 @@ export class TaskOverviewEditorPane extends EditorPane {
 			case 'taskBoard.openOverview':
 				return undefined;
 
+			// ─── Worktrees ───────────────────────────────────────
+			case 'worktree.list': {
+				const wsId = this._agentStudioService.getActiveWorkspaceId()
+					|| (p.workspaceId as string)
+					|| undefined;
+				if (!wsId) { return []; }
+				const raw = await this._agentStudioService.getWorktrees(wsId);
+				return raw.map((wt: any) => ({
+					path: wt.path,
+					branch: wt.branch || wt.name || 'HEAD',
+					repoRoot: wt.repoRoot,
+					repoName: wt.repoName,
+				}));
+			}
+
 			default:
 				this._logService.warn(`[TaskOverviewEditorPane] Unhandled message type: ${type}`);
 				return undefined;

@@ -101,5 +101,7 @@ export interface IStoredWorkflow {
 	connections?: WorkflowGraphConnection[];
 	createdAt?: string;
 	updatedAt?: string;
+	/** v5a: workflow-level breakpoints (node IDs). Persisted to the host JSON. */
+	breakpoints?: string[];
 	[key: string]: unknown;
 }

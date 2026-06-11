@@ -686,6 +686,11 @@ export interface IAgentTurnRequest {
 	 * sessionKey（agent:<id>）"列出来传下去。Provider 自身没有能力枚举兄弟 agent。
 	 */
 	readonly memoryAllowedSessionKeys?: readonly string[];
+	/**
+	 * 任务级 worktree 路径（来自 TaskBoardRecord.worktreePath）。
+	 * 当设置时，agent 执行的工作目录应优先使用此路径（高于 AgentBinding.worktreePath）。
+	 */
+	readonly worktreePath?: string;
 }
 
 // ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────

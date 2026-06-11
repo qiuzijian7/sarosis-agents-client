@@ -5,19 +5,11 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { URI } from '../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { IAgentStudioService } from '../common/agentStudio.js';
 import { IAgentChatService } from '../common/agentStudio.js';
-import { IAgentOSService } from '../common/agentOS.js';
-import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode, WorkflowGraphConnection } from '../common/workflowStorage.js';
-import type { IWorkflowExecutionService, IWorkflowExecutionState, IWorkflowExecutionOptions, WorkflowExecutionStatus, IWorkflowNodeExecutionState, WorkflowNodeExecutionStatus, IAskUserOption } from '../common/workflowExecutionService.js';
-
-const DATA_FILE_WORKFLOW_EXECUTIONS = 'workflow-executions.json';
+import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
+import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus } from '../common/workflowExecutionService.js';
+import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption } from '../common/workflowExecutionService.js';
 
 export class WorkflowExecutionService extends Disposable implements IWorkflowExecutionService {
 	declare readonly _serviceBrand: undefined;
@@ -31,18 +23,28 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	private readonly _onDidChangeBreakpoints = this._register(new Emitter<{ executionId: string; nodeIds: string[] }>());
 	readonly onDidChangeBreakpoints: Event<{ executionId: string; nodeIds: string[] }> = this._onDidChangeBreakpoints.event;
 
+	private readonly _onDidExecutionTrace = this._register(new Emitter<IWorkflowTraceEvent>());
+	readonly onDidExecutionTrace: Event<IWorkflowTraceEvent> = this._onDidExecutionTrace.event;
+
 	private _executions = new Map<string, IWorkflowExecutionState>();
 	private _pauseResolvers = new Map<string, (value: string | string[]) => void>();
-	private _dataUri: URI | undefined;
+	/** sessionId cache: key=`${agentId}:${executionId}`, value=agentSessionId */
+	private _sessionCache = new Map<string, string>();
+	/** Per-execution session info (owner agent + new session id + workflow name) */
+	private _executionSession = new Map<string, { workflowAgentId: string; sessionId: string; workflowName: string }>();
+	/**
+	 * Per-execution pending AskUser entries (v4). Keyed by `${executionId}:${nodeId}` so we
+	 * can re-fire the trace event if a webview subscribes late. The entry also lets us
+	 * detect "ghost" pauses (resolver leaked) on cancel.
+	 */
+	private _pendingAskUser = new Map<string, {
+		executionId: string; sessionId: string; nodeId: string; nodeName: string;
+		question: string; options: IAskUserOption[]; multiSelect: boolean;
+	}>();
 
 	constructor(
-		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
-		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
-		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
 	) {
 		super();
@@ -61,7 +63,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			throw new Error(`Workflow not found: ${workflowId}`);
 		}
 
-		// Create execution state
+		// Create execution state. v5a: copy workflow-level breakpoints into the
+		// execution state so the per-node pause check picks them up.
 		const executionId = `wf_exec_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 		const executionState: IWorkflowExecutionState = {
 			executionId,
@@ -70,10 +73,63 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			nodeStates: new Map<string, IWorkflowNodeExecutionState>(),
 			startTime: new Date().toISOString(),
 			context: options?.context ?? {},
+			breakpoints: new Set<string>(workflow.breakpoints ?? []),
 		};
 
 		this._executions.set(executionId, executionState);
 		this._onDidExecutionStatusChange.fire(executionState);
+
+		// P4: Create a fresh session on the workflow's owner agent (workflow.agentId)
+		// and post a user "trigger" message. The session is where the owner chat will
+		// render subagent cards for each node executed in this run.
+		const workflowAgentId = workflow.agentId || options?.agentId;
+		if (workflowAgentId) {
+			try {
+				const meta = await this.agentChatService.createAgentSession(
+					workflowAgentId,
+					`▶ ${workflow.name || workflowId}`,
+				);
+				this._executionSession.set(executionId, {
+					workflowAgentId,
+					sessionId: meta.id,
+					workflowName: workflow.name || workflowId,
+				});
+				this._sessionCache.set(`${workflowAgentId}:${executionId}`, meta.id);
+
+				// Post trigger user message so the owner chat has a visible anchor.
+				await this.agentChatService.appendMessage(workflowAgentId, {
+					id: `wf_trigger_${executionId}`,
+					role: 'user',
+					content: `▶ Run workflow: **${workflow.name || workflowId}**\n\n${workflow.description ?? ''}`,
+					timestamp: new Date().toISOString(),
+					agentSessionId: meta.id,
+				} as any);
+
+				// Forward session info to webview so it can switch the active chat.
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_start',
+					executionId,
+					workflowAgentId,
+					sessionId: meta.id,
+					nodeId: '__workflow__',
+					nodeName: workflow.name || workflowId,
+					nodeType: 'workflow',
+					task: workflow.description || `Run workflow: ${workflow.name || workflowId}`,
+				} as any);
+
+				this.logService.info(
+					`[WorkflowExecution] Created owner-agent session ${meta.id} for ${workflowAgentId} (execution=${executionId})`,
+				);
+			} catch (err) {
+				this.logService.warn(
+					`[WorkflowExecution] Failed to create owner-agent session (continuing without chat trace): ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		} else {
+			this.logService.warn(
+				`[WorkflowExecution] Workflow has no agentId; chat trace will be skipped.`,
+			);
+		}
 
 		// Start execution (fire-and-forget)
 		this._executeWorkflowAsync(executionState, workflow, options).catch(err => {
@@ -82,6 +138,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			executionState.error = err instanceof Error ? err.message : String(err);
 			executionState.endTime = new Date().toISOString();
 			this._onDidExecutionStatusChange.fire(executionState);
+			// P4: also fire execution_end so the owner chat can mark the run as failed.
+			const ownerSession = this._executionSession.get(executionId);
+			if (ownerSession) {
+				this._onDidExecutionTrace.fire({
+					kind: 'execution_end',
+					executionId,
+					sessionId: ownerSession.sessionId,
+					status: 'failed',
+				});
+			}
 		});
 
 		return executionId;
@@ -135,10 +201,47 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		state.status = WorkflowExecutionStatus.Cancelled;
 		state.endTime = new Date().toISOString();
 		this._onDidExecutionStatusChange.fire(state);
+
+		// v4: resolve any pending AskUser pauses so the host's pauseExecution
+		// promise doesn't leak. Also fire ask_user_end so the webview card
+		// flips to "cancelled" state.
+		this._cancelPendingAskUserForExecution(executionId, 'cancelled');
+	}
+
+	/**
+	 * v4 helper: fire ask_user_end('cancelled') for every still-pending AskUser on
+	 * this execution and clean up the resolver. Called from cancelExecution().
+	 */
+	private _cancelPendingAskUserForExecution(
+		executionId: string,
+		status: 'cancelled',
+	): void {
+		for (const [key, entry] of this._pendingAskUser.entries()) {
+			if (entry.executionId !== executionId) { continue; }
+			this._pendingAskUser.delete(key);
+			this._onDidExecutionTrace.fire({
+				kind: 'ask_user_end',
+				executionId,
+				sessionId: entry.sessionId,
+				nodeId: entry.nodeId,
+				status,
+			});
+		}
+		// If the resolver for this execution is still parked (AskUser pause was
+		// never answered), resolve it with empty string so pauseExecution() unblocks.
+		const resolver = this._pauseResolvers.get(executionId);
+		if (resolver) {
+			resolver('');
+			this._pauseResolvers.delete(executionId);
+		}
 	}
 
 	getExecutionState(executionId: string): IWorkflowExecutionState | undefined {
 		return this._executions.get(executionId);
+	}
+
+	getExecutionSession(executionId: string): { workflowAgentId: string; sessionId: string; workflowName: string } | undefined {
+		return this._executionSession.get(executionId);
 	}
 
 	getActiveExecutions(): IWorkflowExecutionState[] {
@@ -181,6 +284,50 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		return Array.from(state.breakpoints);
 	}
 
+	// ─── v5a: Workflow-level breakpoints (persist across runs) ───────────
+
+	/**
+	 * Set a breakpoint at the workflow level. Persists to the workflow JSON
+	 * via the storage service. If `executionId` is provided, also applies to
+	 * the running execution for immediate effect.
+	 */
+	async setWorkflowBreakpoint(workflowId: string, nodeId: string, executionId?: string): Promise<void> {
+		this.logService.info(`[WorkflowExecution] setWorkflowBreakpoint: workflowId=${workflowId}, nodeId=${nodeId}, executionId=${executionId ?? 'none'}`);
+		const workflow = await this.workflowStorage.getWorkflow(workflowId);
+		if (!workflow) {
+			throw new Error(`Workflow not found: ${workflowId}`);
+		}
+		const current = new Set(workflow.breakpoints ?? []);
+		if (current.has(nodeId)) { return; } // already set, no-op
+		current.add(nodeId);
+		await this.workflowStorage.updateWorkflow(workflowId, { breakpoints: Array.from(current) });
+		// Apply to running execution if any.
+		if (executionId) {
+			try { this.setBreakpoint(executionId, nodeId); } catch { /* execution may have ended */ }
+		}
+	}
+
+	async clearWorkflowBreakpoint(workflowId: string, nodeId: string, executionId?: string): Promise<void> {
+		this.logService.info(`[WorkflowExecution] clearWorkflowBreakpoint: workflowId=${workflowId}, nodeId=${nodeId}, executionId=${executionId ?? 'none'}`);
+		const workflow = await this.workflowStorage.getWorkflow(workflowId);
+		if (!workflow) {
+			throw new Error(`Workflow not found: ${workflowId}`);
+		}
+		const current = new Set(workflow.breakpoints ?? []);
+		if (!current.has(nodeId)) { return; }
+		current.delete(nodeId);
+		await this.workflowStorage.updateWorkflow(workflowId, { breakpoints: Array.from(current) });
+		if (executionId) {
+			try { this.clearBreakpoint(executionId, nodeId); } catch { /* execution may have ended */ }
+		}
+	}
+
+	async getWorkflowBreakpoints(workflowId: string): Promise<string[]> {
+		const workflow = await this.workflowStorage.getWorkflow(workflowId);
+		if (!workflow) { return []; }
+		return workflow.breakpoints ?? [];
+	}
+
 	// --------------------------------------------------------------------------------------------
 	// Execution Engine
 	// --------------------------------------------------------------------------------------------
@@ -218,6 +365,23 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			executionState.endTime = new Date().toISOString();
 			this._onDidExecutionStatusChange.fire(executionState);
 			this.logService.info(`[WorkflowExecution] Execution ${executionState.executionId} completed`);
+		}
+
+		// P4: fire execution_end so the owner chat can commit the final assistant message.
+		const ownerSession = this._executionSession.get(executionState.executionId);
+		if (ownerSession) {
+			const finalStatus: 'completed' | 'failed' | 'cancelled' =
+				executionState.status === WorkflowExecutionStatus.Cancelled
+					? 'cancelled'
+					: executionState.status === WorkflowExecutionStatus.Failed
+						? 'failed'
+						: 'completed';
+			this._onDidExecutionTrace.fire({
+				kind: 'execution_end',
+				executionId: executionState.executionId,
+				sessionId: ownerSession.sessionId,
+				status: finalStatus,
+			});
 		}
 	}
 
@@ -378,7 +542,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	): Promise<void> {
 		this.logService.info(`[WorkflowExecution] Executing Task node: ${node.id}`);
 		const data = node.data ?? {};
-		const taskDescription = (data.label as string) || node.name || 'Unknown Task';
+		// v9: prefer data.prompt (configured via PropertyPanel), then data.label, then node.name.
+		// Never use hardcoded fallbacks that could cause the agent to call unrelated skills.
+		const taskDescription = (data.prompt as string) || (data.label as string) || node.name || '';
 
 		// 获取 agent ID（优先使用 options 中的，否则使用 workflow 的 agentId）
 		const agentId = _options?.agentId || workflow.agentId;
@@ -434,13 +600,22 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		}
 
 		try {
+			// Get or create a session for this workflow execution to avoid cross-session leakage.
+			const sessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+			const agentSessionId = await this._getOrCreateAgentSession(
+				agentId,
+				executionState.executionId,
+				sessionName,
+			);
+
 			// 将提示作为用户消息追加到聊天历史
-			this.logService.info(`[WorkflowExecution] Appending prompt to agent ${agentId}: ${promptText.substring(0, 100)}`);
+			this.logService.info(`[WorkflowExecution] Appending prompt to agent ${agentId} (session=${agentSessionId}): ${promptText.substring(0, 100)}`);
 			await this.agentChatService.appendMessage(agentId, {
 				id: `prompt_${node.id}_${Date.now()}`,
 				role: 'user',
 				content: promptText,
 				timestamp: new Date().toISOString(),
+				agentSessionId,
 			} as any);
 
 			this.logService.info(`[WorkflowExecution] Prompt ${node.id} appended successfully`);
@@ -459,22 +634,109 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		this.logService.info(`[WorkflowExecution] Executing Agent node: ${node.id}`);
 		const data = node.data ?? {};
 		const agentId = (data.agentId as string) || options?.agentId;
+		const ownerSession = this._executionSession.get(executionState.executionId);
 
 		if (!agentId) {
 			throw new Error(`Agent node ${node.id} has no agentId`);
 		}
 
+		// v10: build prompt from node config, with task context as fallback.
+		// Only the FIRST agent node receives the taskDescription — once consumed,
+		// we clear it so subsequent nodes must use their own data.prompt.
+		let nodePrompt = (data.prompt as string) || '';
+		if (!nodePrompt) {
+			const ctx = executionState.context;
+			const consumed = (ctx?._taskConsumed as boolean) || false;
+			const taskDesc = consumed ? undefined : (ctx?.taskDescription as string | undefined);
+			if (taskDesc) {
+				nodePrompt = taskDesc;
+				// Mark the task context as consumed so subsequent agent nodes
+				// don't accidentally pick it up.
+				ctx!['_taskConsumed'] = true;
+				this.logService.info(
+					`[WorkflowExecution] Agent node ${node.id} (FIRST) using task context: "${taskDesc.substring(0, 80)}"`,
+				);
+			}
+		}
+
+		if (!nodePrompt) {
+			// No prompt configured at all — log a warning and skip execution.
+			this.logService.warn(
+				`[WorkflowExecution] Agent node ${node.id} ("${node.name || ''}") has no prompt configured — skipping execution. ` +
+				'Add a prompt via the PropertyPanel (select the node → "Prompt Template" field).',
+			);
+			if (ownerSession) {
+				// Fire subagent_start then immediately subagent_end(error) so the
+				// card renders and shows the error.
+				const nodeName = (data.label as string) || node.name || node.id;
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_start',
+					executionId: executionState.executionId,
+					workflowAgentId: ownerSession.workflowAgentId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					nodeName,
+					nodeType: 'agent',
+					task: 'No prompt configured — add a prompt in the PropertyPanel.',
+				});
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_end',
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					status: 'error',
+					error: `Agent node "${nodeName}" has no prompt configured. Open the PropertyPanel, select this node, and fill in the "Prompt Template" field.`,
+				});
+			}
+			return;
+		}
+
+		// P4: fire subagent_start so the workflow owner chat opens a subagent card
+		if (ownerSession) {
+			this._onDidExecutionTrace.fire({
+				kind: 'subagent_start',
+				executionId: executionState.executionId,
+				workflowAgentId: ownerSession.workflowAgentId,
+				sessionId: ownerSession.sessionId,
+				nodeId: node.id,
+				nodeName: (data.label as string) || node.name || node.id,
+				nodeType: 'agent',
+				task: nodePrompt.substring(0, 200),
+			});
+		}
+
 		try {
 			// 使用指定 agent 执行（发送一个继续的提示）
-			const continuePrompt = (data.prompt as string) || '请继续执行工作流任务';
-			this.logService.info(`[WorkflowExecution] Sending to agent ${agentId}: ${continuePrompt}`);
-			
+			const continuePrompt = nodePrompt;
+
+			// Get or create a session for this workflow execution to avoid cross-session leakage.
+			const sessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+			const agentSessionId = await this._getOrCreateAgentSession(
+				agentId,
+				executionState.executionId,
+				sessionName,
+			);
+
+			this.logService.info(`[WorkflowExecution] Sending to agent ${agentId} (session=${agentSessionId}): ${continuePrompt}`);
+
 			const message = await this.agentChatService.sendMessage(
 				agentId,
 				continuePrompt,
-				{ workspaceId: undefined, agentSessionId: undefined },
+				{ workspaceId: undefined, agentSessionId },
 				(delta) => {
 					this.logService.debug(`[WorkflowExecution] Agent ${node.id} delta: ${delta.content?.substring(0, 50)}`);
+
+					// P4: forward delta to owner chat as subagent progress.
+					// Strip non-serializable fields if any (delta.content is fine; metadata may be omitted).
+					if (ownerSession) {
+						this._onDidExecutionTrace.fire({
+							kind: 'delta',
+							executionId: executionState.executionId,
+							sessionId: ownerSession.sessionId,
+							nodeId: node.id,
+							delta: this._sanitizeDelta(delta),
+						});
+					}
 				},
 			);
 
@@ -484,25 +746,135 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				nodeState.output = message.content || '';
 			}
 
+			// P4: fire subagent_end so the owner chat can flip the card to "done".
+			if (ownerSession) {
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_end',
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					status: 'done',
+					output: message.content?.substring(0, 4000) || '',
+				});
+			}
+
 			this.logService.info(`[WorkflowExecution] Agent ${node.id} completed`);
 		} catch (err) {
+			// P4: surface errors to owner chat too.
+			if (ownerSession) {
+				this._onDidExecutionTrace.fire({
+					kind: 'subagent_end',
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					status: 'error',
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 			this.logService.error(`[WorkflowExecution] Agent ${node.id} failed:`, err);
 			throw err;
 		}
+	}
+
+	/**
+	 * Strip a streaming delta of any non-serializable fields before sending
+	 * it through the structured-clone boundary (host→webview). The delta has
+	 * a few well-known fields: type, content, toolCallId, toolName, etc.
+	 */
+	private _sanitizeDelta(delta: any): Record<string, unknown> {
+		if (!delta || typeof delta !== 'object') { return {}; }
+		const out: Record<string, unknown> = {};
+		const copyKeys = [
+			'type', 'content', 'toolCallId', 'toolName', 'displayName', 'renderType',
+			'defaultShow', 'arguments', 'metadata', 'progressData', 'confirmationData',
+			'todosData', 'tipsData', 'questionsData', 'references', 'usage',
+		];
+		for (const k of copyKeys) {
+			if (k in delta) { out[k] = delta[k]; }
+		}
+		return out;
+	}
+
+	/**
+	 * v11: build a human-readable session name for the workflow execution.
+	 * If the execution was triggered from a task, use "执行任务: {taskTitle}".
+	 * Otherwise fall back to "workflow-{name}".
+	 */
+	private static _buildSessionName(
+		executionState: IWorkflowExecutionState,
+		workflow: IStoredWorkflow,
+	): string {
+		const taskTitle = executionState.context?.taskTitle as string | undefined;
+		if (taskTitle) {
+			// Truncate long task titles to keep the session name readable.
+			const short = taskTitle.length > 50 ? taskTitle.substring(0, 50) + '…' : taskTitle;
+			return `执行任务: ${short}`;
+		}
+		return `workflow-${workflow.name || workflow.id}`;
+	}
+
+	/**
+	 * Get or create an agent session for a workflow execution.
+	 * Cached by (agentId, executionId) so all nodes in the same execution
+	 * for the same agent share one session.
+	 */
+	private async _getOrCreateAgentSession(
+		agentId: string,
+		executionId: string,
+		sessionName: string,
+	): Promise<string> {
+		const key = `${agentId}:${executionId}`;
+		const cached = this._sessionCache.get(key);
+		if (cached) {
+			return cached;
+		}
+
+		const meta = await this.agentChatService.createAgentSession(agentId, sessionName);
+		this._sessionCache.set(key, meta.id);
+		this.logService.info(`[WorkflowExecution] Created agent session ${meta.id} for ${agentId} (execution=${executionId})`);
+		return meta.id;
 	}
 
 	private async _executeAskUserNode(
 		executionState: IWorkflowExecutionState,
 		workflow: IStoredWorkflow,
 		node: WorkflowGraphNode,
-		adj: Map<string, { targetId: string; fromPort?: string }[]>,
+		_adj: Map<string, { targetId: string; fromPort?: string }[]>,
 	): Promise<string | string[]> {
 		this.logService.info(`[WorkflowExecution] Executing AskUser node: ${node.id}`);
 		const data = node.data ?? {};
 		const question = (data.question as string) || '请提供更多输入';
 		const options = (data.options as IAskUserOption[]) || [];
+		const multiSelect = (data.multiSelect as boolean) ?? false;
+		const ownerSession = this._executionSession.get(executionState.executionId);
 
 		try {
+			// v4: fire ask_user trace event BEFORE pausing so the webview can render
+			// an interactive card in the workflow owner agent's chat. The card will
+			// send `workflow.resume` (RPC) when the user picks an option.
+			if (ownerSession) {
+				const nodeName = (data.label as string) || node.name || node.id;
+				this._pendingAskUser.set(`${executionState.executionId}:${node.id}`, {
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					nodeName,
+					question,
+					options,
+					multiSelect,
+				});
+				this._onDidExecutionTrace.fire({
+					kind: 'ask_user',
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					nodeName,
+					question,
+					options,
+					multiSelect,
+				});
+			}
+
 			// 暂停执行并等待用户输入
 			this.logService.info(`[WorkflowExecution] Pausing for user input: ${question}`);
 			const userInput = await this.pauseExecution(
@@ -512,9 +884,33 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				options,
 			);
 
+			// v4: fire ask_user_end so the webview card flips to "answered" state.
+			if (ownerSession) {
+				this._pendingAskUser.delete(`${executionState.executionId}:${node.id}`);
+				this._onDidExecutionTrace.fire({
+					kind: 'ask_user_end',
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					status: 'answered',
+					selection: userInput,
+				});
+			}
+
 			this.logService.info(`[WorkflowExecution] User input received: ${JSON.stringify(userInput)}`);
 			return userInput;
 		} catch (err) {
+			// v4: mark the pending ask_user as expired so the card shows "failed" state.
+			if (ownerSession) {
+				this._pendingAskUser.delete(`${executionState.executionId}:${node.id}`);
+				this._onDidExecutionTrace.fire({
+					kind: 'ask_user_end',
+					executionId: executionState.executionId,
+					sessionId: ownerSession.sessionId,
+					nodeId: node.id,
+					status: 'expired',
+				});
+			}
 			this.logService.error(`[WorkflowExecution] AskUser ${node.id} failed:`, err);
 			throw err;
 		}
@@ -566,7 +962,6 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		this.logService.info(`[WorkflowExecution] Executing Condition node: ${node.id}`);
 		const data = node.data ?? {};
 		const condition = (data.condition as string) || '';
-		const branches = (data.branches as Array<{ id: string; label: string; condition: string }>) ?? [];
 
 		// TODO: Evaluate condition and select branch
 		// For now, just follow the first branch
@@ -616,17 +1011,5 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	private _getNextNodes(nodeId: string, adj: Map<string, { targetId: string; fromPort?: string }[]>): string[] {
 		const connections = adj.get(nodeId) ?? [];
 		return connections.map(c => c.targetId);
-	}
-
-	private _getDataUri(): URI {
-		if (!this._dataUri) {
-			const customPath = this.configurationService.getValue<string>('agentStudio.dataPath');
-			if (customPath) {
-				this._dataUri = URI.file(customPath);
-			} else {
-				this._dataUri = URI.joinPath((this.environmentService as any).userHome, '.agent-studio', 'data');
-			}
-		}
-		return this._dataUri;
 	}
 }

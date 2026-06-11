@@ -5,7 +5,8 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import type { IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode, WorkflowGraphConnection } from './workflowStorage.js';
+
+export const IWorkflowExecutionService = createDecorator<IWorkflowExecutionService>('workflowExecutionService');
 
 // ------------------------------------------------------------------------------------------------
 // Workflow Execution Service Interface
@@ -59,6 +60,8 @@ export interface IWorkflowExecutionService {
 	readonly onDidNodeExecutionStatusChange: Event<{ executionId: string; nodeState: IWorkflowNodeExecutionState }>;
 	/** Breakpoint changes */
 	readonly onDidChangeBreakpoints: Event<{ executionId: string; nodeIds: string[] }>;
+	/** Fine-grained trace events for chat panel rendering (P4) */
+	readonly onDidExecutionTrace: Event<IWorkflowTraceEvent>;
 
 	/**
 	 * Execute a workflow.
@@ -95,6 +98,12 @@ export interface IWorkflowExecutionService {
 	getActiveExecutions(): IWorkflowExecutionState[];
 
 	/**
+	 * Get the owner-agent chat session created for this execution (P4 chat trace).
+	 * Returns undefined if the workflow has no agentId or session creation failed.
+	 */
+	getExecutionSession(executionId: string): IWorkflowSessionInfo | undefined;
+
+	/**
 	 * Set breakpoint on a node (P2 debug feature).
 	 */
 	setBreakpoint(executionId: string, nodeId: string): void;
@@ -108,6 +117,25 @@ export interface IWorkflowExecutionService {
 	 * Get all breakpoints for an execution.
 	 */
 	getBreakpoints(executionId: string): string[];
+
+	// v5a: workflow-level breakpoints (persist across runs).
+
+	/**
+	 * Set a breakpoint on a workflow node. Persists to the workflow JSON so
+	 * it applies to the next run. Pass `executionId` to also apply it to the
+	 * running execution (if any) for immediate effect.
+	 */
+	setWorkflowBreakpoint(workflowId: string, nodeId: string, executionId?: string): Promise<void>;
+
+	/**
+	 * Clear a workflow-level breakpoint.
+	 */
+	clearWorkflowBreakpoint(workflowId: string, nodeId: string, executionId?: string): Promise<void>;
+
+	/**
+	 * Get all workflow-level breakpoints (persisted).
+	 */
+	getWorkflowBreakpoints(workflowId: string): Promise<string[]>;
 }
 
 export interface IWorkflowExecutionOptions {
@@ -120,4 +148,33 @@ export interface IWorkflowExecutionOptions {
 export interface IAskUserOption {
 	label: string;
 	description?: string;
+}
+
+// ─── Trace Event: forwarded to webview so the workflow owner agent's chat
+//     can render node execution as subagent cards + tool call list. ───
+
+/** Per-node execution trace event (one per agent node in the workflow). */
+export type IWorkflowTraceEvent =
+	/** A new subagent (workflow node) starts. */
+	| { kind: 'subagent_start'; executionId: string; workflowAgentId: string; sessionId: string;
+		nodeId: string; nodeName: string; nodeType: string; task: string }
+	/** Streaming delta from the agent model (text/thinking/tool_start/tool_args/tool_result). */
+	| { kind: 'delta'; executionId: string; sessionId: string; nodeId: string; delta: unknown }
+	/** Subagent finishes successfully. */
+	| { kind: 'subagent_end'; executionId: string; sessionId: string; nodeId: string;
+		status: 'done' | 'error'; output?: string; error?: string }
+	/** AskUser node wants user input — webview should render an interactive card. */
+	| { kind: 'ask_user'; executionId: string; sessionId: string; nodeId: string; nodeName: string;
+		question: string; options: IAskUserOption[]; multiSelect: boolean }
+	/** AskUser node has been answered (or cancelled) — webview flips card to "answered" state. */
+	| { kind: 'ask_user_end'; executionId: string; sessionId: string; nodeId: string;
+		status: 'answered' | 'cancelled' | 'expired'; selection?: string | string[] }
+	/** Whole execution finished — owner chat should commit final assistant message. */
+	| { kind: 'execution_end'; executionId: string; sessionId: string; status: 'completed' | 'failed' | 'cancelled' };
+
+/** Information about the new chat session created for a workflow run. */
+export interface IWorkflowSessionInfo {
+	workflowAgentId: string;
+	sessionId: string;
+	workflowName: string;
 }

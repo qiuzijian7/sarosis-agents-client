@@ -284,7 +284,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 					this.orchestrationService.executeTaskForBoard(
 						updated.workspaceId!,
 						id,
-						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId },
+						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath },
 					).catch(err => {
 						this.logService.warn(`[AgentStudio] TaskBoard: task execution failed for ${id}:`, err);
 					});

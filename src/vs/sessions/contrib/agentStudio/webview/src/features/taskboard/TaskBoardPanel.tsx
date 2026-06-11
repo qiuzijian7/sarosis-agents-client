@@ -13,6 +13,7 @@ import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useAgentStore } from '../../store/useAgentStore';
 import { useDelegationStore } from '../../store/useDelegationStore';
 import { useOrchestrationStore } from '../../store/useOrchestrationStore';
+import { sendRequest } from '../../bridge/messageClient';
 import { useDiagnosticsStore } from '../../store/useDiagnosticsStore';
 import { useSwarmStore } from '../../store/useSwarmStore';
 import { TaskCard } from './TaskCard';
@@ -56,16 +57,43 @@ export function TaskBoardPanel(): React.ReactElement {
 	// All agents are global (no per-workspace filtering) — `agents` already holds the full list.
 	const allAgents = agents;
 
-	// Worktree options: agents that have a worktree binding.
-	const worktreeOptions = useMemo(() =>
-		agents.filter(a => a.worktreePath).map(a => ({
-			agentId: a.id,
-			agentName: a.name,
-			worktreePath: a.worktreePath!,
-			worktreeBranch: a.worktreeBranch,
-		})),
-		[agents],
-	);
+	// Worktree options: list ALL git worktrees from the active workspace
+	// (mirrors Source Control Worktree view, not just agent-bound ones).
+	const [worktreeList, setWorktreeList] = useState<{ path: string; branch: string; repoName?: string }[]>([]);
+	const fetchWorktrees = useCallback(() => {
+		const wsId = activeWorkspaceId;
+		if (!wsId) { return Promise.resolve(); }
+		return sendRequest<{ workspaceId: string }, Array<{ path: string; branch: string; repoRoot?: string; repoName?: string }>>(
+			'worktree.list',
+			{ workspaceId: wsId },
+		).then(list => {
+			console.log(`[TaskBoardPanel] worktree.list (wsId=${wsId}) → ${list?.length ?? 0} entries:`, list);
+			setWorktreeList(
+				(list || []).map(wt => ({
+					path: wt.path,
+					branch: wt.branch,
+					repoName: wt.repoName,
+				})),
+			);
+		}).catch(err => {
+			console.warn('[TaskBoardPanel] worktree.list failed:', err);
+			setWorktreeList([]);
+		});
+	}, [activeWorkspaceId]);
+	// Re-fetch on workspace change.
+	useEffect(() => {
+		void fetchWorktrees();
+	}, [fetchWorktrees]);
+	// Refresh the worktree list whenever a worktree is created/removed elsewhere
+	// (e.g. via the Worktree Switcher in the chat header).
+	useEffect(() => {
+		const handler = () => {
+			void fetchWorktrees();
+		};
+		window.addEventListener('agentStudio:worktree-changed', handler);
+		return () => window.removeEventListener('agentStudio:worktree-changed', handler);
+	}, [fetchWorktrees]);
+	const worktreeOptions = worktreeList;
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
 	const { diagnostics, isRunning: isDiagnosticsRunning, loadDiagnostics, runDiagnostics } = useDiagnosticsStore();
@@ -88,6 +116,16 @@ export function TaskBoardPanel(): React.ReactElement {
 	// Create-task modal (opened from the 待执行/todo column's + button).
 	const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
 
+	// Re-fetch the worktree list every time the create-task modal opens,
+	// ensuring the dropdown always matches the current Source Control state
+	// (handles the case where the modal is opened before the initial load
+	// completes, or after a worktree is added/removed).
+	useEffect(() => {
+		if (isCreateTaskOpen) {
+			void fetchWorktrees();
+		}
+	}, [isCreateTaskOpen, fetchWorktrees]);
+
 	// Submit handler for the create-task form. New tasks land in the todo
 	// column ('todo' status) scoped to the currently-viewed workspace board.
 	const handleCreateTask = useCallback((data: CreateTaskFormData) => {
@@ -103,6 +141,7 @@ export function TaskBoardPanel(): React.ReactElement {
 			status: 'todo',
 			source: 'task-board',
 			workspaceId: wsId,
+			workflowId: data.workflowId,
 		});
 	}, [createTask, boardFilterWsId, activeWorkspaceId]);
 

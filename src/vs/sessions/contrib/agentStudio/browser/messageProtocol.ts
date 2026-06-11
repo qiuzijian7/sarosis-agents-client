@@ -128,6 +128,7 @@ export type RequestType =
 	| 'chat.openAllCheckpointsDiff' // open multi-file diff for all touched files (查看变更)
 	| 'chat.toolApprove'          // approve/reject a pending tool call
 	| 'worktree.list'           // list git worktrees for a workspace
+	| 'agent.worktree.switch'   // switch the active agent's binding to a different worktree path
 	| 'memory.listL0'           // list L0 raw conversation turns for an agent (TDB-AM)
 	| 'memory.listL1'           // list L1 distilled memories for an agent (TDB-AM)
 	| 'memory.deleteL0'         // hard-delete L0 record(s) by id
@@ -138,7 +139,11 @@ export type RequestType =
 	| 'workflow.execute'           // execute workflow (WebView → Host)
 	| 'workflow.pause'            // pause workflow execution (WebView → Host)
 	| 'workflow.resume'           // resume workflow execution (WebView → Host)
-	| 'workflow.cancel';          // cancel workflow execution (WebView → Host)
+	| 'workflow.cancel'           // cancel workflow execution (WebView → Host)
+	| 'workflow.breakpoint.set'   // v5a: persist a breakpoint on a workflow node (WebView → Host)
+	| 'workflow.breakpoint.clear' // v5a: clear a workflow-level breakpoint (WebView → Host)
+	| 'workflow.breakpoint.get'   // v5a: fetch persisted breakpoints (WebView → Host)
+	| 'workflow.list';            // v10: list all workflows (WebView → Host)
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -164,6 +169,7 @@ export type EventType =
 	| 'orchestration.taskUpdated'
 	| 'agentSessions.changed'      // agent session list changed (create/rename/delete/update)
 	| 'worktree.changed'          // git worktree list changed (create/remove) — refresh worktree dropdowns
+	| 'agent.worktree.changed'    // active agent's binding worktree changed (switch) — refresh dropdowns + tool roots
 	| 'configmd.sourceChanged'    // MD content updated (file watcher / external edit)
 	| 'configmd.htmlRendered'     // new HTML rendered (push to preview)
 	| 'configmd.command'          // model-issued command for HTML view
@@ -174,7 +180,8 @@ export type EventType =
 	| 'workflow.loaded'          // host sends workflow data to webview editor
 	| 'workflow.saved'           // host confirms save to webview
 	| 'workflow.stateApplied'    // host pushes AI-generated workflow state to webview editor
-	| 'workflow.executionUpdate'; // host pushes execution state updates to webview editor
+	| 'workflow.executionUpdate' // host pushes execution state updates to webview editor
+	| 'workflow.executionTrace'; // P4: host pushes subagent trace (start/delta/end) to owner agent's chat
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -981,6 +988,39 @@ export interface IWorkflowCancelPayload {
 }
 
 /**
+ * v5a: Payload for `workflow.breakpoint.set` request (WebView → Host).
+ * WebView tells the host to persist a breakpoint on a workflow node.
+ */
+export interface IWorkflowBreakpointSetPayload {
+	/** Workflow ID (the breakpoint is persisted at the workflow level). */
+	readonly workflowId: string;
+	/** Node ID within the workflow. */
+	readonly nodeId: string;
+	/**
+	 * Optional execution ID — if provided, also applies the breakpoint to
+	 * the running execution for immediate effect.
+	 */
+	readonly executionId?: string;
+}
+
+/**
+ * v5a: Payload for `workflow.breakpoint.clear` request (WebView → Host).
+ */
+export interface IWorkflowBreakpointClearPayload {
+	readonly workflowId: string;
+	readonly nodeId: string;
+	readonly executionId?: string;
+}
+
+/**
+ * v5a: Payload for `workflow.breakpoint.get` request (WebView → Host).
+ * Returns the persisted breakpoints for a workflow.
+ */
+export interface IWorkflowBreakpointGetPayload {
+	readonly workflowId: string;
+}
+
+/**
  * Payload for `workflow.executionUpdate` event (Host → WebView).
  * Host pushes execution state updates to the webview editor.
  */
@@ -1001,4 +1041,29 @@ export interface IWorkflowExecutionUpdatePayload {
 	}>;
 	/** Breakpoint node IDs. */
 	readonly breakpoints?: string[];
+}
+
+/**
+ * Payload for `workflow.executionTrace` event (Host → WebView). P4: per-node
+ * trace forwarded to the workflow owner agent's chat panel so it can render
+ * each node as a subagent card (with nested tool calls / thinking / LLM text).
+ */
+export interface IWorkflowExecutionTracePayload {
+	readonly executionId: string;
+	readonly sessionId: string;
+	readonly workflowAgentId: string;
+	/** 'subagent_start' | 'delta' | 'subagent_end' | 'execution_end' */
+	readonly kind: string;
+	/** Node id (or '__workflow__' for the overall workflow run). */
+	readonly nodeId: string;
+	/** Subagent metadata for start/end. */
+	readonly nodeName?: string;
+	readonly nodeType?: string;
+	readonly task?: string;
+	/** Stream delta payload (for kind='delta'). */
+	readonly delta?: unknown;
+	/** Final output / error (for kind='subagent_end'). */
+	readonly output?: string;
+	readonly error?: string;
+	readonly status?: string; // 'done' | 'error' | 'completed' | 'failed' | 'cancelled'
 }

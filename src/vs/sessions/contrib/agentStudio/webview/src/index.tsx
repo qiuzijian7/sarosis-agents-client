@@ -34,6 +34,125 @@ import '@xyflow/react/dist/style.css';
 // Initialize the message bridge (must happen before React mounts)
 perfTrace.mark('bundle-eval');
 initMessageClient((type, data) => {
+
+	/**
+	 * P4: route a workflow trace event from the host to the chat store.
+	 * The store maintains a `liveWorkflowExecutions[sessionId]` entry and
+	 * streams subagent deltas into it for live rendering.
+	 *
+	 * v4: also routes `ask_user` / `ask_user_end` events for interactive
+	 * cards in the workflow owner agent's chat.
+	 */
+	function routeWorkflowTrace(trace: { executionId: string; sessionId: string; workflowAgentId: string;
+		kind: string; nodeId: string; nodeName?: string; nodeType?: string;
+		task?: string; delta?: unknown; output?: string; error?: string; status?: string;
+		question?: string; options?: Array<{ label: string; description?: string }>;
+		multiSelect?: boolean; selection?: string | string[] }): void {
+		const store = useChatStore.getState();
+
+		// v5b: append non-delta events to the execution timeline.
+		const isDelta = trace.kind === 'delta';
+		if (!isDelta) {
+			let summary: string | undefined;
+			if (trace.kind === 'ask_user' && trace.question) {
+				summary = `❓ ${trace.question.substring(0, 60)}`;
+			} else if (trace.kind === 'ask_user_end') {
+				summary = `已${trace.status === 'answered' ? '回答' : trace.status === 'cancelled' ? '取消' : '过期'}`;
+			} else if (trace.kind === 'subagent_end' && trace.error) {
+				summary = `✗ ${trace.error.substring(0, 60)}`;
+			} else if (trace.kind === 'subagent_end' && trace.output) {
+				summary = `✓ ${trace.output.substring(0, 60)}`;
+			} else if (trace.kind === 'execution_end') {
+				summary = `执行结束: ${trace.status}`;
+			}
+			store.appendWorkflowEvent(trace.sessionId, {
+				executionId: trace.executionId,
+				sessionId: trace.sessionId,
+				kind: trace.kind as any,
+				nodeId: trace.nodeId,
+				nodeName: trace.nodeName,
+				nodeType: trace.nodeType,
+				task: trace.task,
+				status: trace.status,
+				summary,
+			});
+		}
+
+		if (trace.kind === 'subagent_start') {
+			if (trace.nodeId === '__workflow__') {
+				store.startWorkflowExecution(trace.executionId, trace.sessionId, trace.nodeName ?? 'Workflow');
+
+				// v6: auto-switch the chat panel to the workflow's owner agent
+				// session so the user immediately sees the execution trace.
+				// This runs in the CHAT webview (which also receives trace events).
+				// We need to set the active agent first (to load the chat panel for
+				// that agent), then switch to the specific session.
+				void (async () => {
+					try {
+						const chatStore = useChatStore.getState();
+						// Only switch if not already on this agent/session.
+						if (chatStore.activeAgentId !== trace.workflowAgentId ||
+							chatStore.activeAgentSessionId !== trace.sessionId) {
+							chatStore.setActiveAgent(trace.workflowAgentId);
+							// Give setActiveAgent a tick to propagate.
+							await new Promise(r => setTimeout(r, 50));
+							await chatStore.switchAgentSession(trace.sessionId);
+							console.log(`[trace-router] auto-switched chat to agent=${trace.workflowAgentId} session=${trace.sessionId}`);
+						}
+					} catch (err) {
+						console.warn('[trace-router] auto-switch chat failed:', err);
+					}
+				})();
+			} else {
+				store.startWorkflowSubAgent(trace.sessionId, {
+					id: trace.nodeId,
+					name: trace.nodeName ?? trace.nodeId,
+					type: trace.nodeType ?? 'agent',
+					task: trace.task ?? '',
+					status: 'running',
+					toolCalls: [],
+					startTime: Date.now(),
+				});
+			}
+		} else if (trace.kind === 'delta') {
+			store.appendWorkflowTraceDelta(trace.sessionId, trace.nodeId, trace.delta);
+		} else if (trace.kind === 'subagent_end') {
+			store.endWorkflowSubAgent(
+				trace.sessionId,
+				trace.nodeId,
+				(trace.status as 'done' | 'error') ?? 'done',
+				trace.output,
+				trace.error,
+			);
+		} else if (trace.kind === 'ask_user') {
+			// v4: register an interactive AskUser card. The card will call
+			// submitAskUser() when the user picks an option, which sends
+			// `workflow.resume` to the host.
+			store.startAskUser(trace.sessionId, {
+				executionId: trace.executionId,
+				nodeId: trace.nodeId,
+				nodeName: trace.nodeName ?? trace.nodeId,
+				question: trace.question ?? '',
+				options: trace.options ?? [],
+				multiSelect: trace.multiSelect ?? false,
+			});
+		} else if (trace.kind === 'ask_user_end') {
+			// v4: server told us the AskUser was resolved (could be 'answered'
+			// from the host firing the same end as us, or 'cancelled' / 'expired').
+			// 'answered' is also a no-op since submitAskUser already flipped the
+			// card, but we still pass through for any cross-replica case.
+			const status = (trace.status as 'answered' | 'cancelled' | 'expired') ?? 'answered';
+			if (status !== 'answered') {
+				store.cancelAskUser(trace.sessionId, `${trace.executionId}:${trace.nodeId}`, status);
+			}
+		} else if (trace.kind === 'execution_end') {
+			store.commitWorkflowExecution(
+				trace.sessionId,
+				(trace.status as 'completed' | 'failed' | 'cancelled') ?? 'completed',
+			);
+		}
+	}
+
 	switch (type) {
 		case 'chat.stream.delta':
 			handleStreamDelta(data as Parameters<typeof handleStreamDelta>[0]);
@@ -107,6 +226,11 @@ initMessageClient((type, data) => {
 			// Git worktree list changed (create/remove) — notify the worktree
 			// dropdowns (agent node card + WorktreeSwitcher) to re-fetch.
 			window.dispatchEvent(new CustomEvent('agentStudio:worktree-changed', { detail: data }));
+			break;
+		case 'agent.worktree.changed':
+			// Agent's binding worktree changed (via dropdown switch) — notify
+			// the worktree dropdown to update its current selection.
+			window.dispatchEvent(new CustomEvent('agentStudio:agent-worktree-changed', { detail: data }));
 			break;
 		case 'workspace.changed':
 			window.dispatchEvent(new CustomEvent('agentStudio:workspace-changed', { detail: data }));
@@ -369,7 +493,48 @@ initMessageClient((type, data) => {
 			if (appliedToStream || updatedCommitted) {
 				console.log(`[AgentStudio] Tool approval requested: toolCallId=${payload.toolCallId}, toolName=${payload.toolName} (stream=${appliedToStream}, committed=${updatedCommitted})`);
 			} else {
-				console.warn(`[AgentStudio] chat.toolApprovalRequest: toolCallId=${payload.toolCallId} not found in stream or messages`);
+				// v7: tool approval during workflow execution — the tool call lives
+				// in liveWorkflowExecutions (not in the chat's streamState/messages).
+				// Search all live workflow executions and auto-approve if found.
+				const liveExecs = useChatStore.getState().liveWorkflowExecutions;
+				let foundInWorkflow = false;
+				for (const [, exec] of Object.entries(liveExecs)) {
+					for (const sa of exec.subAgents) {
+						const tool = sa.toolCalls?.find(tc => tc.id === payload.toolCallId);
+						if (tool) {
+							foundInWorkflow = true;
+							console.log(`[AgentStudio] Tool approval auto-approved for workflow tool: toolCallId=${payload.toolCallId}, toolName=${payload.toolName}, subAgent=${sa.id}`);
+							// Mark the tool call in the store so the SubAgentCard can show the status.
+							useChatStore.setState(state => {
+								const newExec = { ...state.liveWorkflowExecutions };
+								for (const [sid, e] of Object.entries(newExec)) {
+									const idx = e.subAgents.findIndex(s => s.id === sa.id);
+									if (idx < 0) { continue; }
+									const sub = e.subAgents[idx];
+									const tcIdx = (sub.toolCalls ?? []).findIndex(tc => tc.id === payload.toolCallId);
+									if (tcIdx < 0) { continue; }
+									const newTC = [...(sub.toolCalls ?? [])];
+									newTC[tcIdx] = { ...newTC[tcIdx], status: 'running' };
+									newExec[sid] = {
+										...e,
+										subAgents: e.subAgents.map((s, i) => i === idx ? { ...s, toolCalls: newTC } : s),
+									};
+								}
+								return { liveWorkflowExecutions: newExec };
+							});
+							// Auto-approve (allow_once). The user already explicitly started the workflow.
+							void postMessage('chat.toolApprove', {
+								toolCallId: payload.toolCallId,
+								decision: 'allow_once',
+							});
+							break;
+						}
+					}
+					if (foundInWorkflow) { break; }
+				}
+				if (!foundInWorkflow) {
+					console.warn(`[AgentStudio] chat.toolApprovalRequest: toolCallId=${payload.toolCallId} not found in stream, messages, or live workflow executions`);
+				}
 			}
 			break;
 		}
@@ -450,25 +615,44 @@ initMessageClient((type, data) => {
 			}
 			break;
 		}
-		case 'workflow.stateApplied': {
-			// AI-driven workflow change — dispatch as custom event so the
-			// WorkflowEditorPanel can reload from the new data.
-			const payload = data as {
-				workflow: {
-					id: string;
-					name?: string;
-					description?: string;
-					nodes?: Array<Record<string, unknown>>;
-					connections?: Array<Record<string, unknown>>;
-				};
+	case 'workflow.stateApplied': {
+		// AI-driven workflow change — dispatch as custom event so the
+		// WorkflowEditorPanel can reload from the new data.
+		const payload = data as {
+			workflow: {
+				id: string;
+				name?: string;
 				description?: string;
-			} | undefined;
-			if (payload?.workflow) {
-				console.log(`[AgentStudio] workflow.stateApplied → id=${payload.workflow.id}, nodes=${payload.workflow.nodes?.length ?? 0}`);
-				window.dispatchEvent(new CustomEvent('agentStudio:workflow-state-applied', { detail: payload }));
-			}
-			break;
+				nodes?: Array<Record<string, unknown>>;
+				connections?: Array<Record<string, unknown>>;
+			};
+			description?: string;
+		} | undefined;
+		if (payload?.workflow) {
+			console.log(`[AgentStudio] workflow.stateApplied → id=${payload.workflow.id}, nodes=${payload.workflow.nodes?.length ?? 0}`);
+			window.dispatchEvent(new CustomEvent('agentStudio:workflow-state-applied', { detail: payload }));
 		}
+		break;
+	}
+	case 'workflow.executionUpdate': {
+		// Host pushed workflow execution status / node state / breakpoints update.
+		// Dispatch as a custom event so WorkflowEditorPanel can update the canvas
+		// (current node highlight, breakpoint markers, run/pause/cancel buttons).
+		console.log(`[AgentStudio] workflow.executionUpdate →`, data);
+		window.dispatchEvent(new CustomEvent('agentStudio:workflow-execution-update', { detail: data }));
+		break;
+	}
+	case 'workflow.executionTrace': {
+		// P4: host pushed per-node trace (subagent_start/delta/subagent_end/execution_end).
+		// Route to the chat store, which updates the transient live execution
+		// view rendered by the chat panel.
+		const trace = data as { executionId: string; sessionId: string; workflowAgentId: string;
+			kind: string; nodeId: string; nodeName?: string; nodeType?: string;
+			task?: string; delta?: unknown; output?: string; error?: string; status?: string };
+		console.log(`[AgentStudio] workflow.executionTrace → kind=${trace.kind} node=${trace.nodeId} session=${trace.sessionId}`);
+		routeWorkflowTrace(trace);
+		break;
+	}
 		default:
 			console.warn(`[AgentStudio] Unknown event type: ${type}`);
 	}

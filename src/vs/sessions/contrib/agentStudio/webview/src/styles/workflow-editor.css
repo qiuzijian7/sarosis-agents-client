@@ -1,0 +1,52 @@
+
+/* ── v5a: Breakpoint indicator + right-click context menu ───────────── */
+.wf-breakpoint-indicator {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	width: 14px;
+	height: 14px;
+	background: var(--vscode-charts-red, #f48771);
+	color: #fff;
+	border-radius: 50%;
+	font-size: 9px;
+	line-height: 14px;
+	text-align: center;
+	z-index: 10;
+	box-shadow: 0 0 0 2px var(--vscode-editor-background);
+}
+
+.wf-context-menu {
+	position: fixed;
+	z-index: 100;
+	background: var(--vscode-menu-background, #252526);
+	border: 1px solid var(--vscode-menu-border, #454545);
+	border-radius: 4px;
+	padding: 4px 0;
+	min-width: 140px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.wf-context-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	padding: 4px 12px;
+	background: none;
+	border: none;
+	color: var(--vscode-menu-foreground, #cccccc);
+	font-size: 12px;
+	font-family: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.wf-context-menu-item:hover {
+	background: var(--vscode-menu-selectionBackground, #094771);
+}
+
+.wf-context-menu-icon {
+	color: var(--vscode-charts-red, #f48771);
+	font-size: 10px;
+}

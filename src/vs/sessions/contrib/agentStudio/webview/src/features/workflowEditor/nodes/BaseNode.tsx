@@ -74,6 +74,15 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
 			}}
 		>
 			{children}
+			{/* v5a: Breakpoint indicator (red dot top-right corner) */}
+			{Boolean((data as Record<string, unknown>).hasBreakpoint) && (
+				<div
+					className="wf-breakpoint-indicator"
+					title="此节点已设断点 (右键 → 取消断点)"
+				>
+					●
+				</div>
+			)}
 			{showTarget && (
 				<Handle
 					type="target"

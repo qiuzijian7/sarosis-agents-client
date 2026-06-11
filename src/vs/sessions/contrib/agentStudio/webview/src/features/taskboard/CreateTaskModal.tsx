@@ -5,6 +5,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useRef, useState } from 'react';
+import { sendRequest } from '../../bridge/messageClient';
 
 export interface CreateTaskFormData {
 	title: string;
@@ -16,6 +17,8 @@ export interface CreateTaskFormData {
 	worktreePath?: string;
 	/** Ids of tasks this task depends on (must complete first). */
 	dependencies?: string[];
+	/** v10: associated workflow ID (filtered by selected agent). */
+	workflowId?: string;
 }
 
 interface CreateTaskModalProps {
@@ -26,8 +29,8 @@ interface CreateTaskModalProps {
 	agents: { id: string; name: string }[];
 	/** All existing tasks, used to populate the dependency dropdown. */
 	tasks: { id: string; title: string }[];
-	/** Available worktrees (derived from agents with worktree bindings). */
-	worktreeOptions: { agentId: string; agentName: string; worktreePath: string; worktreeBranch?: string }[];
+	/** Available worktrees for the current workspace (global, not bound to any agent). */
+	worktreeOptions: { path: string; branch: string; repoName?: string }[];
 }
 
 export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, worktreeOptions }: CreateTaskModalProps): React.ReactElement | null {
@@ -37,7 +40,10 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, work
 	const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
 	const [dependencies, setDependencies] = useState<string[]>([]);
 	const [worktreePath, setWorktreePath] = useState('');
+	const [workflowId, setWorkflowId] = useState('');
+	const [workflows, setWorkflows] = useState<{ id: string; name: string; agentId?: string }[]>([]);
 	const titleInputRef = useRef<HTMLInputElement>(null);
+	const mouseDownOnOverlay = useRef(false);
 
 	// Reset form + focus the title field each time the modal opens.
 	useEffect(() => {
@@ -48,15 +54,26 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, work
 			setPriority('medium');
 			setDependencies([]);
 			setWorktreePath('');
-			// Defer focus until after the modal paints.
+			setWorkflowId('');
+			// Fetch workflows — used to auto-select when assignee matches a workflow agent.
+			sendRequest<{ workspaceId?: string }, { workflows: { id: string; name: string; agentId?: string }[] }>('workflow.list', {})
+				.then(r => setWorkflows(r?.workflows ?? []))
+				.catch(() => setWorkflows([]));
 			setTimeout(() => titleInputRef.current?.focus(), 50);
 		}
 	}, [isOpen]);
 
+	// v10: when assignee changes, auto-select the workflow whose agentId matches.
+	const handleAssigneeChange = (agentId: string) => {
+		setAssigneeId(agentId);
+		if (!agentId) { setWorkflowId(''); return; }
+		const matched = workflows.find(w => w.agentId === agentId);
+		setWorkflowId(matched?.id ?? '');
+	};
+
 	if (!isOpen) { return null; }
 
 	const canSubmit = title.trim().length > 0;
-	const mouseDownOnOverlay = useRef(false);
 
 	// Tasks not yet selected as a dependency (avoid duplicate selection).
 	const availableDepTasks = tasks.filter(t => !dependencies.includes(t.id));
@@ -82,6 +99,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, work
 			priority,
 			worktreePath: worktreePath || undefined,
 			dependencies: dependencies.length > 0 ? dependencies : undefined,
+			workflowId: workflowId || undefined,
 		});
 		onClose();
 	};
@@ -146,7 +164,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, work
 							<select
 								className="create-task-select"
 								value={assigneeId}
-								onChange={e => setAssigneeId(e.target.value)}
+								onChange={e => handleAssigneeChange(e.target.value)}
 							>
 								<option value="">未指派</option>
 								{agents.map(emp => (
@@ -177,11 +195,16 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, work
 							onChange={e => setWorktreePath(e.target.value)}
 						>
 							<option value="">无</option>
-							{(worktreeOptions || []).map(opt => (
-								<option key={opt.agentId} value={opt.worktreePath}>
-									{opt.worktreePath} ({opt.agentName})
+							{(worktreeOptions || []).map((opt, i) => (
+								<option key={`${opt.path}-${i}`} value={opt.path}>
+									🌿 {opt.branch}{opt.repoName ? ` (${opt.repoName})` : ''}
 								</option>
 							))}
+							{(!worktreeOptions || worktreeOptions.length === 0) && (
+								<option value="" disabled>
+									当前工作区无 worktree（请在 Source Control 中创建）
+								</option>
+							)}
 						</select>
 					</label>
 

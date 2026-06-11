@@ -17,7 +17,8 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useMemo, useState } from 'react';
-import type { SubAgentInfo } from '../../store/useChatStore';
+import type { SubAgentInfo, SubAgentToolCallTrace } from '../../store/useChatStore';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 // ─── Sub-agent type configuration ─────────────────────────────────────────
 
@@ -66,6 +67,186 @@ function StatusIcon({ status }: { status: SubAgentInfo['status'] }): React.React
 			);
 	}
 }
+
+// ─── P4 v3: Thinking Block ────────────────────────────────────────────────
+// Collapsible thinking/reasoning panel inside a sub-agent row. Uses
+// MarkdownRenderer so model-emitted ```code fences``` and lists render.
+
+interface SubAgentThinkingBlockProps {
+	thinking: string;
+	isStreaming?: boolean;
+	/** Default-open when streaming, default-closed otherwise. */
+	defaultOpen?: boolean;
+}
+
+function SubAgentThinkingBlockRaw({
+	thinking,
+	isStreaming,
+	defaultOpen,
+}: SubAgentThinkingBlockProps): React.ReactElement {
+	// Auto-open while streaming; honour caller override; default closed on completion.
+	const [open, setOpen] = useState<boolean>(defaultOpen ?? !!isStreaming);
+	const preview = thinking.length > 80 ? thinking.substring(0, 80) + '…' : thinking;
+
+	return (
+		<div className={`subagent-thinking ${isStreaming ? 'streaming' : ''}`}>
+			<div
+				className="subagent-thinking-header"
+				onClick={() => setOpen(o => !o)}
+				role="button"
+				aria-expanded={open}
+			>
+				<span className="subagent-thinking-icon">💭</span>
+				<span className={`subagent-thinking-title ${isStreaming ? 'shimmer' : ''}`}>
+					{isStreaming ? '思考中…' : '思考过程'}
+				</span>
+				{!open && (
+					<span className="subagent-thinking-preview">{preview}</span>
+				)}
+				<span className={`subagent-thinking-toggle ${open ? '' : 'collapsed'}`}>
+					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+						<polyline points="6 9 12 15 18 9" />
+					</svg>
+				</span>
+			</div>
+			{open && (
+				<div className="subagent-thinking-body">
+					<MarkdownRenderer content={thinking} className="thinking-stream markdown-body" />
+				</div>
+			)}
+		</div>
+	);
+}
+
+const SubAgentThinkingBlock = memo(SubAgentThinkingBlockRaw);
+
+// ─── P4 v3: Tool Trace Block ──────────────────────────────────────────────
+// Collapsible list of lightweight tool-call rows inside a sub-agent row.
+// Each row shows status icon + tool name; click to expand arguments + result.
+
+interface SubAgentToolTraceBlockProps {
+	tools: SubAgentToolCallTrace[];
+	isStreaming?: boolean;
+}
+
+function SubAgentToolTraceBlockRaw({
+	tools,
+	isStreaming,
+}: SubAgentToolTraceBlockProps): React.ReactElement {
+	const [open, setOpen] = useState<boolean>(false);
+	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+
+	const summary = useMemo(() => {
+		const running = tools.filter(t => t.status === 'running').length;
+		const done = tools.filter(t => t.status === 'done').length;
+		const error = tools.filter(t => t.status === 'error').length;
+		const parts: string[] = [];
+		if (running > 0) { parts.push(`${running} 运行`); }
+		if (done > 0) { parts.push(`${done} 完成`); }
+		if (error > 0) { parts.push(`${error} 失败`); }
+		return parts.length > 0 ? parts.join(' · ') : `${tools.length} 个`;
+	}, [tools]);
+
+	const toggleTool = (id: string) => {
+		setExpandedTools(prev => {
+			const next = new Set(prev);
+			if (next.has(id)) { next.delete(id); } else { next.add(id); }
+			return next;
+		});
+	};
+
+	return (
+		<div className="subagent-tool-trace">
+			<div
+				className="subagent-tool-trace-header"
+				onClick={() => setOpen(o => !o)}
+				role="button"
+				aria-expanded={open}
+			>
+				<span className="subagent-tool-trace-icon">🔧</span>
+				<span className="subagent-tool-trace-title">工具调用</span>
+				<span className="subagent-tool-trace-summary">{summary}</span>
+				<span className={`subagent-tool-trace-toggle ${open ? '' : 'collapsed'}`}>
+					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+						<polyline points="6 9 12 15 18 9" />
+					</svg>
+				</span>
+			</div>
+			{open && (
+				<div className="subagent-tool-trace-body">
+					{tools.map(tool => {
+						const isToolOpen = expandedTools.has(tool.id);
+						const status = tool.status ?? 'done';
+						return (
+							<div key={tool.id} className={`subagent-tool-row status-${status}`}>
+								<div
+									className="subagent-tool-row-header"
+									onClick={() => toggleTool(tool.id)}
+									role="button"
+									aria-expanded={isToolOpen}
+								>
+									<span className="subagent-tool-status-icon">
+										{status === 'running' && (
+											<svg className="subagent-spinner" width="11" height="11" viewBox="0 0 24 24"
+												fill="none" stroke="currentColor" strokeWidth="2.5">
+												<path d="M21 12a9 9 0 11-6.219-8.56" />
+											</svg>
+										)}
+										{status === 'done' && (
+											<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2.5">
+												<polyline points="20 6 9 17 4 12" />
+											</svg>
+										)}
+										{status === 'error' && (
+											<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#f48771" strokeWidth="2.5">
+												<circle cx="12" cy="12" r="10" />
+												<line x1="15" y1="9" x2="9" y2="15" />
+												<line x1="9" y1="9" x2="15" y2="15" />
+											</svg>
+										)}
+										{(status === 'pending' || !status) && (
+											<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6c757d" strokeWidth="2">
+												<circle cx="12" cy="12" r="10" />
+											</svg>
+										)}
+									</span>
+									<span className="subagent-tool-name">{tool.name}</span>
+									{isToolOpen && <span className="subagent-tool-detail-spacer" />}
+									<span className={`subagent-tool-chevron ${isToolOpen ? 'expanded' : ''}`}>
+										<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+											<polyline points="9 6 15 12 9 18" />
+										</svg>
+									</span>
+								</div>
+								{isToolOpen && (
+									<div className="subagent-tool-row-body">
+										{tool.arguments && (
+											<div className="subagent-tool-args">
+												<div className="subagent-tool-detail-label">参数</div>
+												<pre>{tool.arguments}</pre>
+											</div>
+										)}
+										{tool.result !== undefined && tool.result !== null && tool.result !== '' && (
+											<div className="subagent-tool-result">
+												<div className="subagent-tool-detail-label">结果</div>
+												<pre>{typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result, null, 2)}</pre>
+											</div>
+										)}
+										{!tool.arguments && (tool.result === undefined || tool.result === null || tool.result === '') && (
+											<div className="subagent-tool-empty">(无参数/结果)</div>
+										)}
+									</div>
+								)}
+							</div>
+						);
+					})}
+				</div>
+			)}
+		</div>
+	);
+}
+
+const SubAgentToolTraceBlock = memo(SubAgentToolTraceBlockRaw);
 
 // ─── Single Sub-Agent Row ─────────────────────────────────────────────────
 
@@ -116,6 +297,22 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 					</span>
 					<span className="subagent-progress-text">{agent.progress}</span>
 				</div>
+			)}
+
+			{/* P4 v3: Thinking block (collapsible, auto-open while streaming) */}
+			{agent.thinking && agent.thinking.length > 0 && (
+				<SubAgentThinkingBlock
+					thinking={agent.thinking}
+					isStreaming={isRunning}
+				/>
+			)}
+
+			{/* P4 v3: Tool trace block (collapsible list of tool calls) */}
+			{agent.toolTrace && agent.toolTrace.length > 0 && (
+				<SubAgentToolTraceBlock
+					tools={agent.toolTrace}
+					isStreaming={isRunning}
+				/>
 			)}
 
 			{/* Error message */}

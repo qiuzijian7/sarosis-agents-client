@@ -17,7 +17,7 @@ export {
 
 export {
 	IWorkflowExecutionService,
-} from '../../../common/workflowExecutionService.js';
+} from './workflowExecutionService.js';
 
 // Type-only exports (interfaces)
 export type {

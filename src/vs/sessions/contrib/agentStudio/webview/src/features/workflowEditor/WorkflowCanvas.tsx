@@ -11,6 +11,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useMemo, useCallback, useEffect, useRef, useState } from 'react';
+import { sendRequest } from '../../bridge/messageClient';
 import {
 	ReactFlow,
 	Background,
@@ -106,6 +107,7 @@ export const WorkflowCanvas: React.FC = () => {
 	const interactionMode = useWorkflowEditorStore(s => s.interactionMode);
 	const scrollMode = useWorkflowEditorStore(s => s.scrollMode);
 	const isEdgeAnimationEnabled = useWorkflowEditorStore(s => s.isEdgeAnimationEnabled);
+	const workflowBreakpoints = useWorkflowEditorStore(s => s.workflowBreakpoints);
 	const minimapMode = useWorkflowEditorStore(s => s.minimapMode);
 	const executionId = useWorkflowEditorStore(s => s.executionId);
 	const executionStatus = useWorkflowEditorStore(s => s.executionStatus);
@@ -298,8 +300,13 @@ export const WorkflowCanvas: React.FC = () => {
 
 	// ── Nodes with execution state (P3) ──
 	const displayNodes = useMemo<Node[]>(() => {
+		// v5a: read workflowBreakpoints from store and inject as node data
+		const bpSet = new Set(useWorkflowEditorStore.getState().workflowBreakpoints);
 		if (!executionId) {
-			return nodes;
+			return nodes.map(n => ({
+				...n,
+				data: { ...n.data, hasBreakpoint: bpSet.has(n.id) },
+			}));
 		}
 		return nodes.map(n => {
 			const nodeState = nodeExecutionStates[n.id];
@@ -308,13 +315,14 @@ export const WorkflowCanvas: React.FC = () => {
 				...n,
 				data: {
 					...n.data,
+					hasBreakpoint: bpSet.has(n.id),
 					executionState: nodeState?.status || 'pending',
 					isCurrentNode: isCurrent,
 					executionError: nodeState?.error,
 				},
 			};
 		});
-	}, [nodes, executionId, currentNodeId, nodeExecutionStates]);
+	}, [nodes, executionId, currentNodeId, nodeExecutionStates, workflowBreakpoints]);
 
 	// ── MiniMap visibility ──
 	const showMinimap = useMemo(() => {
@@ -331,6 +339,48 @@ export const WorkflowCanvas: React.FC = () => {
 		useWorkflowEditorStore.getState().addNode(type, pos);
 	}, [screenToFlowPosition]);
 
+	// ── v5a: Right-click context menu (toggle breakpoint) ─────────────
+	const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; hasBreakpoint: boolean } | null>(null);
+	const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+		event.preventDefault();
+		setContextMenu({
+			x: event.clientX,
+			y: event.clientY,
+			nodeId: node.id,
+			hasBreakpoint: !!(node.data as { hasBreakpoint?: boolean })?.hasBreakpoint,
+		});
+	}, []);
+
+	// Close on any click outside the menu.
+	useEffect(() => {
+		if (!contextMenu) { return; }
+		const handler = () => setContextMenu(null);
+		window.addEventListener('click', handler);
+		return () => window.removeEventListener('click', handler);
+	}, [contextMenu]);
+
+	const workflowId = useWorkflowEditorStore(s => s.workflowId);
+	const toggleWorkflowBreakpoint = useWorkflowEditorStore(s => s.toggleWorkflowBreakpoint);
+	const handleToggleBreakpoint = useCallback(async () => {
+		if (!contextMenu) { return; }
+		const { nodeId, hasBreakpoint } = contextMenu;
+		const executionId = useWorkflowEditorStore.getState().executionId ?? undefined;
+		// Optimistic local update
+		toggleWorkflowBreakpoint(nodeId);
+		try {
+			if (hasBreakpoint) {
+				await sendRequest('workflow.breakpoint.clear', { workflowId, nodeId, executionId });
+			} else {
+				await sendRequest('workflow.breakpoint.set', { workflowId, nodeId, executionId });
+			}
+		} catch (err) {
+			// Rollback on failure.
+			console.error('[WorkflowCanvas] toggle breakpoint RPC failed:', err);
+			toggleWorkflowBreakpoint(nodeId);
+		}
+		setContextMenu(null);
+	}, [contextMenu, workflowId, toggleWorkflowBreakpoint]);
+
 	return (
 		<div style={{ position: 'absolute', inset: 0 }}>
 			<ReactFlow
@@ -342,6 +392,7 @@ export const WorkflowCanvas: React.FC = () => {
 				onNodesDelete={onNodesDelete}
 				onNodeClick={onNodeClick}
 				onPaneClick={onPaneClick}
+				onNodeContextMenu={onNodeContextMenu}
 				onNodeDragStart={onNodeDragStart}
 				onNodeDragStop={onNodeDragStop}
 				onMove={markInteracting}
@@ -390,6 +441,23 @@ export const WorkflowCanvas: React.FC = () => {
 				onConfirm={confirmDelete}
 				onCancel={() => setPendingDelete(null)}
 			/>
+
+			{/* v5a: right-click context menu (toggle breakpoint) */}
+			{contextMenu && (
+				<div
+					className="wf-context-menu"
+					style={{ top: contextMenu.y, left: contextMenu.x }}
+					onClick={(e) => e.stopPropagation()}
+				>
+					<button
+						className="wf-context-menu-item"
+						onClick={handleToggleBreakpoint}
+					>
+						<span className="wf-context-menu-icon">●</span>
+						{contextMenu.hasBreakpoint ? '取消断点' : '设断点'}
+					</button>
+				</div>
+			)}
 		</div>
 	);
 };

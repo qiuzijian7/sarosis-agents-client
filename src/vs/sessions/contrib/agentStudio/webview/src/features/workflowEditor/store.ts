@@ -47,7 +47,7 @@ const DEFAULT_END: Node = {
 
 // ─── Node category ──────────────────────────────────────────────────────────
 
-export type NodeCategory = 'basic' | 'controlFlow' | 'layout';
+export type NodeCategory = 'basic' | 'controlFlow' | 'layout' | 'system';
 
 export interface NodeTypeSelector {
 	type: string;
@@ -58,6 +58,14 @@ export interface NodeTypeSelector {
 
 export const nodeCategories: Array<{ category: NodeCategory; label: string; items: NodeTypeSelector[] }> = [
 	{
+		category: 'system',
+		label: 'System Nodes',
+		items: [
+			{ type: 'start',      label: 'Start',        description: 'Entry point of the workflow',          icon: '▶️' },
+			{ type: 'end',        label: 'End',          description: 'Exit point of the workflow',           icon: '⏹️' },
+		],
+	},
+	{
 		category: 'basic',
 		label: 'Basic Nodes',
 		items: [
@@ -65,7 +73,6 @@ export const nodeCategories: Array<{ category: NodeCategory; label: string; item
 			{ type: 'agent',      label: 'Agent',        description: 'Execute a specific agent',            icon: '🤖' },
 			{ type: 'skill',      label: 'Skill',        description: 'Execute a skill',                     icon: '⚡' },
 			{ type: 'tool',       label: 'Tool',         description: 'Execute a tool with parameters',      icon: '🔧' },
-			{ type: 'task',       label: 'Task',         description: 'A single task to execute',            icon: '📋' },
 		],
 	},
 	{
@@ -74,9 +81,6 @@ export const nodeCategories: Array<{ category: NodeCategory; label: string; item
 		items: [
 			{ type: 'ifElse',     label: 'If/Else',      description: 'Binary conditional (True/False)',     icon: '↔️' },
 			{ type: 'switch',     label: 'Switch',        description: 'Multi-way branching (2-N cases)',     icon: '🔀' },
-			{ type: 'condition',  label: 'Condition',     description: 'Branch based on a condition',        icon: '🔀' },
-			{ type: 'loop',       label: 'Loop',          description: 'Repeat over items',                  icon: '🔄' },
-			{ type: 'parallel',   label: 'Parallel',      description: 'Run branches in parallel',           icon: '⇉' },
 			{ type: 'askUser',    label: 'Ask User',      description: 'Branch based on user selection',     icon: '❓' },
 		],
 	},
@@ -122,6 +126,9 @@ interface WorkflowEditorState {
 	workflowName: string;
 	workflowDescription: string;
 
+	// v5a: workflow-level breakpoints (set of nodeIds, persisted via host)
+	workflowBreakpoints: string[];
+
 	// UI state
 	isPropertyPanelOpen: boolean;
 	interactionMode: InteractionMode;
@@ -164,6 +171,8 @@ interface WorkflowEditorState {
 	// Execution state actions (P3)
 	setExecutionState: (executionId: string | null, status: WorkflowExecutionStatus | null, currentNodeId: string | null, nodeStates: Record<string, IWorkflowNodeExecutionState>) => void;
 	setBreakpoints: (breakpoints: string[]) => void;
+	setWorkflowBreakpoints: (breakpoints: string[]) => void;
+	toggleWorkflowBreakpoint: (nodeId: string) => void;
 	clearExecutionState: () => void;
 
 	// Interaction
@@ -259,6 +268,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 		isEdgeAnimationEnabled: true,
 		minimapMode: 'auto' as MinimapMode,
 		defaultAgentConfig: {},
+		workflowBreakpoints: [],
 
 		// Execution state (P3)
 		executionId: null,
@@ -381,6 +391,17 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 		setBreakpoints: (breakpoints) => set({ breakpoints }),
 
+		// v5a: workflow-level breakpoints
+		setWorkflowBreakpoints: (breakpoints) => set({ workflowBreakpoints: breakpoints }),
+		toggleWorkflowBreakpoint: (nodeId) => set(state => {
+			const has = state.workflowBreakpoints.includes(nodeId);
+			return {
+				workflowBreakpoints: has
+					? state.workflowBreakpoints.filter(id => id !== nodeId)
+					: [...state.workflowBreakpoints, nodeId],
+			};
+		}),
+
 		clearExecutionState: () => set({
 			executionId: null,
 			executionStatus: null,
@@ -479,6 +500,8 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 				const nodes: Node[] = [];
 				const edges: Edge[] = [];
+				// v5a: workflow-level breakpoints loaded from the host JSON
+				const breakpoints = new Set<string>(wf.breakpoints ?? []);
 
 				if (wf.nodes && wf.nodes.length > 0) {
 					for (const gn of wf.nodes) {
@@ -486,7 +509,12 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 							id: gn.id,
 							type: gn.type,
 							position: gn.position,
-							data: { ...gn.data, label: gn.name },
+							data: {
+								...gn.data,
+								label: gn.name,
+								// v5a: mark breakpoint in node data so the renderer can show indicator
+								hasBreakpoint: breakpoints.has(gn.id),
+							},
 							...(gn.parentId && { parentId: gn.parentId }),
 							...(gn.style && { style: gn.style }),
 						});
@@ -556,6 +584,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 					workflowDescription: wf.description || '',
 					selectedNodeId: null,
 					isPropertyPanelOpen: false,
+					workflowBreakpoints: Array.from(breakpoints),
 				});
 				useWorkflowEditorStore.temporal.getState().clear();
 			},

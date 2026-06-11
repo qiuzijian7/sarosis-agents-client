@@ -31,6 +31,8 @@ import { ConfirmationCard } from './ConfirmationCard';
 import { TodoListCard } from './TodoListCard';
 import { TipCard } from './TipCard';
 import { QuestionCarouselCard } from './QuestionCarouselCard';
+import { AskUserCard } from './AskUserCard';
+import { SubAgentCard } from './SubAgentCard';
 // CheckpointCard 已停止在消息流中渲染（改为 CheckpointBar 显示在输入框上方），
 // 此处保留导入会触发 unused-import lint，故移除。如需恢复时间旅行卡片，请重新引入。
 
@@ -255,6 +257,25 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 							defaultExpanded: true,
 						} as any)}
 					/>
+				)}
+
+				{/* v5d: rendered AskUser cards persisted from completed workflow runs. */}
+				{message.askUsers && message.askUsers.length > 0 && (
+					<div className="askuser-list">
+						{message.askUsers.map(ask => (
+							<AskUserCard
+								key={ask.id}
+								askUser={ask}
+								onSubmit={() => { /* read-only */ }}
+								onSelectionChange={() => { /* read-only */ }}
+							/>
+						))}
+					</div>
+				)}
+
+				{/* v11: render persisted subagent cards (workflow execution trace). */}
+				{message.subAgents && message.subAgents.length > 0 && (
+					<SubAgentCard subAgents={message.subAgents as any} isStreaming={false} />
 				)}
 
 				{/* ── Confirmation card (VS Code: chatConfirmationContentPart pattern) ─── */}

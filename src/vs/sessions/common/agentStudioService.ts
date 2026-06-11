@@ -385,6 +385,11 @@ export interface IChatSendOptions {
 	 * 图片附件将转换为各 LLM API 的多模态消息格式（OpenAI image_url / Anthropic image source）。
 	 */
 	readonly attachments?: readonly IChatAttachmentSend[];
+	/**
+	 * 任务级 worktree 路径（来自 TaskBoardRecord.worktreePath）。
+	 * 当设置时，agent 执行的工作目录应优先使用此路径（高于 AgentBinding.worktreePath）。
+	 */
+	readonly worktreePath?: string;
 }
 
 /**
@@ -424,6 +429,12 @@ export interface IAgentChatService {
 
 	/** Append a message to the chat history for an agent and persist. */
 	appendMessage(agentId: string, message: ChatMessage): Promise<void>;
+
+	/**
+	 * Create a new agent session (e.g. for workflow execution isolation).
+	 * Returns the session metadata including the session id.
+	 */
+	createAgentSession(agentId: string, name?: string): Promise<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number }>;
 
 	/**
 	 * Delete chat messages after a given message ID (for checkpoint time-travel).
@@ -636,7 +647,7 @@ export interface ITaskOrchestrationService {
 	executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string },
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string },
 	): Promise<void>;
 
 	/**

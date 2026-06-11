@@ -153,21 +153,12 @@ export class WorkflowViewPane extends ViewPane {
 			const item = $('div.workflow-item');
 			item.title = wf.description || wf.name;
 
-			// ── Main row: name + run button ──
+			// ── Main row: name + delete button ──
 			const topRow = $('div.workflow-item-top');
 
 			const nameEl = $('div.workflow-item-name');
 			nameEl.textContent = wf.name;
 			topRow.appendChild(nameEl);
-
-			const runBtn = $('button.workflow-run-btn');
-			runBtn.textContent = '▶ Run';
-			runBtn.title = 'Execute this workflow in the agent chat';
-			runBtn.onclick = (e) => {
-				e.stopPropagation();
-				void this._runWorkflow(wf);
-			};
-			topRow.appendChild(runBtn);
 
 			const delBtn = $('button.workflow-del-btn');
 			delBtn.textContent = '×';
@@ -415,6 +406,7 @@ export class WorkflowViewPane extends ViewPane {
 	 * 3. 打开聊天框（Claw Chat View）
 	 * 4. 将工作流执行指令注入聊天框并发送，所有内容在聊天框中显示
 	 */
+	// @ts-expect-error _runWorkflow保留供后续使用（v9移除了Run按钮但保留函数以备将来需要）
 	private async _runWorkflow(wf: IStoredWorkflow): Promise<void> {
 		try {
 			// 使用工作流执行服务来执行工作流
@@ -456,7 +448,8 @@ export class WorkflowViewPane extends ViewPane {
 	 */
 	private async _createWorkflowAgent(wf: IStoredWorkflow): Promise<Agent | undefined> {
 		try {
-			const agentName = `${wf.name} · workflow`;
+			// v9: use the workflow name directly (no suffix) to keep names consistent.
+			const agentName = wf.name;
 			const systemPrompt = this._buildWorkflowSystemPrompt(wf);
 
 			return await this.agentStudioService.createAgent({
@@ -598,205 +591,6 @@ export class WorkflowViewPane extends ViewPane {
 		return lines.join('\n');
 	}
 
-	/**
-	 * 构造工作流执行指令文本。
-	 * Supports both legacy steps and graph-based nodes.
-	 */
-	private _buildExecutionPrompt(wf: IStoredWorkflow): string {
-		const lines: string[] = [];
-		lines.push(`# Execute Workflow: ${wf.name}`);
-		lines.push('');
-		if (wf.description) {
-			lines.push(wf.description);
-			lines.push('');
-		}
-
-		// Prefer graph-based nodes over legacy steps
-		const hasGraphNodes = wf.nodes && wf.nodes.length > 1; // >1 because start+end = 2 minimum
-		if (hasGraphNodes) {
-			return this._buildGraphExecutionPrompt(wf, lines);
-		}
-
-		// Legacy step-based
-		if (wf.steps && wf.steps.length > 0) {
-			lines.push('## Steps');
-			wf.steps.forEach((step, i) => {
-				lines.push(`${i + 1}. **${step.name}** (${step.type})`);
-				if (step.executorId) { lines.push(`   - Executor: ${step.executorId}`); }
-				if (step.type === 'condition' && step.condition) { lines.push(`   - Condition: ${step.condition}`); }
-				if (step.type === 'loop' && step.loopConfig) { lines.push(`   - Loop over: ${step.loopConfig.items} as ${step.loopConfig.itemVariable}`); }
-				if (step.type === 'parallel' && step.parallelSteps) { lines.push(`   - Parallel: ${step.parallelSteps.join(', ')}`); }
-			});
-			lines.push('');
-			lines.push('Please execute these steps in order, narrating your progress, and summarize at the end.');
-		} else {
-			lines.push('This workflow has no steps defined yet. Ask me what steps to add, or proceed based on the name and description above.');
-		}
-
-		return lines.join('\n');
-	}
-
-	/**
-	 * Build execution prompt from graph nodes + connections.
-	 * Performs topological traversal from Start → ... → End.
-	 */
-	private _buildGraphExecutionPrompt(wf: IStoredWorkflow, lines: string[]): string {
-		const nodes = wf.nodes!;
-		const connections = wf.connections ?? [];
-
-		// Build adjacency for traversal
-		const adj = new Map<string, string[]>();    // nodeId → [targetId, ...]
-		const incoming = new Map<string, number>();
-		for (const c of connections) {
-			const list = adj.get(c.from) ?? [];
-			list.push(c.to);
-			adj.set(c.from, list);
-			incoming.set(c.to, (incoming.get(c.to) ?? 0) + 1);
-		}
-
-		// Find start node(s) — nodes with no incoming edges
-		const startNodes = nodes.filter(n =>
-			n.type !== 'group' && (incoming.get(n.id) ?? 0) === 0
-		);
-		const visited = new Set<string>();
-		const ordered: typeof nodes = [];
-
-		// BFS in-degree traversal for topological order
-		for (const sn of startNodes) {
-			if (visited.has(sn.id)) { continue; }
-			const queue = [sn.id];
-			while (queue.length > 0) {
-				const current = queue.shift()!;
-				if (visited.has(current)) { continue; }
-				visited.add(current);
-				const node = nodes.find(n => n.id === current);
-				if (node) { ordered.push(node); }
-				for (const next of adj.get(current) ?? []) {
-					if (!visited.has(next)) {
-						queue.push(next);
-					}
-				}
-			}
-		}
-
-		// Filter out start/end/group from description (they're structural)
-		const userNodes = ordered.filter(n => n.type !== 'start' && n.type !== 'end' && n.type !== 'group');
-
-		if (userNodes.length === 0) {
-			lines.push('This workflow has no executable nodes defined yet.');
-			lines.push('Add nodes in the workflow editor and try again.');
-			return lines.join('\n');
-		}
-
-		lines.push('## Workflow Nodes');
-		lines.push('');
-		let stepNum = 0;
-		for (const node of userNodes) {
-			stepNum++;
-			const data = node.data || {};
-			const label = (data.label as string) || node.name || node.id;
-
-			switch (node.type) {
-				case 'prompt':
-					lines.push(`${stepNum}. 💬 **${label}** (Prompt)`);
-					if (data.prompt) {
-						const preview = (data.prompt as string).length > 120
-							? (data.prompt as string).substring(0, 120) + '...'
-							: data.prompt as string;
-						lines.push(`   _${preview}_`);
-					}
-					break;
-				case 'agent':
-					lines.push(`${stepNum}. 🤖 **${label}** (Agent)`);
-					if (data.agentId) { lines.push(`   - Agent: ${data.agentId}`); }
-					if ((data.agentConfig as { model?: string })?.model) {
-						lines.push(`   - Model: ${(data.agentConfig as { model?: string }).model}`);
-					}
-					break;
-				case 'skill':
-					lines.push(`${stepNum}. ⚡ **${label}** (Skill)`);
-					if (data.skillName) { lines.push(`   - Skill: ${data.skillName}`); }
-					break;
-				case 'tool':
-					lines.push(`${stepNum}. 🔧 **${label}** (Tool)`);
-					if (data.toolName) { lines.push(`   - Tool: ${data.toolName}`); }
-					if (data.toolParams && Object.keys(data.toolParams as Record<string, string>).length > 0) {
-						const params = data.toolParams as Record<string, string>;
-						const paramStr = Object.entries(params).map(([k, v]) => `${k}=${v}`).join(', ');
-						lines.push(`   - Params: ${paramStr}`);
-					}
-					break;
-				case 'task':
-					lines.push(`${stepNum}. 📋 **${label}** (Task)`);
-					if (data.executorId) { lines.push(`   - Executor: ${data.executorId}`); }
-					if (data.taskId) { lines.push(`   - Task ID: ${data.taskId}`); }
-					break;
-				case 'ifElse':
-					lines.push(`${stepNum}. ↔️ **${label}** (If/Else - Binary branch)`);
-					if (data.evaluationTarget) { lines.push(`   - Evaluate: ${data.evaluationTarget}`); }
-					if (data.branches) {
-						for (const b of data.branches as Array<{ label: string; condition: string }>) {
-							lines.push(`   - ${b.label}: ${b.condition || '(no condition)'}`);
-						}
-					}
-					break;
-				case 'switch':
-					lines.push(`${stepNum}. 🔀 **${label}** (Switch - Multi-way branch)`);
-					if (data.evaluationTarget) { lines.push(`   - Evaluate: ${data.evaluationTarget}`); }
-					if (data.branches) {
-						for (const b of data.branches as Array<{ label: string; condition: string }>) {
-							lines.push(`   - ${b.label}: ${b.condition || '(default)'}`);
-						}
-					}
-					break;
-				case 'condition':
-					lines.push(`${stepNum}. 🔀 **${label}** (Condition)`);
-					if (data.condition) { lines.push(`   - Condition: ${data.condition}`); }
-					if (data.branches) {
-						for (const b of data.branches as Array<{ label: string; condition: string }>) {
-							lines.push(`   - ${b.label}: ${b.condition || ''}`);
-						}
-					}
-					break;
-				case 'loop':
-					lines.push(`${stepNum}. 🔄 **${label}** (Loop)`);
-					if (data.loopConfig) {
-						const lc = data.loopConfig as { items: string; itemVariable: string; maxIterations?: number };
-						lines.push(`   - Over: ${lc.items || '(not set)'}`);
-						lines.push(`   - Var: ${lc.itemVariable || 'item'}`);
-						if (lc.maxIterations) { lines.push(`   - Max iterations: ${lc.maxIterations}`); }
-					}
-					break;
-				case 'parallel':
-					lines.push(`${stepNum}. ⇉ **${label}** (Parallel)`);
-					if (data.parallelSteps && (data.parallelSteps as string[]).length > 0) {
-						lines.push(`   - Branches: ${(data.parallelSteps as string[]).join(', ')}`);
-					}
-					break;
-				case 'askUser':
-					lines.push(`${stepNum}. ❓ **${label}** (Ask User)`);
-					if (data.questionText) { lines.push(`   - Question: ${(data.questionText as string).substring(0, 100)}`); }
-					if (data.options) {
-						const opts = data.options as Array<{ label: string }>;
-						lines.push(`   - Options: ${opts.map(o => o.label).join(' | ')}`);
-					}
-					if (data.multiSelect) { lines.push('   - Mode: Multi-select'); }
-					break;
-				default:
-					lines.push(`${stepNum}. **${label}** (${node.type})`);
-					break;
-			}
-			lines.push('');
-		}
-
-		lines.push('Please execute this workflow following the connections between nodes.');
-		lines.push('For branch nodes (If/Else, Switch, Condition, Ask User), evaluate the condition');
-		lines.push('and follow the matching branch. For parallel nodes, run branches simultaneously.');
-		lines.push('For loops, iterate over each item. Narrate your progress and summarize at the end.');
-
-		return lines.join('\n');
-	}
-
 	private _getScopedCSS(): string {
 		return /* css */`
 			.workflow-view-root {
@@ -881,20 +675,6 @@ export class WorkflowViewPane extends ViewPane {
 				overflow: hidden;
 				text-overflow: ellipsis;
 				white-space: nowrap;
-			}
-			.workflow-run-btn {
-				flex-shrink: 0;
-				background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-				border: none;
-				color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
-				padding: 2px 8px;
-				border-radius: 3px;
-				cursor: pointer;
-				font-size: 10px;
-				font-weight: 600;
-			}
-			.workflow-run-btn:hover {
-				background: var(--vscode-button-hoverBackground);
 			}
 			.workflow-del-btn {
 				flex-shrink: 0;
