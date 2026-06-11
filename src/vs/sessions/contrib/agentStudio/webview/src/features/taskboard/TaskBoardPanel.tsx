@@ -55,6 +55,17 @@ export function TaskBoardPanel(): React.ReactElement {
 	const loadAgents = useAgentStore(s => s.loadAgents);
 	// All agents are global (no per-workspace filtering) — `agents` already holds the full list.
 	const allAgents = agents;
+
+	// Worktree options: agents that have a worktree binding.
+	const worktreeOptions = useMemo(() =>
+		agents.filter(a => a.worktreePath).map(a => ({
+			agentId: a.id,
+			agentName: a.name,
+			worktreePath: a.worktreePath!,
+			worktreeBranch: a.worktreeBranch,
+		})),
+		[agents],
+	);
 	const { loadDelegations } = useDelegationStore();
 	const { isPlanDialogOpen, openPlanDialog, closePlanDialog, loadPlans, activePlan, plans: orchestrationPlans, setActivePlan } = useOrchestrationStore();
 	const { diagnostics, isRunning: isDiagnosticsRunning, loadDiagnostics, runDiagnostics } = useDiagnosticsStore();
@@ -87,6 +98,7 @@ export function TaskBoardPanel(): React.ReactElement {
 			assigneeId: data.assigneeId,
 			assigneeName: data.assigneeName,
 			priority: data.priority,
+			worktreePath: data.worktreePath || undefined,
 			dependencies: data.dependencies,
 			status: 'todo',
 			source: 'task-board',
@@ -342,6 +354,7 @@ export function TaskBoardPanel(): React.ReactElement {
 			onCreate={handleCreateTask}
 			agents={allAgents.map(e => ({ id: e.id, name: e.name }))}
 			tasks={tasks.map(t => ({ id: t.id, title: t.title }))}
+			worktreeOptions={worktreeOptions}
 		/>
 
 		{/* Filter bar: board(workspace) filter + agent filter + status-column toggles */}

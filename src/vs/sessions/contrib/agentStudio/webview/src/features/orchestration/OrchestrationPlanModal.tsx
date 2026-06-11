@@ -4,7 +4,7 @@
  *  Provides overlay, centered layout, and close behavior.
  *--------------------------------------------------------------------------------------------*/
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { OrchestrationPlanView } from './OrchestrationPlanView';
 
 interface OrchestrationPlanModalProps {
@@ -13,10 +13,19 @@ interface OrchestrationPlanModalProps {
 }
 
 export function OrchestrationPlanModal({ isOpen, onClose }: OrchestrationPlanModalProps): React.ReactElement | null {
+	const mouseDownOnOverlay = useRef(false);
 	if (!isOpen) { return null; }
 
 	return (
-		<div className="orch-modal-overlay" onClick={onClose}>
+		<div
+			className="orch-modal-overlay"
+			onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
+			onClick={(e) => {
+				if (e.target === e.currentTarget && mouseDownOnOverlay.current) {
+					onClose();
+				}
+			}}
+		>
 			<div className="orch-modal-content" onClick={(e) => e.stopPropagation()}>
 				<OrchestrationPlanView onClose={onClose} />
 			</div>

@@ -134,7 +134,11 @@ export type RequestType =
 	| 'memory.deleteL1'         // hard-delete L1 record(s) by id
 	| 'skills.list'
 	| 'workflow.get'
-	| 'workflow.save';              // save workflow nodes+connections from webview editor
+	| 'workflow.save'              // save workflow nodes+connections from webview editor
+	| 'workflow.execute'           // execute workflow (WebView → Host)
+	| 'workflow.pause'            // pause workflow execution (WebView → Host)
+	| 'workflow.resume'           // resume workflow execution (WebView → Host)
+	| 'workflow.cancel';          // cancel workflow execution (WebView → Host)
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -169,7 +173,8 @@ export type EventType =
 	| 'chat.injectPrompt'        // host requests webview to inject a prompt into the chat (e.g. workflow run)
 	| 'workflow.loaded'          // host sends workflow data to webview editor
 	| 'workflow.saved'           // host confirms save to webview
-	| 'workflow.stateApplied';   // host pushes AI-generated workflow state to webview editor
+	| 'workflow.stateApplied'    // host pushes AI-generated workflow state to webview editor
+	| 'workflow.executionUpdate'; // host pushes execution state updates to webview editor
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 
@@ -931,4 +936,69 @@ export interface IWorkflowStateAppliedPayload {
 	};
 	/** Optional description of what changed (for UI feedback). */
 	readonly description?: string;
+}
+
+// ─── Workflow Execution Payloads ─────────────────────────────────────────
+
+/**
+ * Payload for `workflow.execute` request (WebView → Host).
+ * WebView requests the host to start executing a workflow.
+ */
+export interface IWorkflowExecutePayload {
+	/** Workflow ID to execute. */
+	readonly workflowId: string;
+	/** Optional agent ID to use for execution (overrides workflow.agentId). */
+	readonly agentId?: string;
+}
+
+/**
+ * Payload for `workflow.pause` request (WebView → Host).
+ * WebView requests the host to pause workflow execution (e.g., at AskUser node).
+ */
+export interface IWorkflowPausePayload {
+	/** Execution ID. */
+	readonly executionId: string;
+}
+
+/**
+ * Payload for `workflow.resume` request (WebView → Host).
+ * WebView sends user input to resume a paused workflow.
+ */
+export interface IWorkflowResumePayload {
+	/** Execution ID. */
+	readonly executionId: string;
+	/** User input (string for single input, string[] for multi-select). */
+	readonly userInput: string | string[];
+}
+
+/**
+ * Payload for `workflow.cancel` request (WebView → Host).
+ * WebView requests the host to cancel workflow execution.
+ */
+export interface IWorkflowCancelPayload {
+	/** Execution ID. */
+	readonly executionId: string;
+}
+
+/**
+ * Payload for `workflow.executionUpdate` event (Host → WebView).
+ * Host pushes execution state updates to the webview editor.
+ */
+export interface IWorkflowExecutionUpdatePayload {
+	/** Execution ID. */
+	readonly executionId: string;
+	/** Current execution status. */
+	readonly status: string; // 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
+	/** Currently executing node ID (if any). */
+	readonly currentNodeId?: string;
+	/** Node execution states map (nodeId → state). */
+	readonly nodeStates: Record<string, {
+		readonly status: string; // 'pending' | 'running' | 'completed' | 'failed' | 'paused'
+		readonly startTime?: string;
+		readonly endTime?: string;
+		readonly error?: string;
+		readonly output?: unknown;
+	}>;
+	/** Breakpoint node IDs. */
+	readonly breakpoints?: string[];
 }

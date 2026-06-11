@@ -3,7 +3,7 @@
  *  Dialog shown when an agent references skills that are missing from the skill library.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 import { useAgentStore } from '../../store/useAgentStore';
 
 interface SkillMissingDialogProps {
@@ -21,6 +21,7 @@ export function SkillMissingDialog({
 	onIgnore, 
 	onInstall 
 }: SkillMissingDialogProps): React.ReactElement {
+	const mouseDownOnOverlay = useRef(false);
 	const [isInstalling, setIsInstalling] = useState(false);
 	const [installError, setInstallError] = useState<string | null>(null);
 
@@ -48,7 +49,15 @@ export function SkillMissingDialog({
 	}
 
 	return (
-		<div className="agent-form-overlay" onClick={onClose}>
+		<div
+			className="agent-form-overlay"
+			onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
+			onClick={(e) => {
+				if (e.target === e.currentTarget && mouseDownOnOverlay.current) {
+					onClose();
+				}
+			}}
+		>
 			<div className="agent-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
 				<h3 style={{ margin: '0 0 8px', fontSize: '14px' }}>技能缺失警告</h3>
 				<p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginBottom: '16px' }}>

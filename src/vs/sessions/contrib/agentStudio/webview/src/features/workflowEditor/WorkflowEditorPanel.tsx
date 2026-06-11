@@ -24,6 +24,11 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const [saving, setSaving] = useState(false);
 	const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	const [validationMsg, setValidationMsg] = useState<string | null>(null);
+	
+	// Execution state (P3: execution control UI)
+	const [executionId, setExecutionId] = useState<string | null>(null);
+	const [executionStatus, setExecutionStatus] = useState<string | null>(null); // 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
+	const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
 
 	const loadWorkflow = useWorkflowEditorStore(s => s.loadWorkflow);
 	const workflowId = useWorkflowEditorStore(s => s.workflowId);
@@ -103,6 +108,48 @@ export const WorkflowEditorPanel: React.FC = () => {
 		window.addEventListener('keydown', handler);
 		return () => window.removeEventListener('keydown', handler);
 	}, [nodes, edges, workflowId, workflowName]);
+
+	// Listen for workflow execution updates from Host (P3: execution control)
+	useEffect(() => {
+		const handler = (e: Event) => {
+			const detail = (e as CustomEvent).detail as {
+				executionId: string;
+				status: string;
+				currentNodeId?: string;
+				nodeStates: Record<string, {
+					status: string;
+					startTime?: string;
+					endTime?: string;
+					error?: string;
+					output?: unknown;
+				}>;
+				breakpoints?: string[];
+			} | undefined;
+			
+			if (detail) {
+				console.log(`[WorkflowEditor] Received workflow.executionUpdate:`, detail);
+				setExecutionId(detail.executionId);
+				setExecutionStatus(detail.status);
+				setCurrentNodeId(detail.currentNodeId || null);
+				
+				// Update store with execution state
+				const { setExecutionState, setBreakpoints } = useWorkflowEditorStore.getState();
+				setExecutionState(
+					detail.executionId,
+					detail.status as 'running' | 'paused' | 'completed' | 'failed' | 'cancelled',
+					detail.currentNodeId || null,
+					detail.nodeStates
+				);
+				
+				if (detail.breakpoints) {
+					setBreakpoints(detail.breakpoints);
+				}
+			}
+		};
+	
+		window.addEventListener('agentStudio:workflow-execution-update', handler);
+		return () => window.removeEventListener('agentStudio:workflow-execution-update', handler);
+	}, []);
 
 	const handleSave = useCallback(async () => {
 		if (saving || !workflowId) { return; }

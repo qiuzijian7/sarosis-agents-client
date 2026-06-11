@@ -22,6 +22,7 @@ import type {
 	WorkflowGraphNode,
 	WorkflowGraphConnection,
 } from '../../types/workflowStorage';
+import type { WorkflowExecutionStatus, IWorkflowNodeExecutionState } from '../../types/workflowExecution';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -131,6 +132,13 @@ interface WorkflowEditorState {
 	// Default agent config for new agent nodes (inherited from workflow's bound agent)
 	defaultAgentConfig: { agentId?: string; providerId?: string; modelId?: string };
 
+	// Execution state (P3: execution status visualization)
+	executionId: string | null;
+	executionStatus: WorkflowExecutionStatus | null;
+	currentNodeId: string | null;
+	nodeExecutionStates: Record<string, IWorkflowNodeExecutionState>;
+	breakpoints: string[];
+
 	// ReactFlow handlers
 	onNodesChange: OnNodesChange;
 	onEdgesChange: OnEdgesChange;
@@ -152,6 +160,11 @@ interface WorkflowEditorState {
 	setWorkflowName: (name: string) => void;
 	setWorkflowDescription: (desc: string) => void;
 	setDefaultAgentConfig: (config: { agentId?: string; providerId?: string; modelId?: string }) => void;
+
+	// Execution state actions (P3)
+	setExecutionState: (executionId: string | null, status: WorkflowExecutionStatus | null, currentNodeId: string | null, nodeStates: Record<string, IWorkflowNodeExecutionState>) => void;
+	setBreakpoints: (breakpoints: string[]) => void;
+	clearExecutionState: () => void;
 
 	// Interaction
 	toggleInteractionMode: () => void;
@@ -243,11 +256,18 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 			isPropertyPanelOpen: false,
 			interactionMode: 'pan' as InteractionMode,
 			scrollMode: 'classic' as ScrollMode,
-			isEdgeAnimationEnabled: true,
-			minimapMode: 'auto' as MinimapMode,
-			defaultAgentConfig: {},
+		isEdgeAnimationEnabled: true,
+		minimapMode: 'auto' as MinimapMode,
+		defaultAgentConfig: {},
 
-			// ── ReactFlow handlers ──
+		// Execution state (P3)
+		executionId: null,
+		executionStatus: null,
+		currentNodeId: null,
+		nodeExecutionStates: {},
+		breakpoints: [],
+
+		// ── ReactFlow handlers ──
 
 			onNodesChange: (changes) => {
 				set({ nodes: applyNodeChanges(changes, get().nodes) });
@@ -348,9 +368,28 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 			setWorkflowName: (name) => set({ workflowName: name }),
 			setWorkflowDescription: (desc) => set({ workflowDescription: desc }),
-			setDefaultAgentConfig: (config) => set({ defaultAgentConfig: config }),
+		setDefaultAgentConfig: (config) => set({ defaultAgentConfig: config }),
 
-			// ── Interaction ──
+		// ── Execution state actions (P3) ──
+
+		setExecutionState: (executionId, status, currentNodeId, nodeStates) => set({
+			executionId,
+			executionStatus: status,
+			currentNodeId,
+			nodeExecutionStates: nodeStates,
+		}),
+
+		setBreakpoints: (breakpoints) => set({ breakpoints }),
+
+		clearExecutionState: () => set({
+			executionId: null,
+			executionStatus: null,
+			currentNodeId: null,
+			nodeExecutionStates: {},
+			breakpoints: [],
+		}),
+
+		// ── Interaction ──
 
 			toggleInteractionMode: () => set(state => ({ interactionMode: state.interactionMode === 'pan' ? 'select' : 'pan' })),
 			toggleScrollMode: () => set(state => ({ scrollMode: state.scrollMode === 'classic' ? 'pan' : 'classic' })),

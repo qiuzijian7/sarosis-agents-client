@@ -2,7 +2,7 @@
  *  Agent Studio WebView - Auto-Plan Dialog
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 import { useDelegationStore } from '../../store/useDelegationStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 
@@ -11,6 +11,7 @@ interface AutoPlanDialogProps {
 }
 
 export function AutoPlanDialog({ onClose }: AutoPlanDialogProps): React.ReactElement {
+	const mouseDownOnOverlay = useRef(false);
 	const { executePlan, isLoading } = useDelegationStore();
 	const { activeWorkspaceId } = useWorkspaceStore();
 	const [goal, setGoal] = useState('');
@@ -26,7 +27,15 @@ export function AutoPlanDialog({ onClose }: AutoPlanDialogProps): React.ReactEle
 	}, [goal, activeWorkspaceId, executePlan, onClose]);
 
 	return (
-		<div className="agent-form-overlay" onClick={onClose}>
+		<div
+			className="agent-form-overlay"
+			onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
+			onClick={(e) => {
+				if (e.target === e.currentTarget && mouseDownOnOverlay.current) {
+					onClose();
+				}
+			}}
+		>
 			<div className="agent-form" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
 				<h3 style={{ margin: '0 0 8px', fontSize: '14px' }}>Auto-Plan</h3>
 				<p style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginBottom: '16px' }}>

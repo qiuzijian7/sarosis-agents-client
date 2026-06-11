@@ -30,6 +30,7 @@ export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ agentId, onC
 	const [success, setSuccess] = useState<string | undefined>();
 	const parserInputRef = useRef<HTMLInputElement | null>(null);
 	const stylesInputRef = useRef<HTMLInputElement | null>(null);
+	const mouseDownOnOverlay = useRef(false);
 
 	const load = async () => {
 		try {
@@ -108,7 +109,15 @@ export const ConfigMdSettings: React.FC<ConfigMdSettingsProps> = ({ agentId, onC
 	};
 
 	return (
-		<div className="configmd-settings-overlay" onClick={onClose}>
+		<div
+			className="configmd-settings-overlay"
+			onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
+			onClick={(e) => {
+				if (e.target === e.currentTarget && mouseDownOnOverlay.current) {
+					onClose();
+				}
+			}}
+		>
 			<div className="configmd-settings-panel" onClick={(e) => e.stopPropagation()}>
 				<div className="configmd-settings-header">
 					<span className="configmd-settings-title">⚙ ConfigMD 配置</span>

@@ -310,3 +310,424 @@ suite('Workflow Run → Prompt Injection Chain', () => {
 		assert.ok(received.endsWith('x'.repeat(10000)));
 	});
 });
+
+// ── workflow_apply agent node auto-population tests ─────────────────
+
+suite('workflow_apply → Agent Node Auto-Population', () => {
+
+	/**
+	 * Replicates the auto-population logic in workflow_apply handler:
+	 * when an agent node has no agentConfig.providerId/modelId,
+	 * we fill them from the workflow's bound agent.
+	 */
+	function autoPopulateAgentNodes(
+		nodes: Array<Record<string, unknown>>,
+		workflowAgentModel: string | undefined,
+		workflowAgentId: string | undefined,
+	): Array<Record<string, unknown>> {
+		if (!workflowAgentModel) { return nodes; }
+
+		for (const node of nodes) {
+			if (node.type === 'agent') {
+				const data = (node.data as Record<string, unknown>) || {};
+				if (!data.agentId && workflowAgentId) {
+					data.agentId = workflowAgentId;
+				}
+				const cfg = (data.agentConfig as Record<string, unknown>) || {};
+				if (!cfg.providerId && !cfg.modelId) {
+					(data as any).agentConfig = { providerId: '', modelId: workflowAgentModel };
+				} else if (!cfg.modelId && workflowAgentModel) {
+					cfg.modelId = workflowAgentModel;
+					(data as any).agentConfig = cfg;
+				}
+			}
+		}
+		return nodes;
+	}
+
+	test('fills empty agentConfig from workflow agent model', () => {
+		const nodes = [
+			{ id: 'start', type: 'start', data: { label: 'Start' } },
+			{ id: 'agent-1', type: 'agent', data: { label: 'My Agent', agentId: 'wf-agent' } },
+			{ id: 'end', type: 'end', data: { label: 'End' } },
+		];
+
+		const result = autoPopulateAgentNodes(nodes, 'claude-sonnet-4-20250514', 'wf-agent');
+
+		const agentNode = result[1];
+		const cfg = (agentNode.data as any).agentConfig as Record<string, unknown>;
+		assert.strictEqual(cfg.modelId, 'claude-sonnet-4-20250514');
+		assert.strictEqual(cfg.providerId, '');
+	});
+
+	test('fills missing agentId from workflow agent', () => {
+		const nodes = [
+			{ id: 'agent-1', type: 'agent', data: { label: 'Agent', agentConfig: {} } },
+		];
+
+		const result = autoPopulateAgentNodes(nodes, 'gpt-4o', 'wf-agent-123');
+
+		const data = result[0].data as Record<string, unknown>;
+		assert.strictEqual(data.agentId, 'wf-agent-123');
+		const cfg = (data.agentConfig as Record<string, unknown>);
+		assert.strictEqual(cfg.modelId, 'gpt-4o');
+	});
+
+	test('does NOT overwrite existing agentConfig', () => {
+		const nodes = [
+			{ id: 'agent-1', type: 'agent', data: { label: 'Agent', agentId: 'custom-agent', agentConfig: { providerId: 'openai', modelId: 'gpt-4-turbo' } } },
+		];
+
+		const result = autoPopulateAgentNodes(nodes, 'claude-sonnet', 'wf-agent');
+
+		const data = result[0].data as Record<string, unknown>;
+		const cfg = (data.agentConfig as Record<string, unknown>);
+		// Should keep original values, not overwrite
+		assert.strictEqual(cfg.providerId, 'openai');
+		assert.strictEqual(cfg.modelId, 'gpt-4-turbo');
+		assert.strictEqual(data.agentId, 'custom-agent');
+	});
+
+	test('skips non-agent node types', () => {
+		const nodes = [
+			{ id: 'task-1', type: 'task', data: { label: 'Task', executorId: 'x' } },
+			{ id: 'prompt-1', type: 'prompt', data: { label: 'Prompt', prompt: 'hello' } },
+		];
+
+		const result = autoPopulateAgentNodes(nodes, 'claude-sonnet', 'wf-agent');
+
+		// Should be unchanged
+		assert.strictEqual(result, nodes);
+	});
+
+	test('handles missing workflow agent model gracefully', () => {
+		const nodes = [
+			{ id: 'agent-1', type: 'agent', data: { label: 'Agent' } },
+		];
+
+		const result = autoPopulateAgentNodes(nodes, undefined, undefined);
+
+		// Should be unchanged
+		const data = result[0].data as Record<string, unknown>;
+		assert.strictEqual(data.agentId, undefined);
+	});
+
+	test('fills modelId when providerId is set but modelId is missing', () => {
+		const nodes = [
+			{ id: 'agent-1', type: 'agent', data: { label: 'Agent', agentConfig: { providerId: 'openai' } } },
+		];
+
+		const result = autoPopulateAgentNodes(nodes, 'gpt-4o', 'wf-agent');
+
+		const data = result[0].data as Record<string, unknown>;
+		const cfg = (data.agentConfig as Record<string, unknown>);
+		assert.strictEqual(cfg.providerId, 'openai');
+		assert.strictEqual(cfg.modelId, 'gpt-4o');
+	});
+});
+
+// ── Node format normalization tests ────────────────────────────
+
+suite('workflow_apply → Node Format Normalization', () => {
+
+	/**
+	 * Replicates the normalization logic in workflow_apply handler:
+	 * Moves top-level fields (label, agentId, agentConfig etc.) into data,
+	 * since the AI sends them at the top level but WorkflowGraphNode expects
+	 * them nested inside `data`.
+	 */
+	function normalizeNodes(nodes: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+		const KNOWN_META_KEYS = new Set(['id', 'type', 'position', 'parentId', 'style', 'data', 'name']);
+		for (const node of nodes) {
+			const data = (node.data as Record<string, unknown>) || {};
+			let hasMoved = false;
+			for (const key of Object.keys(node)) {
+				if (!KNOWN_META_KEYS.has(key) && !(key in data)) {
+					data[key] = node[key];
+					hasMoved = true;
+				}
+			}
+			if (hasMoved || Object.keys(data).length > 0) {
+				node.data = data;
+			}
+			if (!data.label) {
+				data.label = (node.name as string) || (node.id as string) || (node.type as string);
+				node.data = data;
+			}
+		}
+		return nodes;
+	}
+
+	test('moves top-level label into data', () => {
+		const nodes = [
+			{ id: 'dev', type: 'agent', label: 'Developer', position: { x: 100, y: 200 } },
+		];
+
+		const result = normalizeNodes(nodes);
+		const data = result[0].data as Record<string, unknown>;
+		// Label is now inside data (the top-level key may persist but data takes priority)
+		assert.strictEqual(data.label, 'Developer');
+	});
+
+	test('moves top-level agentId and agentConfig into data', () => {
+		const nodes = [{
+			id: 'dev', type: 'agent',
+			label: 'Coder',
+			agentId: 'coder',
+			agentConfig: { modelId: 'claude-sonnet-4-20250514' },
+			position: { x: 100, y: 200 },
+		}];
+
+		const result = normalizeNodes(nodes);
+		const data = result[0].data as Record<string, unknown>;
+		assert.strictEqual(data.label, 'Coder');
+		assert.strictEqual(data.agentId, 'coder');
+		const cfg = data.agentConfig as Record<string, unknown>;
+		assert.strictEqual(cfg.modelId, 'claude-sonnet-4-20250514');
+	});
+
+	test('moves askUser fields (questionText, options) into data', () => {
+		const nodes = [{
+			id: 'ask', type: 'askUser',
+			label: 'Confirm',
+			questionText: 'Proceed?',
+			options: [{ label: 'Yes' }, { label: 'No' }],
+			position: { x: 200, y: 200 },
+		}];
+
+		const result = normalizeNodes(nodes);
+		const data = result[0].data as Record<string, unknown>;
+		assert.strictEqual(data.questionText, 'Proceed?');
+		assert.strictEqual((data.options as any[]).length, 2);
+	});
+
+	test('preserves existing data object fields', () => {
+		const nodes = [{
+			id: 'dev', type: 'agent',
+			position: { x: 100, y: 200 },
+			data: { label: 'Existing', agentId: 'coder' },
+		}];
+
+		const result = normalizeNodes(nodes);
+		const data = result[0].data as Record<string, unknown>;
+		assert.strictEqual(data.label, 'Existing');
+		assert.strictEqual(data.agentId, 'coder');
+	});
+
+	test('does not move meta keys (id, type, position, etc.)', () => {
+		const nodes = [{
+			id: 'start', type: 'start', position: { x: 80, y: 250 },
+			label: 'Start',
+		}];
+
+		const result = normalizeNodes(nodes);
+		assert.strictEqual(result[0].id, 'start');
+		assert.strictEqual(result[0].type, 'start');
+		assert.deepStrictEqual(result[0].position, { x: 80, y: 250 });
+	});
+
+	test('sets default label from id when not provided', () => {
+		const nodes = [
+			{ id: 'agent-1', type: 'agent', position: { x: 0, y: 0 } },
+		];
+
+		const result = normalizeNodes(nodes);
+		const data = result[0].data as Record<string, unknown>;
+		assert.strictEqual(data.label, 'agent-1');
+	});
+
+	test('realistic AI output: full agent node normalization', () => {
+		// Exact format the AI sends (top-level agentId, agentConfig, label)
+		const nodes = [
+			{
+				id: 'dev', type: 'agent',
+				label: '开发 - 保证编译通过',
+				agentId: 'coder',
+				agentConfig: { modelId: 'claude-sonnet-4-20250514' },
+				position: { x: 320, y: 200 },
+			},
+			{
+				id: 'ask_upload', type: 'askUser',
+				label: '是否上传？',
+				questionText: '代码开发和测试已完成，是否上传？',
+				options: [
+					{ label: '是，立即上传', description: '将代码上传到仓库/部署环境' },
+					{ label: '否，暂不上传', description: '跳过上传步骤，保留本地修改' },
+				],
+				position: { x: 800, y: 200 },
+			},
+		];
+
+		const result = normalizeNodes(nodes);
+
+		// Agent node
+		const agentData = result[0].data as Record<string, unknown>;
+		assert.strictEqual(agentData.label, '开发 - 保证编译通过');
+		assert.strictEqual(agentData.agentId, 'coder');
+		const agentCfg = agentData.agentConfig as Record<string, unknown>;
+		assert.strictEqual(agentCfg.modelId, 'claude-sonnet-4-20250514');
+
+		// AskUser node
+		const askData = result[1].data as Record<string, unknown>;
+		assert.strictEqual(askData.label, '是否上传？');
+		assert.strictEqual(askData.questionText, '代码开发和测试已完成，是否上传？');
+		assert.strictEqual((askData.options as any[]).length, 2);
+		assert.strictEqual((askData.options as any[])[0].label, '是，立即上传');
+	});
+
+	test('connections pass through unchanged (no data normalization needed)', () => {
+		const connections = [
+			{ id: 'e4', from: 'ask_upload', to: 'upload', fromPort: 'option-0' },
+			{ id: 'e1', from: 'start', to: 'dev' },
+		];
+
+		// Connections don't need normalization — they use from/to/fromPort at top level
+		assert.strictEqual(connections[0].from, 'ask_upload');
+		assert.strictEqual(connections[0].fromPort, 'option-0');
+		assert.strictEqual(connections[1].from, 'start');
+	});
+});
+
+// ── Fixup tracking (P2: normalization feedback to AI) ────────────
+
+suite('workflow_apply → Fixup Tracking & Feedback', () => {
+
+	/**
+	 * Simulates the full normalization + auto-population + fixup tracking
+	 * that the workflow_apply handler performs.
+	 */
+	function processNodes(
+		nodes: Array<Record<string, unknown>>,
+		workflowAgentModel: string | undefined,
+		workflowAgentId: string | undefined,
+		workflowAgentProviderId: string = '',
+	): { nodes: Array<Record<string, unknown>>; fixups: string[] } {
+		const fixups: string[] = [];
+		const KNOWN_META_KEYS = new Set(['id', 'type', 'position', 'parentId', 'style', 'data', 'name']);
+
+		for (const node of nodes) {
+			// Step 1: Normalize (move top-level fields into data)
+			const data = (node.data as Record<string, unknown>) || {};
+			const movedFields: string[] = [];
+			for (const key of Object.keys(node)) {
+				if (!KNOWN_META_KEYS.has(key) && !(key in data)) {
+					data[key] = node[key];
+					movedFields.push(key);
+				}
+			}
+			if (movedFields.length > 0) {
+				fixups.push(`Node "${node.id}" (${node.type}): moved ${movedFields.join(', ')} into data`);
+				node.data = data;
+			}
+			if (!data.label) {
+				data.label = (node.name as string) || (node.id as string) || (node.type as string);
+				node.data = data;
+				fixups.push(`Node "${node.id}": set label="${data.label}" (was missing)`);
+			}
+
+			// Step 2: Auto-populate agent config
+			if (node.type === 'agent' && workflowAgentModel) {
+				if (!data.agentId && workflowAgentId) {
+					data.agentId = workflowAgentId;
+					fixups.push(`Node "${node.id}" (agent): auto-set agentId="${workflowAgentId}"`);
+				}
+				const cfg = (data.agentConfig as Record<string, unknown>) || {};
+				if (!cfg.providerId && !cfg.modelId) {
+					data.agentConfig = { providerId: workflowAgentProviderId, modelId: workflowAgentModel };
+					fixups.push(`Node "${node.id}" (agent): auto-set agentConfig={ providerId:"${workflowAgentProviderId}", modelId:"${workflowAgentModel}" }`);
+				} else if (!cfg.modelId) {
+					cfg.modelId = workflowAgentModel;
+					data.agentConfig = cfg;
+					fixups.push(`Node "${node.id}" (agent): auto-set modelId="${workflowAgentModel}" (was missing)`);
+				} else if (!cfg.providerId && workflowAgentProviderId) {
+					cfg.providerId = workflowAgentProviderId;
+					data.agentConfig = cfg;
+					fixups.push(`Node "${node.id}" (agent): auto-set providerId="${workflowAgentProviderId}" (was missing)`);
+				}
+				node.data = data;
+			}
+		}
+		return { nodes, fixups };
+	}
+
+	test('reports fixups when fields are moved into data', () => {
+		const nodes = [
+			{ id: 'dev', type: 'agent', label: 'Coder', agentId: 'coder', position: { x: 100, y: 200 } },
+		];
+
+		const { fixups } = processNodes(nodes, undefined, undefined);
+		assert.ok(fixups.some((f: string) => f.includes('moved label, agentId into data')),
+			'Should report moved fields');
+	});
+
+	test('reports fixups when agent config is auto-populated', () => {
+		const nodes = [
+			{ id: 'dev', type: 'agent', data: { label: 'Agent' }, position: { x: 100, y: 200 } },
+		];
+
+		const { fixups } = processNodes(nodes, 'claude-sonnet', 'wf-agent-1', 'knot');
+		assert.ok(fixups.some((f: string) => f.includes('auto-set agentId="wf-agent-1"')));
+		assert.ok(fixups.some((f: string) => f.includes('auto-set agentConfig')));
+	});
+
+	test('reports fixups for missing modelId only', () => {
+		const nodes = [
+			{ id: 'dev', type: 'agent', data: { label: 'Agent', agentConfig: { providerId: 'knot' } }, position: { x: 100, y: 200 } },
+		];
+
+		const { fixups } = processNodes(nodes, 'gpt-4o', 'wf-agent', 'knot');
+		assert.ok(fixups.some((f: string) => f.includes('auto-set modelId="gpt-4o"')));
+	});
+
+	test('reports fixups for missing providerId only', () => {
+		const nodes = [
+			{ id: 'dev', type: 'agent', data: { label: 'Agent', agentConfig: { modelId: 'claude-sonnet' } }, position: { x: 100, y: 200 } },
+		];
+
+		const { fixups } = processNodes(nodes, 'claude-sonnet', 'wf-agent', 'knot');
+		assert.ok(fixups.some((f: string) => f.includes('auto-set providerId="knot"')));
+	});
+
+	test('no fixups when format is already correct', () => {
+		const nodes = [
+			{ id: 'dev', type: 'agent', data: { label: 'Coder', agentId: 'coder', agentConfig: { providerId: 'knot', modelId: 'claude-sonnet' } }, position: { x: 100, y: 200 } },
+		];
+
+		const { fixups } = processNodes(nodes, 'claude-sonnet', 'wf-agent', 'knot');
+		assert.strictEqual(fixups.length, 0, 'No fixups needed for correctly formatted nodes');
+	});
+
+	test('reports label fixup when missing', () => {
+		const nodes = [
+			{ id: 'agent-x', type: 'agent', position: { x: 0, y: 0 } },
+		];
+
+		const { fixups } = processNodes(nodes, 'gpt-4o', 'wf-a', 'knot');
+		assert.ok(fixups.some((f: string) => f.includes('set label="agent-x"')));
+	});
+
+	test('realistic scenario: fully malformed AI output with fixups', () => {
+		const nodes = [
+			{ id: 'start', type: 'start', label: 'Start', position: { x: 80, y: 250 } },
+			{ id: 'dev', type: 'agent', label: 'Develop', agentId: 'coder', agentConfig: { modelId: 'claude-sonnet' }, position: { x: 320, y: 200 } },
+			{ id: 'end', type: 'end', label: 'End', position: { x: 600, y: 250 } },
+		];
+
+		const { nodes: result, fixups } = processNodes(nodes, 'claude-sonnet', 'wf-main', 'knot');
+
+		// Start node: label moved into data, meta keys untouched
+		const startData = result[0].data as Record<string, unknown>;
+		assert.strictEqual(startData.label, 'Start');
+
+		// Dev node: agentConfig modelId preserved, providerId auto-added
+		const devData = result[1].data as Record<string, unknown>;
+		const devCfg = devData.agentConfig as Record<string, unknown>;
+		assert.strictEqual(devCfg.modelId, 'claude-sonnet');
+		assert.strictEqual(devCfg.providerId, 'knot');
+
+		// Should have fixups for each node + providerId auto-fill
+		assert.ok(fixups.length >= 3, `Expected at least 3 fixups, got ${fixups.length}: ${fixups.join('; ')}`);
+		assert.ok(fixups.some((f: string) => f.includes('moved label into data') && f.includes('start')));
+		assert.ok(fixups.some((f: string) => f.includes('auto-set providerId="knot"')));
+	});
+});

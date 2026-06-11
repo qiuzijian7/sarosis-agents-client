@@ -12,6 +12,8 @@ export interface CreateTaskFormData {
 	assigneeId?: string;
 	assigneeName?: string;
 	priority?: 'low' | 'medium' | 'high';
+	/** Git worktree directory the task operates in (derived from agent binding). */
+	worktreePath?: string;
 	/** Ids of tasks this task depends on (must complete first). */
 	dependencies?: string[];
 }
@@ -24,14 +26,17 @@ interface CreateTaskModalProps {
 	agents: { id: string; name: string }[];
 	/** All existing tasks, used to populate the dependency dropdown. */
 	tasks: { id: string; title: string }[];
+	/** Available worktrees (derived from agents with worktree bindings). */
+	worktreeOptions: { agentId: string; agentName: string; worktreePath: string; worktreeBranch?: string }[];
 }
 
-export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: CreateTaskModalProps): React.ReactElement | null {
+export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks, worktreeOptions }: CreateTaskModalProps): React.ReactElement | null {
 	const [title, setTitle] = useState('');
 	const [description, setDescription] = useState('');
 	const [assigneeId, setAssigneeId] = useState('');
 	const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
 	const [dependencies, setDependencies] = useState<string[]>([]);
+	const [worktreePath, setWorktreePath] = useState('');
 	const titleInputRef = useRef<HTMLInputElement>(null);
 
 	// Reset form + focus the title field each time the modal opens.
@@ -42,6 +47,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: Cr
 			setAssigneeId('');
 			setPriority('medium');
 			setDependencies([]);
+			setWorktreePath('');
 			// Defer focus until after the modal paints.
 			setTimeout(() => titleInputRef.current?.focus(), 50);
 		}
@@ -50,6 +56,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: Cr
 	if (!isOpen) { return null; }
 
 	const canSubmit = title.trim().length > 0;
+	const mouseDownOnOverlay = useRef(false);
 
 	// Tasks not yet selected as a dependency (avoid duplicate selection).
 	const availableDepTasks = tasks.filter(t => !dependencies.includes(t.id));
@@ -73,6 +80,7 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: Cr
 			assigneeId: assigneeId || undefined,
 			assigneeName: emp?.name || undefined,
 			priority,
+			worktreePath: worktreePath || undefined,
 			dependencies: dependencies.length > 0 ? dependencies : undefined,
 		});
 		onClose();
@@ -90,7 +98,15 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: Cr
 	};
 
 	return (
-		<div className="orch-modal-overlay" onClick={onClose}>
+		<div
+			className="orch-modal-overlay"
+			onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
+			onClick={(e) => {
+				if (e.target === e.currentTarget && mouseDownOnOverlay.current) {
+					onClose();
+				}
+			}}
+		>
 			<div
 				className="create-task-modal"
 				onClick={(e) => e.stopPropagation()}
@@ -152,6 +168,22 @@ export function CreateTaskModal({ isOpen, onClose, onCreate, agents, tasks }: Cr
 							</select>
 						</label>
 					</div>
+
+					<label className="create-task-field">
+						<span className="create-task-field-label">Worktree</span>
+						<select
+							className="create-task-select"
+							value={worktreePath}
+							onChange={e => setWorktreePath(e.target.value)}
+						>
+							<option value="">无</option>
+							{(worktreeOptions || []).map(opt => (
+								<option key={opt.agentId} value={opt.worktreePath}>
+									{opt.worktreePath} ({opt.agentName})
+								</option>
+							))}
+						</select>
+					</label>
 
 					<label className="create-task-field">
 						<span className="create-task-field-label">依赖任务</span>

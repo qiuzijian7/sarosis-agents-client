@@ -2238,7 +2238,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				name: 'workflow_apply',
 				description: 'Apply a complete workflow definition (all nodes and connections) to create or replace a workflow. ' +
 					'IMPORTANT: Always include the Start and End nodes. Provide ALL nodes and connections — this replaces the entire workflow. ' +
-					'Use this for major structural changes. For small edits, get the current workflow via workflow_get, modify it, and apply.',
+					'Use this for major structural changes. For small edits, get the current workflow via workflow_get, modify it, and apply.\n\n' +
+					'NODE FORMAT (CRITICAL): Each node must have id, type, position, and a data object containing all content.\n' +
+					'Example: { "id":"dev","type":"agent","position":{"x":320,"y":200},"data":{"label":"Coder","agentId":"coder","agentConfig":{"modelId":"claude-sonnet-4-20250514"}} }\n' +
+					'DO NOT put label/agentId/agentConfig at the top level — they go inside data.',
 				inputSchema: {
 					type: 'object',
 					properties: {
@@ -2247,15 +2250,41 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 						description: { type: 'string', description: 'Workflow description (optional, preserved if omitted).' },
 						nodes: {
 							type: 'array',
-							description: 'All nodes in the workflow. Each node must have: id (string), type (from schema), label (string), position ({x, y}).',
-							items: { type: 'object' },
+							description: 'All nodes. Each node: { id(string), type(string), position({x,y}), data({label, ...typeFields}) }. ' +
+								'CRITICAL: put label/agentId/agentConfig/other content inside `data`, NOT at top level.',
+							items: {
+								type: 'object',
+								properties: {
+									id: { type: 'string', description: 'Unique node id' },
+									type: { type: 'string', description: 'Node type from workflow_get_schema' },
+									position: {
+										type: 'object',
+										properties: { x: { type: 'number' }, y: { type: 'number' } },
+										required: ['x', 'y'],
+									},
+									data: {
+										type: 'object',
+										description: 'Content fields: label (required), plus type-specific fields (agentId, agentConfig, prompt, etc.)',
+									},
+								},
+								required: ['id', 'type', 'position'],
+							},
 						},
 						connections: {
 							type: 'array',
 							description: 'All connections (edges) between nodes. Each connection: id (string), from (source node id), to (target node id). ' +
 								'CRITICAL for multi-port nodes (ifElse/switch/condition/askUser): MUST also include fromPort (string). ' +
 								'ifElse/condition: fromPort is "branch-0" or "branch-1". switch: "branch-0", "branch-1", etc. askUser: "option-0", "option-1", etc.',
-							items: { type: 'object' },
+							items: {
+								type: 'object',
+								properties: {
+									id: { type: 'string', description: 'Unique edge id' },
+									from: { type: 'string', description: 'Source node id' },
+									to: { type: 'string', description: 'Target node id' },
+									fromPort: { type: 'string', description: 'Required for multi-port nodes (branch-0, option-0, etc.)' },
+								},
+								required: ['id', 'from', 'to'],
+							},
 						},
 						change_description: { type: 'string', description: 'Brief description of what changed (for user feedback).' },
 					},
@@ -2296,6 +2325,83 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 						return [{ type: 'text', text: 'workflow_apply validation error: Workflow must have both a Start node and an End node.' }];
 					}
 
+					// Normalize node format: AI may send fields (label, agentId, agentConfig etc.)
+					// at the top level instead of nested inside `data`. Move them into `data`
+					// so loadWorkflow() in the webview sees them correctly.
+					const fixups: string[] = [];
+					const KNOWN_META_KEYS = new Set(['id', 'type', 'position', 'parentId', 'style', 'data', 'name']);
+					for (const node of nodes) {
+						const data = (node.data as Record<string, unknown>) || {};
+						let hasMoved = false;
+						const movedFields: string[] = [];
+						for (const key of Object.keys(node)) {
+							if (!KNOWN_META_KEYS.has(key) && !(key in data)) {
+								data[key] = node[key];
+								movedFields.push(key);
+								hasMoved = true;
+							}
+						}
+						if (hasMoved) {
+							fixups.push(`Node "${node.id}" (${node.type}): moved ${movedFields.join(', ')} into data`);
+						}
+						if (hasMoved || Object.keys(data).length > 0) {
+							(node as Record<string, unknown>).data = data;
+						}
+						// Ensure label is always set (fallback to id)
+						if (!data.label) {
+							data.label = (node.name as string) || (node.id as string) || (node.type as string);
+							(node as Record<string, unknown>).data = data;
+							fixups.push(`Node "${node.id}": set label="${data.label}" (was missing)`);
+						}
+					}
+
+					// Auto-populate agent node configs from the workflow's bound agent.
+					// AI may forget to set agentConfig.providerId / modelId; we fill them here
+					// as a server-side guarantee so agent nodes never show "No provider selected".
+					try {
+						const existingWf = await this.workflowStorageService.getWorkflow(workflowId, wsId);
+						if (existingWf?.agentId) {
+							const workflowAgent = await this.studioService.getAgent(existingWf.agentId);
+							if (workflowAgent?.model) {
+								const defaultModelId = typeof workflowAgent.model === 'string'
+									? workflowAgent.model
+									: Array.isArray(workflowAgent.model)
+										? workflowAgent.model[0]
+										: (workflowAgent.model as { primary: string })?.primary;
+								const defaultProviderId = (workflowAgent as any).providerId || '';
+
+								for (const node of nodes) {
+									if (node.type === 'agent') {
+										const data = (node.data as Record<string, unknown>) || {};
+										if (!data.agentId) {
+											data.agentId = existingWf.agentId;
+											fixups.push(`Node "${node.id}" (agent): auto-set agentId="${existingWf.agentId}"`);
+										}
+										const cfg = (data.agentConfig as Record<string, unknown>) || {};
+										if (!cfg.providerId && !cfg.modelId) {
+											data.agentConfig = {
+												providerId: defaultProviderId || '',
+												modelId: defaultModelId || '',
+											};
+											fixups.push(`Node "${node.id}" (agent): auto-set agentConfig={ providerId:"${defaultProviderId || ''}", modelId:"${defaultModelId || ''}" }`);
+										} else if (!cfg.modelId && defaultModelId) {
+											cfg.modelId = defaultModelId;
+											data.agentConfig = cfg;
+											fixups.push(`Node "${node.id}" (agent): auto-set modelId="${defaultModelId}" (was missing)`);
+										} else if (cfg.modelId && !cfg.providerId && defaultProviderId) {
+											cfg.providerId = defaultProviderId;
+											data.agentConfig = cfg;
+											fixups.push(`Node "${node.id}" (agent): auto-set providerId="${defaultProviderId}" (was missing)`);
+										}
+										(node as Record<string, unknown>).data = data;
+									}
+								}
+							}
+						}
+					} catch {
+						// Non-fatal: if we can't resolve the agent, proceed with whatever the AI provided
+					}
+
 					// Build the patch
 					const patch: Partial<IStoredWorkflow> = {
 						nodes: nodes as unknown as IStoredWorkflow['nodes'],
@@ -2311,10 +2417,15 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 					const nodeCount = nodes.length;
 					const connCount = connections.length;
-					return [{
-						type: 'text',
-						text: `Workflow "${updated.name || workflowId}" updated successfully. ${nodeCount} nodes, ${connCount} connections applied.`,
-					}];
+					let resultText = `Workflow "${updated.name || workflowId}" updated successfully. ${nodeCount} nodes, ${connCount} connections applied.`;
+					if (fixups.length > 0) {
+						resultText += '\n\n[Format fixes applied — please use the correct format next time to avoid these automatic corrections:]';
+						for (const f of fixups) {
+							resultText += `\n  • ${f}`;
+						}
+						resultText += '\n\nReminder: put all content fields (label, agentId, agentConfig, etc.) inside the `data` object in each node.';
+					}
+					return [{ type: 'text', text: resultText }];
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
 					return [{ type: 'text', text: `workflow_apply error: ${msg}` }];

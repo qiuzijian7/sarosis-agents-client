@@ -2656,3 +2656,330 @@ suite("Workflow Run \u2192 Prompt Injection Chain", () => {
     import_assert2.default.ok(received.endsWith("x".repeat(1e4)));
   });
 });
+suite("workflow_apply \u2192 Agent Node Auto-Population", () => {
+  function autoPopulateAgentNodes(nodes, workflowAgentModel, workflowAgentId) {
+    if (!workflowAgentModel) {
+      return nodes;
+    }
+    for (const node of nodes) {
+      if (node.type === "agent") {
+        const data = node.data || {};
+        if (!data.agentId && workflowAgentId) {
+          data.agentId = workflowAgentId;
+        }
+        const cfg = data.agentConfig || {};
+        if (!cfg.providerId && !cfg.modelId) {
+          data.agentConfig = { providerId: "", modelId: workflowAgentModel };
+        } else if (!cfg.modelId && workflowAgentModel) {
+          cfg.modelId = workflowAgentModel;
+          data.agentConfig = cfg;
+        }
+      }
+    }
+    return nodes;
+  }
+  test("fills empty agentConfig from workflow agent model", () => {
+    const nodes = [
+      { id: "start", type: "start", data: { label: "Start" } },
+      { id: "agent-1", type: "agent", data: { label: "My Agent", agentId: "wf-agent" } },
+      { id: "end", type: "end", data: { label: "End" } }
+    ];
+    const result = autoPopulateAgentNodes(nodes, "claude-sonnet-4-20250514", "wf-agent");
+    const agentNode = result[1];
+    const cfg = agentNode.data.agentConfig;
+    import_assert2.default.strictEqual(cfg.modelId, "claude-sonnet-4-20250514");
+    import_assert2.default.strictEqual(cfg.providerId, "");
+  });
+  test("fills missing agentId from workflow agent", () => {
+    const nodes = [
+      { id: "agent-1", type: "agent", data: { label: "Agent", agentConfig: {} } }
+    ];
+    const result = autoPopulateAgentNodes(nodes, "gpt-4o", "wf-agent-123");
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.agentId, "wf-agent-123");
+    const cfg = data.agentConfig;
+    import_assert2.default.strictEqual(cfg.modelId, "gpt-4o");
+  });
+  test("does NOT overwrite existing agentConfig", () => {
+    const nodes = [
+      { id: "agent-1", type: "agent", data: { label: "Agent", agentId: "custom-agent", agentConfig: { providerId: "openai", modelId: "gpt-4-turbo" } } }
+    ];
+    const result = autoPopulateAgentNodes(nodes, "claude-sonnet", "wf-agent");
+    const data = result[0].data;
+    const cfg = data.agentConfig;
+    import_assert2.default.strictEqual(cfg.providerId, "openai");
+    import_assert2.default.strictEqual(cfg.modelId, "gpt-4-turbo");
+    import_assert2.default.strictEqual(data.agentId, "custom-agent");
+  });
+  test("skips non-agent node types", () => {
+    const nodes = [
+      { id: "task-1", type: "task", data: { label: "Task", executorId: "x" } },
+      { id: "prompt-1", type: "prompt", data: { label: "Prompt", prompt: "hello" } }
+    ];
+    const result = autoPopulateAgentNodes(nodes, "claude-sonnet", "wf-agent");
+    import_assert2.default.strictEqual(result, nodes);
+  });
+  test("handles missing workflow agent model gracefully", () => {
+    const nodes = [
+      { id: "agent-1", type: "agent", data: { label: "Agent" } }
+    ];
+    const result = autoPopulateAgentNodes(nodes, void 0, void 0);
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.agentId, void 0);
+  });
+  test("fills modelId when providerId is set but modelId is missing", () => {
+    const nodes = [
+      { id: "agent-1", type: "agent", data: { label: "Agent", agentConfig: { providerId: "openai" } } }
+    ];
+    const result = autoPopulateAgentNodes(nodes, "gpt-4o", "wf-agent");
+    const data = result[0].data;
+    const cfg = data.agentConfig;
+    import_assert2.default.strictEqual(cfg.providerId, "openai");
+    import_assert2.default.strictEqual(cfg.modelId, "gpt-4o");
+  });
+});
+suite("workflow_apply \u2192 Node Format Normalization", () => {
+  function normalizeNodes(nodes) {
+    const KNOWN_META_KEYS = /* @__PURE__ */ new Set(["id", "type", "position", "parentId", "style", "data", "name"]);
+    for (const node of nodes) {
+      const data = node.data || {};
+      let hasMoved = false;
+      for (const key of Object.keys(node)) {
+        if (!KNOWN_META_KEYS.has(key) && !(key in data)) {
+          data[key] = node[key];
+          hasMoved = true;
+        }
+      }
+      if (hasMoved || Object.keys(data).length > 0) {
+        node.data = data;
+      }
+      if (!data.label) {
+        data.label = node.name || node.id || node.type;
+        node.data = data;
+      }
+    }
+    return nodes;
+  }
+  test("moves top-level label into data", () => {
+    const nodes = [
+      { id: "dev", type: "agent", label: "Developer", position: { x: 100, y: 200 } }
+    ];
+    const result = normalizeNodes(nodes);
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.label, "Developer");
+  });
+  test("moves top-level agentId and agentConfig into data", () => {
+    const nodes = [{
+      id: "dev",
+      type: "agent",
+      label: "Coder",
+      agentId: "coder",
+      agentConfig: { modelId: "claude-sonnet-4-20250514" },
+      position: { x: 100, y: 200 }
+    }];
+    const result = normalizeNodes(nodes);
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.label, "Coder");
+    import_assert2.default.strictEqual(data.agentId, "coder");
+    const cfg = data.agentConfig;
+    import_assert2.default.strictEqual(cfg.modelId, "claude-sonnet-4-20250514");
+  });
+  test("moves askUser fields (questionText, options) into data", () => {
+    const nodes = [{
+      id: "ask",
+      type: "askUser",
+      label: "Confirm",
+      questionText: "Proceed?",
+      options: [{ label: "Yes" }, { label: "No" }],
+      position: { x: 200, y: 200 }
+    }];
+    const result = normalizeNodes(nodes);
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.questionText, "Proceed?");
+    import_assert2.default.strictEqual(data.options.length, 2);
+  });
+  test("preserves existing data object fields", () => {
+    const nodes = [{
+      id: "dev",
+      type: "agent",
+      position: { x: 100, y: 200 },
+      data: { label: "Existing", agentId: "coder" }
+    }];
+    const result = normalizeNodes(nodes);
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.label, "Existing");
+    import_assert2.default.strictEqual(data.agentId, "coder");
+  });
+  test("does not move meta keys (id, type, position, etc.)", () => {
+    const nodes = [{
+      id: "start",
+      type: "start",
+      position: { x: 80, y: 250 },
+      label: "Start"
+    }];
+    const result = normalizeNodes(nodes);
+    import_assert2.default.strictEqual(result[0].id, "start");
+    import_assert2.default.strictEqual(result[0].type, "start");
+    import_assert2.default.deepStrictEqual(result[0].position, { x: 80, y: 250 });
+  });
+  test("sets default label from id when not provided", () => {
+    const nodes = [
+      { id: "agent-1", type: "agent", position: { x: 0, y: 0 } }
+    ];
+    const result = normalizeNodes(nodes);
+    const data = result[0].data;
+    import_assert2.default.strictEqual(data.label, "agent-1");
+  });
+  test("realistic AI output: full agent node normalization", () => {
+    const nodes = [
+      {
+        id: "dev",
+        type: "agent",
+        label: "\u5F00\u53D1 - \u4FDD\u8BC1\u7F16\u8BD1\u901A\u8FC7",
+        agentId: "coder",
+        agentConfig: { modelId: "claude-sonnet-4-20250514" },
+        position: { x: 320, y: 200 }
+      },
+      {
+        id: "ask_upload",
+        type: "askUser",
+        label: "\u662F\u5426\u4E0A\u4F20\uFF1F",
+        questionText: "\u4EE3\u7801\u5F00\u53D1\u548C\u6D4B\u8BD5\u5DF2\u5B8C\u6210\uFF0C\u662F\u5426\u4E0A\u4F20\uFF1F",
+        options: [
+          { label: "\u662F\uFF0C\u7ACB\u5373\u4E0A\u4F20", description: "\u5C06\u4EE3\u7801\u4E0A\u4F20\u5230\u4ED3\u5E93/\u90E8\u7F72\u73AF\u5883" },
+          { label: "\u5426\uFF0C\u6682\u4E0D\u4E0A\u4F20", description: "\u8DF3\u8FC7\u4E0A\u4F20\u6B65\u9AA4\uFF0C\u4FDD\u7559\u672C\u5730\u4FEE\u6539" }
+        ],
+        position: { x: 800, y: 200 }
+      }
+    ];
+    const result = normalizeNodes(nodes);
+    const agentData = result[0].data;
+    import_assert2.default.strictEqual(agentData.label, "\u5F00\u53D1 - \u4FDD\u8BC1\u7F16\u8BD1\u901A\u8FC7");
+    import_assert2.default.strictEqual(agentData.agentId, "coder");
+    const agentCfg = agentData.agentConfig;
+    import_assert2.default.strictEqual(agentCfg.modelId, "claude-sonnet-4-20250514");
+    const askData = result[1].data;
+    import_assert2.default.strictEqual(askData.label, "\u662F\u5426\u4E0A\u4F20\uFF1F");
+    import_assert2.default.strictEqual(askData.questionText, "\u4EE3\u7801\u5F00\u53D1\u548C\u6D4B\u8BD5\u5DF2\u5B8C\u6210\uFF0C\u662F\u5426\u4E0A\u4F20\uFF1F");
+    import_assert2.default.strictEqual(askData.options.length, 2);
+    import_assert2.default.strictEqual(askData.options[0].label, "\u662F\uFF0C\u7ACB\u5373\u4E0A\u4F20");
+  });
+  test("connections pass through unchanged (no data normalization needed)", () => {
+    const connections = [
+      { id: "e4", from: "ask_upload", to: "upload", fromPort: "option-0" },
+      { id: "e1", from: "start", to: "dev" }
+    ];
+    import_assert2.default.strictEqual(connections[0].from, "ask_upload");
+    import_assert2.default.strictEqual(connections[0].fromPort, "option-0");
+    import_assert2.default.strictEqual(connections[1].from, "start");
+  });
+});
+suite("workflow_apply \u2192 Fixup Tracking & Feedback", () => {
+  function processNodes(nodes, workflowAgentModel, workflowAgentId, workflowAgentProviderId = "") {
+    const fixups = [];
+    const KNOWN_META_KEYS = /* @__PURE__ */ new Set(["id", "type", "position", "parentId", "style", "data", "name"]);
+    for (const node of nodes) {
+      const data = node.data || {};
+      const movedFields = [];
+      for (const key of Object.keys(node)) {
+        if (!KNOWN_META_KEYS.has(key) && !(key in data)) {
+          data[key] = node[key];
+          movedFields.push(key);
+        }
+      }
+      if (movedFields.length > 0) {
+        fixups.push(`Node "${node.id}" (${node.type}): moved ${movedFields.join(", ")} into data`);
+        node.data = data;
+      }
+      if (!data.label) {
+        data.label = node.name || node.id || node.type;
+        node.data = data;
+        fixups.push(`Node "${node.id}": set label="${data.label}" (was missing)`);
+      }
+      if (node.type === "agent" && workflowAgentModel) {
+        if (!data.agentId && workflowAgentId) {
+          data.agentId = workflowAgentId;
+          fixups.push(`Node "${node.id}" (agent): auto-set agentId="${workflowAgentId}"`);
+        }
+        const cfg = data.agentConfig || {};
+        if (!cfg.providerId && !cfg.modelId) {
+          data.agentConfig = { providerId: workflowAgentProviderId, modelId: workflowAgentModel };
+          fixups.push(`Node "${node.id}" (agent): auto-set agentConfig={ providerId:"${workflowAgentProviderId}", modelId:"${workflowAgentModel}" }`);
+        } else if (!cfg.modelId) {
+          cfg.modelId = workflowAgentModel;
+          data.agentConfig = cfg;
+          fixups.push(`Node "${node.id}" (agent): auto-set modelId="${workflowAgentModel}" (was missing)`);
+        } else if (!cfg.providerId && workflowAgentProviderId) {
+          cfg.providerId = workflowAgentProviderId;
+          data.agentConfig = cfg;
+          fixups.push(`Node "${node.id}" (agent): auto-set providerId="${workflowAgentProviderId}" (was missing)`);
+        }
+        node.data = data;
+      }
+    }
+    return { nodes, fixups };
+  }
+  test("reports fixups when fields are moved into data", () => {
+    const nodes = [
+      { id: "dev", type: "agent", label: "Coder", agentId: "coder", position: { x: 100, y: 200 } }
+    ];
+    const { fixups } = processNodes(nodes, void 0, void 0);
+    import_assert2.default.ok(
+      fixups.some((f) => f.includes("moved label, agentId into data")),
+      "Should report moved fields"
+    );
+  });
+  test("reports fixups when agent config is auto-populated", () => {
+    const nodes = [
+      { id: "dev", type: "agent", data: { label: "Agent" }, position: { x: 100, y: 200 } }
+    ];
+    const { fixups } = processNodes(nodes, "claude-sonnet", "wf-agent-1", "knot");
+    import_assert2.default.ok(fixups.some((f) => f.includes('auto-set agentId="wf-agent-1"')));
+    import_assert2.default.ok(fixups.some((f) => f.includes("auto-set agentConfig")));
+  });
+  test("reports fixups for missing modelId only", () => {
+    const nodes = [
+      { id: "dev", type: "agent", data: { label: "Agent", agentConfig: { providerId: "knot" } }, position: { x: 100, y: 200 } }
+    ];
+    const { fixups } = processNodes(nodes, "gpt-4o", "wf-agent", "knot");
+    import_assert2.default.ok(fixups.some((f) => f.includes('auto-set modelId="gpt-4o"')));
+  });
+  test("reports fixups for missing providerId only", () => {
+    const nodes = [
+      { id: "dev", type: "agent", data: { label: "Agent", agentConfig: { modelId: "claude-sonnet" } }, position: { x: 100, y: 200 } }
+    ];
+    const { fixups } = processNodes(nodes, "claude-sonnet", "wf-agent", "knot");
+    import_assert2.default.ok(fixups.some((f) => f.includes('auto-set providerId="knot"')));
+  });
+  test("no fixups when format is already correct", () => {
+    const nodes = [
+      { id: "dev", type: "agent", data: { label: "Coder", agentId: "coder", agentConfig: { providerId: "knot", modelId: "claude-sonnet" } }, position: { x: 100, y: 200 } }
+    ];
+    const { fixups } = processNodes(nodes, "claude-sonnet", "wf-agent", "knot");
+    import_assert2.default.strictEqual(fixups.length, 0, "No fixups needed for correctly formatted nodes");
+  });
+  test("reports label fixup when missing", () => {
+    const nodes = [
+      { id: "agent-x", type: "agent", position: { x: 0, y: 0 } }
+    ];
+    const { fixups } = processNodes(nodes, "gpt-4o", "wf-a", "knot");
+    import_assert2.default.ok(fixups.some((f) => f.includes('set label="agent-x"')));
+  });
+  test("realistic scenario: fully malformed AI output with fixups", () => {
+    const nodes = [
+      { id: "start", type: "start", label: "Start", position: { x: 80, y: 250 } },
+      { id: "dev", type: "agent", label: "Develop", agentId: "coder", agentConfig: { modelId: "claude-sonnet" }, position: { x: 320, y: 200 } },
+      { id: "end", type: "end", label: "End", position: { x: 600, y: 250 } }
+    ];
+    const { nodes: result, fixups } = processNodes(nodes, "claude-sonnet", "wf-main", "knot");
+    const startData = result[0].data;
+    import_assert2.default.strictEqual(startData.label, "Start");
+    const devData = result[1].data;
+    const devCfg = devData.agentConfig;
+    import_assert2.default.strictEqual(devCfg.modelId, "claude-sonnet");
+    import_assert2.default.strictEqual(devCfg.providerId, "knot");
+    import_assert2.default.ok(fixups.length >= 3, `Expected at least 3 fixups, got ${fixups.length}: ${fixups.join("; ")}`);
+    import_assert2.default.ok(fixups.some((f) => f.includes("moved label into data") && f.includes("start")));
+    import_assert2.default.ok(fixups.some((f) => f.includes('auto-set providerId="knot"')));
+  });
+});

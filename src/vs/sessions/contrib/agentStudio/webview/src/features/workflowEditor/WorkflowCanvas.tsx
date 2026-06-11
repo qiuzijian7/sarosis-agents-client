@@ -107,6 +107,10 @@ export const WorkflowCanvas: React.FC = () => {
 	const scrollMode = useWorkflowEditorStore(s => s.scrollMode);
 	const isEdgeAnimationEnabled = useWorkflowEditorStore(s => s.isEdgeAnimationEnabled);
 	const minimapMode = useWorkflowEditorStore(s => s.minimapMode);
+	const executionId = useWorkflowEditorStore(s => s.executionId);
+	const executionStatus = useWorkflowEditorStore(s => s.executionStatus);
+	const currentNodeId = useWorkflowEditorStore(s => s.currentNodeId);
+	const nodeExecutionStates = useWorkflowEditorStore(s => s.nodeExecutionStates);
 
 	const { screenToFlowPosition } = useReactFlow();
 
@@ -292,6 +296,26 @@ export const WorkflowCanvas: React.FC = () => {
 		return edges.map(e => ({ ...e, animated: false, type: e.type || 'deletable' }));
 	}, [edges, isEdgeAnimationEnabled]);
 
+	// ── Nodes with execution state (P3) ──
+	const displayNodes = useMemo<Node[]>(() => {
+		if (!executionId) {
+			return nodes;
+		}
+		return nodes.map(n => {
+			const nodeState = nodeExecutionStates[n.id];
+			const isCurrent = n.id === currentNodeId;
+			return {
+				...n,
+				data: {
+					...n.data,
+					executionState: nodeState?.status || 'pending',
+					isCurrentNode: isCurrent,
+					executionError: nodeState?.error,
+				},
+			};
+		});
+	}, [nodes, executionId, currentNodeId, nodeExecutionStates]);
+
 	// ── MiniMap visibility ──
 	const showMinimap = useMemo(() => {
 		if (minimapMode === 'always') { return true; }
@@ -310,7 +334,7 @@ export const WorkflowCanvas: React.FC = () => {
 	return (
 		<div style={{ position: 'absolute', inset: 0 }}>
 			<ReactFlow
-				nodes={nodes}
+				nodes={displayNodes}
 				edges={displayEdges}
 				onNodesChange={onNodesChange}
 				onEdgesChange={onEdgesChange}

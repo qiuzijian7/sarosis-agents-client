@@ -15,6 +15,10 @@ export {
 	IConfigHtmlService,
 } from '../../../common/agentStudioService.js';
 
+export {
+	IWorkflowExecutionService,
+} from '../../../common/workflowExecutionService.js';
+
 // Type-only exports (interfaces)
 export type {
 	IChatStreamDelta,

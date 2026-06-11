@@ -4,7 +4,7 @@
  *  Includes: goal input → plan preview → approve/reject
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import {
 	useOrchestrationStore,
 	type OrchestrationPlan,
@@ -315,6 +315,7 @@ interface OrchestrationPlanDialogProps {
 }
 
 export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProps): React.ReactElement {
+	const mouseDownOnOverlay = useRef(false);
 	const {
 		activePlan,
 		isLoading,
@@ -465,7 +466,15 @@ export function OrchestrationPlanDialog({ onClose }: OrchestrationPlanDialogProp
 	}, [activePlan]);
 
 	return (
-		<div className="agent-form-overlay" onClick={onClose}>
+		<div
+			className="agent-form-overlay"
+			onMouseDown={(e) => { mouseDownOnOverlay.current = e.target === e.currentTarget; }}
+			onClick={(e) => {
+				if (e.target === e.currentTarget && mouseDownOnOverlay.current) {
+					onClose();
+				}
+			}}
+		>
 			<div
 				className="agent-form orch-plan-dialog"
 				onClick={(e) => e.stopPropagation()}

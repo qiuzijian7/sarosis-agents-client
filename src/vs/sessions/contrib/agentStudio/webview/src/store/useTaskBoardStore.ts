@@ -28,6 +28,7 @@ export interface TaskBoardRecord {
 	source: TaskSource;
 	assigneeId?: string;
 	assigneeName?: string;
+	worktreePath?: string;
 	fromAgentId?: string;
 	fromAgentName?: string;
 	toAgentId?: string;

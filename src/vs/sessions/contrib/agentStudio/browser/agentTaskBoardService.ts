@@ -208,6 +208,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			sourceId: data.sourceId,
 			assigneeId: data.assigneeId,
 			assigneeName: data.assigneeName,
+			worktreePath: data.worktreePath,
 			workspaceId: data.workspaceId || '',
 			boardId: data.boardId || DEFAULT_BOARD_ID,
 			priority: data.priority || 'medium',

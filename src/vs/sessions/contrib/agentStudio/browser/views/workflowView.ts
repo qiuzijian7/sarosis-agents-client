@@ -18,6 +18,7 @@ import { $, clearNode } from '../../../../../base/browser/dom.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
 import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/workflowStorage.js';
+import { IWorkflowExecutionService } from '../../common/workflowExecutionService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
@@ -57,6 +58,7 @@ export class WorkflowViewPane extends ViewPane {
 		@IViewsService private readonly viewsService: IViewsService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
+		@IWorkflowExecutionService private readonly workflowExecutionService: IWorkflowExecutionService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
 	) {
@@ -415,32 +417,11 @@ export class WorkflowViewPane extends ViewPane {
 	 */
 	private async _runWorkflow(wf: IStoredWorkflow): Promise<void> {
 		try {
-			// 1. 确保 Agent 存在
-			const agent = await this._ensureWorkflowAgent(wf);
-			if (!agent) {
-				this.notificationService.error('Failed to prepare the Workflow Agent. Please make sure a workspace is selected.');
-				return;
-			}
-
-			// 持久化 agentId 绑定（首次执行后记录）
-			if (wf.agentId !== agent.id) {
-				try {
-					await this.workflowStorage.updateWorkflow(wf.id, { agentId: agent.id });
-				} catch { /* non-fatal */ }
-			}
-
-			// 2. 选中该 Agent
-			this.modelSelectorService.setSelectedAgentId(agent.id);
-			this.agentStudioService.fireSelectAgent(agent.id);
-
-			// 3. 打开聊天框
-			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
-
-			// 4. 注入执行指令 → chat panel 自动发送并开始 agent loop
-			const prompt = this._buildExecutionPrompt(wf);
-			this.agentStudioService.requestInjectPrompt(agent.id, prompt);
+			// 使用工作流执行服务来执行工作流
+			const executionId = await this.workflowExecutionService.executeWorkflow(wf.id);
+			this.notificationService.info(`工作流 "${wf.name}" 已开始执行 (ID: ${executionId})`);
 		} catch (err) {
-			this.notificationService.error(`Failed to run workflow: ${err instanceof Error ? err.message : String(err)}`);
+			this.notificationService.error(`执行工作流失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -570,10 +551,30 @@ export class WorkflowViewPane extends ViewPane {
 		lines.push('1. When asked to modify the workflow, first use `workflow_get` to see current state.');
 		lines.push('2. Then use `workflow_get_schema` to get valid agent IDs and node type schemas.');
 		lines.push('3. Build the complete nodes+connections array and apply via `workflow_apply`.');
-		lines.push('4. Always include Start and End nodes. Every node must have: id, type, label, position {x,y}.');
-		lines.push('5. For new nodes, place them at reasonable positions near related nodes.');
-		lines.push('6. Include a `change_description` summarizing what you changed.');
-		lines.push('7. After applying, the workflow editor updates automatically.');
+		lines.push('4. Always include Start and End nodes.');
+		lines.push('');
+		lines.push('### CRITICAL: Node Format');
+		lines.push('Every node MUST use this exact structure with a `data` wrapper for all content fields:');
+		lines.push('```');
+		lines.push('{');
+		lines.push('  "id": "unique-id",          // string, unique in this workflow');
+		lines.push('  "type": "agent",            // from schema nodeTypes');
+		lines.push('  "position": { "x": 320, "y": 200 },');
+		lines.push('  "data": {                    // ALL content fields go inside data');
+		lines.push('    "label": "Display Name",');
+		lines.push('    "agentId": "coder",');
+		lines.push('    "agentConfig": { "providerId": "knot", "modelId": "claude-sonnet-4-20250514" }');
+		lines.push('  }');
+		lines.push('}');
+		lines.push('```');
+		lines.push('DO NOT put label/agentId/agentConfig at the top level — they MUST be inside `data`.');
+		lines.push('For agent nodes: always include agentConfig.modelId from availableAgents.');
+		lines.push('');
+		lines.push('### Connection Format');
+		lines.push('```');
+		lines.push('{ "id": "e1", "from": "start", "to": "dev" }');
+		lines.push('{ "id": "e2", "from": "ask", "to": "opt1", "fromPort": "option-0" }  // multi-port nodes');
+		lines.push('```');
 		lines.push('');
 		lines.push('## Connection Port Rules (CRITICAL for branch nodes)');
 		lines.push('Multi-port nodes (ifElse, switch, condition, askUser) have MULTIPLE output handles.');

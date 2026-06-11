@@ -852,6 +852,7 @@ export interface TaskBoardRecord {
 	sourceId?: string; // delegation ID if source=delegation
 	assigneeId?: string;
 	assigneeName?: string;
+	worktreePath?: string;
 	workspaceId: string;
 	/**
 	 * Board this task belongs to (multi-board isolation, P2).

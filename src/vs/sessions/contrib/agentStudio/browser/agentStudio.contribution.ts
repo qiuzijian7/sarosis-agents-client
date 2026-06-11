@@ -54,6 +54,8 @@ import { ICrewTeamService } from '../common/crewTeam.js';
 import { CrewTeamService } from './crewTeamService.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { WorkflowStorageService } from './workflowStorageService.js';
+import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
+import { WorkflowExecutionService } from './workflowExecutionService.js';
 import { IEventBridgeService, EventBridgeService } from '../common/eventBridge.js';
 import { TaskOrchestrationService } from './taskOrchestrationService.js';
 import { IWorkspaceLifecycleService } from '../common/workspaceLifecycle.js';
@@ -414,6 +416,7 @@ registerSingleton(IAgentSchedulerService, AgentSchedulerService, InstantiationTy
 registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType.Delayed);
 registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
 registerSingleton(IWorkflowStorageService, WorkflowStorageService, InstantiationType.Delayed);
+registerSingleton(IWorkflowExecutionService, WorkflowExecutionService, InstantiationType.Delayed);
 registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
 registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, InstantiationType.Delayed);
 // ConfigMD service: shared across all webview controllers (chat panels) and
