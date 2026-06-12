@@ -659,6 +659,15 @@ export class AgentStudioWebviewController extends Disposable {
 			return;
 		}
 
+		// ── Lifecycle signal: pool.ready ─────────────────────────────────
+		// The webview entry point emits pool.ready after React mounts.
+		// It is consumed by AgentStudioWebviewPool._waitForReady — no
+		// further dispatch needed. Short-circuit to avoid the default
+		// "Unknown message type" throw in _dispatch.
+		if (type === 'pool.ready') {
+			return;
+		}
+
 		// ── Perf: log incoming message with timing for key types ─────────
 		const perfTypes = new Set(['agents.list', 'skills.list', 'memory.listL0', 'memory.listL1']);
 		const t0 = perfTypes.has(type) ? Date.now() : 0;
@@ -906,6 +915,11 @@ export class AgentStudioWebviewController extends Disposable {
 					(p.agentId) as string,
 					p.sessionId as string | undefined,
 				);
+			case "chat.append":
+				// v6: webview commits a synthesized message (e.g. wf_run_* with
+				// subAgents + toolTrace) to the host so it persists across reloads.
+				// Bypasses the `sendMessage` path (which kicks off a model turn).
+				return this._handleChatAppend(p);
 			case "chat.clear":
 				return this.agentChatService.clearHistory(
 					(p.agentId) as string,
@@ -1654,6 +1668,33 @@ export class AgentStudioWebviewController extends Disposable {
 				error: `Failed to create agent session: ${err instanceof Error ? err.message : String(err)}`,
 			});
 		}
+	}
+
+	/**
+	 * v6: webview commits a synthesized message (e.g. workflow `wf_run_*` with
+	 * `subAgents` + `toolTrace`) to the host. This bypasses the model-stream
+	 * path entirely — the message is just persisted so it survives a window
+	 * reload. Idempotent: appendMessage on the host is a no-op for an existing
+	 * id, so retries from the webview are safe.
+	 */
+	private async _handleChatAppend(payload: Record<string, unknown>): Promise<{ ok: boolean; id: string }> {
+		const agentId = payload.agentId as string;
+		const message = payload.message as import("../../../common/agentStudioTypes.js").ChatMessage | undefined;
+		if (!agentId || !message) {
+			throw new Error('chat.append: missing agentId or message');
+		}
+		// Defensive: ensure the message has an agentSessionId so the host's
+		// noSession guard doesn't drop it.
+		if (!message.agentSessionId) {
+			this.logService.warn(
+				`[AgentStudioWebviewController] chat.append: message ${message.id} missing agentSessionId; persisting anyway (host will fill from active session)`,
+			);
+		}
+		await this.agentChatService.appendMessage(agentId, message);
+		this.logService.info(
+			`[AgentStudioWebviewController] chat.append: persisted ${message.id} (role=${message.role}, subAgents=${message.subAgents?.length ?? 0}, hasToolTrace=${(message.subAgents ?? []).some((sa: any) => (sa as any).toolTrace?.length > 0)})`,
+		);
+		return { ok: true, id: message.id };
 	}
 
 	/**

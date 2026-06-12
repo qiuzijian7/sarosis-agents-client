@@ -10,6 +10,7 @@ import { IAgentChatService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
 import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus } from '../common/workflowExecutionService.js';
 import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption } from '../common/workflowExecutionService.js';
+import { substituteHostVariables, buildRuntimeValueMap } from './utils/templateUtils.js';
 
 export class WorkflowExecutionService extends Disposable implements IWorkflowExecutionService {
 	declare readonly _serviceBrand: undefined;
@@ -44,6 +45,24 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 
 	/** v6: resolvers for pre-execution variable collection (keyed by executionId). */
 	private _variableResolvers = new Map<string, (values: Record<string, string>) => void>();
+
+	/**
+	 * v21: per-execution active stream tracker so `cancelExecution` can abort
+	 * the in-flight LLM call instead of waiting for it to finish. Keyed by
+	 * `executionId`. Each entry stores the (agentId, agentSessionId) pair that
+	 * identifies the active stream inside `agentChatService._activeStreams`
+	 * (the stream key is `${agentId}::${agentSessionId}`).
+	 *
+	 * Why this exists: previously `cancelExecution` only flipped the execution
+	 * status to `Cancelled` and resolved pending AskUser / variable resolvers.
+	 * The actual `agentChatService.sendMessage()` await inside a node executor
+	 * kept running until the model finished its response — so clicking Cancel
+	 * during a long agent turn had no visible effect for the entire LLM
+	 * generation latency, and the next node's recursive call would only bail
+	 * out at the *next* status check. With this tracker, cancel synchronously
+	 * aborts the active stream so the node executor returns almost immediately.
+	 */
+	private _activeStreams = new Map<string, { agentId: string; agentSessionId: string; nodeId: string }>();
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
@@ -248,6 +267,14 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		state.status = WorkflowExecutionStatus.Cancelled;
 		state.endTime = new Date().toISOString();
 		this._onDidExecutionStatusChange.fire(state);
+
+		// v21: abort the in-flight LLM stream so the node executor's
+		// `await sendMessage(...)` returns within ms instead of waiting for
+		// the model to finish. Without this, clicking Cancel during a long
+		// agent turn has no visible effect until the next model completion
+		// (could be many seconds). Must run BEFORE the AskUser/variable
+		// resolvers because they only unblock *future* awaits.
+		this._abortActiveStream(executionId);
 
 		// v4: resolve any pending AskUser pauses so the host's pauseExecution
 		// promise doesn't leak. Also fire ask_user_end so the webview card
@@ -471,6 +498,30 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		executionState.nodeStates.set(node.id, nodeState);
 		this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
 
+		// v23: substitute upstream node outputs and the `$prev` alias in
+		// `data.prompt` / `data.skillArgs[*]` / `data.toolParams[*]` BEFORE
+		// any node executor runs. The pre-execution `_substituteVariables`
+		// pass (called once when the workflow starts, see line ~181) only
+		// resolved user-supplied variables — at that point upstream nodes
+		// hadn't run yet, so `{{$prev.output}}` and `{{someNodeId.output}}`
+		// remained as literal text and were never replaced.
+		//
+		// We re-substitute here, *now* that the upstream nodeStates map
+		// contains the actual outputs of previously-completed nodes. The
+		// value map built by `buildRuntimeValueMap` exposes BOTH the
+		// `<nodeId>` and `<nodeId>.output` keys (and the same for `$prev`),
+		// so users can write `{{myNode}}` or `{{myNode.output}}`
+		// interchangeably. Cancellation / failed upstream nodes contribute
+		// empty strings (with a warn log) so the prompt stays coherent
+		// instead of leaving a literal `{{myNode.output}}` placeholder.
+		//
+		// Note: Start / End / AskUser nodes have no `data.prompt` and we
+		// also short-circuit pure routing nodes to avoid mutating data on
+		// them. The mutation goes back into `data` (same object the
+		// downstream `_execute*Node` reads from), so it propagates
+		// naturally to all four executors that use `data.prompt`.
+		this._substituteUpstreamVariables(executionState, workflow, node);
+
 		try {
 			// 检查断点（P2 调试功能）
 			if (executionState.breakpoints?.has(node.id)) {
@@ -544,7 +595,32 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				const userInput = await this._executeAskUserNode(executionState, workflow, node, adj);
 				// 将用户输入存储到上下文
 				executionState.context['userInput'] = userInput;
-				nextNodeIds = this._getNextNodes(node.id, adj);
+
+				// v30: port-based routing. Each ask_user option maps to an
+				// edge whose `fromPort` is 'option-0' / 'option-1' / ...
+				// Only follow edges matching the user's selection(s), so
+				// "暂不提交" doesn't accidentally flow into the git-commit
+				// agent branch. Fall back to all edges when no port-specific
+				// edges exist (backward compat for old workflows).
+				{
+					const askData = node.data ?? {};
+					const askOptions = (askData.options as IAskUserOption[]) ?? [];
+					const selections = Array.isArray(userInput) ? userInput : [userInput];
+					const selectedIndices: number[] = [];
+					for (const sel of selections) {
+						const idx = askOptions.findIndex(opt => opt.label === sel);
+						if (idx >= 0) { selectedIndices.push(idx); }
+					}
+					if (selectedIndices.length > 0) {
+						nextNodeIds = this._getAskUserNextNodes(node.id, adj, selectedIndices);
+						if (nextNodeIds.length === 0) {
+							this.logService.warn(`[WorkflowExecution] AskUser ${node.id}: no edges matched selected options [${selectedIndices.join(',')}], falling back to all edges`);
+							nextNodeIds = this._getNextNodes(node.id, adj);
+						}
+					} else {
+						nextNodeIds = this._getNextNodes(node.id, adj);
+					}
+				}
 				break;
 
 				default:
@@ -556,6 +632,14 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			// Mark node as completed
 			nodeState.status = WorkflowNodeExecutionStatus.Completed;
 			nodeState.endTime = new Date().toISOString();
+			// v30: AskUser nodes store the selected labels as their output so
+			// downstream nodes can reference {{askCommit.output}} / {{nodeId.output}}.
+			if (node.type === WorkflowNodeType.AskUser && nodeState.output === undefined) {
+				const ctxInput = executionState.context['userInput'];
+				if (ctxInput !== undefined) {
+					nodeState.output = Array.isArray(ctxInput) ? (ctxInput as string[]).join(', ') : (ctxInput as string);
+				}
+			}
 			executionState.nodeStates.set(node.id, nodeState);
 			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
 
@@ -567,6 +651,29 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				}
 			}
 		} catch (err) {
+			// v21: distinguish cancellation from real failures. When the user
+			// clicks Cancel, _abortActiveStream() flips the AbortController, the
+			// stream loop breaks, and _sendAndTrackStream's `finally` cleans up.
+			// sendMessage() returns with whatever was accumulated so the node
+			// executor usually does NOT throw — the cancel propagates as a normal
+			// return. But if a node was already mid-await when cancel fired and
+			// throws (e.g. inner network error from the abort), we should NOT
+			// mark the whole execution as Failed — the user explicitly cancelled
+			// it. Detect by status flag instead of by error message to keep
+			// semantics independent of error wording.
+			// Note: use string comparison rather than enum equality here —
+			// the early `if (status === Cancelled) return` above narrows the
+			// status type inside the try block, which the catch block inherits,
+			// so a direct enum comparison would be flagged TS2367 (no overlap).
+			if ((executionState.status as string) === 'cancelled') {
+				// Mark this node as cancelled (not failed) and let the natural
+				// `_executeWorkflowAsync` end-of-loop `execution_end` fire.
+				nodeState.status = WorkflowNodeExecutionStatus.Cancelled;
+				nodeState.endTime = new Date().toISOString();
+				executionState.nodeStates.set(node.id, nodeState);
+				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+				return;
+			}
 			// Mark node as failed
 			nodeState.status = WorkflowNodeExecutionStatus.Failed;
 			nodeState.error = err instanceof Error ? err.message : String(err);
@@ -609,10 +716,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		try {
 			// 发送任务描述给 Agent
 			this.logService.info(`[WorkflowExecution] Sending task to agent ${agentId}: ${taskDescription}`);
-			const message = await this.agentChatService.sendMessage(
+			// v21: route through _sendAndTrackStream so cancelExecution can abort
+			// the in-flight LLM call. Previously the bare `sendMessage` await
+			// kept running even after status flipped to Cancelled, so the UI
+			// button had no effect during long agent turns.
+			const message = await this._sendAndTrackStream(
+				executionState,
+				node,
 				agentId,
 				taskDescription,
-				{ workspaceId: undefined, agentSessionId: undefined },
+				undefined,
 				(delta) => {
 					// 可选：转发流式响应
 					this.logService.debug(`[WorkflowExecution] Task ${node.id} delta: ${delta.content?.substring(0, 50)}`);
@@ -753,10 +866,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 
 			this.logService.info(`[WorkflowExecution] Sending to agent ${agentId} (session=${agentSessionId}): ${continuePrompt}`);
 
-			const message = await this.agentChatService.sendMessage(
+			// v21: route through _sendAndTrackStream so cancelExecution can abort
+			// the in-flight LLM call. Without this, clicking Cancel during a
+			// long agent turn had no effect — the await kept running until the
+			// model finished, even though state.status was already Cancelled.
+			const message = await this._sendAndTrackStream(
+				executionState,
+				node,
 				agentId,
 				continuePrompt,
-				{ workspaceId: undefined, agentSessionId },
+				agentSessionId,
 				(delta) => {
 					this.logService.debug(`[WorkflowExecution] Agent ${node.id} delta: ${delta.content?.substring(0, 50)}`);
 
@@ -780,14 +899,19 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				nodeState.output = message.content || '';
 			}
 
-			// P4: fire subagent_end so the owner chat can flip the card to "done".
+			// v21: if the execution was cancelled mid-stream, fire subagent_end
+			// with status 'cancelled' so the webview card flips to the cancelled
+			// badge instead of the "done" success badge. The sendMessage await
+			// returns with partial content (no throw) when AbortController is
+			// tripped, so we have to detect cancel via the execution status.
+			const wasCancelled = (executionState.status as string) === 'cancelled';
 			if (ownerSession) {
 				this._onDidExecutionTrace.fire({
 					kind: 'subagent_end',
 					executionId: executionState.executionId,
 					sessionId: ownerSession.sessionId,
 					nodeId: node.id,
-					status: 'done',
+					status: wasCancelled ? 'cancelled' : 'done',
 					output: message.content?.substring(0, 4000) || '',
 				});
 			}
@@ -983,10 +1107,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const executionPrompt = promptParts.filter(Boolean).join('\n');
 
 		this.logService.info(`[WorkflowExecution] Skill ${node.id}: executing "${skillName}"`);
-		const message = await this.agentChatService.sendMessage(
+		// v21: route through _sendAndTrackStream so cancelExecution can abort
+		// the in-flight LLM call. The bare `sendMessage` await previously
+		// ignored the Cancelled status, so cancel had no effect during
+		// long-running skill executions.
+		const message = await this._sendAndTrackStream(
+			executionState,
+			node,
 			agentId,
 			executionPrompt,
-			{ workspaceId: undefined, agentSessionId: undefined },
+			undefined,
 			() => { /* noop onDelta */ },
 		);
 
@@ -1025,10 +1155,15 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			: `Execute tool **${toolName}**`;
 
 		this.logService.info(`[WorkflowExecution] Tool ${node.id}: executing "${toolName}"`);
-		const message = await this.agentChatService.sendMessage(
+		// v21: route through _sendAndTrackStream so cancelExecution can abort
+		// the in-flight LLM call (cancel previously had no effect while a
+		// tool's agent turn was streaming).
+		const message = await this._sendAndTrackStream(
+			executionState,
+			node,
 			agentId,
 			executionPrompt,
-			{ workspaceId: undefined, agentSessionId: undefined },
+			undefined,
 			() => { /* noop onDelta */ },
 		);
 
@@ -1071,10 +1206,15 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		if (agentId) {
 			try {
 				this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: asking agent to evaluate`);
-				const message = await this.agentChatService.sendMessage(
+				// v21: route through _sendAndTrackStream so cancelExecution can
+				// abort the in-flight evaluation call. Bare sendMessage await
+				// previously ignored Cancelled status.
+				const message = await this._sendAndTrackStream(
+					executionState,
+					node,
 					agentId,
 					evaluationPrompt,
-					{ workspaceId: undefined, agentSessionId: undefined },
+					undefined,
 					() => { /* noop onDelta */ },
 				);
 
@@ -1120,26 +1260,68 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		return connections.map(c => c.targetId);
 	}
 
+	/**
+	 * v30: AskUser port-aware routing. Unlike `_getNextNodes` which
+	 * returns ALL downstream nodes unconditionally, this method only
+	 * returns nodes whose edge's `fromPort` matches one of the selected
+	 * option indices (formatted as 'option-N'). This prevents
+	 * "暂不提交" / "取消操作" selections from accidentally flowing into
+	 * the git-commit agent branch.
+	 *
+	 * When no edges carry a matching fromPort, callers should fall back
+	 * to `_getNextNodes` for backward compatibility with old workflows
+	 * that don't have port-specific edges behind AskUser nodes.
+	 */
+	private _getAskUserNextNodes(
+		nodeId: string,
+		adj: Map<string, { targetId: string; fromPort?: string }[]>,
+		selectedIndices: number[],
+	): string[] {
+		const connections = adj.get(nodeId) ?? [];
+		const ports = new Set(selectedIndices.map(i => `option-${i}`));
+		return connections
+			.filter(c => c.fromPort && ports.has(c.fromPort))
+			.map(c => c.targetId);
+	}
+
 	// ─── v6: Variable collection helpers ───────────────────────────────────
 
 	/**
 	 * Scan all agent/prompt/skill/tool nodes in the workflow for `{{variable}}` patterns
 	 * in their `data.prompt`, `data.skillArgs` (Record<string,string>), or
 	 * `data.toolParams` (Record<string,string>) fields. Returns deduplicated
-	 * variable names with optional default values.
+	 * variable names with optional default values. Built-in variables
+	 * (`{{input}}`, `{{$prev.output}}`, etc.) are skipped — they're auto-resolved
+	 * by the runtime value map.
 	 */
 	private static _collectTemplateVariables(workflow: IStoredWorkflow): Array<{ name: string; defaultValue?: string }> {
 		const seen = new Set<string>();
 		const vars: Array<{ name: string; defaultValue?: string }> = [];
 		const nodes = workflow.nodes ?? [];
-		const regex = /\{\{(\w+)\}\}/g;
+		const regex = /\{\{(\$?\w+)\}\}/g;
+
+		// v22: `{{input}}` is NO LONGER treated as a built-in auto-resolved variable.
+		// Previously it was auto-mapped to `taskDescription` (workflow input from
+		// chat). When the user clicks Run in the workflow editor without typing
+		// anything in chat, the workflow started executing with `{{input}}`
+		// resolving to empty string — so the agent received a literal
+		// `{{input}}` as the task (visible as a red placeholder in the
+		// subagent card). The fix: always collect `{{input}}` from the user via
+		// the variable collection card. If the user truly wants to pass
+		// `taskDescription` automatically, they can pre-fill the input card
+		// from chat or change the workflow to use a custom variable name.
+		// `$prev` and upstream-node aliases ARE still built-in (auto-resolved
+		// at runtime from the previous node's output) because they don't need
+		// any user-supplied data.
+		const isBuiltin = (n: string) => /^(taskDescription|taskTitle|workflowName|workflowDescription|\$prev|\$prev\.output|\$preNode|\$preNode\.output)$/.test(n);
 
 		const scan = (text: string) => {
-			// Reset lastIndex for safety (regex is shared).
 			regex.lastIndex = 0;
 			let match: RegExpExecArray | null;
 			while ((match = regex.exec(text)) !== null) {
 				const name = match[1];
+				if (isBuiltin(name)) { continue; }
+				if (name.startsWith('$')) { continue; } // any other $-prefixed alias
 				if (!seen.has(name)) {
 					seen.add(name);
 					vars.push({ name, defaultValue: '' });
@@ -1213,9 +1395,168 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	}
 
 	private static _replaceVariables(template: string, values: Record<string, string>): string {
-		return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => {
-			return values[name] ?? `{{${name}}}`;
+		// v23: delegate to the shared `substituteHostVariables` so both the
+		// pre-execution pass and the per-node pass use the SAME regex
+		// (which now supports `.output` and other `.field` suffixes).
+		// Previously this inlined `/\{\{(\$?\w+)\}\}/g` which silently
+		// failed on `{{$prev.output}}` because `\w+` doesn't match `.`.
+		return substituteHostVariables(template, values);
+	}
+
+	// ─── v23: per-node upstream variable substitution ───────────────────
+
+	/**
+	 * Build an `upstreamOutputs` map by reading the final `output` field of
+	 * every node in `executionState.nodeStates` that has finished (Completed,
+	 * Failed, Skipped, or Cancelled — anything with a terminal status).
+	 *
+	 * Why include all finished nodes, not just immediate topological
+	 * predecessors: workflow authors usually write prompts referencing
+	 * upstream nodes by their stable ReactFlow `node.id` (e.g.
+	 * `{{printerNode.output}}`), and that id can be several hops back. We
+	 * intentionally don't enforce a graph-walk because:
+	 *   1. The graph adjacency isn't always available inside this method
+	 *      (we'd have to thread `adj: Map<...>` from the caller, which is
+	 *      fragile — `adj` is built per-execution and is per-direction).
+	 *   2. The value map is keyed by `nodeId`, so as long as the user
+	 *      references a node by its id, lookup works regardless of topology.
+	 *   3. Failed / cancelled nodes contribute empty strings (with a
+	 *      one-line warn) so the substitution result is still a coherent
+	 *      prompt instead of leaving a `{{nodeId.output}}` literal.
+	 *
+	 * For the `$prev` alias we use the most recently *finished* node (by
+	 * its `endTime`), which is what the workflow author intuitively means
+	 * by "the previous node's output" — typically the immediate predecessor
+	 * in the run order.
+	 */
+	private _collectUpstreamOutputs(
+		executionState: IWorkflowExecutionState,
+	): Record<string, string> {
+		const upstream: Record<string, string> = {};
+		let lastEndTime: number | undefined;
+		let lastId: string | undefined;
+		let lastOut: string | undefined;
+		for (const [nodeId, state] of executionState.nodeStates.entries()) {
+			const isTerminal = state.status === WorkflowNodeExecutionStatus.Completed
+				|| state.status === WorkflowNodeExecutionStatus.Failed
+				|| state.status === WorkflowNodeExecutionStatus.Skipped
+				|| state.status === WorkflowNodeExecutionStatus.Cancelled;
+			if (!isTerminal) { continue; }
+			upstream[nodeId] = state.output ?? '';
+			const end = state.endTime ? Date.parse(state.endTime) : undefined;
+			if (end !== undefined && (lastEndTime === undefined || end > lastEndTime)) {
+				lastEndTime = end;
+				lastId = nodeId;
+				lastOut = state.output ?? '';
+			}
+		}
+		// `$prev` = the most recently finished node. We do NOT inject it
+		// into the map here — `buildRuntimeValueMap` reads `args.upstreamOutputs`
+		// and inserts the alias itself (it picks the last key in the
+		// object iteration, which roughly matches "most recently added"
+		// in modern V8 for string keys). Passing an explicit lastId as a
+		// synthetic key is brittle, so we leave the alias logic to the
+		// helper. If authors complain `$prev` resolves to the wrong node
+		// we can revisit.
+		if (lastId && lastOut !== undefined) {
+			this.logService.debug(
+				`[WorkflowExecution] upstream: last finished node = ${lastId} ` +
+				`(endTime=${new Date(lastEndTime!).toISOString()}, outputLen=${lastOut.length})`,
+			);
+		}
+		return upstream;
+	}
+
+	/**
+	 * Per-node substitution pass. Called at the start of `_executeNodeRecursive`,
+	 * *after* the node is marked Running but *before* any of the per-type
+	 * executors run. Builds a runtime value map from the execution context,
+	 * the node's own `data.variables` overrides, and the `upstreamOutputs` of
+	 * every previously-finished node; then mutates `node.data.prompt` (and
+	 * `node.data.skillArgs[*]` / `node.data.toolParams[*]` if present) in place
+	 * with the substituted strings.
+	 *
+	 * Why mutate: the four per-type executors (`_executeTaskNode`,
+	 * `_executeAgentNode`, `_executeSkillNode`, `_executeToolNode`) all
+	 * read `data.prompt` directly, so in-place mutation guarantees the
+	 * substituted prompt reaches them without plumbing a return value
+	 * through 4 call sites.
+	 *
+	 * Why this is safe: the pre-execution `_substituteVariables` pass has
+	 * already replaced user-supplied variables; the only references that
+	 * survive that pass are `{{$prev.output}}` / `{{$prev}}` / `{{nodeId.output}}`
+	 * (which were undefined at pre-execution time because no upstream
+	 * nodes had finished). So this second pass is a strict superset and
+	 * no variable gets double-substituted.
+	 */
+	private _substituteUpstreamVariables(
+		executionState: IWorkflowExecutionState,
+		workflow: IStoredWorkflow,
+		node: WorkflowGraphNode,
+	): void {
+		const data = node.data as Record<string, unknown> | undefined;
+		if (!data) { return; }
+		// Start / End / AskUser / control-flow nodes have no prompt to
+		// substitute; short-circuit to avoid logging "0 substitutions"
+		// noise.
+		if (node.type === WorkflowNodeType.Start || node.type === WorkflowNodeType.End) {
+			return;
+		}
+
+		const upstreamOutputs = this._collectUpstreamOutputs(executionState);
+		const values = buildRuntimeValueMap({
+			context: executionState.context as Record<string, unknown>,
+			nodeVariables: (data.variables as Record<string, string> | undefined) ?? undefined,
+			upstreamOutputs,
+			workflowName: workflow.name || '',
 		});
+
+		let didReplace = false;
+		if (typeof data.prompt === 'string' && data.prompt.includes('{{')) {
+			const next = substituteHostVariables(data.prompt, values);
+			if (next !== data.prompt) {
+				this.logService.info(
+					`[WorkflowExecution] v23 substituted upstream vars in node ${node.id} prompt ` +
+					`(len ${data.prompt.length} → ${next.length})`,
+				);
+				data.prompt = next;
+				didReplace = true;
+			}
+		}
+		// Also substitute in skillArgs (Record<string, string>) — the
+		// values may contain `{{$prev.output}}` references too.
+		if (data.skillArgs && typeof data.skillArgs === 'object') {
+			const sa = data.skillArgs as Record<string, string>;
+			for (const k of Object.keys(sa)) {
+				if (typeof sa[k] === 'string' && sa[k].includes('{{')) {
+					const next = substituteHostVariables(sa[k], values);
+					if (next !== sa[k]) {
+						sa[k] = next;
+						didReplace = true;
+					}
+				}
+			}
+		}
+		// And toolParams (Record<string, string | unknown>) — we only
+		// touch string values, leaving complex object params alone.
+		if (data.toolParams && typeof data.toolParams === 'object') {
+			const tp = data.toolParams as Record<string, unknown>;
+			for (const k of Object.keys(tp)) {
+				if (typeof tp[k] === 'string' && (tp[k] as string).includes('{{')) {
+					const next = substituteHostVariables(tp[k] as string, values);
+					if (next !== tp[k]) {
+						tp[k] = next;
+						didReplace = true;
+					}
+				}
+			}
+		}
+		if (didReplace) {
+			this.logService.debug(
+				`[WorkflowExecution] v23 node ${node.id} (${node.type}) prompt/args substituted; ` +
+				`upstream keys: [${Object.keys(upstreamOutputs).join(', ')}]`,
+			);
+		}
 	}
 
 	// ─── v6: submitWorkflowVariables ────────────────────────────────────────
@@ -1228,5 +1569,79 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		}
 		this._variableResolvers.delete(executionId);
 		resolver(values);
+	}
+
+	// ─── v21: Active stream tracking for cancel ──────────────────────────
+
+	/**
+	 * Abort the in-flight chat stream for a given execution, if any. Called
+	 * by `cancelExecution` so the node executor's `await sendMessage(...)`
+	 * returns within a few ms instead of waiting for the LLM to finish its
+	 * full response. Idempotent — safe to call when no stream is active.
+	 */
+	private _abortActiveStream(executionId: string): void {
+		const stream = this._activeStreams.get(executionId);
+		if (!stream) { return; }
+		this._activeStreams.delete(executionId);
+		this.logService.info(
+			`[WorkflowExecution] aborting active stream for executionId=${executionId} ` +
+			`(agentId=${stream.agentId}, agentSessionId=${stream.agentSessionId || '<none>'}, nodeId=${stream.nodeId})`,
+		);
+		try {
+			// agentChatService stores the stream under `${agentId}::${agentSessionId}`
+			// when sessionId is set, or just `${agentId}` when not. cancelStream
+			// handles both shapes; pass undefined sessionId to use the latter form.
+			if (stream.agentSessionId) {
+				this.agentChatService.cancelStream(stream.agentId, stream.agentSessionId);
+			} else {
+				this.agentChatService.cancelStream(stream.agentId);
+			}
+		} catch (err) {
+			this.logService.warn(
+				`[WorkflowExecution] cancelStream failed (continuing with status-only cancel): ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	/**
+	 * Run a node's `agentChatService.sendMessage(...)` call with the execution's
+	 * active stream registered so `cancelExecution` can abort it. Throws
+	 * `WorkflowCancelledError` if the execution has already been cancelled
+	 * (defense in depth — combined with the abort in `_abortActiveStream`,
+	 * the node executor returns within milliseconds of a cancel click).
+	 *
+	 * Use this from every node executor that calls `sendMessage` (task / agent
+	 * / skill / tool / ifElse). The `try/finally` guarantees the stream entry
+	 * is removed when sendMessage returns, regardless of success or error.
+	 */
+	private async _sendAndTrackStream(
+		executionState: IWorkflowExecutionState,
+		node: WorkflowGraphNode,
+		agentId: string,
+		prompt: string,
+		agentSessionId: string | undefined,
+		onDelta: (delta: any) => void,
+	): Promise<any> {
+		if (executionState.status === WorkflowExecutionStatus.Cancelled) {
+			throw new Error(`Workflow execution ${executionState.executionId} was cancelled`);
+		}
+		this._activeStreams.set(executionState.executionId, {
+			agentId,
+			agentSessionId: agentSessionId ?? '',
+			nodeId: node.id,
+		});
+		try {
+			return await this.agentChatService.sendMessage(
+				agentId,
+				prompt,
+				{ workspaceId: undefined, agentSessionId },
+				onDelta,
+			);
+		} finally {
+			const cur = this._activeStreams.get(executionState.executionId);
+			if (cur && cur.nodeId === node.id) {
+				this._activeStreams.delete(executionState.executionId);
+			}
+		}
 	}
 }

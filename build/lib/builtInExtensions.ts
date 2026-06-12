@@ -75,6 +75,16 @@ function getExtensionDownloadStream(extension: IExtensionDefinition) {
 		input = ext.fromVsix(path.join(root, extension.vsix), extension);
 	} else if (productjson.extensionsGallery?.serviceUrl) {
 		input = ext.fromMarketplace(productjson.extensionsGallery.serviceUrl, extension);
+	} else if (!extension.repo) {
+		// 本地源码扩展：product.json 中 repo 留空的项目自带扩展，
+		// 从仓库根目录的 extensions/${name}/ 直接读取已编译产物
+		const localPath = path.join(root, 'extensions', extension.name);
+		if (fs.existsSync(localPath)) {
+			fancyLog('Using local extension source:', ansiColors.yellow(`${extension.name}@${extension.version}`));
+			input = vfs.src(['**'], { cwd: localPath, dot: true });
+		} else {
+			throw new Error(`Extension ${extension.name} has no repo, no vsix, and no local source at ${localPath}`);
+		}
 	} else {
 		input = ext.fromGithub(extension);
 	}

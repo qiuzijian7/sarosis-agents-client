@@ -1031,11 +1031,44 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				idleTimer = setTimeout(() => resolve(''), IDLE_TIMEOUT_MS);
 			});
 
-			// 发送命令到终端
-			await instance.sendText(command, true);
+			// v27: hard cap timeout at 60s regardless of user input. Reasons:
+			// 1. Long-running interactive commands (REPL, watch, tail -f) can
+			//    keep onData firing and starve the 1.5s idle timer; the user
+			//    asked for 300s but the actual hang is unbounded.
+			// 2. If the host event loop is saturated (e.g. WorkspaceExplorer
+			//    re-render loop flooding the log), setTimeout callbacks can
+			//    be delayed for many seconds — `Math.min(maxSec, 60)` ensures
+			//    the tool always returns within a reasonable time.
+			// 3. Per the user's stuck-terminal bug report, default 30s
+			//    wasn't enough because the timeout itself didn't fire while
+			//    the event loop was busy. Capping at 60s gives the underlying
+			//    Promise.race a tight bound that will fire under load.
+			const hardCapMs = 60_000;
+			const timeoutMs = Math.min(timeoutSec * 1000, hardCapMs);
+
+			// v27: log the actual command at the start of execution so the
+			// log shows what was sent (currently only the tool name is
+			// logged, which makes debugging hangs like this one painful —
+			// we can't tell from the log whether the agent sent `dir`,
+			// `tail -f`, or an interactive command).
+			this.logService.info(
+				`[BuiltinTools] terminal: command="${command.slice(0, 200)}" cwd=${effectiveCwd ?? '(none)'} ` +
+				`timeout=${timeoutSec}s hardCap=${hardCapMs}ms`,
+			);
+
+			// v27: defensive `await instance.sendText(command, true)` — if
+			// the underlying transport hangs, the abort/timeout promises
+			// can't be set up because we never reach `Promise.race`. We
+			// race the sendText itself against a 5s cushion past the
+			// hard cap to ensure no matter which sub-step hangs, the tool
+			// always returns.
+			const sendTextTimeoutMs = hardCapMs + 5_000;
+			const sendTextTimeout = new Promise<void>((resolve) => {
+				setTimeout(() => resolve(), sendTextTimeoutMs);
+			});
+			await Promise.race([instance.sendText(command, true), sendTextTimeout]);
 
 			// 等待输出或超时
-			const timeoutMs = timeoutSec * 1000;
 			let result = '';
 
 			const abortPromise = signal
@@ -1046,7 +1079,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				: new Promise<string>(() => { /* never resolves */ });
 
 			const timeoutPromise = new Promise<string>((resolve) => {
-				setTimeout(() => resolve(`[TIMEOUT] Command timed out after ${timeoutSec}s\n`), timeoutMs);
+				setTimeout(() => resolve(`[TIMEOUT] Command timed out after ${timeoutMs / 1000}s\n`), timeoutMs);
 			});
 
 			result = await Promise.race([outputPromise, timeoutPromise, abortPromise]);

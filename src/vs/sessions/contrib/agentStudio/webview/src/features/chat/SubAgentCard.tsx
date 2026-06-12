@@ -127,11 +127,14 @@ const SubAgentThinkingBlock = memo(SubAgentThinkingBlockRaw);
 interface SubAgentToolTraceBlockProps {
 	tools: SubAgentToolCallTrace[];
 	isStreaming?: boolean;
+	/** Agent (subagent) name to display in the header. */
+	agentName?: string;
 }
 
 function SubAgentToolTraceBlockRaw({
 	tools,
 	isStreaming,
+	agentName,
 }: SubAgentToolTraceBlockProps): React.ReactElement {
 	const [open, setOpen] = useState<boolean>(false);
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
@@ -164,7 +167,9 @@ function SubAgentToolTraceBlockRaw({
 				aria-expanded={open}
 			>
 				<span className="subagent-tool-trace-icon">🔧</span>
-				<span className="subagent-tool-trace-title">工具调用</span>
+				<span className="subagent-tool-trace-title">
+					{agentName ? `${agentName} · 工具调用` : '工具调用'}
+				</span>
 				<span className="subagent-tool-trace-summary">{summary}</span>
 				<span className={`subagent-tool-trace-toggle ${open ? '' : 'collapsed'}`}>
 					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -248,6 +253,81 @@ function SubAgentToolTraceBlockRaw({
 
 const SubAgentToolTraceBlock = memo(SubAgentToolTraceBlockRaw);
 
+// ─── P4 v24: Output / Stream Block ────────────────────────────────────────
+// Collapsible card that wraps the LLM streaming content (delta text
+// accumulated during agent execution, plus the final output). Mirrors the
+// visual style of SubAgentThinkingBlock / SubAgentToolTraceBlock (header
+// + chevron + collapsible body) so the streamed content no longer renders
+// as an un-collapsible `<pre>` block taking up the full chat width.
+//
+// Why this exists: previously the agent's streamed text was rendered via
+// a flat `subagent-output` block (only when `isDone`) with a small
+// `▼ 展开` text-button — visually inconsistent with the
+// thinking/tool-trace cards and, when expanded, a wall of text that
+// pushed all other sub-agent cards out of the viewport. The new block:
+//   - Uses the same "tool card" visual language (border-left accent +
+//     icon + title + chevron + collapsible body) as the sibling blocks
+//   - Auto-opens while streaming so the user sees the content live
+//   - Auto-collapses on completion (header stays visible with a preview)
+//   - Body content is rendered through MarkdownRenderer so the model's
+//     ```code fences``` and bullet lists render correctly.
+//
+// The block derives its `isStreaming` state from the agent status; it
+// renders the streamed text both during and after execution (the
+// LiveWorkflowTraceView already maps `streamedText` to `output` as a
+// fallback so the same field is populated in both phases).
+
+interface SubAgentOutputBlockProps {
+	content: string;
+	isStreaming?: boolean;
+	/** When true, force-open regardless of streaming state (for the
+	 *  rare case where the parent wants the body permanently visible). */
+	defaultOpen?: boolean;
+}
+
+function SubAgentOutputBlockRaw({
+	content,
+	isStreaming,
+	defaultOpen,
+}: SubAgentOutputBlockProps): React.ReactElement {
+	// Auto-open while streaming; honour caller override; default closed on
+	// completion so the chat panel doesn't get overwhelmed by the model's
+	// full response when many sub-agents run in parallel.
+	const [open, setOpen] = useState<boolean>(defaultOpen ?? !!isStreaming);
+	const preview = content.length > 80 ? content.substring(0, 80) + '…' : content;
+
+	return (
+		<div className={`subagent-output-block ${isStreaming ? 'streaming' : ''}`}>
+			<div
+				className="subagent-output-block-header"
+				onClick={() => setOpen(o => !o)}
+				role="button"
+				aria-expanded={open}
+			>
+				<span className="subagent-output-block-icon">💬</span>
+				<span className={`subagent-output-block-title ${isStreaming ? 'shimmer' : ''}`}>
+					{isStreaming ? '生成中…' : '响应内容'}
+				</span>
+				{!open && (
+					<span className="subagent-output-block-preview">{preview}</span>
+				)}
+				<span className={`subagent-output-block-toggle ${open ? '' : 'collapsed'}`}>
+					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+						<polyline points="6 9 12 15 18 9" />
+					</svg>
+				</span>
+			</div>
+			{open && (
+				<div className="subagent-output-block-body">
+					<MarkdownRenderer content={content} className="output-stream markdown-body" />
+				</div>
+			)}
+		</div>
+	);
+}
+
+const SubAgentOutputBlock = memo(SubAgentOutputBlockRaw);
+
 // ─── Single Sub-Agent Row ─────────────────────────────────────────────────
 
 interface SubAgentRowProps {
@@ -256,7 +336,6 @@ interface SubAgentRowProps {
 }
 
 function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactElement {
-	const [showOutput, setShowOutput] = useState(false);
 	const config = SUB_AGENT_TYPE_CONFIG[agent.type] || SUB_AGENT_TYPE_CONFIG.general;
 	const isRunning = agent.status === 'running';
 	const isDone = agent.status === 'done';
@@ -267,10 +346,18 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 		? agent.task.substring(0, 80) + '...'
 		: agent.task;
 
-	// Truncate output preview
-	const outputPreview = agent.output && agent.output.length > 200
-		? agent.output.substring(0, 200) + '...'
-		: agent.output;
+	// v24: prefer `streamedText` (the live, growing delta content) when
+	// running so the user sees the LLM's response stream into the card.
+	// Fall back to `output` for the post-completion case. The new
+	// `SubAgentOutputBlock` renders this in a proper "tool card" visual
+	// style (header + chevron + collapsible body) consistent with the
+	// sibling thinking/tool-trace cards. We deliberately don't use the
+	// old `subagent-output-preview` / `subagent-output-full` flat layout
+	// any more — that style was an un-collapsible wall of text that
+	// pushed sibling sub-agent cards out of the viewport.
+	const streamContent: string = isRunning
+		? (agent.streamedText ?? agent.output ?? '')
+		: (agent.output ?? agent.streamedText ?? '');
 
 	return (
 		<div className={`subagent-row ${agent.status}`}>
@@ -278,6 +365,15 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 				<span className="subagent-type-icon">{config.icon}</span>
 				<span className="subagent-status-icon">
 					<StatusIcon status={agent.status} />
+				</span>
+				{/* v26: prefer `name` (workflow node label, e.g. "在控制台打印
+				    一个hello world" / the agent's own name for agent-type
+				    nodes); fall back to a short slice of `task` so the row
+				    header never goes blank. The previous render was just
+				    `{agent.name}` which produced an empty span when the
+				    field was missing. */}
+				<span className="subagent-name">
+					{agent.name || (agent.task ? agent.task.substring(0, 40) : agent.id)}
 				</span>
 				<span className={`subagent-task ${isRunning ? 'shimmer' : ''}`}>
 					{taskDisplay}
@@ -287,7 +383,9 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 				</span>
 			</div>
 
-			{/* Progress text during execution */}
+			{/* Progress text during execution (kept for short-status
+			    feedback; the SubAgentOutputBlock below carries the full
+			    stream content). */}
 			{isRunning && agent.progress && (
 				<div className="subagent-progress">
 					<span className="subagent-progress-dots">
@@ -312,6 +410,7 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 				<SubAgentToolTraceBlock
 					tools={agent.toolTrace}
 					isStreaming={isRunning}
+					agentName={agent.name}
 				/>
 			)}
 
@@ -320,23 +419,16 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 				<div className="subagent-error">{agent.error}</div>
 			)}
 
-			{/* Output preview (collapsed by default) */}
-			{isDone && agent.output && (
-				<div className="subagent-output">
-					{showOutput ? (
-						<div className="subagent-output-full">
-							<pre>{agent.output}</pre>
-							<button className="subagent-output-toggle" onClick={() => setShowOutput(false)}>
-								▲ 收起
-							</button>
-						</div>
-					) : (
-						<div className="subagent-output-preview" onClick={() => setShowOutput(true)}>
-							<span className="subagent-output-text">{outputPreview}</span>
-							<button className="subagent-output-toggle">▼ 展开</button>
-						</div>
-					)}
-				</div>
+			{/* v24: Collapsible output / stream card. Renders for BOTH
+			    running (uses streamedText fallback) and done (uses output
+			    fallback) so the user can review the full LLM response in
+			    a consistent "tool card" visual style. Empty when both
+			    fields are empty (e.g. node hasn't produced text yet). */}
+			{streamContent && streamContent.length > 0 && (
+				<SubAgentOutputBlock
+					content={streamContent}
+					isStreaming={isRunning}
+				/>
 			)}
 		</div>
 	);

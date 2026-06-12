@@ -9,11 +9,51 @@
  *    2. data.variables           (per-node static values, cc-wf-studio parity)
  *    3. upstream node outputs    (key: <nodeId>.output, plus the special
  *                                 `$prev` alias for the most recent node)
+ *
+ *  Variable name regex: `\$?\w+(?:\.\w+)*` — supports both `{{$prev}}` and
+ *  the suffixed forms `{{$prev.output}}` / `{{nodeId.output}}` / `{{nodeId}}`
+ *  in a single match. The `.output` suffix is treated as a "field accessor"
+ *  but the lookup logic also tries the unsuffixed name, so users can write
+ *  `{{myNode}}` instead of `{{myNode.output}}` interchangeably.
  *--------------------------------------------------------------------------------------------*/
 
-export const HOST_VARIABLE_PATTERN = /\{\{(\w+)\}\}/g;
+// v23: was `/\{\{(\$?\w+)\}\}/g` which rejected `.` — the regex would stop
+// at `$prev` in `{{$prev.output}}` and leave `.output}}` as literal
+// characters in the output, breaking runtime substitution of upstream
+// node outputs. The new pattern `(?:\.\w+)*` allows 0+ `.field` suffixes
+// per variable. The `.output` part is just the convention we picked for
+// accessing an upstream node's stored output (`nodeState.output`); the
+// `buildRuntimeValueMap` layer also adds the bare nodeId key, so a
+// missing suffix still resolves correctly.
+export const HOST_VARIABLE_PATTERN = /\{\{(\$?\w+(?:\.\w+)*)\}\}/g;
 
-/** Extract the set of variable names referenced in a template. */
+/** Built-in variable names that are auto-populated at runtime — never ask the user. */
+const BUILTIN_VAR_NAMES: ReadonlySet<string> = new Set([
+	'taskDescription',
+	'taskTitle',
+	'workflowName',
+	'workflowDescription',
+	'input',
+	'firstInput',
+	'$prev',
+	'$prev.output',
+	'$preNode',
+	'$preNode.output',
+]);
+
+/**
+ * Decide whether a captured variable name is a built-in (auto-resolved
+ * by the runtime value map) or one the user must supply via the variable
+ * collection card.
+ */
+function isBuiltinVarName(name: string): boolean {
+	if (BUILTIN_VAR_NAMES.has(name)) { return true; }
+	// Anything starting with `$` is a reserved runtime alias (e.g. `$prev`).
+	if (name.startsWith('$')) { return true; }
+	return false;
+}
+
+/** Extract the set of variable names referenced in a template that need user input. */
 export function extractHostVariables(text: string): string[] {
 	if (!text) { return []; }
 	const matches = text.matchAll(HOST_VARIABLE_PATTERN);
@@ -21,6 +61,7 @@ export function extractHostVariables(text: string): string[] {
 	const out: string[] = [];
 	for (const m of matches) {
 		const name = m[1];
+		if (isBuiltinVarName(name)) { continue; }
 		if (!seen.has(name)) {
 			seen.add(name);
 			out.push(name);
@@ -83,10 +124,15 @@ export function buildRuntimeValueMap(args: {
 			values[k] = String(v);
 		}
 	}
-	// Alias: `input` resolves to the workflow's user-provided input (taskDescription).
-	if (values['taskDescription'] !== undefined) {
-		values['input'] = values['taskDescription'];
-	}
+	// v22: `input` is no longer aliased to `taskDescription`. With the new
+	// pre-execution variable collection card, `{{input}}` is always collected
+	// from the user (host substitutes the value into `data.prompt` BEFORE
+	// node executors run), so the runtime layer doesn't need to resolve it
+	// here. The previous auto-alias caused a confusing double-source-of-truth
+	// (chat message OR user-typed-in-card) and silently produced empty
+	// prompts when the user clicked Run in the workflow editor without
+	// typing in chat. Kept `taskDescription` in the value map for back-compat
+	// (e.g. custom {{taskDescription}} references in advanced users' prompts).
 
 	// Layer 2: per-node static values (cc-wf-studio `data.variables`).
 	if (args.nodeVariables) {

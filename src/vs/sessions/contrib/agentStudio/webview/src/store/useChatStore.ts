@@ -241,6 +241,18 @@ export interface SuggestedQuestion {
 export interface SubAgentInfo {
 	/** Unique sub-agent invocation ID */
 	id: string;
+	/**
+	 * v26: human-readable sub-agent name (e.g. the workflow node label
+	 * like "在控制台打印一个hello world" or the agent's own name for
+	 * agent-type nodes). Previously missing from this interface — the
+	 * SubAgentRow rendered `<span className="subagent-name">` with an
+	 * empty string and a TS2339 was silently swallowed, so the parallel
+	 * execution card showed the row type (通用) + spinner but no name.
+	 * The cardSubAgents mapping in `LiveWorkflowTraceView` now passes
+	 * `sa.name` (from the `subagent_start` trace event payload, which
+	 * is the workflow node's label) into this field.
+	 */
+	name?: string;
 	/** Sub-agent type (explore/general/scout) */
 	type: 'explore' | 'general' | 'scout';
 	/** Task description */
@@ -251,6 +263,13 @@ export interface SubAgentInfo {
 	status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
 	/** Progress text */
 	progress?: string;
+	/**
+	 * v24: live LLM streaming content (delta accumulation) for this
+	 * sub-agent. Distinct from `output` (which is the final value set on
+	 * subagent_end). The SubAgentRow uses this for the in-progress
+	 * streaming card and falls back to `output` once the agent finishes.
+	 */
+	streamedText?: string;
 	/** Final output */
 	output?: string;
 	/** Error message */
@@ -283,6 +302,12 @@ export interface ChatMessage {
 	id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system' | 'checkpoint';
 	content: string;
+	/**
+	 * Agent-level session ID (within the owning agent). Round-tripped with
+	 * the host so `chat.append` can target the correct session even when the
+	 * message is synthesized locally (e.g. workflow `wf_run_*` assistant msg).
+	 */
+	agentSessionId?: string;
 	thinking?: string;
 	toolCalls?: { id: string; name: string; arguments: string; result?: string; status: string; defaultShow?: boolean; displayName?: string; renderType?: string; serverExecuted?: boolean; textPosition?: number }[];
 	/**
@@ -491,7 +516,11 @@ interface ChatState {
 	endWorkflowSubAgent: (
 		sessionId: string,
 		nodeId: string,
-		status: 'done' | 'error',
+		// v21: 'cancelled' is fired when the user clicked Cancel while the
+		// node was mid-stream. The host aborted the underlying LLM call and
+		// surfaced it via subagent_end status — the card flips to a
+		// "cancelled" badge instead of the success badge.
+		status: 'done' | 'error' | 'cancelled',
 		output?: string,
 		error?: string,
 	) => void;
@@ -503,6 +532,10 @@ interface ChatState {
 	) => void;
 	/** Drop a live execution without committing. */
 	discardWorkflowExecution: (sessionId: string) => void;
+	/** v22: cancel all running workflow executions. Used by the chat
+	 *  composer's send/stop toggle — when a workflow is running, clicking
+	 *  the button cancels the workflow instead of sending a new message. */
+	cancelCurrentWorkflow: () => Promise<void>;
 
 	// v4 AskUser methods
 	/** Register a new pending AskUser request for the given session. */
@@ -868,12 +901,30 @@ export const useChatStore = create<ChatState>((set, get) => {
 			const newStreamState = switchActiveStream(agentId, forkSessionId);
 
 			// Save current agent's messages to cache, restore cached messages for target agent
-			const { messages: currentMessages, cachedMessages } = get();
+			const { messages: currentMessages, activeAgentSessionId: prevSessionId, cachedMessages, liveWorkflowExecutions, liveAskUsers, liveCollectVariables, liveWorkflowEvents } = get();
 			const newCache = { ...cachedMessages };
 			if (current && currentMessages.length > 0) {
 				newCache[current] = currentMessages;
 			}
 			const restoredMessages = newCache[agentId] || [];
+
+			// v6 (refined): wipe only the previous agent's live workflow state so
+			// the panel closes when switching agents. Preserve the new agent's
+			// session live state (e.g. live workflow execution that was just
+			// populated by startWorkflowExecution in the same trace event handler
+			// — wiping it caused all subsequent subagent_start events to silently
+			// fail their `if (!exec) return` guard, leading to missing tool cards).
+			const newLiveExec = { ...liveWorkflowExecutions };
+			const newLiveAsk = { ...liveAskUsers };
+			const newLiveCollect = { ...liveCollectVariables };
+			const newLiveEvents = { ...liveWorkflowEvents };
+			if (current && prevSessionId) {
+				// Wipe only the previous (current→old) agent's session entries.
+				delete newLiveExec[prevSessionId];
+				delete newLiveAsk[prevSessionId];
+				delete newLiveCollect[prevSessionId];
+				delete newLiveEvents[prevSessionId];
+			}
 
 			set({
 				activeAgentId: agentId,
@@ -884,6 +935,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 				streamState: newStreamState,
 				chatMode: 'craft',
 				cachedMessages: newCache,
+				liveWorkflowExecutions: newLiveExec,
+				liveAskUsers: newLiveAsk,
+				liveCollectVariables: newLiveCollect,
+				liveWorkflowEvents: newLiveEvents,
 			});
 
 			if (forkSessionId) {
@@ -1436,13 +1491,42 @@ export const useChatStore = create<ChatState>((set, get) => {
 		},
 
 		switchAgentSession: async (sessionId: string) => {
-			const { activeAgentId, cachedMessages } = get();
+			const { activeAgentId, activeAgentSessionId: prevSessionId, cachedMessages, liveWorkflowEvents, liveAskUsers, liveCollectVariables, liveWorkflowExecutions } = get();
 			if (!activeAgentId) { return; }
+			// 🔧 2026-06-12 fix: only clear the PREVIOUS session's live state, not
+			// the new one. The new session's liveWorkflowExecutions entry may
+			// have just been populated by the workflow trace router (routeWorkflowTrace
+			// → startWorkflowExecution) and wiping it causes all subsequent
+			// subagent_start events to silently fail their `if (!exec) return`
+			// guard — resulting in no tool cards showing in the chat panel.
+			// The previous session's data is stale and safe to drop.
 			const newStreamState = switchActiveStream(activeAgentId, sessionId);
 			// Clear cached messages for this agent — switching sessions invalidates the cache
 			const newCache = { ...cachedMessages };
 			delete newCache[activeAgentId];
-			set({ activeAgentSessionId: sessionId, messages: [], streamState: newStreamState, cachedMessages: newCache });
+			// v6 (refined): clear only the PREVIOUS session's workflow live state and
+			// timeline events. The committed assistant message in `messages` is preserved
+			// (it's already persisted to the host via `chat.append`).
+			const newLiveExec = { ...liveWorkflowExecutions };
+			const newLiveAsk = { ...liveAskUsers };
+			const newLiveCollect = { ...liveCollectVariables };
+			const newLiveEvents = { ...liveWorkflowEvents };
+			if (prevSessionId && prevSessionId !== sessionId) {
+				delete newLiveExec[prevSessionId];
+				delete newLiveAsk[prevSessionId];
+				delete newLiveCollect[prevSessionId];
+				delete newLiveEvents[prevSessionId];
+			}
+			set({
+				activeAgentSessionId: sessionId,
+				messages: [],
+				streamState: newStreamState,
+				cachedMessages: newCache,
+				liveWorkflowExecutions: newLiveExec,
+				liveAskUsers: newLiveAsk,
+				liveCollectVariables: newLiveCollect,
+				liveWorkflowEvents: newLiveEvents,
+			});
 			get().loadHistoryForSession(activeAgentId, sessionId);
 		},
 
@@ -1935,7 +2019,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 		/**
 		 * Mark a sub-agent as done (or error). Called on `subagent_end`.
 		 */
-		endWorkflowSubAgent: (sessionId: string, nodeId: string, status: 'done' | 'error', output?: string, error?: string) => {
+		endWorkflowSubAgent: (sessionId: string, nodeId: string,
+			// v21: 'cancelled' is fired when the user clicked Cancel while the
+			// node was mid-stream. The host aborted the underlying LLM call and
+			// surfaced it via subagent_end status — the card flips to a
+			// "cancelled" badge instead of the success badge.
+			status: 'done' | 'error' | 'cancelled',
+			output?: string, error?: string) => {
 			console.log(`[ChatStore] endWorkflowSubAgent: sessionId=${sessionId} nodeId=${nodeId} status=${status}`);
 			set(state => {
 				const exec = state.liveWorkflowExecutions[sessionId];
@@ -2015,17 +2105,45 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// Drop from live map (keep the message permanently in `messages`).
 				const nextLive = { ...state.liveWorkflowExecutions };
 				const nextAsk = { ...state.liveAskUsers };
-				const nextEvents = { ...state.liveWorkflowEvents };
+				// v6 (refined): KEEP the timeline events after execution completes.
+				// The user wants the timeline to remain visible after a run finishes
+				// so they can review what happened; it only clears on session switch
+				// (handled by `clearWorkflowEvents` in `switchAgentSession` / `setActiveAgent`).
+				const nextEvents = state.liveWorkflowEvents;
 				delete nextLive[sessionId];
 				delete nextAsk[sessionId];
-				// Keep events for post-mortem viewing; just cap by executionId
-				// when the user navigates away. For now, also clear them so
-				// the panel doesn't show stale data after a fresh run.
-				delete nextEvents[sessionId];
 
 				// Only append if the active session matches; if user switched away
 				// during the run, skip appending to avoid polluting another session.
-				if (state.activeAgentSessionId !== sessionId) {
+				const isActiveSession = state.activeAgentSessionId === sessionId;
+
+				// Bug fix: also persist the assistant message to the host so that
+				// the workflow run trace (subAgents + toolTrace + askUsers) survives
+				// a window reload. Previously this only mutated in-memory messages,
+				// so the tool cards disappeared after Cmd+R.
+				// Fire-and-forget — host persist is async; the in-memory message
+				// renders immediately regardless.
+				if (isActiveSession && state.activeAgentId) {
+					void (async () => {
+						try {
+							// Ensure the message carries an agentSessionId so the host's
+							// noSession guard doesn't drop it.
+							const persistable: ChatMessage = {
+								...assistantMessage,
+								agentSessionId: sessionId,
+							};
+							await sendRequest('chat.append', {
+								agentId: state.activeAgentId,
+								message: persistable,
+							});
+							console.log(`[ChatStore] commitWorkflowExecution: persisted wf_run_${exec.executionId} to host`);
+						} catch (err) {
+							console.warn(`[ChatStore] commitWorkflowExecution: chat.append failed for wf_run_${exec.executionId}`, err);
+						}
+					})();
+				}
+
+				if (!isActiveSession) {
 					return { liveWorkflowExecutions: nextLive, liveAskUsers: nextAsk, liveCollectVariables: state.liveCollectVariables, liveWorkflowEvents: nextEvents };
 				}
 				return {
@@ -2055,6 +2173,42 @@ export const useChatStore = create<ChatState>((set, get) => {
 				delete nextEvents[sessionId];
 				return { liveWorkflowExecutions: next, liveAskUsers: nextAsk, liveCollectVariables: nextCollect, liveWorkflowEvents: nextEvents };
 			});
+		},
+
+		// ─── v22: Cancel running workflow from chat panel ───────────────────
+
+		/**
+		 * Find the currently-running workflow execution (if any) and send a
+		 * `workflow.cancel` RPC to the host to abort it. The host's
+		 * `cancelExecution` aborts the in-flight LLM stream and resolves any
+		 * pending AskUser / variable-collection promises, so the UI updates
+		 * within milliseconds of the click.
+		 *
+		 * This is wired up to the chat composer's send/stop toggle so the
+		 * user can stop a running workflow from the chat panel (the
+		 * `onCancel` callback) without having to go back to the workflow
+		 * editor toolbar.
+		 */
+		cancelCurrentWorkflow: async (): Promise<void> => {
+			const liveExecs = get().liveWorkflowExecutions;
+			const running: Array<{ sessionId: string; executionId: string }> = [];
+			for (const [sid, exec] of Object.entries(liveExecs)) {
+				if (exec.status === 'running') {
+					running.push({ sessionId: sid, executionId: exec.executionId });
+				}
+			}
+			if (running.length === 0) {
+				console.log('[ChatStore] cancelCurrentWorkflow: no running workflow');
+				return;
+			}
+			console.log(`[ChatStore] cancelCurrentWorkflow: cancelling ${running.length} execution(s)`);
+			await Promise.allSettled(
+				running.map(({ executionId }) =>
+					sendRequest('workflow.cancel', { executionId }).catch(err => {
+						console.warn(`[ChatStore] cancelCurrentWorkflow: cancel ${executionId} failed`, err);
+					}),
+				),
+			);
 		},
 
 		// ─── v5b: Execution timeline ─────────────────────────────────────

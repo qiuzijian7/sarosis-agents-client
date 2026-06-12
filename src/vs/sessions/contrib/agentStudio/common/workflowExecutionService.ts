@@ -27,6 +27,11 @@ export const enum WorkflowNodeExecutionStatus {
 	Completed = 'completed',
 	Failed = 'failed',
 	Skipped = 'skipped',
+	/** v21: node executor was interrupted by `cancelExecution` (the user
+	 *  clicked Cancel while this node was mid-flight). Distinct from Failed
+	 *  so the UI / trace timeline can render a "已取消" badge instead of an
+	 *  error icon. */
+	Cancelled = 'cancelled',
 }
 
 export interface IWorkflowNodeExecutionState {
@@ -168,7 +173,12 @@ export type IWorkflowTraceEvent =
 	| { kind: 'delta'; executionId: string; sessionId: string; nodeId: string; delta: unknown }
 	/** Subagent finishes successfully. */
 	| { kind: 'subagent_end'; executionId: string; sessionId: string; nodeId: string;
-		status: 'done' | 'error'; output?: string; error?: string }
+		// v21: 'cancelled' is fired when the user clicks Cancel while the node
+		// is mid-stream. The sendMessage await returns with partial content
+		// (no throw) when AbortController is tripped, so we surface the cancel
+		// via this status so the webview card can flip to the cancelled badge
+		// instead of the "done" success badge.
+		status: 'done' | 'error' | 'cancelled'; output?: string; error?: string }
 	/** AskUser node wants user input — webview should render an interactive card. */
 	| { kind: 'ask_user'; executionId: string; sessionId: string; nodeId: string; nodeName: string;
 		question: string; options: IAskUserOption[]; multiSelect: boolean }

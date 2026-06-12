@@ -777,6 +777,20 @@ export interface ChatMessage {
 	tips?: TipMessage[];
 	/** Suggested questions for user to ask - VS Code chatQuestionCarouselPart pattern */
 	questions?: SuggestedQuestion[];
+	/**
+	 * v6: persisted sub-agent execution trace for a completed workflow run.
+	 * Synthesized by the webview's `commitWorkflowExecution` and reloaded from
+	 * disk on session restore so the SubAgentCard survives a window reload.
+	 * Typed as `any[]` here because SubAgentInfo lives in the webview layer
+	 * (useChatStore.ts) and is only consumed for UI rendering; the host treats
+	 * it as opaque JSON for round-trip persistence.
+	 */
+	subAgents?: any[];
+	/**
+	 * v6: persisted AskUser answers for a completed workflow run. Same
+	 * rationale as `subAgents` — webview-only rendering, opaque on the host.
+	 */
+	askUsers?: any[];
 }
 
 export interface ToolCall {

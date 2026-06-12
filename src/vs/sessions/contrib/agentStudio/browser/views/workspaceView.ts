@@ -404,6 +404,18 @@ export class WorkspaceViewPane extends ViewPane {
 	private readonly _pendingRefreshRoots = new Set<IWorkspaceExplorerElement>();
 	/** Debounce handle coalescing a burst of filesystem events into a single refresh. */
 	private _fsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+	/** v27: wall-clock timestamp of the last successful refresh, used to throttle
+	 *  the debounce window so a burst of file events can't drive a busy loop. */
+	private _lastFsRefreshAt = 0;
+	/**
+	 * v28: reentrancy guard for {@link _flushPendingRefresh}. Without it, every
+	 * `fileService.resolve()` call inside `getChildren` emits its own
+	 * `onDidFilesChange` event — which immediately re-schedules a refresh that
+	 * will call resolve again, ad infinitum. While a refresh is in flight we
+	 * drop new events (they'll be picked up by the next debounce tick when the
+	 * in-flight refresh completes) instead of enqueuing another refresh.
+	 */
+	private _isRefreshing = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -953,17 +965,62 @@ export class WorkspaceViewPane extends ViewPane {
 	}
 
 	/**
-	 * Reload the children of the renamed element's parent so the new name and
-	 * sort order appear. Falls back to a full reload when the parent can't be
-	 * resolved (e.g. it was a workspace root).
+	 * Reload the children of the renamed/deleted element's parent so the new
+	 * name and sort order appear. v28: switched from a full reload (which
+	 * tore down the entire tree, recreated watchers and expanded every root
+	 * again — overkill for a single rename/delete) to a local
+	 * `tree.updateChildren` on the parent node. This preserves expansion
+	 * state across the rest of the tree and is what the native Explorer
+	 * does.
+	 *
+	 * If the parent is the workspace root itself, that root is a workspace
+	 * root element whose children are fetched on demand — so we refresh it
+	 * directly. If the parent isn't in the visible tree yet (e.g. some
+	 * intermediate folder is collapsed), fall back to refreshing the
+	 * nearest ancestor that IS in the tree so the cascade re-renders when
+	 * the user expands it.
 	 */
 	private async _refreshParentOf(element: IWorkspaceExplorerElement): Promise<void> {
+		if (!this.tree) {
+			return;
+		}
+
 		const parentUri = dirname(element.resource);
-		// Find the matching tree element by resource. We can't easily look up
-		// arbitrary nodes in an async tree, so reload the whole active workspace
-		// view — cheap enough and guaranteed correct.
-		void parentUri;
-		await this._loadWorkspaceRoots();
+		// Walk from `parentUri` upward until we find a node that's already in
+		// the visible tree, then refresh it. Most cases land on the first
+		// iteration (the immediate parent is visible).
+		const visited: URI[] = [];
+		let cursor: URI | undefined = parentUri;
+		let targetNode: IWorkspaceExplorerElement | undefined;
+		while (cursor) {
+			visited.push(cursor);
+			// Look up the matching workspace-explorer element by resource.
+			// We compare against watched roots first (cheapest), then walk
+			// up the path looking for a known element.
+			const rootMatch = this._watchedRoots.find(r => r.resource.toString() === cursor!.toString());
+			if (rootMatch && this.tree.hasNode(rootMatch)) {
+				targetNode = rootMatch;
+				break;
+			}
+			// Step up one level — parent of a parent.
+			cursor = dirname(cursor);
+		}
+
+		if (!targetNode) {
+			// Nothing in the tree maps to this path — fall back to a full
+			// reload (rare; only happens if the element lives outside any
+			// currently-watched root).
+			this.logService.warn('[WorkspaceViewPane] _refreshParentOf: no tree node for parent, falling back to full reload');
+			await this._loadWorkspaceRoots();
+			return;
+		}
+
+		try {
+			await this.tree.updateChildren(targetNode, /* recursive */ false, /* rerender */ true);
+			this.logService.info(`[WorkspaceViewPane] _refreshParentOf: refreshed subtree of "${targetNode.name}" after mutation`);
+		} catch (err) {
+			this.logService.warn(`[WorkspaceViewPane] _refreshParentOf failed for "${targetNode.name}":`, err);
+		}
 	}
 
 	/**
@@ -980,6 +1037,10 @@ export class WorkspaceViewPane extends ViewPane {
 			clearTimeout(this._fsRefreshTimer);
 			this._fsRefreshTimer = undefined;
 		}
+		// v28: reset the reentrancy guard so a leftover `true` from an
+		// interrupted refresh doesn't permanently block file-watcher events
+		// after the root set is rebuilt.
+		this._isRefreshing = false;
 
 		const realRoots = roots.filter(r => !r.isVirtualWorkspace && r.resource.scheme === 'file');
 		this._watchedRoots = realRoots;
@@ -987,10 +1048,25 @@ export class WorkspaceViewPane extends ViewPane {
 		for (const root of realRoots) {
 			try {
 				// Recursive watch so nested creates/deletes (any depth) surface.
-				// node_modules/.git etc. are noisy but harmless — the change
-				// handler filters by visible roots and the tree refresh is cheap
-				// and scoped. We keep excludes minimal to avoid missing events.
-				this._fsWatchers.add(this.fileService.watch(root.resource, { recursive: true, excludes: [] }));
+				// v28: explicitly exclude high-noise directories that the native
+				// Explorer also skips via `files.watcherExclude` defaults.
+				// Without these, every `npm install` / `git fetch` /
+				// editor temp-save floods onDidFilesChange, which fans into a
+				// busy-loop where each refresh's fileService.resolve() emits
+				// its own event that triggers another refresh. The patterns
+				// are absolute globs matching at any depth inside the root.
+				const excludes: string[] = [
+					'**/.git/**',
+					'**/node_modules/**',
+					'**/.svn/**',
+					'**/.hg/**',
+					'**/CVS/**',
+					'**/.DS_Store',
+					'**/Thumbs.db',
+					// VS Code's own tmp folder (in case any tool writes there).
+					'**/.vscode/**/.tmp/**',
+				];
+				this._fsWatchers.add(this.fileService.watch(root.resource, { recursive: true, excludes }));
 			} catch (err) {
 				this.logService.warn(`[WorkspaceViewPane] Failed to watch root "${root.resource.toString()}":`, err);
 			}
@@ -1001,6 +1077,16 @@ export class WorkspaceViewPane extends ViewPane {
 	 * React to on-disk file changes. Determine which watched root subtrees are
 	 * affected and schedule a debounced, scoped refresh of just those subtrees
 	 * (preserving expansion/selection state, like the native Explorer).
+	 *
+	 * v28 reentrancy guard: if a refresh is already in flight (or queued), we
+	 * still update `_pendingRefreshRoots` so the next debounce tick covers
+	 * any newly-arrived changes, but we do NOT schedule an additional refresh
+	 * alongside the one that's already running. Without this guard, a refresh
+	 * can fan out into itself because `fileService.resolve()` emits its own
+	 * `onDidFilesChange` event, which would otherwise schedule another
+	 * refresh on every nested resolution → busy loop. The flag is cleared at
+	 * the end of `_flushPendingRefresh` so the next event starts a fresh
+	 * cycle.
 	 */
 	private _onDidFilesChange(e: FileChangesEvent): void {
 		if (this._watchedRoots.length === 0) {
@@ -1019,15 +1105,47 @@ export class WorkspaceViewPane extends ViewPane {
 			return;
 		}
 
-		// Debounce: filesystem operations often emit several events in quick
-		// succession (write temp → rename, etc.). Coalesce into one refresh.
+		// v28: if a refresh is already running, don't pile on — the next
+		// debounce tick will pick up the latest `_pendingRefreshRoots` once
+		// the in-flight refresh finishes. This is the core anti-self-excite
+		// guard that breaks the busy loop.
+		if (this._isRefreshing) {
+			return;
+		}
+
+		// v27: throttle (not just debounce) the file-change refresh. The
+		// 300ms debounce alone was insufficient — when an AI tool runs a
+		// command that touches many files (or a parent render loop fires
+		// file events indirectly via the fileService), the watcher emits
+		// events faster than the tree can resolve children, causing a
+		// busy-loop where `updateChildren` is invoked ~once per second and
+		// floods the log. Coalesce all events within a 2s window into a
+		// single refresh. The user-visible cost is at most a 2s lag
+		// before new files appear, which is acceptable for a workspace
+		// explorer. Also rate-limit to at most one refresh per 1500ms
+		// even if events keep arriving (the "throttle" half).
+		const now = Date.now();
+		const timeSinceLastRefresh = now - this._lastFsRefreshAt;
+		const fsRefreshCooldownMs = 1500;
 		if (this._fsRefreshTimer !== undefined) {
 			clearTimeout(this._fsRefreshTimer);
 		}
-		this._fsRefreshTimer = setTimeout(() => {
-			this._fsRefreshTimer = undefined;
-			void this._flushPendingRefresh();
-		}, 300);
+		if (timeSinceLastRefresh >= fsRefreshCooldownMs) {
+			// Outside the cooldown — fire as soon as the debounce window closes
+			this._fsRefreshTimer = setTimeout(() => {
+				this._fsRefreshTimer = undefined;
+				this._lastFsRefreshAt = Date.now();
+				void this._flushPendingRefresh();
+			}, 300);
+		} else {
+			// Inside the cooldown — defer to the end of the cooldown window
+			const deferMs = fsRefreshCooldownMs - timeSinceLastRefresh;
+			this._fsRefreshTimer = setTimeout(() => {
+				this._fsRefreshTimer = undefined;
+				this._lastFsRefreshAt = Date.now();
+				void this._flushPendingRefresh();
+			}, deferMs);
+		}
 	}
 
 	/**
@@ -1035,25 +1153,44 @@ export class WorkspaceViewPane extends ViewPane {
 	 * updateChildren(root, recursive, rerender) which re-resolves children via
 	 * the data source while preserving the tree's expansion and selection
 	 * state — so a newly created file simply appears in place.
+	 *
+	 * v28 reentrancy: the `_isRefreshing` flag is set on entry and cleared in
+	 * `finally`, so any `onDidFilesChange` events emitted by the in-flight
+	 * `fileService.resolve()` call (which the underlying watcher broadcasts
+	 * synchronously per resolved directory) are absorbed by `_onDidFilesChange`
+	 * without scheduling a parallel refresh. The events still mutate
+	 * `_pendingRefreshRoots`, so the next tick after this completes will
+	 * re-refresh the right subtrees if needed.
 	 */
 	private async _flushPendingRefresh(): Promise<void> {
 		if (!this.tree) {
 			return;
 		}
-		const roots = Array.from(this._pendingRefreshRoots);
-		this._pendingRefreshRoots.clear();
+		if (this._isRefreshing) {
+			// Defensive: should be unreachable because _onDidFilesChange guards
+			// against this, but keep the check so a stray caller can't break
+			// the invariant.
+			return;
+		}
+		this._isRefreshing = true;
+		try {
+			const roots = Array.from(this._pendingRefreshRoots);
+			this._pendingRefreshRoots.clear();
 
-		for (const root of roots) {
-			// The node may have been removed by a concurrent reload — guard it.
-			if (!this.tree.hasNode(root)) {
-				continue;
+			for (const root of roots) {
+				// The node may have been removed by a concurrent reload — guard it.
+				if (!this.tree.hasNode(root)) {
+					continue;
+				}
+				try {
+					await this.tree.updateChildren(root, /* recursive */ true, /* rerender */ false);
+					this.logService.trace(`[WorkspaceViewPane] Refreshed subtree after fs change: ${root.name}`);
+				} catch (err) {
+					this.logService.warn(`[WorkspaceViewPane] Failed to refresh subtree "${root.name}" after fs change:`, err);
+				}
 			}
-			try {
-				await this.tree.updateChildren(root, /* recursive */ true, /* rerender */ false);
-				this.logService.trace(`[WorkspaceViewPane] Refreshed subtree after fs change: ${root.name}`);
-			} catch (err) {
-				this.logService.warn(`[WorkspaceViewPane] Failed to refresh subtree "${root.name}" after fs change:`, err);
-			}
+		} finally {
+			this._isRefreshing = false;
 		}
 	}
 

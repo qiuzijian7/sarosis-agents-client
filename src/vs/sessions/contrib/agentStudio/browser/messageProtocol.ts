@@ -39,6 +39,7 @@ export type RequestType =
 	| 'workspace.connections.remove'
 	| 'chat.send'
 	| 'chat.history'
+	| 'chat.append'              // v6: webview commits a synthesized message (e.g. wf_run_* with subAgents) to host
 	| 'chat.clear'
 	| 'chat.cancel'
 	| 'chat.activeSessionChanged'  // webview tells host which (agentId,agentSessionId) is currently visible

@@ -9,13 +9,13 @@
  *
  *  Variable syntax:
  *    - {{name}}            (alphanumeric + underscore identifier)
+ *    - {{$alias}}          (runtime aliases like $prev, $preNode)
  *    - {{taskTitle}}       (camelCase supported)
- *    - dot-paths are NOT supported (cc-wf-studio parity)
  *    - Undefined variables are left as the original `{{name}}` placeholder
  *      (matches cc-wf-studio behaviour; the LLM sees the unresolved token).
  *--------------------------------------------------------------------------------------------*/
 
-export const VARIABLE_PATTERN = /\{\{(\w+)\}\}/g;
+export const VARIABLE_PATTERN = /\{\{(\$?\w+)\}\}/g;
 
 /**
  * Extract the set of variable names referenced inside a template string.

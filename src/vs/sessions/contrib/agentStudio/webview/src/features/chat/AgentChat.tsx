@@ -60,6 +60,7 @@ const StreamingBubble = memo(function StreamingBubble({
 	errorMessage,
 	streamError,
 	phase,
+	suppressText,
 }: {
 	textBuffer: string;
 	thinkingBuffer: string;
@@ -68,6 +69,7 @@ const StreamingBubble = memo(function StreamingBubble({
 	errorMessage: string | null;
 	streamError: StreamError | null;
 	phase: StreamPhase;
+	suppressText?: boolean;
 }): React.ReactElement {
 	// Thinking card in streaming bubble: default expanded, but user can collapse it
 	const [thinkingCollapsed, setThinkingCollapsed] = useState(false);
@@ -133,8 +135,17 @@ const StreamingBubble = memo(function StreamingBubble({
 						})} />
 					));
 
+					// v30: when a workflow is executing, the delta text content
+					// is already rendered inside the SubAgentCard's output block
+					// (via LiveWorkflowTraceView). Suppress the StreamingBubble's
+					// own textBuffer rendering to avoid showing it twice. We still
+					// render toolCallNodes standalone — they aren't duplicated in
+					// the workflow trace (the trace uses a different compact
+					// SubAgentToolTraceBlock layout).
+					const effectiveText = suppressText ? '' : sanitizedText;
+
 					// Case A: there IS streaming text → interleave tool cards inside markdown
-					if (sanitizedText) {
+					if (effectiveText) {
 						// Build position map from textPosition hints (recorded at tool_start time)
 						const toolPositions = new Map<string, number>();
 						for (const tc of visibleToolCalls) {
@@ -146,14 +157,14 @@ const StreamingBubble = memo(function StreamingBubble({
 							<div className="message-text">
 								{toolCallNodes.length > 0 ? (
 									<InterleavedMarkdownRenderer
-										content={sanitizedText}
+										content={effectiveText}
 										showCursor
 										toolCallNodes={toolCallNodes}
 										toolPositions={toolPositions}
 									/>
 								) : (
 									<MarkdownRenderer
-										content={sanitizedText}
+										content={effectiveText}
 										showCursor
 									/>
 								)}
@@ -240,6 +251,15 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 	// Map our LiveWorkflowSubAgent → the SubAgentInfo shape SubAgentCard expects.
 	const cardSubAgents = subAgents.map(sa => ({
 		id: sa.id,
+		// v26: forward the node label so the SubAgentRow header can show
+		// "在控制台打印一个hello world" / "({{$prev.output}}" / the agent name
+		// instead of an empty string. Without this, `{agent.name}` in
+		// SubAgentRow was rendering nothing (and the TS2339 was swallowed
+		// because SubAgentInfo never declared a `name` field). The label
+		// comes from the `subagent_start` trace event's `nodeName` field
+		// (workflow node label, with `data.label || node.name || node.id`
+		// fallback chain in the host).
+		name: sa.name,
 		type: 'general' as const,
 		task: sa.task || sa.name,
 		parentAgentId: undefined,
@@ -248,6 +268,11 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 				: sa.status === 'done' ? 'done' as const
 					: 'running' as const,
 		progress: sa.status === 'running' ? (sa.streamedText ? sa.streamedText.slice(-200) : '执行中...') : undefined,
+		// v24: forward the live streamed text so the new SubAgentOutputBlock
+		// can render a "tool card"-style collapsible view of the model's
+		// response while it's still streaming. `output` is kept as the
+		// post-execution fallback (set on subagent_end).
+		streamedText: sa.streamedText,
 		output: sa.output ?? (sa.streamedText ? sa.streamedText.slice(0, 4000) : ''),
 		error: sa.error,
 		// P4 v3: pass through thinking + toolTrace so SubAgentCard can render them.
@@ -257,6 +282,26 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 
 	const isRunning = execution.status === 'running';
 
+	// v25: chronological render order. The pre-execution variable collection
+	// cards MUST come BEFORE the SubAgentCard so the chat panel reflects
+	// the actual lifecycle of a workflow run:
+	//   1. ▶ user clicks Run → variable collection card appears (user fills
+	//      `{{userVar}}` values)
+	//   2. user submits → parallel sub-agent cards start populating
+	//   3. mid-execution AskUser cards may appear (interactive)
+	//
+	// The previous order (SubAgentCard → variables → AskUser) put the
+	// variable card AFTER the parallel execution cards, which is the
+	// opposite of the real timeline and made it look like the user was
+	// being asked to fill variables AFTER everything had already
+	// finished. This is purely a JSX re-order; the data flow is
+	// unchanged (host fires `collect_variables` first, then
+	// `subagent_start`).
+	//
+	// AskUser stays at the END because those cards are interactive and
+	// the user needs to see them at the bottom of the panel where their
+	// attention naturally lands when the workflow pauses. The previous
+	// AskUser-at-end comment is preserved below for grep-ability.
 	return (
 		<div className="message assistant" style={{ padding: '8px 12px' }}>
 			<div className="workflow-trace-header" style={{
@@ -276,33 +321,10 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 					{subAgents.filter(sa => sa.status === 'error').length > 0 && ` · ${subAgents.filter(sa => sa.status === 'error').length} 失败`}
 				</span>
 			</div>
-			{subAgents.length > 0 && <SubAgentCard subAgents={cardSubAgents as any} isStreaming={isRunning} />}
-			{/* v4: render pending / answered AskUser cards inline below the SubAgentCard. */}
-			{executionAskUsers.length > 0 && (
-				<div className="askuser-list">
-					{executionAskUsers.map(ask => {
-						// Look up the active sessionId at click time (it can change while
-						// the AskUser is still pending if the user switches sessions).
-						return (
-							<AskUserCard
-								key={ask.id}
-								askUser={ask}
-								onSubmit={(selection) => {
-									const sid = useChatStore.getState().activeAgentSessionId;
-									if (!sid) { return; }
-									void useChatStore.getState().submitAskUser(sid, ask.id, selection);
-								}}
-								onSelectionChange={(idx) => {
-									const sid = useChatStore.getState().activeAgentSessionId;
-									if (!sid) { return; }
-									useChatStore.getState().updateAskUserSelection(sid, ask.id, idx);
-								}}
-							/>
-						);
-					})}
-				</div>
-			)}
-			{/* v6: render variable collection cards */}
+			{/* v6 + v25: render variable collection cards FIRST (pre-execution
+			    input). The host fires `collect_variables` before
+			    `subagent_start`, so the chronological order in the chat
+			    panel should also be: collect → execute → ask. */}
 			{executionCollectVariables.length > 0 && (
 				<div className="collect-variables-list">
 					{executionCollectVariables.map(cv => (
@@ -409,6 +431,36 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 					))}
 				</div>
 			)}
+			{subAgents.length > 0 && <SubAgentCard subAgents={cardSubAgents as any} isStreaming={isRunning} />}
+			{/* v4: render pending / answered AskUser cards at the END (after subagents
+			    and after pre-execution variable collection). This matches the
+			    expected workflow lifecycle: collect variables → execute subagents →
+			    ask user → finish. Interactive AskUser cards sit at the bottom where
+			    the user's attention naturally lands when execution pauses. */}
+			{executionAskUsers.length > 0 && (
+				<div className="askuser-list">
+					{executionAskUsers.map(ask => {
+						// Look up the active sessionId at click time (it can change while
+						// the AskUser is still pending if the user switches sessions).
+						return (
+							<AskUserCard
+								key={ask.id}
+								askUser={ask}
+								onSubmit={(selection) => {
+									const sid = useChatStore.getState().activeAgentSessionId;
+									if (!sid) { return; }
+									void useChatStore.getState().submitAskUser(sid, ask.id, selection);
+								}}
+								onSelectionChange={(idx) => {
+									const sid = useChatStore.getState().activeAgentSessionId;
+									if (!sid) { return; }
+									useChatStore.getState().updateAskUserSelection(sid, ask.id, idx);
+								}}
+							/>
+						);
+					})}
+				</div>
+			)}
 		</div>
 	);
 });
@@ -416,7 +468,13 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 const LiveWorkflowTraceView = LiveWorkflowTraceViewRaw;
 
 export function AgentChat(): React.ReactElement {
-	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode, activeAgentSessionId, liveWorkflowExecutions, liveAskUsers, liveCollectVariables, liveWorkflowEvents } = useChatStore();
+	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode, activeAgentSessionId, liveWorkflowExecutions, liveAskUsers, liveCollectVariables, liveWorkflowEvents, cancelCurrentWorkflow } = useChatStore();
+	// v22: derive "any workflow is currently executing" from the live map.
+	// Used by the ChatComposer to switch its send button into a stop button.
+	// Recomputed on every render (cheap; liveWorkflowExecutions is a flat object).
+	const hasRunningWorkflow = useMemo(() => {
+		return Object.values(liveWorkflowExecutions).some(e => e.status === 'running');
+	}, [liveWorkflowExecutions]);
 	const { agents, selectedAgentId, selectAgent } = useAgentStore();
 	const { selection, loadSelectionForAgent } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -592,6 +650,21 @@ export function AgentChat(): React.ReactElement {
 		// Re-enable auto-scroll
 		isAtBottomRef.current = true;
 		setShowScrollBtn(false);
+	}, []);
+
+	// v22: Scroll to top handler — jumps to the first message and pauses
+	// auto-scroll. Helpful when a workflow run produces a long trace and
+	// the user wants to review the original "Run workflow: ..." trigger
+	// message that was pushed off-screen by the auto-scroll-to-bottom
+	// behavior.
+	const handleScrollToTop = useCallback(() => {
+		const el = chatMessagesRef.current;
+		if (!el) { return; }
+		el.scrollTo({ top: 0, behavior: 'smooth' });
+		// Pause auto-scroll so subsequent new content doesn't yank the view
+		// back down.
+		isAtBottomRef.current = false;
+		setShowScrollBtn(true);
 	}, []);
 
 	// 会话消息列表：按时间正序排列的用户消息（含首条关键词摘要）
@@ -1316,6 +1389,7 @@ export function AgentChat(): React.ReactElement {
 								errorMessage={streamState.errorMessage}
 								streamError={streamState.error}
 								phase={streamState.phase}
+								suppressText={hasRunningWorkflow}
 							/>
 						)}
 
@@ -1336,6 +1410,25 @@ export function AgentChat(): React.ReactElement {
 						<ExecutionTimelinePanel sessionId={activeAgentSessionId} />
 					)}
 
+					{/* v22: Scroll-to-top button — appears when there are messages above
+					   the visible viewport, so the user can quickly jump back to
+					   the first chat message (often a long workflow trigger that
+					   was scrolled off-screen by auto-scroll). Positioned to the
+					   left of the scroll-to-bottom button. */}
+					<button
+						className="chat-scroll-top-btn"
+						onClick={handleScrollToTop}
+						title="滚动到顶部 / 第一个消息"
+						style={{
+							display: (showScrollBtn && messages.length > 1) ? 'flex' : 'none',
+							right: 56, // sit just left of the scroll-to-bottom button
+						}}
+					>
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+							<polyline points="18 15 12 9 6 15" />
+						</svg>
+					</button>
+
 					{/* Scroll-to-bottom button: always in DOM, visibility via React state */}
 					<button
 						className="chat-scroll-bottom-btn"
@@ -1355,8 +1448,12 @@ export function AgentChat(): React.ReactElement {
 				{/* Composer */}
 			<ChatComposer
 				onSend={handleSend}
-				onCancel={cancelStream}
-				isLoading={isPhaseActive(streamState.phase)}
+				// v22: when a workflow is running, the stop button cancels the
+				// workflow (not just the chat stream). The composer's
+				// send/stop toggle picks the right action based on its
+				// isLoading prop and whether the input has text.
+				onCancel={isPhaseActive(streamState.phase) ? cancelStream : cancelCurrentWorkflow}
+				isLoading={isPhaseActive(streamState.phase) || hasRunningWorkflow}
 				onCommand={handleCommand}
 			/>
 		</div>

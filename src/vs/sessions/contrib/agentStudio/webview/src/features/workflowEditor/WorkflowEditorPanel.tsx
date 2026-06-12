@@ -221,9 +221,20 @@ export const WorkflowEditorPanel: React.FC = () => {
 				// Prefer direct store hook (cleaner), fall back to global if not exposed
 				try {
 					const mod = await import('../../store/useChatStore');
-					mod.useChatStore.getState().setActiveAgent(sessionInfo.workflowAgentId);
-					await mod.useChatStore.getState().switchAgentSession(sessionInfo.sessionId);
-					console.log(`[WorkflowEditor] auto-switched to owner agent ${sessionInfo.workflowAgentId} session ${sessionInfo.sessionId}`);
+					// 🔧 2026-06-12 fix: only auto-switch when we're not already on the
+					// target agent+session. Without this guard the second switch wipes
+					// `liveWorkflowExecutions[newSessionId]` (which the trace event
+					// handler just populated via `startWorkflowExecution`), causing
+					// all subsequent subagent_start events to be dropped silently —
+					// resulting in no tool cards showing in the chat panel. The trace
+					// event's own auto-switch already handles the actual transition.
+					const cur = mod.useChatStore.getState();
+					if (cur.activeAgentId !== sessionInfo.workflowAgentId ||
+						cur.activeAgentSessionId !== sessionInfo.sessionId) {
+						mod.useChatStore.getState().setActiveAgent(sessionInfo.workflowAgentId);
+						await mod.useChatStore.getState().switchAgentSession(sessionInfo.sessionId);
+						console.log(`[WorkflowEditor] auto-switched to owner agent ${sessionInfo.workflowAgentId} session ${sessionInfo.sessionId}`);
+					}
 				} catch (err) {
 					console.warn('[WorkflowEditor] failed to auto-switch chat panel:', err);
 				}

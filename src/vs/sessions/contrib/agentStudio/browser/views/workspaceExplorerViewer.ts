@@ -98,6 +98,16 @@ export class WorkspaceExplorerDelegate implements IListVirtualDelegate<IWorkspac
 //#region Tree Data Source
 
 export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceExplorerElement, IWorkspaceExplorerElement> {
+	/**
+	 * v27: cache the last child fingerprint per resource path so we can
+	 * detect no-op re-resolutions (e.g. when a file watcher busy-loop
+	 * re-triggers getChildren for the same path repeatedly). The Map is
+	 * deliberately unbounded — it's just string fingerprints, each
+	 * ~1 KB, so even 10K entries would be ~10 MB. For a workspace
+	 * explorer the realistic upper bound is hundreds.
+	 */
+	private static _lastFingerprints = new Map<string, string>();
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
@@ -169,7 +179,30 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 						name: basename(child.resource),
 						isDirectory: child.isDirectory,
 					}));
-				this.logService.info(`[WorkspaceExplorer] Resolved ${stat.children.length} raw children, ${children.length} after filtering for: ${element.name}${filtered.length > 0 ? ` (filtered out: ${filtered.join(', ')})` : ''}`);
+				// v27: dedupe consecutive identical resolutions to avoid flooding
+				// the log when a parent render loop (or a busy file watcher)
+				// re-triggers getChildren for the same path. We compare the
+				// child name+isDirectory fingerprint; if it matches the last
+				// cached signature for this element, we skip the info log.
+				// First-time resolution always logs.
+				const fingerprint = children
+					.map(c => `${c.name}:${c.isDirectory ? 'd' : 'f'}`)
+					.sort()
+					.join('|');
+				const lastFp = WorkspaceExplorerDataSource._lastFingerprints.get(element.resource.toString());
+				if (lastFp === fingerprint) {
+					// Same children as last time — debug-level only to keep
+					// the log readable while still letting users opt in to
+					// the noise via log level config.
+					this.logService.debug(
+						`[WorkspaceExplorer] No change for: ${element.name} (children=${children.length})`,
+					);
+				} else {
+					this.logService.info(
+						`[WorkspaceExplorer] Resolved ${stat.children.length} raw children, ${children.length} after filtering for: ${element.name}${filtered.length > 0 ? ` (filtered out: ${filtered.join(', ')})` : ''}`,
+					);
+					WorkspaceExplorerDataSource._lastFingerprints.set(element.resource.toString(), fingerprint);
+				}
 
 				// When all children were filtered out, show "empty folder" placeholder
 				if (children.length === 0 && stat.children.length > 0) {

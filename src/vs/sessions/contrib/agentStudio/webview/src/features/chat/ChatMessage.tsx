@@ -545,6 +545,11 @@ export const ChatMessageComponent = memo(ChatMessageRaw, (prev, next) => {
 		pm.questions === nm.questions &&
 		pm.attachments === nm.attachments &&
 		pm.checkpoint === nm.checkpoint &&
+		// v6: workflow trace data — subAgents (SubAgentCard) and askUsers
+		// (AskUserCard). Without these, a memoized message that mutates
+		// subAgents in place (e.g. during reload re-hydration) won't re-render.
+		pm.subAgents === nm.subAgents &&
+		pm.askUsers === nm.askUsers &&
 		prev.isStreaming === next.isStreaming
 	);
 });

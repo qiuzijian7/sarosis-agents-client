@@ -3803,15 +3803,27 @@ html, body, #root {
 /* ─── Message List ────────────────────────────────────────────────────────── */
 
 /* Message list container: holds the scrollable list + the scroll-down button.
-   Mirrors VS Code's interactive-list > monaco-scrollable-element pattern. */
+   Mirrors VS Code's interactive-list > monaco-scrollable-element pattern.
+   v22 fix: explicitly set display:flex + flex-direction:column so the
+   `.chat-messages` child (now `flex: 1 1 0` instead of `height: 100%`) can
+   share the container's vertical space with the timeline panel. Without
+   this, `.chat-messages` (with `height: 100%`) overlapped the timeline
+   panel at the bottom — the user could see the top of the chat but
+   scrolling up didn't reveal the first message because the visible
+   viewport was effectively the top N pixels of an oversized chat
+   container, not the chat-messages element itself. */
 .chat-messages-container {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat-messages {
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 12px 16px;
@@ -3842,6 +3854,32 @@ html, body, #root {
 }
 
 .chat-scroll-bottom-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(90, 93, 94, 1));
+}
+
+/* v22: Scroll-to-top button — sibling of `.chat-scroll-bottom-btn`.
+   Positioned slightly to the left so both buttons don't overlap.
+   `right` is overridden inline by the React component to sit at right:56
+   (scroll-to-bottom is at right:12 + 27 width + ~8 gap = ~47). */
+.chat-scroll-top-btn {
+  position: absolute;
+  bottom: 7px;
+  right: 56px;
+  width: 27px;
+  height: 27px;
+  border-radius: 100%;
+  border: none;
+  background: var(--vscode-button-secondaryBackground, rgba(90, 93, 94, 0.8));
+  color: var(--vscode-button-secondaryForeground, #fff);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  transition: background-color 0.15s ease;
+}
+
+.chat-scroll-top-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, rgba(90, 93, 94, 1));
 }
 

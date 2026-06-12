@@ -986,6 +986,111 @@
 	to { transform: rotate(360deg); }
 }
 
+/* ── P4 v24: Sub-Agent Output / Stream Block ────────────────────────────
+   Collapsible "tool card" wrapping the LLM streaming content (delta
+   accumulation + final output). Replaces the previous flat
+   .subagent-output-preview / .subagent-output-full layout which was an
+   un-collapsible wall of text. Visual style mirrors .subagent-thinking
+   and .subagent-tool-trace (border-left accent + header + chevron) so
+   the streamed response feels like a first-class card in the sub-agent
+   row, not a stray text dump. Color uses a teal accent (distinct from
+   purple thinking and orange tool-trace) so the user can tell at a
+   glance which sub-block they're looking at. */
+.subagent-output-block {
+	margin: 4px 0 4px 28px;
+	border-left: 2px solid var(--vscode-charts-blue, #60a5fa);
+	background: rgba(96, 165, 250, 0.04);
+	border-radius: 0 4px 4px 0;
+	overflow: hidden;
+}
+
+.subagent-output-block.streaming {
+	border-left-color: var(--vscode-progressBar-background, #60a5fa);
+	background: rgba(96, 165, 250, 0.08);
+}
+
+.subagent-output-block-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	cursor: pointer;
+	user-select: none;
+	font-size: 11px;
+}
+
+.subagent-output-block-header:hover {
+	background: rgba(96, 165, 250, 0.08);
+}
+
+.subagent-output-block-icon {
+	font-size: 12px;
+	flex-shrink: 0;
+}
+
+.subagent-output-block-title {
+	font-weight: 600;
+	color: var(--vscode-charts-blue, #60a5fa);
+	flex-shrink: 0;
+}
+
+.subagent-output-block-title.shimmer {
+	background: linear-gradient(90deg,
+		#60a5fa 0%,
+		#3b82f6 50%,
+		#60a5fa 100%);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	animation: subagent-shimmer 2s linear infinite;
+}
+
+.subagent-output-block-preview {
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-style: italic;
+}
+
+.subagent-output-block-toggle {
+	display: inline-flex;
+	color: var(--vscode-charts-blue, #60a5fa);
+	flex-shrink: 0;
+	transition: transform 0.15s ease;
+}
+
+.subagent-output-block-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.subagent-output-block-body {
+	padding: 6px 10px 8px 10px;
+	border-top: 1px solid rgba(96, 165, 250, 0.15);
+	max-height: 400px;
+	overflow-y: auto;
+}
+
+.subagent-output-block-body .markdown-body {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-foreground);
+}
+
+.subagent-output-block-body .markdown-body p {
+	margin: 0 0 6px 0;
+}
+
+.subagent-output-block-body .markdown-body pre {
+	background: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-radius: 4px;
+	padding: 6px 8px;
+	font-size: 11px;
+	overflow-x: auto;
+}
+
 /* ── Workflow trace banner (P4) ──────────────────────────────────────── */
 .workflow-trace-header {
 	user-select: none;
@@ -1447,7 +1552,7 @@
 	background: var(--vscode-editorWidget-background, #252526);
 	font-size: 11px;
 	flex-shrink: 0;
-	max-height: 40vh;
+	max-height: 50vh;   /* was 40vh — bumped to fit more events */
 	display: flex;
 	flex-direction: column;
 }

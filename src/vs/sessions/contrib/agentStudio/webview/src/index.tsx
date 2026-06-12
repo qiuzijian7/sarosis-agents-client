@@ -51,14 +51,31 @@ initMessageClient((type, data) => {
 		variables?: Array<{ name: string; defaultValue?: string }> }): void {
 		const store = useChatStore.getState();
 
-		// v5b: append non-delta events to the execution timeline.
-		const isDelta = trace.kind === 'delta';
-		if (!isDelta) {
+		// v6 (refined): append ONLY node-level events to the execution timeline.
+		// Deltas (streaming text/thinking/tool args) are intentionally excluded —
+		// the timeline should read as a clean per-node execution log, not a
+		// noisy per-token stream. The subagent card already shows live deltas.
+		// Also skip `__workflow__` synthetic events (the workflow root) to avoid
+		// cluttering the timeline with redundant top-level entries.
+		const isNodeEvent =
+			trace.kind === 'subagent_start' ||
+			trace.kind === 'subagent_end' ||
+			trace.kind === 'ask_user' ||
+			trace.kind === 'ask_user_end' ||
+			trace.kind === 'collect_variables' ||
+			trace.kind === 'collect_variables_end' ||
+			trace.kind === 'execution_end' ||
+			trace.kind === 'breakpoint_hit';
+		if (!isNodeEvent) {
+			// Deltas and any unknown kinds: skip.
+		} else {
 			let summary: string | undefined;
 			if (trace.kind === 'ask_user' && trace.question) {
 				summary = `❓ ${trace.question.substring(0, 60)}`;
 			} else if (trace.kind === 'ask_user_end') {
 				summary = `已${trace.status === 'answered' ? '回答' : trace.status === 'cancelled' ? '取消' : '过期'}`;
+			} else if (trace.kind === 'subagent_start' && trace.task) {
+				summary = `${trace.task.substring(0, 60).replace(/\n/g, ' ')}`;
 			} else if (trace.kind === 'subagent_end' && trace.error) {
 				summary = `✗ ${trace.error.substring(0, 60)}`;
 			} else if (trace.kind === 'subagent_end' && trace.output) {
@@ -125,7 +142,10 @@ initMessageClient((type, data) => {
 			store.endWorkflowSubAgent(
 				trace.sessionId,
 				trace.nodeId,
-				(trace.status as 'done' | 'error') ?? 'done',
+				// v21: trace.status can be 'cancelled' when the user clicked
+				// Cancel mid-stream. endWorkflowSubAgent's type union already
+				// includes 'cancelled' so this cast is safe.
+				(trace.status as 'done' | 'error' | 'cancelled') ?? 'done',
 				trace.output,
 				trace.error,
 			);
