@@ -47,7 +47,8 @@ initMessageClient((type, data) => {
 		kind: string; nodeId: string; nodeName?: string; nodeType?: string;
 		task?: string; delta?: unknown; output?: string; error?: string; status?: string;
 		question?: string; options?: Array<{ label: string; description?: string }>;
-		multiSelect?: boolean; selection?: string | string[] }): void {
+		multiSelect?: boolean; selection?: string | string[];
+		variables?: Array<{ name: string; defaultValue?: string }> }): void {
 		const store = useChatStore.getState();
 
 		// v5b: append non-delta events to the execution timeline.
@@ -64,6 +65,10 @@ initMessageClient((type, data) => {
 				summary = `✓ ${trace.output.substring(0, 60)}`;
 			} else if (trace.kind === 'execution_end') {
 				summary = `执行结束: ${trace.status}`;
+			} else if (trace.kind === 'collect_variables' && trace.variables) {
+				summary = `📝 填入变量: ${trace.variables.map(v => v.name).join(', ')}`;
+			} else if (trace.kind === 'collect_variables_end') {
+				summary = `变量${trace.status === 'submitted' ? '已提交' : '已跳过'}`;
 			}
 			store.appendWorkflowEvent(trace.sessionId, {
 				executionId: trace.executionId,
@@ -145,6 +150,18 @@ initMessageClient((type, data) => {
 			if (status !== 'answered') {
 				store.cancelAskUser(trace.sessionId, `${trace.executionId}:${trace.nodeId}`, status);
 			}
+		} else if (trace.kind === 'collect_variables') {
+			// v6: register a variable collection card so the user can fill in values.
+			store.startCollectVariables(trace.sessionId, {
+				executionId: trace.executionId,
+				variables: trace.variables ?? [],
+			});
+		} else if (trace.kind === 'collect_variables_end') {
+			// v6: server resolved variable collection — mark card as submitted/skipped.
+			if (trace.status === 'skipped') {
+				store.cancelCollectVariables(trace.sessionId, trace.executionId);
+			}
+			// 'submitted' is already handled by submitCollectVariables optimistically
 		} else if (trace.kind === 'execution_end') {
 			store.commitWorkflowExecution(
 				trace.sessionId,

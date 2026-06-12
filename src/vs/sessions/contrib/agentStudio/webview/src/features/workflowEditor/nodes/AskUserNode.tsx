@@ -1,7 +1,9 @@
 import React from 'react';
 import { Handle, Position, type NodeProps, useUpdateNodeInternals } from '@xyflow/react';
-import { useEffect } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useWorkflowEditorStore } from '../store';
+import { extractVariables, formatVariableBadge } from '../utils/templateUtils';
+import { VariableAutocomplete, buildCandidates } from '../utils/VariableAutocomplete';
 
 const ieInput: React.CSSProperties = {
 	width: '100%', padding: '2px 5px', fontSize: '11px',
@@ -24,6 +26,19 @@ export const AskUserNode: React.FC<NodeProps> = React.memo(({ id, data, selected
 
 	const n = options.length || 2;
 
+	// v15: autocomplete candidates
+	const allNodes = useWorkflowEditorStore(s => s.nodes);
+	const allEdges = useWorkflowEditorStore(s => s.edges);
+	const candidates = useMemo(() => buildCandidates({
+		nodeData: d,
+		nodeId: id,
+		nodes: allNodes as Array<{ id: string; data?: Record<string, unknown> }>,
+		edges: allEdges as Array<{ source: string; target: string }>,
+	}), [d, id, allNodes, allEdges]);
+	const questionRef = useRef<HTMLTextAreaElement>(null);
+	const variableBadge = formatVariableBadge(questionText);
+	const detectedVariables = extractVariables(questionText);
+
 	return (
 		<div className="wf-node" style={{
 			position: 'relative', padding: selected ? '12px 14px' : '12px 14px', borderRadius: '8px',
@@ -37,14 +52,37 @@ export const AskUserNode: React.FC<NodeProps> = React.memo(({ id, data, selected
 					<span style={{ fontSize: '14px' }}>❓</span>
 					<span style={{ fontWeight: 600, fontSize: '12px', textTransform: 'uppercase' }}>Ask User</span>
 				</div>
-				{multiSelect && <span style={{ fontSize: '9px', padding: '2px 6px', backgroundColor: 'var(--vscode-badge-background)', color: 'var(--vscode-badge-foreground)', borderRadius: '3px', fontWeight: 600 }}>Multi</span>}
+				<div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+					{variableBadge && (
+						<span title={`Detected variables: ${detectedVariables.join(', ')}`}
+							style={{ fontSize: '9px', fontWeight: 600, padding: '1px 5px', borderRadius: '8px', background: 'var(--vscode-badge-background, #4d4d4d)', color: 'var(--vscode-badge-foreground, #ffffff)' }}>
+							{variableBadge}
+						</span>
+					)}
+					{multiSelect && <span style={{ fontSize: '9px', padding: '2px 6px', backgroundColor: 'var(--vscode-badge-background)', color: 'var(--vscode-badge-foreground)', borderRadius: '3px', fontWeight: 600 }}>Multi</span>}
+				</div>
 			</div>
 
 			{selected ? (
 				<>
 					<input style={ieInput} value={(d.label as string) || ''} onChange={e => update('label', e.target.value)} placeholder="Node name" />
 					<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Question</div>
-					<textarea style={ieTextarea} value={questionText} onChange={e => update('question', e.target.value)} placeholder="What do you want to ask?" />
+					<div style={{ position: 'relative' }}>
+						<textarea
+							ref={questionRef}
+							style={ieTextarea}
+							value={questionText}
+							onChange={e => update('question', e.target.value)}
+							placeholder="Type {{ for variable autocomplete"
+						/>
+						<VariableAutocomplete
+							targetRef={questionRef}
+							text={questionText}
+							onChange={next => update('question', next)}
+							candidates={candidates}
+							id={`askuser-node-ac-${id}`}
+						/>
+					</div>
 					<label style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '6px', fontSize: '10px' }}>
 						<input type="checkbox" checked={!!multiSelect} onChange={e => update('multiSelect', e.target.checked)} /> Multi-select
 					</label>

@@ -42,6 +42,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		question: string; options: IAskUserOption[]; multiSelect: boolean;
 	}>();
 
+	/** v6: resolvers for pre-execution variable collection (keyed by executionId). */
+	private _variableResolvers = new Map<string, (values: Record<string, string>) => void>();
+
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
@@ -131,6 +134,50 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			);
 		}
 
+		// v6: Collect template variables from agent/prompt nodes before execution.
+		// If any {{variable}} patterns are found, show an interactive card in the
+		// chat panel so the user can fill in values before nodes start running.
+		const variables = WorkflowExecutionService._collectTemplateVariables(workflow);
+		const ownerSession = this._executionSession.get(executionId);
+		if (variables.length > 0 && ownerSession) {
+			this.logService.info(
+				`[WorkflowExecution] Found ${variables.length} template variable(s): ` +
+				variables.map(v => v.name).join(', '),
+			);
+			this._onDidExecutionTrace.fire({
+				kind: 'collect_variables',
+				executionId,
+				sessionId: ownerSession.sessionId,
+				variables,
+			});
+
+			// Wait for the user to fill in variable values via the webview card.
+			// The card sends workflow.submitVariables which resolves this promise.
+			try {
+				const values = await new Promise<Record<string, string>>((resolve) => {
+					this._variableResolvers.set(executionId, resolve);
+				});
+				this.logService.info(
+					`[WorkflowExecution] Variables collected: ${JSON.stringify(values)}`,
+				);
+				WorkflowExecutionService._substituteVariables(workflow, values);
+				this._onDidExecutionTrace.fire({
+					kind: 'collect_variables_end',
+					executionId,
+					sessionId: ownerSession.sessionId,
+					status: 'submitted',
+				});
+			} catch {
+				// User skipped or cancelled
+				this._onDidExecutionTrace.fire({
+					kind: 'collect_variables_end',
+					executionId,
+					sessionId: ownerSession.sessionId,
+					status: 'skipped',
+				});
+			}
+		}
+
 		// Start execution (fire-and-forget)
 		this._executeWorkflowAsync(executionState, workflow, options).catch(err => {
 			this.logService.error(`[WorkflowExecution] Execution ${executionId} failed:`, err);
@@ -206,6 +253,23 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// promise doesn't leak. Also fire ask_user_end so the webview card
 		// flips to "cancelled" state.
 		this._cancelPendingAskUserForExecution(executionId, 'cancelled');
+
+		// v6: resolve any pending variable collection so executeWorkflow doesn't hang.
+		const varResolver = this._variableResolvers.get(executionId);
+		if (varResolver) {
+			this._variableResolvers.delete(executionId);
+			// Reject by calling with empty values — executeWorkflow will see empty and skip.
+			varResolver({});
+			const ownerSession = this._executionSession.get(executionId);
+			if (ownerSession) {
+				this._onDidExecutionTrace.fire({
+					kind: 'collect_variables_end',
+					executionId,
+					sessionId: ownerSession.sessionId,
+					status: 'skipped',
+				});
+			}
+		}
 	}
 
 	/**
@@ -468,24 +532,14 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					nextNodeIds = this._getNextNodes(node.id, adj);
 					break;
 
-				case WorkflowNodeType.Condition:
 				case WorkflowNodeType.IfElse:
 				case WorkflowNodeType.Switch:
 					// Control flow: evaluate condition and follow branch
-					nextNodeIds = await this._executeConditionNode(executionState, workflow, node, adj, options);
+					nextNodeIds = await this._executeIfElseNode(executionState, workflow, node, adj, options);
 					break;
 
-				case WorkflowNodeType.Loop:
-					// Loop node: iterate
-					nextNodeIds = await this._executeLoopNode(executionState, workflow, node, adj, options);
-					break;
 
-				case WorkflowNodeType.Parallel:
-					// Parallel node: execute branches concurrently
-					nextNodeIds = await this._executeParallelNode(executionState, workflow, node, adj, options);
-					break;
-
-			case WorkflowNodeType.AskUser:
+				case WorkflowNodeType.AskUser:
 				// AskUser node: pause and wait for user input
 				const userInput = await this._executeAskUserNode(executionState, workflow, node, adj);
 				// 将用户输入存储到上下文
@@ -660,35 +714,15 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		}
 
 		if (!nodePrompt) {
-			// No prompt configured at all — log a warning and skip execution.
-			this.logService.warn(
-				`[WorkflowExecution] Agent node ${node.id} ("${node.name || ''}") has no prompt configured — skipping execution. ` +
-				'Add a prompt via the PropertyPanel (select the node → "Prompt Template" field).',
+			// No explicit prompt — build a sensible fallback from workflow description
+			// or node label instead of skipping execution.
+			const fallback = (workflow.description || '').trim() ||
+				`Run the "${(data.label as string) || node.name || node.id}" agent with default instructions.`;
+			nodePrompt = fallback;
+			this.logService.info(
+				`[WorkflowExecution] Agent node ${node.id} ("${node.name || ''}") has no explicit prompt — ` +
+				`using fallback: "${fallback.substring(0, 80)}"`,
 			);
-			if (ownerSession) {
-				// Fire subagent_start then immediately subagent_end(error) so the
-				// card renders and shows the error.
-				const nodeName = (data.label as string) || node.name || node.id;
-				this._onDidExecutionTrace.fire({
-					kind: 'subagent_start',
-					executionId: executionState.executionId,
-					workflowAgentId: ownerSession.workflowAgentId,
-					sessionId: ownerSession.sessionId,
-					nodeId: node.id,
-					nodeName,
-					nodeType: 'agent',
-					task: 'No prompt configured — add a prompt in the PropertyPanel.',
-				});
-				this._onDidExecutionTrace.fire({
-					kind: 'subagent_end',
-					executionId: executionState.executionId,
-					sessionId: ownerSession.sessionId,
-					nodeId: node.id,
-					status: 'error',
-					error: `Agent node "${nodeName}" has no prompt configured. Open the PropertyPanel, select this node, and fill in the "Prompt Template" field.`,
-				});
-			}
-			return;
 		}
 
 		// P4: fire subagent_start so the workflow owner chat opens a subagent card
@@ -924,14 +958,42 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	): Promise<void> {
 		this.logService.info(`[WorkflowExecution] Executing Skill node: ${node.id}`);
 		const data = node.data ?? {};
-		const skillName = (data.skillName as string) || '';
+		const skillName = (data.skillName as string) || (data.skillId as string) || '';
+		const skillInput = (data.prompt as string) || '';
+		const skillArgs = (data.skillArgs as Record<string, string>) ?? {};
 
 		if (!skillName) {
 			throw new Error(`Skill node ${node.id} has no skillName`);
 		}
 
-		// TODO: Execute skill
-		this.logService.info(`[WorkflowExecution] Skill: ${skillName}`);
+		const agentId = _options?.agentId || workflow.agentId;
+		if (!agentId) {
+			throw new Error(`Skill node ${node.id}: No agent ID available`);
+		}
+
+		// Build skill execution prompt
+		const argsStr = Object.entries(skillArgs)
+			.map(([k, v]) => `  - ${k}: ${v}`)
+			.join('\n');
+		const promptParts: string[] = [
+			`Execute the following skill: **${skillName}**`,
+			skillInput ? `\nInput: ${skillInput}` : '',
+			argsStr ? `\nArguments:\n${argsStr}` : '',
+		];
+		const executionPrompt = promptParts.filter(Boolean).join('\n');
+
+		this.logService.info(`[WorkflowExecution] Skill ${node.id}: executing "${skillName}"`);
+		const message = await this.agentChatService.sendMessage(
+			agentId,
+			executionPrompt,
+			{ workspaceId: undefined, agentSessionId: undefined },
+			() => { /* noop onDelta */ },
+		);
+
+		const nodeState = executionState.nodeStates.get(node.id);
+		if (nodeState) {
+			nodeState.output = message.content || '';
+		}
 	}
 
 	private async _executeToolNode(
@@ -943,65 +1005,110 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		this.logService.info(`[WorkflowExecution] Executing Tool node: ${node.id}`);
 		const data = node.data ?? {};
 		const toolName = (data.toolName as string) || '';
+		const toolParams = (data.toolParams ?? data.params ?? {}) as Record<string, unknown>;
 
 		if (!toolName) {
 			throw new Error(`Tool node ${node.id} has no toolName`);
 		}
 
-		// TODO: Execute tool
-		this.logService.info(`[WorkflowExecution] Tool: ${toolName}`);
+		const agentId = _options?.agentId || workflow.agentId;
+		if (!agentId) {
+			throw new Error(`Tool node ${node.id}: No agent ID available`);
+		}
+
+		// Build tool execution prompt
+		const paramsStr = typeof toolParams === 'string'
+			? toolParams as string
+			: JSON.stringify(toolParams, null, 2);
+		const executionPrompt = paramsStr && Object.keys(toolParams).length > 0
+			? `Execute tool **${toolName}** with parameters:\n\`\`\`json\n${paramsStr}\n\`\`\``
+			: `Execute tool **${toolName}**`;
+
+		this.logService.info(`[WorkflowExecution] Tool ${node.id}: executing "${toolName}"`);
+		const message = await this.agentChatService.sendMessage(
+			agentId,
+			executionPrompt,
+			{ workspaceId: undefined, agentSessionId: undefined },
+			() => { /* noop onDelta */ },
+		);
+
+		const nodeState = executionState.nodeStates.get(node.id);
+		if (nodeState) {
+			nodeState.output = message.content || '';
+		}
 	}
 
-	private async _executeConditionNode(
+	private async _executeIfElseNode(
 		executionState: IWorkflowExecutionState,
 		workflow: IStoredWorkflow,
 		node: WorkflowGraphNode,
 		adj: Map<string, { targetId: string; fromPort?: string }[]>,
 		_options?: IWorkflowExecutionOptions,
 	): Promise<string[]> {
-		this.logService.info(`[WorkflowExecution] Executing Condition node: ${node.id}`);
+		this.logService.info(`[WorkflowExecution] Executing IfElse/Switch node: ${node.id}`);
 		const data = node.data ?? {};
-		const condition = (data.condition as string) || '';
+		const branches: Array<{ id: string; label: string; condition: string; isDefault?: boolean }> =
+			(data.branches as any[]) || [{ id: '0', label: 'True', condition: '' }, { id: '1', label: 'False', condition: '' }];
 
-		// TODO: Evaluate condition and select branch
-		// For now, just follow the first branch
-		const nextNodes = this._getNextNodes(node.id, adj);
-		this.logService.info(`[WorkflowExecution] Condition: ${condition}, following ${nextNodes.length} branches`);
-		return nextNodes;
-	}
+		const agentId = _options?.agentId || workflow.agentId;
 
-	private async _executeLoopNode(
-		executionState: IWorkflowExecutionState,
-		workflow: IStoredWorkflow,
-		node: WorkflowGraphNode,
-		adj: Map<string, { targetId: string; fromPort?: string }[]>,
-		_options?: IWorkflowExecutionOptions,
-	): Promise<string[]> {
-		this.logService.info(`[WorkflowExecution] Executing Loop node: ${node.id}`);
-		const data = node.data ?? {};
-		const loopConfig = (data.loopConfig as { items: string; itemVariable: string; maxIterations?: number }) ?? {};
+		// Build prompt to ask agent to evaluate conditions (cc-wf-studio style)
+		const branchList = branches.map((b, i) =>
+			`${i}. **${b.label}**: ${b.condition || (b.isDefault ? '(default)' : '(no condition)')}`
+		).join('\n');
 
-		// TODO: Implement loop iteration
-		// For now, just follow the first branch once
-		const nextNodes = this._getNextNodes(node.id, adj);
-		this.logService.info(`[WorkflowExecution] Loop: over ${loopConfig.items}, following ${nextNodes.length} branches`);
-		return nextNodes;
-	}
+		const evaluationPrompt = [
+			'You are at a decision point in the workflow. Evaluate the following branches and decide which one to follow.',
+			'',
+			'**Branches:**',
+			branchList,
+			'',
+			'Based on the context of all previous steps, which branch should be followed?',
+			'Respond with ONLY the branch number (e.g., "0") followed by a brief reason in the next line.',
+		].join('\n');
 
-	private async _executeParallelNode(
-		executionState: IWorkflowExecutionState,
-		workflow: IStoredWorkflow,
-		node: WorkflowGraphNode,
-		adj: Map<string, { targetId: string; fromPort?: string }[]>,
-		_options?: IWorkflowExecutionOptions,
-	): Promise<string[]> {
-		this.logService.info(`[WorkflowExecution] Executing Parallel node: ${node.id}`);
+		let branchIndex = 0; // default to first branch
+		if (agentId) {
+			try {
+				this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: asking agent to evaluate`);
+				const message = await this.agentChatService.sendMessage(
+					agentId,
+					evaluationPrompt,
+					{ workspaceId: undefined, agentSessionId: undefined },
+					() => { /* noop onDelta */ },
+				);
 
-		// TODO: Execute branches concurrently
-		// For now, return all next nodes (will be executed sequentially)
-		const nextNodes = this._getNextNodes(node.id, adj);
-		this.logService.info(`[WorkflowExecution] Parallel: ${nextNodes.length} branches`);
-		return nextNodes;
+				// Parse agent response for branch index
+				const content = message.content || '';
+				const match = content.match(/\b([0-9]+)\b/);
+				if (match) {
+					branchIndex = parseInt(match[1], 10);
+					if (branchIndex >= branches.length) {
+						branchIndex = 0; // fallback to first branch
+					}
+				}
+			} catch (err) {
+				this.logService.warn(`[WorkflowExecution] IfElse/Switch ${node.id}: condition evaluation failed, using default branch`);
+			}
+		}
+
+		this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: selected branch ${branchIndex} ("${branches[branchIndex]?.label}")`);
+
+		// Store the decision in execution context
+		const nodeState = executionState.nodeStates.get(node.id);
+		if (nodeState) {
+			nodeState.output = `Selected branch ${branchIndex}: ${branches[branchIndex]?.label}`;
+		}
+
+		// Return the selected branch's next nodes
+		const connections = adj.get(node.id) ?? [];
+		// Find the one matching our branch port
+		const matching = connections.filter(c => c.fromPort === `branch-${branchIndex}`);
+		if (matching.length > 0) {
+			return matching.map(c => c.targetId);
+		}
+		// Fallback: if no port-specific match, return all next nodes
+		return connections.map(c => c.targetId);
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -1011,5 +1118,115 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	private _getNextNodes(nodeId: string, adj: Map<string, { targetId: string; fromPort?: string }[]>): string[] {
 		const connections = adj.get(nodeId) ?? [];
 		return connections.map(c => c.targetId);
+	}
+
+	// ─── v6: Variable collection helpers ───────────────────────────────────
+
+	/**
+	 * Scan all agent/prompt/skill/tool nodes in the workflow for `{{variable}}` patterns
+	 * in their `data.prompt`, `data.skillArgs` (Record<string,string>), or
+	 * `data.toolParams` (Record<string,string>) fields. Returns deduplicated
+	 * variable names with optional default values.
+	 */
+	private static _collectTemplateVariables(workflow: IStoredWorkflow): Array<{ name: string; defaultValue?: string }> {
+		const seen = new Set<string>();
+		const vars: Array<{ name: string; defaultValue?: string }> = [];
+		const nodes = workflow.nodes ?? [];
+		const regex = /\{\{(\w+)\}\}/g;
+
+		const scan = (text: string) => {
+			// Reset lastIndex for safety (regex is shared).
+			regex.lastIndex = 0;
+			let match: RegExpExecArray | null;
+			while ((match = regex.exec(text)) !== null) {
+				const name = match[1];
+				if (!seen.has(name)) {
+					seen.add(name);
+					vars.push({ name, defaultValue: '' });
+				}
+			}
+		};
+
+		for (const node of nodes) {
+			const data = node.data ?? {};
+
+			// 1. Scan prompt (string field).
+			if (typeof data.prompt === 'string') {
+				scan(data.prompt);
+			}
+			// 2. Scan skillArgs values (Record<string, string>).
+			if (data.skillArgs && typeof data.skillArgs === 'object') {
+				for (const value of Object.values(data.skillArgs)) {
+					if (typeof value === 'string') {
+						scan(value);
+					}
+				}
+			}
+			// 3. Scan toolParams values (Record<string, string>).
+			if (data.toolParams && typeof data.toolParams === 'object') {
+				for (const value of Object.values(data.toolParams)) {
+					if (typeof value === 'string') {
+						scan(value);
+					}
+				}
+			}
+		}
+
+		return vars;
+	}
+
+	/**
+	 * Substitute variable values into all node `data.prompt`, `data.skillArgs`,
+	 * and `data.toolParams` fields in the workflow graph (in-place mutation).
+	 */
+	private static _substituteVariables(workflow: IStoredWorkflow, values: Record<string, string>): void {
+		const nodes = workflow.nodes;
+		if (!nodes) { return; }
+
+		for (const node of nodes) {
+			const data = node.data as Record<string, unknown>;
+			if (!data) { continue; }
+
+			// Substitute in prompt (string).
+			if (typeof data.prompt === 'string') {
+				data.prompt = WorkflowExecutionService._replaceVariables(data.prompt, values);
+			}
+			// Substitute in skillArgs values (Record<string, string>).
+			if (data.skillArgs && typeof data.skillArgs === 'object') {
+				const sa = data.skillArgs as Record<string, string>;
+				for (const k of Object.keys(sa)) {
+					if (typeof sa[k] === 'string') {
+						sa[k] = WorkflowExecutionService._replaceVariables(sa[k], values);
+					}
+				}
+			}
+			// Substitute in toolParams values (Record<string, string>).
+			if (data.toolParams && typeof data.toolParams === 'object') {
+				const tp = data.toolParams as Record<string, string>;
+				for (const k of Object.keys(tp)) {
+					if (typeof tp[k] === 'string') {
+						tp[k] = WorkflowExecutionService._replaceVariables(tp[k], values);
+					}
+				}
+			}
+		}
+	}
+
+	private static _replaceVariables(template: string, values: Record<string, string>): string {
+		return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => {
+			return values[name] ?? `{{${name}}}`;
+		});
+	}
+
+	// ─── v6: submitWorkflowVariables ────────────────────────────────────────
+
+	async submitWorkflowVariables(executionId: string, values: Record<string, string>): Promise<void> {
+		this.logService.info(`[WorkflowExecution] submitWorkflowVariables: executionId=${executionId}, keys=${Object.keys(values).join(',')}`);
+		const resolver = this._variableResolvers.get(executionId);
+		if (!resolver) {
+			throw new Error(`No pending variable collection for execution: ${executionId}`);
+		}
+		this._variableResolvers.delete(executionId);
+		resolver(values);
 	}
 }

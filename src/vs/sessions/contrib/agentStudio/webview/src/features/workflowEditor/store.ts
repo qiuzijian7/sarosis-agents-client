@@ -9,7 +9,7 @@
  *  node dragging so a drag results in a single undo step.
  *
  *  Node categories: Basic Nodes (prompt, agent, skill, tool, task),
- *  Control Flow (ifElse, switch, condition, loop, parallel, askUser),
+ *  Control Flow (ifElse, switch, askUser),
  *  Layout (group).
  *--------------------------------------------------------------------------------------------*/
 
@@ -199,7 +199,7 @@ function defaultDataForType(type: string): Record<string, unknown> {
 		case 'prompt':
 			return { ...base, label: 'Prompt', prompt: '', variables: {} };
 		case 'agent':
-			return { ...base, label: 'Agent', agentId: '', agentConfig: { providerId: '', modelId: '' } };
+			return { ...base, label: 'Agent', agentId: '', agentConfig: { providerId: '', modelId: '' }, prompt: '{{input}}' };
 		case 'skill':
 			return { ...base, label: 'Skill', skillName: '', skillArgs: {} };
 		case 'tool':
@@ -536,10 +536,13 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 									executorId: step.executorId,
 									taskId: step.taskId,
 									condition: step.condition,
-									branches: step.type === 'condition'
+									branches: step.type === 'condition' || step.type === 'ifElse'
 										? [{ id: uid('branch'), label: 'True', condition: step.condition || '' },
 										   { id: uid('branch'), label: 'False', condition: '' }]
-										: undefined,
+										: step.type === 'switch'
+											? [{ id: uid('branch'), label: 'Case 1', condition: '' },
+											   { id: uid('branch'), label: 'Default', condition: '', isDefault: true }]
+											: undefined,
 									parallelSteps: step.parallelSteps,
 									loopConfig: step.loopConfig,
 								},

@@ -192,6 +192,9 @@ export function TaskCard({
 				context: {
 					taskTitle: task.title,
 					taskDescription: task.description ?? task.title,
+					// v17: propagate the task's worktree so workflow agents + their
+					// subagents all execute inside the same worktree directory.
+					worktreePath: task.worktreePath,
 				},
 			});
 			// Also mark the task as running so it moves to the running column.

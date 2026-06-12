@@ -12,6 +12,8 @@ import { useAgentStore } from '../../../store/useAgentStore';
 import { useProviderStore } from '../../../store/useProviderStore';
 import { useWorkspaceStore } from '../../../store/useWorkspaceStore';
 import { sendRequest } from '../../../bridge/messageClient';
+import { extractVariables, formatVariableBadge } from '../utils/templateUtils';
+import { VariableAutocomplete, buildCandidates } from '../utils/VariableAutocomplete';
 
 // Inline edit styles
 const ieInput: React.CSSProperties = {
@@ -71,11 +73,42 @@ export const AgentNode: React.FC<NodeProps> = React.memo((props) => {
 	const currentProvider = providers.find(p => p.id === config?.providerId);
 	const currentModels = currentProvider?.models ?? [];
 
+	// v13: prompt variable detection (mirrors PromptNode badge/picker UX)
+	const promptText = (data.prompt as string) || '';
+	const variableBadge = formatVariableBadge(promptText);
+	const detectedVariables = extractVariables(promptText);
+
+	// v14: pull workflow graph for upstream node detection
+	const allNodes = useWorkflowEditorStore(s => s.nodes);
+	const allEdges = useWorkflowEditorStore(s => s.edges);
+	const candidates = React.useMemo(() => buildCandidates({
+		nodeData: data,
+		nodeId: props.id,
+		nodes: allNodes as Array<{ id: string; data?: Record<string, unknown> }>,
+		edges: allEdges as Array<{ source: string; target: string }>,
+	}), [data, props.id, allNodes, allEdges]);
+	const promptTextareaRef = React.useRef<HTMLTextAreaElement>(null);
+
 	return (
 		<BaseNode {...props} color="#f97316" handles={{ target: true, source: true }}>
 			<div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
 				<span style={{ fontSize: '14px' }}>🤖</span>
 				<span style={{ fontWeight: 600 }}>Agent</span>
+				{/* Variable count badge (cc-wf-studio parity) */}
+				{variableBadge && (
+					<span
+						title={`Detected variables: ${detectedVariables.join(', ')}`}
+						style={{
+							marginLeft: 'auto',
+							fontSize: '9px', fontWeight: 600,
+							padding: '1px 5px', borderRadius: '8px',
+							background: 'var(--vscode-badge-background, #4d4d4d)',
+							color: 'var(--vscode-badge-foreground, #ffffff)',
+						}}
+					>
+						{variableBadge}
+					</span>
+				)}
 			</div>
 
 			{/* Label (always visible, editable when selected) */}
@@ -117,7 +150,42 @@ export const AgentNode: React.FC<NodeProps> = React.memo((props) => {
 					</select>
 
 					<span style={ieLabel}>Prompt</span>
-					<textarea style={ieTextarea} value={(data.prompt as string) || ''} onChange={e => update('prompt', e.target.value)} placeholder="What should this agent do?" />
+					<div style={{ position: 'relative' }}>
+						<textarea
+							ref={promptTextareaRef}
+							style={ieTextarea}
+							value={promptText}
+							onChange={e => update('prompt', e.target.value)}
+							placeholder="Type {{ for variable autocomplete"
+						/>
+						<VariableAutocomplete
+							targetRef={promptTextareaRef}
+							text={promptText}
+							onChange={next => update('prompt', next)}
+							candidates={candidates}
+							id={`agent-node-ac-${props.id}`}
+						/>
+					</div>
+					{/* v13: detected variable chips (read-only — the actual popup is the VariableAutocomplete above) */}
+					{detectedVariables.length > 0 && (
+						<div style={{ marginTop: '3px', display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+							{detectedVariables.map(name => (
+								<span
+									key={name}
+									style={{
+										fontSize: '9px',
+										padding: '1px 5px',
+										borderRadius: '2px',
+										background: 'var(--vscode-textCodeBlock-background, #1e1e1e)',
+										color: 'var(--vscode-charts-blue, #4fc1ff)',
+										fontFamily: 'var(--vscode-editor-font-family, monospace)',
+									}}
+								>
+									{`{{${name}}}`}
+								</span>
+							))}
+						</div>
+					)}
 
 					<span style={ieLabel}>Provider</span>
 					<select style={ieSelect} value={config?.providerId || ''} onChange={e => update('agentConfig', { ...config, providerId: e.target.value, modelId: '' })}>

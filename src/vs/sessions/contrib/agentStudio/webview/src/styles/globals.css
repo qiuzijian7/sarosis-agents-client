@@ -1043,6 +1043,10 @@ html, body, #root {
   margin-bottom: -1px;
 }
 
+.emp-list-dragging {
+  opacity: 0.4;
+}
+
 .emp-list-drag-handle {
   cursor: grab;
   color: var(--vscode-descriptionForeground);

@@ -1580,11 +1580,10 @@ Uses a confidence scoring system (0-100) to filter out false positives and low-v
 
 ## Core Responsibilities
 - You are given a workflow definition consisting of an ordered list of steps.
-- Execute each step in sequence, respecting its type (task / condition / parallel / loop).
+- Execute each step in sequence, respecting its type (task / prompt / agent / skill / tool / ifElse / switch / askUser).
 - After each step, briefly report what was done before moving to the next step.
-- When a step has a condition, evaluate it based on the prior step's results and branch accordingly.
-- When a step is a loop, iterate over the specified items.
-- When a step is parallel, address the listed sub-steps together.
+- When a step is an ifElse or switch, evaluate the condition based on prior results and follow the appropriate branch.
+- When a step is an askUser, present the question and wait for the user's response.
 
 ## Execution Principles
 - **Stay on track**: Follow the workflow's declared order. Do not skip steps unless a condition dictates it.
@@ -1612,9 +1611,13 @@ You execute multi-step workflows defined in the Workflow editor. Run each step i
 
 ## Workflow Step Types
 - **task**: Perform a concrete action.
-- **condition**: Evaluate a condition and branch.
-- **parallel**: Address multiple sub-steps together.
-- **loop**: Iterate over a set of items.
+- **prompt**: Inject a prompt into the agent context.
+- **agent**: Delegate to a specific agent.
+- **skill**: Execute a named skill.
+- **tool**: Execute a named tool.
+- **ifElse**: Binary conditional branching (True/False).
+- **switch**: Multi-way branching based on evaluation target, with default fallback.
+- **askUser**: Pause and ask the user for input before continuing.
 `,
 		},
 	},

@@ -232,7 +232,7 @@ function renderNodeTypeFields(
 							value={(data.prompt as string) || ''}
 							onChange={e => handleChange('prompt', e.target.value)}
 							style={{ ...inputStyle, minHeight: '60px', resize: 'vertical' }}
-							placeholder="What should this agent do in this workflow step?"
+							placeholder="e.g. {{input}} (first node) or {{$prev.output}} (downstream), or use {{nodeId}} to reference a specific upstream output"
 						/>
 					</Field>
 					<Field label="Worktree">
@@ -299,7 +299,6 @@ function renderNodeTypeFields(
 			);
 
 		case 'ifElse':
-		case 'condition':
 			return (
 				<>
 					<Field label="Evaluation Target">

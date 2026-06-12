@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { type NodeProps } from '@xyflow/react';
 import { BaseNode } from './BaseNode';
 import { useWorkflowEditorStore } from '../store';
 import { sendRequest } from '../../../bridge/messageClient';
+import { extractVariables, formatVariableBadge } from '../utils/templateUtils';
+import { VariableAutocomplete, buildCandidates } from '../utils/VariableAutocomplete';
 
 const ieInput: React.CSSProperties = {
 	width: '100%', padding: '2px 5px', fontSize: '11px',
@@ -28,12 +30,40 @@ export const SkillNode: React.FC<NodeProps> = React.memo((props) => {
 
 	const skillName = (data.skillName as string) || '';
 	const skillId = (data.skillId as string) || '';
+	const promptText = (data.prompt as string) || '';
+	const variableBadge = formatVariableBadge(promptText);
+	const detectedVariables = extractVariables(promptText);
+
+	// v15: autocomplete candidates (context + workflow + static + upstream)
+	const allNodes = useWorkflowEditorStore(s => s.nodes);
+	const allEdges = useWorkflowEditorStore(s => s.edges);
+	const candidates = useMemo(() => buildCandidates({
+		nodeData: data,
+		nodeId: props.id,
+		nodes: allNodes as Array<{ id: string; data?: Record<string, unknown> }>,
+		edges: allEdges as Array<{ source: string; target: string }>,
+	}), [data, props.id, allNodes, allEdges]);
+	const promptRef = useRef<HTMLTextAreaElement>(null);
 
 	return (
 		<BaseNode {...props} color="#eab308" handles={{ target: true, source: true }}>
 			<div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
 				<span style={{ fontSize: '14px' }}>⚡</span>
 				<span style={{ fontWeight: 600 }}>Skill</span>
+				{variableBadge && (
+					<span
+						title={`Detected variables: ${detectedVariables.join(', ')}`}
+						style={{
+							marginLeft: 'auto',
+							fontSize: '9px', fontWeight: 600,
+							padding: '1px 5px', borderRadius: '8px',
+							background: 'var(--vscode-badge-background, #4d4d4d)',
+							color: 'var(--vscode-badge-foreground, #ffffff)',
+						}}
+					>
+						{variableBadge}
+					</span>
+				)}
 			</div>
 			{selected ? (
 				<>
@@ -48,7 +78,22 @@ export const SkillNode: React.FC<NodeProps> = React.memo((props) => {
 						{skills.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
 					</select>
 					<span style={ieLabel}>Input</span>
-					<textarea style={ieTextarea} value={(data.prompt as string) || ''} onChange={e => updateNodeData(props.id, { prompt: e.target.value })} placeholder="Skill input (optional)" />
+					<div style={{ position: 'relative' }}>
+						<textarea
+							ref={promptRef}
+							style={ieTextarea}
+							value={promptText}
+							onChange={e => updateNodeData(props.id, { prompt: e.target.value })}
+							placeholder="Type {{ for variable autocomplete (optional)"
+						/>
+						<VariableAutocomplete
+							targetRef={promptRef}
+							text={promptText}
+							onChange={next => updateNodeData(props.id, { prompt: next })}
+							candidates={candidates}
+							id={`skill-node-ac-${props.id}`}
+						/>
+					</div>
 				</>
 			) : (
 				<>

@@ -88,6 +88,21 @@ export interface IAskUserOption {
 }
 
 /**
+ * v6: a pending variable collection shown as an interactive card in the
+ * workflow owner agent's chat before execution starts. The user fills in
+ * text values for each template variable and submits.
+ */
+export interface LiveCollectVariable {
+	id: string;              // executionId (one per execution)
+	executionId: string;
+	variables: Array<{ name: string; defaultValue?: string }>;
+	/** Currently entered values keyed by variable name. */
+	values: Record<string, string>;
+	status: 'pending' | 'submitted' | 'skipped';
+	createdAt: number;
+}
+
+/**
  * v5b: a single entry in the execution timeline panel. Captured from the
  * trace event stream (subagent_start / delta / subagent_end / ask_user /
  * ask_user_end / execution_end). Cleared on page reload.
@@ -100,7 +115,7 @@ export interface LiveWorkflowEvent {
 	/** Wall-clock time of the event (Date.now() at capture time). */
 	timestamp: number;
 	/** Event kind (mirrors IWorkflowTraceEvent['kind']). */
-	kind: 'subagent_start' | 'delta' | 'subagent_end' | 'ask_user' | 'ask_user_end' | 'execution_end' | 'breakpoint_hit';
+	kind: 'subagent_start' | 'delta' | 'subagent_end' | 'ask_user' | 'ask_user_end' | 'collect_variables' | 'collect_variables_end' | 'execution_end' | 'breakpoint_hit';
 	nodeId: string;
 	nodeName?: string;
 	nodeType?: string;
@@ -380,6 +395,14 @@ interface ChatState {
 	liveAskUsers: Record<string, LiveWorkflowAskUser[]>;
 
 	/**
+	 * v6: pending variable collection card shown before workflow execution.
+	 * Keyed by sessionId (the workflow owner agent's session).
+	 */
+	liveCollectVariables: Record<string, LiveCollectVariable[]>;
+
+	/**
+
+	/**
 	 * v5b: time-ordered log of workflow events for the session timeline panel.
 	 * Capped at MAX_TIMELINE_EVENTS to avoid unbounded growth; oldest events
 	 * are dropped first.
@@ -387,7 +410,7 @@ interface ChatState {
 	liveWorkflowEvents: Record<string, LiveWorkflowEvent[]>;
 
 	// Actions
-	setActiveAgent: (agentId: string) => void;
+	setActiveAgent: (agentId: string, opts?: { autoActivateLatestSession?: boolean }) => void;
 	loadHistory: (agentId: string) => Promise<void>;
 	/** Load history for a specific agentSessionId (used by session switching) */
 	loadHistoryForSession: (agentId: string, agentSessionId?: string) => Promise<void>;
@@ -493,6 +516,19 @@ interface ChatState {
 	submitAskUser: (sessionId: string, askUserId: string, selection: string | string[]) => Promise<void>;
 	/** Mark a pending AskUser as cancelled or expired. */
 	cancelAskUser: (sessionId: string, askUserId: string, status: 'cancelled' | 'expired') => void;
+
+	// v6: Variable collection methods
+	/** Register a pending variable collection for the given session. */
+	startCollectVariables: (
+		sessionId: string,
+		collect: Omit<LiveCollectVariable, 'id' | 'values' | 'status' | 'createdAt'>,
+	) => void;
+	/** Update a variable's value in the collection form (pure UI). */
+	updateCollectVariableValue: (sessionId: string, collectId: string, varName: string, value: string) => void;
+	/** Submit variable values (sends `workflow.submitVariables`). */
+	submitCollectVariables: (sessionId: string, collectId: string, values: Record<string, string>) => Promise<void>;
+	/** Mark a variable collection as skipped. */
+	cancelCollectVariables: (sessionId: string, collectId: string) => void;
 
 	// v5b: Execution timeline
 	/**
@@ -643,16 +679,35 @@ export const useChatStore = create<ChatState>((set, get) => {
 		// Prefer the host-assembled message (hostMessage) as the authoritative source
 		// because it accumulates ALL deltas server-side without any risk of missing
 		// chunks due to RAF cancellation, background-stream switching, or other
-		// webview-side timing issues. Fall back to the webview-side buffers only
-		// when the host didn't provide the field.
-		// Additionally, as a defensive measure, always pick the LONGER of the two
-		// sources — this guards against any scenario where the webview buffer is
-		// truncated (e.g. switch-related timing) or the hostMessage is unexpectedly
-		// incomplete (e.g. error mid-stream where host still sends partial content).
+		// webview-side timing issues.
+		//
+		// Content resolution rules:
+		// 1. When one source has content and the other doesn't → use the one with content.
+		// 2. When both have content and they represent the SAME response
+		//    (one is a prefix of the other) → pick the LONGER one (defense against
+		//    webview buffer truncation or partial host messages).
+		// 3. When both have content but they're DIFFERENT responses
+		//    (neither is a prefix of the other) → TRUST the HOST message.
+		//    This guards against multi-turn agent loops where the webview buffer
+		//    accumulates raw text from ALL turns while the host message carries
+		//    only the LAST turn's sanitized content (see agentChatService::assistant_turn).
 		const hostText = (hostMessage?.content as string) || '';
 		const hostThinking = (hostMessage?.thinking as string) || '';
-		const textContent = hostText.length >= finalState.textBuffer.length ? hostText : finalState.textBuffer;
-		const thinkingContent = hostThinking.length >= finalState.thinkingBuffer.length ? hostThinking : finalState.thinkingBuffer;
+
+		// Detect whether both sources represent the same model response
+		const sameTextResponse = !hostText || !finalState.textBuffer ||
+			finalState.textBuffer.startsWith(hostText) ||
+			hostText.startsWith(finalState.textBuffer);
+		const sameThinkingResponse = !hostThinking || !finalState.thinkingBuffer ||
+			finalState.thinkingBuffer.startsWith(hostThinking) ||
+			hostThinking.startsWith(finalState.thinkingBuffer);
+
+		const textContent = sameTextResponse
+			? (hostText.length >= finalState.textBuffer.length ? hostText : finalState.textBuffer)
+			: hostText;
+		const thinkingContent = sameThinkingResponse
+			? (hostThinking.length >= finalState.thinkingBuffer.length ? hostThinking : finalState.thinkingBuffer)
+			: hostThinking;
 
 		console.log('[ChatStore] Building assistant message:', {
 			textContentLen: textContent.length,
@@ -666,16 +721,27 @@ export const useChatStore = create<ChatState>((set, get) => {
 			bufferThinkingLen: finalState.thinkingBuffer.length,
 		});
 
-		// DEBUG: Detect content mismatch between streaming buffer and host message
-		if (hostText && finalState.textBuffer && hostText !== finalState.textBuffer) {
-			console.warn('[ChatStore] ⚠️ CONTENT MISMATCH between stream buffer and host message!', {
+		// DEBUG: Detect content mismatch between streaming buffer and host message.
+		// When they don't share a common prefix, this indicates a multi-turn agent
+		// loop where the buffer accumulated old-turn text while the host carries
+		// the final turn's sanitized content.
+		if (hostText && finalState.textBuffer && !sameTextResponse) {
+			console.warn('[ChatStore] ⚠️ CROSS-TURN CONTENT MISMATCH — webview buffer carries different model turn than host message!', {
 				bufferFirst100: finalState.textBuffer.substring(0, 100),
 				hostFirst100: hostText.substring(0, 100),
 				bufferLast100: finalState.textBuffer.substring(Math.max(0, finalState.textBuffer.length - 100)),
 				hostLast100: hostText.substring(Math.max(0, hostText.length - 100)),
-				// Check heading normalization difference
-				bufferHeadings: (finalState.textBuffer.match(/^#{1,6}.{0,30}/gm) || []).slice(0, 5),
-				hostHeadings: (hostText.match(/^#{1,6}.{0,30}/gm) || []).slice(0, 5),
+				bufferLen: finalState.textBuffer.length,
+				hostLen: hostText.length,
+				action: 'using host (authoritative sanitized content)',
+			});
+		} else if (hostText && finalState.textBuffer && hostText !== finalState.textBuffer) {
+			console.warn('[ChatStore] ⚠️ SAME-TURN CONTENT MISMATCH — lengths differ but share prefix', {
+				bufferLen: finalState.textBuffer.length,
+				hostLen: hostText.length,
+				bufferFirst80: finalState.textBuffer.substring(0, 80),
+				hostFirst80: hostText.substring(0, 80),
+				action: textContent === hostText ? 'using host (longer)' : 'using buffer (longer)',
 			});
 		}
 
@@ -779,11 +845,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 		chatMode: 'craft',
 		liveWorkflowExecutions: {},
 		liveAskUsers: {},
+		liveCollectVariables: {},
 		liveWorkflowEvents: {},
 
-		setActiveAgent: (agentId: string) => {
+		setActiveAgent: (agentId: string, opts?: { autoActivateLatestSession?: boolean }) => {
 			const current = get().activeAgentId;
-			console.log(`[ChatStore] setActiveAgent: ${current} → ${agentId}`);
+			console.log(`[ChatStore] setActiveAgent: ${current} → ${agentId}`, opts);
 			if (current === agentId) {
 				return;
 			}
@@ -823,27 +890,26 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// Fork mode: directly load fork session
 				get().loadHistoryForSession(agentId, forkSessionId);
 			} else {
-				// Root mode: load sessions list ONLY (for sidebar display).
-				// 🔒 修复（2026-06-05）：之前会自动把 `activeAgentSessionId` 设到
-				// sessions[0]（最近一条）并 loadHistoryForSession，导致用户切到
-				// agent 那一刻就隐式"恢复"了上一次几百轮的旧 session，再发消息
-				// 时 sendMessage 看到 activeAgentSessionId 非空就直接复用，整段历史
-				// 被回灌给模型（log 里 305 条跨主题/跨 worktree 串台即此故障——
-				// 之前修的 sendMessage 兜底分支根本走不到，因为 activeAgentSessionId
-				// 早被这里自动激活了）。
-				//
-				// 新行为：只把 sessions 列表填到侧边栏，**不自动激活最近一条**。
+				// Root mode: load sessions list (for sidebar display).
+				// 🔒 修复（2026-06-05）：默认不自动激活最近一条 session，
 				// activeAgentSessionId 保持 null，sendMessage 会走 `agentSession.create`
 				// 开全新空 session。要恢复旧会话必须从历史列表显式点选。
+				//
+				// ✅ 2026-06-12 增强：新增 `autoActivateLatestSession` 选项，
+				// 用于 workflow 编辑器打开时自动恢复对应 agent 的最近 session。
+				const autoActivate = opts?.autoActivateLatestSession === true;
 				sendRequest<{ agentId: string }, AgentSessionInfo[]>(
 					'agentSession.list',
 					{ agentId },
 				).then(sessions => {
 					if (get().activeAgentId !== agentId) { return; }
 					set({ agentSessions: sessions || [] });
-					// Intentionally do NOT auto-activate sessions[0]. Leave
-					// activeAgentSessionId === null so the next sendMessage opens
-					// a fresh empty session with no historical context.
+					if (autoActivate && sessions && sessions.length > 0) {
+						// Auto-activate the most recent session
+						const latest = sessions[0];
+						console.log(`[ChatStore] auto-activating latest session: ${latest.id}`);
+						get().switchAgentSession(latest.id);
+					}
 				}).catch(err => {
 					console.error('[ChatStore] Failed to load agent sessions:', err);
 				});
@@ -1960,12 +2026,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// Only append if the active session matches; if user switched away
 				// during the run, skip appending to avoid polluting another session.
 				if (state.activeAgentSessionId !== sessionId) {
-					return { liveWorkflowExecutions: nextLive, liveAskUsers: nextAsk, liveWorkflowEvents: nextEvents };
+					return { liveWorkflowExecutions: nextLive, liveAskUsers: nextAsk, liveCollectVariables: state.liveCollectVariables, liveWorkflowEvents: nextEvents };
 				}
 				return {
 					messages: [...state.messages, assistantMessage],
 					liveWorkflowExecutions: nextLive,
 					liveAskUsers: nextAsk,
+					liveCollectVariables: state.liveCollectVariables,
 					liveWorkflowEvents: nextEvents,
 				};
 			});
@@ -1980,11 +2047,13 @@ export const useChatStore = create<ChatState>((set, get) => {
 				if (!state.liveWorkflowExecutions[sessionId]) { return state; }
 				const next = { ...state.liveWorkflowExecutions };
 				const nextAsk = { ...state.liveAskUsers };
+				const nextCollect = { ...state.liveCollectVariables };
 				const nextEvents = { ...state.liveWorkflowEvents };
 				delete next[sessionId];
 				delete nextAsk[sessionId];
+				delete nextCollect[sessionId];
 				delete nextEvents[sessionId];
-				return { liveWorkflowExecutions: next, liveAskUsers: nextAsk, liveWorkflowEvents: nextEvents };
+				return { liveWorkflowExecutions: next, liveAskUsers: nextAsk, liveCollectVariables: nextCollect, liveWorkflowEvents: nextEvents };
 			});
 		},
 
@@ -2117,6 +2186,97 @@ export const useChatStore = create<ChatState>((set, get) => {
 					? { ...a, status, answeredAt: Date.now() }
 					: a);
 				return { liveAskUsers: { ...state.liveAskUsers, [sessionId]: next } };
+			});
+		},
+
+		// ── v6: Variable collection actions ────────────────────────────
+
+		startCollectVariables: (sessionId, collect) => {
+			const id = collect.executionId;
+			console.log(`[ChatStore] startCollectVariables: id=${id} sessionId=${sessionId} vars=${collect.variables.map(v => v.name).join(',')}`);
+			// Init values map with empty strings
+			const values: Record<string, string> = {};
+			for (const v of collect.variables) {
+				values[v.name] = v.defaultValue ?? '';
+			}
+			set(state => {
+				const existing = state.liveCollectVariables[sessionId] ?? [];
+				if (existing.some(c => c.id === id)) { return state; }
+				const entry: LiveCollectVariable = {
+					...collect,
+					id,
+					values,
+					status: 'pending',
+					createdAt: Date.now(),
+				};
+				return {
+					liveCollectVariables: { ...state.liveCollectVariables, [sessionId]: [...existing, entry] },
+				};
+			});
+		},
+
+		updateCollectVariableValue: (sessionId, collectId, varName, value) => {
+			set(state => {
+				const list = state.liveCollectVariables[sessionId];
+				if (!list) { return state; }
+				const next = list.map(c =>
+					c.id === collectId && c.status === 'pending'
+						? { ...c, values: { ...c.values, [varName]: value } }
+						: c
+				);
+				return { liveCollectVariables: { ...state.liveCollectVariables, [sessionId]: next } };
+			});
+		},
+
+		submitCollectVariables: async (sessionId, collectId, values) => {
+			// Optimistic update
+			set(state => {
+				const list = state.liveCollectVariables[sessionId];
+				if (!list) { return state; }
+				const next = list.map(c =>
+					c.id === collectId && c.status === 'pending'
+						? { ...c, status: 'submitted' as const, values }
+						: c
+				);
+				return { liveCollectVariables: { ...state.liveCollectVariables, [sessionId]: next } };
+			});
+
+			const entry = get().liveCollectVariables[sessionId]?.find(c => c.id === collectId);
+			if (!entry) {
+				console.warn(`[ChatStore] submitCollectVariables: entry ${collectId} not found`);
+				return;
+			}
+
+			try {
+				await sendRequest('workflow.submitVariables', {
+					executionId: entry.executionId,
+					values,
+				});
+				console.log(`[ChatStore] submitCollectVariables: sent workflow.submitVariables for ${collectId}`);
+			} catch (err) {
+				console.error(`[ChatStore] submitCollectVariables: workflow.submitVariables failed for ${collectId}`, err);
+				// Rollback
+				set(state => {
+					const list = state.liveCollectVariables[sessionId];
+					if (!list) { return state; }
+					const next = list.map(c =>
+						c.id === collectId ? { ...c, status: 'pending' as const } : c
+					);
+					return { liveCollectVariables: { ...state.liveCollectVariables, [sessionId]: next } };
+				});
+			}
+		},
+
+		cancelCollectVariables: (sessionId, collectId) => {
+			set(state => {
+				const list = state.liveCollectVariables[sessionId];
+				if (!list) { return state; }
+				const next = list.map(c =>
+					c.id === collectId && c.status === 'pending'
+						? { ...c, status: 'skipped' as const }
+						: c
+				);
+				return { liveCollectVariables: { ...state.liveCollectVariables, [sessionId]: next } };
 			});
 		},
 	};

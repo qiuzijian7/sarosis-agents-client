@@ -48,6 +48,20 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// Agents list (to look up the workflow's bound agent)
 	const agents = useAgentStore(s => s.agents);
 
+	// v18: When a workflow is loaded, auto-switch the chat panel to its bound agent
+	// and restore the agent's most recent session.
+	const autoSwitchChatToWorkflowAgent = useCallback(async (workflowAgentId: string) => {
+		if (!workflowAgentId) { return; }
+		try {
+			const mod = await import('../../store/useChatStore');
+			const chatStore = mod.useChatStore.getState();
+			console.log(`[WorkflowEditor] auto-switching chat to workflow agent: ${workflowAgentId}`);
+			chatStore.setActiveAgent(workflowAgentId, { autoActivateLatestSession: true });
+		} catch (err) {
+			console.warn('[WorkflowEditor] failed to auto-switch chat panel:', err);
+		}
+	}, []);
+
 	// Load initial data from the host-injected __AGENT_STUDIO_INITIAL_DATA__
 	useEffect(() => {
 		if (loaded) { return; }
@@ -57,8 +71,12 @@ export const WorkflowEditorPanel: React.FC = () => {
 		if (initialData?.type === 'workflow' && initialData.workflow) {
 			loadWorkflow(initialData.workflow);
 			setLoaded(true);
+			// v18: auto-switch chat panel to workflow's bound agent
+			if (initialData.workflow.agentId) {
+				autoSwitchChatToWorkflowAgent(initialData.workflow.agentId);
+			}
 		}
-	}, [loaded, loadWorkflow]);
+	}, [loaded, loadWorkflow, autoSwitchChatToWorkflowAgent]);
 
 	// Sync default agent config from the workflow's bound agent.
 	// When a new agent node is created, it inherits this agent's provider/model.
@@ -97,12 +115,14 @@ export const WorkflowEditorPanel: React.FC = () => {
 							modelId: wfAgent.modelId || (typeof wfAgent.model === 'string' ? wfAgent.model as string : ''),
 						});
 					}
+					// v18: also auto-switch chat panel when workflow state is applied
+					autoSwitchChatToWorkflowAgent(detail.workflow.agentId);
 				}
 			}
 		};
 		window.addEventListener('agentStudio:workflow-state-applied', handler);
 		return () => window.removeEventListener('agentStudio:workflow-state-applied', handler);
-	}, [loadWorkflow, agents, setDefaultAgentConfig]);
+	}, [loadWorkflow, agents, setDefaultAgentConfig, autoSwitchChatToWorkflowAgent]);
 
 	// Keyboard shortcut: Ctrl+S to save
 	useEffect(() => {
@@ -401,7 +421,22 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 				{/* Main area */}
 				<div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
-					<NodePalette collapsed={paletteCollapsed} onToggle={() => setPaletteCollapsed(!paletteCollapsed)} />
+					<NodePalette
+					collapsed={paletteCollapsed}
+					onToggle={() => setPaletteCollapsed(!paletteCollapsed)}
+					activeWorkflowId={workflowId}
+					onSelectWorkflow={async (wfId) => {
+						try {
+							const result = await sendRequest('workflow.open', { workflowId: wfId }) as { success: boolean; workflow?: IStoredWorkflow } | null;
+							if (result?.success && result.workflow) {
+								loadWorkflow(result.workflow);
+								setLoaded(true);
+							}
+						} catch (err) {
+							console.warn('[WorkflowEditor] failed to open workflow:', err);
+						}
+					}}
+				/>
 					<div style={{ flex: 1, position: 'relative' }}>
 						<WorkflowCanvas />
 					</div>

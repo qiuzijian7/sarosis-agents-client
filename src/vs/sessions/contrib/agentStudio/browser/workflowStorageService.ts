@@ -202,4 +202,18 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 			this._logService.warn('[WorkflowStorage] delete failed', uri.toString(), err);
 		}
 	}
+
+	/**
+	 * v19: Persist workflow display order.
+	 * Stores ordered IDs in `.sarosisworkspace/workflows-order.json`.
+	 */
+	async reorderWorkflows(orderedIds: string[], workspaceId?: string): Promise<void> {
+		const dir = await this._resolveWorkflowsDir(workspaceId);
+		if (!dir) { return; }
+		// Write order file in parent directory (.sarosisworkspace/)
+		const orderUri = URI.joinPath(dir, '..', 'workflows-order.json');
+		const data = JSON.stringify({ order: orderedIds, updatedAt: Date.now() }, null, 2);
+		await this._fileService.writeFile(orderUri, VSBuffer.fromString(data));
+		this._logService.info(`[WorkflowStorage] Reorder saved: ${orderedIds.length} workflows`);
+	}
 }

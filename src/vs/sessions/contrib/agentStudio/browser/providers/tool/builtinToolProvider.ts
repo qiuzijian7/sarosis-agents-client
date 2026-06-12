@@ -124,6 +124,27 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private readonly _onDidChangeTools = this._register(new Emitter<void>());
 	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
+	// v17: worktree path inherited from the parent agent's execution context.
+	// Set by `setParentWorktreePath()` before each turn; cleared on turn end.
+	// Used by the `delegate_task` tool to propagate the worktree to sub-agents.
+	private _parentWorktreePath: string | undefined;
+
+	/**
+	 * v17: set the worktree path inherited from the parent agent's request.
+	 * This is consulted by the `delegate_task` tool when dispatching
+	 * sub-agents so the entire subagent tree operates in the same worktree.
+	 */
+	setParentWorktreePath(path: string | undefined): void {
+		this._parentWorktreePath = path;
+	}
+
+	/**
+	 * v17: read the currently-set parent worktree (used by delegate_task).
+	 */
+	getParentWorktreePath(): string | undefined {
+		return this._parentWorktreePath;
+	}
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
@@ -1145,6 +1166,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('delegate_task: either "task" or "tasks" must be provided');
 				}
 
+				// v17: inherit the parent agent's worktree so the subagent tree
+				// operates in the same working directory.
+				const inheritedWorktree = this.getParentWorktreePath();
+
 				// Build executeFn that delegates to AgentOS
 				const executeFn = (request: IAgentTurnRequest, _budget: IterationBudget): AsyncIterable<IChatStreamDelta> => {
 					return this.agentOS.executeAgentTurn(request);
@@ -1157,7 +1182,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 							agentId ?? 'unknown',
 							task,
 							executeFn,
-							{ type: SubAgentType.General },
+							{ type: SubAgentType.General, worktreePath: inheritedWorktree },
 						);
 						if (result.success) {
 							return [{ type: 'text', text: result.output ?? '(no output)' }];
@@ -1166,10 +1191,17 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 						}
 					} else {
 						// Batch tasks mode — use dispatchParallelExplore()
+						// v17: per-task worktree inherited from the parent agent.
+						const perTaskOptions = inheritedWorktree
+							? tasks!.map(() => ({ worktreePath: inheritedWorktree }))
+							: undefined;
 						const results = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatchParallelExplore(
 							agentId ?? 'unknown',
 							tasks!,
 							executeFn,
+							undefined, // context
+							perTaskOptions as Array<{ priority?: 'low' | 'medium' | 'high'; maxIterations?: number; timeout?: number }> | undefined,
+							undefined, // eventSink
 						);
 						const lines = results.map((r: SubAgentResult, i: number) => [
 							`Task ${i + 1}: ${r.success ? 'SUCCESS' : 'FAILED'}`,
@@ -2026,26 +2058,27 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			outputPortPattern: 'branch-{index}',
 		},
 		{
-			type: 'condition', label: 'Condition', category: 'controlFlow',
-			description: 'Branch based on a condition expression. ' +
+			type: 'ifElse', label: 'If/Else', category: 'controlFlow',
+			description: 'Binary conditional branching. ' +
 				'Output port IDs: "branch-0" (True) and "branch-1" (False). Connections from this node MUST specify fromPort.',
 			dataSchema: {
 				label: 'string',
-				condition: 'string',
-				branches: '[{ id: string, label: string, condition: string }] (2 branches)',
+				evaluationTarget: 'string',
+				branches: '[{ id: string, label: string, condition: string }] (2 branches: True/False)',
 			},
 			outputPorts: ['branch-0', 'branch-1'],
 		},
-			{
-				type: 'loop', label: 'Loop', category: 'controlFlow',
-				description: 'Repeat an operation over a collection.',
-				dataSchema: { label: 'string', loopConfig: '{ items: string, itemVariable: string, maxIterations: number }' },
+		{
+			type: 'switch', label: 'Switch', category: 'controlFlow',
+			description: 'Multi-way branching based on evaluation target. ' +
+				'Output port IDs: "branch-0", "branch-1", ..., "branch-{N-1}" (one per branch, last one is Default). Connections from this node MUST specify fromPort.',
+			dataSchema: {
+				label: 'string',
+				evaluationTarget: 'string',
+				branches: '[{ id: string, label: string, condition: string, isDefault?: boolean }] (N branches, last one is Default)',
 			},
-			{
-				type: 'parallel', label: 'Parallel', category: 'controlFlow',
-				description: 'Execute multiple branches in parallel.',
-				dataSchema: { label: 'string', parallelSteps: 'string[]' },
-			},
+			outputPortPattern: 'branch-{index}',
+		},
 			{
 			type: 'askUser', label: 'Ask User', category: 'controlFlow',
 			description: 'Present a question and branch based on user selection. ' +
@@ -2400,6 +2433,57 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 						}
 					} catch {
 						// Non-fatal: if we can't resolve the agent, proceed with whatever the AI provided
+					}
+
+					// v6: Auto-default prompt templates for AI-generated workflow nodes.
+					//   - All nodes with a `data.prompt` field get a placeholder when empty.
+					//   - The FIRST prompt-bearing node (in BFS order from Start) defaults to `{{input}}`.
+					//   - All other prompt-bearing nodes default to `{{$prev.output}}` (most recent upstream output).
+					try {
+						const PROMPT_NODE_TYPES = new Set(['prompt', 'agent']);
+						const promptBearing: string[] = [];  // node ids in BFS order
+						const seen = new Set<string>(['start']);
+						const queue: string[] = ['start'];
+						// Build adjacency list once for the BFS
+						const adj = new Map<string, string[]>();
+						for (const c of connections as Array<{ from: string; to: string }>) {
+							const list = adj.get(c.from) ?? [];
+							list.push(c.to);
+							adj.set(c.from, list);
+						}
+						while (queue.length > 0) {
+							const cur = queue.shift()!;
+							for (const next of adj.get(cur) ?? []) {
+								if (seen.has(next)) { continue; }
+								seen.add(next);
+								const nn = nodes.find(n => n.id === next);
+								if (nn && PROMPT_NODE_TYPES.has(nn.type as string)) {
+									promptBearing.push(next);
+								}
+								queue.push(next);
+							}
+						}
+
+						for (let i = 0; i < promptBearing.length; i++) {
+							const nid = promptBearing[i];
+							const node = nodes.find(n => n.id === nid);
+							if (!node) { continue; }
+							const data = (node.data as Record<string, unknown>) || {};
+							const currentPrompt = (data.prompt as string | undefined) ?? '';
+							if (currentPrompt.trim().length > 0) { continue; }  // AI explicitly set it
+							const defaultTpl = i === 0
+								? '{{input}}'                       // first prompt-bearing node
+								: '{{$prev.output}}';               // all others
+							data.prompt = defaultTpl;
+							(node as Record<string, unknown>).data = data;
+							fixups.push(
+								`Node "${nid}" (${node.type}): auto-set prompt="${defaultTpl}" ` +
+								`(${i === 0 ? 'first prompt node → {{input}}' : 'downstream → {{$prev.output}}'})`,
+							);
+						}
+					} catch (err) {
+						// Non-fatal — proceed without the prompt defaults.
+						this.logService.warn('[BuiltinTools] workflow_apply: prompt template defaulting failed', err);
 					}
 
 					// Build the patch

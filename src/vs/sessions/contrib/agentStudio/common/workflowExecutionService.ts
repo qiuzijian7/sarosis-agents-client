@@ -136,6 +136,12 @@ export interface IWorkflowExecutionService {
 	 * Get all workflow-level breakpoints (persisted).
 	 */
 	getWorkflowBreakpoints(workflowId: string): Promise<string[]>;
+
+	/**
+	 * v6: Submit variable values collected before execution starts.
+	 * Called by the webview after the user fills in the variable collection card.
+	 */
+	submitWorkflowVariables(executionId: string, values: Record<string, string>): Promise<void>;
 }
 
 export interface IWorkflowExecutionOptions {
@@ -169,6 +175,12 @@ export type IWorkflowTraceEvent =
 	/** AskUser node has been answered (or cancelled) — webview flips card to "answered" state. */
 	| { kind: 'ask_user_end'; executionId: string; sessionId: string; nodeId: string;
 		status: 'answered' | 'cancelled' | 'expired'; selection?: string | string[] }
+	/** v6: Workflow needs variable values before execution. Webview renders text inputs for each. */
+	| { kind: 'collect_variables'; executionId: string; sessionId: string;
+		variables: Array<{ name: string; defaultValue?: string }> }
+	/** v6: Variable collection resolved — webview flips card to "submitted" state. */
+	| { kind: 'collect_variables_end'; executionId: string; sessionId: string;
+		status: 'submitted' | 'skipped' }
 	/** Whole execution finished — owner chat should commit final assistant message. */
 	| { kind: 'execution_end'; executionId: string; sessionId: string; status: 'completed' | 'failed' | 'cancelled' };
 

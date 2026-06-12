@@ -67,9 +67,6 @@ export const enum WorkflowNodeType {
 	Start = 'start',
 	End = 'end',
 	Task = 'task',
-	Condition = 'condition',
-	Parallel = 'parallel',
-	Loop = 'loop',
 	// New types — cc-wf-studio inspired
 	Prompt = 'prompt',
 	Agent = 'agent',
@@ -91,10 +88,7 @@ export interface WorkflowNodePosition {
 export interface WorkflowNodeData {
 	label?: string;
 	taskId?: string;
-	condition?: string;
 	branches?: BranchDef[];
-	parallelSteps?: string[];
-	loopConfig?: { items: string; itemVariable: string; maxIterations?: number };
 	executorId?: string;
 	// Prompt node
 	prompt?: string;
@@ -124,6 +118,7 @@ export interface BranchDef {
 	id: string;
 	label: string;
 	condition: string;
+	isDefault?: boolean;
 }
 
 export interface AskUserOption {
@@ -187,6 +182,9 @@ export interface IWorkflowStorageService {
 
 	/** 更新工作流（合并字段）并写回文件。 */
 	updateWorkflow(id: string, patch: Partial<IStoredWorkflow>, workspaceId?: string): Promise<IStoredWorkflow>;
+
+	/** v19: 重排工作流顺序并持久化。 */
+	reorderWorkflows(orderedIds: string[], workspaceId?: string): Promise<void>;
 
 	/** 删除工作流文件。 */
 	deleteWorkflow(id: string, workspaceId?: string): Promise<void>;

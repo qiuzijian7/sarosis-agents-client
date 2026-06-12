@@ -15,7 +15,7 @@
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useChatStore, type ChatMessage, type LiveWorkflowExecution, type LiveWorkflowSubAgent, type LiveWorkflowAskUser } from '../../store/useChatStore';
+import { useChatStore, type ChatMessage, type LiveWorkflowExecution, type LiveWorkflowSubAgent, type LiveWorkflowAskUser, type LiveCollectVariable } from '../../store/useChatStore';
 import { useAgentStore, type Agent } from '../../store/useAgentStore';
 import { useProviderStore } from '../../store/useProviderStore';
 import { sendRequest } from '../../bridge/messageClient';
@@ -210,16 +210,20 @@ interface LiveWorkflowTraceViewProps {
 	execution: LiveWorkflowExecution;
 	/** v4: pending AskUser requests for this session (rendered as interactive cards). */
 	askUsers: LiveWorkflowAskUser[];
+	/** v6: pending variable collection card for this session. */
+	collectVariables: LiveCollectVariable[];
 }
 
-const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ execution, askUsers }: LiveWorkflowTraceViewProps): React.ReactElement | null {
+const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ execution, askUsers, collectVariables }: LiveWorkflowTraceViewProps): React.ReactElement | null {
 	// Only show subagents that are real workflow nodes (skip synthetic root '__workflow__').
 	const subAgents = execution.subAgents.filter(sa => sa.id !== '__workflow__');
 
 	// Filter askUser entries to those that belong to THIS execution (a session
 	// could in theory have multiple executions — render only the current one).
 	const executionAskUsers = askUsers.filter(a => a.executionId === execution.executionId);
-	const hasContent = subAgents.length > 0 || executionAskUsers.length > 0;
+	// v6: filter collect variables to this execution
+	const executionCollectVariables = collectVariables.filter(c => c.executionId === execution.executionId);
+	const hasContent = subAgents.length > 0 || executionAskUsers.length > 0 || executionCollectVariables.length > 0;
 
 	if (!hasContent) {
 		// Show a minimal banner so the user knows a workflow is running.
@@ -298,6 +302,113 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 					})}
 				</div>
 			)}
+			{/* v6: render variable collection cards */}
+			{executionCollectVariables.length > 0 && (
+				<div className="collect-variables-list">
+					{executionCollectVariables.map(cv => (
+						<div key={cv.id} className="collect-variables-card" style={{
+							margin: '8px 0',
+							padding: '10px 12px',
+							border: '1px solid var(--vscode-panel-border)',
+							borderRadius: '6px',
+							backgroundColor: 'var(--vscode-editor-background)',
+						}}>
+							<div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '8px', color: 'var(--vscode-foreground)' }}>
+								📝 请填入工作流变量
+							</div>
+							{cv.status === 'pending' ? (
+								<>
+									{cv.variables.map(v => (
+										<div key={v.name} style={{ marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+											<label style={{
+												fontSize: '11px',
+												fontFamily: 'monospace',
+												color: 'var(--vscode-textLink-foreground)',
+												minWidth: '120px',
+											}}>
+												{'{{' + v.name + '}}'}
+											</label>
+											<input
+												type="text"
+												value={cv.values[v.name] ?? ''}
+												onChange={e => {
+													const sid = useChatStore.getState().activeAgentSessionId;
+													if (!sid) { return; }
+													useChatStore.getState().updateCollectVariableValue(sid, cv.id, v.name, e.target.value);
+												}}
+												placeholder={v.defaultValue || '输入值…'}
+												style={{
+													flex: 1,
+													fontSize: '12px',
+													padding: '4px 8px',
+													border: '1px solid var(--vscode-input-border)',
+													borderRadius: '4px',
+													backgroundColor: 'var(--vscode-input-background)',
+													color: 'var(--vscode-input-foreground)',
+													outline: 'none',
+												}}
+												onFocus={e => {
+													e.currentTarget.style.borderColor = 'var(--vscode-focusBorder)';
+												}}
+												onBlur={e => {
+													e.currentTarget.style.borderColor = 'var(--vscode-input-border)';
+												}}
+											/>
+										</div>
+									))}
+									<div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+										<button
+											onClick={() => {
+												const sid = useChatStore.getState().activeAgentSessionId;
+												if (!sid) { return; }
+												void useChatStore.getState().submitCollectVariables(sid, cv.id, cv.values);
+											}}
+											style={{
+												padding: '4px 14px',
+												fontSize: '12px',
+												fontWeight: 600,
+												border: 'none',
+												borderRadius: '4px',
+												backgroundColor: 'var(--vscode-button-background)',
+												color: 'var(--vscode-button-foreground)',
+												cursor: 'pointer',
+											}}
+										>
+											提交并执行
+										</button>
+										<button
+											onClick={() => {
+												const sid = useChatStore.getState().activeAgentSessionId;
+												if (!sid) { return; }
+												useChatStore.getState().cancelCollectVariables(sid, cv.id);
+											}}
+											style={{
+												padding: '4px 14px',
+												fontSize: '12px',
+												border: '1px solid var(--vscode-panel-border)',
+												borderRadius: '4px',
+												backgroundColor: 'transparent',
+												color: 'var(--vscode-descriptionForeground)',
+												cursor: 'pointer',
+											}}
+										>
+											跳过
+										</button>
+									</div>
+								</>
+							) : cv.status === 'submitted' ? (
+								<div style={{ fontSize: '11px', color: 'var(--vscode-charts-green, #34d399)' }}>
+									✅ 变量已提交
+								</div>
+							) : (
+								<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>
+									⊘ 变量已跳过
+								</div>
+							)}
+						</div>
+					))}
+				</div>
+			)}
 		</div>
 	);
 });
@@ -305,7 +416,7 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 const LiveWorkflowTraceView = LiveWorkflowTraceViewRaw;
 
 export function AgentChat(): React.ReactElement {
-	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode, activeAgentSessionId, liveWorkflowExecutions, liveAskUsers, liveWorkflowEvents } = useChatStore();
+	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode, activeAgentSessionId, liveWorkflowExecutions, liveAskUsers, liveCollectVariables, liveWorkflowEvents } = useChatStore();
 	const { agents, selectedAgentId, selectAgent } = useAgentStore();
 	const { selection, loadSelectionForAgent } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1210,10 +1321,11 @@ export function AgentChat(): React.ReactElement {
 
 						{/* ── P4: live workflow execution trace (owner-agent chat) ──────── */}
 						{activeAgentSessionId && liveWorkflowExecutions[activeAgentSessionId] && (
-							<LiveWorkflowTraceView
-								execution={liveWorkflowExecutions[activeAgentSessionId]}
-								askUsers={liveAskUsers[activeAgentSessionId] ?? []}
-							/>
+						<LiveWorkflowTraceView
+							execution={liveWorkflowExecutions[activeAgentSessionId]}
+							askUsers={liveAskUsers[activeAgentSessionId] ?? []}
+							collectVariables={liveCollectVariables[activeAgentSessionId] ?? []}
+						/>
 						)}
 
 						<div ref={messagesEndRef} />

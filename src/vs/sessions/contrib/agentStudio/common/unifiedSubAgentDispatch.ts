@@ -98,6 +98,13 @@ export interface SubAgentOptions {
 	readonly background?: boolean;
 	/** Parent session ID for context isolation */
 	readonly parentSessionId?: string;
+	/**
+	 * v17: per-subagent worktree path override. Inherited from the parent
+	 * agent's execution context (set by builtinToolProvider before dispatching
+	 * delegate_task). When set, the subagent's working directory is locked
+	 * to this path (matches `IAgentTurnRequest.worktreePath` semantics).
+	 */
+	readonly worktreePath?: string;
 }
 
 export interface SubAgentInstance {
@@ -464,6 +471,10 @@ export class UnifiedSubAgentDispatch {
 				agentId: subAgent.id,
 				messages,
 				systemPrompt: this._buildSystemPrompt(subAgent),
+				// v17: propagate the parent agent's worktree so the subagent's
+				// tools (file_read, file_write, terminal_cmd, etc.) all run
+				// inside the same worktree the parent was operating in.
+				worktreePath: subAgent.options.worktreePath,
 			};
 
 			// Execute with timeout
@@ -631,13 +642,14 @@ export class UnifiedSubAgentDispatch {
 	 *
 	 * @param perTaskOptions Optional per-task options override. If not provided,
 	 *                       defaults to { type: Explore, priority: high, context }.
+	 *                       v17: also accepts `worktreePath` for per-task worktree.
 	 */
 	async dispatchParallelExplore(
 		parentAgentId: string,
 		tasks: string[],
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		context?: string,
-		perTaskOptions?: Array<Pick<SubAgentOptions, 'priority' | 'maxIterations' | 'timeout'>>,
+		perTaskOptions?: Array<Pick<SubAgentOptions, 'priority' | 'maxIterations' | 'timeout' | 'worktreePath'>>,
 		eventSink?: SubAgentEventSink,
 	): Promise<SubAgentResult[]> {
 		const subAgentIds = tasks.map((task, idx) =>
@@ -647,6 +659,8 @@ export class UnifiedSubAgentDispatch {
 				priority: perTaskOptions?.[idx]?.priority ?? 'high',
 				maxIterations: perTaskOptions?.[idx]?.maxIterations,
 				timeout: perTaskOptions?.[idx]?.timeout,
+				// v17: propagate worktree to each parallel explore subagent.
+				worktreePath: perTaskOptions?.[idx]?.worktreePath,
 			})
 		);
 

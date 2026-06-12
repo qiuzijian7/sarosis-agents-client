@@ -829,22 +829,36 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					onDelta(delta);
 					continue;
 				}
-				// ─── Hermes-style 回合边界事件（治本根因修复）─────────────────
-				// agentOS 在每个 iteration 确定 assistant 消息后发来 `assistant_turn`，
-				// content 为本轮权威文本（已 sanitize+trim），metadata.toolCallIds 为本轮
-				// 工具调用 id。收到后把这一轮快照成一个 turn。注意：此时 toolCalls 里这些
-				// id 的 result 可能尚未回填（tool_result 在 assistant_turn 之后才 yield），
-				// 因此只记录 id，最终持久化时再按 id 从全局 toolCalls 取回填好 result 的副本。
-				// 不向 webview 转发该事件（纯后端边界信号，UI 仍按流式增量渲染）。
-				if ((delta as any).type === 'assistant_turn') {
-					const md = (delta as any).metadata ?? {};
-					const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
-					turns.push({
-						content: (delta as any).content ?? "",
-						toolCallIds: ids,
+			// ─── Hermes-style 回合边界事件 ──────────────────────────────
+			// agentOS 在每个 iteration 确定 assistant 消息后发来 `assistant_turn`，
+			// content 为本轮权威文本（已 sanitize+trim），metadata.toolCallIds 为本轮
+			// 工具调用 id。收到后把这一轮快照成一个 turn。
+			//
+			// 同时作为 `content_replace` 转发给 webview，确保 webview 的 textBuffer
+			// 与宿主的 sanitized 内容同步。若不转发，多轮 agent loop 时 webview 的 buffer
+			// 会累积所有轮次的原始文本，导致最终 chat.stream.complete 时 buffer 与 host
+			// message 内容完全不同（CONTENT MISMATCH），引发渲染异常和 UI 卡死。
+			//
+			// 注意：此时 toolCalls 里这些 id 的 result 可能尚未回填
+			// （tool_result 在 assistant_turn 之后才 yield），因此只记录 id，
+			// 最终持久化时再按 id 从全局 toolCalls 取回填好 result 的副本。
+			if ((delta as any).type === 'assistant_turn') {
+				const md = (delta as any).metadata ?? {};
+				const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
+				const turnContent: string = (delta as any).content ?? "";
+				turns.push({
+					content: turnContent,
+					toolCallIds: ids,
+				});
+				// 同步 webview 的 text buffer 为本轮 sanitized 文本
+				if (turnContent) {
+					onDelta({
+						type: 'content_replace' as any,
+						content: turnContent,
 					});
-					continue;
 				}
+				continue;
+			}
 				if (delta.type === "tool_start" && delta.toolCallId && delta.toolName) {
 					if (!toolCalls) {
 						toolCalls = [];

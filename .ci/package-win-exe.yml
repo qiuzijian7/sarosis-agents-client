@@ -1,0 +1,129 @@
+version: v3.0
+
+# ============================================================
+# VsSarosis Windows EXE 打包流水线 (蓝盾 Pipeline-as-Code v3.0)
+# ------------------------------------------------------------
+# 触发：origin 仓库 (git.woa.com/zijianqiu/sarosis-agents-client)
+#       任意分支有新提交 (push) 立即触发打包。
+# 排队：需在蓝盾流水线 UI → "流水线设置" → "并发控制" 中配置
+#       "同一时间只允许运行 1 个构建，其余排队等待"。
+# 版本：2.1.${x}，x = 当前 git 提交总数 (git rev-list --count HEAD)，
+#       递增整数，最贴近 SVN changelist 语义。
+# 产物：.build/win32-x64/ 下的 system / user setup exe 安装包。
+# ============================================================
+
+name: "VsSarosis-Win-EXE-Package"
+
+label:
+  - "打包"
+  - "Windows"
+
+# ---- 触发器：仓库任意分支有 push 即触发 ----
+on:
+  push:
+    branches:
+      - "*"
+
+# ---- 全局变量 ----
+variables:
+  NODE_OPTIONS:
+    value: "--max-old-space-size=8192"
+
+stages:
+  - name: "编译与打包"
+    jobs:
+      build-win-exe:
+        name: "Build & Package Windows EXE"
+        # Windows 构建机（按实际可用的 Windows 公共/私有构建集群调整）
+        # 资源规格 (cpu/memory) 请在蓝盾 UI job 配置中设置
+        runs-on:
+          pool-name: "windows"
+          # 如使用私有构建机，取消下行注释并设为 true
+          # self-hosted: true
+        steps:
+          # ---------- 0. 拉取源码（PAC 必须显式 checkout） ----------
+          - checkout: self
+            name: "拉取源码"
+            with:
+              enableGitLfs: false
+
+          # ---------- 1. 计算动态版本号 2.1.x ----------
+          - name: "计算版本号 2.1.x (x = git 提交计数)"
+            id: calc_version
+            run: |
+              # 确保有完整提交历史（浅克隆会导致 count 不准）
+              git fetch --unshallow 2>$null
+              $count = (git rev-list --count HEAD).Trim()
+              $version = "2.1.$count"
+              Write-Host "Resolved package version: $version"
+              # 写入蓝盾 step 输出变量，供后续 step 通过 steps.<id>.outputs.<name> 引用
+              Write-Host "::set-output name=BUILD_VERSION::$version"
+            shell: powershell
+
+          # ---------- 2. 将版本号写入 package.json / product.json ----------
+          - name: "注入版本号到 package.json 和 product.json"
+            run: |
+              $v = "${{ steps.calc_version.outputs.BUILD_VERSION }}"
+              Write-Host "Stamping version $v into package.json & product.json"
+
+              $pkgPath = "package.json"
+              $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+              $pkg.version = $v
+              $pkg | ConvertTo-Json -Depth 100 | Set-Content $pkgPath -Encoding UTF8
+
+              $prodPath = "product.json"
+              $prod = Get-Content $prodPath -Raw | ConvertFrom-Json
+              $prod.version = $v
+              $prod | ConvertTo-Json -Depth 100 | Set-Content $prodPath -Encoding UTF8
+
+              Write-Host "package.json version  = $($pkg.version)"
+              Write-Host "product.json version  = $($prod.version)"
+            shell: powershell
+
+          # ---------- 3. 安装依赖 ----------
+          - name: "安装依赖 (npm ci)"
+            run: |
+              node --version
+              npm --version
+              npm ci
+            shell: powershell
+
+          # ---------- 4. 生产编译（带 mangling，失败回退 dev 编译） ----------
+          - name: "生产编译 compile-build-with-mangling"
+            run: |
+              npx gulp compile-build-with-mangling --verbose
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "compile-build-with-mangling failed, fallback to dev compile..."
+                npm run compile
+                if ($LASTEXITCODE -ne 0) { Write-Error "Compile failed"; exit 1 }
+              }
+            shell: powershell
+
+          # ---------- 5. 编译内置扩展 ----------
+          - name: "编译扩展 compile-extensions-build"
+            run: |
+              npx gulp compile-extensions-build --verbose
+              if ($LASTEXITCODE -ne 0) { Write-Error "Extensions build failed"; exit 1 }
+            shell: powershell
+
+          # ---------- 6. 打包 Win32 x64 应用目录 ----------
+          - name: "打包 vscode-win32-x64"
+            run: |
+              npx gulp vscode-win32-x64 --verbose
+              if ($LASTEXITCODE -ne 0) { Write-Error "Packaging failed"; exit 1 }
+            shell: powershell
+
+          # ---------- 7. 生成 EXE 安装包（user + system setup） ----------
+          - name: "生成 EXE 安装包 (user & system setup)"
+            run: |
+              npx gulp vscode-win32-x64-user-setup --verbose
+              if ($LASTEXITCODE -ne 0) { Write-Error "User setup failed"; exit 1 }
+              npx gulp vscode-win32-x64-system-setup --verbose
+              if ($LASTEXITCODE -ne 0) { Write-Error "System setup failed"; exit 1 }
+            shell: powershell
+
+          # ---------- 8. 归档 EXE 产物 ----------
+          - name: "归档 EXE 产物"
+            uses: "archiveArtifact@8.*"
+            with:
+              filePath: ".build/win32-x64/**/*.exe"

@@ -143,7 +143,10 @@ export type RequestType =
 	| 'workflow.breakpoint.set'   // v5a: persist a breakpoint on a workflow node (WebView → Host)
 	| 'workflow.breakpoint.clear' // v5a: clear a workflow-level breakpoint (WebView → Host)
 	| 'workflow.breakpoint.get'   // v5a: fetch persisted breakpoints (WebView → Host)
-	| 'workflow.list';            // v10: list all workflows (WebView → Host)
+	| 'workflow.list'            // v10: list all workflows (WebView → Host)
+	| 'workflow.reorder'         // v19: reorder workflow list (WebView → Host)
+	| 'workflow.open'            // v19: open a workflow in the editor (WebView → Host)
+	| 'workflow.submitVariables'; // v6: submit pre-execution variable values (WebView → Host)
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =

@@ -288,24 +288,35 @@ export const NodeInlineEditor: React.FC = () => {
 				);
 			}
 			case 'ifElse': {
-				const branches = (data.branches as BranchDef[]) || [{ label: 'True', description: '' }, { label: 'False', description: '' }];
+				const branches = (data.branches as BranchDef[]) || [{ id: 'branch_0', label: 'True', condition: 'Condition is met' }, { id: 'branch_1', label: 'False', condition: 'Condition is not met' }];
 				return (
 					<>
-						<Field label="Condition">
-							<input style={inputStyle} value={(data.condition as string) || ''} onChange={e => handleChange('condition', e.target.value)} placeholder="e.g. output === 'ok'" />
-						</Field>
-						<OptionsMiniEditor options={branches as unknown as AskUserOption[]} onChange={(o) => { handleChange('branches', o); setVersion(v => v + 1); }} minItems={2} />
+						{branches.map((b, i) => (
+							<Field key={b.id} label={i === 0 ? 'True Branch' : 'False Branch'}>
+								<input style={inputStyle} value={b.label} onChange={e => {
+									const next = branches.map((br, j) => j === i ? { ...br, label: e.target.value } : br);
+									handleChange('branches', next);
+								}} placeholder="Branch label" />
+								<textarea style={{ ...inputStyle, minHeight: '30px', resize: 'vertical', marginTop: '2px' }}
+									value={b.condition}
+									onChange={e => {
+										const next = branches.map((br, j) => j === i ? { ...br, condition: e.target.value } : br);
+										handleChange('branches', next);
+									}}
+									placeholder="Condition" />
+							</Field>
+						))}
 					</>
 				);
 			}
 			case 'switch': {
-				const cases = (data.cases as BranchDef[]) || [{ label: 'Case 1', description: '' }, { label: 'Default', description: '' }];
+				const branches = (data.branches as BranchDef[]) || [{ id: 'case_1', label: 'Case 1', condition: '' }, { id: 'default', label: 'Default', condition: '', isDefault: true }];
 				return (
 					<>
 						<Field label="Switch On">
-							<input style={inputStyle} value={(data.switchOn as string) || ''} onChange={e => handleChange('switchOn', e.target.value)} placeholder="e.g. {{status}}" />
+							<input style={inputStyle} value={(data.evaluationTarget as string) || ''} onChange={e => handleChange('evaluationTarget', e.target.value)} placeholder="e.g. {{status}}" />
 						</Field>
-						<OptionsMiniEditor options={cases as unknown as AskUserOption[]} onChange={(o) => { handleChange('cases', o); setVersion(v => v + 1); }} minItems={2} />
+						<OptionsMiniEditor options={branches as unknown as AskUserOption[]} onChange={(o) => { handleChange('branches', o); setVersion(v => v + 1); }} minItems={2} />
 					</>
 				);
 			}

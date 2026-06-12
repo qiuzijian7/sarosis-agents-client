@@ -1364,6 +1364,18 @@ export class AgentStudioWebviewController extends Disposable {
 			const lp = p as unknown as { workspaceId?: string };
 			return this._handleWorkflowList(lp);
 		}
+		case "workflow.reorder": {
+			const rp = p as unknown as { orderedIds: string[]; workspaceId?: string };
+			return this._handleWorkflowReorder(rp);
+		}
+		case "workflow.open": {
+			const op = p as unknown as { workflowId: string };
+			return this._handleWorkflowOpen(op);
+		}
+		case "workflow.submitVariables": {
+			const vp = p as unknown as { executionId: string; values: Record<string, string> };
+			return this._handleWorkflowSubmitVariables(vp);
+		}
 
 			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
 			case "memory.listL0": {
@@ -3661,6 +3673,54 @@ export class AgentStudioWebviewController extends Disposable {
 			};
 		} catch (err) {
 			this.logService.error('[AgentStudioWebviewController] workflow.list failed', err);
+			throw err;
+		}
+	}
+
+	/**
+	 * v19: Handle `workflow.reorder` — webview sends new workflow order after drag-and-drop.
+	 * Persists the order so it survives reloads.
+	 */
+	private async _handleWorkflowReorder(payload: { orderedIds: string[]; workspaceId?: string }): Promise<{ success: boolean }> {
+		try {
+			await this.workflowStorageService.reorderWorkflows(payload.orderedIds, payload.workspaceId);
+			this.logService.info(`[AgentStudioWebviewController] workflow.reorder: saved order for ${payload.orderedIds.length} workflows`);
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.reorder failed', err);
+			return { success: false };
+		}
+	}
+
+	/**
+	 * v19: Handle `workflow.open` — webview requests opening a workflow in the editor.
+	 * Returns the full workflow data so the webview can load it directly.
+	 */
+	private async _handleWorkflowOpen(payload: { workflowId: string }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.open: ${payload.workflowId}`);
+			const wf = await this.workflowStorageService.getWorkflow(payload.workflowId);
+			if (wf) {
+				return { success: true, workflow: wf };
+			}
+			return { success: false };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.open failed', err);
+			return { success: false };
+		}
+	}
+
+	/**
+	 * v6: Handle `workflow.submitVariables` — webview provides variable values
+	 * collected from the user before workflow execution starts.
+	 */
+	private async _handleWorkflowSubmitVariables(payload: { executionId: string; values: Record<string, string> }): Promise<Record<string, unknown> | null> {
+		try {
+			this.logService.info(`[AgentStudioWebviewController] workflow.submitVariables: executionId=${payload.executionId}, keys=${Object.keys(payload.values || {}).join(',')}`);
+			await this.workflowExecutionService.submitWorkflowVariables(payload.executionId, payload.values);
+			return { success: true };
+		} catch (err) {
+			this.logService.error('[AgentStudioWebviewController] workflow.submitVariables failed', err);
 			throw err;
 		}
 	}

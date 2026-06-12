@@ -1105,7 +1105,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				try {
 					if (canParallel) {
 						// Streaming parallel: yield as each tool finishes, in completion order.
-						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId)) {
+						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId, request.worktreePath)) {
 							toolResults.push(toolResult);
 							// Emit tool_result + tool_end for THIS tool immediately (do not
 							// wait for the rest of the batch).
@@ -1130,7 +1130,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					} else {
 						// Serial path: keep old behavior (each tool naturally finishes
 						// sequentially so head-of-line blocking is not an issue here).
-						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId);
+						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath);
 						for (const toolResult of serial) {
 							toolResults.push(toolResult);
 							const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
@@ -1247,8 +1247,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *  - **[P0] Approval flow** (securityLevel-based user confirmation)
 	 *  - **[P1] Execution metadata** (timing, truncation, timeout info)
 	 */
-	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
+	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
+
+		// v17: propagate the parent agent's worktree to tool providers that
+		// support inheriting it. Today this is BuiltinToolProvider, which
+		// passes the path down to sub-agents via `delegate_task`.
+		if (worktreePath) {
+			for (const provider of this._slotRegistry.getToolProviders()) {
+				const candidate = provider as unknown as { setParentWorktreePath?: (p: string | undefined) => void };
+				if (typeof candidate.setParentWorktreePath === 'function') {
+					try { candidate.setParentWorktreePath(worktreePath); } catch { /* ignore */ }
+				}
+			}
+		}
 
 		// Pre-collect all available tools and build lookup structures
 		const allAvailableTools: IToolDefinition[] = [];
@@ -1470,7 +1482,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * Skipped entries (validation failures) are yielded synchronously up
 	 * front so the UI can mark them done immediately.
 	 */
-	private async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
+	private async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
+		// v17: same as the serial path — push the worktree down to tool providers
+		// (e.g. BuiltinToolProvider) so sub-agents inherit it.
+		if (worktreePath) {
+			for (const provider of this._slotRegistry.getToolProviders()) {
+				const candidate = provider as unknown as { setParentWorktreePath?: (p: string | undefined) => void };
+				if (typeof candidate.setParentWorktreePath === 'function') {
+					try { candidate.setParentWorktreePath(worktreePath); } catch { /* ignore */ }
+				}
+			}
+		}
+
 		// Pre-collect all available tools and build lookup structures
 		const allAvailableTools: IToolDefinition[] = [];
 		for (const provider of this._slotRegistry.getToolProviders()) {

@@ -31,9 +31,6 @@ import '@xyflow/react/dist/style.css';
 import { StartNode } from './nodes/StartNode';
 import { EndNode } from './nodes/EndNode';
 import { TaskNode } from './nodes/TaskNode';
-import { ConditionNode } from './nodes/ConditionNode';
-import { ParallelNode } from './nodes/ParallelNode';
-import { LoopNode } from './nodes/LoopNode';
 import { PromptNode } from './nodes/PromptNode';
 import { AgentNode } from './nodes/AgentNode';
 import { SkillNode } from './nodes/SkillNode';
@@ -58,9 +55,6 @@ const nodeTypes: NodeTypes = {
 	start: StartNode,
 	end: EndNode,
 	task: TaskNode,
-	condition: ConditionNode,
-	parallel: ParallelNode,
-	loop: LoopNode,
 	prompt: PromptNode,
 	agent: AgentNode,
 	skill: SkillNode,
@@ -80,9 +74,6 @@ const nodeColor = (node: Node): string => {
 		case 'start': return '#22c55e';
 		case 'end': return '#ef4444';
 		case 'task': return '#3b82f6';
-		case 'condition': return '#f59e0b';
-		case 'parallel': return '#8b5cf6';
-		case 'loop': return '#06b6d4';
 		case 'prompt': return '#8b5cf6';
 		case 'agent': return '#f97316';
 		case 'skill': return '#eab308';

@@ -1,7 +1,8 @@
 import React from 'react';
 import { Handle, Position, type NodeProps, useUpdateNodeInternals } from '@xyflow/react';
-import { useEffect } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useWorkflowEditorStore } from '../store';
+import { VariableAutocomplete, buildCandidates } from '../utils/VariableAutocomplete';
 
 const ieInput: React.CSSProperties = {
 	width: '100%', padding: '2px 5px', fontSize: '11px',
@@ -13,13 +14,24 @@ const ieInput: React.CSSProperties = {
 export const SwitchNode: React.FC<NodeProps> = React.memo(({ id, data, selected }) => {
 	const d = data as Record<string, unknown>;
 	const branches = (d.branches as Array<{ id: string; label: string; condition: string }>) || [];
-	const evalTarget = (d.evaluationTarget as string) || (d.switchOn as string) || '';
+	const evalTarget = (d.evaluationTarget as string) || '';
 	const updateNodeInternals = useUpdateNodeInternals();
 	const updateNodeData = useWorkflowEditorStore(s => s.updateNodeData);
 
 	useEffect(() => { updateNodeInternals(id); }, [id, branches.length, updateNodeInternals]);
 
 	const n = branches.length || 2;
+
+	// v15: autocomplete candidates
+	const allNodes = useWorkflowEditorStore(s => s.nodes);
+	const allEdges = useWorkflowEditorStore(s => s.edges);
+	const candidates = useMemo(() => buildCandidates({
+		nodeData: d,
+		nodeId: id,
+		nodes: allNodes as Array<{ id: string; data?: Record<string, unknown> }>,
+		edges: allEdges as Array<{ source: string; target: string }>,
+	}), [d, id, allNodes, allEdges]);
+	const switchOnRef = useRef<HTMLInputElement>(null);
 
 	return (
 		<div className="wf-node" style={{
@@ -37,7 +49,22 @@ export const SwitchNode: React.FC<NodeProps> = React.memo(({ id, data, selected 
 				<>
 					<input style={ieInput} value={(d.label as string) || ''} onChange={e => updateNodeData(id, { label: e.target.value })} placeholder="Node name" />
 					<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Switch On</div>
-					<input style={ieInput} value={evalTarget} onChange={e => updateNodeData(id, { switchOn: e.target.value })} placeholder="e.g. {{status}}" />
+					<div style={{ position: 'relative' }}>
+						<input
+							ref={switchOnRef}
+							style={ieInput}
+							value={evalTarget}
+							onChange={e => updateNodeData(id, { evaluationTarget: e.target.value })}
+							placeholder="Type {{ for variable autocomplete, e.g. {{status}}"
+						/>
+						<VariableAutocomplete
+							targetRef={switchOnRef}
+							text={evalTarget}
+							onChange={next => updateNodeData(id, { evaluationTarget: next })}
+							candidates={candidates}
+							id={`switch-node-ac-${id}`}
+						/>
+					</div>
 					<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Branches</div>
 					{branches.map((b, i) => (
 						<div key={b.id} style={{ marginBottom: '3px' }}>

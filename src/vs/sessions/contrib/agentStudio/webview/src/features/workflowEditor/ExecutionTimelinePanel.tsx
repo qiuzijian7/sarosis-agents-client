@@ -28,6 +28,8 @@ const KIND_META: Record<LiveWorkflowEvent['kind'], { icon: string; color: string
 	subagent_end: { icon: '✓', color: 'var(--vscode-charts-green, #34d399)', label: '完成' },
 	ask_user: { icon: '❓', color: 'var(--vscode-textPreformat-foreground, #c084fc)', label: '询问' },
 	ask_user_end: { icon: '⊘', color: 'var(--vscode-charts-orange, #f59e0b)', label: '回答' },
+	collect_variables: { icon: '📝', color: 'var(--vscode-charts-purple, #a78bfa)', label: '变量' },
+	collect_variables_end: { icon: '✅', color: 'var(--vscode-charts-green, #34d399)', label: '提交' },
 	execution_end: { icon: '⏹', color: 'var(--vscode-descriptionForeground, #999)', label: '结束' },
 	breakpoint_hit: { icon: '◉', color: 'var(--vscode-charts-red, #f48771)', label: '断点' },
 };
