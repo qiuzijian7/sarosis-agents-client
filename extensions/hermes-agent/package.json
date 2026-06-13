@@ -10,6 +10,7 @@
     "agent-studio": "^1.0.0"
   },
   "main": "./dist/extension.js",
+  "activationEvents": [],
   "icon": "hermes-icon.png",
   "contributes": {
     "chatPlugins": [
