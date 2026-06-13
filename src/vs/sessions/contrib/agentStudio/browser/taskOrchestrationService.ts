@@ -43,6 +43,8 @@ import { StructuredOutputParser } from './structuredOutputParser.js';
 import { RepoOverviewProvider } from './repoOverviewProvider.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IterationBudget } from '../common/iterationBudget.js';
+import { IWorkflowStorageService } from '../common/workflowStorage.js';
+import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 
 const DATA_FILE_ORCHESTRATION = 'orchestration-plans.json';
 
@@ -123,6 +125,8 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
+		@IWorkflowExecutionService private readonly workflowExecutionService: IWorkflowExecutionService,
 	) {
 		super();
 		this._decomposer = new TaskDecomposer();
@@ -417,6 +421,62 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			plan.completedAt = new Date().toISOString();
 			plan.updatedAt = plan.completedAt;
 			this._onDidChangePlan.fire(plan);
+
+			// v40: Fire-and-forget: send execution_end trace + append workflow summary
+			if (plan.plannerId && this._streamEventCallback) {
+				void (async () => {
+					try {
+						// Resolve sessionId for trace events
+						let sessionId: string | undefined;
+						try {
+							const session = await (this.agentChatService as any).getOrCreateActiveSession(
+								plan.plannerId,
+								plan.goal.slice(0, 50),
+							);
+							sessionId = session?.id as string | undefined;
+						} catch { /* ignore */ }
+
+						// Fire execution_end trace event (commit LiveWorkflowExecution to chat history)
+						if (sessionId) {
+							this._streamEventCallback!('workflow.executionTrace', {
+								executionId: plan.id,
+								sessionId,
+								workflowAgentId: plan.plannerId,
+								kind: 'execution_end',
+								nodeId: '__workflow__',
+								status: hasError ? 'failed' : 'completed',
+							});
+						}
+
+						// Build and append summary message
+						const doneCount = plan.tasks.filter(t => t.status === PlanTaskStatus.Done).length;
+						const errorCount = plan.tasks.filter(t => t.status === PlanTaskStatus.Error).length;
+						const summaryLines: string[] = [];
+						summaryLines.push(`## ✅ 工作流执行完成`);
+						summaryLines.push('');
+						summaryLines.push(`- **目标**: ${plan.goal}`);
+						summaryLines.push(`- **状态**: ${hasError ? '⚠️ 部分失败' : '✅ 全部完成'}`);
+						summaryLines.push(`- **任务统计**: ${plan.tasks.length} 个任务 · ${doneCount} 完成 · ${errorCount} 失败`);
+						summaryLines.push('');
+						for (const t of plan.tasks) {
+							const statusIcon = t.status === PlanTaskStatus.Done ? '✅' : t.status === PlanTaskStatus.Error ? '❌' : '⏭️';
+							summaryLines.push(`- ${statusIcon} **${t.assigneeName || t.title}**: ${t.result ? t.result.slice(0, 100).replace(/\n/g, ' ') : '无输出'}`);
+						}
+
+						const chatMessage = {
+							id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+							role: 'assistant' as const,
+							content: summaryLines.join('\n'),
+							timestamp: new Date().toISOString(),
+							agentSessionId: undefined,
+						};
+						await this.agentChatService.appendMessage(plan.plannerId, chatMessage);
+						this.logService.info(`[Orchestration] Appended workflow summary to agent ${plan.plannerId}`);
+					} catch (err) {
+						this.logService.warn(`[Orchestration] Failed to append workflow summary: ${err}`);
+					}
+				})();
+			}
 		}
 	}
 
@@ -1581,6 +1641,35 @@ Goal: ${goal}`;
 
 		this.logService.info(`[Orchestration] Created workflow plan ${planId} with ${tasks.length} tasks`);
 
+		// v40: Get or create a session for the planner agent, then fire the
+		// __workflow__ trace event so the chat panel creates a LiveWorkflowExecution
+		// (which is the container for SubAgent cards).
+		let workflowSessionId = options?.agentSessionId;
+		if (!workflowSessionId) {
+			try {
+				const session = await (this.agentChatService as any).getOrCreateActiveSession(
+					agentId,
+					`工作流: ${startAgent.name} — ${message.slice(0, 50)}`,
+				);
+				workflowSessionId = session?.id as string | undefined;
+			} catch { /* fall through */ }
+		}
+		if (this._streamEventCallback && workflowSessionId) {
+			this._streamEventCallback('workflow.executionTrace', {
+				executionId: planId,
+				sessionId: workflowSessionId,
+				workflowAgentId: agentId,
+				kind: 'subagent_start',
+				nodeId: '__workflow__',
+				nodeName: startAgent.name || 'Workflow',
+				nodeType: 'workflow',
+				task: message.slice(0, 500),
+			});
+			// Update the options so _executeWorkflowTask can reuse this session
+			if (!options) { options = {} as any; }
+			(options as any).agentSessionId = workflowSessionId;
+		}
+
 		// ── Step 4: Create task board items ──
 		await this._createTaskBoardItems(plan);
 
@@ -1694,6 +1783,20 @@ Goal: ${goal}`;
 		}
 
 		try {
+			// v40: Fire subagent_start trace event so the chat panel renders SubAgent cards
+			if (this._streamEventCallback) {
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: planId,
+					sessionId: sessionIdForEvent,
+					workflowAgentId: task.assigneeId,
+					kind: 'subagent_start',
+					nodeId: task.id,
+					nodeName: task.assigneeName || task.title,
+					nodeType: 'agent',
+					task: taskPrompt.slice(0, 500),
+				});
+			}
+
 			const chatMessage = await this.agentChatService.sendMessage(
 				task.assigneeId,
 				taskPrompt,
@@ -1711,6 +1814,21 @@ Goal: ${goal}`;
 
 			const resultContent = chatMessage.content || '';
 			this.logService.info(`[Orchestration] Workflow task ${task.id} completed by agent ${task.assigneeId}`);
+
+			// v40: Fire subagent_end trace event to finalize SubAgent card
+			if (this._streamEventCallback) {
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: planId,
+					sessionId: sessionIdForEvent,
+					workflowAgentId: task.assigneeId,
+					kind: 'subagent_end',
+					nodeId: task.id,
+					nodeName: task.assigneeName || task.title,
+					nodeType: 'agent',
+					status: 'done',
+					output: resultContent.slice(0, 2000),
+				});
+			}
 
 			// Notify the webview that the stream completed
 			if (this._streamEventCallback) {
@@ -1733,12 +1851,28 @@ Goal: ${goal}`;
 			this.logService.error(`[Orchestration] Workflow task ${task.id} execution error:`, err);
 			this._markAgentIdle(task.assigneeId);
 
+			// v40: Fire subagent_end trace event with error status
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			if (this._streamEventCallback) {
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: planId,
+					sessionId: sessionIdForEvent,
+					workflowAgentId: task.assigneeId,
+					kind: 'subagent_end',
+					nodeId: task.id,
+					nodeName: task.assigneeName || task.title,
+					nodeType: 'agent',
+					status: 'error',
+					error: errorMsg,
+				});
+			}
+
 			// Notify the webview about the error
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.error', {
 					agentId: task.assigneeId,
 					sessionId: sessionIdForEvent,
-					error: err instanceof Error ? err.message : String(err),
+					error: errorMsg,
 				});
 			}
 
@@ -1749,7 +1883,7 @@ Goal: ${goal}`;
 				const taskRef = plan?.tasks.find(t => t.id === task.id);
 				if (taskRef && taskRef.status === PlanTaskStatus.Running) {
 					taskRef.status = PlanTaskStatus.Error;
-					taskRef.result = err instanceof Error ? err.message : String(err);
+					taskRef.result = errorMsg;
 					taskRef.completedAt = new Date().toISOString();
 					if (plan) { plan.updatedAt = taskRef.completedAt; }
 					await this._writePlans(plans);
@@ -1823,7 +1957,9 @@ Goal: ${goal}`;
 			} else if (p.assigneeId) {
 				// Agent is idle — execute immediately
 				this._onDidChangeTask.fire({ planId, task: p });
-				this._executeTask(planId, p).catch(err => {
+				// v40: for workflow plans, use _executeWorkflowTask so trace events fire (SubAgent cards)
+				const execFn = planId.startsWith('wf_') ? this._executeWorkflowTask.bind(this) : this._executeTask.bind(this);
+				execFn(planId, p).catch(err => {
 					this.logService.error(`[Orchestration] Promoted task ${p.id} execution failed:`, err);
 				});
 				continue;
@@ -2034,6 +2170,60 @@ Goal: ${goal}`;
 		// Build task prompt
 		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${taskTitle}\n**任务描述**: ${taskDesc}\n**任务来源**: 任务看板`;
 
+		// v40: If agent is a workflow agent, delegate to workflowExecutionService
+		// so the chat panel renders SubAgent cards and full execution trace.
+		const workflows = await this.workflowStorage.listWorkflows(workspaceId);
+		const matchingWorkflow = workflows.find(w => w.agentId === assigneeId);
+		if (matchingWorkflow && matchingWorkflow.id) {
+			this.logService.info(`[Orchestration] executeTaskForBoard: agent ${assigneeId} is a workflow agent (workflow=${matchingWorkflow.id}), delegating to workflowExecutionService`);
+			// Fire-and-forget: workflowExecutionService handles its own tracing
+			void this.workflowExecutionService.executeWorkflow(
+				matchingWorkflow.id,
+				{
+					context: {
+						taskTitle,
+						taskDesc,
+						taskBoardRecordId,
+						// v40: map common workflow template variables → task board fields
+						input: taskDesc,          // {{input}}
+						taskDescription: taskDesc, // {{taskDescription}}
+					},
+					agentId: assigneeId,
+					skipVariableCollection: true, // v40: variables pre-filled from task board
+				},
+			).then(execId => {
+				this.logService.info(`[Orchestration] workflowExecutionService started: execId=${execId}`);
+			});
+			return;
+		}
+
+		// v40: Fire trace events so the chat panel renders SubAgent cards
+		const boardExecId = planId || `board_${taskBoardRecordId}`;
+		if (this._streamEventCallback && agentSessionId) {
+			// 1) __workflow__ start → creates LiveWorkflowExecution container
+			this._streamEventCallback('workflow.executionTrace', {
+				executionId: boardExecId,
+				sessionId: agentSessionId,
+				workflowAgentId: assigneeId,
+				kind: 'subagent_start',
+				nodeId: '__workflow__',
+				nodeName: taskTitle,
+				nodeType: 'task',
+				task: taskDesc.slice(0, 500),
+			});
+			// 2) task-level subagent_start → creates SubAgent card
+			this._streamEventCallback('workflow.executionTrace', {
+				executionId: boardExecId,
+				sessionId: agentSessionId,
+				workflowAgentId: assigneeId,
+				kind: 'subagent_start',
+				nodeId: taskBoardRecordId,
+				nodeName: taskTitle,
+				nodeType: 'agent',
+				task: taskDesc.slice(0, 500),
+			});
+		}
+
 		// Mark agent as busy while executing this board task
 		this._markAgentBusy(assigneeId);
 
@@ -2054,6 +2244,30 @@ Goal: ${goal}`;
 			);
 
 			this.logService.info(`[Orchestration] executeTaskForBoard: task ${taskBoardRecordId} completed by agent ${assigneeId}`);
+
+			// v40: Fire subagent_end + execution_end trace events
+			const resultContent = chatMessage.content || '';
+			if (this._streamEventCallback && agentSessionId) {
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: boardExecId,
+					sessionId: agentSessionId,
+					workflowAgentId: assigneeId,
+					kind: 'subagent_end',
+					nodeId: taskBoardRecordId,
+					nodeName: taskTitle,
+					nodeType: 'agent',
+					status: 'done',
+					output: resultContent.slice(0, 2000),
+				});
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: boardExecId,
+					sessionId: agentSessionId,
+					workflowAgentId: assigneeId,
+					kind: 'execution_end',
+					nodeId: '__workflow__',
+					status: 'completed',
+				});
+			}
 
 			// Notify the webview that the stream completed
 			if (this._streamEventCallback) {
@@ -2083,6 +2297,30 @@ Goal: ${goal}`;
 			});
 		} catch (err) {
 			this.logService.error(`[Orchestration] executeTaskForBoard: task ${taskBoardRecordId} execution error:`, err);
+			const errorMsg = err instanceof Error ? err.message : String(err);
+
+			// v40: Fire subagent_end + execution_end with error status
+			if (this._streamEventCallback && agentSessionId) {
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: boardExecId,
+					sessionId: agentSessionId,
+					workflowAgentId: assigneeId,
+					kind: 'subagent_end',
+					nodeId: taskBoardRecordId,
+					nodeName: taskTitle,
+					nodeType: 'agent',
+					status: 'error',
+					error: errorMsg,
+				});
+				this._streamEventCallback('workflow.executionTrace', {
+					executionId: boardExecId,
+					sessionId: agentSessionId,
+					workflowAgentId: assigneeId,
+					kind: 'execution_end',
+					nodeId: '__workflow__',
+					status: 'failed',
+				});
+			}
 
 			if (this._streamEventCallback) {
 				this._streamEventCallback('chat.stream.error', {

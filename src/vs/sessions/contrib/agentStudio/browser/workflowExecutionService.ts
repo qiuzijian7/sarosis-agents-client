@@ -167,6 +167,20 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const variables = WorkflowExecutionService._collectTemplateVariables(workflow);
 		const ownerSession = this._executionSession.get(executionId);
 		if (variables.length > 0 && ownerSession) {
+			// v40: skip variable collection card when pre-filled from context (e.g. task board)
+			if (options?.skipVariableCollection) {
+				this.logService.info(
+					`[WorkflowExecution] Skipping variable collection card (skipVariableCollection=true), ` +
+					`auto-resolving ${variables.length} variable(s) from context`,
+				);
+				// Auto-resolve variables from options.context
+				const autoValues: Record<string, string> = {};
+				const ctx = options.context ?? {};
+				for (const v of variables) {
+					autoValues[v.name] = String(ctx[v.name] ?? v.defaultValue ?? '');
+				}
+				WorkflowExecutionService._substituteVariables(workflow, autoValues);
+			} else {
 			this.logService.info(
 				`[WorkflowExecution] Found ${variables.length} template variable(s): ` +
 				variables.map(v => v.name).join(', '),
@@ -203,6 +217,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					status: 'skipped',
 				});
 			}
+			} // end else (skipVariableCollection)
 		}
 
 		// Start execution (fire-and-forget)

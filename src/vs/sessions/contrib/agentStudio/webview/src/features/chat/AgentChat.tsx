@@ -24,15 +24,14 @@ import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { ChatMessageComponent } from './ChatMessage';
 import { ChatComposer } from './ChatComposer';
 import { CheckpointBar } from './CheckpointBar';
-import { ToolCallCard } from './ToolCallCard';
-import { SubAgentCard } from './SubAgentCard';
+import { SubAgentCard, SubAgentToolTraceBlock } from './SubAgentCard';
 import { AskUserCard } from './AskUserCard';
 import { ExecutionTimelinePanel } from '../workflowEditor/ExecutionTimelinePanel';
-import { MarkdownRenderer, InterleavedMarkdownRenderer } from './MarkdownRenderer';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import { AgentSessionSwitcher } from './AgentSessionSwitcher';
-import { sanitizeStreamingText, sanitizeToolResultText } from '../../utils/assistantVisibleText';
+import { sanitizeStreamingText } from '../../utils/assistantVisibleText';
 import type { StreamError, StreamPhase } from '../../bridge/streamHandler';
-import { isPhaseActive, toolCallStateToToolMessage } from '../../bridge/streamHandler';
+import { isPhaseActive } from '../../bridge/streamHandler';
 import { ChatHistoryPage } from './ChatHistoryPage';
 import { perfTrace } from '../../utils/perfTrace';
 
@@ -123,64 +122,40 @@ const StreamingBubble = memo(function StreamingBubble({
 					<SubAgentCard subAgents={subAgents as any} isStreaming={true} />
 				)}
 
-				{/* Streaming text content + tool calls (interleaved) */}
+				{/* Streaming tool calls — unified SubAgentToolTraceBlock style */}
 				{(() => {
 					const safeToolCalls = Array.isArray(toolCalls) ? toolCalls : [];
 					const visibleToolCalls = safeToolCalls.filter(tc => tc && tc.defaultShow !== false);
-					const toolCallNodes = visibleToolCalls.map(tc => (
-						<ToolCallCard key={tc.id} toolCall={toolCallStateToToolMessage({
-							...tc,
-							status: tc.status as 'running' | 'done' | 'error' | 'approval_required',
-							result: tc.result ? sanitizeToolResultText(tc.result) : tc.result,
-						})} />
-					));
+					// Map ToolCallState → SubAgentToolCallTrace for SubAgentToolTraceBlock
+					const toolTrace: Array<{ id: string; name: string; arguments?: string; result?: string; status?: 'pending' | 'running' | 'done' | 'error' }> = visibleToolCalls.map(tc => ({
+						id: tc.id,
+						name: tc.name,
+						arguments: tc.arguments,
+						result: tc.result,
+						status: (tc.status === 'running' ? 'running' : tc.status === 'error' ? 'error' : tc.status === 'done' ? 'done' : 'pending') as 'pending' | 'running' | 'done' | 'error',
+					}));
 
-					// v30: when a workflow is executing, the delta text content
-					// is already rendered inside the SubAgentCard's output block
-					// (via LiveWorkflowTraceView). Suppress the StreamingBubble's
-					// own textBuffer rendering to avoid showing it twice. We still
-					// render toolCallNodes standalone — they aren't duplicated in
-					// the workflow trace (the trace uses a different compact
-					// SubAgentToolTraceBlock layout).
+					// v30/v40: when a workflow is executing, suppress StreamingBubble's own
+					// textBuffer rendering (LiveWorkflowTraceView already renders it).
+					// Tool calls now go through the unified SubAgentToolTraceBlock instead
+					// of individual ToolCallCards for visual consistency.
 					const effectiveText = suppressText ? '' : sanitizedText;
 
-					// Case A: there IS streaming text → interleave tool cards inside markdown
-					if (effectiveText) {
-						// Build position map from textPosition hints (recorded at tool_start time)
-						const toolPositions = new Map<string, number>();
-						for (const tc of visibleToolCalls) {
-							if (tc.textPosition !== undefined) {
-								toolPositions.set(tc.id, tc.textPosition);
-							}
-						}
-						return (
-							<div className="message-text">
-								{toolCallNodes.length > 0 ? (
-									<InterleavedMarkdownRenderer
-										content={effectiveText}
-										showCursor
-										toolCallNodes={toolCallNodes}
-										toolPositions={toolPositions}
-									/>
-								) : (
-									<MarkdownRenderer
-										content={effectiveText}
-										showCursor
-									/>
-								)}
-							</div>
-						);
-					}
-
-					// Case B: NO text yet but tool cards exist (e.g. a tool requiring
-					// approval fired before any assistant text streamed). Render the
-					// cards standalone so the approval UI is visible — otherwise the
-					// user can never approve and the stream stays stuck.
-					if (toolCallNodes.length > 0) {
-						return <div className="message-text">{toolCallNodes}</div>;
-					}
-
-					return null;
+					return (
+						<>
+							{toolTrace.length > 0 && (
+								<SubAgentToolTraceBlock
+									tools={toolTrace}
+									isStreaming={true}
+								/>
+							)}
+							{effectiveText && (
+								<div className="message-text">
+									<MarkdownRenderer content={effectiveText} showCursor />
+								</div>
+							)}
+						</>
+					);
 				})()}
 
 				{/* Error message */}

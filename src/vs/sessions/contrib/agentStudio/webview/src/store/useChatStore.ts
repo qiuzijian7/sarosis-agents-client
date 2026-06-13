@@ -2058,6 +2058,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 		 */
 		commitWorkflowExecution: (sessionId: string, status: 'completed' | 'failed' | 'cancelled') => {
 			console.log(`[ChatStore] commitWorkflowExecution: sessionId=${sessionId} status=${status}`);
+			// Captured for the post-commit host persistence. The `set()` updater
+			// below MUST stay a pure function (no side effects / no async work),
+			// otherwise React 19's useSyncExternalStore can invoke it twice and
+			// double-fire the persist request. We collect what to persist here
+			// and fire the request AFTER set() returns.
+			let _persistPayload: { agentId: string; message: ChatMessage; executionId: string } | undefined;
 			set(state => {
 				const exec = state.liveWorkflowExecutions[sessionId];
 				if (!exec) { return state; }
@@ -2122,26 +2128,21 @@ export const useChatStore = create<ChatState>((set, get) => {
 				// the workflow run trace (subAgents + toolTrace + askUsers) survives
 				// a window reload. Previously this only mutated in-memory messages,
 				// so the tool cards disappeared after Cmd+R.
-				// Fire-and-forget — host persist is async; the in-memory message
-				// renders immediately regardless.
+				// NOTE: we only CAPTURE the payload here; the actual async
+				// `chat.append` request is fired AFTER set() returns to keep this
+				// updater pure (see _persistPayload declaration above).
 				if (isActiveSession && state.activeAgentId) {
-					void (async () => {
-						try {
-							// Ensure the message carries an agentSessionId so the host's
-							// noSession guard doesn't drop it.
-							const persistable: ChatMessage = {
-								...assistantMessage,
-								agentSessionId: sessionId,
-							};
-							await sendRequest('chat.append', {
-								agentId: state.activeAgentId,
-								message: persistable,
-							});
-							console.log(`[ChatStore] commitWorkflowExecution: persisted wf_run_${exec.executionId} to host`);
-						} catch (err) {
-							console.warn(`[ChatStore] commitWorkflowExecution: chat.append failed for wf_run_${exec.executionId}`, err);
-						}
-					})();
+					// Ensure the message carries an agentSessionId so the host's
+					// noSession guard doesn't drop it.
+					const persistable: ChatMessage = {
+						...assistantMessage,
+						agentSessionId: sessionId,
+					};
+					_persistPayload = {
+						agentId: state.activeAgentId,
+						message: persistable,
+						executionId: exec.executionId,
+					};
 				}
 
 				if (!isActiveSession) {
@@ -2155,6 +2156,20 @@ export const useChatStore = create<ChatState>((set, get) => {
 					liveWorkflowEvents: nextEvents,
 				};
 			});
+
+			// Fire-and-forget host persistence AFTER set() returns, so the
+			// updater stays pure. The in-memory message already rendered.
+			if (_persistPayload) {
+				const { agentId, message, executionId } = _persistPayload;
+				void (async () => {
+					try {
+						await sendRequest('chat.append', { agentId, message });
+						console.log(`[ChatStore] commitWorkflowExecution: persisted wf_run_${executionId} to host`);
+					} catch (err) {
+						console.warn(`[ChatStore] commitWorkflowExecution: chat.append failed for wf_run_${executionId}`, err);
+					}
+				})();
+			}
 		},
 
 		/**

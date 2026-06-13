@@ -16,7 +16,7 @@
 
 
 /* eslint-disable local/code-no-unexternalized-strings */
-import React, { memo, useMemo, useState } from 'react';
+import React, { memo, useMemo, useRef, useState } from 'react';
 import type { ChatMessage } from '../../store/useChatStore';
 import { useChatStore } from '../../store/useChatStore';
 import { ToolCallCard } from './ToolCallCard';
@@ -95,6 +95,43 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	// Lightbox preview for image attachments (Void-inspired full-size viewer)
 	const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
+	// ═══ DIAGNOSTIC: render count tracking for freeze investigation ═══
+	// Remove after root cause is confirmed.
+	const _renderCountRef = useRef(0);
+	_renderCountRef.current++;
+	const _renderCount = _renderCountRef.current;
+	// Log on every 100th render to detect runaway re-render loops.
+	// Also log every render for the first 5 renders of each message instance.
+	if (_renderCount <= 5 || _renderCount % 100 === 0) {
+		console.warn(
+			`[ChatMessage DIAG] render #${_renderCount} id=${message.id} ` +
+			`role=${message.role} isStreaming=${isStreaming} ` +
+			`contentLen=${message.content?.length ?? 0} ` +
+			`hasToolCalls=${Array.isArray(message.toolCalls) && message.toolCalls.length > 0} ` +
+			`metadataType=${(message.metadata as any)?.type ?? 'none'}`,
+		);
+	}
+	// Bail out after 10,000 renders on the same message — this confirms an
+	// infinite re-render loop and prevents the process from locking up
+	// completely.  The error message helps identify which message is guilty.
+	if (_renderCount === 10000) {
+		console.error(
+			`[ChatMessage DIAG] 🛑 10,000 renders for id=${message.id} — stopping. ` +
+			`This message is causing an infinite re-render loop!`,
+		);
+	}
+	if (_renderCount >= 10000) {
+		return (
+			<div className="chat-message assistant" data-message-id={message.id}>
+				<div className="message-content" style={{ color: 'red', padding: '16px', fontFamily: 'monospace' }}>
+					⚠️ 消息渲染循环超过 10000 次，已强制中断。
+					<br />消息 ID: {message.id}
+					<br />内容长度: {message.content?.length ?? 0}
+				</div>
+			</div>
+		);
+	}
+
 	// Subscribe to the orchestration plan that this message renders.
 	// ChatMessageRaw is wrapped in React.memo; while the custom comparator
 	// returns false for orchestration_plan messages (so it re-renders when
@@ -102,9 +139,25 @@ function ChatMessageRaw({ message, isStreaming = false }: ChatMessageProps): Rea
 	// messages array changes.  By subscribing to the plan status here we
 	// force this component to re-render whenever the plan is
 	// approved/rejected/updated, bypassing the memo barrier entirely.
-	const _orchPlanStatus = message.metadata?.type === 'orchestration_plan'
-		? useOrchestrationStore(s => s.plans.find(p => p.id === message.metadata!.planId)?.status)
+	//
+	// ⚠️ CRITICAL — Rules of Hooks: this Hook MUST be called unconditionally
+	// on EVERY render. The previous implementation gated the
+	// `useOrchestrationStore(...)` call behind a `metadata?.type === ...`
+	// ternary, so messages WITHOUT orchestration metadata called one fewer
+	// Hook than messages WITH it. When the chat list mixes both kinds (e.g.
+	// after a workflow run commits a `wf_run_*` assistant message via
+	// `commitWorkflowExecution`), React's fiber for a reused slot would see
+	// the Hook count change between renders and throw "Rendered fewer/more
+	// hooks than expected" (#300/#310). React then re-attempts the render in
+	// a tight loop, freezing the whole webview (observed as "app 卡死 after a
+	// workflow finishes"). The fix: always call the Hook; do the type/plan
+	// guard INSIDE the selector so non-plan messages simply select undefined.
+	const _orchPlanId = message.metadata?.type === 'orchestration_plan'
+		? message.metadata.planId
 		: undefined;
+	const _orchPlanStatus = useOrchestrationStore(s =>
+		_orchPlanId ? s.plans.find(p => p.id === _orchPlanId)?.status : undefined,
+	);
 	void _orchPlanStatus; // subscription side-effect is the only purpose
 
 	const formatTime = (timestamp: string | number) => {

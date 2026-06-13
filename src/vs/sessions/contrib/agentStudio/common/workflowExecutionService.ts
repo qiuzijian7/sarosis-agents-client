@@ -174,6 +174,12 @@ export interface IWorkflowExecutionOptions {
 	 * Default: 0.25 (25%). Set to 0 to disable compression entirely.
 	 */
 	compressionThreshold?: number;
+	/**
+	 * v40: When true, skip the interactive variable collection card and
+	 * auto-resolve `{{variable}}` placeholders from context.
+	 * Used when executing from task board where variables are pre-filled.
+	 */
+	skipVariableCollection?: boolean;
 }
 
 export interface RetryConfig {

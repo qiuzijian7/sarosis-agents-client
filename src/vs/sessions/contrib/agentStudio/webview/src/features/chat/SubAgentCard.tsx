@@ -252,6 +252,7 @@ function SubAgentToolTraceBlockRaw({
 }
 
 const SubAgentToolTraceBlock = memo(SubAgentToolTraceBlockRaw);
+export { SubAgentToolTraceBlock };
 
 // ─── P4 v24: Output / Stream Block ────────────────────────────────────────
 // Collapsible card that wraps the LLM streaming content (delta text
