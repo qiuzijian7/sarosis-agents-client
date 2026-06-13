@@ -3,6 +3,7 @@
 	"version": "1.0.0",
 	"description": "Shared utilities for Sarosis chat model providers (SSE parsing, model config, chat helpers)",
 	"main": "./out/index.js",
+  "activationEvents": [],
 	"types": "./out/index.d.ts",
 	"scripts": {
 		"compile": "tsc -p ./",

@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "type": "module",
   "main": "./out/extension.js",
+  "activationEvents": [],
   "engines": {
     "vscode": "^1.100.0"
   },
