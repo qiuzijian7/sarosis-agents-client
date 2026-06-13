@@ -487,10 +487,23 @@ export function packageCopilotExtensionStream(disableMangle: boolean): Stream {
 }
 
 export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
+	// allow-any-unicode-next-line
+	// 无 GITHUB_TOKEN 时跳过需从 GitHub Releases 下载的内置扩展
+	// allow-any-unicode-next-line
+	// （避免 fetchGithub 因 403 rate limit 中断整个 bundle 构建）
+	const hasGitHubToken = !!process.env['GITHUB_TOKEN'];
+	const hasMarketplace = !!productJson.extensionsGallery?.serviceUrl;
+
 	const marketplaceExtensionsDescriptions = [
 		...builtInExtensions.filter(({ name }) => (forWeb ? !marketplaceWebExtensionsExclude.has(name) : true)),
 		...(forWeb ? webBuiltInExtensions : [])
-	];
+	].filter(ext => {
+		if (!hasGitHubToken && !ext.vsix && !hasMarketplace && ext.repo) {
+			fancyLog('Skipping GitHub-only extension (no GITHUB_TOKEN):', ansiColors.yellow(ext.name));
+			return false;
+		}
+		return true;
+	});
 	const marketplaceExtensionsStream = minifyExtensionResources(
 		es.merge(
 			...marketplaceExtensionsDescriptions
