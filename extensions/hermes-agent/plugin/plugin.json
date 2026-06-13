@@ -1,7 +1,0 @@
-{
-	"name": "hermes-agent",
-	"version": "1.0.0",
-	"description": "Hermes Agent — autonomous AI agent with multi-provider support, 70+ tools, memory, planning and execution. Powered by NousResearch/hermes-agent.",
-	"publisher": "sarosis",
-	"homepage": "https://github.com/NousResearch/hermes-agent"
-}
