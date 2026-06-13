@@ -195,7 +195,22 @@ export function getBuiltInExtensions(): Promise<void> {
 	const control = readControlFile();
 	const streams: Stream[] = [];
 
+	// allow-any-unicode-next-line
+	// 内网构建机无 GITHUB_TOKEN 时，从 GitHub Releases 下载内置扩展必被 403 rate limit。
+	// allow-any-unicode-next-line
+	// 这些扩展（js-debug / js-debug-companion / js-profile-table）对 EXE 运行非必需，
+	// allow-any-unicode-next-line
+	// 既无 vsix 本地包也无 marketplace serviceUrl，无法离线获取 —— 直接跳过避免构建中断。
+	const hasGithubToken = !!process.env['GITHUB_TOKEN'];
+	const hasMarketplace = !!productjson.extensionsGallery?.serviceUrl;
+
 	for (const extension of [...builtInExtensions, ...webBuiltInExtensions]) {
+		const needsGithub = !extension.vsix && !hasMarketplace && !!extension.repo;
+		if (needsGithub && !hasGithubToken) {
+			log(ansiColors.yellow('[skip]'), `${extension.name}@${extension.version}: requires GitHub download but no GITHUB_TOKEN (would be rate limited)`);
+			continue;
+		}
+
 		const controlState = control[extension.name] || 'marketplace';
 		control[extension.name] = controlState;
 
@@ -203,6 +218,11 @@ export function getBuiltInExtensions(): Promise<void> {
 	}
 
 	writeControlFile(control);
+
+	if (streams.length === 0) {
+		log('No built-in extensions to synchronize.');
+		return Promise.resolve();
+	}
 
 	return new Promise((resolve, reject) => {
 		es.merge(streams)
