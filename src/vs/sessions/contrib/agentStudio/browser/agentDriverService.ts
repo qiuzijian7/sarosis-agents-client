@@ -1192,6 +1192,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			systemPrompt: options.systemPrompt,
 			explicitSkillIds: options.explicitSkillIds,
 			worktreePath: options.worktreePath,
+			// v39: forward per-request model override from workflow node config.
+			// When both providerId and model are set, override the global selection.
+			modelOverride: (options.providerId && options.model)
+				? { providerId: options.providerId, modelId: options.model }
+				: undefined,
 			options: {
 				temperature: options.temperature,
 				reasoning: options.reasoning,

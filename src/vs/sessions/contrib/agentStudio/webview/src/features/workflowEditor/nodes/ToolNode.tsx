@@ -14,7 +14,6 @@ const ieLabel: React.CSSProperties = { fontSize: '9px', fontWeight: 600, color: 
 
 export const ToolNode: React.FC<NodeProps> = React.memo((props) => {
 	const data = props.data as Record<string, unknown>;
-	const selected = props.selected;
 	const updateNodeData = useWorkflowEditorStore(s => s.updateNodeData);
 	const toolName = (data.toolName as string) || '';
 
@@ -24,24 +23,12 @@ export const ToolNode: React.FC<NodeProps> = React.memo((props) => {
 				<span style={{ fontSize: '14px' }}>🔧</span>
 				<span style={{ fontWeight: 600 }}>Tool</span>
 			</div>
-			{selected ? (
-				<>
-					<input style={ieInput} value={(data.label as string) || ''} onChange={e => updateNodeData(props.id, { label: e.target.value })} placeholder="Node name" />
-					<span style={ieLabel}>Tool Name</span>
-					<input style={ieInput} value={toolName} onChange={e => updateNodeData(props.id, { toolName: e.target.value })} placeholder="e.g. read_file" />
-					<span style={ieLabel}>Parameters (JSON)</span>
-					<textarea style={ieTextarea} value={(data.params as string) || ''} onChange={e => updateNodeData(props.id, { params: e.target.value })} placeholder='{"key": "value"}' />
-				</>
-			) : (
-				<>
-					<div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '2px' }}>{(data.label as string) || 'Tool'}</div>
-					{toolName ? (
-						<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>{toolName}</div>
-					) : (
-						<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', fontStyle: 'italic' }}>No tool configured</div>
-					)}
-				</>
-			)}
+			{/* Editors (always visible) */}
+			<input style={ieInput} value={(data.label as string) || ''} onChange={e => updateNodeData(props.id, { label: e.target.value })} placeholder="Node name" />
+			<span style={ieLabel}>Tool Name</span>
+			<input style={ieInput} value={toolName} onChange={e => updateNodeData(props.id, { toolName: e.target.value })} placeholder="e.g. read_file" />
+			<span style={ieLabel}>Parameters (JSON)</span>
+			<textarea style={ieTextarea} value={(data.params as string) || ''} onChange={e => updateNodeData(props.id, { params: e.target.value })} placeholder='{"key": "value"}' />
 		</BaseNode>
 	);
 });

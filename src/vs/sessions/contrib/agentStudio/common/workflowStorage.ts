@@ -96,6 +96,23 @@ export interface WorkflowNodeData {
 	// Agent node
 	agentId?: string;
 	agentConfig?: { model?: string; tools?: string[]; memory?: string };
+	/**
+	 * Controls how much conversation context the agent node receives.
+	 * - 'session' (default): shares the session with other agent nodes for the
+	 *   same execution — full conversation history is available.
+	 * - 'upstream-only': creates a fresh session; only upstream node outputs
+	 *   are injected as a system message (no prior conversation history).
+	 * - 'fresh': creates a fully isolated session with no upstream context at all.
+	 */
+	contextScope?: 'session' | 'upstream-only' | 'fresh';
+	// Failure recovery: per-node retry policy (exponential backoff + jitter).
+	retryMaxAttempts?: number;      // max retry attempts (default: 0)
+	retryInitialDelayMs?: number;   // initial delay before first retry (default: 1000)
+	retryBackoffMultiplier?: number;// backoff multiplier (default: 2)
+	retryMaxDelayMs?: number;       // max delay between retries (default: 30000)
+	// Failure recovery: per-node timeout policy.
+	timeoutRunMs?: number;          // hard wall-clock timeout (default: 300000 = 5min)
+	timeoutIdleMs?: number;         // max idle time without progress (default: 60000 = 1min)
 	// Skill node
 	skillName?: string;
 	skillArgs?: Record<string, string>;

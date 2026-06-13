@@ -497,6 +497,35 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 	}
 
+	/**
+	 * Replace the entire chat history for an agent session in both the
+	 * in-memory cache and the persistent session file. Used by workflow
+	 * execution to write back compressed messages so subsequent
+	 * `getHistory` calls don't reload the full uncompressed history.
+	 */
+	async replaceHistory(agentId: string, sessionId: string | undefined, messages: ChatMessage[]): Promise<void> {
+		await this._ensureHistoryLoaded();
+		const key = this._cacheKey(agentId, sessionId);
+		this._historyCache.set(key, [...messages]);
+		await this._persistGlobalHistory();
+		if (sessionId) {
+			try {
+				const paths = await this._resolveAgentPaths(agentId);
+				const fileUri = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+				const json = JSON.stringify(messages, null, 2);
+				await this.fileService.writeFile(fileUri, VSBuffer.fromString(json));
+				this.logService.info(
+					`[AgentChatService] replaceHistory: wrote ${messages.length} msgs to ${key}`,
+				);
+			} catch (err) {
+				this.logService.error(
+					`[AgentChatService] replaceHistory: failed to persist for ${key}: ${err instanceof Error ? err.message : err}`,
+				);
+				throw err;
+			}
+		}
+	}
+
 	// ─── 历史转换：host ChatMessage[] → driver IChatMessage[] ──────────────────
 	//
 	// 背景：后端 turn 此前每轮只收到当前 user 消息（messages=1），长对话上下文

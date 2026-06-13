@@ -32,23 +32,17 @@ export const GroupNode: React.FC<NodeProps> = React.memo((props) => {
 					<span style={{ fontSize: '14px' }}>▦</span>
 					<span>Group</span>
 				</div>
-				{props.selected ? (
-					<input
-						style={{
-							fontSize: '12px', fontWeight: 500, marginTop: '2px', padding: '2px 4px',
-							background: 'var(--vscode-input-background)', color: 'var(--vscode-input-foreground)',
-							border: '1px solid var(--vscode-input-border)', borderRadius: '2px',
-							width: '100%',
-						}}
-						value={(data.label as string) || ''}
-						onChange={e => updateNodeData(props.id, { label: e.target.value })}
-						placeholder="Group name"
-					/>
-				) : (
-					<div style={{ fontSize: '12px', fontWeight: 500, marginTop: '2px' }}>
-						{(data.label as string) || 'Group'}
-					</div>
-				)}
+				<input
+					style={{
+						fontSize: '12px', fontWeight: 500, marginTop: '2px', padding: '2px 4px',
+						background: 'var(--vscode-input-background)', color: 'var(--vscode-input-foreground)',
+						border: '1px solid var(--vscode-input-border)', borderRadius: '2px',
+						width: '100%',
+					}}
+					value={(data.label as string) || ''}
+					onChange={e => updateNodeData(props.id, { label: e.target.value })}
+					placeholder="Group name"
+				/>
 			</div>
 		</>
 	);

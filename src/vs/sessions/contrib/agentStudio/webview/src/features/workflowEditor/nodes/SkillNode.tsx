@@ -18,15 +18,14 @@ const ieLabel: React.CSSProperties = { fontSize: '9px', fontWeight: 600, color: 
 
 export const SkillNode: React.FC<NodeProps> = React.memo((props) => {
 	const data = props.data as Record<string, unknown>;
-	const selected = props.selected;
 	const updateNodeData = useWorkflowEditorStore(s => s.updateNodeData);
 	const [skills, setSkills] = useState<{ id: string; name: string }[]>([]);
 
 	useEffect(() => {
-		if (selected && skills.length === 0) {
+		if (skills.length === 0) {
 			sendRequest<unknown, { id: string; name: string }[]>('skills.list', {}).then(r => setSkills(Array.isArray(r) ? r : [])).catch(() => {});
 		}
-	}, [selected, skills.length]);
+	}, [skills.length]);
 
 	const skillName = (data.skillName as string) || '';
 	const skillId = (data.skillId as string) || '';
@@ -65,46 +64,34 @@ export const SkillNode: React.FC<NodeProps> = React.memo((props) => {
 					</span>
 				)}
 			</div>
-			{selected ? (
-				<>
-					<input style={ieInput} value={(data.label as string) || ''} onChange={e => updateNodeData(props.id, { label: e.target.value })} placeholder="Node name" />
-					<span style={ieLabel}>Skill</span>
-					<select style={ieSelect} value={skillId} onChange={e => {
-						const found = skills.find(s => s.id === e.target.value);
-						updateNodeData(props.id, { skillId: e.target.value, skillName: found?.name || '' });
-						if (found) updateNodeData(props.id, { label: found.name });
-					}}>
-						<option value="">— Select skill —</option>
-						{skills.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
-					</select>
-					<span style={ieLabel}>Input</span>
-					<div style={{ position: 'relative' }}>
-						<textarea
-							ref={promptRef}
-							style={ieTextarea}
-							value={promptText}
-							onChange={e => updateNodeData(props.id, { prompt: e.target.value })}
-							placeholder="Type {{ for variable autocomplete (optional)"
-						/>
-						<VariableAutocomplete
-							targetRef={promptRef}
-							text={promptText}
-							onChange={next => updateNodeData(props.id, { prompt: next })}
-							candidates={candidates}
-							id={`skill-node-ac-${props.id}`}
-						/>
-					</div>
-				</>
-			) : (
-				<>
-					<div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '2px' }}>{(data.label as string) || 'Skill'}</div>
-					{skillName ? (
-						<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>{skillName}</div>
-					) : (
-						<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', fontStyle: 'italic' }}>No skill selected</div>
-					)}
-				</>
-			)}
+			{/* Label + editors (always visible) */}
+			<input style={ieInput} value={(data.label as string) || ''} onChange={e => updateNodeData(props.id, { label: e.target.value })} placeholder="Node name" />
+			<span style={ieLabel}>Skill</span>
+			<select style={ieSelect} value={skillId} onChange={e => {
+				const found = skills.find(s => s.id === e.target.value);
+				updateNodeData(props.id, { skillId: e.target.value, skillName: found?.name || '' });
+				if (found) updateNodeData(props.id, { label: found.name });
+			}}>
+				<option value="">— Select skill —</option>
+				{skills.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
+			</select>
+			<span style={ieLabel}>Input</span>
+			<div style={{ position: 'relative' }}>
+				<textarea
+					ref={promptRef}
+					style={ieTextarea}
+					value={promptText}
+					onChange={e => updateNodeData(props.id, { prompt: e.target.value })}
+					placeholder="Type {{ for variable autocomplete (optional)"
+				/>
+				<VariableAutocomplete
+					targetRef={promptRef}
+					text={promptText}
+					onChange={next => updateNodeData(props.id, { prompt: next })}
+					candidates={candidates}
+					id={`skill-node-ac-${props.id}`}
+				/>
+			</div>
 		</BaseNode>
 	);
 });

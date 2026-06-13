@@ -360,6 +360,10 @@ export type ChatMode = 'craft' | 'ask' | 'plan' | 'workflow';
 
 export interface IChatSendOptions {
 	readonly model?: string;
+	/** Provider ID override (e.g. 'byok', 'knot-agui'). When set together with
+	 *  `model`, the pair overrides the global active model selection for this
+	 *  single sendMessage call — used by workflow node-level provider/model. */
+	readonly providerId?: string;
 	readonly agentId?: string; // selected Agent ID (e.g. Knot Agent)
 	readonly systemPrompt?: string;
 	readonly temperature?: number;
@@ -441,6 +445,14 @@ export interface IAgentChatService {
 	 * Keeps messages up to and including the target message.
 	 */
 	deleteMessagesAfter(agentId: string, sessionId: string | undefined, messageId: string): Promise<void>;
+
+	/**
+	 * Replace the entire chat history for an agent session. Used by the
+	 * workflow execution engine to write back compressed messages after
+	 * the Provider layer performs context compaction, so subsequent
+	 * `getHistory` calls don't reload the full uncompressed history.
+	 */
+	replaceHistory(agentId: string, sessionId: string | undefined, messages: ChatMessage[]): Promise<void>;
 }
 
 // --- Agent Delegation Service ---

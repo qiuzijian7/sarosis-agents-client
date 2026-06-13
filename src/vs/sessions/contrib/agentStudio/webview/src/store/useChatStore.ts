@@ -2069,6 +2069,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 					.filter(sa => sa.id !== '__workflow__') // skip synthetic root
 					.map(sa => ({
 						id: sa.id,
+						name: sa.name,
 						type: 'general' as const,
 						task: sa.task,
 						parentAgentId: state.activeAgentId ?? undefined,

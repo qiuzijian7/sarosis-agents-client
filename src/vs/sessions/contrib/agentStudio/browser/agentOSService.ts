@@ -416,6 +416,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	async *executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		this._logService.info(`[AgentOS] executeAgentTurn: agentId=${request.agentId}, messages=${request.messages.length}`);
 
+		// v39: per-request model override — workflow nodes can specify their own
+		// provider/model. We temporarily swap the global selection and restore
+		// it in the finally block, so all downstream code (tool listing,
+		// provider lookup, fallback) sees the overridden selection.
+		const savedSelection = this._activeSelection;
+		if (request.modelOverride?.providerId && request.modelOverride?.modelId) {
+			this._activeSelection = request.modelOverride;
+			this._logService.info(
+				`[AgentOS] Model override active: ${request.modelOverride.providerId}/${request.modelOverride.modelId} ` +
+				`(was ${savedSelection?.providerId}/${savedSelection?.modelId})`,
+			);
+		}
+
+		try {
 		// ─── Path 1: 用户明确选择了 Model → 直通模式 ───────────────
 		// 当用户在聊天框中显式选择了 Provider/Model 时，应直接使用该 Provider
 		// 的 chat() 方法，而不是走 ExecutionProvider（它可能是 example stub）。
@@ -451,6 +465,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		// ─── Path 3: 退化模式：直接调用 Model Provider（带 Fallback）──
 		yield* this._executeWithFallbackDirectly(request);
+		} finally {
+			// v39: restore the original selection after the turn completes.
+			if (request.modelOverride?.providerId && request.modelOverride?.modelId) {
+				this._activeSelection = savedSelection;
+				this._logService.info(
+					`[AgentOS] Model override restored to: ${savedSelection?.providerId}/${savedSelection?.modelId}`,
+				);
+			}
+		}
 	}
 
 	/**

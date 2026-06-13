@@ -41,10 +41,10 @@ export const AskUserNode: React.FC<NodeProps> = React.memo(({ id, data, selected
 
 	return (
 		<div className="wf-node" style={{
-			position: 'relative', padding: selected ? '12px 14px' : '12px 14px', borderRadius: '8px',
+			position: 'relative', padding: '12px 14px', borderRadius: '8px',
 			border: `2px solid ${selected ? 'var(--vscode-focusBorder)' : '#06b6d4'}`,
 			backgroundColor: 'var(--vscode-editor-background)',
-			minWidth: selected ? '260px' : '200px', maxWidth: '320px',
+			minWidth: '260px', maxWidth: '320px',
 			fontSize: '13px', lineHeight: 1.5, color: 'var(--vscode-foreground)',
 		}}>
 			<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
@@ -63,53 +63,38 @@ export const AskUserNode: React.FC<NodeProps> = React.memo(({ id, data, selected
 				</div>
 			</div>
 
-			{selected ? (
-				<>
-					<input style={ieInput} value={(d.label as string) || ''} onChange={e => update('label', e.target.value)} placeholder="Node name" />
-					<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Question</div>
-					<div style={{ position: 'relative' }}>
-						<textarea
-							ref={questionRef}
-							style={ieTextarea}
-							value={questionText}
-							onChange={e => update('question', e.target.value)}
-							placeholder="Type {{ for variable autocomplete"
-						/>
-						<VariableAutocomplete
-							targetRef={questionRef}
-							text={questionText}
-							onChange={next => update('question', next)}
-							candidates={candidates}
-							id={`askuser-node-ac-${id}`}
-						/>
-					</div>
-					<label style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '6px', fontSize: '10px' }}>
-						<input type="checkbox" checked={!!multiSelect} onChange={e => update('multiSelect', e.target.checked)} /> Multi-select
-					</label>
-					<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Options</div>
-					{options.map((opt, i) => (
-						<div key={i} style={{ marginBottom: '4px' }}>
-							<input style={ieInput} value={opt.label} onChange={e => {
-								const next = options.map((o, j) => j === i ? { ...o, label: e.target.value } : o);
-								update('options', next);
-							}} placeholder="Option label" />
-						</div>
-					))}
-					<button onClick={() => update('options', [...options, { label: `Option ${options.length + 1}`, description: '' }])}
-						style={{ fontSize: '10px', padding: '1px 6px', cursor: 'pointer', marginTop: '2px', background: 'var(--vscode-button-secondaryBackground)', color: 'var(--vscode-button-secondaryForeground)', border: 'none', borderRadius: '3px' }}>+ Option</button>
-				</>
-			) : (
-				<>
-					<div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px' }}>{(d.label as string) || 'Ask User'}</div>
-					<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', marginBottom: '8px', lineHeight: 1.3 }}>{questionText || 'No question set'}</div>
-					{options.map((opt, i) => (
-						<div key={i} style={{ fontSize: '11px', marginBottom: '4px', padding: '4px 8px', backgroundColor: 'var(--vscode-textBlockQuote-background)', borderLeft: '3px solid var(--vscode-charts-blue)', borderRadius: '3px' }}>
-							<span style={{ fontWeight: 600 }}>{opt.label}</span>
-							{opt.description && <div style={{ fontSize: '10px', color: 'var(--vscode-descriptionForeground)' }}>{opt.description}</div>}
-						</div>
-					))}
-				</>
-			)}
+			<input style={ieInput} value={(d.label as string) || ''} onChange={e => update('label', e.target.value)} placeholder="Node name" />
+			<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Question</div>
+			<div style={{ position: 'relative' }}>
+				<textarea
+					ref={questionRef}
+					style={ieTextarea}
+					value={questionText}
+					onChange={e => update('question', e.target.value)}
+					placeholder="Type {{ for variable autocomplete"
+				/>
+				<VariableAutocomplete
+					targetRef={questionRef}
+					text={questionText}
+					onChange={next => update('question', next)}
+					candidates={candidates}
+					id={`askuser-node-ac-${id}`}
+				/>
+			</div>
+			<label style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '6px', fontSize: '10px' }}>
+				<input type="checkbox" checked={!!multiSelect} onChange={e => update('multiSelect', e.target.checked)} /> Multi-select
+			</label>
+			<div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--vscode-descriptionForeground)', marginTop: '6px' }}>Options</div>
+			{options.map((opt, i) => (
+				<div key={i} style={{ marginBottom: '4px' }}>
+					<input style={ieInput} value={opt.label} onChange={e => {
+						const next = options.map((o, j) => j === i ? { ...o, label: e.target.value } : o);
+						update('options', next);
+					}} placeholder="Option label" />
+				</div>
+			))}
+			<button onClick={() => update('options', [...options, { label: `Option ${options.length + 1}`, description: '' }])}
+				style={{ fontSize: '10px', padding: '1px 6px', cursor: 'pointer', marginTop: '2px', background: 'var(--vscode-button-secondaryBackground)', color: 'var(--vscode-button-secondaryForeground)', border: 'none', borderRadius: '3px' }}>+ Option</button>
 
 			<Handle type="target" position={Position.Left} id="input" style={{ width: 10, height: 10, backgroundColor: '#06b6d4', border: '2px solid var(--vscode-editor-background)' }} />
 			{Array.from({ length: Math.max(n, 2) }).map((_, i) => (

@@ -54,6 +54,14 @@ export interface IWorkflowExecutionState {
 	error?: string;
 	context: Record<string, unknown>; // Data passed between nodes
 	breakpoints?: Set<string>; // Node IDs with breakpoints (for P2 debug)
+	/** Execution options (history trimming, context strategies, etc.) */
+	readonly options?: IWorkflowExecutionOptions;
+	/**
+	 * Shared memory for inter-agent communication during workflow execution.
+	 * Agents can read/write named values that are visible to all nodes.
+	 * Inspired by open-multi-agent's SharedMemory.
+	 */
+	readonly sharedMemory: Map<string, string>;
 }
 
 export interface IWorkflowExecutionService {
@@ -154,6 +162,36 @@ export interface IWorkflowExecutionOptions {
 	context?: Record<string, unknown>;
 	/** Agent ID to use for agent nodes (defaults to workflow's agentId) */
 	agentId?: string;
+	/**
+	 * Maximum number of conversation history messages to keep when sending
+	 * to agent nodes. When exceeded, the oldest messages are trimmed.
+	 * Default: undefined (no limit, keep all).
+	 */
+	maxHistoryMessages?: number;
+	/**
+	 * Context compression threshold (0-1). Tokens above this ratio of the
+	 * model's context window trigger the Hermes 3-segment compression.
+	 * Default: 0.25 (25%). Set to 0 to disable compression entirely.
+	 */
+	compressionThreshold?: number;
+}
+
+export interface RetryConfig {
+	/** Maximum number of retry attempts (default: 0 — no retry). */
+	maxAttempts?: number;
+	/** Initial delay before first retry, in milliseconds (default: 1000). */
+	initialDelayMs?: number;
+	/** Backoff multiplier — each retry delay = previous * multiplier (default: 2). */
+	backoffMultiplier?: number;
+	/** Maximum delay between retries, in milliseconds (default: 30000). */
+	maxDelayMs?: number;
+}
+
+export interface TimeoutConfig {
+	/** Hard wall-clock timeout for the entire node execution, in milliseconds. Default: 300000 (5 min). */
+	runTimeoutMs?: number;
+	/** Maximum idle time without any delta/progress, in milliseconds. Default: 60000 (1 min). */
+	idleTimeoutMs?: number;
 }
 
 export interface IAskUserOption {

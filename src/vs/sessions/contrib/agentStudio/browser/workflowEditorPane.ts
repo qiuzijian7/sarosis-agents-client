@@ -113,6 +113,22 @@ export class WorkflowEditorPane extends EditorPane {
 		this._webviewController?.layout(dimension.width, dimension.height);
 	}
 
+	override setVisible(visible: boolean): void {
+		super.setVisible(visible);
+		if (visible && this._webviewController && this._container) {
+			// Tab switch causes the panel container to be hidden/removed from DOM,
+			// which zeros out getBoundingClientRect(). The ResizeObserver in the
+			// pool hot path won't fire when the pane re-appears with the same CSS
+			// dimensions as before — so we force a layout sync.
+			// Also gives the webview a kick for the cold path (retainContextWhenHidden
+			// keeps the iframe alive but may leave it at stale dimensions).
+			const rect = this._container.getBoundingClientRect();
+			if (rect.width > 0 && rect.height > 0) {
+				this._webviewController.layout(rect.width, rect.height);
+			}
+		}
+	}
+
 	private _disposeWebview(): void {
 		if (this._webviewController) {
 			this._webviewController.dispose();

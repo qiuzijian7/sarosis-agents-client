@@ -1,7 +1,6 @@
 /*---------------------------------------------------------------------------------------------
- *  AgentNode — inline editing when selected (v12)
- *  When selected, expands to show agent selector, prompt textarea, and config dropdowns.
- *  When deselected (or unselected), shows the compact read-only view.
+ *  AgentNode — always-expanded editing UI (v12)
+ *  Shows agent selector, prompt textarea, and config dropdowns at all times.
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useState } from 'react';
@@ -30,7 +29,6 @@ export const AgentNode: React.FC<NodeProps> = React.memo((props) => {
 	const data = props.data as Record<string, unknown>;
 	const agentId = (data.agentId as string) || '';
 	const config = data.agentConfig as { providerId?: string; modelId?: string } | undefined;
-	const selected = props.selected;
 
 	const updateNodeData = useWorkflowEditorStore(s => s.updateNodeData);
 	const update = (k: string, v: unknown) => updateNodeData(props.id, { [k]: v });
@@ -44,17 +42,14 @@ export const AgentNode: React.FC<NodeProps> = React.memo((props) => {
 	const [worktrees, setWorktrees] = useState<{ path: string; branch: string; repoName?: string }[]>([]);
 
 	useEffect(() => {
-		if (selected && agents.length === 0) loadAgents();
-		if (selected && providers.length === 0) loadProviders();
-	}, [selected, agents.length, providers.length, loadAgents, loadProviders]);
+		if (agents.length === 0) loadAgents();
+		if (providers.length === 0) loadProviders();
+	}, [agents.length, providers.length, loadAgents, loadProviders]);
 
-	// Fetch worktrees when selected AND workspaceId is available.
-	// Separated so it re-fires when activeWorkspaceId loads asynchronously.
+	// Fetch worktrees when workspaceId is available.
 	useEffect(() => {
-		if (!selected) { return; }
 		const wsId = activeWorkspaceId;
 		if (!wsId) {
-			// workspaceId not loaded yet — poll once after a short delay
 			const timer = setTimeout(() => {
 				const fallbackWsId = useWorkspaceStore.getState().activeWorkspaceId;
 				if (fallbackWsId) {
@@ -68,7 +63,7 @@ export const AgentNode: React.FC<NodeProps> = React.memo((props) => {
 		sendRequest<{ workspaceId: string }, { path: string; branch: string; repoName?: string }[]>('worktree.list', { workspaceId: wsId })
 			.then(r => setWorktrees(Array.isArray(r) ? r : []))
 			.catch(() => setWorktrees([]));
-	}, [selected, activeWorkspaceId]);
+	}, [activeWorkspaceId]);
 
 	const currentProvider = providers.find(p => p.id === config?.providerId);
 	const currentModels = currentProvider?.models ?? [];
@@ -111,101 +106,75 @@ export const AgentNode: React.FC<NodeProps> = React.memo((props) => {
 				)}
 			</div>
 
-			{/* Label (always visible, editable when selected) */}
-			{selected ? (
-				<input style={ieInput} value={(data.label as string) || ''} onChange={e => update('label', e.target.value)} placeholder="Agent node name" />
-			) : (
-				<div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '2px' }}>
-					{(data.label as string) || 'Agent'}
+			{/* Label (always editable) */}
+			<input style={ieInput} value={(data.label as string) || ''} onChange={e => update('label', e.target.value)} placeholder="Agent node name" />
+
+			{/* Inline editors (always visible) */}
+			<span style={ieLabel}>Agent</span>
+			<select style={ieSelect} value={agentId} onChange={e => {
+				const found = agents.find(a => a.id === e.target.value);
+				update('agentId', e.target.value);
+				if (found) update('label', found.name);
+			}}>
+				<option value="">— Select agent —</option>
+				{agents.map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
+			</select>
+
+			<span style={ieLabel}>Prompt</span>
+			<div style={{ position: 'relative' }}>
+				<textarea
+					ref={promptTextareaRef}
+					style={ieTextarea}
+					value={promptText}
+					onChange={e => update('prompt', e.target.value)}
+					placeholder="Type {{ for variable autocomplete"
+				/>
+				<VariableAutocomplete
+					targetRef={promptTextareaRef}
+					text={promptText}
+					onChange={next => update('prompt', next)}
+					candidates={candidates}
+					id={`agent-node-ac-${props.id}`}
+				/>
+			</div>
+			{/* v13: detected variable chips */}
+			{detectedVariables.length > 0 && (
+				<div style={{ marginTop: '3px', display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+					{detectedVariables.map(name => (
+						<span
+							key={name}
+							style={{
+								fontSize: '9px',
+								padding: '1px 5px',
+								borderRadius: '2px',
+								background: 'var(--vscode-textCodeBlock-background, #1e1e1e)',
+								color: 'var(--vscode-charts-blue, #4fc1ff)',
+								fontFamily: 'var(--vscode-editor-font-family, monospace)',
+							}}
+						>
+							{`{{${name}}}`}
+						</span>
+					))}
 				</div>
 			)}
 
-			{!selected && agentId && (
-				<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)' }}>
-					ID: {agentId.slice(0, 20)}{agentId.length > 20 ? '...' : ''}
-				</div>
-			)}
-			{!selected && !agentId && (
-				<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', fontStyle: 'italic' }}>
-					No agent selected
-				</div>
-			)}
-			{!selected && config?.modelId && (
-				<div style={{ fontSize: '10px', color: 'var(--vscode-descriptionForeground)', marginTop: '2px' }}>
-					{config.modelId}
-				</div>
-			)}
+			<span style={ieLabel}>Provider</span>
+			<select style={ieSelect} value={config?.providerId || ''} onChange={e => update('agentConfig', { ...config, providerId: e.target.value, modelId: '' })}>
+				<option value="">— Default —</option>
+				{providers.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+			</select>
 
-			{/* Inline editors (only when selected) */}
-			{selected && (
-				<>
-					<span style={ieLabel}>Agent</span>
-					<select style={ieSelect} value={agentId} onChange={e => {
-						const found = agents.find(a => a.id === e.target.value);
-						update('agentId', e.target.value);
-						if (found) update('label', found.name);
-					}}>
-						<option value="">— Select agent —</option>
-						{agents.map(a => (<option key={a.id} value={a.id}>{a.name}</option>))}
-					</select>
+			<span style={ieLabel}>Model</span>
+			<select style={ieSelect} value={config?.modelId || ''} onChange={e => update('agentConfig', { ...config, modelId: e.target.value })} disabled={!config?.providerId}>
+				<option value="">— Default —</option>
+				{currentModels.map(m => (<option key={m.id} value={m.id}>{m.name}</option>))}
+			</select>
 
-					<span style={ieLabel}>Prompt</span>
-					<div style={{ position: 'relative' }}>
-						<textarea
-							ref={promptTextareaRef}
-							style={ieTextarea}
-							value={promptText}
-							onChange={e => update('prompt', e.target.value)}
-							placeholder="Type {{ for variable autocomplete"
-						/>
-						<VariableAutocomplete
-							targetRef={promptTextareaRef}
-							text={promptText}
-							onChange={next => update('prompt', next)}
-							candidates={candidates}
-							id={`agent-node-ac-${props.id}`}
-						/>
-					</div>
-					{/* v13: detected variable chips (read-only — the actual popup is the VariableAutocomplete above) */}
-					{detectedVariables.length > 0 && (
-						<div style={{ marginTop: '3px', display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
-							{detectedVariables.map(name => (
-								<span
-									key={name}
-									style={{
-										fontSize: '9px',
-										padding: '1px 5px',
-										borderRadius: '2px',
-										background: 'var(--vscode-textCodeBlock-background, #1e1e1e)',
-										color: 'var(--vscode-charts-blue, #4fc1ff)',
-										fontFamily: 'var(--vscode-editor-font-family, monospace)',
-									}}
-								>
-									{`{{${name}}}`}
-								</span>
-							))}
-						</div>
-					)}
-
-					<span style={ieLabel}>Provider</span>
-					<select style={ieSelect} value={config?.providerId || ''} onChange={e => update('agentConfig', { ...config, providerId: e.target.value, modelId: '' })}>
-						<option value="">— Default —</option>
-						{providers.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
-					</select>
-
-					<span style={ieLabel}>Model</span>
-					<select style={ieSelect} value={config?.modelId || ''} onChange={e => update('agentConfig', { ...config, modelId: e.target.value })} disabled={!config?.providerId}>
-						<option value="">— Default —</option>
-						{currentModels.map(m => (<option key={m.id} value={m.id}>{m.name}</option>))}
-					</select>
-
-					<span style={ieLabel}>Worktree</span>
-					<select style={ieSelect} value={(data.worktreePath as string) || ''} onChange={e => update('worktreePath', e.target.value)}>
-						<option value="">— None —</option>
-						{worktrees.map(wt => (<option key={wt.path} value={wt.path}>{wt.repoName ? `${wt.repoName} · ` : ''}{wt.branch}</option>))}
-					</select>
-				</>
-			)}
+			<span style={ieLabel}>Worktree</span>
+			<select style={ieSelect} value={(data.worktreePath as string) || ''} onChange={e => update('worktreePath', e.target.value)}>
+				<option value="">— None —</option>
+				{worktrees.map(wt => (<option key={wt.path} value={wt.path}>{wt.repoName ? `${wt.repoName} · ` : ''}{wt.branch}</option>))}
+			</select>
 		</BaseNode>
 	);
 });

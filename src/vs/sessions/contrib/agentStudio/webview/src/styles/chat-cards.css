@@ -1091,6 +1091,89 @@
 	overflow-x: auto;
 }
 
+/* ── P4 v34: Input / Task Block (collapsible) ────────────────────────────
+   Renders the agent's input (prompt / task description) as a "tool card"
+   with the same visual language (border-left accent + icon + title +
+   chevron + body) as the output/tool-trace blocks. Default collapsed so
+   the card stays compact — the user expands it to inspect the full prompt. */
+
+.subagent-input-block {
+	margin: 4px 0 4px 28px;
+	border-left: 2px solid var(--vscode-charts-green, #34d399);
+	background: rgba(52, 211, 153, 0.04);
+	border-radius: 0 4px 4px 0;
+}
+
+.subagent-input-block-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	cursor: pointer;
+	font-size: 12px;
+	user-select: none;
+	border-radius: 0 4px 4px 0;
+}
+
+.subagent-input-block-header:hover {
+	background: rgba(52, 211, 153, 0.08);
+}
+
+.subagent-input-block-icon {
+	font-size: 12px;
+	flex-shrink: 0;
+}
+
+.subagent-input-block-title {
+	font-weight: 600;
+	color: var(--vscode-charts-green, #34d399);
+	flex-shrink: 0;
+}
+
+.subagent-input-block-preview {
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #999));
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.subagent-input-block-toggle {
+	display: inline-flex;
+	color: var(--vscode-charts-green, #34d399);
+	flex-shrink: 0;
+	transition: transform 0.15s ease;
+}
+
+.subagent-input-block-toggle.collapsed {
+	transform: rotate(-90deg);
+}
+
+.subagent-input-block-body {
+	padding: 6px 10px 8px 10px;
+	border-top: 1px solid rgba(52, 211, 153, 0.15);
+	max-height: 300px;
+	overflow-y: auto;
+}
+
+.subagent-input-block-body .markdown-body {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-foreground);
+}
+
+.subagent-input-block-body .markdown-body p {
+	margin: 0 0 6px 0;
+}
+
+.subagent-input-block-body .markdown-body pre {
+	background: var(--as-bg-tertiary, rgba(128, 128, 128, 0.08));
+	border-radius: 4px;
+	padding: 6px 8px;
+	font-size: 11px;
+	overflow-x: auto;
+}
+
 /* ── Workflow trace banner (P4) ──────────────────────────────────────── */
 .workflow-trace-header {
 	user-select: none;

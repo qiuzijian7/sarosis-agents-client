@@ -24843,6 +24843,7 @@
               }
               const subAgentsForMessage = exec.subAgents.filter((sa) => sa.id !== "__workflow__").map((sa) => ({
                 id: sa.id,
+                name: sa.name,
                 type: "general",
                 task: sa.task,
                 parentAgentId: state.activeAgentId ?? void 0,
@@ -41289,7 +41290,6 @@
       ieLabel = { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px", display: "block" };
       TaskNode = import_react43.default.memo((props) => {
         const data = props.data;
-        const selected2 = props.selected;
         const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
         const promptText = data.prompt || "";
         const variableBadge = formatVariableBadge(promptText);
@@ -41324,38 +41324,29 @@
               }
             )
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(import_jsx_runtime37.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("input", { style: ieInput, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Task name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { style: ieLabel, children: "Description" }),
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { style: { position: "relative" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
-                "textarea",
-                {
-                  ref: textareaRef,
-                  style: ieTextarea,
-                  value: promptText,
-                  onChange: (e) => updateNodeData(props.id, { prompt: e.target.value }),
-                  placeholder: "Type {{ for variable autocomplete"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
-                VariableAutocomplete,
-                {
-                  targetRef: textareaRef,
-                  text: promptText,
-                  onChange: (next) => updateNodeData(props.id, { prompt: next }),
-                  candidates,
-                  id: `task-node-ac-${props.id}`
-                }
-              )
-            ] })
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(import_jsx_runtime37.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "2px" }, children: data.label || "Task" }),
-            data.executorId ? /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)" }, children: [
-              "Executor: ",
-              data.executorId.slice(0, 16),
-              "..."
-            ] }) : null
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("input", { style: ieInput, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Task name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { style: ieLabel, children: "Description" }),
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { style: { position: "relative" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+              "textarea",
+              {
+                ref: textareaRef,
+                style: ieTextarea,
+                value: promptText,
+                onChange: (e) => updateNodeData(props.id, { prompt: e.target.value }),
+                placeholder: "Type {{ for variable autocomplete"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+              VariableAutocomplete,
+              {
+                targetRef: textareaRef,
+                text: promptText,
+                onChange: (next) => updateNodeData(props.id, { prompt: next }),
+                candidates,
+                id: `task-node-ac-${props.id}`
+              }
+            )
           ] })
         ] });
       });
@@ -41388,10 +41379,8 @@
       ieTextarea2 = { ...ieInput2, minHeight: "60px", resize: "vertical" };
       PromptNode = import_react44.default.memo((props) => {
         const data = props.data;
-        const selected2 = props.selected;
         const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
         const promptText = data.prompt || "";
-        const preview = promptText.length > 80 ? promptText.substring(0, 80) + "..." : promptText;
         const variableBadge = formatVariableBadge(promptText);
         const detectedVariables = extractVariables(promptText);
         const allNodes = useWorkflowEditorStore((s) => s.nodes);
@@ -41455,118 +41444,113 @@
               }
             )
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("input", { style: ieInput2, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Prompt node name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { style: { position: "relative" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
-                "textarea",
-                {
-                  ref: textareaRef,
-                  style: ieTextarea2,
-                  value: promptText,
-                  onChange: (e) => updateNodeData(props.id, { prompt: e.target.value }),
-                  placeholder: "Type {{ for variable autocomplete, e.g. Build a {{feature}} using {{stack}}"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
-                VariableAutocomplete,
-                {
-                  targetRef: textareaRef,
-                  text: promptText,
-                  onChange: (next) => updateNodeData(props.id, { prompt: next }),
-                  candidates,
-                  id: `prompt-node-ac-${props.id}`
-                }
-              )
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { style: { position: "relative", marginTop: "4px" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
-                "button",
-                {
-                  onClick: () => setShowPicker((s) => !s),
-                  style: {
-                    fontSize: "10px",
-                    padding: "1px 6px",
-                    cursor: "pointer",
-                    background: "var(--vscode-button-secondaryBackground)",
-                    color: "var(--vscode-button-secondaryForeground)",
-                    border: "none",
-                    borderRadius: "3px"
-                  },
-                  children: "\uFF0B Insert variable"
-                }
-              ),
-              showPicker && /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
-                "div",
-                {
-                  ref: pickerRef,
-                  style: {
-                    position: "absolute",
-                    top: "100%",
-                    left: 0,
-                    zIndex: 50,
-                    background: "var(--vscode-menu-background, #252526)",
-                    border: "1px solid var(--vscode-menu-border, #454545)",
-                    borderRadius: "4px",
-                    padding: "4px 0",
-                    minWidth: "180px",
-                    maxHeight: "200px",
-                    overflowY: "auto",
-                    boxShadow: "0 4px 12px rgba(0,0,0,0.4)"
-                  },
-                  children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { padding: "4px 10px", fontSize: "9px", color: "var(--vscode-descriptionForeground)", textTransform: "uppercase" }, children: "Available variables" }),
-                    candidates.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { padding: "4px 10px", fontSize: "10px", color: "var(--vscode-descriptionForeground)" }, children: "(no variables configured)" }),
-                    candidates.map((c, idx) => /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
-                      "button",
-                      {
-                        onClick: () => insertVariable(c.name),
-                        style: {
-                          display: "flex",
-                          alignItems: "center",
-                          width: "100%",
-                          textAlign: "left",
-                          padding: "3px 10px",
-                          fontSize: "11px",
-                          gap: 8,
-                          background: "none",
-                          border: "none",
-                          color: "var(--vscode-menu-foreground, #ccc)",
-                          cursor: "pointer",
-                          fontFamily: "var(--vscode-editor-font-family, monospace)"
-                        },
-                        onMouseEnter: (e) => e.currentTarget.style.background = "var(--vscode-menu-selectionBackground, #094771)",
-                        onMouseLeave: (e) => e.currentTarget.style.background = "none",
-                        children: [
-                          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { style: { color: "var(--vscode-charts-blue, #4fc1ff)" }, children: `{{${c.name}}}` }),
-                          c.tag && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { style: { color: "var(--vscode-descriptionForeground, #999)", fontSize: 9, marginLeft: "auto" }, children: c.tag })
-                        ]
-                      },
-                      c.name + "_" + idx
-                    ))
-                  ]
-                }
-              )
-            ] }),
-            detectedVariables.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { marginTop: "4px", display: "flex", flexWrap: "wrap", gap: "3px" }, children: detectedVariables.map((name2) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
-              "span",
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("input", { style: ieInput2, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Prompt node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { style: { position: "relative" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
+              "textarea",
               {
+                ref: textareaRef,
+                style: ieTextarea2,
+                value: promptText,
+                onChange: (e) => updateNodeData(props.id, { prompt: e.target.value }),
+                placeholder: "Type {{ for variable autocomplete, e.g. Build a {{feature}} using {{stack}}"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
+              VariableAutocomplete,
+              {
+                targetRef: textareaRef,
+                text: promptText,
+                onChange: (next) => updateNodeData(props.id, { prompt: next }),
+                candidates,
+                id: `prompt-node-ac-${props.id}`
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)("div", { style: { position: "relative", marginTop: "4px" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
+              "button",
+              {
+                onClick: () => setShowPicker((s) => !s),
                 style: {
-                  fontSize: "9px",
-                  padding: "1px 5px",
-                  borderRadius: "2px",
-                  background: "var(--vscode-textCodeBlock-background, #1e1e1e)",
-                  color: "var(--vscode-charts-blue, #4fc1ff)",
-                  fontFamily: "var(--vscode-editor-font-family, monospace)"
+                  fontSize: "10px",
+                  padding: "1px 6px",
+                  cursor: "pointer",
+                  background: "var(--vscode-button-secondaryBackground)",
+                  color: "var(--vscode-button-secondaryForeground)",
+                  border: "none",
+                  borderRadius: "3px"
                 },
-                children: `{{${name2}}}`
+                children: "\uFF0B Insert variable"
+              }
+            ),
+            showPicker && /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
+              "div",
+              {
+                ref: pickerRef,
+                style: {
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  zIndex: 50,
+                  background: "var(--vscode-menu-background, #252526)",
+                  border: "1px solid var(--vscode-menu-border, #454545)",
+                  borderRadius: "4px",
+                  padding: "4px 0",
+                  minWidth: "180px",
+                  maxHeight: "200px",
+                  overflowY: "auto",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.4)"
+                },
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { padding: "4px 10px", fontSize: "9px", color: "var(--vscode-descriptionForeground)", textTransform: "uppercase" }, children: "Available variables" }),
+                  candidates.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { padding: "4px 10px", fontSize: "10px", color: "var(--vscode-descriptionForeground)" }, children: "(no variables configured)" }),
+                  candidates.map((c, idx) => /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(
+                    "button",
+                    {
+                      onClick: () => insertVariable(c.name),
+                      style: {
+                        display: "flex",
+                        alignItems: "center",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "3px 10px",
+                        fontSize: "11px",
+                        gap: 8,
+                        background: "none",
+                        border: "none",
+                        color: "var(--vscode-menu-foreground, #ccc)",
+                        cursor: "pointer",
+                        fontFamily: "var(--vscode-editor-font-family, monospace)"
+                      },
+                      onMouseEnter: (e) => e.currentTarget.style.background = "var(--vscode-menu-selectionBackground, #094771)",
+                      onMouseLeave: (e) => e.currentTarget.style.background = "none",
+                      children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { style: { color: "var(--vscode-charts-blue, #4fc1ff)" }, children: `{{${c.name}}}` }),
+                        c.tag && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("span", { style: { color: "var(--vscode-descriptionForeground, #999)", fontSize: 9, marginLeft: "auto" }, children: c.tag })
+                      ]
+                    },
+                    c.name + "_" + idx
+                  ))
+                ]
+              }
+            )
+          ] }),
+          detectedVariables.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { marginTop: "4px", display: "flex", flexWrap: "wrap", gap: "3px" }, children: detectedVariables.map((name2) => /* @__PURE__ */ (0, import_jsx_runtime38.jsx)(
+            "span",
+            {
+              style: {
+                fontSize: "9px",
+                padding: "1px 5px",
+                borderRadius: "2px",
+                background: "var(--vscode-textCodeBlock-background, #1e1e1e)",
+                color: "var(--vscode-charts-blue, #4fc1ff)",
+                fontFamily: "var(--vscode-editor-font-family, monospace)"
               },
-              name2
-            )) })
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsxs)(import_jsx_runtime38.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "2px" }, children: data.label || "Prompt" }),
-            promptText ? /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", lineHeight: 1.4, fontStyle: "italic", maxHeight: "48px", overflow: "hidden" }, children: preview }) : /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", fontStyle: "italic" }, children: "No prompt content" })
-          ] })
+              children: `{{${name2}}}`
+            },
+            name2
+          )) })
         ] });
       });
       PromptNode.displayName = "PromptNode";
@@ -41606,7 +41590,6 @@
         const data = props.data;
         const agentId = data.agentId || "";
         const config = data.agentConfig;
-        const selected2 = props.selected;
         const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
         const update = (k, v) => updateNodeData(props.id, { [k]: v });
         const agents = useAgentStore((s) => s.agents);
@@ -41616,13 +41599,10 @@
         const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
         const [worktrees, setWorktrees] = (0, import_react45.useState)([]);
         (0, import_react45.useEffect)(() => {
-          if (selected2 && agents.length === 0) loadAgents();
-          if (selected2 && providers.length === 0) loadProviders();
-        }, [selected2, agents.length, providers.length, loadAgents, loadProviders]);
+          if (agents.length === 0) loadAgents();
+          if (providers.length === 0) loadProviders();
+        }, [agents.length, providers.length, loadAgents, loadProviders]);
         (0, import_react45.useEffect)(() => {
-          if (!selected2) {
-            return;
-          }
           const wsId = activeWorkspaceId;
           if (!wsId) {
             const timer2 = setTimeout(() => {
@@ -41634,7 +41614,7 @@
             return () => clearTimeout(timer2);
           }
           sendRequest("worktree.list", { workspaceId: wsId }).then((r) => setWorktrees(Array.isArray(r) ? r : [])).catch(() => setWorktrees([]));
-        }, [selected2, activeWorkspaceId]);
+        }, [activeWorkspaceId]);
         const currentProvider = providers.find((p) => p.id === config?.providerId);
         const currentModels = currentProvider?.models ?? [];
         const promptText = data.prompt || "";
@@ -41670,80 +41650,71 @@
               }
             )
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("input", { style: ieInput3, value: data.label || "", onChange: (e) => update("label", e.target.value), placeholder: "Agent node name" }) : /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "2px" }, children: data.label || "Agent" }),
-          !selected2 && agentId && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)" }, children: [
-            "ID: ",
-            agentId.slice(0, 20),
-            agentId.length > 20 ? "..." : ""
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("input", { style: ieInput3, value: data.label || "", onChange: (e) => update("label", e.target.value), placeholder: "Agent node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Agent" }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: agentId, onChange: (e) => {
+            const found = agents.find((a) => a.id === e.target.value);
+            update("agentId", e.target.value);
+            if (found) update("label", found.name);
+          }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 Select agent \u2014" }),
+            agents.map((a) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: a.id, children: a.name }, a.id))
           ] }),
-          !selected2 && !agentId && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", fontStyle: "italic" }, children: "No agent selected" }),
-          !selected2 && config?.modelId && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { style: { fontSize: "10px", color: "var(--vscode-descriptionForeground)", marginTop: "2px" }, children: config.modelId }),
-          selected2 && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)(import_jsx_runtime39.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Agent" }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: agentId, onChange: (e) => {
-              const found = agents.find((a) => a.id === e.target.value);
-              update("agentId", e.target.value);
-              if (found) update("label", found.name);
-            }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 Select agent \u2014" }),
-              agents.map((a) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: a.id, children: a.name }, a.id))
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Prompt" }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { style: { position: "relative" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
-                "textarea",
-                {
-                  ref: promptTextareaRef,
-                  style: ieTextarea3,
-                  value: promptText,
-                  onChange: (e) => update("prompt", e.target.value),
-                  placeholder: "Type {{ for variable autocomplete"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
-                VariableAutocomplete,
-                {
-                  targetRef: promptTextareaRef,
-                  text: promptText,
-                  onChange: (next) => update("prompt", next),
-                  candidates,
-                  id: `agent-node-ac-${props.id}`
-                }
-              )
-            ] }),
-            detectedVariables.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { style: { marginTop: "3px", display: "flex", flexWrap: "wrap", gap: "3px" }, children: detectedVariables.map((name2) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
-              "span",
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Prompt" }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { style: { position: "relative" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+              "textarea",
               {
-                style: {
-                  fontSize: "9px",
-                  padding: "1px 5px",
-                  borderRadius: "2px",
-                  background: "var(--vscode-textCodeBlock-background, #1e1e1e)",
-                  color: "var(--vscode-charts-blue, #4fc1ff)",
-                  fontFamily: "var(--vscode-editor-font-family, monospace)"
-                },
-                children: `{{${name2}}}`
+                ref: promptTextareaRef,
+                style: ieTextarea3,
+                value: promptText,
+                onChange: (e) => update("prompt", e.target.value),
+                placeholder: "Type {{ for variable autocomplete"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+              VariableAutocomplete,
+              {
+                targetRef: promptTextareaRef,
+                text: promptText,
+                onChange: (next) => update("prompt", next),
+                candidates,
+                id: `agent-node-ac-${props.id}`
+              }
+            )
+          ] }),
+          detectedVariables.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { style: { marginTop: "3px", display: "flex", flexWrap: "wrap", gap: "3px" }, children: detectedVariables.map((name2) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+            "span",
+            {
+              style: {
+                fontSize: "9px",
+                padding: "1px 5px",
+                borderRadius: "2px",
+                background: "var(--vscode-textCodeBlock-background, #1e1e1e)",
+                color: "var(--vscode-charts-blue, #4fc1ff)",
+                fontFamily: "var(--vscode-editor-font-family, monospace)"
               },
-              name2
-            )) }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Provider" }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: config?.providerId || "", onChange: (e) => update("agentConfig", { ...config, providerId: e.target.value, modelId: "" }), children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 Default \u2014" }),
-              providers.map((p) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: p.id, children: p.name }, p.id))
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Model" }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: config?.modelId || "", onChange: (e) => update("agentConfig", { ...config, modelId: e.target.value }), disabled: !config?.providerId, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 Default \u2014" }),
-              currentModels.map((m) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: m.id, children: m.name }, m.id))
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Worktree" }),
-            /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: data.worktreePath || "", onChange: (e) => update("worktreePath", e.target.value), children: [
-              /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 None \u2014" }),
-              worktrees.map((wt) => /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("option", { value: wt.path, children: [
-                wt.repoName ? `${wt.repoName} \xB7 ` : "",
-                wt.branch
-              ] }, wt.path))
-            ] })
+              children: `{{${name2}}}`
+            },
+            name2
+          )) }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Provider" }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: config?.providerId || "", onChange: (e) => update("agentConfig", { ...config, providerId: e.target.value, modelId: "" }), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 Default \u2014" }),
+            providers.map((p) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: p.id, children: p.name }, p.id))
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Model" }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: config?.modelId || "", onChange: (e) => update("agentConfig", { ...config, modelId: e.target.value }), disabled: !config?.providerId, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 Default \u2014" }),
+            currentModels.map((m) => /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: m.id, children: m.name }, m.id))
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { style: ieLabel2, children: "Worktree" }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("select", { style: ieSelect, value: data.worktreePath || "", onChange: (e) => update("worktreePath", e.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("option", { value: "", children: "\u2014 None \u2014" }),
+            worktrees.map((wt) => /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("option", { value: wt.path, children: [
+              wt.repoName ? `${wt.repoName} \xB7 ` : "",
+              wt.branch
+            ] }, wt.path))
           ] })
         ] });
       });
@@ -41779,15 +41750,14 @@
       ieLabel3 = { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px", display: "block" };
       SkillNode = import_react46.default.memo((props) => {
         const data = props.data;
-        const selected2 = props.selected;
         const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
         const [skills, setSkills] = (0, import_react46.useState)([]);
         (0, import_react46.useEffect)(() => {
-          if (selected2 && skills.length === 0) {
+          if (skills.length === 0) {
             sendRequest("skills.list", {}).then((r) => setSkills(Array.isArray(r) ? r : [])).catch(() => {
             });
           }
-        }, [selected2, skills.length]);
+        }, [skills.length]);
         const skillName = data.skillName || "";
         const skillId = data.skillId || "";
         const promptText = data.prompt || "";
@@ -41823,43 +41793,38 @@
               }
             )
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("input", { style: ieInput4, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Node name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { style: ieLabel3, children: "Skill" }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("select", { style: ieSelect2, value: skillId, onChange: (e) => {
-              const found = skills.find((s) => s.id === e.target.value);
-              updateNodeData(props.id, { skillId: e.target.value, skillName: found?.name || "" });
-              if (found) updateNodeData(props.id, { label: found.name });
-            }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("option", { value: "", children: "\u2014 Select skill \u2014" }),
-              skills.map((s) => /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("option", { value: s.id, children: s.name }, s.id))
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { style: ieLabel3, children: "Input" }),
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { style: { position: "relative" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
-                "textarea",
-                {
-                  ref: promptRef,
-                  style: ieTextarea4,
-                  value: promptText,
-                  onChange: (e) => updateNodeData(props.id, { prompt: e.target.value }),
-                  placeholder: "Type {{ for variable autocomplete (optional)"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
-                VariableAutocomplete,
-                {
-                  targetRef: promptRef,
-                  text: promptText,
-                  onChange: (next) => updateNodeData(props.id, { prompt: next }),
-                  candidates,
-                  id: `skill-node-ac-${props.id}`
-                }
-              )
-            ] })
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)(import_jsx_runtime40.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "2px" }, children: data.label || "Skill" }),
-            skillName ? /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)" }, children: skillName }) : /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", fontStyle: "italic" }, children: "No skill selected" })
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("input", { style: ieInput4, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { style: ieLabel3, children: "Skill" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("select", { style: ieSelect2, value: skillId, onChange: (e) => {
+            const found = skills.find((s) => s.id === e.target.value);
+            updateNodeData(props.id, { skillId: e.target.value, skillName: found?.name || "" });
+            if (found) updateNodeData(props.id, { label: found.name });
+          }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("option", { value: "", children: "\u2014 Select skill \u2014" }),
+            skills.map((s) => /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("option", { value: s.id, children: s.name }, s.id))
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsx)("span", { style: ieLabel3, children: "Input" }),
+          /* @__PURE__ */ (0, import_jsx_runtime40.jsxs)("div", { style: { position: "relative" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+              "textarea",
+              {
+                ref: promptRef,
+                style: ieTextarea4,
+                value: promptText,
+                onChange: (e) => updateNodeData(props.id, { prompt: e.target.value }),
+                placeholder: "Type {{ for variable autocomplete (optional)"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime40.jsx)(
+              VariableAutocomplete,
+              {
+                targetRef: promptRef,
+                text: promptText,
+                onChange: (next) => updateNodeData(props.id, { prompt: next }),
+                candidates,
+                id: `skill-node-ac-${props.id}`
+              }
+            )
           ] })
         ] });
       });
@@ -41891,7 +41856,6 @@
       ieLabel4 = { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px", display: "block" };
       ToolNode = import_react47.default.memo((props) => {
         const data = props.data;
-        const selected2 = props.selected;
         const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
         const toolName = data.toolName || "";
         return /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(BaseNode, { ...props, color: "#64748b", handles: { target: true, source: true }, children: [
@@ -41899,16 +41863,11 @@
             /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: { fontSize: "14px" }, children: "\u{1F527}" }),
             /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: { fontWeight: 600 }, children: "Tool" })
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("input", { style: ieInput5, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Node name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: ieLabel4, children: "Tool Name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("input", { style: ieInput5, value: toolName, onChange: (e) => updateNodeData(props.id, { toolName: e.target.value }), placeholder: "e.g. read_file" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: ieLabel4, children: "Parameters (JSON)" }),
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("textarea", { style: ieTextarea5, value: data.params || "", onChange: (e) => updateNodeData(props.id, { params: e.target.value }), placeholder: '{"key": "value"}' })
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsxs)(import_jsx_runtime41.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "2px" }, children: data.label || "Tool" }),
-            toolName ? /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)" }, children: toolName }) : /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", fontStyle: "italic" }, children: "No tool configured" })
-          ] })
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("input", { style: ieInput5, value: data.label || "", onChange: (e) => updateNodeData(props.id, { label: e.target.value }), placeholder: "Node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: ieLabel4, children: "Tool Name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("input", { style: ieInput5, value: toolName, onChange: (e) => updateNodeData(props.id, { toolName: e.target.value }), placeholder: "e.g. read_file" }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("span", { style: ieLabel4, children: "Parameters (JSON)" }),
+          /* @__PURE__ */ (0, import_jsx_runtime41.jsx)("textarea", { style: ieTextarea5, value: data.params || "", onChange: (e) => updateNodeData(props.id, { params: e.target.value }), placeholder: '{"key": "value"}' })
         ] });
       });
       ToolNode.displayName = "ToolNode";
@@ -42002,7 +41961,7 @@
           borderRadius: "8px",
           border: `2px solid ${selected2 ? "var(--vscode-focusBorder)" : "#ef4444"}`,
           backgroundColor: "var(--vscode-editor-background)",
-          minWidth: selected2 ? "240px" : "170px",
+          minWidth: "240px",
           maxWidth: "300px",
           fontSize: "13px",
           lineHeight: 1.5,
@@ -42012,29 +41971,20 @@
             /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { style: { fontSize: "14px" }, children: "\u2194\uFE0F" }),
             /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("span", { style: { fontWeight: 600, fontSize: "12px", textTransform: "uppercase" }, children: "If/Else" })
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("input", { style: ieInput6, value: d.label || "", onChange: (e) => updateNodeData(id2, { label: e.target.value }), placeholder: "Node name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Branches" }),
-            branches.map((b, i) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
-              BranchConditionEditor,
-              {
-                branch: b,
-                index: i,
-                candidates,
-                nodeId: id2,
-                updateNodeData,
-                branches
-              },
-              b.id
-            ))
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(import_jsx_runtime42.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-badge-foreground)", backgroundColor: "var(--vscode-badge-background)", padding: "2px 6px", borderRadius: "3px", marginBottom: "8px", display: "inline-block" }, children: "2-way Branch" }),
-            /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "6px" }, children: d.label || "If/Else" }),
-            branches.map((b, i) => /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)("div", { style: { fontSize: "11px", marginBottom: "6px", padding: "4px 8px", backgroundColor: "var(--vscode-textBlockQuote-background)", borderLeft: `3px solid ${i === 0 ? "#22c55e" : "#ef4444"}`, borderRadius: "3px" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { style: { fontWeight: 600 }, children: b.label }),
-              b.condition && /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { style: { color: "var(--vscode-descriptionForeground)", fontStyle: "italic", fontSize: "10px" }, children: b.condition })
-            ] }, b.id))
-          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("input", { style: ieInput6, value: d.label || "", onChange: (e) => updateNodeData(id2, { label: e.target.value }), placeholder: "Node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Branches" }),
+          branches.map((b, i) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
+            BranchConditionEditor,
+            {
+              branch: b,
+              index: i,
+              candidates,
+              nodeId: id2,
+              updateNodeData,
+              branches
+            },
+            b.id
+          )),
           /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(Handle, { type: "target", position: Position.Left, id: "input", style: { width: 10, height: 10, backgroundColor: "#ef4444", border: "2px solid var(--vscode-editor-background)" } }),
           Array.from({ length: n }).map((_, i) => /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
             Handle,
@@ -42099,7 +42049,7 @@
           borderRadius: "8px",
           border: `2px solid ${selected2 ? "var(--vscode-focusBorder)" : "#a855f7"}`,
           backgroundColor: "var(--vscode-editor-background)",
-          minWidth: selected2 ? "240px" : "170px",
+          minWidth: "240px",
           maxWidth: "300px",
           fontSize: "13px",
           lineHeight: 1.5,
@@ -42109,52 +42059,39 @@
             /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { style: { fontSize: "14px" }, children: "\u{1F500}" }),
             /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("span", { style: { fontWeight: 600, fontSize: "12px", textTransform: "uppercase" }, children: "Switch" })
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(import_jsx_runtime43.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("input", { style: ieInput7, value: d.label || "", onChange: (e) => updateNodeData(id2, { label: e.target.value }), placeholder: "Node name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Switch On" }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { style: { position: "relative" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
-                "input",
-                {
-                  ref: switchOnRef,
-                  style: ieInput7,
-                  value: evalTarget,
-                  onChange: (e) => updateNodeData(id2, { evaluationTarget: e.target.value }),
-                  placeholder: "Type {{ for variable autocomplete, e.g. {{status}}"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
-                VariableAutocomplete,
-                {
-                  targetRef: switchOnRef,
-                  text: evalTarget,
-                  onChange: (next) => updateNodeData(id2, { evaluationTarget: next }),
-                  candidates,
-                  id: `switch-node-ac-${id2}`
-                }
-              )
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Branches" }),
-            branches.map((b, i) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { marginBottom: "3px" }, children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("input", { style: ieInput7, value: b.label, onChange: (e) => {
-              const next = branches.map((br, j) => j === i ? { ...br, label: e.target.value } : br);
-              updateNodeData(id2, { branches: next });
-            }, placeholder: "Branch label" }) }, b.id)),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("button", { onClick: () => {
-              const next = [...branches, { id: `case_${branches.length + 1}`, label: `Case ${branches.length + 1}`, condition: "" }];
-              updateNodeData(id2, { branches: next });
-            }, style: { fontSize: "10px", padding: "1px 6px", cursor: "pointer", marginTop: "2px", background: "var(--vscode-button-secondaryBackground)", color: "var(--vscode-button-secondaryForeground)", border: "none", borderRadius: "3px" }, children: "+ Branch" })
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)(import_jsx_runtime43.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { style: { fontSize: "11px", color: "var(--vscode-badge-foreground)", backgroundColor: "var(--vscode-badge-background)", padding: "2px 6px", borderRadius: "3px", marginBottom: "8px", display: "inline-block" }, children: [
-              n,
-              "-way Switch"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "6px" }, children: d.label || "Switch" }),
-            evalTarget && /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", fontStyle: "italic" }, children: [
-              "on: ",
-              evalTarget
-            ] }),
-            branches.map((b, i) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { fontSize: "11px", marginBottom: "4px", padding: "3px 6px", backgroundColor: "var(--vscode-textBlockQuote-background)", borderLeft: "3px solid var(--vscode-charts-purple)", borderRadius: "3px" }, children: b.label }, b.id))
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("input", { style: ieInput7, value: d.label || "", onChange: (e) => updateNodeData(id2, { label: e.target.value }), placeholder: "Node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Switch On" }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsxs)("div", { style: { position: "relative" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+              "input",
+              {
+                ref: switchOnRef,
+                style: ieInput7,
+                value: evalTarget,
+                onChange: (e) => updateNodeData(id2, { evaluationTarget: e.target.value }),
+                placeholder: "Type {{ for variable autocomplete, e.g. {{status}}"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
+              VariableAutocomplete,
+              {
+                targetRef: switchOnRef,
+                text: evalTarget,
+                onChange: (next) => updateNodeData(id2, { evaluationTarget: next }),
+                candidates,
+                id: `switch-node-ac-${id2}`
+              }
+            )
           ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Branches" }),
+          branches.map((b, i) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("div", { style: { marginBottom: "3px" }, children: /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("input", { style: ieInput7, value: b.label, onChange: (e) => {
+            const next = branches.map((br, j) => j === i ? { ...br, label: e.target.value } : br);
+            updateNodeData(id2, { branches: next });
+          }, placeholder: "Branch label" }) }, b.id)),
+          /* @__PURE__ */ (0, import_jsx_runtime43.jsx)("button", { onClick: () => {
+            const next = [...branches, { id: `case_${branches.length + 1}`, label: `Case ${branches.length + 1}`, condition: "" }];
+            updateNodeData(id2, { branches: next });
+          }, style: { fontSize: "10px", padding: "1px 6px", cursor: "pointer", marginTop: "2px", background: "var(--vscode-button-secondaryBackground)", color: "var(--vscode-button-secondaryForeground)", border: "none", borderRadius: "3px" }, children: "+ Branch" }),
           /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(Handle, { type: "target", position: Position.Left, id: "input", style: { width: 10, height: 10, backgroundColor: "#a855f7", border: "2px solid var(--vscode-editor-background)" } }),
           Array.from({ length: n }).map((_, i) => /* @__PURE__ */ (0, import_jsx_runtime43.jsx)(
             Handle,
@@ -42221,11 +42158,11 @@
         const detectedVariables = extractVariables(questionText);
         return /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { className: "wf-node", style: {
           position: "relative",
-          padding: selected2 ? "12px 14px" : "12px 14px",
+          padding: "12px 14px",
           borderRadius: "8px",
           border: `2px solid ${selected2 ? "var(--vscode-focusBorder)" : "#06b6d4"}`,
           backgroundColor: "var(--vscode-editor-background)",
-          minWidth: selected2 ? "260px" : "200px",
+          minWidth: "260px",
           maxWidth: "320px",
           fontSize: "13px",
           lineHeight: 1.5,
@@ -42248,56 +42185,47 @@
               multiSelect && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { style: { fontSize: "9px", padding: "2px 6px", backgroundColor: "var(--vscode-badge-background)", color: "var(--vscode-badge-foreground)", borderRadius: "3px", fontWeight: 600 }, children: "Multi" })
             ] })
           ] }),
-          selected2 ? /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("input", { style: ieInput8, value: d.label || "", onChange: (e) => update("label", e.target.value), placeholder: "Node name" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Question" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { style: { position: "relative" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
-                "textarea",
-                {
-                  ref: questionRef,
-                  style: ieTextarea6,
-                  value: questionText,
-                  onChange: (e) => update("question", e.target.value),
-                  placeholder: "Type {{ for variable autocomplete"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
-                VariableAutocomplete,
-                {
-                  targetRef: questionRef,
-                  text: questionText,
-                  onChange: (next) => update("question", next),
-                  candidates,
-                  id: `askuser-node-ac-${id2}`
-                }
-              )
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("label", { style: { display: "flex", alignItems: "center", gap: "4px", marginTop: "6px", fontSize: "10px" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("input", { type: "checkbox", checked: !!multiSelect, onChange: (e) => update("multiSelect", e.target.checked) }),
-              " Multi-select"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Options" }),
-            options.map((opt, i) => /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { marginBottom: "4px" }, children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("input", { style: ieInput8, value: opt.label, onChange: (e) => {
-              const next = options.map((o, j) => j === i ? { ...o, label: e.target.value } : o);
-              update("options", next);
-            }, placeholder: "Option label" }) }, i)),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("input", { style: ieInput8, value: d.label || "", onChange: (e) => update("label", e.target.value), placeholder: "Node name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Question" }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { style: { position: "relative" }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
-              "button",
+              "textarea",
               {
-                onClick: () => update("options", [...options, { label: `Option ${options.length + 1}`, description: "" }]),
-                style: { fontSize: "10px", padding: "1px 6px", cursor: "pointer", marginTop: "2px", background: "var(--vscode-button-secondaryBackground)", color: "var(--vscode-button-secondaryForeground)", border: "none", borderRadius: "3px" },
-                children: "+ Option"
+                ref: questionRef,
+                style: ieTextarea6,
+                value: questionText,
+                onChange: (e) => update("question", e.target.value),
+                placeholder: "Type {{ for variable autocomplete"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+              VariableAutocomplete,
+              {
+                targetRef: questionRef,
+                text: questionText,
+                onChange: (next) => update("question", next),
+                candidates,
+                id: `askuser-node-ac-${id2}`
               }
             )
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)(import_jsx_runtime44.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginBottom: "6px" }, children: d.label || "Ask User" }),
-            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "11px", color: "var(--vscode-descriptionForeground)", marginBottom: "8px", lineHeight: 1.3 }, children: questionText || "No question set" }),
-            options.map((opt, i) => /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("div", { style: { fontSize: "11px", marginBottom: "4px", padding: "4px 8px", backgroundColor: "var(--vscode-textBlockQuote-background)", borderLeft: "3px solid var(--vscode-charts-blue)", borderRadius: "3px" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("span", { style: { fontWeight: 600 }, children: opt.label }),
-              opt.description && /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "10px", color: "var(--vscode-descriptionForeground)" }, children: opt.description })
-            ] }, i))
           ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsxs)("label", { style: { display: "flex", alignItems: "center", gap: "4px", marginTop: "6px", fontSize: "10px" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("input", { type: "checkbox", checked: !!multiSelect, onChange: (e) => update("multiSelect", e.target.checked) }),
+            " Multi-select"
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { fontSize: "9px", fontWeight: 600, color: "var(--vscode-descriptionForeground)", marginTop: "6px" }, children: "Options" }),
+          options.map((opt, i) => /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("div", { style: { marginBottom: "4px" }, children: /* @__PURE__ */ (0, import_jsx_runtime44.jsx)("input", { style: ieInput8, value: opt.label, onChange: (e) => {
+            const next = options.map((o, j) => j === i ? { ...o, label: e.target.value } : o);
+            update("options", next);
+          }, placeholder: "Option label" }) }, i)),
+          /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
+            "button",
+            {
+              onClick: () => update("options", [...options, { label: `Option ${options.length + 1}`, description: "" }]),
+              style: { fontSize: "10px", padding: "1px 6px", cursor: "pointer", marginTop: "2px", background: "var(--vscode-button-secondaryBackground)", color: "var(--vscode-button-secondaryForeground)", border: "none", borderRadius: "3px" },
+              children: "+ Option"
+            }
+          ),
           /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(Handle, { type: "target", position: Position.Left, id: "input", style: { width: 10, height: 10, backgroundColor: "#06b6d4", border: "2px solid var(--vscode-editor-background)" } }),
           Array.from({ length: Math.max(n, 2) }).map((_, i) => /* @__PURE__ */ (0, import_jsx_runtime44.jsx)(
             Handle,
@@ -42365,7 +42293,7 @@
               /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { style: { fontSize: "14px" }, children: "\u25A6" }),
               /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("span", { children: "Group" })
             ] }),
-            props.selected ? /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime45.jsx)(
               "input",
               {
                 style: {
@@ -42383,7 +42311,7 @@
                 onChange: (e) => updateNodeData(props.id, { label: e.target.value }),
                 placeholder: "Group name"
               }
-            ) : /* @__PURE__ */ (0, import_jsx_runtime45.jsx)("div", { style: { fontSize: "12px", fontWeight: 500, marginTop: "2px" }, children: data.label || "Group" })
+            )
           ] })
         ] });
       });
@@ -60911,36 +60839,54 @@
     ] });
   }
   var SubAgentOutputBlock = (0, import_react18.memo)(SubAgentOutputBlockRaw);
+  function SubAgentInputBlockRaw({
+    content: content3
+  }) {
+    const [open, setOpen] = (0, import_react18.useState)(false);
+    const preview = content3.length > 80 ? content3.substring(0, 80) + "\u2026" : content3;
+    return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "subagent-input-block", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)(
+        "div",
+        {
+          className: "subagent-input-block-header",
+          onClick: () => setOpen((o) => !o),
+          role: "button",
+          "aria-expanded": open,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-input-block-icon", children: "\u{1F4E5}" }),
+            /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-input-block-title", children: "\u8F93\u5165" }),
+            !open && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-input-block-preview", children: preview }),
+            /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: `subagent-input-block-toggle ${open ? "" : "collapsed"}`, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("svg", { width: "10", height: "10", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("polyline", { points: "6 9 12 15 18 9" }) }) })
+          ]
+        }
+      ),
+      open && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "subagent-input-block-body", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(MarkdownRenderer, { content: content3, className: "input-prompt markdown-body" }) })
+    ] });
+  }
+  var SubAgentInputBlock = (0, import_react18.memo)(SubAgentInputBlockRaw);
   function SubAgentRowRaw({ agent, isStreaming }) {
     const config = SUB_AGENT_TYPE_CONFIG[agent.type] || SUB_AGENT_TYPE_CONFIG.general;
     const isRunning = agent.status === "running";
     const isDone = agent.status === "done";
     const isError = agent.status === "error";
-    const taskDisplay = agent.task.length > 80 ? agent.task.substring(0, 80) + "..." : agent.task;
     const streamContent = isRunning ? agent.streamedText ?? agent.output ?? "" : agent.output ?? agent.streamedText ?? "";
     return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: `subagent-row ${agent.status}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "subagent-row-header", children: [
         /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-type-icon", children: config.icon }),
         /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-status-icon", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(StatusIcon, { status: agent.status }) }),
         /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-name", children: agent.name || (agent.task ? agent.task.substring(0, 40) : agent.id) }),
-        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: `subagent-task ${isRunning ? "shimmer" : ""}`, children: taskDisplay }),
         /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: `subagent-type-badge type-${agent.type}`, children: config.label })
       ] }),
-      isRunning && agent.progress && /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "subagent-progress", children: [
+      isRunning && /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("div", { className: "subagent-progress", children: [
         /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("span", { className: "subagent-progress-dots", children: [
           /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "typing-dot", children: "\u25CF" }),
           /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "typing-dot", children: "\u25CF" }),
           /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "typing-dot", children: "\u25CF" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-progress-text", children: agent.progress })
+        /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { className: "subagent-progress-text", children: "\u6267\u884C\u4E2D" })
       ] }),
-      agent.thinking && agent.thinking.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-        SubAgentThinkingBlock,
-        {
-          thinking: agent.thinking,
-          isStreaming: isRunning
-        }
-      ),
+      agent.task && agent.task.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(SubAgentInputBlock, { content: agent.task }),
+      false,
       agent.toolTrace && agent.toolTrace.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
         SubAgentToolTraceBlock,
         {
@@ -70234,9 +70180,18 @@ Data Scientist
       }
     }
     switch (type) {
-      case "chat.stream.delta":
-        handleStreamDelta(data);
+      case "chat.stream.delta": {
+        const deltaData = data;
+        const chatStore = useChatStore.getState();
+        const hasRunningWf = Object.values(chatStore.liveWorkflowExecutions).some(
+          (e) => e.status === "running"
+        );
+        const isWorkflowAgent = hasRunningWf && deltaData.agentId && chatStore.activeAgentId === deltaData.agentId;
+        if (!isWorkflowAgent) {
+          handleStreamDelta(deltaData);
+        }
         break;
+      }
       case "chat.stream.complete": {
         const completeData = data;
         const msg = completeData.message;

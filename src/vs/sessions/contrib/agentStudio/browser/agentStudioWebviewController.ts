@@ -150,6 +150,9 @@ export class AgentStudioWebviewController extends Disposable {
 	private _activeChatAgentId: string | undefined;
 	private _activeChatAgentSessionId: string | undefined;
 
+	/** Layout-sync callback — set only when the pool hot path is used. */
+	private _poolSyncLayout: (() => void) | undefined;
+
 	/** Pending tool approval requests: toolCallId → resolve function */
 	private readonly _pendingToolApprovals = new Map<string, { resolve: (decision: ToolApprovalDecision) => void }>();
 
@@ -393,11 +396,18 @@ export class AgentStudioWebviewController extends Disposable {
 			};
 			syncLayout();
 
+			// Store sync callback so layout() & setVisible() can
+			// re-position the iframe when the editor pane is re-shown.
+			this._poolSyncLayout = syncLayout;
+
 			// Re-sync on resize / layout changes.
 			const resizeObserver = new ResizeObserver(syncLayout);
 			resizeObserver.observe(this.container);
 			this._register({ dispose: () => resizeObserver.disconnect() });
-			this._register({ dispose: () => poolContainer.remove() });
+			this._register({ dispose: () => {
+				this._poolSyncLayout = undefined;
+				poolContainer.remove();
+			}});
 
 			// CRITICAL: register the message handler BEFORE sending pool.activate.
 			// When the webview processes pool.activate it will immediately start
@@ -3772,5 +3782,11 @@ export class AgentStudioWebviewController extends Disposable {
 			this.container.style.width = `${width}px`;
 			this.container.style.height = `${height}px`;
 		}
+		// If the pool hot path was used, re-sync the pool iframe position.
+		// After a tab switch the panel container's bounding rect may return
+		// 0,0,0,0 while hidden, and the ResizeObserver won't fire when the
+		// pane becomes visible again with the same CSS dimensions — leaving
+		// the iframe positioned at 0,0 and rendering blank/black.
+		this._poolSyncLayout?.();
 	}
 }

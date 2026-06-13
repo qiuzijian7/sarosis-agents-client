@@ -15,10 +15,8 @@ const ieTextarea: React.CSSProperties = { ...ieInput, minHeight: '60px', resize:
 
 export const PromptNode: React.FC<NodeProps> = React.memo((props) => {
 	const data = props.data as Record<string, unknown>;
-	const selected = props.selected;
 	const updateNodeData = useWorkflowEditorStore(s => s.updateNodeData);
 	const promptText = (data.prompt as string) || '';
-	const preview = promptText.length > 80 ? promptText.substring(0, 80) + '...' : promptText;
 	const variableBadge = formatVariableBadge(promptText);
 	const detectedVariables = extractVariables(promptText);
 
@@ -90,111 +88,98 @@ export const PromptNode: React.FC<NodeProps> = React.memo((props) => {
 					</span>
 				)}
 			</div>
-			{selected ? (
-				<>
-					<input style={ieInput} value={(data.label as string) || ''} onChange={e => updateNodeData(props.id, { label: e.target.value })} placeholder="Prompt node name" />
-					{/* v14: textarea + {{ }} IntelliSense autocomplete */}
-					<div style={{ position: 'relative' }}>
-						<textarea
-							ref={textareaRef}
-							style={ieTextarea}
-							value={promptText}
-							onChange={e => updateNodeData(props.id, { prompt: e.target.value })}
-							placeholder="Type {{ for variable autocomplete, e.g. Build a {{feature}} using {{stack}}"
-						/>
-						<VariableAutocomplete
-							targetRef={textareaRef}
-							text={promptText}
-							onChange={next => updateNodeData(props.id, { prompt: next })}
-							candidates={candidates}
-							id={`prompt-node-ac-${props.id}`}
-						/>
-					</div>
-					{/* Variable tools row (legacy dropdown for click-driven UX) */}
-					<div style={{ position: 'relative', marginTop: '4px' }}>
-						<button
-							onClick={() => setShowPicker(s => !s)}
+				<input style={ieInput} value={(data.label as string) || ''} onChange={e => updateNodeData(props.id, { label: e.target.value })} placeholder="Prompt node name" />
+				{/* v14: textarea + {{ }} IntelliSense autocomplete */}
+				<div style={{ position: 'relative' }}>
+					<textarea
+						ref={textareaRef}
+						style={ieTextarea}
+						value={promptText}
+						onChange={e => updateNodeData(props.id, { prompt: e.target.value })}
+						placeholder="Type {{ for variable autocomplete, e.g. Build a {{feature}} using {{stack}}"
+					/>
+					<VariableAutocomplete
+						targetRef={textareaRef}
+						text={promptText}
+						onChange={next => updateNodeData(props.id, { prompt: next })}
+						candidates={candidates}
+						id={`prompt-node-ac-${props.id}`}
+					/>
+				</div>
+				{/* Variable tools row (legacy dropdown for click-driven UX) */}
+				<div style={{ position: 'relative', marginTop: '4px' }}>
+					<button
+						onClick={() => setShowPicker(s => !s)}
+						style={{
+							fontSize: '10px', padding: '1px 6px', cursor: 'pointer',
+							background: 'var(--vscode-button-secondaryBackground)',
+							color: 'var(--vscode-button-secondaryForeground)',
+							border: 'none', borderRadius: '3px',
+						}}
+					>＋ Insert variable</button>
+					{showPicker && (
+						<div
+							ref={pickerRef}
 							style={{
-								fontSize: '10px', padding: '1px 6px', cursor: 'pointer',
-								background: 'var(--vscode-button-secondaryBackground)',
-								color: 'var(--vscode-button-secondaryForeground)',
-								border: 'none', borderRadius: '3px',
+								position: 'absolute', top: '100%', left: 0, zIndex: 50,
+								background: 'var(--vscode-menu-background, #252526)',
+								border: '1px solid var(--vscode-menu-border, #454545)',
+								borderRadius: '4px',
+								padding: '4px 0',
+								minWidth: '180px',
+								maxHeight: '200px', overflowY: 'auto',
+								boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
 							}}
-						>＋ Insert variable</button>
-						{showPicker && (
-							<div
-								ref={pickerRef}
-								style={{
-									position: 'absolute', top: '100%', left: 0, zIndex: 50,
-									background: 'var(--vscode-menu-background, #252526)',
-									border: '1px solid var(--vscode-menu-border, #454545)',
-									borderRadius: '4px',
-									padding: '4px 0',
-									minWidth: '180px',
-									maxHeight: '200px', overflowY: 'auto',
-									boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-								}}
-							>
-								<div style={{ padding: '4px 10px', fontSize: '9px', color: 'var(--vscode-descriptionForeground)', textTransform: 'uppercase' }}>
-									Available variables
-								</div>
-								{candidates.length === 0 && (
-									<div style={{ padding: '4px 10px', fontSize: '10px', color: 'var(--vscode-descriptionForeground)' }}>
-										(no variables configured)
-									</div>
-								)}
-								{candidates.map((c, idx) => (
-									<button
-										key={c.name + '_' + idx}
-										onClick={() => insertVariable(c.name)}
-										style={{
-											display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
-											padding: '3px 10px', fontSize: '11px', gap: 8,
-											background: 'none', border: 'none', color: 'var(--vscode-menu-foreground, #ccc)',
-											cursor: 'pointer', fontFamily: 'var(--vscode-editor-font-family, monospace)',
-										}}
-										onMouseEnter={e => (e.currentTarget.style.background = 'var(--vscode-menu-selectionBackground, #094771)')}
-										onMouseLeave={e => (e.currentTarget.style.background = 'none')}
-									>
-										<span style={{ color: 'var(--vscode-charts-blue, #4fc1ff)' }}>{`{{${c.name}}}`}</span>
-										{c.tag && (
-											<span style={{ color: 'var(--vscode-descriptionForeground, #999)', fontSize: 9, marginLeft: 'auto' }}>{c.tag}</span>
-										)}
-									</button>
-								))}
+						>
+							<div style={{ padding: '4px 10px', fontSize: '9px', color: 'var(--vscode-descriptionForeground)', textTransform: 'uppercase' }}>
+								Available variables
 							</div>
-						)}
-					</div>
-					{detectedVariables.length > 0 && (
-						<div style={{ marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
-							{detectedVariables.map(name => (
-								<span
-									key={name}
+							{candidates.length === 0 && (
+								<div style={{ padding: '4px 10px', fontSize: '10px', color: 'var(--vscode-descriptionForeground)' }}>
+									(no variables configured)
+								</div>
+							)}
+							{candidates.map((c, idx) => (
+								<button
+									key={c.name + '_' + idx}
+									onClick={() => insertVariable(c.name)}
 									style={{
-										fontSize: '9px',
-										padding: '1px 5px',
-										borderRadius: '2px',
-										background: 'var(--vscode-textCodeBlock-background, #1e1e1e)',
-										color: 'var(--vscode-charts-blue, #4fc1ff)',
-										fontFamily: 'var(--vscode-editor-font-family, monospace)',
+										display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+										padding: '3px 10px', fontSize: '11px', gap: 8,
+										background: 'none', border: 'none', color: 'var(--vscode-menu-foreground, #ccc)',
+										cursor: 'pointer', fontFamily: 'var(--vscode-editor-font-family, monospace)',
 									}}
+									onMouseEnter={e => (e.currentTarget.style.background = 'var(--vscode-menu-selectionBackground, #094771)')}
+									onMouseLeave={e => (e.currentTarget.style.background = 'none')}
 								>
-									{`{{${name}}}`}
-								</span>
+									<span style={{ color: 'var(--vscode-charts-blue, #4fc1ff)' }}>{`{{${c.name}}}`}</span>
+									{c.tag && (
+										<span style={{ color: 'var(--vscode-descriptionForeground, #999)', fontSize: 9, marginLeft: 'auto' }}>{c.tag}</span>
+									)}
+								</button>
 							))}
 						</div>
 					)}
-				</>
-			) : (
-				<>
-					<div style={{ fontSize: '12px', fontWeight: 500, marginBottom: '2px' }}>{(data.label as string) || 'Prompt'}</div>
-					{promptText ? (
-						<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', lineHeight: 1.4, fontStyle: 'italic', maxHeight: '48px', overflow: 'hidden' }}>{preview}</div>
-					) : (
-						<div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', fontStyle: 'italic' }}>No prompt content</div>
-					)}
-				</>
-			)}
+				</div>
+				{detectedVariables.length > 0 && (
+					<div style={{ marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+						{detectedVariables.map(name => (
+							<span
+								key={name}
+								style={{
+									fontSize: '9px',
+									padding: '1px 5px',
+									borderRadius: '2px',
+									background: 'var(--vscode-textCodeBlock-background, #1e1e1e)',
+									color: 'var(--vscode-charts-blue, #4fc1ff)',
+									fontFamily: 'var(--vscode-editor-font-family, monospace)',
+								}}
+							>
+								{`{{${name}}}`}
+							</span>
+						))}
+					</div>
+				)}
 		</BaseNode>
 	);
 });

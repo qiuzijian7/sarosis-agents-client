@@ -81,16 +81,158 @@ stages:
             shell: powershell
 
           # ---------- 3. 安装依赖 ----------
-          - name: "安装依赖 (npm ci)"
+          - name: "安装依赖 (npm install + rebuild)"
             run: |
+              # ===== 1. Node =====
+              $nodeVersion = "22.22.1"
+              if (-not (nvm list 2>$null | Select-String $nodeVersion)) { nvm install $nodeVersion }
+              nvm use $nodeVersion
               node --version
-              npm --version
-              npm ci
+
+              # ===== 2. Cleanup =====
+              cmd /c "rd /s /q node_modules 2>nul"
+              cmd /c "rd /s /q build\node_modules 2>nul"
+
+              # ===== 3. Install Spectre (first run only) =====
+              $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community"
+              $vsInstaller = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
+              $latestMsvc = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+              if ($latestMsvc -and -not (Test-Path "$vsPath\VC\Tools\MSVC\$($latestMsvc.Name)\lib\spectre\x64\libcmt.lib")) {
+                Write-Host "=== Installing Spectre Libraries ==="
+                & "$vsInstaller" modify --installPath $vsPath --quiet --norestart `
+                  --add Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre `
+                  --add Microsoft.VisualStudio.Component.VC.ATL.Spectre `
+                  --add Microsoft.VisualStudio.Component.VC.MFC.Spectre 2>&1 | Out-Null
+              }
+              cmd /c "rd /s /q `"$vsPath\VC\Tools\MSVC\14.38.33130`" 2>nul"
+
+              # ===== 4. Env vars for Electron native build =====
+              $env:GYP_MSVS_VERSION      = "2022"
+              $env:npm_config_target     = "39.8.8"
+              $env:npm_config_runtime    = "electron"
+              $env:npm_config_disturl    = "https://electronjs.org/headers"
+              $env:npm_config_arch       = "x64"
+              $env:npm_config_target_arch = "x64"
+              $env:npm_config_build_from_source = "true"
+              $env:npm_config_registry   = "https://registry.npmmirror.com/"
+              $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
+
+              # ===== 5. Install root dependencies =====
+              # FIX: --ignore-scripts avoids ripgrep GitHub 403 postinstall failure
+              # which causes npm to rollback and delete all packages.
+              npm install --ignore-scripts
+              if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: npm install --ignore-scripts failed"; exit 1 }
+
+              # Rebuild native modules only (avoids ripgrep rebuild script)
+              npm rebuild `
+                @parcel/watcher @vscode/native-watchdog @vscode/policy-watcher `
+                @vscode/spdlog @vscode/windows-process-tree @vscode/windows-registry `
+                @vscode/deviceid @vscode/sqlite3 @vscode/windows-mutex `
+                @vscode/windows-ca-certs kerberos native-keymap node-pty `
+                windows-foreground-love `
+                --foreground-scripts
+              if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: native rebuild failed"; exit 1 }
+
+              if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
+                Write-Error "FATAL: node_modules/gulp not found after npm install + rebuild"
+                exit 1
+              }
+              Write-Host "[OK] node_modules/gulp found"
+
+              # ===== 6. Install build/ dependencies =====
+              Push-Location build
+              npm install --ignore-scripts
+              if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ npm install failed"; exit 1 }
+
+              # FIX: tree-sitter binding.gyp forces /std:c++17, but Node 39.8.8 requires C++20
+              $tsGyp = "node_modules\tree-sitter\binding.gyp"
+              if (Test-Path $tsGyp) {
+                $gypContent = Get-Content $tsGyp -Raw
+                $gypContent = $gypContent -replace '/std:c\+\+17', '/std:c++20'
+                [System.IO.File]::WriteAllText((Resolve-Path $tsGyp), $gypContent, (New-Object System.Text.UTF8Encoding $false))
+                Write-Host "[FIX] tree-sitter binding.gyp patched: /std:c++17 -> /std:c++20"
+              }
+
+              # FIX: only rebuild tree-sitter (the single native module build/ needs).
+              # Full "npm rebuild" triggers ripgrep postinstall -> GitHub 403 -> fail.
+              npm rebuild tree-sitter --foreground-scripts
+              if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ tree-sitter rebuild failed"; exit 1 }
+              Pop-Location
+
+              # ===== 7. ripgrep fallback (copy from build/) =====
+              $mainRg = "node_modules\@vscode\ripgrep\bin\rg.exe"
+              $buildRg = "build\node_modules\@vscode\ripgrep\bin\rg.exe"
+              if (-not (Test-Path $mainRg) -and (Test-Path $buildRg)) {
+                New-Item -Force -ItemType Directory (Split-Path $mainRg) | Out-Null
+                Copy-Item $buildRg $mainRg -Force
+                Write-Host "[FIX] ripgrep copied from build/"
+              } elseif (-not (Test-Path $mainRg)) {
+                Write-Host "[WARN] ripgrep not available (GitHub API rate limit). Build will continue without it - search falls back to built-in engine."
+              }
+
+              # ===== 8. Install extension dependencies =====
+              # root --ignore-scripts skipped postinstall.ts, which normally
+              # installs deps for all subdirectories (extensions, remote, etc).
+              # Extensions with esbuild bundling (markdown-language-features) need
+              # their own node_modules (e.g. dompurify) to compile.
+              $extRoots = Get-ChildItem extensions -Directory -Depth 2
+              foreach ($extDir in $extRoots) {
+                if (Test-Path "$($extDir.FullName)/package.json") {
+                  Push-Location $extDir.FullName
+                  npm install --ignore-scripts
+                  if ($LASTEXITCODE -ne 0) {
+                    Write-Host "[WARN] $extDir npm install exited $LASTEXITCODE (non-critical)"
+                  }
+                  Pop-Location
+                }
+              }
+              Write-Host "[OK] Extension dependencies installed"
+
+              # ===== 8b. Install .vscode/extensions dependencies =====
+              if (Test-Path ".vscode/extensions") {
+                $vscExtRoots = Get-ChildItem .vscode/extensions -Directory
+                foreach ($extDir in $vscExtRoots) {
+                  if (Test-Path "$($extDir.FullName)/package.json") {
+                    Push-Location $extDir.FullName
+                    npm install --ignore-scripts
+                    if ($LASTEXITCODE -ne 0) {
+                      Write-Host "[WARN] $extDir npm install exited $LASTEXITCODE (non-critical)"
+                    }
+                    Pop-Location
+                  }
+                }
+                Write-Host "[OK] .vscode/extensions dependencies installed"
+              }
+
+              # ===== 8c. Hoist typescript to extensions/node_modules =====
+              # extensions/typescript-language-features/src/tsServer/protocol/protocol.d.ts
+              # references "../../../../node_modules/typescript/lib/typescript" which
+              # resolves to extensions/node_modules/typescript. Normally postinstall.ts
+              # runs `npm install` at extensions/ root which hoists typescript there.
+              # We bypass that, so we manually copy from root node_modules/typescript.
+              $extTsTarget = "extensions\node_modules\typescript"
+              $rootTs = "node_modules\typescript"
+              if ((Test-Path $rootTs) -and -not (Test-Path $extTsTarget)) {
+                New-Item -Force -ItemType Directory "extensions\node_modules" | Out-Null
+                # Use junction (fast, no copy). Falls back to copy if junction fails.
+                cmd /c "mklink /J `"$extTsTarget`" `"$((Resolve-Path $rootTs).Path)`"" 2>&1 | Out-Null
+                if (-not (Test-Path "$extTsTarget\lib\typescript.d.ts")) {
+                  Write-Host "[INFO] junction failed, falling back to copy"
+                  Copy-Item -Recurse -Force $rootTs $extTsTarget
+                }
+                Write-Host "[FIX] typescript hoisted to $extTsTarget"
+              }
             shell: powershell
 
           # ---------- 4. 生产编译（带 mangling，失败回退 dev 编译） ----------
           - name: "生产编译 compile-build-with-mangling"
             run: |
+              # Ensure nvm Node is on PATH for child processes (gulp->esbuild)
+              $nvmNodeDir = "$env:LOCALAPPDATA\nvm\v22.22.1"
+              $env:PATH = "$nvmNodeDir;$env:PATH"
+              node --version
+              Get-Command node | Select-Object Source
+
               npx gulp compile-build-with-mangling --verbose
               if ($LASTEXITCODE -ne 0) {
                 Write-Host "compile-build-with-mangling failed, fallback to dev compile..."

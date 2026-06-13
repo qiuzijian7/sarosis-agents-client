@@ -691,6 +691,13 @@ export interface IAgentTurnRequest {
 	 * 当设置时，agent 执行的工作目录应优先使用此路径（高于 AgentBinding.worktreePath）。
 	 */
 	readonly worktreePath?: string;
+	/**
+	 * Per-request model override (v39). When set, executeAgentTurn temporarily
+	 * replaces the global active model selection with this value for the
+	 * duration of the turn. Used by workflow nodes that have node-level
+	 * provider/model configuration (agentConfig.providerId / modelId).
+	 */
+	readonly modelOverride?: IModelSelection;
 }
 
 // ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────

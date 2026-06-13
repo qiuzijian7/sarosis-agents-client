@@ -191,9 +191,31 @@ initMessageClient((type, data) => {
 	}
 
 	switch (type) {
-		case 'chat.stream.delta':
-			handleStreamDelta(data as Parameters<typeof handleStreamDelta>[0]);
+		case 'chat.stream.delta': {
+			// v31: when a workflow execution is running for this agent, the
+			// delta text is already rendered inside LiveWorkflowTraceView's
+			// SubAgentOutputBlock. Suppress the regular stream state update
+			// to prevent the text from appearing twice in the chat panel.
+			// We check ALL sessions' workflowExecutions because a workflow
+			// could be running in a different session than the one currently
+			// active (and both share the same agent).
+			const deltaData = data as { agentId?: string; sessionId?: string };
+			const chatStore = useChatStore.getState();
+			const hasRunningWf = Object.values(chatStore.liveWorkflowExecutions).some(
+				e => e.status === 'running'
+			);
+			// Only suppress when (a) a workflow is running AND (b) the
+			// streaming agent matches what we have loaded. If a workflow
+			// is running for agent A and user chats with agent B in a
+			// different tab, agent B's deltas should still render normally.
+			const isWorkflowAgent = hasRunningWf && deltaData.agentId && (
+				chatStore.activeAgentId === deltaData.agentId
+			);
+			if (!isWorkflowAgent) {
+				handleStreamDelta(deltaData as Parameters<typeof handleStreamDelta>[0]);
+			}
 			break;
+		}
 		case 'chat.stream.complete': {
 			const completeData = data as Parameters<typeof handleStreamComplete>[0];
 			const msg = completeData.message as Record<string, unknown> | undefined;

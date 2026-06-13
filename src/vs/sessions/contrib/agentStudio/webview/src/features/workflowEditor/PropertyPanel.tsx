@@ -250,6 +250,33 @@ function renderNodeTypeFields(
 							))}
 						</select>
 					</Field>
+
+			{/* Advanced Settings */}
+			<Field label="Context Scope">
+				<select value={(data.contextScope as string) || 'session'} onChange={e => handleChange('contextScope', e.target.value)} style={selectStyle}>
+					<option value="session">Session (shared history)</option>
+					<option value="upstream-only">Upstream Only</option>
+					<option value="fresh">Fresh (isolated)</option>
+				</select>
+			</Field>
+			<Field label="Retry Max Attempts">
+				<input type="number" value={(data.retryMaxAttempts as number) ?? 0} onChange={e => handleChange('retryMaxAttempts', parseInt(e.target.value) || 0)} style={inputStyle} min="0" />
+			</Field>
+			<Field label="Retry Initial Delay (ms)">
+				<input type="number" value={(data.retryInitialDelayMs as number) ?? 1000} onChange={e => handleChange('retryInitialDelayMs', parseInt(e.target.value) || 0)} style={inputStyle} min="0" />
+			</Field>
+			<Field label="Retry Backoff">
+				<input type="number" value={(data.retryBackoffMultiplier as number) ?? 2} onChange={e => handleChange('retryBackoffMultiplier', parseFloat(e.target.value) || 2)} style={inputStyle} min="1" step="0.1" />
+			</Field>
+			<Field label="Retry Max Delay (ms)">
+				<input type="number" value={(data.retryMaxDelayMs as number) ?? 30000} onChange={e => handleChange('retryMaxDelayMs', parseInt(e.target.value) || 0)} style={inputStyle} min="0" />
+			</Field>
+			<Field label="Timeout Run (ms)">
+				<input type="number" value={(data.timeoutRunMs as number) ?? 0} onChange={e => handleChange('timeoutRunMs', parseInt(e.target.value) || 0)} style={inputStyle} min="0" />
+			</Field>
+			<Field label="Timeout Idle (ms)">
+				<input type="number" value={(data.timeoutIdleMs as number) ?? 0} onChange={e => handleChange('timeoutIdleMs', parseInt(e.target.value) || 0)} style={inputStyle} min="0" />
+			</Field>
 				</>
 			);
 		}

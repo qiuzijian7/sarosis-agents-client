@@ -8,7 +8,7 @@
  *   └────────────┴────────────────────────┴──────────────┘
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import { NodePalette } from './NodePalette';
@@ -201,6 +201,36 @@ export const WorkflowEditorPanel: React.FC = () => {
 			setTimeout(() => setSaveStatus('idle'), 3000);
 		}
 	}, [saving, workflowId, toWorkflowData]);
+
+	// ═══════════════════════════════════════════════════════════════════
+	// v38: Auto-save — debounce-persist workflow after node/edge changes.
+	// Without this, provider/model changes in agent nodes only live in
+	// Zustand memory and are lost on reload. Fires 2s after the last edit.
+	// ═══════════════════════════════════════════════════════════════════
+	const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+	const autoSave = useCallback(async () => {
+		const state = useWorkflowEditorStore.getState();
+		if (!state.workflowId) { return; }
+		try {
+			const { nodes: gnodes, connections } = state.toWorkflowData();
+			await sendRequest('workflow.save', {
+				workflow: {
+					id: state.workflowId,
+					nodes: gnodes,
+					connections,
+					name: state.workflowName,
+				},
+			});
+		} catch {
+			// Silently ignore auto-save errors (manual save still reports)
+		}
+	}, []);
+	useEffect(() => {
+		if (!loaded || !workflowId) { return; }
+		clearTimeout(autoSaveTimerRef.current);
+		autoSaveTimerRef.current = setTimeout(() => { autoSave(); }, 2000);
+		return () => clearTimeout(autoSaveTimerRef.current);
+	}, [nodes, edges, loaded, workflowId, autoSave]);
 
 	const handleExecute = useCallback(async () => {
 		if (!workflowId) { return; }

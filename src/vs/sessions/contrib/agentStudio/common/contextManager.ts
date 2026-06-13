@@ -58,7 +58,7 @@ import type { ITaskOrchestrationService } from '../../../common/agentStudioServi
 // ─── Default Configuration ──────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: IContextManagerConfig = {
-	compressionThreshold: 0.5, // 50% threshold
+	compressionThreshold: 0.25, // 25% threshold — lowered from 0.5 to catch mid-size workflows earlier
 	maxRecentMessages: 20, // Keep 20 recent messages
 	minMessagesToCompress: 10, // Minimum 10 messages to compress
 	maxSnapshotHistory: 10, // Keep 10 snapshots

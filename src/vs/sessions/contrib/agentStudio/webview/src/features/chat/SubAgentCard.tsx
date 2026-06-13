@@ -328,6 +328,53 @@ function SubAgentOutputBlockRaw({
 
 const SubAgentOutputBlock = memo(SubAgentOutputBlockRaw);
 
+// ─── P4 v34: Input / Task Block ───────────────────────────────────────
+// Collapsible card showing the agent's input (prompt/task description).
+// Follows the same "tool card" visual language (border-left accent +
+// icon + title + chevron + collapsible body) as the sibling blocks so
+// the end-to-end execution flow reads like a unified document:
+//   Input → Tool Calls → Output
+
+interface SubAgentInputBlockProps {
+	content: string;
+}
+
+function SubAgentInputBlockRaw({
+	content,
+}: SubAgentInputBlockProps): React.ReactElement {
+	const [open, setOpen] = useState<boolean>(false);
+	const preview = content.length > 80 ? content.substring(0, 80) + '…' : content;
+
+	return (
+		<div className="subagent-input-block">
+			<div
+				className="subagent-input-block-header"
+				onClick={() => setOpen(o => !o)}
+				role="button"
+				aria-expanded={open}
+			>
+				<span className="subagent-input-block-icon">📥</span>
+				<span className="subagent-input-block-title">输入</span>
+				{!open && (
+					<span className="subagent-input-block-preview">{preview}</span>
+				)}
+				<span className={`subagent-input-block-toggle ${open ? '' : 'collapsed'}`}>
+					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+						<polyline points="6 9 12 15 18 9" />
+					</svg>
+				</span>
+			</div>
+			{open && (
+				<div className="subagent-input-block-body">
+					<MarkdownRenderer content={content} className="input-prompt markdown-body" />
+				</div>
+			)}
+		</div>
+	);
+}
+
+const SubAgentInputBlock = memo(SubAgentInputBlockRaw);
+
 // ─── Single Sub-Agent Row ─────────────────────────────────────────────────
 
 interface SubAgentRowProps {
@@ -341,20 +388,11 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 	const isDone = agent.status === 'done';
 	const isError = agent.status === 'error';
 
-	// Truncate task description for display
-	const taskDisplay = agent.task.length > 80
-		? agent.task.substring(0, 80) + '...'
-		: agent.task;
-
-	// v24: prefer `streamedText` (the live, growing delta content) when
-	// running so the user sees the LLM's response stream into the card.
-	// Fall back to `output` for the post-completion case. The new
-	// `SubAgentOutputBlock` renders this in a proper "tool card" visual
-	// style (header + chevron + collapsible body) consistent with the
-	// sibling thinking/tool-trace cards. We deliberately don't use the
-	// old `subagent-output-preview` / `subagent-output-full` flat layout
-	// any more — that style was an un-collapsible wall of text that
-	// pushed sibling sub-agent cards out of the viewport.
+	// v34: task description is now rendered inside SubAgentInputBlock
+	// (collapsible input card) rather than inline in the header. The
+	// header only shows the agent node name.
+	// Stream content for the output block (prefers live streamedText
+	// while running, switches to finalized output on completion).
 	const streamContent: string = isRunning
 		? (agent.streamedText ?? agent.output ?? '')
 		: (agent.output ?? agent.streamedText ?? '');
@@ -366,39 +404,50 @@ function SubAgentRowRaw({ agent, isStreaming }: SubAgentRowProps): React.ReactEl
 				<span className="subagent-status-icon">
 					<StatusIcon status={agent.status} />
 				</span>
-				{/* v26: prefer `name` (workflow node label, e.g. "在控制台打印
-				    一个hello world" / the agent's own name for agent-type
-				    nodes); fall back to a short slice of `task` so the row
-				    header never goes blank. The previous render was just
-				    `{agent.name}` which produced an empty span when the
-				    field was missing. */}
+				{/* v34: simplified header — only show the agent node name.
+				    The full task/prompt description moves into the new
+				    SubAgentInputBlock (collapsible input card) below. */}
 				<span className="subagent-name">
 					{agent.name || (agent.task ? agent.task.substring(0, 40) : agent.id)}
-				</span>
-				<span className={`subagent-task ${isRunning ? 'shimmer' : ''}`}>
-					{taskDisplay}
 				</span>
 				<span className={`subagent-type-badge type-${agent.type}`}>
 					{config.label}
 				</span>
 			</div>
 
-			{/* Progress text during execution (kept for short-status
-			    feedback; the SubAgentOutputBlock below carries the full
-			    stream content). */}
-			{isRunning && agent.progress && (
+			{/* v34: simplified — only show "执行中" with dots while running.
+			    On completion (done/error/cancelled), hide entirely. The
+			    SubAgentOutputBlock below carries the full result content. */}
+			{isRunning && (
 				<div className="subagent-progress">
 					<span className="subagent-progress-dots">
 						<span className="typing-dot">●</span>
 						<span className="typing-dot">●</span>
 						<span className="typing-dot">●</span>
 					</span>
-					<span className="subagent-progress-text">{agent.progress}</span>
+					<span className="subagent-progress-text">执行中</span>
 				</div>
 			)}
 
-			{/* P4 v3: Thinking block (collapsible, auto-open while streaming) */}
-			{agent.thinking && agent.thinking.length > 0 && (
+			{/* v34: Agent Input card (collapsible) — the prompt / task
+			    description sent to this agent. Rendered as a proper
+			    "tool card" so the full execution flow reads:
+			        Input → Tool Calls → Output.
+			    Default collapsed — the header already shows the node
+			    name, and users expand this to inspect the full prompt. */}
+			{agent.task && agent.task.length > 0 && (
+				<SubAgentInputBlock content={agent.task} />
+			)}
+
+			{/* P4 v3: Thinking block (collapsible, auto-open while streaming).
+			    v33: Removed from SubAgentRow — when the SubAgentOutputBlock
+			    (below) is already showing the model's streamed response, the
+			    thinking text often duplicates the output, causing visual
+			    noise. The output block now renders the full delta via
+			    MarkdownRenderer, so there's no need for a separate reasoning
+			    panel. */}
+			{/* v33: thinking block retired */}
+			{false && agent.thinking && agent.thinking.length > 0 && (
 				<SubAgentThinkingBlock
 					thinking={agent.thinking}
 					isStreaming={isRunning}

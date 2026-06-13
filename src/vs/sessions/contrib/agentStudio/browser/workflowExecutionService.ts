@@ -10,6 +10,10 @@ import { IAgentChatService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
 import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus } from '../common/workflowExecutionService.js';
 import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption } from '../common/workflowExecutionService.js';
+import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { substituteHostVariables, buildRuntimeValueMap } from './utils/templateUtils.js';
 
 export class WorkflowExecutionService extends Disposable implements IWorkflowExecutionService {
@@ -68,6 +72,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		@ILogService private readonly logService: ILogService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
+		@IFileService private readonly fileService: IFileService,
+		@IWorkspaceRegistry private readonly workspaceRegistry: IWorkspaceRegistry,
 	) {
 		super();
 	}
@@ -96,6 +102,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			startTime: new Date().toISOString(),
 			context: options?.context ?? {},
 			breakpoints: new Set<string>(workflow.breakpoints ?? []),
+			options,  // v31: store options for per-node access (maxHistoryMessages, etc.)
+			sharedMemory: new Map<string, string>(),  // v32: inter-agent shared memory
 		};
 
 		this._executions.set(executionId, executionState);
@@ -447,15 +455,24 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			throw new Error('Workflow has no Start node');
 		}
 
-		// Execute from start node
-		await this._executeNodeRecursive(executionState, workflow, startNode, adj, options);
+		// v31: visited set prevents diamond-pattern re-execution and infinite
+		// loops from accidental cycles. maxDepth protects against stack
+		// overflow on pathological graphs. Both are scoped to a single
+		// execution run.
+		const visited = new Set<string>();
+		const MAX_DEPTH = 500;
+		await this._executeNodeRecursive(executionState, workflow, startNode, adj, options, visited, 0, MAX_DEPTH);
 
-		// Mark execution as completed
+		// Mark execution as completed (or failed if any node failed)
 		if (executionState.status === WorkflowExecutionStatus.Running) {
-			executionState.status = WorkflowExecutionStatus.Completed;
+			const hasFailed = [...executionState.nodeStates.values()]
+				.some(s => s.status === WorkflowNodeExecutionStatus.Failed);
+			executionState.status = hasFailed
+				? WorkflowExecutionStatus.Failed
+				: WorkflowExecutionStatus.Completed;
 			executionState.endTime = new Date().toISOString();
 			this._onDidExecutionStatusChange.fire(executionState);
-			this.logService.info(`[WorkflowExecution] Execution ${executionState.executionId} completed`);
+			this.logService.info(`[WorkflowExecution] Execution ${executionState.executionId} ${hasFailed ? 'failed (some nodes failed)' : 'completed'}`);
 		}
 
 		// P4: fire execution_end so the owner chat can commit the final assistant message.
@@ -481,10 +498,39 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		workflow: IStoredWorkflow,
 		node: WorkflowGraphNode,
 		adj: Map<string, { targetId: string; fromPort?: string }[]>,
-		options?: IWorkflowExecutionOptions,
+		options: IWorkflowExecutionOptions | undefined,
+		visited: Set<string>,
+		depth: number,
+		maxDepth: number,
 	): Promise<void> {
 		// Check if execution was cancelled
 		if (executionState.status === WorkflowExecutionStatus.Cancelled) {
+			return;
+		}
+
+		// v31: cycle detection — if this node has already been visited in the
+		// current execution run, skip it. This prevents:
+		//   1. Infinite loops from accidental cycles in the graph
+		//   2. Diamond-pattern nodes being executed multiple times (once per
+		//      incoming path, which would cause double-work and inconsistent state)
+		if (visited.has(node.id)) {
+			this.logService.info(
+				`[WorkflowExecution] Node ${node.id} already visited (cycle/diamond), skipping`,
+			);
+			return;
+		}
+		visited.add(node.id);
+
+		// v31: max depth guard — prevent stack overflow on deep/recursive graphs.
+		if (depth >= maxDepth) {
+			this.logService.error(
+				`[WorkflowExecution] Max depth ${maxDepth} exceeded at node ${node.id}. ` +
+				`Possible infinite loop or excessively deep workflow. Halting execution.`,
+			);
+			executionState.status = WorkflowExecutionStatus.Failed;
+			executionState.error = `Workflow exceeded maximum depth of ${maxDepth} nodes. Possible infinite loop.`;
+			executionState.endTime = new Date().toISOString();
+			this._onDidExecutionStatusChange.fire(executionState);
 			return;
 		}
 
@@ -526,61 +572,64 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			// 检查断点（P2 调试功能）
 			if (executionState.breakpoints?.has(node.id)) {
 				this.logService.info(`[WorkflowExecution] Breakpoint hit at node ${node.id}`);
-				// 暂停执行，等待用户恢复
 				await this.pauseExecution(
 					executionState.executionId,
 					node.id,
 					`断点暂停: ${node.name || node.id}`,
 					[],
 				);
-				// 恢复后继续执行
 			}
 
-			// Execute node based on type
-			let nextNodeIds: string[] = [];
+			// v31: Retry loop — wraps node execution with configurable
+			// exponential backoff. Canceled executions are never retried.
+			const nodeData = node.data ?? {};
+			const retryMaxAttempts = (nodeData.retryMaxAttempts as number) ?? 0;
+			const retryInitialMs = (nodeData.retryInitialDelayMs as number) ?? 1000;
+			const retryMultiplier = (nodeData.retryBackoffMultiplier as number) ?? 2;
+			const retryMaxMs = (nodeData.retryMaxDelayMs as number) ?? 30000;
 
-			switch (node.type) {
-				case WorkflowNodeType.Start:
-					// Start node: just pass through to next nodes
-					nextNodeIds = this._getNextNodes(node.id, adj);
-					break;
+		let nextNodeIds: string[] = [];
 
-				case WorkflowNodeType.End:
-					// End node: stop execution
-					nodeState.status = WorkflowNodeExecutionStatus.Completed;
-					nodeState.endTime = new Date().toISOString();
-					executionState.nodeStates.set(node.id, nodeState);
-					this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
-					return;
+			for (let attempt = 0; attempt <= retryMaxAttempts; attempt++) {
+				// Reset nextNodeIds before each attempt
+				nextNodeIds = [];
+				try {
+					// Execute node based on type
+					switch (node.type) {
+						case WorkflowNodeType.Start:
+							nextNodeIds = this._getNextNodes(node.id, adj);
+							break;
 
-				case WorkflowNodeType.Task:
-					// Task node: execute task
-					await this._executeTaskNode(executionState, workflow, node, options);
-					nextNodeIds = this._getNextNodes(node.id, adj);
-					break;
+						case WorkflowNodeType.End:
+							nodeState.status = WorkflowNodeExecutionStatus.Completed;
+							nodeState.endTime = new Date().toISOString();
+							executionState.nodeStates.set(node.id, nodeState);
+							this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+							return;
 
-				case WorkflowNodeType.Prompt:
-					// Prompt node: inject prompt
-					await this._executePromptNode(executionState, workflow, node, options);
-					nextNodeIds = this._getNextNodes(node.id, adj);
-					break;
+						case WorkflowNodeType.Task:
+							await this._executeTaskNode(executionState, workflow, node, options);
+							nextNodeIds = this._getNextNodes(node.id, adj);
+							break;
 
-				case WorkflowNodeType.Agent:
-					// Agent node: execute with specific agent
-					await this._executeAgentNode(executionState, workflow, node, options);
-					nextNodeIds = this._getNextNodes(node.id, adj);
-					break;
+						case WorkflowNodeType.Prompt:
+							await this._executePromptNode(executionState, workflow, node, options);
+							nextNodeIds = this._getNextNodes(node.id, adj);
+							break;
 
-				case WorkflowNodeType.Skill:
-					// Skill node: execute skill
-					await this._executeSkillNode(executionState, workflow, node, options);
-					nextNodeIds = this._getNextNodes(node.id, adj);
-					break;
+						case WorkflowNodeType.Agent:
+							await this._executeAgentNode(executionState, workflow, node, options);
+							nextNodeIds = this._getNextNodes(node.id, adj);
+							break;
 
-				case WorkflowNodeType.Tool:
-					// Tool node: execute tool
-					await this._executeToolNode(executionState, workflow, node, options);
-					nextNodeIds = this._getNextNodes(node.id, adj);
+						case WorkflowNodeType.Skill:
+							await this._executeSkillNode(executionState, workflow, node, options);
+							nextNodeIds = this._getNextNodes(node.id, adj);
+							break;
+
+						case WorkflowNodeType.Tool:
+							await this._executeToolNode(executionState, workflow, node, options);
+							nextNodeIds = this._getNextNodes(node.id, adj);
 					break;
 
 				case WorkflowNodeType.IfElse:
@@ -628,26 +677,81 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					nextNodeIds = this._getNextNodes(node.id, adj);
 					break;
 			}
+					// Success — exit the retry loop.
+					break;
+			} catch (innerErr) {
+				// Never retry cancelled executions.
+					if ((executionState.status as string) === 'cancelled') {
+						throw innerErr;
+					}
+					// Last attempt — re-throw to the outer catch handler.
+					if (attempt >= retryMaxAttempts) {
+						throw innerErr;
+					}
+					// Calculate exponential backoff delay with jitter.
+					const baseDelay = Math.min(
+						retryMaxMs,
+						retryInitialMs * Math.pow(retryMultiplier, attempt),
+					);
+					// Add ±20% jitter to avoid thundering herd.
+					const jitter = baseDelay * 0.2 * (Math.random() * 2 - 1);
+					const delay = Math.round(baseDelay + jitter);
+					this.logService.warn(
+						`[WorkflowExecution] Node ${node.id} failed (attempt ${attempt + 1}/${retryMaxAttempts + 1}), ` +
+						`retrying in ${delay}ms: ${innerErr instanceof Error ? innerErr.message : String(innerErr)}`,
+					);
+					// Reset node state for retry.
+					nodeState.status = WorkflowNodeExecutionStatus.Running;
+					nodeState.error = undefined;
+					nodeState.endTime = undefined;
+					executionState.nodeStates.set(node.id, nodeState);
+					this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+			}
 
 			// Mark node as completed
 			nodeState.status = WorkflowNodeExecutionStatus.Completed;
 			nodeState.endTime = new Date().toISOString();
-			// v30: AskUser nodes store the selected labels as their output so
-			// downstream nodes can reference {{askCommit.output}} / {{nodeId.output}}.
+			// v30: AskUser nodes store the selected labels as their output
 			if (node.type === WorkflowNodeType.AskUser && nodeState.output === undefined) {
 				const ctxInput = executionState.context['userInput'];
 				if (ctxInput !== undefined) {
 					nodeState.output = Array.isArray(ctxInput) ? (ctxInput as string[]).join(', ') : (ctxInput as string);
 				}
 			}
+			// v37: Prompt nodes store their (already-substituted) prompt text
+			// as output so downstream nodes can reference it via {{$prev.output}}.
+			// Without this, _collectUpstreamOutputs finds no output for the
+			// prompt node, causing {{$prev.output}} to resolve to empty in the
+			// downstream agent node — which then falls back to workflow
+			// description instead of the user's actual input.
+			if (node.type === WorkflowNodeType.Prompt && nodeState.output === undefined) {
+				const promptText = (node.data as { prompt?: string })?.prompt;
+				if (promptText) {
+					nodeState.output = promptText;
+					this.logService.info(
+						`[WorkflowExecution] Prompt node ${node.id}: stored output (len=${promptText.length}) for downstream {{$prev.output}}`,
+					);
+				}
+			}
 			executionState.nodeStates.set(node.id, nodeState);
 			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
+
+			// v32: write node output to SharedMemory for cross-node communication.
+			// Any downstream node can read this via executionState.sharedMemory.get(nodeId).
+			if (nodeState.output !== undefined) {
+				executionState.sharedMemory.set(node.id, String(nodeState.output));
+			}
+
+			// v32: save checkpoint after node success
+			this._saveCheckpoint(executionState).catch(() => { /* best-effort */ });
 
 			// Execute next nodes
 			for (const nextNodeId of nextNodeIds) {
 				const nextNode = workflow.nodes?.find(n => n.id === nextNodeId);
 				if (nextNode) {
-					await this._executeNodeRecursive(executionState, workflow, nextNode, adj, options);
+					await this._executeNodeRecursive(executionState, workflow, nextNode, adj, options, visited, depth + 1, maxDepth);
 				}
 			}
 		} catch (err) {
@@ -674,20 +778,71 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
 				return;
 			}
-			// Mark node as failed
+			// v32: Cascade failure — instead of immediately failing the entire
+			// execution, mark this node as Failed and recursively skip all
+			// downstream nodes (they cannot run without upstream output).
+			// Other independent branches continue normally. The execution
+			// is marked Failed at the end only if any node actually failed.
 			nodeState.status = WorkflowNodeExecutionStatus.Failed;
 			nodeState.error = err instanceof Error ? err.message : String(err);
 			nodeState.endTime = new Date().toISOString();
 			executionState.nodeStates.set(node.id, nodeState);
 			this._onDidNodeExecutionStatusChange.fire({ executionId: executionState.executionId, nodeState });
 
-			// Mark execution as failed
-			executionState.status = WorkflowExecutionStatus.Failed;
-			executionState.error = nodeState.error;
-			executionState.endTime = new Date().toISOString();
-			this._onDidExecutionStatusChange.fire(executionState);
+			// Collect all downstream node IDs reachable from this failed node.
+			this._cascadeSkipDownstream(executionState, node.id, adj);
+			// Do NOT throw — let the execution continue for other branches.
+			return;
+		}
+	}
 
-			throw err;
+	/**
+	 * v32: Cascade failure — recursively mark all downstream nodes reachable
+	 * from a failed node as Skipped. This prevents the execution engine from
+	 * trying to execute nodes that depend on missing upstream output.
+	 * Independent parallel branches are unaffected.
+	 */
+	private _cascadeSkipDownstream(
+		executionState: IWorkflowExecutionState,
+		failedNodeId: string,
+		adj: Map<string, { targetId: string; fromPort?: string }[]>,
+		visited = new Set<string>(),
+	): void {
+		if (visited.has(failedNodeId)) { return; }
+		visited.add(failedNodeId);
+
+		const downstream = adj.get(failedNodeId);
+		if (!downstream) { return; }
+
+		for (const { targetId } of downstream) {
+			if (visited.has(targetId)) { continue; }
+			// Only skip nodes that haven't already started/run/failed.
+			// If a node already Failed (its own error, not cascade), don't overwrite with Skipped.
+			const existingState = executionState.nodeStates.get(targetId);
+			if (existingState && (
+				existingState.status === WorkflowNodeExecutionStatus.Completed ||
+				existingState.status === WorkflowNodeExecutionStatus.Running ||
+				existingState.status === WorkflowNodeExecutionStatus.Failed
+			)) { continue; }
+
+			const skippedState: IWorkflowNodeExecutionState = {
+				nodeId: targetId,
+				status: WorkflowNodeExecutionStatus.Skipped,
+				output: undefined,
+				error: `Upstream node "${failedNodeId}" failed`,
+				startTime: new Date().toISOString(),
+				endTime: new Date().toISOString(),
+			};
+			executionState.nodeStates.set(targetId, skippedState);
+			this._onDidNodeExecutionStatusChange.fire({
+				executionId: executionState.executionId,
+				nodeState: skippedState,
+			});
+			this.logService.info(
+				`[WorkflowExecution] Cascade: skipped node ${targetId} because upstream ${failedNodeId} failed`,
+			);
+			// Recurse to skip this node's downstream too.
+			this._cascadeSkipDownstream(executionState, targetId, adj, visited);
 		}
 	}
 
@@ -810,8 +965,22 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// v10: build prompt from node config, with task context as fallback.
 		// Only the FIRST agent node receives the taskDescription — once consumed,
 		// we clear it so subsequent nodes must use their own data.prompt.
+		//
+		// v32: _substituteUpstreamVariables mutates data.prompt in-place before
+		// we reach here. If the original prompt was a variable template like
+		// {{$prev.output}} and the upstream output was empty, data.prompt is
+		// now '' — which looks like "no prompt configured". We must distinguish
+		// "user didn't write a prompt" from "user wrote a template that resolved
+		// to empty because the upstream node didn't produce output".
+		// To do this, check whether the ORIGINAL node data has a non-empty
+		// prompt property BEFORE substitution happened. We use the node's own
+		// data (via the workflow.nodes) since data.prompt has been mutated.
+		const workflowNode = workflow.nodes?.find(n => n.id === node.id);
+		const originalPrompt = (workflowNode?.data?.prompt as string) || '';
+		const hadExplicitPrompt = !!originalPrompt;
+
 		let nodePrompt = (data.prompt as string) || '';
-		if (!nodePrompt) {
+		if (!nodePrompt && !hadExplicitPrompt) {
 			const ctx = executionState.context;
 			const consumed = (ctx?._taskConsumed as boolean) || false;
 			const taskDesc = consumed ? undefined : (ctx?.taskDescription as string | undefined);
@@ -826,15 +995,32 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			}
 		}
 
-		if (!nodePrompt) {
+		if (!nodePrompt && !hadExplicitPrompt) {
 			// No explicit prompt — build a sensible fallback from workflow description
 			// or node label instead of skipping execution.
+			// v32: only fall back when the user genuinely didn't configure a prompt
+			// (not when a {{$prev.output}} variable resolved to empty).
 			const fallback = (workflow.description || '').trim() ||
 				`Run the "${(data.label as string) || node.name || node.id}" agent with default instructions.`;
 			nodePrompt = fallback;
 			this.logService.info(
 				`[WorkflowExecution] Agent node ${node.id} ("${node.name || ''}") has no explicit prompt — ` +
 				`using fallback: "${fallback.substring(0, 80)}"`,
+			);
+		}
+
+		// v32: when a variable template was configured but resolved to empty
+		// (upstream didn't produce output), provide a clear diagnostic message
+		// instead of sending empty instructions.
+		if (!nodePrompt && hadExplicitPrompt) {
+			nodePrompt = `The upstream node's output is empty — no content to work with. ` +
+				`Original prompt template: <template>${originalPrompt}</template>. ` +
+				`This agent node was supposed to receive upstream output but none was produced. ` +
+				`Please check the upstream node's execution logs.`;
+			this.logService.warn(
+				`[WorkflowExecution] Agent node ${node.id} ("${node.name || ''}") prompt resolved to empty ` +
+				`after variable substitution (original template: "${originalPrompt}"). ` +
+				`Using diagnostic fallback.`,
 			);
 		}
 
@@ -856,20 +1042,66 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			// 使用指定 agent 执行（发送一个继续的提示）
 			const continuePrompt = nodePrompt;
 
-			// Get or create a session for this workflow execution to avoid cross-session leakage.
-			const sessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
-			const agentSessionId = await this._getOrCreateAgentSession(
-				agentId,
-				executionState.executionId,
-				sessionName,
-			);
+			// v31: contextScope — controls how much conversation context the
+			// agent node receives. Default 'session' keeps the old behaviour
+			// (shared session with full history).
+			const scope = ((data.contextScope as string) || 'session') as 'session' | 'upstream-only' | 'fresh';
+			let agentSessionId: string;
+			let extraOpts: { systemPrompt?: string } | undefined;
 
-			this.logService.info(`[WorkflowExecution] Sending to agent ${agentId} (session=${agentSessionId}): ${continuePrompt}`);
+			if (scope === 'fresh') {
+				// Fresh: fully isolated — new session, no upstream context.
+				const sessionName = `${WorkflowExecutionService._buildSessionName(executionState, workflow)}_${node.id}`;
+				const meta = await this.agentChatService.createAgentSession(agentId, sessionName);
+				agentSessionId = meta.id;
+				this.logService.info(`[WorkflowExecution] Agent node ${node.id}: contextScope=fresh, new session=${agentSessionId}`);
+			} else if (scope === 'upstream-only') {
+				// Upstream-only: new session with only upstream node outputs
+				// injected as a system message — no prior conversation history.
+				const sessionName = `${WorkflowExecutionService._buildSessionName(executionState, workflow)}_${node.id}`;
+				const meta = await this.agentChatService.createAgentSession(agentId, sessionName);
+				agentSessionId = meta.id;
+
+				// Build upstream context as a system prompt from completed node outputs.
+				const upstreamOutputs = this._collectUpstreamOutputs(executionState);
+				const upstreamEntries = Object.entries(upstreamOutputs);
+				if (upstreamEntries.length > 0) {
+					const sections = upstreamEntries.map(([nid, out]) =>
+						`<upstream_node id="${nid}">\n${out || '(empty output)'}\n</upstream_node>`,
+					);
+					extraOpts = {
+						systemPrompt: [
+							'You are executing a step in a workflow. Below are the outputs from ' +
+							'previously completed steps. Use them as context for your task.',
+							'',
+							...sections,
+						].join('\n'),
+					};
+				}
+				this.logService.info(
+					`[WorkflowExecution] Agent node ${node.id}: contextScope=upstream-only, ` +
+					`new session=${agentSessionId}, upstream nodes=${upstreamEntries.length}`,
+				);
+			} else {
+				// Session (default): shared session for this agent+execution,
+				// full conversation history available.
+				const sessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+				agentSessionId = await this._getOrCreateAgentSession(
+					agentId,
+					executionState.executionId,
+					sessionName,
+				);
+			}
+
+			this.logService.info(`[WorkflowExecution] Sending to agent ${agentId} (session=${agentSessionId}, scope=${scope}): ${continuePrompt}`);
 
 			// v21: route through _sendAndTrackStream so cancelExecution can abort
-			// the in-flight LLM call. Without this, clicking Cancel during a
-			// long agent turn had no effect — the await kept running until the
-			// model finished, even though state.status was already Cancelled.
+			// the in-flight LLM call.
+			const nodeData = data as Record<string, any>;
+			const timeoutConfig = {
+				runTimeoutMs: nodeData.timeoutRunMs as number | undefined,
+				idleTimeoutMs: nodeData.timeoutIdleMs as number | undefined,
+			};
 			const message = await this._sendAndTrackStream(
 				executionState,
 				node,
@@ -891,6 +1123,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 						});
 					}
 				},
+				extraOpts,
+				timeoutConfig,
 			);
 
 			// 记录执行结果
@@ -1186,29 +1420,116 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			(data.branches as any[]) || [{ id: '0', label: 'True', condition: '' }, { id: '1', label: 'False', condition: '' }];
 
 		const agentId = _options?.agentId || workflow.agentId;
+		const isSwitch = node.type === WorkflowNodeType.Switch;
 
-		// Build prompt to ask agent to evaluate conditions (cc-wf-studio style)
-		const branchList = branches.map((b, i) =>
-			`${i}. **${b.label}**: ${b.condition || (b.isDefault ? '(default)' : '(no condition)')}`
-		).join('\n');
+		// v31: resolve the default branch index. The isDefault flag marks the
+		// catch-all branch that should be taken when no condition matches.
+		// prefer it as the ultimate fallback over hardcoded branch-0.
+		const defaultBranchIndex = (() => {
+			const idx = branches.findIndex(b => b.isDefault);
+			return idx >= 0 ? idx : 0;
+		})();
 
-		const evaluationPrompt = [
-			'You are at a decision point in the workflow. Evaluate the following branches and decide which one to follow.',
-			'',
-			'**Branches:**',
-			branchList,
-			'',
-			'Based on the context of all previous steps, which branch should be followed?',
-			'Respond with ONLY the branch number (e.g., "0") followed by a brief reason in the next line.',
-		].join('\n');
+		// ═══════════════════════════════════════════════════════════════════
+		// v31: Code-level deterministic condition evaluation.
+		// Before calling the LLM (expensive + non-deterministic), try to
+		// evaluate conditions with deterministic rules. For Switch nodes,
+		// match the resolved evaluationTarget against branch labels and
+		// condition text. For IfElse nodes, parse simple `==`, `contains`,
+		// `startsWith` / `endsWith` patterns from condition strings.
+		// Only fall back to LLM when no deterministic rule fires.
+		// ═══════════════════════════════════════════════════════════════════
+		const evalTargetRaw = (data.evaluationTarget as string) || '';
+		const resolvedEvalTarget = evalTargetRaw
+			? WorkflowExecutionService._replaceVariables(evalTargetRaw, this._buildEvalContext(executionState))
+			: '';
+		let branchIndex = -1; // -1 = not yet determined, requires LLM fallback
 
-		let branchIndex = 0; // default to first branch
-		if (agentId) {
+		// ---- Switch: deterministic label/value matching ----
+		if (isSwitch && resolvedEvalTarget) {
+			const targetLower = resolvedEvalTarget.trim().toLowerCase();
+			this.logService.info(
+				`[WorkflowExecution] Switch ${node.id}: deterministic eval on ` +
+				`target="${targetLower}" against ${branches.length} branches`,
+			);
+			for (let i = 0; i < branches.length; i++) {
+				const labelLower = (branches[i].label || '').toLowerCase();
+				const condLower = (branches[i].condition || '').toLowerCase();
+				if (
+					labelLower === targetLower ||
+					condLower === targetLower ||
+					labelLower.includes(targetLower) ||
+					condLower.includes(targetLower)
+				) {
+					branchIndex = i;
+					this.logService.info(
+						`[WorkflowExecution] Switch ${node.id}: ` +
+						`deterministic match → branch ${branchIndex} ("${branches[i].label}")`,
+					);
+					break;
+				}
+			}
+			// If no direct match, check for a numeric evaluationTarget that maps to branch index
+			if (branchIndex === -1) {
+				const num = parseInt(resolvedEvalTarget, 10);
+				if (!isNaN(num) && num >= 0 && num < branches.length) {
+					branchIndex = num;
+					this.logService.info(
+						`[WorkflowExecution] Switch ${node.id}: ` +
+						`numeric target → branch ${branchIndex}`,
+					);
+				}
+			}
+		}
+
+		// ---- IfElse: deterministic condition parsing ----
+		if (!isSwitch && branchIndex === -1) {
+			for (let i = 0; i < branches.length; i++) {
+				const cond = (branches[i].condition || '').trim();
+				if (!cond) { continue; }
+				const resolved = WorkflowExecutionService._replaceVariables(
+					cond,
+					this._buildEvalContext(executionState),
+				);
+				if (this._evaluateSimpleCondition(resolved, executionState)) {
+					branchIndex = i;
+					this.logService.info(
+						`[WorkflowExecution] IfElse ${node.id}: ` +
+						`deterministic match → branch ${branchIndex} ("${branches[i].label}") ` +
+						`condition="${cond}"`,
+					);
+					break;
+				}
+			}
+		}
+
+		// ---- LLM fallback (only when deterministic eval didn't decide) ----
+		if (branchIndex === -1 && agentId) {
+			// Build prompt to ask agent to evaluate conditions
+			const branchList = branches.map((b, i) =>
+				`${i}. **${b.label}**: ${b.condition || (b.isDefault ? '(default)' : '(no condition)')}`
+			).join('\n');
+
+			// v31: for Switch nodes, include the resolved evaluationTarget in
+			// the prompt so the LLM knows what value to switch on. Previously
+			// evaluationTarget was only stored in node data but never passed
+			// to the agent, making Switch nodes behave identically to IfElse.
+			const switchOnLine = (isSwitch && resolvedEvalTarget)
+				? `\n**Switching on:** "${resolvedEvalTarget}"\n`
+				: '';
+
+			const evaluationPrompt = [
+				'You are at a decision point in the workflow. Evaluate the following branches and decide which one to follow.',
+				'',
+				'**Branches:**',
+				branchList,
+				switchOnLine,
+				'Based on the context of all previous steps, which branch should be followed?',
+				'Respond with ONLY the branch number (e.g., "0") on the first line.',
+			].join('\n');
+
 			try {
 				this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: asking agent to evaluate`);
-				// v21: route through _sendAndTrackStream so cancelExecution can
-				// abort the in-flight evaluation call. Bare sendMessage await
-				// previously ignored Cancelled status.
 				const message = await this._sendAndTrackStream(
 					executionState,
 					node,
@@ -1218,37 +1539,202 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					() => { /* noop onDelta */ },
 				);
 
-				// Parse agent response for branch index
+				// v31: robust parsing — scan the first non-empty line for a
+				// standalone integer, falling back to the old /\b([0-9]+)\b/
+				// for backward compatibility.
 				const content = message.content || '';
-				const match = content.match(/\b([0-9]+)\b/);
-				if (match) {
-					branchIndex = parseInt(match[1], 10);
-					if (branchIndex >= branches.length) {
-						branchIndex = 0; // fallback to first branch
+				const lines = content.split('\n').map((l: string) => l.trim()).filter(Boolean);
+				let parsed = false;
+				for (const line of lines) {
+					const m = line.match(/^(\d+)\b/);
+					if (m) {
+						const idx = parseInt(m[1], 10);
+						if (idx >= 0 && idx < branches.length) {
+							branchIndex = idx;
+							parsed = true;
+							break;
+						}
 					}
 				}
+				if (!parsed) {
+					// fallback: old-style regex across entire content
+					const match = content.match(/\b([0-9]+)\b/);
+					if (match) {
+						const idx = parseInt(match[1], 10);
+						if (idx >= 0 && idx < branches.length) {
+							branchIndex = idx;
+						}
+					}
+				}
+				if (branchIndex === -1) {
+					this.logService.warn(
+						`[WorkflowExecution] IfElse/Switch ${node.id}: ` +
+						`could not parse branch index from agent response "${content.substring(0, 100)}"`,
+					);
+				}
 			} catch (err) {
-				this.logService.warn(`[WorkflowExecution] IfElse/Switch ${node.id}: condition evaluation failed, using default branch`);
+				this.logService.warn(
+					`[WorkflowExecution] IfElse/Switch ${node.id}: ` +
+					`condition evaluation failed: ${err instanceof Error ? err.message : err}`,
+				);
 			}
+		}
+
+		// ---- Ultimate fallback: use default branch ----
+		if (branchIndex === -1) {
+			branchIndex = defaultBranchIndex;
+			this.logService.info(
+				`[WorkflowExecution] IfElse/Switch ${node.id}: ` +
+				`no match found (agentId=${agentId || '<none>'}), ` +
+				`using default branch ${branchIndex} ("${branches[branchIndex]?.label}")`,
+			);
+		}
+
+		// Clamp to valid range (safety net)
+		if (branchIndex < 0 || branchIndex >= branches.length) {
+			branchIndex = defaultBranchIndex;
 		}
 
 		this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: selected branch ${branchIndex} ("${branches[branchIndex]?.label}")`);
 
-		// Store the decision in execution context
+		// Store the decision + upstream output in execution context.
+		// v38: The node output must carry the actual upstream data, not just
+		// the branch metadata. Otherwise {{$prev.output}} in downstream nodes
+		// resolves to "Selected branch 0: 通过（无报错）" and the agent has
+		// no real input to work with. We concatenate: upstream output first
+		// (the data), then the branch decision (metadata separator).
 		const nodeState = executionState.nodeStates.get(node.id);
 		if (nodeState) {
-			nodeState.output = `Selected branch ${branchIndex}: ${branches[branchIndex]?.label}`;
+			const upstreamOutputs = this._collectUpstreamOutputs(executionState);
+			const upstreamEntries = Object.entries(upstreamOutputs)
+				.filter(([, val]) => val.trim())
+				.map(([, val]) => val.trim());
+			const upstreamBlob = upstreamEntries.join('\n\n');
+			const branchMeta = `Selected branch ${branchIndex}: ${branches[branchIndex]?.label}`;
+			nodeState.output = upstreamBlob
+				? `${upstreamBlob}\n\n---\nBranch decision: ${branchMeta}`
+				: branchMeta;
 		}
 
 		// Return the selected branch's next nodes
 		const connections = adj.get(node.id) ?? [];
-		// Find the one matching our branch port
+		// v31: port-based routing. Match against branch-{branchIndex}.
 		const matching = connections.filter(c => c.fromPort === `branch-${branchIndex}`);
 		if (matching.length > 0) {
 			return matching.map(c => c.targetId);
 		}
-		// Fallback: if no port-specific match, return all next nodes
+		// v31: port mismatch — fall back to the default branch's port instead
+		// of returning ALL downstream nodes (which would bypass branching
+		// semantics and silently execute every branch).
+		const defaultMatch = connections.filter(c => c.fromPort === `branch-${defaultBranchIndex}`);
+		if (defaultMatch.length > 0) {
+			this.logService.warn(
+				`[WorkflowExecution] IfElse/Switch ${node.id}: ` +
+				`no edge matched port "branch-${branchIndex}", ` +
+				`falling back to default port "branch-${defaultBranchIndex}"`,
+			);
+			return defaultMatch.map(c => c.targetId);
+		}
+		// Ultimate last resort: return first branch's matches
+		const firstMatch = connections.filter(c => c.fromPort === `branch-0`);
+		if (firstMatch.length > 0) {
+			this.logService.warn(
+				`[WorkflowExecution] IfElse/Switch ${node.id}: ` +
+				`no edge matched any specific port, using branch-0`,
+			);
+			return firstMatch.map(c => c.targetId);
+		}
+		// No port-specific edges at all — return all (backward compat for old
+		// workflows that don't have fromPort on connections behind control-flow nodes)
+		this.logService.warn(
+			`[WorkflowExecution] IfElse/Switch ${node.id}: ` +
+			`no port-specific edges found, falling back to all downstream (backward compat)`,
+		);
 		return connections.map(c => c.targetId);
+	}
+
+	/**
+	 * v31: Build a context map for variable resolution inside condition text.
+	 * Resolves upstream node outputs so that `{{previewStatus.output}}` and
+	 * similar references evaluate to actual values.
+	 */
+	private _buildEvalContext(executionState: IWorkflowExecutionState): Record<string, string> {
+		const ctx: Record<string, string> = {};
+		for (const [nodeId, ns] of executionState.nodeStates) {
+			if (ns.output !== undefined) {
+				ctx[nodeId] = ns.output;
+				ctx[`${nodeId}.output`] = ns.output;
+			}
+		}
+		// Also expose direct context entries
+		for (const [k, v] of Object.entries(executionState.context)) {
+			if (typeof v === 'string') { ctx[k] = v; }
+		}
+		return ctx;
+	}
+
+	/**
+	 * v31: Evaluate a simple condition string (after variable substitution)
+	 * against the current execution context. Supports:
+	 *   - `value == "literal"` or `value === "literal"`
+	 *   - `value != "literal"` or `value !== "literal"`
+	 *   - `value contains "substring"`
+	 *   - `value startsWith "prefix"` / `value endsWith "suffix"`
+	 *   - plain boolean truthiness: non-empty string = true, empty = false
+	 *
+	 * Returns true if the condition evaluates to true, false otherwise.
+	 * Returns false for conditions that can't be parsed (safe fail: defer to LLM).
+	 */
+	private _evaluateSimpleCondition(condition: string, _executionState: IWorkflowExecutionState): boolean {
+		const text = condition.trim();
+		if (!text) { return false; }
+
+		// Pattern: `"something"` or `'something'` → plain truthiness check.
+		// Non-empty quoted literal → true (means this branch fires).
+		// But a bare quoted string without an operator has no meaning, skip.
+		if (/^["'].*["']$/.test(text)) {
+			// A condition that's just a quoted literal is unusual — treat as truthy.
+			return text.length > 2; // at least one char inside quotes
+		}
+
+		// Try `value == "literal"` / `value === "literal"`
+		const eqMatch = text.match(/^(.+?)\s*[=!]==?\s*["'](.+?)["']$/);
+		if (eqMatch) {
+			const lhs = eqMatch[1].trim();
+			const op = text.includes('!=') || text.includes('!==') ? '!=' : '==';
+			const rhs = eqMatch[2];
+			return op === '==' ? lhs === rhs : lhs !== rhs;
+		}
+
+		// Try `value contains "substring"`
+		const containsMatch = text.match(/^(.+?)\s+contains\s+["'](.+?)["']$/i);
+		if (containsMatch) {
+			return containsMatch[1].trim().toLowerCase().includes(containsMatch[2].toLowerCase());
+		}
+
+		// Try `value startsWith "prefix"` / `value endsWith "suffix"`
+		const startsMatch = text.match(/^(.+?)\s+startsWith\s+["'](.+?)["']$/i);
+		if (startsMatch) {
+			return startsMatch[1].trim().toLowerCase().startsWith(startsMatch[2].toLowerCase());
+		}
+		const endsMatch = text.match(/^(.+?)\s+endsWith\s+["'](.+?)["']$/i);
+		if (endsMatch) {
+			return endsMatch[1].trim().toLowerCase().endsWith(endsMatch[2].toLowerCase());
+		}
+
+		// Try `value matches /regex/`
+		const regexMatch = text.match(/^(.+?)\s+matches\s+\/(.+?)\/$/i);
+		if (regexMatch) {
+			try {
+				return new RegExp(regexMatch[2], 'i').test(regexMatch[1].trim());
+			} catch {
+				return false;
+			}
+		}
+
+		// Cannot parse — defer to LLM (return false = no deterministic decision,
+		// caller falls through to LLM evaluation)
+		return false;
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -1621,27 +2107,192 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		prompt: string,
 		agentSessionId: string | undefined,
 		onDelta: (delta: any) => void,
+		extraOptions?: { systemPrompt?: string },
+		timeoutConfig?: { runTimeoutMs?: number; idleTimeoutMs?: number },
 	): Promise<any> {
 		if (executionState.status === WorkflowExecutionStatus.Cancelled) {
 			throw new Error(`Workflow execution ${executionState.executionId} was cancelled`);
 		}
+
+		// v31: trim history if maxHistoryMessages is set.
+		if (executionState.options?.maxHistoryMessages && agentSessionId) {
+			const history = await this.agentChatService.getHistory(agentId, agentSessionId);
+			if (history.length > executionState.options.maxHistoryMessages) {
+				const excess = history.length - executionState.options.maxHistoryMessages;
+				await this.agentChatService.clearHistory(agentId, agentSessionId);
+				const kept = history.slice(-executionState.options.maxHistoryMessages);
+				for (const msg of kept) {
+					await this.agentChatService.appendMessage(agentId, msg);
+				}
+				this.logService.info(
+					`[WorkflowExecution] Trimmed ${excess} old messages from session ${agentSessionId} ` +
+					`for node ${node.id} (kept ${kept.length})`,
+				);
+			}
+		}
+
 		this._activeStreams.set(executionState.executionId, {
 			agentId,
 			agentSessionId: agentSessionId ?? '',
 			nodeId: node.id,
 		});
+
+		let idleHandle: any;
+
 		try {
-			return await this.agentChatService.sendMessage(
+			// v31/v32: timeout protection via Promise.race.
+			const runTimeoutMs = timeoutConfig?.runTimeoutMs ?? 300_000; // default 5 min
+			const idleTimeoutMsVal = timeoutConfig?.idleTimeoutMs;
+
+			const promises: Promise<any>[] = [];
+
+			// Set up delta callback (may be wrapped with idle reset)
+			let deltaCallback = onDelta;
+
+			if (idleTimeoutMsVal && idleTimeoutMsVal > 0) {
+				let idleReject: ((reason: any) => void) | undefined;
+				const idleTimeoutPromise = new Promise<never>((_, reject) => {
+					idleReject = reject;
+				});
+				promises.push(idleTimeoutPromise);
+
+				const resetIdle = () => {
+					if (idleHandle) { clearTimeout(idleHandle); }
+					idleHandle = setTimeout(() => {
+						try {
+							if (agentSessionId) {
+								this.agentChatService.cancelStream(agentId, agentSessionId);
+							} else {
+								this.agentChatService.cancelStream(agentId);
+							}
+						} catch { /* best effort */ }
+						idleReject?.(new Error(
+							`Node ${node.id} timed out after ${idleTimeoutMsVal}ms (idle timeout — ` +
+							`no token received for ${idleTimeoutMsVal}ms). The stream has been cancelled.`,
+						));
+					}, idleTimeoutMsVal);
+				};
+
+				deltaCallback = (delta: any) => {
+					resetIdle();
+					onDelta(delta);
+				};
+
+				resetIdle();
+			}
+
+			// ── Run timeout (total wall-clock) ───────────────────────────
+			if (runTimeoutMs > 0) {
+				promises.push(new Promise<never>((_, reject) => {
+					setTimeout(() => {
+						try {
+							if (agentSessionId) {
+								this.agentChatService.cancelStream(agentId, agentSessionId);
+							} else {
+								this.agentChatService.cancelStream(agentId);
+							}
+						} catch { /* best effort */ }
+						reject(new Error(
+							`Node ${node.id} timed out after ${runTimeoutMs}ms (run timeout). ` +
+							`The stream has been cancelled.`,
+						));
+					}, runTimeoutMs);
+				}));
+			}
+
+			// Create sendPromise with (possibly wrapped) deltaCallback
+			// v39: forward node-level provider/model config into sendMessage
+			// options so the global active model selection is overridden for
+			// this specific workflow node.
+			const nodeData = node.data as Record<string, any>;
+			const agentConfig = nodeData?.agentConfig as { providerId?: string; modelId?: string } | undefined;
+			const sendPromise = this.agentChatService.sendMessage(
 				agentId,
 				prompt,
-				{ workspaceId: undefined, agentSessionId },
-				onDelta,
+				{
+					workspaceId: undefined,
+					agentSessionId,
+					systemPrompt: extraOptions?.systemPrompt,
+					providerId: agentConfig?.providerId,
+					model: agentConfig?.modelId,
+				},
+				deltaCallback,
 			);
+			promises.push(sendPromise);
+
+			const result = await Promise.race(promises);
+
+			return result;
 		} finally {
 			const cur = this._activeStreams.get(executionState.executionId);
 			if (cur && cur.nodeId === node.id) {
 				this._activeStreams.delete(executionState.executionId);
 			}
+			if (idleHandle) {
+				clearTimeout(idleHandle);
+			}
+		}
+
+	}
+
+	/**
+	 * v32: Save a checkpoint snapshot of the current execution state.
+	 * Checkpoints are saved after each node completes (success or failure)
+	 * to `{workspace}/.sarosisworkspace/checkpoints/{executionId}.json`.
+	 * This enables resumption from the last checkpoint after a crash.
+	 */
+		private async _saveCheckpoint(executionState: IWorkflowExecutionState): Promise<void> {
+		try {
+			const nodeStates: Record<string, any> = {};
+			for (const [nodeId, ns] of executionState.nodeStates.entries()) {
+				nodeStates[nodeId] = {
+					status: ns.status,
+					output: ns.output ?? null,
+					error: ns.error ?? null,
+					startTime: ns.startTime ?? null,
+					endTime: ns.endTime ?? null,
+				};
+			}
+			// Sanitize context to avoid JSON.stringify errors (functions, circular refs, etc.)
+			const sanitizedContext: Record<string, string> = {};
+			for (const [key, val] of Object.entries(executionState.context)) {
+				try {
+					const json = JSON.stringify(val);
+					sanitizedContext[key] = json;
+				} catch {
+					sanitizedContext[key] = String(val);
+				}
+			}
+			const checkpoint = {
+				executionId: executionState.executionId,
+				workflowId: executionState.workflowId,
+				status: executionState.status,
+				timestamp: new Date().toISOString(),
+				nodeStates,
+				context: sanitizedContext,
+				sharedMemory: [...(executionState.sharedMemory?.entries() ?? [])],
+			};
+
+			const workspaces = this.workspaceRegistry.getWorkspaces();
+			const activeWorkspace = workspaces.find(w => w.isActive);
+			if (activeWorkspace?.path) {
+				const checkpointsDir = URI.joinPath(
+					URI.file(activeWorkspace.path),
+					'.sarosisworkspace',
+					'checkpoints',
+				);
+				await this.fileService.createFolder(checkpointsDir);
+				const fileUri = URI.joinPath(checkpointsDir, `${executionState.executionId}.json`);
+				await this.fileService.writeFile(
+					fileUri,
+					VSBuffer.fromString(JSON.stringify(checkpoint, null, 2)),
+				);
+			}
+		} catch (err) {
+			this.logService.warn(
+				`[WorkflowExecution] Checkpoint save failed: ` +
+				`${err instanceof Error ? err.message : err}`,
+			);
 		}
 	}
 }
