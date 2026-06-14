@@ -253,23 +253,7 @@ stages:
               cmd /c "rd /s /q extensions\retrieval-example 2>nul"
               cmd /c "rd /s /q extensions\tool-example 2>nul"
               # Fix @saros/shared -> saros-shared (vsce rejects @scope/name)
-              $shared = @{
-                name = 'saros-shared'
-                version = '1.0.0'
-                description = 'Shared utilities'
-                main = './out/index.js'
-                engines = @{ vscode = '^1.95.0' }
-                activationEvents = @()
-                types = './out/index.d.ts'
-                dependencies = @{}
-                scripts = @{ compile = 'tsc -p ./'; watch = 'tsc -watch -p ./' }
-                devDependencies = @{
-                  '@types/node' = '22.x'
-                  '@types/vscode' = '^1.95.0'
-                  typescript = '^6.0.3'
-                }
-              }
-              $shared | ConvertTo-Json -Depth 3 | Out-File -Encoding utf8 extensions\shared\package.json
+              Set-Content -Encoding utf8 extensions\shared\package.json '{"name":"saros-shared","version":"1.0.0","description":"Shared utilities","main":"./out/index.js","engines":{"vscode":"^1.95.0"},"activationEvents":[],"types":"./out/index.d.ts","dependencies":{},"scripts":{"compile":"tsc -p ./","watch":"tsc -watch -p ./"},"devDependencies":{"@types/node":"22.x","@types/vscode":"^1.95.0","typescript":"^6.0.3"}}'
               # Fix codebuddy-provider dep name
               $cb = Get-Content extensions\codebuddy-provider\package.json -Raw
               $cb = $cb -replace '"@saros/shared"', '"saros-shared"'
