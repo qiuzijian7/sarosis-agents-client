@@ -85,8 +85,11 @@ export class AgentStudioEditorPane extends EditorPane {
 
 	override layout(dimension: DOM.Dimension): void {
 		if (this._container) {
+			// [Sarosis] Use width from dimension but force height to 100%
+			// of parent. The upstream editorGroupView passes (parent - 35)
+			// to account for the tab bar, but .title is hidden via CSS.
 			this._container.style.width = `${dimension.width}px`;
-			this._container.style.height = `${dimension.height}px`;
+			this._container.style.height = '100%';
 		}
 		this._webviewController?.layout(dimension.width, dimension.height);
 	}

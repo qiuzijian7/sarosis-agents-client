@@ -66,10 +66,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 	const [modelSearchQuery, setModelSearchQuery] = useState('');
 	const modelSearchInputRef = useRef<HTMLInputElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-	// 用户通过拖动条手动设置过的高度。一旦设置，自动撑高将以其为下限（内容更多时可继续撑大到 MAX）。
-	const userResizedHeightRef = useRef<number | null>(null);
-	// 拖动状态
-	const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null);
 	// 输入区域整体高度拖动状态
 	const inputAreaRef = useRef<HTMLDivElement>(null);
 	const inputAreaDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -420,7 +416,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			setSkillChips([]);
 			if (textareaRef.current) {
 				textareaRef.current.style.minHeight = `${TEXTAREA_DEFAULT_HEIGHT}px`;
-				userResizedHeightRef.current = null;
 			}
 			return;
 		}
@@ -434,7 +429,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		if (textareaRef.current) {
 			// 发送后清空内容：重置为默认最小高度
 			textareaRef.current.style.minHeight = `${TEXTAREA_DEFAULT_HEIGHT}px`;
-			userResizedHeightRef.current = null;
 		}
 	}, [input, attachments.length, skillChips.length, onSend, onCommand, closeAllPopups, chatMode, toPayload, clearAttachments, skillChips]);
 
@@ -513,45 +507,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			// 使用 min-height 而非 height，让 flex:1 在输入区域变高时自然撑满。
 			// scrollHeight 确保内容不会溢出，flex 确保占满可用空间。
 			textarea.style.minHeight = 'auto'; // 先重置以获取准确 scrollHeight
-			const minBase = userResizedHeightRef.current ?? TEXTAREA_MIN_HEIGHT;
 			const contentHeight = textarea.scrollHeight;
-			const next = Math.min(Math.max(contentHeight, minBase), 800);
+			const next = Math.min(Math.max(contentHeight, TEXTAREA_MIN_HEIGHT), 800);
 			textarea.style.minHeight = `${next}px`;
 		}
-	}, []);
-
-	// 拖动条：用户按住向上/向下拖动改变 textarea 最小高度
-	const handleResizerMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-		const textarea = textareaRef.current;
-		if (!textarea) { return; }
-		e.preventDefault();
-		dragStateRef.current = {
-			startY: e.clientY,
-			startHeight: textarea.offsetHeight,
-		};
-		document.body.style.cursor = 'ns-resize';
-		document.body.style.userSelect = 'none';
-
-		const handleMove = (ev: MouseEvent) => {
-			const ds = dragStateRef.current;
-			if (!ds || !textareaRef.current) { return; }
-			const delta = ds.startY - ev.clientY;
-			const next = Math.min(
-				Math.max(ds.startHeight + delta, TEXTAREA_MIN_HEIGHT),
-				800, // 移除旧 300px 上限，拖大区域时允许 textarea 更高
-			);
-			textareaRef.current.style.minHeight = `${next}px`;
-			userResizedHeightRef.current = next;
-		};
-		const handleUp = () => {
-			dragStateRef.current = null;
-			document.body.style.cursor = '';
-			document.body.style.userSelect = '';
-			document.removeEventListener('mousemove', handleMove);
-			document.removeEventListener('mouseup', handleUp);
-		};
-		document.addEventListener('mousemove', handleMove);
-		document.addEventListener('mouseup', handleUp);
 	}, []);
 
 	// 输入区域整体高度拖动：拖动顶部分割线改变输入区域高度
@@ -780,23 +739,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 							<path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
 						</svg>
 						<span>拖放文件或图片到此处</span>
-					</div>
-				)}
+			</div>
+		)}
 
-				{/* 顶部拖动条：手动调整 textarea 高度（最低 60px / 最高 300px） */}
-				<div
-					className="chat-composer-resizer"
-					title="拖动调整输入框高度"
-					role="separator"
-					aria-orientation="horizontal"
-				>
-					<span
-						className="chat-composer-resizer-grip"
-						onMouseDown={handleResizerMouseDown}
-					/>
-				</div>
-
-				{/* 附件预览区 */}
+		{/* 附件预览区 */}
 				{attachments.length > 0 && (
 					<div className="chat-attachments-preview">
 						{attachments.map(att => (

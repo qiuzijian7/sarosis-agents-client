@@ -191,6 +191,38 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 					primaryWindowControlsLocation === 'left' ? this.leftContent : this.rightContent,
 					$('div.window-controls-container')
 				);
+
+				// ── 弹出 + 伸缩按钮：弹出聊天独立窗口 / 折叠右侧栏 ──
+				// 包裹在 no-drag 容器中，避免父级 titlebar drag region
+				// 导致的鼠标 cursor 闪烁问题。
+				if (primaryWindowControlsLocation === 'right') {
+					const toggleContainer = append(this.rightContent, $('div.titlebar-toggle-container'));
+					toggleContainer.id = 'agent-studio-titlebar-toggle-container';
+
+					// 弹出按钮：隐藏右侧栏并弹出独立聊天窗口
+					const popoutBtn = append(toggleContainer, $('button.titlebar-popout-chat'));
+					popoutBtn.classList.add('codicon', 'codicon-open-in-window');
+					popoutBtn.title = 'Pop Out Chat Window';
+					popoutBtn.setAttribute('aria-label', 'Pop Out Chat Window');
+					popoutBtn.addEventListener('click', (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						document.dispatchEvent(new CustomEvent('agent-studio:popout-chat'));
+					});
+
+					// 折叠按钮
+					const toggleBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+					toggleBtn.classList.add('codicon', 'codicon-layout-sidebar-left');
+					toggleBtn.title = 'Toggle Sidebar Content';
+					toggleBtn.setAttribute('aria-label', 'Toggle Sidebar Content');
+					toggleBtn.addEventListener('click', (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'));
+					});
+					// 将容器移到 window-controls-container 之前
+					this.rightContent.insertBefore(toggleContainer, this.windowControlsContainer);
+				}
 				if (isWeb) {
 					append(
 						primaryWindowControlsLocation === 'left' ? this.rightContent : this.leftContent,

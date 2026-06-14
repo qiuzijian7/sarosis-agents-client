@@ -573,8 +573,13 @@ export class AgentStudioWebviewController extends Disposable {
 	${styleTag}
 	<style nonce="${nonce}">
 		@keyframes as-spin { to { transform: rotate(360deg); } }
-		body { margin: 0; padding: 0; overflow: hidden; height: 100vh; background: var(--as-bg-primary, var(--vscode-editor-background)); color: var(--as-fg-primary, var(--vscode-foreground)); font-family: var(--vscode-font-family); }
+		html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; }
+		body { background: var(--as-bg-primary, var(--vscode-editor-background)); color: var(--as-fg-primary, var(--vscode-foreground)); font-family: var(--vscode-font-family); }
 		#root { width: 100%; height: 100%; }
+		/* Ensure standalone panels fill the full webview height */
+		.panel-standalone, .agent-chat-root, .agent-chat { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+		/* agent-chat uses flex inside agent-chat-root; let it fill remaining height */
+		.agent-chat { flex: 1 1 auto; min-height: 0; }
 		#as-preload { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 16px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-font-family); }
 		#as-preload svg { animation: as-spin 1s linear infinite; opacity: 0.7; }
 		#as-preload span { font-size: 13px; letter-spacing: 0.4px; opacity: 0.8; }

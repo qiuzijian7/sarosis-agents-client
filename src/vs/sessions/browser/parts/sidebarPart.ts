@@ -32,7 +32,7 @@ import { Separator } from '../../../base/common/actions.js';
 import { IHoverService } from '../../../platform/hover/browser/hover.js';
 import { Extensions } from '../../../workbench/browser/panecomposite.js';
 import { Menus } from '../menus.js';
-import { $, append, addDisposableListener, EventType, getWindowId, prepend } from '../../../base/browser/dom.js';
+import { $, append, addDisposableListener, EventType, getWindowId, prepend, clearNode } from '../../../base/browser/dom.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../platform/actions/browser/toolbar.js';
 import { isFullscreen, onDidChangeFullscreen } from '../../../base/browser/browser.js';
 import { mainWindow } from '../../../base/browser/window.js';
@@ -42,10 +42,9 @@ import { isMacintosh, isNative } from '../../../base/common/platform.js';
 import { Emitter } from '../../../base/common/event.js';
 import { SidebarContentVisibleContext } from '../../common/contextkeys.js';
 import { IProductService } from '../../../platform/product/common/productService.js';
-import { AgentStudioWorkspaceToolbar } from '../../contrib/agentStudio/browser/agentStudioWorkspaceToolbar.js';
 import { IAgentStudioService } from '../../contrib/agentStudio/common/agentStudio.js';
 import { IFileDialogService } from '../../../platform/dialogs/common/dialogs.js';
-import { IFileService } from '../../../platform/files/common/files.js';
+import type { Workspace } from '../../contrib/agentStudio/common/types.js';
 
 /** CSS class names for sidebar content collapsed/expanded states */
 const SIDEBAR_CONTENT_COLLAPSED_CLASS = 'sidebar-content-collapsed';
@@ -313,46 +312,329 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		versionLabel.textContent = version ? `v${version}` : '';
 		versionLabel.title = `${nameLong} v${version}`;
 
-		// ── 3. Workspace selector ──
-		this._createWorkspaceToolbar(toolbar);
+		// ── 3. Custom workspace selector (right-aligned) ──
+		this._createWorkspaceSelector(toolbar);
 	}
 
-	/**
-	 * Create workspace selector inside the sidebar toolbar.
-	 * Reuses the same AgentStudioWorkspaceToolbar component that was
-	 * previously in the titlebar, with the same 'titlebar' variant.
-	 */
-	private _createWorkspaceToolbar(toolbar: HTMLElement): void {
+	// ─── Custom Workspace Selector ──────────────────────────────────────────
+
+	private _workspaceSelectorEl: HTMLElement | undefined;
+	private _workspaceDropdownEl: HTMLElement | undefined;
+	private _workspaceSearchInput: HTMLInputElement | undefined;
+	private _workspaceListEl: HTMLElement | undefined;
+	private _workspaces: Workspace[] = [];
+	private _activeWorkspaceId: string | undefined;
+	private _wsAgentStudioService: IAgentStudioService | undefined;
+	private _wsFileDialogService: IFileDialogService | undefined;
+
+	private _createWorkspaceSelector(toolbar: HTMLElement): void {
 		const container = append(toolbar, $('div.sidebar-toolbar-workspace'));
-		const wsToolbar = this._register(new AgentStudioWorkspaceToolbar(container, {
-			variant: 'titlebar',
-			showBadge: false,
-			insertMode: 'append',
+
+		// ── Selector button ──
+		const button = append(container, $('button.ws-selector-btn'));
+		button.title = '切换工作区';
+
+		const label = append(button, $('span.ws-selector-label'));
+		label.textContent = '---';
+
+		const chevron = append(button, $('span.codicon.codicon-chevron-down'));
+		chevron.style.fontSize = '12px';
+
+		// ── Dropdown panel (fixed position, hidden by default) ──
+		const dropdown = append(container, $('div.ws-dropdown'));
+		dropdown.style.display = 'none';  // controlled programmatically
+		dropdown.style.position = 'fixed';
+		dropdown.style.minWidth = '220px';
+		dropdown.style.maxWidth = '280px';
+		dropdown.style.zIndex = '2500';
+		dropdown.style.background = 'var(--vscode-dropdown-background, var(--vscode-sideBar-background))';
+		dropdown.style.border = '1px solid var(--vscode-dropdown-border, var(--vscode-widget-border))';
+		dropdown.style.borderRadius = '6px';
+		dropdown.style.boxShadow = '0 4px 16px rgba(0,0,0,0.3)';
+		dropdown.style.padding = '4px 0';
+		dropdown.style.overflow = 'hidden';
+
+		this._workspaceSelectorEl = container;
+		this._workspaceDropdownEl = dropdown;
+
+		// ── Search input ──
+		const searchRow = append(dropdown, $('div.ws-dropdown-search'));
+		searchRow.style.display = 'flex';
+		searchRow.style.alignItems = 'center';
+		searchRow.style.padding = '4px 8px 6px';
+		searchRow.style.borderBottom = '1px solid var(--vscode-dropdown-border, var(--vscode-widget-border))';
+
+		const searchInput = document.createElement('input');
+		searchInput.type = 'text';
+		searchInput.className = 'ws-search-input';
+		searchInput.placeholder = '搜索工作区...';
+		searchInput.style.width = '100%';
+		searchInput.style.border = 'none';
+		searchInput.style.outline = 'none';
+		searchInput.style.background = 'transparent';
+		searchInput.style.color = 'var(--vscode-input-foreground, inherit)';
+		searchInput.style.fontSize = '12px';
+		searchInput.style.padding = '2px 4px';
+		searchRow.appendChild(searchInput);
+		this._workspaceSearchInput = searchInput;
+
+		// ── Workspace list ──
+		const list = append(dropdown, $('div.ws-dropdown-list'));
+		list.style.maxHeight = '240px';
+		list.style.overflowY = 'auto';
+		this._workspaceListEl = list;
+
+		// ── Open folder as workspace button ──
+		const createRow = append(dropdown, $('div.ws-dropdown-create'));
+
+		const openFolderBtn = append(createRow, $('button.ws-open-folder-btn'));
+		openFolderBtn.textContent = '+ 从文件夹打开工作区';
+		openFolderBtn.style.cssText = 'width:100%;border:none;background:transparent;color:var(--vscode-textLink-foreground,#3794ff);cursor:pointer;font-size:12px;padding:4px 8px;border-radius:4px;text-align:left';
+
+		// ── Events ──
+		this._register(addDisposableListener(button, EventType.CLICK, (e: MouseEvent) => {
+			e.stopPropagation();
+			this._toggleWorkspaceDropdown();
 		}));
 
-		const connectService = () => {
-			try {
-				const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
-				wsToolbar.connectService(agentStudioService);
-			} catch { setTimeout(connectService, 2000); }
-		};
-		connectService();
+		this._register(addDisposableListener(document, EventType.CLICK, (e: MouseEvent) => {
+			if (!dropdown || dropdown.style.display === 'none') { return; }
+			if (!container.contains(e.target as Node)) {
+				this._closeWorkspaceDropdown();
+			}
+		}));
 
-		const connectFileDialog = () => {
-			try {
-				const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
-				wsToolbar.connectFileDialogService(fileDialogService);
-			} catch { setTimeout(connectFileDialog, 2000); }
-		};
-		connectFileDialog();
+		this._register(addDisposableListener(searchInput, EventType.INPUT, () => {
+			this._renderWorkspaceList();
+		}));
 
-		const connectFileSvc = () => {
-			try {
-				const fileService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileService));
-				wsToolbar.connectFileService(fileService);
-			} catch { setTimeout(connectFileSvc, 2000); }
-		};
-		connectFileSvc();
+		this._register(addDisposableListener(searchInput, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+			if (e.key === 'Escape') {
+				this._closeWorkspaceDropdown();
+				e.stopPropagation();
+			}
+		}));
+
+		// ── Open folder button: browse folder → create workspace ──
+		this._register(addDisposableListener(openFolderBtn, EventType.CLICK, () => {
+			this._openFolderAsWorkspace();
+		}));
+
+		// ── Connect services ──
+		this._connectWorkspaceServices();
+	}
+
+	private _connectWorkspaceServices(): void {
+		try {
+			const agentStudioService = this.instantiationService.invokeFunction(
+				accessor => accessor.get(IAgentStudioService)
+			);
+			this._wsAgentStudioService = agentStudioService;
+
+			// Subscribe to workspace changes
+			this._register(agentStudioService.onDidChangeWorkspace(() => {
+				this._loadWorkspaces();
+			}));
+			this._register(agentStudioService.onDidChangeActiveWorkspace((workspaceId) => {
+				this._activeWorkspaceId = workspaceId ?? undefined;
+				this._updateSelectorLabel();
+			}));
+
+			this._loadWorkspaces();
+		} catch {
+			setTimeout(() => this._connectWorkspaceServices(), 2000);
+		}
+
+		try {
+			this._wsFileDialogService = this.instantiationService.invokeFunction(
+				accessor => accessor.get(IFileDialogService)
+			);
+		} catch { /* file dialog service not available yet */ }
+	}
+
+	private async _loadWorkspaces(): Promise<void> {
+		if (!this._wsAgentStudioService) { return; }
+		this._workspaces = await this._wsAgentStudioService.getWorkspaces();
+		this._activeWorkspaceId = this._wsAgentStudioService.getActiveWorkspaceId();
+		this._updateSelectorLabel();
+		if (this._workspaceDropdownEl && this._workspaceDropdownEl.style.display !== 'none') {
+			this._renderWorkspaceList();
+		}
+	}
+
+	private _updateSelectorLabel(): void {
+		const label = this._workspaceSelectorEl?.querySelector('.ws-selector-label');
+		if (!label) { return; }
+		const active = this._workspaces.find(w => w.id === this._activeWorkspaceId);
+		label.textContent = active?.name || '无工作区';
+	}
+
+	private _toggleWorkspaceDropdown(): void {
+		if (!this._workspaceDropdownEl) { return; }
+		if (this._workspaceDropdownEl.style.display === 'none') {
+			this._openWorkspaceDropdown();
+		} else {
+			this._closeWorkspaceDropdown();
+		}
+	}
+
+	private _openWorkspaceDropdown(): void {
+		if (!this._workspaceSelectorEl || !this._workspaceDropdownEl) { return; }
+		const rect = this._workspaceSelectorEl.getBoundingClientRect();
+		this._workspaceDropdownEl.style.left = `${rect.left}px`;
+		this._workspaceDropdownEl.style.top = `${rect.bottom + 4}px`;
+		this._workspaceDropdownEl.style.display = '';
+		if (this._workspaceSearchInput) {
+			this._workspaceSearchInput.value = '';
+		}
+		this._renderWorkspaceList();
+		// Focus search after render
+		setTimeout(() => this._workspaceSearchInput?.focus(), 50);
+	}
+
+	private _closeWorkspaceDropdown(): void {
+		if (this._workspaceDropdownEl) {
+			this._workspaceDropdownEl.style.display = 'none';
+		}
+	}
+
+	private _renderWorkspaceList(): void {
+		if (!this._workspaceListEl) { return; }
+		const query = (this._workspaceSearchInput?.value || '').toLowerCase();
+
+		const filtered = query
+			? this._workspaces.filter(w =>
+				w.name.toLowerCase().includes(query) ||
+				(w.path && w.path.toLowerCase().includes(query))
+			)
+			: this._workspaces;
+
+		// Clear list
+		clearNode(this._workspaceListEl);
+
+		if (filtered.length === 0) {
+			const empty = append(this._workspaceListEl, $('div.ws-dropdown-empty'));
+			empty.textContent = query ? '未找到匹配的工作区' : '暂无工作区';
+			empty.style.padding = '12px 12px';
+			empty.style.color = 'var(--vscode-descriptionForeground)';
+			empty.style.fontSize = '12px';
+			empty.style.textAlign = 'center';
+			return;
+		}
+
+		for (const ws of filtered) {
+			const item = append(this._workspaceListEl, $('div.ws-dropdown-item'));
+			item.style.display = 'flex';
+			item.style.alignItems = 'center';
+			item.style.padding = '6px 12px';
+			item.style.cursor = 'pointer';
+			item.style.fontSize = '12px';
+			item.style.justifyContent = 'space-between';
+
+			if (ws.id === this._activeWorkspaceId) {
+				item.classList.add('active');
+			}
+
+			// Hover
+			this._register(addDisposableListener(item, EventType.MOUSE_OVER, () => {
+				item.style.background = 'var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground))';
+			}));
+			this._register(addDisposableListener(item, EventType.MOUSE_OUT, () => {
+				item.style.background = '';
+			}));
+
+			// Click to switch
+			this._register(addDisposableListener(item, EventType.CLICK, () => {
+				if (ws.id !== this._activeWorkspaceId && this._wsAgentStudioService) {
+					this._wsAgentStudioService.setActiveWorkspace(ws.id);
+				}
+				this._closeWorkspaceDropdown();
+			}));
+
+			// Text area (click to switch)
+			const textDiv = append(item, $('div.ws-dropdown-item-text'));
+			textDiv.style.display = 'flex';
+			textDiv.style.flexDirection = 'column';
+			textDiv.style.minWidth = '0';
+			textDiv.style.flex = '1';
+
+			const nameSpan = append(textDiv, $('span.ws-dropdown-item-name'));
+			nameSpan.textContent = ws.name;
+			nameSpan.style.fontWeight = '500';
+			nameSpan.style.whiteSpace = 'nowrap';
+			nameSpan.style.overflow = 'hidden';
+			nameSpan.style.textOverflow = 'ellipsis';
+
+			if (ws.path) {
+				const pathSpan = append(textDiv, $('span.ws-dropdown-item-path'));
+				pathSpan.textContent = ws.path;
+				pathSpan.style.fontSize = '10px';
+				pathSpan.style.color = 'var(--vscode-descriptionForeground)';
+				pathSpan.style.opacity = '0.7';
+				pathSpan.style.whiteSpace = 'nowrap';
+				pathSpan.style.overflow = 'hidden';
+				pathSpan.style.textOverflow = 'ellipsis';
+			}
+
+			// Right side: active checkmark + delete button
+			const actionsDiv = append(item, $('div.ws-dropdown-item-actions'));
+			actionsDiv.style.display = 'flex';
+			actionsDiv.style.alignItems = 'center';
+			actionsDiv.style.gap = '4px';
+			actionsDiv.style.flexShrink = '0';
+
+			if (ws.id === this._activeWorkspaceId) {
+				const check = append(actionsDiv, $('span.codicon.codicon-check'));
+				check.style.fontSize = '14px';
+				check.style.color = 'var(--vscode-textLink-foreground, #3794ff)';
+			}
+
+			// Delete button
+			const deleteBtn = append(actionsDiv, $('button.ws-delete-btn'));
+			deleteBtn.textContent = '\u2715';  // ×
+			deleteBtn.title = '删除工作区';
+			deleteBtn.style.cssText = 'border:none;background:transparent;color:inherit;cursor:pointer;font-size:11px;padding:0 2px;opacity:0.5;line-height:1';
+			deleteBtn.style.display = 'none';  // show on hover via CSS
+
+			this._register(addDisposableListener(deleteBtn, EventType.CLICK, (e: MouseEvent) => {
+				e.stopPropagation();  // don't trigger item click
+				this._confirmDeleteWorkspace(ws);
+			}));
+		}
+	}
+
+	private _confirmDeleteWorkspace(ws: Workspace): void {
+		if (!this._wsAgentStudioService) { return; }
+		this._wsAgentStudioService.deleteWorkspace(ws.id);
+	}
+
+	private async _openFolderAsWorkspace(): Promise<void> {
+		if (!this._wsAgentStudioService || !this._wsFileDialogService) { return; }
+
+		let folderPath: string | undefined;
+		try {
+			const uris = await this._wsFileDialogService.showOpenDialog({
+				canSelectFiles: false,
+				canSelectFolders: true,
+				canSelectMany: false,
+				openLabel: '打开工作区',
+				title: '选择工作区文件夹',
+			});
+			if (uris && uris.length > 0) {
+				folderPath = uris[0].fsPath;
+			}
+		} catch { /* user cancelled */ }
+		if (!folderPath) { return; }
+
+		// Derive workspace name from folder name
+		const segments = folderPath.replace(/[/\\]+$/, '').split(/[/\\]/);
+		const name = segments[segments.length - 1] || folderPath;
+
+		await this._wsAgentStudioService.createWorkspace({
+			name,
+			path: folderPath,
+		});
+		this._closeWorkspaceDropdown();
 	}
 
 	private createFooter(parent: HTMLElement): void {

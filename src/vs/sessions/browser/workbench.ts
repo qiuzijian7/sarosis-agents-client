@@ -19,7 +19,6 @@ import { Part } from '../../workbench/browser/part.js';
 import { Direction, ISerializableView, ISerializedGrid, ISerializedLeafNode, ISerializedNode, IViewSize, Orientation, SerializableGrid } from '../../base/browser/ui/grid/grid.js';
 import { DEFAULT_CUSTOM_TITLEBAR_HEIGHT } from '../../platform/window/common/window.js';
 import { IEditorGroupsService, IEditorGroup } from '../../workbench/services/editor/common/editorGroupsService.js';
-import { MainEditorPart as SessionsMainEditorPart } from './parts/editorPart.js';
 import { EditorParts as SessionsEditorParts } from './parts/editorParts.js';
 import { IEditorService } from '../../workbench/services/editor/common/editorService.js';
 import { IPaneCompositePartService } from '../../workbench/services/panecomposite/browser/panecomposite.js';
@@ -36,8 +35,7 @@ import { ILifecycleService, LifecyclePhase, WillShutdownEvent } from '../../work
 import { IStorageService, WillSaveStateReason, StorageScope, StorageTarget } from '../../platform/storage/common/storage.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { IHostService } from '../../workbench/services/host/browser/host.js';
-import { IDialogService, IFileDialogService } from '../../platform/dialogs/common/dialogs.js';
-import { IFileService } from '../../platform/files/common/files.js';
+import { IDialogService } from '../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../platform/notification/common/notification.js';
 import { NotificationService } from '../../workbench/services/notification/common/notificationService.js';
 import { IHoverService, WorkbenchHoverDelegate } from '../../platform/hover/browser/hover.js';
@@ -80,9 +78,6 @@ import { MobileTitlebarPart } from './parts/mobile/mobileTitlebarPart.js';
 import { autorun } from '../../base/common/observable.js';
 import { ISessionsManagementService } from '../services/sessions/common/sessionsManagement.js';
 import { AgentStudioEditorInput } from '../contrib/agentStudio/browser/agentStudioEditorInput.js';
-import { AgentStudioWorkspaceToolbar } from '../contrib/agentStudio/browser/agentStudioWorkspaceToolbar.js';
-import { IAgentStudioService } from '../contrib/agentStudio/common/agentStudio.js';
-import '../contrib/agentStudio/browser/media/workspaceToolbar.css';
 
 //#region Workbench Options
 
@@ -1149,65 +1144,242 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const canvasGroup = agentPart.activeGroup;
 		canvasGroup.lock(true);
 
-		// ── Workspace Toolbar overlay (right column) ─────────────────────
-		// Absolute overlay on mainContainer, positioned in the band above
-		// the Agent editor part. Tracks the agent part's bounding rect so it
-		// always spans the right column. (Stage 3 will fold this into the
-		// right-column titlebar with the workspace dropdown + window
-		// controls; for now it floats above the agent part.)
-		const TOOLBAR_HEIGHT = SessionsMainEditorPart.TOOLBAR_HEIGHT;
-		const agentPartContainer = this.getPart(Parts.AGENT_EDITOR_PART).getContainer();
+		canvasGroup.lock(true);
 
-		if (agentPartContainer) {
-			const toolbar = new AgentStudioWorkspaceToolbar(this.mainContainer);
-			this._register(toolbar);
-			toolbar.element.style.position = 'absolute';
-			toolbar.element.style.height = `${TOOLBAR_HEIGHT}px`;
-			toolbar.element.style.zIndex = '15';
+		// ── 伸缩按钮：折叠/展开右侧 Agent Studio 栏 ──
+		let isRightColumnCollapsed = false;
+		let preToggleWidth = 500;
+		const toggleHandler: EventListener = () => {
+			if (!this.workbenchGrid || !this.agentEditorPartView) { return; }
+			try {
+				if (isRightColumnCollapsed) {
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
+					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: preToggleWidth, height: 1000 });
+					isRightColumnCollapsed = false;
+				} else {
+					preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
+					isRightColumnCollapsed = true;
+				}
+			} catch { /* Grid 未就绪 */ }
+		};
+		document.addEventListener('agent-studio:toggle-right-column', toggleHandler);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:toggle-right-column', toggleHandler) });
 
-			const updateToolbarPosition = () => {
-				const mainRect = this.mainContainer.getBoundingClientRect();
-				const partRect = agentPartContainer.getBoundingClientRect();
-				// AgentEditorPart reserves a TOOLBAR_HEIGHT band at the top
-				// of its content (see agentEditorPart.ts: createContentArea
-				// shifts `.content` down by `TOOLBAR_HEIGHT`, layout() trims
-				// the grid by the same amount). The toolbar therefore
-				// anchors at `partRect.top` (the freed band) — no clamping,
-				// no negative offset needed.
-				toolbar.element.style.left = `${partRect.left - mainRect.left}px`;
-				toolbar.element.style.top = `${partRect.top - mainRect.top}px`;
-				toolbar.element.style.width = `${partRect.width}px`;
-			};
-			updateToolbarPosition();
+		// ── 弹出聊天按钮：隐藏右侧栏 + 弹出独立浮动聊天窗口 ──
+		let popoutWindow: HTMLElement | null = null;
+		let popoutOriginalParent: HTMLElement | null = null;
+		let wasPoppedOut = false;
+		// 聊天内容是挂在 document.body 上的绝对定位 webview 覆盖层 iframe（Chromium
+		// 限制下 iframe 无法 reparent），它通过 getBoundingClientRect() 跟踪
+		// .agent-studio-editor-pane 的位置。弹窗时需要把它抬到浮窗之上并跟随浮窗定位。
+		let popoutOverlay: HTMLElement | null = null;
+		let popoutOverlayPrevZ = '';
+		let popoutRepositionOverlay: (() => void) | null = null;
 
-			const ro = new ResizeObserver(updateToolbarPosition);
-			ro.observe(agentPartContainer);
-			this._register({ dispose: () => ro.disconnect() });
+		/** Hide / show the titlebar popout+collapse buttons in the titlebar. */
+		const setToggleContainerVisible = (visible: boolean) => {
+			const tc = document.getElementById('agent-studio-titlebar-toggle-container');
+			if (tc) {
+				tc.style.display = visible ? '' : 'none';
+			}
+		};
 
-			const connectService = () => {
-				try {
-					const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
-					toolbar.connectService(agentStudioService);
-				} catch { setTimeout(connectService, 2000); }
-			};
-			connectService();
+		const popoutHandler: EventListener = () => {
+			console.warn('[Sarosis][Popout] handler invoked, wasPoppedOut=' + wasPoppedOut);
+			if (!this.workbenchGrid || !this.agentEditorPartView) {
+				console.warn('[Sarosis][Popout] grid or agentEditorPartView not ready, aborting');
+				return;
+			}
+			try {
+				if (wasPoppedOut) {
+					// ── 关闭弹出窗口：恢复右侧栏 ──
+					console.warn('[Sarosis][Popout] closing popout window, restoring agent editor');
 
-			const connectFileDialog = () => {
-				try {
-					const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
-					toolbar.connectFileDialogService(fileDialogService);
-				} catch { setTimeout(connectFileDialog, 2000); }
-			};
-			connectFileDialog();
+					// 显示 titlebar 上的弹出按钮和伸缩按钮
+					setToggleContainerVisible(true);
 
-			const connectFileSvc = () => {
-				try {
-					const fileService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileService));
-					toolbar.connectFileService(fileService);
-				} catch { setTimeout(connectFileSvc, 2000); }
-			};
-			connectFileSvc();
-		}
+					if (popoutWindow && popoutWindow.parentNode) {
+						// 将 pane 移回原位（如果在 popup 里的话）
+						const paneInside = popoutWindow.querySelector('.agent-studio-editor-pane') as HTMLElement | null;
+						if (paneInside && popoutOriginalParent) {
+							try {
+								popoutOriginalParent.appendChild(paneInside);
+								console.warn('[Sarosis][Popout] pane moved back to original parent');
+							} catch (e) {
+								console.error('[Sarosis][Popout] failed to restore pane:', e);
+							}
+						}
+						popoutWindow.remove();
+					}
+					popoutWindow = null;
+					popoutOriginalParent = null;
+
+					// 恢复 webview 覆盖层的 z-index（恢复右侧栏后，控制器的 ResizeObserver
+					// 会自动把覆盖层 iframe 同步回 pane 的原位置）。
+					if (popoutOverlay) {
+						popoutOverlay.style.zIndex = popoutOverlayPrevZ;
+						popoutOverlay = null;
+					}
+					popoutRepositionOverlay = null;
+
+					// 恢复右侧栏
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
+					const w = preToggleWidth > 0 ? preToggleWidth : 500;
+					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: w, height: 1000 });
+					isRightColumnCollapsed = false;
+					wasPoppedOut = false;
+					console.warn('[Sarosis][Popout] agent editor restored, width=' + w);
+				} else {
+					// ── 弹出聊天窗口 ──
+					// 先保存 agent editor 当前宽度（用于恢复）
+					if (!isRightColumnCollapsed) {
+						try {
+							preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+						} catch { /* grid may not be fully layouted */ }
+					}
+
+					// ① 在右侧栏仍可见时，先定位 pane 和它对应的 webview 覆盖层。
+					// 覆盖层是 body 直接子节点中、包含 iframe.webview 且 rect 与 pane
+					// 重合的那个绝对定位元素。必须在 collapse 之前找，否则 pane rect 为 0。
+					const agentPartContainer = document.getElementById(Parts.AGENT_EDITOR_PART);
+					const pane = agentPartContainer?.querySelector('.agent-studio-editor-pane') as HTMLElement | null;
+					let overlay: HTMLElement | null = null;
+					if (pane) {
+						const pr = pane.getBoundingClientRect();
+						overlay = (Array.from(document.body.children).find(el => {
+							if (!isHTMLElement(el)) { return false; }
+							if (!el.querySelector('iframe.webview')) { return false; }
+							const r = el.getBoundingClientRect();
+							return Math.abs(r.left - pr.left) < 6 && Math.abs(r.top - pr.top) < 6 &&
+								Math.abs(r.width - pr.width) < 6 && Math.abs(r.height - pr.height) < 6;
+						}) as HTMLElement | undefined) || null;
+						console.warn('[Sarosis][Popout] pane found, overlay(webview) found=' + !!overlay);
+					}
+
+					// ② 隐藏右侧栏（与收缩按钮效果一致）
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
+					isRightColumnCollapsed = true;
+
+					// 隐藏 titlebar 上的弹出按钮和伸缩按钮（右侧栏已隐藏，这两个按钮不再有用）
+					setToggleContainerVisible(false);
+
+					console.warn('[Sarosis][Popout] agent editor hidden, toggle buttons hidden, creating floating window');
+
+					// 创建浮动窗口（用 DOM API 构建，避免 innerHTML 触发 Trusted Types 拦截）
+					const win = document.createElement('div');
+					win.className = 'agent-chat-popout-window';
+
+					const popoutTitlebar = document.createElement('div');
+					popoutTitlebar.className = 'agent-chat-popout-titlebar';
+					const popoutTitle = document.createElement('span');
+					popoutTitle.className = 'agent-chat-popout-title';
+					popoutTitle.textContent = 'Agent Chat';
+					const popoutCloseBtn = document.createElement('button');
+					popoutCloseBtn.className = 'agent-chat-popout-close codicon codicon-close';
+					popoutCloseBtn.title = 'Close and restore to sidebar';
+					popoutTitlebar.appendChild(popoutTitle);
+					popoutTitlebar.appendChild(popoutCloseBtn);
+
+					const contentArea = document.createElement('div');
+					contentArea.className = 'agent-chat-popout-content';
+
+					win.appendChild(popoutTitlebar);
+					win.appendChild(contentArea);
+
+					// ★ 先把浮窗挂到 body，确保窗口立即可见。
+					document.body.appendChild(win);
+					popoutWindow = win;
+					wasPoppedOut = true;
+					console.warn('[Sarosis][Popout] floating window created and appended to body');
+
+					// 关闭按钮
+					popoutCloseBtn.addEventListener('click', () => {
+						console.warn('[Sarosis][Popout] close button clicked');
+						popoutHandler(new (globalThis as any).Event('click'));
+					});
+
+					// ③ 把 pane 移入浮窗内容区（pane 会撑满内容区，其 rect == 内容区 rect，
+					// 控制器的 ResizeObserver 随后会自动把覆盖层 iframe 同步到这个新位置）。
+					if (pane) {
+						try {
+							popoutOriginalParent = pane.parentElement;
+							contentArea.appendChild(pane);
+							console.warn('[Sarosis][Popout] pane moved into floating window');
+						} catch (e) {
+							console.error('[Sarosis][Popout] failed to move pane into floating window:', e);
+							popoutOriginalParent = null;
+							const ph = document.createElement('div');
+							ph.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground);font-size:13px;text-align:center;';
+							ph.textContent = 'Failed to move chat panel. Close to restore.';
+							contentArea.appendChild(ph);
+						}
+					} else {
+						console.warn('[Sarosis][Popout] .agent-studio-editor-pane not found — showing placeholder');
+						const ph = document.createElement('div');
+						ph.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground);font-size:13px;text-align:center;';
+						ph.textContent = 'Chat panel not available. Please reopen the Agent Chat tab.';
+						contentArea.appendChild(ph);
+					}
+
+					// ④ 关键修复：把 webview 覆盖层 iframe 抬到浮窗（z-index:5000）之上，
+					// 否则它被浮窗的不透明背景挡住 → 弹窗显示空白。同时手动定位到内容区，
+					// 以应对拖拽/初次布局时 ResizeObserver 不触发（仅位置变化不触发）的情况。
+					if (overlay) {
+						popoutOverlay = overlay;
+						popoutOverlayPrevZ = overlay.style.zIndex;
+						overlay.style.zIndex = '5001';
+						const repositionOverlay = () => {
+							if (!popoutOverlay) { return; }
+							const r = contentArea.getBoundingClientRect();
+							popoutOverlay.style.left = `${r.left}px`;
+							popoutOverlay.style.top = `${r.top}px`;
+							popoutOverlay.style.width = `${r.width}px`;
+							popoutOverlay.style.height = `${r.height}px`;
+						};
+						popoutRepositionOverlay = repositionOverlay;
+						// 浮窗布局完成后再定位（下一帧 + 再下一帧，双保险）。
+						requestAnimationFrame(repositionOverlay);
+						requestAnimationFrame(() => requestAnimationFrame(repositionOverlay));
+					}
+
+					// 拖拽标题栏移动窗口
+					let dragState: { startX: number; startY: number; startLeft: number; startTop: number } | null = null;
+					const titlebar = popoutTitlebar;
+					titlebar.addEventListener('mousedown', (e) => {
+						const me = e as MouseEvent;
+						dragState = {
+							startX: me.clientX,
+							startY: me.clientY,
+							startLeft: win.offsetLeft,
+							startTop: win.offsetTop,
+						};
+						document.body.style.userSelect = 'none';
+					});
+					const onMouseMove = (e: MouseEvent) => {
+						if (!dragState) { return; }
+						const dx = e.clientX - dragState.startX;
+						const dy = e.clientY - dragState.startY;
+						win.style.left = `${dragState.startLeft + dx}px`;
+						win.style.top = `${dragState.startTop + dy}px`;
+						// 仅位置变化时 ResizeObserver 不触发，需手动让覆盖层跟随浮窗。
+						popoutRepositionOverlay?.();
+					};
+					const onMouseUp = () => {
+						dragState = null;
+						document.body.style.userSelect = '';
+						document.removeEventListener('mousemove', onMouseMove);
+						document.removeEventListener('mouseup', onMouseUp);
+					};
+					document.addEventListener('mousemove', onMouseMove);
+					document.addEventListener('mouseup', onMouseUp);
+				}
+			} catch (err) {
+				console.error('[Sarosis][Popout] handler error:', err);
+			}
+		};
+		document.addEventListener('agent-studio:popout-chat', popoutHandler);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:popout-chat', popoutHandler) });
 
 		// ── Close-guard for Canvas / Chat ────────────────────────────────
 		// Re-open the last instance of a panel type if it is closed inside

@@ -3149,6 +3149,13 @@ html, body, #root {
 
 /* ═══ ④ Agent Chat ════════════════════════════════════════════════════════ */
 
+.agent-chat-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .agent-chat {
   display: flex;
   flex-direction: column;
@@ -4452,53 +4459,6 @@ html, body, #root {
   min-height: 60px;
   border-radius: 16px 16px 0 0;
   font-family: inherit;
-}
-
-/* 顶部高度拖动条 */
-.chat-composer-resizer {
-  position: relative;
-  width: 100%;
-  height: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 16px 16px 0 0;
-  flex-shrink: 0;
-  transition: background-color 0.15s ease;
-}
-
-/* 分割线（grip）：只在分割线处可拖拽 */
-.chat-composer-resizer-grip {
-  position: relative;
-  width: 36px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
-  opacity: 0.5;
-  transition: opacity 0.15s ease, background-color 0.15s ease;
-  cursor: ns-resize;
-}
-
-/* 扩大分割线的可点击热区 */
-.chat-composer-resizer-grip::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: -20px;
-  right: -20px;
-  bottom: -6px;
-}
-
-/* grip hover 时 resizer 背景也高亮 */
-.chat-composer-resizer:has(.chat-composer-resizer-grip:hover),
-.chat-composer-resizer:has(.chat-composer-resizer-grip:active) {
-  background: var(--as-border-focus, rgba(124, 185, 255, 0.18));
-}
-
-.chat-composer-resizer-grip:hover,
-.chat-composer-resizer-grip:active {
-  opacity: 1;
-  background: var(--as-border-focus, rgba(124, 185, 255, 0.7));
 }
 
 .chat-composer-textarea::placeholder {

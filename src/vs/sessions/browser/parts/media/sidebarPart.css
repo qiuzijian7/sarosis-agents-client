@@ -116,16 +116,79 @@
 	flex-shrink: 0;
 }
 
-/* ── Workspace selector container ── */
+/* ── Workspace selector (right-aligned) ── */
 .agent-sessions-workbench .part.sidebar > .sidebar-toolbar > .sidebar-toolbar-workspace {
-	flex: 0 0 auto;
+	flex: 0 1 auto;
 	margin-left: auto;
 	display: flex;
 	align-items: center;
-	overflow: hidden;
+	min-width: 0;
+	overflow: visible;
+	position: relative;
 }
 
-/* Collapsed state: hide version label and workspace selector, center toggle */
+/* ── Selector button ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-selector-btn {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	height: 22px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground, inherit);
+	cursor: pointer;
+	font-size: 12px;
+	flex-shrink: 0;
+	max-width: 180px;
+	overflow: hidden;
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-selector-btn:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+/* ── Selector label ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-selector-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+/* ── Dropdown item states ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item:hover {
+	background-color: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item.active {
+	background-color: var(--vscode-list-activeSelectionBackground, color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent));
+	color: var(--vscode-list-activeSelectionForeground, inherit);
+}
+
+/* ── Dropdown item: show delete button on hover ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-item:hover .ws-delete-btn {
+	display: inline !important;
+}
+
+/* ── Delete button hover ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-delete-btn:hover {
+	opacity: 1 !important;
+	color: var(--vscode-errorForeground, #f14c4c);
+}
+
+/* ── Open folder button hover ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-open-folder-btn:hover {
+	background-color: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground)) !important;
+}
+
+/* ── Create section ── */
+.agent-sessions-workbench .part.sidebar > .sidebar-toolbar .ws-dropdown-create {
+	padding: 4px 8px;
+	border-top: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
+}
+
+/* Collapsed state: hide version and workspace, center toggle */
 .agent-sessions-workbench .part.sidebar.sidebar-content-collapsed > .sidebar-toolbar {
 	padding: 0;
 	justify-content: center;

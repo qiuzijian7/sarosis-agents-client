@@ -76,6 +76,26 @@
 	display: none !important;
 }
 
+/* [Saros] Hide the agent editor tab bar + force editor-container to fill
+   100% of parent height. VS Code's JS writes inline height = (parent - 35px)
+   which we override with !important. Uses flex layout instead of absolute. */
+.agent-sessions-workbench .agent-editor-part .editor-group-container > .title {
+	display: none !important;
+}
+
+/* Force column flex on the editor group so children stack vertically */
+.agent-sessions-workbench .agent-editor-part .editor-group-container {
+	display: flex !important;
+	flex-direction: column !important;
+}
+
+/* Consume ALL available vertical space, overriding JS inline height */
+.agent-sessions-workbench .agent-editor-part .editor-group-container > .editor-container {
+	flex: 1 1 0% !important;
+	min-height: 0 !important;
+	height: 100% !important;
+}
+
 /* [Sarosis] Hide the overflow "..." menu button in sessions workbench editors */
 .agent-sessions-workbench .part.editor > .content .editor-group-container > .title .editor-actions .codicon-toolbar-more {
 	display: none !important;

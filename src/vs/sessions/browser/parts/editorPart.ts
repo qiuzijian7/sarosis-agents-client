@@ -32,7 +32,7 @@ export class MainEditorPart extends MainEditorPartBase {
 	 * positions the floating WorkspaceToolbar; kept here so both parts
 	 * agree on the reserved band height.
 	 */
-	static readonly TOOLBAR_HEIGHT = 32;
+	static readonly TOOLBAR_HEIGHT = 0;
 
 	override layout(width: number, height: number, top: number, left: number): void {
 		if (!this.layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
