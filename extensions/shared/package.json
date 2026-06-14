@@ -5,6 +5,7 @@
 	"main": "./out/index.js",
   "activationEvents": [],
 	"types": "./out/index.d.ts",
+	"dependencies": {},
 	"scripts": {
 		"compile": "tsc -p ./",
 		"watch": "tsc -watch -p ./"
