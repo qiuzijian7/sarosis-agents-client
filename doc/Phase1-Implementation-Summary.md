@@ -120,17 +120,17 @@ CREATE TABLE IF NOT EXISTS compression_log (
 ```jsonc
 {
     // 压缩配置
-    "sarosis.session.compression.enabled": true,
-    "sarosis.session.compression.thresholdPercent": 0.50,
-    "sarosis.session.compression.headProtectCount": 3,
-    "sarosis.session.compression.tailBudgetRatio": 0.20,
-    "sarosis.session.compression.toolOutputTruncateLength": 500,
+    "saros.session.compression.enabled": true,
+    "saros.session.compression.thresholdPercent": 0.50,
+    "saros.session.compression.headProtectCount": 3,
+    "saros.session.compression.tailBudgetRatio": 0.20,
+    "saros.session.compression.toolOutputTruncateLength": 500,
 
     // 记忆配置
-    "sarosis.session.memory.enabled": true,
-    "sarosis.session.memory.maxPrefetchResults": 5,
-    "sarosis.session.memory.autoExtract": true,
-    "sarosis.session.memory.defaultImportance": 0.5
+    "saros.session.memory.enabled": true,
+    "saros.session.memory.maxPrefetchResults": 5,
+    "saros.session.memory.autoExtract": true,
+    "saros.session.memory.defaultImportance": 0.5
 }
 ```
 
@@ -210,7 +210,7 @@ src/vs/workbench/browser/        # workbench 初始化中注册服务
 
 ```bash
 # 运行单元测试
-cd g:\CustomWorkspaces\AIProjects\sarosis-agents-client
+cd g:\CustomWorkspaces\AIProjects\saros-agents-client
 npx vitest run src/vs/platform/agentHost/
 ```
 

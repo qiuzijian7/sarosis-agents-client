@@ -186,7 +186,7 @@ export class EditorParts extends EditorPartsBase {
 | 方法 | 行号 | 改动 |
 |------|------|------|
 | `createEditorPart()` | 983-1000 | 新增创建 `agentPart` 的容器 + `create()`；container id 用 `Parts.AGENT_EDITOR_PART` |
-| `_openAgentStudioEditors()` | 1047+ | **重写**：不再查 zone group，改为往 `agentPart.activeGroup` 开 Canvas/Chat；**删除**所有 `__sarosisIsAgentStudioGroup__` / 跨 zone 拦截 / `installRelocationGuard` / `agentRootGroup.lock` |
+| `_openAgentStudioEditors()` | 1047+ | **重写**：不再查 zone group，改为往 `agentPart.activeGroup` 开 Canvas/Chat；**删除**所有 `__sarosIsAgentStudioGroup__` / 跨 zone 拦截 / `installRelocationGuard` / `agentRootGroup.lock` |
 | `getPartView()` | 2029-2040 | `case Parts.AGENT_EDITOR_PART: return this.agentPartView;` |
 | Grid 描述符 `createDesktopGridDescriptor()` | ~1581 | mainRow 从 `[Sidebar, Editor]` 改为 `[Sidebar, Editor(File), AgentEditor]` 三 leaf |
 | 字段 | — | 新增 `private agentPartView: ISerializableView`（仿 `editorPartView` 1494） |
@@ -291,8 +291,8 @@ agentPart 自己的 grid 状态由它**各自的** `editorpart.state` memento（
 
 | Hack | 当前位置 | 删除后 |
 |------|---------|--------|
-| `__sarosisIsAgentStudioGroup__()` | workbench.ts 全局 API | 删除——无跨 part 概念 |
-| `__sarosisCrossZoneDragBlocked__()` | workbench.ts 全局 API | 删除——物理拖不过去 |
+| `__sarosIsAgentStudioGroup__()` | workbench.ts 全局 API | 删除——无跨 part 概念 |
+| `__sarosCrossZoneDragBlocked__()` | workbench.ts 全局 API | 删除——物理拖不过去 |
 | `installRelocationGuard()` 兜底搬回 | workbench.ts | 删除 |
 | `removeGroup` zone root 保护 | sessions editorPart.ts 88-98 | 删除 |
 | 双 branch grid + zone-state 持久化 | sessions editorPart.ts 130-395 | 删除 |

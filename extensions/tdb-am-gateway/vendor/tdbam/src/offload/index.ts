@@ -50,8 +50,8 @@ import { findHistoryMmdInsertionPoint } from "./mmd-injector.js";
 import type { OffloadConfig } from "../config.js";
 import type { PluginConfig, PluginLogger } from "./types.js";
 import { BackendClient } from "./backend-client.js";
-// sarosis 本地化构建：阶段 1 复制时已剔除 ./local-llm/（Q4=A 完全跟随云端 Chat 模型）。
-// LocalLlmClient 仅在 vendor 内"本地推理 fallback"路径使用，sarosis 不会触发该路径。
+// saros 本地化构建：阶段 1 复制时已剔除 ./local-llm/（Q4=A 完全跟随云端 Chat 模型）。
+// LocalLlmClient 仅在 vendor 内"本地推理 fallback"路径使用，saros 不会触发该路径。
 // 此处保留一个空 class stub 以满足下方补需 instantiation 的代码，如果运行期被误触发会报错。
 //
 // 方法签名与 BackendClient 对齐（l1Summarize/l15Judge/l2Generate），让 union type
@@ -59,18 +59,18 @@ import { BackendClient } from "./backend-client.js";
 class LocalLlmClient {
   constructor(_config: unknown, _logger: unknown) {
     throw new Error(
-      "[memory-tdai][offload] LocalLlmClient is disabled in sarosis build. " +
+      "[memory-tdai][offload] LocalLlmClient is disabled in saros build. " +
       "All LLM calls should go through the Knot bridge (Q4=A).",
     );
   }
   async l1Summarize(_req: L1Request): Promise<never> {
-    throw new Error("[memory-tdai][offload] LocalLlmClient.l1Summarize disabled in sarosis build.");
+    throw new Error("[memory-tdai][offload] LocalLlmClient.l1Summarize disabled in saros build.");
   }
   async l15Judge(_req: L15Request): Promise<never> {
-    throw new Error("[memory-tdai][offload] LocalLlmClient.l15Judge disabled in sarosis build.");
+    throw new Error("[memory-tdai][offload] LocalLlmClient.l15Judge disabled in saros build.");
   }
   async l2Generate(_req: L2Request): Promise<never> {
-    throw new Error("[memory-tdai][offload] LocalLlmClient.l2Generate disabled in sarosis build.");
+    throw new Error("[memory-tdai][offload] LocalLlmClient.l2Generate disabled in saros build.");
   }
 } import type { L1Request, L15Request, L2Request } from "./backend-client.js"; import { parseMmdMeta } from "./mmd-meta.js";
 import { sanitizeText, writeRefMd } from "./storage.js";

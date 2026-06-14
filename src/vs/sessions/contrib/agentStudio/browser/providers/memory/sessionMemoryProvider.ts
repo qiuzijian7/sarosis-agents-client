@@ -16,8 +16,8 @@
  *   - searchMemory 在文本匹配基础上额外按 type、metadata.tag 过滤（通过 query 前缀）。
  *
  * 文件布局：
- *   <root>/sarosis/memory/<agentId>/short-term.jsonl
- *   <root>/sarosis/memory/<agentId>/long-term.jsonl
+ *   <root>/saros/memory/<agentId>/short-term.jsonl
+ *   <root>/saros/memory/<agentId>/long-term.jsonl
  *
  * 其中 <root> 是 `userRoamingDataHome`，对桌面端等价 `%APPDATA%/Code-OSS-Dev/User`，
  * 对 web 端是 indexedDB-backed 路径，IFileService 都能直接读写。
@@ -38,7 +38,7 @@ const REWRITE_THRESHOLD = 1024 * 1024;   // 1 MB —— 小于此走全量重写
 
 export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 
-	readonly id: string = 'sarosis.session-memory';
+	readonly id: string = 'saros.session-memory';
 	readonly name: string = 'Sarosis Session Memory';
 
 	constructor(
@@ -121,7 +121,7 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 
 	private _memFile(agentId: string, fileName: string): URI {
 		const safe = agentId.replace(/[^A-Za-z0-9_.-]/g, '_');
-		return URI.joinPath(this.environmentService.userRoamingDataHome, 'sarosis', 'memory', safe, fileName);
+		return URI.joinPath(this.environmentService.userRoamingDataHome, 'saros', 'memory', safe, fileName);
 	}
 
 	private async _readJsonl(file: URI): Promise<IMemoryEntry[]> {

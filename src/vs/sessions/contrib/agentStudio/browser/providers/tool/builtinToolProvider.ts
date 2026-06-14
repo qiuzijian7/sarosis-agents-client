@@ -116,7 +116,7 @@ export interface IBuiltinToolRegistration extends IToolDescriptor { }
 
 export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
-	readonly id: string = 'sarosis.builtin-tools';
+	readonly id: string = 'saros.builtin-tools';
 	readonly name: string = 'Sarosis Built-in Tools';
 
 	private readonly _tools = new Map<string, IToolDescriptor>();
@@ -716,7 +716,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('url must start with http:// or https://');
 				}
 				const headers = (args['headers'] as Record<string, string> | undefined) ?? {};
-				const ctx = await this.requestService.request({ type: 'GET', url, headers, callSite: 'sarosis.builtinTool.http_get' }, CancellationToken.None);
+				const ctx = await this.requestService.request({ type: 'GET', url, headers, callSite: 'saros.builtinTool.http_get' }, CancellationToken.None);
 				const body = (await asText(ctx)) ?? '';
 				if (body.length > 1024 * 1024) {
 					throw new Error('response body exceeded 1 MiB');

@@ -702,7 +702,7 @@
 1. 实现统一适配层，支持 OpenAI-compatible API
 2. 支持 Anthropic Messages API
 3. 支持 Ollama local API
-4. 配置化选择后端（`sarosis.directllm.backend`）
+4. 配置化选择后端（`saros.directllm.backend`）
 5. 各后端的流式响应统一转换为 IChatStreamDelta
 
 **验收标准**:
@@ -869,7 +869,7 @@
 **任务步骤**:
 1. 实现内置模板加载（从 bundled resources）
 2. 定义 Marketplace API 接口（暂用 Mock）
-3. 自定义模板导入（从本地 .sarosis/templates/）
+3. 自定义模板导入（从本地 .saros/templates/）
 4. 模板搜索/筛选/排序
 
 **验收标准**:

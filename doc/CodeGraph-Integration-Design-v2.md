@@ -1,7 +1,7 @@
 # CodeGraph 接入设计方案 v2
 
 > 本文档基于对 `G:\CustomWorkspaces\AIProjects\codegraph`（`@colbymchenry/codegraph` v0.9.8）**真实源码**的核查，
-> 以及对本项目（`sarosis-agents-client`）Agent Studio 集成点的实测编写。
+> 以及对本项目（`saros-agents-client`）Agent Studio 集成点的实测编写。
 >
 > **它取代了旧版 `doc/CODEGRAPH_INTEGRATION_ANALYSIS.md`**（2026-05-26）。旧版基于 `better-sqlite3` 假设，
 > 而 CodeGraph 在 0.9.x 已改用 Node 内置 `node:sqlite`，且引入了 daemon/proxy 常驻架构——这两点直接改变了集成结论。
@@ -181,7 +181,7 @@ registerRetrievalProvider(provider: IRetrievalProvider, priority = 0): IDisposab
 
 `Workspace` 有两类根（`sessions/common/agentStudioTypes.ts`）：
 
-- `workspace.path` → **home / 元数据目录**（存 `.sarosisworkspace`、worktrees、artifacts），**不含代码**
+- `workspace.path` → **home / 元数据目录**（存 `.sarosworkspace`、worktrees、artifacts），**不含代码**
 - `workspace.relatedFolders[].path` → **真正的代码仓库**（git root，源码所在）
 
 > **任何「对代码做索引 / grep / 图谱构建」的功能，根路径必须取 `relatedFolders[].path`，绝不能用 `workspace.path`。**

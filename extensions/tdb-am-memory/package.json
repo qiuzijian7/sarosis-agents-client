@@ -1,9 +1,9 @@
 {
 	"name": "tdb-am-memory",
 	"displayName": "TDB-AM Memory",
-	"description": "TencentDB Agent Memory 召回适配器：把 sarosis 的 LLM 调用与 TDB-AM gateway 的 /memory/recall 接入。",
+	"description": "TencentDB Agent Memory 召回适配器：把 saros 的 LLM 调用与 TDB-AM gateway 的 /memory/recall 接入。",
 	"version": "0.0.1",
-	"publisher": "sarosis",
+	"publisher": "saros",
 	"license": "MIT",
 	"type": "module",
 	"main": "./out/extension.js",

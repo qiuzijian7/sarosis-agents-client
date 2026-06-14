@@ -1,7 +1,7 @@
 # 多 Agent 上下文管理与故障恢复：五大项目横向对比
 
 > 分析日期: 2026-06-12
-> 项目范围: sarosis-agents-client（本项目）+ openclaw + Hermes-Agent + open-multi-agent + LangGraph
+> 项目范围: saros-agents-client（本项目）+ openclaw + Hermes-Agent + open-multi-agent + LangGraph
 
 ---
 

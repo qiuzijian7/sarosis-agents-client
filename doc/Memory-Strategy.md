@@ -1,4 +1,4 @@
-# sarosis-agents-client Memory 策略
+# saros-agents-client Memory 策略
 
 > 项目跨会话记忆子系统的总体策略文档：列举各项手段的实现方案与未来优化方向。
 >
@@ -35,7 +35,7 @@
 
 **作用**：控制 prompt token 占用，保留最近 N 轮原文供模型直接参考。
 
-**实现现状**：sarosis 聊天主链路默认保留近 N 轮消息。TDB-AM 召回的内容拼在窗口之外，互不冲突。
+**实现现状**：saros 聊天主链路默认保留近 N 轮消息。TDB-AM 召回的内容拼在窗口之外，互不冲突。
 
 **提升优化方向**：
 - **窗口大小自适应**：根据当前模型 context 容量动态调整（hunyuan-turbo 32K 与 hunyuan-large 256K 应该不同）
@@ -88,7 +88,7 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 
 **实现现状**：
 - KV Cache 物理上在推理服务端 GPU 显存里，客户端不存 KV
-- sarosis 已消费上游 API 返回的 `prompt_tokens_details.cached_tokens` / `cache_read_input_tokens`，UI 显示 KV 命中数
+- saros 已消费上游 API 返回的 `prompt_tokens_details.cached_tokens` / `cache_read_input_tokens`，UI 显示 KV 命中数
 - 应用层做的事：**让 prompt 拼接顺序保证前缀稳定**
 
 ```
@@ -117,7 +117,7 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 - 召回策略：`keyword`（FTS5 + jieba 中文分词），关闭 embedding / 向量召回
 - 存储：SQLite + WAL，本地落盘
 - LLM 调用：经 Knot Bridge（`127.0.0.1:8421`）翻译 OpenAI 协议为 Knot AG-UI 协议
-- UI 浏览：sarosis 主仓内置 ViewPane，显示 L0/L1/L2/L3 四层
+- UI 浏览：saros 主仓内置 ViewPane，显示 L0/L1/L2/L3 四层
 
 **提升优化方向**：
 - **同义词词表**：UE / 腾讯内部术语映射（"复制 ↔ Replication"、"关卡序列 ↔ LevelSequence"），提升中文 keyword 召回
@@ -137,7 +137,7 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 - Mem0 的 Graph Memory 在 codebase 依赖关系记忆场景下有差异化价值，但当前 PoC 阶段不引入
 
 **提升优化方向**：
-- **保持 Provider 接口干净**：sarosis 的 `IMemoryProvider` 接口已经支持多 Provider 优先级注册（tdb-am-memory=80 > 内置=50），未来切换或并存其他 mem 系统不需要改主仓
+- **保持 Provider 接口干净**：saros 的 `IMemoryProvider` 接口已经支持多 Provider 优先级注册（tdb-am-memory=80 > 内置=50），未来切换或并存其他 mem 系统不需要改主仓
 - **基准测试套件**：建立可重复的召回质量评测集，定期对比 TDB-AM vs Mem0 的命中率，为是否切换提供数据支撑
 - **降级机制**：当 TDB-AM gateway 不可用时，自动降级到第三方 / 内置 mem，保证 chat 不被记忆故障阻塞
 
@@ -207,7 +207,7 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 
 ## 四、主流 Agent 应用 Memory 策略对比
 
-下面横向对比 4 个有代表性的开源 / 商业 agent 应用的 memory 设计，作为 sarosis 选型与未来优化的参考。
+下面横向对比 4 个有代表性的开源 / 商业 agent 应用的 memory 设计，作为 saros 选型与未来优化的参考。
 
 ### 4.1 速览矩阵
 
@@ -257,9 +257,9 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 - **导入机制** `@path/to/file` —— 复用其它 markdown 文档，最多 5 层递归
 - **prompt cache** 由 Anthropic API 层做，CLAUDE.md 内容自动享受缓存
 
-### 4.3 sarosis 当前位置（自我对照）
+### 4.3 saros 当前位置（自我对照）
 
-| 维度 | sarosis 现状 | 对照同类 |
+| 维度 | saros 现状 | 对照同类 |
 |------|------------|---------|
 | 架构 | TencentDB-AM L0/L1/L2/L3 + FTS5 + jieba | 与 OpenClaw + TDB-AM 路径一致 |
 | 召回 | keyword（FTS5） | 与 Hermes 同（FTS5） |
@@ -273,18 +273,18 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 ### 4.4 可借鉴的 5 个具体设计
 
 1. **【高优先级】采用 Hermes 的"冻结快照"模式** ——
-   sarosis 当前 prompt 里 Persona/L1 是动态生成的，每次都可能小变 → KV prefix cache 命中率不稳。
+   saros 当前 prompt 里 Persona/L1 是动态生成的，每次都可能小变 → KV prefix cache 命中率不稳。
    改造：会话开始读一次 Persona+高频 L1，整段 freeze 进 system prompt，会话内不刷新；下次新会话再读最新版。
    收益：prefix cache 命中率显著提升，**这是性能优化的最大杠杆**。
 
 2. **【高优先级】引入 Claude Code 风格的 `CLAUDE.md` 等价物** ——
-   现在 sarosis 的"用户偏好"全靠 TDB-AM 自动抽取（容易抽错），但**有些规则用户希望一锤定音**（"永远用 pnpm"、"提交前跑 npm test"）。
-   做法：在工作区根目录支持 `.sarosis/AGENT.md`，每次会话强制加载到 system prompt 前段。**人写规则 + AI 抽取偏好** 双系统，互不取代。
+   现在 saros 的"用户偏好"全靠 TDB-AM 自动抽取（容易抽错），但**有些规则用户希望一锤定音**（"永远用 pnpm"、"提交前跑 npm test"）。
+   做法：在工作区根目录支持 `.saros/AGENT.md`，每次会话强制加载到 system prompt 前段。**人写规则 + AI 抽取偏好** 双系统，互不取代。
 
 3. **【中优先级】引入 Hermes 的 Skill 系统** ——
    memory 是"事实/偏好"，skill 是"操作流程"。两者职责不同，混在一起会越用越乱。
    做法：让用户能把"修复 LevelSequence 重连问题"这种**多步流程**封装成可复用 skill，下次直接调用。
-   sarosis 已经有 skill 概念（agent-studio/skills），可扩展为程序化记忆层。
+   saros 已经有 skill 概念（agent-studio/skills），可扩展为程序化记忆层。
 
 4. **【中优先级】Token 压缩 pipeline 借鉴 OpenHuman TokenJuice** ——
    IDE 场景下 L0 里有大量 HTML、长 URL、Stack trace。
@@ -297,8 +297,8 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 ### 4.5 我们应该警惕的"反面"
 
 - **OpenHuman 的"118 集成 + 自动同步"在企业域不可行** —— 邮件/Slack/repo 数据同步进 memory 在腾讯内部是合规雷区，Reject。
-- **Hermes 的 3575 字符上限不能照搬** —— 它是 chat assistant 场景，sarosis 是 IDE 场景，代码片段必然更长，应当根据上下文容量动态调整。
-- **Claude Code 的 CLAUDE.md 直接 inject 用户消息** —— 是个简化设计，sarosis 已用更复杂的 capability provider 架构，不需要降级。
+- **Hermes 的 3575 字符上限不能照搬** —— 它是 chat assistant 场景，saros 是 IDE 场景，代码片段必然更长，应当根据上下文容量动态调整。
+- **Claude Code 的 CLAUDE.md 直接 inject 用户消息** —— 是个简化设计，saros 已用更复杂的 capability provider 架构，不需要降级。
 
 ---
 
@@ -306,7 +306,7 @@ L1/L2 抽取由后台 pipeline 异步触发，调用 LLM 完成，比朴素的"�
 
 1. **memory 合并 schema 预留** — owner / userId / agent_id 字段进 L0/L1/L2/L3，现在做成本极低，不做未来重构成本巨大
 2. **冻结快照模式**（借鉴 Hermes）— Persona/L1 会话内不刷新，最大化 KV prefix cache 命中
-3. **`.sarosis/AGENT.md` 人写规则**（借鉴 Claude Code）— 双系统补足"AI 抽不到 / 抽错了"的硬性约束
+3. **`.saros/AGENT.md` 人写规则**（借鉴 Claude Code）— 双系统补足"AI 抽不到 / 抽错了"的硬性约束
 4. **KnotBridge 透传 prompt cache 元信息** — 让走 Knot 也能看到 KV 命中
 5. **写入感知 / 敏感信息打标** — 腾讯域合规
 6. **Skill 系统集成**（借鉴 Hermes）— 把多步流程沉淀成程序化记忆

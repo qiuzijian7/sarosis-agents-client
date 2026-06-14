@@ -14,7 +14,7 @@ export function getBuiltinAgents(): Agent[] {
 	const now = new Date().toISOString();
 	return [
 		{
-			id: 'sarosis-claw',
+			id: 'saros-claw',
 			name: 'Sarosis Claw',
 			role: 'AI Assistant',
 			description: 'General-purpose AI assistant built into Sarosis Agent Studio. Handles coding, research, writing, planning, and task coordination.',

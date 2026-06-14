@@ -580,7 +580,7 @@ export class WorkspaceViewPane extends ViewPane {
 			// Mark every node as incompressible so the tree renders a proper
 			// hierarchical structure — just like VS Code's native Explorer.
 			// Without this, the compressible tree merges single-child paths
-			// into flat entries like ".sarosisworkspace/agents.json".
+			// into flat entries like ".sarosworkspace/agents.json".
 			{ isIncompressible: () => true },
 			[renderer],
 			this.instantiationService.createInstance(WorkspaceExplorerDataSource),
@@ -1415,7 +1415,7 @@ export class WorkspaceViewPane extends ViewPane {
 		// The chosen directory may be empty OR already contain files (e.g. an
 		// existing code repository the user wants to adopt as the home dir).
 		// Both are allowed — we only surface an informational confirm so the
-		// user knows workspace metadata (.sarosisworkspace) will be written
+		// user knows workspace metadata (.sarosworkspace) will be written
 		// alongside any existing content. This is NOT a hard requirement.
 		try {
 			const stat = await this.fileService.resolve(homeUri);
@@ -1424,7 +1424,7 @@ export class WorkspaceViewPane extends ViewPane {
 				const confirmed = await this.dialogService.confirm({
 					type: 'info',
 					message: localize('createWorkspaceNonEmpty', "所选文件夹已包含文件"),
-					detail: localize('createWorkspaceNonEmptyDetail', "工作区元数据（.sarosisworkspace）将写入该文件夹，与已有文件共存（不会删除或修改它们）。空文件夹和非空文件夹都可以作为工作区主目录。是否继续？"),
+					detail: localize('createWorkspaceNonEmptyDetail', "工作区元数据（.sarosworkspace）将写入该文件夹，与已有文件共存（不会删除或修改它们）。空文件夹和非空文件夹都可以作为工作区主目录。是否继续？"),
 					primaryButton: localize('createWorkspaceContinue', "继续"),
 				});
 				if (!confirmed.confirmed) {

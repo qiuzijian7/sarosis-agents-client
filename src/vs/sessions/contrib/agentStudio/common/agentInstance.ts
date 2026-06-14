@@ -14,7 +14,7 @@ export const IAgentInstanceService = createDecorator<IAgentInstanceService>('age
  * Agent 实例化服务
  * 
  * 管理 Agent 实例的创建、删除、配置。
- * 每个实例对应一个独立的 Agent 配置（. sarosis/agents/{id}/agent.yaml）。
+ * 每个实例对应一个独立的 Agent 配置（. saros/agents/{id}/agent.yaml）。
  */
 export interface IAgentInstanceService {
 	readonly _serviceBrand: undefined;

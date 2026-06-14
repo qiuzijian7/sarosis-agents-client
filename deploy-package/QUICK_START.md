@@ -15,15 +15,15 @@
 
 ```bash
 # 在本地执行
-scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssarosis-update/
+scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssaros-update/
 ```
 
 #### 方式 B: 使用 PowerShell (Windows 服务器)
 
 ```powershell
 # 在服务器上执行
-New-Item -ItemType Directory -Force -Path C:\vssarosis-update
-# 然后手动复制 deploy-package\update-server\ 到 C:\vssarosis-update\
+New-Item -ItemType Directory -Force -Path C:\vssaros-update
+# 然后手动复制 deploy-package\update-server\ 到 C:\vssaros-update\
 ```
 
 ### 步骤 2: 在服务器上启动更新服务器
@@ -35,16 +35,16 @@ New-Item -ItemType Directory -Force -Path C:\vssarosis-update
 ssh root@21.91.41.66
 
 # 进入更新服务器目录
-cd /opt/vssarosis-update/update-server
+cd /opt/vssaros-update/update-server
 
 # 安装 PM2 (如果未安装)
 npm install -g pm2
 
 # 启动更新服务器 (端口 3030)
-PORT=3030 pm2 start server.mjs --name vssarosis-update
+PORT=3030 pm2 start server.mjs --name vssaros-update
 
 # 查看日志
-pm2 logs vssarosis-update
+pm2 logs vssaros-update
 
 # 测试服务
 curl http://localhost:3030/health
@@ -54,7 +54,7 @@ curl http://localhost:3030/health
 
 ```powershell
 # RDP 登录服务器
-cd C:\vssarosis-update\update-server
+cd C:\vssaros-update\update-server
 $env:PORT=3030
 node server.mjs
 ```
@@ -85,7 +85,7 @@ New-NetFirewallRule -DisplayName "VsSarosis Update Server" -Direction Inbound -P
 curl http://21.91.41.66:3030/health
 
 # 测试更新 API (使用一个假的 commit)
-curl http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/0000000000000000000000000000000000000000
+curl http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
 ```
 
 预期响应 (JSON):
@@ -101,7 +101,7 @@ curl http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/00000000000000000
 
 ### 步骤 5: 构建 VsSarosis 安装包 (可选，如需发布新版本)
 
-在本地 `sarosis-agents-client` 目录执行：
+在本地 `saros-agents-client` 目录执行：
 
 ```powershell
 # 1. 修复品牌配置
@@ -119,16 +119,16 @@ npm run gulp vscode-win32-x64-user-setup
 
 1. 将安装包上传到服务器或 GitHub Releases
 2. 更新 `update-server/manifest.json` 中的版本信息
-3. 重启更新服务器: `pm2 restart vssarosis-update`
+3. 重启更新服务器: `pm2 restart vssaros-update`
 
 ## 验证部署
 
 部署成功后，你应该能够：
 
 1. **访问更新服务器健康检查**: `http://21.91.41.66:3030/health`
-   - 预期响应: `{"ok":true,"service":"vssarosis-update-server","mode":"manifest"}`
+   - 预期响应: `{"ok":true,"service":"vssaros-update-server","mode":"manifest"}`
 
-2. **访问更新 API**: `http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/0000000000000000000000000000000000000000`
+2. **访问更新 API**: `http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000`
    - 预期响应: JSON 包含版本信息
 
 3. **客户端自动检测更新** (安装并运行 VsSarosis 后)
@@ -145,10 +145,10 @@ netstat -tlnp | grep 3030  # Linux
 netstat -an | findstr 3030  # Windows
 
 # 查看 PM2 日志
-pm2 logs vssarosis-update
+pm2 logs vssaros-update
 
 # 手动启动测试
-cd /opt/vssarosis-update/update-server
+cd /opt/vssaros-update/update-server
 node server.mjs
 ```
 
@@ -203,4 +203,4 @@ deploy-package/
 
 - 查看 `DEPLOYMENT_GUIDE.md` 获取详细步骤
 - 查看 `update-server/` 目录中的代码和注释
-- 检查更新服务器日志: `pm2 logs vssarosis-update`
+- 检查更新服务器日志: `pm2 logs vssaros-update`

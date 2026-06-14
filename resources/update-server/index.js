@@ -7,7 +7,7 @@
  * 部署：DevCloud 实例 zijianqiu-any1.devcloud.woa.com:3030
  *
  * 客户端请求：
- *   GET /api/update/win32-x64/sarosis/{commit-hash}
+ *   GET /api/update/win32-x64/saros/{commit-hash}
  *
  * 响应格式：
  *   { version, productVersion, url, sha256hash, timestamp }
@@ -19,9 +19,9 @@ const https = require('https');
 // ===== 配置 =====
 const PORT = 3030;
 const GONGFENG_TOKEN = process.env.GONGFENG_TOKEN || ''; // 需设置环境变量
-const PROJECT_ID = '1790708'; // vssarosis_issue 项目 ID
+const PROJECT_ID = '1790708'; // vssaros_issue 项目 ID
 const GONGFENG_API = 'https://git.woa.com/api/v3';
-const QUALITY = 'sarosis';
+const QUALITY = 'saros';
 
 // ===== 工具函数 =====
 
@@ -131,7 +131,7 @@ const server = http.createServer(async (req, res) => {
     // 健康检查
     if (url.pathname === '/health' || url.pathname === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', service: 'vssarosis-update', quality: QUALITY }));
+        res.end(JSON.stringify({ status: 'ok', service: 'vssaros-update', quality: QUALITY }));
         return;
     }
 
@@ -146,7 +146,7 @@ const server = http.createServer(async (req, res) => {
     const [, platform, quality, commit] = match;
     log(`更新请求: platform=${platform}, quality=${quality}, commit=${commit}`);
 
-    // 验证 quality（可选，防止非 sarosis 客户端误用）
+    // 验证 quality（可选，防止非 saros 客户端误用）
     if (quality !== QUALITY) {
         log(`quality 不匹配: ${quality} !== ${QUALITY}，返回空（无更新）`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -171,7 +171,7 @@ const server = http.createServer(async (req, res) => {
 
         // 有更新
         const update = buildUpdateResponse(latest, commit);
-        update.url = update.url || `https://git.woa.com/zijianqiu/vssarosis_issue/-/releases/${latest.tag}`;
+        update.url = update.url || `https://git.woa.com/zijianqiu/vssaros_issue/-/releases/${latest.tag}`;
         log(`返回更新: version=${update.version}, productVersion=${update.productVersion}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -17,7 +17,7 @@
  *  Prompt cache passthrough: if Knot's SSE metadata carries token usage
  *  (including any of `cached_tokens` / `cache_read_tokens` / `prompt_cache_tokens`),
  *  we forward it in the OpenAI-format `usage.prompt_tokens_details.cached_tokens`
- *  field so sarosis BYOK provider's existing cache-detection code path picks it
+ *  field so saros BYOK provider's existing cache-detection code path picks it
  *  up automatically — no special-casing of Knot in BYOK.
  *--------------------------------------------------------------------------------------------*/
 
@@ -431,7 +431,7 @@ export class KnotBridge {
 		// Build the OpenAI-format usage block. When Knot reported nothing we
 		// keep the historical zeros (callers tolerate that). When Knot did
 		// report cache info we place it under `prompt_tokens_details.cached_tokens`,
-		// which is the path sarosis BYOK provider already inspects — no special
+		// which is the path saros BYOK provider already inspects — no special
 		// handling for "Knot" needed downstream.
 		const promptTokens = usage.seen ? usage.promptTokens : 0;
 		const completionTokens = usage.seen ? usage.completionTokens : 0;

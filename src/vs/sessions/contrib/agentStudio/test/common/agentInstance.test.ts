@@ -28,7 +28,7 @@ suite('Agent Instance Service - Interface Definitions (Phase 4)', () => {
 			name: 'My Agent',
 			templateId: 'template-1',
 			workspaceId: 'workspace-1',
-			configPath: '.sarosis/agents/instance-1/agent.yaml',
+			configPath: '.saros/agents/instance-1/agent.yaml',
 			createdAt: new Date().toISOString(),
 			updatedAt: new Date().toISOString(),
 			status: 'active' as const,
@@ -100,7 +100,7 @@ suite('Agent Instance Service - Interface Definitions (Phase 4)', () => {
 				name: 'New Instance',
 				templateId,
 				workspaceId,
-				configPath: `.sarosis/agents/instance-from-${templateId}/agent.yaml`,
+				configPath: `.saros/agents/instance-from-${templateId}/agent.yaml`,
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
 				status: 'active' as const,
@@ -112,7 +112,7 @@ suite('Agent Instance Service - Interface Definitions (Phase 4)', () => {
 		assert.ok(instance.id.includes('instance-from-template-1'));
 		assert.strictEqual(instance.templateId, 'template-1');
 		assert.strictEqual(instance.workspaceId, 'workspace-1');
-		assert.ok(instance.configPath.includes('.sarosis/agents/'));
+		assert.ok(instance.configPath.includes('.saros/agents/'));
 		assert.strictEqual(instance.status, 'active');
 	});
 
@@ -126,7 +126,7 @@ suite('Agent Instance Service - Interface Definitions (Phase 4)', () => {
 		const deleteInstance = (id: string) => {
 			instances.delete(id);
 			// 模拟清理目录
-			// fs.rmSync(`.sarosis/agents/${id}`, { recursive: true });
+			// fs.rmSync(`.saros/agents/${id}`, { recursive: true });
 		};
 
 		assert.ok(instances.has('instance-1'));
@@ -175,11 +175,11 @@ suite('Agent Instance Service - Interface Definitions (Phase 4)', () => {
 		assert.strictEqual(searchTemplates('help').length, 2); // Code Assistant + Writer
 	});
 
-	test('.sarosis/agents/ directory structure', () => {
+	test('.saros/agents/ directory structure', () => {
 		const instanceId = 'instance-1';
-		const expectedPath = `.sarosis/agents/${instanceId}/agent.yaml`;
+		const expectedPath = `.saros/agents/${instanceId}/agent.yaml`;
 
-		assert.ok(expectedPath.includes('.sarosis/agents/'));
+		assert.ok(expectedPath.includes('.saros/agents/'));
 		assert.ok(expectedPath.endsWith('agent.yaml'));
 		assert.ok(expectedPath.includes(instanceId));
 	});

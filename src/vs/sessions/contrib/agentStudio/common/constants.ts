@@ -622,12 +622,12 @@ export const DATA_FILE_CUSTOM_AGENTS = 'custom-agents.json';
 export const DATA_FILE_AGENT_BINDINGS = 'agent-bindings.json';
 
 // Workspace-local data directory name (stored inside the workspace folder)
-export const WORKSPACE_DATA_DIR = '.sarosisworkspace';
+export const WORKSPACE_DATA_DIR = '.sarosworkspace';
 
-// Agent instance directory name (stored inside .sarosisworkspace/)
+// Agent instance directory name (stored inside .sarosworkspace/)
 export const AGENTS_DIR = 'agents';
 
-// Workspace Sessions (Forks) directory name (stored inside .sarosisworkspace/)
+// Workspace Sessions (Forks) directory name (stored inside .sarosworkspace/)
 export const WORKSPACE_SESSIONS_DIR = 'workspace_sessions';
 
 // Agent instance bootstrap file names (inspired by OpenClaw workspace structure)

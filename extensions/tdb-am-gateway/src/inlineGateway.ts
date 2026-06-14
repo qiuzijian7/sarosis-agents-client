@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  InlineGateway — sarosis 进程内 TDB-AM 网关。
+ *  InlineGateway — saros 进程内 TDB-AM 网关。
  *
  *  本文件是一层薄包装，负责：
  *    1. 设置 TDB-AM 真实实现需要的环境变量（端口/数据目录/Knot 桥地址等）
@@ -8,7 +8,7 @@
  *
  *  与早期"5KB 内存 Map"占位实现的区别：
  *    - 真正接入 vendor/tdbam 的 L0/L1/L2/L3 完整记忆栈
- *    - LLM 调用通过 sarosis Knot 桥（OpenAI-compatible，跟随用户当前 Chat 模型）
+ *    - LLM 调用通过 saros Knot 桥（OpenAI-compatible，跟随用户当前 Chat 模型）
  *    - 召回走 SQLite FTS5（向量已禁用，对应 Q7=A 决策）
  *
  *  详细路线图：参见 extensions/tdb-am-gateway/vendor/tdbam/COPY_MANIFEST.md
@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // ── 关于 vendor 的引用方式 ──
-// sarosis 顶层 gulpfile 用 tsgo（TypeScript Native Preview）编译扩展，
+// saros 顶层 gulpfile 用 tsgo（TypeScript Native Preview）编译扩展，
 // 它在处理 vendor/tdbam/** 这种 130+ 文件 + Node16 ESM 的大依赖图时
 // 会段错误崩溃（exit code 0xC0000005）。
 //
@@ -68,7 +68,7 @@ export interface GatewayOptions {
 }
 
 /**
- * sarosis 端 InlineGateway —— vendor TdaiGateway 的薄包装。
+ * saros 端 InlineGateway —— vendor TdaiGateway 的薄包装。
  *
  * 维持与早期占位实现一致的对外 API（start / stop），让 extension.ts 不需要变更。
  */
@@ -91,7 +91,7 @@ export class InlineGateway {
 		// 与 vendor 内 src/gateway/config.ts 的 env 读取顺序保持一致：
 		//   TDAI_GATEWAY_PORT / TDAI_DATA_DIR / TDAI_LLM_BASE_URL / ...
 		//
-		// 同时注入 vendor llm-runner 的 sarosis 适配变量（来自阶段 2 的 Q3/Q4 改造）：
+		// 同时注入 vendor llm-runner 的 saros 适配变量（来自阶段 2 的 Q3/Q4 改造）：
 		//   TDBAM_LLM_BASE_URL / TDBAM_LLM_API_KEY / TDBAM_LLM_MODEL
 		// 二者并存：vendor gateway 用 TDAI_*，llm-runner 用 TDBAM_* —— 设置两套以兼容。
 		this.injectEnv();
@@ -100,14 +100,14 @@ export class InlineGateway {
 			// 动态 import vendor 预编译产物。
 			//
 			// 关键背景：
-			//   - 本文件被 sarosis VSCode 扩展宿主以 CommonJS 加载（tsc 输出 CJS）。
+			//   - 本文件被 saros VSCode 扩展宿主以 CommonJS 加载（tsc 输出 CJS）。
 			//     out/package.json 显式标记 "type":"commonjs" 以截断向上爬到主仓
 			//     "type":"module"。这意味着运行时 __dirname / require 都可用，
 			//     而 ESM-only 的 import.meta 在 CJS 中会抛 SyntaxError，绝对不能用。
 			//   - vendor 是 ESM 编译输出（out/vendor/package.json 标记 "type":"module"），
 			//     所以这里用 dynamic `await import(file://...)` 跨 module 系统加载。
 			//
-			// vendor 产物可能位于多个候选路径（独立编译 vs sarosis 主框架部署），
+			// vendor 产物可能位于多个候选路径（独立编译 vs saros 主框架部署），
 			// 我们逐个探测并取第一个存在的。
 			const { pathToFileURL } = await import('url');
 
@@ -201,7 +201,7 @@ export class InlineGateway {
 	/**
 	 * 写入 vendor TdaiGateway 启动需要的环境变量。
 	 *
-	 * 注意：所有变量都是 *进程级*，sarosis 是单进程，因此影响范围仅限本扩展，
+	 * 注意：所有变量都是 *进程级*，saros 是单进程，因此影响范围仅限本扩展，
 	 * 不会污染其他扩展。
 	 */
 	private injectEnv(): void {
@@ -216,7 +216,7 @@ export class InlineGateway {
 		// LLM = Knot 桥（OpenAI 兼容）。Knot 桥未就绪时仍写入占位值，避免 vendor
 		// 的 fallback 走真实 OpenAI 域名。
 		process.env.TDAI_LLM_BASE_URL = knotBaseUrl || 'http://127.0.0.1:8421/v1';
-		process.env.TDAI_LLM_API_KEY = 'sarosis-knot-bridge-token';
+		process.env.TDAI_LLM_API_KEY = 'saros-knot-bridge-token';
 		process.env.TDAI_LLM_MODEL = knotModel;
 
 		// 关闭向量路径（Q7=A）。
@@ -225,7 +225,7 @@ export class InlineGateway {
 		process.env.TDAI_STORE_BACKEND = 'sqlite';
 		process.env.TDAI_RECALL_STRATEGY = this.options.recallStrategy ?? 'keyword';
 
-		// ── vendor adapters/standalone/llm-runner.ts 的 sarosis 适配变量 ──
+		// ── vendor adapters/standalone/llm-runner.ts 的 saros 适配变量 ──
 		// 与 TDAI_* 并存：llm-runner 优先读 TDBAM_*，找不到再读 config 里转译过的
 		// TDAI_* 值，二者一致即可。
 		process.env.TDBAM_LLM_BASE_URL = process.env.TDAI_LLM_BASE_URL;

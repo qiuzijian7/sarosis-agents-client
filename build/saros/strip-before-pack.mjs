@@ -1,0 +1,201 @@
+#!/usr/bin/env node
+/**
+ * strip-before-pack.mjs — VsSarosis 安装包预打包清理脚本
+ *
+ * 在 gulp vscode-win32-x64-ci 之后、Inno Setup 打包之前运行。
+ * 从构建输出目录中删除不需要的文件，显著减小安装包体积。
+ *
+ * 用法:
+ *   node build/saros/strip-before-pack.mjs [构建输出目录]
+ *
+ * 默认目录: ../VSCode-win32-x64 (相对于项目根目录)
+ *
+ * 清理项清单 (按安全级别分组):
+ *
+ * 【无损 - 生产环境不需要】
+ *   - *.map sourcemap 文件 (~185MB)
+ *   - 非 zh-CN/en-US 的 locale pak 文件 (53种语言, ~43MB)
+ *   - LICENSES.chromium.html (~15MB)
+ *   - node-pty 跨平台 prebuilds (仅保留 win32-x64, ~12MB)
+ *
+ * 【VsSarosis 品牌下不工作 - 可安全排除】
+ *   - @github/copilot (整个目录, 49MB) — 使用 Knot AG-UI, 不需要 GitHub Copilot
+ *   - @microsoft/1ds-* 遥测 SDK — 连接 Microsoft 端点, VsSarosis 不应连 MS
+ *   - @microsoft/applicationinsights-* — 同上
+ *   - @microsoft/dynamicproto-js — 同上
+ *   - @microsoft/dev-tunnels-* — 需 Microsoft 账户
+ *
+ * 【低风险 - 特定功能降级】
+ *   - dxcompiler.dll + dxil.dll (26.5MB) — WebGL/D3D shader 编译场景降级
+ *   - vk_swiftshader.dll (5.4MB) — 无 GPU 时 Vulkan 软件回退不可用
+ *   - playwright-core (9.3MB) — 浏览器自动化调试不可用
+ *   - chrome-remote-interface (2.2MB) — Chrome DevTools Protocol 不可用
+ *   - katex (4.4MB) — Markdown 数学公式不渲染
+ *   - opentype.js (2.0MB) — 自定义字体解析降级
+ *   - @vscode/vscode-languagedetection (1.8MB) — 未识别文件的语言检测降级
+ *   - @xterm/addon-webgl (1.8MB) — 终端回退到 canvas 渲染器
+ *   - @parcel (1.7MB) — Parcel bundler 未见直接使用
+ *   - ssh2 (641KB) — Remote SSH 需 Microsoft 账户
+ *   - @vscode/sandbox-runtime (1.5MB) — 沙箱运行时
+ */
+
+import { rmSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// __dirname = .../saros-agents-client/build/saros
+// ROOT = .../saros-agents-client
+const ROOT = resolve(__dirname, '../..');
+// 构建输出在项目同级的 VSCode-win32-x64
+const DEFAULT_BUILD_DIR = join(ROOT, '../VSCode-win32-x64');
+
+const buildDir = resolve(process.argv[2] || DEFAULT_BUILD_DIR);
+
+if (!existsSync(buildDir)) {
+	console.error(`❌ 构建输出目录不存在: ${buildDir}`);
+	process.exit(1);
+}
+
+console.log(`🧹 清理构建输出: ${buildDir}\n`);
+
+let totalFreed = 0;
+
+function toPosix(p) {
+	return p.replace(/\\/g, '/');
+}
+
+function removeDir(label, relPath) {
+	const absPath = join(buildDir, relPath);
+	if (!existsSync(absPath)) {
+		console.log(`  ⏭  ${label} — 不存在，跳过`);
+		return;
+	}
+	let size = 0;
+	try {
+		const out = execSync(`du -sb "${toPosix(absPath)}" 2>/dev/null`, { encoding: 'utf8' }).trim();
+		size = parseInt(out.split('\t')[0]) || 0;
+	} catch { /* ignore */ }
+	try {
+		rmSync(absPath, { recursive: true, force: true });
+		totalFreed += size;
+		const sizeStr = size > 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)}MB` : `${(size / 1024).toFixed(0)}KB`;
+		console.log(`  ✅ ${label} — ${sizeStr}`);
+	} catch (e) {
+		console.log(`  ⚠️  ${label} — 删除失败: ${e.message}`);
+	}
+}
+
+function removeFile(label, relPath) {
+	const absPath = join(buildDir, relPath);
+	if (!existsSync(absPath)) {
+		console.log(`  ⏭  ${label} — 不存在，跳过`);
+		return;
+	}
+	const size = statSync(absPath).size;
+	try {
+		rmSync(absPath, { force: true });
+		totalFreed += size;
+		const sizeStr = size > 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)}MB` : `${(size / 1024).toFixed(0)}KB`;
+		console.log(`  ✅ ${label} — ${sizeStr}`);
+	} catch (e) {
+		console.log(`  ⚠️  ${label} — 删除失败: ${e.message}`);
+	}
+}
+
+function removeGlob(label, pattern) {
+	try {
+		const out = execSync(`find "${toPosix(buildDir)}" -name "${pattern}" -type f 2>/dev/null`, { encoding: 'utf8' }).trim();
+		if (!out) {
+			console.log(`  ⏭  ${label} — 无匹配，跳过`);
+			return;
+		}
+		const files = out.split('\n').filter(Boolean);
+		let size = 0;
+		for (const f of files) {
+			try { size += statSync(f).size; } catch { /* skip */ }
+			try { rmSync(f, { force: true }); } catch { /* skip */ }
+		}
+		totalFreed += size;
+		const sizeStr = size > 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)}MB` : `${(size / 1024).toFixed(0)}KB`;
+		console.log(`  ✅ ${label} — ${files.length} 文件, ${sizeStr}`);
+	} catch (e) {
+		console.log(`  ⚠️  ${label} — 失败: ${e.message}`);
+	}
+}
+
+// === 1. 无损清理 ===
+console.log('📦 [无损] 生产环境不需要的文件:');
+
+removeGlob('.map sourcemaps', '*.map');
+removeFile('LICENSES.chromium.html', 'LICENSES.chromium.html');
+
+// 精简 locales — 仅保留 en-US.pak 和 zh-CN.pak
+const localesDir = join(buildDir, 'locales');
+if (existsSync(localesDir)) {
+	const kept = new Set(['en-US.pak', 'zh-CN.pak']);
+	const paks = readdirSync(localesDir).filter(f => f.endsWith('.pak') && !kept.has(f));
+	let size = 0;
+	for (const f of paks) {
+		const fp = join(localesDir, f);
+		try { size += statSync(fp).size; } catch { /* skip */ }
+		try { rmSync(fp, { force: true }); } catch { /* skip */ }
+	}
+	totalFreed += size;
+	console.log(`  ✅ 精简 locales (${paks.length} 文件) — ${(size / 1024 / 1024).toFixed(1)}MB`);
+}
+
+// node-pty: 仅保留 win32-x64 prebuilds
+const ptyPrebuilds = join(buildDir, 'resources/app/node_modules/node-pty/prebuilds');
+if (existsSync(ptyPrebuilds)) {
+	const keptPrefix = 'win32-x64';
+	const entries = readdirSync(ptyPrebuilds).filter(e => !e.startsWith(keptPrefix));
+	for (const e of entries) {
+		removeDir(`node-pty prebuilds/${e}`, `resources/app/node_modules/node-pty/prebuilds/${e}`);
+	}
+}
+
+// === 2. VsSarosis 品牌下不工作 ===
+console.log('\n🏷️  [品牌] VsSarosis 不需要的模块:');
+
+removeDir('@github/copilot (整个目录)', 'resources/app/node_modules/@github/copilot');
+removeDir('@github/copilot-sdk', 'resources/app/node_modules/@github/copilot-sdk');
+removeDir('@microsoft/1ds-post-js', 'resources/app/node_modules/@microsoft/1ds-post-js');
+removeDir('@microsoft/1ds-core-js', 'resources/app/node_modules/@microsoft/1ds-core-js');
+removeDir('@microsoft/applicationinsights-core-js', 'resources/app/node_modules/@microsoft/applicationinsights-core-js');
+removeDir('@microsoft/applicationinsights-shims', 'resources/app/node_modules/@microsoft/applicationinsights-shims');
+removeDir('@microsoft/dynamicproto-js', 'resources/app/node_modules/@microsoft/dynamicproto-js');
+removeDir('@microsoft/dev-tunnels-ssh', 'resources/app/node_modules/@microsoft/dev-tunnels-ssh');
+removeDir('@microsoft/dev-tunnels-connections', 'resources/app/node_modules/@microsoft/dev-tunnels-connections');
+removeDir('@microsoft/dev-tunnels-contracts', 'resources/app/node_modules/@microsoft/dev-tunnels-contracts');
+removeDir('@microsoft/dev-tunnels-management', 'resources/app/node_modules/@microsoft/dev-tunnels-management');
+removeDir('@microsoft/dev-tunnels-ssh-tcp', 'resources/app/node_modules/@microsoft/dev-tunnels-ssh-tcp');
+
+// === 3. 低风险 - 特定功能降级 ===
+console.log('\n⚡ [低风险] 功能降级项:');
+
+removeFile('dxcompiler.dll', 'dxcompiler.dll');
+removeFile('dxil.dll', 'dxil.dll');
+removeFile('vk_swiftshader.dll', 'vk_swiftshader.dll');
+removeDir('playwright-core', 'resources/app/node_modules/playwright-core');
+removeDir('chrome-remote-interface', 'resources/app/node_modules/chrome-remote-interface');
+removeDir('katex', 'resources/app/node_modules/katex');
+removeDir('opentype.js', 'resources/app/node_modules/opentype.js');
+removeDir('@vscode/vscode-languagedetection', 'resources/app/node_modules/@vscode/vscode-languagedetection');
+removeDir('@xterm/addon-webgl', 'resources/app/node_modules/@xterm/addon-webgl');
+removeDir('@parcel', 'resources/app/node_modules/@parcel');
+removeDir('ssh2', 'resources/app/node_modules/ssh2');
+removeDir('@vscode/sandbox-runtime', 'resources/app/node_modules/@vscode/sandbox-runtime');
+
+// === 4. 清理空目录 ===
+console.log('\n🧹 清理空目录...');
+try {
+	execSync(`find "${toPosix(buildDir)}/resources/app/node_modules" -type d -empty -delete 2>/dev/null`);
+	console.log('  ✅ 已清理空目录');
+} catch { /* ignore */ }
+
+// === 汇总 ===
+console.log(`\n📊 总计释放: ${(totalFreed / 1024 / 1024).toFixed(1)}MB`);
+console.log('✅ 清理完成，可以执行 Inno Setup 打包');

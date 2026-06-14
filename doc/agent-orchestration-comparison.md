@@ -713,7 +713,7 @@ private async _failTask(planId: string, taskId: string, reason: string): Promise
 3. Rudder 项目: `G:\CustomWorkspaces\AIProjects\rudder`
 4. OpenClaw 项目: `G:\CustomWorkspaces\AIProjects\openclaw`
 5. Hermes-Agent 项目: `G:\CustomWorkspaces\AIProjects\Hermes-Agent`
-6. Sarosis 项目: `G:\CustomWorkspaces\AIProjects\sarosis-agents-client`
+6. Sarosis 项目: `G:\CustomWorkspaces\AIProjects\saros-agents-client`
 
 ---
 

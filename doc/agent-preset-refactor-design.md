@@ -187,7 +187,7 @@ type AgentCategory = 'General' | 'Development' | 'Research' | 'Creative' | 'Mana
 
 ```
 {workspacePath}/
-  .sarosisworkspace/
+  .sarosworkspace/
     agents.json              ← ★ 所有 Agent 定义（替代 employees.json + presets.json）
     sessions/
       {agentId}/
@@ -232,7 +232,7 @@ Builtin agents 通过代码定义，首次加载时自动写入 `agents.json`。
 export function getBuiltinAgents(): Agent[] {
   return [
     {
-      id: 'sarosis-claw',
+      id: 'saros-claw',
       name: 'Sarosis Claw',
       role: 'AI Assistant',
       description: 'General-purpose AI assistant...',

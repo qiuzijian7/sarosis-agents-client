@@ -97,7 +97,7 @@ export interface ISettingsTabDescriptor {
 	/** Tab label shown in the tab bar (e.g. "🔗 Knot") */
 	label: string;
 	/** Optional `when` clause context key expression for conditional visibility.
-	 *  Example: "extensionInstalled == sarosis-knot-agui" */
+	 *  Example: "extensionInstalled == saros-knot-agui" */
 	when?: string;
 	/** Tab description shown in the section header */
 	description?: string;

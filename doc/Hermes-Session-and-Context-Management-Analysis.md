@@ -2,7 +2,7 @@
 
 ## 1. 概述
 
-本报告分析了 `sarosis-agents-client/extensions/hermes-agent` 项目的 Session 管理和上下文管理机制。该扩展通过 Bridge 架构连接到 Python 端的 hermes-agent 核心引擎，实现了完整的 AI 对话会话管理。
+本报告分析了 `saros-agents-client/extensions/hermes-agent` 项目的 Session 管理和上下文管理机制。该扩展通过 Bridge 架构连接到 Python 端的 hermes-agent 核心引擎，实现了完整的 AI 对话会话管理。
 
 **架构层次**：
 - **TypeScript 层**（扩展前端）：`hermes-agent/extensions/hermes-agent/src/`

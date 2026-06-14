@@ -148,7 +148,7 @@
 | **Hermes** | Python 类 + 文件系统 | `~/.hermes/config.yaml` | `~/.hermes/` |
 | **OpenClaw** | YAML 配置文件 | `.agents/*.yml`, `agents.yml` | `~/.openclaw/agents/` |
 | **OpenHuman** | TOML 定义 + Markdown 提示词 | `agents/{id}/agent.toml` + `agents/{id}/SOUL.md` | `~/.openhuman/` |
-| **本项目** | JSON (employees.json) + Markdown (五文件体系) | `.sarosisworkspace/employees.json` | `.sarosisworkspace/agents/{slug}/` |
+| **本项目** | JSON (employees.json) + Markdown (五文件体系) | `.sarosworkspace/employees.json` | `.sarosworkspace/agents/{slug}/` |
 
 ### 3.2 详细存储结构
 
@@ -274,7 +274,7 @@ agents/researcher/
 #### 本项目: JSON + 五文件 Markdown 体系
 
 ```
-.sarosisworkspace/
+.sarosworkspace/
 ├── employees.json                    # 所有 Agent 实例的元数据
 └── agents/
     └── coder/

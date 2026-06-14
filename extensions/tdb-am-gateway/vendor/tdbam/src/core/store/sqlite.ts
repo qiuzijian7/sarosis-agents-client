@@ -167,7 +167,7 @@ let _jieba: JiebaInstance | null | undefined; // undefined = not yet tried
 
 function getJieba(): JiebaInstance | null {
   if (_jieba !== undefined) return _jieba;
-  // ── sarosis local-first build (Q10) ──
+  // ── saros local-first build (Q10) ──
   // 禁用 @node-rs/jieba（原生模块，跨平台预编译复杂），强制走下方的 unicode-regex
   // fallback 路径。中文召回精度略降，但避免了原生依赖，便于打包分发。
   //
@@ -212,7 +212,7 @@ const ZH_STOP_WORDS = new Set([
 /**
  * Build an FTS5 MATCH query from raw text.
  *
- * 当索引使用 `trigram` tokenizer 时（sarosis local-first build）：
+ * 当索引使用 `trigram` tokenizer 时（saros local-first build）：
  *   - trigram 会把 query 切成 3-gram，**所有** 3-gram 都需要在文档中按序出现才命中。
  *   - 这意味着把整段长 query 当单 phrase 传入会过于严格——
  *     例如 query "GM代码在哪个文件"，包含 trigram "码在哪"/"在哪个"/"哪个文"/"个文件"
@@ -224,7 +224,7 @@ const ZH_STOP_WORDS = new Set([
  *   - OR 让任一段命中即可召回（BM25 自然让命中更多段的文档排前面）
  *   - 长度 < 3 的段被丢弃（trigram 索引不到）
  *
- * 例子（trigram, sarosis local-first）:
+ * 例子（trigram, saros local-first）:
  *   "GM代码"             → '"GM代码"'                 // 单段，无需拆
  *   "GM代码在哪个文件"   → '"GM代码在哪个文件" OR "GM" OR "代码在哪个文件"'
  *   "用户喜欢 React"     → '"用户喜欢" OR "React"'
@@ -239,7 +239,7 @@ export function buildFtsQuery(raw: string): string | null {
 
   const jieba = getJieba();
   if (!jieba) {
-    // sarosis local-first：索引侧走 trigram tokenizer。
+    // saros local-first：索引侧走 trigram tokenizer。
     //
     // 由于 trigram 把 query 当成 **AND** 序列匹配（query 的所有 3-gram 都要在
     // 文档中按序出现才命中），直接传整段长 query 会因为某些位置的 3-gram 在文档
@@ -555,12 +555,12 @@ export class VectorStore implements IMemoryStore {
    *   so the caller can schedule a full re-embed.
    */
   init(providerInfo?: EmbeddingProviderInfo): VectorStoreInitResult {
-    // ── sarosis local-first build (Q7=A) ──
+    // ── saros local-first build (Q7=A) ──
     // Vector recall is disabled. When dimensions=0, vec0 tables are deferred
     // (see initSchema: `vecTablesReady = dimensions > 0`), so we skip loading
     // sqlite-vec entirely and remain non-degraded — FTS5 path is fully functional.
     //
-    // 当 dimensions > 0（理论上不会在 sarosis 走到，但保留兼容路径）时仍尝试加载，
+    // 当 dimensions > 0（理论上不会在 saros 走到，但保留兼容路径）时仍尝试加载，
     // 失败则保持上游原行为：进入 degraded 模式。
     if (this.dimensions > 0) {
       try {
@@ -2580,7 +2580,7 @@ export class VectorStore implements IMemoryStore {
       //
       // 背景：v2 默认走 `simple` tokenizer，unicode61 也不行（两者都把 CJK
       //   连续字符当作单 token）。最后选定 `trigram` tokenizer：按 3-gram
-      //   切词，在 sarosis local-first （无中文分词库）这种场景下是唯一能
+      //   切词，在 saros local-first （无中文分词库）这种场景下是唯一能
       //   让 "GM代码" / "空投" / "S1GameCheatExtension" 全部召回的方案。
       //
       // FTS5 把 tokenizer 选项写在 sqlite_master 的 sql 文本里，正则探测最稳。

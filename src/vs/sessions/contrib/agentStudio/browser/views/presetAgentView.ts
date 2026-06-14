@@ -2070,7 +2070,7 @@ export class PresetAgentViewPane extends ViewPane {
 	// ── Custom Preset CRUD ───────────────────────────────────────────────────
 
 	private async _loadCustomPresets(): Promise<void> {
-		// Strategy: Try file system first (`.sarosis/presets/presets.json`),
+		// Strategy: Try file system first (`.saros/presets/presets.json`),
 		// then fall back to localStorage for migration, then empty.
 		try {
 			const presetsUri = this._getCustomPresetsUri();
@@ -2132,12 +2132,12 @@ export class PresetAgentViewPane extends ViewPane {
 	}
 
 	/**
-	 * Resolve the custom presets file URI: `.sarosis/presets/presets.json`
+	 * Resolve the custom presets file URI: `.saros/presets/presets.json`
 	 */
 	private _getCustomPresetsUri(): URI | undefined {
 		const folders = this.workspaceContextService.getWorkspace().folders;
 		if (folders.length === 0) { return undefined; }
-		return URI.joinPath(folders[0].uri, '.sarosis', 'presets', 'presets.json');
+		return URI.joinPath(folders[0].uri, '.saros', 'presets', 'presets.json');
 	}
 
 	private _logPresets(source: string): void {

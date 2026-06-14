@@ -5,7 +5,7 @@
 ## 文件清单
 
 ```
-.sarosisworkspace/
+.sarosworkspace/
 └── agents/
     └── researcher-nlmniq3/
         ├── agent.yaml          # 包含 configMd 配置块

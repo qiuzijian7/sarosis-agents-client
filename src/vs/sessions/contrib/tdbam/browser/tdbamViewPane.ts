@@ -24,7 +24,7 @@ import { IAgentDriverService, AgentTurnStatus } from '../../agentStudio/common/a
 import { IAgentStudioService } from '../../agentStudio/common/agentStudio.js';
 
 /**
- * TDB-AM Memory ViewPane — 在 sarosis sidebar 中显示 L0/L1/L2/L3 四层记忆。
+ * TDB-AM Memory ViewPane — 在 saros sidebar 中显示 L0/L1/L2/L3 四层记忆。
  *
  * 数据通路：
  *   ViewPane --(HTTP)--> http://127.0.0.1:<tdbam.gatewayPort>/...
@@ -1185,7 +1185,7 @@ export class TdbamViewPane extends ViewPane {
 	 *   1. `e.stopPropagation()` so the click doesn't toggle the parent
 	 *      `<details>` open/close state.
 	 *   2. Confirmation dialog via IDialogService (matches the rest of
-	 *      sarosis' UX — see skillsView.ts for the precedent).
+	 *      saros' UX — see skillsView.ts for the precedent).
 	 *   3. Run the supplied `onConfirm`. On success, hide the row instantly
 	 *      (optimistic update) and trigger a layer refresh so totals match.
 	 *      On failure, leave the row intact and surface a notification.

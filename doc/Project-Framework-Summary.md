@@ -40,7 +40,7 @@
 {
   "name": "code-oss-dev",
   "version": "1.120.0",
-  "publisher": "sarosis-agents",
+  "publisher": "saros-agents",
   "description": "Sarosis Agents Client - AI Agent Development Platform",
   "engines": {
     "vscode": "^1.120.0"
@@ -198,7 +198,7 @@ Sarosis Agents Client 在 VS Code 原有三层架构基础上，创新性地引�
 ### 3.1 目录结构概览
 
 ```
-sarosis-agents-client/
+saros-agents-client/
 ├── .agents/                    # Agent 配置
 ├── .codebuddy/                 # CodeBuddy 配置
 ├── .config/                    # 项目配置
@@ -507,7 +507,7 @@ type MemoryCategory =
 ```
 MemoryService (协调 + 路由)
 ├── BuiltinMemoryProvider     # 内置记忆 Provider
-│   ├─ 文件记忆 (~/.sarosis/memories/)
+│   ├─ 文件记忆 (~/.saros/memories/)
 │   ├─ KV 键值对
 │   └─ 基于 SessionStore (FTS5)
 └── ExtensionMemoryProvider   # 扩展记忆 Provider
@@ -579,7 +579,7 @@ extensions/
 │   ├── hermes-agent/            # Hermes Agent
 │   ├── knot-agui/               # Knot GUI
 │   ├── mcp-builder/             # MCP 构建器
-│   ├── sarosis-agent/           # Sarosis Agent
+│   ├── saros-agent/           # Sarosis Agent
 │   ├── skill-creator/           # 技能创建器
 │   └── ...
 │
@@ -683,7 +683,7 @@ Sarosis:
 // 创建智能体团队
 const team = new AgentTeam({
   planner: 'hermes-agent',
-  coder: 'sarosis-agent',
+  coder: 'saros-agent',
   tester: 'test-agent',
   reviewer: 'review-agent'
 });
@@ -895,8 +895,8 @@ MemoryService.syncTurn(sessionId, userMsg, assistantResponse)
 
 ```bash
 # 1. 克隆仓库
-git clone https://git.woa.com/your-team/sarosis-agents-client.git
-cd sarosis-agents-client
+git clone https://git.woa.com/your-team/saros-agents-client.git
+cd saros-agents-client
 
 # 2. 安装依赖
 pnpm install
@@ -913,7 +913,7 @@ pnpm run          # 运行桌面版
 
 ```bash
 # 1. 启动监听
-cd g:\CustomWorkspaces\AIProjects\sarosis-agents-client
+cd g:\CustomWorkspaces\AIProjects\saros-agents-client
 pnpm watch
 
 # 2. 修改文件
@@ -930,7 +930,7 @@ pnpm watch
 
 ```bash
 # 1. 启动 Vite 开发服务器
-cd g:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\workbench\contrib\chat\browser
+cd g:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\workbench\contrib\chat\browser
 pnpm dev
 
 # 2. 修改文件

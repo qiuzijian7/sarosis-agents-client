@@ -518,7 +518,7 @@ export class ContextCompressionService extends Disposable implements IContextCom
 	}
 
 	private _loadConfig(): ICompressionConfig {
-		const config = this.configService.getValue<Partial<ICompressionConfig>>('sarosis.session.compression');
+		const config = this.configService.getValue<Partial<ICompressionConfig>>('saros.session.compression');
 		return {
 			...DEFAULT_COMPRESSION_CONFIG,
 			...config,

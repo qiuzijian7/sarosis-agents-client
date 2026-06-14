@@ -15,7 +15,7 @@ export const ICheckpointService =
  *
  * Browser-layer implementation that persists checkpoint metadata and full file
  * snapshots as JSON via {@link IFileService}, stored under the workspace home
- * directory (`Workspace.path/.sarosisworkspace/checkpoints`). This avoids the
+ * directory (`Workspace.path/.sarosworkspace/checkpoints`). This avoids the
  * cross-process limitation of the old node/SQLite implementation: the webview
  * controller and the builtin tool provider both run in the renderer (browser)
  * process and can inject this service directly through DI.

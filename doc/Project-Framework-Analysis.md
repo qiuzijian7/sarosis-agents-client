@@ -13,7 +13,7 @@
 - [二、架构分层](#二架构分层)
 - [三、源码结构详解](#三源码结构详解)
 - [四、核心系统分析](#四核心系统分析)
-- [五、Sessions 层 — Sarosis 核心创新](#五sessions-层--sarosis-核心创新)
+- [五、Sessions 层 — Sarosis 核心创新](#五sessions-层--saros-核心创新)
 - [六、Agent Studio 四层子架构](#六agent-studio-四层子架构)
 - [七、Workbench Chat 系统](#七workbench-chat-系统)
 - [八、扩展系统](#八扩展系统)
@@ -151,7 +151,7 @@ Sarosis 在 VS Code 分层之上增加了 **Sessions 层**，与 workbench 同�
 ### 3.1 顶层目录
 
 ```
-sarosis-agents-client/
+saros-agents-client/
 ├── src/                     # 主 TypeScript 源码
 │   ├── vs/                 # VS Code 核心源码
 │   ├── typings/            # 类型定义
@@ -689,8 +689,8 @@ Sarosis 扩展了标准 VS Code 扩展 manifest，新增了 `agentCapabilities` 
     ],
     "configuration": {
       "properties": {
-        "sarosis.knot.token": { "type": "string" },
-        "sarosis.knot.endpoint": { "type": "string" }
+        "saros.knot.token": { "type": "string" },
+        "saros.knot.endpoint": { "type": "string" }
       }
     }
   }

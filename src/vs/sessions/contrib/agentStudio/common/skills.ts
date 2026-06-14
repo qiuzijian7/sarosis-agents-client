@@ -18,7 +18,7 @@
  *
  * Skill 来源（按优先级合并，重名后注册的覆盖前者）：
  *   1. 内置目录   `extensions/.../skills/*` （随产品发布）
- *   2. 用户全局目录   `~/.sarosis/skills-library/<id>/SKILL.md`
+ *   2. 用户全局目录   `~/.saros/skills-library/<id>/SKILL.md`
  *   3. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill
  */
 

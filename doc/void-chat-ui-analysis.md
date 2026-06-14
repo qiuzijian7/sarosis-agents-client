@@ -2,7 +2,7 @@
 
 > 分析日期：2026-05-27
 > Void 项目路径：`G:\CustomWorkspaces\AIProjects\void`
-> 本项目路径：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client`
+> 本项目路径：`G:\CustomWorkspaces\AIProjects\saros-agents-client`
 
 ---
 

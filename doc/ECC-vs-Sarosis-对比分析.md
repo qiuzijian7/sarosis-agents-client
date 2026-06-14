@@ -392,7 +392,7 @@ Rust 实现的 ECC 2.0 有独立的 Worktree 模块（`ecc2/src/worktree/`），
 ```typescript
 // 两类根目录
 Workspace {
-    path?: string;              // home/元数据目录（存 .sarosisworkspace）
+    path?: string;              // home/元数据目录（存 .sarosworkspace）
     relatedFolders: RelatedFolder[]; // 真正的代码仓库（多仓库管理核心）
 }
 

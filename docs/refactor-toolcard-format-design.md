@@ -3,7 +3,7 @@
 ## 1. 背景与目标
 
 ### 1.1 当前问题
-- **消息格式不统一**：当前 sarosis 项目消息格式（IModelDelta/IChatStreamDelta/StreamChunk）与 void 项目差异较大
+- **消息格式不统一**：当前 saros 项目消息格式（IModelDelta/IChatStreamDelta/StreamChunk）与 void 项目差异较大
 - **工具卡耦合严重**：ToolCallCard 组件与特定消息格式耦合，难以扩展支持新格式
 - **格式解析分散**：knot-agui 消息格式解析逻辑分散在共享代码中，不利于插件独立维护
 
@@ -54,7 +54,7 @@
 
 ### 2.2 统一消息格式定义
 
-参考 void 项目的 `ChatMessage` 和 `ToolMessage`，定义 sarosis 的统一消息格式：
+参考 void 项目的 `ChatMessage` 和 `ToolMessage`，定义 saros 的统一消息格式：
 
 ```typescript
 // src/vs/sessions/contrib/agentStudio/common/chatTypes.ts
@@ -667,7 +667,7 @@ export class AGUIFormatAdapter implements IFormatAdapter<AGUIMessage[]> {
 ### 8.1 参考资料
 - Void 项目消息格式：`G:\CustomWorkspaces\AIProjects\void\src\vs\workbench\contrib\void\common\sendLLMMessageTypes.ts`
 - Void 项目工具消息：`G:\CustomWorkspaces\AIProjects\void\src\vs\workbench\contrib\void\common\chatThreadServiceTypes.ts`
-- Sarosis 项目当前消息格式：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\sessions\contrib\agentStudio\common\providers.ts`
+- Sarosis 项目当前消息格式：`G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\sessions\contrib\agentStudio\common\providers.ts`
 
 ### 8.2 相关文件清单
 | 文件 | 当前职责 | 重构后职责 |

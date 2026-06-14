@@ -19,7 +19,7 @@
 		"forceConsistentCasingInFileNames": true,
 		"noImplicitAny": false
 	},
-	// sarosis 顶层 gulpfile 流水线（build/lib/tsgo.ts）会扫描这个 tsconfig，
+	// saros 顶层 gulpfile 流水线（build/lib/tsgo.ts）会扫描这个 tsconfig，
 	// 仅包含 src/ 下两个文件（extension.ts / inlineGateway.ts），让 tsgo 在
 	// 1 秒内跑完。vendor/tdbam/** 由 tsconfig.vendor.json 单独编译，
 	// 入口为本扩展的 `npm run compile:vendor`，或顶层 `npm run compile-tdb-am-vendor`

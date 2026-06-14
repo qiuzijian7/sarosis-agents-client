@@ -23,7 +23,7 @@ suite('Agent Instance Service (Phase 4)', () => {
 					name: 'Instance 1',
 					templateId: 'template-1',
 					workspaceId: 'workspace-1',
-					configPath: '.sarosis/agents/instance-1/agent.yaml',
+					configPath: '.saros/agents/instance-1/agent.yaml',
 					createdAt: new Date().toISOString(),
 					updatedAt: new Date().toISOString(),
 					status: 'active',
@@ -48,7 +48,7 @@ suite('Agent Instance Service (Phase 4)', () => {
 				name: `Instance from ${templateId}`,
 				templateId,
 				workspaceId,
-				configPath: `.sarosis/agents/instance-${Date.now()}/agent.yaml`,
+				configPath: `.saros/agents/instance-${Date.now()}/agent.yaml`,
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
 				status: 'active',
@@ -138,7 +138,7 @@ suite('Agent Instance Service (Phase 4)', () => {
 		assert.ok(instance.id.includes('instance-'));
 		assert.strictEqual(instance.templateId, 'template-1');
 		assert.strictEqual(instance.workspaceId, 'workspace-1');
-		assert.ok(instance.configPath.includes('.sarosis/agents/'));
+		assert.ok(instance.configPath.includes('.saros/agents/'));
 		assert.ok(instance.configPath.includes('agent.yaml'));
 		assert.strictEqual(instance.status, 'active');
 	});
@@ -214,7 +214,7 @@ suite('Agent Instance Service (Phase 4)', () => {
 		
 		const instance = await service.createInstanceFromTemplate('template-1', 'workspace-1');
 		
-		assert.ok(instance.configPath.includes('.sarosis/agents/'));
+		assert.ok(instance.configPath.includes('.saros/agents/'));
 		assert.ok(instance.configPath.endsWith('agent.yaml'));
 		assert.ok(instance.configPath.includes(instance.id));
 	});

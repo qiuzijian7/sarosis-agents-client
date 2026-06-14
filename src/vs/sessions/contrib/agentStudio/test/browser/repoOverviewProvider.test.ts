@@ -24,7 +24,7 @@ suite('RepoOverviewProvider - Utility Logic', () => {
 			'vendor', '__pycache__', '.venv', 'venv', 'env', '.env',
 			'target', '.cargo', '.rustup', 'coverage', '.coverage',
 			'.idea', '.vscode', '.vs', 'bin', 'obj', 'Debug', 'Release',
-			'.sarosisworkspace',
+			'.sarosworkspace',
 		]);
 
 		assert.strictEqual(SKIP_DIRS.has('node_modules'), true);
@@ -32,7 +32,7 @@ suite('RepoOverviewProvider - Utility Logic', () => {
 		assert.strictEqual(SKIP_DIRS.has('dist'), true);
 		assert.strictEqual(SKIP_DIRS.has('vendor'), true);
 		assert.strictEqual(SKIP_DIRS.has('__pycache__'), true);
-		assert.strictEqual(SKIP_DIRS.has('.sarosisworkspace'), true);
+		assert.strictEqual(SKIP_DIRS.has('.sarosworkspace'), true);
 		// src should NOT be skipped
 		assert.strictEqual(SKIP_DIRS.has('src'), false);
 		assert.strictEqual(SKIP_DIRS.has('lib'), false);

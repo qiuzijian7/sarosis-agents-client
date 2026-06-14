@@ -17,7 +17,7 @@
 7. [QClaw — 腾讯消费级 Claw 产品](#七qclaw--腾讯消费级-claw-产品)
 8. [综合对比矩阵](#八综合对比矩阵)
 9. [市场痛点总结](#九市场痛点总结)
-10. [Sarosis Agents Client — 我们的解决方案](#十sarosis-agents-client--我们的解决方案)
+10. [Sarosis Agents Client — 我们的解决方案](#十saros-agents-client--我们的解决方案)
 11. [结论与路线图建议](#十一结论与路线图建议)
 
 ---
@@ -540,7 +540,7 @@
 #### 特性 5: 工作区完全隔离
 
 ```
-项目 A (sarosis-agents-client)     项目 B (hermes-agent-studio)
+项目 A (saros-agents-client)     项目 B (hermes-agent-studio)
 ┌────────────────────────┐         ┌────────────────────────┐
 │ Driver 实例 A          │         │ Driver 实例 B          │
 │ OS 实例 A              │         │ OS 实例 B              │
@@ -616,7 +616,7 @@
 | CodeBuddy | copilot.tencent.com / copilot.tencent.com/home/ |
 | Hermes Agent | github.com/NousResearch/hermes-agent |
 | QClaw | (腾讯内部产品) |
-| Sarosis Agents Client | git.tencent.com:zijianqiu/sarosis-agents-client |
+| Sarosis Agents Client | git.tencent.com:zijianqiu/saros-agents-client |
 
 ---
 

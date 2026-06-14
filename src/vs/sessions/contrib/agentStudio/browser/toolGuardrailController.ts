@@ -118,7 +118,7 @@ export interface IToolCallGuardrailConfig {
 
 /**
  * 默认配置 —— 推荐收紧值（适合 IDE 嵌入式 Agent）。
- * 与 sarosis-agents-client 主循环 MAX_TOOL_ITERATIONS=30 对齐；
+ * 与 saros-agents-client 主循环 MAX_TOOL_ITERATIONS=30 对齐；
  * 主动叫停优先于继续尝试，避免上下文越跑越偏。
  */
 export const DEFAULT_GUARDRAIL_CONFIG: IToolCallGuardrailConfig = {

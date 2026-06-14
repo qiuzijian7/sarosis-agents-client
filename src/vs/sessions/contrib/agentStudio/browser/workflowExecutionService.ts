@@ -2253,7 +2253,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	/**
 	 * v32: Save a checkpoint snapshot of the current execution state.
 	 * Checkpoints are saved after each node completes (success or failure)
-	 * to `{workspace}/.sarosisworkspace/checkpoints/{executionId}.json`.
+	 * to `{workspace}/.sarosworkspace/checkpoints/{executionId}.json`.
 	 * This enables resumption from the last checkpoint after a crash.
 	 */
 		private async _saveCheckpoint(executionState: IWorkflowExecutionState): Promise<void> {
@@ -2293,7 +2293,7 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			if (activeWorkspace?.path) {
 				const checkpointsDir = URI.joinPath(
 					URI.file(activeWorkspace.path),
-					'.sarosisworkspace',
+					'.sarosworkspace',
 					'checkpoints',
 				);
 				await this.fileService.createFolder(checkpointsDir);

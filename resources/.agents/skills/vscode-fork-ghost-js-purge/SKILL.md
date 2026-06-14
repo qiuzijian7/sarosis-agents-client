@@ -1,6 +1,6 @@
 ---
 name: vscode-fork-ghost-js-purge
-description: 排查并修复 sarosis-agents-client（VSCode fork）因 src 混入幽灵 .js 导致 out 产物 const enum 缺命名导出、F5/启动时 ESM 抛 "does not provide an export named X" 主进程崩溃的问题。当出现 ESM SyntaxError "does not provide an export named"、崩在 ModuleJob._instantiate 或 startup/onReady、F5 启动几秒后进程消失不弹窗、或怀疑 out 产物里 const enum 被内联无导出时使用。
+description: 排查并修复 saros-agents-client（VSCode fork）因 src 混入幽灵 .js 导致 out 产物 const enum 缺命名导出、F5/启动时 ESM 抛 "does not provide an export named X" 主进程崩溃的问题。当出现 ESM SyntaxError "does not provide an export named"、崩在 ModuleJob._instantiate 或 startup/onReady、F5 启动几秒后进程消失不弹窗、或怀疑 out 产物里 const enum 被内联无导出时使用。
 agent_created: true
 ---
 

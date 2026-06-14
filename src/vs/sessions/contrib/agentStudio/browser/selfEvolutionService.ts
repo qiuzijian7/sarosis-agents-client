@@ -13,7 +13,7 @@
  * - 提供记录查询接口给 UI (EvolutionViewPane / EvolutionDetailEditorPane)
  *
  * 存储结构：
- *   <userRoamingDataHome>/sarosis/evolution/
+ *   <userRoamingDataHome>/saros/evolution/
  *     records.json          — 全局进化记录
  *     configs/
  *       <agentId>.json      — 每个 agent 的进化配置
@@ -67,7 +67,7 @@ export class SelfEvolutionService extends Disposable implements ISelfEvolutionSe
 		super();
 
 		// Use userRoamingDataHome for cross-workspace persistence
-		this._evolutionDir = URI.joinPath(this.environmentService.userRoamingDataHome, 'sarosis', 'evolution');
+		this._evolutionDir = URI.joinPath(this.environmentService.userRoamingDataHome, 'saros', 'evolution');
 		this._recordsFile = URI.joinPath(this._evolutionDir, 'records.json');
 
 		// Load on construction

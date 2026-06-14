@@ -36,7 +36,7 @@ interface IRoutedTool {
 
 export class McpToolProvider extends Disposable implements IToolProvider {
 
-	readonly id: string = 'sarosis.mcp-tools';
+	readonly id: string = 'saros.mcp-tools';
 	readonly name: string = 'MCP Tools';
 
 	private readonly _routes = new Map<string, IRoutedTool>();

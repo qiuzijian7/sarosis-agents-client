@@ -31,7 +31,7 @@ import {
 	separateSystemMessage,
 	getExtensionVersion,
 	fetchWithRetry,
-} from '@sarosis/shared';
+} from '@saros/shared';
 import { CodeBuddyAuth } from './auth';
 
 // ── Compile-time macro switches ───────────────────────────────────────────────
@@ -64,7 +64,7 @@ function extractTenantIdFromIss(iss: string): string | undefined {
 }
 
 const VENDOR = 'codebuddy';
-const EXTENSION_ID = 'sarosis.sarosis-codebuddy-provider';
+const EXTENSION_ID = 'saros.saros-codebuddy-provider';
 
 /**
  * Reasoning/thinking config forwarded from the host bridge through
@@ -1146,7 +1146,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			// src/vs/sessions/contrib/agentStudio/browser/languageModelsBridge.ts.
 			if (event.usage && typeof event.usage === 'object') {
 				progress.report(
-					vscode.LanguageModelDataPart.json(event.usage, 'application/vnd.sarosis.usage+json'),
+					vscode.LanguageModelDataPart.json(event.usage, 'application/vnd.saros.usage+json'),
 				);
 				// do not return — the usage chunk may have no choices; fall through to the
 				// choices guard which will no-op when choices is empty.

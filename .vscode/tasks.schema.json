@@ -1,7 +1,7 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"title": "sarosis tasks.json",
-	"description": "Permissive schema for the sarosis fork. Same shape as the built-in VS Code tasks schema, but allows additional fields used by the fork (e.g. `inAgents` consumed by sessionsTasksService) and a wider problemMatcher set ($tsgo-watch, $tsc-watch, ...).",
+	"title": "saros tasks.json",
+	"description": "Permissive schema for the saros fork. Same shape as the built-in VS Code tasks schema, but allows additional fields used by the fork (e.g. `inAgents` consumed by sessionsTasksService) and a wider problemMatcher set ($tsgo-watch, $tsc-watch, ...).",
 	"type": "object",
 	"properties": {
 		"version": {
@@ -99,7 +99,7 @@
 
 					"inAgents": {
 						"type": "boolean",
-						"description": "sarosis fork: when true, this task is exposed to the Agents run button (consumed by sessionsTasksService)."
+						"description": "saros fork: when true, this task is exposed to the Agents run button (consumed by sessionsTasksService)."
 					}
 				}
 			}

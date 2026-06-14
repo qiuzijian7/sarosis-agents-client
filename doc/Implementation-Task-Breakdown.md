@@ -311,7 +311,7 @@ rollback: <回滚方案>         # 仅高风险任务必填
 1. 定义 schema 版本字段（在所有持久化文件第一行 `# version: 2`）
 2. 实现 `migrationRunner.ts` — 启动时自动执行 pending 迁移
 3. 编写 v1→v2 迁移脚本（旧 JSON config → 新 YAML/分目录结构）
-4. 实现 dry-run 模式 + 备份机制（迁移前 zip 旧数据到 `.sarosis/backup/<timestamp>/`）
+4. 实现 dry-run 模式 + 备份机制（迁移前 zip 旧数据到 `.saros/backup/<timestamp>/`）
 5. 实现 `rollback` 命令（恢复指定备份）
 
 **验收**:
@@ -320,7 +320,7 @@ rollback: <回滚方案>         # 仅高风险任务必填
 - [ ] rollback 命令可恢复任意备份点
 - [ ] 迁移失败时自动回滚 + 错误报告
 
-**Rollback**: 备份目录可手动复制回原位置，或通过 `sarosis.rollbackMigration` 命令
+**Rollback**: 备份目录可手动复制回原位置，或通过 `saros.rollbackMigration` 命令
 
 ---
 
@@ -452,7 +452,7 @@ rollback: <回滚方案>         # 仅高风险任务必填
 1. 将 `executeAgentTurn()` / `_executeWithFallback()` 迁移到 Driver
 2. OS 仅保留 register/unregister/getActive
 3. 添加 `onDidChangeCapabilities` 事件
-4. 提供 OS 与 Driver 的并行兼容期：feature flag `sarosis.driver.enabled`
+4. 提供 OS 与 Driver 的并行兼容期：feature flag `saros.driver.enabled`
 
 **验收**:
 - [ ] OS 无 LLM 调用
@@ -684,7 +684,7 @@ rollback: <回滚方案>         # 仅高风险任务必填
 1. 路径白名单（默认仅工作区目录可读写）
 2. 资源限制（CPU、内存、超时、子进程数）
 3. 危险工具二次确认（删除、网络、系统命令）
-4. 审计日志（所有工具调用记录到 `.sarosis/audit.log`）
+4. 审计日志（所有工具调用记录到 `.saros/audit.log`）
 
 **验收**:
 - [ ] 越界路径访问被拒绝

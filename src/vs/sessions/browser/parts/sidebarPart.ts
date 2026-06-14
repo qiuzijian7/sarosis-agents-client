@@ -32,7 +32,7 @@ import { Separator } from '../../../base/common/actions.js';
 import { IHoverService } from '../../../platform/hover/browser/hover.js';
 import { Extensions } from '../../../workbench/browser/panecomposite.js';
 import { Menus } from '../menus.js';
-import { $, append, getWindowId, prepend } from '../../../base/browser/dom.js';
+import { $, append, addDisposableListener, EventType, getWindowId, prepend } from '../../../base/browser/dom.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../platform/actions/browser/toolbar.js';
 import { isFullscreen, onDidChangeFullscreen } from '../../../base/browser/browser.js';
 import { mainWindow } from '../../../base/browser/window.js';
@@ -41,6 +41,11 @@ import { hasNativeTitlebar, getTitleBarStyle } from '../../../platform/window/co
 import { isMacintosh, isNative } from '../../../base/common/platform.js';
 import { Emitter } from '../../../base/common/event.js';
 import { SidebarContentVisibleContext } from '../../common/contextkeys.js';
+import { IProductService } from '../../../platform/product/common/productService.js';
+import { AgentStudioWorkspaceToolbar } from '../../contrib/agentStudio/browser/agentStudioWorkspaceToolbar.js';
+import { IAgentStudioService } from '../../contrib/agentStudio/common/agentStudio.js';
+import { IFileDialogService } from '../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../platform/files/common/files.js';
 
 /** CSS class names for sidebar content collapsed/expanded states */
 const SIDEBAR_CONTENT_COLLAPSED_CLASS = 'sidebar-content-collapsed';
@@ -175,6 +180,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// Apply initial collapsed state CSS class
 		parent.classList.add(SIDEBAR_CONTENT_COLLAPSED_CLASS);
 
+		this.createSidebarToolbar(parent);
 		this.createFooter(parent);
 	}
 
@@ -255,6 +261,98 @@ export class SidebarPart extends AbstractPaneCompositePart {
 
 		// Fire event so the workbench can resize the grid
 		this._onDidChangeContentCollapsed.fire(collapsed);
+	}
+
+	/**
+	 * Create the sidebar toolbar — a horizontal bar above the sidebar content.
+	 * Contains: collapse/expand button, version label, workspace selector.
+	 * These were previously in the titlebar; moving them here gives a cleaner
+	 * separation: titlebar = window-level, sidebar toolbar = sidebar-level.
+	 */
+	private createSidebarToolbar(parent: HTMLElement): void {
+		const toolbar = prepend(parent, $('div.sidebar-toolbar'));
+
+		// ── 1. Collapse/Expand button ──
+		const toggleBtn = append(toolbar, $('button.sidebar-toolbar-toggle'));
+		toggleBtn.setAttribute('aria-label', 'Toggle Sidebar Content');
+		toggleBtn.title = 'Toggle Sidebar Content';
+
+		// Use codicon classes for native VS Code sidebar icon
+		const toggleIcon = append(toggleBtn, $('span.codicon'));
+		toggleIcon.style.fontSize = '14px';
+		toggleIcon.style.lineHeight = '1';
+
+		const updateToggleIcon = (collapsed: boolean) => {
+			toggleIcon.className = 'codicon ' + (collapsed ? 'codicon-layout-sidebar-left-off' : 'codicon-layout-sidebar-left');
+		};
+
+		this._register(addDisposableListener(toggleBtn, EventType.CLICK, () => {
+			// Toggle via layoutService to get the full expand/collapse behavior
+			// (including viewlet restoration when expanding).
+			const isContentVisible = !this._contentCollapsed;
+			this.layoutService.setPartHidden(isContentVisible, Parts.SIDEBAR_PART);
+		}));
+
+		// Set initial icon based on current collapsed state
+		updateToggleIcon(this._contentCollapsed);
+
+		// Update icon when content collapsed state changes
+		this._register(this.onDidChangeContentCollapsed(collapsed => {
+			updateToggleIcon(collapsed);
+		}));
+
+		// ── 2. Version label ──
+		const versionLabel = append(toolbar, $('span.sidebar-toolbar-version'));
+		let version = '';
+		let nameLong = 'VsSaros';
+		try {
+			const productService = this.instantiationService.invokeFunction(accessor => accessor.get(IProductService));
+			version = productService.version || '';
+			nameLong = productService.nameLong || 'VsSaros';
+		} catch { /* product service not available yet */ }
+		versionLabel.textContent = version ? `v${version}` : '';
+		versionLabel.title = `${nameLong} v${version}`;
+
+		// ── 3. Workspace selector ──
+		this._createWorkspaceToolbar(toolbar);
+	}
+
+	/**
+	 * Create workspace selector inside the sidebar toolbar.
+	 * Reuses the same AgentStudioWorkspaceToolbar component that was
+	 * previously in the titlebar, with the same 'titlebar' variant.
+	 */
+	private _createWorkspaceToolbar(toolbar: HTMLElement): void {
+		const container = append(toolbar, $('div.sidebar-toolbar-workspace'));
+		const wsToolbar = this._register(new AgentStudioWorkspaceToolbar(container, {
+			variant: 'titlebar',
+			showBadge: false,
+			insertMode: 'append',
+		}));
+
+		const connectService = () => {
+			try {
+				const agentStudioService = this.instantiationService.invokeFunction(accessor => accessor.get(IAgentStudioService));
+				wsToolbar.connectService(agentStudioService);
+			} catch { setTimeout(connectService, 2000); }
+		};
+		connectService();
+
+		const connectFileDialog = () => {
+			try {
+				const fileDialogService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileDialogService));
+				wsToolbar.connectFileDialogService(fileDialogService);
+			} catch { setTimeout(connectFileDialog, 2000); }
+		};
+		connectFileDialog();
+
+		const connectFileSvc = () => {
+			try {
+				const fileService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileService));
+				wsToolbar.connectFileService(fileService);
+			} catch { setTimeout(connectFileSvc, 2000); }
+		};
+		connectFileSvc();
 	}
 
 	private createFooter(parent: HTMLElement): void {

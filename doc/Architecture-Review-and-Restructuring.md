@@ -243,7 +243,7 @@ Phase 2 ───────────────────────┬
 | `sessions/contrib/agentStudio/browser/workspaceRegistryService.ts` | 注册表实现 |
 | `sessions/contrib/agentStudio/browser/agentInstanceService.ts` | 实例化实现 |
 | `sessions/contrib/agentStudio/browser/agentGalleryService.ts` | Gallery 实现 |
-| `.sarosis/agents/{id}/agent.yaml` | Agent 实例配置（模板） |
+| `.saros/agents/{id}/agent.yaml` | Agent 实例配置（模板） |
 | WebView: `features/gallery/` | Agent Gallery 面板 |
 
 **验证标准**：
@@ -252,7 +252,7 @@ Phase 2 ───────────────────────┬
 - ✅ Gallery 面板可展示预设模板
 - ✅ 拖拽模板到工作区创建实例，目录结构正确
 - ✅ 删除实例清理目录
-- ✅ `.sarosis/agents/` 目录结构与 OpenClaw 兼容
+- ✅ `.saros/agents/` 目录结构与 OpenClaw 兼容
 
 ---
 

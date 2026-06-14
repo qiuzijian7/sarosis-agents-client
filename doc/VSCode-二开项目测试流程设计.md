@@ -1,6 +1,6 @@
 # VSCode 源码二开项目测试流程设计
 
-> 基于 sarosis-agents-client（VS Code 1.120.0 fork）实际项目调研撰写，适用于所有 VSCode 二次开发项目。
+> 基于 saros-agents-client（VS Code 1.120.0 fork）实际项目调研撰写，适用于所有 VSCode 二次开发项目。
 
 ---
 
@@ -124,7 +124,7 @@ strategy:
 
 ---
 
-## 三、项目（sarosis-agents-client）的测试现状
+## 三、项目（saros-agents-client）的测试现状
 
 ### 已覆盖的部分 ✅
 

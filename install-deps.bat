@@ -5,7 +5,7 @@ REM --- 强制切到 UTF-8 代码页（脚本以 UTF-8 编码保存，确保无�
 chcp 65001 >nul
 
 REM ============================================================================
-REM  sarosis-agents-client Windows 一键安装脚本
+REM  saros-agents-client Windows 一键安装脚本
 REM  -----------------------------------------------------------------
 REM  必须从 "x64 Native Tools Command Prompt for VS 2022" 启动
 REM  (开始菜单 -> Visual Studio 2022 -> x64 Native Tools Command Prompt for VS 2022)

@@ -53,7 +53,7 @@ class TdbamSidebarContribution extends Disposable implements IWorkbenchContribut
 		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
 
 		// Register the sidebar ViewContainer (this creates the activity-bar icon
-		// inside sarosis SidebarPart, which monitors ViewContainerLocation.Sidebar).
+		// inside saros SidebarPart, which monitors ViewContainerLocation.Sidebar).
 		const container = viewContainerRegistry.registerViewContainer({
 			id: TDBAM_VIEW_CONTAINER_ID,
 			title: localize2('tdbam.title', 'TDB-AM 记忆'),

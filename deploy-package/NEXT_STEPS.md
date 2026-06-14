@@ -3,7 +3,7 @@
 ## 🎉 已完成的工作
 
 ### 1. ✅ 构建完成
-- **安装包**: `G:\CustomWorkspaces\AIProjects\sarosis-agents-client\.build\win32-x64\user-setup\VsSarosisUserSetup.exe`
+- **安装包**: `G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-setup\VsSarosisUserSetup.exe`
 - **大小**: 158.25 MB
 - **SHA256**: `3369FEE8E9E7209946EA19F556261632EB23BDC1097D2A7DC54EC20B72F52595`
 - **Git Commit**: `d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3`
@@ -27,7 +27,7 @@
 
 ```bash
 # 方式 1: 使用 SCP (Linux服务器)
-scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssarosis-update/
+scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssaros-update/
 
 # 方式 2: 先压缩再上传（如果SCP慢）
 # 在本地压缩
@@ -42,16 +42,16 @@ Compress-Archive -Path deploy-package\update-server -DestinationPath update-serv
 ssh root@21.91.41.66
 
 # 进入目录
-cd /opt/vssarosis-update/update-server
+cd /opt/vssaros-update/update-server
 
 # 安装 PM2 (如果未安装)
 npm install -g pm2
 
 # 启动更新服务器
-PORT=3030 pm2 start server.mjs --name vssarosis-update
+PORT=3030 pm2 start server.mjs --name vssaros-update
 
 # 查看日志确认启动成功
-pm2 logs vssarosis-update
+pm2 logs vssaros-update
 
 # 测试服务
 curl http://localhost:3030/health
@@ -59,7 +59,7 @@ curl http://localhost:3030/health
 
 **预期响应**:
 ```json
-{"ok":true,"service":"vssarosis-update-server","mode":"manifest"}
+{"ok":true,"service":"vssaros-update-server","mode":"manifest"}
 ```
 
 #### A3. 配置防火墙
@@ -79,10 +79,10 @@ curl http://21.91.41.66:3030/health
 
 ```bash
 # 在服务器上创建 downloads 目录
-ssh root@21.91.41.66 "mkdir -p /opt/vssarosis-update/downloads"
+ssh root@21.91.41.66 "mkdir -p /opt/vssaros-update/downloads"
 
 # 上传安装包
-scp "G:\CustomWorkspaces\AIProjects\sarosis-agents-client\.build\win32-x64\user-setup\VsSarosisUserSetup.exe" root@21.91.41.66:/opt/vssarosis-update/downloads/VsSarosisUserSetup.exe
+scp "G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-setup\VsSarosisUserSetup.exe" root@21.91.41.66:/opt/vssaros-update/downloads/VsSarosisUserSetup.exe
 ```
 
 #### A5. 验证部署
@@ -91,7 +91,7 @@ scp "G:\CustomWorkspaces\AIProjects\sarosis-agents-client\.build\win32-x64\user-
 
 ```bash
 # 测试更新 API
-curl "http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/0000000000000000000000000000000000000000"
+curl "http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000"
 ```
 
 **预期响应**:
@@ -141,10 +141,10 @@ curl "http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/0000000000000000
 
 ## 📋 部署检查清单
 
-- [ ] 更新服务器代码已上传到 `21.91.41.66:/opt/vssarosis-update/`
+- [ ] 更新服务器代码已上传到 `21.91.41.66:/opt/vssaros-update/`
 - [ ] 更新服务器已启动 (PM2 或 node)
 - [ ] 端口 3030 已开放防火墙
-- [ ] 安装包已上传到 `/opt/vssarosis-update/downloads/`
+- [ ] 安装包已上传到 `/opt/vssaros-update/downloads/`
 - [ ] `manifest.json` 已更新（已完成，在 `deploy-package/update-server/`）
 - [ ] 更新服务器 API 测试通过 (`/health` 和 `/api/update/...`)
 - [ ] 客户端可以访问更新服务器
@@ -160,10 +160,10 @@ curl "http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/0000000000000000
 netstat -tlnp | grep 3030
 
 # 查看 PM2 日志
-pm2 logs vssarosis-update
+pm2 logs vssaros-update
 
 # 手动启动测试
-cd /opt/vssarosis-update/update-server
+cd /opt/vssaros-update/update-server
 node server.mjs
 ```
 
@@ -183,7 +183,7 @@ firewall-cmd --list-ports
 
 ### manifest.json 配置错误
 
-检查 `/opt/vssarosis-update/update-server/manifest.json`:
+检查 `/opt/vssaros-update/update-server/manifest.json`:
 - `version` 必须是完整的 40 位 git commit sha
 - `url` 必须可访问（测试: `curl <url>`）
 - `sha256hash` 必须匹配安装包的 SHA256
@@ -203,7 +203,7 @@ firewall-cmd --list-ports
 部署成功后，你应该能够：
 
 1. **访问更新服务器**: http://21.91.41.66:3030/health
-2. **查看更新 API 响应**: http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/0000000000000000000000000000000000000000
+2. **查看更新 API 响应**: http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
 3. **安装客户端并测试更新**: 安装 `VsSarosisUserSetup.exe`，打开 VS Code，等待更新检测
 
 ---

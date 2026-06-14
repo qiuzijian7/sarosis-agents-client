@@ -1,6 +1,6 @@
 # Kanban 看板系统对比与优化建议
 
-> 基于 Hermes-Agent (`G:\CustomWorkspaces\AIProjects\Hermes-Agent`) 与本项目 (`sarosis-agents-client`) 看板架构的深度对比分析
+> 基于 Hermes-Agent (`G:\CustomWorkspaces\AIProjects\Hermes-Agent`) 与本项目 (`saros-agents-client`) 看板架构的深度对比分析
 
 ## 一、架构总览对比
 

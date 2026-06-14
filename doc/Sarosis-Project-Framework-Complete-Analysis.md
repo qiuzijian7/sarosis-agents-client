@@ -15,7 +15,7 @@
 4. [四层架构设计](#4-四层架构设计)
 5. [核心模块详解](#5-核心模块详解)
 6. [扩展系统分析](#6-扩展系统分析)
-7. [Sarosis 创新特性](#7-sarosis-创新特性)
+7. [Sarosis 创新特性](#7-saros-创新特性)
 8. [开发工作流](#8-开发工作流)
 9. [部署与构建](#9-部署与构建)
 10. [总结与展望](#10-总结与展望)
@@ -40,7 +40,7 @@
 {
   "name": "code-oss-dev",
   "version": "1.120.0",
-  "publisher": "sarosis-agents",
+  "publisher": "saros-agents",
   "engines": {
     "vscode": "^1.120.0"
   }
@@ -110,7 +110,7 @@
 ### 3.1 根目录结构
 
 ```
-sarosis-agents-client/
+saros-agents-client/
 ├── .agents/                    # Agent 配置
 ├── .codebuddy/                 # CodeBuddy 配置
 ├── .config/                    # 项目配置
@@ -467,7 +467,7 @@ extensions/
 │   ├── hermes-agent/            # Hermes Agent ⭐
 │   ├── knot-agui/               # Knot GUI ⭐
 │   ├── mcp-builder/             # MCP 构建器 ⭐
-│   ├── sarosis-agent/           # Sarosis Agent ⭐
+│   ├── saros-agent/           # Sarosis Agent ⭐
 │   ├── skill-creator/           # 技能创建器 ⭐
 │   └── ...
 │
@@ -588,7 +588,7 @@ Sarosis:
 // 创建智能体团队
 const team = new AgentTeam({
   planner: 'hermes-agent',
-  coder: 'sarosis-agent',
+  coder: 'saros-agent',
   tester: 'test-agent',
   reviewer: 'review-agent'
 });
@@ -675,8 +675,8 @@ const result = await skill.execute({
 
 ```bash
 # 1. 克隆仓库
-git clone https://git.woa.com/your-team/sarosis-agents-client.git
-cd sarosis-agents-client
+git clone https://git.woa.com/your-team/saros-agents-client.git
+cd saros-agents-client
 
 # 2. 安装依赖
 pnpm install
@@ -695,7 +695,7 @@ pnpm run          # 运行桌面版
 
 ```bash
 # 1. 启动监听
-cd g:\CustomWorkspaces\AIProjects\sarosis-agents-client
+cd g:\CustomWorkspaces\AIProjects\saros-agents-client
 pnpm watch
 
 # 2. 修改文件
@@ -712,7 +712,7 @@ pnpm watch
 
 ```bash
 # 1. 启动 Vite 开发服务器
-cd g:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\workbench\contrib\chat\browser
+cd g:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\workbench\contrib\chat\browser
 pnpm dev
 
 # 2. 修改文件

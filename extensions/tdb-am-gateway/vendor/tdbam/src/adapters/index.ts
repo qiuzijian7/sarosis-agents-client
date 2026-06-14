@@ -1,12 +1,12 @@
 /**
  * TDAI Adapters — barrel re-export for host adapter implementations.
  *
- * sarosis 本地化构建中只保留 standalone 适配器（OpenClaw 适配器已剔除）。
+ * saros 本地化构建中只保留 standalone 适配器（OpenClaw 适配器已剔除）。
  * 详见 vendor/tdbam/COPY_MANIFEST.md 第 2 节。
  *
  * Directory structure:
  *   adapters/
- *   └── standalone/    — Gateway / sarosis sidecar (HTTP, OpenAI-compatible API)
+ *   └── standalone/    — Gateway / saros sidecar (HTTP, OpenAI-compatible API)
  */
 
 // Standalone adapter

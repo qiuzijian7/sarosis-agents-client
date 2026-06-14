@@ -1,15 +1,15 @@
 /**
- * Embedding Service — STUB ONLY (sarosis local-first build).
+ * Embedding Service — STUB ONLY (saros local-first build).
  *
- * 本文件是 sarosis 本地化构建里 EmbeddingService 的"占位定义"。
- * 上游 TDB-AM 在此提供 OpenAI / 自托管 embedding 客户端，sarosis 按 Q7 决策：
+ * 本文件是 saros 本地化构建里 EmbeddingService 的"占位定义"。
+ * 上游 TDB-AM 在此提供 OpenAI / 自托管 embedding 客户端，saros 按 Q7 决策：
  *   - 关闭向量召回，只走 FTS5 + 同义词 + 标签 + LLM 检索器
  *   - 因此真实 embedding 实现已在复制时剔除
  *
  * 本文件保留的目的：
  *   - 满足 8 处 `import type { EmbeddingService }` 的类型导入
  *   - 满足 vendor 内的方法调用面（embed / embedBatch / getDimensions / getProviderInfo / embedQuery）
- *   - 任何运行时调用 NoopEmbeddingService 的方法都会抛出，提示开发者：sarosis 不该走向量路径
+ *   - 任何运行时调用 NoopEmbeddingService 的方法都会抛出，提示开发者：saros 不该走向量路径
  *
  * 未来若要接入第三方 mem 向量插件，可在此处恢复完整实现，并在 factory.ts 启用。
  */
@@ -25,7 +25,7 @@ export interface EmbeddingCallOptions {
  * Provider 元信息 —— 用于 sqlite.ts 在 init() 时检测 embedding provider/model
  * 是否变更（变更则需要 reindex）。
  *
- * 上游版本可能还包含 baseUrl / apiKey 字段；sarosis 关闭向量后这些都不需要。
+ * 上游版本可能还包含 baseUrl / apiKey 字段；saros 关闭向量后这些都不需要。
  */
 export interface EmbeddingProviderInfo {
 	provider: string;
@@ -35,7 +35,7 @@ export interface EmbeddingProviderInfo {
 
 /**
  * EmbeddingService —— 类型契约。
- * sarosis 本地化构建中没有实例会真正实现这个接口（除 NoopEmbeddingService 外）。
+ * saros 本地化构建中没有实例会真正实现这个接口（除 NoopEmbeddingService 外）。
  */
 export interface EmbeddingService {
 	/** Vector dimensions (used for vec0 schema). 0 = vector path disabled. */
@@ -82,25 +82,25 @@ export class NoopEmbeddingService implements EmbeddingService {
 	}
 
 	startWarmup(): void {
-		/* intentionally no-op in sarosis local-first build */
+		/* intentionally no-op in saros local-first build */
 	}
 
 	async embed(_text: string, _opts?: EmbeddingCallOptions): Promise<Float32Array> {
 		throw new Error(
-			"[memory-tdai][embedding] NoopEmbeddingService.embed() called — vector recall is disabled in sarosis build. " +
+			"[memory-tdai][embedding] NoopEmbeddingService.embed() called — vector recall is disabled in saros build. " +
 			"Use FTS5 / synonym / tag / LLM retriever paths instead.",
 		);
 	}
 
 	async embedBatch(_texts: string[], _opts?: EmbeddingCallOptions): Promise<Float32Array[]> {
 		throw new Error(
-			"[memory-tdai][embedding] NoopEmbeddingService.embedBatch() called — vector recall is disabled in sarosis build.",
+			"[memory-tdai][embedding] NoopEmbeddingService.embedBatch() called — vector recall is disabled in saros build.",
 		);
 	}
 
 	async embedQuery(_text: string, _opts?: EmbeddingCallOptions): Promise<Float32Array> {
 		throw new Error(
-			"[memory-tdai][embedding] NoopEmbeddingService.embedQuery() called — vector recall is disabled in sarosis build.",
+			"[memory-tdai][embedding] NoopEmbeddingService.embedQuery() called — vector recall is disabled in saros build.",
 		);
 	}
 
@@ -112,7 +112,7 @@ export class NoopEmbeddingService implements EmbeddingService {
 /**
  * createEmbeddingService — STUB.
  *
- * sarosis 本地化构建不真正创建 embedding service。该函数保留以兼容 factory 旧签名，
+ * saros 本地化构建不真正创建 embedding service。该函数保留以兼容 factory 旧签名，
  * 任何调用都会抛错以暴露"误启用向量路径"的代码缺陷。
  */
 export interface EmbeddingServiceConfig {
@@ -129,7 +129,7 @@ export function createEmbeddingService(
 	_logger?: { warn?: (msg: string) => void; debug?: (msg: string) => void },
 ): EmbeddingService {
 	throw new Error(
-		"[memory-tdai][embedding] createEmbeddingService() is disabled in sarosis local-first build. " +
+		"[memory-tdai][embedding] createEmbeddingService() is disabled in saros local-first build. " +
 		"Vector recall has been removed (Q7=A). To re-enable, restore the upstream embedding.ts " +
 		"and update factory.ts accordingly.",
 	);

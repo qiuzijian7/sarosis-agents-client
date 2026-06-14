@@ -1183,7 +1183,7 @@ export class MemoryPipelineManager {
 
   /**
    * 立即触发指定 session 的 L2 蒸馏（不等待定时器）。
-   * 用于 gateway POST /distill/l2 端点，由 sarosis 侧定时器或 session 结束事件调用。
+   * 用于 gateway POST /distill/l2 端点，由 saros 侧定时器或 session 结束事件调用。
    */
   forceL2(sessionKey: string): void {
     if (this.destroyed) return;
@@ -1217,7 +1217,7 @@ export class MemoryPipelineManager {
 
   /**
    * 立即触发全局 L3 画像蒸馏（不等待 L2 完成）。
-   * 用于 gateway POST /distill/l3 端点，由 sarosis 侧定时器调用。
+   * 用于 gateway POST /distill/l3 端点，由 saros 侧定时器调用。
    */
   forceL3(): void {
     if (this.destroyed) return;

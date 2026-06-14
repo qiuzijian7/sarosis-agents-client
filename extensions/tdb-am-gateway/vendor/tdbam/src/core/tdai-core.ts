@@ -379,7 +379,7 @@ export class TdaiCore {
 
   /**
    * 立即触发指定 session 的 L2 场景蒸馏（不等待内部定时器）。
-   * 由 gateway POST /distill/l2 端点调用，sarosis 侧在 session 结束或定时器触发时调用。
+   * 由 gateway POST /distill/l2 端点调用，saros 侧在 session 结束或定时器触发时调用。
    */
   async triggerDistillL2(sessionKey: string): Promise<void> {
     if (!sessionKey) return;
@@ -392,7 +392,7 @@ export class TdaiCore {
 
   /**
    * 立即触发全局 L3 画像蒸馏（不等待 L2 完成）。
-   * 由 gateway POST /distill/l3 端点调用，sarosis 侧定时器触发。
+   * 由 gateway POST /distill/l3 端点调用，saros 侧定时器触发。
    */
   async triggerDistillL3(): Promise<void> {
     await this.storeReady?.catch(() => { });

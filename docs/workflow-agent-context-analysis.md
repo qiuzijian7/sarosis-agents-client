@@ -125,7 +125,7 @@ ExecutionProvider.run() 主循环
 private async _getOrCreateAgentSession(agentId, executionId, sessionName) { ... }
 ```
 
-**场景**：一个工作流有 3 个 Agent 节点，都引用同一个 `agentId: "sarosis-claw"`。
+**场景**：一个工作流有 3 个 Agent 节点，都引用同一个 `agentId: "saros-claw"`。
 
 ```
 Node 1 → LLM 调用 → assistant 响应（含 tool_calls）

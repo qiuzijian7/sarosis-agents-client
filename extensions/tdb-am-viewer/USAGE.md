@@ -1,9 +1,9 @@
-# TDB-AM 接入 sarosis-agents-client（内嵌 vendor 版）
+# TDB-AM 接入 saros-agents-client（内嵌 vendor 版）
 
 ## 1. 总体架构
 
 ```
-sarosis VSCode host（单进程）
+saros VSCode host（单进程）
 ├─ extensions/knot-agui          ← 原有，未触碰
 ├─ extensions/memory-example     ← 原有，未触碰
 ├─ extensions/tdb-am-gateway     ← 内嵌 TDB-AM 网关
@@ -21,10 +21,10 @@ sarosis VSCode host（单进程）
 * L1/L2/L3 抽取所需的 LLM 调用，全部经 Knot Bridge 翻译为 Knot AG-UI 协议，跟随用户当前 Chat 选定的模型。
 * **不再需要外部 TencentDB-Agent-Memory 仓库**（阶段 3 已把上游源码完整内嵌到 `extensions/tdb-am-gateway/vendor/tdbam/`）。详见 `vendor/tdbam/COPY_MANIFEST.md`。
 
-## 2. 在 sarosis 中编译
+## 2. 在 saros 中编译
 
 ```bash
-cd D:/UGit/sarosis-agents-client/extensions/tdb-am-gateway
+cd D:/UGit/saros-agents-client/extensions/tdb-am-gateway
 npm install   # 安装 vendor 需要的 ai / @ai-sdk/openai / yaml / js-tiktoken / json5 / zod
 
 cd ../tdb-am-memory
@@ -64,7 +64,7 @@ npm run watch-extensions
 
 ## 4. 运行
 
-启动 sarosis（dev 模式：`./scripts/code.sh` / `./scripts/code.bat`）。
+启动 saros（dev 模式：`./scripts/code.sh` / `./scripts/code.bat`）。
 
 * 左侧活动栏会出现 **TDB-AM 图标**，点击展开可见 4 个根节点（L0/L1/L2/L3）。
 * 第一次启动数据为空，触发几轮 Agent 对话后再点刷新即可看到 L0 条目。
@@ -85,7 +85,7 @@ npm run watch-extensions
 |---|---|
 | **侧边栏没有 TDB-AM 图标** | 1) 检查 `tdb-am-viewer` 是否在编译产物中（`extensions/tdb-am-viewer/out/`）；2) 看 `输出` → `TDB-AM Viewer` 频道是否报错 |
 | **TreeView 一直空** | OutputChannel `TDB-AM Gateway` 看 `[gateway]` 日志；常见是 vendor 编译产物缺失或端口冲突 |
-| `knot.token` 报错 | 在 sarosis 设置里填 `knot.token`；与现有 KnotBot 共用 |
+| `knot.token` 报错 | 在 saros 设置里填 `knot.token`；与现有 KnotBot 共用 |
 | Knot 桥 502 | 查看 OutputChannel 中 `[knot-bridge]` 行，常见是 `knotAgentId` 错或 token 过期 |
 | 网关启动失败 | 看 `TDB-AM Gateway` 频道首行；常见是 vendor 内未安装 npm 依赖（`cd extensions/tdb-am-gateway && npm install`）|
 

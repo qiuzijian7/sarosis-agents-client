@@ -418,9 +418,9 @@ enum AgentCapability {
     "configuration": {
       "title": "Knot AG-UI",
       "properties": {
-        "sarosis.knot.token": { "type": "string", "description": "Knot API Token" },
-        "sarosis.knot.endpoint": { "type": "string", "default": "https://knot.woa.com" },
-        "sarosis.knot.defaultAgent": { "type": "string" }
+        "saros.knot.token": { "type": "string", "description": "Knot API Token" },
+        "saros.knot.endpoint": { "type": "string", "default": "https://knot.woa.com" },
+        "saros.knot.defaultAgent": { "type": "string" }
       }
     }
   }
@@ -544,7 +544,7 @@ interface IAgentGalleryService {
 
 **实例目录**:
 ```
-.sarosis/agents/{instance-id}/
+.saros/agents/{instance-id}/
 ├── agent.yaml          # 核心配置
 ├── system-prompt.md    # 系统提示词
 ├── tools/              # 自定义工具
@@ -876,7 +876,7 @@ extensions/
 
 ```
 {workspace-root}/
-└── .sarosis/
+└── .saros/
     ├── config.yaml           # 工作区级配置
     └── agents/
         ├── {instance-id-1}/
@@ -1123,8 +1123,8 @@ P0(1w) → P1(2w) → P2(3w) → P4(3w) → P5c(3w) = 12 周
 ## 附录 B: agent.yaml 配置示例
 
 ```yaml
-# .sarosis/agents/{instance-id}/agent.yaml
-apiVersion: sarosis/v1
+# .saros/agents/{instance-id}/agent.yaml
+apiVersion: saros/v1
 kind: Agent
 metadata:
   id: "code-reviewer-001"

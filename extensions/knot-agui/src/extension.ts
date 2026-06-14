@@ -166,7 +166,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		token: vscode.CancellationToken,
 	): Promise<void> {
 		// allow-any-unicode-next-line
-		// 从 settings 读取配置（与 sarosis-webui 一致）
+		// 从 settings 读取配置（与 saros-webui 一致）
 		const config = vscode.workspace.getConfiguration('knot');
 		const endpoint = config.get<string>('endpoint') ?? 'https://knot.woa.com';
 		const token_ = config.get<string>('token') ?? '';
@@ -192,7 +192,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		);
 
 		// allow-any-unicode-next-line
-		// 正确的 Knot AG-UI API URL（与 sarosis-webui 一致）
+		// 正确的 Knot AG-UI API URL（与 saros-webui 一致）
 		const url = `${endpoint}/apigw/api/v1/agents/agui/${encodeURIComponent(agentId)}`;
 
 		// allow-any-unicode-next-line
@@ -246,7 +246,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		}
 
 		// allow-any-unicode-next-line
-		// 构建正确的请求 body（与 sarosis-webui 的 knot_agui.py 一致）
+		// 构建正确的请求 body（与 saros-webui 的 knot_agui.py 一致）
 		// allow-any-unicode-next-line
 		// 获取 agent_client_uuid（仅从 knot-cli 获取真实 connection_uuid，不可用时省略该字段）
 		const agentClientUuid = await this._tryGetConnectionUuid();
@@ -294,7 +294,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 		);
 
 		// allow-any-unicode-next-line
-		// 正确的 headers（与 sarosis-webui 一致）
+		// 正确的 headers（与 saros-webui 一致）
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 			Accept: 'text/event-stream',
@@ -323,7 +323,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			}
 
 			// allow-any-unicode-next-line
-			// 解析 SSE 流（与 sarosis-webui 的 knot_agui.py 一致）
+			// 解析 SSE 流（与 saros-webui 的 knot_agui.py 一致）
 			const reader = response.body?.getReader();
 			if (!reader) {
 				throw new Error('Knot response has no body stream');
@@ -692,9 +692,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 // allow-any-unicode-next-line
 	 * 读取 agent 实例配置的技能清单，生成注入到 system prompt 的文本。
 // allow-any-unicode-next-line
-	 * 读取 `.sarosisworkspace/employees.json` 找到 agentDir，然后读取
+	 * 读取 `.sarosworkspace/employees.json` 找到 agentDir，然后读取
 // allow-any-unicode-next-line
-	 * `.agents/skills/` 和 `.sarosisworkspace/agents/<agentDir>/skills/` 目录下的技能。
+	 * `.agents/skills/` 和 `.sarosworkspace/agents/<agentDir>/skills/` 目录下的技能。
 	 */
 	private async _getAgentSkillsManifest(
 		workspacePath: string,
@@ -704,7 +704,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 			// 1. Read employees.json to find agentDir for agentId
 			const employeesPath = path.join(
 				workspacePath,
-				'.sarosisworkspace',
+				'.sarosworkspace',
 				'employees.json',
 			);
 			if (!fs.existsSync(employeesPath)) {
@@ -736,9 +736,9 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 				return '';
 			}
 
-			// 2. Read .agents/skills/ and .sarosisworkspace/agents/<agentDir>/skills/ to get skills
+			// 2. Read .agents/skills/ and .sarosworkspace/agents/<agentDir>/skills/ to get skills
 			const workspaceSkillsDir = path.join(workspacePath, '.agents', 'skills');
-			const agentSkillsDir = path.join(workspacePath, '.sarosisworkspace', 'agents', agentDir, 'skills');
+			const agentSkillsDir = path.join(workspacePath, '.sarosworkspace', 'agents', agentDir, 'skills');
 			
 			// Collect skill entries from both locations: {name, basePath}
 			const skillEntries: Array<{name: string, basePath: string}> = [];
@@ -755,7 +755,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 				console.log(`[Knot] _getAgentSkillsManifest: workspace skills dir not found at ${workspaceSkillsDir}`);
 			}
 			
-			// Read agent skills directory (.sarosisworkspace/agents/<agentDir>/skills/)
+			// Read agent skills directory (.sarosworkspace/agents/<agentDir>/skills/)
 			if (fs.existsSync(agentSkillsDir)) {
 				const dirs = fs.readdirSync(agentSkillsDir, { withFileTypes: true })
 					.filter((d) => d.isDirectory())
@@ -812,7 +812,7 @@ class KnotChatProvider implements vscode.LanguageModelChatProvider {
 				// Generate relative path for knot-cli
 				const relativePath = entry.basePath.includes('.agents/skills') 
 					? `.agents/skills/${entry.name}/`
-					: `.sarosisworkspace/agents/${agentDir}/skills/${entry.name}/`;
+					: `.sarosworkspace/agents/${agentDir}/skills/${entry.name}/`;
 				const skillPath = relativePath;
 				lines.push('  <skill>');
 				lines.push(`    <name>${name}</name>`);
@@ -864,7 +864,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('knot.openSettings', () => {
 			void vscode.commands.executeCommand(
 				'workbench.action.openSettings',
-				'@ext:sarosis.sarosis-knot-agui',
+				'@ext:saros.saros-knot-agui',
 			);
 		}),
 	);
@@ -1449,9 +1449,9 @@ function tryRunVersion(executable: string): Promise<KnotCliStatus> {
  * Derive the IDE application install directory.
  *
  * `process.execPath` points to the electron binary (e.g.
- *   - Windows: `C:\Users\x\AppData\Local\Programs\SarosisIDE\sarosis.exe`
+ *   - Windows: `C:\Users\x\AppData\Local\Programs\SarosisIDE\saros.exe`
  *   - macOS:   `/Applications/SarosisIDE.app/Contents/MacOS/Electron`
- *   - Linux:   `/opt/sarosis/sarosis`
+ *   - Linux:   `/opt/saros/saros`
  * )
  * We walk up to the application root directory (the folder that contains
  * the executable or `.app` bundle) and use that as the `--workspace` value

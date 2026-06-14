@@ -60,8 +60,8 @@ interface IStoredFileSnapshot {
  * Browser-layer checkpoint service backed by {@link IFileService} + JSON.
  *
  * Storage layout (under the workspace home dir):
- *   <home>/.sarosisworkspace/checkpoints/<agentId>/<sessionId>/index.json
- *   <home>/.sarosisworkspace/checkpoints/<agentId>/<sessionId>/snapshots/<snapshotId>.json
+ *   <home>/.sarosworkspace/checkpoints/<agentId>/<sessionId>/index.json
+ *   <home>/.sarosworkspace/checkpoints/<agentId>/<sessionId>/snapshots/<snapshotId>.json
  *
  * The index file holds the ordered checkpoint metadata array; each snapshot is
  * its own file. When no workspace home dir can be resolved we fall back to the
@@ -198,10 +198,10 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 
 		if (!baseDir) {
 			// Fallback: user-data dir keeps the feature alive for virtual workspaces.
-			baseDir = joinPath(this.environmentService.userRoamingDataHome, 'sarosis-checkpoints');
+			baseDir = joinPath(this.environmentService.userRoamingDataHome, 'saros-checkpoints');
 		}
 
-		return joinPath(baseDir, '.sarosisworkspace', 'checkpoints', agentId, sessionId);
+		return joinPath(baseDir, '.sarosworkspace', 'checkpoints', agentId, sessionId);
 	}
 
 	private _indexUri(sessionDir: URI): URI {

@@ -548,7 +548,7 @@ export class IntegrationViewPane extends ViewPane {
 			} else {
 				p.append('No skills in this category. Click ', Object.assign($('b'), { textContent: '+ Install' }),
 					' to add from a hub, or drop a SKILL.md into ',
-					Object.assign($('code'), { textContent: '.sarosisworkspace/agents/<agentDir>/skills/<id>/' }), '.');
+					Object.assign($('code'), { textContent: '.sarosworkspace/agents/<agentDir>/skills/<id>/' }), '.');
 			}
 			empty.appendChild(p);
 			listEl.appendChild(empty);

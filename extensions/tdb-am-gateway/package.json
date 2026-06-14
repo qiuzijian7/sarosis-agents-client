@@ -3,7 +3,7 @@
 	"displayName": "TDB-AM Gateway",
 	"description": "TencentDB Agent Memory 内嵌网关：进程内启动 vendor TDB-AM 实例，提供 L0/L1/L2/L3 完整记忆栈。",
 	"version": "0.0.1",
-	"publisher": "sarosis",
+	"publisher": "saros",
 	"license": "MIT",
 	"main": "./out/extension.js",
 	"engines": {

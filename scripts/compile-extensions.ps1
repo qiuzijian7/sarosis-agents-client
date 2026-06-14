@@ -9,8 +9,15 @@ Push-Location $PSScriptRoot\..
 
 # ===== 1. Node =====
 $nodeVersion = "22.22.1"
-nvm use $nodeVersion 2>$null
-if ($LASTEXITCODE -ne 0) { Write-Warning "nvm use failed, checking node version..."; node --version }
+$currentNode = (node --version 2>$null) -replace 'v',''
+if ($currentNode -notmatch "^22\.") {
+    if (Get-Command nvm -ErrorAction SilentlyContinue) {
+        nvm use $nodeVersion
+        if ($LASTEXITCODE -ne 0) { throw "nvm use $nodeVersion failed" }
+    } else {
+        throw "Node ${currentNode} detected but $nodeVersion required. Install nvm-windows or switch manually."
+    }
+}
 $env:PATH = "$env:LOCALAPPDATA\nvm\$nodeVersion;$env:PATH"
 Write-Host "Node: $(node --version)" -ForegroundColor Cyan
 
@@ -93,12 +100,12 @@ foreach ($d in $toDelete) {
 }
 
 # ===== 6. Reinstall codebuddy-provider shared (pick up latest fixes) =====
-Write-Host "=== Reinstall @sarosis/shared ===" -ForegroundColor Yellow
+Write-Host "=== Reinstall @saros/shared ===" -ForegroundColor Yellow
 Push-Location extensions\codebuddy-provider
-cmd /c "rd /s /q node_modules\@sarosis 2>nul"
+cmd /c "rd /s /q node_modules\@saros 2>nul"
 npm install --ignore-scripts 2>&1 | Out-Null
 Pop-Location
-Write-Host "  [OK] @sarosis/shared reinstalled"
+Write-Host "  [OK] @saros/shared reinstalled"
 
 # ===== 7. Preflight check =====
 Write-Host "=== Preflight: npm list --production ===" -ForegroundColor Yellow

@@ -112,7 +112,7 @@ export interface IGitCommitService {
  * to the terminal service: spawn git commands through the native host.
  *
  * For simplicity and reliability in this Electron environment, we use
- * a direct approach with the global `window.__sarosisExecGit` bridge
+ * a direct approach with the global `window.__sarosExecGit` bridge
  * that the preload script exposes, or fall back to fetch-based IPC.
  */
 export class GitCommitService extends Disposable implements IGitCommitService {

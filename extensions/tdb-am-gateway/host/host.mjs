@@ -2,8 +2,8 @@
 /*---------------------------------------------------------------------------------------------
  *  TDB-AM Gateway 独立子进程入口（host.mjs）
  *
- *  本文件由 sarosis Electron 主进程通过 child_process.fork/spawn 启动。
- *  与 sarosis renderer 进程隔离，可自由使用 fs/path/http 等 Node 原生模块。
+ *  本文件由 saros Electron 主进程通过 child_process.fork/spawn 启动。
+ *  与 saros renderer 进程隔离，可自由使用 fs/path/http 等 Node 原生模块。
  *
  *  通信方式：
  *    - 配置：通过 process.env 传入（TDAI_* / TDBAM_* 系列变量）
@@ -310,7 +310,7 @@ function applyEnvDefaults() {
 	const host = process.env.TDAI_GATEWAY_HOST || '127.0.0.1';
 	const dataDir = process.env.TDAI_DATA_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '.', '.tdai');
 	const llmBase = process.env.TDAI_LLM_BASE_URL || 'http://127.0.0.1:8421/v1';
-	const llmKey = process.env.TDAI_LLM_API_KEY || 'sarosis-knot-bridge-token';
+	const llmKey = process.env.TDAI_LLM_API_KEY || 'saros-knot-bridge-token';
 	const llmModel = process.env.TDAI_LLM_MODEL || 'knot-default';
 
 	process.env.TDAI_GATEWAY_PORT = port;

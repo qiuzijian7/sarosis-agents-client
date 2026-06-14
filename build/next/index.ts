@@ -891,9 +891,9 @@ async function transpileCapabilityPlugins(outDir: string): Promise<void> {
 				plugins: [{
 					name: 'resolve-src-imports',
 					setup(build) {
-						// Resolve @sarosis/shared to local source so capability-plugin bundles
+						// Resolve @saros/shared to local source so capability-plugin bundles
 						// do not leave an unresolved bare module specifier in browser runtime.
-						build.onResolve({ filter: /^@sarosis\/shared$/ }, () => ({
+						build.onResolve({ filter: /^@saros\/shared$/ }, () => ({
 							path: path.join(REPO_ROOT, 'extensions', 'shared', 'src', 'index.ts'),
 						}));
 
@@ -947,7 +947,7 @@ async function transpileCapabilityPlugins(outDir: string): Promise<void> {
 
 			// Additionally, produce a CJS bundle for extensions that declare
 			// package.json "main" (VS Code extension host loads via require()).
-			// This ensures `@sarosis/shared` and other workspace-internal deps
+			// This ensures `@saros/shared` and other workspace-internal deps
 			// are inlined — only `vscode` is left external.
 			const extPkgPath = path.join(REPO_ROOT, 'extensions', extName, 'package.json');
 			const extPkg = JSON.parse(fs.readFileSync(extPkgPath, 'utf-8'));
@@ -961,6 +961,17 @@ async function transpileCapabilityPlugins(outDir: string): Promise<void> {
 					platform: 'node',
 					target: ['es2022'],
 					external: ['vscode'],
+					plugins: [{
+						name: 'resolve-saros-shared-cjs',
+						setup(build) {
+							// Resolve @saros/shared → extensions/shared/src/index.ts
+							// so CJS bundles (loaded by extension host) can inline
+							// shared utilities instead of leaving a bare module specifier.
+							build.onResolve({ filter: /^@saros\/shared$/ }, () => ({
+								path: path.join(REPO_ROOT, 'extensions', 'shared', 'src', 'index.ts'),
+							}));
+						},
+					}],
 					sourcemap: 'linked',
 					tsconfigRaw: JSON.stringify({
 						compilerOptions: {

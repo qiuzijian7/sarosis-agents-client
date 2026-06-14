@@ -2,7 +2,7 @@
 
 ## 整体布局
 
-基于 sarosis-webui 的 DockLayout 设计理念，在 VS Code AuxiliaryBar 中实现四区布局。
+基于 saros-webui 的 DockLayout 设计理念，在 VS Code AuxiliaryBar 中实现四区布局。
 由于 VS Code WebView 面板空间有限（约 400-600px 宽），采用**上下分栏+左右分栏**的混合布局：
 
 ```
@@ -41,7 +41,7 @@ WorkspaceToolbar → useWorkspaceStore.setActiveWorkspace(id)
                  → 触发 loadEmployees / loadDelegations
 ```
 
-**对应 sarosis-webui 组件**：`WorkspaceToolbar.tsx`
+**对应 saros-webui 组件**：`WorkspaceToolbar.tsx`
 
 ---
 
@@ -69,7 +69,7 @@ WorkspaceCanvas → useWorkspaceStore (nodes, edges, viewport)
                → onSelectEmployee → useChatStore.setActiveEmployee
 ```
 
-**对应 sarosis-webui 组件**：`WorkspaceCanvas.tsx` + `EmployeeList.tsx`
+**对应 saros-webui 组件**：`WorkspaceCanvas.tsx` + `EmployeeList.tsx`
 
 ---
 
@@ -96,7 +96,7 @@ WorkspaceCanvas → useWorkspaceStore (nodes, edges, viewport)
 - 委派任务：`delegation.list` → delegationToRecord 转换
 - 合并后统一显示
 
-**对应 sarosis-webui 组件**：`TaskBoardPanel.tsx`
+**对应 saros-webui 组件**：`TaskBoardPanel.tsx`
 
 ---
 
@@ -115,7 +115,7 @@ EmployeeChat → useChatStore (messages, streamState, inputValue)
              → streamHandler → store update → re-render
 ```
 
-**对应 sarosis-webui 组件**：`EmployeeChat.tsx`（176KB 精简版）
+**对应 saros-webui 组件**：`EmployeeChat.tsx`（176KB 精简版）
 
 ---
 

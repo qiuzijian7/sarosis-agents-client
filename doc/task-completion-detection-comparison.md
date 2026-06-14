@@ -755,8 +755,8 @@ protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undef
 
 1. OpenClaw 源代码：`G:\CustomWorkspaces\AIProjects\openclaw\src\agents\tool-loop-detection.ts`
 2. OpenClaw 源代码：`G:\CustomWorkspaces\AIProjects\openclaw\src\tasks\task-executor.ts`
-3. Sarosis Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\workbench\contrib\chat\common\tools\builtinTools\taskCompleteTool.ts`
-4. Sarosis Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\extension\intents\node\toolCallingLoop.ts`
+3. Sarosis Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\workbench\contrib\chat\common\tools\builtinTools\taskCompleteTool.ts`
+4. Sarosis Agents Client 源代码：`G:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\extension\intents\node\toolCallingLoop.ts`
 
 ### B. 术语表
 

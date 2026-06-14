@@ -221,8 +221,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	/**
 	 * Resolve the data directory URI for an agent.
 	 * Priority:
-	 *   1. Workspace with `path` → `{path}/.sarosisworkspace/`
-	 *   2. VS Code open folder   → `{folder}/.sarosisworkspace/`
+	 *   1. Workspace with `path` → `{path}/.sarosworkspace/`
+	 *   2. VS Code open folder   → `{folder}/.sarosworkspace/`
 	 *   3. Global fallback       → `{globalDataUri}/` or `{globalDataUri}/{workspaceId}/`
 	 */
 	private async _resolveDataUri(workspaceId?: string): Promise<URI> {
@@ -265,7 +265,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	/**
 	 * Resolve the workspace-local data directory URI.
-	 * If the workspace has a path, returns `{path}/.sarosisworkspace/`.
+	 * If the workspace has a path, returns `{path}/.sarosworkspace/`.
 	 * Otherwise falls back to `globalDataUri/{workspaceId}/`.
 	 */
 	private async _getWorkspaceDataUri(workspaceId: string): Promise<URI> {
@@ -597,7 +597,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const workspaces = rawWorkspaces.map(w => migrateWorkspace(w));
 
 		// Auto-discover: if the global workspace index is empty but the current
-		// VS Code folder already contains a .sarosisworkspace directory (e.g.
+		// VS Code folder already contains a .sarosworkspace directory (e.g.
 		// user deleted workspaces.json or switched to a fresh VS Code profile),
 		// automatically create a workspace entry so that agents and layout
 		// are visible without manual workspace recreation.
@@ -643,7 +643,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 
 		// IMPORTANT: `workspace.path` is the workspace HOME/metadata directory
-		// (holds .sarosisworkspace, artifacts) and is NOT a git repository, so
+		// (holds .sarosworkspace, artifacts) and is NOT a git repository, so
 		// running `git worktree list` there fails and returns []. The actual
 		// code lives in `relatedFolders[].path` (the real git roots).
 		//
@@ -780,7 +780,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// Save the global workspace index
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
-		// Create .sarosisworkspace directory in the workspace folder (if path is set)
+		// Create .sarosworkspace directory in the workspace folder (if path is set)
 		if (newWorkspace.path) {
 			try {
 				const wsDataUri = URI.joinPath(URI.file(newWorkspace.path), WORKSPACE_DATA_DIR);
@@ -823,7 +823,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		};
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, workspaces);
 
-		// Update workspace manifest in .sarosisworkspace if path exists
+		// Update workspace manifest in .sarosworkspace if path exists
 		if (workspaces[index].path) {
 			try {
 				const wsDataUri = URI.joinPath(URI.file(workspaces[index].path!), WORKSPACE_DATA_DIR);
@@ -845,7 +845,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_WORKSPACES, filtered);
 
 		// Optionally clean up workspace-local data directory
-		// (We don't delete .sarosisworkspace to preserve user data on disk)
+		// (We don't delete .sarosworkspace to preserve user data on disk)
 		if (target?.path) {
 			this.logService.info(`[AgentStudio] Workspace deleted from index. ${WORKSPACE_DATA_DIR} directory preserved at: ${target.path}`);
 		}

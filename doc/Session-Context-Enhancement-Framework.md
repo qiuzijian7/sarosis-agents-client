@@ -1,6 +1,6 @@
 # Sarosis-Agents-Client Session & 上下文增强框架设计
 
-> **方案2**：在 `sarosis-agents-client` TypeScript 端原生实现上下文压缩、记忆管理和 FTS5 全文搜索，  
+> **方案2**：在 `saros-agents-client` TypeScript 端原生实现上下文压缩、记忆管理和 FTS5 全文搜索，  
 > 参考 Hermes Agent (Python) 的成熟实现，融入现有的 AgentHost / Sessions / Chronicle 架构。
 
 **版本**：v1.0  
@@ -662,7 +662,7 @@ ContextCompressionService._maybeAutoCompress()
 │  │  BuiltinMemory-      │  │  ExtensionMemory-        │ │
 │  │  Provider             │  │  Provider                │ │
 │  │                       │  │  (贡献点扩展)             │ │
-│  │  • 文件记忆 (~/.sarosis│  │                          │ │
+│  │  • 文件记忆 (~/.saros│  │                          │ │
 │  │    /memories/)        │  │  • 自定义存储后端         │ │
 │  │  • KV 键值对          │  │  • 自定义提取逻辑         │ │
 │  │  • 自动重要度衰减     │  │  • 自定义注入策略         │ │
@@ -1109,32 +1109,32 @@ registerSingleton(IMemoryService, MemoryService, InstantiationType.Delayed);
 
 ```json
 {
-    "sarosis.session.compression.enabled": {
+    "saros.session.compression.enabled": {
         "type": "boolean",
         "default": true,
         "description": "启用上下文自动压缩"
     },
-    "sarosis.session.compression.thresholdPercent": {
+    "saros.session.compression.thresholdPercent": {
         "type": "number",
         "default": 0.50,
         "description": "触发压缩的 token 使用率阈值"
     },
-    "sarosis.session.compression.headProtectCount": {
+    "saros.session.compression.headProtectCount": {
         "type": "number",
         "default": 3,
         "description": "压缩时保护的头部消息数量"
     },
-    "sarosis.session.memory.enabled": {
+    "saros.session.memory.enabled": {
         "type": "boolean",
         "default": true,
         "description": "启用跨会话记忆管理"
     },
-    "sarosis.session.memory.maxPrefetchResults": {
+    "saros.session.memory.maxPrefetchResults": {
         "type": "number",
         "default": 5,
         "description": "每轮预取的最大记忆数量"
     },
-    "sarosis.session.memory.autoExtract": {
+    "saros.session.memory.autoExtract": {
         "type": "boolean",
         "default": true,
         "description": "自动从对话中提取记忆"

@@ -91,7 +91,7 @@ export class WorkspaceSessionService extends Disposable implements IWorkspaceSes
 			this._logService.warn(`[WorkspaceSessionService] Workspace ${workspaceId} has no path`);
 			return null;
 		}
-		return URI.joinPath(URI.file(ws.path), '.sarosisworkspace');
+		return URI.joinPath(URI.file(ws.path), '.sarosworkspace');
 	}
 
 	private _sessionsDir(wsDataUri: URI): URI {

@@ -47,7 +47,7 @@ export class WorkflowEditorInput extends EditorInput {
 	}
 
 	override get resource(): URI {
-		return URI.from({ scheme: 'sarosis-workflow', path: `/${this._workflow.id}` });
+		return URI.from({ scheme: 'saros-workflow', path: `/${this._workflow.id}` });
 	}
 
 	override getName(): string {

@@ -623,7 +623,7 @@ export interface IWorkspaceSessionStatusPayload {
 ### 7.1 磁盘文件布局
 
 ```
-.sarosisworkspace/
+.sarosworkspace/
 ├── workspaces.json              ← Workspace 列表 (扩展 rootInfo 字段)
 ├── employees.json               ← Agent 实例列表 (Root 数据)
 ├── sessions.json                ← 全局 Session 索引 (旧, 可废弃)

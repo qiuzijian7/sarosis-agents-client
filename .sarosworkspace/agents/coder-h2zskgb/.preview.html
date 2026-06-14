@@ -1,0 +1,480 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>ConfigMD Preview</title>
+<style>
+:root { color-scheme: light dark; }
+body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+	font-size: 14px;
+	line-height: 1.65;
+	color: #d4d4d4;
+	background: #1e1e1e;
+	margin: 0;
+	padding: 22px 28px 40px;
+	max-width: 920px;
+}
+h1,h2,h3,h4,h5,h6 { line-height: 1.25; margin: 18px 0 8px; }
+h1 { font-size: 1.7em; }
+h2 { font-size: 1.4em; padding-bottom: 6px; border-bottom: 1px solid rgba(127,127,127,0.25); }
+h3 { font-size: 1.18em; }
+p { margin: 8px 0; }
+a { color: #4ea1ff; }
+ul, ol { padding-left: 1.5em; }
+li { margin: 3px 0; }
+code { background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 3px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
+pre { background: #252526; padding: 12px 14px; border-radius: 6px; overflow-x: auto; border: 1px solid rgba(127,127,127,0.22); }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 3px solid #4ea1ff; background: rgba(78,161,255,0.10); margin: 10px 0; padding: 8px 12px; border-radius: 0 4px 4px 0; }
+hr { border: 0; border-top: 1px dashed rgba(127,127,127,0.30); margin: 24px 0; }
+input[type="checkbox"] { margin-right: 6px; }
+[data-agent-bind] { background: rgba(78,161,255,0.12); padding: 0 4px; border-radius: 2px; }
+[data-agent-state] { padding: 2px 4px; border-left: 2px solid rgba(127,127,127,0.30); margin: 6px 0; }
+@media (prefers-color-scheme: light) {
+	body { color: #1e1e1e; background: #ffffff; }
+	pre { background: #f5f5f5; border-color: rgba(127,127,127,0.22); }
+}
+
+.imgui-form { display: flex; flex-direction: column; gap: 10px; padding: 16px; margin: 14px 0; background: rgba(127,127,127,0.06); border: 1px solid rgba(127,127,127,0.20); border-radius: 8px; }
+.imgui-row { display: flex; align-items: center; gap: 10px; }
+.imgui-row-block { flex-direction: column; align-items: stretch; }
+.imgui-checkbox-row { gap: 6px; }
+.imgui-label { min-width: 96px; font-size: 13px; opacity: 0.85; }
+.imgui-input, .imgui-select, .imgui-textarea { flex: 1; min-width: 0; padding: 5px 8px; font: inherit; color: inherit; background: rgba(127,127,127,0.10); border: 1px solid rgba(127,127,127,0.30); border-radius: 4px; outline: none; }
+.imgui-input:focus, .imgui-select:focus, .imgui-textarea:focus { border-color: #4ea1ff; }
+.imgui-textarea { min-height: 60px; resize: vertical; font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
+.imgui-slider-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
+.imgui-slider { flex: 1; }
+.imgui-slider-value { min-width: 32px; text-align: right; font-family: monospace; font-size: 12px; opacity: 0.85; }
+.imgui-checkbox { width: 16px; height: 16px; accent-color: #4ea1ff; }
+.imgui-radio-group { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.imgui-radio-item { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; font-size: 13px; }
+.imgui-radio-item input[type="radio"] { accent-color: #4ea1ff; }
+.imgui-divider { border: 0; border-top: 1px dashed rgba(127,127,127,0.35); margin: 6px 0; }
+.imgui-spacer { height: 6px; }
+.imgui-heading { margin: 6px 0 2px; font-size: 1.05em; }
+.imgui-text { margin: 2px 0; opacity: 0.9; }
+.imgui-button { align-self: flex-start; padding: 6px 16px; font: inherit; border: none; border-radius: 4px; cursor: pointer; transition: transform 0.08s, opacity 0.15s, background 0.15s; }
+.imgui-button-primary { background: #4ea1ff; color: #ffffff; }
+.imgui-button-secondary { background: rgba(127,127,127,0.20); color: inherit; }
+.imgui-button-danger { background: #d63f3f; color: #ffffff; }
+.imgui-button:hover { opacity: 0.88; }
+.imgui-button:active, .imgui-button-active { transform: translateY(1px); opacity: 0.7; }
+.imgui-button-armed { background: #f0a020 !important; color: #000 !important; animation: imgui-pulse 1.2s ease-in-out infinite; }
+@keyframes imgui-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.65; } }
+.imgui-error { padding: 8px 12px; background: rgba(214,63,63,0.12); border-left: 3px solid #d63f3f; border-radius: 0 4px 4px 0; color: #ff8e8e; font-size: 13px; }
+.imgui-error pre { margin: 6px 0 0; padding: 6px 8px; background: rgba(0,0,0,0.20); border-radius: 3px; font-size: 12px; white-space: pre-wrap; }
+.imgui-progress { flex: 1; position: relative; height: 18px; background: rgba(127,127,127,0.18); border-radius: 9px; overflow: hidden; }
+.imgui-progress-fill { height: 100%; background: linear-gradient(90deg, #4ea1ff, #6cc6ff); transition: width 0.3s ease; }
+.imgui-progress-text { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: monospace; color: rgba(255,255,255,0.95); text-shadow: 0 1px 1px rgba(0,0,0,0.5); }
+.imgui-badge { display: inline-block; padding: 2px 8px; font-size: 12px; border-radius: 10px; background: rgba(127,127,127,0.25); margin-right: 4px; }
+.imgui-badge-success { background: rgba(58,180,90,0.25); color: #6cd48a; }
+.imgui-badge-warning { background: rgba(240,160,32,0.25); color: #ffb45e; }
+.imgui-badge-danger  { background: rgba(214,63,63,0.25); color: #ff8e8e; }
+.imgui-badge-info    { background: rgba(78,161,255,0.25); color: #79b9ff; }
+.imgui-hrow { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.imgui-hrow > .imgui-row { flex: 1 1 200px; }
+.imgui-hcol { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
+.imgui-toast { position: fixed; left: 50%; bottom: 32px; transform: translate(-50%, 12px); padding: 8px 16px; border-radius: 6px; font-size: 13px; background: rgba(40,40,40,0.95); color: #f0f0f0; box-shadow: 0 4px 16px rgba(0,0,0,0.4); pointer-events: none; opacity: 0; transition: opacity 0.2s, transform 0.2s; z-index: 9999; }
+.imgui-toast-show { opacity: 1; transform: translate(-50%, 0); }
+.imgui-toast-success { background: rgba(58,180,90,0.95); }
+.imgui-toast-warning { background: rgba(240,160,32,0.95); color: #1e1e1e; }
+.imgui-toast-error { background: rgba(214,63,63,0.95); }
+
+/* Context badge (top-right pill showing workspace/agent/session binding). */
+.imgui-ctx-badge {
+	position: fixed; top: 10px; right: 12px; z-index: 9999;
+	display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+	padding: 5px 8px;
+	background: rgba(30,30,30,0.78);
+	border: 1px solid rgba(127,127,127,0.30);
+	border-radius: 14px;
+	font: 11px/1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+	color: rgba(255,255,255,0.92);
+	backdrop-filter: blur(6px);
+	-webkit-backdrop-filter: blur(6px);
+	box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+	max-width: 60vw;
+}
+@media (prefers-color-scheme: light) {
+	.imgui-ctx-badge { background: rgba(255,255,255,0.85); color: #1e1e1e; border-color: rgba(0,0,0,0.12); }
+}
+.imgui-ctx-mode {
+	padding: 1px 7px; border-radius: 9px;
+	font-weight: 600; font-size: 10px;
+	letter-spacing: 0.04em; text-transform: uppercase;
+}
+.imgui-ctx-mode-fork { background: rgba(78,161,255,0.30); color: #aed6ff; }
+.imgui-ctx-mode-root { background: rgba(180,180,180,0.25); color: rgba(255,255,255,0.85); }
+@media (prefers-color-scheme: light) {
+	.imgui-ctx-mode-fork { color: #1467c4; }
+	.imgui-ctx-mode-root { color: #555; }
+}
+.imgui-ctx-row { display: inline-flex; align-items: center; gap: 4px; }
+.imgui-ctx-key {
+	opacity: 0.55; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.imgui-ctx-val {
+	font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+	font-size: 11px;
+	background: rgba(127,127,127,0.18);
+	padding: 1px 5px;
+	border-radius: 4px;
+	max-width: 160px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+
+
+</style>
+</head>
+<body>
+<h1 id="h-coder">Coder 工作面板</h1>
+<p>&gt; 这是 <strong>Coder</strong> 的 ConfigMD 控制面板。该面板由</p>
+<p>&gt; <code>&lt;agentDir&gt;/config.md</code> 渲染而成；锚点（agent-state / agent-bind）允许</p>
+<p>&gt; agent 在对话中通过 <code>configmd-patch</code> / <code>configmd-command</code> 块对其进行</p>
+<p>&gt; 增量更新。如需自定义解析器或样式，参考同目录下</p>
+<p>&gt; <code>ui/parser.js.example</code> / <code>ui/styles.css.example</code>，将其复制为</p>
+<p>&gt; <code>parser.js</code> / <code>styles.css</code> 即生效。</p>
+<p>---</p>
+<h2 id="h-">状态</h2>
+<ul>
+<li>进度：<span data-agent-bind="progress">0%</span></li>
+<li>当前任务：<span data-agent-bind="status">待启动</span></li>
+</ul>
+<h2 id="h-">任务清单</h2>
+<p><div data-agent-state="tasks"><ul class="cmd-tasklist">
+<li><label class="cmd-task"><input type="checkbox" data-agent-task /> 在此处列出待办事项</label></li>
+</ul></div></p>
+<h2 id="h-agent">与 Agent 对话</h2>
+<p><form class="imgui-form" data-imgui-form="imgui-form-1" onsubmit="return false;">
+<h3 class="imgui-heading">快速指令</h3>
+<label class="imgui-row imgui-row-block"><span class="imgui-label">问题 / 指令</span><textarea class="imgui-textarea" data-imgui-id="ask" rows="3" placeholder="想让 agent 做什么？"></textarea></label>
+<button type="button" class="imgui-button imgui-button-primary" data-imgui-id="send" data-imgui-action="send_to_chat" data-imgui-template="{ask}">💬 发送</button>
+</form></p>
+<h2 id="h-">表单状态快照</h2>
+<p>&gt; 当用户提交表单且按钮带 <code>state=&quot;form_snapshot&quot;</code> 时，host 会把当前所有控件</p>
+<p>&gt; 的值以 JSON 写入下方锚点，供 agent 在后续对话中读取。</p>
+<p><div data-agent-state="form_snapshot"><p><pre class="cmd-code"><code class="lang-json">{ &quot;note&quot;: &quot;form has not been submitted yet&quot; }
+</code></pre></p></div></p>
+<script>(function(){
+	// Cached context injected by the host pane on mount (imgui.ctx event).
+	// Carries the (employeeId, workspaceId, workspaceSessionId,
+	// agentSessionId) tuple captured at the moment the preview was opened.
+	// We attach it to every submit payload so the host can route imgui.submit
+	// → chat.send to the exact session the user expects, even after they
+	// switch employees / Forks in the chat panel.
+	var __imguiCtx = {
+		employeeId: undefined,
+		workspaceId: undefined,
+		workspaceSessionId: undefined,
+		agentSessionId: undefined
+	};
+	function collectValues(formEl){
+		var out = {};
+		// Regular controls (inputs / selects / textareas / checkboxes / sliders / numbers).
+		formEl.querySelectorAll('[data-imgui-id]').forEach(function(el){
+			var id = el.getAttribute('data-imgui-id');
+			if (!id) return;
+			// Radio group: read the checked sibling within the same group.
+			if (el.type === 'radio') {
+				var group = el.getAttribute('data-imgui-radio-group') || id;
+				var picked = formEl.querySelector('input[type="radio"][data-imgui-radio-group="' + group + '"]:checked');
+				out[id] = picked ? picked.value : '';
+				return;
+			}
+			if (el.type === 'checkbox') { out[id] = el.checked; }
+			else if (el.type === 'range' || el.type === 'number') { out[id] = el.value === '' ? '' : Number(el.value); }
+			else if (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') { out[id] = el.value; }
+			// Display widgets (progress / badge): read the value attribute / textContent
+			else if (el.classList && el.classList.contains('imgui-progress')) { out[id] = Number(el.getAttribute('data-imgui-value') || 0); }
+			else if (el.classList && el.classList.contains('imgui-badge')) { out[id] = el.textContent || ''; }
+		});
+		return out;
+	}
+	function renderTemplate(tpl, values){
+		if (!tpl) return '';
+		return tpl.replace(/\{(\w+)\}/g, function(_, k){
+			return values.hasOwnProperty(k) ? String(values[k]) : '{' + k + '}';
+		});
+	}
+	function getApi(){
+		if (window.__vsapi) return window.__vsapi;
+		try { window.__vsapi = acquireVsCodeApi(); return window.__vsapi; } catch(e) { return null; }
+	}
+	// Live slider → output sync (replaces stripped inline oninput= handlers).
+	function syncSliderOutput(input){
+		var id = input.getAttribute('data-imgui-id');
+		if (!id) return;
+		var out = document.querySelector('output[data-imgui-output-for="' + id.replace(/"/g, '\\"') + '"]');
+		if (out) { out.textContent = input.value; }
+	}
+	function updateProgress(el, value, max){
+		if (typeof max === 'number') { el.setAttribute('data-imgui-max', String(max)); }
+		var m = Number(el.getAttribute('data-imgui-max') || 100);
+		var v = Number(value);
+		if (isNaN(v)) v = 0;
+		el.setAttribute('data-imgui-value', String(v));
+		var pct = m > 0 ? Math.max(0, Math.min(100, (v / m) * 100)) : 0;
+		var fill = el.querySelector('.imgui-progress-fill');
+		var text = el.querySelector('.imgui-progress-text');
+		if (fill) fill.style.width = pct.toFixed(1) + '%';
+		if (text) text.textContent = v + '/' + m;
+	}
+	// ── Persistence (sessionStorage by formId) ────────────────────────
+	// Preserves user input across preview reloads / file rewrites within
+	// the same webview session. Keyed by the workspace-relative file path
+	// (parent window.location) plus the formId.
+	function storageKey(formId){
+		return 'imgui:' + (location.pathname || '') + ':' + formId;
+	}
+	// ── Context badge ─────────────────────────────────────────────────
+	// Renders a small floating chip in the top-right of the preview that
+	// shows which (workspace, agent, session) this preview is bound to.
+	// Helps users keep track when they have multiple Forks open at once.
+	// Idempotent: subsequent imgui.ctx events update the same badge.
+	function renderCtxBadge(){
+		try {
+			var badge = document.getElementById('imgui-ctx-badge');
+			if (!badge) {
+				badge = document.createElement('div');
+				badge.id = 'imgui-ctx-badge';
+				badge.className = 'imgui-ctx-badge';
+				document.body.appendChild(badge);
+			}
+			var emp = __imguiCtx.employeeId || '—';
+			var ws  = __imguiCtx.workspaceId || '—';
+			var fsn = __imguiCtx.workspaceSessionId || '';
+			var asn = __imguiCtx.agentSessionId || '—';
+			var modeLabel = fsn ? 'Fork' : 'Root';
+			var modeClass = fsn ? 'imgui-ctx-mode-fork' : 'imgui-ctx-mode-root';
+			// Truncate long ids for display while keeping full ids in title.
+			function shortId(s, n){
+				if (!s || s === '—') return s;
+				if (s.length <= n) return s;
+				return s.substring(0, n - 3) + '…';
+			}
+			badge.innerHTML =
+				'<span class="imgui-ctx-mode ' + modeClass + '">' + modeLabel + '</span>' +
+				'<span class="imgui-ctx-row" title="employee: ' + escapeAttr(emp) + '">'+
+				  '<span class="imgui-ctx-key">agent</span>'+
+				  '<span class="imgui-ctx-val">' + escapeText(shortId(emp, 18)) + '</span>'+
+				'</span>' +
+				'<span class="imgui-ctx-row" title="workspace: ' + escapeAttr(ws) + '">'+
+				  '<span class="imgui-ctx-key">ws</span>'+
+				  '<span class="imgui-ctx-val">' + escapeText(shortId(ws, 14)) + '</span>'+
+				'</span>' +
+				(fsn ? (
+				'<span class="imgui-ctx-row" title="fork session: ' + escapeAttr(fsn) + '">'+
+				  '<span class="imgui-ctx-key">fork</span>'+
+				  '<span class="imgui-ctx-val">' + escapeText(shortId(fsn, 14)) + '</span>'+
+				'</span>'
+				) : '') +
+				'<span class="imgui-ctx-row" title="agent session: ' + escapeAttr(asn) + '">'+
+				  '<span class="imgui-ctx-key">session</span>'+
+				  '<span class="imgui-ctx-val">' + escapeText(shortId(asn, 14)) + '</span>'+
+				'</span>';
+		} catch (e) {
+			try { console.warn('[imgui] renderCtxBadge failed', e); } catch(_){}
+		}
+	}
+	function escapeText(s){
+		return String(s == null ? '' : s)
+			.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+	}
+	function escapeAttr(s){
+		return escapeText(s).replace(/"/g,'&quot;');
+	}
+	function saveForm(formEl){
+		try {
+			var formId = formEl.getAttribute('data-imgui-form');
+			if (!formId) return;
+			var v = collectValues(formEl);
+			sessionStorage.setItem(storageKey(formId), JSON.stringify(v));
+		} catch(e){ /* quota / storage disabled — non-fatal */ }
+	}
+	function restoreForm(formEl){
+		try {
+			var formId = formEl.getAttribute('data-imgui-form');
+			if (!formId) return;
+			var raw = sessionStorage.getItem(storageKey(formId));
+			if (!raw) return;
+			var values = JSON.parse(raw);
+			applyValuesToForm(formEl, values);
+		} catch(e){ /* parse/storage error — non-fatal */ }
+	}
+	function applyValuesToForm(scope, values){
+		Object.keys(values).forEach(function(id){
+			var el = scope.querySelector('[data-imgui-id="' + id + '"]');
+			if (!el) return;
+			if (el.type === 'radio') {
+				var group = el.getAttribute('data-imgui-radio-group') || id;
+				var match = scope.querySelector('input[type="radio"][data-imgui-radio-group="' + group + '"][value="' + String(values[id]).replace(/"/g, '\\"') + '"]');
+				if (match) match.checked = true;
+				return;
+			}
+			if (el.type === 'checkbox') { el.checked = !!values[id]; return; }
+			if (el.classList && el.classList.contains('imgui-progress')) { updateProgress(el, values[id]); return; }
+			if (el.classList && el.classList.contains('imgui-badge')) { el.textContent = String(values[id]); return; }
+			el.value = String(values[id]);
+			if (el.classList && el.classList.contains('imgui-slider')) { syncSliderOutput(el); }
+		});
+	}
+	// Restore on load.
+	document.querySelectorAll('[data-imgui-form]').forEach(function(f){ restoreForm(f); });
+	// Save on every change (debounced).
+	var saveTimer = null;
+	document.addEventListener('input', function(e){
+		var t = e.target;
+		if (t && t.classList && t.classList.contains('imgui-slider')) { syncSliderOutput(t); }
+		var formEl = t && t.closest && t.closest('[data-imgui-form]');
+		if (!formEl) return;
+		if (saveTimer) clearTimeout(saveTimer);
+		saveTimer = setTimeout(function(){ saveForm(formEl); }, 250);
+	});
+	document.addEventListener('change', function(e){
+		var formEl = e.target && e.target.closest && e.target.closest('[data-imgui-form]');
+		if (formEl) saveForm(formEl);
+	});
+
+	document.addEventListener('click', function(e){
+		var btn = e.target && e.target.closest && e.target.closest('[data-imgui-action]');
+		if (!btn) return;
+		var formEl = btn.closest('[data-imgui-form]');
+		var values = formEl ? collectValues(formEl) : {};
+		var action = btn.getAttribute('data-imgui-action') || 'send_to_chat';
+		var template = btn.getAttribute('data-imgui-template') || '';
+		var rendered = renderTemplate(template, values);
+		var formId = formEl ? formEl.getAttribute('data-imgui-form') : null;
+		var confirmMsg = btn.getAttribute('data-imgui-confirm');
+		var payloadAttr = btn.getAttribute('data-imgui-payload') || '';
+		var anchor = btn.getAttribute('data-imgui-anchor') || '';
+		var skill = btn.getAttribute('data-imgui-skill') || '';
+		var stateAnchor = btn.getAttribute('data-imgui-state') || '';
+		// Optional confirm step — note: webview doesn't support window.confirm,
+		// so we use a 5s "armed" two-step gesture instead, mirroring the
+		// pattern already used by the ConfigMD Demo button.
+		if (confirmMsg) {
+			if (!btn.__armed) {
+				btn.__armed = true;
+				var oldText = btn.textContent;
+				btn.textContent = '⚠ ' + confirmMsg + '（再次点击确认）';
+				btn.classList.add('imgui-button-armed');
+				setTimeout(function(){
+					btn.__armed = false;
+					btn.textContent = oldText;
+					btn.classList.remove('imgui-button-armed');
+				}, 5000);
+				return;
+			}
+			btn.__armed = false;
+			btn.classList.remove('imgui-button-armed');
+		}
+		var api = getApi();
+		if (!api) {
+			console.warn('[imgui] vscode api unavailable; submit dropped', { action: action, values: values });
+			return;
+		}
+		// Try parsing payload as JSON; fallback to string passthrough.
+		var payload = payloadAttr;
+		if (payloadAttr) {
+			try { payload = JSON.parse(payloadAttr); } catch(_){ /* keep as string */ }
+		}
+		api.postMessage({
+			type: 'imgui.submit',
+			payload: {
+				formId: formId,
+				buttonId: btn.getAttribute('data-imgui-id'),
+				action: action,
+				template: template,
+				message: rendered,
+				values: values,
+				anchor: anchor || undefined,
+				skill: skill || undefined,
+				stateAnchor: stateAnchor || undefined,
+				payload: payload || undefined,
+				// Routing context: copied from the imgui.ctx message the
+				// host pane sent us on mount. The host re-validates this
+				// (the preview JS shouldn't be trusted as a routing
+				// authority on its own), but echoing it makes diagnostics
+				// — and any future SDK-level features that depend on
+				// session — much easier.
+				ctx: {
+					employeeId: __imguiCtx.employeeId,
+					workspaceId: __imguiCtx.workspaceId,
+					workspaceSessionId: __imguiCtx.workspaceSessionId,
+					agentSessionId: __imguiCtx.agentSessionId
+				}
+			}
+		});
+		btn.classList.add('imgui-button-active');
+		setTimeout(function(){ btn.classList.remove('imgui-button-active'); }, 300);
+	});
+	// ── Inbound: host → preview commands ───────────────────────────────
+	// imgui.set        — bulk-update form values { id → value }
+	// imgui.set_one    — single value update     { id, value, max? }
+	// imgui.toast      — transient notification banner inside the preview
+	// imgui.reset      — reset a form to its initial values (clear sessionStorage)
+	window.addEventListener('message', function(e){
+		var m = e.data;
+		if (!m || typeof m.type !== 'string') return;
+		if (m.type === 'imgui.ctx') {
+			// Host telling us which (employee, workspace, fork session,
+			// agent session) this preview is bound to. Cache it for
+			// subsequent submits.
+			__imguiCtx = {
+				employeeId: m.employeeId,
+				workspaceId: m.workspaceId,
+				workspaceSessionId: m.workspaceSessionId,
+				agentSessionId: m.agentSessionId
+			};
+			try {
+				console.log('[imgui] ctx received:', __imguiCtx);
+			} catch(_){}
+			// Also publish to a globally-readable hook for power-user JS
+			// running inside the preview (e.g. theme tweaks that want to
+			// show a session badge).
+			try { window.__IMGUI_CTX__ = __imguiCtx; } catch(_){}
+			renderCtxBadge();
+			return;
+		}
+		if (m.type === 'imgui.set' || m.type === 'imgui.set_one') {
+			var values = m.values || (m.id ? (function(){ var o = {}; o[m.id] = m.value; if (typeof m.max === 'number') o[m.id + '__max'] = m.max; return o; })() : {});
+			applyValuesToForm(document, values);
+			return;
+		}
+		if (m.type === 'imgui.toast') {
+			showToast(m.message || '', m.variant || 'info', m.duration || 2400);
+			return;
+		}
+		if (m.type === 'imgui.reset') {
+			var formId = m.formId;
+			document.querySelectorAll('[data-imgui-form]').forEach(function(f){
+				if (formId && f.getAttribute('data-imgui-form') !== formId) return;
+				try { sessionStorage.removeItem(storageKey(f.getAttribute('data-imgui-form'))); } catch(_){}
+				// Re-apply DOM defaults via location.reload alternative: clear values manually.
+				f.querySelectorAll('[data-imgui-id]').forEach(function(el){
+					if (el.type === 'checkbox' || el.type === 'radio') { el.checked = el.defaultChecked; }
+					else if (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') { el.value = el.defaultValue || ''; if (el.classList && el.classList.contains('imgui-slider')) { syncSliderOutput(el); } }
+				});
+			});
+			return;
+		}
+	});
+	function showToast(text, variant, duration){
+		var t = document.createElement('div');
+		t.className = 'imgui-toast imgui-toast-' + variant;
+		t.textContent = text;
+		document.body.appendChild(t);
+		// Force layout then animate in
+		void t.offsetHeight;
+		t.classList.add('imgui-toast-show');
+		setTimeout(function(){
+			t.classList.remove('imgui-toast-show');
+			setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 250);
+		}, duration);
+	}
+})();</script>
+</body>
+</html>

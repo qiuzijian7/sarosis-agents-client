@@ -14,8 +14,8 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-// sarosis 本地化构建：剔除 OpenClaw 类型依赖（仅作类型占位）。
-// 上游真实接入时 OpenClawPluginApi 用于访问 host 提供的 IO/网络能力，sarosis 不走这条路径。
+// saros 本地化构建：剔除 OpenClaw 类型依赖（仅作类型占位）。
+// 上游真实接入时 OpenClawPluginApi 用于访问 host 提供的 IO/网络能力，saros 不走这条路径。
 // 用 any 而非 unknown，是因为下方代码用了索引访问（OpenClawPluginApi["runtime"]["agent"]...）。
 type OpenClawPluginApi = any;
 import { getEnv } from "./env.js";

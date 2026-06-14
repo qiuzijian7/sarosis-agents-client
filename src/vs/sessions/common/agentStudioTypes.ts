@@ -359,7 +359,7 @@ export interface Agent {
  *
  * `Agent` is a global singleton definition; `AgentBinding` is the workspace-local
  * record that captures everything specific to running that agent inside ONE
- * workspace. Persisted at `{workspace}/.sarosisworkspace/agent-bindings.json`
+ * workspace. Persisted at `{workspace}/.sarosworkspace/agent-bindings.json`
  * keyed by agentId, so two workspaces running the same agent never clobber each
  * other's worktree / memory / instance dir.
  *
@@ -376,7 +376,7 @@ export interface AgentBinding {
 	worktreePath?: string;
 	/** Branch name of the agent's worktree. */
 	worktreeBranch?: string;
-	/** Directory under {workspace}/.sarosisworkspace/agents/{slug}/ holding instance files. */
+	/** Directory under {workspace}/.sarosworkspace/agents/{slug}/ holding instance files. */
 	agentDir?: string;
 	/**
 	 * Memory configuration — controls L0/L1 recall + Persona injection at runtime.
@@ -536,7 +536,7 @@ export interface Workspace {
 	description?: string;
 	/**
 	 * Workspace home directory. On creation this should point to an (ideally empty)
-	 * folder used to store .sarosisworkspace metadata, agent artifacts, worktrees, etc.
+	 * folder used to store .sarosworkspace metadata, agent artifacts, worktrees, etc.
 	 * Kept optional for backward compatibility with legacy "virtual" workspaces.
 	 */
 	path?: string;

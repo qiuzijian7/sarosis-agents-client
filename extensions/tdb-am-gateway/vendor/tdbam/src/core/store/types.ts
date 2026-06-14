@@ -346,7 +346,7 @@ export interface IMemoryStore {
   /**
    * Optional: full L0 dump including role / session_key / timestamp.
    *
-   * Used by inspection panels (e.g. sarosis Tdbam ViewPane) that want to render
+   * Used by inspection panels (e.g. saros Tdbam ViewPane) that want to render
    * each turn as a collapsible item with author and session context. Stores
    * that don't implement this can be queried via {@link getAllL0Texts} for the
    * minimal text-only view.

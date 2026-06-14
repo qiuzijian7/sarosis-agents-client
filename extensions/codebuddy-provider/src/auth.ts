@@ -18,7 +18,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as zlib from 'zlib';
 import { execFile } from 'child_process';
-import { ICredentialData, AuthStatus, TokenSource } from '@sarosis/shared';
+import { ICredentialData, AuthStatus, TokenSource } from '@saros/shared';
 
 /** CodeBuddy-specific token data with source tracking */
 export interface ICodeBuddyTokenData extends ICredentialData {

@@ -16,8 +16,8 @@
 		"types": ["node"],
 		"typeRoots": ["../../node_modules/@types"],
 		"paths": {
-			"@sarosis/shared": ["../shared/out/index"],
-			"@sarosis/shared/*": ["../shared/out/*"]
+			"@saros/shared": ["../shared/out/index"],
+			"@saros/shared/*": ["../shared/out/*"]
 		}
 	},
 	"include": ["src/**/*"],

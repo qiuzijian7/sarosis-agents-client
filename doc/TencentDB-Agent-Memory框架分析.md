@@ -256,7 +256,7 @@ npm run gateway
 
 ## 八、与当前项目的关联启示
 
-分析该框架对 `sarosis-agents-client` 项目的启示：
+分析该框架对 `saros-agents-client` 项目的启示：
 
 1. **分层记忆设计**：可为 Agent Studio 引入类似 L0~L3 的分层记忆机制
 2. **上下文管理**：Offload 模块的符号化卸载思路可用于解决长对话上下文溢出问题

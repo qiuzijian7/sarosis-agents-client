@@ -1,0 +1,61 @@
+# 示例 Agent 实例配置
+# 此文件展示了一个 Agent 实例的完整配置
+
+# 基本标识
+id: example-agent-001
+name: Example Agent
+description: 一个示例 Agent 实例，基于通用助手模板
+
+# 来源模板
+templateId: general-assistant
+
+# 所属工作区
+workspaceId: default-workspace
+
+# 模型配置
+model:
+  providerId: knot-agui
+  modelId: gpt-4o
+  temperature: 0.7
+  maxTokens: 4096
+
+# Memory 配置
+memory:
+  enabled: true
+  providerId: mem0-memory
+
+# Tool 配置（启用的工具列表）
+tools:
+  - filesystem
+  - search
+  - web-browser
+
+# Planning 配置
+planning:
+  enabled: true
+  providerId: basic-planning
+
+# Execution 配置
+execution:
+  enabled: true
+  providerId: basic-execution
+  maxIterations: 10
+
+# Retrieval (RAG) 配置
+retrieval:
+  enabled: false
+  providerId: basic-retrieval
+
+# Kanban 配置
+kanban:
+  enabled: true
+  providerId: basic-kanban
+  defaultBoard: main
+
+# 系统提示（覆盖模板默认值）
+systemPrompt: "你是一个有用的助手。请根据用户的问题提供准确、有用的回答。"
+
+# 创建和更新时间（由系统自动管理）
+createdAt: 2026-01-01T00:00:00Z
+updatedAt: 2026-01-01T00:00:00Z
+status: active

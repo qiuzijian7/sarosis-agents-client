@@ -1,0 +1,14 @@
+id: data-analyst
+name: Data Analyst
+description: 数据分析助手，支持 SQL、Python、可视化
+category: data-analysis
+icon: icon.png
+defaultConfig:
+  temperature: 0.5
+  maxTokens: 6144
+  systemPrompt: "你是一个数据分析助手，擅长 SQL、Python 和数据可视化。请帮助用户分析数据并生成见解。"
+tags:
+  - data
+  - sql
+  - python
+  - visualization

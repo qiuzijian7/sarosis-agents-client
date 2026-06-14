@@ -1,8 +1,8 @@
 /**
  * Store Factory — creates the storage backend and (stub) embedding service
- * for sarosis local-first build.
+ * for saros local-first build.
  *
- * sarosis 适配（参见 vendor/tdbam/COPY_MANIFEST.md 第 3 节）：
+ * saros 适配（参见 vendor/tdbam/COPY_MANIFEST.md 第 3 节）：
  *   - Q7=A 关闭向量召回 → 仅保留 SQLite FTS5 路径，移除 TCVDB 与 sqlite-vec
  *   - Q11=A 删除 bm25-local → 不再生成 BM25 sparse vector
  *   - embedding 服务降级为 NoopEmbeddingService，调用即抛错
@@ -32,7 +32,7 @@ export interface StoreBundle {
 }
 
 /**
- * Create the storage backend for sarosis (always SQLite without vector recall).
+ * Create the storage backend for saros (always SQLite without vector recall).
  *
  * @param config       Fully resolved plugin config.
  * @param options.dataDir    Plugin data directory.
@@ -44,11 +44,11 @@ export function createStoreBundle(
 ): StoreBundle {
   const { logger } = options;
 
-  // sarosis 本地化构建中 storeBackend 仅支持 "sqlite"。
+  // saros 本地化构建中 storeBackend 仅支持 "sqlite"。
   // 若 config 指向 "tcvdb"，记录警告并回退（避免运行时崩溃）。
   if (config.storeBackend && config.storeBackend !== "sqlite") {
     logger?.warn?.(
-      `${TAG} storeBackend="${config.storeBackend}" is not supported in sarosis build (vector recall disabled). ` +
+      `${TAG} storeBackend="${config.storeBackend}" is not supported in saros build (vector recall disabled). ` +
       `Falling back to "sqlite". See vendor/tdbam/COPY_MANIFEST.md.`,
     );
   }
@@ -60,7 +60,7 @@ export function createStoreBundle(
   const store = new VectorStore(dbPath, dims, logger);
 
   logger?.debug?.(
-    `${TAG} Store created: backend=sqlite (sarosis local-first), dbPath=${dbPath}, ` +
+    `${TAG} Store created: backend=sqlite (saros local-first), dbPath=${dbPath}, ` +
     `dimensions=0 (vector recall disabled), embedding=noop`,
   );
 

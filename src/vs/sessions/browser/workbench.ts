@@ -1461,70 +1461,28 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 * On phone, the titlebar is hidden via CSS and a MobileTitlebarPart
 	 * is prepended before the grid.
 	 *
-	 * [Sarosis] Two-column layout:
-	 * - Sidebar (activity bar + content panel, 250px default) on the left
-	 * - Editor (split into two groups: left=files, right=Agent Studio) on the right
-	 * - No Panel, no AuxiliaryBar, no ChatBar
+	 * [Sarosis] VS Code native layout:
+	 *
+	 *   Root (VERTICAL):
+	 *   ├─ TitleBar [height=titleBarHeight, full width]
+	 *   └─ contentRow (HORIZONTAL) [height=fill]:
+	 *       ├─ Sidebar  [width=sideBarSize]
+	 *       ├─ File editor  [width=editorWidth]
+	 *       └─ Agent editor [width=agentEditorWidth]
 	 */
 	private createDesktopGridDescriptor(width: number, height: number): ISerializedGrid {
 
 		// [Sarosis] Sidebar width is dynamic:
-		//   - When the persisted sidebar visibility says "expanded", build
-		//     the grid with the previously-resized width (`_sidebarExpandedWidth`).
-		//   - Otherwise start collapsed at the 48px icon strip and let
-		//     `handleSidebarContentCollapsed()` resize when the user
-		//     expands it (it reads the same `_sidebarExpandedWidth`).
 		const sideBarSize = this.partVisibility.sidebar
 			? this._sidebarExpandedWidth
 			: 48;
-		// [Sarosis] The titlebar hosts the left-column tools (the sidebar
-		// expand/collapse toggle in `Menus.TitleBarLeftLayout`, plus the
-		// center command center and right account menu). Previously we gave
-		// it a zero-height hidden full-width slot so the three columns could
-		// fill the window top-to-bottom — but that also removed the sidebar
-		// toggle button. To keep the toggle button AND let the File/Agent
-		// editor columns fill the full window height, the titlebar is moved
-		// OUT of the window-top row and INTO the top of the left column.
-		//
-		// New grid shape (root = HORIZONTAL):
-		//   Root (HORIZONTAL):
-		//   ├─ leftColumn (branch, VERTICAL) [width=sideBarSize]:
-		//   │     ├─ TitleBar [height=titleBarHeight]  ← toggle button lives here
-		//   │     └─ Sidebar  [height=fill]
-		//   ├─ File editor  [width=editorWidth]        (fills full window height)
-		//   └─ Agent editor [width=agentEditorWidth]   (fills full window height)
-		//
-		// Because the editor columns are now direct children of the root
-		// HORIZONTAL branch, they span the entire window height — the File
-		// (middle) column is no longer pushed down by a top titlebar band.
 		const titleBarHeight = DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
 
-		// [Sarosis] The editor row is split into two physically independent
-		// EditorPart columns:
-		//   - File zone (middle)  → workspace files
-		//   - Agent zone (right)  → Canvas + Chat side-by-side split
-		//
-		// Per user requirement (2026-06-03): the agent zone takes **exactly
-		// half of the entire window width** at boot. This is measured
-		// against `width` (the whole window), NOT against the editor band,
-		// because users frame the layout in terms of "screen halves" — the
-		// sidebar is taken out of the file zone's budget, not split with
-		// the agent zone.
-		//
-		// Sizing rules:
-		//   - agent zone   = max(480, width / 2)
-		//                    (480 floor keeps both inner panes ≥ 240px on
-		//                     very narrow windows after the Canvas|Chat
-		//                     internal split)
-		//   - file editor  = remainder of the editor band, floor 320px
-		//
-		// Typical results:
-		//   1080px window: sidebar=240, agent=540, file=300→320 (floor)
-		//   1440px window: sidebar=240, agent=720, file=480
-		//   1920px window: sidebar=240, agent=960, file=720
+		// Sizing rules
 		const agentEditorWidth = Math.max(480, Math.round(width / 2));
 		const editorWidth = Math.max(320, width - sideBarSize - agentEditorWidth);
 
+		// ── TitleBar: full-width top row ──
 		const titleBarNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.TITLEBAR_PART },
@@ -1532,22 +1490,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			visible: true
 		};
 
+		// ── Sidebar ──
 		const sideBarNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.SIDEBAR_PART },
-			size: Math.max(0, height - titleBarHeight),
+			size: sideBarSize,
 			visible: this.partVisibility.sidebar
 		};
 
-		// Left column (VERTICAL): TitleBar (top) | Sidebar (fill). Its width
-		// is the sidebar width; the titlebar shares that width and renders
-		// only the left-column tools (toggle button) within it.
-		const leftColumn: ISerializedNode = {
-			type: 'branch',
-			data: [titleBarNode, sideBarNode],
-			size: sideBarSize
-		};
-
+		// ── File Editor ──
 		const editorNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.EDITOR_PART },
@@ -1555,6 +1506,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			visible: true
 		};
 
+		// ── Agent Editor ──
 		const agentEditorNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.AGENT_EDITOR_PART },
@@ -1562,18 +1514,24 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			visible: true
 		};
 
-		// Root (HORIZONTAL): Left column | File editor | Agent editor.
+		// ── Content row (HORIZONTAL): Sidebar | File editor | Agent editor ──
+		const contentRow: ISerializedNode = {
+			type: 'branch',
+			data: [sideBarNode, editorNode, agentEditorNode],
+			size: Math.max(0, height - titleBarHeight)
+		};
+
+		// ── Root (VERTICAL): TitleBar | contentRow ──
 		const result: ISerializedGrid = {
 			root: {
 				type: 'branch',
 				size: height,
 				data: [
-					leftColumn,
-					editorNode,
-					agentEditorNode
+					titleBarNode,
+					contentRow
 				]
 			},
-			orientation: Orientation.HORIZONTAL,
+			orientation: Orientation.VERTICAL,
 			width,
 			height
 		};
@@ -1924,11 +1882,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				this.workbenchGrid.resizeView(this.agentEditorPartView, { width: preToggleAgentWidth, height: 1000 });
 			} catch { /* ignore — grid may not be ready */ }
 		}
-
-		// [Sarosis] When the sidebar is collapsed (48px), the titlebar in the
-		// left column should only show the sidebar toggle button — the command
-		// center and right actions would overflow and look broken.
-		this.mainContainer.classList.toggle('sidebar-content-collapsed-layout', collapsed);
 	}
 
 	//#endregion

@@ -261,7 +261,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	 * Resolve the owning agent from the preview file's URI.
 	 *
 	 * Path convention (set up by `ConfigHtmlService.previewToFile`):
-	 *   <workspacePath>/.sarosisworkspace/agents/<agentDir>/.preview.html
+	 *   <workspacePath>/.sarosworkspace/agents/<agentDir>/.preview.html
 	 *
 	 * Strategy (in order):
 	 *   1. Extract `<workspacePath>` and `<agentDir>` from the file path.
@@ -282,7 +282,7 @@ export class HtmlPreviewEditorPane extends EditorPane {
 	 */
 	private async _resolveAgentIdFromUri(uri: URI): Promise<string | undefined> {
 		const fsPath = uri.fsPath.replace(/\\/g, '/');
-		const m = /^(.+?)\/\.sarosisworkspace\/agents\/([^/]+)\/\.preview\.html$/i.exec(fsPath);
+		const m = /^(.+?)\/\.sarosworkspace\/agents\/([^/]+)\/\.preview\.html$/i.exec(fsPath);
 		if (!m) {
 			this._logService.warn(`[HtmlPreviewEditorPane] resolveAgentId: path regex did not match fsPath=${fsPath}`);
 			return undefined;

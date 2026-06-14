@@ -3,7 +3,7 @@
 
 param(
     [string]$ServerIP = "21.91.41.66",
-    [string]$DeployPath = "C:\vssarosis-update",
+    [string]$DeployPath = "C:\vssaros-update",
     [int]$Port = 3030
 )
 
@@ -29,7 +29,7 @@ Copy-Item -Recurse -Force $sourcePath $destPath
 # 3. 创建 package.json (如果需要)
 Write-Host "[3/5] 创建 package.json..." -ForegroundColor Cyan
 $packageJson = @{
-    name = "vssarosis-update-server"
+    name = "vssaros-update-server"
     version = "1.0.0"
     description = "VsSarosis hot update server"
     main = "server.mjs"
@@ -57,7 +57,7 @@ Write-Host "[5/5] 创建 PM2 配置..." -ForegroundColor Cyan
 $pm2Config = @{
     apps = @(
         @{
-            name = "vssarosis-update"
+            name = "vssaros-update"
             script = "update-server/server.mjs"
             instances = 1
             autorestart = $true

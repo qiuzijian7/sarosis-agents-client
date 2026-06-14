@@ -1,4 +1,4 @@
-# cc-wf-studio vs sarosis-agents-client Workflow 功能对比分析
+# cc-wf-studio vs saros-agents-client Workflow 功能对比分析
 
 > 分析时间：2026-06-06  
 > cc-wf-studio 版本：v3.34.3  

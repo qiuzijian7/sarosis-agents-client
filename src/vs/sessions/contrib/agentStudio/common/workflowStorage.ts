@@ -8,11 +8,11 @@
 // ------------------------------------------------------------------------------------------------
 //
 // 作用: 将工作流以 JSON 文件形式持久化到当前工作区的
-//       `.sarosisworkspace/workflows/` 目录下，支持读取、写入、列举、删除。
+//       `.sarosworkspace/workflows/` 目录下，支持读取、写入、列举、删除。
 //
 // 与 CrewTeamService 的区别:
 // - CrewTeamService 用 IStorageService（浏览器存储）持久化，不落地到工作区文件。
-// - WorkflowStorageService 直接用 IFileService 写文件到 .sarosisworkspace/workflows/，
+// - WorkflowStorageService 直接用 IFileService 写文件到 .sarosworkspace/workflows/，
 //   每个工作流一个 `{id}.json` 文件，可被版本管理 / 团队共享。
 //
 // 设计: 每个工作流默认绑定一个 Agent（presetId + 部署后的 agentId），
@@ -177,7 +177,7 @@ export interface IWorkflowStorageService {
 	readonly onDidChangeWorkflows: Event<void>;
 
 	/**
-	 * 列举当前激活工作区下 `.sarosisworkspace/workflows/` 中的所有工作流。
+	 * 列举当前激活工作区下 `.sarosworkspace/workflows/` 中的所有工作流。
 	 * 如果没有激活工作区或目录不存在，返回空数组。
 	 */
 	listWorkflows(workspaceId?: string): Promise<IStoredWorkflow[]>;

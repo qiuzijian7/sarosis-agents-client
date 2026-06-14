@@ -24,7 +24,7 @@ import {
 	AgentStatus,
 } from "./agentChatTypes.js";
 
-// AgentChatPanel -- Full chat panel matching sarosis-webui layout
+// AgentChatPanel -- Full chat panel matching saros-webui layout
 //
 // Structure:
 //   .chat-container

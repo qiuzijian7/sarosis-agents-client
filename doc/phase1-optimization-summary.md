@@ -2,11 +2,11 @@
 
 ## 执行概要
 
-本文档总结了 sarosis-agents-client 项目第一阶段（1-2周）的优化工作。本阶段主要借鉴 OpenClaw 项目的 Skill 管理机制，对 sarosis-agents-client 的 Skill 系统进行了关键改进。
+本文档总结了 saros-agents-client 项目第一阶段（1-2周）的优化工作。本阶段主要借鉴 OpenClaw 项目的 Skill 管理机制，对 saros-agents-client 的 Skill 系统进行了关键改进。
 
 **完成时间：** 2026-05-20  
 **执行者：** AI Assistant  
-**代码库：** `G:\CustomWorkspaces\AIProjects\sarosis-agents-client`
+**代码库：** `G:\CustomWorkspaces\AIProjects\saros-agents-client`
 
 ---
 
@@ -281,7 +281,7 @@ if (!isWithinWorkspace) {
 ### C. 参考资料
 
 1. OpenClaw 源代码: `G:\CustomWorkspaces\AIProjects\openclaw`
-2. OpenClaw Skill 机制分析: `G:\CustomWorkspaces\AIProjects\sarosis-agents-client\doc\openclaw-skill-system-analysis.md`
+2. OpenClaw Skill 机制分析: `G:\CustomWorkspaces\AIProjects\saros-agents-client\doc\openclaw-skill-system-analysis.md`
 3. 第一阶段优化文档: 本文档
 
 ---

@@ -156,7 +156,7 @@ class DropOverlay extends Themable {
 				// zones (file zone left, agent-studio zone right). Cross-zone
 				// drags are blocked; any operation within the same zone is fully
 				// allowed (split, dock, merge, reorder — all directions).
-				const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+				const crossZoneBlocked = (globalThis as any).__sarosCrossZoneDragBlocked__;
 
 				if (isDraggingEditor && typeof crossZoneBlocked === 'function') {
 					const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
@@ -284,7 +284,7 @@ class DropOverlay extends Themable {
 		// ── [Sarosis] Safety-net: enforce two-zone layout ──────────────────
 		// Even if onDragOver was bypassed somehow, block cross-zone drops.
 		// Same-zone operations (split, dock, merge) are fully allowed.
-		const crossZoneBlocked = (globalThis as any).__sarosisCrossZoneDragBlocked__;
+		const crossZoneBlocked = (globalThis as any).__sarosCrossZoneDragBlocked__;
 		if (typeof crossZoneBlocked === 'function') {
 			if (this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
 				const edData = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);

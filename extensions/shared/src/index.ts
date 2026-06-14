@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * @sarosis/shared — Re-export barrel
+ * @saros/shared — Re-export barrel
  */
 
 export * from './types';

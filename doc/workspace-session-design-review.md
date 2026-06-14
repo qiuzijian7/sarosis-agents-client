@@ -25,7 +25,7 @@ async clearHistory(_employeeId: string, _sessionId?: string): Promise<void> {
 - **聊天消息从未写入磁盘**：`AgentChatService.sendMessage` → `AgentDriverService.executeTurn` → `AgentOSService.executeAgentTurn` 全链路无 `writeFile`，最终 `chatMessage` 仅存在于 webview 的 zustand store（运行时内存）。
 - 关闭/重启窗口后所有对话**直接丢失**。
 - `agentStudioWebviewController.ts` 中流式事件 `chat.stream.delta` 的 `sessionId` 字段已硬编码为 `''`。
-- `.sarosisworkspace/agents/{slug}/sessions/` 目录虽已被 `_ensureDir` 创建（`agentStudioService.ts:944`），但**完全空置**，注释明确说"Future: per-agent session transcripts"。
+- `.sarosworkspace/agents/{slug}/sessions/` 目录虽已被 `_ensureDir` 创建（`agentStudioService.ts:944`），但**完全空置**，注释明确说"Future: per-agent session transcripts"。
 
 **影响**：设计文档的"Fork 独立 Session"功能在当前代码上**不可能工作**——切换到 Fork 永远显示空对话，发送消息后写入哪里也未定义。
 
@@ -83,7 +83,7 @@ async *executeTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> 
 **影响**：设计文档 §4.3"定时任务触发 → 创建 Fork"流程的**触发端不存在**。
 
 **修复方案**：
-1. 调度器先做磁盘持久化（建议 `.sarosisworkspace/schedules.json`）。
+1. 调度器先做磁盘持久化（建议 `.sarosworkspace/schedules.json`）。
 2. 定义触发钩子接口 `IScheduleTriggerListener`，让 `WorkspaceSessionService` 注册为监听者，接到触发后创建 Fork。
 3. 调度器 `executeFromChatOptions` 调用前先创建 Fork、拿到该 Agent 的 `agentSessionId`，再带着 `sessionId` 进入 Driver。
 4. `views/scheduleView.ts` 的 mock 数据替换为真正的 `workspaceSession.list` 协议消息。

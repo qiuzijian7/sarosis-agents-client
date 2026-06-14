@@ -3,7 +3,7 @@
 	"displayName": "TDB-AM Viewer",
 	"description": "TencentDB Agent Memory：拉起 TDB-AM gateway 与 Knot→OpenAI 协议适配器（L0/L1/L2/L3 记忆 UI 已迁移到 Sessions ViewPane）。",
 	"version": "0.0.1",
-	"publisher": "sarosis",
+	"publisher": "saros",
 	"license": "MIT",
 	"engines": {
 		"vscode": "^1.95.0"

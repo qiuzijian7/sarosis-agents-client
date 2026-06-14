@@ -39,7 +39,7 @@ export class AgentSettingsEditorInput extends EditorInput {
 	}
 
 	override get resource(): URI {
-		return URI.from({ scheme: 'sarosis-agent-settings', path: `/${this._agentId}` });
+		return URI.from({ scheme: 'saros-agent-settings', path: `/${this._agentId}` });
 	}
 
 	override getName(): string {

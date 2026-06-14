@@ -385,7 +385,7 @@ export class AgentStudioSearchViewPane extends SearchView {
 			const activeWorkspace = workspaces.find((ws: Workspace) => ws.id === activeWorkspaceId);
 
 			// 真实代码仓库根目录集合（用于搜索范围）：
-			// 注意：workspace.path 是 home / 元数据目录（存放 .sarosisworkspace、worktrees 等），
+			// 注意：workspace.path 是 home / 元数据目录（存放 .sarosworkspace、worktrees 等），
 			// **不含代码**；真正的代码仓库在 relatedFolders[]（见 WorkspaceViewPane 文件树渲染逻辑）。
 			// 因此搜索范围必须用 relatedFolders 的路径，否则会搜到空的 home 目录 → 0 结果。
 			const repoPaths = this._collectWorkspaceRepoPaths(activeWorkspace);
@@ -446,7 +446,7 @@ export class AgentStudioSearchViewPane extends SearchView {
 		//
 		// 完整根因（前两版修复均未命中真凶）：
 		//   sessions 窗口的 agentStudio Workspace 有两类根目录：
-		//     - workspace.path  → home / 元数据目录（.sarosisworkspace、worktrees 等），**不含代码**
+		//     - workspace.path  → home / 元数据目录（.sarosworkspace、worktrees 等），**不含代码**
 		//     - relatedFolders[] → 真正的代码仓库（git root，含 AGENTS.md 等源码）
 		//   之前的代码错误地把 workspace.path（空的 home 目录）写入 include pattern，
 		//   导致搜索范围落在不含代码的目录 → 搜索已存在内容也 0 结果（与现象完全吻合）。

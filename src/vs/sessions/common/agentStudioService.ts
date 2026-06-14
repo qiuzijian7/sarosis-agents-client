@@ -68,7 +68,7 @@ export interface IAgentStudioService {
 	// `Agent` is a global definition; bindings hold workspace-local runtime
 	// state (worktree, agentDir, memoryConfig) so the same agent running in two
 	// workspaces never clobbers the other. Persisted at
-	// `{workspace}/.sarosisworkspace/agent-bindings.json` keyed by agentId.
+	// `{workspace}/.sarosworkspace/agent-bindings.json` keyed by agentId.
 	/** All bindings for a workspace. */
 	getAgentBindings(workspaceId: string): Promise<AgentBinding[]>;
 	/** A single binding, or undefined if the agent has never run in this workspace. */

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Agent Chat — Type definitions (ported from sarosis-webui)
+// Agent Chat — Type definitions (ported from saros-webui)
 
 import { AgentStatus } from '../../common/agentStudioTypes.js';
 

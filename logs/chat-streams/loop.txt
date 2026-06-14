@@ -24,10 +24,10 @@ AgentStudioWebviewController @ agentStudioWebviewController.js:99
 _createInstance @ instantiationService.js:118
 createInstance @ instantiationService.js:93
 setInput @ agentStudioEditorPane.js:50
-vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/base/common/lifecycle.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
-vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/sessions/contrib/agentStudio/common/agentOS.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
-vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/base/common/event.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
-vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/sessions/contrib/agentStudio/common/providers.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
+vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/base/common/lifecycle.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
+vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/sessions/contrib/agentStudio/common/agentOS.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
+vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/base/common/event.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
+vscode-file://vscode-app/g:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/sessions/contrib/agentStudio/common/providers.js:1  Failed to load resource: net::ERR_FILE_NOT_FOUND
  Unrecognized feature: 'local-network-access'.
 (anonymous) @ index.html?id=ebebaa…5-9595-72ceec…:1032
 await in (anonymous)
@@ -66,9 +66,9 @@ HostMessaging.channel.port1.onmessage @ index.html?id=ebebaa…55-9595-72ceec…
   INFO [AgentStudio] _handleMessage: type=employees.list, id=req_4_1780615905529, panelType=canvas, payload={"workspaceId":"1780403697369-9cz1cjv"}
  [CanvasPanel] loadWorkspaces done, workspaces: 4 activeWorkspaceId: 1780403697369-9cz1cjv
   INFO [AgentStudio] getEmployees: found 3 employees
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace
-  INFO [AgentStudio] getEmployees: workspaceId=1780403697369-9cz1cjv, dirUri=file:///g%3A/vssarosis_workspace/.sarosisworkspace
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace
+  INFO [AgentStudio] getEmployees: workspaceId=1780403697369-9cz1cjv, dirUri=file:///g%3A/vssaros_workspace/.sarosworkspace
   INFO [AgentStudio] _handleMessage: type=workspace.setActive, id=req_5_1780615905536, panelType=canvas, payload={"id":"1780403697369-9cz1cjv"}
  [WorkspaceCanvas] storeEdges changed, count: 2
   INFO [AgentStudio] getEmployees: found 3 employees
@@ -84,37 +84,37 @@ HostMessaging.channel.port1.onmessage @ index.html?id=ebebaa…55-9595-72ceec…
   INFO [WorktreeService] getAllRepositoryRoots: workspace folders count=2
   INFO [WorktreeService] getAllRepositoryRoots: workspace folders count=2
   INFO [WorktreeService] getAllRepositoryRoots: workspace folders count=2
-  INFO [WorktreeService] filterGitRepositoryRoots: found .git at "g:\CustomWorkspaces\AIProjects\sarosis-agents-client"
+  INFO [WorktreeService] filterGitRepositoryRoots: found .git at "g:\CustomWorkspaces\AIProjects\saros-agents-client"
   INFO [WorktreeService] getAllRepositoryRoots: 1 repo root(s)
-  INFO [WorktreeService] filterGitRepositoryRoots: found .git at "g:\CustomWorkspaces\AIProjects\sarosis-agents-client"
+  INFO [WorktreeService] filterGitRepositoryRoots: found .git at "g:\CustomWorkspaces\AIProjects\saros-agents-client"
   INFO [WorktreeService] getAllRepositoryRoots: 1 repo root(s)
-  INFO [WorktreeService] filterGitRepositoryRoots: found .git at "g:\CustomWorkspaces\AIProjects\sarosis-agents-client"
+  INFO [WorktreeService] filterGitRepositoryRoots: found .git at "g:\CustomWorkspaces\AIProjects\saros-agents-client"
   INFO [WorktreeService] getAllRepositoryRoots: 1 repo root(s)
-  INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregating worktrees across 1 repo root(s): g:\CustomWorkspaces\AIProjects\sarosis-agents-client
-  INFO [WorktreeService] listWorktrees: repoPath="g:\CustomWorkspaces\AIProjects\sarosis-agents-client"
-  INFO [WorktreeService] execGit: git worktree list --porcelain (cwd: g:\CustomWorkspaces\AIProjects\sarosis-agents-client)
+  INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregating worktrees across 1 repo root(s): g:\CustomWorkspaces\AIProjects\saros-agents-client
+  INFO [WorktreeService] listWorktrees: repoPath="g:\CustomWorkspaces\AIProjects\saros-agents-client"
+  INFO [WorktreeService] execGit: git worktree list --porcelain (cwd: g:\CustomWorkspaces\AIProjects\saros-agents-client)
   INFO [WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge
-  INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregating worktrees across 1 repo root(s): g:\CustomWorkspaces\AIProjects\sarosis-agents-client
-  INFO [WorktreeService] listWorktrees: repoPath="g:\CustomWorkspaces\AIProjects\sarosis-agents-client"
-  INFO [WorktreeService] execGit: git worktree list --porcelain (cwd: g:\CustomWorkspaces\AIProjects\sarosis-agents-client)
+  INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregating worktrees across 1 repo root(s): g:\CustomWorkspaces\AIProjects\saros-agents-client
+  INFO [WorktreeService] listWorktrees: repoPath="g:\CustomWorkspaces\AIProjects\saros-agents-client"
+  INFO [WorktreeService] execGit: git worktree list --porcelain (cwd: g:\CustomWorkspaces\AIProjects\saros-agents-client)
   INFO [WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge
-  INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregating worktrees across 1 repo root(s): g:\CustomWorkspaces\AIProjects\sarosis-agents-client
-  INFO [WorktreeService] listWorktrees: repoPath="g:\CustomWorkspaces\AIProjects\sarosis-agents-client"
-  INFO [WorktreeService] execGit: git worktree list --porcelain (cwd: g:\CustomWorkspaces\AIProjects\sarosis-agents-client)
+  INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregating worktrees across 1 repo root(s): g:\CustomWorkspaces\AIProjects\saros-agents-client
+  INFO [WorktreeService] listWorktrees: repoPath="g:\CustomWorkspaces\AIProjects\saros-agents-client"
+  INFO [WorktreeService] execGit: git worktree list --porcelain (cwd: g:\CustomWorkspaces\AIProjects\saros-agents-client)
   INFO [WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge
  [EmployeeNode] calling updateNodeInternals("1780403758112-sg552ku") after double-rAF
  [EmployeeNode] calling updateNodeInternals("1780471231090-0po9dxm") after double-rAF
  [EmployeeNode] calling updateNodeInternals("1780471264463-cosrkvb") after double-rAF
   INFO [WorktreeService] execGit: success, stdout length=462
-  INFO [WorktreeService] listWorktrees: output="worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client
+  INFO [WorktreeService] listWorktrees: output="worktree G:/CustomWorkspaces/AIProjects/saros-agents-client
 HEAD 94752bec575e1a3000ef62b830e964059987980e
 branch refs/heads/main
 
-worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client/.worktrees/feat-codegraph
+worktree G:/CustomWorkspaces/AIProjects/saros-agents-client/.worktrees/feat-codegraph
 HEAD ebc80446fe4975f81d7111fb72c6684ce4f44873
 branch refs/heads/feat-codegraph
 
-worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client/.worktrees/feat-kanban
+worktree G:/CustomWorkspaces/AIProjects/saros-agents-client/.worktrees/feat-kanban
 HEAD 0364edd718c31fd4f91d9671864c735b7faf957f
 branch refs/heads/feat-kanban
 
@@ -122,15 +122,15 @@ branch refs/heads/feat-kanban
   INFO [WorktreeService] listWorktrees: parsed 3 worktrees
   INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregated 3 worktree(s)
   INFO [WorktreeService] execGit: success, stdout length=462
-  INFO [WorktreeService] listWorktrees: output="worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client
+  INFO [WorktreeService] listWorktrees: output="worktree G:/CustomWorkspaces/AIProjects/saros-agents-client
 HEAD 94752bec575e1a3000ef62b830e964059987980e
 branch refs/heads/main
 
-worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client/.worktrees/feat-codegraph
+worktree G:/CustomWorkspaces/AIProjects/saros-agents-client/.worktrees/feat-codegraph
 HEAD ebc80446fe4975f81d7111fb72c6684ce4f44873
 branch refs/heads/feat-codegraph
 
-worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client/.worktrees/feat-kanban
+worktree G:/CustomWorkspaces/AIProjects/saros-agents-client/.worktrees/feat-kanban
 HEAD 0364edd718c31fd4f91d9671864c735b7faf957f
 branch refs/heads/feat-kanban
 
@@ -138,15 +138,15 @@ branch refs/heads/feat-kanban
   INFO [WorktreeService] listWorktrees: parsed 3 worktrees
   INFO [AgentStudio] getWorktrees(1780403697369-9cz1cjv): aggregated 3 worktree(s)
   INFO [WorktreeService] execGit: success, stdout length=462
-  INFO [WorktreeService] listWorktrees: output="worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client
+  INFO [WorktreeService] listWorktrees: output="worktree G:/CustomWorkspaces/AIProjects/saros-agents-client
 HEAD 94752bec575e1a3000ef62b830e964059987980e
 branch refs/heads/main
 
-worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client/.worktrees/feat-codegraph
+worktree G:/CustomWorkspaces/AIProjects/saros-agents-client/.worktrees/feat-codegraph
 HEAD ebc80446fe4975f81d7111fb72c6684ce4f44873
 branch refs/heads/feat-codegraph
 
-worktree G:/CustomWorkspaces/AIProjects/sarosis-agents-client/.worktrees/feat-kanban
+worktree G:/CustomWorkspaces/AIProjects/saros-agents-client/.worktrees/feat-kanban
 HEAD 0364edd718c31fd4f91d9671864c735b7faf957f
 branch refs/heads/feat-kanban
 
@@ -226,29 +226,29 @@ onClick @ actionViewItems.js:110
  [Sarosis-Debug] ViewPaneContainer.layout() called: id=agentStudio.workspace, width=390, height=927
  [Sarosis-Debug] Calling paneview.layout(height=927, width=390)
   INFO [WorkspaceViewPane] Loaded 4 workspaces
-  INFO [WorkspaceViewPane] Active workspace: "vssarosis_workspace" id=1780403697369-9cz1cjv path=g:\vssarosis_workspace relatedFolders=1
+  INFO [WorkspaceViewPane] Active workspace: "vssaros_workspace" id=1780403697369-9cz1cjv path=g:\vssaros_workspace relatedFolders=1
   INFO [WorkspaceViewPane] Building tree with 2 roots for active workspace
   INFO [WorkspaceExplorer] getChildren(Workspaces): returning 2 predefined children
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssarosis_workspace
-  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
-  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssarosis_workspace
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssaros_workspace
+  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
+  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssaros_workspace
   INFO [WorkspaceViewPane] setInput completed for virtual root
-  INFO [WorkspaceViewPane] expanded workspace root: vssarosis_workspace
-  INFO [WorkspaceViewPane] expanded workspace root: sarosis-agents-client
- [Extension Host] [dotenv@17.2.0] injecting env (0) from ..\..\extensions\copilot\.env (tip: ⚙️  write to custom object with { processEnv: myObject }) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+  INFO [WorkspaceViewPane] expanded workspace root: vssaros_workspace
+  INFO [WorkspaceViewPane] expanded workspace root: saros-agents-client
+ [Extension Host] [dotenv@17.2.0] injecting env (0) from ..\..\extensions\copilot\.env (tip: ⚙️  write to custom object with { processEnv: myObject }) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO Extension host (LocalProcess pid: 66144) is responsive.
- [Extension Host] [Knot] activate() — registered chat provider, vendor='knot' (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] findResourcesDir: found at project root g:\CustomWorkspaces\AIProjects\sarosis-agents-client\resources (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] autoAddLocalResourcesDirToKnotWorkspace: checking resources directory: g:\CustomWorkspaces\AIProjects\sarosis-agents-client\resources (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:46.830Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:46.843Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] Cache MISS (empty) — fetching from server (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] → GET https://copilot.tencent.com/v3/config (timeout=60000ms, traceId=0e638b77-4713-4b32-aba2-1520355a63fb, requestId=176c8c00b7f94ae182aea852c2acf851) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] activate() — registered chat provider, vendor='knot' (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] findResourcesDir: found at project root g:\CustomWorkspaces\AIProjects\saros-agents-client\resources (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] autoAddLocalResourcesDirToKnotWorkspace: checking resources directory: g:\CustomWorkspaces\AIProjects\saros-agents-client\resources (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:46.830Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:46.843Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] Cache MISS (empty) — fetching from server (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] → GET https://copilot.tencent.com/v3/config (timeout=60000ms, traceId=0e638b77-4713-4b32-aba2-1520355a63fb, requestId=176c8c00b7f94ae182aea852c2acf851) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [WorkspaceLifecycle] command hook registered: id=knot-agui onCreated=knot.workspaceSync onDeleted=knot.workspaceUnsync onUpdated=<none>
- [Extension Host] [Knot] provideLanguageModelChatInformation -> 12 (agent×model) entries from 1 agent(s) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] provideLanguageModelChatInformation -> 12 (agent×model) entries from 1 agent(s) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [LMBridge] Resolved 12 model(s) for vendor=knot
   INFO [ModelSelector] Model list changed for lm:knot
   INFO [AgentStudio] Model providers changed, notifying webview
@@ -286,9 +286,9 @@ onClick @ actionViewItems.js:110
   INFO [ModelSelector] Model list changed for lm:knot
   INFO [AgentStudio] Model providers changed, notifying webview
   INFO [AgentStudio] Model providers changed, notifying webview
- [Extension Host] [Knot] getKnotClientStatus: knot-cli client-status (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] auto-check on activate -> installed=true version='Version: v0.16.0' (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] registered workspace lifecycle hook (id=knot-agui, onCreated=knot.workspaceSync, onDeleted=knot.workspaceUnsync) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] getKnotClientStatus: knot-cli client-status (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] auto-check on activate -> installed=true version='Version: v0.16.0' (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] registered workspace lifecycle hook (id=knot-agui, onCreated=knot.workspaceSync, onDeleted=knot.workspaceUnsync) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [VISION-DEBUG][Host.providersList] providerId=openrouter providerName=OpenRouter modelCount=200 models=[{"id":"nvidia/nemotron-3.5-content-safety:free"},{"id":"nvidia/nemotron-3-ultra-550b-a55b:free"},{"id":"nvidia/nemotron-3-ultra-550b-a55b"},{"id":"qwen/qwen3.7-plus"},{"id":"minimax/minimax-m3"},{"id":"stepfun/step-3.7-flash"},{"id":"anthropic/claude-opus-4.8-fast"},{"id":"anthropic/claude-opus-4.8"},{"id":"qwen/qwen3.7-max"},{"id":"x-ai/grok-build-0.1"},{"id":"google/gemini-3.5-flash"},{"id":"anthropic/claude-opus-4.7-fast"},{"id":"openrouter/fusion"},{"id":"perceptron/perceptron-mk1"},{"id":"inclusionai/ring-2.6-1t"},{"id":"google/gemini-3.1-flash-lite"},{"id":"openai/gpt-chat-latest"},{"id":"x-ai/grok-4.3"},{"id":"ibm-granite/granite-4.1-8b"},{"id":"mistralai/mistral-medium-3-5"},{"id":"openrouter/owl-alpha"},{"id":"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"},{"id":"poolside/laguna-xs.2:free"},{"id":"poolside/laguna-m.1:free"},{"id":"~anthropic/claude-haiku-latest"},{"id":"~openai/gpt-mini-latest"},{"id":"~google/gemini-pro-latest"},{"id":"~moonshotai/kimi-latest"},{"id":"~google/gemini-flash-latest"},{"id":"~anthropic/claude-sonnet-latest"},{"id":"~openai/gpt-latest"},{"id":"qwen/qwen3.5-plus-20260420"},{"id":"qwen/qwen3.6-flash"},{"id":"qwen/qwen3.6-35b-a3b"},{"id":"qwen/qwen3.6-max-preview"},{"id":"qwen/qwen3.6-27b"},{"id":"openai/gpt-5.5-pro"},{"id":"openai/gpt-5.5"},{"id":"deepseek/deepseek-v4-pro"},{"id":"deepseek/deepseek-v4-flash"},{"id":"inclusionai/ling-2.6-1t"},{"id":"tencent/hy3-preview"},{"id":"xiaomi/mimo-v2.5-pro"},{"id":"xiaomi/mimo-v2.5"},{"id":"openai/gpt-5.4-image-2"},{"id":"inclusionai/ling-2.6-flash"},{"id":"~anthropic/claude-opus-latest"},{"id":"openrouter/pareto-code"},{"id":"moonshotai/kimi-k2.6:free"},{"id":"moonshotai/kimi-k2.6"},{"id":"anthropic/claude-opus-4.7"},{"id":"anthropic/claude-opus-4.6-fast"},{"id":"z-ai/glm-5.1"},{"id":"google/gemma-4-26b-a4b-it:free"},{"id":"google/gemma-4-26b-a4b-it"},{"id":"google/gemma-4-31b-it:free"},{"id":"google/gemma-4-31b-it"},{"id":"qwen/qwen3.6-plus"},{"id":"z-ai/glm-5v-turbo"},{"id":"arcee-ai/trinity-large-thinking"},{"id":"x-ai/grok-4.20-multi-agent"},{"id":"x-ai/grok-4.20"},{"id":"google/lyria-3-pro-preview"},{"id":"google/lyria-3-clip-preview"},{"id":"kwaipilot/kat-coder-pro-v2"},{"id":"rekaai/reka-edge"},{"id":"minimax/minimax-m2.7"},{"id":"openai/gpt-5.4-nano"},{"id":"openai/gpt-5.4-mini"},{"id":"mistralai/mistral-small-2603"},{"id":"z-ai/glm-5-turbo"},{"id":"nvidia/nemotron-3-super-120b-a12b:free"},{"id":"nvidia/nemotron-3-super-120b-a12b"},{"id":"bytedance-seed/seed-2.0-lite"},{"id":"qwen/qwen3.5-9b"},{"id":"openai/gpt-5.4-pro"},{"id":"openai/gpt-5.4"},{"id":"inception/mercury-2"},{"id":"openai/gpt-5.3-chat"},{"id":"google/gemini-3.1-flash-lite-preview"},{"id":"bytedance-seed/seed-2.0-mini"},{"id":"google/gemini-3.1-flash-image-preview"},{"id":"qwen/qwen3.5-35b-a3b"},{"id":"qwen/qwen3.5-27b"},{"id":"qwen/qwen3.5-122b-a10b"},{"id":"qwen/qwen3.5-flash-02-23"},{"id":"liquid/lfm-2-24b-a2b"},{"id":"google/gemini-3.1-pro-preview-customtools"},{"id":"openai/gpt-5.3-codex"},{"id":"aion-labs/aion-2.0"},{"id":"google/gemini-3.1-pro-preview"},{"id":"anthropic/claude-sonnet-4.6"},{"id":"qwen/qwen3.5-plus-02-15"},{"id":"qwen/qwen3.5-397b-a17b"},{"id":"minimax/minimax-m2.5"},{"id":"z-ai/glm-5"},{"id":"qwen/qwen3-max-thinking"},{"id":"anthropic/claude-opus-4.6"},{"id":"qwen/qwen3-coder-next"},{"id":"openrouter/free"},{"id":"stepfun/step-3.5-flash"},{"id":"moonshotai/kimi-k2.5"},{"id":"upstage/solar-pro-3"},{"id":"minimax/minimax-m2-her"},{"id":"writer/palmyra-x5"},{"id":"liquid/lfm-2.5-1.2b-thinking:free"},{"id":"liquid/lfm-2.5-1.2b-instruct:free"},{"id":"openai/gpt-audio"},{"id":"openai/gpt-audio-mini"},{"id":"z-ai/glm-4.7-flash"},{"id":"openai/gpt-5.2-codex"},{"id":"bytedance-seed/seed-1.6-flash"},{"id":"bytedance-seed/seed-1.6"},{"id":"minimax/minimax-m2.1"},{"id":"z-ai/glm-4.7"},{"id":"google/gemini-3-flash-preview"},{"id":"xiaomi/mimo-v2-flash"},{"id":"nvidia/nemotron-3-nano-30b-a3b:free"},{"id":"nvidia/nemotron-3-nano-30b-a3b"},{"id":"openai/gpt-5.2-chat"},{"id":"openai/gpt-5.2-pro"},{"id":"openai/gpt-5.2"},{"id":"mistralai/devstral-2512"},{"id":"relace/relace-search"},{"id":"z-ai/glm-4.6v"},{"id":"nex-agi/deepseek-v3.1-nex-n1"},{"id":"essentialai/rnj-1-instruct"},{"id":"openrouter/bodybuilder"},{"id":"openai/gpt-5.1-codex-max"},{"id":"amazon/nova-2-lite-v1"},{"id":"mistralai/ministral-14b-2512"},{"id":"mistralai/ministral-8b-2512"},{"id":"mistralai/ministral-3b-2512"},{"id":"mistralai/mistral-large-2512"},{"id":"arcee-ai/trinity-mini"},{"id":"deepseek/deepseek-v3.2"},{"id":"prime-intellect/intellect-3"},{"id":"anthropic/claude-opus-4.5"},{"id":"allenai/olmo-3-32b-think"},{"id":"google/gemini-3-pro-image-preview"},{"id":"deepcogito/cogito-v2.1-671b"},{"id":"openai/gpt-5.1"},{"id":"openai/gpt-5.1-chat"},{"id":"openai/gpt-5.1-codex"},{"id":"openai/gpt-5.1-codex-mini"},{"id":"moonshotai/kimi-k2-thinking"},{"id":"amazon/nova-premier-v1"},{"id":"perplexity/sonar-pro-search"},{"id":"mistralai/voxtral-small-24b-2507"},{"id":"openai/gpt-oss-safeguard-20b"},{"id":"nvidia/nemotron-nano-12b-v2-vl:free"},{"id":"minimax/minimax-m2"},{"id":"qwen/qwen3-vl-32b-instruct"},{"id":"ibm-granite/granite-4.0-h-micro"},{"id":"microsoft/phi-4-mini-instruct"},{"id":"openai/gpt-5-image-mini"},{"id":"anthropic/claude-haiku-4.5"},{"id":"qwen/qwen3-vl-8b-thinking"},{"id":"qwen/qwen3-vl-8b-instruct"},{"id":"openai/gpt-5-image"},{"id":"openai/o3-deep-research"},{"id":"openai/o4-mini-deep-research"},{"id":"nvidia/llama-3.3-nemotron-super-49b-v1.5"},{"id":"google/gemini-2.5-flash-image"},{"id":"qwen/qwen3-vl-30b-a3b-thinking"},{"id":"qwen/qwen3-vl-30b-a3b-instruct"},{"id":"openai/gpt-5-pro"},{"id":"z-ai/glm-4.6"},{"id":"anthropic/claude-sonnet-4.5"},{"id":"deepseek/deepseek-v3.2-exp"},{"id":"thedrummer/cydonia-24b-v4.1"},{"id":"relace/relace-apply-3"},{"id":"google/gemini-2.5-flash-lite-preview-09-2025"},{"id":"qwen/qwen3-vl-235b-a22b-thinking"},{"id":"qwen/qwen3-vl-235b-a22b-instruct"},{"id":"qwen/qwen3-max"},{"id":"qwen/qwen3-coder-plus"},{"id":"openai/gpt-5-codex"},{"id":"deepseek/deepseek-v3.1-terminus"},{"id":"qwen/qwen3-coder-flash"},{"id":"qwen/qwen3-next-80b-a3b-thinking"},{"id":"qwen/qwen3-next-80b-a3b-instruct:free"},{"id":"qwen/qwen3-next-80b-a3b-instruct"},{"id":"qwen/qwen-plus-2025-07-28:thinking"},{"id":"qwen/qwen-plus-2025-07-28"},{"id":"nvidia/nemotron-nano-9b-v2:free"},{"id":"nvidia/nemotron-nano-9b-v2"},{"id":"moonshotai/kimi-k2-0905"},{"id":"qwen/qwen3-30b-a3b-thinking-2507"},{"id":"nousresearch/hermes-4-70b"},{"id":"nousresearch/hermes-4-405b"},{"id":"deepseek/deepseek-chat-v3.1"},{"id":"mistralai/mistral-medium-3.1"},{"id":"baidu/ernie-4.5-vl-28b-a3b"},{"id":"z-ai/glm-4.5v"},{"id":"ai21/jamba-large-1.7"},{"id":"openai/gpt-5-chat"},{"id":"openai/gpt-5"},{"id":"openai/gpt-5-mini"},{"id":"openai/gpt-5-nano"}]
   INFO [VISION-DEBUG][Host.providersList] providerId=nous providerName=Nous modelCount=0 models=[]
   INFO [VISION-DEBUG][Host.providersList] providerId=gemini providerName=Gemini modelCount=0 models=[]
@@ -351,10 +351,10 @@ onClick @ actionViewItems.js:110
  [VISION-DEBUG][bridge.listModels] vendor=knot qualifiedId=knot/9de3e080c2724179a549ebd15f00aaae::kimi-k2.6 bareId=kimi-k2.6 supportsImages=true supportsReasoning=true
   INFO [VISION-DEBUG][Host.providersList] providerId=lm:knot providerName=Knot modelCount=12 models=[{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v3.1"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v3.2"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v4-flash"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::glm-5.1","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.7-opus","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-sonnet","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-sonnet-1m-context","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-opus","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-opus-1m-context","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::gpt-5.4","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::hy3-preview"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::kimi-k2.6","img":true}]
  [ProviderStore] updateProviders: keeping selection lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa (provider exists, authStatus=validating)
- [Extension Host] [Knot] getKnotClientStatus: knot-cli client-status (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] getKnotClientStatus: connection_uuid=7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] auto-fetch connection_uuid on activate -> 7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] connection_uuid: 7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] getKnotClientStatus: knot-cli client-status (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] getKnotClientStatus: connection_uuid=7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] auto-fetch connection_uuid on activate -> 7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] connection_uuid: 7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [AgenticPromptsService] listPromptFiles(type=agent) called
   INFO [AgenticPromptsService] listPromptFiles(type=agent): baseResults count=5
   INFO [AgenticPromptsService] listPromptFiles(type=agent): not skill type, returning baseResults
@@ -460,13 +460,13 @@ onClick @ actionViewItems.js:110
  [VISION-DEBUG][bridge.listModels] vendor=knot qualifiedId=knot/9de3e080c2724179a549ebd15f00aaae::kimi-k2.6 bareId=kimi-k2.6 supportsImages=true supportsReasoning=true
   INFO [VISION-DEBUG][Host.providersList] providerId=lm:knot providerName=Knot modelCount=12 models=[{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v3.1"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v3.2"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v4-flash"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::glm-5.1","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.7-opus","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-sonnet","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-sonnet-1m-context","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-opus","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-opus-1m-context","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::gpt-5.4","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::hy3-preview"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::kimi-k2.6","img":true}]
  [ProviderStore] updateProviders: keeping selection lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa (provider exists, authStatus=validating)
- [Extension Host] [Knot] getKnotClientStatus: connection_uuid=7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [Knot] autoAddLocalResourcesDirToKnotWorkspace: resources directory is already in knot-cli workspace, skipping (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] ← HTTP 200 OK in 1578ms (serverTraceId=8e22f037f25d7e43f190b4d5b627b777) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] Parsed payload: 70 raw models, 12 agents [craft, ask, CodeCompletion, CodeCompletionNes, CommitMessage, RemoteAgentProxy, InlineChat, agent, chat, enhance prompt, inline-chat, terminal] (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] Using 'craft' agent allow-list (20 entries): [hy3-preview-agent-ioa, glm-5v-turbo-ioa, glm-5.1-ioa, kimi-k2.6-ioa, minimax-m2.7-ioa, claude-opus-4.8-1m, claude-opus-4.8, claude-opus-4.7-1m, claude-opus-4.7, claude-opus-4.6-1m, claude-sonnet-4.6-1m, claude-opus-4.6, claude-haiku-4.5, gpt-5.5, gpt-5.4, gpt-5.3-codex, gemini-3.5-flash, deepseek-v3-2-volc-ioa, deepseek-v4-flash-ioa, deepseek-v4-pro-ioa] (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] Resolved 20 chat models from allow-list (20 with metadata, 0 synthesized) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] ✓ SUCCESS — cached 20 chat models in 1581ms (TTL=300000ms): (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] getKnotClientStatus: connection_uuid=7f6542ef-dc0a-49ca-b14a-ef694234b4b9 (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [Knot] autoAddLocalResourcesDirToKnotWorkspace: resources directory is already in knot-cli workspace, skipping (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] ← HTTP 200 OK in 1578ms (serverTraceId=8e22f037f25d7e43f190b4d5b627b777) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] Parsed payload: 70 raw models, 12 agents [craft, ask, CodeCompletion, CodeCompletionNes, CommitMessage, RemoteAgentProxy, InlineChat, agent, chat, enhance prompt, inline-chat, terminal] (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] Using 'craft' agent allow-list (20 entries): [hy3-preview-agent-ioa, glm-5v-turbo-ioa, glm-5.1-ioa, kimi-k2.6-ioa, minimax-m2.7-ioa, claude-opus-4.8-1m, claude-opus-4.8, claude-opus-4.7-1m, claude-opus-4.7, claude-opus-4.6-1m, claude-sonnet-4.6-1m, claude-opus-4.6, claude-haiku-4.5, gpt-5.5, gpt-5.4, gpt-5.3-codex, gemini-3.5-flash, deepseek-v3-2-volc-ioa, deepseek-v4-flash-ioa, deepseek-v4-pro-ioa] (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] Resolved 20 chat models from allow-list (20 with metadata, 0 synthesized) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] ✓ SUCCESS — cached 20 chat models in 1581ms (TTL=300000ms): (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
  [Extension Host] ┌─────────┬──────────────────────────┬──────────────────────────────────┬──────────┬───────────┬────────┬───────┬───────────┬────────┐
 │ (index) │ id                       │ name                             │ maxInput │ maxOutput │ images │ tools │ reasoning │ vendor │
 ├─────────┼──────────────────────────┼──────────────────────────────────┼──────────┼───────────┼────────┼───────┼───────────┼────────┤
@@ -490,10 +490,10 @@ onClick @ actionViewItems.js:110
 │ 17      │ 'deepseek-v3-2-volc-ioa' │ 'DeepSeek-V3.2'                  │ 96000    │ 32000     │ true   │ true  │ true      │ 'f'    │
 │ 18      │ 'deepseek-v4-flash-ioa'  │ 'Deepseek-V4-Flash'              │ 1000000  │ 50000     │ true   │ true  │ true      │ 'f'    │
 │ 19      │ 'deepseek-v4-pro-ioa'    │ 'Deepseek-V4-Pro'                │ 1000000  │ 50000     │ true   │ true  │ true      │ 'f'    │
-└─────────┴──────────────────────────┴──────────────────────────────────┴──────────┴───────────┴────────┴───────┴───────────┴────────┘ (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Using 20 models from /v3/config API (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] codebuddy.models already up-to-date (20 models) — skip write (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] provideLanguageModelChatInformation returning 20 models: Array(20) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+└─────────┴──────────────────────────┴──────────────────────────────────┴──────────┴───────────┴────────┴───────┴───────────┴────────┘ (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Using 20 models from /v3/config API (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] codebuddy.models already up-to-date (20 models) — skip write (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] provideLanguageModelChatInformation returning 20 models: Array(20) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [ModelSelector] Model list changed for lm:codebuddy
   INFO [AgentStudio] Model providers changed, notifying webview
   INFO [AgentStudio] Model providers changed, notifying webview
@@ -528,14 +528,14 @@ onClick @ actionViewItems.js:110
   INFO [AgentStudio] Model providers changed, notifying webview
   INFO [AgentStudio] Model providers changed, notifying webview
   INFO [LMBridge] Skipping excluded vendor: copilotcli
- [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:48.442Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:48.443Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] ✓ Cache HIT — serving 20 models (age=18ms, ttlLeft=299982ms): [hy3-preview-agent-ioa, glm-5v-turbo-ioa, glm-5.1-ioa, kimi-k2.6-ioa, minimax-m2.7-ioa, claude-opus-4.8-1m, claude-opus-4.8, claude-opus-4.7-1m, claude-opus-4.7, claude-opus-4.6-1m, claude-sonnet-4.6-1m, claude-opus-4.6, claude-haiku-4.5, gpt-5.5, gpt-5.4, gpt-5.3-codex, gemini-3.5-flash, deepseek-v3-2-volc-ioa, deepseek-v4-flash-ioa, deepseek-v4-pro-ioa] (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Using 20 models from /v3/config API (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy][/v3/config] codebuddy.models already up-to-date (20 models) — skip write (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] provideLanguageModelChatInformation returning 20 models: Array(20) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:48.442Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:31:48.443Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] ✓ Cache HIT — serving 20 models (age=18ms, ttlLeft=299982ms): [hy3-preview-agent-ioa, glm-5v-turbo-ioa, glm-5.1-ioa, kimi-k2.6-ioa, minimax-m2.7-ioa, claude-opus-4.8-1m, claude-opus-4.8, claude-opus-4.7-1m, claude-opus-4.7, claude-opus-4.6-1m, claude-sonnet-4.6-1m, claude-opus-4.6, claude-haiku-4.5, gpt-5.5, gpt-5.4, gpt-5.3-codex, gemini-3.5-flash, deepseek-v3-2-volc-ioa, deepseek-v4-flash-ioa, deepseek-v4-pro-ioa] (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Using 20 models from /v3/config API (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy][/v3/config] codebuddy.models already up-to-date (20 models) — skip write (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] provideLanguageModelChatInformation returning 20 models: Array(20) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [LMBridge] Resolved 20 model(s) for vendor=codebuddy
   INFO [ModelSelector] Model list changed for lm:codebuddy
   INFO [AgentStudio] Model providers changed, notifying webview
@@ -642,24 +642,24 @@ onClick @ actionViewItems.js:110
  [VISION-DEBUG][bridge.listModels] vendor=knot qualifiedId=knot/9de3e080c2724179a549ebd15f00aaae::kimi-k2.6 bareId=kimi-k2.6 supportsImages=true supportsReasoning=true
   INFO [VISION-DEBUG][Host.providersList] providerId=lm:knot providerName=Knot modelCount=12 models=[{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v3.1"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v3.2"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::deepseek-v4-flash"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::glm-5.1","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.7-opus","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-sonnet","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-sonnet-1m-context","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-opus","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::claude-4.6-opus-1m-context","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::gpt-5.4","img":true},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::hy3-preview"},{"id":"knot/9de3e080c2724179a549ebd15f00aaae::kimi-k2.6","img":true}]
  [ProviderStore] updateProviders: keeping selection lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa (provider exists, authStatus=authenticated)
- [Extension Host] Agent Studio extension activated (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] Agent Studio extension activated (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [AgenticPromptsService] listPromptFiles(type=agent) called
   INFO [AgenticPromptsService] listPromptFiles(type=agent): baseResults count=5
   INFO [AgenticPromptsService] listPromptFiles(type=agent): not skill type, returning baseResults
- [SourceControlWorkspaceSync] onDidAddRepository root=g:\CustomWorkspaces\AIProjects\sarosis-agents-client — reconciling against current allowedRoots
- [SourceControlWorkspaceSync] reconcile[immediate] allowedRoots=[g:\vssarosis_workspace, g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   registered(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
+ [SourceControlWorkspaceSync] onDidAddRepository root=g:\CustomWorkspaces\AIProjects\saros-agents-client — reconciling against current allowedRoots
+ [SourceControlWorkspaceSync] reconcile[immediate] allowedRoots=[g:\vssaros_workspace, g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   registered(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
  [SourceControlWorkspaceSync]   visibleBefore(0)=[]
- [SourceControlWorkspaceSync]   desired(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   toAdd(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client] toRemove(0)=[]
- [SourceControlWorkspaceSync]   reconcile[immediate] APPLIED visibleAfter(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync] reconcile[t+300] allowedRoots=[g:\vssarosis_workspace, g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   registered(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   visibleBefore(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   desired(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
+ [SourceControlWorkspaceSync]   desired(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   toAdd(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client] toRemove(0)=[]
+ [SourceControlWorkspaceSync]   reconcile[immediate] APPLIED visibleAfter(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync] reconcile[t+300] allowedRoots=[g:\vssaros_workspace, g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   registered(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   visibleBefore(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   desired(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
  [SourceControlWorkspaceSync]   toAdd(0)=[] toRemove(0)=[]
  [SourceControlWorkspaceSync]   reconcile[t+300] no change
- [Extension Host] rejected promise not handled within 1 second: Error: GitHubLoginFailed (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] rejected promise not handled within 1 second: Error: GitHubLoginFailed (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 log @ console.js:73
 $logExtensionHostMessage @ mainThreadConsole.js:38
 _doInvokeHandler @ rpcProtocol.js:371
@@ -671,12 +671,12 @@ _deliver @ event.js:792
 fire @ event.js:817
 fire @ ipc.net.js:427
 (anonymous) @ localProcessExtensionHost.js:315
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
  [Extension Host] stack trace: Error: GitHubLoginFailed
-    at VSCodeCopilotTokenManager._authShowWarnings (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:135:10)
-    at VSCodeCopilotTokenManager.getCopilotToken (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:56:25)
-    at AuthenticationService.getCopilotToken (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\authentication\common\authentication.ts:249:18)
-    at ModelMetadataFetcher._fetchModels (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\endpoint\node\modelMetadataFetcher.ts:234:25) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+    at VSCodeCopilotTokenManager._authShowWarnings (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:135:10)
+    at VSCodeCopilotTokenManager.getCopilotToken (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:56:25)
+    at AuthenticationService.getCopilotToken (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\authentication\common\authentication.ts:249:18)
+    at ModelMetadataFetcher._fetchModels (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\endpoint\node\modelMetadataFetcher.ts:234:25) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 log @ console.js:73
 $logExtensionHostMessage @ mainThreadConsole.js:38
 _doInvokeHandler @ rpcProtocol.js:371
@@ -700,10 +700,10 @@ fire @ event.js:817
 fire @ ipc.net.js:427
 (anonymous) @ localProcessExtensionHost.js:315
  Error: GitHubLoginFailed
-    at VSCodeCopilotTokenManager._authShowWarnings (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:135:10)
-    at VSCodeCopilotTokenManager.getCopilotToken (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:56:25)
-    at AuthenticationService.getCopilotToken (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\authentication\common\authentication.ts:249:18)
-    at ModelMetadataFetcher._fetchModels (g:\CustomWorkspaces\AIProjects\sarosis-agents-client\extensions\copilot\src\platform\endpoint\node\modelMetadataFetcher.ts:234:25)
+    at VSCodeCopilotTokenManager._authShowWarnings (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:135:10)
+    at VSCodeCopilotTokenManager.getCopilotToken (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\authentication\vscode-node\copilotTokenManager.ts:56:25)
+    at AuthenticationService.getCopilotToken (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\authentication\common\authentication.ts:249:18)
+    at ModelMetadataFetcher._fetchModels (g:\CustomWorkspaces\AIProjects\saros-agents-client\extensions\copilot\src\platform\endpoint\node\modelMetadataFetcher.ts:234:25)
 $onExtensionRuntimeError @ mainThreadExtensionService.js:68
 _doInvokeHandler @ rpcProtocol.js:371
 _invokeHandler @ rpcProtocol.js:357
@@ -733,11 +733,11 @@ _deliver @ event.js:792
 fire @ event.js:817
 fire @ ipc.net.js:427
 (anonymous) @ localProcessExtensionHost.js:315
-  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
- [SourceControlWorkspaceSync] reconcile[t+1000] allowedRoots=[g:\vssarosis_workspace, g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   registered(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   visibleBefore(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
- [SourceControlWorkspaceSync]   desired(1)=[g:\CustomWorkspaces\AIProjects\sarosis-agents-client]
+  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
+ [SourceControlWorkspaceSync] reconcile[t+1000] allowedRoots=[g:\vssaros_workspace, g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   registered(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   visibleBefore(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
+ [SourceControlWorkspaceSync]   desired(1)=[g:\CustomWorkspaces\AIProjects\saros-agents-client]
  [SourceControlWorkspaceSync]   toAdd(0)=[] toRemove(0)=[]
  [SourceControlWorkspaceSync]   reconcile[t+1000] no change
  [EmployeeNode] onClick: employee=Coder_kanban(1780403758112-sg552ku), onSelect=true
@@ -773,8 +773,8 @@ mW @ webview.js?_=1780615900377:9
   INFO [AgentStudio] chat.activeSessionChanged: employeeId=1780403758112-sg552ku agentSessionId=<none> (panelType=chat)
   INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_10_1780615910882, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
  [VISION-DEBUG][store.currentModelInfo] sel=lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa found=true supportsImages=true modelCount=20
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
  [ProviderStore] loadSelectionForEmployee: loading for 1780403758112-sg552ku
   INFO [AgentStudio] _handleMessage: type=providers.getSelectionForEmployee, id=req_11_1780615910904, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
  [AgentStudio] received 'employee.selected' event: employeeId=1780403758112-sg552ku, panelType=chat
@@ -783,24 +783,24 @@ mW @ webview.js?_=1780615900377:9
  [AgentStudio] → useEmployeeStore.setState({ selectedEmployeeId: '1780403758112-sg552ku' })
  [AgentStudio] received 'employee.selected' event: employeeId=1780403758112-sg552ku, panelType=canvas
  [AgentStudio] → useEmployeeStore.setState({ selectedEmployeeId: '1780403758112-sg552ku' })
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
  [ChatPanel] notify host chat.activeSessionChanged: employeeId=1780403758112-sg552ku agentSessionId=sess_mpwt6z2s_szhpq3
   INFO [AgentStudio] _handleMessage: type=chat.activeSessionChanged, id=req_12_1780615910938, panelType=chat, payload={"employeeId":"1780403758112-sg552ku","agentSessionId":"sess_mpwt6z2s_szhpq3"}
  [ChatStore] loadHistoryForSession: employeeId=1780403758112-sg552ku, agentSessionId=sess_mpwt6z2s_szhpq3
   INFO [AgentStudio] chat.activeSessionChanged: employeeId=1780403758112-sg552ku agentSessionId=sess_mpwt6z2s_szhpq3 (panelType=chat)
   INFO [ConfigMD] active session: 1780403758112-sg552ku <none> → sess_mpwt6z2s_szhpq3
   INFO [AgentStudio] _handleMessage: type=chat.history, id=req_13_1780615910938, panelType=chat, payload={"employeeId":"1780403758112-sg552ku","sessionId":"sess_mpwt6z2s_szhpq3"}
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
   INFO [AgentChatService] Loaded global history: 8 keys
   INFO [AgentChatService] getHistory: 182 msgs for 1780403758112-sg552ku::sess_mpwt6z2s_szhpq3
  [ChatStore] loadHistoryForSession: received 182 messages for 1780403758112-sg552ku
  [ChatStore] Plans not loaded yet, loading plans first...
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace
   INFO [AgentStudio] _handleMessage: type=orchestration.listPlans, id=req_14_1780615910968, panelType=chat, payload={"workspaceId":"1780403697369-9cz1cjv"}
   INFO [AgentStudio] Restored model selection from agent.yaml for employee 1780403758112-sg552ku: lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa [agent: 9de3e080c2724179a549ebd15f00aaae]
  [ProviderStore] loadSelectionForEmployee: restored → lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa [agent: 9de3e080c2724179a549ebd15f00aaae]
@@ -812,34 +812,34 @@ mW @ webview.js?_=1780615900377:9
  [ChatStore] loadHistoryForSession: activePlans count=0
   INFO [AgentStudio] updateEmployeeModelConfig: employeeId=1780403758112-sg552ku, config={"providerId":"lm:codebuddy","modelId":"codebuddy/codebuddy-hy3-preview-agent-ioa","agentId":"9de3e080c2724179a549ebd15f00aaae"}
   INFO [AgentStudio] _handleMessage: type=chat.listCheckpoints, id=req_15_1780615910977, panelType=chat, payload={"employeeId":"1780403758112-sg552ku","sessionId":"sess_mpwt6z2s_szhpq3"}
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace
-  INFO [AgentStudio] updateEmployeeModelConfig: configFileUri=file:///g%3A/vssarosis_workspace/.sarosisworkspace/agents/coder-sg552ku/agent.yaml
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace
+  INFO [AgentStudio] updateEmployeeModelConfig: configFileUri=file:///g%3A/vssaros_workspace/.sarosworkspace/agents/coder-sg552ku/agent.yaml
  [ChatStore] loadHistoryForSession: re-hydrated 3 checkpoint(s)
  [ChatMessage] displayContent computed: Object
   INFO [AgentStudio] Updated agent.yaml model config for employee 1780403758112-sg552ku: lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa [agent: 9de3e080c2724179a549ebd15f00aaae]
   INFO [AgentStudio] agent.yaml updated for employee 1780403758112-sg552ku
   INFO [AgentStudio] updateEmployee: id=1780403758112-sg552ku, data={"provider":"lm:codebuddy","model":"codebuddy/codebuddy-hy3-preview-agent-ioa"}
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
  [ChatMessage] displayContent computed: Object
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
- [ChatMessage] displayContent computed: Object
- [ChatMessage] displayContent computed: Object
- [ChatMessage] displayContent computed: Object
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
- [ChatMessage] displayContent computed: Object
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
  [ChatMessage] displayContent computed: Object
  [ChatMessage] displayContent computed: Object
-  INFO [AgentStudio] updateEmployee: found at dirUri=file:///g%3A/vssarosis_workspace/.sarosisworkspace, index=0, name=Coder_kanban
+ [ChatMessage] displayContent computed: Object
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+ [ChatMessage] displayContent computed: Object
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+ [ChatMessage] displayContent computed: Object
+ [ChatMessage] displayContent computed: Object
+  INFO [AgentStudio] updateEmployee: found at dirUri=file:///g%3A/vssaros_workspace/.sarosworkspace, index=0, name=Coder_kanban
   INFO [AgentStudio] updateEmployee: wrote employees.json, firing onDidChangeEmployees
  [ChatMessage] displayContent computed: Object
   INFO [AgentStudio] employees.json updated for employee 1780403758112-sg552ku: provider=lm:codebuddy, model=codebuddy/codebuddy-hy3-preview-agent-ioa
@@ -848,9 +848,9 @@ mW @ webview.js?_=1780615900377:9
  [ChatMessage] displayContent computed: Object
  [ChatMessage] displayContent computed: Object
  [ChatMessage] displayContent computed: Object
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace
-  INFO [AgentStudio] getEmployees: workspaceId=1780403697369-9cz1cjv, dirUri=file:///g%3A/vssarosis_workspace/.sarosisworkspace
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace
+  INFO [AgentStudio] getEmployees: workspaceId=1780403697369-9cz1cjv, dirUri=file:///g%3A/vssaros_workspace/.sarosworkspace
  [ChatMessage] displayContent computed: Object
  [ChatMessage] displayContent computed: Object
   INFO [AgentStudio] getEmployees: found 3 employees
@@ -922,14 +922,14 @@ mW @ webview.js?_=1780615900377:9
  [ChatMessage] displayContent computed: Object
  [ChatMessage] displayContent computed: Object
  [ChatMessage] displayContent computed: Object
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
-  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssarosis_workspace
-  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssarosis_workspace
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
+  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssaros_workspace
+  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssaros_workspace
   INFO [AgentStudio] _handleMessage: type=employees.list, id=req_16_1780615911705, panelType=chat, payload={"workspaceId":"1780403697369-9cz1cjv"}
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace
-  INFO [AgentStudio] getEmployees: workspaceId=1780403697369-9cz1cjv, dirUri=file:///g%3A/vssarosis_workspace/.sarosisworkspace
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _resolveDataUri(workspaceId=1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace
+  INFO [AgentStudio] getEmployees: workspaceId=1780403697369-9cz1cjv, dirUri=file:///g%3A/vssaros_workspace/.sarosworkspace
   INFO [AgentStudio] getEmployees: found 3 employees
   WARN [LM] No provider registered for vendor anthropic
 logToConsole @ log.js:99
@@ -1126,41 +1126,41 @@ _resolveAllLanguageModels @ languageModels.js:468
   INFO [AgentChatService] 🧹 _toDriverMessages: filtered 11 contaminated assistant messages (fake-completion / unfinished-intent residue)
   INFO [AgentChatService] Assembled 292 prior driver messages from 183 history msgs (key=1780403758112-sg552ku::sess_mpwt6z2s_szhpq3)
   INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_18_1780615954320, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
   INFO [AgentDriver] Planning result: intent="创建test74.txt文件", complexity=low, steps=1
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
   INFO [CheckpointService] Created checkpoint dc78d95e-46fd-45f3-b5ef-e6e8cd00158b (user_edit) with 0 snapshots
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
   INFO [AgentOS] listAllToolsWithState: found 3 tool providers
-  INFO [AgentOS] listAllToolsWithState: provider sarosis.mcp-tools
-  INFO [AgentOS] listAllToolsWithState: provider sarosis.builtin-tools
+  INFO [AgentOS] listAllToolsWithState: provider saros.mcp-tools
+  INFO [AgentOS] listAllToolsWithState: provider saros.builtin-tools
   INFO [AgentOS] listAllToolsWithState: provider tool-example
   INFO [AgentDriver] Injected 81 enabled tools into systemPrompt (mode=craft)
   INFO [AgentDriver] B-plan override: memoryStrategy forced to 'summary' (messages=293, L0 would duplicate history)
@@ -1170,24 +1170,24 @@ _resolveAllLanguageModels @ languageModels.js:468
 
 ## Workspace Context
 
-You are operating inside the Sarosis workspace "vssarosis_workspace".
-The workspace root directory is: g:\vssarosis_workspace
+You are operating inside the Sarosis workspace "vssaros_workspace".
+The workspace root directory is: g:\vssaros_workspace
 
 When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,
-they mean this directory: g:\vssarosis_work...
+they mean this directory: g:\vssaros_work...
   INFO [AgentDriver] Memory injection policy: strategy=summary, maxEntries=unlimited, scope=agent, allowedKeys=0 (raw=undefined)
   INFO [AgentOS] executeAgentTurn: agentId=1780403758112-sg552ku, messages=293
   INFO [AgentOS] Active model selection detected (lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa), using direct model call instead of ExecutionProvider
   INFO [AgentOS] Using ModelProvider directly: lm:codebuddy, modelId=codebuddy/codebuddy-hy3-preview-agent-ioa
   INFO [AgentOS] listAllToolsWithState: found 3 tool providers
-  INFO [AgentOS] listAllToolsWithState: provider sarosis.mcp-tools
-  INFO [AgentOS] listAllToolsWithState: provider sarosis.builtin-tools
+  INFO [AgentOS] listAllToolsWithState: provider saros.mcp-tools
+  INFO [AgentOS] listAllToolsWithState: provider saros.builtin-tools
   INFO [AgentOS] listAllToolsWithState: provider tool-example
   INFO [AgentOS] _getEnabledTools: 81/81 tools enabled for agent 1780403758112-sg552ku
   INFO [AgentOS] Direct mode: 81 enabled tools for agent 1780403758112-sg552ku
   INFO [AgentOS] Prepended Hermes hardening (1603 chars) + systemPrompt (15317 chars) as system messages
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
   INFO [AgentOS] Memory provider returned empty context for agent 1780403758112-sg552ku (strategy=summary, L1/L2=0, L0=0)
  [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-hy3-preview-agent-ioa bareId=hy3-preview-agent-ioa supportsImages=true supportsReasoning=true
  [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-glm-5v-turbo-ioa bareId=glm-5v-turbo-ioa supportsImages=true supportsReasoning=true
@@ -1218,21 +1218,21 @@ they mean this directory: g:\vssarosis_work...
   INFO [LMBridge] Passing 81 tools to extension via modelOptions.tools
   INFO [LMBridge] Passing toolChoice=auto to extension
   INFO [LMBridge] Passing reasoning to extension: effort=(none) budget=1024
- [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:32:34.423Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Sending request with token: length=1541, prefix=eyJhbGciOi... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:32:34.423Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Sending request with token: length=1541, prefix=eyJhbGciOi... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
   INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
   INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
  [AgentStudio] agentSessions.changed → reloading sessions for 1780403758112-sg552ku
   INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_19_1780615954426, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
- [Extension Host] [CodeBuddy] reasoning enabled: effort=medium (source=ui-budget), summary=auto (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Including 81 tools in request (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
+ [Extension Host] [CodeBuddy] reasoning enabled: effort=medium (source=ui-budget), summary=auto (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Including 81 tools in request (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
  [Extension Host] 
-========== [CodeBuddy] HTTP REQUEST DEBUG ========== (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] URL: https://copilot.tencent.com/v2/chat/completions (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Method: POST (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+========== [CodeBuddy] HTTP REQUEST DEBUG ========== (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] URL: https://copilot.tencent.com/v2/chat/completions (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Method: POST (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
  [Extension Host] [CodeBuddy] Headers: {
   "Content-Type": "application/json",
   "Accept": "text/event-stream",
@@ -1264,18 +1264,18 @@ they mean this directory: g:\vssarosis_work...
   "monitor_promptPrepareStartTime": "1780615954431",
   "monitor_httpSendTime": "1780615954431",
   "Content-Encoding": "gzip"
-} (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Body: 245597 chars (raw JSON), 51979 bytes (gzip) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
- [Extension Host] [CodeBuddy] Body preview: {"model":"hy3-preview-agent-ioa","messages":[{"role":"system","content":"\n\n## Workspace Context\n\nYou are operating inside the Sarosis workspace \"vssarosis_workspace\".\nThe workspace root directory is: g:\\vssarosis_workspace\n\nWhen the user refers to \"workspace\", \"project\", \"current directory\", or asks to print/list the workspace,\nthey mean this directory: g:\\vssarosis_workspace\n\n### Security Sandbox\n\nYou are ONLY permitted to read, write, search, and execute commands within t... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+} (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Body: 245597 chars (raw JSON), 51979 bytes (gzip) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ [Extension Host] [CodeBuddy] Body preview: {"model":"hy3-preview-agent-ioa","messages":[{"role":"system","content":"\n\n## Workspace Context\n\nYou are operating inside the Sarosis workspace \"vssaros_workspace\".\nThe workspace root directory is: g:\\vssaros_workspace\n\nWhen the user refers to \"workspace\", \"project\", \"current directory\", or asks to print/list the workspace,\nthey mean this directory: g:\\vssaros_workspace\n\n### Security Sandbox\n\nYou are ONLY permitted to read, write, search, and execute commands within t... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
  [Extension Host] ========== END REQUEST DEBUG ==========
- (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssarosis_workspace
-  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssarosis_workspace
+ (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssaros_workspace
+  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssaros_workspace
  [StreamHandler] Stream started for employee=1780403758112-sg552ku
-  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
-  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
+  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
+  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
   INFO [AgentOS][Compression] captured real prompt usage: inputTokens=77200 cached=0 cacheWrite=0 → lastRealPromptTokens=77200
   INFO [AgentOS] Model response: textLen=10545, toolCalls=0
   INFO [AgentOS] _tryExtractToolCallsFromText: attempting extraction from 10545 chars (thinking: 0 chars)
@@ -1304,105 +1304,105 @@ webview.js?_=1780615900400:9 [ChatStore] Unified ChatMessage[] built: 1 Array(1)
 webview.js?_=1780615900400:9 [ChatStore] Committing assistant message, current messages count: 186 , new msg id: msg_1780615999017_cwbtggw
 webview.js?_=1780615900400:9 [ChatStore] onStreamComplete done, employee status restored to idle
 webview.js?_=1780615900400:1458 [ChatMessage] displayContent computed: Object
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
 webview.js?_=1780615900400:1465 [AgentStudio] agentSessions.changed → reloading sessions for 1780403758112-sg552ku
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_20_1780615999081, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssarosis_workspace
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssarosis_workspace
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: sarosis-agents-client (filtered out: .git, node_modules)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_20_1780615999081, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssaros_workspace
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssaros_workspace
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 187 raw children, 185 after filtering for: saros-agents-client (filtered out: .git, node_modules)
 webview.js?_=1780615900400:9 [VISION-DEBUG][store.currentModelInfo] sel=lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa found=true supportsImages=true modelCount=20
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=chat.send, id=req_21_1780616102252, panelType=chat, payload={"employeeId":"1780403758112-sg552ku","message":"创建test74.txt文件","agentSessionId":"sess_mpwt6z2s_szhpq3","workspaceId":"1780403697369-9cz1cjv","chatMode":"craft","reasoning":{"enabled":true,"budget":1
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [CoderTrace] AgentChatService.sendMessage: employeeId=1780403758112-sg552ku, messageLen=14, model=undefined, chatMode=craft, explicitSkillIds=undefined
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] Skipping duplicate user message persist: "创建test74.txt文件..."
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] getHistory: 185 msgs for 1780403758112-sg552ku::sess_mpwt6z2s_szhpq3
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] 🧹 _toDriverMessages: filtered 11 contaminated assistant messages (fake-completion / unfinished-intent residue)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] Assembled 294 prior driver messages from 185 history msgs (key=1780403758112-sg552ku::sess_mpwt6z2s_szhpq3)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_22_1780616102263, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Planning result: intent="创建test74.txt文件", complexity=low, steps=1
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [CheckpointService] Created checkpoint 18f0e02e-539a-4aba-8c9f-11f3839ef79a (user_edit) with 0 snapshots
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: found 3 tool providers
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider sarosis.mcp-tools
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider sarosis.builtin-tools
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider tool-example
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Injected 81 enabled tools into systemPrompt (mode=craft)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] B-plan override: memoryStrategy forced to 'summary' (messages=295, L0 would duplicate history)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Injected memory_extract guidance (1497 chars) — provider=lm:codebuddy
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Skill inventory: 3 skills (lightweight XML catalog injected), systemPrompt length: 15317
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] systemPrompt preview: 
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=chat.send, id=req_21_1780616102252, panelType=chat, payload={"employeeId":"1780403758112-sg552ku","message":"创建test74.txt文件","agentSessionId":"sess_mpwt6z2s_szhpq3","workspaceId":"1780403697369-9cz1cjv","chatMode":"craft","reasoning":{"enabled":true,"budget":1
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [CoderTrace] AgentChatService.sendMessage: employeeId=1780403758112-sg552ku, messageLen=14, model=undefined, chatMode=craft, explicitSkillIds=undefined
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] Skipping duplicate user message persist: "创建test74.txt文件..."
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] getHistory: 185 msgs for 1780403758112-sg552ku::sess_mpwt6z2s_szhpq3
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] 🧹 _toDriverMessages: filtered 11 contaminated assistant messages (fake-completion / unfinished-intent residue)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentChatService] Assembled 294 prior driver messages from 185 history msgs (key=1780403758112-sg552ku::sess_mpwt6z2s_szhpq3)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_22_1780616102263, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Planning result: intent="创建test74.txt文件", complexity=low, steps=1
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [CheckpointService] Created checkpoint 18f0e02e-539a-4aba-8c9f-11f3839ef79a (user_edit) with 0 snapshots
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: found 3 tool providers
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider saros.mcp-tools
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider saros.builtin-tools
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider tool-example
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Injected 81 enabled tools into systemPrompt (mode=craft)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] B-plan override: memoryStrategy forced to 'summary' (messages=295, L0 would duplicate history)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Injected memory_extract guidance (1497 chars) — provider=lm:codebuddy
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Skill inventory: 3 skills (lightweight XML catalog injected), systemPrompt length: 15317
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] systemPrompt preview: 
 
 ## Workspace Context
 
-You are operating inside the Sarosis workspace "vssarosis_workspace".
-The workspace root directory is: g:\vssarosis_workspace
+You are operating inside the Sarosis workspace "vssaros_workspace".
+The workspace root directory is: g:\vssaros_workspace
 
 When the user refers to "workspace", "project", "current directory", or asks to print/list the workspace,
-they mean this directory: g:\vssarosis_work...
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Memory injection policy: strategy=summary, maxEntries=unlimited, scope=agent, allowedKeys=0 (raw=undefined)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] executeAgentTurn: agentId=1780403758112-sg552ku, messages=295
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Active model selection detected (lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa), using direct model call instead of ExecutionProvider
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Using ModelProvider directly: lm:codebuddy, modelId=codebuddy/codebuddy-hy3-preview-agent-ioa
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: found 3 tool providers
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider sarosis.mcp-tools
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider sarosis.builtin-tools
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider tool-example
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _getEnabledTools: 81/81 tools enabled for agent 1780403758112-sg552ku
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Direct mode: 81 enabled tools for agent 1780403758112-sg552ku
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Prepended Hermes hardening (1603 chars) + systemPrompt (15317 chars) as system messages
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Memory provider returned empty context for agent 1780403758112-sg552ku (strategy=summary, L1/L2=0, L0=0)
+they mean this directory: g:\vssaros_work...
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentDriver] Memory injection policy: strategy=summary, maxEntries=unlimited, scope=agent, allowedKeys=0 (raw=undefined)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] executeAgentTurn: agentId=1780403758112-sg552ku, messages=295
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Active model selection detected (lm:codebuddy/codebuddy/codebuddy-hy3-preview-agent-ioa), using direct model call instead of ExecutionProvider
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Using ModelProvider directly: lm:codebuddy, modelId=codebuddy/codebuddy-hy3-preview-agent-ioa
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: found 3 tool providers
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider saros.mcp-tools
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider saros.builtin-tools
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] listAllToolsWithState: provider tool-example
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _getEnabledTools: 81/81 tools enabled for agent 1780403758112-sg552ku
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Direct mode: 81 enabled tools for agent 1780403758112-sg552ku
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Prepended Hermes hardening (1603 chars) + systemPrompt (15317 chars) as system messages
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Memory provider returned empty context for agent 1780403758112-sg552ku (strategy=summary, L1/L2=0, L0=0)
 languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-hy3-preview-agent-ioa bareId=hy3-preview-agent-ioa supportsImages=true supportsReasoning=true
 languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-glm-5v-turbo-ioa bareId=glm-5v-turbo-ioa supportsImages=true supportsReasoning=true
 languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-glm-5.1-ioa bareId=glm-5.1-ioa supportsImages=true supportsReasoning=true
@@ -1423,29 +1423,29 @@ languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=co
 languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-deepseek-v3-2-volc-ioa bareId=deepseek-v3-2-volc-ioa supportsImages=true supportsReasoning=true
 languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-deepseek-v4-flash-ioa bareId=deepseek-v4-flash-ioa supportsImages=true supportsReasoning=false
 languageModelsBridge.js:sourcemap:66 [VISION-DEBUG][bridge.listModels] vendor=codebuddy qualifiedId=codebuddy/codebuddy-deepseek-v4-pro-ioa bareId=deepseek-v4-pro-ioa supportsImages=true supportsReasoning=false
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] _resolveContextWindow modelId=codebuddy/codebuddy-hy3-preview-agent-ioa maxInputTokens=192000 contextWindow=192000 resolved=192000 modelFound=true totalModels=20
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Direct mode iteration 1/30 (budget Budget: 1/30 (3.3%))
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] iteration=1 didCompress=false skipped="below_token_threshold" tokenSource=rough_estimate effectiveTokens=55034 realPromptTokens=n/a estimatedTokens=55034 thresholdTokens=96000 effectiveWindow=192000 compressionWindow=192000 messageCount=297 minMessagesToCompress=10 ineffectiveCompressionCount=0 compressionThreshold=0.5
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] B-plan: suppressing sessionId for model provider (messages=297, avoiding server-side context overlap)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Calling modelProvider.chat(modelId=codebuddy/codebuddy-hy3-preview-agent-ioa, messages=297, tools=81)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] chat() called — vendor=codebuddy model=codebuddy/codebuddy-hy3-preview-agent-ioa, tools=81
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing 81 tools to extension via modelOptions.tools
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing toolChoice=auto to extension
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing reasoning to extension: effort=(none) budget=1024
-console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:35:02.380Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Sending request with token: length=1541, prefix=eyJhbGciOi... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] reasoning enabled: effort=medium (source=ui-budget), summary=auto (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Including 81 tools in request (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] _resolveContextWindow modelId=codebuddy/codebuddy-hy3-preview-agent-ioa maxInputTokens=192000 contextWindow=192000 resolved=192000 modelFound=true totalModels=20
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Direct mode iteration 1/30 (budget Budget: 1/30 (3.3%))
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] iteration=1 didCompress=false skipped="below_token_threshold" tokenSource=rough_estimate effectiveTokens=55034 realPromptTokens=n/a estimatedTokens=55034 thresholdTokens=96000 effectiveWindow=192000 compressionWindow=192000 messageCount=297 minMessagesToCompress=10 ineffectiveCompressionCount=0 compressionThreshold=0.5
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] B-plan: suppressing sessionId for model provider (messages=297, avoiding server-side context overlap)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Calling modelProvider.chat(modelId=codebuddy/codebuddy-hy3-preview-agent-ioa, messages=297, tools=81)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] chat() called — vendor=codebuddy model=codebuddy/codebuddy-hy3-preview-agent-ioa, tools=81
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing 81 tools to extension via modelOptions.tools
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing toolChoice=auto to extension
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing reasoning to extension: effort=(none) budget=1024
+console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:35:02.380Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Sending request with token: length=1541, prefix=eyJhbGciOi... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] reasoning enabled: effort=medium (source=ui-budget), summary=auto (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Including 81 tools in request (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] agentSessions changed for 1780403758112-sg552ku, notifying webview
 webview.js?_=1780615900400:1465 [AgentStudio] agentSessions.changed → reloading sessions for 1780403758112-sg552ku
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_23_1780616102384, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosisworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=agentSession.list, id=req_23_1780616102384, panelType=chat, payload={"employeeId":"1780403758112-sg552ku"}
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1778496610574-vd4625j) -> file:///f%3A/GR_qiuzijian_main/.sarosworkspace (workspace has path)
 console.js:sourcemap:73 [Extension Host] 
-========== [CodeBuddy] HTTP REQUEST DEBUG ========== (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] URL: https://copilot.tencent.com/v2/chat/completions (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Method: POST (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+========== [CodeBuddy] HTTP REQUEST DEBUG ========== (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] URL: https://copilot.tencent.com/v2/chat/completions (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Method: POST (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 console.js:sourcemap:73 [Extension Host] [CodeBuddy] Headers: {
   "Content-Type": "application/json",
   "Accept": "text/event-stream",
@@ -1477,85 +1477,85 @@ console.js:sourcemap:73 [Extension Host] [CodeBuddy] Headers: {
   "monitor_promptPrepareStartTime": "1780616102387",
   "monitor_httpSendTime": "1780616102387",
   "Content-Encoding": "gzip"
-} (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body: 256566 chars (raw JSON), 55146 bytes (gzip) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosisworkspace (workspace has path)
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body preview: {"model":"hy3-preview-agent-ioa","messages":[{"role":"system","content":"\n\n## Workspace Context\n\nYou are operating inside the Sarosis workspace \"vssarosis_workspace\".\nThe workspace root directory is: g:\\vssarosis_workspace\n\nWhen the user refers to \"workspace\", \"project\", \"current directory\", or asks to print/list the workspace,\nthey mean this directory: g:\\vssarosis_workspace\n\n### Security Sandbox\n\nYou are ONLY permitted to read, write, search, and execute commands within t... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+} (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body: 256566 chars (raw JSON), 55146 bytes (gzip) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779363995710-6fu4k7j) -> file:///g%3A/workspace3/.sarosworkspace (workspace has path)
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body preview: {"model":"hy3-preview-agent-ioa","messages":[{"role":"system","content":"\n\n## Workspace Context\n\nYou are operating inside the Sarosis workspace \"vssaros_workspace\".\nThe workspace root directory is: g:\\vssaros_workspace\n\nWhen the user refers to \"workspace\", \"project\", \"current directory\", or asks to print/list the workspace,\nthey mean this directory: g:\\vssaros_workspace\n\n### Security Sandbox\n\nYou are ONLY permitted to read, write, search, and execute commands within t... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 console.js:sourcemap:73 [Extension Host] ========== END REQUEST DEBUG ==========
- (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/sarosis-agents-client/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssarosis_workspace/.sarosisworkspace (workspace has path)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssarosis_workspace
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssarosis_workspace
+ (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1779721050029-iia8sf6) -> file:///g%3A/CustomWorkspaces/AIProjects/saros-agents-client/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _getWorkspaceDataUri(1780403697369-9cz1cjv) -> file:///g%3A/vssaros_workspace/.sarosworkspace (workspace has path)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolving: file:///g%3A/vssaros_workspace
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [WorkspaceExplorer] Resolved 46 raw children, 46 after filtering for: vssaros_workspace
 webview.js?_=1780615900400:9 [StreamHandler] Stream started for employee=1780403758112-sg552ku
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] captured real prompt usage: inputTokens=79865 cached=0 cacheWrite=0 → lastRealPromptTokens=79865
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Model response: textLen=1982, toolCalls=0
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: attempting extraction from 1982 chars (thinking: 0 chars)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: XML extraction attempt, hasXmlTags=true, textLen=1982
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool_call> tag (closed), contentLen=167, contentPreview=file_write<tool_sep>
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] captured real prompt usage: inputTokens=79865 cached=0 cacheWrite=0 → lastRealPromptTokens=79865
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Model response: textLen=1982, toolCalls=0
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: attempting extraction from 1982 chars (thinking: 0 chars)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: XML extraction attempt, hasXmlTags=true, textLen=1982
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool_call> tag (closed), contentLen=167, contentPreview=file_write<tool_sep>
 <arg_key>path</arg_key>
-<arg_value>g:\vssarosis_workspace\test74.txt</arg_value>
+<arg_value>g:\vssaros_workspace\test74.txt</arg_value>
 <arg_key>content</
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: unprocessable content for <tool_call>: "file_write<tool_sep>
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: unprocessable content for <tool_call>: "file_write<tool_sep>
 <arg_key>path"
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool_call> tag (closed), contentLen=100, contentPreview=file_read<tool_sep>
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool_call> tag (closed), contentLen=100, contentPreview=file_read<tool_sep>
 <arg_key>path</arg_key>
-<arg_value>g:\vssarosis_workspace\test74.txt</arg_value>
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: unprocessable content for <tool_call>: "file_read<tool_sep>
+<arg_value>g:\vssaros_workspace\test74.txt</arg_value>
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: unprocessable content for <tool_call>: "file_read<tool_sep>
 <arg_key>path"
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool> tag (unclosed), content="file_write"
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "file_write"
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool> tag (unclosed), content="file_read"
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "file_read"
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: found 2 tool call(s) in XML format
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: extracted 2 tool call(s) from 1982 chars
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Extracted 2 tool calls from text output
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Sanitized assistantContent, remaining: 1667 chars
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] [parallel] Executing 2 tool calls concurrently (skipped 0)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool> tag (unclosed), content="file_write"
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "file_write"
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: found <tool> tag (unclosed), content="file_read"
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _extractToolCallsFromXml: treating content as raw tool name: "file_read"
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: found 2 tool call(s) in XML format
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] _tryExtractToolCallsFromText: extracted 2 tool call(s) from 1982 chars
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Extracted 2 tool calls from text output
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Sanitized assistantContent, remaining: 1667 chars
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] [parallel] Executing 2 tool calls concurrently (skipped 0)
 webview.js?_=1780615900400:1465 [AgentStudio] Tool approval requested: toolCallId=xml_1780616120058_s01pcr, toolName=file_write (stream=true, committed=false)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  WARN [BuiltinTools] file_read failed: path is required
-logToConsole @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:554
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:663
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\logService.ts:47
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  WARN [BuiltinTools] file_read failed: path is required
+logToConsole @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:554
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:663
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\logService.ts:47
 executeTool @ builtinToolProvider.js:sourcemap:295
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  WARN [AgentOS] [parallel] Tool file_read returned error via sarosis.builtin-tools: path is required
-logToConsole @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:554
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:663
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\logService.ts:47
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  WARN [AgentOS] [parallel] Tool file_read returned error via saros.builtin-tools: path is required
+logToConsole @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:554
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:663
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\logService.ts:47
 (anonymous) @ agentOSService.js:sourcemap:1595
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=chat.toolApprove, id=req_24_1780616122892, panelType=chat, payload={"toolCallId":"xml_1780616120058_s01pcr","decision":"allow_always"}
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudioWebviewController] chat.toolApprove → xml_1780616120058_s01pcr decision=allow_always
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  WARN [BuiltinTools] file_write failed: path is required
-logToConsole @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:554
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:663
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\logService.ts:47
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudio] _handleMessage: type=chat.toolApprove, id=req_24_1780616122892, panelType=chat, payload={"toolCallId":"xml_1780616120058_s01pcr","decision":"allow_always"}
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentStudioWebviewController] chat.toolApprove → xml_1780616120058_s01pcr decision=allow_always
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  WARN [BuiltinTools] file_write failed: path is required
+logToConsole @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:554
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:663
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\logService.ts:47
 executeTool @ builtinToolProvider.js:sourcemap:295
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  WARN [AgentOS] [parallel] Tool file_write returned error via sarosis.builtin-tools: path is required
-logToConsole @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:554
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:663
-warn @ G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\logService.ts:47
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  WARN [AgentOS] [parallel] Tool file_write returned error via saros.builtin-tools: path is required
+logToConsole @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:554
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:663
+warn @ G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\logService.ts:47
 (anonymous) @ agentOSService.js:sourcemap:1595
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Direct mode iteration 2/30 (budget Budget: 2/30 (6.7%))
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] iteration=2 didCompress=false skipped="below_token_threshold" tokenSource=real_usage effectiveTokens=79865 realPromptTokens=79865 estimatedTokens=55544 thresholdTokens=96000 effectiveWindow=192000 compressionWindow=192000 messageCount=300 minMessagesToCompress=10 ineffectiveCompressionCount=0 compressionThreshold=0.5
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] B-plan: suppressing sessionId for model provider (messages=300, avoiding server-side context overlap)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Calling modelProvider.chat(modelId=codebuddy/codebuddy-hy3-preview-agent-ioa, messages=300, tools=81)
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] chat() called — vendor=codebuddy model=codebuddy/codebuddy-hy3-preview-agent-ioa, tools=81
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing 81 tools to extension via modelOptions.tools
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing toolChoice=auto to extension
-G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing reasoning to extension: effort=(none) budget=1024
-console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:35:22.900Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Sending request with token: length=1541, prefix=eyJhbGciOi... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] reasoning enabled: effort=medium (source=ui-budget), summary=auto (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Including 81 tools in request (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Direct mode iteration 2/30 (budget Budget: 2/30 (6.7%))
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS][Compression] iteration=2 didCompress=false skipped="below_token_threshold" tokenSource=real_usage effectiveTokens=79865 realPromptTokens=79865 estimatedTokens=55544 thresholdTokens=96000 effectiveWindow=192000 compressionWindow=192000 messageCount=300 minMessagesToCompress=10 ineffectiveCompressionCount=0 compressionThreshold=0.5
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] B-plan: suppressing sessionId for model provider (messages=300, avoiding server-side context overlap)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [AgentOS] Calling modelProvider.chat(modelId=codebuddy/codebuddy-hy3-preview-agent-ioa, messages=300, tools=81)
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] chat() called — vendor=codebuddy model=codebuddy/codebuddy-hy3-preview-agent-ioa, tools=81
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing 81 tools to extension via modelOptions.tools
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing toolChoice=auto to extension
+G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\platform\log\common\log.ts:117  INFO [LMBridge] Passing reasoning to extension: effort=(none) budget=1024
+console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] Checking cached token: expiresAt=2026-06-05T00:09:54.204Z, now=2026-06-04T23:35:22.900Z, hasRefresh=true, source=cli_external_link (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy Auth] ✅ Using cached token (len=1541, prefix=eyJhbGciOi..., source=cli_external_link) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Sending request with token: length=1541, prefix=eyJhbGciOi... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] reasoning enabled: effort=medium (source=ui-budget), summary=auto (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Including 81 tools in request (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 console.js:sourcemap:73 [Extension Host] 
-========== [CodeBuddy] HTTP REQUEST DEBUG ========== (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] URL: https://copilot.tencent.com/v2/chat/completions (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Method: POST (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+========== [CodeBuddy] HTTP REQUEST DEBUG ========== (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] URL: https://copilot.tencent.com/v2/chat/completions (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Method: POST (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 console.js:sourcemap:73 [Extension Host] [CodeBuddy] Headers: {
   "Content-Type": "application/json",
   "Accept": "text/event-stream",
@@ -1587,8 +1587,8 @@ console.js:sourcemap:73 [Extension Host] [CodeBuddy] Headers: {
   "monitor_promptPrepareStartTime": "1780616122907",
   "monitor_httpSendTime": "1780616122907",
   "Content-Encoding": "gzip"
-} (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body: 258677 chars (raw JSON), 55713 bytes (gzip) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
-console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body preview: {"model":"hy3-preview-agent-ioa","messages":[{"role":"system","content":"\n\n## Workspace Context\n\nYou are operating inside the Sarosis workspace \"vssarosis_workspace\".\nThe workspace root directory is: g:\\vssarosis_workspace\n\nWhen the user refers to \"workspace\", \"project\", \"current directory\", or asks to print/list the workspace,\nthey mean this directory: g:\\vssarosis_workspace\n\n### Security Sandbox\n\nYou are ONLY permitted to read, write, search, and execute commands within t... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+} (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body: 258677 chars (raw JSON), 55713 bytes (gzip) (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+console.js:sourcemap:73 [Extension Host] [CodeBuddy] Body preview: {"model":"hy3-preview-agent-ioa","messages":[{"role":"system","content":"\n\n## Workspace Context\n\nYou are operating inside the Sarosis workspace \"vssaros_workspace\".\nThe workspace root directory is: g:\\vssaros_workspace\n\nWhen the user refers to \"workspace\", \"project\", \"current directory\", or asks to print/list the workspace,\nthey mean this directory: g:\\vssaros_workspace\n\n### Security Sandbox\n\nYou are ONLY permitted to read, write, search, and execute commands within t... (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
 console.js:sourcemap:73 [Extension Host] ========== END REQUEST DEBUG ==========
- (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))
+ (at console.<anonymous> (file:///G:/CustomWorkspaces/AIProjects/saros-agents-client/src/vs/workbench/api/common/extHostConsoleForwarder.ts:50:10))

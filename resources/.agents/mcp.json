@@ -5,8 +5,8 @@
     "gongfeng": {
       "purpose": "工蜂（git.woa.com）API：发版时创建 Release、上传安装包资产、查 MR/issue/commit。",
       "usedBy": [
-        "resources/.agents/agents/vssarosis-release-bot.md",
-        "resources/.agents/skills/vssarosis-release-pipeline/SKILL.md"
+        "resources/.agents/agents/vssaros-release-bot.md",
+        "resources/.agents/skills/vssaros-release-pipeline/SKILL.md"
       ],
       "userLevelConfig": {
         "path": "~/.workbuddy/mcp.json",

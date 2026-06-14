@@ -10,7 +10,7 @@ import { IDisposable } from '../../../../../../base/common/lifecycle.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IMemoryProvider, IMemoryContext, IMemoryEntry } from '../../../common/providers.js';
 
-const MEMORY_DIR = '.sarosis/agents';
+const MEMORY_DIR = '.saros/agents';
 const SHORT_TERM_FILE = 'short-term.jsonl';
 const LONG_TERM_FILE = 'long-term.jsonl';
 
@@ -18,8 +18,8 @@ const LONG_TERM_FILE = 'long-term.jsonl';
  * 本地文件 Memory 后端
  *
  * 每个 agent 的记忆存储在：
- * - `.sarosis/agents/{agentId}/memory/short-term.jsonl` - 短期记忆
- * - `.sarosis/agents/{agentId}/memory/long-term.jsonl` - 长期记忆
+ * - `.saros/agents/{agentId}/memory/short-term.jsonl` - 短期记忆
+ * - `.saros/agents/{agentId}/memory/long-term.jsonl` - 长期记忆
  */
 export class LocalFileMemory implements IMemoryProvider, IDisposable {
 

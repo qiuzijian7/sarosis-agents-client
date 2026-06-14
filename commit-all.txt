@@ -426,7 +426,7 @@ src\vs\sessions\common\agentStudioTypes.ts(778,6): Unexpected unicode character:
 src\vs\sessions\common\agentStudioTypes.ts(780,6): Unexpected unicode character: "是否默认展开显示工具卡（默认" (charCode: 26159). To suppress, use // allow-any-unicode-next-line
 src\vs\sessions\common\agentStudioTypes.ts(782,6): Unexpected unicode character: "工具已在服务端执行（如" (charCode: 24037). To suppress, use // allow-any-unicode-next-line
 src\vs\sessions\common\agentStudioTypes.ts(1113,4): Unexpected unicode character: "───" (charCode: 9472). To suppress, use // allow-any-unicode-next-line
-[23:51:15] G:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\sessions\common\agentStudioService.ts: line 25, col 48, Warning - Imports violates 'vs/base/common/** or vs/base/parts/*/common/** or vs/platform/*/common/** or vs/editor/common/** or vs/editor/contrib/*/common/** or vs/workbench/common/** or vs/workbench/browser/** or vs/workbench/services/*/common/** or vs/sessions/common/** or vs/sessions/services/*/common/** or vs/nls.js or vs/amdX.js' restrictions. See https://github.com/microsoft/vscode/wiki/Source-Code-Organization (local/code-import-patterns)
+[23:51:15] G:\CustomWorkspaces\AIProjects\saros-agents-client\src\vs\sessions\common\agentStudioService.ts: line 25, col 48, Warning - Imports violates 'vs/base/common/** or vs/base/parts/*/common/** or vs/platform/*/common/** or vs/editor/common/** or vs/editor/contrib/*/common/** or vs/workbench/common/** or vs/workbench/browser/** or vs/workbench/services/*/common/** or vs/sessions/common/** or vs/sessions/services/*/common/** or vs/nls.js or vs/amdX.js' restrictions. See https://github.com/microsoft/vscode/wiki/Source-Code-Organization (local/code-import-patterns)
 
 1 problem
 

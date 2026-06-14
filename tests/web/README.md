@@ -2,7 +2,7 @@
 
 ## 📋 概述
 
-本文档说明如何使用 Playwright 对 sarosis-agents-client 项目进行 Web 模式自动化测试，包括 UI 交互和录屏功能。
+本文档说明如何使用 Playwright 对 saros-agents-client 项目进行 Web 模式自动化测试，包括 UI 交互和录屏功能。
 
 ---
 
@@ -12,7 +12,7 @@
 
 ```bash
 # 安装项目依赖（如果还没安装）
-cd G:\CustomWorkspaces\AIProjects\sarosis-agents-client
+cd G:\CustomWorkspaces\AIProjects\saros-agents-client
 npm install
 
 # 安装 Playwright 浏览器
@@ -54,7 +54,7 @@ npx playwright show-report test-results
 ## 📊 测试结构
 
 ```
-sarosis-agents-client/
+saros-agents-client/
 ├── playwright.web.config.ts          # Playwright Web 模式配置文件
 ├── tests/
 │   └── web/

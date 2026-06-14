@@ -1,9 +1,9 @@
 {
-	"name": "sarosis-codebuddy-provider",
+	"name": "saros-codebuddy-provider",
 	"displayName": "CodeBuddy Provider",
 	"description": "CodeBuddy AI 聊天模型提供者，提供与 CodeBuddy API 的集成能力。",
 	"version": "1.0.0",
-	"publisher": "sarosis",
+	"publisher": "saros",
 	"license": "MIT",
 	"engines": {
 		"vscode": "^1.95.0"
@@ -172,7 +172,7 @@
 		"watch": "node ../../node_modules/typescript/bin/tsc -watch -p ./"
 	},
 	"dependencies": {
-		"@sarosis/shared": "file:../shared"
+		"@saros/shared": "file:../shared"
 	},
 	"devDependencies": {
 		"@types/node": "22.x",

@@ -32,7 +32,7 @@ deploy-package/
 
 ```bash
 # 在目标服务器上执行
-cd /opt/vssarosis-update
+cd /opt/vssaros-update
 
 # 安装依赖
 npm install
@@ -46,7 +46,7 @@ node update-server/server.mjs
 在本地构建 VsSarosis 安装包：
 
 ```bash
-cd /d g:\CustomWorkspaces\AIProjects\sarosis-agents-client
+cd /d g:\CustomWorkspaces\AIProjects\saros-agents-client
 
 # 修复品牌配置
 npm run fix-branding
@@ -90,7 +90,7 @@ npm run gulp vscode-win32-x64-user-setup
 ## 热更新工作流程
 
 1. **客户端启动** → 每小时检查更新
-2. **请求更新服务器** → `GET http://21.91.41.66:3030/api/update/win32-x64-user/sarosis/<commit>`
+2. **请求更新服务器** → `GET http://21.91.41.66:3030/api/update/win32-x64-user/saros/<commit>`
 3. **服务器响应** → 返回新版本信息或 204（无更新）
 4. **客户端下载** → 后台静默下载新版本安装包
 5. **应用更新** → 下次重启时由 `inno_updater.exe` 应用更新
@@ -99,10 +99,10 @@ npm run gulp vscode-win32-x64-user-setup
 
 ```bash
 # 查看更新服务器日志
-pm2 logs vssarosis-update
+pm2 logs vssaros-update
 
 # 重启更新服务器
-pm2 restart vssarosis-update
+pm2 restart vssaros-update
 
 # 检查服务器健康状态
 curl http://21.91.41.66:3030/health

@@ -296,7 +296,7 @@ depth=2:  [Agent C]                    ← 第三层
 |------|------|------|
 | 编排计划 | `orchestration-plans.json` | `~/.agent-studio/data/` |
 | 任务看板 | `taskboard.json` | `~/.agent-studio/data/` |
-| Agent 数据 | `employees.json` | `.sarosisworkspace/` |
+| Agent 数据 | `employees.json` | `.sarosworkspace/` |
 
 ### 并发安全
 

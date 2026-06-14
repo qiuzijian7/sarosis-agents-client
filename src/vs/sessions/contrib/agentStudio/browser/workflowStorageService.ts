@@ -8,10 +8,10 @@
 // ------------------------------------------------------------------------------------------------
 //
 // 将工作流以 JSON 文件形式持久化到当前工作区的
-// `.sarosisworkspace/workflows/{id}.json`。
+// `.sarosworkspace/workflows/{id}.json`。
 //
 // 目录定位:
-//   workspace.path → home/元数据目录 → 拼接 `.sarosisworkspace/workflows/`
+//   workspace.path → home/元数据目录 → 拼接 `.sarosworkspace/workflows/`
 //   (workspace.path 通过 IAgentStudioService.getWorkspace(activeId) 获取)
 
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -47,7 +47,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	// ─── Directory resolution ────────────────────────────────────────────
 
 	/**
-	 * 解析当前工作区的 `.sarosisworkspace/workflows/` 目录 URI。
+	 * 解析当前工作区的 `.sarosworkspace/workflows/` 目录 URI。
 	 * 优先用激活工作区的 path，回退到 IDE 第一个打开的文件夹。
 	 */
 	private async _resolveWorkflowsDir(workspaceId?: string): Promise<URI | undefined> {
@@ -205,12 +205,12 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 
 	/**
 	 * v19: Persist workflow display order.
-	 * Stores ordered IDs in `.sarosisworkspace/workflows-order.json`.
+	 * Stores ordered IDs in `.sarosworkspace/workflows-order.json`.
 	 */
 	async reorderWorkflows(orderedIds: string[], workspaceId?: string): Promise<void> {
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) { return; }
-		// Write order file in parent directory (.sarosisworkspace/)
+		// Write order file in parent directory (.sarosworkspace/)
 		const orderUri = URI.joinPath(dir, '..', 'workflows-order.json');
 		const data = JSON.stringify({ order: orderedIds, updatedAt: Date.now() }, null, 2);
 		await this._fileService.writeFile(orderUri, VSBuffer.fromString(data));

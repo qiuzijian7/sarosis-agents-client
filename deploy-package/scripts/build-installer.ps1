@@ -13,8 +13,8 @@ Write-Host ""
 
 # 检查当前目录
 $currentPath = Get-Location
-if (-not $currentPath.Path.EndsWith("sarosis-agents-client")) {
-    Write-Host "错误: 请在 sarosis-agents-client 根目录下运行此脚本" -ForegroundColor Red
+if (-not $currentPath.Path.EndsWith("saros-agents-client")) {
+    Write-Host "错误: 请在 saros-agents-client 根目录下运行此脚本" -ForegroundColor Red
     exit 1
 }
 

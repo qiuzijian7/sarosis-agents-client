@@ -1,0 +1,44 @@
+// ConfigMD custom parser — example.
+//
+// To activate: rename this file to "parser.js" (drop the .example suffix).
+// The host re-reads it on the next preview render.
+//
+// Contract:
+//   exports.parse(markdown, ctx) -> HTML string
+//
+// The returned HTML is passed through a host-side sanitizer (strips
+// <script>, on*= handlers, javascript:) and then through the imgui
+// post-processor (which converts ```imgui code blocks into interactive
+// <form> markup). You generally do NOT need to handle imgui yourself —
+// just emit standard markdown HTML and let the host take care of the rest.
+//
+// `ctx` includes:
+//   { employeeId: string }   // identifier of the agent owning this panel
+//
+// Failure mode:
+//   If `parse` throws or returns a non-string, the host falls back to its
+//   built-in markdown renderer and logs a warning. Never block on async
+//   work here — the function must be synchronous.
+
+module.exports = {
+	parse(markdown, _ctx) {
+		// Trivial example: pass through with a single heading wrapper.
+		// Replace this with your own renderer (e.g. `marked`, `markdown-it`).
+		const escape = (s) => s
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
+
+		const lines = markdown.split('\n');
+		const out = [];
+		for (const line of lines) {
+			const h1 = /^# (.+)$/.exec(line);
+			if (h1) { out.push('<h1>' + escape(h1[1]) + '</h1>'); continue; }
+			const h2 = /^## (.+)$/.exec(line);
+			if (h2) { out.push('<h2>' + escape(h2[1]) + '</h2>'); continue; }
+			if (!line.trim()) { continue; }
+			out.push('<p>' + escape(line) + '</p>');
+		}
+		return out.join('\n');
+	},
+};

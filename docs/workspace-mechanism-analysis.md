@@ -85,11 +85,11 @@ this.enterMultiRootWorkspaceSupportContext.set(
 
 ---
 
-## 2. sarosis-agents-client 中的问题识别
+## 2. saros-agents-client 中的问题识别
 
 ### 2.1 发现的问题
 
-通过代码分析，发现 `sarosis-agents-client` 中存在一个自定义的工作区服务：
+通过代码分析，发现 `saros-agents-client` 中存在一个自定义的工作区服务：
 
 **文件：** `src/vs/sessions/services/workspace/browser/workspaceContextService.ts`
 
@@ -139,7 +139,7 @@ this.enterMultiRootWorkspaceSupportContext.set(
 ```
 
 - 如果是桌面应用，`isNative` 应该为 `true`
-- 需要确认 `isNative` 在 `sarosis-agents-client` 中是否被正确设置
+- 需要确认 `isNative` 在 `saros-agents-client` 中是否被正确设置
 
 #### 原因2：工作区编辑服务被自定义或替换
 
@@ -263,7 +263,7 @@ VS Code 原生支持多根工作区，但切换"当前根目录"的体验可以�
 
 **如果 `enterMultiRootWorkspaceSupport` 为 false：**
 - 检查 `isNative` 为什么为 false
-- 可能需要在 `sarosis-agents-client` 中正确设置 `isNative`
+- 可能需要在 `saros-agents-client` 中正确设置 `isNative`
 
 **如果 `addFolders` 无效果：**
 - 调试 `BrowserWorkspaceEditingService.addFolders()` 方法
@@ -328,9 +328,9 @@ await editingService.addFolders([
 
 ### 4.1 立即执行的诊断步骤
 
-1. **启动 sarosis-agents-client 开发版本**
+1. **启动 saros-agents-client 开发版本**
    ```bash
-   cd G:\CustomWorkspaces\AIProjects\sarosis-agents-client
+   cd G:\CustomWorkspaces\AIProjects\saros-agents-client
    ./scripts/code.bat --disable-extensions
    ```
 
@@ -419,17 +419,17 @@ console.log('isNative (base/platform):', window.require('vs/base/common/platform
 
 ### 4.4 快速验证：对比官方 VS Code
 
-用官方 VS Code 做相同操作，确认是否是 `sarosis-agents-client` 的特有问题：
+用官方 VS Code 做相同操作，确认是否是 `saros-agents-client` 的特有问题：
 
-1. 关闭 `sarosis-agents-client`
+1. 关闭 `saros-agents-client`
 2. 打开官方 VS Code 
 3. **文件 → 打开文件夹...** (选择一个仓库 `repo1`)
 4. **文件 → 将文件夹添加到工作区...** (选择另一个仓库 `repo2`)
 5. 观察是否成功：资源管理器应显示两个根文件夹
 6. 检查状态栏或标题栏是否显示 "Workspace" 而非文件夹名
 
-**如果官方 VS Code 可以，但 `sarosis-agents-client` 不可以：**
-→ 说明 `sarosis-agents-client` 有自定义修改导致问题，需要对比代码差异
+**如果官方 VS Code 可以，但 `saros-agents-client` 不可以：**
+→ 说明 `saros-agents-client` 有自定义修改导致问题，需要对比代码差异
 
 **如果官方 VS Code 也不可以：**
 → 说明用户操作方式有误，需要指导正确使用多根工作区功能

@@ -2,7 +2,7 @@
 
 > 目标：将"工作区"从**单文件夹容器**重构为**「工作区主目录 + N 个关联代码仓库」**的多根容器，并打通沙箱、SCM、ActivityBar UI 与画布切换四条链路。
 >
-> 适用代码库：`sarosis-agents-client`（VS Code fork，sessions 层 Agent Studio）
+> 适用代码库：`saros-agents-client`（VS Code fork，sessions 层 Agent Studio）
 
 ---
 
@@ -66,7 +66,7 @@ export interface Workspace {
 
 	/**
 	 * 工作区主目录 —— 创建时【必须】指定一个空目录。
-	 * 用于存放 .sarosisworkspace 元数据、agent 产物、worktree 等。
+	 * 用于存放 .sarosworkspace 元数据、agent 产物、worktree 等。
 	 */
 	path: string;                         // ⬅️ 由 path? 改为必填
 
@@ -332,7 +332,7 @@ private async _resolveAndCheckWorkspacePath(agentId: string | undefined, request
 │ ⌂ [WORKSPACE2        ▼] [+] │  ← 顶部：工作区选择器 + 创建按钮
 ├─────────────────────────────┤
 │ ▼ WORKSPACE2 (主目录)        │  ← 仅显示【选中】工作区
-│   ▸ .sarosisworkspace        │
+│   ▸ .sarosworkspace        │
 │   ▸ doc                      │
 │ ▼ 关联仓库 repo-A  [git ⎇]   │  ← relatedFolders 分组展示
 │   ▸ src                      │
@@ -400,14 +400,14 @@ this._register(this.agentStudioService.onDidChangeWorkspace(() => this._loadActi
 
 ## 6. 数据迁移
 
-`.sarosisworkspace/workspace.json` 中旧记录无 `relatedFolders`。在工作区加载服务（`workspaceLifecycle` / 持久化读取处）加一次性迁移：
+`.sarosworkspace/workspace.json` 中旧记录无 `relatedFolders`。在工作区加载服务（`workspaceLifecycle` / 持久化读取处）加一次性迁移：
 
 ```ts
 function migrateWorkspace(raw: any): Workspace {
 	if (!Array.isArray(raw.relatedFolders)) {
 		raw.relatedFolders = [];
 		// 可选策略：若旧 path 是代码仓库（含 .git），把它转为首个关联仓库，
-		// 主目录另指向 .sarosisworkspace 上级或保持原 path。
+		// 主目录另指向 .sarosworkspace 上级或保持原 path。
 	}
 	if (!raw.path) {
 		// 旧的"虚拟工作区"（无 path）：保持 path 为空，UI 显示空态并提示绑定主目录

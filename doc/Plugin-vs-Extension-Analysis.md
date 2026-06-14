@@ -133,7 +133,7 @@ extensions/knot-agui/
 **1. package.json 声明**
 ```json
 {
-  "name": "sarosis-knot-agui",
+  "name": "saros-knot-agui",
   "displayName": "Knot AG-UI Model Provider",
   "contributes": {
     "agentCapabilities": [
@@ -373,7 +373,7 @@ extensions/knot-agui/
     "chatPlugins": [
       {
         "path": "./plugin",
-        "when": "extensionInstalled == sarosis-knot-agui"
+        "when": "extensionInstalled == saros-knot-agui"
       }
     ],
     "agentCapabilities": [...],
@@ -407,11 +407,11 @@ extensions/knot-agui/
 ### 发现流程
 
 ```
-1. VSCode 加载扩展 sarosis-knot-agui
+1. VSCode 加载扩展 saros-knot-agui
     ↓
 2. ExtensionAgentPluginDiscovery 读取 chatPlugins 扩展点
     ↓
-3. 发现 { path: "./plugin", when: "extensionInstalled == sarosis-knot-agui" }
+3. 发现 { path: "./plugin", when: "extensionInstalled == saros-knot-agui" }
     ↓
 4. 检查 when 条件 → 满足
     ↓

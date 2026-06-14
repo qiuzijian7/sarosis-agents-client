@@ -6,9 +6,9 @@
  *    POST /search/memories    — L1 keyword search (searchMemory + loadContext long-term)
  *    POST /recall             — pre-built context string (loadContext)
  *
- *  ─── 关键设计：sarosis writeMemory 调用模式适配 ─────────────────────────────
+ *  ─── 关键设计：saros writeMemory 调用模式适配 ─────────────────────────────
  *
- *  sarosis 的 chat 链路有两处会调 writeMemory（参见 src/vs/sessions/contrib/
+ *  saros 的 chat 链路有两处会调 writeMemory（参见 src/vs/sessions/contrib/
  *  agentStudio/browser）：
  *
  *    1. agentDriverService.ts (Step 5: 写回记忆)
@@ -24,7 +24,7 @@
  *           metadata: { toolCalls, toolResults },
  *         });
  *
- *  ⚠ sarosis 没有传递 metadata.role 字段。早期版本依赖 role='user'/'assistant'
+ *  ⚠ saros 没有传递 metadata.role 字段。早期版本依赖 role='user'/'assistant'
  *  来区分两端，导致两次调用都被当 assistant 处理，userContent 永远空，
  *  /capture 直接返回 HTTP 400。
  *
@@ -35,17 +35,17 @@
  *    后 executionProvider（写 assistant 消息，含 metadata.toolCalls / toolResults）
  *
  *  特征区分（按可信度排序）：
- *    A. 显式 entry.metadata.role — 兼容未来 sarosis 升级
+ *    A. 显式 entry.metadata.role — 兼容未来 saros 升级
  *    B. metadata 里含 toolCalls / toolResults — 强烈暗示 assistant
  *    C. 默认：第一次到达视作 user，第二次到达视作 assistant，触发 /capture
  *
  *  sessionKey 推导：
  *    优先用 entry.metadata.sessionId / entry.metadata.session_key；
- *    退而求其次：用 agentId 作为唯一 key（同一 agent 在 sarosis 里只会有一个
+ *    退而求其次：用 agentId 作为唯一 key（同一 agent 在 saros 里只会有一个
  *    活动会话，足以保证 vendor 端 session 连续性）。
  *--------------------------------------------------------------------------------------------*/
 
-// ─── Structural mirror of sarosis IMemoryProvider contract ──────────────────
+// ─── Structural mirror of saros IMemoryProvider contract ──────────────────
 
 interface IMemoryEntry {
 	readonly id: string;
@@ -205,7 +205,7 @@ function deriveSessionKey(agentId: string, _entry: IMemoryEntry): string {
 /**
  * 清除内容中由上游 chat 渲染链路漏网的字面量 `undefined` 串。
  *
- * 背景：sarosis 早期 chat 写入路径在某些异步消息片段尚未到达时会用
+ * 背景：saros 早期 chat 写入路径在某些异步消息片段尚未到达时会用
  * `String(undefined)` 拼接历史，导致 `assistant_content` 中夹杂 "undefined"
  * 序列。即使 chat 侧已加了 7 道防线，仍需要在 vendor /capture 入口处兜底，
  * 避免再次污染 SQLite L0 表（已落盘的脏数据无法靠重启自愈）。

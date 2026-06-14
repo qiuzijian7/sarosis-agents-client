@@ -710,7 +710,7 @@ export class AgentStudioWorkspaceToolbar extends Disposable {
 		const isEmpty = await this._checkFolderEmpty(this._selectedFolderUri);
 		if (!isEmpty) {
 			const confirmed = window.confirm(
-				'所选主目录非空，工作区元数据（.sarosisworkspace）将写入其中，可能与已有文件混合。\n\n建议选择一个空文件夹。是否仍要继续？'
+				'所选主目录非空，工作区元数据（.sarosworkspace）将写入其中，可能与已有文件混合。\n\n建议选择一个空文件夹。是否仍要继续？'
 			);
 			if (!confirmed) {
 				return;

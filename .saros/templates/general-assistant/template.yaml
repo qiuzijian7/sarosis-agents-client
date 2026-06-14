@@ -1,0 +1,12 @@
+id: general-assistant
+name: General Assistant
+description: 通用对话助手，适用于大多数场景
+category: general
+icon: icon.png
+defaultConfig:
+  temperature: 0.7
+  maxTokens: 4096
+  systemPrompt: "你是一个通用助手，可以回答各种问题。"
+tags:
+  - chat
+  - general

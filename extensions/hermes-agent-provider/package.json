@@ -3,7 +3,7 @@
 	"displayName": "Hermes Agent Provider (sample, disabled)",
 	"description": "Sample/reference VS Code chat-provider extension wired to the Hermes Python backend. Kept in the tree as documentation only — no longer registered as a chat-box model provider.",
 	"version": "0.1.0",
-	"publisher": "sarosis",
+	"publisher": "saros",
 	"license": "MIT",
 	"engines": {
 		"vscode": "^1.95.0"

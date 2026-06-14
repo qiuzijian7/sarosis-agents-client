@@ -130,7 +130,7 @@ const SKIP_DIRS = new Set([
 	'vendor', '__pycache__', '.venv', 'venv', 'env', '.env',
 	'target', '.cargo', '.rustup', 'coverage', '.coverage',
 	'.idea', '.vscode', '.vs', 'bin', 'obj', 'Debug', 'Release',
-	'.sarosisworkspace',
+	'.sarosworkspace',
 ]);
 
 // Files to skip

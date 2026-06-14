@@ -2,7 +2,7 @@
 	"name": "codebuddy-provider",
 	"version": "1.0.0",
 	"description": "CodeBuddy AI 聊天模型提供者，提供与 CodeBuddy API 的集成能力。\n\n登录状态：运行命令 `CodeBuddy: Login (iOA SSO)` 进行 iOA 登录，或运行 `CodeBuddy: Logout` 登出。",
-	"publisher": "sarosis",
+	"publisher": "saros",
 	"configuration": {
 		"properties": {
 			"codebuddy.status": {

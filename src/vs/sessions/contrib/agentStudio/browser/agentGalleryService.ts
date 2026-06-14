@@ -72,9 +72,9 @@ export class AgentGalleryService extends Disposable implements IAgentGalleryServ
 			return;
 		}
 
-		// 模板目录：.sarosis/templates/
+		// 模板目录：.saros/templates/
 		// 每个模板是一个子目录，包含 template.yaml
-		const templatesDir = URI.from({ scheme: 'file', path: '.sarosis/templates' });
+		const templatesDir = URI.from({ scheme: 'file', path: '.saros/templates' });
 
 		try {
 			const children = await this._fileService.resolve(templatesDir);

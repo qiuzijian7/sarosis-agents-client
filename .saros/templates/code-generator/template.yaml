@@ -1,0 +1,13 @@
+id: code-generator
+name: Code Generator
+description: 代码生成助手，支持多种编程语言
+category: codegen
+icon: icon.png
+defaultConfig:
+  temperature: 0.3
+  maxTokens: 8192
+  systemPrompt: "你是一个代码生成助手，擅长多种编程语言。请根据用户需求生成高质量的代码。"
+tags:
+  - code
+  - generation
+  - programming

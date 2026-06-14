@@ -24,7 +24,7 @@ registered in `product.json#extensionEnabledApiProposals`:
 
 ```json
 "extensionEnabledApiProposals": {
-    "sarosis.hermes-agent-provider": ["chatProvider"]
+    "saros.hermes-agent-provider": ["chatProvider"]
 }
 ```
 

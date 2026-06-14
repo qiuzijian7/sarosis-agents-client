@@ -2201,8 +2201,8 @@ export class AgentStudioWebviewController extends Disposable {
 				pushRoot(workspace?.path);
 				// Also try the parent directory of workspace.path. The tool
 				// often returns paths relative to the parent (e.g. the
-				// workspace.path is .../project/.sarosisworkspace, and the
-				// file path is .sarosisworkspace/workflows/...). Without the
+				// workspace.path is .../project/.sarosworkspace, and the
+				// file path is .sarosworkspace/workflows/...). Without the
 				// parent root, joined paths get a double prefix.
 				if (workspace?.path) {
 					const workspaceUri = URI.file(workspace.path);
@@ -3397,7 +3397,7 @@ export class AgentStudioWebviewController extends Disposable {
 			// 从快照 URI 取文件名（比 split('/') 更健壮，能正确处理 file:/// 等 scheme）。
 			const fileName = matched.uri.path.split('/').filter(Boolean).pop() ?? 'file';
 			const baseDirUri = URI.file(baseDir);
-			const snapshotUri = URI.joinPath(baseDirUri, '.sarosisworkspace', 'checkpoint-diffs', checkpointId, fileName);
+			const snapshotUri = URI.joinPath(baseDirUri, '.sarosworkspace', 'checkpoint-diffs', checkpointId, fileName);
 			await this.fileService.writeFile(snapshotUri, VSBuffer.fromString(snapshotContent));
 
 			// 3. Build diff editor input and open
@@ -3520,7 +3520,7 @@ export class AgentStudioWebviewController extends Disposable {
 				const fileName = snap.uri.path.split('/').filter(Boolean).pop() ?? 'file';
 				// 用 snapshotId 作为子目录，避免同名文件互相覆盖。
 				const originalUri = URI.joinPath(
-					baseDirUri, '.sarosisworkspace', 'checkpoint-diffs', '__all__', snap.id, fileName,
+					baseDirUri, '.sarosworkspace', 'checkpoint-diffs', '__all__', snap.id, fileName,
 				);
 				try {
 					await this.fileService.writeFile(originalUri, VSBuffer.fromString(snap.content));

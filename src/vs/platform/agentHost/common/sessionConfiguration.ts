@@ -16,11 +16,11 @@ import { Registry } from '../../registry/common/platform.js';
  * Configuration structure:
  * ```json
  * {
- *   "sarosis.session.compression": {
+ *   "saros.session.compression": {
  *     "enabled": true,
  *     "thresholdPercent": 0.50
  *   },
- *   "sarosis.session.memory": {
+ *   "saros.session.memory": {
  *     "enabled": true,
  *     "maxPrefetchResults": 5
  *   }
@@ -29,21 +29,21 @@ import { Registry } from '../../registry/common/platform.js';
  */
 
 const configuration: IConfigurationNode = {
-	id: 'sarosis.session',
+	id: 'saros.session',
 	order: 100,
 	type: 'object',
 	title: 'Session & Context Enhancement',
 	properties: {
 		// ── Compression Settings ──────────────────────────────
 
-		'sarosis.session.compression.enabled': {
+		'saros.session.compression.enabled': {
 			type: 'boolean',
 			default: true,
 			description: 'Enable automatic context compression when token usage exceeds threshold.',
 			tags: ['onOff'],
 		},
 
-		'sarosis.session.compression.thresholdPercent': {
+		'saros.session.compression.thresholdPercent': {
 			type: 'number',
 			default: 0.50,
 			minimum: 0.1,
@@ -51,7 +51,7 @@ const configuration: IConfigurationNode = {
 			description: 'Token usage ratio (0-1) that triggers automatic compression.',
 		},
 
-		'sarosis.session.compression.headProtectCount': {
+		'saros.session.compression.headProtectCount': {
 			type: 'integer',
 			default: 3,
 			minimum: 1,
@@ -59,7 +59,7 @@ const configuration: IConfigurationNode = {
 			description: 'Number of messages to protect at the start of conversation (system prompt + initial context).',
 		},
 
-		'sarosis.session.compression.tailBudgetRatio': {
+		'saros.session.compression.tailBudgetRatio': {
 			type: 'number',
 			default: 0.20,
 			minimum: 0.05,
@@ -67,7 +67,7 @@ const configuration: IConfigurationNode = {
 			description: 'Token budget ratio to protect at the end of conversation (recent context).',
 		},
 
-		'sarosis.session.compression.toolOutputTruncateLength': {
+		'saros.session.compression.toolOutputTruncateLength': {
 			type: 'integer',
 			default: 500,
 			minimum: 100,
@@ -77,14 +77,14 @@ const configuration: IConfigurationNode = {
 
 		// ── Memory Settings ──────────────────────────────────
 
-		'sarosis.session.memory.enabled': {
+		'saros.session.memory.enabled': {
 			type: 'boolean',
 			default: true,
 			description: 'Enable cross-session memory management.',
 			tags: ['onOff'],
 		},
 
-		'sarosis.session.memory.maxPrefetchResults': {
+		'saros.session.memory.maxPrefetchResults': {
 			type: 'integer',
 			default: 5,
 			minimum: 1,
@@ -92,14 +92,14 @@ const configuration: IConfigurationNode = {
 			description: 'Maximum number of memories to prefetch and inject per turn.',
 		},
 
-		'sarosis.session.memory.autoExtract': {
+		'saros.session.memory.autoExtract': {
 			type: 'boolean',
 			default: true,
 			description: 'Automatically extract memorable content from conversations.',
 			tags: ['onOff'],
 		},
 
-		'sarosis.session.memory.defaultImportance': {
+		'saros.session.memory.defaultImportance': {
 			type: 'number',
 			default: 0.5,
 			minimum: 0.0,

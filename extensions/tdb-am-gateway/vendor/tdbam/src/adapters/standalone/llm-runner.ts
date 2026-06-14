@@ -183,13 +183,13 @@ export class StandaloneLLMRunner implements LLMRunner {
     const maxTokens = params.maxTokens ?? this.config.maxTokens ?? 4096;
     const workspaceDir = params.workspaceDir ?? process.cwd();
 
-    // ── sarosis local-first build (Q3 + Q4) ──
-    // 让 sarosis IDE 注入的环境变量覆盖 config 中的 LLM 参数，使 TDB-AM 的所有
+    // ── saros local-first build (Q3 + Q4) ──
+    // 让 saros IDE 注入的环境变量覆盖 config 中的 LLM 参数，使 TDB-AM 的所有
     // LLM 调用（L1 抽取、L1 dedup、L2 场景、L3 画像）跟随用户当前 Chat 选定的
-    // 模型，统一走 sarosis 的 Knot 桥（登录态鉴权）。
+    // 模型，统一走 saros 的 Knot 桥（登录态鉴权）。
     //
     //   TDBAM_LLM_BASE_URL — Knot 桥的 OpenAI-compatible endpoint
-    //   TDBAM_LLM_API_KEY  — sarosis 注入的临时 token（登录态）
+    //   TDBAM_LLM_API_KEY  — saros 注入的临时 token（登录态）
     //   TDBAM_LLM_MODEL    — 用户当前 Chat 选用的模型 ID
     //
     // 这三个变量缺失时回退到 config（保留 standalone 独立运行能力）。
@@ -200,11 +200,11 @@ export class StandaloneLLMRunner implements LLMRunner {
     this.logger?.debug?.(
       `${TAG} run() start: taskId=${params.taskId}, model=${effectiveModel}, ` +
       `tools=${this.enableTools}, timeout=${timeoutMs}ms, ` +
-      `bridge=${process.env.TDBAM_LLM_BASE_URL ? "sarosis-knot" : "config"}`,
+      `bridge=${process.env.TDBAM_LLM_BASE_URL ? "saros-knot" : "config"}`,
     );
 
     // Create OpenAI-compatible provider via AI SDK.
-    // sarosis 本地化构建：@ai-sdk/openai v3.x 已默认 OpenAI-compatible 模式（无 compatibility 字段）。
+    // saros 本地化构建：@ai-sdk/openai v3.x 已默认 OpenAI-compatible 模式（无 compatibility 字段）。
     // 走 /chat/completions 端点，兼容 DeepSeek/Qwen/Knot 桥等。
     const provider = createOpenAI({
       baseURL,

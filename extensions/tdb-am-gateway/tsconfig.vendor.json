@@ -1,5 +1,5 @@
 {
-	"//": "vendor 专用 tsconfig — 不被 sarosis 顶层 gulpfile 扫描，只由 npm run compile:vendor 跑。原因见 tsconfig.json 注释。",
+	"//": "vendor 专用 tsconfig — 不被 saros 顶层 gulpfile 扫描，只由 npm run compile:vendor 跑。原因见 tsconfig.json 注释。",
 	"compilerOptions": {
 		"target": "ES2022",
 		"lib": [

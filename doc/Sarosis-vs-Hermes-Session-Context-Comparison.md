@@ -2,7 +2,7 @@
 
 ## 一、概述
 
-本文档对比分析 `sarosis-agents-client` (VSCode 定制版) 与 `hermes-agent-studio` (Python) 在 Session 管理和上下文管理方面的功能支持情况。
+本文档对比分析 `saros-agents-client` (VSCode 定制版) 与 `hermes-agent-studio` (Python) 在 Session 管理和上下文管理方面的功能支持情况。
 
 ---
 
@@ -11,7 +11,7 @@
 ### 2.1 架构概览
 
 ```
-sarosis-agents-client/
+saros-agents-client/
 ├── src/vs/platform/agentHost/     # 平台级 Agent 宿主服务
 │   ├── node/sessionDatabase.ts     # SQLite 数据库实现
 │   ├── common/
@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 ## 七、集成方式：Bridge 模式
 
-`sarosis-agents-client` 可以通过 `hermes-agent` 扩展使用 Bridge 模式调用 Hermes Agent 的完整功能：
+`saros-agents-client` 可以通过 `hermes-agent` 扩展使用 Bridge 模式调用 Hermes Agent 的完整功能：
 
 ```
 VSCode (TypeScript)
@@ -354,7 +354,7 @@ AIAgent + ToolRegistry + Providers
 
 ## 十、后续建议
 
-如果需要在 `sarosis-agents-client` 中实现与 Hermes Agent 相同的功能，建议：
+如果需要在 `saros-agents-client` 中实现与 Hermes Agent 相同的功能，建议：
 
 1. **增强 SessionDatabase**：
    - 添加 `sessions` 表和 `parent_session_id` 字段

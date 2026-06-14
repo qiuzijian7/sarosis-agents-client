@@ -1082,26 +1082,26 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		rootDir: string,
 		isWorktree: boolean,
 	): Promise<string> {
-		// ── .sarosis/AGENT.md 人写规则注入（借鉴 Claude Code 双系统设计）──
-		// 用户可以在工作区根目录放置 .sarosis/AGENT.md 文件，写入一锤定音的约束
+		// ── .saros/AGENT.md 人写规则注入（借鉴 Claude Code 双系统设计）──
+		// 用户可以在工作区根目录放置 .saros/AGENT.md 文件，写入一锤定音的约束
 		// （例如"永远用 pnpm"、"提交前跑 npm test"），这些规则会无条件覆盖 AI
 		// 自动抽取的偏好，优先级最高。
 		// 参见：doc/Memory-Strategy.md §四.4 / §五.3
 		let agentMdSection = '';
 		try {
-			const agentMdUri = URI.joinPath(URI.file(rootDir), '.sarosis', 'AGENT.md');
+			const agentMdUri = URI.joinPath(URI.file(rootDir), '.saros', 'AGENT.md');
 			const exists = await this._fileService.exists(agentMdUri);
 			if (exists) {
 				const buf = await this._fileService.readFile(agentMdUri);
 				const content = buf.value.toString().trim();
 				if (content.length > 0) {
-					agentMdSection = `## Project-level Rules (.sarosis/AGENT.md)\n\nThe following rules were written by the user and MUST be strictly followed:\n\n${content}`;
-					this._logService.info(`[AgentDriver] Loaded .sarosis/AGENT.md (${content.length} chars)`);
+					agentMdSection = `## Project-level Rules (.saros/AGENT.md)\n\nThe following rules were written by the user and MUST be strictly followed:\n\n${content}`;
+					this._logService.info(`[AgentDriver] Loaded .saros/AGENT.md (${content.length} chars)`);
 				}
 			}
 		} catch (err) {
 			// 文件不存在或读取失败不影响主流程
-			this._logService.debug(`[AgentDriver] .sarosis/AGENT.md not found or unreadable: ${err instanceof Error ? err.message : String(err)}`);
+			this._logService.debug(`[AgentDriver] .saros/AGENT.md not found or unreadable: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
 		const lines: string[] = [

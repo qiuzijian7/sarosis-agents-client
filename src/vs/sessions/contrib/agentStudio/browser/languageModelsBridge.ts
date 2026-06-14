@@ -62,7 +62,7 @@ import {
  * ⚠️ 同步约定：此字符串与 `extensions/codebuddy-provider/src/extension.ts` 中
  * 上报 usage 时使用的 MIME 必须**逐字一致**（跨 npm 包无法共享常量，双方各自硬编码）。
  */
-export const SAROSIS_USAGE_MIME = 'application/vnd.sarosis.usage+json';
+export const SAROSIS_USAGE_MIME = 'application/vnd.saros.usage+json';
 
 /**
  * One IModelProvider instance per LM vendor.

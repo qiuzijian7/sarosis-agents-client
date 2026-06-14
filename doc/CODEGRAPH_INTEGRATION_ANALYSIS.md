@@ -65,7 +65,7 @@ CodeGraph 可以作为 **库** 使用，也可以作为 **MCP 服务器** 运行
 
 ### 2.1 项目概述
 
-当前项目 (`sarosis-agents-client`) 是 **VS Code OSS** 的一个分支，添加了 **Agent Studio** 功能。Agent Studio 允许管理多个 AI Agent（称为 "Employee"），每个 Agent 可以：
+当前项目 (`saros-agents-client`) 是 **VS Code OSS** 的一个分支，添加了 **Agent Studio** 功能。Agent Studio 允许管理多个 AI Agent（称为 "Employee"），每个 Agent 可以：
 
 - 使用不同的 LLM 模型
 - 拥有不同的工具集

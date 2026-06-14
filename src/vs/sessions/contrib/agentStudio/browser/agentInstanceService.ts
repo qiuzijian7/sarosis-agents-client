@@ -114,7 +114,7 @@ export class AgentInstanceService extends Disposable implements IAgentInstanceSe
 	async deleteInstance(id: string): Promise<void> {
 		const instance = this._instances.get(id);
 		if (instance) {
-			// 清理 .sarosis/agents/{id}/ 目录
+			// 清理 .saros/agents/{id}/ 目录
 			await this._cleanupInstanceFiles(id);
 
 			this._instances.delete(id);

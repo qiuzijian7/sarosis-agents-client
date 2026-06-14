@@ -626,7 +626,7 @@ examples/
 
 ## 10. 与 Sarosis Agents 的集成参考
 
-基于以上分析，browser-use 的以下设计模式和架构思路可供 sarosis-agents-client 项目参考：
+基于以上分析，browser-use 的以下设计模式和架构思路可供 saros-agents-client 项目参考：
 
 1. **事件驱动架构**：使用 EventBus + Watchdog 实现关注点分离，适合浏览器会话管理
 2. **Registry 模式**：装饰器注册工具/动作，支持参数自动推断和特殊参数注入

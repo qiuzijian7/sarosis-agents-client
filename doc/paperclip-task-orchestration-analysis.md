@@ -2,7 +2,7 @@
 
 > **分析日期**: 2026-05-23  
 > **分析对象**: G:\CustomWorkspaces\AIProjects\paperclip  
-> **对比对象**: G:\CustomWorkspaces\AIProjects\sarosis-agents-client (Sarosis)  
+> **对比对象**: G:\CustomWorkspaces\AIProjects\saros-agents-client (Sarosis)  
 > **分析人**: AI Assistant
 
 ---
@@ -44,13 +44,13 @@ paperclip/
 
 ---
 
-### 1.2 Sarosis (sarosis-agents-client) 项目
+### 1.2 Sarosis (saros-agents-client) 项目
 
 **项目类型**: VS Code 扩展（Electron 应用）
 
 **架构**: VS Code Extension + Webview
 ```
-sarosis-agents-client/
+saros-agents-client/
 ├── src/vs/                          # VS Code 核心代码
 │   └── sessions/contrib/agentStudio/ # Agent Studio 功能模块
 │       ├── browser/                  # 浏览器层（扩展主机）

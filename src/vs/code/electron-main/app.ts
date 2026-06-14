@@ -1857,16 +1857,16 @@ export class CodeApplication extends Disposable {
 	 * 启动 TDB-AM 内嵌网关子进程（vendor TdaiGateway）。
 	 *
 	 * 架构说明：
-	 *   - sarosis renderer 进程的 capability 扩展不能直接 import vendor TdaiGateway
+	 *   - saros renderer 进程的 capability 扩展不能直接 import vendor TdaiGateway
 	 *     （vendor 依赖 fs/sqlite/http server 等 Node 原生模块，renderer 无法加载）。
 	 *   - 因此 vendor 由 Electron 主进程 spawn 独立的 Node 子进程承载，
 	 *     监听 127.0.0.1:8420 提供 HTTP API；renderer 端通过 fetch 访问。
 	 *   - 子进程入口 host.mjs 读取 env 变量获取配置，启动后 emit "ready" JSON 行。
 	 *
 	 * 容错：
-	 *   - host.mjs 找不到时只记录 warning，不阻塞 sarosis 启动。
+	 *   - host.mjs 找不到时只记录 warning，不阻塞 saros 启动。
 	 *   - 子进程异常退出时记录 error，不影响其他功能（chat 等仍可工作）。
-	 *   - sarosis 退出时通过 SIGTERM 触发优雅关闭。
+	 *   - saros 退出时通过 SIGTERM 触发优雅关闭。
 	 */
 	private startTdbamGateway(): void {
 		try {
@@ -1901,7 +1901,7 @@ export class CodeApplication extends Disposable {
 				TDAI_GATEWAY_PORT: process.env['TDAI_GATEWAY_PORT'] ?? '8420',
 				TDAI_GATEWAY_HOST: '127.0.0.1',
 				TDAI_LLM_BASE_URL: process.env['TDAI_LLM_BASE_URL'] ?? 'http://127.0.0.1:8421/v1',
-				TDAI_LLM_API_KEY: process.env['TDAI_LLM_API_KEY'] ?? 'sarosis-knot-bridge-token',
+				TDAI_LLM_API_KEY: process.env['TDAI_LLM_API_KEY'] ?? 'saros-knot-bridge-token',
 				TDAI_LLM_MODEL: process.env['TDAI_LLM_MODEL'] ?? 'knot-default',
 				TDAI_EMBEDDING_PROVIDER: 'none',
 				TDAI_EMBEDDING_ENABLED: 'false',
@@ -1974,10 +1974,10 @@ export class CodeApplication extends Disposable {
 				this.logService.error(`[tdbam-gateway] spawn 错误: ${err.message}`);
 			});
 
-			// 注册 sarosis 关闭时的 cleanup：发 SIGTERM，给 host.mjs 一秒做优雅关闭后强杀。
+			// 注册 saros 关闭时的 cleanup：发 SIGTERM，给 host.mjs 一秒做优雅关闭后强杀。
 			this._register(this.lifecycleMainService.onWillShutdown(() => {
 				if (childProc.exitCode === null && !childProc.killed) {
-					this.logService.info('[tdbam-gateway] sarosis 关闭中，发送 SIGTERM 给网关子进程');
+					this.logService.info('[tdbam-gateway] saros 关闭中，发送 SIGTERM 给网关子进程');
 					try {
 						childProc.kill('SIGTERM');
 					} catch (err) {
@@ -1994,7 +1994,7 @@ export class CodeApplication extends Disposable {
 				}
 			}));
 		} catch (err) {
-			this.logService.error(`[tdbam-gateway] 启动逻辑异常（已忽略，不影响 sarosis 启动）: ${err instanceof Error ? err.message : String(err)}`);
+			this.logService.error(`[tdbam-gateway] 启动逻辑异常（已忽略，不影响 saros 启动）: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 }

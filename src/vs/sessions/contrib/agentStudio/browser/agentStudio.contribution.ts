@@ -1033,7 +1033,7 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			// tdb-am-memory：把每轮对话通过 POST /capture 上报给 tdb-am-gateway 子进程，
 			// 让 vendor TdaiGateway 写入 L0/L1/L2/L3 SQLite。
 			//
-			// priority 80 > 内置 SessionMemoryProvider(50)，因此 sarosis 会优先调用本
+			// priority 80 > 内置 SessionMemoryProvider(50)，因此 saros 会优先调用本
 			// provider 的 writeMemory；同时 hermes-agent.memory(70) 也低于本条，确保在
 			// 同时启用时仍然由 tdb-am 拿走数据。
 			//

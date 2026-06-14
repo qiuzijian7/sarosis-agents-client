@@ -1,6 +1,6 @@
 # SubAgent 与主 Agent 消息汇总逻辑对比分析
 
-> **对比对象**：`sarosis-agents-client` (SAC) vs `Hermes-Agent` (HA)
+> **对比对象**：`saros-agents-client` (SAC) vs `Hermes-Agent` (HA)
 > **分析维度**：SubAgent 执行完成后，消息如何返回给主 Agent（消息汇总逻辑）
 
 ---
