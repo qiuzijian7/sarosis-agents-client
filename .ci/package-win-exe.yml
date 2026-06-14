@@ -251,10 +251,10 @@ stages:
               cmd /c "rd /s /q extensions\memory-example 2>nul"
               cmd /c "rd /s /q extensions\planning-example 2>nul"
               cmd /c "rd /s /q extensions\retrieval-example 2>nul"
-              cmd /c "rd /s /q extensions\shared 2>nul"
               cmd /c "rd /s /q extensions\tool-example 2>nul"
-              # Re-install shared so codebuddy-provider picks up engines/dependencies fixes
+              # Re-install shared so codebuddy-provider picks up latest fixes
               Push-Location extensions\codebuddy-provider
+              cmd /c "rd /s /q node_modules\saros-shared 2>nul"
               cmd /c "rd /s /q node_modules\@sarosis 2>nul"
               npm install --ignore-scripts
               Pop-Location

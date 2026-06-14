@@ -172,7 +172,7 @@
 		"watch": "node ../../node_modules/typescript/bin/tsc -watch -p ./"
 	},
 	"dependencies": {
-		"@saros/shared": "file:../shared"
+		"saros-shared": "file:../shared"
 	},
 	"devDependencies": {
 		"@types/node": "22.x",

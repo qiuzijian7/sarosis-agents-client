@@ -89,7 +89,7 @@ Write-Host "=== Cleanup problematic extensions ===" -ForegroundColor Yellow
 $toDelete = @(
     "hermes-agent", "execution-example", "kanban-example",
     "memory-example", "planning-example", "retrieval-example",
-    "shared", "tool-example"
+    "tool-example"
 )
 foreach ($d in $toDelete) {
     $path = "extensions\$d"
