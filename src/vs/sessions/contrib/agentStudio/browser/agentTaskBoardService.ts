@@ -215,6 +215,8 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			dependencies: data.dependencies || [],
 			createdAt: now,
 			updatedAt: now,
+			workflowId: data.workflowId,
+			variableValues: data.variableValues,
 		};
 		await this._withTasks(tasks => { tasks.push(newTask); });
 		this._onDidChangeTaskBoard.fire();
@@ -284,7 +286,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 					this.orchestrationService.executeTaskForBoard(
 						updated.workspaceId!,
 						id,
-						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath },
+						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath, workflowId: updated.workflowId, variableValues: updated.variableValues },
 					).catch(err => {
 						this.logService.warn(`[AgentStudio] TaskBoard: task execution failed for ${id}:`, err);
 					});

@@ -69,6 +69,11 @@ export class AgentEditorPart extends EditorPart {
 		});
 	}
 
+	// [Sarosis] Constrain Agent zone width: prevent the panel from growing
+	// wider than 650px or narrower than 450px when dragging the sash.
+	override get minimumWidth(): number { return 450; }
+	override get maximumWidth(): number { return 650; }
+
 	/**
 	 * [Sarosis] Reserve a 32-px band at the top of the agent part for the
 	 * `AgentStudioWorkspaceToolbar` overlay (workbench.ts).

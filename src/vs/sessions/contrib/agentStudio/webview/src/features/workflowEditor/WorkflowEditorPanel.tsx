@@ -1,11 +1,17 @@
 /*---------------------------------------------------------------------------------------------
  *  WorkflowEditorPanel — main panel component for the workflow-editor webview.
  *
- *  Layout (3-column):
- *   ┌────────────┬────────────────────────┬──────────────┐
- *   │ NodePalette│   WorkflowCanvas       │ PropertyPanel│
- *   │ (collapsible)│ (ReactFlow)          │ (floating)   │
- *   └────────────┴────────────────────────┴──────────────┘
+ *  Layout:
+ *   ┌─────────────────────────────────────────┐
+ *   │               Toolbar                    │
+ *   ├─────────────────────────────────────────┤
+ *   │  📝 任务描述：[        editable...       ] │
+ *   ├─────────────────────────────────────────┤
+ *   │ ┌──────────┐                            │
+ *   │ │NodePalette│▶  ◀──────────┐            │
+ *   │ │(overlay) │   WorkflowCanvas│          │
+ *   │ └──────────┘               │            │
+ *   └────────────────────────────┴────────────┘
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
@@ -20,6 +26,8 @@ import type { IStoredWorkflow } from '../../types/workflowStorage';
 
 export const WorkflowEditorPanel: React.FC = () => {
 	const [paletteCollapsed, setPaletteCollapsed] = useState(false);
+	const [paletteWidth, setPaletteWidth] = useState(200); // v40: resizable palette width
+	const [editingDescription, setEditingDescription] = useState(false); // v41: multi-line edit toggle
 	const [loaded, setLoaded] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -40,6 +48,8 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const workflowId = useWorkflowEditorStore(s => s.workflowId);
 	const workflowName = useWorkflowEditorStore(s => s.workflowName);
 	const setWorkflowName = useWorkflowEditorStore(s => s.setWorkflowName);
+	const workflowDescription = useWorkflowEditorStore(s => s.workflowDescription);
+	const setWorkflowDescription = useWorkflowEditorStore(s => s.setWorkflowDescription);
 	const toWorkflowData = useWorkflowEditorStore(s => s.toWorkflowData);
 	const nodes = useWorkflowEditorStore(s => s.nodes);
 	const edges = useWorkflowEditorStore(s => s.edges);
@@ -184,13 +194,16 @@ export const WorkflowEditorPanel: React.FC = () => {
 		setSaveStatus('saving');
 		try {
 			const { nodes: gnodes, connections } = toWorkflowData();
-			const name = useWorkflowEditorStore.getState().workflowName;
+			const state = useWorkflowEditorStore.getState();
+			const name = state.workflowName;
+			const description = state.workflowDescription;
 			const result = await sendRequest('workflow.save', {
 				workflow: {
 					id: workflowId,
 					nodes: gnodes,
 					connections,
 					name,
+					description,
 				},
 			}) as { success: boolean };
 			setSaveStatus(result?.success ? 'saved' : 'error');
@@ -207,7 +220,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// Without this, provider/model changes in agent nodes only live in
 	// Zustand memory and are lost on reload. Fires 2s after the last edit.
 	// ═══════════════════════════════════════════════════════════════════
-	const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+	const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const autoSave = useCallback(async () => {
 		const state = useWorkflowEditorStore.getState();
 		if (!state.workflowId) { return; }
@@ -219,6 +232,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 					nodes: gnodes,
 					connections,
 					name: state.workflowName,
+					description: state.workflowDescription,
 				},
 			});
 		} catch {
@@ -317,6 +331,28 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 		setTimeout(() => setValidationMsg(null), 5000);
 	}, []);
+
+	// v40: Resize handler for NodePalette panel
+	const handleResizeStart = useCallback((e: React.MouseEvent) => {
+		e.preventDefault();
+		const startX = e.clientX;
+		const startWidth = paletteWidth;
+		const onMouseMove = (ev: MouseEvent) => {
+			const dx = ev.clientX - startX;
+			const newWidth = Math.max(120, Math.min(400, startWidth + dx));
+			setPaletteWidth(newWidth);
+		};
+		const onMouseUp = () => {
+			document.removeEventListener('mousemove', onMouseMove);
+			document.removeEventListener('mouseup', onMouseUp);
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+		};
+		document.addEventListener('mousemove', onMouseMove);
+		document.addEventListener('mouseup', onMouseUp);
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
+	}, [paletteWidth]);
 
 	return (
 		<ReactFlowProvider>
@@ -460,28 +496,174 @@ export const WorkflowEditorPanel: React.FC = () => {
 					</div>
 				</div>
 
-				{/* Main area */}
-				<div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
-					<NodePalette
-					collapsed={paletteCollapsed}
-					onToggle={() => setPaletteCollapsed(!paletteCollapsed)}
-					activeWorkflowId={workflowId}
-					onSelectWorkflow={async (wfId) => {
-						try {
-							const result = await sendRequest('workflow.open', { workflowId: wfId }) as { success: boolean; workflow?: IStoredWorkflow } | null;
-							if (result?.success && result.workflow) {
-								loadWorkflow(result.workflow);
-								setLoaded(true);
-							}
-						} catch (err) {
-							console.warn('[WorkflowEditor] failed to open workflow:', err);
-						}
-					}}
-				/>
-					<div style={{ flex: 1, position: 'relative' }}>
-						<WorkflowCanvas />
-					</div>
+				{/* v41: Editable task description bar — single-line display, multi-line on click */}
+				<div style={{
+					display: 'flex',
+					alignItems: editingDescription ? 'flex-start' : 'center',
+					padding: editingDescription ? '6px 12px' : '4px 12px',
+					borderBottom: '1px solid var(--vscode-panel-border)',
+					backgroundColor: editingDescription
+						? 'var(--vscode-input-background)'
+						: 'var(--vscode-editor-background)',
+					gap: '8px',
+					transition: 'padding 0.12s ease, background-color 0.12s ease',
+				}}>
+					<span style={{
+						fontSize: '11px',
+						fontWeight: 500,
+						color: 'var(--vscode-descriptionForeground)',
+						whiteSpace: 'nowrap',
+						flexShrink: 0,
+						paddingTop: editingDescription ? '5px' : '0',
+					}}>
+						📝 任务描述
+					</span>
+					{!editingDescription ? (
+						/* Default: single-line display, click to edit */
+						<div
+							onClick={() => setEditingDescription(true)}
+							title="点击编辑任务描述"
+							style={{
+								flex: 1,
+								padding: '3px 6px',
+								fontSize: '12px',
+								color: workflowDescription
+									? 'var(--vscode-foreground)'
+									: 'var(--vscode-descriptionForeground)',
+								fontStyle: workflowDescription ? 'normal' : 'italic',
+								cursor: 'text',
+								borderRadius: '2px',
+								border: '1px solid transparent',
+								overflow: 'hidden',
+								whiteSpace: 'nowrap',
+								textOverflow: 'ellipsis',
+								userSelect: 'none',
+							}}
+							onMouseEnter={e => {
+								e.currentTarget.style.borderColor = 'var(--vscode-focusBorder)';
+								e.currentTarget.style.background = 'var(--vscode-input-background)';
+							}}
+							onMouseLeave={e => {
+								e.currentTarget.style.borderColor = 'transparent';
+								e.currentTarget.style.background = 'transparent';
+							}}
+						>
+							{workflowDescription || '描述这个工作流的任务目标与流程...'}
+						</div>
+					) : (
+						/* Editing: multi-line textarea */
+						<div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+							<textarea
+								autoFocus
+								value={workflowDescription}
+								onChange={e => setWorkflowDescription(e.target.value)}
+								placeholder="描述这个工作流的任务目标与流程..."
+								rows={Math.max(2, (workflowDescription.match(/\n/g) || []).length + 1)}
+								style={{
+									width: '100%',
+									border: '1px solid var(--vscode-focusBorder)',
+									borderRadius: '2px',
+									background: 'var(--vscode-input-background)',
+									color: 'var(--vscode-foreground)',
+									padding: '4px 8px',
+									fontSize: '12px',
+									lineHeight: 1.5,
+									outline: 'none',
+									resize: 'vertical',
+									fontFamily: 'inherit',
+									minHeight: '40px',
+								}}
+								onBlur={() => setEditingDescription(false)}
+								onKeyDown={e => {
+									// Escape collapses without saving changes beyond current value
+									if (e.key === 'Escape') {
+										(e.target as HTMLTextAreaElement).blur();
+									}
+								}}
+							/>
+							<div style={{
+								fontSize: '10px',
+								color: 'var(--vscode-descriptionForeground)',
+								marginTop: '2px',
+								paddingLeft: '2px',
+							}}>
+								Esc 退出编辑 · 支持多行描述
+							</div>
+						</div>
+					)}
 				</div>
+
+			{/* Main area — palette overlays canvas, canvas always full-width */}
+			<div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+				{/* v41: Palette floats above the canvas as an absolute overlay.
+				     When collapsed it slides off-screen; canvas width is never affected. */}
+				<div style={{
+					position: 'absolute',
+					left: paletteCollapsed ? -paletteWidth : 0,
+					top: 0,
+					bottom: 0,
+					zIndex: 10,
+					transition: 'left 0.22s ease',
+					display: 'flex',
+				}}>
+					<NodePalette
+						collapsed={paletteCollapsed}
+						onToggle={() => setPaletteCollapsed(!paletteCollapsed)}
+						width={paletteWidth}
+					/>
+					{/* Resize handle — attached to palette right edge, part of overlay */}
+					{!paletteCollapsed && (
+						<div
+							onMouseDown={handleResizeStart}
+							style={{
+								width: '4px',
+								cursor: 'col-resize',
+								backgroundColor: 'transparent',
+								transition: 'background-color 0.15s ease',
+							}}
+							onMouseEnter={e => { (e.target as HTMLElement).style.backgroundColor = 'var(--vscode-focusBorder)'; }}
+							onMouseLeave={e => { (e.target as HTMLElement).style.backgroundColor = 'transparent'; }}
+						/>
+					)}
+				</div>
+
+				{/* Collapsed-state floating trigger — slides in when palette is hidden */}
+				{paletteCollapsed && (
+					<button
+						onClick={() => setPaletteCollapsed(false)}
+						title="Show Nodes panel"
+						style={{
+							position: 'absolute',
+							left: 6,
+							top: 8,
+							zIndex: 11,
+							width: 26,
+							height: 26,
+							borderRadius: 4,
+							border: '1px solid var(--vscode-panel-border)',
+							backgroundColor: 'var(--vscode-sideBar-background)',
+							color: 'var(--vscode-foreground)',
+							cursor: 'pointer',
+							display: 'flex',
+							alignItems: 'center',
+							justifyContent: 'center',
+							fontSize: 11,
+							opacity: 0.85,
+							boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+							transition: 'opacity 0.15s ease',
+						}}
+						onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '1'; }}
+						onMouseLeave={e => { (e.target as HTMLElement).style.opacity = '0.85'; }}
+					>
+						▶
+					</button>
+				)}
+
+				{/* Canvas — always fills the full area */}
+				<div style={{ width: '100%', height: '100%' }}>
+					<WorkflowCanvas />
+				</div>
+			</div>
 			</div>
 		</ReactFlowProvider>
 	);

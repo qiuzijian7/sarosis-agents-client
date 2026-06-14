@@ -2123,7 +2123,7 @@ Goal: ${goal}`;
 	async executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string },
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string> },
 	): Promise<void> {
 		const assigneeId = taskInfo?.assigneeId;
 		if (!assigneeId) {

@@ -14,9 +14,9 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { IAgentTaskBoardService, IAgentStudioService, ITaskOrchestrationService } from '../../common/agentStudio.js';
+import { IAgentTaskBoardService, ITaskOrchestrationService } from '../../common/agentStudio.js';
 import { $ } from '../../../../../base/browser/dom.js';
-import { TaskBoardStatus, type TaskBoardRecord, type Workspace } from '../../common/types.js';
+import { TaskBoardStatus, type TaskBoardRecord } from '../../common/types.js';
 import { TaskOverviewEditorInput } from '../taskOverviewEditorInput.js';
 
 /**
@@ -34,11 +34,8 @@ export class TasksViewPane extends ViewPane {
 	private _root!: HTMLElement;
 	private _searchInput!: HTMLInputElement;
 	private _listContainer!: HTMLElement;
-	private _wsSelector!: HTMLSelectElement;
 	private _tasks: TaskBoardRecord[] = [];
-	private _workspaces: Workspace[] = [];
 	private _searchQuery = '';
-	private _selectedWorkspaceId: string | undefined; // undefined = All
 	private _statusFilter: TaskBoardStatus | 'all' = 'all';
 
 	constructor(
@@ -53,7 +50,6 @@ export class TasksViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
-		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
 		@IEditorService private readonly editorService: IEditorService,
 	) {
@@ -71,28 +67,13 @@ export class TasksViewPane extends ViewPane {
 		styleEl.textContent = this._getScopedCSS();
 		this._root.appendChild(styleEl);
 
-		// ─── Toolbar: Overview + Workspace selector ──────────────────
+		// ─── Toolbar: no Overview button or workspace selector.
+		// The Task Overview EditorPane auto-opens when the Tasks view becomes visible.
 		const toolbar = $('div.tasks-toolbar');
-
-		const overviewBtn = $('button.tasks-overview-btn');
-		overviewBtn.textContent = '📋 Overview';
-		overviewBtn.title = '打开任务看板总览 (EditorPane)';
-		overviewBtn.onclick = () => this._openOverview();
-		toolbar.appendChild(overviewBtn);
-
-		// Workspace selector dropdown
-		this._wsSelector = document.createElement('select');
-		this._wsSelector.className = 'tasks-ws-selector';
-		this._wsSelector.onchange = () => {
-			this._selectedWorkspaceId = this._wsSelector.value || undefined;
-			this._loadTasks();
-		};
-		toolbar.appendChild(this._wsSelector);
-
 		this._root.appendChild(toolbar);
 
 		// Load workspaces for the selector
-		this._loadWorkspaces();
+		this._root.appendChild(toolbar);
 
 		// ─── Search bar ───────────────────────────────────────────
 		const searchWrap = $('div.tasks-search');
@@ -112,7 +93,6 @@ export class TasksViewPane extends ViewPane {
 		const filters = $('div.tasks-status-filters');
 		const statuses: Array<{ label: string; value: TaskBoardStatus | 'all'; icon: string }> = [
 			{ label: 'All', value: 'all', icon: '📋' },
-			{ label: 'Triage', value: TaskBoardStatus.Triage, icon: '🗂' },
 			{ label: 'Todo', value: TaskBoardStatus.Todo, icon: '⬜' },
 			{ label: 'Ready', value: TaskBoardStatus.Ready, icon: '✔️' },
 			{ label: 'Running', value: TaskBoardStatus.Running, icon: '⚡' },
@@ -143,34 +123,9 @@ export class TasksViewPane extends ViewPane {
 		this._register(this.taskBoardService.onDidChangeTaskBoard(() => this._loadTasks()));
 	}
 
-	private async _loadWorkspaces(): Promise<void> {
-		try {
-			this._workspaces = await this.agentStudioService.getWorkspaces();
-			this._rebuildWorkspaceSelector();
-		} catch { /* ignore */ }
-	}
-
-	private _rebuildWorkspaceSelector(): void {
-		if (!this._wsSelector) { return; }
-		this._wsSelector.innerHTML = '';
-
-		const allOpt = document.createElement('option');
-		allOpt.value = '';
-		allOpt.textContent = '🌍 All Workspaces';
-		this._wsSelector.appendChild(allOpt);
-
-		for (const ws of this._workspaces) {
-			const opt = document.createElement('option');
-			opt.value = ws.id;
-			opt.textContent = `🏠 ${ws.name}`;
-			if (ws.id === this._selectedWorkspaceId) { opt.selected = true; }
-			this._wsSelector.appendChild(opt);
-		}
-	}
-
 	private async _loadTasks(): Promise<void> {
 		try {
-			this._tasks = await this.taskBoardService.getTasks(this._selectedWorkspaceId);
+			this._tasks = await this.taskBoardService.getTasks();
 			this._renderTasks();
 		} catch {
 			this._listContainer.innerHTML = '<div class="tasks-empty">⚠️ Failed to load tasks</div>';
@@ -270,9 +225,13 @@ export class TasksViewPane extends ViewPane {
 
 	// ─── EditorPane integration ───────────────────────────────────
 
-	private _openOverview(): void {
-		const input = TaskOverviewEditorInput.getOrCreate();
-		this.editorService.openEditor(input, { pinned: true });
+	override setVisible(visible: boolean): void {
+		super.setVisible(visible);
+		if (visible) {
+			// Auto-open the Task Overview EditorPane when the Tasks view tab is clicked
+			const input = TaskOverviewEditorInput.getOrCreate();
+			this.editorService.openEditor(input, { pinned: true });
+		}
 	}
 
 	/**

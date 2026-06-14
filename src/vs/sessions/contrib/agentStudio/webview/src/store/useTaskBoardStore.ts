@@ -46,6 +46,8 @@ export interface TaskBoardRecord {
 	sourceId?: string;
 	/** v10: associated workflow ID (set when creating task with a workflow). */
 	workflowId?: string;
+	/** v11: user-provided values for workflow template variables. */
+	variableValues?: Record<string, string>;
 }
 
 // Delegation status → TaskBoard status mapping

@@ -1318,7 +1318,6 @@ export function AgentChat(): React.ReactElement {
 						{chatMode === 'craft' && '⚡ Craft'}
 						{chatMode === 'ask' && '💡 Ask'}
 						{chatMode === 'plan' && '📋 Plan'}
-						{chatMode === 'workflow' && '✓ Workflow'}
 					</span>
 					<span className="session-info-sep">|</span>
 					{superior && (

@@ -402,8 +402,8 @@ interface ChatState {
 	 * NOT persisted — cleared on page reload.
 	 */
 	cachedMessages: Record<string, ChatMessage[]>;
-	/** Current chat mode: craft / ask / plan / workflow */
-	chatMode: 'craft' | 'ask' | 'plan' | 'workflow';
+	/** Current chat mode: craft / ask / plan */
+	chatMode: 'craft' | 'ask' | 'plan';
 
 	/**
 	 * P4: live workflow executions keyed by sessionId. Each entry represents
@@ -477,7 +477,7 @@ interface ChatState {
 	/** Append a decomposition progress message for the given agent */
 	addDecompositionProgress: (agentId: string, message: ChatMessage) => void;
 	/** Set the current chat mode */
-	setChatMode: (mode: 'craft' | 'ask' | 'plan' | 'workflow') => void;
+	setChatMode: (mode: 'craft' | 'ask' | 'plan') => void;
 	/** Approve a plan-approval confirmation card → create OrchestrationPlan → auto-execute */
 	approvePlanConfirmation: (confirmation: ConfirmationRequest, buttonId: string) => Promise<void>;
 	/** Reject a plan-approval confirmation card */

@@ -51,7 +51,7 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 
 	// Use the side bar dimensions
 	override readonly minimumWidth: number = 170;
-	override readonly maximumWidth: number = Number.POSITIVE_INFINITY;
+	override readonly maximumWidth: number = 650;
 	override readonly minimumHeight: number = 0;
 	override readonly maximumHeight: number = Number.POSITIVE_INFINITY;
 

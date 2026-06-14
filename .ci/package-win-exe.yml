@@ -244,6 +244,19 @@ stages:
           # ---------- 5. 编译内置扩展 ----------
           - name: "编译扩展 compile-extensions-build"
             run: |
+              # Delete extensions with vsce packaging issues (workspace cache safety)
+              cmd /c "rd /s /q extensions\hermes-agent 2>nul"
+              cmd /c "rd /s /q extensions\execution-example 2>nul"
+              cmd /c "rd /s /q extensions\kanban-example 2>nul"
+              cmd /c "rd /s /q extensions\memory-example 2>nul"
+              cmd /c "rd /s /q extensions\planning-example 2>nul"
+              cmd /c "rd /s /q extensions\retrieval-example 2>nul"
+              cmd /c "rd /s /q extensions\shared 2>nul"
+              cmd /c "rd /s /q extensions\tool-example 2>nul"
+              # Fix @sarosis/shared leaking devDeps -> vsce npm list --production ELSPROBLEMS
+              cmd /c "rd /s /q extensions\codebuddy-provider\node_modules\@sarosis\shared\node_modules 2>nul"
+              cmd /c "del /f /q extensions\codebuddy-provider\node_modules\@sarosis\shared\package-lock.json 2>nul"
+
               npx gulp compile-extensions-build --verbose
               if ($LASTEXITCODE -ne 0) { Write-Error "Extensions build failed"; exit 1 }
             shell: powershell

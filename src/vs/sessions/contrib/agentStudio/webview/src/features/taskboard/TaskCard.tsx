@@ -73,6 +73,7 @@ export function TaskCard({
 	const isDelegation = task.source === 'delegation';
 	const shortId = `#${task.id.slice(-6)}`;
 	const [copied, setCopied] = useState(false);
+	const [expanded, setExpanded] = useState(false);
 
 	// ─── Attachments ──────────────────────────────────────────────────────
 	const addAttachment = useTaskBoardStore(s => s.addAttachment);
@@ -213,7 +214,7 @@ export function TaskCard({
 
 	return (
 		<div
-			className={`task-card ${isDragging ? 'dragging' : ''} ${!isDraggable ? 'no-drag' : ''} ${priorityInfo ? `priority-${task.priority}` : ''} ${isFocused ? 'focused' : ''} ${agentColor ? 'has-agent-color' : ''} ${topDiagnostic ? `has-diagnostic diagnostic-${topDiagnostic.severity}` : ''}`}
+			className={`task-card ${isDragging ? 'dragging' : ''} ${!isDraggable ? 'no-drag' : ''} ${priorityInfo ? `priority-${task.priority}` : ''} ${isFocused ? 'focused' : ''} ${agentColor ? 'has-agent-color' : ''} ${topDiagnostic ? `has-diagnostic diagnostic-${topDiagnostic.severity}` : ''} ${expanded ? 'expanded' : ''}`}
 			data-task-id={task.id}
 			draggable={isDraggable}
 			onDragStart={handleDragStart}
@@ -224,7 +225,7 @@ export function TaskCard({
 				borderLeftColor: agentColor.primary,
 			} as React.CSSProperties : undefined}
 		>
-			{/* Card header: Task ID + priority + source badge */}
+			{/* Card header: Task ID + priority + source badge + expand toggle */}
 			<div className="task-card-header">
 				<div className="task-card-header-left">
 					<span className="task-card-id-label">ID</span>
@@ -250,6 +251,13 @@ export function TaskCard({
 					)}
 					{isDelegation && <span className="task-card-badge delegation">委派</span>}
 					{!isDelegation && <span className="task-card-badge manual">手动</span>}
+					<button
+						className="task-card-expand-toggle"
+						onClick={(e) => { e.stopPropagation(); setExpanded(prev => !prev); }}
+						title={expanded ? '收起详情' : '展开详情'}
+					>
+						{expanded ? '▲' : '▼'}
+					</button>
 				</div>
 			</div>
 
@@ -381,6 +389,67 @@ export function TaskCard({
 				<div className="task-card-assignee">
 					<span className="task-card-assignee-icon" style={agentColor ? { color: agentColor.primary } : undefined}>🤖</span>
 					<span className="task-card-assignee-name" style={agentColor ? { color: agentColor.primary } : undefined}>{task.assigneeName}</span>
+				</div>
+			)}
+
+			{/* ─── Expanded detail section ────────────────────────────── */}
+			{expanded && (
+				<div className="task-card-detail">
+					{/* Full description */}
+					{task.description && task.description !== task.title && (
+						<div className="task-card-detail-field">
+							<span className="task-card-detail-label">描述</span>
+							<span className="task-card-detail-value">{task.description}</span>
+						</div>
+					)}
+					{/* Timestamps */}
+					<div className="task-card-detail-field">
+						<span className="task-card-detail-label">创建时间</span>
+						<span className="task-card-detail-value">{new Date(task.createdAt).toLocaleString('zh-CN')}</span>
+					</div>
+					{task.startedAt && (
+						<div className="task-card-detail-field">
+							<span className="task-card-detail-label">开始时间</span>
+							<span className="task-card-detail-value">{new Date(task.startedAt).toLocaleString('zh-CN')}</span>
+						</div>
+					)}
+					{task.finishedAt && (
+						<div className="task-card-detail-field">
+							<span className="task-card-detail-label">完成时间</span>
+							<span className="task-card-detail-value">{new Date(task.finishedAt).toLocaleString('zh-CN')}</span>
+						</div>
+					)}
+					{/* Worktree path */}
+					{task.worktreePath && (
+						<div className="task-card-detail-field">
+							<span className="task-card-detail-label">Worktree</span>
+							<span className="task-card-detail-value mono">{task.worktreePath}</span>
+						</div>
+					)}
+					{/* Workflow ID */}
+					{task.workflowId && (
+						<div className="task-card-detail-field">
+							<span className="task-card-detail-label">工作流 ID</span>
+							<span className="task-card-detail-value mono">{task.workflowId}</span>
+						</div>
+					)}
+					{/* Full task ID */}
+					<div className="task-card-detail-field">
+						<span className="task-card-detail-label">任务 ID</span>
+						<span className="task-card-detail-value mono">{task.id}</span>
+					</div>
+					{/* Status */}
+					<div className="task-card-detail-field">
+						<span className="task-card-detail-label">状态</span>
+						<span className="task-card-detail-value">{task.status}</span>
+					</div>
+					{/* Error message */}
+					{task.error && (
+						<div className="task-card-detail-field error">
+							<span className="task-card-detail-label">错误</span>
+							<span className="task-card-detail-value">{task.error}</span>
+						</div>
+					)}
 				</div>
 			)}
 

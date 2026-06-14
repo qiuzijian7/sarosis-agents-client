@@ -109,7 +109,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 	// Mode options — with descriptions and icons (ref: CodeBuddy-IDE-模式分析.md)
 	const modeOptions = useMemo(() => {
-		const all: Array<{ id: 'craft' | 'ask' | 'plan' | 'workflow'; label: string; description: string; icon: string }> = [
+		const all: Array<{ id: 'craft' | 'ask' | 'plan'; label: string; description: string; icon: string }> = [
 			{
 				id: 'craft',
 				label: 'Craft',
@@ -127,12 +127,6 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 				label: 'Plan',
 				description: '计划模式 — 只读探索 + 任务拆解，确认后切换执行模式',
 				icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
-			},
-			{
-				id: 'workflow',
-				label: 'Workflow',
-				description: '工作流模式 — Craft + 完成后驱动下游 Agent 执行',
-				icon: 'M22 11.08V12a10 10 0 11-5.93-9.14M22 4L12 14.01l-3-3',
 			},
 		];
 		const isPlanner = activeAgent?.agentType === 'planner'

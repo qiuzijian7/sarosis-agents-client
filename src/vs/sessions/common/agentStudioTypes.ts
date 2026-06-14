@@ -886,6 +886,10 @@ export interface TaskBoardRecord {
 	createdAt: string;
 	updatedAt: string;
 	completedAt?: string;
+	/** v10: associated workflow ID (set when creating task with a workflow agent). */
+	workflowId?: string;
+	/** v11: user-provided values for workflow template variables ({{var}} patterns). */
+	variableValues?: Record<string, string>;
 }
 
 /**

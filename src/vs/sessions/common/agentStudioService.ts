@@ -659,7 +659,7 @@ export interface ITaskOrchestrationService {
 	executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string },
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string> },
 	): Promise<void>;
 
 	/**

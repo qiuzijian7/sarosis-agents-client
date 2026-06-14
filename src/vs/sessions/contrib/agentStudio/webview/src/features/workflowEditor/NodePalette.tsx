@@ -1,29 +1,26 @@
 /*---------------------------------------------------------------------------------------------
- *  NodePalette — sidebar with categorized buttons to add nodes to the canvas.
- *  Categories: Basic Nodes / Control Flow / Layout (mirrors cc-wf-studio).
+ *  NodePalette — floating overlay palette with categorized add-node buttons.
+ *  Categories: System / Basic Nodes / Control Flow / Layout (mirrors cc-wf-studio).
  *
- *  v19: Added tab toggle between "Nodes" palette and "Workflows" list.
+ *  v41: Changed to absolute-position overlay (floats above canvas). Collapse
+ *       button (◀) on the right side of the header; parent handles slide-out.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useWorkflowEditorStore, nodeCategories, type NodeCategory } from './store';
-import { WorkflowListPanel } from './WorkflowListPanel';
 
 const CATEGORY_COLORS: Record<NodeCategory, string> = {
+	system: '#6b7280',
 	basic: '#3b82f6',
 	controlFlow: '#f59e0b',
 	layout: '#8b5cf6',
 };
 
-type SidebarTab = 'nodes' | 'workflows';
-
 export const NodePalette: React.FC<{
 	collapsed: boolean;
 	onToggle: () => void;
-	activeWorkflowId?: string | null;
-	onSelectWorkflow?: (workflowId: string) => void;
-}> = ({ collapsed, onToggle, activeWorkflowId, onSelectWorkflow }) => {
-	const [tab, setTab] = useState<SidebarTab>('nodes');
+	width: number; // v40: resizable width from WorkflowEditorPanel
+}> = ({ collapsed, onToggle, width }) => {
 	const addNode = useWorkflowEditorStore(s => s.addNode);
 
 	const handleAdd = (type: string) => {
@@ -32,67 +29,50 @@ export const NodePalette: React.FC<{
 		addNode(type, { x, y });
 	};
 
-	const handleSwitchWorkflow = (wfId: string) => {
-		if (onSelectWorkflow) {
-			onSelectWorkflow(wfId);
-		}
-	};
-
 	return (
 		<div style={{
-			width: collapsed ? '32px' : '200px',
-			minWidth: collapsed ? '32px' : '200px',
-			borderRight: '1px solid var(--vscode-panel-border)',
+			width: `${width}px`,
+			minWidth: '120px',
 			backgroundColor: 'var(--vscode-sideBar-background)',
 			display: 'flex',
 			flexDirection: 'column',
 			overflow: 'hidden',
-			transition: 'width 0.15s ease',
+			boxShadow: '2px 0 12px rgba(0,0,0,0.35)',
+			height: '100%',
 		}}>
-			{/* Header with tab toggle */}
+			{/* Header with collapse toggle on the right */}
 			<div style={{
 				display: 'flex', alignItems: 'center',
 				borderBottom: '1px solid var(--vscode-panel-border)',
 			}}>
-				<div style={{ flex: 1, display: 'flex', cursor: 'pointer' }} onClick={onToggle}>
-					<div style={{ flex: 1, display: 'flex', padding: '8px 10px' }}>
-						<span style={{ fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden' }}>
-							{collapsed ? '＋' : tab === 'nodes' ? 'Nodes' : 'Workflows'}
-						</span>
-					</div>
+				<div style={{ flex: 1, display: 'flex', padding: '8px 10px' }}>
+					<span style={{
+						fontSize: '12px', fontWeight: 600,
+						whiteSpace: 'nowrap', overflow: 'hidden',
+						color: 'var(--vscode-foreground)',
+					}}>
+						Nodes
+					</span>
 				</div>
-				{!collapsed && (
-					<div style={{ display: 'flex', paddingRight: '4px' }}>
-						<button
-							onClick={() => setTab('nodes')}
-							title="Node Palette"
-							style={{
-								padding: '2px 6px', fontSize: '10px', cursor: 'pointer',
-								background: tab === 'nodes' ? 'var(--vscode-button-background)' : 'transparent',
-								color: tab === 'nodes' ? 'var(--vscode-button-foreground)' : 'var(--vscode-descriptionForeground)',
-								border: '1px solid var(--vscode-panel-border)',
-								borderRadius: '3px',
-							}}
-						>
-							＋
-						</button>
-						<button
-							onClick={() => setTab('workflows')}
-							title="Workflow List"
-							style={{
-								padding: '2px 6px', fontSize: '10px', cursor: 'pointer', marginLeft: '3px',
-								background: tab === 'workflows' ? 'var(--vscode-button-background)' : 'transparent',
-								color: tab === 'workflows' ? 'var(--vscode-button-foreground)' : 'var(--vscode-descriptionForeground)',
-								border: '1px solid var(--vscode-panel-border)',
-								borderRadius: '3px',
-							}}
-						>
-							⚡
-						</button>
-					</div>
-				)}
+				<button
+					onClick={(e) => { e.stopPropagation(); onToggle(); }}
+					title="Hide Nodes panel"
+					style={{
+						width: '28px', alignSelf: 'stretch',
+						display: 'flex', alignItems: 'center', justifyContent: 'center',
+						border: 'none', borderLeft: '1px solid var(--vscode-panel-border)',
+						background: 'transparent',
+						color: 'var(--vscode-descriptionForeground)',
+						cursor: 'pointer',
+						fontSize: '11px',
+					}}
+					onMouseEnter={e => { (e.target as HTMLElement).style.color = 'var(--vscode-foreground)'; (e.target as HTMLElement).style.background = 'var(--vscode-toolbar-hoverBackground)'; }}
+					onMouseLeave={e => { (e.target as HTMLElement).style.color = 'var(--vscode-descriptionForeground)'; (e.target as HTMLElement).style.background = 'transparent'; }}
+				>
+					◀
+				</button>
 			</div>
-			{!collapsed && tab === 'nodes' && (
+			{!collapsed && (
 				<div style={{ padding: '8px', overflow: 'auto', flex: 1 }}>
 					{nodeCategories.map((cat) => (
 						<div key={cat.category} style={{ marginBottom: '16px' }}>
@@ -152,14 +132,8 @@ export const NodePalette: React.FC<{
 					</div>
 				</div>
 			)}
-			{!collapsed && tab === 'workflows' && (
-				<div style={{ flex: 1, overflow: 'auto' }}>
-					<WorkflowListPanel
-						activeWorkflowId={activeWorkflowId}
-						onSelectWorkflow={handleSwitchWorkflow}
-					/>
-				</div>
-			)}
 		</div>
 	);
 };
+
+export default NodePalette;

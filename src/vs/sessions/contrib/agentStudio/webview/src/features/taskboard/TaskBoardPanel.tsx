@@ -1,7 +1,7 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Task Board Panel (Kanban)
- *  6-column kanban over a 7-status model:
- *    triage | (todo+ready) | (running+blocked) | done | cancelled | archived
+ *  5-column kanban over a 6-status model:
+ *    (todo+ready) | (running+blocked) | done | cancelled | archived
  *  Columns may aggregate multiple statuses; dropStatus defines the status applied on drop
  *  (null = column rejects drops, e.g. the running column which holds protected tasks).
  *  Supports drag-and-drop status change, collapse/expand
@@ -34,7 +34,6 @@ interface ColumnDef {
 }
 
 const COLUMNS: ColumnDef[] = [
-	{ key: 'triage', statuses: ['triage'], dropStatus: 'triage', label: '待规划', icon: '🗂', color: '#a855f7' },
 	{ key: 'todo', statuses: ['todo', 'ready'], dropStatus: 'todo', label: '待执行', icon: '📋', color: '#f59e0b' },
 	{ key: 'running', statuses: ['running', 'blocked'], dropStatus: null, label: '执行中', icon: '⚡', color: '#3b82f6' },
 	{ key: 'done', statuses: ['done'], dropStatus: 'done', label: '执行结束', icon: '✅', color: '#10b981' },
@@ -508,16 +507,7 @@ export function TaskBoardPanel(): React.ReactElement {
 								<span className="task-column-count" style={{ backgroundColor: col.color + '30', color: col.color }}>
 									{columnTasks.length}
 								</span>
-								{/* 待规划列：+ 打开任务编排 UI；待执行列：+ 打开创建任务 UI */}
-								{col.key === 'triage' && (
-									<button
-										className="task-column-add-btn"
-										onClick={(e) => { e.stopPropagation(); openPlanDialog(); }}
-										title="编排任务 - AI 自动拆分、创建 Agent"
-									>
-										＋
-									</button>
-								)}
+								{/* 待执行列：+ 打开创建任务 UI */}
 								{col.key === 'todo' && (
 									<button
 										className="task-column-add-btn"
