@@ -316,6 +316,7 @@ const nativeExtensions = [
 ];
 
 const excludedExtensions = [
+	'codebuddy-provider',
 	'copilot',
 	'vscode-api-tests',
 	'vscode-colorize-tests',
