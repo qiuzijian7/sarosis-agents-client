@@ -252,13 +252,11 @@ stages:
               cmd /c "rd /s /q extensions\planning-example 2>nul"
               cmd /c "rd /s /q extensions\retrieval-example 2>nul"
               cmd /c "rd /s /q extensions\tool-example 2>nul"
-              # Fix @saros/shared -> saros-shared (vsce rejects @scope/name)
-              Set-Content -Encoding utf8 extensions\shared\package.json '{"name":"saros-shared","version":"1.0.0","description":"Shared utilities","main":"./out/index.js","engines":{"vscode":"^1.95.0"},"activationEvents":[],"types":"./out/index.d.ts","dependencies":{},"scripts":{"compile":"tsc -p ./","watch":"tsc -watch -p ./"},"devDependencies":{"@types/node":"22.x","@types/vscode":"^1.95.0","typescript":"^6.0.3"}}'
-              # Fix codebuddy-provider dep name
-              $cb = Get-Content extensions\codebuddy-provider\package.json -Raw
-              $cb = $cb -replace '"@saros/shared"', '"saros-shared"'
-              [IO.File]::WriteAllText("$pwd\extensions\codebuddy-provider\package.json", $cb, (New-Object Text.UTF8Encoding $false))
-              # Reinstall so symlink uses new name
+              # NOTE: package.json files (shared + codebuddy-provider) are already correct in the repo
+              # (name=saros-shared, dep=saros-shared, UTF-8). DO NOT rewrite them in-script:
+              # Get-Content/Set-Content under the GBK default charset corrupts the Chinese
+              # description bytes and triggers "Bad control character" JSON parse errors.
+              # Just reinstall so the symlink resolves against the committed package.json.
               Push-Location extensions\codebuddy-provider
               Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@sarosis
               Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared
