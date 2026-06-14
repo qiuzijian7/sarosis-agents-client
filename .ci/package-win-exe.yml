@@ -252,10 +252,34 @@ stages:
               cmd /c "rd /s /q extensions\planning-example 2>nul"
               cmd /c "rd /s /q extensions\retrieval-example 2>nul"
               cmd /c "rd /s /q extensions\tool-example 2>nul"
-              # Re-install shared so codebuddy-provider picks up latest fixes
+              # Fix @saros/shared -> saros-shared (vsce rejects @scope/name)
+              $sharedJson = @'
+              {
+              	"name": "saros-shared",
+              	"version": "1.0.0",
+              	"description": "Shared utilities",
+              	"main": "./out/index.js",
+              	"engines": { "vscode": "^1.95.0" },
+                "activationEvents": [],
+              	"types": "./out/index.d.ts",
+              	"dependencies": {},
+              	"scripts": { "compile": "tsc -p ./", "watch": "tsc -watch -p ./" },
+              	"devDependencies": {
+              		"@types/node": "22.x",
+              		"@types/vscode": "^1.95.0",
+              		"typescript": "^6.0.3"
+              	}
+              }
+              '@
+              [IO.File]::WriteAllText("$pwd\extensions\shared\package.json", $sharedJson, (New-Object Text.UTF8Encoding $false))
+              # Fix codebuddy-provider dep name
+              $cb = Get-Content extensions\codebuddy-provider\package.json -Raw
+              $cb = $cb -replace '"@saros/shared"', '"saros-shared"'
+              [IO.File]::WriteAllText("$pwd\extensions\codebuddy-provider\package.json", $cb, (New-Object Text.UTF8Encoding $false))
+              # Reinstall so symlink uses new name
               Push-Location extensions\codebuddy-provider
-              cmd /c "rd /s /q node_modules\saros-shared 2>nul"
-              cmd /c "rd /s /q node_modules\@sarosis 2>nul"
+              Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@sarosis
+              Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared
               npm install --ignore-scripts
               Pop-Location
 
