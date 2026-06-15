@@ -587,7 +587,7 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
 	return async () => {
 		const versionedResourcesFolder = util.getVersionedResourcesFolder('win32', commit!);
 		const deps = (await Promise.all([
-			glob('**/*.node', { cwd, ignore: ['extensions/node_modules/@parcel/watcher/**', '**/copilot/**/prebuilds/**'] }),
+			glob('**/*.node', { cwd, ignore: 'extensions/node_modules/@parcel/watcher/**' }),
 			glob('**/rg.exe', { cwd }),
 			glob('**/*explorer_command*.dll', { cwd }),
 		])).flatMap(o => o);
@@ -598,19 +598,26 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
 		const patchPromises = deps.map<Promise<unknown>>(async dep => {
 			const basename = path.basename(dep);
 
-			await rcedit(path.join(cwd, dep), {
-				'file-version': baseVersion,
-				'version-string': {
-					'CompanyName': 'Microsoft Corporation',
-					'FileDescription': product.nameLong,
-					'FileVersion': packageJson.version,
-					'InternalName': basename,
-					'LegalCopyright': 'Copyright (C) 2026 Microsoft. All rights reserved',
-					'OriginalFilename': basename,
-					'ProductName': product.nameLong,
-					'ProductVersion': packageJson.version,
-				}
-			});
+			// rcedit only works on Windows PE files. Copilot bundles contain
+			// cross-platform .node addons (linux-x64, darwin-arm64, etc.)
+			// that rcedit cannot parse — skip them gracefully.
+			try {
+				await rcedit(path.join(cwd, dep), {
+					'file-version': baseVersion,
+					'version-string': {
+						'CompanyName': 'Microsoft Corporation',
+						'FileDescription': product.nameLong,
+						'FileVersion': packageJson.version,
+						'InternalName': basename,
+						'LegalCopyright': 'Copyright (C) 2026 Microsoft. All rights reserved',
+						'OriginalFilename': basename,
+						'ProductName': product.nameLong,
+						'ProductVersion': packageJson.version,
+					}
+				});
+			} catch {
+				console.warn(`[patchWin32Dependencies] Skipping non-PE file: ${dep}`);
+			}
 		});
 
 		await Promise.all(patchPromises);
