@@ -16,13 +16,13 @@
  */
 
 import assert from 'assert';
-import { WorkflowExecutionService } from '../../browser/workflowExecutionService.js';
+import { WorkflowExecutionService } from '../../browser/workflowExecutionService';
 import {
 	WorkflowExecutionStatus,
 	WorkflowNodeExecutionStatus,
-} from '../../common/workflowExecutionService.js';
-import type { IStoredWorkflow, WorkflowGraphNode } from '../../common/workflowStorage.js';
-import { WorkflowNodeType } from '../../common/workflowStorage.js';
+} from '../../common/workflowExecutionService';
+import type { IStoredWorkflow, WorkflowGraphNode } from '../../common/workflowStorage';
+import { WorkflowNodeType } from '../../common/workflowStorage';
 
 // ─── Mock ILogService ──────────────────────────────────────────────────────────
 
