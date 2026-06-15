@@ -374,7 +374,7 @@ const builtInExtensions: IExtensionDefinition[] = productJson.builtInExtensions 
 const webBuiltInExtensions: IExtensionDefinition[] = productJson.webBuiltInExtensions || [];
 
 type ExtensionKind = 'ui' | 'workspace' | 'web';
-interface IExtensionManifest {
+export interface IExtensionManifest {
 	main?: string;
 	browser?: string;
 	type?: ExtensionKind;
@@ -384,7 +384,15 @@ interface IExtensionManifest {
 	};
 }
 
-function isWebExtension(manifest: IExtensionManifest): boolean {
+export interface IScannedBuiltinExtension {
+	extensionPath: string;
+	packageJSON: any;
+	packageNLS: any | undefined;
+	readmePath: string | undefined;
+	changelogPath: string | undefined;
+}
+
+export function isWebExtension(manifest: IExtensionManifest): boolean {
 	// Copilot extension always gets packaged for desktop AND web
 	if (manifest.name === 'copilot') {
 		return true;
