@@ -285,6 +285,8 @@ stages:
           # ---------- 7. 生成 EXE 安装包（user + system setup） ----------
           - name: "生成 EXE 安装包 (user & system setup)"
             run: |
+              npx gulp vscode-win32-x64-inno-updater --verbose
+              if ($LASTEXITCODE -ne 0) { Write-Error "Inno updater setup failed"; exit 1 }
               npx gulp vscode-win32-x64-user-setup --verbose
               if ($LASTEXITCODE -ne 0) { Write-Error "User setup failed"; exit 1 }
               npx gulp vscode-win32-x64-system-setup --verbose
