@@ -425,6 +425,13 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	}
 
 	private _connectWorkspaceServices(): void {
+		// Idempotent: this can be invoked more than once (initial create +
+		// retry-on-open when the service wasn't ready). Once the service is
+		// bound and subscriptions registered, don't re-subscribe.
+		if (this._wsAgentStudioService) {
+			void this._loadWorkspaces();
+			return;
+		}
 		try {
 			const agentStudioService = this.instantiationService.invokeFunction(
 				accessor => accessor.get(IAgentStudioService)
@@ -438,6 +445,12 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			this._register(agentStudioService.onDidChangeActiveWorkspace((workspaceId) => {
 				this._activeWorkspaceId = workspaceId ?? undefined;
 				this._updateSelectorLabel();
+				// The active workspace often resolves AFTER the initial
+				// _loadWorkspaces() call (service not ready at sidebar-connect
+				// time). Without reloading here, `_workspaces` can stay empty
+				// while the label shows the active name — making the dropdown
+				// list render empty. Reload so list + label stay in sync.
+				void this._loadWorkspaces();
 			}));
 
 			this._loadWorkspaces();
@@ -457,6 +470,10 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		this._workspaces = await this._wsAgentStudioService.getWorkspaces();
 		this._activeWorkspaceId = this._wsAgentStudioService.getActiveWorkspaceId();
 		this._updateSelectorLabel();
+		// Re-render the list whenever data refreshes AND the dropdown is open,
+		// so an async load that resolves after _openWorkspaceDropdown() still
+		// fills the visible list (the open() path renders synchronously first
+		// with possibly-stale/empty data, then awaits this).
 		if (this._workspaceDropdownEl && this._workspaceDropdownEl.style.display !== 'none') {
 			this._renderWorkspaceList();
 		}
@@ -487,7 +504,18 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		if (this._workspaceSearchInput) {
 			this._workspaceSearchInput.value = '';
 		}
+		// Render immediately with whatever we have so the panel isn't blank,
+		// then re-fetch fresh data from the service and re-render. This makes
+		// the list reliable even if the initial connect-time load missed the
+		// data (service not ready) or the data changed in another surface.
 		this._renderWorkspaceList();
+		if (!this._wsAgentStudioService) {
+			// Service may not have connected yet — retry the connection so the
+			// list can populate instead of staying permanently empty.
+			this._connectWorkspaceServices();
+		} else {
+			void this._loadWorkspaces();
+		}
 		// Focus search after render
 		setTimeout(() => this._workspaceSearchInput?.focus(), 50);
 	}
@@ -630,10 +658,23 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		const segments = folderPath.replace(/[/\\]+$/, '').split(/[/\\]/);
 		const name = segments[segments.length - 1] || folderPath;
 
-		await this._wsAgentStudioService.createWorkspace({
+		// If a workspace already bound to this exact folder exists, reuse it
+		// instead of creating a duplicate — then just switch to it.
+		const norm = (p: string) => p.replace(/[/\\]+$/, '').toLowerCase();
+		const existing = this._workspaces.find(w => w.path && norm(w.path) === norm(folderPath));
+
+		const target = existing ?? await this._wsAgentStudioService.createWorkspace({
 			name,
 			path: folderPath,
 		});
+
+		// Refresh local cache so the new/target workspace is present, then
+		// activate it. createWorkspace fires onDidChangeWorkspace (→ reload),
+		// but we also reload explicitly to avoid any ordering race before the
+		// setActiveWorkspace call below relies on the cached list.
+		await this._loadWorkspaces();
+		await this._wsAgentStudioService.setActiveWorkspace(target.id);
+
 		this._closeWorkspaceDropdown();
 	}
 

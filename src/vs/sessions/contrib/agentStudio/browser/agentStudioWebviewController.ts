@@ -495,7 +495,40 @@ export class AgentStudioWebviewController extends Disposable {
 
 		this._register(this._webview);
 		const _perfMountStart = Date.now();
-		this._webview.mountTo(this.container, mainWindow);
+		// CRITICAL: iframes cannot be re-parented without losing state (Chromium
+		// limitation). Mirror the HOT PATH and mount the webview into a
+		// body-level absolute overlay that tracks our panel container's
+		// geometry — instead of mounting it directly inside `this.container`
+		// (which lives inside the collapsible grid column). This keeps the
+		// iframe alive when the column is hidden (display:none) and lets the
+		// "popout chat" feature reposition the overlay over a floating window
+		// without reloading the iframe.
+		const coldOverlay = document.createElement('div');
+		coldOverlay.style.position = 'absolute';
+		coldOverlay.style.zIndex = '10';
+		coldOverlay.setAttribute('data-agent-studio-overlay', 'cold');
+		document.body.appendChild(coldOverlay);
+
+		const coldSyncLayout = () => {
+			const rect = this.container.getBoundingClientRect();
+			coldOverlay.style.left = `${rect.left}px`;
+			coldOverlay.style.top = `${rect.top}px`;
+			coldOverlay.style.width = `${rect.width}px`;
+			coldOverlay.style.height = `${rect.height}px`;
+		};
+		coldSyncLayout();
+		// Store sync callback so layout() & setVisible() can re-position the
+		// iframe when the editor pane is re-shown.
+		this._poolSyncLayout = coldSyncLayout;
+		const coldResizeObserver = new ResizeObserver(coldSyncLayout);
+		coldResizeObserver.observe(this.container);
+		this._register({ dispose: () => coldResizeObserver.disconnect() });
+		this._register({ dispose: () => {
+			this._poolSyncLayout = undefined;
+			coldOverlay.remove();
+		}});
+
+		this._webview.mountTo(coldOverlay, mainWindow);
 		const _perfMountEnd = Date.now();
 		this._webview.setHtml(
 			this._getWebviewHtml(
