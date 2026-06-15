@@ -252,14 +252,16 @@ gulp.task(watchExtensionsTask);
 
 //#region Extension media
 
-export const compileExtensionMediaTask = task.define('compile-extension-media', () => ext.buildExtensionMedia(false));
-gulp.task(compileExtensionMediaTask);
+// NOTE: ext.buildExtensionMedia does not exist in build/lib/extensions.ts (missing function)
+// Commented out to fix "ext.buildExtensionMedia is not a function" error
+// export const compileExtensionMediaTask = task.define('compile-extension-media', () => ext.buildExtensionMedia(false));
+// gulp.task(compileExtensionMediaTask);
 
-export const watchExtensionMedia = task.define('watch-extension-media', () => ext.buildExtensionMedia(true));
-gulp.task(watchExtensionMedia);
+// export const watchExtensionMedia = task.define('watch-extension-media', () => ext.buildExtensionMedia(true));
+// gulp.task(watchExtensionMedia);
 
-export const compileExtensionMediaBuildTask = task.define('compile-extension-media-build', () => ext.buildExtensionMedia(false, '.build/extensions'));
-gulp.task(compileExtensionMediaBuildTask);
+// export const compileExtensionMediaBuildTask = task.define('compile-extension-media-build', () => ext.buildExtensionMedia(false, '.build/extensions'));
+// gulp.task(compileExtensionMediaBuildTask);
 
 //#endregion
 
