@@ -252,11 +252,19 @@ stages:
               cmd /c "rd /s /q extensions\planning-example 2>nul"
               cmd /c "rd /s /q extensions\retrieval-example 2>nul"
               cmd /c "rd /s /q extensions\tool-example 2>nul"
-              # NOTE: package.json files (shared + codebuddy-provider) are already correct in the repo
-              # (name=saros-shared, dep=saros-shared, UTF-8). DO NOT rewrite them in-script:
-              # Get-Content/Set-Content under the GBK default charset corrupts the Chinese
-              # description bytes and triggers "Bad control character" JSON parse errors.
-              # Just reinstall so the symlink resolves against the committed package.json.
+              # Force shared/package.json to the correct name. The build workspace is
+              # REUSED across runs, so a stale @saros/shared can linger even though the
+              # repo is already saros-shared -> vsce rejects "@scope/name".
+              # This content is pure ASCII (no Chinese). MUST write WITHOUT BOM:
+              # PowerShell 5.1 'Set-Content -Encoding utf8' prepends a UTF-8 BOM (EF BB BF),
+              # which vsce's JSON.parse rejects ("Unexpected token, \ufeff{name}..."). Use
+              # UTF8Encoding($false) via WriteAllText to guarantee a BOM-free file.
+              $sharedJson = '{"name":"saros-shared","version":"1.0.0","description":"Shared utilities","main":"./out/index.js","engines":{"vscode":"^1.95.0"},"activationEvents":[],"types":"./out/index.d.ts","dependencies":{},"scripts":{"compile":"tsc -p ./","watch":"tsc -watch -p ./"},"devDependencies":{"@types/node":"22.x","@types/vscode":"^1.95.0","typescript":"^6.0.3"}}'
+              [IO.File]::WriteAllText("$pwd\extensions\shared\package.json", $sharedJson, (New-Object Text.UTF8Encoding $false))
+              # DO NOT rewrite codebuddy-provider/package.json: it contains Chinese in
+              # "description"; Get-Content/Set-Content under GBK corrupts those bytes and
+              # triggers "Bad control character" JSON parse errors. The repo copy is already
+              # correct (dep=saros-shared, UTF-8). Just reinstall to refresh the symlink.
               Push-Location extensions\codebuddy-provider
               Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@sarosis
               Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared

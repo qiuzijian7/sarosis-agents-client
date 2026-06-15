@@ -630,7 +630,14 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
 		const appNodeModulesDir = path.join(appBase, 'node_modules');
 
 		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
-		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+		try {
+			prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+		} catch (err) {
+			// @vscode/ripgrep postinstall downloads binaries from GitHub;
+			// on CI without GITHUB_TOKEN this fails → bin/ is empty.
+			// This is non-fatal for our fork — just warn and continue.
+			console.warn(`[prepareBuiltInCopilotRipgrepShim] Skipped: ${err}`);
+		}
 	};
 }
 
