@@ -78,6 +78,7 @@ import { MobileTitlebarPart } from './parts/mobile/mobileTitlebarPart.js';
 import { autorun } from '../../base/common/observable.js';
 import { ISessionsManagementService } from '../services/sessions/common/sessionsManagement.js';
 import { AgentStudioEditorInput } from '../contrib/agentStudio/browser/agentStudioEditorInput.js';
+import { NativeChatEditorInput } from '../contrib/agentStudio/browser/nativeChatEditorInput.js';
 
 //#region Workbench Options
 
@@ -1107,7 +1108,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// untouched. (After the first post-refactor launch the persisted
 		// state no longer carries Canvas/Chat, so this becomes a no-op.)
 		const fileHasStale = fileMainPart.groups.some(g =>
-			g.editors.some(ed => ed instanceof AgentStudioEditorInput)
+			g.editors.some(ed => ed instanceof AgentStudioEditorInput || ed instanceof NativeChatEditorInput)
 		);
 		if (fileHasStale) {
 			// Step 1 — collapse every File group into the active root group.
@@ -1132,7 +1133,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			// (the "only Chat shows, no Canvas" symptom). Awaiting guarantees
 			// the singleton is fully detached from the File part first.
 			const fileRootGroup = fileMainPart.activeGroup;
-			const staleEditors = fileRootGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput);
+			const staleEditors = fileRootGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput || ed instanceof NativeChatEditorInput);
 			if (staleEditors.length > 0) {
 				await fileRootGroup.closeEditors(staleEditors, { preserveFocus: true });
 			}
@@ -1385,18 +1386,36 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Re-open the last instance of a panel type if it is closed inside
 		// the agent part. Membership is trivial now: every group on
 		// `agentPart` belongs to the agent zone.
+		//
+		// IMPORTANT: when the user pops out chat into an auxiliary BrowserWindow
+		// (Move Editor into New Window), the editor leaves `agentPart.groups`
+		// but still lives in another IEditorPart (the aux window's part). We
+		// must check ALL editor parts before re-opening, otherwise pop-out
+		// causes the chat to get duplicated back into the main window.
 		const reopenIfLast = (panelType: string) => {
-			const stillExists = agentPart.groups.some(g =>
-				g.editors.some(ed => ed instanceof AgentStudioEditorInput && ed.panelType === panelType)
+			const editorPartsForCheck = this.editorGroupService.parts; // includes aux windows
+			const stillExists = editorPartsForCheck.some(p =>
+				p.groups.some(g =>
+					g.editors.some(ed =>
+						(ed instanceof AgentStudioEditorInput && ed.panelType === panelType) ||
+						(ed instanceof NativeChatEditorInput && panelType === 'native-chat')
+					)
+				)
 			);
-			console.warn(`[Sarosis][AgentEditor] reopenIfLast(${panelType}) stillExists=${stillExists}`);
+			console.warn(`[Sarosis][AgentEditor] reopenIfLast(${panelType}) stillExists=${stillExists} (across ${editorPartsForCheck.length} parts)`);
 			if (stillExists) {
 				return;
 			}
 			const target = agentPart.activeGroup;
-			const input = AgentStudioEditorInput.getOrCreate(panelType as any);
-			console.warn(`[Sarosis][AgentEditor] reopenIfLast → re-opening '${panelType}' in group ${target.id}`);
-			target.openEditor(input, { pinned: true, sticky: true });
+			if (panelType === 'native-chat') {
+				const input = NativeChatEditorInput.getInstance();
+				console.warn(`[Sarosis][AgentEditor] reopenIfLast → re-opening native-chat in group ${target.id}`);
+				target.openEditor(input, { pinned: true, sticky: true });
+			} else {
+				const input = AgentStudioEditorInput.getOrCreate(panelType as any);
+				console.warn(`[Sarosis][AgentEditor] reopenIfLast → re-opening '${panelType}' in group ${target.id}`);
+				target.openEditor(input, { pinned: true, sticky: true });
+			}
 		};
 		const installCloseGuard = (group: IEditorGroup) => {
 			this._register(group.onDidCloseEditor(e => {
@@ -1404,6 +1423,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					const panelType = e.editor.panelType;
 					console.warn(`[Sarosis][AgentEditor] onDidCloseEditor fired: panelType='${panelType}' group=${group.id} → scheduling reopenIfLast`);
 					queueMicrotask(() => reopenIfLast(panelType));
+				} else if (e.editor instanceof NativeChatEditorInput) {
+					console.warn(`[Sarosis][AgentEditor] onDidCloseEditor fired: native-chat group=${group.id} → scheduling reopenIfLast`);
+					queueMicrotask(() => reopenIfLast('native-chat'));
 				}
 			}));
 		};
@@ -1442,7 +1464,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Remove any stale AgentStudioEditorInput already sitting in the left
 		// group (shouldn't happen with restore disabled, but keep it
 		// deterministic).
-		const existingAgentEditors = leftGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput);
+		const existingAgentEditors = leftGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput || ed instanceof NativeChatEditorInput);
 		if (existingAgentEditors.length > 0) {
 			console.warn(`[Sarosis][AgentEditor] purging ${existingAgentEditors.length} pre-existing AS editor(s) from left group`);
 			await leftGroup.closeEditors(existingAgentEditors, { preserveFocus: true });
@@ -1450,7 +1472,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
 
-		// Open Chat in the single group (no Canvas side-by-side).
+		// Open Chat (React webview, full-featured: provider/model/chatmode selectors,
+		// markdown rendering, syntax highlight, tool-call cards, attachments, slash menu, etc.)
+		// in the single group. Native AgentChatPanel is kept on the side ChatBar for
+		// lightweight quick-send entry.
 		try {
 			await leftGroup.openEditor(chatInput, { pinned: true, sticky: true });
 		} catch (e) {

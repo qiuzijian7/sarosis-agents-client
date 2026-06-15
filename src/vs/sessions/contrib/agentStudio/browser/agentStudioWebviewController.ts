@@ -503,11 +503,13 @@ export class AgentStudioWebviewController extends Disposable {
 		// iframe alive when the column is hidden (display:none) and lets the
 		// "popout chat" feature reposition the overlay over a floating window
 		// without reloading the iframe.
-		const coldOverlay = document.createElement('div');
+		const targetDoc = this.container.ownerDocument;
+		const targetWindow = targetDoc.defaultView as CodeWindow;
+		const coldOverlay = targetDoc.createElement('div');
 		coldOverlay.style.position = 'absolute';
 		coldOverlay.style.zIndex = '10';
 		coldOverlay.setAttribute('data-agent-studio-overlay', 'cold');
-		document.body.appendChild(coldOverlay);
+		targetDoc.body.appendChild(coldOverlay);
 
 		const coldSyncLayout = () => {
 			const rect = this.container.getBoundingClientRect();
@@ -528,7 +530,7 @@ export class AgentStudioWebviewController extends Disposable {
 			coldOverlay.remove();
 		}});
 
-		this._webview.mountTo(coldOverlay, mainWindow);
+		this._webview.mountTo(coldOverlay, targetWindow);
 		const _perfMountEnd = Date.now();
 		this._webview.setHtml(
 			this._getWebviewHtml(

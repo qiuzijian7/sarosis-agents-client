@@ -1,0 +1,138 @@
+{
+  "id": "builtin-goal-workflow",
+  "name": "Goal Execution Workflow",
+  "description": "内置单次 Goal 工作流：执行一步目标操作并通过 Judge 评估进度。Kanban 任务看板根据评估结果决定是否继续执行。",
+  "version": "1.0.0",
+  "isBuiltin": true,
+  "tags": ["goal", "auto-execution", "builtin"],
+  "nodes": [
+    {
+      "id": "node-start",
+      "type": "start",
+      "name": "Start",
+      "position": { "x": 100, "y": 100 },
+      "data": {}
+    },
+    {
+      "id": "node-agent",
+      "type": "prompt",
+      "name": "Execute Goal Step",
+      "position": { "x": 300, "y": 100 },
+      "data": {
+        "label": "执行目标步骤",
+        "prompt": "{{goal}}\n\n当前进度：\n{{progress}}\n\n这是第 {{turnsUsed}}/{{maxTurns}} 轮。请继续执行目标。如果目标已完成，明确说明。",
+        "variables": {
+          "goal": "{{goal}}",
+          "progress": "{{progress}}",
+          "turnsUsed": "{{turnsUsed}}",
+          "maxTurns": "{{maxTurns}}"
+        }
+      }
+    },
+    {
+      "id": "node-judge",
+      "type": "prompt",
+      "name": "Judge Goal Completion",
+      "position": { "x": 500, "y": 100 },
+      "data": {
+        "label": "评估目标完成状态",
+        "prompt": "你是一个目标完成度评估器。\n\n用户目标：{{goal}}\n\nAgent 最新输出：\n{{agentOutput}}\n\n请评估目标是否已完成。严格按照 JSON 格式返回：\n{\"done\": true/false, \"reason\": \"评估理由\", \"nextStep\": \"建议的下一步\"}\n\n判断标准：\n- done=true：目标已明确完成，或 Agent 明确表示无法继续，或陷入死循环\n- done=false：目标未完成，且有明确的下一步可执行\n\n仅返回 JSON，不要包含其他文本。",
+        "variables": {
+          "goal": "{{goal}}",
+          "agentOutput": "{{node-agent.output}}"
+        }
+      }
+    },
+    {
+      "id": "node-if-else",
+      "type": "ifElse",
+      "name": "Check Judge Result",
+      "position": { "x": 700, "y": 100 },
+      "data": {
+        "label": "检查评估结果",
+        "evaluationTarget": "{{node-judge.output.done}}",
+        "branches": [
+          {
+            "id": "branch-not-done",
+            "label": "Not Done",
+            "condition": "== false"
+          },
+          {
+            "id": "branch-done",
+            "label": "Done",
+            "condition": "== true",
+            "isDefault": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "node-end-done",
+      "type": "end",
+      "name": "Goal Completed",
+      "position": { "x": 900, "y": 50 },
+      "data": {
+        "label": "目标已完成",
+        "output": { "done": true, "reason": "", "nextStep": "" }
+      }
+    },
+    {
+      "id": "node-end-continue",
+      "type": "end",
+      "name": "Goal Not Done",
+      "position": { "x": 900, "y": 150 },
+      "data": {
+        "label": "目标未完成，需要继续",
+        "output": { "done": false, "reason": "", "nextStep": "" }
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-start-agent",
+      "from": "node-start",
+      "to": "node-agent",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-agent-judge",
+      "from": "node-agent",
+      "to": "node-judge",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-judge-ifelse",
+      "from": "node-judge",
+      "to": "node-if-else",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-ifelse-done",
+      "from": "node-if-else",
+      "to": "node-end-done",
+      "fromPort": "branch-done",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-ifelse-notdone",
+      "from": "node-if-else",
+      "to": "node-end-continue",
+      "fromPort": "branch-not-done",
+      "toPort": "in"
+    }
+  ],
+  "variables": {
+    "goal": "",
+    "progress": "",
+    "turnsUsed": 0,
+    "maxTurns": 20
+  },
+  "settings": {
+    "maxTurns": 20,
+    "judgeModel": "auxiliary",
+    "failOpen": true
+  }
+}

@@ -214,3 +214,6 @@ build/win32/code.iss
 .worktrees/feat-codegraph
 .worktrees/feat-kanban
 extensions/hermes-agent/hermes
+.vs/*
+.vs/ProjectSettings.json
+extensions/hermes-agent/src/__pycache__/hermes_bridge_server.cpython-312.pyc

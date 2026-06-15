@@ -51,6 +51,8 @@ export interface IAgentInfo {
 	readonly customPrompt?: string;
 	readonly model?: string;
 	readonly provider?: string;
+	/** Agent type — only 'planner' supports plan mode */
+	readonly agentType?: 'general' | 'planner' | string;
 }
 
 /** Provider info for model selector */
@@ -66,8 +68,71 @@ export interface IModelInfo {
 	readonly provider: string;
 }
 
-/** Header panel types (toolbar buttons) */
-export type HeaderPanelType = 'prompt' | 'condense-skill' | 'skills' | 'config-html' | 'params' | 'memory' | null;
+/** Chat mode — mirrors webview ChatMode */
+export type ChatMode = 'craft' | 'ask' | 'plan';
+
+/** Mode option metadata for the composer mode dropdown */
+export interface IModeOption {
+	readonly id: ChatMode;
+	readonly label: string;
+	readonly description: string;
+	readonly icon: string;       // SVG path d=
+}
+
+/** Header dropdown panel types (toolbar buttons) */
+export type HeaderPanelType =
+	| 'worktree'
+	| 'message-nav'
+	| 'history'
+	| 'settings'
+	| null;
+
+/** Worktree info for header dropdown */
+export interface IWorktreeItem {
+	readonly path: string;
+	readonly branch: string;
+}
+
+/** Lightweight summary of a user message — fed into the message-nav dropdown */
+export interface IMessageNavItem {
+	readonly id: string;
+	readonly summary: string;
+	readonly timestamp: number;
+}
+
+/** Session info bar payload */
+export interface ISessionInfo {
+	readonly mode: ChatMode;
+	readonly superior?: { id: string; name: string };
+	readonly subordinates?: ReadonlyArray<{ id: string; name: string }>;
+	readonly taskCount: number;
+}
+
+/** Agent session metadata for the chat-history side panel */
+export interface IAgentSessionMeta {
+	readonly id: string;
+	readonly name: string;
+	readonly createdAt: string;
+	readonly updatedAt: string;
+	readonly messageCount: number;
+}
+
+/** Token usage snapshot used to render the context-usage ring */
+export interface IContextUsage {
+	readonly used: number;
+	readonly limit: number;
+	readonly percent: number; // 0-100
+	readonly ratio: number;   // 0-1
+}
+
+/** Checkpoint info for the CheckpointBar */
+export interface ICheckpointInfo {
+	readonly id: string;
+	readonly label: string;
+	readonly timestamp: number;
+	readonly fileCount: number;
+	readonly files: ReadonlyArray<{ path: string; status: 'modified' | 'created' | 'deleted' }>;
+}
 
 /** Global unique message ID generator */
 let _msgSeq = 0;

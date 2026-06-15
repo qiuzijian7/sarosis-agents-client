@@ -14,14 +14,16 @@ import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensi
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
-import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { IContextKeyService, ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { ILocalizedString, localize, localize2 } from '../../../../nls.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
@@ -137,6 +139,8 @@ import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
 import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
 import { SkillMarketEditorPane } from './skillMarketEditorPane.js';
 import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
+import { NativeChatEditorPane } from './nativeChatEditorPane.js';
+import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { WorkspaceViewPane } from './views/workspaceView.js';
@@ -179,7 +183,7 @@ import { ISelfEvolutionService } from '../common/selfEvolution.js';
 import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
-import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroupsService, IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 // --- Icons -----------------------------------------------------------------------
 
@@ -640,6 +644,19 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register NativeChatEditorPane — renders the Agent Chat UI natively in
+// the DOM (no WebView/iframe overlay). Mounted inside AgentEditorPart.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		NativeChatEditorPane,
+		NativeChatEditorPane.ID,
+		localize('nativeChatEditor', "Agent Chat"),
+	),
+	[
+		new SyncDescriptor(NativeChatEditorInput)
+	]
+);
+
 // Register a command to open the Agent Studio Settings editor directly
 registerAction2(class extends Action2 {
 	constructor() {
@@ -687,6 +704,83 @@ registerAction2(class extends Action2 {
 	}
 });
 
+// ─── Pop Out Chat Window ───────────────────────────────────────────────
+// Renders as an icon button in the editor title bar (top-right), but ONLY
+// when the active editor is the Agent Chat editor (either the React webview
+// AgentStudioEditorPane with panelType='chat', or the native NativeChatEditorPane).
+//
+// Implementation (方案 2 — Independent BrowserWindow):
+// Delegates to the built-in `workbench.action.moveEditorToNewWindow` command,
+// which opens an independent OS-level Electron BrowserWindow and moves the
+// active editor into it. The new window has its own native window controls
+// (min/max/close), completely escaping the stacking-context / OS-overlay
+// constraints of the main window's titlebar — no DOM-level z-index conflicts.
+// Closing the standalone window automatically returns the editor to the main
+// window's editor group.
+registerAction2(class extends Action2 {
+	constructor() {
+		const chatEditorActive = ContextKeyExpr.or(
+			ActiveEditorContext.isEqualTo('workbench.editor.agentStudio'),
+			ActiveEditorContext.isEqualTo('workbench.editor.nativeChat'),
+		);
+		super({
+			id: 'agentStudio.popoutChat',
+			title: localize2('agentStudio.popoutChat', 'Pop Out Chat to New Window'),
+			f1: false,
+			icon: Codicon.linkExternal,
+			menu: [{
+				id: MenuId.EditorTitle,
+				when: chatEditorActive,
+				group: 'navigation',
+				order: -1,
+			}],
+			precondition: chatEditorActive,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+
+		// Locate the chat editor + its group EXPLICITLY (do NOT trust the
+		// global active editor — when the popout button is clicked, focus may
+		// be on the main editor area, which would cause moveEditorToNewWindow
+		// to pop out the wrong file).
+		let targetGroup: IEditorGroup | undefined;
+		let targetEditor: EditorInput | undefined;
+		for (const group of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+			for (const ed of group.editors) {
+				if (
+					(ed instanceof AgentStudioEditorInput && ed.panelType === 'chat') ||
+					ed instanceof NativeChatEditorInput
+				) {
+					targetGroup = group;
+					targetEditor = ed;
+					break;
+				}
+			}
+			if (targetEditor) { break; }
+		}
+
+		if (!targetGroup || !targetEditor) {
+			// Nothing to pop out
+			return;
+		}
+
+		try {
+			// Open an auxiliary BrowserWindow (independent OS window with
+			// native window controls) and move the chat editor into it.
+			const auxPart = await editorGroupsService.createAuxiliaryEditorPart();
+			targetGroup.moveEditors(
+				[{ editor: targetEditor, options: { preserveFocus: false } }],
+				auxPart.activeGroup,
+			);
+		} catch {
+			// Last-resort fallback: dispatch the legacy in-window overlay event
+			// (kept for backward compatibility with the older floating-overlay impl).
+			mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:popout-chat'));
+		}
+	}
+});
+
 // --- EditorInput Serializers ----------------------------------------------------
 // EditorPart persists the grid layout (groups + sashes) on shutdown and
 // restores it on startup. Each editor in a group is round-tripped via its
@@ -724,6 +818,26 @@ class AgentStudioEditorInputSerializer implements IEditorSerializer {
 
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
 	.registerEditorSerializer(AgentStudioEditorInput.TypeID, AgentStudioEditorInputSerializer);
+
+// Serializer for NativeChatEditorInput — ensures the native chat tab
+// survives editor-state round-trips (persist on shutdown, restore on startup).
+class NativeChatEditorInputSerializer implements IEditorSerializer {
+	canSerialize(_editorInput: EditorInput): boolean {
+		return true;
+	}
+	serialize(editorInput: EditorInput): string | undefined {
+		if (!(editorInput instanceof NativeChatEditorInput)) {
+			return undefined;
+		}
+		return JSON.stringify({ type: 'native-chat' });
+	}
+	deserialize(_instantiationService: IInstantiationService, _serialized: string): EditorInput | undefined {
+		return NativeChatEditorInput.getInstance();
+	}
+}
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
+	.registerEditorSerializer(NativeChatEditorInput.TypeID, NativeChatEditorInputSerializer);
 
 // --- Provider Contribution -------------------------------------------------------
 

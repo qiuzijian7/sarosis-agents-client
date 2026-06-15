@@ -327,34 +327,9 @@
 	gap: 2px;
 }
 
-.monaco-workbench .part.titlebar .titlebar-popout-chat {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 32px;
-	height: 100%;
-	border: none;
-	background: transparent;
-	color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
-	opacity: 0.5;
-	cursor: pointer;
-	padding: 0;
-	font-size: 13px;
-	flex-shrink: 0;
-	position: relative;
-	z-index: 3000;
-	-webkit-app-region: no-drag;
-	transition: opacity 0.15s, background-color 0.15s;
-}
-
-.monaco-workbench .part.titlebar .titlebar-popout-chat:hover {
-	opacity: 1;
-	background: rgba(255, 255, 255, 0.1);
-}
-
-.monaco-workbench .part.titlebar.inactive .titlebar-popout-chat {
-	color: var(--vscode-titleBar-inactiveForeground);
-}
+/* NOTE: .titlebar-popout-chat 样式已废弃 — 弹出按钮已迁移到 Chat Editor 标题栏右侧
+ * (通过 MenuId.EditorTitle 在 chat editor 激活时自动渲染)。
+ */
 
 .monaco-workbench .part.titlebar .titlebar-toggle-right-column {
 	display: flex;

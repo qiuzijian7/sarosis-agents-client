@@ -46,16 +46,17 @@ export class AgentEditorPart extends EditorPart {
 	) {
 		super(editorPartsView, Parts.AGENT_EDITOR_PART, '', mainWindow.vscodeWindowId, instantiationService, themeService, configurationService, storageService, layoutService, hostService, contextKeyService);
 
-		// [Sarosis] Hide tab bar when only Agent Chat is open.
+		// [Sarosis] Show tab bar when multiple editors are open.
 		//
-		// The Agent zone typically hosts a single editor (Agent Chat),
-		// so `showTabs: 'single'` hides the redundant tab bar. If a second
-		// editor (e.g. Canvas) is opened, the tab bar automatically appears.
+		// The Agent zone can host multiple editors (Native Chat, Canvas,
+		// TaskBoard, etc.). `showTabs: 'multiple'` shows the tab bar
+		// whenever more than one editor is open, keeping the UI clean
+		// when only Agent Chat is present.
 		//
 		// `enforcePartOptions` re-applies on every option recompute, so a
 		// later config change can't revert it.
 		this.enforcePartOptions({
-			showTabs: 'single',
+			showTabs: 'multiple',
 			limit: { enabled: false, value: 10, perEditorGroup: false, excludeDirty: false }
 		});
 	}

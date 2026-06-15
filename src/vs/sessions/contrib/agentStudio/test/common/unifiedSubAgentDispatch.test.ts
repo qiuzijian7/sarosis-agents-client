@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { UnifiedSubAgentDispatch, SubAgentType } from '../../common/unifiedSubAgentDispatch';
-import { IterationBudget } from '../../common/iterationBudget';
-import type { IAgentTurnRequest, IChatStreamDelta } from '../../common/providers';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
+import { UnifiedSubAgentDispatch, SubAgentType } from '../../common/unifiedSubAgentDispatch.js';
+import { IterationBudget } from '../../common/iterationBudget.js';
+import type { IAgentTurnRequest, IChatStreamDelta } from '../../common/providers.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 suite('UnifiedSubAgentDispatch', () => {
 
@@ -134,8 +134,8 @@ suite('UnifiedSubAgentDispatch', () => {
 
 		assert.strictEqual(results.size, 3, 'All 3 sub-agents should have results');
 		// At least one should succeed and one should fail
-		const successes = Array.from(results.values()).filter(r => r.success);
-		const failures = Array.from(results.values()).filter(r => !r.success);
+		const successes = Array.from(results.values()).filter((r: any) => r.success);
+		const failures = Array.from(results.values()).filter((r: any) => !r.success);
 		assert.ok(successes.length >= 1, 'At least one sub-agent should succeed');
 		assert.ok(failures.length >= 1, 'At least one sub-agent should fail');
 	});

@@ -21,7 +21,7 @@ import * as assert from 'assert';
 import {
 	sanitizeAssistantVisibleText,
 	isEntirelyToolCallContent,
-} from '../../common/assistantVisibleText';
+} from '../../common/assistantVisibleText.js';
 
 // ════════════════════════════════════════════════════════════════════════════════
 // § Replicated placeholder replacement logic (mirrors AgentOSService._replaceToolBlocksWithPlaceholders)

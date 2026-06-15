@@ -22,7 +22,36 @@ import {
 	STATUS_MAP,
 	HeaderPanelType,
 	AgentStatus,
+	ChatMode,
+	IModeOption,
+	IWorktreeItem,
+	ISessionInfo,
+	IAgentSessionMeta,
+	IContextUsage,
+	ICheckpointInfo,
 } from "./agentChatTypes.js";
+
+// Mode options metadata — mirrors webview ChatComposer.tsx modeOptions
+const MODE_OPTIONS: IModeOption[] = [
+	{
+		id: 'craft',
+		label: 'Craft',
+		description: '打造模式 · 完整工具链',
+		icon: 'M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.121 2.121 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z',
+	},
+	{
+		id: 'ask',
+		label: 'Ask',
+		description: '问答模式 · 只读',
+		icon: 'M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z',
+	},
+	{
+		id: 'plan',
+		label: 'Plan',
+		description: '规划模式 · 多步编排',
+		icon: 'M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11',
+	},
+];
 
 // AgentChatPanel -- Full chat panel matching saros-webui layout
 //
@@ -54,19 +83,34 @@ export class AgentChatPanel extends Disposable {
 	private _messagesWrapper!: HTMLElement;
 	private _textarea!: HTMLTextAreaElement;
 	private _scrollToBottomBtn!: HTMLElement;
+	private _scrollToTopBtn!: HTMLElement;
 	private _sendBtn!: HTMLElement;
+	private _checkpointBarContainer: HTMLElement | null = null;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
 	private _agent: IAgentInfo | null = null;
 	private _isSending = false;
 	private _showScrollBtn = false;
+	private _showScrollTopBtn = false;
 	private _autoOrchestrateEnabled = false;
 	private _webSearchEnabled = false;
 	private _currentProvider = "";
 	private _currentModel = "";
+	private _providers: IProviderInfo[] = [];
+	private _models: IModelInfo[] = [];
 	private _activeHeaderPanel: HeaderPanelType = null;
 	private _abortController: AbortController | null = null;
+
+	// Worktree / session / context / checkpoint state
+	private _worktrees: IWorktreeItem[] = [];
+	private _selectedWorktreePath = "";
+	private _chatMode: ChatMode = 'craft';
+	private _sessionInfo: ISessionInfo | null = null;
+	private _agentSessions: IAgentSessionMeta[] = [];
+	private _contextUsage: IContextUsage | null = null;
+	private _checkpoint: ICheckpointInfo | null = null;
+	private _checkpointFilesExpanded = false;
 
 	// -- Agent dropdown state --
 	private _availableAgents: IAgentInfo[] = [];
@@ -77,22 +121,75 @@ export class AgentChatPanel extends Disposable {
 	private _agentDropdownList: HTMLElement | null = null;
 	private _agentSelectorTrigger: HTMLElement | null = null;
 
+	// -- Other floating dropdown refs --
+	private _worktreeDropdownEl: HTMLElement | null = null;
+	private _worktreeTrigger: HTMLElement | null = null;
+	private _msgNavDropdownEl: HTMLElement | null = null;
+	private _msgNavTrigger: HTMLElement | null = null;
+	private _modeDropdownEl: HTMLElement | null = null;
+	private _modeTrigger: HTMLElement | null = null;
+	private _providerDropdownEl: HTMLElement | null = null;
+	private _providerTrigger: HTMLElement | null = null;
+	private _modelDropdownEl: HTMLElement | null = null;
+	private _modelTrigger: HTMLElement | null = null;
+	private _historyOverlayEl: HTMLElement | null = null;
+
+	// -- Tabs state --
+	private _tabsContainer: HTMLElement | undefined;
+
 	// -- Callbacks --
 	private readonly _onSendMessage: (text: string) => void;
 	private readonly _onCancelExecution: () => void;
 	private readonly _onSelectAgent: (id: string) => void;
+	private readonly _onSelectWorktree?: (path: string) => void;
+	private readonly _onScrollToMessage?: (messageId: string) => void;
+	private readonly _onNewSession?: () => void;
+	private readonly _onOpenSession?: (sessionId: string) => void;
+	private readonly _onRenameSession?: (sessionId: string, newName: string) => void;
+	private readonly _onDeleteSession?: (sessionId: string) => void;
+	private readonly _onOpenSettings?: () => void;
+	private readonly _onChangeMode?: (mode: ChatMode) => void;
+	private readonly _onSelectProvider?: (providerId: string) => void;
+	private readonly _onSelectModel?: (modelId: string) => void;
+	private readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
 
 	constructor(opts: {
 		onSendMessage: (text: string) => void;
 		onCancelExecution: () => void;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
+		onSelectWorktree?: (path: string) => void;
+		onScrollToMessage?: (messageId: string) => void;
+		onNewSession?: () => void;
+		onOpenSession?: (sessionId: string) => void;
+		onRenameSession?: (sessionId: string, newName: string) => void;
+		onDeleteSession?: (sessionId: string) => void;
+		onOpenSettings?: () => void;
+		onChangeMode?: (mode: ChatMode) => void;
+		onSelectProvider?: (providerId: string) => void;
+		onSelectModel?: (modelId: string) => void;
+		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
 	}) {
 		super();
 		this._onSendMessage = opts.onSendMessage;
 		this._onCancelExecution = opts.onCancelExecution;
 		this._onSelectAgent = opts.onSelectAgent;
+		this._onSelectWorktree = opts.onSelectWorktree;
+		this._onScrollToMessage = opts.onScrollToMessage;
+		this._onNewSession = opts.onNewSession;
+		this._onOpenSession = opts.onOpenSession;
+		this._onRenameSession = opts.onRenameSession;
+		this._onDeleteSession = opts.onDeleteSession;
+		this._onOpenSettings = opts.onOpenSettings;
+		this._onChangeMode = opts.onChangeMode;
+		this._onSelectProvider = opts.onSelectProvider;
+		this._onSelectModel = opts.onSelectModel;
+		this._onCheckpointAction = opts.onCheckpointAction;
 		this._container = $(".chat-container");
+
+		// Initial render so the container has visible structure (tabs + empty state)
+		// even before setAgent() / setAvailableAgents() are called.
+		this._render();
 	}
 
 	get element(): HTMLElement {
@@ -102,12 +199,16 @@ export class AgentChatPanel extends Disposable {
 	// Public API
 
 	setAgent(agent: IAgentInfo | null): void {
+		// eslint-disable-next-line no-console
+		console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null');
 		this._agent = agent;
 		this._render();
 	}
 
 	setAvailableAgents(agents: IAgentInfo[]): void {
 		this._availableAgents = agents;
+		// Re-render tabs to reflect the new list of available agents
+		this._renderTabs();
 	}
 
 	setMessages(messages: IAgentChatMessage[]): void {
@@ -139,19 +240,59 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	setProviders(providers: IProviderInfo[]): void {
-		// Provider list for dropdown — future expansion
+		this._providers = providers.slice();
 	}
 
 	setModels(models: IModelInfo[]): void {
-		// Model list for dropdown — future expansion
+		this._models = models.slice();
 	}
 
 	setCurrentProvider(provider: string): void {
 		this._currentProvider = provider;
+		// Re-render input area so the chip label refreshes immediately
+		if (this._agent) { this._render(); }
 	}
 
 	setCurrentModel(model: string): void {
 		this._currentModel = model;
+		if (this._agent) { this._render(); }
+	}
+
+	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void {
+		this._worktrees = items.slice();
+		if (this._agent) { this._render(); }
+	}
+
+	setSelectedWorktree(path: string): void {
+		this._selectedWorktreePath = path || "";
+		if (this._agent) { this._render(); }
+	}
+
+	setChatMode(mode: ChatMode): void {
+		this._chatMode = mode;
+		if (this._agent) { this._render(); }
+	}
+
+	setSessionInfo(info: ISessionInfo | null): void {
+		this._sessionInfo = info;
+		if (this._agent) { this._render(); }
+	}
+
+	setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void {
+		this._agentSessions = sessions.slice();
+		if (this._historyOverlayEl) {
+			this._renderHistoryOverlayContent();
+		}
+	}
+
+	setContextUsage(usage: IContextUsage | null): void {
+		this._contextUsage = usage;
+		this._updateContextRing();
+	}
+
+	setCheckpoint(info: ICheckpointInfo | null): void {
+		this._checkpoint = info;
+		this._renderCheckpointBar();
 	}
 
 	focusInput(): void {
@@ -161,11 +302,18 @@ export class AgentChatPanel extends Disposable {
 	// Rendering — Full render
 
 	private _render(): void {
-		// Close dropdown before re-render (dropdown is outside container)
-		this._closeAgentDropdown();
+		// Close all floating dropdowns before re-render
+		this._closeAllDropdowns();
 		clearNode(this._container);
 
+		// NOTE: 原侧栏样式（webview 版）没有 tabs。
+		// 此处不再渲染 tabs，使外观与原 chat sidebar 保持一致。
+		// 如需开启 multi-agent tabs，可调用 _renderTabsContainer()。
+		this._tabsContainer = undefined;
+
 		if (!this._agent) {
+			// eslint-disable-next-line no-console
+			console.warn('[AgentChatPanel] _render: rendering empty state — _agent is null/undefined');
 			this._renderEmptyState();
 			return;
 		}
@@ -173,39 +321,111 @@ export class AgentChatPanel extends Disposable {
 		// Chat header
 		this._renderHeader();
 
+		// Session info bar (mode badge + hierarchy + tasks)
+		if (this._sessionInfo) {
+			this._renderSessionInfo();
+		}
+
 		// Messages wrapper
 		this._renderMessagesArea();
 
+		// Checkpoint bar container (always present so updates can re-render in place)
+		this._renderCheckpointBarContainer();
+
 		// Input area
 		this._renderInputArea();
+
+		// History overlay (rendered last so it stacks on top)
+		if (this._activeHeaderPanel === 'history') {
+			this._renderHistoryOverlay();
+		}
+	}
+
+	private _closeAllDropdowns(): void {
+		this._closeAgentDropdown();
+		this._closeWorktreeDropdown();
+		this._closeMsgNavDropdown();
+		this._closeModeDropdown();
+		this._closeProviderDropdown();
+		this._closeModelDropdown();
+	}
+
+	// Tabs Container (editor-style tabs)
+	// NOTE: 当前不使用 tabs（与原侧栏样式保持一致）。保留方法以便未来可恢复 multi-agent tabs 功能。
+	// @ts-expect-error - reserved for future use
+	private _renderTabsContainer(): void {
+		// Create tabs container
+		const tabsContainer = append(this._container, $('.chat-tabs-container'));
+
+		// Create tabs list (role="tablist")
+		this._tabsContainer = append(tabsContainer, $('.chat-tabs', { role: 'tablist' }));
+
+		// Render tabs
+		this._renderTabs();
+	}
+
+	private _renderTabs(): void {
+		if (!this._tabsContainer) {
+			return;
+		}
+
+		clearNode(this._tabsContainer);
+
+		// Create a tab for each available agent
+		for (const agent of this._availableAgents) {
+			const tab = append(this._tabsContainer, $('.chat-tab', { role: 'tab' }));
+
+			// Mark active tab
+			if (this._agent && agent.id === this._agent.id) {
+				tab.classList.add('active');
+				tab.setAttribute('aria-selected', 'true');
+			} else {
+				tab.setAttribute('aria-selected', 'false');
+			}
+
+			// Agent avatar/icon
+			const avatar = append(tab, $('.chat-tab-avatar'));
+			if (agent.avatarUrl) {
+				const img = append(avatar, $('img')) as HTMLImageElement;
+				img.src = agent.avatarUrl;
+				img.alt = agent.name;
+				img.style.width = '16px';
+				img.style.height = '16px';
+				img.style.borderRadius = '2px';
+			} else {
+				const fallback = append(avatar, $('.chat-tab-avatar-fallback'));
+				fallback.textContent = agent.name.charAt(0).toUpperCase();
+			}
+
+			// Agent name
+			const label = append(tab, $('.chat-tab-label'));
+			label.textContent = agent.name;
+
+			// Click handler to switch agent
+			this._register(
+				addDisposableListener(tab, EventType.CLICK, () => {
+					this._onSelectAgent(agent.id);
+				})
+			);
+		}
 	}
 
 	// Empty state
 
 	private _renderEmptyState(): void {
-		const header = append(this._container, $(".chat-header"));
-		append(header, $("h3.chat-header-title", undefined, "对话"));
-
-		const empty = append(this._container, $(".chat-empty-state"));
-		const svg = append(empty, $("svg.chat-empty-icon"));
-		svg.setAttribute("viewBox", "0 0 24 24");
-		svg.setAttribute("fill", "none");
-		svg.setAttribute("stroke", "currentColor");
-		svg.setAttribute("stroke-width", "1.5");
-		const path1 = document.createElementNS(
-			"http://www.w3.org/2000/svg",
-			"path",
-		);
-		path1.setAttribute(
-			"d",
-			"M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z",
-		);
-		svg.appendChild(path1);
-		append(empty, $("p.chat-empty-text", undefined, "选择一个 Agent 开始对话"));
-		append(
-			empty,
-			$("p.chat-empty-subtext", undefined, "点击画布或列表中的 Agent 卡片"),
-		);
+		// 还原原 webview AgentChat.tsx 的空状态结构：
+		// <div class="chat-empty">
+		//   <div class="chat-empty-inner">
+		//     <div class="chat-empty-icon">💬</div>
+		//     <h2 class="chat-empty-title">Agent Studio</h2>
+		//     <p class="chat-empty-desc">选择一个 Agent 开始对话</p>
+		//   </div>
+		// </div>
+		const empty = append(this._container, $(".chat-empty"));
+		const inner = append(empty, $(".chat-empty-inner"));
+		append(inner, $(".chat-empty-icon", undefined, "💬"));
+		append(inner, $("h2.chat-empty-title", undefined, "Agent Studio"));
+		append(inner, $("p.chat-empty-desc", undefined, "选择一个 Agent 开始对话"));
 	}
 
 	// Chat Header
@@ -217,8 +437,13 @@ export class AgentChatPanel extends Disposable {
 
 		const header = append(this._container, $(".chat-header"));
 
-		// Left: agent selector dropdown trigger
+		// Left: worktree pill + agent selector dropdown trigger
 		const left = append(header, $(".chat-header-left"));
+
+		// Worktree pill (only if data exists)
+		if (this._worktrees.length > 0 || this._selectedWorktreePath) {
+			this._renderHeaderWorktree(left);
+		}
 
 		// Agent selector trigger (clickable, replaces static avatar+name)
 		this._agentSelectorTrigger = append(left, $(".chat-header-agent-selector"));
@@ -328,78 +553,156 @@ export class AgentChatPanel extends Disposable {
 		// Spacer
 		append(left, $(".chat-header-spacer"));
 
-		// Right: toolbar buttons
+		// Right: 5 action buttons (message-nav / new / history / settings)
 		const actions = append(header, $(".chat-header-actions"));
-		const toolButtons: {
-			key: HeaderPanelType;
-			title: string;
-			svgPath: string;
-		}[] = [
-			{
-				key: "prompt",
-				title: "编辑提示词",
-				svgPath:
-					"M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z",
-			},
-			{
-				key: "condense-skill",
-				title: "对话沉淀为技能",
-				svgPath: "M12 2 2 7 12 12 22 7 12 2M2 17 12 22 22 17M2 12 12 17 22 12",
-			},
-			{
-				key: "skills",
-				title: "配置员工技能",
-				svgPath:
-					"M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 012.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.65 1.65 0 001.82.33l.06.06a2 2 0 012.83-2.83l-.06-.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z",
-			},
-			{
-				key: "config-html",
-				title: "配置页面",
-				svgPath: "M3 3h18v18H3zM3 9h18M9 21V9",
-			},
-			{
-				key: "params",
-				title: "配置参数",
-				svgPath:
-					"M4 21V14M4 10V3M12 21V12M12 8V3M20 21V16M20 12V3M1 14h7M9 8h6M17 16h6",
-			},
-			{
-				key: "memory",
-				title: "员工记忆",
-				svgPath:
-					"M4 19.5A2.5 2.5 0 006.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z",
-			},
-		];
 
-		for (const btn of toolButtons) {
-			const el = append(actions, $(".chat-header-action-btn"));
-			el.title = btn.title;
-			if (this._activeHeaderPanel === btn.key) {
-				el.classList.add("active");
-			}
-			const svg = append(el, $("svg"));
-			svg.setAttribute("width", "15");
-			svg.setAttribute("height", "15");
-			svg.setAttribute("viewBox", "0 0 24 24");
-			svg.setAttribute("fill", "none");
-			svg.setAttribute("stroke", "currentColor");
-			svg.setAttribute("stroke-width", "2");
-			svg.setAttribute("stroke-linecap", "round");
-			svg.setAttribute("stroke-linejoin", "round");
-			const pathEl = document.createElementNS(
-				"http://www.w3.org/2000/svg",
-				"path",
-			);
-			pathEl.setAttribute("d", btn.svgPath);
-			svg.appendChild(pathEl);
-			this._register(
-				addDisposableListener(el, EventType.CLICK, () => {
-					this._activeHeaderPanel =
-						this._activeHeaderPanel === btn.key ? null : btn.key;
-					this._render();
-				}),
-			);
+		// 1. Message-nav (汉堡菜单 → 用户消息列表)
+		this._msgNavTrigger = this._appendHeaderActionBtn(actions, {
+			title: '跳转到用户消息',
+			svgPath: 'M3 12h18M3 6h18M3 18h18',
+		});
+		if (this._activeHeaderPanel === 'message-nav') {
+			this._msgNavTrigger.classList.add('active');
 		}
+		this._register(
+			addDisposableListener(this._msgNavTrigger, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._msgNavDropdownEl) {
+					this._closeMsgNavDropdown();
+				} else {
+					this._openMsgNavDropdown();
+				}
+			}),
+		);
+
+		// 2. New session (+)
+		const newBtn = this._appendHeaderActionBtn(actions, {
+			title: '新建会话',
+			svgPath: 'M12 5v14M5 12h14',
+		});
+		this._register(
+			addDisposableListener(newBtn, EventType.CLICK, () => {
+				this._onNewSession?.();
+			}),
+		);
+
+		// 3. History (clock icon)
+		const historyBtn = this._appendHeaderActionBtn(actions, {
+			title: '聊天历史',
+			svgPath: 'M12 8v4l3 2',
+		});
+		// Add the outer circle for the clock icon
+		const historyClockSvg = historyBtn.querySelector('svg');
+		if (historyClockSvg) {
+			const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+			c.setAttribute('cx', '12');
+			c.setAttribute('cy', '12');
+			c.setAttribute('r', '9');
+			historyClockSvg.insertBefore(c, historyClockSvg.firstChild);
+		}
+		if (this._activeHeaderPanel === 'history') {
+			historyBtn.classList.add('active');
+		}
+		this._register(
+			addDisposableListener(historyBtn, EventType.CLICK, () => {
+				this._activeHeaderPanel = this._activeHeaderPanel === 'history' ? null : 'history';
+				this._render();
+			}),
+		);
+
+		// 4. Settings (gear)
+		const settingsBtn = this._appendHeaderActionBtn(actions, {
+			title: '设置',
+			svgPath: 'M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z',
+		});
+		const gearSvg = settingsBtn.querySelector('svg');
+		if (gearSvg) {
+			const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+			c.setAttribute('cx', '12');
+			c.setAttribute('cy', '12');
+			c.setAttribute('r', '3');
+			gearSvg.insertBefore(c, gearSvg.firstChild);
+		}
+		this._register(
+			addDisposableListener(settingsBtn, EventType.CLICK, () => {
+				this._onOpenSettings?.();
+			}),
+		);
+	}
+
+	// Header-action button helper
+	private _appendHeaderActionBtn(parent: HTMLElement, opts: { title: string; svgPath: string }): HTMLElement {
+		const el = append(parent, $(".chat-header-action-btn.chat-header-btn"));
+		el.title = opts.title;
+		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		svg.setAttribute("width", "15");
+		svg.setAttribute("height", "15");
+		svg.setAttribute("viewBox", "0 0 24 24");
+		svg.setAttribute("fill", "none");
+		svg.setAttribute("stroke", "currentColor");
+		svg.setAttribute("stroke-width", "2");
+		svg.setAttribute("stroke-linecap", "round");
+		svg.setAttribute("stroke-linejoin", "round");
+		const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		pathEl.setAttribute("d", opts.svgPath);
+		svg.appendChild(pathEl);
+		el.appendChild(svg);
+		return el;
+	}
+
+	// Header worktree pill
+	private _renderHeaderWorktree(parent: HTMLElement): void {
+		this._worktreeTrigger = append(parent, $(".chat-header-worktree"));
+		const btn = append(this._worktreeTrigger, $("button.chat-header-worktree-btn"));
+		btn.title = '切换 Worktree';
+
+		// Branch icon
+		const iconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		iconSvg.setAttribute('width', '14');
+		iconSvg.setAttribute('height', '14');
+		iconSvg.setAttribute('viewBox', '0 0 24 24');
+		iconSvg.setAttribute('fill', 'none');
+		iconSvg.setAttribute('stroke', 'currentColor');
+		iconSvg.setAttribute('stroke-width', '2');
+		iconSvg.setAttribute('stroke-linecap', 'round');
+		iconSvg.setAttribute('stroke-linejoin', 'round');
+		const iconPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		iconPath.setAttribute('d', 'M6 3v12M18 9v12M6 21l12-12');
+		iconSvg.appendChild(iconPath);
+		btn.appendChild(iconSvg);
+
+		// Branch label
+		const current = this._worktrees.find(w => w.path === this._selectedWorktreePath);
+		const branchEl = append(btn, $("span.chat-header-worktree-branch"));
+		const fallback = this._selectedWorktreePath ? this._selectedWorktreePath.split(/[\\/]/).filter(Boolean).pop() || 'main' : 'main';
+		branchEl.textContent = current?.branch || fallback;
+
+		// Chevron
+		const chevSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		chevSvg.setAttribute('width', '12');
+		chevSvg.setAttribute('height', '12');
+		chevSvg.setAttribute('viewBox', '0 0 24 24');
+		chevSvg.setAttribute('fill', 'none');
+		chevSvg.setAttribute('stroke', 'currentColor');
+		chevSvg.setAttribute('stroke-width', '2.5');
+		chevSvg.setAttribute('stroke-linecap', 'round');
+		chevSvg.setAttribute('stroke-linejoin', 'round');
+		chevSvg.classList.add('chat-header-worktree-chevron');
+		const chevPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		chevPath.setAttribute('d', 'M6 9l6 6 6-6');
+		chevSvg.appendChild(chevPath);
+		btn.appendChild(chevSvg);
+
+		this._register(
+			addDisposableListener(btn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._worktreeDropdownEl) {
+					this._closeWorktreeDropdown();
+				} else {
+					this._openWorktreeDropdown();
+				}
+			}),
+		);
 	}
 
 	// Agent dropdown — open / close / render
@@ -578,25 +881,53 @@ export class AgentChatPanel extends Disposable {
 			$(".chat-messages"),
 		);
 
-		// Scroll listener
+		// Scroll listener — toggle top + bottom button visibility
 		this._register(
 			addDisposableListener(this._messagesContainer, EventType.SCROLL, () => {
 				const el = this._messagesContainer;
 				const nearBottom =
 					el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-				if (nearBottom !== !this._showScrollBtn) {
-					this._showScrollBtn = !nearBottom;
-					this._scrollToBottomBtn.style.display = this._showScrollBtn
-						? "flex"
-						: "none";
+				const nearTop = el.scrollTop < 40;
+				const showBottom = !nearBottom;
+				const showTop = !nearTop;
+				if (showBottom !== this._showScrollBtn) {
+					this._showScrollBtn = showBottom;
+					this._scrollToBottomBtn.style.display = showBottom ? "flex" : "none";
 				}
+				if (showTop !== this._showScrollTopBtn) {
+					this._showScrollTopBtn = showTop;
+					this._scrollToTopBtn.style.display = showTop ? "flex" : "none";
+				}
+			}),
+		);
+
+		// Scroll-to-top button
+		this._scrollToTopBtn = append(this._messagesWrapper, $(".chat-scroll-top-btn"));
+		this._scrollToTopBtn.style.display = "none";
+		this._scrollToTopBtn.title = '滚动到顶部';
+		const upSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		upSvg.setAttribute("width", "18");
+		upSvg.setAttribute("height", "18");
+		upSvg.setAttribute("viewBox", "0 0 24 24");
+		upSvg.setAttribute("fill", "none");
+		upSvg.setAttribute("stroke", "currentColor");
+		upSvg.setAttribute("stroke-width", "2.5");
+		upSvg.setAttribute("stroke-linecap", "round");
+		upSvg.setAttribute("stroke-linejoin", "round");
+		const upPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		upPath.setAttribute("d", "M12 19V5M5 12l7-7 7 7");
+		upSvg.appendChild(upPath);
+		this._scrollToTopBtn.appendChild(upSvg);
+		this._register(
+			addDisposableListener(this._scrollToTopBtn, EventType.CLICK, () => {
+				this._messagesContainer.scrollTop = 0;
 			}),
 		);
 
 		// Scroll-to-bottom button
 		this._scrollToBottomBtn = append(
 			this._messagesWrapper,
-			$(".scroll-to-bottom-btn"),
+			$(".scroll-to-bottom-btn.chat-scroll-bottom-btn"),
 		);
 		this._scrollToBottomBtn.style.display = "none";
 		const svg = append(this._scrollToBottomBtn, $("svg"));
@@ -659,6 +990,7 @@ export class AgentChatPanel extends Disposable {
 	private _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 		const isUser = msg.role === "user";
 		const messageEl = $(`.chat-message.${isUser ? "user" : "assistant"}`);
+		messageEl.setAttribute('data-msg-id', msg.id);
 
 		// Assistant avatar
 		if (!isUser && this._agent) {
@@ -1074,8 +1406,29 @@ export class AgentChatPanel extends Disposable {
 		// Divider
 		append(leftToolbar, $(".chat-toolbar-divider"));
 
+		// Mode tag (craft / ask / plan)
+		const modeOpt = MODE_OPTIONS.find(m => m.id === this._chatMode) || MODE_OPTIONS[0];
+		this._modeTrigger = this._appendToolbarBtn(leftToolbar, {
+			title: '切换模式',
+			svgPath: modeOpt.icon,
+			hasLabel: true,
+			label: modeOpt.label,
+			showChevron: true,
+			cssClass: 'mode-tag',
+		});
+		this._register(
+			addDisposableListener(this._modeTrigger, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._modeDropdownEl) {
+					this._closeModeDropdown();
+				} else {
+					this._openModeDropdown();
+				}
+			}),
+		);
+
 		// Provider chip
-		this._appendToolbarBtn(leftToolbar, {
+		this._providerTrigger = this._appendToolbarBtn(leftToolbar, {
 			title: "选择 Provider",
 			svgPath: "M2 3h20v14H2zM8 21h8M12 17v4",
 			hasLabel: true,
@@ -1083,9 +1436,39 @@ export class AgentChatPanel extends Disposable {
 			showChevron: true,
 			cssClass: "provider-tag",
 		});
+		this._register(
+			addDisposableListener(this._providerTrigger, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._providerDropdownEl) {
+					this._closeProviderDropdown();
+				} else {
+					this._openProviderDropdown();
+				}
+			}),
+		);
+
+		// Agent chip — toggles header agent dropdown
+		const agentTag = this._appendToolbarBtn(leftToolbar, {
+			title: '切换 Agent',
+			svgPath: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z',
+			hasLabel: true,
+			label: this._agent?.name || 'Agent',
+			showChevron: true,
+			cssClass: 'agent-tag',
+		});
+		this._register(
+			addDisposableListener(agentTag, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._dropdownOpen) {
+					this._closeAgentDropdown();
+				} else {
+					this._openAgentDropdown();
+				}
+			}),
+		);
 
 		// Model chip
-		this._appendToolbarBtn(leftToolbar, {
+		this._modelTrigger = this._appendToolbarBtn(leftToolbar, {
 			title: "选择模型",
 			svgPath: "M4 17l6-6-6-6M12 19h8",
 			hasLabel: true,
@@ -1093,10 +1476,24 @@ export class AgentChatPanel extends Disposable {
 			showChevron: true,
 			cssClass: "model-tag",
 		});
+		this._register(
+			addDisposableListener(this._modelTrigger, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (this._modelDropdownEl) {
+					this._closeModelDropdown();
+				} else {
+					this._openModelDropdown();
+				}
+			}),
+		);
+
+		// Right wrap: context-usage ring + send circle
+		const rightWrap = append(toolbar, $(".provider-model-chip-wrap"));
+		this._renderContextUsageRing(rightWrap);
 
 		// Send / Cancel button
 		this._sendBtn = append(
-			toolbar,
+			rightWrap,
 			$(`.chat-send-circle${this._isSending ? ".chat-cancel-circle" : ""}`),
 		);
 		this._renderSendButtonSvg();
@@ -1255,6 +1652,614 @@ export class AgentChatPanel extends Disposable {
 			this._textarea.disabled = this._isSending;
 		}
 		this._renderSendButtonSvg();
+	}
+
+	// =========================================================
+	// Session Info Bar (mode badge + hierarchy + tasks)
+	// =========================================================
+
+	private _renderSessionInfo(): void {
+		const info = this._sessionInfo!;
+		const bar = append(this._container, $(".chat-session-info"));
+
+		const modeBadge = append(bar, $(`.chat-mode-badge.mode-${info.mode}`));
+		modeBadge.textContent = info.mode === 'craft' ? 'Craft' : info.mode === 'ask' ? 'Ask' : 'Plan';
+
+		const hierarchy = append(bar, $(".session-info-hierarchy"));
+		if (info.superior) {
+			append(hierarchy, $("span.hierarchy-label", undefined, '上级'));
+			append(hierarchy, $("span.hierarchy-agent", undefined, info.superior.name));
+			if (info.subordinates && info.subordinates.length > 0) {
+				append(hierarchy, $("span.hierarchy-comma", undefined, ' · '));
+			}
+		}
+		if (info.subordinates && info.subordinates.length > 0) {
+			append(hierarchy, $("span.hierarchy-label", undefined, '下级'));
+			const names = info.subordinates.map(s => s.name).join('、');
+			append(hierarchy, $("span.hierarchy-agent", undefined, names));
+		}
+		if (!info.superior && (!info.subordinates || info.subordinates.length === 0)) {
+			append(hierarchy, $("span.hierarchy-label", undefined, '独立会话'));
+		}
+
+		const tasks = append(bar, $(".session-info-tasks"));
+		tasks.textContent = `任务 ${info.taskCount}`;
+	}
+
+	// =========================================================
+	// CheckpointBar
+	// =========================================================
+
+	private _renderCheckpointBarContainer(): void {
+		this._checkpointBarContainer = append(this._container, $(".chat-checkpoint-bar-container"));
+		this._renderCheckpointBar();
+	}
+
+	private _renderCheckpointBar(): void {
+		if (!this._checkpointBarContainer) { return; }
+		clearNode(this._checkpointBarContainer);
+		if (!this._checkpoint) { return; }
+		const cp = this._checkpoint;
+		const bar = append(this._checkpointBarContainer, $(".chat-checkpoint-bar"));
+
+		const main = append(bar, $(".chat-checkpoint-bar-main"));
+
+		// Files toggle
+		const toggle = append(main, $(`.chat-checkpoint-bar-files-toggle${this._checkpointFilesExpanded ? '.expanded' : ''}`));
+		const togSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		togSvg.setAttribute('width', '12');
+		togSvg.setAttribute('height', '12');
+		togSvg.setAttribute('viewBox', '0 0 24 24');
+		togSvg.setAttribute('fill', 'none');
+		togSvg.setAttribute('stroke', 'currentColor');
+		togSvg.setAttribute('stroke-width', '2.5');
+		togSvg.setAttribute('stroke-linecap', 'round');
+		togSvg.setAttribute('stroke-linejoin', 'round');
+		const togPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		togPath.setAttribute('d', this._checkpointFilesExpanded ? 'M6 9l6 6 6-6' : 'M9 18l6-6-6-6');
+		togSvg.appendChild(togPath);
+		toggle.appendChild(togSvg);
+		append(toggle, $("span", undefined, `${cp.fileCount} 个文件`));
+		this._register(
+			addDisposableListener(toggle, EventType.CLICK, () => {
+				this._checkpointFilesExpanded = !this._checkpointFilesExpanded;
+				this._renderCheckpointBar();
+			}),
+		);
+
+		// Label
+		const label = append(main, $(".chat-checkpoint-bar-label"));
+		label.textContent = cp.label;
+
+		// Actions
+		const actions = append(main, $(".chat-checkpoint-bar-actions"));
+
+		const undoBtn = append(actions, $("button.chat-checkpoint-bar-btn.undo"));
+		undoBtn.textContent = '撤销全部';
+		this._register(
+			addDisposableListener(undoBtn, EventType.CLICK, () => {
+				this._onCheckpointAction?.('undoAll');
+			}),
+		);
+
+		const keepBtn = append(actions, $("button.chat-checkpoint-bar-btn.keep"));
+		keepBtn.textContent = '保留全部';
+		this._register(
+			addDisposableListener(keepBtn, EventType.CLICK, () => {
+				this._onCheckpointAction?.('keepAll');
+			}),
+		);
+
+		const diffBtn = append(actions, $("button.chat-checkpoint-bar-btn.diff"));
+		diffBtn.textContent = '查看差异';
+		this._register(
+			addDisposableListener(diffBtn, EventType.CLICK, () => {
+				this._onCheckpointAction?.('openDiff');
+			}),
+		);
+
+		// File list (expanded)
+		if (this._checkpointFilesExpanded) {
+			const files = append(bar, $(".chat-checkpoint-bar-files"));
+			for (const f of cp.files) {
+				const fileEl = append(files, $(".chat-checkpoint-bar-file"));
+				const status = append(fileEl, $(`.chat-checkpoint-bar-file-status.${f.status}`));
+				status.textContent = f.status === 'modified' ? 'M' : f.status === 'created' ? 'A' : 'D';
+				const path = append(fileEl, $("span.chat-checkpoint-bar-file-path"));
+				path.textContent = f.path;
+				this._register(
+					addDisposableListener(fileEl, EventType.CLICK, () => {
+						this._onCheckpointAction?.('openDiff', { filePath: f.path });
+					}),
+				);
+			}
+		}
+	}
+
+	// =========================================================
+	// Context-usage ring
+	// =========================================================
+
+	private _renderContextUsageRing(parent: HTMLElement): void {
+		const usage = this._contextUsage;
+		const ringEl = append(parent, $(".context-usage-ring"));
+		const pct = usage ? Math.max(0, Math.min(1, usage.ratio)) : 0;
+		if (usage) {
+			ringEl.title = `上下文 ${Math.round(pct * 100)}% (${usage.used} / ${usage.limit})`;
+			if (pct >= 0.9) { ringEl.classList.add('danger'); }
+			else if (pct >= 0.7) { ringEl.classList.add('warn'); }
+		} else {
+			ringEl.title = '上下文使用';
+		}
+
+		const size = 22;
+		const stroke = 2.5;
+		const r = (size / 2) - stroke;
+		const c = 2 * Math.PI * r;
+		const offset = c * (1 - pct);
+
+		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		svg.setAttribute("width", String(size));
+		svg.setAttribute("height", String(size));
+		svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+
+		const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		bg.setAttribute("cx", String(size / 2));
+		bg.setAttribute("cy", String(size / 2));
+		bg.setAttribute("r", String(r));
+		bg.setAttribute("fill", "none");
+		bg.setAttribute("stroke", "currentColor");
+		bg.setAttribute("stroke-width", String(stroke));
+		bg.setAttribute("opacity", "0.2");
+		svg.appendChild(bg);
+
+		const fg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		fg.setAttribute("cx", String(size / 2));
+		fg.setAttribute("cy", String(size / 2));
+		fg.setAttribute("r", String(r));
+		fg.setAttribute("fill", "none");
+		fg.setAttribute("stroke", "currentColor");
+		fg.setAttribute("stroke-width", String(stroke));
+		fg.setAttribute("stroke-dasharray", String(c));
+		fg.setAttribute("stroke-dashoffset", String(offset));
+		fg.setAttribute("stroke-linecap", "round");
+		fg.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
+		fg.classList.add('ring-fg');
+		svg.appendChild(fg);
+
+		ringEl.appendChild(svg);
+	}
+
+	private _updateContextRing(): void {
+		const ring = this._container.querySelector('.context-usage-ring') as HTMLElement | null;
+		if (!ring) { return; }
+		const parent = ring.parentElement;
+		if (!parent) { return; }
+		const sendBtn = parent.querySelector('.chat-send-circle');
+		ring.remove();
+		const tempParent = $('div');
+		this._renderContextUsageRing(tempParent);
+		const newRing = tempParent.firstElementChild;
+		if (newRing && sendBtn) {
+			parent.insertBefore(newRing, sendBtn);
+		} else if (newRing) {
+			parent.appendChild(newRing);
+		}
+	}
+
+	// =========================================================
+	// Worktree dropdown
+	// =========================================================
+
+	private _openWorktreeDropdown(): void {
+		this._closeAllDropdowns();
+		this._activeHeaderPanel = 'worktree';
+		if (this._worktreeTrigger) { this._worktreeTrigger.classList.add('open'); }
+
+		this._worktreeDropdownEl = append(mainWindow.document.body, $(".chat-worktree-dropdown"));
+		this._positionDropdownBelow(this._worktreeDropdownEl, this._worktreeTrigger);
+
+		const head = append(this._worktreeDropdownEl, $(".chat-worktree-dropdown-header"));
+		head.textContent = 'Worktrees';
+
+		const list = append(this._worktreeDropdownEl, $(".chat-worktree-dropdown-list"));
+		if (this._worktrees.length === 0) {
+			append(list, $(".chat-worktree-dropdown-empty", undefined, '当前仓库没有 worktree'));
+		} else {
+			for (const wt of this._worktrees) {
+				const item = append(list, $(".chat-worktree-dropdown-item"));
+				if (wt.path === this._selectedWorktreePath) {
+					item.classList.add('active');
+				}
+				const infoCol = append(item, $(".chat-worktree-dropdown-item-info"));
+				append(infoCol, $("span.chat-worktree-dropdown-branch", undefined, wt.branch));
+				append(infoCol, $("span.chat-worktree-dropdown-path", undefined, wt.path));
+				this._register(
+					addDisposableListener(item, EventType.CLICK, () => {
+						this._closeWorktreeDropdown();
+						if (wt.path !== this._selectedWorktreePath) {
+							this._selectedWorktreePath = wt.path;
+							this._onSelectWorktree?.(wt.path);
+							this._render();
+						}
+					}),
+				);
+			}
+		}
+
+		this._registerOutsideClickClose(this._worktreeDropdownEl, this._worktreeTrigger, () => this._closeWorktreeDropdown());
+	}
+
+	private _closeWorktreeDropdown(): void {
+		if (this._worktreeDropdownEl) {
+			this._worktreeDropdownEl.remove();
+			this._worktreeDropdownEl = null;
+		}
+		if (this._worktreeTrigger) { this._worktreeTrigger.classList.remove('open'); }
+		if (this._activeHeaderPanel === 'worktree') {
+			this._activeHeaderPanel = null;
+		}
+	}
+
+	// =========================================================
+	// Message-nav dropdown
+	// =========================================================
+
+	private _openMsgNavDropdown(): void {
+		this._closeAllDropdowns();
+		this._activeHeaderPanel = 'message-nav';
+		if (this._msgNavTrigger) { this._msgNavTrigger.classList.add('active'); }
+
+		this._msgNavDropdownEl = append(mainWindow.document.body, $(".chat-message-nav-dropdown"));
+		this._positionDropdownBelow(this._msgNavDropdownEl, this._msgNavTrigger, true /* rightAlign */);
+
+		const head = append(this._msgNavDropdownEl, $(".chat-message-nav-dropdown-header"));
+		head.textContent = '用户消息';
+
+		const list = append(this._msgNavDropdownEl, $(".chat-message-nav-dropdown-list"));
+		const userMsgs = this._messages.filter(m => m.role === 'user');
+
+		if (userMsgs.length === 0) {
+			append(list, $(".chat-message-nav-empty", undefined, '当前对话还没有消息'));
+		} else {
+			for (let i = 0; i < userMsgs.length; i++) {
+				const m = userMsgs[i];
+				const item = append(list, $(".chat-message-nav-dropdown-item"));
+				append(item, $("span.chat-message-nav-index", undefined, `#${i + 1}`));
+				const summary = (m.content || '(空消息)').replace(/\s+/g, ' ').slice(0, 60);
+				append(item, $("span.chat-message-nav-summary", undefined, summary));
+				this._register(
+					addDisposableListener(item, EventType.CLICK, () => {
+						this._closeMsgNavDropdown();
+						this._scrollToMessage(m.id);
+						this._onScrollToMessage?.(m.id);
+					}),
+				);
+			}
+		}
+
+		this._registerOutsideClickClose(this._msgNavDropdownEl, this._msgNavTrigger, () => this._closeMsgNavDropdown());
+	}
+
+	private _closeMsgNavDropdown(): void {
+		if (this._msgNavDropdownEl) {
+			this._msgNavDropdownEl.remove();
+			this._msgNavDropdownEl = null;
+		}
+		if (this._msgNavTrigger) { this._msgNavTrigger.classList.remove('active'); }
+		if (this._activeHeaderPanel === 'message-nav') {
+			this._activeHeaderPanel = null;
+		}
+	}
+
+	private _scrollToMessage(messageId: string): void {
+		if (!this._messagesContainer) { return; }
+		const el = this._messagesContainer.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null;
+		if (el) {
+			el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			el.classList.add('chat-message-flash');
+			mainWindow.setTimeout(() => el.classList.remove('chat-message-flash'), 1200);
+		}
+	}
+
+	// =========================================================
+	// Mode dropdown (composer)
+	// =========================================================
+
+	private _openModeDropdown(): void {
+		this._closeAllDropdowns();
+		if (this._modeTrigger) { this._modeTrigger.classList.add('open'); }
+
+		this._modeDropdownEl = append(mainWindow.document.body, $(".mode-dropdown-composer"));
+		this._positionDropdownAbove(this._modeDropdownEl, this._modeTrigger);
+
+		// — Disable plan mode for non-planner agents (mirrors webview behaviour)
+		const isPlanner = this._agent?.agentType === 'planner';
+
+		for (const opt of MODE_OPTIONS) {
+			const isDisabled = opt.id === 'plan' && !isPlanner;
+			const item = append(this._modeDropdownEl, $(`.mode-item${this._chatMode === opt.id ? '.active' : ''}${isDisabled ? '.disabled' : ''}`));
+
+			// icon
+			const ic = append(item, $(".mode-item-icon"));
+			const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			sv.setAttribute('width', '14');
+			sv.setAttribute('height', '14');
+			sv.setAttribute('viewBox', '0 0 24 24');
+			sv.setAttribute('fill', 'none');
+			sv.setAttribute('stroke', 'currentColor');
+			sv.setAttribute('stroke-width', '2');
+			sv.setAttribute('stroke-linecap', 'round');
+			sv.setAttribute('stroke-linejoin', 'round');
+			const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			p.setAttribute('d', opt.icon);
+			sv.appendChild(p);
+			ic.appendChild(sv);
+
+			// label + description
+			const text = append(item, $(".mode-item-text"));
+			append(text, $("span.mode-item-label", undefined, opt.label));
+			append(text, $("span.mode-item-tooltip", undefined, opt.description));
+
+			if (!isDisabled) {
+				this._register(
+					addDisposableListener(item, EventType.CLICK, () => {
+						this._closeModeDropdown();
+						if (opt.id !== this._chatMode) {
+							this._chatMode = opt.id;
+							this._onChangeMode?.(opt.id);
+							this._render();
+						}
+					}),
+				);
+			}
+		}
+
+		this._registerOutsideClickClose(this._modeDropdownEl, this._modeTrigger, () => this._closeModeDropdown());
+	}
+
+	private _closeModeDropdown(): void {
+		if (this._modeDropdownEl) {
+			this._modeDropdownEl.remove();
+			this._modeDropdownEl = null;
+		}
+		if (this._modeTrigger) { this._modeTrigger.classList.remove('open'); }
+	}
+
+	// =========================================================
+	// Provider dropdown (composer)
+	// =========================================================
+
+	private _openProviderDropdown(): void {
+		this._closeAllDropdowns();
+		if (this._providerTrigger) { this._providerTrigger.classList.add('open'); }
+
+		this._providerDropdownEl = append(mainWindow.document.body, $(".provider-dropdown"));
+		this._positionDropdownAbove(this._providerDropdownEl, this._providerTrigger);
+
+		if (this._providers.length === 0) {
+			append(this._providerDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用 Provider'));
+		} else {
+			for (const p of this._providers) {
+				const item = append(this._providerDropdownEl, $(`.provider-dropdown-item${this._currentProvider === p.id ? '.active' : ''}`));
+				append(item, $("span.provider-dropdown-name", undefined, p.label));
+				this._register(
+					addDisposableListener(item, EventType.CLICK, () => {
+						this._closeProviderDropdown();
+						if (p.id !== this._currentProvider) {
+							this._currentProvider = p.id;
+							this._onSelectProvider?.(p.id);
+							this._render();
+						}
+					}),
+				);
+			}
+		}
+
+		this._registerOutsideClickClose(this._providerDropdownEl, this._providerTrigger, () => this._closeProviderDropdown());
+	}
+
+	private _closeProviderDropdown(): void {
+		if (this._providerDropdownEl) {
+			this._providerDropdownEl.remove();
+			this._providerDropdownEl = null;
+		}
+		if (this._providerTrigger) { this._providerTrigger.classList.remove('open'); }
+	}
+
+	// =========================================================
+	// Model dropdown (composer)
+	// =========================================================
+
+	private _openModelDropdown(): void {
+		this._closeAllDropdowns();
+		if (this._modelTrigger) { this._modelTrigger.classList.add('open'); }
+
+		this._modelDropdownEl = append(mainWindow.document.body, $(".provider-dropdown.model-dropdown"));
+		this._positionDropdownAbove(this._modelDropdownEl, this._modelTrigger);
+
+		// Filter models by current provider when set
+		const filtered = this._currentProvider
+			? this._models.filter(m => !m.provider || m.provider === this._currentProvider)
+			: this._models;
+
+		if (filtered.length === 0) {
+			append(this._modelDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用模型'));
+		} else {
+			for (const m of filtered) {
+				const item = append(this._modelDropdownEl, $(`.provider-dropdown-item${this._currentModel === m.id ? '.active' : ''}`));
+				append(item, $("span.provider-dropdown-name", undefined, m.label));
+				if (m.provider) {
+					append(item, $("span.provider-dropdown-detail", undefined, m.provider));
+				}
+				this._register(
+					addDisposableListener(item, EventType.CLICK, () => {
+						this._closeModelDropdown();
+						if (m.id !== this._currentModel) {
+							this._currentModel = m.id;
+							this._onSelectModel?.(m.id);
+							this._render();
+						}
+					}),
+				);
+			}
+		}
+
+		this._registerOutsideClickClose(this._modelDropdownEl, this._modelTrigger, () => this._closeModelDropdown());
+	}
+
+	private _closeModelDropdown(): void {
+		if (this._modelDropdownEl) {
+			this._modelDropdownEl.remove();
+			this._modelDropdownEl = null;
+		}
+		if (this._modelTrigger) { this._modelTrigger.classList.remove('open'); }
+	}
+
+	// =========================================================
+	// History overlay
+	// =========================================================
+
+	private _renderHistoryOverlay(): void {
+		this._historyOverlayEl = append(this._container, $(".chat-history-overlay"));
+		this._renderHistoryOverlayContent();
+	}
+
+	private _renderHistoryOverlayContent(): void {
+		if (!this._historyOverlayEl) { return; }
+		clearNode(this._historyOverlayEl);
+
+		// Header
+		const header = append(this._historyOverlayEl, $(".chat-history-header"));
+		const back = append(header, $("button.chat-history-back-btn"));
+		back.title = '返回';
+		const backSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		backSvg.setAttribute('width', '16');
+		backSvg.setAttribute('height', '16');
+		backSvg.setAttribute('viewBox', '0 0 24 24');
+		backSvg.setAttribute('fill', 'none');
+		backSvg.setAttribute('stroke', 'currentColor');
+		backSvg.setAttribute('stroke-width', '2.5');
+		backSvg.setAttribute('stroke-linecap', 'round');
+		backSvg.setAttribute('stroke-linejoin', 'round');
+		const backPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		backPath.setAttribute('d', 'M19 12H5M12 19l-7-7 7-7');
+		backSvg.appendChild(backPath);
+		back.appendChild(backSvg);
+		this._register(
+			addDisposableListener(back, EventType.CLICK, () => {
+				this._activeHeaderPanel = null;
+				this._render();
+			}),
+		);
+		append(header, $("span.chat-history-title", undefined, '聊天历史'));
+
+		const newBtn = append(header, $("button.chat-history-new-btn"));
+		newBtn.textContent = '新建';
+		this._register(
+			addDisposableListener(newBtn, EventType.CLICK, () => {
+				this._onNewSession?.();
+			}),
+		);
+
+		// List
+		if (this._agentSessions.length === 0) {
+			append(this._historyOverlayEl, $(".chat-history-empty", undefined, '当前 Agent 暂无历史会话'));
+			return;
+		}
+		const list = append(this._historyOverlayEl, $(".chat-history-list"));
+		for (const s of this._agentSessions) {
+			const item = append(list, $(".chat-history-item"));
+			const info = append(item, $(".chat-history-item-info"));
+			append(info, $("span.chat-history-item-name", undefined, s.name));
+			const meta = append(info, $("span.chat-history-item-meta"));
+			meta.textContent = `${s.messageCount} 条消息 · ${this._formatRelativeTime(s.updatedAt)}`;
+
+			const actions = append(item, $(".chat-history-item-actions"));
+			const renameBtn = append(actions, $("button.chat-history-item-action"));
+			renameBtn.textContent = '重命名';
+			this._register(
+				addDisposableListener(renameBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					const next = mainWindow.prompt('新的会话名称', s.name);
+					if (next && next.trim() && next.trim() !== s.name) {
+						this._onRenameSession?.(s.id, next.trim());
+					}
+				}),
+			);
+			const delBtn = append(actions, $("button.chat-history-item-action"));
+			delBtn.textContent = '删除';
+			this._register(
+				addDisposableListener(delBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					if (mainWindow.confirm(`确认删除会话「${s.name}」?`)) {
+						this._onDeleteSession?.(s.id);
+					}
+				}),
+			);
+
+			this._register(
+				addDisposableListener(item, EventType.CLICK, () => {
+					this._activeHeaderPanel = null;
+					this._onOpenSession?.(s.id);
+					this._render();
+				}),
+			);
+		}
+	}
+
+	private _formatRelativeTime(iso: string): string {
+		try {
+			const t = new Date(iso).getTime();
+			const diff = Date.now() - t;
+			const mins = Math.floor(diff / 60000);
+			if (mins < 1) { return '刚刚'; }
+			if (mins < 60) { return `${mins} 分钟前`; }
+			const hours = Math.floor(mins / 60);
+			if (hours < 24) { return `${hours} 小时前`; }
+			const days = Math.floor(hours / 24);
+			if (days < 30) { return `${days} 天前`; }
+			return new Date(iso).toLocaleDateString('zh-CN');
+		} catch {
+			return iso;
+		}
+	}
+
+	// =========================================================
+	// Dropdown helpers
+	// =========================================================
+
+	private _positionDropdownBelow(el: HTMLElement, trigger: HTMLElement | null, rightAlign = false): void {
+		if (!trigger) { return; }
+		const rect = trigger.getBoundingClientRect();
+		el.style.position = 'fixed';
+		el.style.top = (rect.bottom + 4) + 'px';
+		if (rightAlign) {
+			el.style.right = (mainWindow.innerWidth - rect.right) + 'px';
+		} else {
+			el.style.left = rect.left + 'px';
+		}
+		el.style.minWidth = Math.max(220, rect.width) + 'px';
+		el.style.zIndex = '10000';
+	}
+
+	private _positionDropdownAbove(el: HTMLElement, trigger: HTMLElement | null): void {
+		if (!trigger) { return; }
+		const rect = trigger.getBoundingClientRect();
+		el.style.position = 'fixed';
+		el.style.bottom = (mainWindow.innerHeight - rect.top + 6) + 'px';
+		el.style.left = rect.left + 'px';
+		el.style.minWidth = Math.max(180, rect.width) + 'px';
+		el.style.zIndex = '10000';
+	}
+
+	private _registerOutsideClickClose(panel: HTMLElement, trigger: HTMLElement | null, onClose: () => void): void {
+		const handler = addDisposableListener(mainWindow.document.body, EventType.CLICK, (e: MouseEvent) => {
+			if (panel.contains(e.target as Node)) { return; }
+			if (trigger && trigger.contains(e.target as Node)) { return; }
+			onClose();
+		});
+		this._register(handler);
 	}
 
 	// Actions
