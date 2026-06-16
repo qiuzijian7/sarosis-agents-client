@@ -15,7 +15,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
-import { IAgentStudioService, IAgentChatService } from '../../../common/agentStudioService.js';
+import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import type { AgentStatus as AgentChatAgentStatus } from '../../../browser/agentChat/agentChatTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
@@ -87,8 +87,36 @@ export class NativeChatEditorPane extends EditorPane {
 							explicitSkillIds: explicitSkillIds,
 						},
 						(delta) => {
-							// TODO: Handle stream delta (update UI)
-							console.log('[NativeChatEditorPane] delta:', delta?.type);
+							// Handle stream delta
+							if (!delta) return;
+							
+							switch (delta.type) {
+								case 'text':
+								case 'thinking':
+									// Stream is producing text/thinking - UI should update via AgentChatPanel
+									// TODO: Pass delta to AgentChatPanel for UI update
+									break;
+								case 'tool_start':
+									console.log(`[NativeChatEditorPane] Tool started: ${delta.toolName}`);
+									break;
+								case 'tool_end':
+									console.log(`[NativeChatEditorPane] Tool ended: ${delta.toolName}, success=${delta.success}`);
+									break;
+								case 'done':
+									console.log('[NativeChatEditorPane] Stream complete');
+									// TODO: Finalize UI state (e.g., re-enable input)
+									break;
+								case 'error':
+									console.error('[NativeChatEditorPane] Stream error:', delta.content);
+									// TODO: Show error in UI
+									break;
+								case 'usage':
+									console.log('[NativeChatEditorPane] Usage:', delta.usage);
+									break;
+								default:
+									// Other delta types - just log for now
+									break;
+							}
 						},
 					);
 				} catch (err) {
