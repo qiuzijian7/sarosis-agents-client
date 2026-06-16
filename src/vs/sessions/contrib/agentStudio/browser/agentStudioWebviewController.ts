@@ -224,8 +224,7 @@ export class AgentStudioWebviewController extends Disposable {
 			);
 			// Note: We still need _registerServiceListeners() for non-webview features
 			// but most listeners send events to webview which doesn't exist.
-			// TODO: Disable webview-specific listeners in native mode.
-			this._registerServiceListeners();
+			// TODO: Consider removing this controller entirely in native mode.
 			return; // Early return - no webview created
 		}
 

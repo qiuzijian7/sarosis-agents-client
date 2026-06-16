@@ -33,12 +33,15 @@ import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
 // @ts-ignore - TypeScript cannot find type declarations for .ts files imported with .js extension
 import { AgentChatPanel } from '../agentChat/agentChatPanel.js';
+import { AgentSettingsEditorInput } from '../../contrib/agentStudio/browser/agentSettingsEditorInput.js';
 import { IAgentStudioService, IAgentChatService } from '../../common/agentStudioService.js';
 import { IWorktreeService } from '../../contrib/worktree/common/worktreeService.js';
 import { ICommandService } from '../../../platform/commands/common/commands.js';
 import { IModelSelectorService } from '../../contrib/agentStudio/common/modelSelector.js';
 import { ICheckpointService } from '../../contrib/agentStudio/common/checkpointService.js';
 import { ISkillRegistry } from '../../contrib/agentStudio/common/skills.js';
+import { IEditorService } from '../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroupsService } from '../../../workbench/services/editor/common/editorGroupsService.js';
 import { autorun } from '../../../base/common/observable.js';
 import type { AgentStatus as AgentChatAgentStatus, ChatMode, StreamPhase, IAgentChatMessage, IAgentSessionMeta, IWorktreeItem, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, ICheckpointInfo, IContextUsage, ILiveWorkflowExecution, ILiveWorkflowSubAgent, ILiveWorkflowEvent, ILiveCollectVariable } from '../agentChat/agentChatTypes.js';
 import { uniqueMsgId } from '../agentChat/agentChatTypes.js';
@@ -51,7 +54,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 	static readonly viewContainersWorkspaceStateKey = 'workbench.chatbar.viewContainersWorkspaceState';
 
 	override readonly minimumWidth: number = 300;
-	override readonly maximumWidth: number = Number.POSITIVE_INFINITY;
+	override get maximumWidth(): number {
+		// 限制最大宽度为当前窗口大小的 1/2
+		return Math.max(300, this.layoutService.mainContainerDimension.width * 0.5);
+	}
 	override readonly minimumHeight: number = 0;
 	override readonly maximumHeight: number = Number.POSITIVE_INFINITY;
 	override get snap(): boolean { return false; }
@@ -105,6 +111,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ILogService private readonly _logService: ILogService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
+		@IEditorService private readonly _editorService: IEditorService,
+		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 	) {
 		super(
 			Parts.CHATBAR_PART,
@@ -162,8 +170,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
-			onSelectWorktree: (path: string) => {
-				this._worktreeService.setSelectedWorktree(path ? { path } : undefined);
+			onSelectWorktree: (worktree: { path: string; branch: string }) => {
+				this._worktreeService.setSelectedWorktree(worktree.path ? { path: worktree.path, branch: worktree.branch } : undefined);
 			},
 			onScrollToMessage: (_messageId: string) => {
 				// Panel handles smooth-scroll internally; reserved for tracing.
@@ -180,9 +188,26 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onDeleteSession: (sessionId: string) => {
 				void this._deleteAgentSession(sessionId);
 			},
-			onOpenSettings: () => {
-				void this._commandService.executeCommand('workbench.action.openSettings');
-			},
+		onOpenSettings: async () => {
+			// Open agent settings page (refer to AgentChat.tsx settings button)
+			if (!this._currentAgentId) {
+				console.warn('[ChatBarPart] onOpenSettings: no agent selected');
+				return;
+			}
+			try {
+				const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+				if (!agent) {
+					console.warn(`[ChatBarPart] onOpenSettings: agent ${this._currentAgentId} not found`);
+					return;
+				}
+				const input = new AgentSettingsEditorInput(agent.id, agent.name);
+				const groups = this._editorGroupsService.getGroups(0); // GroupsOrder.CREATION_TIME = 0
+				const targetGroup = groups.length <= 1 ? 0 : groups[0]; // SIDE_GROUP = 0, but we want the first group
+				await this._editorService.openEditor(input, { pinned: true }, targetGroup);
+			} catch (err) {
+				console.error('[ChatBarPart] onOpenSettings failed:', err);
+			}
+		},
 			onChangeMode: (mode: ChatMode) => {
 				this._currentChatMode = mode;
 			},
@@ -396,6 +421,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						name: emp.name,
 						role: emp.role,
 						avatarUrl: emp.avatar,
+						icon: emp.icon,
 						status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 						isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 						customPrompt: emp.systemPrompt,
@@ -740,14 +766,12 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 								const limit = this._currentMaxContextTokens ?? 0;
 								if (limit > 0) {
-									const used = input; // input-token consumption is what the ring shows
-									const ratio = Math.max(0, Math.min(1, used / limit));
-									panel.setContextUsage({
-										used,
-										limit,
-										ratio,
-										percent: ratio * 100,
-									} satisfies IContextUsage);
+									// 参考React：使用 setStreamUsage 传递原始 usage 数据
+									panel.setStreamUsage({
+										input: delta.usage.inputTokens ?? 0,
+										output: delta.usage.outputTokens ?? 0,
+										seen: true,
+									});
 								}
 							}
 							break;

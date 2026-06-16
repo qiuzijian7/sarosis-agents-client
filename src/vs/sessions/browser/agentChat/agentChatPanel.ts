@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import "./media/agentChat.css";
-import { Disposable } from "../../../base/common/lifecycle.js";
+import { Disposable, IDisposable } from "../../../base/common/lifecycle.js";
 import {
 	$,
 	append,
@@ -102,7 +102,6 @@ export class AgentChatPanel extends Disposable {
 	private _messagesWrapper!: HTMLElement;
 	private _textarea!: HTMLTextAreaElement;
 	private _scrollToBottomBtn!: HTMLElement;
-	private _scrollToTopBtn!: HTMLElement;
 	private _sendBtn!: HTMLElement;
 	private _checkpointBarContainer: HTMLElement | null = null;
 
@@ -111,9 +110,7 @@ export class AgentChatPanel extends Disposable {
 	private _agent: IAgentInfo | null = null;
 	private _isSending = false;
 	private _showScrollBtn = false;
-	private _showScrollTopBtn = false;
 	private _autoOrchestrateEnabled = false;
-	private _webSearchEnabled = false;
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
 	private _currentModel = "";
@@ -129,6 +126,11 @@ export class AgentChatPanel extends Disposable {
 	private _sessionInfo: ISessionInfo | null = null;
 	private _agentSessions: IAgentSessionMeta[] = [];
 	private _contextUsage: IContextUsage | null = null;
+	// 流式状态：用于计算 context usage（匹配 React 3 层逻辑）
+	private _streamUsage: { input?: number; output?: number; seen?: boolean } | null = null;
+	private _streamTextBuffer: string = '';
+	private _streamThinkingBuffer: string = '';
+	private _compactedBaseline: number = 0;
 	private _checkpoint: ICheckpointInfo | null = null;
 	private _checkpointFilesExpanded = false;
 	private _attachments: IChatAttachment[] = [];
@@ -160,6 +162,7 @@ export class AgentChatPanel extends Disposable {
 
 	// -- Composer --
 	private _resizeMaxH = 120; // dynamic max height from drag resize
+	private _userHasAdjustedHeight = false; // whether user has manually adjusted the composer height
 
 	// -- Slash menu state --
 	private _slashMenuEl: HTMLElement | null = null;
@@ -174,13 +177,16 @@ export class AgentChatPanel extends Disposable {
 	private _isPlanDialogOpen: boolean = false;
 	private _activePlan: OrchestrationPlan | null = null;
 
+	// -- Markdown render disposables --
+	private _markdownDisposables = new Map<HTMLElement, IDisposable>();
+
 	// -- Context baseline --
 
 	// -- Callbacks --
 	private readonly _onSendMessage: (text: string, explicitSkillIds?: string[]) => void;
 	private readonly _onCancelExecution: () => void;
 	private readonly _onSelectAgent: (id: string) => void;
-	private readonly _onSelectWorktree?: (path: string) => void;
+	private readonly _onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
 	private readonly _onScrollToMessage?: (messageId: string) => void;
 	private readonly _onNewSession?: () => void;
 	private readonly _onOpenSession?: (sessionId: string) => void;
@@ -216,7 +222,7 @@ export class AgentChatPanel extends Disposable {
 		onCancelExecution: () => void;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
-		onSelectWorktree?: (path: string) => void;
+		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
 		onScrollToMessage?: (messageId: string) => void;
 		onNewSession?: () => void;
 		onOpenSession?: (sessionId: string) => void;
@@ -311,6 +317,8 @@ export class AgentChatPanel extends Disposable {
 		this._messages = this._aggregateTurns(messages);
 		this._renderMessages();
 		this._scrollToBottom(false);
+		// 消息变化影响 inputBaselineTokens，需要重新计算 context ring
+		this._updateContextRing();
 	}
 
 	addMessage(message: IAgentChatMessage): void {
@@ -327,6 +335,8 @@ export class AgentChatPanel extends Disposable {
 		if (idx >= 0) {
 			Object.assign(this._messages[idx], updates);
 			this._updateMessageDom(idx, this._messages[idx]);
+			// 消息更新可能影响 inputBaselineTokens（如 tokenUsage 变化），需要重新计算 context ring
+			this._updateContextRing();
 		}
 	}
 
@@ -338,6 +348,8 @@ export class AgentChatPanel extends Disposable {
 
 	setStreamPhase(phase: StreamPhase): void {
 		this._streamPhase = phase;
+		// streamPhase 变化影响 context usage 计算（空闲/流式/真值 三层逻辑）
+		this._updateContextRing();
 	}
 
 	setProviders(providers: IProviderInfo[]): void {
@@ -386,19 +398,37 @@ export class AgentChatPanel extends Disposable {
 		}
 	}
 
+	/** @deprecated 使用 setStreamUsage 替代 */
 	setContextUsage(usage: IContextUsage | null): void {
-		this._contextUsage = usage;
+		// 为了向后兼容，从 IContextUsage 提取 input/output 并设置 streamUsage
+		if (usage) {
+			this._streamUsage = { input: usage.used, output: 0, seen: true };
+		} else {
+			this._streamUsage = null;
+		}
 		this._updateContextRing();
 	}
 
 	setCompactedBaseline(baseline: number): void {
-		// Immediately recalculate displayed ring using the compacted baseline
-		if (this._contextUsage && baseline > 0) {
-			const limit = this._contextUsage.limit;
-			const ratio = Math.max(0, Math.min(1, baseline / limit));
-			const effective: IContextUsage = { used: baseline, limit, ratio, percent: ratio * 100 };
-			this._contextUsage = effective;
-		}
+		this._compactedBaseline = baseline;
+		this._updateContextRing();
+	}
+
+	/** 设置流式用量（来自 usage chunk） */
+	setStreamUsage(usage: { input?: number; output?: number; seen?: boolean } | null): void {
+		this._streamUsage = usage;
+		this._updateContextRing();
+	}
+
+	/** 设置流式文本缓冲区（用于实时估算） */
+	setStreamTextBuffer(buffer: string): void {
+		this._streamTextBuffer = buffer;
+		this._updateContextRing();
+	}
+
+	/** 设置流式思考缓冲区（用于实时估算） */
+	setStreamThinkingBuffer(buffer: string): void {
+		this._streamThinkingBuffer = buffer;
 		this._updateContextRing();
 	}
 
@@ -505,6 +535,10 @@ export class AgentChatPanel extends Disposable {
 				img.style.width = '16px';
 				img.style.height = '16px';
 				img.style.borderRadius = '2px';
+			} else if (agent.icon) {
+				// Use icon emoji as fallback when avatarUrl is not available
+				const fallback = append(avatar, $('.chat-tab-avatar-fallback'));
+				fallback.textContent = agent.icon;
 			} else {
 				const fallback = append(avatar, $('.chat-tab-avatar-fallback'));
 				fallback.textContent = agent.name.charAt(0).toUpperCase();
@@ -571,6 +605,10 @@ export class AgentChatPanel extends Disposable {
 			) as HTMLImageElement;
 			img.src = emp.avatarUrl;
 			img.alt = emp.name;
+		} else if (emp.icon) {
+			// Use icon emoji as fallback when avatarUrl is not available
+			const fallback = append(avatarBorder, $(".chat-header-avatar-fallback"));
+			fallback.textContent = emp.icon;
 		} else {
 			const fallback = append(avatarBorder, $(".chat-header-avatar-fallback"));
 			fallback.textContent = emp.name.charAt(0).toUpperCase();
@@ -669,17 +707,24 @@ export class AgentChatPanel extends Disposable {
 		// Right: 5 action buttons (message-nav / new / history / settings)
 		const actions = append(header, $(".chat-header-actions"));
 
-		// 1. Message-nav (汉堡菜单 → 用户消息列表)
+		// 1. Message-nav (会话消息列表)
 		this._msgNavTrigger = this._appendHeaderActionBtn(actions, {
-			title: '跳转到用户消息',
-			svgPath: 'M3 12h18M3 6h18M3 18h18',
+			title: '会话消息列表',
+			svgPath: 'M4 6h16M4 12h10M4 18h16',
 		});
+		// Disable if no user messages
+		const userMsgCount = this._messages.filter(m => m.role === 'user').length;
+		if (userMsgCount === 0) {
+			this._msgNavTrigger.classList.add('disabled');
+			this._msgNavTrigger.setAttribute('aria-disabled', 'true');
+		}
 		if (this._activeHeaderPanel === 'message-nav') {
 			this._msgNavTrigger.classList.add('active');
 		}
 		this._register(
 			addDisposableListener(this._msgNavTrigger, EventType.CLICK, (e) => {
 				e.stopPropagation();
+				if (this._msgNavTrigger && this._msgNavTrigger.classList.contains('disabled')) { return; }
 				if (this._msgNavDropdownEl) {
 					this._closeMsgNavDropdown();
 				} else {
@@ -695,7 +740,12 @@ export class AgentChatPanel extends Disposable {
 		});
 		this._register(
 			addDisposableListener(newBtn, EventType.CLICK, () => {
-				this._onNewSession?.();
+				console.log('[AgentChatPanel] New Session button clicked, _onNewSession exists:', !!this._onNewSession);
+				try {
+					this._onNewSession?.();
+				} catch (err) {
+					console.error('[AgentChatPanel] Error in _onNewSession:', err);
+				}
 			}),
 		);
 
@@ -958,6 +1008,10 @@ export class AgentChatPanel extends Disposable {
 				const img = append(miniAvatar, $("img")) as HTMLImageElement;
 				img.src = agent.avatarUrl;
 				img.alt = agent.name;
+			} else if (agent.icon) {
+				// Use icon emoji as fallback when avatarUrl is not available
+				const fallback = append(miniAvatar, $(".chat-agent-dropdown-item-avatar-fallback"));
+				fallback.textContent = agent.icon;
 			} else {
 				const fallback = append(miniAvatar, $(".chat-agent-dropdown-item-avatar-fallback"));
 				fallback.textContent = agent.name.charAt(0).toUpperCase();
@@ -969,14 +1023,16 @@ export class AgentChatPanel extends Disposable {
 			const roleText = agent.role?.split(/[，,]/)[0] || "";
 			append(itemInfo, $(".chat-agent-dropdown-item-role", undefined, roleText));
 
-			// Click to select
+			// Click to select (mirrors React AgentChat.tsx logic)
 			this._register(
 				addDisposableListener(item, EventType.CLICK, (e) => {
 					e.stopPropagation();
-					this._closeAgentDropdown();
+					// Select agent first (matches React: selectAgent + setActiveAgent)
 					if (agent.id !== this._agent?.id) {
 						this._onSelectAgent(agent.id);
 					}
+					// Then close dropdown and clear filter (matches React: setDropdownOpen + setDropdownFilter)
+					this._closeAgentDropdown();
 				}),
 			);
 		}
@@ -1059,46 +1115,17 @@ export class AgentChatPanel extends Disposable {
 			$(".chat-messages"),
 		);
 
-		// Scroll listener — toggle top + bottom button visibility
+		// Scroll listener — toggle bottom button visibility
 		this._register(
 			addDisposableListener(this._messagesContainer, EventType.SCROLL, () => {
 				const el = this._messagesContainer;
 				const nearBottom =
 					el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-				const nearTop = el.scrollTop < 40;
 				const showBottom = !nearBottom;
-				const showTop = !nearTop;
 				if (showBottom !== this._showScrollBtn) {
 					this._showScrollBtn = showBottom;
 					this._scrollToBottomBtn.style.display = showBottom ? "flex" : "none";
 				}
-				if (showTop !== this._showScrollTopBtn) {
-					this._showScrollTopBtn = showTop;
-					this._scrollToTopBtn.style.display = showTop ? "flex" : "none";
-				}
-			}),
-		);
-
-		// Scroll-to-top button
-		this._scrollToTopBtn = append(this._messagesWrapper, $(".chat-scroll-top-btn"));
-		this._scrollToTopBtn.style.display = "none";
-		this._scrollToTopBtn.title = '滚动到顶部';
-		const upSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-		upSvg.setAttribute("width", "18");
-		upSvg.setAttribute("height", "18");
-		upSvg.setAttribute("viewBox", "0 0 24 24");
-		upSvg.setAttribute("fill", "none");
-		upSvg.setAttribute("stroke", "currentColor");
-		upSvg.setAttribute("stroke-width", "2.5");
-		upSvg.setAttribute("stroke-linecap", "round");
-		upSvg.setAttribute("stroke-linejoin", "round");
-		const upPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-		upPath.setAttribute("d", "M12 19V5M5 12l7-7 7 7");
-		upSvg.appendChild(upPath);
-		this._scrollToTopBtn.appendChild(upSvg);
-		this._register(
-			addDisposableListener(this._scrollToTopBtn, EventType.CLICK, () => {
-				this._messagesContainer.scrollTop = 0;
 			}),
 		);
 
@@ -1163,15 +1190,36 @@ export class AgentChatPanel extends Disposable {
 		if (idx >= children.length) { return; }
 		const existingEl = children[idx] as HTMLElement;
 
-		// Fast path: if only streaming text/content changed, update in-place
+		const hasToolCalls = msg.toolCalls && msg.toolCalls.length > 0;
 		const hasStructuralChange =
-			(msg.toolCalls && msg.toolCalls.length > 0) ||
+			hasToolCalls ||
 			msg.confirmation ||
 			(msg.subAgents && msg.subAgents.length > 0);
+
+		// Fast path 1: no structural change, streaming text-only update
 		if (!hasStructuralChange && msg.isStreaming && msg.content) {
-			const streamingText = existingEl.querySelector('.streaming-text');
+			const streamingContainer = existingEl.querySelector('.streaming-container') as HTMLElement | null;
+			const streamingText = existingEl.querySelector('.streaming-text') as HTMLSpanElement | null;
+
+			if (streamingContainer) {
+				streamingContainer.textContent = '';
+				this._renderMarkdownContent(streamingContainer, msg.content);
+				return;
+			}
+
 			if (streamingText) {
 				streamingText.textContent = msg.content;
+				return;
+			}
+		}
+
+		// Fast path 2: tool cards already rendered in DOM — only update text content in place
+		// 参考 void：工具调用渲染后，后续流式文本只更新内容区域，不重复重建卡片
+		if (msg.isStreaming && msg.content && hasToolCalls) {
+			const existingToolCards = existingEl.querySelectorAll('.tool-call-card');
+			if (existingToolCards.length > 0) {
+				// Tool cards are already present in DOM — update only the content parts
+				this._updateStreamingContentInPlace(existingEl, msg);
 				return;
 			}
 		}
@@ -1179,6 +1227,49 @@ export class AgentChatPanel extends Disposable {
 		// Slow path: rebuild this single message element and replace in DOM
 		const newEl = this._createMessageElement(msg);
 		this._messagesContainer.replaceChild(newEl, existingEl);
+	}
+
+	/**
+	 * 增量更新流式内容（工具卡片已渲染后在流式过程中不断更新文本）
+	 * 参考 void：保留工具调用卡片，只更新已渲染的 Markdown 内容区域
+	 */
+	private _updateStreamingContentInPlace(existingEl: HTMLElement, msg: IAgentChatMessage): void {
+		// 检测工具调用结构是否发生变化（新增或移除工具卡片）
+		const existingToolCards = existingEl.querySelectorAll('.tool-call-card');
+		const newToolCount = msg.toolCalls?.length ?? 0;
+
+		if (existingToolCards.length !== newToolCount) {
+			// 结构变化：完整重建
+			this._rebuildMessageElement(existingEl, msg);
+			return;
+		}
+
+		// Interleaved 模式（工具卡片交叉插入文本中）：内容拆分为多段，增量更新复杂，直接完整重建
+		const interleavedSegments = existingEl.querySelectorAll('.interleaved-segment');
+		if (interleavedSegments.length > 0) {
+			this._rebuildMessageElement(existingEl, msg);
+			return;
+		}
+
+		// 简单模式：streaming-container + 工具卡片分离 → 只更新文本容器
+		const streamingContainer = existingEl.querySelector('.streaming-container') as HTMLElement | null;
+		if (streamingContainer) {
+			streamingContainer.textContent = '';
+			this._renderMarkdownContent(streamingContainer, msg.content);
+			return;
+		}
+
+		// 回退：完整重建
+		this._rebuildMessageElement(existingEl, msg);
+	}
+
+	/** 完整重建消息元素并替换到 DOM */
+	private _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentChatMessage): void {
+		const newEl = this._createMessageElement(msg);
+		const parent = existingEl.parentNode;
+		if (parent) {
+			parent.replaceChild(newEl, existingEl);
+		}
 	}
 
 	// Message element builder
@@ -1199,6 +1290,10 @@ export class AgentChatPanel extends Disposable {
 				img.style.height = "100%";
 				img.style.objectFit = "cover";
 				img.style.borderRadius = "50%";
+			} else if (this._agent.icon) {
+				// Use icon emoji as fallback when avatarUrl is not available
+				const fallback = append(avatarWrap, $(".chat-avatar-fallback"));
+				fallback.textContent = this._agent.icon;
 			} else {
 				const fallback = append(avatarWrap, $(".chat-avatar-fallback"));
 				fallback.textContent = this._agent.name.charAt(0).toUpperCase();
@@ -1225,58 +1320,86 @@ export class AgentChatPanel extends Disposable {
 			if (phase !== 'idle') {
 				step.classList.add(`phase-${phase.replace(/_/g, '-')}`);
 			}
-			switch (phase) {
-				case 'llm_streaming':
-					step.innerHTML = '<span class="step-icon loading-dots">...</span> AI 正在输出...';
-					break;
-				case 'tool_executing':
-					step.innerHTML = '<span class="step-icon">⚙️</span> 执行工具中...';
-					break;
-				case 'awaiting_approval':
-					step.innerHTML = '<span class="step-icon">🔒</span> 等待审批...';
-					break;
-				case 'compressing':
-					step.innerHTML = '<span class="step-icon">🔄</span> 压缩上下文中...';
-					break;
-				case 'error':
-					step.innerHTML = '<span class="step-icon" style="color:#f87171">⚠</span> 出错了';
-					break;
-				default:
-					if (msg.currentStep === "call_llm") {
-						step.innerHTML = '<span class="step-icon loading-dots">...</span> 调用模型中...';
-					} else if (msg.currentStep === "execute_tool") {
-						step.innerHTML = '<span class="step-icon">⚙️</span> 执行工具中...';
-					} else {
-						step.innerHTML = '<span class="step-icon loading-dots">...</span> 思考中...';
-					}
+		switch (phase) {
+			case 'llm_streaming': {
+				step.textContent = '';
+				append(step, $('span.step-icon.loading-dots', undefined, '...'));
+				step.append(' AI 正在输出...');
+				break;
 			}
+			case 'tool_executing': {
+				step.textContent = '';
+				append(step, $('span.step-icon', undefined, '⚙️'));
+				step.append(' 执行工具中...');
+				break;
+			}
+			case 'awaiting_approval': {
+				step.textContent = '';
+				append(step, $('span.step-icon', undefined, '🔒'));
+				step.append(' 等待审批...');
+				break;
+			}
+			case 'compressing': {
+				step.textContent = '';
+				append(step, $('span.step-icon', undefined, '🔄'));
+				step.append(' 压缩上下文中...');
+				break;
+			}
+			case 'error': {
+				step.textContent = '';
+				const errorIcon = $('span.step-icon', undefined, '⚠');
+				errorIcon.style.color = '#f87171';
+				step.appendChild(errorIcon);
+				step.append(' 出错了');
+				break;
+			}
+			default: {
+				step.textContent = '';
+				if (msg.currentStep === "call_llm") {
+					append(step, $('span.step-icon.loading-dots', undefined, '...'));
+					step.append(' 调用模型中...');
+				} else if (msg.currentStep === "execute_tool") {
+					append(step, $('span.step-icon', undefined, '⚙️'));
+					step.append(' 执行工具中...');
+				} else {
+					append(step, $('span.step-icon.loading-dots', undefined, '...'));
+					step.append(' 思考中...');
+				}
+				break;
+			}
+		}
 		}
 
 		// Content + Tool calls — interleaved rendering for assistant messages
 		// (Void-inspired: tool cards inserted at text positions inside markdown),
 		// simple rendering for user messages.
+		// NOTE: Always use Markdown rendering for assistant messages (including streaming)
+		// to ensure code blocks, inline code, and other Markdown features render correctly.
 		if (isUser && msg.content) {
 			const contentEl = append(bubble, $(".message-content"));
 			this._renderUserContent(contentEl, msg.content);
-		} else if (!isUser && msg.content && msg.isStreaming && !(msg.toolCalls?.length)) {
-			// Streaming text-only: show plain text (fast path)
-			const contentEl = append(bubble, $(".message-content"));
-			const span = append(contentEl, $("span.streaming-text"));
-			span.textContent = msg.content;
 		} else if (!isUser && msg.content && msg.toolCalls && msg.toolCalls.some(tc => tc.textPosition != null)) {
-			// Has positioned tool calls → interleaved rendering
+			// Has positioned tool calls → interleaved rendering (tool cards inserted at text positions)
 			this._renderInterleavedContent(bubble, msg.content, msg.toolCalls);
-		} else if (!isUser) {
-			// No positioned tool calls → content first, then tool calls
-			if (msg.content) {
-				const contentEl = append(bubble, $(".message-content"));
-				this._renderMarkdownContent(contentEl, msg.content);
+		} else if (!isUser && msg.content) {
+			// No positioned tool calls → render content as Markdown, then append unpositioned tool calls
+			const contentEl = append(bubble, $(".message-content"));
+			if (msg.isStreaming) {
+				contentEl.classList.add('streaming-container');
 			}
+			this._renderMarkdownContent(contentEl, msg.content);
 			if (msg.toolCalls && msg.toolCalls.length > 0) {
 				const section = append(bubble, $(".tool-calls-section"));
 				for (const tc of msg.toolCalls) {
 					section.appendChild(this._createToolCallCard(tc));
 				}
+			}
+		} else if (!isUser && msg.toolCalls && msg.toolCalls.length > 0) {
+			// 回退：工具调用存在但内容为空（流式输出早期阶段常见）
+			// 参考 void：工具调用作为独立的进度卡片渲染
+			const section = append(bubble, $(".tool-calls-section"));
+			for (const tc of msg.toolCalls) {
+				section.appendChild(this._createToolCallCard(tc));
 			}
 		}
 
@@ -2012,7 +2135,18 @@ export class AgentChatPanel extends Disposable {
 		append(header, $('span.todo-title', undefined, '任务清单'));
 		append(header, $('span.todo-progress', undefined, `${completedCount}/${totalCount}`));
 		const toggle = append(header, $('span.todo-toggle'));
-		toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>';
+		// Create SVG element directly (avoid TrustedHTML issues with DOMParser)
+		const todoToggleSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		todoToggleSvg.setAttribute("width", "12");
+		todoToggleSvg.setAttribute("height", "12");
+		todoToggleSvg.setAttribute("viewBox", "0 0 24 24");
+		todoToggleSvg.setAttribute("fill", "none");
+		todoToggleSvg.setAttribute("stroke", "currentColor");
+		todoToggleSvg.setAttribute("stroke-width", "2.5");
+		const todoTogglePolyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+		todoTogglePolyline.setAttribute("points", "6 9 12 15 18 9");
+		todoToggleSvg.appendChild(todoTogglePolyline);
+		toggle.appendChild(todoToggleSvg);
 
 		// Body
 		const body = append(card, $('.todo-body'));
@@ -2089,7 +2223,18 @@ export class AgentChatPanel extends Disposable {
 		append(header, $('span.references-icon', undefined, '📚'));
 		append(header, $('span.references-title', undefined, title));
 		const toggle = append(header, $('span.references-toggle.collapsed'));
-		toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>';
+		// Create SVG element directly (avoid TrustedHTML issues with DOMParser)
+		const refToggleSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		refToggleSvg.setAttribute("width", "12");
+		refToggleSvg.setAttribute("height", "12");
+		refToggleSvg.setAttribute("viewBox", "0 0 24 24");
+		refToggleSvg.setAttribute("fill", "none");
+		refToggleSvg.setAttribute("stroke", "currentColor");
+		refToggleSvg.setAttribute("stroke-width", "2.5");
+		const refTogglePolyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+		refTogglePolyline.setAttribute("points", "6 9 12 15 18 9");
+		refToggleSvg.appendChild(refTogglePolyline);
+		toggle.appendChild(refToggleSvg);
 
 		// List (collapsed by default)
 		const list = append(card, $('.references-list'));
@@ -2222,10 +2367,6 @@ export class AgentChatPanel extends Disposable {
 	private _renderMarkdownContent(parent: HTMLElement, content: string): void {
 		const md: IMarkdownString = { value: content, isTrusted: true };
 		const LARGE_CODE_THRESHOLD = 30; // lines before auto-collapse
-		const svgIcons = {
-			copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
-			copied: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
-		};
 
 		const options: MarkdownRenderOptions = {
 			codeBlockRenderer: (languageAlias, code) => {
@@ -2253,14 +2394,71 @@ export class AgentChatPanel extends Disposable {
 				const copyBtn = document.createElement('button');
 				copyBtn.className = 'code-block-copy-btn';
 				copyBtn.title = 'Copy code';
-				copyBtn.innerHTML = svgIcons.copy;
+				// Create copy SVG icon directly (avoid TrustedHTML issues)
+				const copySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+				copySvg.setAttribute('width', '12');
+				copySvg.setAttribute('height', '12');
+				copySvg.setAttribute('viewBox', '0 0 24 24');
+				copySvg.setAttribute('fill', 'none');
+				copySvg.setAttribute('stroke', 'currentColor');
+				copySvg.setAttribute('stroke-width', '2');
+				copySvg.setAttribute('stroke-linecap', 'round');
+				copySvg.setAttribute('stroke-linejoin', 'round');
+				const copyRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+				copyRect.setAttribute('x', '9');
+				copyRect.setAttribute('y', '9');
+				copyRect.setAttribute('width', '13');
+				copyRect.setAttribute('height', '13');
+				copyRect.setAttribute('rx', '2');
+				copyRect.setAttribute('ry', '2');
+				copySvg.appendChild(copyRect);
+				const copyPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+				copyPath.setAttribute('d', 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1');
+				copySvg.appendChild(copyPath);
+				copyBtn.appendChild(copySvg);
 				copyBtn.addEventListener('click', (e) => {
 					e.stopPropagation();
 					navigator.clipboard.writeText(code).then(() => {
-						copyBtn.innerHTML = svgIcons.copied;
+						copyBtn.textContent = '';
+						// Create copied SVG icon directly
+						const copiedSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+						copiedSvg.setAttribute('width', '12');
+						copiedSvg.setAttribute('height', '12');
+						copiedSvg.setAttribute('viewBox', '0 0 24 24');
+						copiedSvg.setAttribute('fill', 'none');
+						copiedSvg.setAttribute('stroke', 'currentColor');
+						copiedSvg.setAttribute('stroke-width', '2');
+						copiedSvg.setAttribute('stroke-linecap', 'round');
+						copiedSvg.setAttribute('stroke-linejoin', 'round');
+						const copiedPolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+						copiedPolyline.setAttribute('points', '20 6 9 17 4 12');
+						copiedSvg.appendChild(copiedPolyline);
+						copyBtn.appendChild(copiedSvg);
 						copyBtn.classList.add('copied');
 						setTimeout(() => {
-							copyBtn.innerHTML = svgIcons.copy;
+							copyBtn.textContent = '';
+							// Re-create copy SVG icon
+							const copySvg2 = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+							copySvg2.setAttribute('width', '12');
+							copySvg2.setAttribute('height', '12');
+							copySvg2.setAttribute('viewBox', '0 0 24 24');
+							copySvg2.setAttribute('fill', 'none');
+							copySvg2.setAttribute('stroke', 'currentColor');
+							copySvg2.setAttribute('stroke-width', '2');
+							copySvg2.setAttribute('stroke-linecap', 'round');
+							copySvg2.setAttribute('stroke-linejoin', 'round');
+							const copyRect2 = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+							copyRect2.setAttribute('x', '9');
+							copyRect2.setAttribute('y', '9');
+							copyRect2.setAttribute('width', '13');
+							copyRect2.setAttribute('height', '13');
+							copyRect2.setAttribute('rx', '2');
+							copyRect2.setAttribute('ry', '2');
+							copySvg2.appendChild(copyRect2);
+							const copyPath2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+							copyPath2.setAttribute('d', 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1');
+							copySvg2.appendChild(copyPath2);
+							copyBtn.appendChild(copySvg2);
 							copyBtn.classList.remove('copied');
 						}, 1500);
 					}).catch(() => { /* ignore */ });
@@ -2307,7 +2505,16 @@ export class AgentChatPanel extends Disposable {
 				return Promise.resolve(wrapper);
 			},
 		};
-		renderMarkdown(md, options, parent);
+
+		// Dispose previous markdown disposable for this parent to avoid leakage
+		const existingDisposable = this._markdownDisposables.get(parent);
+		if (existingDisposable) {
+			existingDisposable.dispose();
+		}
+
+		// renderMarkdown returns a disposable that must be managed
+		const disposable = renderMarkdown(md, options, parent);
+		this._markdownDisposables.set(parent, disposable);
 	}
 
 	// --- Interleaved content renderer (Void-inspired: tool cards inserted at text positions) ---
@@ -2386,10 +2593,9 @@ export class AgentChatPanel extends Disposable {
 
 	private _renderInputArea(): void {
 		const emp = this._agent!;
-		const inputArea = append(this._container, $(".chat-input-area"));
 
-		// Resize handle — drag to adjust composer height
-		const resizeHandle = append(inputArea, $(".composer-resize-handle"));
+		// Resize handle — drag to adjust composer height (placed above input area)
+		const resizeHandle = append(this._container, $(".composer-resize-handle"));
 		this._register(addDisposableListener(resizeHandle, EventType.MOUSE_DOWN, (downEv: MouseEvent) => {
 			downEv.preventDefault();
 			const startY = downEv.clientY;
@@ -2397,7 +2603,14 @@ export class AgentChatPanel extends Disposable {
 			const onMove = (moveEv: MouseEvent) => {
 				const newH = Math.max(60, Math.min(500, startH + (startY - moveEv.clientY)));
 				this._resizeMaxH = newH;
+				this._userHasAdjustedHeight = true; // 标记用户已调整过高度
 				if (this._textarea) { this._textarea.style.height = `${newH}px`; }
+				// 保存用户调整的高度到 localStorage
+				try {
+					localStorage.setItem('agentChatComposerHeight', newH.toString());
+				} catch {
+					// localStorage 不可用时忽略
+				}
 			};
 			const onUp = () => {
 				document.removeEventListener('mousemove', onMove);
@@ -2406,6 +2619,8 @@ export class AgentChatPanel extends Disposable {
 			document.addEventListener('mousemove', onMove);
 			document.addEventListener('mouseup', onUp);
 		}));
+
+		const inputArea = append(this._container, $(".chat-input-area"));
 
 		// Composer box
 		const composerBox = append(inputArea, $(".chat-composer-box"));
@@ -2428,12 +2643,34 @@ export class AgentChatPanel extends Disposable {
 				: `Message ${emp.name}...`;
 		this._textarea.disabled = this._isSending;
 
+		// 恢复保存的输入框高度
+		try {
+			const savedHeight = localStorage.getItem('agentChatComposerHeight');
+			if (savedHeight) {
+				const height = parseInt(savedHeight, 10);
+				if (!isNaN(height) && height >= 60 && height <= 500) {
+					this._resizeMaxH = height;
+					this._userHasAdjustedHeight = true;
+					this._textarea.style.height = `${height}px`;
+				}
+			}
+		} catch {
+			// localStorage 不可用时忽略
+		}
+
 		// Auto-resize + slash command detection + slash menu
 		this._register(
 			addDisposableListener(this._textarea, EventType.INPUT, () => {
 				const t = this._textarea;
 				t.style.height = "auto";
-				t.style.height = Math.min(t.scrollHeight, this._resizeMaxH) + "px";
+				// 如果用户调整过高度，使用 max（内容高度和用户调整高度的较大值）作为高度
+				// 否则使用 min（内容高度不超过 resizeMaxH）
+				// 同时限制最大高度为 500px
+				const maxAllowed = 500;
+				const newHeight = this._userHasAdjustedHeight
+					? Math.min(Math.max(t.scrollHeight, this._resizeMaxH), maxAllowed)
+					: Math.min(t.scrollHeight, this._resizeMaxH);
+				t.style.height = newHeight + "px";
 
 				// Detect /skill /command patterns — show slash menu
 				const val = t.value;
@@ -2507,11 +2744,17 @@ export class AgentChatPanel extends Disposable {
 							this._selectSlashMenuItem();
 							return;
 						}
-						if (e.key === 'Escape') {
-							e.preventDefault();
+					if (e.key === 'Escape') {
+						e.preventDefault();
+						if (this._slashMenuEl) {
+							// Slash menu open: close menu
 							this._closeSlashMenu();
-							return;
+						} else if (this._isSending && this._onCancelExecution) {
+							// Sending: cancel execution
+							this._onCancelExecution();
 						}
+						return;
+					}
 					}
 
 					// Backspace: if textarea is empty and we have skill chips, remove the last chip
@@ -2552,26 +2795,6 @@ export class AgentChatPanel extends Disposable {
 				"M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8",
 		});
 
-		// Web search button
-		const webSearchBtn = this._appendToolbarBtn(leftToolbar, {
-			title: "联网搜索",
-			svgPath:
-				"M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z",
-			hasLabel: true,
-			label: "联网",
-			extraSvg:
-				'<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>',
-		});
-		if (this._webSearchEnabled) {
-			webSearchBtn.classList.add("active");
-		}
-		this._register(
-			addDisposableListener(webSearchBtn, EventType.CLICK, () => {
-				this._webSearchEnabled = !this._webSearchEnabled;
-				webSearchBtn.classList.toggle("active", this._webSearchEnabled);
-			}),
-		);
-
 		// Divider
 		append(leftToolbar, $(".chat-toolbar-divider"));
 
@@ -2601,7 +2824,7 @@ export class AgentChatPanel extends Disposable {
 			title: "选择 Provider",
 			svgPath: "M2 3h20v14H2zM8 21h8M12 17v4",
 			hasLabel: true,
-			label: this._currentProvider || "Provider",
+			label: this._providers.find(p => p.id === this._currentProvider)?.label || this._currentProvider || "Provider",
 			showChevron: true,
 			cssClass: "provider-tag",
 		});
@@ -2616,32 +2839,37 @@ export class AgentChatPanel extends Disposable {
 			}),
 		);
 
-		// Agent chip — toggles header agent dropdown
-		const agentTag = this._appendToolbarBtn(leftToolbar, {
-			title: '切换 Agent',
-			svgPath: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z',
-			hasLabel: true,
-			label: this._agent?.name || 'Agent',
-			showChevron: true,
-			cssClass: 'agent-tag',
-		});
-		this._register(
-			addDisposableListener(agentTag, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				if (this._dropdownOpen) {
-					this._closeAgentDropdown();
-				} else {
-					this._openAgentDropdown();
-				}
-			}),
-		);
+		// Agent chip — only show when current provider supports agents (e.g. knot)
+		const currentProviderInfo = this._providers.find(p => p.id === this._currentProvider);
+		const supportsAgents = !!currentProviderInfo?.supportsAgents;
+		
+		if (supportsAgents) {
+			const agentTag = this._appendToolbarBtn(leftToolbar, {
+				title: '切换 Agent',
+				svgPath: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z',
+				hasLabel: true,
+				label: this._agent?.name || 'Agent',
+				showChevron: true,
+				cssClass: 'agent-tag',
+			});
+			this._register(
+				addDisposableListener(agentTag, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					if (this._dropdownOpen) {
+						this._closeAgentDropdown();
+					} else {
+						this._openAgentDropdown();
+					}
+				}),
+			);
+		}
 
 		// Model chip
 		this._modelTrigger = this._appendToolbarBtn(leftToolbar, {
 			title: "选择模型",
 			svgPath: "M4 17l6-6-6-6M12 19h8",
 			hasLabel: true,
-			label: this._currentModel || "Model",
+			label: this._models.find(m => m.id === this._currentModel)?.label || this._currentModel || "Model",
 			showChevron: true,
 			cssClass: "model-tag",
 		});
@@ -2669,7 +2897,12 @@ export class AgentChatPanel extends Disposable {
 		this._register(
 			addDisposableListener(this._sendBtn, EventType.CLICK, () => {
 				if (this._isSending) {
-					this._onCancelExecution();
+					// 参考React：有输入/附件时发送新消息（自动停止当前），无输入时取消
+					if (this._textarea?.value.trim() || this._attachments.length > 0) {
+						this._handleSendMessage();
+					} else {
+						this._onCancelExecution();
+					}
 				} else {
 					this._handleSendMessage();
 				}
@@ -2682,7 +2915,7 @@ export class AgentChatPanel extends Disposable {
 		opts: {
 			title: string;
 			svgPath: string;
-			extraSvg?: string;
+			extraSvgElements?: SVGElement[];
 			hasLabel?: boolean;
 			label?: string;
 			showChevron?: boolean;
@@ -2697,8 +2930,8 @@ export class AgentChatPanel extends Disposable {
 		);
 		btn.title = opts.title;
 
-		// Extra SVG (like the globe for web search)
-		if (opts.extraSvg) {
+		// Extra SVG elements (like the globe for web search)
+		if (opts.extraSvgElements) {
 			const wrapper = document.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"svg",
@@ -2711,7 +2944,10 @@ export class AgentChatPanel extends Disposable {
 			wrapper.setAttribute("stroke-width", "2");
 			wrapper.setAttribute("stroke-linecap", "round");
 			wrapper.setAttribute("stroke-linejoin", "round");
-			wrapper.innerHTML = opts.extraSvg;
+			// Append pre-created SVG elements (avoids TrustedHTML issues)
+			for (const el of opts.extraSvgElements) {
+				wrapper.appendChild(el);
+			}
 			btn.appendChild(wrapper);
 		}
 
@@ -2820,6 +3056,23 @@ export class AgentChatPanel extends Disposable {
 		if (this._textarea) {
 			this._textarea.disabled = this._isSending;
 		}
+		// 参考React：按钮禁用逻辑
+		// disabled = !input.trim() && attachments.length === 0 && !isLoading
+		const hasInput = (this._textarea?.value.trim() || this._attachments.length > 0);
+		const disabled = !hasInput && !this._isSending;
+		(this._sendBtn as HTMLButtonElement).disabled = disabled;
+
+		// 更新按钮标题（参考React）
+		if (this._isSending) {
+			if (hasInput) {
+				this._sendBtn.title = '发送新消息 (自动停止当前)';
+			} else {
+				this._sendBtn.title = '停止生成 (Escape)';
+			}
+		} else {
+			this._sendBtn.title = '发送 (Enter)';
+		}
+
 		this._renderSendButtonSvg();
 	}
 
@@ -3018,9 +3271,9 @@ export class AgentChatPanel extends Disposable {
 				s.name.toLowerCase().includes(filter.toLowerCase()))
 			: skills;
 
-		const list = this._slashMenuEl.querySelector('.slash-menu-list');
+		const list = this._slashMenuEl.querySelector('.slash-menu-list') as HTMLElement | null;
 		if (!list) { return; }
-		list.innerHTML = '';
+		clearNode(list);
 
 		if (!filtered.length) {
 			this._closeSlashMenu();
@@ -3095,8 +3348,28 @@ export class AgentChatPanel extends Disposable {
 			chipEl.title = `技能: ${chip.name} (${chip.id})`;
 			append(chipEl, $('span.skill-chip-icon', undefined, '⚡'));
 			append(chipEl, $('span.skill-chip-name', undefined, chip.name));
-			const removeBtn = append(chipEl, $('button.skill-chip-remove'));
-			removeBtn.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+		const removeBtn = append(chipEl, $('button.skill-chip-remove'));
+			// Create SVG element directly (avoid TrustedHTML issues with DOMParser)
+			const removeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			removeSvg.setAttribute('width', '10');
+			removeSvg.setAttribute('height', '10');
+			removeSvg.setAttribute('viewBox', '0 0 24 24');
+			removeSvg.setAttribute('fill', 'none');
+			removeSvg.setAttribute('stroke', 'currentColor');
+			removeSvg.setAttribute('stroke-width', '2.5');
+			const removeLine1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			removeLine1.setAttribute('x1', '18');
+			removeLine1.setAttribute('y1', '6');
+			removeLine1.setAttribute('x2', '6');
+			removeLine1.setAttribute('y2', '18');
+			removeSvg.appendChild(removeLine1);
+			const removeLine2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			removeLine2.setAttribute('x1', '6');
+			removeLine2.setAttribute('y1', '6');
+			removeLine2.setAttribute('x2', '18');
+			removeLine2.setAttribute('y2', '18');
+			removeSvg.appendChild(removeLine2);
+			removeBtn.appendChild(removeSvg);
 			this._register(addDisposableListener(removeBtn, EventType.CLICK, () => {
 				this._removeSkillChip(chip.id);
 			}));
@@ -3124,7 +3397,12 @@ export class AgentChatPanel extends Disposable {
 		this._textarea.removeAttribute('data-slash-command');
 		// Auto-resize and reposition cursor to end
 		this._textarea.style.height = 'auto';
-		this._textarea.style.height = Math.min(this._textarea.scrollHeight, this._resizeMaxH) + 'px';
+		// 使用新的高度计算逻辑（考虑用户是否调整过高度）
+		const maxAllowed = 500;
+		const newHeight = this._userHasAdjustedHeight
+			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
+			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
+		this._textarea.style.height = newHeight + 'px';
 		this._textarea.focus();
 		this._textarea.setSelectionRange(this._textarea.value.length, this._textarea.value.length);
 	}
@@ -3191,7 +3469,88 @@ export class AgentChatPanel extends Disposable {
 		ringEl.appendChild(svg);
 	}
 
+	// ── Context Usage 计算（匹配 React 3 层逻辑）─────────────────
+
+	/** 粗略 token 估算（参考 React estimateTokens：字符数/4 向上取整） */
+	private _estimateTokens(text: string | undefined | null): number {
+		if (!text) { return 0; }
+		return Math.ceil(text.length / 4);
+	}
+
+	/** 计算输入基线 tokens（从消息历史中最后一条有 tokenUsage 的消息） */
+	private _computeInputBaselineTokens(): number {
+		// 从后往前找到最近一条有真实 tokenUsage 的消息
+		for (let i = this._messages.length - 1; i >= 0; i--) {
+			const m = this._messages[i];
+			if (m.tokenUsage && (m.tokenUsage.input > 0 || m.tokenUsage.total > 0)) {
+				if (m.tokenUsage.input > 0) {
+					return m.tokenUsage.input + (m.tokenUsage.output || 0);
+				}
+				return m.tokenUsage.total;
+			}
+		}
+		// 无真实 usage（新对话或首条消息）：降级为逐条字符估算
+		let total = 0;
+		for (const m of this._messages) {
+			total += this._estimateTokens(m.content);
+			total += this._estimateTokens(m.thinking);
+			if (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) {
+				for (const tc of m.toolCalls) {
+					total += this._estimateTokens(tc.args);
+					total += this._estimateTokens(tc.result);
+					total += this._estimateTokens(tc.name);
+				}
+			}
+		}
+		return total;
+	}
+
+	/** 计算 context usage（3 层实时更新逻辑，匹配 React） */
+	private _computeContextUsage(): IContextUsage | null {
+		const limit = this._contextUsage?.limit ?? 0;
+		if (limit <= 0) {
+			return null;
+		}
+
+		const isStreaming = this._streamPhase !== 'idle' && this._streamPhase !== 'error';
+
+		const inputBaselineTokens = this._computeInputBaselineTokens();
+
+		// effectiveBaseline: 如果有 compactedBaseline，使用它（取较小值）
+		const effectiveBaseline = this._compactedBaseline > 0
+			? Math.min(this._compactedBaseline, inputBaselineTokens)
+			: inputBaselineTokens;
+
+		let used: number;
+		if (this._streamUsage?.seen) {
+			// 3) 真值优先：已收到真实 usage chunk
+			const real = (this._streamUsage.input ?? 0) + (this._streamUsage.output ?? 0);
+			used = Math.max(real, effectiveBaseline);
+		} else if (isStreaming) {
+			// 2) 流式进行中且尚无真实 usage：输入基线 + 实时输出估算
+			const outputEstimate = this._estimateTokens(this._streamTextBuffer) + this._estimateTokens(this._streamThinkingBuffer);
+			used = effectiveBaseline + outputEstimate;
+		} else {
+			// 1) 空闲态：纯输入基线
+			used = effectiveBaseline;
+		}
+
+		const ratio = Math.max(0, Math.min(1, used / limit));
+		return {
+			used,
+			limit,
+			ratio,
+			percent: Math.round(ratio * 100),
+		};
+	}
+
 	private _updateContextRing(): void {
+		// 重新计算 contextUsage（3层逻辑，匹配 React）
+		const computed = this._computeContextUsage();
+		if (computed) {
+			this._contextUsage = computed;
+		}
+		// 渲染环形进度条
 		const ring = this._container.querySelector('.context-usage-ring') as HTMLElement | null;
 		if (!ring) { return; }
 		const parent = ring.parentElement;
@@ -3240,7 +3599,7 @@ export class AgentChatPanel extends Disposable {
 						this._closeWorktreeDropdown();
 						if (wt.path !== this._selectedWorktreePath) {
 							this._selectedWorktreePath = wt.path;
-							this._onSelectWorktree?.(wt.path);
+							this._onSelectWorktree?.({ path: wt.path, branch: wt.branch });
 							this._render();
 						}
 					}),
@@ -3275,7 +3634,7 @@ export class AgentChatPanel extends Disposable {
 		this._positionDropdownBelow(this._msgNavDropdownEl, this._msgNavTrigger, true /* rightAlign */);
 
 		const head = append(this._msgNavDropdownEl, $(".chat-message-nav-dropdown-header"));
-		head.textContent = '用户消息';
+		head.textContent = '会话消息';
 
 		const list = append(this._msgNavDropdownEl, $(".chat-message-nav-dropdown-list"));
 		const userMsgs = this._messages.filter(m => m.role === 'user');
@@ -3286,8 +3645,9 @@ export class AgentChatPanel extends Disposable {
 			for (let i = 0; i < userMsgs.length; i++) {
 				const m = userMsgs[i];
 				const item = append(list, $(".chat-message-nav-dropdown-item"));
-				append(item, $("span.chat-message-nav-index", undefined, `#${i + 1}`));
-				const summary = (m.content || '(空消息)').replace(/\s+/g, ' ').slice(0, 60);
+				append(item, $("span.chat-message-nav-index", undefined, `#${userMsgs.length - i}`));
+				const trimmedContent = (m.content || '').trim();
+				const summary = trimmedContent.slice(0, 80).replace(/\n/g, ' ') + (trimmedContent.length > 80 ? '…' : '');
 				append(item, $("span.chat-message-nav-summary", undefined, summary));
 				this._register(
 					addDisposableListener(item, EventType.CLICK, () => {
@@ -3490,83 +3850,117 @@ export class AgentChatPanel extends Disposable {
 		if (!this._historyOverlayEl) { return; }
 		clearNode(this._historyOverlayEl);
 
-		// Header
+		// Header (close button + title)
 		const header = append(this._historyOverlayEl, $(".chat-history-header"));
-		const back = append(header, $("button.chat-history-back-btn"));
-		back.title = '返回';
-		const backSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		backSvg.setAttribute('width', '16');
-		backSvg.setAttribute('height', '16');
-		backSvg.setAttribute('viewBox', '0 0 24 24');
-		backSvg.setAttribute('fill', 'none');
-		backSvg.setAttribute('stroke', 'currentColor');
-		backSvg.setAttribute('stroke-width', '2.5');
-		backSvg.setAttribute('stroke-linecap', 'round');
-		backSvg.setAttribute('stroke-linejoin', 'round');
-		const backPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-		backPath.setAttribute('d', 'M19 12H5M12 19l-7-7 7-7');
-		backSvg.appendChild(backPath);
-		back.appendChild(backSvg);
+		const closeBtn = append(header, $("button.chat-history-close-btn"));
+		closeBtn.title = '关闭';
+		const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		closeSvg.setAttribute('width', '16');
+		closeSvg.setAttribute('height', '16');
+		closeSvg.setAttribute('viewBox', '0 0 24 24');
+		closeSvg.setAttribute('fill', 'none');
+		closeSvg.setAttribute('stroke', 'currentColor');
+		closeSvg.setAttribute('stroke-width', '2');
+		closeSvg.setAttribute('stroke-linecap', 'round');
+		closeSvg.setAttribute('stroke-linejoin', 'round');
+		const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		closePath.setAttribute('d', 'M18 6L6 18M6 6l12 12');
+		closeSvg.appendChild(closePath);
+		closeBtn.appendChild(closeSvg);
 		this._register(
-			addDisposableListener(back, EventType.CLICK, () => {
+			addDisposableListener(closeBtn, EventType.CLICK, () => {
 				this._activeHeaderPanel = null;
 				this._render();
 			}),
 		);
 		append(header, $("span.chat-history-title", undefined, '聊天历史'));
 
-		const newBtn = append(header, $("button.chat-history-new-btn"));
-		newBtn.textContent = '新建';
+		// Content area (list or empty)
+		const content = append(this._historyOverlayEl, $(".chat-history-content"));
+		if (this._agentSessions.length === 0) {
+			append(content, $(".chat-history-empty", undefined, '当前 Agent 暂无历史会话'));
+		} else {
+			const list = append(content, $(".chat-history-list"));
+			for (const s of this._agentSessions) {
+				const item = append(list, $(".chat-history-item"));
+				const info = append(item, $(".chat-history-item-info"));
+				append(info, $("span.chat-history-item-name", undefined, s.name));
+				const time = append(info, $("span.chat-history-item-time"));
+				time.textContent = this._formatRelativeTime(s.updatedAt);
+
+				const actions = append(item, $(".chat-history-item-actions"));
+				const renameBtn = append(actions, $("button.chat-history-item-btn"));
+				renameBtn.title = '重命名';
+				// Rename icon (pencil)
+				const renameSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+				renameSvg.setAttribute('width', '14');
+				renameSvg.setAttribute('height', '14');
+				renameSvg.setAttribute('viewBox', '0 0 24 24');
+				renameSvg.setAttribute('fill', 'none');
+				renameSvg.setAttribute('stroke', 'currentColor');
+				renameSvg.setAttribute('stroke-width', '2');
+				renameSvg.setAttribute('stroke-linecap', 'round');
+				renameSvg.setAttribute('stroke-linejoin', 'round');
+				const renamePath1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+				renamePath1.setAttribute('d', 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
+				const renamePath2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+				renamePath2.setAttribute('d', 'M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z');
+				renameSvg.appendChild(renamePath1);
+				renameSvg.appendChild(renamePath2);
+				renameBtn.appendChild(renameSvg);
+				this._register(
+					addDisposableListener(renameBtn, EventType.CLICK, (e) => {
+						e.stopPropagation();
+						const next = mainWindow.prompt('新的会话名称', s.name);
+						if (next && next.trim() && next.trim() !== s.name) {
+							this._onRenameSession?.(s.id, next.trim());
+						}
+					}),
+				);
+				const delBtn = append(actions, $("button.chat-history-item-btn delete-btn"));
+				delBtn.title = '删除';
+				// Delete icon (trash)
+				const delSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+				delSvg.setAttribute('width', '14');
+				delSvg.setAttribute('height', '14');
+				delSvg.setAttribute('viewBox', '0 0 24 24');
+				delSvg.setAttribute('fill', 'none');
+				delSvg.setAttribute('stroke', 'currentColor');
+				delSvg.setAttribute('stroke-width', '2');
+				delSvg.setAttribute('stroke-linecap', 'round');
+				delSvg.setAttribute('stroke-linejoin', 'round');
+				const delPath1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+				delPath1.setAttribute('d', 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2');
+				delSvg.appendChild(delPath1);
+				delBtn.appendChild(delSvg);
+				this._register(
+					addDisposableListener(delBtn, EventType.CLICK, (e) => {
+						e.stopPropagation();
+						if (mainWindow.confirm(`确认删除会话「${s.name}」?`)) {
+							this._onDeleteSession?.(s.id);
+						}
+					}),
+				);
+
+				this._register(
+					addDisposableListener(item, EventType.CLICK, () => {
+						this._activeHeaderPanel = null;
+						this._onOpenSession?.(s.id);
+						this._render();
+					}),
+				);
+			}
+		}
+
+		// Footer (new session button)
+		const footer = append(this._historyOverlayEl, $(".chat-history-footer"));
+		const newBtn = append(footer, $("button.chat-history-new-btn"));
+		newBtn.textContent = '+ 新建对话';
 		this._register(
 			addDisposableListener(newBtn, EventType.CLICK, () => {
 				this._onNewSession?.();
 			}),
 		);
-
-		// List
-		if (this._agentSessions.length === 0) {
-			append(this._historyOverlayEl, $(".chat-history-empty", undefined, '当前 Agent 暂无历史会话'));
-			return;
-		}
-		const list = append(this._historyOverlayEl, $(".chat-history-list"));
-		for (const s of this._agentSessions) {
-			const item = append(list, $(".chat-history-item"));
-			const info = append(item, $(".chat-history-item-info"));
-			append(info, $("span.chat-history-item-name", undefined, s.name));
-			const meta = append(info, $("span.chat-history-item-meta"));
-			meta.textContent = `${s.messageCount} 条消息 · ${this._formatRelativeTime(s.updatedAt)}`;
-
-			const actions = append(item, $(".chat-history-item-actions"));
-			const renameBtn = append(actions, $("button.chat-history-item-action"));
-			renameBtn.textContent = '重命名';
-			this._register(
-				addDisposableListener(renameBtn, EventType.CLICK, (e) => {
-					e.stopPropagation();
-					const next = mainWindow.prompt('新的会话名称', s.name);
-					if (next && next.trim() && next.trim() !== s.name) {
-						this._onRenameSession?.(s.id, next.trim());
-					}
-				}),
-			);
-			const delBtn = append(actions, $("button.chat-history-item-action"));
-			delBtn.textContent = '删除';
-			this._register(
-				addDisposableListener(delBtn, EventType.CLICK, (e) => {
-					e.stopPropagation();
-					if (mainWindow.confirm(`确认删除会话「${s.name}」?`)) {
-						this._onDeleteSession?.(s.id);
-					}
-				}),
-			);
-
-			this._register(
-				addDisposableListener(item, EventType.CLICK, () => {
-					this._activeHeaderPanel = null;
-					this._onOpenSession?.(s.id);
-					this._render();
-				}),
-			);
-		}
 	}
 
 	private _formatRelativeTime(iso: string): string {
@@ -3637,6 +4031,12 @@ export class AgentChatPanel extends Disposable {
 		// Clear textarea and skill chips
 		this._textarea.value = "";
 		this._textarea.style.height = "auto";
+		// 重新计算高度（考虑用户是否调整过高度）
+		const maxAllowed = 500;
+		const newHeight = this._userHasAdjustedHeight
+			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
+			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
+		this._textarea.style.height = newHeight + 'px';
 		this._skillChips = [];
 		this._renderSkillChips();
 
@@ -3727,7 +4127,8 @@ export class AgentChatPanel extends Disposable {
 		goalDiv.style.alignItems = 'center';
 		goalDiv.style.gap = '8px';
 		const goalText = document.createElement('span');
-		goalText.innerHTML = `<strong>目标:</strong> ${this._escapeHtml(plan.goal)}`;
+		append(goalText, $('strong', undefined, '目标:'));
+		goalText.append(` ${plan.goal}`);
 		goalDiv.appendChild(goalText);
 		// Edit goal button (only for pending_approval plans)
 		if (plan.status === 'pending_approval') {
@@ -3755,12 +4156,19 @@ export class AgentChatPanel extends Disposable {
 		const doneTasks = plan.tasks.filter(t => t.status === 'done').length;
 		const runningTasks = plan.tasks.filter(t => t.status === 'running').length;
 		const pendingTasks = plan.tasks.filter(t => t.status === 'pending').length;
-		statsDiv.innerHTML = `
-			<span class="orch-stat">📋 ${totalTasks} 任务</span>
-			${runningTasks > 0 ? `<span class="orch-stat">⚡ ${runningTasks} 执行中</span>` : ''}
-			${doneTasks > 0 ? `<span class="orch-stat">✅ ${doneTasks} 完成</span>` : ''}
-			${pendingTasks > 0 ? `<span class="orch-stat">⏳ ${pendingTasks} 待执行</span>` : ''}
-		`;
+		append(statsDiv, $('span.orch-stat', undefined, `📋 ${totalTasks} 任务`));
+		if (runningTasks > 0) {
+			statsDiv.append(' ');
+			append(statsDiv, $('span.orch-stat', undefined, `⚡ ${runningTasks} 执行中`));
+		}
+		if (doneTasks > 0) {
+			statsDiv.append(' ');
+			append(statsDiv, $('span.orch-stat', undefined, `✅ ${doneTasks} 完成`));
+		}
+		if (pendingTasks > 0) {
+			statsDiv.append(' ');
+			append(statsDiv, $('span.orch-stat', undefined, `⏳ ${pendingTasks} 待执行`));
+		}
 		summary.appendChild(statsDiv);
 		dialog.appendChild(summary);
 
@@ -3844,7 +4252,7 @@ export class AgentChatPanel extends Disposable {
 			if (task.assigneeName) {
 				const agentSpan = document.createElement('span');
 				agentSpan.className = 'orch-task-agent';
-				agentSpan.innerHTML = `${task.autoCreateAgent ? '🆕 ' : ''}${this._escapeHtml(task.assigneeName)}`;
+				agentSpan.textContent = `${task.autoCreateAgent ? '🆕 ' : ''}${task.assigneeName}`;
 				taskMeta.appendChild(agentSpan);
 			}
 
@@ -4165,12 +4573,6 @@ export class AgentChatPanel extends Disposable {
 
 	// ─── Utility ───────────────────────────────────────────────────────
 
-	private _escapeHtml(text: string): string {
-		const div = document.createElement('div');
-		div.textContent = text;
-		return div.innerHTML;
-	}
-
 	private _scrollToBottom(force: boolean): void {
 		if (!this._messagesContainer) {
 			return;
@@ -4356,7 +4758,7 @@ export class AgentChatPanel extends Disposable {
 
 		const closeBtn = document.createElement('button');
 		closeBtn.className = 'chat-lightbox-close';
-		closeBtn.innerHTML = '✕';
+		closeBtn.textContent = '✕';
 		closeBtn.addEventListener('click', () => overlay.remove());
 		overlay.appendChild(closeBtn);
 
@@ -4392,6 +4794,13 @@ export class AgentChatPanel extends Disposable {
 	override dispose(): void {
 		this._closeAgentDropdown();
 		this._abortController?.abort();
+
+		// Dispose all markdown disposables to avoid leakage
+		for (const disposable of this._markdownDisposables.values()) {
+			disposable.dispose();
+		}
+		this._markdownDisposables.clear();
+
 		super.dispose();
 	}
 }

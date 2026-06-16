@@ -9,7 +9,7 @@ import { ServicesAccessor } from '../../../../editor/browser/editorExtensions.js
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { ActiveEditorContext, EditorPartModalContext, IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
+import { EditorPartModalContext, IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IAgentWorkbenchLayoutService } from '../../../browser/workbench.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -22,7 +22,6 @@ import { prepareMoveCopyEditors } from '../../../../workbench/browser/parts/edit
 import { Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { MOVE_MODAL_EDITOR_TO_MAIN_COMMAND_ID } from '../../../../workbench/browser/parts/editor/editorCommands.js';
 import { AgentStudioEditorInput } from '../../agentStudio/browser/agentStudioEditorInput.js';
-import { AgentStudioEditorPane } from '../../agentStudio/browser/agentStudioEditorPane.js';
 
 // [Sarosis 2026-06-03] Removed `MaximizeMainEditorPartAction` /
 // `RestoreMainEditorPartAction` (the "最大化编辑器区域" / "Maximize Editor
@@ -42,28 +41,8 @@ class OpenEditorInModalEditorAction extends Action2 {
 			title: localize2('openEditorInModal', "Open in Modal Editor"),
 			icon: Codicon.openInWindow,
 			f1: false,
-			menu: {
-				id: MenuId.EditorTitleLayout,
-				group: 'navigation',
-				order: 1,
-				when: ContextKeyExpr.and(
-					IsSessionsWindowContext,
-					// Hide for the Agent Studio EditorPane (which hosts
-					// Canvas / Chat / Task Board) — they are singleton
-					// editors bound to the agent-studio zone and must not
-					// be moved into a modal editor part.
-					//
-					// NOTE: `ActiveEditorContext` is set from
-					// `activeEditorPane.getId()` (see editorGroupView.ts),
-					// which for ALL three Agent Studio panels resolves to
-					// the same shared pane id `workbench.editor.agentStudio`.
-					// Earlier code mistakenly checked the EditorInput's
-					// editorId (`agentStudio.canvas` etc.), which never
-					// matched and caused the button to show on Agent
-					// Studio groups.
-					ActiveEditorContext.notEqualsTo(AgentStudioEditorPane.ID)
-				)
-			}
+			// Menu registration removed - "open in modal" button is no longer shown
+			// in the editor title bar. Users can use the "Pop Out" button instead.
 		});
 	}
 

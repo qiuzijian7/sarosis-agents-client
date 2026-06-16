@@ -311,6 +311,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 				name: provider.name,
 				icon: provider.icon?.toString(),
 				authStatus,
+				supportsAgents: provider.supportsAgents,
 			};
 
 			try {

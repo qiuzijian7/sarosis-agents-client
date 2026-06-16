@@ -128,7 +128,12 @@ export class TasksViewPane extends ViewPane {
 			this._tasks = await this.taskBoardService.getTasks();
 			this._renderTasks();
 		} catch {
-			this._listContainer.innerHTML = '<div class="tasks-empty">⚠️ Failed to load tasks</div>';
+			// Use replaceChildren instead of innerHTML to avoid Trusted Types violation
+			this._listContainer.replaceChildren();
+			const errorDiv = document.createElement('div');
+			errorDiv.className = 'tasks-empty';
+			errorDiv.textContent = '⚠️ Failed to load tasks';
+			this._listContainer.appendChild(errorDiv);
 		}
 	}
 
@@ -159,7 +164,8 @@ export class TasksViewPane extends ViewPane {
 
 		if (tasks.length === 0) {
 			const empty = $('div.tasks-empty');
-			empty.innerHTML = this._searchQuery ? '🔍 没有匹配的任务' : '📭 暂无任务';
+			// Use textContent instead of innerHTML to avoid Trusted Types violation
+			empty.textContent = this._searchQuery ? '🔍 没有匹配的任务' : '📭 暂无任务';
 			this._listContainer.appendChild(empty);
 			return;
 		}

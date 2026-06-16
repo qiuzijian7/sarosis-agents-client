@@ -140,6 +140,8 @@ export interface IAgentInfo {
 	readonly name: string;
 	readonly role: string;
 	readonly avatarUrl?: string;
+	/** Icon emoji for the agent (e.g. '🦞', '👨‍💻') — used as fallback when avatarUrl is not available */
+	readonly icon?: string;
 	readonly status: AgentStatus;
 	readonly isPM?: boolean;
 	readonly customPrompt?: string;
@@ -153,6 +155,17 @@ export interface IAgentInfo {
 export interface IProviderInfo {
 	readonly id: string;
 	readonly label: string;
+	/** Whether the provider supports agent selection (e.g. knot) */
+	readonly supportsAgents?: boolean;
+	/** Available agents for this provider (only if supportsAgents is true) */
+	readonly agents?: IProviderAgentInfo[];
+}
+
+/** Agent info for provider's agent list */
+export interface IProviderAgentInfo {
+	readonly id: string;
+	readonly name: string;
+	readonly models?: string[];
 }
 
 /** Model info for model selector */

@@ -12,12 +12,16 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { addDisposableListener } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
+import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
-import type { AgentStatus as AgentChatAgentStatus } from '../../../browser/agentChat/agentChatTypes.js';
+import { IModelSelectorService } from '../common/modelSelector.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta } from '../../../browser/agentChat/agentChatTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
 import * as DOM from '../../../../base/browser/dom.js';
 
@@ -41,7 +45,8 @@ export class NativeChatEditorPane extends EditorPane {
 	private _defaultAgentSelected = false;
 	private _currentAgentId: string | null = null;
 	private _currentSessionId: string | null = null;
-	private _currentChatMode: 'chat' | 'craft' = 'chat';
+	private _currentChatMode: ChatMode | undefined = undefined;
+	private _currentWorkspaceId: string | null = null;
 
 	constructor(
 		group: IEditorGroup,
@@ -51,6 +56,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
 		@IAgentChatService private readonly _chatService: IAgentChatService,
+		@IModelSelectorService private readonly _modelSelector: IModelSelectorService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -73,11 +79,32 @@ export class NativeChatEditorPane extends EditorPane {
 
 		this._chatPanel = this._register(new AgentChatPanel({
 			onSendMessage: async (text: string, explicitSkillIds?: string[]) => {
-				// TODO: Implement full message sending logic (refer to chatBarPart.ts _handleSendMessage)
-				// For now, just call sendMessage with minimal parameters
 				try {
 					const agentId = this._currentAgentId ?? 'claw';
 					const sessionId = this._currentSessionId ?? undefined;
+					
+					// Optimistically add user message
+					const userMsg: any = {
+						id: `msg_${Date.now()}_user`,
+						role: 'user',
+						content: text,
+						timestamp: Date.now(),
+					};
+					this._chatPanel?.addMessage(userMsg);
+					
+					// Create assistant placeholder
+					const assistantId = `msg_${Date.now()}_assistant`;
+					const assistantMsg: any = {
+						id: assistantId,
+						role: 'assistant',
+						content: '',
+						timestamp: Date.now(),
+						isStreaming: true,
+						streamPhase: 'llm_streaming',
+					};
+					this._chatPanel?.addMessage(assistantMsg);
+					this._chatPanel?.setSending(true);
+					
 					await this._chatService.sendMessage(
 						agentId,
 						text,
@@ -87,14 +114,26 @@ export class NativeChatEditorPane extends EditorPane {
 							explicitSkillIds: explicitSkillIds,
 						},
 						(delta) => {
-							// Handle stream delta
 							if (!delta) return;
 							
 							switch (delta.type) {
 								case 'text':
+									// Update assistant message with streaming text
+									const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
+									assistantMsg.content = textContent;
+									this._chatPanel?.updateMessage(assistantId, {
+										content: textContent,
+										isStreaming: true,
+										streamPhase: 'llm_streaming',
+									});
+									break;
 								case 'thinking':
-									// Stream is producing text/thinking - UI should update via AgentChatPanel
-									// TODO: Pass delta to AgentChatPanel for UI update
+									const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : ((assistantMsg.thinking ?? '') + (delta.content ?? ''));
+									assistantMsg.thinking = thinkingContent;
+									this._chatPanel?.updateMessage(assistantId, {
+										thinking: thinkingContent,
+										isThinking: true,
+									});
 									break;
 								case 'tool_start':
 									console.log(`[NativeChatEditorPane] Tool started: ${delta.toolName}`);
@@ -104,23 +143,44 @@ export class NativeChatEditorPane extends EditorPane {
 									break;
 								case 'done':
 									console.log('[NativeChatEditorPane] Stream complete');
-									// TODO: Finalize UI state (e.g., re-enable input)
+									// Finalize UI state
+									this._chatPanel?.updateMessage(assistantId, {
+										isStreaming: false,
+										isThinking: false,
+										streamPhase: 'idle',
+									});
+									this._chatPanel?.setSending(false);
 									break;
 								case 'error':
 									console.error('[NativeChatEditorPane] Stream error:', delta.content);
-									// TODO: Show error in UI
+									this._chatPanel?.updateMessage(assistantId, {
+										isStreaming: false,
+										isThinking: false,
+										streamPhase: 'error',
+										content: (assistantMsg.content || '') + `\n\n⚠️ ${typeof delta.content === 'string' ? delta.content : '执行失败'}`,
+									});
+									this._chatPanel?.setSending(false);
 									break;
 								case 'usage':
 									console.log('[NativeChatEditorPane] Usage:', delta.usage);
+									if (delta.usage) {
+										this._chatPanel?.updateMessage(assistantId, {
+											tokenUsage: {
+												input: delta.usage.inputTokens ?? 0,
+												output: delta.usage.outputTokens ?? 0,
+												total: (delta.usage.inputTokens ?? 0) + (delta.usage.outputTokens ?? 0),
+											},
+										});
+									}
 									break;
 								default:
-									// Other delta types - just log for now
 									break;
 							}
 						},
 					);
 				} catch (err) {
 					console.error('[NativeChatEditorPane] sendMessage failed:', err);
+					this._chatPanel?.setSending(false);
 				}
 			},
 			onCancelExecution: () => {
@@ -139,34 +199,48 @@ export class NativeChatEditorPane extends EditorPane {
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
-			onChangeMode: (mode: 'chat' | 'craft') => {
+			onChangeMode: (mode: ChatMode) => {
 				this._currentChatMode = mode;
 				console.log(`[NativeChatEditorPane] onChangeMode: switched to ${mode} mode`);
 				// TODO: Update UI or reconfigure chat panel if needed
 			},
-			onOpenSettings: () => {
-				// TODO: Open settings page (refer to chatBarPart.ts onOpenSettings)
-				// For now, just log
-				console.log('[NativeChatEditorPane] onOpenSettings: opening settings...');
-				// TODO: Use commandService to execute 'workbench.action.openSettings'
-				// This requires adding ICommandService to the constructor
-			},
-			onListSkills: () => [],
-			onNewSession: async () => {
-				// Create a new session for the current agent
-				if (!this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onNewSession: no agent selected');
+		onOpenSettings: async () => {
+			// Open agent settings page (refer to AgentChat.tsx settings button)
+			if (!this._currentAgentId) {
+				console.warn('[NativeChatEditorPane] onOpenSettings: no agent selected');
+				return;
+			}
+			try {
+				const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+				if (!agent) {
+					console.warn(`[NativeChatEditorPane] onOpenSettings: agent ${this._currentAgentId} not found`);
 					return;
 				}
-				try {
-					const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
-					this._currentSessionId = session.id;
-					console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
-					// TODO: Update UI to show the new session
-				} catch (err) {
-					console.error('[NativeChatEditorPane] onNewSession failed:', err);
-				}
-			},
+				const input = new AgentSettingsEditorInput(agent.id, agent.name);
+				await this.group.openEditor(input, { pinned: true });
+			} catch (err) {
+				console.error('[NativeChatEditorPane] onOpenSettings failed:', err);
+			}
+		},
+		onListSkills: () => [],
+		onNewSession: async () => {
+			// Create a new session for the current agent
+			if (!this._currentAgentId) {
+				console.warn('[NativeChatEditorPane] onNewSession: no agent selected');
+				return;
+			}
+			try {
+				const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
+				this._currentSessionId = session.id;
+				console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
+				// Clear messages in UI
+				this._chatPanel?.setMessages([]);
+				// Refresh session list
+				await this._refreshSessionList();
+			} catch (err) {
+				console.error('[NativeChatEditorPane] onNewSession failed:', err);
+			}
+		},
 			onOpenSession: async (sessionId: string) => {
 				// Switch to the selected session
 				if (!this._currentAgentId) {
@@ -272,22 +346,47 @@ export class NativeChatEditorPane extends EditorPane {
 				// Just log for now, the dialog is closed in AgentChatPanel
 				console.log('[NativeChatEditorPane] closePlanDialog:', planId);
 			},
-			// Missing callbacks (stub implementations)
-			onSelectWorktree: (path: string) => {
-				console.log('[NativeChatEditorPane] onSelectWorktree:', path);
-				// TODO: Implement worktree selection logic
+			onSelectWorktree: async (worktree: { path: string; branch: string }) => {
+				const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
+				if (!workspaceId || !this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onSelectWorktree: missing workspaceId or agentId');
+					return;
+				}
+				try {
+					await this._agentStudioService.upsertAgentBinding(workspaceId, this._currentAgentId, {
+						worktreePath: worktree.path,
+						worktreeBranch: worktree.branch,
+					});
+					// Update local state
+					this._currentWorkspaceId = workspaceId;
+					this._chatPanel?.setSelectedWorktree(worktree.path);
+					console.log(`[NativeChatEditorPane] onSelectWorktree: switched to worktree ${worktree.path}`);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onSelectWorktree failed:', err);
+				}
 			},
 			onScrollToMessage: (messageId: string) => {
 				console.log('[NativeChatEditorPane] onScrollToMessage:', messageId);
 				// TODO: Implement scroll to message logic
 			},
 			onSelectProvider: (providerId: string) => {
-				console.log('[NativeChatEditorPane] onSelectProvider:', providerId);
-				// TODO: Implement provider selection logic (refer to chatBarPart.ts)
+				const cur = this._modelSelector.getSelection();
+				this._modelSelector.setSelection({
+					providerId,
+					modelId: cur?.modelId ?? '',
+					agentId: cur?.agentId,
+				});
+				void this._refreshModelSelector();
 			},
 			onSelectModel: (modelId: string) => {
-				console.log('[NativeChatEditorPane] onSelectModel:', modelId);
-				// TODO: Implement model selection logic (refer to chatBarPart.ts)
+				const cur = this._modelSelector.getSelection();
+				if (!cur) { return; }
+				this._modelSelector.setSelection({
+					providerId: cur.providerId,
+					modelId,
+					agentId: cur.agentId,
+				});
+				void this._refreshModelSelector();
 			},
 			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => {
 				console.log('[NativeChatEditorPane] onCheckpointAction:', action, payload);
@@ -333,6 +432,15 @@ export class NativeChatEditorPane extends EditorPane {
 		// Load available agents
 		this._loadAvailableAgents();
 
+		// Model selector wiring — initialize provider/model data for toolbar
+		void this._refreshModelSelector();
+		this._register(this._modelSelector.onDidChangeSelection(() => {
+			void this._refreshModelSelector();
+		}));
+		this._register(this._modelSelector.onDidChangeAvailableModels(() => {
+			void this._refreshModelSelector();
+		}));
+
 		// Listen for agent selection from agentStudio webview/external sources
 		this._register(this._agentStudioService.onDidSelectAgent(async (agentId) => {
 			if (!agentId) {
@@ -366,6 +474,21 @@ export class NativeChatEditorPane extends EditorPane {
 			// TODO: refresh the current plan dialog if it's open
 		}));
 
+		// Listen for worktree changes (agent binding or list changes)
+		this._register(addDisposableListener(mainWindow, 'agentStudio:agent-worktree-changed', (e: Event) => {
+			const detail = (e as CustomEvent).detail as { workspaceId?: string; agentId?: string; worktreePath?: string; worktreeBranch?: string };
+			if (detail?.workspaceId && detail.workspaceId !== this._currentWorkspaceId) { return; }
+			if (detail?.agentId && detail.agentId !== this._currentAgentId) { return; }
+			// Update selected worktree
+			if (detail?.worktreePath) {
+				this._chatPanel?.setSelectedWorktree(detail.worktreePath);
+			}
+		}));
+		this._register(addDisposableListener(mainWindow, 'agentStudio:worktree-changed', (_e: Event) => {
+			// Reload worktree list
+			void this._loadWorktrees();
+		}));
+
 		console.log('[NativeChatEditorPane] Chat panel initialized');
 	}
 
@@ -379,6 +502,7 @@ export class NativeChatEditorPane extends EditorPane {
 					name: emp.name,
 					role: emp.role,
 					avatarUrl: emp.avatar,
+					icon: emp.icon,
 					status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 					isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 					customPrompt: emp.systemPrompt,
@@ -390,9 +514,35 @@ export class NativeChatEditorPane extends EditorPane {
 					const session = await this._chatService.getOrCreateActiveSession(agentId);
 					this._currentSessionId = session.id;
 					console.log(`[NativeChatEditorPane] Active session for agent ${agentId}: ${session.id}`);
+					
+					// Load history messages for this session
+					try {
+						const history = await this._chatService.getHistory(agentId, this._currentSessionId);
+						// Adapt ChatMessage to IAgentChatMessage (filter out 'tool' role messages)
+						const adaptedMessages = history
+							.filter(m => m.role !== 'tool')
+							.map(m => ({
+								id: m.id,
+								role: m.role as 'user' | 'assistant' | 'system',
+								content: m.content,
+								timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp).getTime() : m.timestamp,
+								thinking: (m as any).thinking,
+								toolCalls: (m as any).toolCalls,
+								isStreaming: (m as any).isStreaming,
+								streamPhase: (m as any).streamPhase,
+								metadata: (m as any).metadata,
+								tokenUsage: (m as any).tokenUsage,
+							}));
+						this._chatPanel.setMessages(adaptedMessages);
+					} catch (err) {
+						console.warn('[NativeChatEditorPane] Failed to load history:', err);
+						this._chatPanel.setMessages([]);
+					}
 				} catch (err) {
 					console.warn('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
 				}
+				// Load worktrees for the selected agent
+				await this._loadWorktrees();
 			}
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);
@@ -439,6 +589,122 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _loadAvailableAgents failed:', err);
+		}
+	}
+
+	// ---------- model selector wiring (mirrors chatBarPart.ts) ----------
+
+	private async _refreshModelSelector(): Promise<void> {
+		if (!this._chatPanel) {
+			return;
+		}
+		try {
+			const items = await this._modelSelector.getAvailableModels();
+
+			// Provider list — unique by id, preserving order
+			const seenProviders = new Set<string>();
+			const providers: IPanelProviderInfo[] = [];
+			for (const it of items) {
+				if (!seenProviders.has(it.provider.id)) {
+					seenProviders.add(it.provider.id);
+					providers.push({ 
+						id: it.provider.id, 
+						label: it.provider.name,
+						supportsAgents: it.provider.supportsAgents 
+					});
+				}
+			}
+
+			// Model list — unique by `${providerId}:${modelId}`
+			const seenModels = new Set<string>();
+			const models: IPanelModelInfo[] = [];
+			for (const it of items) {
+				const key = `${it.provider.id}:${it.model.id}`;
+				if (!seenModels.has(key)) {
+					seenModels.add(key);
+					models.push({
+						id: it.model.id,
+						label: it.model.name,
+						provider: it.provider.id,
+					});
+				}
+			}
+
+			this._chatPanel.setProviders(providers);
+			this._chatPanel.setModels(models);
+
+			const selection = this._modelSelector.getSelection();
+			if (selection) {
+				this._chatPanel.setCurrentProvider(selection.providerId);
+				this._chatPanel.setCurrentModel(selection.modelId);
+			}
+		} catch (err) {
+			console.warn('[NativeChatEditorPane] _refreshModelSelector failed:', err);
+		}
+	}
+
+	// ---------- session list logic ----------
+
+	private async _refreshSessionList(): Promise<void> {
+		if (!this._currentAgentId || !this._chatPanel) {
+			return;
+		}
+		try {
+			const sessions = await this._chatService.listAgentSessions(this._currentAgentId);
+			if (Array.isArray(sessions)) {
+				const metas: IAgentSessionMeta[] = sessions.map((s: any) => ({
+					id: s.id,
+					name: s.name ?? '未命名会话',
+					createdAt: s.createdAt ?? new Date().toISOString(),
+					updatedAt: s.updatedAt ?? s.createdAt ?? new Date().toISOString(),
+					messageCount: s.messageCount ?? 0,
+				}));
+				this._chatPanel.setAgentSessions(metas);
+			} else {
+				this._chatPanel.setAgentSessions([]);
+			}
+		} catch {
+			this._chatPanel.setAgentSessions([]);
+		}
+	}
+
+	// ---------- worktree logic (mirrors React AgentChat.tsx) ----------
+
+	private async _loadWorktrees(): Promise<void> {
+		if (!this._chatPanel) {
+			return;
+		}
+		try {
+			const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
+			if (!workspaceId) {
+				console.warn('[NativeChatEditorPane] _loadWorktrees: no workspaceId');
+				this._chatPanel.setWorktrees([]);
+				this._chatPanel.setSelectedWorktree('');
+				return;
+			}
+			this._currentWorkspaceId = workspaceId;
+			const worktrees = await this._agentStudioService.getWorktrees(workspaceId);
+			// Adapt to IWorktreeItem format
+			const items = worktrees.map(wt => ({
+				path: wt.path,
+				branch: wt.branch,
+			}));
+			this._chatPanel.setWorktrees(items);
+			// Set selected worktree from agent binding
+			if (this._currentAgentId) {
+				try {
+					const binding = await this._agentStudioService.getAgentBinding(workspaceId, this._currentAgentId);
+					if (binding?.worktreePath) {
+						this._chatPanel.setSelectedWorktree(binding.worktreePath);
+					}
+				} catch {
+					// ignore
+				}
+			}
+			console.log(`[NativeChatEditorPane] _loadWorktrees: loaded ${items.length} worktrees for workspace ${workspaceId}`);
+		} catch (err) {
+			console.warn('[NativeChatEditorPane] _loadWorktrees failed:', err);
+			this._chatPanel.setWorktrees([]);
 		}
 	}
 

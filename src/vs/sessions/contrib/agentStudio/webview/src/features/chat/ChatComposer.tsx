@@ -415,7 +415,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			setInput('');
 			setSkillChips([]);
 			if (textareaRef.current) {
-				textareaRef.current.style.minHeight = `${TEXTAREA_DEFAULT_HEIGHT}px`;
+				// 恢复到用户调整的高度或默认高度
+				const restoreHeight = userInputAreaHeightRef.current || TEXTAREA_DEFAULT_HEIGHT;
+				textareaRef.current.style.minHeight = `${restoreHeight}px`;
 			}
 			return;
 		}
@@ -427,8 +429,9 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		setSkillChips([]);
 		clearAttachments();
 		if (textareaRef.current) {
-			// 发送后清空内容：重置为默认最小高度
-			textareaRef.current.style.minHeight = `${TEXTAREA_DEFAULT_HEIGHT}px`;
+			// 发送后清空内容：恢复到用户调整的高度或默认高度
+			const restoreHeight = userInputAreaHeightRef.current || TEXTAREA_DEFAULT_HEIGHT;
+			textareaRef.current.style.minHeight = `${restoreHeight}px`;
 		}
 	}, [input, attachments.length, skillChips.length, onSend, onCommand, closeAllPopups, chatMode, toPayload, clearAttachments, skillChips]);
 
@@ -501,6 +504,10 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		}
 	}, [addPastedImage]);
 
+	// 输入区域整体高度拖动：拖动顶部分割线改变输入区域高度
+	const INPUT_AREA_MIN = 100;
+	const INPUT_AREA_MAX = 500;
+
 	const handleInput = useCallback(() => {
 		const textarea = textareaRef.current;
 		if (textarea) {
@@ -508,14 +515,13 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			// scrollHeight 确保内容不会溢出，flex 确保占满可用空间。
 			textarea.style.minHeight = 'auto'; // 先重置以获取准确 scrollHeight
 			const contentHeight = textarea.scrollHeight;
-			const next = Math.min(Math.max(contentHeight, TEXTAREA_MIN_HEIGHT), 800);
+			// 使用用户调整的高度作为最小高度（如果调整过），否则使用默认最小高度
+			const userHeight = userInputAreaHeightRef.current || TEXTAREA_MIN_HEIGHT;
+			const next = Math.min(Math.max(contentHeight, userHeight, TEXTAREA_MIN_HEIGHT), INPUT_AREA_MAX);
 			textarea.style.minHeight = `${next}px`;
 		}
 	}, []);
 
-	// 输入区域整体高度拖动：拖动顶部分割线改变输入区域高度
-	const INPUT_AREA_MIN = 100;
-	const INPUT_AREA_MAX = 500;
 	const handleInputAreaResizerMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
 		const inputArea = inputAreaRef.current;
 		if (!inputArea) { return; }
@@ -539,6 +545,12 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			inputAreaRef.current.style.height = `${next}px`;
 			inputAreaRef.current.style.minHeight = `${next}px`;
 			userInputAreaHeightRef.current = next;
+			// 保存用户调整的高度到 localStorage
+			try {
+				localStorage.setItem('chatComposerInputAreaHeight', next.toString());
+			} catch {
+				// localStorage 不可用时忽略
+			}
 		};
 		const handleUp = () => {
 			inputAreaDragRef.current = null;
@@ -703,6 +715,28 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 			onCancel();
 		}
 	}, [showSlashMenu, filteredSlashItems, selectedSlashIndex, input, isLoading, onCancel, handleSend, skillChips.length]);
+
+	// 恢复保存的输入区域高度
+	useEffect(() => {
+		try {
+			const savedHeight = localStorage.getItem('chatComposerInputAreaHeight');
+			if (savedHeight) {
+				const height = parseInt(savedHeight, 10);
+				if (!isNaN(height) && height >= INPUT_AREA_MIN && height <= INPUT_AREA_MAX) {
+					userInputAreaHeightRef.current = height;
+					// 使用 requestAnimationFrame 确保 ref 已挂载
+					requestAnimationFrame(() => {
+						if (inputAreaRef.current) {
+							inputAreaRef.current.style.height = `${height}px`;
+							inputAreaRef.current.style.minHeight = `${height}px`;
+						}
+					});
+				}
+			}
+		} catch {
+			// localStorage 不可用时忽略
+		}
+	}, []); // 仅在组件挂载时执行一次
 
 	return (
 		<div className="chat-input-area" ref={inputAreaRef}>

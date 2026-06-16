@@ -233,14 +233,14 @@ export function getBuiltinAgents(): Agent[] {
   return [
     {
       id: 'saros-claw',
-      name: 'Sarosis Claw',
+      name: 'Saros Claw',
       role: 'AI Assistant',
       description: 'General-purpose AI assistant...',
       icon: '🦞',
       avatar: 'data:image/svg+xml,...',
       category: 'General',
       model: 'claude-sonnet-4-20250514',
-      systemPrompt: 'You are Sarosis Claw...',
+      systemPrompt: 'You are Saros Claw...',
       skills: ['code-gen', 'code-review', 'analysis', 'summarize', 'writing', 'planning'],
       tools: ['write_to_file', 'read_file', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
       source: 'builtin',
