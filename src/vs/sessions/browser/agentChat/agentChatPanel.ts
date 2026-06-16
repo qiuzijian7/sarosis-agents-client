@@ -2411,8 +2411,10 @@ export class AgentChatPanel extends Disposable {
 		const composerBox = append(inputArea, $(".chat-composer-box"));
 
 		// Skill chips bar (inserted before textarea)
+		// Note: visibility is controlled by _renderSkillChips() -> line 3103
 		this._skillChipsBar = append(composerBox, $(".skill-chips-bar")) as HTMLElement;
-		this._skillChipsBar.style.display = "none"; // hidden by default
+		// Initialize skill chips bar visibility
+		this._renderSkillChips();
 
 		// Textarea
 		this._textarea = append(
