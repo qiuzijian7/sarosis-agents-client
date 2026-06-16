@@ -116,6 +116,13 @@ export class NativeChatEditorPane extends EditorPane {
 				console.log(`[NativeChatEditorPane] onChangeMode: switched to ${mode} mode`);
 				// TODO: Update UI or reconfigure chat panel if needed
 			},
+			onOpenSettings: () => {
+				// TODO: Open settings page (refer to chatBarPart.ts onOpenSettings)
+				// For now, just log
+				console.log('[NativeChatEditorPane] onOpenSettings: opening settings...');
+				// TODO: Use commandService to execute 'workbench.action.openSettings'
+				// This requires adding ICommandService to the constructor
+			},
 			onListSkills: () => [],
 			onNewSession: async () => {
 				// Create a new session for the current agent
