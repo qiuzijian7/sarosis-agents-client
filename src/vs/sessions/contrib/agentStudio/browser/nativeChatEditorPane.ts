@@ -15,7 +15,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
-import { IAgentStudioService } from '../../../common/agentStudioService.js';
+import { IAgentStudioService, IAgentChatService } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import type { AgentStatus as AgentChatAgentStatus } from '../../../browser/agentChat/agentChatTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
@@ -47,6 +47,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
+		@IAgentChatService private readonly _chatService: IAgentChatService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
