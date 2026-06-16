@@ -15,7 +15,7 @@ import { IInstantiationService } from "../../../../platform/instantiation/common
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import { URI } from "../../../../base/common/uri.js";
-import { mainWindow } from "../../../../base/browser/window.js";
+import { mainWindow, type CodeWindow } from "../../../../base/browser/window.js";
 import {
 	IAgentStudioService,
 	IAgentChatService,

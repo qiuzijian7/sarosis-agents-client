@@ -1262,4 +1262,28 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			`[AgentChatService] Stored providerSessionId=${providerSessionId} for session ${sessionId}`,
 		);
 	}
+
+	/**
+	 * Submit AskUser response (workflow interactive input).
+	 */
+	async submitAskUser(agentId: string, sessionId: string, executionId: string, nodeId: string, selection: string | string[]): Promise<void> {
+		this.logService.info(
+			`[AgentChatService] submitAskUser: agentId=${agentId}, sessionId=${sessionId}, executionId=${executionId}, nodeId=${nodeId}`,
+		);
+		// TODO: 实现向工作流引擎提交用户响应的逻辑
+		// 这通常需要调用后端 API 或通过 driver 服务发送响应
+		throw new Error('submitAskUser not yet implemented');
+	}
+
+	/**
+	 * Apply code to file (from AI-generated code).
+	 */
+	async applyCode(agentId: string, sessionId: string, code: string, language: string, filePath?: string): Promise<void> {
+		this.logService.info(
+			`[AgentChatService] applyCode: agentId=${agentId}, sessionId=${sessionId}, language=${language}, filePath=${filePath}`,
+		);
+		// TODO: 实现将代码应用到文件的逻辑
+		// 这通常需要调用文件服务或编辑器服务来写入文件
+		throw new Error('applyCode not yet implemented');
+	}
 }

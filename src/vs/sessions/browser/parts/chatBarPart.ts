@@ -38,8 +38,9 @@ import { IWorktreeService } from '../../contrib/worktree/common/worktreeService.
 import { ICommandService } from '../../../platform/commands/common/commands.js';
 import { IModelSelectorService } from '../../contrib/agentStudio/common/modelSelector.js';
 import { ICheckpointService } from '../../contrib/agentStudio/common/checkpointService.js';
+import { ISkillRegistry } from '../../contrib/agentStudio/common/skills.js';
 import { autorun } from '../../../base/common/observable.js';
-import type { AgentStatus as AgentChatAgentStatus, ChatMode, IAgentChatMessage, IAgentSessionMeta, IWorktreeItem, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, ICheckpointInfo, IContextUsage } from '../agentChat/agentChatTypes.js';
+import type { AgentStatus as AgentChatAgentStatus, ChatMode, StreamPhase, IAgentChatMessage, IAgentSessionMeta, IWorktreeItem, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, ICheckpointInfo, IContextUsage, ILiveWorkflowExecution, ILiveWorkflowSubAgent, ILiveWorkflowEvent, ILiveCollectVariable } from '../agentChat/agentChatTypes.js';
 import { uniqueMsgId } from '../agentChat/agentChatTypes.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
@@ -103,6 +104,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		@IModelSelectorService private readonly _modelSelector: IModelSelectorService,
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ILogService private readonly _logService: ILogService,
+		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 	) {
 		super(
 			Parts.CHATBAR_PART,
@@ -146,8 +148,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 		// Create the agent chat panel and append after the session composite bar
 		this._agentChatPanel = this._register(new AgentChatPanel({
-			onSendMessage: (text: string) => {
-				void this._handleSendMessage(text);
+			onSendMessage: (text: string, explicitSkillIds?: string[]) => {
+				void this._handleSendMessage(text, explicitSkillIds);
 			},
 			onCancelExecution: () => {
 				if (this._currentAgentId) {
@@ -209,6 +211,50 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => {
 				void this._handleCheckpointAction(action, payload);
 			},
+			onConfirmationAction: (_confirmationId: string, _buttonId: string) => {
+				// Confirmation response dispatched to IAgentChatService (reserved)
+			},
+			onListSkills: () => {
+				return this._skillRegistry.getSkills().map(s => ({
+					id: s.id,
+					name: s.name ?? s.id,
+					description: (s as any).description ?? '',
+				}));
+			},
+			// New callbacks for missing features
+			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
+				// Send ask_user_submit delta to host
+				void this._chatService.submitAskUser?.(this._currentAgentId ?? '', this._currentSessionId ?? '', executionId, nodeId, selection);
+			},
+			onQuestionClick: (_question: any) => {
+				// Send the question as a user message
+				const q = _question as any;
+				if (q.label) {
+					void this._handleSendMessage(q.label);
+				}
+			},
+			onReferenceClick: (_ref: any) => {
+				// Open the reference (file/url)
+				const ref = _ref as any;
+				if (ref.uri) {
+					void this._commandService.executeCommand('vscode.open', ref.uri);
+				}
+			},
+			onTipAction: (_tipId: string, _actionId: string) => {
+				// Tip action callback - reserved
+			},
+			onTipDismiss: (_tipId: string) => {
+				// Tip dismiss - just update message to remove tip
+				// (no host call needed, tip is client-side)
+			},
+			onApplyCode: (_code: string, _language: string, _filePath?: string) => {
+				// Apply code to file - delegate to host service
+				void this._chatService.applyCode?.(this._currentAgentId ?? '', this._currentSessionId ?? '', _code, _language, _filePath);
+			},
+			onOpenFile: (_filePath: string) => {
+				// Open file in editor
+				void this._commandService.executeCommand('vscode.open', _filePath);
+			},
 		}));
 		parent.appendChild(this._agentChatPanel.element);
 
@@ -230,6 +276,22 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		this._register(this._chatService.onDidChangeAgentSessions(({ agentId }) => {
 			if (agentId === this._currentAgentId) {
 				void this._loadAgentSessions(agentId);
+			}
+		}));
+
+		// Workflow / TaskBoard → Chat prompt injection bridge
+		// When a workflow is executed or a task board card triggers "Send to Chat",
+		// this handler injects the generated prompt into the native chat composer
+		// and optionally auto-sends it.
+		this._register(this._agentStudioService.onDidRequestInjectPrompt(({ agentId, message }) => {
+			// Only respond when this panel is showing the target agent,
+			// matching the webview controller's guard logic.
+			if (!this._currentAgentId || this._currentAgentId !== agentId) {
+				return;
+			}
+			// Inject the prompt text into the textarea and auto-send
+			if (this._agentChatPanel) {
+				this._agentChatPanel.injectPrompt(message);
 			}
 		}));
 
@@ -404,7 +466,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			return;
 		}
 		try {
-			const sessions = await (this._chatService as any).listAgentSessions?.(agentId);
+			const sessions = await this._chatService.listAgentSessions(agentId);
 			if (Array.isArray(sessions)) {
 				const metas: IAgentSessionMeta[] = sessions.map((s: any) => ({
 					id: s.id,
@@ -462,7 +524,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			return;
 		}
 		try {
-			await (this._chatService as any).renameAgentSession?.(this._currentAgentId, sessionId, newName);
+			await this._chatService.renameAgentSession(this._currentAgentId, sessionId, newName);
 			void this._loadAgentSessions(this._currentAgentId);
 		} catch {
 			// ignore
@@ -474,7 +536,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			return;
 		}
 		try {
-			await (this._chatService as any).deleteAgentSession?.(this._currentAgentId, sessionId);
+			await this._chatService.deleteAgentSession(this._currentAgentId, sessionId);
 			if (this._currentSessionId === sessionId) {
 				this._currentSessionId = undefined;
 				this._agentChatPanel?.setMessages([]);
@@ -487,7 +549,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 	// ---------- send message + streaming bridge ----------
 
-	private async _handleSendMessage(text: string): Promise<void> {
+	private async _handleSendMessage(text: string, explicitSkillIdsFromChips?: string[]): Promise<void> {
 		if (!this._currentAgentId || !this._agentChatPanel) {
 			return;
 		}
@@ -499,14 +561,45 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		const panel = this._agentChatPanel;
 		const agentId = this._currentAgentId;
 
+		// Extract /skill commands as explicitSkillIds
+		const slashSkills: string[] = [];
+		const slashRegex = /\/(\w+)\b/g;
+		let slashMatch: RegExpExecArray | null;
+		while ((slashMatch = slashRegex.exec(trimmed)) !== null) {
+			const skillId = slashMatch[1];
+			// Validate against registered skills (case-insensitive)
+			const skill = this._skillRegistry.getSkills().find(
+				s => s.id.toLowerCase() === skillId.toLowerCase(),
+			);
+			if (skill) { slashSkills.push(skill.id); }
+		}
+
+		// Merge explicitSkillIds from skill chips (panel) with slash skills from text
+		const allExplicitSkillIds = [...(explicitSkillIdsFromChips || []), ...slashSkills];
+		const uniqueSkillIds = [...new Set(allExplicitSkillIds)]; // deduplicate
+
+		// Collect attachments from panel
+		const attachments = panel.getAttachments()
+			.map(a => ({
+				id: a.id,
+				type: a.type,
+				name: a.name,
+				mimeType: a.mimeType,
+				data: a.data,
+				size: a.size,
+				isPasted: a.isPasted,
+			}));
+
 		// Optimistically append the user message
 		const userMsg: IAgentChatMessage = {
 			id: uniqueMsgId(),
 			role: 'user',
 			content: trimmed,
 			timestamp: Date.now(),
+			attachments: [...attachments],
 		};
 		panel.addMessage(userMsg);
+		panel.clearAttachments();
 
 		// Create a streaming assistant placeholder
 		const assistantId = uniqueMsgId();
@@ -516,6 +609,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			content: '',
 			timestamp: Date.now(),
 			isStreaming: true,
+			streamPhase: 'llm_streaming',
 		};
 		panel.addMessage(assistantMsg);
 		panel.setSending(true);
@@ -530,42 +624,106 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 					chatMode: this._currentChatMode,
 					agentSessionId: this._currentSessionId,
 					worktreePath: selectedWorktreePath,
+					attachments: attachments.length > 0 ? attachments as any : undefined,
+					explicitSkillIds: uniqueSkillIds.length > 0 ? uniqueSkillIds : undefined,
 				},
 				(delta) => {
 					switch (delta.type) {
-						case 'text': {
-							const next = (delta.fullText !== undefined)
-								? delta.fullText
-								: (assistantMsg.content + (delta.content ?? ''));
-							assistantMsg.content = next;
-							panel.updateMessage(assistantId, { content: next, isStreaming: true });
-							break;
-						}
+				case 'phase_change': {
+					// Track phase transitions (thinking → text → tool → done)
+					const newPhase: StreamPhase = (delta.phase as StreamPhase) ?? 'llm_streaming';
+					assistantMsg.streamPhase = newPhase;
+					assistantMsg.currentStep = delta.phase as string;
+					panel.setStreamPhase(newPhase);
+					panel.updateMessage(assistantId, {
+						streamPhase: newPhase,
+						currentStep: delta.phase as string,
+						isThinking: newPhase === 'llm_streaming',
+					});
+					break;
+				}
+				case 'text': {
+					const next = (delta.fullText !== undefined)
+						? delta.fullText
+						: (assistantMsg.content + (delta.content ?? ''));
+					assistantMsg.content = next;
+					assistantMsg.streamPhase = 'llm_streaming';
+					panel.setStreamPhase('llm_streaming');
+					panel.updateMessage(assistantId, {
+						content: next,
+						isStreaming: true,
+						isThinking: false,
+						streamPhase: 'llm_streaming',
+						currentStep: 'llm_streaming',
+					});
+					break;
+				}
 						case 'thinking': {
 							const next = (delta.fullThinking !== undefined)
 								? delta.fullThinking
 								: ((assistantMsg.thinking ?? '') + (delta.content ?? ''));
 							assistantMsg.thinking = next;
-							panel.updateMessage(assistantId, { thinking: next, isThinking: true, currentStep: 'thinking' });
+							panel.updateMessage(assistantId, {
+								thinking: next,
+								isThinking: true,
+								currentStep: 'thinking',
+							});
 							break;
 						}
-						case 'tool_start': {
-							const calls = (assistantMsg.toolCalls ?? []).slice();
-							calls.push({
-								id: delta.toolCallId ?? `tc-${calls.length}`,
-								name: delta.toolName ?? 'tool',
-								args: delta.content,
-								status: 'running',
-							});
+				case 'tool_start': {
+					const calls = (assistantMsg.toolCalls ?? []).slice();
+					calls.push({
+						id: delta.toolCallId ?? `tc-${calls.length}`,
+						name: delta.toolName ?? 'tool',
+						args: delta.content,
+						status: 'running',
+						displayName: delta.displayName,
+						renderType: delta.renderType,
+						textPosition: delta.textPosition ?? (assistantMsg.content?.length ?? 0),
+					});
+					assistantMsg.toolCalls = calls;
+					assistantMsg.streamPhase = 'tool_executing';
+					panel.setStreamPhase('tool_executing');
+					panel.updateMessage(assistantId, {
+						toolCalls: calls,
+						streamPhase: 'tool_executing',
+						currentStep: 'execute_tool',
+						isThinking: false,
+					});
+					break;
+				}
+						case 'tool_args': {
+							// Append args for the current running tool call
+							const calls = (assistantMsg.toolCalls ?? []).map(c =>
+								c.id === delta.toolCallId
+									? { ...c, args: (c.args ?? '') + (delta.content ?? '') }
+									: c
+							);
 							assistantMsg.toolCalls = calls;
-							panel.updateMessage(assistantId, { toolCalls: calls, currentStep: 'execute_tool' });
+							panel.updateMessage(assistantId, { toolCalls: calls });
+							break;
+						}
+						case 'tool_progress': {
+							const calls = (assistantMsg.toolCalls ?? []).map(c =>
+								c.id === delta.toolCallId
+									? { ...c, args: delta.content ? `${c.args ?? ''}\n${delta.content}` : c.args }
+									: c
+							);
+							assistantMsg.toolCalls = calls;
+							panel.updateMessage(assistantId, { toolCalls: calls });
 							break;
 						}
 						case 'tool_end':
 						case 'tool_result': {
 							const calls = (assistantMsg.toolCalls ?? []).map(c =>
 								c.id === delta.toolCallId
-									? { ...c, status: 'completed' as const, result: delta.content ?? c.result }
+									? {
+										...c,
+										status: 'completed' as const,
+										result: delta.content ?? c.result,
+										displayName: delta.displayName ?? c.displayName,
+										renderType: delta.renderType ?? c.renderType,
+									}
 									: c
 							);
 							assistantMsg.toolCalls = calls;
@@ -594,50 +752,434 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 							}
 							break;
 						}
-						case 'context_compacted': {
-							const compacted = delta.compactedInputTokens ?? 0;
-							const limit = this._currentMaxContextTokens ?? 0;
-							if (limit > 0 && compacted > 0) {
-								const ratio = Math.max(0, Math.min(1, compacted / limit));
-								panel.setContextUsage({
-									used: compacted,
-									limit,
-									ratio,
-									percent: ratio * 100,
-								} satisfies IContextUsage);
+				case 'context_compacted': {
+					assistantMsg.streamPhase = 'compressing';
+					panel.setStreamPhase('compressing');
+					panel.updateMessage(assistantId, { streamPhase: 'compressing' });
+					const compacted = delta.compactedInputTokens ?? 0;
+					if (compacted > 0) {
+						panel.setCompactedBaseline(compacted);
+					}
+					const limit = this._currentMaxContextTokens ?? 0;
+					if (limit > 0 && compacted > 0) {
+						const ratio = Math.max(0, Math.min(1, compacted / limit));
+						panel.setContextUsage({
+							used: compacted,
+							limit,
+							ratio,
+							percent: ratio * 100,
+						} satisfies IContextUsage);
+					}
+					break;
+				}
+						case 'sub_agent_start': {
+							const subs = (assistantMsg.subAgents ?? []).slice();
+							subs.push({
+								id: delta.subAgentId ?? `sa-${subs.length}`,
+								type: (delta.subAgentType as any) ?? 'general',
+								task: delta.subAgentTask ?? '',
+								status: 'pending',
+								groupId: delta.subAgentGroupId,
+							});
+							assistantMsg.subAgents = subs;
+							panel.updateMessage(assistantId, { subAgents: subs });
+							break;
+						}
+						case 'sub_agent_progress': {
+							const subs = (assistantMsg.subAgents ?? []).map(s =>
+								s.id === delta.subAgentId
+									? { ...s, status: (delta.subAgentStatus as any) ?? s.status, progress: delta.subAgentProgress ?? s.progress, output: delta.subAgentOutput ?? s.output, error: delta.subAgentError ?? s.error }
+									: s
+							);
+							assistantMsg.subAgents = subs;
+							panel.updateMessage(assistantId, { subAgents: subs });
+							break;
+						}
+						case 'sub_agent_end': {
+							const subs = (assistantMsg.subAgents ?? []).map(s =>
+								s.id === delta.subAgentId
+									? { ...s, status: 'done' as const, output: delta.subAgentOutput ?? s.output }
+									: s
+							);
+							assistantMsg.subAgents = subs;
+							panel.updateMessage(assistantId, { subAgents: subs });
+							break;
+						}
+						case 'confirmation': {
+							if (delta.confirmationData) {
+								assistantMsg.confirmation = {
+									id: delta.confirmationData.id,
+									title: delta.confirmationData.title,
+									message: delta.confirmationData.message,
+									detail: delta.confirmationData.detail,
+									status: delta.confirmationData.status,
+									buttons: delta.confirmationData.buttons.map(b => ({ id: b.id, label: b.label, primary: b.primary, danger: b.danger })),
+								};
+								panel.updateMessage(assistantId, { confirmation: assistantMsg.confirmation });
 							}
 							break;
 						}
-						case 'done': {
-							panel.updateMessage(assistantId, { isStreaming: false, isThinking: false });
-							break;
-						}
-						case 'error': {
-							panel.updateMessage(assistantId, {
-								isStreaming: false,
-								isThinking: false,
-								content: (assistantMsg.content || '') + `\n\n⚠ ${delta.content ?? '执行失败'}`,
-							});
-							break;
-						}
-						default:
-							// Ignore other delta types in this lightweight panel
-							break;
+				case 'done': {
+					assistantMsg.streamPhase = 'idle';
+					panel.setStreamPhase('idle');
+					panel.updateMessage(assistantId, { isStreaming: false, isThinking: false, streamPhase: 'idle' });
+					break;
+				}
+				case 'error': {
+					assistantMsg.streamPhase = 'error';
+					panel.setStreamPhase('error');
+					const errObj = typeof delta.content === 'object' ? delta.content : undefined;
+					const errMsg = typeof delta.content === 'string' ? delta.content : (errObj as any)?.message ?? '执行失败';
+					assistantMsg.metadata = { ...assistantMsg.metadata, streamError: {
+						message: errMsg,
+						level: ((delta as any).level as string) || 'error',
+						retryable: (delta as any).retryable !== false,
+						isRateLimited: !!(delta as any).isRateLimited,
+					}};
+					panel.updateMessage(assistantId, {
+						isStreaming: false,
+						isThinking: false,
+						streamPhase: 'error',
+						content: (assistantMsg.content || '') + `\n\n⚠ ${errMsg}`,
+						metadata: assistantMsg.metadata,
+					});
+					break;
+				}
+				case 'content_replace': {
+					assistantMsg.content = delta.content ?? assistantMsg.content;
+					panel.updateMessage(assistantId, { content: assistantMsg.content });
+					break;
+				}
+				case 'discard_prior_text': {
+					assistantMsg.thinking = '';
+					panel.updateMessage(assistantId, { thinking: '', isThinking: false });
+					break;
+				}
+				case 'tool_approval_request': {
+					const calls = (assistantMsg.toolCalls ?? []).map(c =>
+						c.id === delta.toolCallId
+							? { ...c, status: 'approval_required' as any, securityLevel: delta.securityLevel }
+							: c
+					);
+					assistantMsg.toolCalls = calls;
+					assistantMsg.streamPhase = 'awaiting_approval';
+					panel.setStreamPhase('awaiting_approval');
+
+					// Create confirmation object for terminal/tools that need approval
+					const toolName = delta.toolName || '';
+					const isTerminal = toolName.toLowerCase().includes('terminal') || toolName.toLowerCase().includes('exec') || toolName.toLowerCase().includes('shell');
+					const confirmation: any = {
+						id: delta.toolCallId || `cf-${Date.now()}`,
+						title: isTerminal ? '执行终端命令' : (delta.confirmationData?.title || '确认操作'),
+						message: isTerminal ? (delta.toolArgs || '执行命令...') : (delta.confirmationData?.message || ''),
+						status: 'pending',
+						securityLevel: delta.securityLevel || 'cautious',
+						buttons: delta.confirmationData?.buttons || [
+							{ id: 'allow_once', label: '执行', primary: true },
+							{ id: 'reject', label: '取消', danger: true },
+						],
+						autoConfirmOptions: delta.confirmationData?.autoConfirmOptions || [
+							{ id: 'allow_session', label: '在此会话中允许' },
+							{ id: 'allow_workspace', label: '在工作区中允许' },
+							{ id: 'allow_always', label: '始终允许' },
+						],
+						// For terminal confirmation card
+						command: isTerminal ? (delta.toolArgs || '') : undefined,
+						toolName: toolName,
+					};
+					assistantMsg.confirmation = confirmation;
+					panel.updateMessage(assistantId, { toolCalls: calls, streamPhase: 'awaiting_approval', confirmation });
+					break;
+				}
+				case 'tool_approval_resolved': {
+					panel.setStreamPhase('tool_executing');
+					panel.updateMessage(assistantId, { streamPhase: 'tool_executing' });
+					break;
+				}
+				// ── AskUser cards ──────────────────────────────
+				case 'ask_user_start': {
+					const askUser = {
+						id: delta.askUserId ?? `${delta.executionId}:${delta.nodeId}`,
+						executionId: delta.executionId ?? '',
+						nodeId: delta.nodeId ?? '',
+						nodeName: delta.nodeName ?? '工作流',
+						question: delta.question ?? '',
+						options: (delta.options ?? []) as any,
+						multiSelect: !!(delta.multiSelect),
+						selectedIndices: [] as number[],
+						status: 'pending' as const,
+						createdAt: Date.now(),
+					};
+					if (!assistantMsg.askUsers) { assistantMsg.askUsers = []; }
+					assistantMsg.askUsers = [...assistantMsg.askUsers, askUser];
+					panel.updateMessage(assistantId, { askUsers: assistantMsg.askUsers });
+					break;
+				}
+				case 'ask_user_progress': {
+					if (assistantMsg.askUsers) {
+						const status = delta.status as 'answered' | 'cancelled' | 'expired';
+						assistantMsg.askUsers = assistantMsg.askUsers.map(au =>
+							au.id === (delta.askUserId ?? `${delta.executionId}:${delta.nodeId}`)
+								? { ...au, status, selection: delta.selection, answeredAt: Date.now() }
+								: au
+						);
+						panel.updateMessage(assistantId, { askUsers: assistantMsg.askUsers });
 					}
-				},
-			);
-		} catch (err) {
+					break;
+				}
+				// ── TodoList ──────────────────────────────────
+				case 'todo_list': {
+					const todos = (delta.todos ?? []) as any[];
+					assistantMsg.todos = todos.map((t: any) => ({
+						id: t.id ?? `todo-${Date.now()}`,
+						label: t.label ?? '',
+						completed: !!t.completed,
+						description: t.description,
+						assignee: t.assignee,
+					}));
+					panel.updateMessage(assistantId, { todos: assistantMsg.todos });
+					break;
+				}
+				// ── QuestionCarousel ───────────────────────────
+				case 'question_carousel': {
+					const questions = (delta.questions ?? []) as any[];
+					assistantMsg.questions = questions.map((q: any) => ({
+						id: q.id ?? `q-${Date.now()}`,
+						label: q.label ?? '',
+						tooltip: q.tooltip,
+						category: q.category,
+					}));
+					panel.updateMessage(assistantId, { questions: assistantMsg.questions });
+					break;
+				}
+				// ── References ───────────────────────────────
+				case 'references': {
+					const refs = (delta.references ?? []) as any[];
+					assistantMsg.references = refs.map((r: any) => ({
+						id: r.id ?? `ref-${Date.now()}`,
+						kind: r.kind ?? 'file',
+						name: r.name ?? '',
+						uri: r.uri,
+						range: r.range,
+						description: r.description,
+						state: r.state,
+					}));
+					panel.updateMessage(assistantId, { references: assistantMsg.references });
+					break;
+				}
+				// ── Tip ─────────────────────────────────────
+				case 'tip': {
+					assistantMsg.tip = {
+						id: delta.tipId ?? `tip-${Date.now()}`,
+						content: delta.content ?? '',
+						icon: delta.icon,
+						action: delta.action ? { label: delta.action.label, tooltip: delta.action.tooltip, actionId: delta.action.actionId! } : undefined,
+					};
+					panel.updateMessage(assistantId, { tip: assistantMsg.tip });
+					break;
+				}
+			// ── Progress ───────────────────────────────
+			case 'progress': {
+				const items = (delta.progress ?? []) as any[];
+				assistantMsg.progress = items.map((p: any) => ({
+					id: p.id ?? `prog-${Date.now()}`,
+					content: p.content ?? '',
+					status: p.status ?? 'pending',
+					icon: p.icon,
+					timestamp: p.timestamp,
+				}));
+				panel.updateMessage(assistantId, { progress: assistantMsg.progress });
+				break;
+			}
+			// ── LiveWorkflowTraceView ────────────────────
+			case 'workflow_start': {
+				// Initialize a new workflow execution
+				const executionId = delta.executionId ?? `exec-${Date.now()}`;
+				const workflowExec: ILiveWorkflowExecution = {
+					executionId,
+					workflowName: delta.workflowName ?? 'Workflow',
+					status: 'running',
+					currentNodeId: delta.currentNodeId,
+					subAgents: [],
+					startTime: Date.now(),
+				};
+				// Store in assistant message (will be rendered by LiveWorkflowTraceView)
+				if (!assistantMsg.workflowExecutions) { assistantMsg.workflowExecutions = {}; }
+				assistantMsg.workflowExecutions[executionId] = workflowExec;
+				panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				break;
+			}
+			case 'workflow_end': {
+				const executionId = delta.executionId ?? '';
+				if (assistantMsg.workflowExecutions && assistantMsg.workflowExecutions[executionId]) {
+					assistantMsg.workflowExecutions[executionId] = {
+						...assistantMsg.workflowExecutions[executionId],
+						status: (delta.status as 'cancelled' | 'completed' | 'failed' | 'running') ?? 'completed',
+						endTime: Date.now(),
+					};
+					panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				}
+				break;
+			}
+			case 'workflow_subagent_start': {
+				const executionId = delta.executionId ?? '';
+				const subAgent: ILiveWorkflowSubAgent = {
+					id: delta.subAgentId ?? `sa-${Date.now()}`,
+					name: delta.subAgentName ?? 'Sub-agent',
+					task: delta.task,
+					status: 'running',
+					startTime: Date.now(),
+				};
+				if (!assistantMsg.workflowExecutions) { assistantMsg.workflowExecutions = {}; }
+				if (assistantMsg.workflowExecutions[executionId]) {
+					assistantMsg.workflowExecutions[executionId].subAgents.push(subAgent);
+				} else {
+					// Create execution if it doesn't exist
+					assistantMsg.workflowExecutions[executionId] = {
+						executionId,
+						workflowName: delta.workflowName ?? 'Workflow',
+						status: 'running',
+						subAgents: [subAgent],
+						startTime: Date.now(),
+					};
+				}
+				panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				break;
+			}
+			case 'workflow_subagent_end': {
+				const executionId = delta.executionId ?? '';
+				const subAgentId = delta.subAgentId ?? '';
+				if (assistantMsg.workflowExecutions && assistantMsg.workflowExecutions[executionId]) {
+					const subAgents = assistantMsg.workflowExecutions[executionId].subAgents.map(sa =>
+						sa.id === subAgentId
+							? { ...sa, status: (delta.status ?? 'done') as any, output: delta.output ?? sa.output, error: delta.error ?? sa.error, endTime: Date.now() }
+							: sa
+					);
+					assistantMsg.workflowExecutions[executionId] = {
+						...assistantMsg.workflowExecutions[executionId],
+						subAgents,
+					};
+					panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				}
+				break;
+			}
+			case 'workflow_delta': {
+				// Streaming delta for a sub-agent (text/thinking/tool calls)
+				const executionId = delta.executionId ?? '';
+				const subAgentId = delta.subAgentId ?? '';
+				if (assistantMsg.workflowExecutions && assistantMsg.workflowExecutions[executionId]) {
+					const subAgents = assistantMsg.workflowExecutions[executionId].subAgents.map(sa =>
+						sa.id === subAgentId
+							? {
+								...sa,
+								streamedText: delta.content ? (sa.streamedText ?? '') + delta.content : sa.streamedText,
+								streamedThinking: delta.thinking ? (sa.streamedThinking ?? '') + delta.thinking : sa.streamedThinking,
+							}
+							: sa
+					);
+					assistantMsg.workflowExecutions[executionId] = {
+						...assistantMsg.workflowExecutions[executionId],
+						subAgents,
+					};
+					panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				}
+				break;
+			}
+			case 'workflow_ask_user': {
+				// Workflow is asking user for input
+				const executionId = delta.executionId ?? '';
+				const askUserEvent: ILiveWorkflowEvent = {
+					id: delta.eventId ?? `event-${Date.now()}`,
+					executionId,
+					sessionId: delta.sessionId ?? '',
+					timestamp: Date.now(),
+					kind: 'ask_user',
+					nodeId: delta.nodeId ?? '',
+					nodeName: delta.nodeName,
+					nodeType: delta.nodeType,
+					ask: delta.question ?? '',
+				};
+				if (!assistantMsg.workflowEvents) { assistantMsg.workflowEvents = []; }
+				assistantMsg.workflowEvents.push(askUserEvent);
+				panel.updateMessage(assistantId, { workflowEvents: assistantMsg.workflowEvents });
+				break;
+			}
+		case 'workflow_ask_user_end': {
+			const eventId = delta.eventId ?? '';
+				if (assistantMsg.workflowEvents) {
+					assistantMsg.workflowEvents = assistantMsg.workflowEvents.map(evt =>
+						evt.id === eventId ? { ...evt, kind: 'ask_user_end' as any } : evt
+					);
+					panel.updateMessage(assistantId, { workflowEvents: assistantMsg.workflowEvents });
+				}
+				break;
+			}
+			case 'workflow_collect_variables': {
+				const executionId = delta.executionId ?? '';
+				const collectVar: ILiveCollectVariable = {
+					id: delta.collectId ?? `cv-${Date.now()}`,
+					executionId,
+					variables: delta.variables ?? [],
+					values: delta.values ?? {},
+					status: 'pending',
+					createdAt: Date.now(),
+				};
+				if (!assistantMsg.collectVariables) { assistantMsg.collectVariables = {}; }
+				assistantMsg.collectVariables[collectVar.id] = collectVar;
+				panel.updateMessage(assistantId, { collectVariables: assistantMsg.collectVariables });
+				break;
+			}
+			case 'workflow_collect_variables_end': {
+				const collectId = delta.collectId ?? '';
+				if (assistantMsg.collectVariables && assistantMsg.collectVariables[collectId]) {
+					assistantMsg.collectVariables[collectId] = {
+						...assistantMsg.collectVariables[collectId],
+						status: (delta.status as 'pending' | 'skipped' | 'submitted') ?? 'submitted',
+						values: (delta.values as Record<string, string>) ?? assistantMsg.collectVariables[collectId].values,
+					};
+					panel.updateMessage(assistantId, { collectVariables: assistantMsg.collectVariables });
+				}
+				break;
+			}
+			case 'workflow_breakpoint_hit': {
+				const executionId = delta.executionId ?? '';
+				const bpEvent: ILiveWorkflowEvent = {
+					id: delta.eventId ?? `bp-${Date.now()}`,
+					executionId,
+					sessionId: delta.sessionId ?? '',
+					timestamp: Date.now(),
+					kind: 'breakpoint_hit',
+					nodeId: delta.nodeId ?? '',
+					nodeName: delta.nodeName,
+					nodeType: delta.nodeType,
+					summary: delta.summary ?? 'Breakpoint hit',
+				};
+				if (!assistantMsg.workflowEvents) { assistantMsg.workflowEvents = []; }
+				assistantMsg.workflowEvents.push(bpEvent);
+				panel.updateMessage(assistantId, { workflowEvents: assistantMsg.workflowEvents });
+				break;
+			}
+			default:
+				// Ignore other delta types in this lightweight panel
+				break;
+				}
+			},
+		);
+	} catch (err) {
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			assistantMsg.metadata = { ...assistantMsg.metadata, streamError: errorMsg };
 			panel.updateMessage(assistantId, {
 				isStreaming: false,
 				isThinking: false,
-				content: `⚠ ${err instanceof Error ? err.message : String(err)}`,
+				content: (assistantMsg.content || '') + `\n\n⚠ ${errorMsg}`,
+				metadata: assistantMsg.metadata,
 			});
 		} finally {
 			panel.setSending(false);
 		}
 	}
 
-	private _adaptChatMessage(m: { id: string; role: 'user' | 'assistant' | 'tool' | 'system'; content: string; thinking?: string; toolCalls?: any[]; timestamp: string }): IAgentChatMessage {
+	private _adaptChatMessage(m: { id: string; role: 'user' | 'assistant' | 'tool' | 'system'; content: string; thinking?: string; toolCalls?: any[]; turnId?: string; timestamp: string }): IAgentChatMessage {
 		const role: IAgentChatMessage['role'] = m.role === 'tool' ? 'system' : m.role;
 		const ts = (() => {
 			const t = Date.parse(m.timestamp);
@@ -648,6 +1190,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			role,
 			content: m.content,
 			timestamp: ts,
+			turnId: (m as any).turnId,
 			thinking: m.thinking,
 			toolCalls: Array.isArray(m.toolCalls)
 				? m.toolCalls.map((c: any, i: number) => ({

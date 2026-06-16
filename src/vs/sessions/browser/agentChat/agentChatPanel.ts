@@ -13,9 +13,15 @@ import {
 	EventType,
 } from "../../../base/browser/dom.js";
 import { mainWindow } from "../../../base/browser/window.js";
+import { renderMarkdown, type MarkdownRenderOptions } from "../../../base/browser/markdownRenderer.js";
+import type { IMarkdownString } from "../../../base/common/htmlContent.js";
 import {
 	IAgentChatMessage,
 	IToolCall,
+	IChatAttachment,
+	ISubAgentData,
+	ISubAgentBlock,
+	IConfirmationData,
 	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
@@ -23,12 +29,25 @@ import {
 	HeaderPanelType,
 	AgentStatus,
 	ChatMode,
+	StreamPhase,
 	IModeOption,
 	IWorktreeItem,
 	ISessionInfo,
 	IAgentSessionMeta,
 	IContextUsage,
 	ICheckpointInfo,
+	ISuggestedQuestion,
+	IReferenceItem,
+	ILiveWorkflowAskUser,
+	ILiveWorkflowExecution,
+	ILiveWorkflowEvent,
+	ILiveCollectVariable,
+	ITodoItem,
+	ITipMessage,
+	IProgressMessage,
+	// Orchestration Plan Types
+	OrchestrationPlan,
+	PlanTask,
 } from "./agentChatTypes.js";
 
 // Mode options metadata — mirrors webview ChatComposer.tsx modeOptions
@@ -95,6 +114,7 @@ export class AgentChatPanel extends Disposable {
 	private _showScrollTopBtn = false;
 	private _autoOrchestrateEnabled = false;
 	private _webSearchEnabled = false;
+	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
 	private _currentModel = "";
 	private _providers: IProviderInfo[] = [];
@@ -111,7 +131,8 @@ export class AgentChatPanel extends Disposable {
 	private _contextUsage: IContextUsage | null = null;
 	private _checkpoint: ICheckpointInfo | null = null;
 	private _checkpointFilesExpanded = false;
-
+	private _attachments: IChatAttachment[] = [];
+	private _fileInput: HTMLInputElement | null = null;
 	// -- Agent dropdown state --
 	private _availableAgents: IAgentInfo[] = [];
 	private _dropdownOpen = false;
@@ -137,8 +158,26 @@ export class AgentChatPanel extends Disposable {
 	// -- Tabs state --
 	private _tabsContainer: HTMLElement | undefined;
 
+	// -- Composer --
+	private _resizeMaxH = 120; // dynamic max height from drag resize
+
+	// -- Slash menu state --
+	private _slashMenuEl: HTMLElement | null = null;
+	private _slashMenuIndex = 0;
+
+	// -- Skill chips state --
+	private _skillChipsBar: HTMLElement | null = null;
+	private _skillChips: Array<{ id: string; name: string }> = [];
+
+	// -- Orchestration plan state --
+	private _orchestrationPlanEl: HTMLElement | null = null;
+	private _isPlanDialogOpen: boolean = false;
+	private _activePlan: OrchestrationPlan | null = null;
+
+	// -- Context baseline --
+
 	// -- Callbacks --
-	private readonly _onSendMessage: (text: string) => void;
+	private readonly _onSendMessage: (text: string, explicitSkillIds?: string[]) => void;
 	private readonly _onCancelExecution: () => void;
 	private readonly _onSelectAgent: (id: string) => void;
 	private readonly _onSelectWorktree?: (path: string) => void;
@@ -152,6 +191,25 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onSelectProvider?: (providerId: string) => void;
 	private readonly _onSelectModel?: (modelId: string) => void;
 	private readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
+	private readonly _onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
+	private readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
+	// New callbacks for missing features
+	private readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+	private readonly _onQuestionClick?: (question: ISuggestedQuestion) => void;
+	private readonly _onReferenceClick?: (ref: IReferenceItem) => void;
+	private readonly _onTipAction?: (tipId: string, actionId: string) => void;
+	private readonly _onTipDismiss?: (tipId: string) => void;
+	private readonly _onApplyCode?: (code: string, language: string, filePath?: string) => void;
+	private readonly _onOpenFile?: (filePath: string) => void;
+	// Orchestration plan callbacks
+	private readonly _onApprovePlan?: (planId: string) => void;
+	private readonly _onRejectPlan?: (planId: string) => void;
+	private readonly _onApproveWithoutExecute?: (planId: string) => void;
+	private readonly _onTaskAction?: (planId: string, taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => void;
+	private readonly _onUpdatePlan?: (planId: string, updates: Record<string, unknown>) => void;
+	private readonly _onUpdateTask?: (planId: string, taskId: string, updates: Record<string, unknown>) => void;
+	private readonly _onDecomposeTask?: (planId: string, taskId: string) => void;
+	private readonly _onClosePlanDialog?: (planId: string) => void;
 
 	constructor(opts: {
 		onSendMessage: (text: string) => void;
@@ -169,6 +227,25 @@ export class AgentChatPanel extends Disposable {
 		onSelectProvider?: (providerId: string) => void;
 		onSelectModel?: (modelId: string) => void;
 		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
+		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
+		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
+		// New callbacks for missing features
+		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+		onQuestionClick?: (question: ISuggestedQuestion) => void;
+		onReferenceClick?: (ref: IReferenceItem) => void;
+		onTipAction?: (tipId: string, actionId: string) => void;
+		onTipDismiss?: (tipId: string) => void;
+		onApplyCode?: (code: string, language: string, filePath?: string) => void;
+		onOpenFile?: (filePath: string) => void;
+		onDecomposeTask?: (planId: string, taskId: string) => void;
+		// Orchestration plan callbacks
+		onApprovePlan?: (planId: string) => void;
+		onRejectPlan?: (planId: string) => void;
+		onApproveWithoutExecute?: (planId: string) => void;
+		onTaskAction?: (planId: string, taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => void;
+		onUpdatePlan?: (planId: string, updates: Record<string, unknown>) => void;
+		onUpdateTask?: (planId: string, taskId: string, updates: Record<string, unknown>) => void;
+		onClosePlanDialog?: (planId: string) => void;
 	}) {
 		super();
 		this._onSendMessage = opts.onSendMessage;
@@ -185,6 +262,25 @@ export class AgentChatPanel extends Disposable {
 		this._onSelectProvider = opts.onSelectProvider;
 		this._onSelectModel = opts.onSelectModel;
 		this._onCheckpointAction = opts.onCheckpointAction;
+		this._onConfirmationAction = opts.onConfirmationAction;
+		this._onListSkills = opts.onListSkills;
+		// New callbacks
+		this._onAskUserSubmit = opts.onAskUserSubmit;
+		this._onQuestionClick = opts.onQuestionClick;
+		this._onReferenceClick = opts.onReferenceClick;
+		this._onTipAction = opts.onTipAction;
+		this._onTipDismiss = opts.onTipDismiss;
+		this._onApplyCode = opts.onApplyCode;
+		this._onOpenFile = opts.onOpenFile;
+		// Orchestration plan callbacks
+		this._onApprovePlan = opts.onApprovePlan;
+		this._onRejectPlan = opts.onRejectPlan;
+		this._onApproveWithoutExecute = opts.onApproveWithoutExecute;
+		this._onTaskAction = opts.onTaskAction;
+		this._onUpdatePlan = opts.onUpdatePlan;
+		this._onUpdateTask = opts.onUpdateTask;
+		this._onDecomposeTask = opts.onDecomposeTask;
+		this._onClosePlanDialog = opts.onClosePlanDialog;
 		this._container = $(".chat-container");
 
 		// Initial render so the container has visible structure (tabs + empty state)
@@ -212,7 +308,7 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	setMessages(messages: IAgentChatMessage[]): void {
-		this._messages = messages;
+		this._messages = this._aggregateTurns(messages);
 		this._renderMessages();
 		this._scrollToBottom(false);
 	}
@@ -237,6 +333,11 @@ export class AgentChatPanel extends Disposable {
 	setSending(sending: boolean): void {
 		this._isSending = sending;
 		this._updateSendButton();
+		if (!sending) { this._streamPhase = 'idle'; }
+	}
+
+	setStreamPhase(phase: StreamPhase): void {
+		this._streamPhase = phase;
 	}
 
 	setProviders(providers: IProviderInfo[]): void {
@@ -287,6 +388,17 @@ export class AgentChatPanel extends Disposable {
 
 	setContextUsage(usage: IContextUsage | null): void {
 		this._contextUsage = usage;
+		this._updateContextRing();
+	}
+
+	setCompactedBaseline(baseline: number): void {
+		// Immediately recalculate displayed ring using the compacted baseline
+		if (this._contextUsage && baseline > 0) {
+			const limit = this._contextUsage.limit;
+			const ratio = Math.max(0, Math.min(1, baseline / limit));
+			const effective: IContextUsage = { used: baseline, limit, ratio, percent: ratio * 100 };
+			this._contextUsage = effective;
+		}
 		this._updateContextRing();
 	}
 
@@ -348,6 +460,7 @@ export class AgentChatPanel extends Disposable {
 		this._closeModeDropdown();
 		this._closeProviderDropdown();
 		this._closeModelDropdown();
+		this._closeSlashMenu();
 	}
 
 	// Tabs Container (editor-style tabs)
@@ -869,6 +982,71 @@ export class AgentChatPanel extends Disposable {
 		}
 	}
 
+	// --- Hermes turn aggregation ---
+	// Merges consecutive assistant messages that share the same turnId into single bubbles,
+	// matching the React webview displayMessages computed-property behavior.
+	private _aggregateTurns(messages: IAgentChatMessage[]): IAgentChatMessage[] {
+		if (!messages.length) { return []; }
+
+		const aggregated: IAgentChatMessage[] = [];
+		let i = 0;
+
+		while (i < messages.length) {
+			const current = messages[i];
+
+			// Skip non-assistant or messages without turnId
+			if (current.role !== 'assistant' || !current.turnId) {
+				aggregated.push(current);
+				i++;
+				continue;
+			}
+
+			// Collect consecutive assistant messages with same turnId
+			const turnId = current.turnId;
+			const turnMessages: IAgentChatMessage[] = [current];
+			let j = i + 1;
+			while (j < messages.length && messages[j].role === 'assistant' && messages[j].turnId === turnId) {
+				turnMessages.push(messages[j]);
+				j++;
+			}
+
+			if (turnMessages.length === 1) {
+				aggregated.push(current);
+			} else {
+				// Merge: concatenate content, merge toolCalls (adjust textPosition offsets)
+				const mergedContent = turnMessages
+					.map(m => m.content || '')
+					.filter(c => c.length > 0)
+					.join('\n\n');
+				const mergedToolCalls: IToolCall[] = [];
+				let contentOffset = 0;
+				for (const tm of turnMessages) {
+					const tcOffset = contentOffset;
+					const tcs = (tm.toolCalls || []).map(tc => ({
+						...tc,
+						textPosition: tc.textPosition != null ? tc.textPosition + tcOffset : undefined,
+					}));
+					mergedToolCalls.push(...tcs);
+					contentOffset += (tm.content || '').length + 2; // +2 for \n\n separator
+				}
+
+				const lastMsg = turnMessages[turnMessages.length - 1];
+				const merged: IAgentChatMessage = {
+					...lastMsg,
+					id: `turn-${turnId}`,
+					content: mergedContent,
+					toolCalls: mergedToolCalls.length > 0 ? mergedToolCalls : undefined,
+					thinking: turnMessages.map(m => m.thinking).filter(Boolean).join('\n\n') || undefined,
+				};
+				aggregated.push(merged);
+			}
+
+			i = j;
+		}
+
+		return aggregated;
+	}
+
 	// Messages area
 
 	private _renderMessagesArea(): void {
@@ -980,9 +1158,27 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	private _updateMessageDom(idx: number, msg: IAgentChatMessage): void {
-		// For simplicity, re-render the full message list
-		// Performance optimization can be done later with keyed updates
-		this._renderMessages();
+		if (!this._messagesContainer) { return; }
+		const children = this._messagesContainer.children;
+		if (idx >= children.length) { return; }
+		const existingEl = children[idx] as HTMLElement;
+
+		// Fast path: if only streaming text/content changed, update in-place
+		const hasStructuralChange =
+			(msg.toolCalls && msg.toolCalls.length > 0) ||
+			msg.confirmation ||
+			(msg.subAgents && msg.subAgents.length > 0);
+		if (!hasStructuralChange && msg.isStreaming && msg.content) {
+			const streamingText = existingEl.querySelector('.streaming-text');
+			if (streamingText) {
+				streamingText.textContent = msg.content;
+				return;
+			}
+		}
+
+		// Slow path: rebuild this single message element and replace in DOM
+		const newEl = this._createMessageElement(msg);
+		this._messagesContainer.replaceChild(newEl, existingEl);
 	}
 
 	// Message element builder
@@ -1020,40 +1216,127 @@ export class AgentChatPanel extends Disposable {
 			bubble.appendChild(this._createThinkingCard(msg));
 		}
 
-		// Step indicator
-		if (!isUser && msg.currentStep && !msg.content) {
-			const step = append(bubble, $(".step-indicator"));
-			if (msg.currentStep === "call_llm") {
-				step.innerHTML = '<span class="step-icon">...</span> 调用模型中...';
-			} else if (msg.currentStep === "execute_tool") {
-				step.innerHTML = '<span class="step-icon">T</span> 执行工具中...';
-			} else {
-				step.textContent = `${msg.currentStep}...`;
+		// Step / phase indicator — shows rich streaming state based on StreamPhase
+		// matches React 5-state model: idle → llm_streaming → tool_executing → awaiting_approval → compressing → error
+		if (!isUser && msg.isStreaming && !msg.content && !(msg.thinking) && !(msg.toolCalls?.length)) {
+			const phase = msg.streamPhase || this._streamPhase;
+			const step = append(bubble, $(".step-indicator.loading"));
+			// Add phase-specific CSS class for color styling
+			if (phase !== 'idle') {
+				step.classList.add(`phase-${phase.replace(/_/g, '-')}`);
+			}
+			switch (phase) {
+				case 'llm_streaming':
+					step.innerHTML = '<span class="step-icon loading-dots">...</span> AI 正在输出...';
+					break;
+				case 'tool_executing':
+					step.innerHTML = '<span class="step-icon">⚙️</span> 执行工具中...';
+					break;
+				case 'awaiting_approval':
+					step.innerHTML = '<span class="step-icon">🔒</span> 等待审批...';
+					break;
+				case 'compressing':
+					step.innerHTML = '<span class="step-icon">🔄</span> 压缩上下文中...';
+					break;
+				case 'error':
+					step.innerHTML = '<span class="step-icon" style="color:#f87171">⚠</span> 出错了';
+					break;
+				default:
+					if (msg.currentStep === "call_llm") {
+						step.innerHTML = '<span class="step-icon loading-dots">...</span> 调用模型中...';
+					} else if (msg.currentStep === "execute_tool") {
+						step.innerHTML = '<span class="step-icon">⚙️</span> 执行工具中...';
+					} else {
+						step.innerHTML = '<span class="step-icon loading-dots">...</span> 思考中...';
+					}
 			}
 		}
 
-		// Tool calls
-		if (!isUser && msg.toolCalls && msg.toolCalls.length > 0) {
-			const section = append(bubble, $(".tool-calls-section"));
-			for (const tc of msg.toolCalls) {
-				section.appendChild(this._createToolCallCard(tc));
-			}
-		}
-
-		// Content
-		if (msg.content) {
+		// Content + Tool calls — interleaved rendering for assistant messages
+		// (Void-inspired: tool cards inserted at text positions inside markdown),
+		// simple rendering for user messages.
+		if (isUser && msg.content) {
 			const contentEl = append(bubble, $(".message-content"));
-			if (msg.isStreaming && !isUser) {
-				// Streaming: plain text to avoid re-rendering markdown
-				const span = append(contentEl, $("span.streaming-text"));
-				span.textContent = msg.content;
-			} else if (isUser) {
-				// User: highlight @mentions
-				this._renderUserContent(contentEl, msg.content);
-			} else {
-				// Assistant: simple markdown-like rendering (code blocks)
-				this._renderAssistantContent(contentEl, msg.content);
+			this._renderUserContent(contentEl, msg.content);
+		} else if (!isUser && msg.content && msg.isStreaming && !(msg.toolCalls?.length)) {
+			// Streaming text-only: show plain text (fast path)
+			const contentEl = append(bubble, $(".message-content"));
+			const span = append(contentEl, $("span.streaming-text"));
+			span.textContent = msg.content;
+		} else if (!isUser && msg.content && msg.toolCalls && msg.toolCalls.some(tc => tc.textPosition != null)) {
+			// Has positioned tool calls → interleaved rendering
+			this._renderInterleavedContent(bubble, msg.content, msg.toolCalls);
+		} else if (!isUser) {
+			// No positioned tool calls → content first, then tool calls
+			if (msg.content) {
+				const contentEl = append(bubble, $(".message-content"));
+				this._renderMarkdownContent(contentEl, msg.content);
 			}
+			if (msg.toolCalls && msg.toolCalls.length > 0) {
+				const section = append(bubble, $(".tool-calls-section"));
+				for (const tc of msg.toolCalls) {
+					section.appendChild(this._createToolCallCard(tc));
+				}
+			}
+		}
+
+		// Sub-agent cards
+		if (!isUser && msg.subAgents && msg.subAgents.length > 0) {
+			const section = append(bubble, $(".subagent-cards-section"));
+			for (const sa of msg.subAgents) {
+				section.appendChild(this._createSubAgentCard(sa));
+			}
+		}
+
+		// LiveWorkflowTraceView — collapsible workflow execution trace
+		if (!isUser && msg.workflowExecutions && Object.keys(msg.workflowExecutions).length > 0) {
+			bubble.appendChild(this._createLiveWorkflowTraceView(
+				msg.workflowExecutions,
+				msg.workflowEvents,
+				msg.collectVariables
+			));
+		}
+
+		// Confirmation card
+		if (!isUser && msg.confirmation && msg.confirmation.status === 'pending') {
+			bubble.appendChild(this._createConfirmationCard(msg.confirmation));
+		}
+
+		// AskUser cards (workflow interactive input)
+		if (!isUser && msg.askUsers && msg.askUsers.length > 0) {
+			for (const askUser of msg.askUsers) {
+				bubble.appendChild(this._createAskUserCard(askUser));
+			}
+		}
+
+		// TodoList card
+		if (!isUser && msg.todos && msg.todos.length > 0) {
+			bubble.appendChild(this._createTodoListCard(msg.todos));
+		}
+
+		// QuestionCarousel card
+		if (!isUser && msg.questions && msg.questions.length > 0) {
+			bubble.appendChild(this._createQuestionCarouselCard(msg.questions));
+		}
+
+		// References card
+		if (!isUser && msg.references && msg.references.length > 0) {
+			bubble.appendChild(this._createReferencesCard(msg.references));
+		}
+
+		// Tip card
+		if (!isUser && msg.tip) {
+			bubble.appendChild(this._createTipCard(msg.tip));
+		}
+
+		// Progress card
+		if (!isUser && msg.progress && msg.progress.length > 0) {
+			bubble.appendChild(this._createProgressCard(msg.progress));
+		}
+
+		// Stream error — structured error card with retry button
+		if (!isUser && msg.metadata?.['streamError']) {
+			bubble.appendChild(this._createStreamErrorCard(msg));
 		}
 
 		// Streaming cursor
@@ -1114,10 +1397,14 @@ export class AgentChatPanel extends Disposable {
 		const toggle = append(header, $("span.thinking-card-toggle.collapsed"));
 		toggle.textContent = "▼";
 
-		// Body (initially collapsed)
+		// Body (initially collapsed, rendered as markdown)
 		const body = $(".thinking-card-body");
 		append(card, body);
-		body.textContent = msg.thinking || (msg.isThinking ? "正在思考..." : "");
+		if (msg.thinking) {
+			this._renderMarkdownContent(body, msg.thinking);
+		} else {
+			body.textContent = msg.isThinking ? "正在思考..." : "";
+		}
 		body.style.display = "none";
 
 		// Toggle click
@@ -1137,49 +1424,63 @@ export class AgentChatPanel extends Disposable {
 
 	private _createToolCallCard(tc: IToolCall): HTMLElement {
 		const isRunning = tc.status === "running";
+		const renderType = tc.renderType || '';
+		const displayName = tc.displayName || '';
 		const card = $(`.tool-call-card.${isRunning ? "running" : "completed"}`);
 
-		// Header
+		// Header — clickable to expand/collapse body
 		const header = $(".tool-call-header");
 		append(card, header);
 		const iconEl = append(header, $("span.tool-call-icon"));
 		if (isRunning) {
 			const spinner = append(iconEl, $("svg.tool-spinner"));
-			spinner.setAttribute("width", "12");
-			spinner.setAttribute("height", "12");
+			spinner.setAttribute("width", "12"); spinner.setAttribute("height", "12");
 			spinner.setAttribute("viewBox", "0 0 24 24");
-			spinner.setAttribute("fill", "none");
-			spinner.setAttribute("stroke", "currentColor");
+			spinner.setAttribute("fill", "none"); spinner.setAttribute("stroke", "currentColor");
 			spinner.setAttribute("stroke-width", "2.5");
-			const spinPath = document.createElementNS(
-				"http://www.w3.org/2000/svg",
-				"path",
-			);
+			const spinPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
 			spinPath.setAttribute("d", "M21 12a9 9 0 11-6.219-8.56");
 			spinner.appendChild(spinPath);
 		} else {
 			const checkSvg = append(iconEl, $("svg"));
-			checkSvg.setAttribute("width", "12");
-			checkSvg.setAttribute("height", "12");
+			checkSvg.setAttribute("width", "12"); checkSvg.setAttribute("height", "12");
 			checkSvg.setAttribute("viewBox", "0 0 24 24");
-			checkSvg.setAttribute("fill", "none");
-			checkSvg.setAttribute("stroke", "currentColor");
+			checkSvg.setAttribute("fill", "none"); checkSvg.setAttribute("stroke", "currentColor");
 			checkSvg.setAttribute("stroke-width", "2.5");
-			const checkPath = document.createElementNS(
-				"http://www.w3.org/2000/svg",
-				"polyline",
-			);
+			const checkPath = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
 			checkPath.setAttribute("points", "20 6 9 17 4 12");
 			checkSvg.appendChild(checkPath);
 		}
-		append(header, $("span.tool-call-name", undefined, tc.name));
+
+		// Tool name — prefer displayName, fallback to name
+		const nameLabel = displayName || tc.name;
+		append(header, $("span.tool-call-name", undefined, nameLabel));
+		// Render type badge if present
+		if (renderType) {
+			append(header, $("span.tool-call-render-type", undefined, renderType));
+		}
+		// File path (clickable to open file)
+		if (tc.filePath) {
+			const filePathEl = append(header, $("code.tool-call-file-path", undefined, tc.filePath));
+			filePathEl.title = '点击打开文件';
+			filePathEl.addEventListener('click', (e) => {
+				e.stopPropagation();
+				// Open file via vscode.open command
+				if (tc.filePath) {
+					// Use the command service to open the file
+					// This will be wired up via callback in ChatBarPart
+					this._onOpenFile?.(tc.filePath);
+				}
+			});
+		}
 		const toggle = append(header, $("span.tool-call-toggle.collapsed"));
 		toggle.textContent = "▼";
 
-		// Body (initially collapsed)
+		// Body (defaultShow=true → open by default)
 		const body = $(".tool-call-body");
 		append(card, body);
-		body.style.display = "none";
+		const defaultShow = tc.defaultShow !== false; // true if undefined
+		if (!defaultShow) { body.style.display = "none"; }
 
 		if (tc.args) {
 			try {
@@ -1206,8 +1507,9 @@ export class AgentChatPanel extends Disposable {
 			}
 		}
 
-		// Toggle click
-		let collapsed = true;
+		// Toggle click — starts open when defaultShow is true
+		let collapsed = !defaultShow;
+		if (!collapsed) { toggle.classList.remove("collapsed"); }
 		this._register(
 			addDisposableListener(header, EventType.CLICK, () => {
 				collapsed = !collapsed;
@@ -1216,6 +1518,689 @@ export class AgentChatPanel extends Disposable {
 			}),
 		);
 
+		return card;
+	}
+
+	// --- Sub-agent card (enhanced: blocks, traces, grouping) ---
+
+	private _createSubAgentCard(sa: ISubAgentData): HTMLElement {
+		const statusMap: Record<string, { icon: string; label: string; color: string }> = {
+			pending: { icon: '⏳', label: '等待中', color: '#9ca3af' },
+			running: { icon: '⚙️', label: '运行中', color: '#60a5fa' },
+			done: { icon: '✅', label: '完成', color: '#34d399' },
+			error: { icon: '❌', label: '错误', color: '#f87171' },
+			cancelled: { icon: '⛔', label: '已取消', color: '#9ca3af' },
+		};
+		const info = statusMap[sa.status] || statusMap.pending;
+		const typeLabel = sa.type === 'explore' ? '探索' : sa.type === 'scout' ? '侦察' : '通用';
+		const card = $(`.subagent-card.status-${sa.status}`);
+		const header = append(card, $('.subagent-card-header'));
+		append(header, $('span.subagent-card-icon', undefined, info.icon));
+		append(header, $('span.subagent-card-name', undefined, `SubAgent (${typeLabel})`));
+		append(header, $('span.subagent-card-status', undefined, info.label)).style.color = info.color;
+
+		const body = append(card, $('.subagent-card-body'));
+
+		// Task description
+		if (sa.task) {
+			append(body, $('p.subagent-card-task', undefined, sa.task));
+		}
+
+		// Progress
+		if (sa.progress) {
+			append(body, $('p.subagent-card-progress', undefined, sa.progress));
+		}
+
+		// Enhanced blocks: Input → Thinking → ToolTrace → Output
+		const blocks: { label: string; items: ISubAgentBlock[] | undefined }[] = [
+			{ label: '输入', items: sa.inputBlocks },
+			{ label: '思考', items: sa.thinkingBlocks },
+		];
+		for (const { label, items } of blocks) {
+			if (!items?.length) continue;
+			for (const blk of items) {
+				const blkEl = append(body, $(`.subagent-block.${blk.collapsed ? 'collapsed' : ''}`));
+				const blkHeader = append(blkEl, $('.subagent-block-header'));
+				append(blkHeader, $('span.subagent-block-label', undefined, label));
+				if (blk.title) { append(blkHeader, $('span.subagent-block-title', undefined, blk.title)); }
+				const blkBody = append(blkEl, $('.subagent-block-content'));
+				blkBody.textContent = blk.content.slice(0, 3000) + (blk.content.length > 3000 ? '...' : '');
+				if (blk.collapsed) { blkBody.style.display = 'none'; }
+			}
+		}
+
+		// Tool traces
+		if (sa.toolTraces?.length) {
+			for (const tt of sa.toolTraces) {
+				const traceEl = append(body, $(`.subagent-tool-trace.status-${tt.status}`));
+				const traceHeader = append(traceEl, $('.subagent-tool-trace-header'));
+				append(traceHeader, $('span.subagent-tool-trace-icon', undefined, tt.status === 'running' ? '⚙️' : '✓'));
+				append(traceHeader, $('span.subagent-tool-trace-name', undefined, tt.name));
+				if (tt.result) {
+					append(traceEl, $('pre.subagent-tool-trace-result', undefined, tt.result.slice(0, 1000)));
+				}
+			}
+		}
+
+		// Output blocks
+		if (sa.outputBlocks?.length) {
+			for (const blk of sa.outputBlocks) {
+				const outEl = append(body, $('.subagent-output-block'));
+				const outContent = append(outEl, $('pre.subagent-block-output'));
+				outContent.textContent = blk.content.slice(0, 3000) + (blk.content.length > 3000 ? '...' : '');
+			}
+		}
+
+		// Legacy output
+		if (sa.output && !sa.outputBlocks?.length) {
+			const out = append(body, $('pre.subagent-card-output'));
+			out.textContent = sa.output.slice(0, 2000) + (sa.output.length > 2000 ? '...' : '');
+		}
+		if (sa.error) {
+			const err = append(body, $('pre.subagent-card-error'));
+			err.textContent = sa.error;
+			err.style.color = '#f87171';
+		}
+		return card;
+	}
+
+	// --- LiveWorkflowTraceView -----------------------------------
+
+	private _createLiveWorkflowTraceView(
+		workflowExecutions: Record<string, ILiveWorkflowExecution>,
+		workflowEvents?: ILiveWorkflowEvent[],
+		collectVariables?: Record<string, ILiveCollectVariable>
+	): HTMLElement {
+		const container = $('.live-workflow-trace-view');
+
+		for (const [execId, exec] of Object.entries(workflowExecutions)) {
+			const execCard = append(container, $('.workflow-execution-card'));
+
+			// Header - collapsible
+			const header = append(execCard, $('.workflow-execution-header'));
+			const toggleBtn = append(header, $('span.workflow-toggle', undefined, '▼'));
+			append(header, $('span.workflow-name', undefined, exec.workflowName));
+
+			const statusInfo = exec.status === 'running' ? { icon: '⚙️', label: '运行中', color: '#60a5fa' } :
+								exec.status === 'completed' ? { icon: '✅', label: '完成', color: '#34d399' } :
+								exec.status === 'failed' ? { icon: '❌', label: '失败', color: '#f87171' } :
+								{ icon: '⛔', label: '已取消', color: '#9ca3af' };
+			append(header, $('span.workflow-status', undefined, `${statusInfo.icon} ${statusInfo.label}`)).style.color = statusInfo.color;
+
+			// Body - collapsible content
+			const body = append(execCard, $('.workflow-execution-body'));
+
+			// Sub-agents
+			if (exec.subAgents.length > 0) {
+				const subAgentsSection = append(body, $('.workflow-subagents-section'));
+				append(subAgentsSection, $('h4.workflow-section-title', undefined, '子代理'));
+
+				for (const subAgent of exec.subAgents) {
+					const saCard = append(subAgentsSection, $('.workflow-subagent-card'));
+					const saHeader = append(saCard, $('.workflow-subagent-header'));
+
+					const saStatusInfo = subAgent.status === 'pending' ? { icon: '⏳', label: '等待中', color: '#9ca3af' } :
+										subAgent.status === 'running' ? { icon: '⚙️', label: '运行中', color: '#60a5fa' } :
+										subAgent.status === 'done' ? { icon: '✅', label: '完成', color: '#34d399' } :
+										subAgent.status === 'error' ? { icon: '❌', label: '错误', color: '#f87171' } :
+										{ icon: '⛔', label: '已取消', color: '#9ca3af' };
+
+					append(saHeader, $('span.subagent-status-icon', undefined, saStatusInfo.icon));
+					append(saHeader, $('span.subagent-name', undefined, subAgent.name));
+					append(saHeader, $('span.subagent-status-label', undefined, saStatusInfo.label)).style.color = saStatusInfo.color;
+
+					// Task description
+					if (subAgent.task) {
+						append(saCard, $('p.subagent-task', undefined, subAgent.task));
+					}
+
+					// Streamed text (collapsible)
+					if (subAgent.streamedText) {
+						const textEl = append(saCard, $('pre.subagent-streamed-text'));
+						textEl.textContent = subAgent.streamedText.slice(0, 2000) + (subAgent.streamedText.length > 2000 ? '...' : '');
+					}
+
+					// Output
+					if (subAgent.output) {
+						const outputEl = append(saCard, $('pre.subagent-output'));
+						outputEl.textContent = subAgent.output.slice(0, 2000) + (subAgent.output.length > 2000 ? '...' : '');
+					}
+
+					// Error
+					if (subAgent.error) {
+						const errorEl = append(saCard, $('pre.subagent-error'));
+						errorEl.textContent = subAgent.error;
+						errorEl.style.color = '#f87171';
+					}
+				}
+			}
+
+			// Events timeline (if available)
+			if (workflowEvents && workflowEvents.length > 0) {
+				const events = workflowEvents.filter(e => e.executionId === execId);
+				if (events.length > 0) {
+					const eventsSection = append(body, $('.workflow-events-section'));
+					append(eventsSection, $('h4.workflow-section-title', undefined, '事件时间线'));
+
+					for (const event of events) {
+						const eventEl = append(eventsSection, $('.workflow-event-item'));
+						const eventHeader = append(eventEl, $('.workflow-event-header'));
+
+						const kindLabel = event.kind === 'subagent_start' ? '子代理开始' :
+										event.kind === 'subagent_end' ? '子代理结束' :
+										event.kind === 'delta' ? '增量更新' :
+										event.kind === 'ask_user' ? '询问用户' :
+										event.kind === 'ask_user_end' ? '询问用户结束' :
+										event.kind === 'collect_variables' ? '收集变量' :
+										event.kind === 'collect_variables_end' ? '收集变量结束' :
+										event.kind === 'execution_end' ? '执行结束' :
+										event.kind === 'breakpoint_hit' ? '断点命中' : event.kind;
+
+						append(eventHeader, $('span.workflow-event-kind', undefined, kindLabel));
+						if (event.nodeName) {
+							append(eventHeader, $('span.workflow-event-node', undefined, event.nodeName));
+						}
+
+						// Event details
+						if (event.ask) {
+							append(eventEl, $('p.workflow-event-ask', undefined, event.ask));
+						}
+						if (event.summary) {
+							append(eventEl, $('p.workflow-event-summary', undefined, event.summary));
+						}
+					}
+				}
+			}
+
+			// Collect variables (if available)
+			if (collectVariables) {
+				const vars = Object.values(collectVariables).filter(v => v.executionId === execId);
+				if (vars.length > 0) {
+					const varsSection = append(body, $('.workflow-collect-variables-section'));
+					append(varsSection, $('h4.workflow-section-title', undefined, '收集变量'));
+
+					for (const cv of vars) {
+						const cvEl = append(varsSection, $('.workflow-collect-variable-item'));
+						append(cvEl, $('p.workflow-cv-status', undefined, `状态: ${cv.status}`));
+
+						// Variables list
+						if (cv.variables.length > 0) {
+							const varsList = append(cvEl, $('.workflow-cv-variables-list'));
+							for (const v of cv.variables) {
+								const vEl = append(varsList, $('.workflow-cv-variable-item'));
+								append(vEl, $('span.workflow-cv-variable-name', undefined, v.name));
+								if (v.defaultValue) {
+									append(vEl, $('span.workflow-cv-variable-default', undefined, `(默认: ${v.defaultValue})`));
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Collapse toggle functionality
+			header.addEventListener('click', () => {
+				const isCollapsed = body.style.display === 'none';
+				body.style.display = isCollapsed ? 'block' : 'none';
+				toggleBtn.textContent = isCollapsed ? '▼' : '▶';
+			});
+		}
+
+		return container;
+	}
+
+	// --- Confirmation card -----------------------------------
+
+	private _createConfirmationCard(cf: IConfirmationData): HTMLElement {
+		// Terminal confirmation card (has command field)
+		if (cf.command) {
+			return this._createTerminalConfirmationCard(cf);
+		}
+
+		const card = $('.confirmation-card');
+		const header = append(card, $('.confirmation-card-header'));
+		append(header, $('span.confirmation-card-title', undefined, cf.title));
+		// Security level badge
+		if (cf.securityLevel) {
+			const badge = append(header, $(`span.security-badge.${cf.securityLevel}`));
+			badge.textContent = cf.securityLevel === 'safe' ? '安全' : cf.securityLevel === 'cautious' ? '注意' : '危险';
+		}
+		const body = append(card, $('.confirmation-card-body'));
+		append(body, $('p.confirmation-card-message', undefined, cf.message));
+		if (cf.detail) {
+			append(body, $('pre.confirmation-card-detail', undefined, cf.detail));
+		}
+		const actions = append(body, $('.confirmation-card-actions'));
+		// Main action buttons
+		for (const btn of cf.buttons) {
+			const el = append(actions, $(
+				`button.confirmation-card-btn${btn.primary ? '.primary' : ''}${btn.danger ? '.danger' : ''}`,
+				undefined,
+				btn.label,
+			));
+			this._register(addDisposableListener(el, EventType.CLICK, () => {
+				this._onConfirmationAction?.(cf.id, btn.id);
+			}));
+		}
+		// Auto-confirm options (once/session/workspace/always)
+		if (cf.autoConfirmOptions?.length) {
+			const autoSection = append(body, $('.confirmation-auto-options'));
+			append(autoSection, $('span.confirmation-auto-options-label', undefined, '自动确认:'));
+			for (const opt of cf.autoConfirmOptions) {
+				const btn = append(autoSection, $('button.confirmation-auto-btn'));
+				btn.textContent = opt.label;
+				this._register(addDisposableListener(btn, EventType.CLICK, () => {
+					this._onConfirmationAction?.(cf.id, opt.id);
+				}));
+			}
+		}
+		return card;
+	}
+
+	private _createTerminalConfirmationCard(cf: IConfirmationData): HTMLElement {
+		const card = $('.confirmation-card.confirmation-card-terminal');
+		const header = append(card, $('.confirmation-title-bar'));
+		const titleContent = append(header, $('.confirmation-title-content'));
+		// Terminal icon (chevron-right + line)
+		const svgIcon = append(titleContent, $('svg'));
+		svgIcon.setAttribute('width', '16');
+		svgIcon.setAttribute('height', '16');
+		svgIcon.setAttribute('viewBox', '0 0 24 24');
+		svgIcon.setAttribute('fill', 'none');
+		svgIcon.setAttribute('stroke', 'currentColor');
+		svgIcon.setAttribute('stroke-width', '2');
+		const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		polyline.setAttribute('points', '4 17 10 11 4 5');
+		svgIcon.appendChild(polyline);
+		const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		line.setAttribute('x1', '12');
+		line.setAttribute('y1', '19');
+		line.setAttribute('x2', '20');
+		line.setAttribute('y2', '19');
+		svgIcon.appendChild(line);
+
+		append(titleContent, $('span.confirmation-title', undefined, '执行终端命令'));
+		const badge = append(titleContent, $('span.confirmation-security-badge.security-cautious'));
+		badge.textContent = '终端操作';
+
+		// Command preview
+		const cmdSection = append(card, $('.confirmation-terminal-command'));
+		const cmdHeader = append(cmdSection, $('.terminal-command-header'));
+		append(cmdHeader, $('span.terminal-prompt', undefined, '$'));
+		const cmdText = cf.command || '';
+		const isLong = cmdText.length > 100;
+		const displayCmd = isLong ? cmdText.substring(0, 100) + '...' : cmdText;
+		append(cmdHeader, $('code.terminal-command-text', undefined, displayCmd));
+
+		if (isLong) {
+			const showMoreBtn = append(cmdSection, $('button.terminal-show-more-btn'));
+			showMoreBtn.textContent = '显示全部';
+			// Toggle logic would need state management - simplified for now
+		}
+
+		// Action buttons
+		const actions = append(card, $('.confirmation-actions'));
+		const primaryAction = append(actions, $('.confirmation-primary-action'));
+
+		const approveBtn = append(primaryAction, $('button.confirmation-btn.confirmation-btn-approve'));
+		const approveSvg = append(approveBtn, $('svg'));
+		approveSvg.setAttribute('width', '14');
+		approveSvg.setAttribute('height', '14');
+		approveSvg.setAttribute('viewBox', '0 0 24 24');
+		approveSvg.setAttribute('fill', 'none');
+		approveSvg.setAttribute('stroke', 'currentColor');
+		approveSvg.setAttribute('stroke-width', '2');
+		const approvePolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		approvePolyline.setAttribute('points', '20 6 9 17 4 12');
+		approveSvg.appendChild(approvePolyline);
+		approveBtn.appendChild(document.createTextNode('执行'));
+		this._register(addDisposableListener(approveBtn, EventType.CLICK, () => {
+			this._onConfirmationAction?.(cf.id, 'allow_once');
+		}));
+
+		// Dropdown for more options
+		const dropdownContainer = append(primaryAction, $('.confirmation-dropdown-container'));
+		const dropdownToggle = append(dropdownContainer, $('button.confirmation-dropdown-toggle'));
+		const toggleSvg = append(dropdownToggle, $('svg'));
+		toggleSvg.setAttribute('width', '12');
+		toggleSvg.setAttribute('height', '12');
+		toggleSvg.setAttribute('viewBox', '0 0 24 24');
+		toggleSvg.setAttribute('fill', 'none');
+		toggleSvg.setAttribute('stroke', 'currentColor');
+		toggleSvg.setAttribute('stroke-width', '2');
+		const togglePolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		togglePolyline.setAttribute('points', '6 9 12 15 18 9');
+		toggleSvg.appendChild(togglePolyline);
+
+		const dropdownMenu = append(dropdownContainer, $('.confirmation-dropdown-menu'));
+		for (const opt of (cf.autoConfirmOptions || [
+			{ id: 'allow_session', label: '在此会话中允许' },
+			{ id: 'allow_workspace', label: '在工作区中允许' },
+			{ id: 'allow_always', label: '始终允许' },
+		])) {
+			const item = append(dropdownMenu, $('button.confirmation-dropdown-item'));
+			item.textContent = opt.label;
+			this._register(addDisposableListener(item, EventType.CLICK, () => {
+				this._onConfirmationAction?.(cf.id, opt.id);
+			}));
+		}
+
+		// Reject button
+		const rejectBtn = append(actions, $('button.confirmation-btn.confirmation-btn-reject'));
+		const rejectSvg = append(rejectBtn, $('svg'));
+		rejectSvg.setAttribute('width', '14');
+		rejectSvg.setAttribute('height', '14');
+		rejectSvg.setAttribute('viewBox', '0 0 24 24');
+		rejectSvg.setAttribute('fill', 'none');
+		rejectSvg.setAttribute('stroke', 'currentColor');
+		rejectSvg.setAttribute('stroke-width', '2');
+		const rejectLine1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		rejectLine1.setAttribute('x1', '18');
+		rejectLine1.setAttribute('y1', '6');
+		rejectLine1.setAttribute('x2', '6');
+		rejectLine1.setAttribute('y2', '18');
+		rejectSvg.appendChild(rejectLine1);
+		const rejectLine2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		rejectLine2.setAttribute('x1', '6');
+		rejectLine2.setAttribute('y1', '6');
+		rejectLine2.setAttribute('x2', '18');
+		rejectLine2.setAttribute('y2', '18');
+		rejectSvg.appendChild(rejectLine2);
+		rejectBtn.appendChild(document.createTextNode('取消'));
+		this._register(addDisposableListener(rejectBtn, EventType.CLICK, () => {
+			this._onConfirmationAction?.(cf.id, 'reject');
+		}));
+
+		return card;
+	}
+
+	// --- AskUser Card (workflow interactive input) ---
+
+	private _createAskUserCard(askUser: ILiveWorkflowAskUser): HTMLElement {
+		const card = $(`.askuser-card.${askUser.status}`);
+		const isPending = askUser.status === 'pending';
+		const isAnswered = askUser.status === 'answered';
+
+		// Header
+		const header = append(card, $('.askuser-card-header'));
+		const headerStatus = isPending
+			? { icon: '❓', label: '需要输入', color: 'var(--vscode-charts-blue, #60a5fa)' }
+			: isAnswered
+				? { icon: '✓', label: '已回答', color: 'var(--vscode-charts-green, #34d399)' }
+				: { icon: '⊘', label: askUser.status === 'cancelled' ? '已取消' : '已过期', color: 'var(--as-fg-secondary, #6c757d)' };
+		append(header, $('span.askuser-card-icon', { style: `color:${headerStatus.color}` }, headerStatus.icon));
+		append(header, $('span.askuser-card-title', undefined, askUser.nodeName));
+		append(header, $('span.askuser-card-status', { style: `color:${headerStatus.color}` }, headerStatus.label));
+
+		// Question
+		append(card, $('div.askuser-card-question', undefined, askUser.question));
+
+		// Options (interactive only while pending)
+		if (isPending) {
+			const optionsDiv = append(card, $(`.askuser-options.${askUser.multiSelect ? 'multi' : 'single'}`));
+			askUser.options.forEach((opt, idx) => {
+				const isSelected = askUser.selectedIndices.includes(idx);
+				const optBtn = append(optionsDiv, $('button.askuser-option' + (isSelected ? '.selected' : '')));
+				this._register(addDisposableListener(optBtn, EventType.CLICK, () => {
+					// Toggle selection
+					const current = askUser.selectedIndices.slice();
+					if (askUser.multiSelect) {
+						const has = current.includes(idx);
+						const next = has ? current.filter(i => i !== idx) : [...current, idx].sort((a, b) => a - b);
+						askUser.selectedIndices = next;
+					} else {
+						askUser.selectedIndices = [idx];
+					}
+					// Re-render this card
+					const msgEl = card.closest('.chat-message') as HTMLElement;
+					if (msgEl) {
+						const msgId = msgEl.dataset.msgId;
+						if (msgId) {
+							const msg = this._messages.find(m => m.id === msgId);
+							if (msg) { this._updateMessageDom(this._messages.indexOf(msg), msg); }
+						}
+					}
+				}));
+				append(optBtn, $('span.askuser-option-marker', undefined, askUser.multiSelect ? (isSelected ? '☑' : '☐') : (isSelected ? '●' : '○')));
+				const body = append(optBtn, $('span.askuser-option-body'));
+				append(body, $('span.askuser-option-label', undefined, opt.label));
+				if (opt.description) {
+					append(body, $('span.askuser-option-description', undefined, opt.description));
+				}
+			});
+
+			// Submit button
+			const actions = append(card, $('.askuser-actions'));
+			const canSubmit = askUser.selectedIndices.length > 0;
+			const submitBtn = append(actions, $('button.askuser-submit' + (canSubmit ? '' : '.disabled'))) as HTMLButtonElement;
+			submitBtn.textContent = askUser.multiSelect ? `提交选择 (${askUser.selectedIndices.length})` : '提交';
+			submitBtn.disabled = !canSubmit;
+			this._register(addDisposableListener(submitBtn, EventType.CLICK, () => {
+				if (!canSubmit) { return; }
+				const selectedLabels = askUser.selectedIndices.map(i => askUser.options[i]?.label).filter(Boolean);
+				// Call onAskUserSubmit callback
+				this._onAskUserSubmit?.(askUser.id, askUser.executionId, askUser.nodeId, askUser.multiSelect ? selectedLabels : selectedLabels[0] ?? '');
+			}));
+		}
+
+		// Answered summary (read-only)
+		if (isAnswered) {
+			const answerDiv = append(card, $('.askuser-answer'));
+			append(answerDiv, $('div.askuser-answer-label', undefined, '已选择:'));
+			const valuesDiv = append(answerDiv, $('.askuser-answer-values'));
+			const selection = Array.isArray(askUser.selection) ? askUser.selection : [askUser.selection];
+			selection.forEach(s => {
+				if (typeof s === 'string' && s.length > 0) {
+					append(valuesDiv, $('span.askuser-answer-chip', undefined, s));
+				}
+			});
+		}
+
+		return card;
+	}
+
+	// --- TodoList Card ---
+
+	private _createTodoListCard(todos: ITodoItem[]): HTMLElement {
+		const card = $('.todo-list-card');
+		const completedCount = todos.filter(t => t.completed).length;
+		const totalCount = todos.length;
+
+		// Header
+		const header = append(card, $('.todo-header'));
+		append(header, $('span.todo-icon', undefined, '☑️'));
+		append(header, $('span.todo-title', undefined, '任务清单'));
+		append(header, $('span.todo-progress', undefined, `${completedCount}/${totalCount}`));
+		const toggle = append(header, $('span.todo-toggle'));
+		toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>';
+
+		// Body
+		const body = append(card, $('.todo-body'));
+		const list = append(body, $('.todo-list'));
+		todos.forEach(todo => {
+			const item = append(list, $('.todo-item' + (todo.completed ? '.completed' : '')));
+			const label = append(item, $('label.todo-checkbox-label'));
+			const cb = append(label, $('input.todo-checkbox')) as HTMLInputElement;
+			cb.type = 'checkbox';
+			cb.checked = todo.completed;
+			cb.disabled = true; // read-only in chat message
+			append(label, $('span.todo-label', undefined, todo.label));
+			if (todo.description) {
+				append(item, $('span.todo-description', undefined, todo.description));
+			}
+			if (todo.assignee) {
+				append(item, $('span.todo-assignee', undefined, `👤 ${todo.assignee}`));
+			}
+		});
+
+		return card;
+	}
+
+	// --- QuestionCarousel Card ---
+
+	private _createQuestionCarouselCard(questions: ISuggestedQuestion[]): HTMLElement {
+		const card = $('.question-carousel-card');
+
+		// Title
+		const titleDiv = append(card, $('.question-carousel-title'));
+		append(titleDiv, $('span.question-carousel-icon', undefined, '💬'));
+		append(titleDiv, $('span', undefined, '推荐问题'));
+
+		// Questions list
+		const list = append(card, $('.question-carousel-list'));
+		questions.forEach(q => {
+			const btn = append(list, $('button.question-carousel-item'));
+			btn.title = q.tooltip ?? '';
+			this._register(addDisposableListener(btn, EventType.CLICK, () => {
+				this._onQuestionClick?.(q);
+			}));
+			append(btn, $('span.question-label', undefined, q.label));
+			// Arrow icon
+			const arrowSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			arrowSvg.setAttribute('width', '12');
+			arrowSvg.setAttribute('height', '12');
+			arrowSvg.setAttribute('viewBox', '0 0 24 24');
+			arrowSvg.setAttribute('fill', 'none');
+			arrowSvg.setAttribute('stroke', 'currentColor');
+			arrowSvg.setAttribute('stroke-width', '2');
+			const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			line.setAttribute('x1', '5');
+			line.setAttribute('y1', '12');
+			line.setAttribute('x2', '19');
+			line.setAttribute('y2', '12');
+			arrowSvg.appendChild(line);
+			const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+			polyline.setAttribute('points', '12 5 19 12 12 19');
+			arrowSvg.appendChild(polyline);
+			btn.appendChild(arrowSvg);
+		});
+
+		return card;
+	}
+
+	// --- References Card ---
+
+	private _createReferencesCard(references: IReferenceItem[]): HTMLElement {
+		const card = $('.references-card');
+		const title = references.length > 1 ? `使用了 ${references.length} 个引用` : '使用了 1 个引用';
+
+		// Header
+		const header = append(card, $('.references-header'));
+		append(header, $('span.references-icon', undefined, '📚'));
+		append(header, $('span.references-title', undefined, title));
+		const toggle = append(header, $('span.references-toggle.collapsed'));
+		toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>';
+
+		// List (collapsed by default)
+		const list = append(card, $('.references-list'));
+		list.style.display = 'none';
+		references.forEach(ref => {
+			const item = append(list, $(`.reference-item.${ref.state || ''}`));
+			const iconMap: Record<string, string> = { file: '📄', code: '📝', url: '🔗', symbol: '🔧', text: '📋' };
+			append(item, $('span.reference-icon', undefined, iconMap[ref.kind] || '📎'));
+			append(item, $('span.reference-name', undefined, ref.name));
+			if (ref.description) {
+				append(item, $('span.reference-description', undefined, ref.description));
+			}
+			if (ref.state && ref.state !== 'not-modified') {
+				const badgeLabel = ref.state === 'modified' ? '已修改' : ref.state === 'pending' ? '待处理' : '已排除';
+				append(item, $('span.reference-state-badge', undefined, badgeLabel));
+			}
+			// Click to open
+			this._register(addDisposableListener(item, EventType.CLICK, () => {
+				this._onReferenceClick?.(ref);
+			}));
+		});
+
+		// Toggle expand/collapse
+		this._register(addDisposableListener(header, EventType.CLICK, () => {
+			const expanded = list.style.display !== 'none';
+			list.style.display = expanded ? 'none' : 'block';
+			toggle.classList.toggle('collapsed');
+		}));
+
+		return card;
+	}
+
+	// --- Tip Card ---
+
+	private _createTipCard(tip: ITipMessage): HTMLElement {
+		const card = $('.tip-card');
+		append(card, $('span.tip-icon', undefined, tip.icon || '💡'));
+		append(card, $('span.tip-content', undefined, tip.content));
+
+		if (tip.action) {
+			const actionBtn = append(card, $('button.tip-action-btn'));
+			actionBtn.textContent = tip.action.label;
+			actionBtn.title = tip.action.tooltip ?? '';
+			this._register(addDisposableListener(actionBtn, EventType.CLICK, () => {
+				this._onTipAction?.(tip.id, tip.action!.actionId);
+			}));
+		}
+
+		const dismissBtn = append(card, $('button.tip-dismiss-btn'));
+		dismissBtn.textContent = '×';
+		dismissBtn.title = '关闭提示';
+		this._register(addDisposableListener(dismissBtn, EventType.CLICK, () => {
+			this._onTipDismiss?.(tip.id);
+		}));
+
+		return card;
+	}
+
+	// --- Progress Card ---
+
+	private _createProgressCard(progressItems: IProgressMessage[]): HTMLElement {
+		const card = $('.progress-card');
+		const header = append(card, $('.progress-header'));
+		append(header, $('span.progress-header-icon', undefined, '⚙️'));
+		append(header, $('span.progress-header-title', undefined, '执行进度'));
+
+		const list = append(card, $('.progress-list'));
+		progressItems.forEach(p => {
+			const step = append(list, $(`.progress-step.${p.status}`));
+			const iconMap: Record<string, string> = { spinner: '⏳', check: '✓', warning: '⚠', error: '✗' };
+			append(step, $('span.progress-icon', undefined, iconMap[p.icon ?? ''] || '•'));
+			append(step, $('span.progress-content', undefined, p.content));
+			if (p.timestamp) {
+				append(step, $('span.progress-timestamp', undefined, p.timestamp));
+			}
+		});
+
+		return card;
+	}
+
+	// --- Stream error card (retryable errors with structured display) ---
+
+	private _createStreamErrorCard(msg: IAgentChatMessage): HTMLElement {
+		const card = $('.chat-error-card');
+		const err = (msg.metadata?.['streamError'] as any);
+		const msgText = typeof err === 'string' ? err : err?.message ?? '执行失败';
+		const isRetryable = !!(err?.retryable);
+		const isRateLimited = !!(err?.isRateLimited);
+		const level: string = err?.level || 'error';
+
+		const icon = append(card, $('span.chat-error-icon'));
+		icon.textContent = level === 'warning' ? '⚠️' : '❌';
+
+		const text = append(card, $('span.chat-error-text'));
+		text.textContent = isRateLimited ? `速率限制: ${msgText}` : msgText;
+		text.style.color = level === 'warning' ? '#fbbf24' : '#f87171';
+
+		if (isRetryable) {
+			const retryBtn = append(card, $('button.chat-error-retry-btn'));
+			retryBtn.textContent = '重试';
+			this._register(addDisposableListener(retryBtn, EventType.CLICK, () => {
+				// Re-send the last user message before this error
+				const msgIdx = this._messages.findIndex(m => m.id === msg.id);
+				if (msgIdx > 0) {
+					const prevMsg = this._messages[msgIdx - 1];
+					if (prevMsg.role === 'user') {
+						this._onSendMessage(prevMsg.content);
+					}
+				}
+			}));
+		}
 		return card;
 	}
 
@@ -1234,91 +2219,167 @@ export class AgentChatPanel extends Disposable {
 		}
 	}
 
-	private _renderAssistantContent(parent: HTMLElement, content: string): void {
-		// Simple code-block-aware rendering
-		// Split by ``` code blocks
-		const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g;
-		let lastIndex = 0;
-		let match: RegExpExecArray | null;
+	private _renderMarkdownContent(parent: HTMLElement, content: string): void {
+		const md: IMarkdownString = { value: content, isTrusted: true };
+		const LARGE_CODE_THRESHOLD = 30; // lines before auto-collapse
+		const svgIcons = {
+			copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+			copied: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+		};
 
-		while ((match = codeBlockRegex.exec(content)) !== null) {
-			// Text before code block
-			if (match.index > lastIndex) {
-				const text = content.slice(lastIndex, match.index);
-				this._renderInlineContent(parent, text);
+		const options: MarkdownRenderOptions = {
+			codeBlockRenderer: (languageAlias, code) => {
+				const lang = languageAlias || '';
+				const lines = code.split('\n');
+				const isLarge = lines.length > LARGE_CODE_THRESHOLD;
+
+				// Wrapper
+				const wrapper = document.createElement('div');
+				wrapper.className = `code-block-wrapper${isLarge ? ' code-block-collapsed' : ''}`;
+
+				// Header bar
+				const header = document.createElement('div');
+				header.className = 'code-block-header';
+
+				const langLabel = document.createElement('span');
+				langLabel.className = 'code-block-lang';
+				langLabel.textContent = lang || 'code';
+				header.appendChild(langLabel);
+
+				const actions = document.createElement('span');
+				actions.className = 'code-block-actions';
+
+				// Copy button
+				const copyBtn = document.createElement('button');
+				copyBtn.className = 'code-block-copy-btn';
+				copyBtn.title = 'Copy code';
+				copyBtn.innerHTML = svgIcons.copy;
+				copyBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					navigator.clipboard.writeText(code).then(() => {
+						copyBtn.innerHTML = svgIcons.copied;
+						copyBtn.classList.add('copied');
+						setTimeout(() => {
+							copyBtn.innerHTML = svgIcons.copy;
+							copyBtn.classList.remove('copied');
+						}, 1500);
+					}).catch(() => { /* ignore */ });
+				});
+				actions.appendChild(copyBtn);
+
+				// Apply button (Void-inspired BlockCodeApplyWrapper)
+				const applyBtn = document.createElement('button');
+				applyBtn.className = 'code-block-apply-btn';
+				applyBtn.title = 'Apply code to file';
+				applyBtn.textContent = 'Apply';
+				applyBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this._onApplyCode?.(code, lang);
+				});
+				actions.appendChild(applyBtn);
+
+				// Expand/collapse button for large blocks
+				if (isLarge) {
+					const toggleBtn = document.createElement('button');
+					toggleBtn.className = 'code-block-toggle-btn';
+					toggleBtn.textContent = `+ Expand (${lines.length} lines)`;
+					toggleBtn.addEventListener('click', (e) => {
+						e.stopPropagation();
+						const collapsed = wrapper.classList.toggle('code-block-collapsed');
+						toggleBtn.textContent = collapsed
+							? `+ Expand (${lines.length} lines)`
+							: `- Collapse`;
+					});
+					actions.appendChild(toggleBtn);
+				}
+
+				header.appendChild(actions);
+				wrapper.appendChild(header);
+
+				// Code block
+				const pre = document.createElement('pre');
+				const codeEl = document.createElement('code');
+				if (lang) { codeEl.classList.add(`language-${lang}`); }
+				codeEl.textContent = code;
+				pre.appendChild(codeEl);
+				wrapper.appendChild(pre);
+
+				return Promise.resolve(wrapper);
+			},
+		};
+		renderMarkdown(md, options, parent);
+	}
+
+	// --- Interleaved content renderer (Void-inspired: tool cards inserted at text positions) ---
+
+	private _renderInterleavedContent(bubble: HTMLElement, content: string, toolCalls: IToolCall[]): void {
+		// Separate tool calls with textPosition from those without
+		const positioned = toolCalls.filter(tc => typeof tc.textPosition === 'number' && tc.textPosition! >= 0);
+		const unpositioned = toolCalls.filter(tc => typeof tc.textPosition !== 'number' || tc.textPosition! < 0);
+
+		if (positioned.length === 0) {
+			// Fast path: no positioned tool cards, render markdown then append unpositioned
+			if (content) {
+				const contentEl = append(bubble, $(".message-content"));
+				this._renderMarkdownContent(contentEl, content);
 			}
-			// Code block
-			const lang = match[1];
-			const code = match[2].replace(/\n$/, "");
-			const codeWrapper = append(parent, $(".chat-code-block"));
-			if (lang) {
-				const langLabel = append(codeWrapper, $(".chat-code-lang"));
-				langLabel.textContent = lang;
+			for (const tc of unpositioned) {
+				const section = bubble.querySelector('.tool-calls-section') || (() => {
+					const s = $(".tool-calls-section");
+					bubble.appendChild(s);
+					return s;
+				})();
+				section.appendChild(this._createToolCallCard(tc));
 			}
-			const pre = append(codeWrapper, $("pre.chat-code-content"));
-			pre.textContent = code;
-			lastIndex = match.index + match[0].length;
+			return;
 		}
 
-		// Remaining text
-		if (lastIndex < content.length) {
-			this._renderInlineContent(parent, content.slice(lastIndex));
+		// Sort positioned tool calls by textPosition (ascending)
+		const sorted = [...positioned].sort((a, b) => (a.textPosition ?? 0) - (b.textPosition ?? 0));
+
+		// Build segments: [text-segment-0, tool-0, text-segment-1, tool-1, ...]
+		let lastPos = 0;
+		for (const tc of sorted) {
+			const tcPos = tc.textPosition ?? 0;
+
+			// Render text segment before this tool card
+			if (tcPos > lastPos) {
+				const segText = content.slice(lastPos, tcPos);
+				if (segText.trim()) {
+					const segEl = append(bubble, $(".message-content.interleaved-segment"));
+					this._renderMarkdownContent(segEl, segText);
+				}
+			}
+
+			// Insert tool card at this position
+			this._createToolCallCardAt(bubble, tc);
+
+			lastPos = Math.max(lastPos, tcPos);
+		}
+
+		// Render remaining text after last positioned tool call
+		if (lastPos < content.length) {
+			const remaining = content.slice(lastPos);
+			if (remaining.trim()) {
+				const segEl = append(bubble, $(".message-content.interleaved-segment"));
+				this._renderMarkdownContent(segEl, remaining);
+			}
+		}
+
+		// Append unpositioned tool cards at the end
+		if (unpositioned.length > 0) {
+			const section = $(".tool-calls-section");
+			bubble.appendChild(section);
+			for (const tc of unpositioned) {
+				section.appendChild(this._createToolCallCard(tc));
+			}
 		}
 	}
 
-	private _renderInlineContent(parent: HTMLElement, text: string): void {
-		// Handle inline code and basic markdown
-		const inlineCodeRegex = /`([^`]+)`/g;
-		let lastIndex = 0;
-		let match: RegExpExecArray | null;
-
-		while ((match = inlineCodeRegex.exec(text)) !== null) {
-			if (match.index > lastIndex) {
-				append(parent, $("span")).textContent = text.slice(
-					lastIndex,
-					match.index,
-				);
-			}
-			const code = append(parent, $("code.chat-inline-code"));
-			code.textContent = match[1];
-			lastIndex = match.index + match[0].length;
-		}
-
-		if (lastIndex < text.length) {
-			// Handle line breaks
-			const lines = text.slice(lastIndex).split("\n");
-			for (let i = 0; i < lines.length; i++) {
-				if (i > 0) {
-					parent.appendChild(document.createElement("br"));
-				}
-				// Bold
-				const boldRegex = /\*\*(.+?)\*\*/g;
-				let boldMatch: RegExpExecArray | null;
-				const line = lines[i];
-				let lineEl: HTMLElement | null = null;
-				let boldLastIdx = 0;
-
-				while ((boldMatch = boldRegex.exec(line)) !== null) {
-					if (!lineEl) {
-						lineEl = append(parent, $("span"));
-					}
-					if (boldMatch.index > boldLastIdx) {
-						append(lineEl, $("span")).textContent = line.slice(
-							boldLastIdx,
-							boldMatch.index,
-						);
-					}
-					append(lineEl, $("strong")).textContent = boldMatch[1];
-					boldLastIdx = boldMatch.index + boldMatch[0].length;
-				}
-
-				if (lineEl && boldLastIdx < line.length) {
-					append(lineEl, $("span")).textContent = line.slice(boldLastIdx);
-				} else if (!lineEl) {
-					append(parent, $("span")).textContent = line;
-				}
-			}
-		}
+	/** Create and insert a tool call card directly into the bubble (for interleaved rendering) */
+	private _createToolCallCardAt(parent: HTMLElement, tc: IToolCall): void {
+		const card = this._createToolCallCard(tc);
+		parent.appendChild(card);
 	}
 
 	// Input area
@@ -1327,8 +2388,31 @@ export class AgentChatPanel extends Disposable {
 		const emp = this._agent!;
 		const inputArea = append(this._container, $(".chat-input-area"));
 
+		// Resize handle — drag to adjust composer height
+		const resizeHandle = append(inputArea, $(".composer-resize-handle"));
+		this._register(addDisposableListener(resizeHandle, EventType.MOUSE_DOWN, (downEv: MouseEvent) => {
+			downEv.preventDefault();
+			const startY = downEv.clientY;
+			const startH = this._textarea?.offsetHeight ?? this._resizeMaxH;
+			const onMove = (moveEv: MouseEvent) => {
+				const newH = Math.max(60, Math.min(500, startH + (startY - moveEv.clientY)));
+				this._resizeMaxH = newH;
+				if (this._textarea) { this._textarea.style.height = `${newH}px`; }
+			};
+			const onUp = () => {
+				document.removeEventListener('mousemove', onMove);
+				document.removeEventListener('mouseup', onUp);
+			};
+			document.addEventListener('mousemove', onMove);
+			document.addEventListener('mouseup', onUp);
+		}));
+
 		// Composer box
 		const composerBox = append(inputArea, $(".chat-composer-box"));
+
+		// Skill chips bar (inserted before textarea)
+		this._skillChipsBar = append(composerBox, $(".skill-chips-bar")) as HTMLElement;
+		this._skillChipsBar.style.display = "none"; // hidden by default
 
 		// Textarea
 		this._textarea = append(
@@ -1342,21 +2426,100 @@ export class AgentChatPanel extends Disposable {
 				: `Message ${emp.name}...`;
 		this._textarea.disabled = this._isSending;
 
-		// Auto-resize
+		// Auto-resize + slash command detection + slash menu
 		this._register(
 			addDisposableListener(this._textarea, EventType.INPUT, () => {
 				const t = this._textarea;
 				t.style.height = "auto";
-				t.style.height = Math.min(t.scrollHeight, 120) + "px";
+				t.style.height = Math.min(t.scrollHeight, this._resizeMaxH) + "px";
+
+				// Detect /skill /command patterns — show slash menu
+				const val = t.value;
+				const slashMatch = val.match(/^\/(\w*)$/);
+				if (slashMatch) {
+					t.style.color = 'var(--ec-accent, #60a5fa)';
+					t.setAttribute('data-slash-command', slashMatch[1]);
+					const filter = slashMatch[1];
+					if (this._slashMenuEl) {
+						this._renderSlashMenuItems(filter);
+					} else {
+						this._openSlashMenu(filter);
+					}
+				} else {
+					t.style.color = '';
+					t.removeAttribute('data-slash-command');
+					this._closeSlashMenu();
+				}
 			}),
 		);
 
-		// Enter to send
+		// Hidden file input (for attach button + paste)
+		this._fileInput = append(this._container, $("input.chat-file-input")) as HTMLInputElement;
+		this._fileInput.type = "file";
+		this._fileInput.multiple = true;
+		this._fileInput.accept = "image/*,.txt,.md,.json,.js,.ts,.py,.go,.rs,.java,.cs,.html,.css";
+		this._fileInput.style.display = "none";
+		this._fileInput.addEventListener("change", () => this._handleFileSelection());
+
+		// Drag & drop on composer box
+		composerBox.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); composerBox.classList.add("drag-over"); });
+		composerBox.addEventListener("dragleave", () => composerBox.classList.remove("drag-over"));
+		composerBox.addEventListener("drop", (e) => {
+			e.preventDefault(); e.stopPropagation(); composerBox.classList.remove("drag-over");
+			if (e.dataTransfer?.files.length) { this._addFiles(Array.from(e.dataTransfer.files)); }
+		});
+
+		// Paste image/file
+		this._register(addDisposableListener(this._textarea, EventType.PASTE, (e) => {
+			const clipboardData = (e as ClipboardEvent).clipboardData;
+			if (!clipboardData?.files.length) { return; }
+			const imageFiles = Array.from(clipboardData.files).filter(f => f.type.startsWith("image/"));
+			if (imageFiles.length > 0) { e.preventDefault(); this._addFiles(imageFiles, true); }
+		}));
+
+		// Attachment preview area (inserted between textarea and toolbar in composerBox)
+		append(composerBox, $(".chat-attachment-bar"));
+
+		// Enter to send / slash menu navigation
 		this._register(
 			addDisposableListener(
 				this._textarea,
 				EventType.KEY_DOWN,
 				(e: KeyboardEvent) => {
+					// Slash menu open: handle navigation keys
+					if (this._slashMenuEl) {
+						if (e.key === 'ArrowDown') {
+							e.preventDefault();
+							this._slashMenuIndex++;
+							this._highlightSlashMenuItem();
+							return;
+						}
+						if (e.key === 'ArrowUp') {
+							e.preventDefault();
+							this._slashMenuIndex = Math.max(0, this._slashMenuIndex - 1);
+							this._highlightSlashMenuItem();
+							return;
+						}
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							this._selectSlashMenuItem();
+							return;
+						}
+						if (e.key === 'Escape') {
+							e.preventDefault();
+							this._closeSlashMenu();
+							return;
+						}
+					}
+
+					// Backspace: if textarea is empty and we have skill chips, remove the last chip
+					if (e.key === 'Backspace' && !this._textarea.value && this._skillChips.length > 0) {
+						e.preventDefault();
+						const lastChip = this._skillChips[this._skillChips.length - 1];
+						this._removeSkillChip(lastChip.id);
+						return;
+					}
+
 					if (e.key === "Enter" && !e.shiftKey) {
 						e.preventDefault();
 						this._handleSendMessage();
@@ -1369,12 +2532,16 @@ export class AgentChatPanel extends Disposable {
 		const toolbar = append(composerBox, $(".chat-composer-toolbar"));
 		const leftToolbar = append(toolbar, $(".chat-toolbar-left"));
 
-		// Attach button
-		this._appendToolbarBtn(leftToolbar, {
+		// Attach button — triggers file input dialog
+		const attachBtn = this._appendToolbarBtn(leftToolbar, {
 			title: "上传附件",
 			svgPath:
 				"M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13",
 		});
+		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			this._fileInput?.click();
+		}));
 
 		// Voice button
 		this._appendToolbarBtn(leftToolbar, {
@@ -1777,6 +2944,198 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	// =========================================================
+	// Slash menu (slash command picker)
+	// =========================================================
+
+	private _openSlashMenu(filter: string): void {
+		this._closeSlashMenu();
+
+		const skills = this._onListSkills();
+		if (!skills.length) { return; }
+
+		const filtered = filter
+			? skills.filter(s =>
+				s.id.toLowerCase().includes(filter.toLowerCase()) ||
+				s.name.toLowerCase().includes(filter.toLowerCase()))
+			: skills;
+		if (!filtered.length) { return; }
+
+		const textarea = this._textarea;
+		const rect = textarea.getBoundingClientRect();
+
+		this._slashMenuEl = document.createElement('div');
+		this._slashMenuEl.className = 'slash-menu';
+		// Position above textarea
+		this._slashMenuEl.style.left = `${rect.left}px`;
+		this._slashMenuEl.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+		this._slashMenuEl.style.maxWidth = `${Math.max(rect.width, 260)}px`;
+
+		// Items (render directly since we just created the element)
+		const list = document.createElement('div');
+		list.className = 'slash-menu-list';
+		filtered.forEach((s, i) => {
+			const item = document.createElement('div');
+			item.className = 'slash-menu-item';
+			item.dataset.skillId = s.id;
+			item.dataset.skillName = s.name || s.id;
+			const icon = document.createElement('span');
+			icon.className = 'slash-menu-item-icon';
+			icon.textContent = '/';
+			item.appendChild(icon);
+			const info = document.createElement('span');
+			info.className = 'slash-menu-item-info';
+			const name = document.createElement('span');
+			name.className = 'slash-menu-item-name';
+			name.textContent = s.id;
+			info.appendChild(name);
+			const desc = document.createElement('span');
+			desc.className = 'slash-menu-item-desc';
+			desc.textContent = s.name;
+			info.appendChild(desc);
+			item.appendChild(info);
+			item.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				this._insertSlashSkill(s.id, s.name || s.id);
+				this._closeSlashMenu();
+			});
+			list.appendChild(item);
+		});
+
+		this._slashMenuEl.appendChild(list);
+		document.body.appendChild(this._slashMenuEl);
+		this._slashMenuIndex = 0;
+		this._highlightSlashMenuItem();
+	}
+
+	private _renderSlashMenuItems(filter: string): void {
+		if (!this._slashMenuEl) { return; }
+		const skills = this._onListSkills();
+		const filtered = filter
+			? skills.filter(s =>
+				s.id.toLowerCase().includes(filter.toLowerCase()) ||
+				s.name.toLowerCase().includes(filter.toLowerCase()))
+			: skills;
+
+		const list = this._slashMenuEl.querySelector('.slash-menu-list');
+		if (!list) { return; }
+		list.innerHTML = '';
+
+		if (!filtered.length) {
+			this._closeSlashMenu();
+			return;
+		}
+
+		filtered.forEach((s, i) => {
+			const item = document.createElement('div');
+			item.className = 'slash-menu-item';
+			item.dataset.skillId = s.id;
+			const icon = document.createElement('span');
+			icon.className = 'slash-menu-item-icon';
+			icon.textContent = '/';
+			item.appendChild(icon);
+			const info = document.createElement('span');
+			info.className = 'slash-menu-item-info';
+			const name = document.createElement('span');
+			name.className = 'slash-menu-item-name';
+			name.textContent = s.id;
+			info.appendChild(name);
+			const desc = document.createElement('span');
+			desc.className = 'slash-menu-item-desc';
+			desc.textContent = s.name;
+			info.appendChild(desc);
+			item.appendChild(info);
+			item.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				this._insertSlashSkill(s.id, s.name || s.id);
+				this._closeSlashMenu();
+			});
+			list.appendChild(item);
+		});
+
+		this._slashMenuIndex = Math.min(this._slashMenuIndex, filtered.length - 1);
+		this._highlightSlashMenuItem();
+	}
+
+	private _highlightSlashMenuItem(): void {
+		const items = this._slashMenuEl?.querySelectorAll('.slash-menu-item');
+		if (!items?.length) { return; }
+		items.forEach((el, i) => {
+			el.classList.toggle('selected', i === this._slashMenuIndex);
+		});
+		// Scroll selected into view
+		const selected = items[this._slashMenuIndex] as HTMLElement | undefined;
+		if (selected) { selected.scrollIntoView({ block: 'nearest' }); }
+	}
+
+	// --- Skill chips (P2) ---
+
+	private _addSkillChip(id: string, name: string): void {
+		// Check if already added
+		if (this._skillChips.some(c => c.id === id)) { return; }
+		this._skillChips.push({ id, name });
+		this._renderSkillChips();
+	}
+
+	private _removeSkillChip(id: string): void {
+		this._skillChips = this._skillChips.filter(c => c.id !== id);
+		this._renderSkillChips();
+	}
+
+	private _renderSkillChips(): void {
+		if (!this._skillChipsBar) { return; }
+		// Clear existing chips
+		while (this._skillChipsBar.firstChild) {
+			this._skillChipsBar.removeChild(this._skillChipsBar.firstChild);
+		}
+		// Render chips
+		for (const chip of this._skillChips) {
+			const chipEl = append(this._skillChipsBar, $('span.skill-chip'));
+			chipEl.title = `技能: ${chip.name} (${chip.id})`;
+			append(chipEl, $('span.skill-chip-icon', undefined, '⚡'));
+			append(chipEl, $('span.skill-chip-name', undefined, chip.name));
+			const removeBtn = append(chipEl, $('button.skill-chip-remove'));
+			removeBtn.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+			this._register(addDisposableListener(removeBtn, EventType.CLICK, () => {
+				this._removeSkillChip(chip.id);
+			}));
+		}
+		// Show/hide bar
+		this._skillChipsBar.style.display = this._skillChips.length > 0 ? 'flex' : 'none';
+	}
+
+	private _selectSlashMenuItem(): void {
+		const items = this._slashMenuEl?.querySelectorAll('.slash-menu-item');
+		if (!items?.length) { return; }
+		const selected = items[Math.min(this._slashMenuIndex, items.length - 1)] as HTMLElement | undefined;
+		if (selected?.dataset.skillId) {
+			this._insertSlashSkill(selected.dataset.skillId, selected.dataset.skillName || selected.dataset.skillId);
+		}
+		this._closeSlashMenu();
+	}
+
+	private _insertSlashSkill(skillId: string, skillName: string): void {
+		// Add skill chip
+		this._addSkillChip(skillId, skillName);
+		// Clear textarea (skill is now in chip)
+		this._textarea.value = '';
+		this._textarea.style.color = '';
+		this._textarea.removeAttribute('data-slash-command');
+		// Auto-resize and reposition cursor to end
+		this._textarea.style.height = 'auto';
+		this._textarea.style.height = Math.min(this._textarea.scrollHeight, this._resizeMaxH) + 'px';
+		this._textarea.focus();
+		this._textarea.setSelectionRange(this._textarea.value.length, this._textarea.value.length);
+	}
+
+	private _closeSlashMenu(): void {
+		if (this._slashMenuEl) {
+			this._slashMenuEl.remove();
+			this._slashMenuEl = null;
+		}
+		this._slashMenuIndex = 0;
+	}
+
+	// =========================================================
 	// Context-usage ring
 	// =========================================================
 
@@ -1824,7 +3183,7 @@ export class AgentChatPanel extends Disposable {
 		fg.setAttribute("stroke-dashoffset", String(offset));
 		fg.setAttribute("stroke-linecap", "round");
 		fg.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
-		fg.classList.add('ring-fg');
+		fg.classList.add('ring-progress');
 		svg.appendChild(fg);
 
 		ringEl.appendChild(svg);
@@ -2270,9 +3629,544 @@ export class AgentChatPanel extends Disposable {
 			return;
 		}
 
+		// Get explicit skill IDs from skill chips
+		const explicitSkillIds = this._skillChips.length > 0 ? this._skillChips.map(c => c.id) : undefined;
+
+		// Clear textarea and skill chips
 		this._textarea.value = "";
 		this._textarea.style.height = "auto";
-		this._onSendMessage(text);
+		this._skillChips = [];
+		this._renderSkillChips();
+
+		// Send message with skill IDs
+		this._onSendMessage(text, explicitSkillIds);
+	}
+
+	// ─── Orchestration Plan Dialog ─────────────────────────────────────
+
+	public closeOrchestrationPlanDialog(): void {
+		if (this._orchestrationPlanEl) {
+			this._orchestrationPlanEl.remove();
+			this._orchestrationPlanEl = null;
+		}
+		this._isPlanDialogOpen = false;
+		this._activePlan = null;
+	}
+
+	public showOrchestrationPlanDialog(plan: OrchestrationPlan): void {
+		// If dialog is already open for the same plan, just update it
+		if (this._isPlanDialogOpen && this._activePlan?.id === plan.id) {
+			// Close existing dialog and reopen with new data
+			this.closeOrchestrationPlanDialog();
+		}
+
+		this._activePlan = plan;
+		this._isPlanDialogOpen = true;
+
+		// Remove existing dialog if any
+		if (this._orchestrationPlanEl) {
+			this._orchestrationPlanEl.remove();
+		}
+
+		// Create dialog overlay
+		const overlay = document.createElement('div');
+		overlay.className = 'orch-plan-overlay';
+
+		// Create dialog content
+		const dialog = document.createElement('div');
+		dialog.className = 'orch-plan-dialog';
+
+		// ─── Dialog Header ─────────────────────────────────────────────
+		const header = document.createElement('div');
+		header.className = 'orch-dialog-header';
+
+		const title = document.createElement('h3');
+		title.textContent = '任务编排';
+		header.appendChild(title);
+
+		// Plan status badge
+		const statusConfig: Record<string, { label: string; color: string }> = {
+			pending_approval: { label: '等待确认', color: '#f59e0b' },
+			approved: { label: '已批准', color: '#3b82f6' },
+			executing: { label: '执行中', color: '#3b82f6' },
+			completed: { label: '已完成', color: '#10b981' },
+			rejected: { label: '已拒绝', color: '#6b7280' },
+			error: { label: '执行错误', color: '#ef4444' },
+		};
+		const planStatus = statusConfig[plan.status] || { label: plan.status, color: '#6b7280' };
+		const statusBadge = document.createElement('span');
+		statusBadge.className = 'orch-plan-status-badge';
+		statusBadge.style.backgroundColor = planStatus.color + '20';
+		statusBadge.style.color = planStatus.color;
+		statusBadge.textContent = planStatus.label;
+		header.appendChild(statusBadge);
+
+		// Close button
+		const closeBtn = document.createElement('button');
+		closeBtn.className = 'orch-inline-close';
+		closeBtn.textContent = '✕';
+		closeBtn.onclick = () => {
+			overlay.remove();
+			this._isPlanDialogOpen = false;
+			this._activePlan = null;
+			this._onClosePlanDialog?.(plan.id);
+		};
+		header.appendChild(closeBtn);
+		dialog.appendChild(header);
+
+		// ─── Plan Summary ──────────────────────────────────────────────
+		const summary = document.createElement('div');
+		summary.className = 'orch-plan-summary';
+
+		// Goal
+		const goalDiv = document.createElement('div');
+		goalDiv.className = 'orch-plan-goal';
+		goalDiv.style.display = 'flex';
+		goalDiv.style.alignItems = 'center';
+		goalDiv.style.gap = '8px';
+		const goalText = document.createElement('span');
+		goalText.innerHTML = `<strong>目标:</strong> ${this._escapeHtml(plan.goal)}`;
+		goalDiv.appendChild(goalText);
+		// Edit goal button (only for pending_approval plans)
+		if (plan.status === 'pending_approval') {
+			const editGoalBtn = document.createElement('button');
+			editGoalBtn.textContent = '✏️';
+			editGoalBtn.title = '编辑目标';
+			editGoalBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:14px;';
+			editGoalBtn.onclick = () => this._showEditGoalForm(plan);
+			goalDiv.appendChild(editGoalBtn);
+		}
+		summary.appendChild(goalDiv);
+
+		// Description
+		if (plan.summary) {
+			const descDiv = document.createElement('div');
+			descDiv.className = 'orch-plan-desc';
+			descDiv.textContent = plan.summary;
+			summary.appendChild(descDiv);
+		}
+
+		// Stats
+		const statsDiv = document.createElement('div');
+		statsDiv.className = 'orch-plan-stats';
+		const totalTasks = plan.tasks.length;
+		const doneTasks = plan.tasks.filter(t => t.status === 'done').length;
+		const runningTasks = plan.tasks.filter(t => t.status === 'running').length;
+		const pendingTasks = plan.tasks.filter(t => t.status === 'pending').length;
+		statsDiv.innerHTML = `
+			<span class="orch-stat">📋 ${totalTasks} 任务</span>
+			${runningTasks > 0 ? `<span class="orch-stat">⚡ ${runningTasks} 执行中</span>` : ''}
+			${doneTasks > 0 ? `<span class="orch-stat">✅ ${doneTasks} 完成</span>` : ''}
+			${pendingTasks > 0 ? `<span class="orch-stat">⏳ ${pendingTasks} 待执行</span>` : ''}
+		`;
+		summary.appendChild(statsDiv);
+		dialog.appendChild(summary);
+
+		// ─── Task List ─────────────────────────────────────────────────
+		const taskListContainer = document.createElement('div');
+		taskListContainer.className = 'orch-task-list';
+
+		// Task status config
+		const taskStatusConfig: Record<string, { label: string; color: string; icon: string }> = {
+			pending: { label: '待执行', color: '#f59e0b', icon: '⏳' },
+			running: { label: '执行中', color: '#3b82f6', icon: '⚡' },
+			paused: { label: '已暂停', color: '#8b5cf6', icon: '⏸' },
+			done: { label: '已完成', color: '#10b981', icon: '✅' },
+			cancelled: { label: '已取消', color: '#6b7280', icon: '⏹' },
+			error: { label: '错误', color: '#ef4444', icon: '❌' },
+		};
+
+		// Sort tasks by depth and priority
+		const sortedTasks = [...plan.tasks].sort((a, b) => a.depth - b.depth || a.priority - b.priority);
+
+		for (const task of sortedTasks) {
+			const taskEl = document.createElement('div');
+			taskEl.className = 'orch-task-item';
+			taskEl.style.marginLeft = `${task.depth * 24}px`;
+
+			// Task header
+			const taskHeader = document.createElement('div');
+			taskHeader.className = 'orch-task-item-header';
+
+			const statusConf = taskStatusConfig[task.status] || taskStatusConfig.pending;
+			const statusIcon = document.createElement('span');
+			statusIcon.className = 'orch-task-status-icon';
+			statusIcon.textContent = statusConf.icon;
+			statusIcon.style.color = statusConf.color;
+			taskHeader.appendChild(statusIcon);
+
+			const taskTitle = document.createElement('span');
+			taskTitle.className = 'orch-task-title';
+			taskTitle.textContent = task.title;
+			taskHeader.appendChild(taskTitle);
+
+			const taskStatusBadge = document.createElement('span');
+			taskStatusBadge.className = 'orch-task-status-badge';
+			taskStatusBadge.style.backgroundColor = statusConf.color + '20';
+			taskStatusBadge.style.color = statusConf.color;
+			taskStatusBadge.textContent = statusConf.label;
+			taskHeader.appendChild(taskStatusBadge);
+
+			// Edit button (only for pending_approval plans)
+			if (plan.status === 'pending_approval') {
+				const editBtn = document.createElement('button');
+				editBtn.className = 'orch-task-header-btn';
+				editBtn.textContent = '✏️';
+				editBtn.title = '编辑任务';
+				editBtn.onclick = () => this._showEditTaskForm(task, plan);
+				taskHeader.appendChild(editBtn);
+
+				// Decompose button
+				const decomposeBtn = document.createElement('button');
+				decomposeBtn.className = 'orch-task-header-btn';
+				decomposeBtn.textContent = '🔀';
+				decomposeBtn.title = 'AI 自动拆分任务';
+				decomposeBtn.onclick = () => this._onDecomposeTask?.(plan.id, task.id);
+				taskHeader.appendChild(decomposeBtn);
+			}
+
+			taskEl.appendChild(taskHeader);
+
+			// Task description
+			if (task.description && task.description !== task.title) {
+				const taskDesc = document.createElement('div');
+				taskDesc.className = 'orch-task-desc';
+				taskDesc.textContent = task.description.length > 120 ? task.description.slice(0, 120) + '...' : task.description;
+				taskEl.appendChild(taskDesc);
+			}
+
+			// Task meta
+			const taskMeta = document.createElement('div');
+			taskMeta.className = 'orch-task-meta';
+
+			if (task.assigneeName) {
+				const agentSpan = document.createElement('span');
+				agentSpan.className = 'orch-task-agent';
+				agentSpan.innerHTML = `${task.autoCreateAgent ? '🆕 ' : ''}${this._escapeHtml(task.assigneeName)}`;
+				taskMeta.appendChild(agentSpan);
+			}
+
+			// Retry count
+			if (task.retryCount > 0) {
+				const retrySpan = document.createElement('span');
+				retrySpan.className = 'orch-task-retry-badge';
+				retrySpan.textContent = `🔄 ${task.retryCount}/${task.maxRetries}`;
+				taskMeta.appendChild(retrySpan);
+			}
+
+			taskEl.appendChild(taskMeta);
+
+			// Task error
+			if (task.error) {
+				const errorDiv = document.createElement('div');
+				errorDiv.className = 'orch-task-error';
+				errorDiv.textContent = `❌ ${task.error}`;
+				taskEl.appendChild(errorDiv);
+			}
+
+			// Task actions (only show for executing plans)
+			const isExecuting = plan.status === 'executing' || plan.status === 'approved';
+			if (isExecuting) {
+				const actionsDiv = document.createElement('div');
+				actionsDiv.className = 'orch-task-actions';
+
+				// Retry button (for error or cancelled tasks)
+				if (task.status === 'error' || task.status === 'cancelled') {
+					const retryBtn = document.createElement('button');
+					retryBtn.className = 'orch-task-action-btn retry';
+					retryBtn.textContent = '🔄 重做';
+					retryBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'retry');
+					actionsDiv.appendChild(retryBtn);
+				}
+
+				// Pause button (for running or pending tasks)
+				if (task.status === 'running' || task.status === 'pending') {
+					const pauseBtn = document.createElement('button');
+					pauseBtn.className = 'orch-task-action-btn pause';
+					pauseBtn.textContent = '⏸ 暂停';
+					pauseBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'pause');
+					actionsDiv.appendChild(pauseBtn);
+				}
+
+				// Resume button (for paused tasks)
+				if (task.status === 'paused') {
+					const resumeBtn = document.createElement('button');
+					resumeBtn.className = 'orch-task-action-btn resume';
+					resumeBtn.textContent = '▶ 恢复';
+					resumeBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'resume');
+					actionsDiv.appendChild(resumeBtn);
+				}
+
+				// Cancel button (for non-done/cancelled tasks)
+				if (task.status !== 'done' && task.status !== 'cancelled') {
+					const cancelBtn = document.createElement('button');
+					cancelBtn.className = 'orch-task-action-btn cancel';
+					cancelBtn.textContent = '✕ 取消';
+					cancelBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'cancel');
+					actionsDiv.appendChild(cancelBtn);
+				}
+
+				// Approve/Reject buttons (for done tasks with pending review)
+				if (task.status === 'done' && task.reviewStatus === 'pending') {
+					const approveBtn = document.createElement('button');
+					approveBtn.className = 'orch-task-action-btn approve';
+					approveBtn.textContent = '✅ 通过';
+					approveBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'approve');
+					actionsDiv.appendChild(approveBtn);
+
+					const rejectBtn = document.createElement('button');
+					rejectBtn.className = 'orch-task-action-btn reject';
+					rejectBtn.textContent = '❌ 拒绝';
+					rejectBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'reject');
+					actionsDiv.appendChild(rejectBtn);
+				}
+
+				// Block/Unblock buttons
+				if (!task.isBlocked && task.status !== 'done') {
+					const blockBtn = document.createElement('button');
+					blockBtn.className = 'orch-task-action-btn block';
+					blockBtn.textContent = '🚫 阻塞';
+					blockBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'block');
+					actionsDiv.appendChild(blockBtn);
+				}
+
+				if (task.isBlocked) {
+					const unblockBtn = document.createElement('button');
+					unblockBtn.className = 'orch-task-action-btn unblock';
+					unblockBtn.textContent = '🔓 解除';
+					unblockBtn.onclick = () => this._onTaskAction?.(plan.id, task.id, 'unblock');
+					actionsDiv.appendChild(unblockBtn);
+				}
+
+				taskEl.appendChild(actionsDiv);
+			}
+
+			taskListContainer.appendChild(taskEl);
+		}
+
+		dialog.appendChild(taskListContainer);
+
+		// ─── Plan Actions ──────────────────────────────────────────────
+		const planActions = document.createElement('div');
+		planActions.className = 'orch-plan-actions';
+
+		const isPendingApproval = plan.status === 'pending_approval';
+		const isExecutingOrApproved = plan.status === 'executing' || plan.status === 'approved';
+
+		if (isPendingApproval) {
+			// Approve button
+			const approveBtn = document.createElement('button');
+			approveBtn.className = 'btn-primary';
+			approveBtn.textContent = '✅ 批准计划';
+			approveBtn.onclick = () => {
+				this._onApprovePlan?.(plan.id);
+				overlay.remove();
+			};
+			planActions.appendChild(approveBtn);
+
+			// Approve without execute button
+			const approveWithoutExecBtn = document.createElement('button');
+			approveWithoutExecBtn.className = 'btn-secondary';
+			approveWithoutExecBtn.textContent = '批准但不执行';
+			approveWithoutExecBtn.onclick = () => {
+				this._onApproveWithoutExecute?.(plan.id);
+				overlay.remove();
+			};
+			planActions.appendChild(approveWithoutExecBtn);
+
+			// Reject button
+			const rejectBtn = document.createElement('button');
+			rejectBtn.className = 'btn-secondary';
+			rejectBtn.textContent = '❌ 拒绝计划';
+			rejectBtn.onclick = () => {
+				this._onRejectPlan?.(plan.id);
+				overlay.remove();
+			};
+			planActions.appendChild(rejectBtn);
+		} else if (isExecutingOrApproved) {
+			// Pause all button
+			const pauseAllBtn = document.createElement('button');
+			pauseAllBtn.className = 'btn-secondary';
+			pauseAllBtn.textContent = '⏸ 暂停所有';
+			pauseAllBtn.onclick = () => {
+				// Pause all running tasks
+				for (const task of plan.tasks) {
+					if (task.status === 'running' || task.status === 'pending') {
+						this._onTaskAction?.(plan.id, task.id, 'pause');
+					}
+				}
+			};
+			planActions.appendChild(pauseAllBtn);
+		}
+
+		dialog.appendChild(planActions);
+
+		// ─── Assemble ──────────────────────────────────────────────────
+		overlay.appendChild(dialog);
+		document.body.appendChild(overlay);
+		this._orchestrationPlanEl = overlay;
+	}
+
+	// ─── Edit Task Form ──────────────────────────────────────────────
+
+	private _showEditTaskForm(task: PlanTask, plan: OrchestrationPlan): void {
+		// Create overlay for edit form
+		const overlay = document.createElement('div');
+		overlay.className = 'orch-edit-overlay';
+		overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10002;display:flex;align-items:center;justify-content:center;';
+
+		// Create form dialog
+		const dialog = document.createElement('div');
+		dialog.className = 'orch-edit-dialog';
+		dialog.style.cssText = 'background:#1e1e2e;color:#cdd6f4;padding:20px;border-radius:8px;max-width:500px;width:90%;';
+
+		// Title
+		const title = document.createElement('h4');
+		title.textContent = '编辑任务';
+		title.style.marginBottom = '15px';
+		dialog.appendChild(title);
+
+		// Form fields
+		// Task title
+		const titleLabel = document.createElement('label');
+		titleLabel.textContent = '任务标题';
+		titleLabel.style.display = 'block';
+		titleLabel.style.marginBottom = '5px';
+		dialog.appendChild(titleLabel);
+
+		const titleInput = document.createElement('input');
+		titleInput.type = 'text';
+		titleInput.value = task.title;
+		titleInput.style.cssText = 'width:100%;padding:8px;margin-bottom:15px;border:1px solid #333;border-radius:4px;background:#2a2a3e;color:#cdd6f4;';
+		dialog.appendChild(titleInput);
+
+		// Task description
+		const descLabel = document.createElement('label');
+		descLabel.textContent = '任务描述';
+		descLabel.style.display = 'block';
+		descLabel.style.marginBottom = '5px';
+		dialog.appendChild(descLabel);
+
+		const descTextarea = document.createElement('textarea');
+		descTextarea.value = task.description || '';
+		descTextarea.rows = 3;
+		descTextarea.style.cssText = 'width:100%;padding:8px;margin-bottom:15px;border:1px solid #333;border-radius:4px;background:#2a2a3e;color:#cdd6f4;';
+		dialog.appendChild(descTextarea);
+
+		// Priority
+		const priorityLabel = document.createElement('label');
+		priorityLabel.textContent = '优先级';
+		priorityLabel.style.display = 'block';
+		priorityLabel.style.marginBottom = '5px';
+		dialog.appendChild(priorityLabel);
+
+		const prioritySelect = document.createElement('select');
+		prioritySelect.style.cssText = 'width:100%;padding:8px;margin-bottom:15px;border:1px solid #333;border-radius:4px;background:#2a2a3e;color:#cdd6f4;';
+		for (let i = 1; i <= 5; i++) {
+			const option = document.createElement('option');
+			option.value = i.toString();
+			option.textContent = `${i} - ${i === 1 ? '最高' : i === 2 ? '高' : i === 3 ? '中' : i === 4 ? '低' : '最低'}`;
+			if (i === task.priority) {
+				option.selected = true;
+			}
+			prioritySelect.appendChild(option);
+		}
+		dialog.appendChild(prioritySelect);
+
+		// Action buttons
+		const actions = document.createElement('div');
+		actions.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+
+		const cancelBtn = document.createElement('button');
+		cancelBtn.textContent = '取消';
+		cancelBtn.style.cssText = 'padding:8px 16px;background:transparent;border:1px solid #333;border-radius:4px;color:#cdd6f4;cursor:pointer;';
+		cancelBtn.onclick = () => overlay.remove();
+		actions.appendChild(cancelBtn);
+
+		const saveBtn = document.createElement('button');
+		saveBtn.textContent = '保存';
+		saveBtn.style.cssText = 'padding:8px 16px;background:#10b981;border:none;border-radius:4px;color:white;cursor:pointer;';
+		saveBtn.onclick = () => {
+			const updates: Record<string, unknown> = {
+				title: titleInput.value,
+				description: descTextarea.value,
+				priority: parseInt(prioritySelect.value, 10),
+			};
+			this._onUpdateTask?.(plan.id, task.id, updates);
+			overlay.remove();
+			// Refresh the plan dialog
+			this.showOrchestrationPlanDialog(plan);
+		};
+		actions.appendChild(saveBtn);
+
+		dialog.appendChild(actions);
+
+		overlay.appendChild(dialog);
+		document.body.appendChild(overlay);
+	}
+
+	// ─── Edit Goal Form ──────────────────────────────────────────
+
+	private _showEditGoalForm(plan: OrchestrationPlan): void {
+		// Create overlay for edit form
+		const overlay = document.createElement('div');
+		overlay.className = 'orch-edit-overlay';
+		overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10002;display:flex;align-items:center;justify-content:center;';
+
+		// Create form dialog
+		const dialog = document.createElement('div');
+		dialog.className = 'orch-edit-dialog';
+		dialog.style.cssText = 'background:#1e1e2e;color:#cdd6f4;padding:20px;border-radius:8px;max-width:500px;width:90%;';
+
+		// Title
+		const title = document.createElement('h4');
+		title.textContent = '编辑计划目标';
+		title.style.marginBottom = '15px';
+		dialog.appendChild(title);
+
+		// Goal textarea
+		const goalTextarea = document.createElement('textarea');
+		goalTextarea.value = plan.goal;
+		goalTextarea.rows = 3;
+		goalTextarea.style.cssText = 'width:100%;padding:8px;margin-bottom:15px;border:1px solid #333;border-radius:4px;background:#2a2a3e;color:#cdd6f4;';
+		dialog.appendChild(goalTextarea);
+
+		// Action buttons
+		const actions = document.createElement('div');
+		actions.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+
+		const cancelBtn = document.createElement('button');
+		cancelBtn.textContent = '取消';
+		cancelBtn.style.cssText = 'padding:8px 16px;background:transparent;border:1px solid #333;border-radius:4px;color:#cdd6f4;cursor:pointer;';
+		cancelBtn.onclick = () => overlay.remove();
+		actions.appendChild(cancelBtn);
+
+		const saveBtn = document.createElement('button');
+		saveBtn.textContent = '保存';
+		saveBtn.style.cssText = 'padding:8px 16px;background:#10b981;border:none;border-radius:4px;color:white;cursor:pointer;';
+		saveBtn.onclick = () => {
+			const updates: Record<string, unknown> = {
+				goal: goalTextarea.value,
+			};
+			if (this._onUpdatePlan) { this._onUpdatePlan(plan.id, updates); }
+			overlay.remove();
+			// Refresh the plan dialog
+			this.showOrchestrationPlanDialog(plan);
+		};
+		actions.appendChild(saveBtn);
+
+		dialog.appendChild(actions);
+
+		overlay.appendChild(dialog);
+		document.body.appendChild(overlay);
+	}
+
+	// ─── Utility ───────────────────────────────────────────────────────
+
+	private _escapeHtml(text: string): string {
+		const div = document.createElement('div');
+		div.textContent = text;
+		return div.innerHTML;
 	}
 
 	private _scrollToBottom(force: boolean): void {
@@ -2288,6 +4182,209 @@ export class AgentChatPanel extends Disposable {
 
 	layout(width: number, height: number): void {
 		// The CSS flexbox handles layout automatically
+	}
+
+	// --- Attachments -------------------------------------
+
+	private _handleFileSelection(): void {
+		if (!this._fileInput?.files) { return; }
+		this._addFiles(Array.from(this._fileInput.files));
+		this._fileInput.value = ''; // reset so same file can be re-selected
+	}
+
+	private _addFiles(files: File[], isPasted = false): void {
+		const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per image
+		const MAX_FILE_SIZE = 30 * 1024 * 1024;  // 30MB per file
+		const MAX_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB total
+
+		for (const file of files) {
+			const isImage = file.type.startsWith('image/');
+			const maxSize = isImage ? MAX_IMAGE_SIZE : MAX_FILE_SIZE;
+
+			if (file.size > maxSize) {
+				// eslint-disable-next-line no-console
+				console.warn(`[AgentChatPanel] File too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB > ${(maxSize / 1024 / 1024).toFixed(0)}MB limit)`);
+				continue;
+			}
+
+			if (isImage) {
+				// Scale image before encoding
+				this._resizeImage(file, 2048, 768).then(scaledDataUrl => {
+					const base64 = scaledDataUrl.split(',')[1] || '';
+					const att: IChatAttachment = {
+						id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+						type: 'image',
+						name: file.name,
+						mimeType: file.type || 'image/png',
+						data: base64,
+						size: file.size,
+						isPasted,
+					};
+					const currentTotal = this._attachments.reduce((sum, a) => sum + a.size, 0);
+					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
+					this._attachments.push(att);
+					this._renderAttachmentPreviews();
+				}).catch(() => { /* ignore resize failures */ });
+			} else {
+				const reader = new FileReader();
+				reader.onload = () => {
+					const dataUrl = reader.result as string;
+					const base64 = dataUrl.split(',')[1] || '';
+					const att: IChatAttachment = {
+						id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+						type: 'file',
+						name: file.name,
+						mimeType: file.type || 'application/octet-stream',
+						data: base64,
+						size: file.size,
+						isPasted,
+					};
+					const currentTotal = this._attachments.reduce((sum, a) => sum + a.size, 0);
+					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
+					this._attachments.push(att);
+					this._renderAttachmentPreviews();
+				};
+				reader.readAsDataURL(file);
+			}
+		}
+	}
+
+	/** Auto-scale image to max 2048x768, return data URL */
+	private _resizeImage(file: File, maxWidth: number, maxHeight: number): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const img = new Image();
+			img.onload = () => {
+				let { width, height } = img;
+				if (width <= maxWidth && height <= maxHeight) {
+					// No scaling needed, return original via FileReader
+					const reader = new FileReader();
+					reader.onload = () => resolve(reader.result as string);
+					reader.onerror = reject;
+					reader.readAsDataURL(file);
+					return;
+				}
+				const ratio = Math.min(maxWidth / width, maxHeight / height);
+				width = Math.round(width * ratio);
+				height = Math.round(height * ratio);
+				const canvas = document.createElement('canvas');
+				canvas.width = width;
+				canvas.height = height;
+				const ctx = canvas.getContext('2d');
+				if (!ctx) { reject(new Error('No canvas context')); return; }
+				ctx.drawImage(img, 0, 0, width, height);
+				resolve(canvas.toDataURL(file.type || 'image/png', 0.85));
+			};
+			img.onerror = reject;
+			img.src = URL.createObjectURL(file);
+		});
+	}
+
+	private _renderAttachmentPreviews(): void {
+		const bars = this._container.querySelectorAll('.chat-attachment-bar');
+		for (const bar of bars) { clearNode(bar as HTMLElement); }
+		if (!this._attachments.length) { return; }
+
+		const bar = this._container.querySelector('.chat-attachment-bar') as HTMLElement;
+		if (!bar) { return; }
+		bar.style.display = 'flex';
+
+		// Check if any image attachment and model doesn't support images
+		const hasImage = this._attachments.some(a => a.type === 'image');
+		const currentModelInfo = this._models.find(m => m.id === this._currentModel);
+		const modelSupportsImages = currentModelInfo?.supportsImages ?? false;
+		const showWarning = hasImage && !modelSupportsImages;
+
+		for (const att of this._attachments) {
+			const chip = append(bar, $('.chat-attachment-chip'));
+			if (att.type === 'image') {
+				const thumb = append(chip, $('img.chat-attachment-thumb')) as HTMLImageElement;
+				thumb.src = `data:${att.mimeType};base64,${att.data}`;
+				thumb.alt = att.name;
+				// Add warning icon overlay if model doesn't support images
+				if (!modelSupportsImages) {
+					const warnOverlay = append(chip, $('.chat-attachment-warn-overlay'));
+					warnOverlay.title = '当前模型不支持图片';
+					const warnIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+					warnIcon.setAttribute('width', '14');
+					warnIcon.setAttribute('height', '14');
+					warnIcon.setAttribute('viewBox', '0 0 24 24');
+					warnIcon.setAttribute('fill', 'currentColor');
+					const warnPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+					warnPath.setAttribute('d', 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z');
+					warnIcon.appendChild(warnPath);
+					warnOverlay.appendChild(warnIcon);
+				}
+				// Lightbox on click
+				this._register(addDisposableListener(thumb, EventType.CLICK, () => {
+					this._showLightbox(thumb.src);
+				}));
+			} else {
+				append(chip, $('span.chat-attachment-file-icon', undefined, '📄'));
+			}
+			append(chip, $('span.chat-attachment-name', undefined, att.name));
+
+			const removeBtn = append(chip, $('span.chat-attachment-remove.codicon.codicon-close'));
+			this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._attachments = this._attachments.filter(a => a.id !== att.id);
+				this._renderAttachmentPreviews();
+			}));
+		}
+
+		// Show warning text if model doesn't support images
+		if (showWarning) {
+			const warningEl = append(bar, $('.chat-attachment-warning'));
+			warningEl.textContent = '当前模型不支持图片输入，图片附件将被忽略';
+		}
+	}
+
+	// --- Lightbox (full-screen image preview) ---
+
+	private _showLightbox(src: string): void {
+		// Remove any existing lightbox
+		document.querySelector('.chat-lightbox-overlay')?.remove();
+
+		const overlay = document.createElement('div');
+		overlay.className = 'chat-lightbox-overlay';
+
+		const img = document.createElement('img');
+		img.src = src;
+		img.className = 'chat-lightbox-image';
+		overlay.appendChild(img);
+
+		const closeBtn = document.createElement('button');
+		closeBtn.className = 'chat-lightbox-close';
+		closeBtn.innerHTML = '✕';
+		closeBtn.addEventListener('click', () => overlay.remove());
+		overlay.appendChild(closeBtn);
+
+		overlay.addEventListener('click', (e) => {
+			if (e.target === overlay) { overlay.remove(); }
+		});
+
+		document.addEventListener('keydown', (e) => {
+			if (e.key === 'Escape') { overlay.remove(); }
+		}, { once: true });
+
+		document.body.appendChild(overlay);
+	}
+
+	getAttachments(): ReadonlyArray<IChatAttachment> {
+		return this._attachments;
+	}
+
+	clearAttachments(): void {
+		this._attachments = [];
+		this._renderAttachmentPreviews();
+	}
+
+	/** Inject a workflow/taskboard prompt into the textarea and auto-send it */
+	injectPrompt(message: string): void {
+		if (!this._textarea) { return; }
+		this._textarea.value = message;
+		this._textarea.dispatchEvent(new Event('input'));
+		// Auto-send after a microtask so the textarea resize settles
+		queueMicrotask(() => this._handleSendMessage());
 	}
 
 	override dispose(): void {

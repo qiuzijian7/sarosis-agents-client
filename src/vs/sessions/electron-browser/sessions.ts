@@ -189,14 +189,14 @@
 					e.metaKey ? 'meta-' : '',
 					e.altKey ? 'alt-' : '',
 					e.shiftKey ? 'shift-' : '',
-					e.keyCode
+					e.code
 				].join('');
 			};
 
 		// Devtools & reload support
-		const TOGGLE_DEV_TOOLS_KB = (safeProcess.platform === 'darwin' ? 'meta-alt-73' : 'ctrl-shift-73'); // mac: Cmd-Alt-I, rest: Ctrl-Shift-I
-		const TOGGLE_DEV_TOOLS_KB_ALT = '123'; // F12
-		const RELOAD_KB = (safeProcess.platform === 'darwin' ? 'meta-82' : 'ctrl-82'); // mac: Cmd-R, rest: Ctrl-R
+		const TOGGLE_DEV_TOOLS_KB = (safeProcess.platform === 'darwin' ? 'meta-alt-KeyI' : 'ctrl-shift-KeyI'); // mac: Cmd-Alt-I, rest: Ctrl-Shift-I
+		const TOGGLE_DEV_TOOLS_KB_ALT = 'F12'; // F12
+		const RELOAD_KB = (safeProcess.platform === 'darwin' ? 'meta-KeyR' : 'ctrl-KeyR'); // mac: Cmd-R, rest: Ctrl-R
 
 		let listener: ((e: KeyboardEvent) => void) | undefined = function (e) {
 			const key = extractKey(e);

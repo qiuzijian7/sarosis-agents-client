@@ -16,7 +16,9 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
+import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import type { AgentStatus as AgentChatAgentStatus } from '../../../browser/agentChat/agentChatTypes.js';
+import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
 import * as DOM from '../../../../base/browser/dom.js';
 
 /**
@@ -44,6 +46,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
+		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -79,6 +82,65 @@ export class NativeChatEditorPane extends EditorPane {
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
+			onListSkills: () => [],
+			// Orchestration plan callbacks
+			onApprovePlan: async (planId: string) => {
+				try {
+					await this._taskOrchestrationService.approvePlan(planId);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] approvePlan failed:', err);
+				}
+			},
+			onRejectPlan: async (planId: string) => {
+				try {
+					await this._taskOrchestrationService.rejectPlan(planId);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] rejectPlan failed:', err);
+				}
+			},
+			onApproveWithoutExecute: async (planId: string) => {
+				try {
+					await this._taskOrchestrationService.approveWithoutExecute(planId);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] approveWithoutExecute failed:', err);
+				}
+			},
+			onTaskAction: async (planId: string, taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => {
+				try {
+					await this._taskOrchestrationService.taskAction(planId, taskId, action);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] taskAction failed:', err);
+				}
+			},
+			onUpdatePlan: async (planId: string, updates: Record<string, unknown>) => {
+				try {
+					await this._taskOrchestrationService.updatePlan(planId, updates);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] updatePlan failed:', err);
+				}
+			},
+			onUpdateTask: async (planId: string, taskId: string, updates: Record<string, unknown>) => {
+				try {
+					await this._taskOrchestrationService.updateTask(planId, taskId, updates);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] updateTask failed:', err);
+				}
+			},
+			onDecomposeTask: async (planId: string, taskId: string) => {
+				try {
+					// Get the plan to retrieve workspaceId and plannerId
+					const plan = await this._taskOrchestrationService.getPlan(planId);
+					if (plan) {
+						await this._taskOrchestrationService.decomposeTask(planId, taskId, plan.workspaceId, plan.plannerId);
+					}
+				} catch (err) {
+					console.error('[NativeChatEditorPane] decomposeTask failed:', err);
+				}
+			},
+			onClosePlanDialog: (planId: string) => {
+				// Just log for now, the dialog is closed in AgentChatPanel
+				console.log('[NativeChatEditorPane] closePlanDialog:', planId);
+			},
 		}));
 
 		this._container.appendChild(this._chatPanel.element);
@@ -94,6 +156,30 @@ export class NativeChatEditorPane extends EditorPane {
 				return;
 			}
 			await this._selectAndLoadAgent(agentId);
+		}));
+
+		// Listen for orchestration plan changes
+		this._register(this._taskOrchestrationService.onDidChangePlan((plan: OrchestrationPlan) => {
+			// When plan changes, show or update the orchestration plan dialog
+			if (plan.status === 'pending_approval') {
+				// Show dialog for pending approval plans
+				this._chatPanel?.showOrchestrationPlanDialog(plan);
+			} else if (plan.status === 'approved' || plan.status === 'executing') {
+				// For approved/executing plans, show dialog if it's not already open,
+				// or update the existing dialog
+				this._chatPanel?.showOrchestrationPlanDialog(plan);
+			} else if (plan.status === 'rejected' || plan.status === 'completed' || plan.status === 'error') {
+				// For terminal states, close the dialog if it's open
+				this._chatPanel?.closeOrchestrationPlanDialog();
+			}
+		}));
+
+		// Listen for orchestration task changes
+		this._register(this._taskOrchestrationService.onDidChangeTask(({ planId, task }) => {
+			// When a task changes, we might want to refresh the current plan dialog
+			// For now, we'll just log it
+			console.log(`[NativeChatEditorPane] Task changed: planId=${planId}, taskId=${task.id}, status=${task.status}`);
+			// TODO: refresh the current plan dialog if it's open
 		}));
 
 		console.log('[NativeChatEditorPane] Chat panel initialized');

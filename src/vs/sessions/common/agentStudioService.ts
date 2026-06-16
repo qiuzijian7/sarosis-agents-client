@@ -217,7 +217,24 @@ export interface IChatStreamDelta {
 	| "sub_agent_progress"
 	| "sub_agent_end"
 	| "discard_prior_text" // Hermes synthetic-recovery 等价物：丢弃此前的幻觉/过渡文本，防止 conversation rot
-	| "assistant_turn"; // Hermes-style 消息边界：agentOS 每个 iteration 的 assistant 边界，供 chatService 按回合切分持久化
+	| "assistant_turn" // Hermes-style 消息边界：agentOS 每个 iteration 的 assistant 边界，供 chatService 按回合切分持久化
+	| "tool_approval_request"
+	| "tool_approval_resolved"
+	| "ask_user_start"
+	| "ask_user_progress"
+	| "todo_list"
+	| "question_carousel"
+	| "tip"
+	| "workflow_start"
+	| "workflow_end"
+	| "workflow_subagent_start"
+	| "workflow_subagent_end"
+	| "workflow_delta"
+	| "workflow_ask_user"
+	| "workflow_ask_user_end"
+	| "workflow_collect_variables"
+	| "workflow_collect_variables_end"
+	| "workflow_breakpoint_hit";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -256,6 +273,10 @@ export interface IChatStreamDelta {
 	readonly subAgentOutput?: string;
 	readonly subAgentError?: string;
 	readonly subAgentGroupId?: string;
+	/** Text position offset for tool call in the message content (used for rendering). */
+	readonly textPosition?: number;
+	/** Security level for tool approval requests. */
+	readonly securityLevel?: string;
 	/**
 	 * Host-side full text snapshot (Void-inspired fullTextSoFar pattern).
 	 * When present, the WebView uses this instead of incrementally
@@ -327,6 +348,7 @@ export interface IChatStreamDelta {
 		}>;
 		readonly status: 'pending' | 'approved' | 'rejected' | 'cancelled';
 		readonly icon?: string;
+		readonly autoConfirmOptions?: Array<{ readonly id: string; readonly label: string }>;
 	};
 	/** Todos data (for todos delta type) */
 	readonly todosData?: Array<{
@@ -354,6 +376,41 @@ export interface IChatStreamDelta {
 		readonly tooltip?: string;
 		readonly category?: string;
 	}>;
+	/** Tool arguments (for tool_approval_request delta type) */
+	readonly toolArgs?: string;
+	/** AskUser fields (for ask_user_start/ask_user_progress delta types) */
+	readonly askUserId?: string;
+	readonly executionId?: string;
+	readonly nodeId?: string;
+	readonly nodeName?: string;
+	readonly question?: string;
+	readonly options?: Array<{ readonly label: string; readonly description?: string }>;
+	readonly multiSelect?: boolean;
+	readonly status?: string;
+	readonly selection?: string | string[];
+	/** Todos (for todo_list delta type) */
+	readonly todos?: Array<{ readonly id: string; readonly label: string; readonly completed: boolean; readonly description?: string; readonly assignee?: string }>;
+	/** Questions (for question_carousel delta type) */
+	readonly questions?: Array<{ readonly id: string; readonly label: string; readonly tooltip?: string; readonly category?: string }>;
+	/** Tip fields (for tip delta type) */
+	readonly tipId?: string;
+	readonly icon?: string;
+	readonly action?: { readonly label: string; readonly tooltip?: string; readonly actionId?: string };
+	/** Workflow fields */
+	readonly workflowName?: string;
+	readonly currentNodeId?: string;
+	readonly subAgentName?: string;
+	readonly task?: string;
+	readonly output?: string;
+	readonly error?: string;
+	readonly thinking?: string;
+	readonly eventId?: string;
+	readonly sessionId?: string;
+	readonly nodeType?: string;
+	readonly collectId?: string;
+	readonly variables?: Array<{ name: string; defaultValue?: string }>;
+	readonly values?: Record<string, string>;
+	readonly summary?: string;
 }
 
 export type ChatMode = 'craft' | 'ask' | 'plan' | 'workflow';
@@ -441,6 +498,29 @@ export interface IAgentChatService {
 	createAgentSession(agentId: string, name?: string): Promise<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number }>;
 
 	/**
+	 * List all sessions for an agent.
+	 * Returns array of session metadata sorted by updatedAt descending.
+	 */
+	listAgentSessions(agentId: string): Promise<Array<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number }>>;
+
+	/**
+	 * Rename an agent session.
+	 */
+	renameAgentSession(agentId: string, sessionId: string, newName: string): Promise<void>;
+
+	/**
+	 * Delete an agent session and its message history.
+	 */
+	deleteAgentSession(agentId: string, sessionId: string): Promise<void>;
+
+	/**
+	 * Get the most recently active session for an agent.
+	 * If no sessions exist, auto-create one.
+	 * Returns the AgentSessionMeta of the active session.
+	 */
+	getOrCreateActiveSession(agentId: string, name?: string): Promise<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number }>;
+
+	/**
 	 * Delete chat messages after a given message ID (for checkpoint time-travel).
 	 * Keeps messages up to and including the target message.
 	 */
@@ -453,6 +533,16 @@ export interface IAgentChatService {
 	 * `getHistory` calls don't reload the full uncompressed history.
 	 */
 	replaceHistory(agentId: string, sessionId: string | undefined, messages: ChatMessage[]): Promise<void>;
+
+	/**
+	 * Submit AskUser response (workflow interactive input).
+	 */
+	submitAskUser(agentId: string, sessionId: string, executionId: string, nodeId: string, selection: string | string[]): Promise<void>;
+
+	/**
+	 * Apply code to file (from AI-generated code).
+	 */
+	applyCode(agentId: string, sessionId: string, code: string, language: string, filePath?: string): Promise<void>;
 }
 
 // --- Agent Delegation Service ---

@@ -273,6 +273,7 @@
 				"--inspect=5875",
 				"--remote-debugging-port=9222",
 				"--no-cached-data",
+				"--open-devtools",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
@@ -320,6 +321,7 @@
 				"--inspect=5875",
 				"--remote-debugging-port=9222",
 				"--no-cached-data",
+				"--open-devtools",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
 				// for general runtime freezes: https://github.com/microsoft/vscode/issues/127861#issuecomment-904144910
 				"--disable-features=CalculateNativeWinOcclusion",
