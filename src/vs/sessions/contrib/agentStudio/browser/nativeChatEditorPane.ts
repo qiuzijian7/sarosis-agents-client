@@ -244,6 +244,59 @@ export class NativeChatEditorPane extends EditorPane {
 				// Just log for now, the dialog is closed in AgentChatPanel
 				console.log('[NativeChatEditorPane] closePlanDialog:', planId);
 			},
+			// Missing callbacks (stub implementations)
+			onSelectWorktree: (path: string) => {
+				console.log('[NativeChatEditorPane] onSelectWorktree:', path);
+				// TODO: Implement worktree selection logic
+			},
+			onScrollToMessage: (messageId: string) => {
+				console.log('[NativeChatEditorPane] onScrollToMessage:', messageId);
+				// TODO: Implement scroll to message logic
+			},
+			onSelectProvider: (providerId: string) => {
+				console.log('[NativeChatEditorPane] onSelectProvider:', providerId);
+				// TODO: Implement provider selection logic (refer to chatBarPart.ts)
+			},
+			onSelectModel: (modelId: string) => {
+				console.log('[NativeChatEditorPane] onSelectModel:', modelId);
+				// TODO: Implement model selection logic (refer to chatBarPart.ts)
+			},
+			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => {
+				console.log('[NativeChatEditorPane] onCheckpointAction:', action, payload);
+				// TODO: Implement checkpoint action logic
+			},
+			onConfirmationAction: (confirmationId: string, buttonId: string) => {
+				console.log('[NativeChatEditorPane] onConfirmationAction:', confirmationId, buttonId);
+				// TODO: Implement confirmation action logic
+			},
+			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
+				console.log('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
+				// TODO: Implement ask user submit logic
+			},
+			onQuestionClick: (question: any) => {
+				console.log('[NativeChatEditorPane] onQuestionClick:', question);
+				// TODO: Implement question click logic
+			},
+			onReferenceClick: (ref: any) => {
+				console.log('[NativeChatEditorPane] onReferenceClick:', ref);
+				// TODO: Implement reference click logic
+			},
+			onTipAction: (tipId: string, actionId: string) => {
+				console.log('[NativeChatEditorPane] onTipAction:', tipId, actionId);
+				// TODO: Implement tip action logic
+			},
+			onTipDismiss: (tipId: string) => {
+				console.log('[NativeChatEditorPane] onTipDismiss:', tipId);
+				// TODO: Implement tip dismiss logic
+			},
+			onApplyCode: (code: string, language: string, filePath?: string) => {
+				console.log('[NativeChatEditorPane] onApplyCode:', language, filePath);
+				// TODO: Implement apply code logic (refer to chatBarPart.ts)
+			},
+			onOpenFile: (filePath: string) => {
+				console.log('[NativeChatEditorPane] onOpenFile:', filePath);
+				// TODO: Implement open file logic (refer to chatBarPart.ts)
+			},
 		}));
 
 		this._container.appendChild(this._chatPanel.element);
