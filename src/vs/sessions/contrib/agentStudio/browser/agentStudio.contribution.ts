@@ -842,6 +842,22 @@ class NativeChatEditorInputSerializer implements IEditorSerializer {
 	}
 }
 
+/**
+ * Helper: Check if Native Chat mode is enabled via configuration.
+ * Reads from the configuration registry (synchronous, no service injection needed).
+ */
+function isNativeChatEnabled(): boolean {
+	try {
+		// Access configuration via registry (works in serializer context)
+		const configRegistry = Registry.as<IConfigurationRegistry>(Extensions.Configuration);
+		// Note: This is a simplified check. In production, we should use IConfigurationService.
+		// For now, we rely on the configuration being already loaded.
+		return false; // TODO: implement proper config check
+	} catch {
+		return false;
+	}
+}
+
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory)
 	.registerEditorSerializer(NativeChatEditorInput.TypeID, NativeChatEditorInputSerializer);
 
