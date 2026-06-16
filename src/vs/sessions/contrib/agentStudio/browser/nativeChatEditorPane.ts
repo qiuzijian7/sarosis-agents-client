@@ -39,6 +39,9 @@ export class NativeChatEditorPane extends EditorPane {
 	private _chatPanel: AgentChatPanel | undefined;
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
+	private _currentAgentId: string | null = null;
+	private _currentSessionId: string | null = null;
+	private _currentChatMode: 'chat' | 'craft' = 'chat';
 
 	constructor(
 		group: IEditorGroup,
@@ -73,12 +76,14 @@ export class NativeChatEditorPane extends EditorPane {
 				// TODO: Implement full message sending logic (refer to chatBarPart.ts _handleSendMessage)
 				// For now, just call sendMessage with minimal parameters
 				try {
+					const agentId = this._currentAgentId ?? 'claw';
+					const sessionId = this._currentSessionId ?? undefined;
 					await this._chatService.sendMessage(
-						'claw', // TODO: get from state (e.g., this._currentAgentId)
+						agentId,
 						text,
 						{
-							chatMode: 'chat', // TODO: get from state (e.g., this._currentChatMode)
-							agentSessionId: undefined, // TODO: get from state (e.g., this._currentSessionId)
+							chatMode: this._currentChatMode,
+							agentSessionId: sessionId,
 							explicitSkillIds: explicitSkillIds,
 						},
 						(delta) => {
@@ -93,7 +98,9 @@ export class NativeChatEditorPane extends EditorPane {
 			onCancelExecution: () => {
 				// TODO: Use this._currentAgentId and this._currentSessionId when available
 				try {
-					this._chatService.cancelStream('claw', undefined);
+					const agentId = this._currentAgentId ?? 'claw';
+					const sessionId = this._currentSessionId ?? undefined;
+					this._chatService.cancelStream(agentId, sessionId);
 				} catch (err) {
 					console.error('[NativeChatEditorPane] cancelExecution failed:', err);
 				}
@@ -104,7 +111,74 @@ export class NativeChatEditorPane extends EditorPane {
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
+			onChangeMode: (mode: 'chat' | 'craft') => {
+				this._currentChatMode = mode;
+				console.log(`[NativeChatEditorPane] onChangeMode: switched to ${mode} mode`);
+				// TODO: Update UI or reconfigure chat panel if needed
+			},
 			onListSkills: () => [],
+			onNewSession: async () => {
+				// Create a new session for the current agent
+				if (!this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onNewSession: no agent selected');
+					return;
+				}
+				try {
+					const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
+					this._currentSessionId = session.id;
+					console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
+					// TODO: Update UI to show the new session
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onNewSession failed:', err);
+				}
+			},
+			onOpenSession: async (sessionId: string) => {
+				// Switch to the selected session
+				if (!this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onOpenSession: no agent selected');
+					return;
+				}
+				try {
+					this._currentSessionId = sessionId;
+					console.log(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
+					// TODO: Load session history and update UI
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onOpenSession failed:', err);
+				}
+			},
+			onRenameSession: async (sessionId: string, newName: string) => {
+				if (!this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onRenameSession: no agent selected');
+					return;
+				}
+				try {
+					await this._chatService.renameAgentSession(this._currentAgentId, sessionId, newName);
+					console.log(`[NativeChatEditorPane] onRenameSession: renamed session ${sessionId} to "${newName}"`);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onRenameSession failed:', err);
+				}
+			},
+			onDeleteSession: async (sessionId: string) => {
+				if (!this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onDeleteSession: no agent selected');
+					return;
+				}
+				try {
+					await this._chatService.deleteAgentSession(this._currentAgentId, sessionId);
+					console.log(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
+					// If deleted session is current, switch to another session
+					if (this._currentSessionId === sessionId) {
+						const sessions = await this._chatService.listAgentSessions(this._currentAgentId);
+						if (sessions.length > 0) {
+							this._currentSessionId = sessions[0].id;
+						} else {
+							this._currentSessionId = null;
+						}
+					}
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onDeleteSession failed:', err);
+				}
+			},
 			// Orchestration plan callbacks
 			onApprovePlan: async (planId: string) => {
 				try {
@@ -211,6 +285,7 @@ export class NativeChatEditorPane extends EditorPane {
 		try {
 			const emp = await this._agentStudioService.getAgent(agentId);
 			if (emp && this._chatPanel) {
+				this._currentAgentId = agentId;
 				this._chatPanel.setAgent({
 					id: emp.id,
 					name: emp.name,
@@ -222,6 +297,14 @@ export class NativeChatEditorPane extends EditorPane {
 					model: emp.model,
 					provider: undefined,
 				});
+				// Auto-create or get active session for this agent
+				try {
+					const session = await this._chatService.getOrCreateActiveSession(agentId);
+					this._currentSessionId = session.id;
+					console.log(`[NativeChatEditorPane] Active session for agent ${agentId}: ${session.id}`);
+				} catch (err) {
+					console.warn('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
+				}
 			}
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);
