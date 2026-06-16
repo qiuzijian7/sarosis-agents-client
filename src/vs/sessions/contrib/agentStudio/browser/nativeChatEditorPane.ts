@@ -91,8 +91,12 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 			},
 			onCancelExecution: () => {
-				// TODO: Wire to abort controller
-				console.log('[NativeChatEditorPane] cancelExecution');
+				// TODO: Use this._currentAgentId and this._currentSessionId when available
+				try {
+					this._chatService.cancelStream('claw', undefined);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] cancelExecution failed:', err);
+				}
 			},
 			onToggleCollapse: () => {
 				document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'));
