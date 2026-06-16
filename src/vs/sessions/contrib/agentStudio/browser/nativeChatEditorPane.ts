@@ -69,9 +69,26 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 
 		this._chatPanel = this._register(new AgentChatPanel({
-			onSendMessage: async (text: string) => {
-				// TODO: Wire to IAgentChatService for actual message sending
-				console.log('[NativeChatEditorPane] sendMessage:', text);
+			onSendMessage: async (text: string, explicitSkillIds?: string[]) => {
+				// TODO: Implement full message sending logic (refer to chatBarPart.ts _handleSendMessage)
+				// For now, just call sendMessage with minimal parameters
+				try {
+					await this._chatService.sendMessage(
+						'claw', // TODO: get from state (e.g., this._currentAgentId)
+						text,
+						{
+							chatMode: 'chat', // TODO: get from state (e.g., this._currentChatMode)
+							agentSessionId: undefined, // TODO: get from state (e.g., this._currentSessionId)
+							explicitSkillIds: explicitSkillIds,
+						},
+						(delta) => {
+							// TODO: Handle stream delta (update UI)
+							console.log('[NativeChatEditorPane] delta:', delta?.type);
+						},
+					);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] sendMessage failed:', err);
+				}
 			},
 			onCancelExecution: () => {
 				// TODO: Wire to abort controller
