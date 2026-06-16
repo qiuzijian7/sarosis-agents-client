@@ -223,7 +223,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[AGENT_STUDIO_USE_NATIVE_CHAT_SETTING]: {
 			type: 'boolean',
-			default: false,
+			default: true,
 			description: localize('agentStudio.chat.useNativeChat', "Use Native Chat UI (DOM-based) instead of React WebView. Native UI has better performance but may have missing features during migration."),
 		},
 		// --- Preferences ---
