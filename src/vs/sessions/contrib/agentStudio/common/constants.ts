@@ -31,6 +31,9 @@ export const AGENT_STUDIO_CHECK_UPDATES_SETTING = 'sessions.agentStudio.preferen
 export const AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING = 'sessions.agentStudio.skills.maxSkillsInPrompt';
 export const AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING = 'sessions.agentStudio.skills.maxSkillsPromptChars';
 
+// Configuration keys — Chat UI Mode (React WebView vs Native DOM)
+export const AGENT_STUDIO_USE_NATIVE_CHAT_SETTING = 'sessions.agentStudio.chat.useNativeChat';
+
 // Configuration keys — Auxiliary Models
 export const AGENT_STUDIO_AUX_VISION_PROVIDER = 'sessions.agentStudio.aux.vision.provider';
 export const AGENT_STUDIO_AUX_VISION_MODEL = 'sessions.agentStudio.aux.vision.model';

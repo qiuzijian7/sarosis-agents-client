@@ -118,6 +118,7 @@ import {
 	AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING,
 	AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING,
 	AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING,
+	AGENT_STUDIO_USE_NATIVE_CHAT_SETTING,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
@@ -219,6 +220,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			description: localize('agentStudio.chatStreamLog.dumpTools', "Dump full tools schema in chat stream logs. When false (default), tools are summarized as '(N tools)' to keep log size small. Enable to inspect provider-side tool registration."),
+		},
+		[AGENT_STUDIO_USE_NATIVE_CHAT_SETTING]: {
+			type: 'boolean',
+			default: false,
+			description: localize('agentStudio.chat.useNativeChat', "Use Native Chat UI (DOM-based) instead of React WebView. Native UI has better performance but may have missing features during migration."),
 		},
 		// --- Preferences ---
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
