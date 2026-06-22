@@ -326,6 +326,7 @@
 
 .chat-message.user {
 	flex-direction: row-reverse;
+	padding-bottom: 36px;
 }
 
 .chat-bubble {
@@ -352,6 +353,440 @@
 	max-width: 75%;
 	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   User message hover action buttons (Void-style: edit / copy / undo)
+   Positioned below-bubble, right-aligned, opacity 0 → 1 on hover.
+   ═══════════════════════════════════════════════════════════════════ */
+.chat-bubble.user {
+	position: relative;
+}
+
+.chat-msg-actions {
+	position: absolute;
+	bottom: -28px;
+	right: 0;
+	display: flex;
+	gap: 2px;
+	opacity: 0;
+	transition: opacity 0.15s ease;
+	z-index: 2;
+	pointer-events: none;
+}
+
+.chat-bubble.user:hover .chat-msg-actions {
+	opacity: 1;
+}
+
+.chat-msg-action-btn {
+	width: 28px;
+	height: 24px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--ec-text-secondary);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	opacity: 0.6;
+	transition: opacity 0.15s, background 0.15s, color 0.15s;
+	pointer-events: auto;
+	flex-shrink: 0;
+}
+.chat-msg-action-btn:hover {
+	opacity: 1;
+	background: rgba(128, 128, 128, 0.12);
+	color: var(--ec-text-primary);
+}
+.chat-msg-copy-copied {
+	color: var(--vscode-debugIcon-startForeground, #4ec9b0) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Checkpoint Undo Confirmation Dialog (modal overlay)
+   Centered modal with backdrop, showing files to be reverted.
+   ═══════════════════════════════════════════════════════════════════ */
+.checkpoint-undo-dialog-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.5);
+	backdrop-filter: blur(2px);
+	animation: undo-overlay-fadein 0.15s ease-out;
+}
+@keyframes undo-overlay-fadein {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+.checkpoint-undo-dialog {
+	width: min(480px, calc(100% - 48px));
+	background: var(--ec-bg-secondary);
+	border: 1px solid var(--ec-border-primary);
+	border-radius: 10px;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 1px rgba(255,255,255,0.06) inset;
+	overflow: hidden;
+	animation: undo-dialog-slidein 0.2s ease-out;
+}
+@keyframes undo-dialog-slidein {
+	from { opacity: 0; transform: translateY(12px) scale(0.97); }
+	to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Header */
+.checkpoint-undo-dialog-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 18px 10px;
+	border-bottom: 1px solid var(--ec-border-secondary);
+}
+.checkpoint-undo-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--ec-text-primary);
+	letter-spacing: 0.3px;
+}
+.checkpoint-undo-close-btn {
+	width: 28px;
+	height: 28px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--ec-text-muted);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.12s, color 0.12s;
+	flex-shrink: 0;
+}
+.checkpoint-undo-close-btn:hover {
+	background: rgba(128, 128, 128, 0.12);
+	color: var(--ec-text-primary);
+}
+
+/* Description */
+.checkpoint-undo-desc {
+	margin: 10px 18px 8px;
+	font-size: 12.5px;
+	color: var(--ec-text-secondary);
+	line-height: 1.5;
+}
+
+/* File list */
+.checkpoint-undo-file-list {
+	margin: 0 16px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	max-height: 180px;
+	overflow-y: auto;
+	padding: 6px 8px;
+	border-radius: 6px;
+	background: rgba(0, 0, 0, 0.18);
+	border: 1px solid var(--ec-border-secondary);
+}
+.checkpoint-undo-file-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: 4px;
+	font-size: 12px;
+	transition: background 0.12s;
+}
+.checkpoint-undo-file-row:hover {
+	background: rgba(128, 128, 128, 0.08);
+}
+.checkpoint-file-hash {
+	color: var(--ec-accent);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11.5px;
+	flex-shrink: 0;
+	font-weight: 500;
+}
+.checkpoint-file-name {
+	color: var(--ec-text-primary);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11.5px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.checkpoint-file-stats {
+	font-size: 11px;
+	font-weight: 600;
+	margin-left: 4px;
+	flex-shrink: 0;
+	font-family: var(--vscode-editor-font-family, monospace);
+	letter-spacing: -0.2px;
+}
+.checkpoint-file-stats.stat-added { color: var(--void-success-color); }
+.checkpoint-file-stats.stat-modified { color: var(--ec-warning); }
+.checkpoint-file-stats.stat-deleted { color: var(--void-error); }
+.checkpoint-file-revert-label {
+	color: var(--ec-text-muted);
+	font-size: 11px;
+	margin-left: auto;
+	flex-shrink: 0;
+}
+
+/* Footer: buttons + checkbox */
+.checkpoint-undo-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 18px 14px;
+	gap: 12px;
+	border-top: 1px solid var(--ec-border-secondary);
+}
+.checkpoint-undo-btn-group {
+	display: flex;
+	gap: 8px;
+}
+.checkpoint-undo-btn {
+	padding: 6px 20px;
+	border-radius: 6px;
+	border: 1px solid;
+	font-size: 12.5px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: opacity 0.12s, filter 0.12s;
+	line-height: 1.4;
+}
+.checkpoint-undo-btn.confirm {
+	background: var(--ec-success);
+	border-color: var(--ec-success);
+	color: #0a0a0a;
+}
+.checkpoint-undo-btn.confirm:hover {
+	filter: brightness(1.1);
+}
+.checkpoint-undo-btn.cancel {
+	background: transparent;
+	border-color: var(--ec-border-primary);
+	color: var(--ec-text-secondary);
+}
+.checkpoint-undo-btn.cancel:hover {
+	background: rgba(128, 128, 128, 0.08);
+	color: var(--ec-text-primary);
+}
+
+/* "Don't prompt again" checkbox */
+.checkpoint-no-prompt-wrap {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	user-select: none;
+	flex-shrink: 0;
+}
+.checkpoint-no-prompt-cb {
+	width: 13px;
+	height: 13px;
+	border: 1.5px solid var(--ec-text-muted);
+	border-radius: 3px;
+	accent-color: var(--ec-accent);
+	cursor: pointer;
+	margin: 0;
+	flex-shrink: 0;
+}
+.checkpoint-no-prompt-text {
+	font-size: 11.5px;
+	color: var(--ec-text-muted);
+	white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   User message edit overlay (matches composer box exactly)
+   Dark rounded card + textarea + toolbar row, same as chat-composer-box.
+   Absolute-positioned to break out of bubble's max-width and fill chat area.
+   ═══════════════════════════════════════════════════════════════════ */
+.chat-message.user {
+	position: relative;
+}
+
+.chat-user-edit-overlay {
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: calc(100% - 0px);
+	max-width: 100%;
+	box-sizing: border-box;
+	z-index: 5;
+	/* 继承 chat-message 的宽度而不是 bubble 的 85% */
+	padding: 0;
+}
+
+.chat-user-edit-composer {
+	background: var(--ec-bg-tertiary);
+	border: 1px solid var(--ec-border-primary);
+	border-radius: 16px;
+	overflow: hidden;
+	transition: border-color 0.2s;
+	display: flex;
+	flex-direction: column;
+}
+.chat-user-edit-composer:focus-within {
+	border-color: rgba(124, 185, 255, 0.4);
+}
+
+.chat-user-edit-input {
+	width: 100%;
+	padding: 12px 16px 6px;
+	background: transparent;
+	color: var(--ec-text-primary);
+	border: none;
+	outline: none;
+	font-size: 14px;
+	line-height: 1.5;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	resize: none;
+	box-sizing: border-box;
+	min-height: 24px;
+	max-height: 120px;
+}
+.chat-user-edit-input::placeholder {
+	color: var(--ec-text-muted);
+	opacity: 0.6;
+}
+
+/* Toolbar row — 与 .chat-composer-toolbar 完全一致 */
+.chat-user-edit-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 6px 8px 8px;
+	gap: 4px;
+	border-top: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.12));
+	border-radius: 0 0 16px 16px;
+}
+.chat-user-edit-toolbar-left {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+}
+.chat-user-edit-toolbar-left::-webkit-scrollbar {
+	display: none;
+}
+.chat-user-edit-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+}
+.chat-user-edit-toolbar-divider {
+	width: 1px;
+	height: 16px;
+	background: var(--ec-border-primary);
+	margin: 0 2px;
+	flex-shrink: 0;
+}
+
+/* Edit toolbar icon buttons — 与 .chat-toolbar-btn 完全一致 */
+.chat-user-edit-tb-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 5px 7px;
+	border-radius: 8px;
+	border: none;
+	background: transparent;
+	color: var(--ec-text-muted);
+	cursor: pointer;
+	transition: all 0.12s;
+	flex-shrink: 0;
+	font-size: 12px;
+}
+.chat-user-edit-tb-btn:hover {
+	background: rgba(255, 255, 255, 0.07);
+	color: var(--ec-text-primary);
+}
+.chat-user-edit-tb-btn.active {
+	background: rgba(124, 185, 255, 0.12);
+	color: var(--ec-accent);
+}
+.chat-user-edit-tb-btn.has-label {
+	padding: 4px 8px;
+	gap: 5px;
+}
+.chat-user-edit-tb-btn svg {
+	flex-shrink: 0;
+}
+.chat-user-edit-tb-label {
+	font-size: 11px;
+	font-weight: 500;
+	white-space: nowrap;
+	color: inherit;
+}
+
+/* Mode / Provider / Model / Agent 标签 — 与 .chat-toolbar-btn.provider-tag/.model-tag 完全一致 */
+.chat-user-edit-tb-btn.mode-tag,
+.chat-user-edit-tb-btn.provider-tag,
+.chat-user-edit-tb-btn.model-tag,
+.chat-user-edit-tb-btn.agent-tag {
+	border: 1px solid var(--ec-border-primary);
+	border-radius: 6px;
+	padding: 3px 8px;
+	background: var(--ec-bg-hover);
+	opacity: 1;
+}
+.chat-user-edit-tb-btn.mode-tag:hover,
+.chat-user-edit-tb-btn.provider-tag:hover,
+.chat-user-edit-tb-btn.model-tag:hover,
+.chat-user-edit-tb-btn.agent-tag:hover {
+	border-color: var(--ec-accent);
+}
+
+.chat-user-edit-tb-btn.mode-tag .chat-user-edit-tb-label {
+	color: var(--vscode-textLink-foreground, #4da3ff);
+}
+.chat-user-edit-tb-btn.mode-tag.has-label {
+	gap: 4px;
+	padding: 0 8px;
+	height: 24px;
+}
+
+/* Hints row（Esc 取消提示，toolbar 下方） */
+.chat-user-edit-hints-row {
+	display: flex;
+	align-items: center;
+	padding: 2px 14px 6px;
+	border-top: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.08));
+}
+.chat-user-edit-hints {
+	font-size: 10px;
+	color: var(--ec-text-secondary);
+	white-space: nowrap;
+	opacity: 0.7;
+}
+.chat-user-edit-hints kbd {
+	display: inline-block;
+	padding: 1px 4px;
+	font-size: 10px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	border: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.2));
+	border-radius: 3px;
+	background: rgba(128, 128, 128, 0.08);
+	line-height: 1.4;
+}
+
+
+
 
 .chat-message-avatar {
 	width: 28px;
@@ -469,6 +904,11 @@
 	animation: blink-cursor 1s step-end infinite;
 	color: var(--vscode-editorCursor-foreground, inherit);
 	margin-left: 2px;
+}
+
+/* 气泡内有工具卡时隐藏文本内嵌光标，改用气泡底部 span.streaming-cursor */
+.chat-bubble.has-tool-cards .streaming-container::after {
+	content: none;
 }
 
 @keyframes blink-cursor {
@@ -1463,6 +1903,286 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Void-style Tool Card (ported 1:1 from webview void-tool-card.css)
+   Unified shell .tool-header-wrapper drives all tool types:
+   chevron + status-aware title + italic desc → right status area
+   (spinner / error / check + duration) → collapsible dropdown body.
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+	--void-bg-1: var(--vscode-input-background);
+	--void-bg-2: var(--vscode-sideBar-background);
+	--void-bg-3: var(--vscode-editor-background);
+	--void-fg-1: var(--vscode-editor-foreground);
+	--void-fg-2: var(--vscode-foreground);
+	--void-fg-3: var(--vscode-input-placeholderForeground);
+	--void-fg-4: var(--vscode-list-deemphasizedForeground);
+	--void-fg-5: var(--vscode-list-deemphasizedForeground);
+	--void-warning: var(--vscode-charts-yellow, #cca700);
+	--void-error: var(--vscode-errorForeground, #f14c4c);
+	--void-border-3: var(--vscode-commandCenter-inactiveBorder, rgba(128, 128, 128, 0.25));
+	--void-border-4: var(--vscode-editorGroup-border, rgba(128, 128, 128, 0.18));
+}
+
+.tool-header-wrapper {
+	margin: 4px 0;
+	max-width: 100%;
+	overflow: hidden;
+}
+.tool-header-wrapper .tool-header {
+	box-sizing: border-box;
+	width: 100%;
+	border: 1px solid var(--void-border-3);
+	border-radius: 4px;
+	padding: 2px 8px;
+	background: var(--void-bg-3);
+	overflow: hidden;
+	transition: border-color 0.15s ease, background 0.15s ease;
+}
+.tool-header-wrapper.tool-card-error .tool-header {
+	border-color: color-mix(in srgb, var(--void-warning) 55%, var(--void-border-3));
+}
+.tool-header-wrapper.tool-card-rejected .tool-header,
+.tool-header-wrapper.tool-card-canceled .tool-header {
+	border-color: var(--void-border-4);
+	opacity: 0.85;
+}
+.tool-header-wrapper.tool-card-approval .tool-header {
+	border-color: color-mix(in srgb, var(--void-warning) 70%, var(--void-border-3));
+	background: color-mix(in srgb, var(--void-warning) 6%, var(--void-bg-3));
+}
+
+.tool-header-row {
+	user-select: none;
+	display: flex;
+	align-items: center;
+	width: 100%;
+	gap: 8px;
+	overflow: hidden;
+	justify-content: space-between;
+	min-height: 24px;
+}
+.tool-header-row-rejected { text-decoration: line-through; }
+
+.tool-header-left {
+	margin-left: 4px;
+	display: flex;
+	align-items: center;
+	overflow: hidden;
+	min-width: 0;
+}
+.tool-header-icon {
+	display: inline-flex;
+	align-items: center;
+	margin-right: 6px;
+	flex-shrink: 0;
+	color: var(--void-fg-3);
+}
+.tool-header-title-container {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	overflow: hidden;
+	flex-grow: 1;
+	max-width: 100%;
+}
+.tool-header-title-clickable { cursor: pointer; transition: filter 0.15s ease; }
+.tool-header-title-clickable:hover { filter: brightness(1.25); }
+
+.tool-header-chevron {
+	color: var(--void-fg-3);
+	margin-right: 2px;
+	height: 16px;
+	width: 16px;
+	flex-shrink: 0;
+	transition: transform 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.tool-header-chevron-expanded { transform: rotate(90deg); }
+
+.tool-header-title {
+	color: var(--void-fg-2);
+	flex-shrink: 0;
+	font-size: 12px;
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tool-header-desc1 {
+	color: var(--void-fg-4);
+	font-size: 11px;
+	font-style: italic;
+	margin-left: 8px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+.tool-header-desc1-clickable { cursor: pointer; transition: filter 0.15s ease; }
+.tool-header-desc1-clickable:hover { filter: brightness(1.25); text-decoration: underline; }
+
+.tool-header-loading-title {
+	display: inline-flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	gap: 1px;
+}
+.tool-header-loading-dots {
+	display: inline-block;
+	width: 14px;
+	font-size: 12px;
+	margin-left: 1px;
+	color: var(--void-fg-3);
+}
+.tool-header-loading-dots::after {
+	content: '.';
+	animation: void-loading-dots 1.2s steps(1, end) infinite;
+}
+@keyframes void-loading-dots {
+	0% { content: '.'; }
+	33% { content: '..'; }
+	66% { content: '...'; }
+}
+
+.tool-header-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+.tool-header-info-icon { margin-left: 8px; color: var(--void-fg-4); opacity: 0.6; flex-shrink: 0; cursor: default; }
+.tool-header-error-icon { color: var(--void-warning); opacity: 0.9; flex-shrink: 0; }
+.tool-header-rejected-icon { color: var(--void-fg-4); opacity: 0.9; flex-shrink: 0; }
+.tool-header-spinner-icon { color: var(--void-fg-3); flex-shrink: 0; animation: void-tool-spin 1s linear infinite; }
+.tool-header-success-icon { color: var(--vscode-debugIcon-startForeground, #4ec9b0); flex-shrink: 0; }
+@keyframes void-tool-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.tool-header-desc2 { color: var(--void-fg-4); font-size: 11px; }
+.tool-header-num-results { color: var(--void-fg-4); font-size: 11px; margin-left: auto; margin-right: 4px; white-space: nowrap; }
+
+.tool-header-children {
+	max-height: 0;
+	opacity: 0;
+	transition: all 0.2s ease-in-out;
+	color: var(--void-fg-4);
+	border-radius: 2px;
+	max-width: 100%;
+	box-sizing: border-box;
+}
+.tool-header-children-expanded {
+	max-height: 1200px;
+	opacity: 1;
+	padding: 4px 0;
+}
+.tool-children-wrapper { cursor: default; user-select: none; max-width: 100%; box-sizing: border-box; }
+.tool-children-wrapper-inner { padding: 0 8px; min-width: 100%; overflow: hidden; max-width: 100%; box-sizing: border-box; }
+.tool-children-wrapper.tool-children-bg { background: var(--void-bg-2); border-radius: 3px; }
+
+.tool-code-children { padding: 4px; border-radius: 2px; overflow: auto; font-size: 12px; max-width: 100%; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }
+.tool-code-children-selectable { user-select: text; cursor: auto; max-width: 100%; }
+.tool-code-children pre,
+.tool-children-wrapper pre {
+	margin: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--void-fg-2);
+	max-width: 100%;
+	overflow-x: auto;
+}
+.tool-children-terminal pre { white-space: pre; color: var(--void-fg-1); max-width: 100%; overflow-x: auto; }
+.tool-children-terminal .tool-terminal-code {
+	user-select: text;
+	cursor: auto;
+	overflow: auto;
+	white-space: pre;
+	border-radius: 3px;
+	background: var(--void-bg-2);
+	padding: 4px 6px;
+	max-width: 100%;
+	box-sizing: border-box;
+}
+
+.tool-listable-item {
+	display: flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	white-space: nowrap;
+	width: 100%;
+	overflow: auto;
+	font-size: 12px;
+	color: var(--void-fg-2);
+	padding: 1px 0;
+	max-width: 100%;
+	box-sizing: border-box;
+}
+.tool-listable-item-clickable { cursor: pointer; transition: filter 0.2s ease; }
+.tool-listable-item-clickable:hover { filter: brightness(1.25); text-decoration: underline; }
+.tool-listable-item-dot { flex-shrink: 0; margin-right: 6px; }
+.tool-listable-item-dot svg { width: 4px; height: 4px; opacity: 0.6; fill: currentColor; }
+.tool-listable-item div,
+.tool-listable-item-small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.tool-bottom-children { width: 100%; padding: 0 8px; margin-top: 2px; max-width: 100%; box-sizing: border-box; }
+.tool-bottom-children-header {
+	display: flex;
+	align-items: center;
+	cursor: pointer;
+	user-select: none;
+	padding: 2px 0;
+	border-radius: 3px;
+	transition: color 0.15s ease;
+}
+.tool-bottom-children-chevron {
+	margin-right: 4px;
+	height: 12px;
+	width: 12px;
+	flex-shrink: 0;
+	color: var(--void-fg-4);
+	transition: transform 0.1s ease;
+}
+.tool-bottom-children-chevron-open { transform: rotate(90deg); }
+.tool-bottom-children-title { font-weight: 500; color: var(--void-fg-4); font-size: 11px; }
+.tool-bottom-children-header:hover .tool-bottom-children-title,
+.tool-bottom-children-header:hover .tool-bottom-children-chevron { color: var(--void-fg-3); }
+.tool-bottom-children-body {
+	overflow: hidden;
+	max-height: 0;
+	opacity: 0;
+	transition: all 0.2s ease-in-out;
+	font-size: 11px;
+	padding-left: 16px;
+}
+.tool-bottom-children-body-open { max-height: 600px; opacity: 1; }
+.tool-bottom-children-content {
+	overflow-x: auto;
+	color: var(--void-fg-4);
+	opacity: 0.9;
+	border-left: 2px solid var(--void-warning);
+	padding: 2px 8px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.tool-exit-code {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	margin-top: 4px;
+	padding: 1px 6px;
+	border-radius: 3px;
+}
+.tool-exit-code-zero { color: var(--vscode-debugIcon-startForeground, #4ec9b0); }
+.tool-exit-code-nonzero { color: var(--void-error); }
+
+/* ═══════════════════════════════════════════════════════════════════
    Step Indicator (assistant "calling model / executing tool" hint)
    ═══════════════════════════════════════════════════════════════════ */
 .step-indicator {
@@ -2085,8 +2805,8 @@
    Send / Cancel Button
    ═══════════════════════════════════════════════════════════════════ */
 .chat-send-circle {
-	width: 32px;
-	height: 32px;
+	width: 22px;
+	height: 22px;
 	border-radius: 50%;
 	background: var(--ec-accent);
 	color: white;
@@ -2187,6 +2907,11 @@
 }
 
 @keyframes ec-dropdown-in {
+	from { opacity: 0; transform: translateY(-4px); }
+	to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes agent-dropdown-in {
 	from { opacity: 0; transform: translateY(-4px); }
 	to   { opacity: 1; transform: translateY(0); }
 }
@@ -2604,14 +3329,15 @@
 	position: fixed;
 	width: 260px;
 	max-height: 280px;
-	background-color: var(--vscode-dropdown-background, #252a33);
-	border: 1px solid var(--vscode-panel-border, #3d444f);
+	background-color: var(--as-bg-tertiary, var(--vscode-dropdown-background, #1e1e1e));
+	border: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
 	border-radius: 8px;
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
 	z-index: 9999;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+	animation: agent-dropdown-in 0.15s ease-out;
 }
 
 .chat-message-nav-item {
@@ -2859,18 +3585,58 @@
 	color: #6e7681;
 }
 
-/* Mode-dropdown specific (composer) */
+/* Mode-dropdown specific (composer) — mirrors provider-dropdown */
 .mode-dropdown-composer {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 0;
 	min-width: 200px;
+	max-height: 280px;
+	overflow-y: auto;
+	padding: 4px;
+	background: #252a33;
+	border: 1px solid #3d444f;
+	border-radius: 8px;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+	z-index: 9999;
 }
 
 .mode-item {
-	flex-wrap: wrap;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-radius: 4px;
+	cursor: pointer;
+	color: #c9d1d9;
+	font-size: 12px;
+	transition: background-color 0.1s;
+}
+
+.mode-item:hover {
+	background: #383f4b;
+	color: #e6edf3;
+}
+
+.mode-item.active {
+	background: #1c3a5e;
+	color: #79c0ff;
+}
+
+.mode-item.disabled {
+	opacity: 0.4;
+	cursor: default;
 }
 
 .mode-item-icon {
 	flex-shrink: 0;
 	color: var(--as-accent, var(--vscode-textLink-foreground, #60a5fa));
+	display: flex;
+	align-items: center;
+}
+
+.mode-item.active .mode-item-icon {
+	color: #79c0ff;
 }
 
 .mode-item-text {
@@ -2881,12 +3647,18 @@
 	min-width: 0;
 }
 
+.mode-item-label {
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.mode-item.active .mode-item-label {
+	color: #79c0ff;
+}
+
 .mode-item-tooltip {
-	width: 100%;
-	font-size: 10px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
-	flex-basis: 100%;
+	font-size: 11px;
+	color: #8b949e;
 }
 
 /* Context-usage ring (token usage) */

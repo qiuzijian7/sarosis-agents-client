@@ -21,7 +21,11 @@ import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
-import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta } from '../../../browser/agentChat/agentChatTypes.js';
+import { ICheckpointService } from '../common/checkpointService.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo } from '../../../browser/agentChat/agentChatTypes.js';
+import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
+import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
 import * as DOM from '../../../../base/browser/dom.js';
 
@@ -47,6 +51,10 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentSessionId: string | null = null;
 	private _currentChatMode: ChatMode | undefined = undefined;
 	private _currentWorkspaceId: string | null = null;
+	private _isSending = false;
+	private _currentMaxContextTokens: number | undefined;
+	/** Reusable streaming-send function, captured from the panel's onSendMessage. */
+	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[]) => Promise<void>;
 
 	constructor(
 		group: IEditorGroup,
@@ -57,6 +65,8 @@ export class NativeChatEditorPane extends EditorPane {
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
 		@IAgentChatService private readonly _chatService: IAgentChatService,
 		@IModelSelectorService private readonly _modelSelector: IModelSelectorService,
+		@ICheckpointService private readonly _checkpointService: ICheckpointService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -78,32 +88,59 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 
 		this._chatPanel = this._register(new AgentChatPanel({
-			onSendMessage: async (text: string, explicitSkillIds?: string[]) => {
+			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[]) => {
+				// 防重入：如果正在发送中，忽略重复调用
+				if (this._isSending) {
+					console.warn('[NativeChatEditorPane] onSendMessage: already sending, ignoring duplicate');
+					return;
+				}
 				try {
-					const agentId = this._currentAgentId ?? 'claw';
-					const sessionId = this._currentSessionId ?? undefined;
-					
+					// Converge the multi-layer session id: always resolve a concrete
+					// agent + session before sending so the stream never falls into the
+					// "noSession bucket" (the historical cross-talk root cause).
+					const ensured = await this._ensureSession();
+					if (!ensured) {
+						console.warn('[NativeChatEditorPane] onSendMessage: no usable agent/session');
+						return;
+					}
+					const agentId = ensured.agentId;
+					const sessionId: string = ensured.sessionId;
+
 					// Optimistically add user message
-					const userMsg: any = {
+					const userMsg: IAgentChatMessage = {
 						id: `msg_${Date.now()}_user`,
 						role: 'user',
 						content: text,
 						timestamp: Date.now(),
 					};
 					this._chatPanel?.addMessage(userMsg);
-					
-					// Create assistant placeholder
-					const assistantId = `msg_${Date.now()}_assistant`;
-					const assistantMsg: any = {
-						id: assistantId,
-						role: 'assistant',
-						content: '',
-						timestamp: Date.now(),
-						isStreaming: true,
-						streamPhase: 'llm_streaming',
-					};
-					this._chatPanel?.addMessage(assistantMsg);
+
+					// Set sending state BEFORE await — switches send button to stop icon immediately
 					this._chatPanel?.setSending(true);
+					this._isSending = true;
+
+					// Assistant message — created lazily on first meaningful delta (text/thinking/tool_start).
+					// This avoids showing an empty placeholder bubble with "AI 正在输出..." text.
+					let assistantId: string | null = null;
+					let assistantMsg: IAgentChatMessage | null = null;
+					let assistantAdded = false;
+
+					const ensureAssistantMsg = () => {
+						if (assistantAdded) { return; }
+						assistantId = `msg_${Date.now()}_assistant`;
+						const turnId = `turn_${Date.now()}`;
+						assistantMsg = {
+							id: assistantId,
+							role: 'assistant',
+							content: '',
+							timestamp: Date.now(),
+							isStreaming: true,
+							streamPhase: 'llm_streaming',
+							turnId,
+						};
+						this._chatPanel?.addMessage(assistantMsg);
+						assistantAdded = true;
+					};
 					
 					await this._chatService.sendMessage(
 						agentId,
@@ -118,9 +155,13 @@ export class NativeChatEditorPane extends EditorPane {
 							
 							switch (delta.type) {
 								case 'text':
-									// Update assistant message with streaming text
+									// First text delta → ensure assistant message exists, then update
+									ensureAssistantMsg();
+									if (!assistantMsg || !assistantId) return;
 									const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
 									assistantMsg.content = textContent;
+									this._chatPanel?.setStreamPhase('llm_streaming');
+									this._chatPanel?.setStreamTextBuffer(textContent);
 									this._chatPanel?.updateMessage(assistantId, {
 										content: textContent,
 										isStreaming: true,
@@ -128,49 +169,147 @@ export class NativeChatEditorPane extends EditorPane {
 									});
 									break;
 								case 'thinking':
+									ensureAssistantMsg();
+									if (!assistantMsg || !assistantId) return;
 									const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : ((assistantMsg.thinking ?? '') + (delta.content ?? ''));
 									assistantMsg.thinking = thinkingContent;
+									this._chatPanel?.setStreamThinkingBuffer(thinkingContent);
 									this._chatPanel?.updateMessage(assistantId, {
 										thinking: thinkingContent,
 										isThinking: true,
 									});
 									break;
-								case 'tool_start':
-									console.log(`[NativeChatEditorPane] Tool started: ${delta.toolName}`);
-									break;
-								case 'tool_end':
-									console.log(`[NativeChatEditorPane] Tool ended: ${delta.toolName}, success=${delta.success}`);
-									break;
-								case 'done':
-									console.log('[NativeChatEditorPane] Stream complete');
-									// Finalize UI state
-									this._chatPanel?.updateMessage(assistantId, {
-										isStreaming: false,
-										isThinking: false,
-										streamPhase: 'idle',
+								case 'tool_start': {
+									// First tool delta → ensure assistant message exists
+									ensureAssistantMsg();
+									if (!assistantMsg || !assistantId) return;
+									if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+									assistantMsg.toolCalls.push({
+										id: delta.toolCallId ?? `tool_${Date.now()}`,
+										name: delta.toolName ?? '',
+										args: '',
+										status: 'running',
+										displayName: delta.displayName,
+										renderType: delta.renderType,
+										defaultShow: delta.defaultShow,
+										textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
 									});
-									this._chatPanel?.setSending(false);
+									this._chatPanel?.setStreamPhase('tool_executing');
+									this._chatPanel?.updateMessage(assistantId, {
+										toolCalls: assistantMsg.toolCalls.slice(),
+										isStreaming: true,
+										streamPhase: 'tool_executing',
+									});
 									break;
+								}
+								case 'tool_args': {
+									if (!assistantMsg || !assistantId) return;
+									const argCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+									if (argCall) {
+										argCall.args = (argCall.args ?? '') + (delta.content ?? '');
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls!.slice(),
+											isStreaming: true,
+											streamPhase: 'tool_executing',
+										});
+									}
+									break;
+								}
+								case 'tool_end': {
+									if (!assistantMsg || !assistantId) return;
+									const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+									if (endCall) {
+										endCall.status = 'completed';
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls!.slice(),
+											isStreaming: true,
+											streamPhase: 'llm_streaming',
+										});
+									}
+									break;
+								}
+								case 'tool_result': {
+									if (!assistantMsg || !assistantId) return;
+									const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+									if (resultCall) {
+										resultCall.result = delta.content;
+										if (resultCall.status === 'running') { resultCall.status = 'completed'; }
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls!.slice(),
+										});
+									}
+									break;
+								}
+								case 'phase_change':
+									// Phase changes can arrive before any content — don't create msg for them
+									if (delta.phase) {
+										this._chatPanel?.setStreamPhase(delta.phase);
+									}
+									if (delta.phase && assistantId) {
+										this._chatPanel?.updateMessage(assistantId, {
+											streamPhase: delta.phase,
+											isStreaming: delta.phase !== 'idle',
+										});
+									}
+									break;
+								case 'done': {
+									// Edge case: if no content ever arrived, ensure msg exists for done-state
+									if (!assistantAdded && assistantId === null) {
+										ensureAssistantMsg();
+									}
+									if (assistantMsg && assistantId) {
+										if (assistantMsg.toolCalls) {
+											for (const tc of assistantMsg.toolCalls) {
+												if (tc.status === 'running') { tc.status = 'completed'; }
+											}
+										}
+										this._chatPanel?.setStreamPhase('idle');
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
+											isStreaming: false,
+											isThinking: false,
+											streamPhase: 'idle',
+										});
+									}
+									this._chatPanel?.setSending(false);
+									this._isSending = false;
+									break;
+								}
 								case 'error':
-									console.error('[NativeChatEditorPane] Stream error:', delta.content);
-									this._chatPanel?.updateMessage(assistantId, {
-										isStreaming: false,
-										isThinking: false,
-										streamPhase: 'error',
-										content: (assistantMsg.content || '') + `\n\n⚠️ ${typeof delta.content === 'string' ? delta.content : '执行失败'}`,
-									});
+									// Ensure assistant msg exists to show error state
+									if (!assistantAdded && assistantId === null) {
+										ensureAssistantMsg();
+									}
+									if (assistantId) {
+										this._chatPanel?.setStreamPhase('error');
+										this._chatPanel?.updateMessage(assistantId, {
+											isStreaming: false,
+											isThinking: false,
+											streamPhase: 'error',
+											content: ((assistantMsg?.content) || '') + `\n\n⚠️ ${typeof delta.content === 'string' ? delta.content : '执行失败'}`,
+										});
+									}
 									this._chatPanel?.setSending(false);
+									this._isSending = false;
 									break;
 								case 'usage':
-									console.log('[NativeChatEditorPane] Usage:', delta.usage);
-									if (delta.usage) {
+									if (delta.usage && assistantMsg && assistantId) {
+										const input = delta.usage.inputTokens ?? 0;
+										const output = delta.usage.outputTokens ?? 0;
+										const total = input + output;
+										assistantMsg.tokenUsage = { input, output, total };
 										this._chatPanel?.updateMessage(assistantId, {
-											tokenUsage: {
+											tokenUsage: { input, output, total },
+										});
+										// 更新上下文环进度条
+										const limit = this._currentMaxContextTokens ?? 0;
+										if (limit > 0) {
+											this._chatPanel?.setStreamUsage({
 												input: delta.usage.inputTokens ?? 0,
 												output: delta.usage.outputTokens ?? 0,
-												total: (delta.usage.inputTokens ?? 0) + (delta.usage.outputTokens ?? 0),
-											},
-										});
+												seen: true,
+											});
+										}
 									}
 									break;
 								default:
@@ -181,7 +320,11 @@ export class NativeChatEditorPane extends EditorPane {
 				} catch (err) {
 					console.error('[NativeChatEditorPane] sendMessage failed:', err);
 					this._chatPanel?.setSending(false);
+					this._isSending = false;
 				}
+			}),
+			onEditMessage: (messageId: string, newText: string) => {
+				void this._handleEditMessage(messageId, newText);
 			},
 			onCancelExecution: () => {
 				// TODO: Use this._currentAgentId and this._currentSessionId when available
@@ -235,6 +378,8 @@ export class NativeChatEditorPane extends EditorPane {
 				console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
 				// Clear messages in UI
 				this._chatPanel?.setMessages([]);
+				// New session has no checkpoints yet — reset bar & scope checkpoints to it.
+				this._activateCheckpointSession(this._currentAgentId, session.id);
 				// Refresh session list
 				await this._refreshSessionList();
 			} catch (err) {
@@ -242,17 +387,21 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		},
 			onOpenSession: async (sessionId: string) => {
-				// Switch to the selected session
+				// Switch to the selected session and reload its history
 				if (!this._currentAgentId) {
 					console.warn('[NativeChatEditorPane] onOpenSession: no agent selected');
 					return;
 				}
+				const agentId = this._currentAgentId;
 				try {
 					this._currentSessionId = sessionId;
-					console.log(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
-					// TODO: Load session history and update UI
+					const history = await this._chatService.getHistory(agentId, sessionId);
+					this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+					// Scope checkpoints to the newly opened session & refresh the bar.
+					this._activateCheckpointSession(agentId, sessionId);
 				} catch (err) {
 					console.error('[NativeChatEditorPane] onOpenSession failed:', err);
+					this._chatPanel?.setMessages([]);
 				}
 			},
 			onRenameSession: async (sessionId: string, newName: string) => {
@@ -272,18 +421,30 @@ export class NativeChatEditorPane extends EditorPane {
 					console.warn('[NativeChatEditorPane] onDeleteSession: no agent selected');
 					return;
 				}
+				const agentId = this._currentAgentId;
 				try {
-					await this._chatService.deleteAgentSession(this._currentAgentId, sessionId);
+					await this._chatService.deleteAgentSession(agentId, sessionId);
 					console.log(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
-					// If deleted session is current, switch to another session
+					// If the deleted session is the current one, switch to the most recent
+					// remaining session (or clear the view) and reload history + checkpoints.
 					if (this._currentSessionId === sessionId) {
-						const sessions = await this._chatService.listAgentSessions(this._currentAgentId);
+						const sessions = await this._chatService.listAgentSessions(agentId);
 						if (sessions.length > 0) {
 							this._currentSessionId = sessions[0].id;
+							try {
+								const history = await this._chatService.getHistory(agentId, this._currentSessionId);
+								this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+							} catch {
+								this._chatPanel?.setMessages([]);
+							}
+							this._activateCheckpointSession(agentId, this._currentSessionId);
 						} else {
 							this._currentSessionId = null;
+							this._chatPanel?.setMessages([]);
+							this._chatPanel?.setCheckpoint(null);
 						}
 					}
+					await this._refreshSessionList();
 				} catch (err) {
 					console.error('[NativeChatEditorPane] onDeleteSession failed:', err);
 				}
@@ -389,8 +550,7 @@ export class NativeChatEditorPane extends EditorPane {
 				void this._refreshModelSelector();
 			},
 			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => {
-				console.log('[NativeChatEditorPane] onCheckpointAction:', action, payload);
-				// TODO: Implement checkpoint action logic
+				void this._handleCheckpointAction(action, payload);
 			},
 			onConfirmationAction: (confirmationId: string, buttonId: string) => {
 				console.log('[NativeChatEditorPane] onConfirmationAction:', confirmationId, buttonId);
@@ -447,6 +607,12 @@ export class NativeChatEditorPane extends EditorPane {
 				this._chatPanel?.setAgent(null);
 				return;
 			}
+			// Don't reload agent (which calls setMessages and wipes streaming state)
+			// while a message is being sent/streaming.
+			if (this._isSending) {
+				console.info('[NativeChatEditorPane] onDidSelectAgent: ignored — currently streaming');
+				return;
+			}
 			await this._selectAndLoadAgent(agentId);
 		}));
 
@@ -489,6 +655,13 @@ export class NativeChatEditorPane extends EditorPane {
 			void this._loadWorktrees();
 		}));
 
+		// Checkpoint wiring — refresh the bar whenever a checkpoint is created for the active session.
+		this._register(this._checkpointService.onDidCreateCheckpoint((cp) => {
+			if (cp.agentId === this._currentAgentId && cp.sessionId === this._currentSessionId) {
+				void this._refreshCheckpointBar();
+			}
+		}));
+
 		console.log('[NativeChatEditorPane] Chat panel initialized');
 	}
 
@@ -518,26 +691,13 @@ export class NativeChatEditorPane extends EditorPane {
 					// Load history messages for this session
 					try {
 						const history = await this._chatService.getHistory(agentId, this._currentSessionId);
-						// Adapt ChatMessage to IAgentChatMessage (filter out 'tool' role messages)
-						const adaptedMessages = history
-							.filter(m => m.role !== 'tool')
-							.map(m => ({
-								id: m.id,
-								role: m.role as 'user' | 'assistant' | 'system',
-								content: m.content,
-								timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp).getTime() : m.timestamp,
-								thinking: (m as any).thinking,
-								toolCalls: (m as any).toolCalls,
-								isStreaming: (m as any).isStreaming,
-								streamPhase: (m as any).streamPhase,
-								metadata: (m as any).metadata,
-								tokenUsage: (m as any).tokenUsage,
-							}));
-						this._chatPanel.setMessages(adaptedMessages);
+						this._chatPanel.setMessages(this._adaptHistoryMessages(history));
 					} catch (err) {
 						console.warn('[NativeChatEditorPane] Failed to load history:', err);
 						this._chatPanel.setMessages([]);
 					}
+					// Register active session for checkpoint scoping & refresh checkpoint bar
+					this._activateCheckpointSession(agentId, this._currentSessionId);
 				} catch (err) {
 					console.warn('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
 				}
@@ -546,6 +706,158 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);
+		}
+	}
+
+	/**
+	 * 将服务端持久化的 ChatMessage[] 适配为面板使用的 IAgentChatMessage[]。
+	 * 阶段E：复用共享 adaptPersistedChatMessage —— assistant 消息携带有序 parts
+	 * （取代 textPosition 交织），独立 'tool' 角色消息被过滤。与 ChatBarPart 完全对齐。
+	 */
+	private _adaptHistoryMessages(history: ChatMessage[]): IAgentChatMessage[] {
+		return (history ?? [])
+			.map(m => adaptPersistedChatMessage(m))
+			.filter((m): m is IAgentChatMessage => !!m);
+	}
+
+	// ---------- checkpoint wiring (aligned with ChatBarPart) ----------
+
+	/**
+	 * Ensures a concrete agent id + session id is available before a send.
+	 *
+	 * Session id convergence: the various layers (`_currentSessionId`,
+	 * `AgentSessionMeta.id`, checkpoint session, provider session) all refer to
+	 * the same logical agent session. If the UI never resolved one (e.g. agent
+	 * load failed), we lazily create/resolve it via `getOrCreateActiveSession`
+	 * so the stream is never persisted into the agent-only "noSession bucket",
+	 * which historically caused history cross-talk between sessions.
+	 */
+	private async _ensureSession(): Promise<{ agentId: string; sessionId: string } | null> {
+		const agentId = this._currentAgentId ?? 'claw';
+		let sessionId = this._currentSessionId ?? undefined;
+		if (!sessionId) {
+			try {
+				const session = await this._chatService.getOrCreateActiveSession(agentId);
+				sessionId = session.id;
+				this._currentSessionId = sessionId;
+				this._activateCheckpointSession(agentId, sessionId);
+			} catch (err) {
+				console.error('[NativeChatEditorPane] _ensureSession failed:', err);
+				return null;
+			}
+		}
+		return { agentId, sessionId };
+	}
+
+	/**
+	 * Handles an inline user-message edit (edit → truncate → regenerate).
+	 *
+	 * The panel has already removed the edited message and everything after it
+	 * from the in-memory view. Here we truncate the persisted history to drop
+	 * the edited user message (and everything after), then re-send the new text
+	 * through the normal streaming flow.
+	 */
+	private async _handleEditMessage(messageId: string, newText: string): Promise<void> {
+		if (!this._currentAgentId) {
+			return;
+		}
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId ?? undefined;
+		try {
+			const history = await this._chatService.getHistory(agentId, sessionId);
+			const idx = history.findIndex(m => m.id === messageId);
+			if (idx <= 0) {
+				await this._chatService.clearHistory(agentId, sessionId);
+			} else {
+				await this._chatService.deleteMessagesAfter(agentId, sessionId, history[idx - 1].id);
+			}
+		} catch (err) {
+			console.error('[NativeChatEditorPane] _handleEditMessage: truncate failed:', err);
+			return;
+		}
+		await this._sendMessageInternal(newText);
+	}
+
+	/** Register the active checkpoint session and refresh the checkpoint bar. */
+	private _activateCheckpointSession(agentId: string, sessionId: string | null | undefined): void {
+		if (!sessionId) {
+			this._chatPanel?.setCheckpoint(null);
+			return;
+		}
+		try {
+			this._checkpointService.setActiveSession(agentId, sessionId);
+		} catch { /* ignore */ }
+		void this._refreshCheckpointBar();
+	}
+
+	private async _refreshCheckpointBar(): Promise<void> {
+		if (!this._currentAgentId || !this._currentSessionId || !this._chatPanel) {
+			this._chatPanel?.setCheckpoint(null);
+			return;
+		}
+		try {
+			const list = await this._checkpointService.listCheckpoints(this._currentAgentId, this._currentSessionId);
+			const live = list.filter(cp => !cp.isGhost);
+			if (live.length === 0) {
+				this._chatPanel.setCheckpoint(null);
+				return;
+			}
+			// Aggregate file changes across all live checkpoints (de-dup by path, last wins)
+			const byPath = new Map<string, { path: string; status: 'modified' | 'created' | 'deleted' }>();
+			for (const cp of live) {
+				if (!cp.files) { continue; }
+				for (const f of cp.files) {
+					const status: 'modified' | 'created' | 'deleted' =
+						(f as any).status === 'created' ? 'created'
+							: (f as any).status === 'deleted' ? 'deleted'
+								: 'modified';
+					const path = (f as any).path ?? (f as any).uri ?? '';
+					byPath.set(path, { path, status });
+				}
+			}
+			const files = Array.from(byPath.values()).filter(f => !!f.path);
+			const latest = live[live.length - 1];
+			const info: ICheckpointInfo = {
+				id: latest.id,
+				label: latest.label || (latest.type === 'tool_edit' ? '工具修改' : '用户检查点'),
+				timestamp: latest.createdAt,
+				fileCount: files.length || latest.fileSnapshotIds.length,
+				files,
+			};
+			this._chatPanel.setCheckpoint(info);
+		} catch {
+			this._chatPanel.setCheckpoint(null);
+		}
+	}
+
+	private async _handleCheckpointAction(action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }): Promise<void> {
+		if (!this._currentAgentId || !this._currentSessionId) {
+			return;
+		}
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId;
+		try {
+			if (action === 'undoAll') {
+				await this._checkpointService.revertAllCheckpoints(agentId, sessionId);
+				await this._checkpointService.deleteAllCheckpoints(agentId, sessionId);
+				this._chatPanel?.setCheckpoint(null);
+				return;
+			}
+			if (action === 'keepAll') {
+				await this._checkpointService.deleteAllCheckpoints(agentId, sessionId);
+				this._chatPanel?.setCheckpoint(null);
+				return;
+			}
+			if (action === 'openDiff') {
+				try {
+					await this._commandService.executeCommand(
+						'agentStudio.openCheckpointDiff',
+						{ agentId, sessionId, filePath: payload?.filePath },
+					);
+				} catch { /* command not registered — silently ignore */ }
+			}
+		} catch (err) {
+			console.warn('[NativeChatEditorPane] _handleCheckpointAction failed:', err);
 		}
 	}
 
@@ -626,6 +938,7 @@ export class NativeChatEditorPane extends EditorPane {
 						id: it.model.id,
 						label: it.model.name,
 						provider: it.provider.id,
+						maxInputTokens: it.model.maxAllowedSize ?? it.model.contextWindow ?? it.model.maxInputTokens,
 					});
 				}
 			}
@@ -637,6 +950,16 @@ export class NativeChatEditorPane extends EditorPane {
 			if (selection) {
 				this._chatPanel.setCurrentProvider(selection.providerId);
 				this._chatPanel.setCurrentModel(selection.modelId);
+
+				const matched = items.find(
+					it => it.provider.id === selection.providerId && it.model.id === selection.modelId,
+				);
+				this._currentMaxContextTokens = matched?.model.maxAllowedSize
+					?? matched?.model.contextWindow
+					?? matched?.model.maxInputTokens
+					?? undefined;
+			} else {
+				this._currentMaxContextTokens = undefined;
 			}
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _refreshModelSelector failed:', err);

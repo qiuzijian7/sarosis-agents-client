@@ -26,6 +26,8 @@ export {
 export {
 	getPrimaryModel,
 	getModelChain,
+	deriveMessageParts,
+	flattenMessageParts,
 } from '../../../common/agentStudioTypes.js';
 
 // Type-only exports (interfaces) - erased at runtime, must use 'export type'

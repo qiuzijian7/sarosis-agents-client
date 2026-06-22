@@ -19,6 +19,11 @@ export interface IAgentChatMessage {
 	/** Hermes turn id — shared by multiple assistant messages from same user request, used for aggregation */
 	turnId?: string;
 	toolCalls?: IToolCall[];
+	/**
+	 * 阶段E：有序内容片段（text|tool）。存在时作为渲染唯一真相，
+	 * 按数组顺序遍历，取代 textPosition 交织。content/toolCalls 仍保留为派生兼容字段。
+	 */
+	parts?: IMessagePart[];
 	thinking?: string;
 	isThinking?: boolean;
 	currentStep?: string;           // 'call_llm' | 'execute_tool' | custom
@@ -115,14 +120,172 @@ export interface IToolCall {
 	name: string;
 	args?: string;
 	result?: string;
-	status?: 'running' | 'completed';
+	status?: 'running' | 'completed' | 'error';
 	displayName?: string;
 	renderType?: string;
 	defaultShow?: boolean;
-	/** Text-buffer length when this tool started — used to interleave tool cards inside markdown */
+	/**
+	 * @deprecated 阶段E 起改用有序 `IAgentChatMessage.parts`。仅迁移期可读。
+	 */
 	textPosition?: number;
 	/** File path associated with this tool call (e.g., for edit_file tools) */
 	filePath?: string;
+	/** Execution duration in milliseconds */
+	duration?: number;
+	/** Error message if the tool failed */
+	error?: string;
+	/** Process exit code (for terminal tools) */
+	exitCode?: number;
+}
+
+/** 文本内容片段（阶段E 有序模型） */
+export interface ITextMessagePart {
+	readonly kind: 'text';
+	text: string;
+}
+
+/** 工具调用片段（阶段E 有序模型） */
+export interface IToolMessagePart {
+	readonly kind: 'tool';
+	tool: IToolCall;
+}
+
+/**
+ * assistant 消息有序片段。渲染按顺序遍历：文本段→markdown，工具段→工具卡。
+ * 顺序即真相，无需 textPosition。
+ */
+export type IMessagePart = ITextMessagePart | IToolMessagePart;
+
+/** 由有序片段派生扁平字段（content=文本拼接，toolCalls=工具列表）。 */
+export function flattenMessageParts(parts: readonly IMessagePart[]): { content: string; toolCalls: IToolCall[] } {
+	let content = '';
+	const toolCalls: IToolCall[] = [];
+	for (const p of parts) {
+		if (p.kind === 'text') {
+			content += p.text;
+		} else {
+			toolCalls.push(p.tool);
+		}
+	}
+	return { content, toolCalls };
+}
+
+/**
+ * 读取期迁移：由 content + 内嵌 toolCalls（含 textPosition）派生有序 parts。
+ * 与持久化层 deriveMessageParts 同算法，但作用于 UI 侧 IToolCall。
+ * 规则：positioned 工具按偏移切分文本；unpositioned 工具排在末尾；
+ * 无工具时仅一个文本片段（content 非空）。
+ */
+export function deriveUiMessageParts(content: string, toolCalls: readonly IToolCall[]): IMessagePart[] {
+	const text = content ?? '';
+	const tcs = toolCalls ?? [];
+	if (tcs.length === 0) {
+		return text.length > 0 ? [{ kind: 'text', text }] : [];
+	}
+	const positioned = tcs
+		.filter(tc => typeof tc.textPosition === 'number' && (tc.textPosition as number) >= 0)
+		.slice()
+		.sort((a, b) => (a.textPosition as number) - (b.textPosition as number));
+	const unpositioned = tcs.filter(tc => typeof tc.textPosition !== 'number' || (tc.textPosition as number) < 0);
+
+	const parts: IMessagePart[] = [];
+	let lastPos = 0;
+	for (const tc of positioned) {
+		const pos = Math.min(Math.max(tc.textPosition as number, 0), text.length);
+		if (pos > lastPos) {
+			const seg = text.slice(lastPos, pos);
+			if (seg.length > 0) { parts.push({ kind: 'text', text: seg }); }
+		}
+		parts.push({ kind: 'tool', tool: tc });
+		lastPos = Math.max(lastPos, pos);
+	}
+	if (lastPos < text.length) {
+		const seg = text.slice(lastPos);
+		if (seg.length > 0) { parts.push({ kind: 'text', text: seg }); }
+	} else if (positioned.length === 0 && text.length > 0) {
+		parts.push({ kind: 'text', text });
+	}
+	for (const tc of unpositioned) {
+		parts.push({ kind: 'tool', tool: tc });
+	}
+	return parts;
+}
+
+/** 将一个持久化 ToolCall（任意来源字段名）规整为 UI 的 IToolCall。 */
+export function adaptPersistedToolCall(c: any, i: number): IToolCall {
+	return {
+		id: c?.id ?? `tc-${i}`,
+		name: c?.name ?? 'tool',
+		// 持久化字段名为 `arguments`，兼容历史可能写入的 `args`。
+		args: typeof c?.arguments === 'string'
+			? c.arguments
+			: (typeof c?.args === 'string'
+				? c.args
+				: (c?.arguments !== undefined
+					? JSON.stringify(c.arguments)
+					: (c?.args !== undefined ? JSON.stringify(c.args) : undefined))),
+		result: typeof c?.result === 'string' ? c.result : (c?.result ? JSON.stringify(c.result) : undefined),
+		// 持久化 status 'running'|'done'|'error' → UI 'running'|'completed'|'error'（保留 error 失败态）。
+		status: c?.status === 'running' ? 'running' : (c?.status === 'error' ? 'error' : 'completed'),
+		// textPosition 仅供本次派生 parts 使用，不再向后传递。
+		textPosition: typeof c?.textPosition === 'number' ? c.textPosition : undefined,
+		displayName: typeof c?.displayName === 'string' ? c.displayName : undefined,
+		renderType: typeof c?.renderType === 'string' ? c.renderType : undefined,
+		defaultShow: typeof c?.defaultShow === 'boolean' ? c.defaultShow : undefined,
+		error: typeof c?.error === 'string' ? c.error : undefined,
+		filePath: typeof c?.filePath === 'string' ? c.filePath : undefined,
+		duration: typeof c?.duration === 'number' ? c.duration : undefined,
+		exitCode: typeof c?.exitCode === 'number' ? c.exitCode : undefined,
+	};
+}
+
+/**
+ * 统一的持久化消息 → 面板消息适配（阶段E：两个宿主共用入口）。
+ * - 过滤独立 'tool' 角色消息（返回 null）；工具卡片由 assistant 的有序 parts 承载。
+ * - assistant 消息总是带 parts（优先用已存的 parts，否则由 content+toolCalls 派生）。
+ * 调用方：`history.map(adaptPersistedChatMessage).filter((m): m is IAgentChatMessage => !!m)`。
+ */
+export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
+	if (!m) { return null; }
+	if (m.role === 'tool') { return null; }
+	const role: IAgentChatMessage['role'] = m.role === 'user' ? 'user' : (m.role === 'assistant' ? 'assistant' : 'system');
+	const ts = (() => {
+		const t = typeof m.timestamp === 'string' ? Date.parse(m.timestamp) : Number(m.timestamp);
+		return Number.isFinite(t) ? t : Date.now();
+	})();
+	const toolCalls: IToolCall[] | undefined = Array.isArray(m.toolCalls)
+		? m.toolCalls.map((c: any, i: number) => adaptPersistedToolCall(c, i))
+		: undefined;
+
+	let parts: IMessagePart[] | undefined;
+	if (role === 'assistant') {
+		if (Array.isArray(m.parts) && m.parts.length > 0) {
+			// 新格式：parts 已落盘，工具片段内的 tool 字段同样规整为 IToolCall。
+			parts = m.parts.map((p: any): IMessagePart =>
+				p?.kind === 'tool'
+					? { kind: 'tool', tool: adaptPersistedToolCall(p.tool, 0) }
+					: { kind: 'text', text: typeof p?.text === 'string' ? p.text : '' }
+			);
+		} else {
+			// 旧格式：由 content + toolCalls(textPosition) 派生。
+			parts = deriveUiMessageParts(m.content ?? '', toolCalls ?? []);
+		}
+	}
+
+	return {
+		id: m.id,
+		role,
+		content: m.content ?? '',
+		timestamp: ts,
+		turnId: m.turnId,
+		thinking: m.thinking,
+		toolCalls,
+		parts,
+		isStreaming: m.isStreaming,
+		streamPhase: m.streamPhase,
+		metadata: m.metadata,
+		tokenUsage: m.tokenUsage,
+	};
 }
 
 /** Status display mapping */
@@ -175,6 +338,8 @@ export interface IModelInfo {
 	readonly provider: string;
 	/** Whether the model supports image input (vision capability) */
 	readonly supportsImages?: boolean;
+	/** Maximum input tokens (context window limit) */
+	readonly maxInputTokens?: number;
 }
 
 /** Stream phase — precise state machine for streaming lifecycle (Void-inspired 5-state model).

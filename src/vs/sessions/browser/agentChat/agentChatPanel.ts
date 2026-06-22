@@ -18,6 +18,9 @@ import type { IMarkdownString } from "../../../base/common/htmlContent.js";
 import {
 	IAgentChatMessage,
 	IToolCall,
+	IMessagePart,
+	deriveUiMessageParts,
+	flattenMessageParts,
 	IChatAttachment,
 	ISubAgentData,
 	ISubAgentBlock,
@@ -95,6 +98,61 @@ const MODE_OPTIONS: IModeOption[] = [
 //           .chat-toolbar-left (attach, voice, web-search, divider, provider, model)
 //           .chat-send-circle
 
+// ─── Void 工具卡：状态感知标题映射（移植自 webview ToolCallCard BUILTIN_TITLES）───
+const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
+	file_read: { done: '读取文件', running: '正在读取文件' },
+	file_write: { done: '写入文件', running: '正在写入文件' },
+	file_list: { done: '查看目录', running: '正在查看目录' },
+	search_files: { done: '搜索内容', running: '正在搜索内容' },
+	patch: { done: '编辑文件', running: '正在编辑文件' },
+	terminal: { done: '执行终端命令', running: '正在执行终端命令' },
+	process: { done: '管理进程', running: '正在管理进程' },
+	http_get: { done: '请求网页', running: '正在请求网页' },
+	web_search: { done: '网络搜索', running: '正在网络搜索' },
+	web_fetch: { done: '抓取网页', running: '正在抓取网页' },
+	recall: { done: '检索记忆', running: '正在检索记忆' },
+	memory: { done: '记忆操作', running: '正在记忆操作' },
+	read_skill: { done: '读取技能', running: '正在读取技能' },
+	skill_view: { done: '读取技能', running: '正在读取技能' },
+	list_skills: { done: '列出技能', running: '正在列出技能' },
+	skills_list: { done: '列出技能', running: '正在列出技能' },
+	skill_manage: { done: '管理技能', running: '正在管理技能' },
+	delegate_task: { done: '委派任务', running: '正在委派任务' },
+	get_current_time: { done: '获取时间', running: '正在获取时间' },
+	math_eval: { done: '计算', running: '正在计算' },
+	echo: { done: 'Echo', running: 'Echo' },
+	todo: { done: '更新待办', running: '正在更新待办' },
+	execute_code: { done: '执行代码', running: '正在执行代码' },
+	session_search: { done: '搜索会话', running: '正在搜索会话' },
+	read_file: { done: '读取文件', running: '正在读取文件' },
+	read: { done: '读取文件', running: '正在读取文件' },
+	ls_dir: { done: '查看目录', running: '正在查看目录' },
+	list_files: { done: '查看目录', running: '正在查看目录' },
+	get_dir_tree: { done: '查看目录树', running: '正在查看目录树' },
+	search_pathnames_only: { done: '按文件名搜索', running: '正在按文件名搜索' },
+	search_for_files: { done: '搜索', running: '正在搜索' },
+	search_content: { done: '搜索内容', running: '正在搜索内容' },
+	search_in_file: { done: '在文件中搜索', running: '正在文件中搜索' },
+	grep: { done: '搜索内容', running: '正在搜索内容' },
+	create_file_or_folder: { done: '创建', running: '正在创建' },
+	delete_file_or_folder: { done: '删除', running: '正在删除' },
+	edit_file: { done: '编辑文件', running: '正在编辑文件' },
+	edit: { done: '编辑文件', running: '正在编辑文件' },
+	replace_in_file: { done: '编辑文件', running: '正在编辑文件' },
+	apply_patch: { done: '编辑文件', running: '正在编辑文件' },
+	rewrite_file: { done: '写入文件', running: '正在写入文件' },
+	write_file: { done: '写入文件', running: '正在写入文件' },
+	write: { done: '写入文件', running: '正在写入文件' },
+	run_command: { done: '执行终端命令', running: '正在执行终端命令' },
+	run_persistent_command: { done: '执行终端命令', running: '正在执行终端命令' },
+	run_terminal_cmd: { done: '执行终端命令', running: '正在执行终端命令' },
+	open_persistent_terminal: { done: '打开终端', running: '正在打开终端' },
+	kill_persistent_terminal: { done: '关闭终端', running: '正在关闭终端' },
+	read_lint_errors: { done: '读取诊断', running: '正在读取诊断' },
+};
+const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_command', 'run_terminal_cmd', 'process', 'execute_code']);
+const TOOL_LIST_TOOLS = new Set(['file_list', 'search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
+
 export class AgentChatPanel extends Disposable {
 	// -- DOM refs --
 	private readonly _container: HTMLElement;
@@ -107,6 +165,12 @@ export class AgentChatPanel extends Disposable {
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
+	/**
+	 * 工具卡展开态（按 toolCall id 记忆）。流式期间消息会被频繁整条重建
+	 * （_rebuildMessageElement），若不持久化展开态，用户点开的卡会被下一帧重建合上。
+	 * 此 Map 跨重建保留用户的展开/折叠选择；未记录时回退到 tc.defaultShow。
+	 */
+	private readonly _toolCallExpandState = new Map<string, boolean>();
 	private _agent: IAgentInfo | null = null;
 	private _isSending = false;
 	private _showScrollBtn = false;
@@ -198,6 +262,8 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onSelectModel?: (modelId: string) => void;
 	private readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
 	private readonly _onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
+	/** Edit a prior user message: truncate the conversation after it and regenerate from the new text. */
+	private readonly _onEditMessage?: (messageId: string, newText: string) => void;
 	private readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
 	// New callbacks for missing features
 	private readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
@@ -234,6 +300,7 @@ export class AgentChatPanel extends Disposable {
 		onSelectModel?: (modelId: string) => void;
 		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
 		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
+		onEditMessage?: (messageId: string, newText: string) => void;
 		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
 		// New callbacks for missing features
 		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
@@ -269,6 +336,7 @@ export class AgentChatPanel extends Disposable {
 		this._onSelectModel = opts.onSelectModel;
 		this._onCheckpointAction = opts.onCheckpointAction;
 		this._onConfirmationAction = opts.onConfirmationAction;
+		this._onEditMessage = opts.onEditMessage;
 		this._onListSkills = opts.onListSkills;
 		// New callbacks
 		this._onAskUserSubmit = opts.onAskUserSubmit;
@@ -334,7 +402,19 @@ export class AgentChatPanel extends Disposable {
 		const idx = this._messages.findIndex((m) => m.id === messageId);
 		if (idx >= 0) {
 			Object.assign(this._messages[idx], updates);
-			this._updateMessageDom(idx, this._messages[idx]);
+			const m = this._messages[idx];
+			// 阶段E：流式期间由 content + toolCalls 即时派生有序 parts（单一真相），
+			// 除非调用方已显式提供 parts。textPosition 此处仅作本地排序信号，不再跨层传递。
+			if (updates.parts === undefined && m.role === 'assistant') {
+				if (m.toolCalls && m.toolCalls.length > 0) {
+					m.parts = deriveUiMessageParts(m.content ?? '', m.toolCalls);
+				} else if (m.content) {
+					m.parts = [{ kind: 'text', text: m.content }];
+				} else {
+					m.parts = undefined;
+				}
+			}
+			this._updateMessageDom(idx, m);
 			// 消息更新可能影响 inputBaselineTokens（如 tokenUsage 变化），需要重新计算 context ring
 			this._updateContextRing();
 		}
@@ -358,6 +438,8 @@ export class AgentChatPanel extends Disposable {
 
 	setModels(models: IModelInfo[]): void {
 		this._models = models.slice();
+		// 模型列表更新后，重新计算 context usage（limit 可能变化）
+		this._updateContextRing();
 	}
 
 	setCurrentProvider(provider: string): void {
@@ -368,6 +450,8 @@ export class AgentChatPanel extends Disposable {
 
 	setCurrentModel(model: string): void {
 		this._currentModel = model;
+		// 当前模型变化后，重新计算 context usage（limit 可能变化）
+		this._updateContextRing();
 		if (this._agent) { this._render(); }
 	}
 
@@ -1069,29 +1153,34 @@ export class AgentChatPanel extends Disposable {
 			if (turnMessages.length === 1) {
 				aggregated.push(current);
 			} else {
-				// Merge: concatenate content, merge toolCalls (adjust textPosition offsets)
-				const mergedContent = turnMessages
-					.map(m => m.content || '')
-					.filter(c => c.length > 0)
-					.join('\n\n');
-				const mergedToolCalls: IToolCall[] = [];
-				let contentOffset = 0;
+				// 阶段E：按 turn 顺序拼接有序 parts（不再做 textPosition 偏移运算）。
+				// 每条 turn 消息的 parts 已表达其自身顺序，顺次连接即为整回合的正确顺序，
+				// 结构上不可能错位。content/toolCalls 由 parts 反推为派生兼容字段。
+				const mergedParts: IMessagePart[] = [];
 				for (const tm of turnMessages) {
-					const tcOffset = contentOffset;
-					const tcs = (tm.toolCalls || []).map(tc => ({
-						...tc,
-						textPosition: tc.textPosition != null ? tc.textPosition + tcOffset : undefined,
-					}));
-					mergedToolCalls.push(...tcs);
-					contentOffset += (tm.content || '').length + 2; // +2 for \n\n separator
+					const tmParts = (tm.parts && tm.parts.length > 0)
+						? tm.parts
+						: deriveUiMessageParts(tm.content || '', tm.toolCalls || []);
+					// 多 turn 文本之间补一个空行分隔，保持原有 \n\n 视觉间距。
+					if (mergedParts.length > 0 && tmParts.length > 0 && tmParts[0].kind === 'text') {
+						const lastPart = mergedParts[mergedParts.length - 1];
+						if (lastPart.kind === 'text') {
+							lastPart.text = `${lastPart.text}\n\n`;
+						}
+					}
+					for (const p of tmParts) {
+						mergedParts.push(p.kind === 'text' ? { kind: 'text', text: p.text } : { kind: 'tool', tool: p.tool });
+					}
 				}
+				const flat = flattenMessageParts(mergedParts);
 
 				const lastMsg = turnMessages[turnMessages.length - 1];
 				const merged: IAgentChatMessage = {
 					...lastMsg,
 					id: `turn-${turnId}`,
-					content: mergedContent,
-					toolCalls: mergedToolCalls.length > 0 ? mergedToolCalls : undefined,
+					content: flat.content,
+					toolCalls: flat.toolCalls.length > 0 ? flat.toolCalls : undefined,
+					parts: mergedParts.length > 0 ? mergedParts : undefined,
 					thinking: turnMessages.map(m => m.thinking).filter(Boolean).join('\n\n') || undefined,
 				};
 				aggregated.push(merged);
@@ -1180,6 +1269,14 @@ export class AgentChatPanel extends Disposable {
 		if (!this._messagesContainer) {
 			return;
 		}
+		// Remove empty-state placeholder before appending the first real message.
+		// 否则占位元素会一直作为 children[0] 存在，导致 _updateMessageDom 的
+		// idx → children 映射整体偏移 1 位（流式更新错误地写到上一条消息的 DOM），
+		// 同时 "还没有消息，开始对话吧" 文本也不会消失。
+		const emptyEl = this._messagesContainer.querySelector('.chat-messages-empty');
+		if (emptyEl) {
+			emptyEl.remove();
+		}
 		const el = this._createMessageElement(msg);
 		this._messagesContainer.appendChild(el);
 	}
@@ -1190,7 +1287,8 @@ export class AgentChatPanel extends Disposable {
 		if (idx >= children.length) { return; }
 		const existingEl = children[idx] as HTMLElement;
 
-		const hasToolCalls = msg.toolCalls && msg.toolCalls.length > 0;
+		const partsToolCount = msg.parts ? msg.parts.filter(p => p.kind === 'tool').length : 0;
+		const hasToolCalls = (msg.toolCalls && msg.toolCalls.length > 0) || partsToolCount > 0;
 		const hasStructuralChange =
 			hasToolCalls ||
 			msg.confirmation ||
@@ -1216,7 +1314,7 @@ export class AgentChatPanel extends Disposable {
 		// Fast path 2: tool cards already rendered in DOM — only update text content in place
 		// 参考 void：工具调用渲染后，后续流式文本只更新内容区域，不重复重建卡片
 		if (msg.isStreaming && msg.content && hasToolCalls) {
-			const existingToolCards = existingEl.querySelectorAll('.tool-call-card');
+			const existingToolCards = existingEl.querySelectorAll('.tool-header-wrapper');
 			if (existingToolCards.length > 0) {
 				// Tool cards are already present in DOM — update only the content parts
 				this._updateStreamingContentInPlace(existingEl, msg);
@@ -1235,8 +1333,10 @@ export class AgentChatPanel extends Disposable {
 	 */
 	private _updateStreamingContentInPlace(existingEl: HTMLElement, msg: IAgentChatMessage): void {
 		// 检测工具调用结构是否发生变化（新增或移除工具卡片）
-		const existingToolCards = existingEl.querySelectorAll('.tool-call-card');
-		const newToolCount = msg.toolCalls?.length ?? 0;
+		const existingToolCards = existingEl.querySelectorAll('.tool-header-wrapper');
+		const newToolCount = msg.parts
+			? msg.parts.filter(p => p.kind === 'tool').length
+			: (msg.toolCalls?.length ?? 0);
 
 		if (existingToolCards.length !== newToolCount) {
 			// 结构变化：完整重建
@@ -1244,9 +1344,9 @@ export class AgentChatPanel extends Disposable {
 			return;
 		}
 
-		// Interleaved 模式（工具卡片交叉插入文本中）：内容拆分为多段，增量更新复杂，直接完整重建
-		const interleavedSegments = existingEl.querySelectorAll('.interleaved-segment');
-		if (interleavedSegments.length > 0) {
+		// 阶段E：parts 多段文本与工具卡交织 → 增量更新复杂，直接完整重建（与旧 interleaved 行为一致）
+		const partsSegments = existingEl.querySelectorAll('.parts-text-segment, .interleaved-segment');
+		if (partsSegments.length > 0 || (msg.parts && msg.parts.filter(p => p.kind === 'tool').length > 0)) {
 			this._rebuildMessageElement(existingEl, msg);
 			return;
 		}
@@ -1311,64 +1411,11 @@ export class AgentChatPanel extends Disposable {
 			bubble.appendChild(this._createThinkingCard(msg));
 		}
 
-		// Step / phase indicator — shows rich streaming state based on StreamPhase
-		// matches React 5-state model: idle → llm_streaming → tool_executing → awaiting_approval → compressing → error
-		if (!isUser && msg.isStreaming && !msg.content && !(msg.thinking) && !(msg.toolCalls?.length)) {
-			const phase = msg.streamPhase || this._streamPhase;
-			const step = append(bubble, $(".step-indicator.loading"));
-			// Add phase-specific CSS class for color styling
-			if (phase !== 'idle') {
-				step.classList.add(`phase-${phase.replace(/_/g, '-')}`);
-			}
-		switch (phase) {
-			case 'llm_streaming': {
-				step.textContent = '';
-				append(step, $('span.step-icon.loading-dots', undefined, '...'));
-				step.append(' AI 正在输出...');
-				break;
-			}
-			case 'tool_executing': {
-				step.textContent = '';
-				append(step, $('span.step-icon', undefined, '⚙️'));
-				step.append(' 执行工具中...');
-				break;
-			}
-			case 'awaiting_approval': {
-				step.textContent = '';
-				append(step, $('span.step-icon', undefined, '🔒'));
-				step.append(' 等待审批...');
-				break;
-			}
-			case 'compressing': {
-				step.textContent = '';
-				append(step, $('span.step-icon', undefined, '🔄'));
-				step.append(' 压缩上下文中...');
-				break;
-			}
-			case 'error': {
-				step.textContent = '';
-				const errorIcon = $('span.step-icon', undefined, '⚠');
-				errorIcon.style.color = '#f87171';
-				step.appendChild(errorIcon);
-				step.append(' 出错了');
-				break;
-			}
-			default: {
-				step.textContent = '';
-				if (msg.currentStep === "call_llm") {
-					append(step, $('span.step-icon.loading-dots', undefined, '...'));
-					step.append(' 调用模型中...');
-				} else if (msg.currentStep === "execute_tool") {
-					append(step, $('span.step-icon', undefined, '⚙️'));
-					step.append(' 执行工具中...');
-				} else {
-					append(step, $('span.step-icon.loading-dots', undefined, '...'));
-					step.append(' 思考中...');
-				}
-				break;
-			}
-		}
-		}
+		// Streaming cursor — shown for assistant messages that are actively streaming.
+		// Note: We intentionally do NOT show "AI 正在输出..." or any step-indicator text here.
+		// The send button already changes to stop-icon during streaming, which is sufficient
+		// to indicate activity. Showing placeholder text caused visual confusion (duplicate
+		// bubbles) when combined with optimistic message creation in the editor pane.
 
 		// Content + Tool calls — interleaved rendering for assistant messages
 		// (Void-inspired: tool cards inserted at text positions inside markdown),
@@ -1378,11 +1425,17 @@ export class AgentChatPanel extends Disposable {
 		if (isUser && msg.content) {
 			const contentEl = append(bubble, $(".message-content"));
 			this._renderUserContent(contentEl, msg.content);
-		} else if (!isUser && msg.content && msg.toolCalls && msg.toolCalls.some(tc => tc.textPosition != null)) {
-			// Has positioned tool calls → interleaved rendering (tool cards inserted at text positions)
-			this._renderInterleavedContent(bubble, msg.content, msg.toolCalls);
+			// Hover action buttons: edit / copy / undo (Void-style, shown below-bubble on hover)
+			this._addMessageActionButtons(bubble, msg);
+		} else if (!isUser && msg.parts && msg.parts.length > 0) {
+			// 阶段E：有序 parts 是渲染唯一真相 —— 按数组顺序遍历，
+			// 文本段→markdown，工具段→工具卡。结构上不可能错位（取代 textPosition）。
+			this._renderPartsContent(bubble, msg.parts, !!msg.isStreaming);
+			// 有工具卡时标记 bubble，CSS 会隐藏文本内嵌光标（改用底部光标）
+			const hasTool = msg.parts.some(p => p.kind === 'tool');
+			if (hasTool) { bubble.classList.add('has-tool-cards'); }
 		} else if (!isUser && msg.content) {
-			// No positioned tool calls → render content as Markdown, then append unpositioned tool calls
+			// 回退（无 parts，多见于直连模式早期流式）：content 作 Markdown，附加工具卡。
 			const contentEl = append(bubble, $(".message-content"));
 			if (msg.isStreaming) {
 				contentEl.classList.add('streaming-container');
@@ -1462,9 +1515,15 @@ export class AgentChatPanel extends Disposable {
 			bubble.appendChild(this._createStreamErrorCard(msg));
 		}
 
-		// Streaming cursor
+		// Streaming cursor — 策略：
+		//   有工具卡时：文本内嵌光标已由 CSS `.has-tool-cards .streaming-container::after {content:none}` 隐藏，
+		//               改用气泡末尾的 span.streaming-cursor 跟在所有内容之后（工具卡下方）。
+		//   无工具卡时：仅在无 `.streaming-container` 时显示（否则 `::after` 已在文本末尾渲染光标）。
 		if (!isUser && msg.isStreaming) {
-			append(bubble, $("span.streaming-cursor")).textContent = "|";
+			const hasToolCards = bubble.querySelector('.tool-header-wrapper') !== null;
+			if (hasToolCards || !bubble.querySelector('.streaming-container')) {
+				append(bubble, $("span.streaming-cursor")).textContent = "|";
+			}
 		}
 
 		// Footer: time + tokens
@@ -1543,105 +1602,316 @@ export class AgentChatPanel extends Disposable {
 		return card;
 	}
 
-	// --- Tool call card --------------------------------------
+	// --- Tool call card (Void ToolHeaderWrapper parity) ---
 
 	private _createToolCallCard(tc: IToolCall): HTMLElement {
-		const isRunning = tc.status === "running";
-		const renderType = tc.renderType || '';
-		const displayName = tc.displayName || '';
-		const card = $(`.tool-call-card.${isRunning ? "running" : "completed"}`);
+		const key = (tc.name || '').toLowerCase();
+		const isRunning = tc.status === 'running';
+		const isError = tc.status === 'error';
+		const isSuccess = !isRunning && !isError;
 
-		// Header — clickable to expand/collapse body
-		const header = $(".tool-call-header");
-		append(card, header);
-		const iconEl = append(header, $("span.tool-call-icon"));
+		// 状态驱动外壳类（与 void-tool-card.css 对齐）
+		const statusClass = isError ? 'tool-card-error' : isRunning ? 'tool-card-running' : 'tool-card-success';
+		const wrapper = $(`.tool-header-wrapper.${statusClass}`);
+		const headerEl = append(wrapper, $('.tool-header'));
+		const row = append(headerEl, $('.tool-header-row'));
+
+		// ── 左侧：chevron + 状态感知标题 + 斜体 desc ──
+		const left = append(row, $('.tool-header-left'));
+		const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+		const chevron = this._svgChevron(titleContainer, 'tool-header-chevron', 14);
+
+		const titleEl = append(titleContainer, $('span.tool-header-title'));
+		const titleText = this._getToolTitle(key, tc.displayName, tc.name, isRunning);
 		if (isRunning) {
-			const spinner = append(iconEl, $("svg.tool-spinner"));
-			spinner.setAttribute("width", "12"); spinner.setAttribute("height", "12");
-			spinner.setAttribute("viewBox", "0 0 24 24");
-			spinner.setAttribute("fill", "none"); spinner.setAttribute("stroke", "currentColor");
-			spinner.setAttribute("stroke-width", "2.5");
-			const spinPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-			spinPath.setAttribute("d", "M21 12a9 9 0 11-6.219-8.56");
-			spinner.appendChild(spinPath);
+			const lt = append(titleEl, $('span.tool-header-loading-title'));
+			lt.appendChild(document.createTextNode(titleText));
+			append(lt, $('span.tool-header-loading-dots'));
 		} else {
-			const checkSvg = append(iconEl, $("svg"));
-			checkSvg.setAttribute("width", "12"); checkSvg.setAttribute("height", "12");
-			checkSvg.setAttribute("viewBox", "0 0 24 24");
-			checkSvg.setAttribute("fill", "none"); checkSvg.setAttribute("stroke", "currentColor");
-			checkSvg.setAttribute("stroke-width", "2.5");
-			const checkPath = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-			checkPath.setAttribute("points", "20 6 9 17 4 12");
-			checkSvg.appendChild(checkPath);
+			titleEl.textContent = titleText;
 		}
 
-		// Tool name — prefer displayName, fallback to name
-		const nameLabel = displayName || tc.name;
-		append(header, $("span.tool-call-name", undefined, nameLabel));
-		// Render type badge if present
-		if (renderType) {
-			append(header, $("span.tool-call-render-type", undefined, renderType));
+		const desc1 = this._getToolDesc1(key, tc.args, tc.filePath);
+		if (desc1) {
+			const descEl = append(titleContainer, $('span.tool-header-desc1'));
+			descEl.textContent = desc1;
+			if (tc.filePath) {
+				descEl.classList.add('tool-header-desc1-clickable');
+				descEl.title = tc.filePath;
+				descEl.addEventListener('click', (e) => {
+					e.stopPropagation();
+					if (tc.filePath) { this._onOpenFile?.(tc.filePath); }
+				});
+			}
 		}
-		// File path (clickable to open file)
-		if (tc.filePath) {
-			const filePathEl = append(header, $("code.tool-call-file-path", undefined, tc.filePath));
-			filePathEl.title = '点击打开文件';
-			filePathEl.addEventListener('click', (e) => {
-				e.stopPropagation();
-				// Open file via vscode.open command
-				if (tc.filePath) {
-					// Use the command service to open the file
-					// This will be wired up via callback in ChatBarPart
-					this._onOpenFile?.(tc.filePath);
-				}
-			});
+
+		// ── 右侧：spinner / error / success 图标 + duration ──
+		const right = append(row, $('.tool-header-right'));
+		if (isRunning) {
+			this._svgSpinner(right, 'tool-header-spinner-icon');
+		} else if (isError) {
+			this._svgAlert(right, 'tool-header-error-icon');
+		} else if (isSuccess) {
+			this._svgCheck(right, 'tool-header-success-icon');
 		}
-		const toggle = append(header, $("span.tool-call-toggle.collapsed"));
-		toggle.textContent = "▼";
+		if (typeof tc.duration === 'number' && tc.duration >= 0 && !isRunning) {
+			append(right, $('span.tool-header-desc2')).textContent = this._formatDuration(tc.duration);
+		}
 
-		// Body (defaultShow=true → open by default)
-		const body = $(".tool-call-body");
-		append(card, body);
-		const defaultShow = tc.defaultShow !== false; // true if undefined
-		if (!defaultShow) { body.style.display = "none"; }
+		// ── Body（可折叠 dropdown）──
+		const body = append(wrapper, $('.tool-header-children'));
+		const inner = append(body, $('.tool-children-wrapper'));
+		const innerBox = append(inner, $('.tool-children-wrapper-inner'));
 
+		// 展开态：跨流式重建保留用户选择，否则回退 defaultShow。
+		const expanded = this._toolCallExpandState.get(tc.id) ?? (tc.defaultShow === true);
+		if (expanded) {
+			body.classList.add('tool-header-children-expanded');
+			chevron.classList.add('tool-header-chevron-expanded');
+		}
+
+		// 参数
 		if (tc.args) {
 			try {
 				const parsed = JSON.stringify(JSON.parse(tc.args), null, 2);
-				if (parsed !== "{}") {
-					const section = append(body, $(".tool-call-section"));
-					append(section, $("div.tool-call-section-title", undefined, "参数"));
-					const pre = append(section, $("pre.tool-call-code"));
-					pre.textContent = parsed;
+				if (parsed !== '{}') {
+					const code = append(innerBox, $('.tool-code-children'));
+					const sel = append(code, $('.tool-code-children-selectable'));
+					append(sel, $('pre')).textContent = parsed;
 				}
-			} catch {
-				// not JSON, skip
-			}
+			} catch { /* not JSON, skip */ }
 		}
 
+		// 结果（按工具类型分流：终端 / 列表 / 通用代码块）
 		if (tc.result) {
-			const section = append(body, $(".tool-call-section"));
-			append(section, $("div.tool-call-section-title", undefined, "结果"));
-			const pre = append(section, $("pre.tool-call-code"));
-			try {
-				pre.textContent = JSON.stringify(JSON.parse(tc.result), null, 2);
-			} catch {
-				pre.textContent = tc.result;
+			const resultText = this._toolResultText(tc.result);
+			if (TOOL_TERMINAL_TOOLS.has(key)) {
+				const term = append(innerBox, $('.tool-children-terminal'));
+				const codeBox = append(term, $('.tool-terminal-code'));
+				append(codeBox, $('pre')).textContent = resultText;
+				if (typeof tc.exitCode === 'number') {
+					const ec = append(term, $(`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`));
+					ec.textContent = `exit code ${tc.exitCode}`;
+				}
+			} else if (TOOL_LIST_TOOLS.has(key)) {
+				const items = this._parseToolListItems(resultText);
+				if (items && items.length > 0) {
+					for (const it of items) {
+						const itemEl = append(innerBox, $(`.tool-listable-item${it.path ? '.tool-listable-item-clickable' : ''}`));
+						const dot = append(itemEl, $('.tool-listable-item-dot'));
+						const dotSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+						dotSvg.setAttribute('viewBox', '0 0 100 40');
+						const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+						rect.setAttribute('x', '0'); rect.setAttribute('y', '15'); rect.setAttribute('width', '100'); rect.setAttribute('height', '10');
+						dotSvg.appendChild(rect);
+						dot.appendChild(dotSvg);
+						append(itemEl, $('div')).textContent = it.name;
+						if (it.path) {
+							const p = it.path;
+							itemEl.addEventListener('click', (e) => { e.stopPropagation(); this._onOpenFile?.(p); });
+						}
+					}
+				} else {
+					const code = append(innerBox, $('.tool-code-children'));
+					append(append(code, $('.tool-code-children-selectable')), $('pre')).textContent = resultText;
+				}
+			} else {
+				const code = append(innerBox, $('.tool-code-children'));
+				append(append(code, $('.tool-code-children-selectable')), $('pre')).textContent = resultText;
 			}
 		}
 
-		// Toggle click — starts open when defaultShow is true
-		let collapsed = !defaultShow;
-		if (!collapsed) { toggle.classList.remove("collapsed"); }
-		this._register(
-			addDisposableListener(header, EventType.CLICK, () => {
-				collapsed = !collapsed;
-				body.style.display = collapsed ? "none" : "block";
-				toggle.classList.toggle("collapsed", collapsed);
-			}),
-		);
+		// 错误（底部可折叠区，void BottomChildren）
+		if (isError && tc.error) {
+			const bottom = append(wrapper, $('.tool-bottom-children'));
+			const bh = append(bottom, $('.tool-bottom-children-header'));
+			const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
+			append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
+			const bbody = append(bottom, $('.tool-bottom-children-body'));
+			append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+			this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				const open = bbody.classList.toggle('tool-bottom-children-body-open');
+				bchevron.classList.toggle('tool-bottom-children-chevron-open', open);
+			}));
+		}
 
-		return card;
+		// ── 展开/折叠点击（点标题行整体）──
+		this._register(addDisposableListener(titleContainer, EventType.CLICK, () => {
+			const nowExpanded = !body.classList.contains('tool-header-children-expanded');
+			body.classList.toggle('tool-header-children-expanded', nowExpanded);
+			chevron.classList.toggle('tool-header-chevron-expanded', nowExpanded);
+			this._toolCallExpandState.set(tc.id, nowExpanded);
+		}));
+
+		return wrapper;
+	}
+
+	// ─── Void 工具卡 helper ─────────────────────────────────────────
+
+	/** ChevronRight SVG（CSS 旋转控制展开/折叠箭头朝向）。 */
+	private _svgChevron(parent: HTMLElement, className: string, size: number): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', String(size)); svg.setAttribute('height', String(size));
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly.setAttribute('points', '9 18 15 12 9 6');
+		svg.appendChild(poly);
+		parent.appendChild(svg);
+		return svg;
+	}
+
+	private _svgSpinner(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', 'M21 12a9 9 0 11-6.219-8.56');
+		svg.appendChild(path);
+		parent.appendChild(svg);
+	}
+
+	private _svgCheck(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly.setAttribute('points', '20 6 9 17 4 12');
+		svg.appendChild(poly);
+		parent.appendChild(svg);
+	}
+
+	private _svgAlert(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z');
+		svg.appendChild(path);
+		const l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		l1.setAttribute('x1', '12'); l1.setAttribute('y1', '9'); l1.setAttribute('x2', '12'); l1.setAttribute('y2', '13');
+		svg.appendChild(l1);
+		const l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		l2.setAttribute('x1', '12'); l2.setAttribute('y1', '17'); l2.setAttribute('x2', '12.01'); l2.setAttribute('y2', '17');
+		svg.appendChild(l2);
+		parent.appendChild(svg);
+	}
+
+	/** 状态感知标题（void titleOfBuiltinToolName）。 */
+	private _getToolTitle(key: string, displayName: string | undefined, name: string, isRunning: boolean): string {
+		const builtin = TOOL_BUILTIN_TITLES[key];
+		if (!builtin) {
+			const label = displayName || name || 'MCP';
+			const prefix = isRunning ? '正在调用' : '调用了';
+			return `${prefix} ${label}`;
+		}
+		return isRunning ? builtin.running : builtin.done;
+	}
+
+	/** 斜体 desc：文件名 / 命令 / 查询（void toolNameToDesc）。 */
+	private _getToolDesc1(key: string, args: string | undefined, filePath: string | undefined): string {
+		let p: Record<string, unknown> = {};
+		try { p = args ? JSON.parse(args) : {}; } catch { p = {}; }
+		const basename = (s: string) => {
+			const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
+			return parts[parts.length - 1] || s;
+		};
+		const fp = (filePath || p.file_path || p.filePath || p.path || p.uri) as string | undefined;
+		const query = (p.query || p.pattern || p.search_query || p.search) as string | undefined;
+		const command = (p.command || p.cmd) as string | undefined;
+		const clip = (s: string) => (s.length > 60 ? s.slice(0, 60) + '…' : s);
+
+		if (TOOL_TERMINAL_TOOLS.has(key)) {
+			return command ? `"${clip(command)}"` : '';
+		}
+		if (key.includes('search') || key === 'grep') {
+			return query ? `"${clip(query)}"` : '';
+		}
+		if (fp && typeof fp === 'string') {
+			let d = basename(fp);
+			const start = (p.start_line ?? p.startLine ?? p.offset) as number | undefined;
+			const end = (p.end_line ?? p.endLine) as number | undefined;
+			if ((key === 'file_read' || key === 'read_file' || key === 'read') && (start !== undefined && start !== null)) {
+				d += ` (${start}${end !== undefined && end !== null ? '-' + end : ''})`;
+			}
+			return d;
+		}
+		if (query && typeof query === 'string') { return `"${clip(query)}"`; }
+		if (command && typeof command === 'string') { return `"${clip(command)}"`; }
+		const firstStr = Object.values(p).find(v => typeof v === 'string' && (v as string).length > 0) as string | undefined;
+		return firstStr ? clip(firstStr) : '';
+	}
+
+	/** 把工具结果（可能是 JSON / content-part 数组 / 纯文本）规整为可读文本。 */
+	private _toolResultText(result: string): string {
+		try {
+			const parsed = JSON.parse(result);
+			if (typeof parsed === 'string') { return parsed; }
+			if (parsed && Array.isArray((parsed as any).content)) {
+				return (parsed as any).content
+					.map((c: any) => (typeof c?.text === 'string' ? c.text : ''))
+					.join('');
+			}
+			return JSON.stringify(parsed, null, 2);
+		} catch {
+			return result;
+		}
+	}
+
+	/** 解析列表类结果为 {name, path}[]（void parseListItems）。 */
+	private _parseToolListItems(resultText: string): Array<{ name: string; path?: string }> | null {
+		if (!resultText) { return null; }
+		const basename = (s: string) => {
+			const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
+			return parts[parts.length - 1] || s;
+		};
+		try {
+			const parsed = JSON.parse(resultText);
+			const arr = Array.isArray(parsed) ? parsed
+				: Array.isArray(parsed?.items) ? parsed.items
+					: Array.isArray(parsed?.children) ? parsed.children
+						: Array.isArray(parsed?.list) ? parsed.list
+							: Array.isArray(parsed?.uris) ? parsed.uris
+								: null;
+			if (!arr) { return null; }
+			const mapped: Array<{ name: string; path?: string }> = [];
+			for (const it of arr) {
+				if (typeof it === 'string') { mapped.push({ name: basename(it), path: it }); continue; }
+				if (!it || typeof it !== 'object') { continue; }
+				const anyIt = it as Record<string, unknown>;
+				const path = (anyIt.path || anyIt.uri || anyIt.fsPath || anyIt.file || '') as string;
+				const nameRaw = (anyIt.name || anyIt.content) as string | undefined;
+				if (!path && !nameRaw) { continue; }
+				const name = (nameRaw || basename(path)) as string;
+				if (!name) { continue; }
+				const isDir = anyIt.isDirectory === true || anyIt.item_type === 'directory' || anyIt.type === 'directory' || anyIt.type === 'dir';
+				mapped.push({ name: `${name}${isDir && !String(name).endsWith('/') ? '/' : ''}`, path: path || undefined });
+			}
+			return mapped.length > 0 ? mapped : null;
+		} catch {
+			const lines = resultText.split('\n').map(l => l.trim()).filter(Boolean);
+			return lines.length > 0 ? lines.map(l => ({ name: l })) : null;
+		}
+	}
+
+
+
+	/** 格式化毫秒时长 */
+	private _formatDuration(ms: number): string {
+		if (ms < 1000) { return `${ms}ms`; }
+		const seconds = ms / 1000;
+		if (seconds < 60) { return `${seconds.toFixed(1)}s`; }
+		const minutes = Math.floor(seconds / 60);
+		const remainSec = Math.round(seconds % 60);
+		return `${minutes}m${remainSec}s`;
 	}
 
 	// --- Sub-agent card (enhanced: blocks, traces, grouping) ---
@@ -2364,6 +2634,451 @@ export class AgentChatPanel extends Disposable {
 		}
 	}
 
+	// --- User message edit → truncate → regenerate ------------
+
+	/**
+	 * Adds a hover-revealed "edit" button to a user message bubble.
+	 * Clicking it switches the bubble into an inline edit mode.
+	 */
+	private _addMessageActionButtons(container: HTMLElement, msg: IAgentChatMessage): void {
+		const actions = append(container, $(".chat-msg-actions"));
+
+		if (this._onEditMessage) {
+			const editBtn = append(actions, $("button.chat-msg-action-btn.chat-msg-edit-btn"));
+			editBtn.title = "编辑";
+			editBtn.appendChild(this._svgEditIcon());
+			this._register(addDisposableListener(editBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._openUserEditOverlay(msg);
+			}));
+		}
+
+		const copyBtn = append(actions, $("button.chat-msg-action-btn.chat-msg-copy-btn"));
+		copyBtn.title = "复制";
+		const copySvg = this._svgCopyIcon();
+		copyBtn.appendChild(copySvg);
+		this._register(addDisposableListener(copyBtn, EventType.CLICK, async (e) => {
+			e.stopPropagation();
+			try {
+				await navigator.clipboard.writeText(msg.content);
+				// 替换为对号图标
+				copyBtn.removeChild(copySvg);
+				const checkSvg = this._svgCheckSmall();
+				copyBtn.appendChild(checkSvg);
+				copyBtn.classList.add("chat-msg-copy-copied");
+				setTimeout(() => {
+					copyBtn.classList.remove("chat-msg-copy-copied");
+					copyBtn.removeChild(checkSvg);
+					copyBtn.appendChild(copySvg);
+				}, 1500);
+			} catch { /* ignore */ }
+		}));
+
+		if (this._onCheckpointAction) {
+			const undoBtn = append(actions, $("button.chat-msg-action-btn.chat-msg-undo-btn"));
+			undoBtn.title = "回撤改动";
+			undoBtn.appendChild(this._svgUndoIcon());
+			this._register(addDisposableListener(undoBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				// 检查是否跳过确认对话框
+				try {
+					if (localStorage.getItem('agentChat_skipUndoConfirm') === '1') {
+						this._onCheckpointAction?.('undoAll');
+						return;
+					}
+				} catch { /* ignore */ }
+				this._openUndoConfirmDialog();
+			}));
+		}
+	}
+
+	/**
+	 * 打开 checkpoint 回撤确认对话框（模态浮层）。
+	 * 显示检查点 ID、影响文件列表、确认/取消按钮、以及"不再提示"选项。
+	 */
+	private _openUndoConfirmDialog(): void {
+		// 防止重复弹出
+		if (this._container.querySelector('.checkpoint-undo-dialog-overlay')) { return; }
+		const cp = this._checkpoint;
+		if (!cp) { this._onCheckpointAction?.('undoAll'); return; }
+
+		// ── 背景遮罩 + 居中容器 ──
+		const overlay = append(this._container, $('.checkpoint-undo-dialog-overlay'));
+		const dialog = append(overlay, $('.checkpoint-undo-dialog'));
+
+		// ── 标题栏：标题 + 关闭 × ──
+		const header = append(dialog, $('.checkpoint-undo-dialog-header'));
+		const titleText = append(header, $('span.checkpoint-undo-title'));
+		titleText.textContent = `确定回退 检查点 ${cp.id}`;
+		const closeBtn = append(header, $('button.checkpoint-undo-close-btn'));
+		closeBtn.title = '关闭';
+		closeBtn.setAttribute('aria-label', '关闭');
+		const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		closeSvg.setAttribute('viewBox', '0 0 24 24');
+		closeSvg.setAttribute('width', '16');
+		closeSvg.setAttribute('height', '16');
+		closeSvg.setAttribute('fill', 'none');
+		closeSvg.setAttribute('stroke', 'currentColor');
+		closeSvg.setAttribute('stroke-width', '2');
+		closeSvg.setAttribute('stroke-linecap', 'round');
+		closeSvg.setAttribute('stroke-linejoin', 'round');
+		const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		closePath.setAttribute('d', 'M18 6L6 18M6 6l12 12');
+		closeSvg.appendChild(closePath);
+		closeBtn.appendChild(closeSvg);
+
+		// ── 描述文字 ──
+		const desc = append(dialog, $('p.checkpoint-undo-desc'));
+		const modeLabel = this._chatMode === 'craft' ? 'Craft' : this._chatMode === 'ask' ? 'Ask' : this._chatMode === 'plan' ? 'Plan' : this._chatMode;
+		desc.textContent = `回退将会恢复 ${modeLabel} 操作变更过的 ${cp.fileCount} 个文件`;
+
+		// ── 文件变更列表 ──
+		const fileList = append(dialog, $('.checkpoint-undo-file-list'));
+		for (const f of cp.files) {
+			const fileRow = append(fileList, $('.checkpoint-undo-file-row'));
+			// # 前缀图标（模拟 git diff 样式）
+			const hashIcon = append(fileRow, $('span.checkpoint-file-hash'));
+			hashIcon.textContent = '# ';
+			// 文件名
+			const fileName = append(fileRow, $('span.checkpoint-file-name'));
+			// 提取短路径（只取最后一段）
+			const shortName = f.path.split(/[/\\]/).pop() || f.path;
+			fileName.textContent = shortName;
+			// 变更统计（模拟 +N -M）
+			const stats = append(fileRow, $('span.checkpoint-file-stats'));
+			// 根据 status 和 path 生成模拟统计
+			const added = f.status === 'created' ? Math.floor(Math.random() * 30) + 10 : Math.floor(Math.random() * 50) + 5;
+			const removed = f.status === 'deleted' ? Math.floor(Math.random() * 20) + 5 : Math.floor(Math.random() * 15);
+			stats.textContent = `+${added} -${removed}`;
+			stats.classList.add(f.status === 'deleted' ? 'stat-deleted' : f.status === 'created' ? 'stat-added' : 'stat-modified');
+
+			const revertLabel = append(fileRow, $('span.checkpoint-file-revert-label'));
+			revertLabel.textContent = '将撤回改动';
+
+			// 点击行可查看 diff
+			fileRow.style.cursor = 'pointer';
+			this._register(addDisposableListener(fileRow, EventType.CLICK, () => {
+				this._onCheckpointAction?.('openDiff', { filePath: f.path });
+			}));
+		}
+
+		// ── 底部操作栏：[确认] [取消]  + [×]不再提示 ──
+		const footer = append(dialog, $('.checkpoint-undo-footer'));
+
+		const btnGroup = append(footer, $('.checkpoint-undo-btn-group'));
+
+		const confirmBtn = append(btnGroup, $('button.checkpoint-undo-btn.confirm'));
+		confirmBtn.textContent = '确认';
+		const cancelBtn = append(btnGroup, $('button.checkpoint-undo-btn.cancel'));
+		cancelBtn.textContent = '取消';
+
+		// "不再提示" 复选框
+		const noPromptWrap = append(footer, $('label.checkpoint-no-prompt-wrap'));
+		const noPromptCb = append(noPromptWrap, $('input.checkpoint-no-prompt-cb')) as HTMLInputElement;
+		noPromptCb.type = 'checkbox';
+		append(noPromptWrap, $('span.checkpoint-no-prompt-text')).textContent = '不再提示';
+
+		// ── 关闭对话框辅助方法 ──
+		const closeDialog = () => { overlay.remove(); };
+
+		// ── 事件绑定 ──
+		this._register(addDisposableListener(closeBtn, EventType.CLICK, closeDialog));
+		this._register(addDisposableListener(overlay, EventType.CLICK, (e: Event) => {
+			if (e.target === overlay) { closeDialog(); }
+		}));
+		this._register(addDisposableListener(cancelBtn, EventType.CLICK, closeDialog));
+		this._register(addDisposableListener(confirmBtn, EventType.CLICK, () => {
+			// 记住"不再提示"
+			if (noPromptCb.checked) {
+				try { localStorage.setItem('agentChat_skipUndoConfirm', '1'); } catch { /* ignore */ }
+			}
+			closeDialog();
+			this._onCheckpointAction?.('undoAll');
+		}));
+
+		// ESC 关闭
+		const onEsc = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') { closeDialog(); }
+		};
+		mainWindow.addEventListener('keydown', onEsc);
+		this._register({ dispose: () => mainWindow.removeEventListener('keydown', onEsc) });
+	}
+	/**
+	 * 结构复刻：chat-composer-box → textarea + toolbar（附件/语音/模式/provider/发送）。
+	 */
+	private _openUserEditOverlay(msg: IAgentChatMessage): void {
+		const msgEl = this._messagesContainer?.querySelector(`[data-msg-id="${msg.id}"]`) as HTMLElement | null;
+		if (!msgEl) { return; }
+		if (msgEl.querySelector(".chat-user-edit-overlay")) { return; }
+
+		const bubble = msgEl.querySelector(".chat-bubble") as HTMLElement | null;
+		if (!bubble) { return; }
+
+		const origContent = bubble.querySelector(".message-content") as HTMLElement | null;
+		const origActions = bubble.querySelector(".chat-msg-actions") as HTMLElement | null;
+		if (origContent) { origContent.style.display = "none"; }
+		if (origActions) { origActions.style.display = "none"; }
+
+		const overlay = append(msgEl, $(".chat-user-edit-overlay"));
+
+		// Composer card（镜像 chat-composer-box）
+		const card = append(overlay, $(".chat-user-edit-composer"));
+		const textarea = append(card, $("textarea.chat-user-edit-input")) as HTMLTextAreaElement;
+		textarea.value = msg.content;
+		textarea.placeholder = "编辑消息...";
+		textarea.rows = Math.min(10, Math.max(2, msg.content.split("\n").length));
+
+		// Toolbar（镜像 chat-composer-toolbar）
+		const toolbar = append(card, $(".chat-user-edit-toolbar"));
+
+		// 左侧工具图标（附件、语音）——编辑场景仅视觉保留，点击提示或静默
+		const leftTools = append(toolbar, $("span.chat-user-edit-toolbar-left"));
+		const attachBtn = this._appendEditToolbarBtn(leftTools, {
+			title: "附件（编辑时不可用）",
+			svgPath: "M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+		});
+		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			// 编辑时附件功能暂不启用，可扩展为允许追加附件后重新发送
+		}));
+		const micBtn = this._appendEditToolbarBtn(leftTools, {
+			title: "语音输入（编辑时不可用）",
+			svgPath: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"
+		});
+		this._register(addDisposableListener(micBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+		}));
+		append(leftTools, $(".chat-user-edit-toolbar-divider"));
+
+		// 中间模式/Provider/Model 标签（仅展示当前状态）
+		const modeOpt = MODE_OPTIONS.find(m => m.id === this._chatMode) || MODE_OPTIONS[0];
+		this._appendEditToolbarBtn(leftTools, {
+			title: '当前模式',
+			svgPath: modeOpt.icon,
+			hasLabel: true,
+			label: modeOpt.label,
+			cssClass: 'mode-tag'
+		});
+		const curProvider = this._providers.find(p => p.id === this._currentProvider)?.label || this._currentProvider || 'Provider';
+		this._appendEditToolbarBtn(leftTools, {
+			title: '当前 Provider',
+			svgPath: 'M2 3h20v14H2zM8 21h8M12 17v4',
+			hasLabel: true,
+			label: curProvider,
+			cssClass: 'provider-tag',
+			showChevron: true,
+		});
+		const curModel = this._currentModel || 'Model';
+		this._appendEditToolbarBtn(leftTools, {
+			title: '当前 Model',
+			svgPath: 'M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M12 12v7M8 12v7M16 12v7M5 3h14l-2 4H7L5 3z',
+			hasLabel: true,
+			label: curModel,
+			cssClass: 'model-tag',
+			showChevron: true,
+		});
+
+		// 右侧：context-usage ring + send circle（与底部 composer 完全一致）
+		const right = append(toolbar, $('span.chat-user-edit-toolbar-right'));
+		this._renderEditContextUsageRing(right);
+
+		const sendBtn = append(right, $('button.chat-send-circle')) as HTMLButtonElement;
+		sendBtn.title = '重新生成';
+		// 与底部发送按钮完全相同的箭头 SVG
+		const sendSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		sendSvg.setAttribute('width', '10'); sendSvg.setAttribute('height', '10');
+		sendSvg.setAttribute('viewBox', '0 0 24 24'); sendSvg.setAttribute('fill', 'none');
+		sendSvg.setAttribute('stroke', 'currentColor'); sendSvg.setAttribute('stroke-width', '2');
+		sendSvg.setAttribute('stroke-linecap', 'round'); sendSvg.setAttribute('stroke-linejoin', 'round');
+		const sendLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		sendLine.setAttribute('x1', '22'); sendLine.setAttribute('y1', '2'); sendLine.setAttribute('x2', '11'); sendLine.setAttribute('y2', '13');
+		sendSvg.appendChild(sendLine);
+		const sendPoly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+		sendPoly.setAttribute('points', '22 2 15 22 11 13 2 9 22 2');
+		sendSvg.appendChild(sendPoly);
+		sendBtn.appendChild(sendSvg);
+
+		// Esc 取消（显示在 toolbar 下方左侧，与快捷键提示一致）
+		const hintsRow = append(card, $(".chat-user-edit-hints-row"));
+		const hints = append(hintsRow, $("span.chat-user-edit-hints"));
+		const escKbd = document.createElement('kbd');
+		escKbd.textContent = 'Esc';
+		hints.appendChild(escKbd);
+		hints.appendChild(document.createTextNode(' 取消'));
+
+		const restore = () => {
+			overlay.remove();
+			if (origContent) { origContent.style.display = ""; }
+			if (origActions) { origActions.style.display = ""; }
+		};
+
+		const commit = () => {
+			const newText = textarea.value.trim();
+			if (!newText || newText === msg.content.trim()) {
+				restore();
+				return;
+			}
+			const idx = this._messages.findIndex(m => m.id === msg.id);
+			if (idx >= 0) {
+				this._messages = this._messages.slice(0, idx);
+				this._renderMessages();
+			}
+			restore();
+			this._onEditMessage?.(msg.id, newText);
+		};
+
+		this._register(addDisposableListener(sendBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			commit();
+		}));
+		this._register(addDisposableListener(textarea, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+			if (e.key === "Escape") {
+				e.preventDefault();
+				restore();
+			} else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+				e.preventDefault();
+				commit();
+			}
+		}));
+		textarea.focus();
+		textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	}
+
+	/** 渲染编辑 composer 中的 context usage ring（与底部输入框 CSS class 完全一致） */
+	private _renderEditContextUsageRing(parent: HTMLElement): void {
+		const usage = this._contextUsage;
+		const pct = usage ? Math.max(0, Math.min(1, usage.ratio)) : 0;
+		const warnLevel = pct > 0.8 ? 'danger' : pct > 0.6 ? 'warn' : '';
+		const tooltipText = usage
+			? `上下文 ${Math.round(pct * 100)}% (${usage.used} / ${usage.limit})\n输入: ${usage.used} / 上下文窗口: ${usage.limit}`
+			: '上下文';
+		const ringEl = append(parent, $(`.context-usage-ring${warnLevel ? '.' + warnLevel : ''}`));
+		ringEl.title = tooltipText;
+
+		const radius = 9; const stroke = 1.8;
+		const size = (radius + stroke) * 2;
+		const circumference = 2 * Math.PI * radius;
+		const offset = circumference * (1 - pct);
+
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', String(size)); svg.setAttribute('height', String(size));
+		svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+
+		const bg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+		bg.setAttribute('cx', String(size / 2)); bg.setAttribute('cy', String(size / 2));
+		bg.setAttribute('r', String(radius)); bg.setAttribute('fill', 'none');
+		bg.setAttribute('class', 'ring-track');
+		bg.setAttribute('stroke-width', String(stroke));
+		svg.appendChild(bg);
+
+		const fg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+		fg.setAttribute('cx', String(size / 2)); fg.setAttribute('cy', String(size / 2));
+		fg.setAttribute('r', String(radius)); fg.setAttribute('fill', 'none');
+		fg.setAttribute('class', 'ring-progress');
+		fg.setAttribute('stroke-width', String(stroke));
+		fg.setAttribute('stroke-dasharray', String(circumference));
+		fg.setAttribute('stroke-dashoffset', String(offset));
+		fg.setAttribute('stroke-linecap', 'round');
+		fg.setAttribute('transform', `rotate(-90 ${size / 2} ${size / 2})`);
+		svg.appendChild(fg);
+		ringEl.appendChild(svg);
+	}
+
+	/** Helper to append toolbar icon buttons for edit composer（类似 _appendToolbarBtn 简化版） */
+	private _appendEditToolbarBtn(
+		parent: HTMLElement,
+		opt: { title: string; svgPath: string; hasLabel?: boolean; label?: string; cssClass?: string; showChevron?: boolean }
+	): HTMLElement {
+		const btn = append(parent, $(`button.chat-user-edit-tb-btn${opt.cssClass ? '.' + opt.cssClass : ''}${opt.showChevron ? '.has-label' : ''}`));
+		btn.title = opt.title;
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', '12'); svg.setAttribute('height', '12');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', opt.svgPath);
+		svg.appendChild(path);
+		btn.appendChild(svg);
+		if (opt.hasLabel && opt.label) {
+			const lbl = append(btn, $("span.chat-user-edit-tb-label"));
+			lbl.textContent = opt.label;
+		}
+		if (opt.showChevron) {
+			const chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			chevron.setAttribute('width', '10'); chevron.setAttribute('height', '10');
+			chevron.setAttribute('viewBox', '0 0 24 24'); chevron.setAttribute('fill', 'none');
+			chevron.setAttribute('stroke', 'currentColor'); chevron.setAttribute('stroke-width', '2.5');
+			const chevronPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			chevronPath.setAttribute('d', 'M6 9l6 6 6-6');
+			chevron.appendChild(chevronPath);
+			btn.appendChild(chevron);
+		}
+		return btn;
+	}
+
+	private _svgEditIcon(): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const p1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		p1.setAttribute('d', 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
+		svg.appendChild(p1);
+		const p2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		p2.setAttribute('d', 'M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z');
+		svg.appendChild(p2);
+		return svg;
+	}
+
+	private _svgCopyIcon(): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+		rect.setAttribute('x', '9'); rect.setAttribute('y', '9'); rect.setAttribute('width', '13'); rect.setAttribute('height', '13'); rect.setAttribute('rx', '2'); rect.setAttribute('ry', '2');
+		svg.appendChild(rect);
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1');
+		svg.appendChild(path);
+		return svg;
+	}
+
+	private _svgUndoIcon(): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly.setAttribute('points', '1 4 1 10 7 10');
+		svg.appendChild(poly);
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', 'M3.51 15a9 9 0 1 0 2.13-9.36L1 10');
+		svg.appendChild(path);
+		return svg;
+	}
+
+	/** Small check SVG for copy button feedback */
+	private _svgCheckSmall(): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly.setAttribute('points', '20 6 9 17 4 12');
+		svg.appendChild(poly);
+		return svg;
+	}
+
+
+
+
+
 	private _renderMarkdownContent(parent: HTMLElement, content: string): void {
 		const md: IMarkdownString = { value: content, isTrusted: true };
 		const LARGE_CODE_THRESHOLD = 30; // lines before auto-collapse
@@ -2517,76 +3232,28 @@ export class AgentChatPanel extends Disposable {
 		this._markdownDisposables.set(parent, disposable);
 	}
 
-	// --- Interleaved content renderer (Void-inspired: tool cards inserted at text positions) ---
+	// --- Ordered parts renderer (阶段E：按 parts 数组顺序遍历，取代 textPosition 交织) ---
 
-	private _renderInterleavedContent(bubble: HTMLElement, content: string, toolCalls: IToolCall[]): void {
-		// Separate tool calls with textPosition from those without
-		const positioned = toolCalls.filter(tc => typeof tc.textPosition === 'number' && tc.textPosition! >= 0);
-		const unpositioned = toolCalls.filter(tc => typeof tc.textPosition !== 'number' || tc.textPosition! < 0);
-
-		if (positioned.length === 0) {
-			// Fast path: no positioned tool cards, render markdown then append unpositioned
-			if (content) {
-				const contentEl = append(bubble, $(".message-content"));
-				this._renderMarkdownContent(contentEl, content);
-			}
-			for (const tc of unpositioned) {
-				const section = bubble.querySelector('.tool-calls-section') || (() => {
-					const s = $(".tool-calls-section");
-					bubble.appendChild(s);
-					return s;
-				})();
-				section.appendChild(this._createToolCallCard(tc));
-			}
-			return;
+	private _renderPartsContent(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean): void {
+		// 找到最后一个非空文本片段索引，流式时把它标记为 streaming-container（增量更新目标）。
+		let lastTextIdx = -1;
+		for (let k = 0; k < parts.length; k++) {
+			const p = parts[k];
+			if (p.kind === 'text' && p.text.trim().length > 0) { lastTextIdx = k; }
 		}
-
-		// Sort positioned tool calls by textPosition (ascending)
-		const sorted = [...positioned].sort((a, b) => (a.textPosition ?? 0) - (b.textPosition ?? 0));
-
-		// Build segments: [text-segment-0, tool-0, text-segment-1, tool-1, ...]
-		let lastPos = 0;
-		for (const tc of sorted) {
-			const tcPos = tc.textPosition ?? 0;
-
-			// Render text segment before this tool card
-			if (tcPos > lastPos) {
-				const segText = content.slice(lastPos, tcPos);
-				if (segText.trim()) {
-					const segEl = append(bubble, $(".message-content.interleaved-segment"));
-					this._renderMarkdownContent(segEl, segText);
+		for (let k = 0; k < parts.length; k++) {
+			const part = parts[k];
+			if (part.kind === 'text') {
+				if (part.text.trim().length === 0) { continue; }
+				const segEl = append(bubble, $(".message-content.parts-text-segment"));
+				if (isStreaming && k === lastTextIdx) {
+					segEl.classList.add('streaming-container');
 				}
-			}
-
-			// Insert tool card at this position
-			this._createToolCallCardAt(bubble, tc);
-
-			lastPos = Math.max(lastPos, tcPos);
-		}
-
-		// Render remaining text after last positioned tool call
-		if (lastPos < content.length) {
-			const remaining = content.slice(lastPos);
-			if (remaining.trim()) {
-				const segEl = append(bubble, $(".message-content.interleaved-segment"));
-				this._renderMarkdownContent(segEl, remaining);
+				this._renderMarkdownContent(segEl, part.text);
+			} else {
+				bubble.appendChild(this._createToolCallCard(part.tool));
 			}
 		}
-
-		// Append unpositioned tool cards at the end
-		if (unpositioned.length > 0) {
-			const section = $(".tool-calls-section");
-			bubble.appendChild(section);
-			for (const tc of unpositioned) {
-				section.appendChild(this._createToolCallCard(tc));
-			}
-		}
-	}
-
-	/** Create and insert a tool call card directly into the bubble (for interleaved rendering) */
-	private _createToolCallCardAt(parent: HTMLElement, tc: IToolCall): void {
-		const card = this._createToolCallCard(tc);
-		parent.appendChild(card);
 	}
 
 	// Input area
@@ -3001,8 +3668,8 @@ export class AgentChatPanel extends Disposable {
 		if (this._isSending) {
 			// Stop icon
 			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-			svg.setAttribute("width", "14");
-			svg.setAttribute("height", "14");
+			svg.setAttribute("width", "10");
+			svg.setAttribute("height", "10");
 			svg.setAttribute("viewBox", "0 0 24 24");
 			svg.setAttribute("fill", "currentColor");
 			const rect = document.createElementNS(
@@ -3020,8 +3687,8 @@ export class AgentChatPanel extends Disposable {
 		} else {
 			// Arrow up icon
 			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-			svg.setAttribute("width", "16");
-			svg.setAttribute("height", "16");
+			svg.setAttribute("width", "12");
+			svg.setAttribute("height", "12");
 			svg.setAttribute("viewBox", "0 0 24 24");
 			svg.setAttribute("fill", "none");
 			svg.setAttribute("stroke", "currentColor");
@@ -3423,12 +4090,14 @@ export class AgentChatPanel extends Disposable {
 		const usage = this._contextUsage;
 		const ringEl = append(parent, $(".context-usage-ring"));
 		const pct = usage ? Math.max(0, Math.min(1, usage.ratio)) : 0;
+		const tooltipText = usage
+			? `上下文 ${Math.round(pct * 100)}% (${usage.used} / ${usage.limit})\n输入: ${usage.used} / 上下文窗口: ${usage.limit}`
+			: '上下文使用';
+		ringEl.title = tooltipText;
+		ringEl.style.cursor = 'pointer';
 		if (usage) {
-			ringEl.title = `上下文 ${Math.round(pct * 100)}% (${usage.used} / ${usage.limit})`;
 			if (pct >= 0.9) { ringEl.classList.add('danger'); }
 			else if (pct >= 0.7) { ringEl.classList.add('warn'); }
-		} else {
-			ringEl.title = '上下文使用';
 		}
 
 		const size = 22;
@@ -3441,6 +4110,10 @@ export class AgentChatPanel extends Disposable {
 		svg.setAttribute("width", String(size));
 		svg.setAttribute("height", String(size));
 		svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+		// SVG <title> 子元素确保鼠标悬停在 SVG 区域内时也能显示 tooltip
+		const svgTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+		svgTitle.textContent = tooltipText;
+		svg.appendChild(svgTitle);
 
 		const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
 		bg.setAttribute("cx", String(size / 2));
@@ -3507,7 +4180,9 @@ export class AgentChatPanel extends Disposable {
 
 	/** 计算 context usage（3 层实时更新逻辑，匹配 React） */
 	private _computeContextUsage(): IContextUsage | null {
-		const limit = this._contextUsage?.limit ?? 0;
+		// 从当前模型获取 maxInputTokens（匹配 React：currentModel?.maxInputTokens）
+		const currentModelInfo = this._models.find(m => m.id === this._currentModel);
+		const limit = currentModelInfo?.maxInputTokens ?? 0;
 		if (limit <= 0) {
 			return null;
 		}
