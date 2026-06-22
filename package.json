@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.1.2",
+  "version": "2.1.156922",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -45,6 +45,7 @@
     "watch-copilot": "npm --prefix extensions/copilot run watch",
     "watch-copilotd": "deemon npm run watch-copilot",
     "kill-watch-copilotd": "deemon --kill npm run watch-copilot",
+    "prepare": "husky",
     "precommit": "node --experimental-strip-types build/hygiene.ts",
     "gulp": "node --experimental-strip-types --max-old-space-size=8192 ./node_modules/gulp/bin/gulp.js",
     "verify-branding": "node build/saros/verify-product-branding.mjs",
@@ -225,7 +226,7 @@
     "gulp-replace": "^0.5.4",
     "gulp-sourcemaps": "^3.0.0",
     "gulp-svgmin": "^4.1.0",
-    "husky": "^0.13.1",
+    "husky": "^9.1.7",
     "innosetup": "^6.4.1",
     "istanbul-lib-coverage": "^3.2.0",
     "istanbul-lib-instrument": "^6.0.1",
