@@ -174,6 +174,9 @@ export class AgentChatPanel extends Disposable {
 	private _agent: IAgentInfo | null = null;
 	private _isSending = false;
 	private _showScrollBtn = false;
+	// 智能滚动状态（匹配 React isAtBottomRef / wasLoadingRef）
+	private _isAtBottom = true;
+	private _wasLoading = false;
 	private _autoOrchestrateEnabled = false;
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
@@ -384,6 +387,8 @@ export class AgentChatPanel extends Disposable {
 	setMessages(messages: IAgentChatMessage[]): void {
 		this._messages = this._aggregateTurns(messages);
 		this._renderMessages();
+		// 加载历史消息 → 标记 wasLoading，确保 instant 滚动
+		this._wasLoading = true;
 		this._scrollToBottom(false);
 		// 消息变化影响 inputBaselineTokens，需要重新计算 context ring
 		this._updateContextRing();
@@ -392,6 +397,7 @@ export class AgentChatPanel extends Disposable {
 	addMessage(message: IAgentChatMessage): void {
 		this._messages.push(message);
 		this._appendMessageDom(message);
+		// 新增消息 → instant 滚动（force=true）
 		this._scrollToBottom(true);
 	}
 
@@ -417,13 +423,20 @@ export class AgentChatPanel extends Disposable {
 			this._updateMessageDom(idx, m);
 			// 消息更新可能影响 inputBaselineTokens（如 tokenUsage 变化），需要重新计算 context ring
 			this._updateContextRing();
+			// 流式更新时自动滚动到底部（如果用户在底部）
+			this._scrollToBottom(false);
 		}
 	}
 
 	setSending(sending: boolean): void {
 		this._isSending = sending;
 		this._updateSendButton();
-		if (!sending) { this._streamPhase = 'idle'; }
+		if (sending) {
+			// 追踪加载状态：新消息或切换 Agent 时，下一帧滚动用 instant
+			this._wasLoading = true;
+		} else {
+			this._streamPhase = 'idle';
+		}
 	}
 
 	setStreamPhase(phase: StreamPhase): void {
@@ -565,6 +578,10 @@ export class AgentChatPanel extends Disposable {
 		if (this._activeHeaderPanel === 'history') {
 			this._renderHistoryOverlay();
 		}
+
+		// 初始加载后滚动到底部
+		this._wasLoading = true;
+		this._scrollToBottom(true);
 	}
 
 	private _closeAllDropdowns(): void {
@@ -1204,43 +1221,91 @@ export class AgentChatPanel extends Disposable {
 			$(".chat-messages"),
 		);
 
-		// Scroll listener — toggle bottom button visibility
+		const SCROLL_THRESHOLD = 80; // 匹配 React 80px 阈值
+
+		// ── 辅助：检测是否在底部 ──
+		const checkAtBottom = (): boolean => {
+			if (!this._messagesContainer) { return false; }
+			const el = this._messagesContainer;
+			return (el.scrollHeight - el.scrollTop - el.clientHeight) < SCROLL_THRESHOLD;
+		};
+
+		// ── 辅助：更新按钮可见性 ──
+		const updateScrollButtons = (atBottom: boolean) => {
+			const show = !atBottom;
+			if (show !== this._showScrollBtn) {
+				this._showScrollBtn = show;
+				if (this._scrollToBottomBtn) {
+					this._scrollToBottomBtn.style.display = show ? "flex" : "none";
+				}
+			}
+		};
+
+		// ── SCROLL 事件：恢复/暂停自动滚动 ──
 		this._register(
 			addDisposableListener(this._messagesContainer, EventType.SCROLL, () => {
-				const el = this._messagesContainer;
-				const nearBottom =
-					el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-				const showBottom = !nearBottom;
-				if (showBottom !== this._showScrollBtn) {
-					this._showScrollBtn = showBottom;
-					this._scrollToBottomBtn.style.display = showBottom ? "flex" : "none";
+				const atBottom = checkAtBottom();
+				if (atBottom) { this._isAtBottom = true; } // 用户滚到底 → 恢复自动跟随
+				updateScrollButtons(atBottom);
+			}),
+		);
+
+		// ── WHEEL 事件：精细控制自动滚动 + 取消 smooth 动画 ──
+		this._register(
+			addDisposableListener(this._messagesContainer, EventType.WHEEL, (e: WheelEvent) => {
+				if (e.deltaY < 0) {
+					// 向上滚 → 立即暂停自动滚动 + 中断任何进行中的 scrollIntoView 动画
+					this._isAtBottom = false;
+					updateScrollButtons(false);
+					this._messagesContainer.scrollTop = this._messagesContainer.scrollTop; // 取消 smooth 动画
+				} else if (e.deltaY > 0) {
+					// 向下滚 → 检测是否到底，恢复自动跟随
+					requestAnimationFrame(() => {
+						if (checkAtBottom()) {
+							this._isAtBottom = true;
+							updateScrollButtons(true);
+						}
+					});
 				}
 			}),
 		);
 
-		// Scroll-to-bottom button
+		// ── TOUCHSTART：触屏设备暂停自动滚动 ──
+		this._register(
+			addDisposableListener(this._messagesContainer, 'touchstart', () => {
+				this._isAtBottom = false;
+				updateScrollButtons(false);
+			}),
+		);
+
+		// ── 创建下箭头 SVG ──
+		const createDownArrowSvg = () => {
+			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			svg.setAttribute("width", "20");
+			svg.setAttribute("height", "20");
+			svg.setAttribute("viewBox", "0 0 24 24");
+			svg.setAttribute("fill", "none");
+			svg.setAttribute("stroke", "currentColor");
+			svg.setAttribute("stroke-width", "2.5");
+			const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+			path.setAttribute("d", "M12 5v14M5 12l7 7 7-7");
+			path.setAttribute("stroke-linecap", "round");
+			path.setAttribute("stroke-linejoin", "round");
+			svg.appendChild(path);
+			return svg;
+		};
+
+		// ── 回到底部按钮 ──
 		this._scrollToBottomBtn = append(
 			this._messagesWrapper,
 			$(".scroll-to-bottom-btn.chat-scroll-bottom-btn"),
 		);
 		this._scrollToBottomBtn.style.display = "none";
-		const svg = append(this._scrollToBottomBtn, $("svg"));
-		svg.setAttribute("width", "20");
-		svg.setAttribute("height", "20");
-		svg.setAttribute("viewBox", "0 0 24 24");
-		svg.setAttribute("fill", "none");
-		svg.setAttribute("stroke", "currentColor");
-		svg.setAttribute("stroke-width", "2.5");
-		const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-		path.setAttribute("d", "M12 5v14M5 12l7 7 7-7");
-		path.setAttribute("stroke-linecap", "round");
-		path.setAttribute("stroke-linejoin", "round");
-		svg.appendChild(path);
+		this._scrollToBottomBtn.appendChild(createDownArrowSvg());
+		this._scrollToBottomBtn.title = "回到底部";
 		this._register(
 			addDisposableListener(this._scrollToBottomBtn, EventType.CLICK, () => {
 				this._scrollToBottom(true);
-				this._showScrollBtn = false;
-				this._scrollToBottomBtn.style.display = "none";
 			}),
 		);
 
@@ -4348,14 +4413,24 @@ export class AgentChatPanel extends Disposable {
 		}
 	}
 
+	/**
+	 * 滚动到指定消息（匹配 React handleScrollToMessage），居中显示 + 暂停自动滚动 + 高亮闪烁
+	 */
 	private _scrollToMessage(messageId: string): void {
 		if (!this._messagesContainer) { return; }
 		const el = this._messagesContainer.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null;
-		if (el) {
-			el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-			el.classList.add('chat-message-flash');
-			mainWindow.setTimeout(() => el.classList.remove('chat-message-flash'), 1200);
-		}
+		if (!el) { return; }
+		el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		// 不再自动跟随：滚动到历史消息意味着用户正在查看历史
+		this._isAtBottom = false;
+		// 更新按钮状态（内联 80px 阈值检查）
+		const dist = this._messagesContainer.scrollHeight - this._messagesContainer.scrollTop - this._messagesContainer.clientHeight;
+		const show = dist >= 80;
+		this._showScrollBtn = show;
+		if (this._scrollToBottomBtn) { this._scrollToBottomBtn.style.display = show ? "flex" : "none"; }
+		// 高亮闪烁效果
+		el.classList.add('chat-message-flash');
+		mainWindow.setTimeout(() => el.classList.remove('chat-message-flash'), 1200);
 	}
 
 	// =========================================================
@@ -5246,15 +5321,43 @@ export class AgentChatPanel extends Disposable {
 		document.body.appendChild(overlay);
 	}
 
-	// ─── Utility ───────────────────────────────────────────────────────
+	// ─── Scroll ──────────────────────────────────────────────────────
 
+	/**
+	 * 滚动到底部（匹配 React useLayoutEffect 逻辑）
+	 * - wasLoading=true（加载历史/切Agent）→ instant 即时跳转
+	 * - isAtBottom=true（用户已在底部）→ smooth 平滑滚动
+	 * - isAtBottom=false（用户已滚离）→ 不滚动
+	 */
 	private _scrollToBottom(force: boolean): void {
-		if (!this._messagesContainer) {
+		if (!this._messagesContainer) { return; }
+
+		const instant = force || this._wasLoading;
+
+		if (instant) {
+			// 加载历史 / 切 Agent → 即时跳转，恢复自动跟随
+			this._isAtBottom = true;
+			this._wasLoading = false;
+			this._showScrollBtn = false;
+			if (this._scrollToBottomBtn) { this._scrollToBottomBtn.style.display = "none"; }
+			this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
 			return;
 		}
-		mainWindow.requestAnimationFrame(() => {
-			this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
-		});
+
+		// 用户不在底部 → 不自动滚动
+		if (!this._isAtBottom) { return; }
+
+		// 双重验证 DOM（匹配 React 安全校验）
+		const distFromBottom = this._messagesContainer.scrollHeight - this._messagesContainer.scrollTop - this._messagesContainer.clientHeight;
+		if (distFromBottom >= 80) {
+			this._isAtBottom = false;
+			this._showScrollBtn = true;
+			if (this._scrollToBottomBtn) { this._scrollToBottomBtn.style.display = "flex"; }
+			return;
+		}
+
+		// 正常情况 → smooth 滚动
+		this._messagesContainer.scrollTo({ top: this._messagesContainer.scrollHeight, behavior: 'smooth' });
 	}
 
 	// Layout
