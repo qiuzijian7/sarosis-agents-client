@@ -24,6 +24,7 @@ import { Action2, registerAction2, MenuId } from '../../../../platform/actions/c
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
@@ -118,13 +119,14 @@ import {
 	AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING,
 	AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING,
 	AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING,
+	AGENT_STUDIO_USE_NATIVE_CHAT_SETTING,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
-import { AgentStudioEditorInput } from './agentStudioEditorInput.js';
+import { AgentStudioEditorInput, setConfigService } from './agentStudioEditorInput.js';
 import { SettingsEditorPane } from './settingsEditorPane.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
 import { PluginDetailEditorPane } from './pluginDetailEditorPane.js';
@@ -219,6 +221,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			description: localize('agentStudio.chatStreamLog.dumpTools', "Dump full tools schema in chat stream logs. When false (default), tools are summarized as '(N tools)' to keep log size small. Enable to inspect provider-side tool registration."),
+		},
+		[AGENT_STUDIO_USE_NATIVE_CHAT_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.chat.useNativeChat', "Use Native Chat UI (DOM-based) instead of React WebView. Native UI has better performance but may have missing features during migration."),
 		},
 		// --- Preferences ---
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
@@ -739,6 +746,7 @@ registerAction2(class extends Action2 {
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const layoutService = accessor.get(IWorkbenchLayoutService);
 
 		// Locate the chat editor + its group EXPLICITLY (do NOT trust the
 		// global active editor — when the popout button is clicked, focus may
@@ -773,6 +781,14 @@ registerAction2(class extends Action2 {
 				[{ editor: targetEditor, options: { preserveFocus: false } }],
 				auxPart.activeGroup,
 			);
+
+			// Hide the chat bar (right sidebar) after popping out
+			layoutService.setPartHidden(true, Parts.CHATBAR_PART);
+
+			// When the auxiliary window is closed, re-show the chat bar
+			auxPart.onWillDispose(() => {
+				layoutService.setPartHidden(false, Parts.CHATBAR_PART);
+			});
 		} catch {
 			// Last-resort fallback: dispatch the legacy in-window overlay event
 			// (kept for backward compatibility with the older floating-overlay impl).
@@ -851,6 +867,10 @@ class AgentStudioProviderContribution extends Disposable implements IWorkbenchCo
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 	) {
 		super();
+
+		// Initialize global config service reference for agentStudioEditorInput.ts
+		// This allows the static isNativeChatEnabled() check to read the feature flag.
+		setConfigService(configurationService);
 
 		const enabled = this.configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING);
 		if (enabled) {

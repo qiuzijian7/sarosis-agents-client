@@ -90,6 +90,8 @@ export interface IModelSelectorProviderInfo {
 	readonly name: string;        // e.g. 'Knot AG-UI'
 	readonly icon?: string;       // URI string
 	readonly authStatus: ModelAuthStatus;
+	/** Whether the provider supports agent selection (e.g. knot) */
+	readonly supportsAgents?: boolean;
 }
 
 // ─── Model Selection Storage ──────────────────────────────────────────────

@@ -741,6 +741,18 @@ export interface ChatMessage {
 	/** Agent-level session ID within a Fork */
 	agentSessionId?: string;
 	toolCalls?: ToolCall[];
+	/**
+	 * 阶段E（数据模型根因重构）：assistant 消息的**有序内容片段**。
+	 * 取代 `textPosition`（字符偏移）作为文本与工具卡交织的唯一真相——
+	 * 渲染只需按 `parts` 数组顺序遍历，结构上不可能错位。
+	 *
+	 * 兼容策略：
+	 * - 新写入的 assistant 消息总是带 `parts`；`content`/`toolCalls` 作为派生字段保留
+	 *   （供 LLM 上下文拼接、token/checkpoint 等旧消费者读取）。
+	 * - 旧数据无 `parts` 时，由 {@link deriveMessageParts} 在读取期按
+	 *   `content` + `toolCalls.textPosition` 即时派生（非破坏性，不改磁盘）。
+	 */
+	parts?: MessagePart[];
 	thinking?: string;
 	timestamp: string;
 	/**
@@ -807,6 +819,103 @@ export interface ToolCall {
 	defaultShow?: boolean;
 	/** 工具已在服务端执行（如 Knot AG-UI），客户端不需要再执行 */
 	serverExecuted?: boolean;
+	/**
+	 * @deprecated 阶段E 起改用有序 `ChatMessage.parts` 作为交织真相。
+	 * 本字段仅用于读取期把旧数据迁移成 `parts`（见 {@link deriveMessageParts}），
+	 * 不再参与流式/渲染/落盘路径。
+	 */
+	textPosition?: number;
+}
+
+// ============================================================================
+// 有序消息片段（阶段E：消除 textPosition 的根因模型）
+// ============================================================================
+
+/** 文本片段 */
+export interface TextMessagePart {
+	readonly kind: 'text';
+	text: string;
+}
+
+/** 工具调用片段 */
+export interface ToolMessagePart {
+	readonly kind: 'tool';
+	tool: ToolCall;
+}
+
+/**
+ * assistant 消息的有序内容片段。渲染按数组顺序遍历：
+ * 文本段 → markdown，工具段 → 工具卡。顺序即真相，无需 textPosition。
+ */
+export type MessagePart = TextMessagePart | ToolMessagePart;
+
+/**
+ * 读取期迁移器：把旧格式 assistant 消息（`content` + 内嵌 `toolCalls[textPosition]`）
+ * 派生为有序 `parts`。非破坏性——不改磁盘，仅在内存重建顺序。
+ *
+ * 规则：
+ * - 已有 `parts` 直接返回（新数据）。
+ * - 有 textPosition 的工具按偏移把 `content` 切成交替的 text/tool 片段。
+ * - 无 textPosition 的工具统一排在文本之后（与旧"unpositioned 末尾"渲染一致）。
+ * - 非 assistant 或无工具的消息：仅一个文本片段（content 非空时）。
+ */
+export function deriveMessageParts(msg: Pick<ChatMessage, 'role' | 'content' | 'toolCalls' | 'parts'>): MessagePart[] {
+	if (msg.parts && msg.parts.length > 0) {
+		return msg.parts;
+	}
+	const content = msg.content ?? '';
+	const toolCalls = msg.toolCalls ?? [];
+	if (toolCalls.length === 0) {
+		return content.length > 0 ? [{ kind: 'text', text: content }] : [];
+	}
+
+	const positioned = toolCalls
+		.filter(tc => typeof tc.textPosition === 'number' && (tc.textPosition as number) >= 0)
+		.sort((a, b) => (a.textPosition as number) - (b.textPosition as number));
+	const unpositioned = toolCalls.filter(tc => typeof tc.textPosition !== 'number' || (tc.textPosition as number) < 0);
+
+	const parts: MessagePart[] = [];
+	let lastPos = 0;
+	for (const tc of positioned) {
+		const pos = Math.min(Math.max(tc.textPosition as number, 0), content.length);
+		if (pos > lastPos) {
+			const seg = content.slice(lastPos, pos);
+			if (seg.length > 0) {
+				parts.push({ kind: 'text', text: seg });
+			}
+		}
+		parts.push({ kind: 'tool', tool: tc });
+		lastPos = Math.max(lastPos, pos);
+	}
+	if (lastPos < content.length) {
+		const seg = content.slice(lastPos);
+		if (seg.length > 0) {
+			parts.push({ kind: 'text', text: seg });
+		}
+	} else if (positioned.length === 0 && content.length > 0) {
+		parts.push({ kind: 'text', text: content });
+	}
+	for (const tc of unpositioned) {
+		parts.push({ kind: 'tool', tool: tc });
+	}
+	return parts;
+}
+
+/**
+ * 由有序 `parts` 反推扁平派生字段（content = 文本段拼接，toolCalls = 工具段列表）。
+ * 落盘时同步写入，保证旧消费者（LLM 上下文/token/checkpoint）仍可读。
+ */
+export function flattenMessageParts(parts: readonly MessagePart[]): { content: string; toolCalls: ToolCall[] } {
+	let content = '';
+	const toolCalls: ToolCall[] = [];
+	for (const p of parts) {
+		if (p.kind === 'text') {
+			content += p.text;
+		} else {
+			toolCalls.push(p.tool);
+		}
+	}
+	return { content, toolCalls };
 }
 
 export class AgentStudioSession {

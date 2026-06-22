@@ -8,6 +8,35 @@ import { EditorInputCapabilities, GroupIdentifier } from '../../../../workbench/
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import type { AgentStudioPanelType } from '../common/constants.js';
+import { NativeChatEditorInput } from './nativeChatEditorInput.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { AGENT_STUDIO_USE_NATIVE_CHAT_SETTING } from '../common/constants.js';
+
+// ─── Global reference to ConfigurationService (HACK for static method access) ───
+// Stored here so static getOrCreate() can read Feature Flag without DI.
+// Set by setConfigService() called from contribution.ts or similar.
+let _configService: IConfigurationService | undefined;
+
+export function setConfigService(cs: IConfigurationService): void {
+	_configService = cs;
+}
+
+/**
+ * Helper: Check if Native Chat mode is enabled.
+ * Uses global _configService (set by setConfigService()).
+ */
+function isNativeChatEnabled(): boolean {
+	if (!_configService) {
+		console.warn('[agentStudioEditorInput] _configService not set, assuming WebView mode');
+		return false;
+	}
+	try {
+		return _configService.getValue<boolean>(AGENT_STUDIO_USE_NATIVE_CHAT_SETTING) ?? false;
+	} catch (e) {
+		console.error('[agentStudioEditorInput] Error reading config:', e);
+		return false;
+	}
+}
 
 /**
  * EditorInput for Agent Studio panels (Canvas, TaskBoard, Chat, Settings).
@@ -46,7 +75,15 @@ export class AgentStudioEditorInput extends EditorInput {
 
 	private static _instances = new Map<AgentStudioPanelType, AgentStudioEditorInput>();
 
-	static getOrCreate(panelType: AgentStudioPanelType): AgentStudioEditorInput {
+	static getOrCreate(panelType: AgentStudioPanelType): EditorInput {
+		// Feature Flag check: if Native Chat mode is enabled and panelType is 'chat',
+		// return NativeChatEditorInput instead of AgentStudioEditorInput.
+		if (panelType === 'chat' && isNativeChatEnabled()) {
+			console.log('[agentStudioEditorInput] Native mode enabled, returning NativeChatEditorInput');
+			return NativeChatEditorInput.getInstance();
+		}
+
+		// WebView mode (default): return AgentStudioEditorInput
 		let instance = AgentStudioEditorInput._instances.get(panelType);
 		if (!instance || instance.isDisposed()) {
 			instance = new AgentStudioEditorInput(panelType);

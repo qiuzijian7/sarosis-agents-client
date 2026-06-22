@@ -18,6 +18,7 @@ import type {
 } from "../common/agentStudio.js";
 import { IAgentDriverService } from "../common/agentDriver.js";
 import type { ChatMessage } from "../common/types.js";
+import { deriveMessageParts } from "../common/types.js";
 import type { IChatMessage } from "../common/providers.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
@@ -733,6 +734,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let fullContent = "";
 		let fullThinking = "";
 		let toolCalls: ChatMessage["toolCalls"];
+		// 阶段E：textPosition 仅作**落盘时切分 parts 的本地排序信号**，不再跨层依赖。
+		// driver/agentOS 不下发 textPosition，由本侧在 tool_start 时按"当前 turn 内已累积
+		// 文本长度"计算（assistant_turn 结算后归零）。最终 deriveMessageParts 用它把
+		// turn.content 与 toolCalls 一次性切分成有序 parts 落盘，重载即按数组顺序渲染，
+		// 不再有任何一层依赖 textPosition 的字符偏移（消除历史错位根因）。
+		let currentTurnTextLen = 0;
 		// ─── Hermes-style 回合边界收集（2026-06-05 治本根因修复）──────────────
 		// agentOS 每个 iteration yield 一个 `assistant_turn` 边界事件。我们据此把
 		// 这一回合（同一次用户请求）拆成多条 assistant 消息，每条只含**本 iteration**
@@ -837,6 +844,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				// to replace the accumulated fullContent with the cleaned version.
 				if (delta.type === "content_replace") {
 					fullContent = delta.content ?? "";
+					currentTurnTextLen = (delta.content ?? "").length;
 				}
 				// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────────
 				// 参考 Hermes `agent/conversation_loop.py:4300-4310` 的 while-pop 模式：
@@ -854,6 +862,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					);
 					fullContent = "";
 					fullThinking = "";
+					currentTurnTextLen = 0;
 					// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
 					onDelta(delta);
 					continue;
@@ -879,6 +888,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					content: turnContent,
 					toolCallIds: ids,
 				});
+				// 本轮结算：下一轮工具卡片的 textPosition 从 0 重新计起，
+				// 与 _aggregateTurns 合并各 turn 时按 turn.content 长度累加 offset 对齐。
+				currentTurnTextLen = 0;
 				// 同步 webview 的 text buffer 为本轮 sanitized 文本
 				if (turnContent) {
 					onDelta({
@@ -901,6 +913,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						renderType: delta.renderType,
 						defaultShow: delta.defaultShow,
 						serverExecuted: (delta as any).serverExecuted,
+						// 记录卡片插入位置：优先用上游下发的 textPosition，否则用当前 turn 内
+						// 已累积的文本长度。持久化后重载即可按位置交织渲染，而非全部排到末尾。
+						textPosition: typeof (delta as any).textPosition === 'number'
+							? (delta as any).textPosition
+							: currentTurnTextLen,
 					});
 				}
 				if (
@@ -1025,6 +1042,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						turnId,
 						timestamp: new Date().toISOString(),
 						...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
+						// 阶段E：落盘有序 parts（文本段与工具段按 textPosition 一次性切分定位），
+						// 作为重载渲染的唯一真相。textPosition 仅在此处切分时使用，不再跨层依赖。
+						parts: deriveMessageParts({ role: "assistant", content: turn.content, toolCalls: turnToolCalls }),
 						// thinking + 卡片数据 + token usage 都是整回合聚合量，仅挂最后一条，
 						// 避免在多条气泡里重复渲染。
 						...(isLast ? {
@@ -1065,6 +1085,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					agentSessionId: options.agentSessionId,
 					thinking: fullThinking || undefined,
 					toolCalls: toolCalls || undefined,
+					// 阶段E：落盘有序 parts（单条回退路径同样写入，重载即按顺序渲染）。
+					parts: deriveMessageParts({ role: "assistant", content: fullContent, toolCalls: toolCalls }),
 					timestamp: new Date().toISOString(),
 					// New card data fields (VS Code Copilot Chat pattern)
 					references: references || undefined,

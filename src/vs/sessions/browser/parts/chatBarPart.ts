@@ -33,15 +33,18 @@ import { ChatCompositeBar } from './chatCompositeBar.js';
 import { prepend } from '../../../base/browser/dom.js';
 // @ts-ignore - TypeScript cannot find type declarations for .ts files imported with .js extension
 import { AgentChatPanel } from '../agentChat/agentChatPanel.js';
+import { AgentSettingsEditorInput } from '../../contrib/agentStudio/browser/agentSettingsEditorInput.js';
 import { IAgentStudioService, IAgentChatService } from '../../common/agentStudioService.js';
 import { IWorktreeService } from '../../contrib/worktree/common/worktreeService.js';
 import { ICommandService } from '../../../platform/commands/common/commands.js';
 import { IModelSelectorService } from '../../contrib/agentStudio/common/modelSelector.js';
 import { ICheckpointService } from '../../contrib/agentStudio/common/checkpointService.js';
 import { ISkillRegistry } from '../../contrib/agentStudio/common/skills.js';
+import { IEditorService } from '../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroupsService } from '../../../workbench/services/editor/common/editorGroupsService.js';
 import { autorun } from '../../../base/common/observable.js';
 import type { AgentStatus as AgentChatAgentStatus, ChatMode, StreamPhase, IAgentChatMessage, IAgentSessionMeta, IWorktreeItem, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, ICheckpointInfo, IContextUsage, ILiveWorkflowExecution, ILiveWorkflowSubAgent, ILiveWorkflowEvent, ILiveCollectVariable } from '../agentChat/agentChatTypes.js';
-import { uniqueMsgId } from '../agentChat/agentChatTypes.js';
+import { uniqueMsgId, adaptPersistedChatMessage } from '../agentChat/agentChatTypes.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
 
@@ -51,7 +54,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 	static readonly viewContainersWorkspaceStateKey = 'workbench.chatbar.viewContainersWorkspaceState';
 
 	override readonly minimumWidth: number = 300;
-	override readonly maximumWidth: number = Number.POSITIVE_INFINITY;
+	override get maximumWidth(): number {
+		// 限制最大宽度为当前窗口大小的 1/2
+		return Math.max(300, this.layoutService.mainContainerDimension.width * 0.5);
+	}
 	override readonly minimumHeight: number = 0;
 	override readonly maximumHeight: number = Number.POSITIVE_INFINITY;
 	override get snap(): boolean { return false; }
@@ -105,6 +111,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ILogService private readonly _logService: ILogService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
+		@IEditorService private readonly _editorService: IEditorService,
+		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 	) {
 		super(
 			Parts.CHATBAR_PART,
@@ -162,8 +170,8 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
-			onSelectWorktree: (path: string) => {
-				this._worktreeService.setSelectedWorktree(path ? { path } : undefined);
+			onSelectWorktree: (worktree: { path: string; branch: string }) => {
+				this._worktreeService.setSelectedWorktree(worktree.path ? { path: worktree.path, branch: worktree.branch } : undefined);
 			},
 			onScrollToMessage: (_messageId: string) => {
 				// Panel handles smooth-scroll internally; reserved for tracing.
@@ -180,9 +188,26 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			onDeleteSession: (sessionId: string) => {
 				void this._deleteAgentSession(sessionId);
 			},
-			onOpenSettings: () => {
-				void this._commandService.executeCommand('workbench.action.openSettings');
-			},
+		onOpenSettings: async () => {
+			// Open agent settings page (refer to AgentChat.tsx settings button)
+			if (!this._currentAgentId) {
+				console.warn('[ChatBarPart] onOpenSettings: no agent selected');
+				return;
+			}
+			try {
+				const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+				if (!agent) {
+					console.warn(`[ChatBarPart] onOpenSettings: agent ${this._currentAgentId} not found`);
+					return;
+				}
+				const input = new AgentSettingsEditorInput(agent.id, agent.name);
+				const groups = this._editorGroupsService.getGroups(0); // GroupsOrder.CREATION_TIME = 0
+				const targetGroup = groups.length <= 1 ? 0 : groups[0]; // SIDE_GROUP = 0, but we want the first group
+				await this._editorService.openEditor(input, { pinned: true }, targetGroup);
+			} catch (err) {
+				console.error('[ChatBarPart] onOpenSettings failed:', err);
+			}
+		},
 			onChangeMode: (mode: ChatMode) => {
 				this._currentChatMode = mode;
 			},
@@ -213,6 +238,9 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 			},
 			onConfirmationAction: (_confirmationId: string, _buttonId: string) => {
 				// Confirmation response dispatched to IAgentChatService (reserved)
+			},
+			onEditMessage: (messageId: string, newText: string) => {
+				void this._handleEditMessage(messageId, newText);
 			},
 			onListSkills: () => {
 				return this._skillRegistry.getSkills().map(s => ({
@@ -361,7 +389,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				const activeSession = await (this._chatService as any).getOrCreateActiveSession?.(emp.id);
 				this._currentSessionId = activeSession?.id;
 				const history = await this._chatService.getHistory(emp.id, this._currentSessionId);
-				this._agentChatPanel.setMessages(history.map(m => this._adaptChatMessage(m)));
+				this._agentChatPanel.setMessages(history.map(m => this._adaptChatMessage(m)).filter((m): m is IAgentChatMessage => !!m));
 			} catch {
 				this._agentChatPanel.setMessages([]);
 				this._currentSessionId = undefined;
@@ -396,6 +424,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						name: emp.name,
 						role: emp.role,
 						avatarUrl: emp.avatar,
+						icon: emp.icon,
 						status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 						isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 						customPrompt: emp.systemPrompt,
@@ -509,7 +538,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		try {
 			this._currentSessionId = sessionId;
 			const history = await this._chatService.getHistory(this._currentAgentId, sessionId);
-			this._agentChatPanel.setMessages(history.map(m => this._adaptChatMessage(m)));
+			this._agentChatPanel.setMessages(history.map(m => this._adaptChatMessage(m)).filter((m): m is IAgentChatMessage => !!m));
 			try {
 				this._checkpointService.setActiveSession(this._currentAgentId, sessionId);
 			} catch { /* ignore */ }
@@ -549,6 +578,39 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 	// ---------- send message + streaming bridge ----------
 
+	/**
+	 * Handles an inline user-message edit (edit → truncate → regenerate).
+	 *
+	 * The panel has already removed the edited message and everything after it
+	 * from the in-memory view. Here we truncate the *persisted* history to drop
+	 * the edited user message (and everything after), then re-send the new text
+	 * through the normal send flow so a fresh user message + assistant reply are
+	 * produced and persisted.
+	 */
+	private async _handleEditMessage(messageId: string, newText: string): Promise<void> {
+		if (!this._currentAgentId) {
+			return;
+		}
+		const agentId = this._currentAgentId;
+		const sessionId = this._currentSessionId;
+		try {
+			const history = await this._chatService.getHistory(agentId, sessionId);
+			const idx = history.findIndex(m => m.id === messageId);
+			if (idx <= 0) {
+				// Edited message is the first message → clear the whole history.
+				await this._chatService.clearHistory(agentId, sessionId);
+			} else {
+				// Keep everything before the edited user message.
+				await this._chatService.deleteMessagesAfter(agentId, sessionId, history[idx - 1].id);
+			}
+		} catch (err) {
+			console.error('[ChatBarPart] _handleEditMessage: truncate failed:', err);
+			return;
+		}
+		// Re-send the edited text through the normal flow.
+		await this._handleSendMessage(newText);
+	}
+
 	private async _handleSendMessage(text: string, explicitSkillIdsFromChips?: string[]): Promise<void> {
 		if (!this._currentAgentId || !this._agentChatPanel) {
 			return;
@@ -560,6 +622,24 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 		const panel = this._agentChatPanel;
 		const agentId = this._currentAgentId;
+
+		// Session id convergence: ensure a concrete session id before sending so
+		// the stream is never persisted into the agent-only "noSession bucket"
+		// (historical cross-talk root cause). `_currentSessionId`,
+		// `AgentSessionMeta.id`, the checkpoint session and the provider session
+		// all refer to this same logical session.
+		if (!this._currentSessionId) {
+			try {
+				const active = await this._chatService.getOrCreateActiveSession(agentId);
+				this._currentSessionId = active.id;
+				try {
+					this._checkpointService.setActiveSession(agentId, active.id);
+				} catch { /* ignore */ }
+			} catch (err) {
+				console.error('[ChatBarPart] _handleSendMessage: ensure session failed:', err);
+			}
+		}
+
 
 		// Extract /skill commands as explicitSkillIds
 		const slashSkills: string[] = [];
@@ -740,14 +820,12 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 
 								const limit = this._currentMaxContextTokens ?? 0;
 								if (limit > 0) {
-									const used = input; // input-token consumption is what the ring shows
-									const ratio = Math.max(0, Math.min(1, used / limit));
-									panel.setContextUsage({
-										used,
-										limit,
-										ratio,
-										percent: ratio * 100,
-									} satisfies IContextUsage);
+									// 参考React：使用 setStreamUsage 传递原始 usage 数据
+									panel.setStreamUsage({
+										input: delta.usage.inputTokens ?? 0,
+										output: delta.usage.outputTokens ?? 0,
+										seen: true,
+									});
 								}
 							}
 							break;
@@ -1179,29 +1257,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 		}
 	}
 
-	private _adaptChatMessage(m: { id: string; role: 'user' | 'assistant' | 'tool' | 'system'; content: string; thinking?: string; toolCalls?: any[]; turnId?: string; timestamp: string }): IAgentChatMessage {
-		const role: IAgentChatMessage['role'] = m.role === 'tool' ? 'system' : m.role;
-		const ts = (() => {
-			const t = Date.parse(m.timestamp);
-			return Number.isFinite(t) ? t : Date.now();
-		})();
-		return {
-			id: m.id,
-			role,
-			content: m.content,
-			timestamp: ts,
-			turnId: (m as any).turnId,
-			thinking: m.thinking,
-			toolCalls: Array.isArray(m.toolCalls)
-				? m.toolCalls.map((c: any, i: number) => ({
-					id: c.id ?? `tc-${i}`,
-					name: c.name ?? 'tool',
-					args: typeof c.args === 'string' ? c.args : (c.args ? JSON.stringify(c.args) : undefined),
-					result: typeof c.result === 'string' ? c.result : (c.result ? JSON.stringify(c.result) : undefined),
-					status: c.status === 'running' ? 'running' : 'completed',
-				}))
-				: undefined,
-		};
+	private _adaptChatMessage(m: { id: string; role: 'user' | 'assistant' | 'tool' | 'system'; content: string; thinking?: string; toolCalls?: any[]; turnId?: string; timestamp: string }): IAgentChatMessage | null {
+		// 阶段E：统一适配入口。assistant 消息携带有序 parts（取代 textPosition 交织）；
+		// 独立 'tool' 角色消息返回 null 由调用方过滤。
+		return adaptPersistedChatMessage(m);
 	}
 
 	// ---------- model selector wiring ----------
@@ -1234,6 +1293,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						id: it.model.id,
 						label: it.model.name,
 						provider: it.provider.id,
+						maxInputTokens: it.model.maxAllowedSize ?? it.model.contextWindow ?? it.model.maxInputTokens,
 					});
 				}
 			}

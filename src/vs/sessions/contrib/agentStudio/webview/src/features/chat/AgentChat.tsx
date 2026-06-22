@@ -1045,7 +1045,7 @@ export function AgentChat(): React.ReactElement {
 		return out;
 	}, [messages]);
 
-	// Auto-init: select Sarosis Claw by default on startup
+	// Auto-init: select Saros Claw by default on startup
 	const autoInitRef = useRef(false);
 	useEffect(() => {
 		if (autoInitRef.current) { return; }
@@ -1053,9 +1053,9 @@ export function AgentChat(): React.ReactElement {
 		if (activeAgentId || selectedAgentId) { return; }
 		autoInitRef.current = true;
 
-		const claw = agents.find(a => a.id === 'sarosis-claw' || a.name === 'Sarosis Claw');
+		const claw = agents.find(a => a.id === 'sarosis-claw' || a.name === 'Saros Claw');
 		if (claw) {
-			console.log('[AgentChat] Auto-selecting Sarosis Claw:', claw.id);
+			console.log('[AgentChat] Auto-selecting Saros Claw:', claw.id);
 			selectAgent(claw.id, true);
 		}
 	}, [agents, activeAgentId, selectedAgentId, selectAgent]);

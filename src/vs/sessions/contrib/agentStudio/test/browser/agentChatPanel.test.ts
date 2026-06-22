@@ -448,7 +448,7 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 		test('basic agent info', () => {
 			const info: IAgentInfo = {
 				id: 'saros-claw',
-				name: 'Sarosis Claw',
+				name: 'Saros Claw',
 				role: 'AI Assistant',
 				status: 'idle' as AgentStatus,
 				agentType: 'general',

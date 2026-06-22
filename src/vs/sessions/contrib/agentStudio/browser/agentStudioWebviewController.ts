@@ -163,6 +163,9 @@ export class AgentStudioWebviewController extends Disposable {
 	 */
 	private readonly _perfCreateTs = Date.now();
 
+	/** Feature flag: if true, use Native Chat mode (skip webview creation) */
+	private _useNativeMode = false;
+
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly panelType: AgentStudioPanelType | undefined,
@@ -207,6 +210,24 @@ export class AgentStudioWebviewController extends Disposable {
 		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
 	) {
 		super();
+
+		// Feature Flag check: if Native Chat mode is enabled, skip webview creation
+		// The system will use NativeChatEditorPane instead of this WebView controller.
+		this._useNativeMode = configurationService.getValue<boolean>('sessions.agentStudio.chat.useNativeChat') ?? false;
+
+		if (this._useNativeMode) {
+			// Native mode: skip webview creation, just set up session service
+			this._sessionService = new WorkspaceSessionService(
+				logService,
+				this.fileService,
+				agentStudioService,
+			);
+			// Note: We still need _registerServiceListeners() for non-webview features
+			// but most listeners send events to webview which doesn't exist.
+			// TODO: Consider removing this controller entirely in native mode.
+			return; // Early return - no webview created
+		}
+
 		this._sessionService = new WorkspaceSessionService(
 			logService,
 			this.fileService,

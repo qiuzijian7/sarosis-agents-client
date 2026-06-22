@@ -15,14 +15,14 @@ export function getBuiltinAgents(): Agent[] {
 	return [
 		{
 			id: 'saros-claw',
-			name: 'Sarosis Claw',
+			name: 'Saros Claw',
 			role: 'AI Assistant',
 			description: 'General-purpose AI assistant built into Sarosis Agent Studio. Handles coding, research, writing, planning, and task coordination.',
 			icon: '🦞',
 			avatar: LOBSTER_AVATAR,
 			category: 'General',
 			model: 'claude-sonnet-4-20250514',
-			systemPrompt: `You are Sarosis Claw, an intelligent AI assistant built into Sarosis Agent Studio.
+			systemPrompt: `You are Saros Claw, an intelligent AI assistant built into Saros Agent Studio.
 
 ## Core Principles
 - **Be helpful and accurate**: Provide clear, actionable responses. When you don't know something, say so honestly.

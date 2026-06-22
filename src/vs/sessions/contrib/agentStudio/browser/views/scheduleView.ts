@@ -68,10 +68,18 @@ export class ScheduleViewPane extends ViewPane {
 
 		// Stats bar
 		const stats = $('div.schedule-stats');
-		stats.innerHTML = `
-			<span class="stat-item"><span class="stat-dot active"></span> Active: ${this.scheduledTasks.filter(t => t.status === 'active').length}</span>
-			<span class="stat-item"><span class="stat-dot paused"></span> Paused: ${this.scheduledTasks.filter(t => t.status === 'paused').length}</span>
-		`;
+		// Use DOM API instead of innerHTML to avoid Trusted Types violation
+		const activeItem = $('span.stat-item');
+		const activeDot = $('span.stat-dot.active');
+		activeItem.appendChild(activeDot);
+		activeItem.append(` Active: ${this.scheduledTasks.filter(t => t.status === 'active').length}`);
+		stats.appendChild(activeItem);
+		
+		const pausedItem = $('span.stat-item');
+		const pausedDot = $('span.stat-dot.paused');
+		pausedItem.appendChild(pausedDot);
+		pausedItem.append(` Paused: ${this.scheduledTasks.filter(t => t.status === 'paused').length}`);
+		stats.appendChild(pausedItem);
 		container.appendChild(stats);
 
 		// List
@@ -81,7 +89,8 @@ export class ScheduleViewPane extends ViewPane {
 	}
 
 	private _renderSchedules(): void {
-		this.listContainer.innerHTML = '';
+		// Use replaceChildren instead of innerHTML = '' to avoid Trusted Types violation
+		this.listContainer.replaceChildren();
 
 		if (this.scheduledTasks.length === 0) {
 			const empty = $('div.schedule-empty');
