@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { StructuredOutputParser, TASK_DECOMPOSITION_SCHEMA } from '../../browser/structuredOutputParser';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
+import { StructuredOutputParser, TASK_DECOMPOSITION_SCHEMA } from '../../browser/structuredOutputParser.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 // Minimal mock ILogService
 class MockLogService {

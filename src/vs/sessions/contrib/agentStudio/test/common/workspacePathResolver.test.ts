@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { URI } from '../../../../../base/common/uri';
-import { isLinux } from '../../../../../base/common/platform';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
-import { resolveWorkspacePath } from '../../common/workspacePathResolver';
+import { URI } from '../../../../../base/common/uri.js';
+import { isLinux } from '../../../../../base/common/platform.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { resolveWorkspacePath } from '../../common/workspacePathResolver.js';
 
 /**
  * 把解析后的路径归一化为与平台无关的 posix 风格 path，便于跨平台稳定断言。

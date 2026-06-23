@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { Emitter, Event } from '../../../../../base/common/event';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 
 /**
  * Workflow Run → Prompt Injection Chain Tests

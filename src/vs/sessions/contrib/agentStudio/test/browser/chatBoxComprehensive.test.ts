@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
-import { uniqueMsgId } from '../../../../browser/agentChat/agentChatTypes';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { uniqueMsgId } from '../../../../browser/agentChat/agentChatTypes.js';
 import type {
 	IAgentChatMessage,
 	IToolCall,
@@ -24,7 +24,7 @@ import type {
 	ISessionInfo,
 	IContextUsage,
 	ICheckpointInfo,
-} from '../../../../browser/agentChat/agentChatTypes';
+} from '../../../../browser/agentChat/agentChatTypes.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

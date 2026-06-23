@@ -22,10 +22,10 @@
  */
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
-import { ContextManager } from '../../common/contextManager';
-import type { IModelProvider, IModelDelta, IChatMessage } from '../../common/providers';
-import type { ChatMessage } from '../../common/types';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ContextManager } from '../../common/contextManager.js';
+import type { IModelProvider, IModelDelta, IChatMessage } from '../../common/providers.js';
+import type { ChatMessage } from '../../common/types.js';
 
 suite('Agent Studio - Context Compression (Hermes 三段式)', () => {
 
