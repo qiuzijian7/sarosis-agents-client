@@ -100,20 +100,19 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 		input = fromLocalNormal(extensionPath);
 	}
 
-	return input
-		.pipe(updateExtensionPackageJSON(data => {
-			delete data.scripts;
-			delete data.devDependencies;
-			if (data.main && isBundled) {
-				// esbuild extensions bundle everything into a single file but
-				// vsce (the marketplace packaging tool) only respects the `main`
-				// field if it points to an existing file. For esbuild extensions,
-				// the `main` field points to uncompiled source that no longer
-				// exists after bundling, so we clear it.
-				delete data.main;
-			}
-			return data;
-		}));
+	return updateExtensionPackageJSON(input, data => {
+		delete data.scripts;
+		delete data.devDependencies;
+		if (data.main && isBundled) {
+			// esbuild extensions bundle everything into a single file but
+			// vsce (the marketplace packaging tool) only respects the `main`
+			// field if it points to an existing file. For esbuild extensions,
+			// the `main` field points to uncompiled source that no longer
+			// exists after bundling, so we clear it.
+			delete data.main;
+		}
+		return data;
+	});
 }
 
 function typeCheckExtensionStream(tsconfigPath: string, forWeb: boolean): Stream {
