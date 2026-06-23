@@ -341,7 +341,7 @@ function fromGithub(extension: IExtensionDefinition): Stream {
 		checksumSha256: sha256
 	};
 
-	return fetchGithub(options)
+	return fetchGithub(repo, options)
 		.pipe(vzip.src())
 		.pipe(filter('extension/**', { dot: true }))
 		.pipe(rename(p => p.dirname = p.dirname!.replace(/^extension\/?/, '')));
