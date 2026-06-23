@@ -4,12 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../../../base/test/common/utils.js';
-import { URI } from '../../../../../../../../base/common/uri.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
+import { URI } from '../../../../../../base/common/uri.js';
 import { PromptFileParser } from '../../../common/promptSyntax/promptFileParser.js';
 import { DEFAULT_AGENT_SOURCE_FOLDERS, SAROS_USER_AGENTS_SOURCE_FOLDER } from '../../../common/promptSyntax/config/promptFileLocations.js';
 import { PromptsStorage } from '../../../common/promptSyntax/service/promptsService.js';
-import { getBuiltinAgents } from '../../../../../../../sessions/contrib/agentStudio/common/builtinAgents.js';
+import { getBuiltinAgents } from '../../../../../../sessions/contrib/agentStudio/common/builtinAgents.js';
 
 /**
  * Expected icon mapping for builtin agents.
