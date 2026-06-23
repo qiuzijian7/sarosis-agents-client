@@ -325,6 +325,12 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 
 function fromGithub(extension: IExtensionDefinition): Stream {
 	const { name, version, repo, sha256 } = extension;
+
+	if (!repo) {
+		fancyLog('No GitHub repo configured, using local extension source:', ansiColors.yellow(`${name}@${version}`));
+		return fromLocal(path.join(root, 'extensions', name), false, false);
+	}
+
 	fancyLog('Downloading extension from GitHub:', ansiColors.yellow(`${name}@${version}`), '...');
 
 	const assetName = `${name}-${version}.vsix`;
