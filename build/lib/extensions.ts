@@ -336,18 +336,19 @@ function fromGithub(extension: IExtensionDefinition): Stream {
 	const assetName = `${name}-${version}.vsix`;
 	const url = `${repo}/releases/download/v${version}/${assetName}`;
 
-	const options = {
-		base: url,
-		headers: {
-			...baseHeaders,
-			Authorization: `Bearer ${process.env['GITHUB_TOKEN']}`,
-			Accept: 'application/octet-stream',
-		},
-		retries: 3,
-		checksumSha256: sha256
+	const headers: Record<string, string> = {
+		...baseHeaders,
+		Accept: 'application/octet-stream',
 	};
+	if (process.env['GITHUB_TOKEN']) {
+		headers.Authorization = `Bearer ${process.env['GITHUB_TOKEN']}`;
+	}
 
-	return fetchGithub(repo, options)
+	return fetchUrls([''], {
+		base: url,
+		nodeFetchOptions: { headers },
+		checksumSha256: sha256
+	})
 		.pipe(vzip.src())
 		.pipe(filter('extension/**', { dot: true }))
 		.pipe(rename(p => p.dirname = p.dirname!.replace(/^extension\/?/, '')));
