@@ -332,20 +332,15 @@ function fromGithub(extension: IExtensionDefinition): Stream {
 	const { name, version, repo, sha256 } = extension;
 	fancyLog('Downloading extension from GitHub:', ansiColors.yellow(`${name}@${version}`), '...');
 
+	// Extract owner/repo from full GitHub URL (e.g. https://github.com/microsoft/vscode-js-debug → microsoft/vscode-js-debug)
+	const repoPath = repo.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
+
+	// Match VSIX asset by name (flexible: handles different naming conventions)
 	const assetName = `${name}-${version}.vsix`;
-	const url = `${repo}/releases/download/v${version}/${assetName}`;
 
-	const headers: Record<string, string> = {
-		...baseHeaders,
-		Accept: 'application/octet-stream',
-	};
-	if (process.env['GITHUB_TOKEN']) {
-		headers.Authorization = `Bearer ${process.env['GITHUB_TOKEN']}`;
-	}
-
-	return fetchUrls([''], {
-		base: url,
-		nodeFetchOptions: { headers },
+	return fetchGithub(repoPath, {
+		version,
+		name: (n: string) => n === assetName || (n.endsWith('.vsix') && n.includes(name)),
 		checksumSha256: sha256
 	})
 		.pipe(vzip.src())
