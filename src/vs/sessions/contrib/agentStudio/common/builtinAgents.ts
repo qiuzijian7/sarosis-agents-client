@@ -8,7 +8,7 @@
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { AgentStatus } from '../../../common/agentStudioTypes.js';
 
-const LOBSTER_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Crect%20width%3D%22100%22%20height%3D%22100%22%20rx%3D%2225%22%20fill%3D%22%232196F3%22%2F%3E%3Ctext%20y%3D%2272%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2260%22%3E%F0%9F%A6%9E%3C%2Ftext%3E%3C%2Fsvg%3E';
+const LOBSTER_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Ctext%20y%3D%2272%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2260%22%3E%F0%9F%A6%9E%3C%2Ftext%3E%3C%2Fsvg%3E';
 
 export function getBuiltinAgents(): Agent[] {
 	const now = new Date().toISOString();
