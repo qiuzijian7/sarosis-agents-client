@@ -317,6 +317,12 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 			return fromMarketplace(serviceUrl!, extension);
 		}
 
+		// Extensions with metadata but no GitHub repo (e.g. tdb-am-gateway) → local
+		if (extension.metadata && !extension.repo) {
+			fancyLog('No GitHub repo configured, using local extension source:', ansiColors.yellow(`${extension.name}@${extension.version}`));
+			return fromLocal(path.join(root, 'extensions', extension.name), forWeb, false);
+		}
+
 		return fromGithub(extension);
 	});
 
@@ -325,12 +331,6 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 
 function fromGithub(extension: IExtensionDefinition): Stream {
 	const { name, version, repo, sha256 } = extension;
-
-	if (!repo) {
-		fancyLog('No GitHub repo configured, using local extension source:', ansiColors.yellow(`${name}@${version}`));
-		return fromLocal(path.join(root, 'extensions', name), false, false);
-	}
-
 	fancyLog('Downloading extension from GitHub:', ansiColors.yellow(`${name}@${version}`), '...');
 
 	const assetName = `${name}-${version}.vsix`;
