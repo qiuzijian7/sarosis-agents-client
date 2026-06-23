@@ -118,7 +118,7 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 function typeCheckExtensionStream(tsconfigPath: string, forWeb: boolean): Stream {
 	// Skip tsgo type checking for web build (will be done in a separate step)
 	if (forWeb) {
-		return es.through();
+		return es.readArray([]);
 	}
 	return createTsgoStream({
 		tsconfigPath,
@@ -277,7 +277,7 @@ function fromMarketplaceOrGithub(extension: IExtensionDefinition): Stream {
 	const isGitHubOnly = !extension.metadata && !!extension.repo;
 	if (isGitHubOnly && !hasGithubToken) {
 		fancyLog(`Skipping GitHub-only extension (no GITHUB_TOKEN):`, ansiColors.yellow(name));
-		return es.through();
+		return es.readArray([]);
 	}
 
 	// Try marketplace first if service URL is available
@@ -308,7 +308,7 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 		// Skip GitHub-only extensions when no token
 		if (!extension.metadata && extension.repo && !hasGithubToken) {
 			fancyLog(`Skipping GitHub-only extension (no GITHUB_TOKEN):`, ansiColors.yellow(extension.name));
-			return es.through();
+			return es.readArray([]);
 		}
 
 		if (hasMarketplaceServiceUrl && extension.metadata) {
@@ -325,7 +325,7 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 		// Skip GitHub extensions when no token (also covers extensions with metadata + repo)
 		if (extension.repo && !hasGithubToken) {
 			fancyLog(`Skipping GitHub extension (no GITHUB_TOKEN):`, ansiColors.yellow(extension.name));
-			return es.through();
+			return es.readArray([]);
 		}
 
 		return fromGithub(extension);
