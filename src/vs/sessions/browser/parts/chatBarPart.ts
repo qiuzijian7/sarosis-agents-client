@@ -376,6 +376,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				name: emp.name,
 				role: emp.role,
 				avatarUrl: emp.avatar,
+				icon: emp.icon,
 				status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 				isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 				customPrompt: emp.systemPrompt,

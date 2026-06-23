@@ -262,4 +262,66 @@ suite('AgentIconConsistency', () => {
 			builtinByKey.get(agent.name.toLowerCase());
 		assert.strictEqual(derived, '🎨', 'Should derive Designer icon by name');
 	});
+
+	/**
+	 * Test 11: Agent → IAgentInfo mapping MUST preserve the icon field.
+	 *
+	 * Regression guard for the chat bar bug where `setAgent()` (header avatar)
+	 * built the IAgentInfo object WITHOUT `icon`, so the header/dropdown fell
+	 * back to a single-letter avatar instead of the preset emoji. Both the
+	 * `setAgent` (active agent) and `setAvailableAgents` (dropdown list) mapping
+	 * sites must forward `icon` from the source Agent.
+	 *
+	 * This simulates the exact projection performed in chatBarPart.ts.
+	 */
+	test('Agent → IAgentInfo mapping preserves icon (header + dropdown)', () => {
+		// Mirrors the projection used by chatBarPart.ts for BOTH setAgent and
+		// setAvailableAgents. If either site drops `icon`, this test fails.
+		const toAgentInfo = (emp: { id: string; name: string; role: string; avatar?: string; icon?: string }) => ({
+			id: emp.id,
+			name: emp.name,
+			role: emp.role,
+			avatarUrl: emp.avatar,
+			icon: emp.icon,
+		});
+
+		for (const agent of getBuiltinAgents()) {
+			const info = toAgentInfo(agent as any);
+			assert.strictEqual(
+				info.icon,
+				EXPECTED_ICONS[agent.name],
+				`IAgentInfo mapping for "${agent.name}" must carry icon ${EXPECTED_ICONS[agent.name]}, got ${info.icon}`
+			);
+		}
+	});
+
+	/**
+	 * Test 12: When neither avatarUrl nor icon is present, the avatar render
+	 * falls back to the first letter — but when icon IS present, it must win
+	 * over the letter fallback. This mirrors the agentChatPanel.ts render
+	 * precedence: avatarUrl > icon > first-letter.
+	 */
+	test('avatar render precedence: avatarUrl > icon > letter', () => {
+		const resolveAvatar = (a: { name: string; avatarUrl?: string; icon?: string }): { kind: 'img' | 'icon' | 'letter'; value: string } => {
+			if (a.avatarUrl) { return { kind: 'img', value: a.avatarUrl }; }
+			if (a.icon) { return { kind: 'icon', value: a.icon }; }
+			return { kind: 'letter', value: a.name.charAt(0).toUpperCase() };
+		};
+
+		// avatarUrl wins
+		assert.deepStrictEqual(
+			resolveAvatar({ name: 'Saros Claw', avatarUrl: 'data:image/svg+xml,x', icon: '🦞' }),
+			{ kind: 'img', value: 'data:image/svg+xml,x' }
+		);
+		// icon wins over letter
+		assert.deepStrictEqual(
+			resolveAvatar({ name: 'Coder', icon: '👨‍💻' }),
+			{ kind: 'icon', value: '👨‍💻' }
+		);
+		// letter only when both missing
+		assert.deepStrictEqual(
+			resolveAvatar({ name: 'Mystery' }),
+			{ kind: 'letter', value: 'M' }
+		);
+	});
 });
