@@ -322,6 +322,12 @@ export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 			return fromLocal(path.join(root, 'extensions', extension.name), forWeb, false);
 		}
 
+		// Skip GitHub extensions when no token (also covers extensions with metadata + repo)
+		if (extension.repo && !hasGithubToken) {
+			fancyLog(`Skipping GitHub extension (no GITHUB_TOKEN):`, ansiColors.yellow(extension.name));
+			return es.through();
+		}
+
 		return fromGithub(extension);
 	});
 
