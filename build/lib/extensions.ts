@@ -120,12 +120,10 @@ function typeCheckExtensionStream(tsconfigPath: string, forWeb: boolean): Stream
 	if (forWeb) {
 		return es.readArray([]);
 	}
-	return createTsgoStream({
-		tsconfigPath,
-		projectRoot: root,
+	return createTsgoStream(tsconfigPath, {
 		taskName: `typechecking extension (tsgo)`,
 		noEmit: true,
-	});
+});
 }
 
 function getBuildRootsForExtension(extensionPath: string): string[] {
