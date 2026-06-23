@@ -201,10 +201,8 @@ import {
 	AGENTS_SOURCE_FOLDER,
 	AGENT_FILE_EXTENSION,
 	SKILL_FILENAME,
-	CLAUDE_AGENTS_SOURCE_FOLDER,
 	DEFAULT_HOOK_FILE_PATHS,
 	DEFAULT_INSTRUCTIONS_SOURCE_FOLDERS,
-	COPILOT_USER_AGENTS_SOURCE_FOLDER,
 	SAROS_USER_AGENTS_SOURCE_FOLDER,
 } from "../common/promptSyntax/config/promptFileLocations.js";
 import { PromptLanguageFeaturesProvider } from "./promptSyntax/promptFileContributions.js";
