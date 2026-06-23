@@ -34,6 +34,7 @@ import type { StreamError, StreamPhase } from '../../bridge/streamHandler';
 import { isPhaseActive } from '../../bridge/streamHandler';
 import { ChatHistoryPage } from './ChatHistoryPage';
 import { perfTrace } from '../../utils/perfTrace';
+import { getAgentColor } from '../../utils/agentColors';
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -1128,14 +1129,12 @@ export function AgentChat(): React.ReactElement {
 						<svg className="chat-header-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
 							<polyline points="6 9 12 15 18 9" />
 						</svg>
-						<img
-							src={activeAgent.avatar
-								|| (activeAgent.avatarStyle && activeAgent.avatarSeed
-									? `https://api.dicebear.com/7.x/${activeAgent.avatarStyle}/svg?seed=${activeAgent.avatarSeed}`
-									: `https://api.dicebear.com/7.x/bottts/svg?seed=${activeAgent.id}`)}
-							alt={activeAgent.name}
+						<div
 							className="chat-header-avatar"
-						/>
+							style={{ backgroundColor: getAgentColor(activeAgent.id).light }}
+						>
+							{activeAgent.icon || '🤖'}
+						</div>
 						<div className="chat-header-info">
 							<span className="chat-header-name">{activeAgent.name}</span>
 							<span className="chat-header-role">
@@ -1178,14 +1177,12 @@ export function AgentChat(): React.ReactElement {
 												setDropdownFilter('');
 											}}
 										>
-											<img
-												className="chat-agent-dropdown-avatar"
-												src={agent.avatar
-													|| (agent.avatarStyle && agent.avatarSeed
-														? `https://api.dicebear.com/7.x/${agent.avatarStyle}/svg?seed=${agent.avatarSeed}`
-														: `https://api.dicebear.com/7.x/bottts/svg?seed=${agent.id}`)}
-												alt={agent.name}
-											/>
+										<div
+											className="chat-agent-dropdown-avatar"
+											style={{ backgroundColor: getAgentColor(agent.id).light }}
+										>
+											{agent.icon || '🤖'}
+										</div>
 											<div className="chat-agent-dropdown-info">
 												<span className="chat-agent-dropdown-name">{agent.name}</span>
 												<span className="chat-agent-dropdown-role">{agent.role || ''}</span>

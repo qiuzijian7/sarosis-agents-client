@@ -1761,11 +1761,11 @@ export namespace CustomAgent {
 		if (target === Target.Claude && model) {
 			model = mapClaudeModels(model);
 		}
-		let { tools, handOffs, argumentHint, agents } = ast.header;
+		let { tools, handOffs, argumentHint, agents, icon } = ast.header;
 		if (target === Target.Claude && tools) {
 			tools = mapClaudeTools(tools);
 		}
-		return { uri, name, description, model, tools, handOffs, argumentHint, target, visibility, agents, agentInstructions, source, sessionTypes, hooks, enabled };
+		return { uri, name, description, model, tools, handOffs, argumentHint, target, visibility, agents, agentInstructions, source, sessionTypes, hooks, enabled, icon };
 
 	}
 }

@@ -191,7 +191,8 @@ class ChatModes extends Disposable implements IChatModes {
 						agents: cachedMode.agents,
 						sessionTypes: cachedMode.sessionTypes,
 						source: reviveChatModeSource(cachedMode.source) ?? { storage: PromptsStorage.local },
-						enabled: true
+						enabled: true,
+						icon: cachedMode.icon,
 					};
 					const instance = new CustomChatMode(customChatMode);
 					this._customModeInstances.set(uri.toString(), instance);
@@ -361,6 +362,8 @@ export interface IChatModeData {
 	readonly agents?: readonly string[];
 	readonly sessionTypes?: readonly string[];
 	readonly infer?: boolean; // deprecated, only available in old cached data
+	/** Optional emoji/icon text for the agent (e.g. "👨‍💻") */
+	readonly icon?: string;
 }
 
 export interface IChatMode {
@@ -368,6 +371,8 @@ export interface IChatMode {
 	readonly name: IObservable<string>;
 	readonly label: IObservable<string>;
 	readonly icon: IObservable<ThemeIcon | undefined>;
+	/** Optional emoji/icon text displayed alongside the mode label (e.g. "👨‍💻" for preset agents). */
+	readonly iconText?: IObservable<string | undefined>;
 	readonly description: IObservable<string | undefined>;
 	readonly isBuiltin: boolean;
 	readonly kind: ChatModeKind;
@@ -430,6 +435,7 @@ export class CustomChatMode implements IChatMode {
 	private readonly _targetObservable: ISettableObservable<Target>;
 	private readonly _visibilityObservable: ISettableObservable<ICustomAgentVisibility | undefined>;
 	private readonly _agentsObservable: ISettableObservable<readonly string[] | undefined>;
+	private readonly _iconTextObservable: ISettableObservable<string | undefined>;
 	private _source: IAgentSource;
 	private _sessionTypes: readonly string[] | undefined;
 
@@ -445,6 +451,10 @@ export class CustomChatMode implements IChatMode {
 
 	get icon(): IObservable<ThemeIcon | undefined> {
 		return constObservable(undefined);
+	}
+
+	get iconText(): IObservable<string | undefined> {
+		return this._iconTextObservable;
 	}
 
 	public get isBuiltin(): boolean {
@@ -514,6 +524,7 @@ export class CustomChatMode implements IChatMode {
 		this._targetObservable = observableValue('target', customChatMode.target);
 		this._visibilityObservable = observableValue('visibility', customChatMode.visibility);
 		this._agentsObservable = observableValue('agents', customChatMode.agents);
+		this._iconTextObservable = observableValue('iconText', customChatMode.icon);
 		this._modeInstructions = observableValue('_modeInstructions', customChatMode.agentInstructions);
 		this._uriObservable = observableValue('uri', customChatMode.uri);
 		this._source = customChatMode.source;
@@ -534,6 +545,7 @@ export class CustomChatMode implements IChatMode {
 			this._targetObservable.set(newData.target, tx);
 			this._visibilityObservable.set(newData.visibility, tx);
 			this._agentsObservable.set(newData.agents, tx);
+			this._iconTextObservable.set(newData.icon, tx);
 			this._modeInstructions.set(newData.agentInstructions, tx);
 			this._uriObservable.set(newData.uri, tx);
 			this._source = newData.source;
@@ -558,6 +570,7 @@ export class CustomChatMode implements IChatMode {
 			visibility: this.visibility.get(),
 			agents: this.agents.get(),
 			sessionTypes: this.sessionTypes,
+			icon: this._iconTextObservable.get(),
 		};
 	}
 }

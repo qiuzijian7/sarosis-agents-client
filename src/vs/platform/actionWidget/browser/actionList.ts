@@ -96,6 +96,8 @@ export interface IActionListItem<T> {
 	 * instead of selecting it.
 	 */
 	readonly isSectionToggle?: boolean;
+	/** Optional emoji/icon text displayed alongside the icon (e.g. "👨‍💻" for preset agents). */
+	readonly iconText?: string;
 	/**
 	 * Optional CSS class name to add to the row container.
 	 */
@@ -118,6 +120,7 @@ export interface IActionListItem<T> {
 interface IActionMenuTemplateData {
 	readonly container: HTMLElement;
 	readonly icon: HTMLElement;
+	readonly iconText: HTMLElement;
 	readonly text: HTMLElement;
 	readonly detail: HTMLElement;
 	readonly badge: HTMLElement;
@@ -213,6 +216,10 @@ class ActionItemRenderer<T> implements IListRenderer<IActionListItem<T>, IAction
 		icon.className = 'icon';
 		container.append(icon);
 
+		const iconText = document.createElement('span');
+		iconText.className = 'icon-text';
+		container.append(iconText);
+
 		const text = document.createElement('span');
 		text.className = 'title';
 		container.append(text);
@@ -245,7 +252,7 @@ class ActionItemRenderer<T> implements IListRenderer<IActionListItem<T>, IAction
 
 		const elementDisposables = new DisposableStore();
 
-		return { container, icon, text, detail, badge, description, groupTitle, keybinding, toolbar, submenuIndicator, elementDisposables };
+		return { container, icon, iconText, text, detail, badge, description, groupTitle, keybinding, toolbar, submenuIndicator, elementDisposables };
 	}
 
 	renderElement(element: IActionListItem<T>, _index: number, data: IActionMenuTemplateData): void {
@@ -267,6 +274,16 @@ class ActionItemRenderer<T> implements IListRenderer<IActionListItem<T>, IAction
 		}
 
 		dom.setVisibility(!element.hideIcon, data.icon);
+		dom.setVisibility(!element.hideIcon, data.iconText);
+
+		// Render optional iconText (emoji icon for custom agents)
+		if (element.iconText) {
+			data.iconText.textContent = element.iconText;
+			data.iconText.style.display = '';
+		} else {
+			data.iconText.textContent = '';
+			data.iconText.style.display = 'none';
+		}
 
 		// Set aria-expanded for section toggle items
 		if (element.isSectionToggle) {

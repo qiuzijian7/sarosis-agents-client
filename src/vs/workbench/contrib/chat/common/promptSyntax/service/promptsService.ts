@@ -299,6 +299,12 @@ export interface ICustomAgent {
 	 * but should not be offered to users or used in automated flows.
 	 */
 	readonly enabled: boolean;
+
+	/**
+	 * Optional icon for the agent (emoji or icon string).
+	 * When set, this icon is displayed in the agent picker and chat input.
+	 */
+	readonly icon?: string;
 }
 
 export interface IAgentInstructions {

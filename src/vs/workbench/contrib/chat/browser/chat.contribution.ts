@@ -205,6 +205,7 @@ import {
 	DEFAULT_HOOK_FILE_PATHS,
 	DEFAULT_INSTRUCTIONS_SOURCE_FOLDERS,
 	COPILOT_USER_AGENTS_SOURCE_FOLDER,
+	SAROS_USER_AGENTS_SOURCE_FOLDER,
 } from "../common/promptSyntax/config/promptFileLocations.js";
 import { PromptLanguageFeaturesProvider } from "./promptSyntax/promptFileContributions.js";
 import {
@@ -2058,9 +2059,7 @@ configurationRegistry.registerConfiguration({
 				AGENT_DOCUMENTATION_URL,
 			),
 			default: {
-				[AGENTS_SOURCE_FOLDER]: true,
-				[CLAUDE_AGENTS_SOURCE_FOLDER]: true,
-				[COPILOT_USER_AGENTS_SOURCE_FOLDER]: true,
+				[SAROS_USER_AGENTS_SOURCE_FOLDER]: true,
 			},
 			additionalProperties: { type: "boolean" },
 			propertyNames: {

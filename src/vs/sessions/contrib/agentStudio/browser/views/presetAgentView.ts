@@ -25,6 +25,8 @@ import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/ed
 import { GroupsOrder, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { AgentSettingsEditorInput } from '../agentSettingsEditorInput.js';
 import type { AgentBootstrapTemplates, IAgentHandOff, IAgentHooks, IAgentVisibility } from '../../../../common/agentStudioTypes.js';
+import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
+import { joinPath } from '../../../../../base/common/resources.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
@@ -1736,10 +1738,15 @@ export class PresetAgentViewPane extends ViewPane {
 		@ICommandService private readonly commandService: ICommandService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+		@IPathService private readonly pathService: IPathService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._loadCustomPresets();
 		this._listenActiveWorkspace();
+		// Sync builtin presets with .agent.md files so icons stay consistent
+		this._syncPresetsWithAgentMd().catch(err =>
+			console.warn('[PresetAgentView] Failed to sync with .agent.md files:', err),
+		);
 	}
 
 	/**
@@ -1788,8 +1795,87 @@ export class PresetAgentViewPane extends ViewPane {
 			if (match) {
 				// _activeWorkspaceId removed — workspace tracking handled by AgentInstanceService
 			}
-		} catch {
-			// best-effort
+	} catch {
+		// best-effort
+		}
+	}
+
+	/**
+	 * Sync BUILTIN_PRESETS with .agent.md files from ~/.saros/agents/.
+	 * This ensures the preset panel and the native chat dropdown use the
+	 * same data source — the .agent.md files are the single source of truth.
+	 *
+	 * For each .agent.md file found, the corresponding BUILTIN_PRESETS entry
+	 * is updated with the icon/name/description from the file. If no matching
+	 * preset exists, a new entry is created.
+	 */
+	private async _syncPresetsWithAgentMd(): Promise<void> {
+		try {
+			const agentsDir = joinPath(await this.pathService.userHome(), '.saros', 'agents');
+
+			// Check if directory exists
+			let entries: { name: string; isDirectory: boolean }[];
+			try {
+				const result = await this.fileService.resolve(agentsDir);
+				entries = (result.children ?? []).map(c => ({ name: c.name, isDirectory: c.isDirectory }));
+			} catch {
+				return; // Directory doesn't exist yet — nothing to sync
+			}
+
+			let updated = false;
+			for (const entry of entries) {
+				if (entry.isDirectory || !entry.name.endsWith('.agent.md')) {
+					continue;
+				}
+
+				try {
+					const fileUri = joinPath(agentsDir, entry.name);
+					const content = (await this.fileService.readFile(fileUri)).value.toString();
+
+					// Parse YAML front matter (simple extraction between --- markers)
+					const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+					if (!fmMatch) { continue; }
+
+					const fm = fmMatch[1];
+					const get = (key: string): string | undefined => {
+						const m = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+						return m?.[1]?.replace(/^["']|["']$/g, '').trim();
+					};
+
+					const name = get('name');
+					const icon = get('icon');
+					const description = get('description');
+					const category = get('category') as PresetCategory | undefined;
+
+					if (!name) { continue; }
+
+					// Find matching builtin preset (by name, case-insensitive)
+					const preset = BUILTIN_PRESETS.find(p => p.name.toLowerCase() === name.toLowerCase());
+					if (preset) {
+						// Override display fields from .agent.md (single source of truth)
+						if (icon && preset.icon !== icon) {
+							preset.icon = icon;
+							updated = true;
+						}
+						if (description && preset.description !== description) {
+							preset.description = description;
+							updated = true;
+						}
+						if (category) {
+							preset.category = category;
+							updated = true;
+						}
+					}
+				} catch {
+					// Skip files that can't be read/parsed
+				}
+			}
+
+			if (updated) {
+				this._renderPresets();
+			}
+		} catch (err) {
+			console.warn('[PresetAgentView] _syncPresetsWithAgentMd error:', err);
 		}
 	}
 

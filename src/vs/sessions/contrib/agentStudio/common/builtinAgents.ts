@@ -234,7 +234,7 @@ export function getBuiltinAgents(): Agent[] {
 			name: 'Version Manager',
 			role: 'Version Control Specialist',
 			description: 'Manages git operations, branching strategies, and release workflows.',
-			icon: '🔖',
+			icon: '📦',
 			category: 'DevOps',
 			model: 'claude-sonnet-4-20250514',
 			systemPrompt: `You are a version control specialist. Manage git operations and release workflows.
@@ -282,7 +282,7 @@ export function getBuiltinAgents(): Agent[] {
 			name: 'Code Explorer',
 			role: 'Code Exploration Agent',
 			description: 'Searches and navigates codebases to understand structure and find relevant code.',
-			icon: '🔍',
+			icon: '🔭',
 			category: 'Development',
 			model: 'claude-sonnet-4-20250514',
 			systemPrompt: `You are a code exploration specialist. Understand and navigate codebases.
@@ -330,7 +330,7 @@ export function getBuiltinAgents(): Agent[] {
 			name: 'Code Reviewer',
 			role: 'Code Quality Review Agent',
 			description: 'Reviews code for bugs, security issues, performance problems, and convention compliance.',
-			icon: '✅',
+			icon: '🔍',
 			category: 'Development',
 			model: 'claude-sonnet-4-20250514',
 			systemPrompt: `You are a code reviewer. Review code for quality and correctness.
@@ -358,7 +358,7 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 			name: 'Workflow Agent',
 			role: 'Workflow Orchestrator',
 			description: 'Orchestrates multi-step workflows coordinating multiple agents and tools.',
-			icon: '🔄',
+			icon: '🧩',
 			category: 'Management',
 			model: 'claude-sonnet-4-20250514',
 			systemPrompt: `You are a workflow orchestrator. Coordinate complex multi-step workflows.

@@ -18,6 +18,8 @@ import { IActionWidgetService } from './actionWidget.js';
 export interface IActionWidgetDropdownAction extends IAction {
 	category?: { label: string; order: number; showHeader?: boolean };
 	icon?: ThemeIcon;
+	/** Optional emoji/icon text displayed alongside the icon (e.g. "👨‍💻" for preset agents). */
+	iconText?: string;
 	description?: string;
 	/**
 	 * Optional detail text displayed as a second line below the label.
@@ -154,6 +156,7 @@ export class ActionWidgetDropdown extends BaseDropdown {
 					keybinding: this._options.showItemKeybindings ?
 						(action.keybinding ?? this.keybindingService.lookupKeybinding(action.id)) :
 						undefined,
+					iconText: action.iconText,
 				});
 			}
 

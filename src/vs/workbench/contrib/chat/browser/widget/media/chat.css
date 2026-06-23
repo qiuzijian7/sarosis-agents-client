@@ -1735,6 +1735,13 @@ have to be updated for changes to the rules above, or to support more deeply nes
 				text-overflow: ellipsis;
 			}
 
+			.chat-input-picker-icon-text {
+				font-size: 14px;
+				line-height: 1;
+				flex-shrink: 0;
+				margin-right: 2px;
+			}
+
 			span + .chat-input-picker-label {
 				margin-left: 2px;
 			}

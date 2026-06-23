@@ -122,6 +122,13 @@
 	align-items: center;
 }
 
+/* Emoji icon text (for custom agents with emoji icons) */
+.action-widget .monaco-list-row.action .icon-text {
+	font-size: 16px;
+	line-height: 1;
+	flex-shrink: 0;
+}
+
 .action-widget .monaco-list-row.action .codicon {
 	font-size: 12px;
 }

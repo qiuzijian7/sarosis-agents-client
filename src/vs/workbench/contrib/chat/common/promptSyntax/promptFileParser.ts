@@ -85,6 +85,8 @@ export namespace PromptHeaderAttributes {
 	export const disableModelInvocation = 'disable-model-invocation';
 	export const hooks = 'hooks';
 	export const context = 'context';
+	/** Optional emoji/icon text for the agent (e.g. "👨‍💻") */
+	export const icon = 'icon';
 }
 
 export class PromptHeader {
@@ -319,6 +321,11 @@ export class PromptHeader {
 
 	public get context(): string | undefined {
 		return this.getStringAttribute(PromptHeaderAttributes.context);
+	}
+
+	/** Optional emoji/icon text for the agent (e.g. "👨‍💻") */
+	public get icon(): string | undefined {
+		return this.getStringAttribute(PromptHeaderAttributes.icon);
 	}
 
 	/**

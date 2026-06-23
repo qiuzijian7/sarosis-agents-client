@@ -107,6 +107,12 @@ export const CLAUDE_AGENTS_SOURCE_FOLDER = '.claude/agents';
 export const COPILOT_USER_AGENTS_SOURCE_FOLDER = '~/.copilot/agents';
 
 /**
+ * Saros user agents folder — the unified agent data source for Sarosis.
+ * Both builtin presets and user-created agents are stored here as .agent.md files.
+ */
+export const SAROS_USER_AGENTS_SOURCE_FOLDER = '~/.saros/agents';
+
+/**
  * Claude rules folder.
  */
 export const CLAUDE_RULES_SOURCE_FOLDER = '.claude/rules';
@@ -182,12 +188,10 @@ export const DEFAULT_PROMPT_SOURCE_FOLDERS: readonly IPromptSourceFolder[] = [
 
 /**
  * Default agent source folders.
+ * ~/.saros/agents/ is the single source of truth for all agent definitions.
  */
 export const DEFAULT_AGENT_SOURCE_FOLDERS: readonly IPromptSourceFolder[] = [
-	{ path: AGENTS_SOURCE_FOLDER, source: PromptFileSource.GitHubWorkspace, storage: PromptsStorage.local },
-	{ path: CLAUDE_AGENTS_SOURCE_FOLDER, source: PromptFileSource.ClaudeWorkspace, storage: PromptsStorage.local },
-	{ path: COPILOT_USER_AGENTS_SOURCE_FOLDER, source: PromptFileSource.CopilotPersonal, storage: PromptsStorage.user },
-	{ path: '~/' + CLAUDE_AGENTS_SOURCE_FOLDER, source: PromptFileSource.ClaudePersonal, storage: PromptsStorage.user },
+	{ path: SAROS_USER_AGENTS_SOURCE_FOLDER, source: PromptFileSource.AgentsPersonal, storage: PromptsStorage.user },
 ];
 
 /**
@@ -207,7 +211,7 @@ export const DEFAULT_HOOK_FILE_PATHS: readonly IPromptSourceFolder[] = [
  */
 function isInAgentsFolder(fileUri: URI): boolean {
 	const dir = dirname(fileUri).path;
-	return dir.endsWith('/' + AGENTS_SOURCE_FOLDER) || dir.endsWith('/' + CLAUDE_AGENTS_SOURCE_FOLDER) || isInCopilotAgentsFolder(fileUri);
+	return dir.endsWith('/' + AGENTS_SOURCE_FOLDER) || dir.endsWith('/' + CLAUDE_AGENTS_SOURCE_FOLDER) || dir.endsWith('/' + SAROS_USER_AGENTS_SOURCE_FOLDER.substring(2)) || dir.endsWith('/' + SAROS_USER_AGENTS_SOURCE_FOLDER.substring(2) + '/custom') || isInCopilotAgentsFolder(fileUri);
 }
 
 /**

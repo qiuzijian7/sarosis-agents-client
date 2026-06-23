@@ -410,6 +410,21 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	},
 });
 
+// --- Builtin Agent .agent.md Sync -----------------------------------------------
+// Ensures builtin agents have .agent.md files in ~/.saros/agents/ before the
+// native chat panel loads, so icons appear correctly in the chat dropdown.
+
+class BuiltinAgentMdSyncContribution implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.builtinAgentMdSync';
+
+	constructor(@IAgentStudioService _agentStudioService: IAgentStudioService) {
+		// Injecting IAgentStudioService triggers its constructor, which calls
+		// ensureBuiltinAgentMdFiles() to create .agent.md files in ~/.saros/agents/.
+	}
+}
+
+registerWorkbenchContribution2(BuiltinAgentMdSyncContribution.ID, BuiltinAgentMdSyncContribution, WorkbenchPhase.BlockRestore);
+
 // --- Services Registration -------------------------------------------------------
 
 registerSingleton(IAgentStudioService, AgentStudioService, InstantiationType.Delayed);

@@ -87,68 +87,69 @@ export class ModePickerActionItem extends ChatInputPickerActionViewItem {
 		const agentModeDisabledViaPolicy = configurationService.inspect<boolean>(ChatConfiguration.AgentEnabled).policyValue === false;
 
 		const makeAction = (mode: IChatMode, currentMode: IChatMode): IActionWidgetDropdownAction => {
-			const isDisabledViaPolicy =
-				mode.kind === ChatModeKind.Agent &&
-				agentModeDisabledViaPolicy;
+		const isDisabledViaPolicy =
+			mode.kind === ChatModeKind.Agent &&
+			agentModeDisabledViaPolicy;
 
-			const tooltip = chatAgentService.getDefaultAgent(ChatAgentLocation.Chat, mode.kind)?.description ?? action.tooltip;
+		const tooltip = chatAgentService.getDefaultAgent(ChatAgentLocation.Chat, mode.kind)?.description ?? action.tooltip;
 
-			// Add toolbar actions for Agent modes
-			const toolbarActions: IAction[] = [];
-			if (mode.kind === ChatModeKind.Agent && !isDisabledViaPolicy) {
-				if (mode.uri) {
-					let label, icon, id;
-					if (mode.source?.storage === PromptsStorage.extension) {
-						icon = Codicon.file;
-						id = `viewAgent:${mode.id}`;
-						label = localize('viewModeConfiguration', "View {0} agent", mode.label.get());
-					} else {
-						icon = Codicon.edit;
-						id = `editAgent:${mode.id}`;
-						label = localize('editModeConfiguration', "Edit {0} agent", mode.label.get());
-					}
-
-					const modeResource = mode.uri;
-					toolbarActions.push({
-						id,
-						label,
-						tooltip: label,
-						class: ThemeIcon.asClassName(icon),
-						enabled: true,
-						run: async () => {
-							openerService.open(modeResource.get());
-						}
-					});
+		// Add toolbar actions for Agent modes
+		const toolbarActions: IAction[] = [];
+		if (mode.kind === ChatModeKind.Agent && !isDisabledViaPolicy) {
+			if (mode.uri) {
+				let label, icon, id;
+				if (mode.source?.storage === PromptsStorage.extension) {
+					icon = Codicon.file;
+					id = `viewAgent:${mode.id}`;
+					label = localize('viewModeConfiguration', "View {0} agent", mode.label.get());
+				} else {
+					icon = Codicon.edit;
+					id = `editAgent:${mode.id}`;
+					label = localize('editModeConfiguration', "Edit {0} agent", mode.label.get());
 				}
-			}
 
-			return {
-				...action,
-				id: getOpenChatActionIdForMode(mode),
-				label: mode.label.get(),
-				icon: isDisabledViaPolicy ? ThemeIcon.fromId(Codicon.lock.id) : mode.icon.get(),
-				class: isDisabledViaPolicy ? 'disabled-by-policy' : undefined,
-				enabled: !isDisabledViaPolicy,
-				checked: !isDisabledViaPolicy && currentMode.id === mode.id,
-				tooltip: '',
-				hover: { content: tooltip },
-				toolbarActions,
-				run: async () => {
-					if (isDisabledViaPolicy) {
-						return; // Block interaction if disabled by policy
+				const modeResource = mode.uri;
+				toolbarActions.push({
+					id,
+					label,
+					tooltip: label,
+					class: ThemeIcon.asClassName(icon),
+					enabled: true,
+					run: async () => {
+						openerService.open(modeResource.get());
 					}
-					const result = await commandService.executeCommand(
-						ToggleAgentModeActionId,
-						{ modeId: mode.id, sessionResource: this.delegate.sessionResource() } satisfies IToggleChatModeArgs
-					);
-					if (this.element) {
-						this.renderLabel(this.element);
-					}
-					return result;
-				},
-				category: isDisabledViaPolicy ? policyDisabledCategory : builtInCategory
-			};
+				});
+			}
+		}
+
+		return {
+			...action,
+			id: getOpenChatActionIdForMode(mode),
+			label: mode.label.get(),
+			icon: isDisabledViaPolicy ? ThemeIcon.fromId(Codicon.lock.id) : mode.icon.get(),
+			iconText: mode.iconText?.get(),
+			class: isDisabledViaPolicy ? 'disabled-by-policy' : undefined,
+			enabled: !isDisabledViaPolicy,
+			checked: !isDisabledViaPolicy && currentMode.id === mode.id,
+			tooltip: '',
+			hover: { content: tooltip },
+			toolbarActions,
+			run: async () => {
+				if (isDisabledViaPolicy) {
+					return; // Block interaction if disabled by policy
+				}
+				const result = await commandService.executeCommand(
+					ToggleAgentModeActionId,
+					{ modeId: mode.id, sessionResource: this.delegate.sessionResource() } satisfies IToggleChatModeArgs
+				);
+				if (this.element) {
+					this.renderLabel(this.element);
+				}
+				return result;
+			},
+			category: isDisabledViaPolicy ? policyDisabledCategory : builtInCategory
 		};
+	};
 
 		const makeActionFromCustomMode = (mode: IChatMode, currentMode: IChatMode): IActionWidgetDropdownAction => {
 			return {
@@ -291,6 +292,13 @@ export class ModePickerActionItem extends ChatInputPickerActionViewItem {
 
 		const labelElements = [];
 		const collapsed = this.pickerOptions.hideChevrons.get();
+
+		// Render custom emoji icon (iconText) if available
+		const iconText = currentMode.iconText?.get();
+		if (iconText) {
+			labelElements.push(dom.$('span.chat-input-picker-icon-text', undefined, iconText));
+		}
+
 		if (icon) {
 			labelElements.push(...renderLabelWithIcons(`$(${icon.id})`));
 		}

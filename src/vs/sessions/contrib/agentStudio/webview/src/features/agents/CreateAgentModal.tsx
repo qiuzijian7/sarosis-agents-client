@@ -57,12 +57,20 @@ const AGENT_PRESETS: Preset[] = [
 		id: 'coder',
 		name: 'Coder',
 		role: 'frontend-engineer',
-		icon: '💻',
+		icon: '👨‍💻',
 		description: '擅长编写、审查和重构代码',
 		model: 'gpt-4o',
 		customPrompt: 'You are an expert software engineer. Write clean, well-documented code following best practices.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Coder
+			agentsMd: `---
+name: Coder
+description: Writes, reviews, and refactors code
+model: gpt-4o
+tools: write_to_file, read_file, terminal, list_dir, search_files, grep_search, replace_in_file
+icon: "👨\u200D\ud83D\udcbb"
+---
+
+# AGENTS.md - Coder
 
 ## Role
 Software Engineer
@@ -112,7 +120,7 @@ Coder
 Software Engineer
 
 ## Emoji
-💻
+👨‍💻
 
 ## Specialities
 - Full-stack development (TypeScript, Python, Go)
@@ -126,12 +134,20 @@ Software Engineer
 		id: 'researcher',
 		name: 'Researcher',
 		role: 'researcher',
-		icon: '🔍',
+		icon: '🔬',
 		description: '擅长信息搜索、分析和总结',
 		model: 'gpt-4o',
 		customPrompt: 'You are a thorough research analyst. Find, evaluate, and synthesize information from multiple sources.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Researcher
+			agentsMd: `---
+name: Researcher
+description: Finds, analyzes, and synthesizes information
+model: gpt-4o
+tools: read_file, search_files, grep_search, web_search
+icon: "🔬"
+---
+
+# AGENTS.md - Researcher
 
 ## Role
 Research Analyst
@@ -190,7 +206,15 @@ Research Analyst
 		model: 'gpt-4o',
 		customPrompt: 'You are a skilled technical writer. Create clear, concise, and well-structured documentation.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Writer
+			agentsMd: `---
+name: Writer
+description: Creates clear, concise, and well-structured documentation
+model: gpt-4o
+tools: read_file, write_to_file, list_dir, search_files
+icon: "✍️"
+---
+
+# AGENTS.md - Writer
 
 ## Role
 Content Writer
@@ -249,7 +273,15 @@ Technical Writer
 		model: 'gpt-4o',
 		customPrompt: 'You are an experienced UI/UX designer. Create intuitive, accessible, and visually appealing designs.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Designer
+			agentsMd: `---
+name: Designer
+description: Creates intuitive, accessible, and visually appealing designs
+model: gpt-4o
+tools: read_file, write_to_file, search_files
+icon: "🎨"
+---
+
+# AGENTS.md - Designer
 
 ## Role
 UI/UX Designer
@@ -307,7 +339,15 @@ UI/UX Designer
 		model: 'gpt-4o',
 		customPrompt: 'You are a strategic project planner. Break down complex goals into actionable tasks with clear dependencies.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Planner
+			agentsMd: `---
+name: Planner
+description: Breaks down complex goals into actionable tasks
+model: gpt-4o
+tools: read_file, write_to_file, search_files
+icon: "📋"
+---
+
+# AGENTS.md - Planner
 
 ## Role
 Project Manager
@@ -367,7 +407,15 @@ Project Manager
 		model: 'gpt-4o',
 		customPrompt: 'You are a meticulous QA engineer. Design comprehensive test plans and identify edge cases.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Tester
+			agentsMd: `---
+name: Tester
+description: Designs comprehensive test plans and identifies edge cases
+model: gpt-4o
+tools: read_file, write_to_file, search_files, terminal
+icon: "🧪"
+---
+
+# AGENTS.md - Tester
 
 ## Role
 QA Engineer
@@ -425,7 +473,15 @@ QA Engineer
 		model: 'gpt-4o',
 		customPrompt: 'You are an expert DevOps engineer. Automate deployments, manage infrastructure, and optimize CI/CD pipelines.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - DevOps
+			agentsMd: `---
+name: DevOps
+description: Automates deployments and manages infrastructure
+model: gpt-4o
+tools: read_file, write_to_file, search_files, terminal
+icon: "🚀"
+---
+
+# AGENTS.md - DevOps
 
 ## Role
 DevOps Engineer
@@ -496,7 +552,15 @@ DevOps Engineer
 		model: 'gpt-4o',
 		customPrompt: 'You are a skilled data analyst. Analyze datasets, identify trends, and create insightful visualizations.',
 		bootstrapTemplates: {
-			agentsMd: `# AGENTS.md - Data Analyst
+			agentsMd: `---
+name: Data Analyst
+description: Analyzes datasets and creates insightful visualizations
+model: gpt-4o
+tools: read_file, write_to_file, search_files, terminal
+icon: "📊"
+---
+
+# AGENTS.md - Data Analyst
 
 ## Role
 Data Scientist
@@ -698,6 +762,8 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 				workspaceId,
 				status: 'idle',
 				skills,
+				// Pass preset icon so agent dropdown shows the same icon as the preset list
+				icon: selectedPreset?.icon,
 				// Pass preset info for agent instance directory bootstrap files
 				presetId: selectedPreset?.id,
 			};

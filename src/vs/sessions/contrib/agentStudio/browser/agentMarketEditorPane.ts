@@ -297,7 +297,14 @@ export class AgentMarketEditorPane extends EditorPane {
 				agents: preset.agents,
 				confidenceThreshold: preset.confidenceThreshold,
 				parallelStrategy: preset.parallelStrategy,
+				icon: preset.icon,
 			};
+
+			// Pass bootstrapTemplates so the host creates a .agent.md file
+			// with the icon field for the native chat mode picker.
+			if (preset.bootstrapTemplates) {
+				(agentData as any).bootstrapTemplates = preset.bootstrapTemplates;
+			}
 
 			await this.agentStudioService.createAgent(agentData);
 			this.notificationService.info(`智能体 "${preset.name}" 已成功部署到当前工作区。`);
