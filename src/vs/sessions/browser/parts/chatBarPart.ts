@@ -418,6 +418,11 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				`[ChatBarPart] _loadAvailableAgents: fetched ${agents?.length ?? 0} agents — ` +
 				`ids=[${(agents ?? []).map(a => a.id).join(', ')}]`
 			);
+			// [ICON-DEBUG] Log icon state of agents returned by getAgents().
+			this._logService.info(
+				`[ICON-DEBUG][chatBarPart._loadAvailableAgents] icons=` +
+				JSON.stringify((agents ?? []).map(a => ({ id: a.id, name: a.name, avatar: (a as any).avatar ? '(set)' : undefined, icon: a.icon })))
+			);
 			if (this._agentChatPanel && agents) {
 				this._agentChatPanel.setAvailableAgents(
 					agents.map(emp => ({

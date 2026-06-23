@@ -431,6 +431,11 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			`(jsonRead=${t1 - t0}ms, merge=${t2 - t1}ms), ` +
 			`builtins=${builtins.length}, customs=${customs.length}, result=${result.length}`
 		);
+		// [ICON-DEBUG] Log icon state of every agent returned, to trace where icons are lost.
+		this.logService.info(
+			`[ICON-DEBUG][agentStudioService.getAgents] ` +
+			JSON.stringify(result.map(a => ({ id: a.id, name: a.name, source: a.source, avatar: (a as any).avatar ? '(set)' : undefined, icon: a.icon })))
+		);
 		return result;
 	}
 

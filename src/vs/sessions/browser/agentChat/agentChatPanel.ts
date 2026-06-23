@@ -379,6 +379,10 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	setAvailableAgents(agents: IAgentInfo[]): void {
+		// [ICON-DEBUG] Log the icon state of agents received by the panel.
+		// eslint-disable-next-line no-console
+		console.info('[ICON-DEBUG][agentChatPanel.setAvailableAgents] received ' + agents.length + ' agents:',
+			agents.map(a => ({ id: a.id, name: a.name, avatarUrl: a.avatarUrl ? '(set)' : undefined, icon: a.icon })));
 		this._availableAgents = agents;
 		// Re-render tabs to reflect the new list of available agents
 		this._renderTabs();
@@ -1096,6 +1100,12 @@ export class AgentChatPanel extends Disposable {
 			noResults.textContent = "未找到匹配的 Agent";
 			return;
 		}
+
+		// [ICON-DEBUG] Log the icon state of every agent at render time so we can
+		// pinpoint where the icon is lost in the data chain.
+		// eslint-disable-next-line no-console
+		console.info('[ICON-DEBUG][agentChatPanel._renderAgentList] rendering ' + filtered.length + ' agents:',
+			filtered.map(a => ({ id: a.id, name: a.name, avatarUrl: a.avatarUrl ? '(set)' : undefined, icon: a.icon })));
 
 		for (const agent of filtered) {
 			const item = append(this._agentDropdownList, $(".chat-agent-dropdown-item"));
