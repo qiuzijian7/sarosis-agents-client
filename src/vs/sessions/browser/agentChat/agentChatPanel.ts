@@ -637,9 +637,9 @@ export class AgentChatPanel extends Disposable {
 				img.style.height = '16px';
 				img.style.borderRadius = '2px';
 			} else if (agent.icon) {
-				// Use icon emoji as fallback when avatarUrl is not available
-				const fallback = append(avatar, $('.chat-tab-avatar-fallback'));
-				fallback.textContent = agent.icon;
+				// Use icon emoji — no background, matches preset panel style
+				const iconEl = append(avatar, $('.chat-tab-avatar-icon'));
+				iconEl.textContent = agent.icon;
 			} else {
 				const fallback = append(avatar, $('.chat-tab-avatar-fallback'));
 				fallback.textContent = agent.name.charAt(0).toUpperCase();
@@ -707,9 +707,9 @@ export class AgentChatPanel extends Disposable {
 			img.src = emp.avatarUrl;
 			img.alt = emp.name;
 		} else if (emp.icon) {
-			// Use icon emoji as fallback when avatarUrl is not available
-			const fallback = append(avatarBorder, $(".chat-header-avatar-fallback"));
-			fallback.textContent = emp.icon;
+			// Use icon emoji — no background, matches preset panel style
+			const iconEl = append(avatarBorder, $(".chat-header-avatar-icon"));
+			iconEl.textContent = emp.icon;
 		} else {
 			const fallback = append(avatarBorder, $(".chat-header-avatar-fallback"));
 			fallback.textContent = emp.name.charAt(0).toUpperCase();
@@ -1110,9 +1110,9 @@ export class AgentChatPanel extends Disposable {
 				img.src = agent.avatarUrl;
 				img.alt = agent.name;
 			} else if (agent.icon) {
-				// Use icon emoji as fallback when avatarUrl is not available
-				const fallback = append(miniAvatar, $(".chat-agent-dropdown-item-avatar-fallback"));
-				fallback.textContent = agent.icon;
+				// Use icon emoji — no background, matches preset panel style
+				const iconEl = append(miniAvatar, $(".chat-agent-dropdown-item-avatar-icon"));
+				iconEl.textContent = agent.icon;
 			} else {
 				const fallback = append(miniAvatar, $(".chat-agent-dropdown-item-avatar-fallback"));
 				fallback.textContent = agent.name.charAt(0).toUpperCase();
@@ -1456,9 +1456,9 @@ export class AgentChatPanel extends Disposable {
 				img.style.objectFit = "cover";
 				img.style.borderRadius = "50%";
 			} else if (this._agent.icon) {
-				// Use icon emoji as fallback when avatarUrl is not available
-				const fallback = append(avatarWrap, $(".chat-avatar-fallback"));
-				fallback.textContent = this._agent.icon;
+				// Use icon emoji — no background, matches preset panel style
+				const iconEl = append(avatarWrap, $(".chat-avatar-icon"));
+				iconEl.textContent = this._agent.icon;
 			} else {
 				const fallback = append(avatarWrap, $(".chat-avatar-fallback"));
 				fallback.textContent = this._agent.name.charAt(0).toUpperCase();

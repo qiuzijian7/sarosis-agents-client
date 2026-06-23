@@ -165,6 +165,16 @@
 	font-size: 12px;
 }
 
+.chat-header-avatar-icon {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 20px;
+	line-height: 1;
+}
+
 .chat-header-status-dot {
 	position: absolute;
 	bottom: -2px;
@@ -808,6 +818,16 @@
 	color: white;
 	font-weight: 700;
 	font-size: 11px;
+}
+
+.chat-avatar-icon {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 18px;
+	line-height: 1;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3014,6 +3034,16 @@
 	font-size: 11px;
 }
 
+.chat-agent-dropdown-item-avatar-icon {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 18px;
+	line-height: 1;
+}
+
 /* Item info */
 .chat-agent-dropdown-item-info {
 	min-width: 0;
@@ -3134,6 +3164,16 @@
 	color: white;
 	font-weight: 700;
 	font-size: 10px;
+}
+
+.chat-tab-avatar-icon {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 16px;
+	line-height: 1;
 }
 
 .chat-tab-label {
