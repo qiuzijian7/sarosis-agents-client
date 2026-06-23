@@ -45,6 +45,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IGitHubService } from '../../github/browser/githubService.js';
 import { computePullRequestIcon, GitHubPullRequestState } from '../../github/common/types.js';
+import { IWorktreeService } from '../../worktree/common/worktreeService.js';
+import { IWorktreeCheckpointService } from '../../worktree/common/worktreeCheckpointService.js';
 
 const SESSION_WORKSPACE_GROUP_GITHUB = localize('sessionWorkspaceGroup.github', "GitHub");
 const STORAGE_KEY_ISOLATION_MODE = 'sessions.isolationPicker.selectedMode';
@@ -1272,6 +1274,8 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		@ILogService private readonly logService: ILogService,
 		@IGitHubService private readonly gitHubService: IGitHubService,
 		@ILabelService private readonly labelService: ILabelService,
+		@IWorktreeService private readonly worktreeService: IWorktreeService,
+		@IWorktreeCheckpointService private readonly checkpointService: IWorktreeCheckpointService,
 	) {
 		super();
 
@@ -1561,6 +1565,82 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 
 	// -- Send --
 
+	/**
+	 * Get the worktree path from a session.
+	 * Returns undefined if the session doesn't have a worktree.
+	 */
+	private _getWorktreePathFromSession(session: ICopilotChatSession): string | undefined {
+		const workspace = session.workspace.get();
+		const repository = workspace?.repositories[0];
+		return repository?.workingDirectory?.fsPath;
+	}
+
+	/**
+	 * Create a baseline checkpoint before the first request in a session.
+	 */
+	private async _createBaselineCheckpoint(session: ICopilotChatSession): Promise<void> {
+		const worktreePath = this._getWorktreePathFromSession(session);
+		if (!worktreePath) {
+			return;
+		}
+
+		try {
+			await this.checkpointService.createBaselineCheckpoint(session.id, worktreePath);
+			this.logService.info(`[CopilotChatSessionsProvider] Baseline checkpoint created for session ${session.id}`);
+		} catch (e) {
+			this.logService.error('[CopilotChatSessionsProvider] Failed to create baseline checkpoint:', e);
+		}
+	}
+
+	/**
+	 * Create a post-turn checkpoint after a request completes.
+	 */
+	private async _createPostTurnCheckpoint(session: ICopilotChatSession, requestId: string): Promise<void> {
+		const worktreePath = this._getWorktreePathFromSession(session);
+		if (!worktreePath) {
+			return;
+		}
+
+		try {
+			await this.checkpointService.createPostTurnCheckpoint(session.id, worktreePath, requestId);
+			this.logService.info(`[CopilotChatSessionsProvider] Post-turn checkpoint created for request ${requestId}`);
+		} catch (e) {
+			this.logService.error('[CopilotChatSessionsProvider] Failed to create post-turn checkpoint:', e);
+		}
+	}
+
+	/**
+	 * Notify worktree service that a request is starting.
+	 */
+	private async _notifyRequestStart(session: ICopilotChatSession): Promise<void> {
+		const worktreePath = this._getWorktreePathFromSession(session);
+		if (!worktreePath) {
+			return;
+		}
+
+		try {
+			await this.worktreeService.notifyRequestStart(session.id, worktreePath);
+		} catch (e) {
+			this.logService.error('[CopilotChatSessionsProvider] Failed to notify request start:', e);
+		}
+	}
+
+	/**
+	 * Notify worktree service that a request has completed.
+	 */
+	private async _notifyRequestComplete(session: ICopilotChatSession, requestId: string): Promise<void> {
+		const worktreePath = this._getWorktreePathFromSession(session);
+		if (!worktreePath) {
+			return;
+		}
+
+		try {
+			await this.worktreeService.notifyRequestComplete(session.id, worktreePath, requestId);
+		} catch (e) {
+			this.logService.error('[CopilotChatSessionsProvider] Failed to notify request complete:', e);
+		}
+	}
+
 	async sendAndCreateChat(sessionId: string, options: ISendRequestOptions): Promise<ISession> {
 		// Determine if this is the first chat or a subsequent chat
 		const session = this._currentNewSession;
@@ -1667,6 +1747,12 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 			throw new Error('[DefaultCopilotProvider] Failed to open chat widget');
 		}
 
+		// Create baseline checkpoint before sending the first request
+		if (session instanceof CopilotCLISession) {
+			await this._createBaselineCheckpoint(session);
+			await this._notifyRequestStart(session);
+		}
+
 		// Send request
 		this.logService.debug(`[CopilotChatSessionsProvider] Sending first chat for session ${session.id} with options:`, {
 			userSelectedModelId: sendOptions.userSelectedModelId,
@@ -1692,6 +1778,17 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		this._invalidateGroupingCaches();
 		const newSession = this._chatToSession(session);
 		this._onDidChangeSessions.fire({ added: [newSession], removed: [], changed: [] });
+
+		// Create post-turn checkpoint after request completes (async, non-blocking)
+		if (session instanceof CopilotCLISession && responseCompletePromise) {
+			responseCompletePromise.then(async () => {
+				const requestId = generateUuid();
+				await this._createPostTurnCheckpoint(session, requestId);
+				await this._notifyRequestComplete(session, requestId);
+			}).catch((e) => {
+				this.logService.error('[CopilotChatSessionsProvider] Failed to create post-turn checkpoint:', e);
+			});
+		}
 
 		try {
 
@@ -1939,6 +2036,9 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		// Load session model with selected options
 		(await this._applySessionModelState(newChatSession.resource, newChatSession)).dispose();
 
+		// Notify request start
+		await this._notifyRequestStart(newChatSession);
+
 		// Send request
 		const result = await this.chatService.sendRequest(newChatSession.resource, query, sendOptions);
 		if (result.kind === 'rejected') {
@@ -1954,6 +2054,17 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		const responseCreatedPromise = result.kind === 'sent'
 			? result.data.responseCreatedPromise
 			: undefined;
+
+		// Create post-turn checkpoint after request completes (async, non-blocking)
+		if (responseCompletePromise) {
+			responseCompletePromise.then(async () => {
+				const requestId = generateUuid();
+				await this._createPostTurnCheckpoint(newChatSession, requestId);
+				await this._notifyRequestComplete(newChatSession, requestId);
+			}).catch((e) => {
+				this.logService.error('[CopilotChatSessionsProvider] Failed to create post-turn checkpoint:', e);
+			});
+		}
 
 		try {
 			// Wait for the session to be committed

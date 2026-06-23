@@ -11,6 +11,8 @@ import { IWorktreeDetail, ICreateWorktreeInfo, IWorktreeOutputItem, IWorktreeInf
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IWorktreeCheckpointService } from '../common/worktreeCheckpointService.js';
 import { URI } from '../../../../base/common/uri.js';
 import { timeout } from '../../../../base/common/async.js';
 
@@ -76,6 +78,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 
@@ -584,15 +587,17 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				}
 
 				// The IPC call completed as a transport. Surface git's actual result here,
-				// OUTSIDE the try above, so real git errors propagate verbatim to the caller.
-				if (result !== undefined) {
-					if (result.success) {
-						this.logService.info(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
-						return result.stdout;
+					// OUTSIDE the try above, so real git errors propagate verbatim to the caller.
+					if (result !== undefined) {
+						if (result.success) {
+							this.logService.info(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
+							return result.stdout;
+						}
+						// Use warn (not error) because non-zero exit codes are normal git behavior
+						// (e.g. "no upstream configured", "no changes", etc.) and are handled by callers.
+						this.logService.warn(`[WorktreeService] execGit: git exited with code ${result.exitCode}, stderr="${result.stderr}"`);
+						throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
 					}
-					this.logService.error(`[WorktreeService] execGit: failed, stderr="${result.stderr}", exitCode=${result.exitCode}`);
-					throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
-				}
 			}
 
 			// Fallback: use Node.js child_process if available in this context
@@ -606,7 +611,9 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			this.logService.error('[WorktreeService] execGit: No git execution method available');
 			throw new Error('Git execution not available in this context');
 		} catch (err) {
-			this.logService.error('[WorktreeService] execGit: error:', err);
+			// Use warn: most errors here are expected git command failures (non-zero exit)
+			// which are already logged above; unexpected errors (IPC failure, etc.) are rare.
+			this.logService.warn('[WorktreeService] execGit: error:', err);
 			throw err;
 		}
 	}
@@ -739,6 +746,205 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		} catch (e) {
 			this.logService.warn('[WorktreeService] Failed to list branches:', e);
 			return [];
+		}
+	}
+
+	// ─── Extended metadata (VS Code compatible) ─────────────────────────
+
+	async getWorktreeMetadata(worktreePath: string): Promise<Partial<IWorktreeDetail>> {
+		try {
+			this.logService.info(`[WorktreeService] getWorktreeMetadata: ${worktreePath}`);
+
+			const metadata: Partial<IWorktreeDetail> = {};
+
+			// 1. Get current branch and upstream
+			let currentBranch: string | undefined;
+			try {
+				const branchOutput = await this.execGit(worktreePath, ['symbolic-ref', '--short', 'HEAD']);
+				currentBranch = branchOutput.trim();
+				metadata.branch = currentBranch;
+
+				// Try to get upstream branch
+				try {
+					const upstreamOutput = await this.execGit(worktreePath, ['rev-parse', '--abbrev-ref', `${currentBranch}@{upstream}`]);
+					metadata.upstreamBranch = upstreamOutput.trim();
+				} catch {
+					// No upstream branch
+				}
+			} catch {
+				metadata.detached = true;
+			}
+
+			// 2. Get incoming/outgoing changes (compared to upstream)
+			if (currentBranch && metadata.upstreamBranch) {
+				try {
+					// Outgoing: commits in local branch but not in upstream
+					const outgoingOutput = await this.execGit(worktreePath, ['rev-list', '--count', `${metadata.upstreamBranch}..HEAD`]);
+					metadata.outgoingChanges = parseInt(outgoingOutput.trim(), 10) || 0;
+				} catch {
+					metadata.outgoingChanges = 0;
+				}
+
+				try {
+					// Incoming: commits in upstream but not in local branch
+					const incomingOutput = await this.execGit(worktreePath, ['rev-list', '--count', `HEAD..${metadata.upstreamBranch}`]);
+					metadata.incomingChanges = parseInt(incomingOutput.trim(), 10) || 0;
+				} catch {
+					metadata.incomingChanges = 0;
+				}
+			}
+
+			// 3. Get uncommitted changes count
+			try {
+				const statusOutput = await this.execGit(worktreePath, ['status', '--porcelain']);
+				metadata.uncommittedChanges = statusOutput.trim() ? statusOutput.trim().split('\n').length : 0;
+			} catch {
+				metadata.uncommittedChanges = 0;
+			}
+
+			// 4. Check for GitHub remote
+			try {
+				const remoteOutput = await this.execGit(worktreePath, ['remote', '-v']);
+				metadata.hasGitHubRemote = remoteOutput.includes('github.com');
+			} catch {
+				metadata.hasGitHubRemote = false;
+			}
+
+			// 5. Get last commit message
+			try {
+				const logOutput = await this.execGit(worktreePath, ['log', '-1', '--pretty=%s']);
+				metadata.lastCommitMessage = logOutput.trim();
+			} catch {
+				// Ignore
+			}
+
+			this.logService.info(`[WorktreeService] getWorktreeMetadata: result=`, metadata);
+			return metadata;
+		} catch (e) {
+			this.logService.error('[WorktreeService] getWorktreeMetadata failed:', e);
+			return {};
+		}
+	}
+
+	async getWorktreeChanges(worktreePath: string): Promise<readonly { filePath: string; status: 'added' | 'modified' | 'deleted' }[]> {
+		try {
+			this.logService.info(`[WorktreeService] getWorktreeChanges: ${worktreePath}`);
+
+			// Use git status --porcelain to get ALL changed files (staged + unstaged + untracked)
+			const output = await this.execGit(worktreePath, ['status', '--porcelain']);
+			if (!output.trim()) {
+				return [];
+			}
+
+			const changes: { filePath: string; status: 'added' | 'modified' | 'deleted' }[] = [];
+			for (const line of output.trim().split('\n')) {
+				// Format: XY FILE (or "?? FILE" for untracked)
+				// X = index status, Y = working tree status
+				const match = line.match(/^(..)\t(.+)$/);
+				if (!match) {
+					continue;
+				}
+
+				const [, statusCodes, filePath] = match;
+				const indexStatus = statusCodes[0];
+				const workingStatus = statusCodes[1];
+
+				// Map git status codes to our simplified status
+				let status: 'added' | 'modified' | 'deleted';
+				if (indexStatus === 'A' || indexStatus === '?' || workingStatus === '?' || indexStatus === 'A') {
+					status = 'added';  // Added or untracked
+				} else if (indexStatus === 'D' || workingStatus === 'D') {
+					status = 'deleted';  // Deleted
+				} else {
+					status = 'modified';  // Modified, renamed, etc.
+				}
+
+				changes.push({ filePath, status });
+			}
+
+			this.logService.info(`[WorktreeService] getWorktreeChanges: ${changes.length} changed file(s)`);
+			return changes;
+		} catch (e) {
+			this.logService.error('[WorktreeService] getWorktreeChanges failed:', e);
+			return [];
+		}
+	}
+
+	async refreshWorktreeMetadata(worktreePath: string): Promise<void> {
+		try {
+			this.logService.info(`[WorktreeService] refreshWorktreeMetadata: ${worktreePath}`);
+
+			// Re-fetch metadata (result can be used to update cache if needed)
+			await this.getWorktreeMetadata(worktreePath);
+
+			// Notify listeners
+			this._onDidChangeWorktreeState.fire({
+				directory: worktreePath,
+				status: WorktreeStatus.Ready,
+			});
+
+			this.logService.info(`[WorktreeService] refreshWorktreeMetadata: completed`);
+		} catch (e) {
+			this.logService.error('[WorktreeService] refreshWorktreeMetadata failed:', e);
+		}
+	}
+
+	async hasUncommittedChanges(worktreePath: string): Promise<boolean> {
+		try {
+			const output = await this.execGit(worktreePath, ['status', '--porcelain']);
+			return output.trim().length > 0;
+		} catch {
+			return false;
+		}
+	}
+
+	// ─── Checkpoint lifecycle (VS Code compatible) ─────────────────────
+
+	async notifyRequestStart(sessionId: string, worktreePath: string): Promise<void> {
+		try {
+			this.logService.info(`[WorktreeService] notifyRequestStart: session=${sessionId}, worktree=${worktreePath}`);
+
+		// Lazily get the checkpoint service
+		const checkpointService = this._instantiationService?.invokeFunction((accessor: any) => {
+			try {
+				return accessor.get(IWorktreeCheckpointService);
+			} catch {
+				return undefined;
+			}
+		});
+
+		if (checkpointService) {
+			await checkpointService.createBaselineCheckpoint(sessionId, worktreePath);
+			this.logService.info(`[WorktreeService] notifyRequestStart: baseline checkpoint created`);
+		} else {
+			this.logService.warn(`[WorktreeService] notifyRequestStart: WorktreeCheckpointService not available`);
+		}
+		} catch (e) {
+			this.logService.error('[WorktreeService] notifyRequestStart failed:', e);
+		}
+	}
+
+	async notifyRequestComplete(sessionId: string, worktreePath: string, requestId: string): Promise<void> {
+		try {
+			this.logService.info(`[WorktreeService] notifyRequestComplete: session=${sessionId}, request=${requestId}`);
+
+		// Lazily get the checkpoint service
+		const checkpointService = this._instantiationService?.invokeFunction((accessor: any) => {
+			try {
+				return accessor.get(IWorktreeCheckpointService);
+			} catch {
+				return undefined;
+			}
+		});
+
+		if (checkpointService) {
+			await checkpointService.createPostTurnCheckpoint(sessionId, worktreePath, requestId);
+			this.logService.info(`[WorktreeService] notifyRequestComplete: post-turn checkpoint created`);
+		} else {
+			this.logService.warn(`[WorktreeService] notifyRequestComplete: WorktreeCheckpointService not available`);
+		}
+		} catch (e) {
+			this.logService.error('[WorktreeService] notifyRequestComplete failed:', e);
 		}
 	}
 }

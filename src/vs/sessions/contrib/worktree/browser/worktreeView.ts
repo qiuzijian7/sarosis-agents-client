@@ -29,6 +29,7 @@ import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IAccessibleViewInformationService } from '../../../../workbench/services/accessibility/common/accessibleViewInformationService.js';
 import { WorktreeItem, WorktreeTreeDataProvider, WorktreeRepoGroup, WorktreeTreeElement, isWorktreeRepoGroup } from './worktreeDataProvider.js';
 import { IWorktreeService } from '../common/worktreeService.js';
+import { IWorktreeCheckpointService } from '../common/worktreeCheckpointService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISCMViewService, ISCMRepository } from '../../../../workbench/contrib/scm/common/scm.js';
 import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
@@ -46,6 +47,7 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 		private readonly _isDeleting: (path: string) => boolean,
 		private readonly _onDelete: (item: WorktreeItem) => void,
 		private readonly _onOpen: (item: WorktreeItem) => void,
+		private readonly _onCreateCheckpoint: (item: WorktreeItem) => void,
 	) { }
 
 	get templateId(): string { return WorktreeTreeRenderer.TEMPLATE_ID; }
@@ -97,6 +99,17 @@ class WorktreeTreeRenderer implements ICompressibleTreeRenderer<WorktreeItem, vo
 		}
 
 		if (!isDeleting && !item.worktree.isMain) {
+			// Checkpoint button
+			const checkpointBtn = dom.append(templateData.actions, $('a.worktree-item-action'));
+			checkpointBtn.setAttribute('role', 'button');
+			checkpointBtn.setAttribute('title', localize('worktreeCreateCheckpoint', 'Create Checkpoint'));
+			checkpointBtn.classList.add(...ThemeIcon.asClassNameArray(Codicon.save));
+			checkpointBtn.onclick = (e) => {
+				e.stopPropagation();
+				this._onCreateCheckpoint(item);
+			};
+
+			// Remove button
 			const removeBtn = dom.append(templateData.actions, $('a.worktree-item-action'));
 			removeBtn.setAttribute('role', 'button');
 			removeBtn.setAttribute('title', localize('worktreeRemove', 'Remove Worktree'));
@@ -223,18 +236,20 @@ export class WorktreeViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAccessibleViewInformationService accessibleViewInformationService: IAccessibleViewInformationService,
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
+		@IWorktreeCheckpointService private readonly _checkpointService: IWorktreeCheckpointService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ISCMViewService private readonly _scmViewService: ISCMViewService,
 		@IGitService private readonly _gitService: IGitService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
-		) {
+	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService, accessibleViewInformationService);
 		this.renderer = new WorktreeTreeRenderer(
 			(path) => this._deletingWorktrees.has(path),
 			(item) => this.onDeleteWorktree(item),
 			(item) => this.openWorktreeInNewWindow(item),
+			(item) => this._onCreateCheckpoint(item),
 		);
 		this.groupRenderer = new WorktreeRepoGroupRenderer();
 	}
@@ -580,6 +595,27 @@ export class WorktreeViewPane extends ViewPane {
 			);
 		}
 		return match;
+	}
+
+	/** Handle checkpoint creation */
+	private async _onCreateCheckpoint(item: WorktreeItem): Promise<void> {
+		try {
+			this.notificationService.info(localize('worktreeCreatingCheckpoint', 'Creating checkpoint for {0}...', item.label));
+
+			// Use the worktree path as session ID for now
+			// TODO: integrate with actual session lifecycle
+			const sessionId = item.path;
+
+			// Create baseline checkpoint
+			const ref = await this._checkpointService.createBaselineCheckpoint(sessionId, item.path);
+			if (ref) {
+				this.notificationService.info(localize('worktreeCheckpointCreated', 'Checkpoint created: {0}', ref));
+			} else {
+				this.notificationService.error(localize('worktreeCheckpointFailed', 'Failed to create checkpoint'));
+			}
+		} catch (e) {
+			this.notificationService.error(localize('worktreeCheckpointError', 'Error creating checkpoint: {0}', (e as Error).message));
+		}
 	}
 
 	/** Handle worktree deletion with loading spinner */

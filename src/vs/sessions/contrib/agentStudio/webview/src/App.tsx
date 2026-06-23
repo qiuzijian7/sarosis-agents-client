@@ -394,14 +394,34 @@ function AgentSettingsPanel(): React.ReactElement {
  * real panel type.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
+/* ── DIAGNOSTIC: DOM-based logger (survives esbuild console drop) ── */
+function diag(tag: string, msg: string): void {
+	try {
+		let el = document.getElementById('__as_diag_overlay');
+		if (!el) {
+			el = document.createElement('div');
+			el.id = '__as_diag_overlay';
+			el.setAttribute('style', 'position:fixed;top:0;left:0;z-index:999999;background:rgba(20,20,20,0.95);color:#0f0;font:11px/1.4 monospace;padding:8px;max-width:90vw;max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-all;border-bottom:2px solid #f00;');
+			document.body.appendChild(el);
+		}
+		const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+		el.textContent = `[${ts}] ${tag}: ${msg}\n` + el.textContent;
+		// Also push to array for programmatic access
+		(window as any).__AS_DIAG_LOG = (window as any).__AS_DIAG_LOG || [];
+		(window as any).__AS_DIAG_LOG.push({ t: ts, tag, msg });
+	} catch { /* silent */ }
+}
+
 export function App(): React.ReactElement {
 	const [panelType, setPanelType] = useState<PanelType>(initialPanelType);
 
+	diag('App', `initialPanelType=${String(initialPanelType)}, __AGENT_STUDIO_PANEL_TYPE__=${String((window as any).__AGENT_STUDIO_PANEL_TYPE__)}, __AGENT_STUDIO_INITIAL_DATA__=${JSON.stringify((window as any).__AGENT_STUDIO_INITIAL_DATA__)?.substring(0, 300) ?? 'null'}`);
+
 	useEffect(() => {
 		const onPoolActivate = (e: Event) => {
-			const detail = (e as CustomEvent).detail as { panelType?: PanelType };
+			const detail = (e as CustomEvent).detail as { panelType?: PanelType; initialData?: unknown };
 			const newType = detail?.panelType ?? undefined;
-			console.log(`[App] pool.activate received, switching panelType: ${panelType} → ${newType}`);
+			diag('App.pool.activate', `switching ${String(panelType)} → ${String(newType)}, initialData=${JSON.stringify(detail?.initialData)?.substring(0, 300) ?? 'undefined'}`);
 			// Update the global so any code that reads it directly still works
 			(window as any).__AGENT_STUDIO_PANEL_TYPE__ = newType;
 			setPanelType(newType === '__pooled__' ? undefined : newType);
@@ -421,20 +441,27 @@ export function App(): React.ReactElement {
 
 	switch (panelType) {
 		case 'chat':
+			diag('App.render', 'branch=chat');
 			return <ChatPanel />;
 		case 'taskboard':
+			diag('App.render', 'branch=taskboard');
 			return <TaskboardPanel />;
 		case 'workflow-editor':
+			diag('App.render', 'branch=workflow-editor — rendering WorkflowEditorPanel');
 			return (
 				<div className="panel-standalone" style={{ width: '100vw', height: '100vh' }}>
-					<React.Suspense fallback={<div style={{ padding: 20, color: 'var(--vscode-descriptionForeground)' }}>Loading workflow editor...</div>}>
-						<WorkflowEditorPanel />
-					</React.Suspense>
+					<PanelErrorBoundary panelType="WorkflowEditorPanel">
+						<React.Suspense fallback={<div style={{ padding: 20, color: 'var(--vscode-descriptionForeground)' }}>Loading workflow editor...</div>}>
+							<WorkflowEditorPanel />
+						</React.Suspense>
+					</PanelErrorBoundary>
 				</div>
 			);
 		case 'agent-settings':
+			diag('App.render', 'branch=agent-settings');
 			return <AgentSettingsPanel />;
 		default:
+			diag('App.render', `branch=default (FullLayout), panelType=${String(panelType)}`);
 			return <FullLayout />;
 	}
 }

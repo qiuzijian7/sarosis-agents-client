@@ -8,10 +8,13 @@ import { IWorktreeService } from '../common/worktreeService.js';
 import { WorktreeService } from './worktreeService.js';
 import { IWorkspaceAdapterService } from '../common/workspaceAdapter.js';
 import { WorktreeAdapterService } from './worktreeAdapterService.js';
+import { IWorktreeCheckpointService } from '../common/worktreeCheckpointService.js';
+import { WorktreeCheckpointService } from './worktreeCheckpointServiceImpl.js';
 
 // --- Register Services ---
 // View container and view registrations are now handled by the unified
-// sessions Explorer in src/vs/sessions/contrib/files/browser/files.contribution.ts
+// sessions Explorer in src/vs/sessions/contrib/files/browser/files.contribution.ts.
 
 registerSingleton(IWorktreeService, WorktreeService, InstantiationType.Delayed);
 registerSingleton(IWorkspaceAdapterService, WorktreeAdapterService, InstantiationType.Delayed);
+registerSingleton(IWorktreeCheckpointService, WorktreeCheckpointService, InstantiationType.Delayed);

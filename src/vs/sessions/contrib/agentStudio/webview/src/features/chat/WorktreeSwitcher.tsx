@@ -11,6 +11,12 @@ import { sendRequest } from '../../bridge/messageClient';
 interface WorktreeInfo {
 	path: string;
 	branch: string;
+	// Extended metadata (VS Code compatible)
+	uncommittedChanges?: number;
+	incomingChanges?: number;
+	outgoingChanges?: number;
+	hasGitHubRemote?: boolean;
+	upstreamBranch?: string;
 }
 
 export function WorktreeSwitcher(): React.ReactElement | null {
@@ -145,6 +151,14 @@ export function WorktreeSwitcher(): React.ReactElement | null {
 								>
 									<span className="worktree-switcher-item-icon">🌿</span>
 									<span className="worktree-switcher-item-name">{wt.branch}</span>
+									{/* Change count badges (VS Code compatible) */}
+									{(wt.incomingChanges || wt.outgoingChanges || wt.uncommittedChanges) && (
+										<span className="worktree-switcher-item-changes">
+											{wt.outgoingChanges ? `↑${wt.outgoingChanges} ` : ''}
+											{wt.incomingChanges ? `↓${wt.incomingChanges} ` : ''}
+											{wt.uncommittedChanges ? `•${wt.uncommittedChanges}` : ''}
+										</span>
+									)}
 									<span className="worktree-switcher-item-path">{wt.path}</span>
 									{currentWorktreePath === wt.path && <span className="worktree-switcher-item-check">✓</span>}
 								</div>

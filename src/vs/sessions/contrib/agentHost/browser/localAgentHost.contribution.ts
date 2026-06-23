@@ -14,10 +14,16 @@ import { AgentHostTerminalContribution } from '../../../../workbench/contrib/cha
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
 import { SessionStatus } from '../../../services/sessions/common/session.js';
 import { LocalAgentHostSessionsProvider } from './localAgentHostSessionsProvider.js';
+import { SarosLocalAgentHostSessionsProvider } from './sarosLocalAgentHostSessionsProvider.js';
 
 /**
- * Registers the {@link LocalAgentHostSessionsProvider} as a sessions provider
- * when `chat.agentHost.enabled` is true.
+ * Registers the {@link SarosLocalAgentHostSessionsProvider} as the default
+ * sessions provider when `chat.agentHost.enabled` is true.
+ *
+ * {@link SarosLocalAgentHostSessionsProvider} extends
+ * {@link LocalAgentHostSessionsProvider} with checkpoint, worktree
+ * notification, isolation mode, permission level, and GitHub integration
+ * support — making it the preferred provider for Saros environments.
  *
  * {@link AgentHostContribution} handles all the heavy lifting — agent discovery,
  * session handler registration, language model providers, customization harness —
@@ -41,7 +47,10 @@ class LocalAgentHostContribution extends Disposable implements IWorkbenchContrib
 			return;
 		}
 
-		const provider = this._register(instantiationService.createInstance(LocalAgentHostSessionsProvider));
+		// Use SarosLocalAgentHostSessionsProvider as the default local provider,
+		// which adds checkpoint/worktree/isolation/permission support on top of
+		// the base LocalAgentHostSessionsProvider.
+		const provider = this._register(instantiationService.createInstance(SarosLocalAgentHostSessionsProvider));
 		this._register(sessionsProvidersService.registerProvider(provider));
 
 		const resolverRegistrations = this._register(new DisposableMap<string>());

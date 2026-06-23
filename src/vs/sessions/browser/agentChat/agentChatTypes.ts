@@ -375,6 +375,12 @@ export type HeaderPanelType =
 export interface IWorktreeItem {
 	readonly path: string;
 	readonly branch: string;
+	/** Number of outgoing changes (local commits not pushed) */
+	readonly outgoingChanges?: number;
+	/** Number of incoming changes (commits from remote) */
+	readonly incomingChanges?: number;
+	/** Number of uncommitted changes (working tree modifications) */
+	readonly uncommittedChanges?: number;
 }
 
 /** Lightweight summary of a user message — fed into the message-nav dropdown */

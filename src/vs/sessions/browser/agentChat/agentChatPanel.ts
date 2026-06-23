@@ -254,6 +254,8 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onCancelExecution: () => void;
 	private readonly _onSelectAgent: (id: string) => void;
 	private readonly _onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
+	private readonly _onClearWorktree?: () => void;
+	private readonly _onLoadWorktrees?: () => Promise<ReadonlyArray<IWorktreeItem>>;
 	private readonly _onScrollToMessage?: (messageId: string) => void;
 	private readonly _onNewSession?: () => void;
 	private readonly _onOpenSession?: (sessionId: string) => void;
@@ -292,6 +294,8 @@ export class AgentChatPanel extends Disposable {
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
 		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
+		onClearWorktree?: () => void;
+		onLoadWorktrees?: () => Promise<ReadonlyArray<IWorktreeItem>>;
 		onScrollToMessage?: (messageId: string) => void;
 		onNewSession?: () => void;
 		onOpenSession?: (sessionId: string) => void;
@@ -328,6 +332,8 @@ export class AgentChatPanel extends Disposable {
 		this._onCancelExecution = opts.onCancelExecution;
 		this._onSelectAgent = opts.onSelectAgent;
 		this._onSelectWorktree = opts.onSelectWorktree;
+		this._onClearWorktree = opts.onClearWorktree;
+		this._onLoadWorktrees = opts.onLoadWorktrees;
 		this._onScrollToMessage = opts.onScrollToMessage;
 		this._onNewSession = opts.onNewSession;
 		this._onOpenSession = opts.onOpenSession;
@@ -685,13 +691,8 @@ export class AgentChatPanel extends Disposable {
 
 		const header = append(this._container, $(".chat-header"));
 
-		// Left: worktree pill + agent selector dropdown trigger
+		// Left: agent selector dropdown trigger
 		const left = append(header, $(".chat-header-left"));
-
-		// Worktree pill (only if data exists)
-		if (this._worktrees.length > 0 || this._selectedWorktreePath) {
-			this._renderHeaderWorktree(left);
-		}
 
 		// Agent selector trigger (clickable, replaces static avatar+name)
 		this._agentSelectorTrigger = append(left, $(".chat-header-agent-selector"));
@@ -805,8 +806,13 @@ export class AgentChatPanel extends Disposable {
 		// Spacer
 		append(left, $(".chat-header-spacer"));
 
-		// Right: 5 action buttons (message-nav / new / history / settings)
+		// Right: worktree pill + action buttons (message-nav / new / history / settings)
 		const actions = append(header, $(".chat-header-actions"));
+
+		// Worktree pill — placed before message-nav button.
+		// Always render (matches React WorktreeSwitcher behavior); the dropdown
+		// loads worktree list lazily on open via _onLoadWorktrees.
+		this._renderHeaderWorktree(actions);
 
 		// 1. Message-nav (会话消息列表)
 		this._msgNavTrigger = this._appendHeaderActionBtn(actions, {
@@ -935,11 +941,19 @@ export class AgentChatPanel extends Disposable {
 		iconSvg.appendChild(iconPath);
 		btn.appendChild(iconSvg);
 
-		// Branch label
+		// Branch label（参考 React WorktreeSwitcher 的逻辑）
 		const current = this._worktrees.find(w => w.path === this._selectedWorktreePath);
 		const branchEl = append(btn, $("span.chat-header-worktree-branch"));
-		const fallback = this._selectedWorktreePath ? this._selectedWorktreePath.split(/[\\/]/).filter(Boolean).pop() || 'main' : 'main';
-		branchEl.textContent = current?.branch || fallback;
+		let label: string;
+		if (!this._selectedWorktreePath) {
+			label = '主仓库';
+		} else if (current?.branch) {
+			label = current.branch;
+		} else {
+			// fallback: use last segment of path
+			label = this._selectedWorktreePath.split(/[\\/]/).filter(Boolean).pop() || this._selectedWorktreePath;
+		}
+		branchEl.textContent = label;
 
 		// Chevron
 		const chevSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -4323,31 +4337,94 @@ export class AgentChatPanel extends Disposable {
 		head.textContent = 'Worktrees';
 
 		const list = append(this._worktreeDropdownEl, $(".chat-worktree-dropdown-list"));
-		if (this._worktrees.length === 0) {
-			append(list, $(".chat-worktree-dropdown-empty", undefined, '当前仓库没有 worktree'));
-		} else {
-			for (const wt of this._worktrees) {
-				const item = append(list, $(".chat-worktree-dropdown-item"));
-				if (wt.path === this._selectedWorktreePath) {
-					item.classList.add('active');
-				}
-				const infoCol = append(item, $(".chat-worktree-dropdown-item-info"));
-				append(infoCol, $("span.chat-worktree-dropdown-branch", undefined, wt.branch));
-				append(infoCol, $("span.chat-worktree-dropdown-path", undefined, wt.path));
-				this._register(
-					addDisposableListener(item, EventType.CLICK, () => {
-						this._closeWorktreeDropdown();
-						if (wt.path !== this._selectedWorktreePath) {
-							this._selectedWorktreePath = wt.path;
-							this._onSelectWorktree?.({ path: wt.path, branch: wt.branch });
-							this._render();
-						}
-					}),
-				);
-			}
-		}
+
+		// 显示加载提示
+		const loadingEl = append(list, $(".chat-worktree-dropdown-loading", undefined, '加载中...'));
+
+		// 异步加载 worktree 列表（参考 React WorktreeSwitcher 的逻辑）
+		this._loadWorktreesAndRender(list, loadingEl);
 
 		this._registerOutsideClickClose(this._worktreeDropdownEl, this._worktreeTrigger, () => this._closeWorktreeDropdown());
+	}
+
+	private async _loadWorktreesAndRender(list: HTMLElement, loadingEl: HTMLElement): Promise<void> {
+		try {
+			// 调用回调加载 worktree 列表
+			if (this._onLoadWorktrees) {
+				const worktrees = await this._onLoadWorktrees();
+				this._worktrees = worktrees.slice();
+			}
+
+			// 移除加载提示
+			loadingEl.remove();
+
+			// 渲染 "主仓库" 选项（参考 React WorktreeSwitcher）
+			const mainItem = append(list, $(".chat-worktree-dropdown-item"));
+			if (!this._selectedWorktreePath) {
+				mainItem.classList.add('active');
+			}
+			append(mainItem, $("span.chat-worktree-dropdown-item-icon", undefined, '📁'));
+			append(mainItem, $("span.chat-worktree-dropdown-item-name", undefined, '主仓库'));
+			if (!this._selectedWorktreePath) {
+				append(mainItem, $("span.chat-worktree-dropdown-item-check", undefined, '✓'));
+			}
+			this._register(
+				addDisposableListener(mainItem, EventType.CLICK, () => {
+					this._closeWorktreeDropdown();
+					if (this._selectedWorktreePath) {
+						this._selectedWorktreePath = '';
+						this._onClearWorktree?.();
+						this._render();
+					}
+				}),
+			);
+
+			// 渲染 worktree 列表
+			if (this._worktrees.length === 0) {
+				append(list, $(".chat-worktree-dropdown-empty", undefined, '暂无其他 worktree'));
+			} else {
+				// 添加分隔线
+				append(list, $(".chat-worktree-dropdown-divider"));
+
+				for (const wt of this._worktrees) {
+					const item = append(list, $(".chat-worktree-dropdown-item"));
+					if (wt.path === this._selectedWorktreePath) {
+						item.classList.add('active');
+					}
+					const infoCol = append(item, $(".chat-worktree-dropdown-info"));
+					append(infoCol, $("span.chat-worktree-dropdown-branch", undefined, wt.branch));
+
+					// 显示变更数量徽章（VS Code 兼容）
+					if (wt.outgoingChanges || wt.incomingChanges || wt.uncommittedChanges) {
+						const changesSpan = append(infoCol, $("span.chat-worktree-dropdown-changes"));
+						if (wt.outgoingChanges) {
+							append(changesSpan, $("span.chat-worktree-dropdown-changes-out", undefined, `↑${wt.outgoingChanges}`));
+						}
+						if (wt.incomingChanges) {
+							append(changesSpan, $("span.chat-worktree-dropdown-changes-in", undefined, `↓${wt.incomingChanges}`));
+						}
+						if (wt.uncommittedChanges) {
+							append(changesSpan, $("span.chat-worktree-dropdown-changes-uncommitted", undefined, `•${wt.uncommittedChanges}`));
+						}
+					}
+
+					append(infoCol, $("span.chat-worktree-dropdown-path", undefined, wt.path));
+					this._register(
+						addDisposableListener(item, EventType.CLICK, () => {
+							this._closeWorktreeDropdown();
+							if (wt.path !== this._selectedWorktreePath) {
+								this._selectedWorktreePath = wt.path;
+								this._onSelectWorktree?.({ path: wt.path, branch: wt.branch });
+								this._render();
+							}
+						}),
+					);
+				}
+			}
+		} catch (err) {
+			console.error('[AgentChatPanel] Failed to load worktrees:', err);
+			loadingEl.textContent = '加载失败，请重试';
+		}
 	}
 
 	private _closeWorktreeDropdown(): void {
@@ -4739,10 +4816,24 @@ export class AgentChatPanel extends Disposable {
 		const rect = trigger.getBoundingClientRect();
 		el.style.position = 'fixed';
 		el.style.top = (rect.bottom + 4) + 'px';
+
+		// Clear previous position
+		el.style.right = '';
+		el.style.left = '';
+
 		if (rightAlign) {
 			el.style.right = (mainWindow.innerWidth - rect.right) + 'px';
 		} else {
-			el.style.left = rect.left + 'px';
+			// Default: left-align to trigger, but clamp to stay within viewport
+			const minWidth = Math.max(220, rect.width);
+			let leftPos = rect.left;
+			// Ensure dropdown doesn't overflow right edge (with 8px padding)
+			if (leftPos + minWidth > mainWindow.innerWidth - 8) {
+				leftPos = mainWindow.innerWidth - minWidth - 8;
+			}
+			// Don't go past left edge either
+			leftPos = Math.max(8, leftPos);
+			el.style.left = leftPos + 'px';
 		}
 		el.style.minWidth = Math.max(220, rect.width) + 'px';
 		el.style.zIndex = '10000';
@@ -4753,8 +4844,16 @@ export class AgentChatPanel extends Disposable {
 		const rect = trigger.getBoundingClientRect();
 		el.style.position = 'fixed';
 		el.style.bottom = (mainWindow.innerHeight - rect.top + 6) + 'px';
-		el.style.left = rect.left + 'px';
-		el.style.minWidth = Math.max(180, rect.width) + 'px';
+
+		// Clamp left position to stay within viewport
+		const minWidth = Math.max(180, rect.width);
+		let leftPos = rect.left;
+		if (leftPos + minWidth > mainWindow.innerWidth - 8) {
+			leftPos = mainWindow.innerWidth - minWidth - 8;
+		}
+		leftPos = Math.max(8, leftPos);
+		el.style.left = leftPos + 'px';
+		el.style.minWidth = minWidth + 'px';
 		el.style.zIndex = '10000';
 	}
 

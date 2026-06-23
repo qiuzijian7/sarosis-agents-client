@@ -23,7 +23,7 @@ import { type ILanguageModelChatMetadataAndIdentifier, ILanguageModelsService } 
 import { Menus } from '../../../../browser/menus.js';
 import { ActiveSessionProviderIdContext, IsPhoneLayoutContext } from '../../../../common/contextkeys.js';
 import { showMobilePickerSheet, IMobilePickerSheetItem } from '../../../../browser/parts/mobile/mobilePickerSheet.js';
-import { type IAgentHostSessionsProvider, isAgentHostProvider, LOCAL_AGENT_HOST_PROVIDER_ID, REMOTE_AGENT_HOST_PROVIDER_RE } from '../../../../common/agentHostSessionsProvider.js';
+import { type IAgentHostSessionsProvider, isAgentHostProvider, LOCAL_AGENT_HOST_PROVIDER_ID, SAROS_LOCAL_AGENT_HOST_PROVIDER_ID, REMOTE_AGENT_HOST_PROVIDER_RE } from '../../../../common/agentHostSessionsProvider.js';
 import { ISessionsManagementService } from '../../../../services/sessions/common/sessionsManagement.js';
 import { ISessionsProvidersService } from '../../../../services/sessions/browser/sessionsProvidersService.js';
 import { type ISession } from '../../../../services/sessions/common/session.js';
@@ -32,6 +32,7 @@ import { IWorkbenchLayoutService } from '../../../../../workbench/services/layou
 
 const IsActiveSessionAgentHost = ContextKeyExpr.or(
 	ContextKeyExpr.equals(ActiveSessionProviderIdContext.key, LOCAL_AGENT_HOST_PROVIDER_ID),
+	ContextKeyExpr.equals(ActiveSessionProviderIdContext.key, SAROS_LOCAL_AGENT_HOST_PROVIDER_ID),
 	ContextKeyExpr.regex(ActiveSessionProviderIdContext.key, REMOTE_AGENT_HOST_PROVIDER_RE),
 );
 

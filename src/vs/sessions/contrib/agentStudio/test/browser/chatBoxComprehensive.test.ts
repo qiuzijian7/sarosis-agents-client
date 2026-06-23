@@ -6,6 +6,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { uniqueMsgId } from '../../../../browser/agentChat/agentChatTypes.js';
+import { AgentStatus } from '../../../../common/agentStudioTypes.js';
 import type {
 	IAgentChatMessage,
 	IToolCall,
@@ -15,8 +16,6 @@ import type {
 	IAgentInfo,
 	IAgentSessionMeta,
 	IWorktreeItem,
-	IMessageNavItem,
-	AgentStatus,
 	ChatMode,
 	StreamPhase,
 	IProviderInfo,
@@ -76,7 +75,7 @@ function makeAgent(overrides: Partial<IAgentInfo> = {}): IAgentInfo {
 	return {
 		id: 'test-agent',
 		name: 'Test Agent',
-		status: 'idle',
+		status: AgentStatus.Idle,
 		agentType: 'general',
 		...overrides,
 	};
@@ -85,7 +84,7 @@ function makeAgent(overrides: Partial<IAgentInfo> = {}): IAgentInfo {
 function makeProvider(overrides: Partial<IProviderInfo> = {}): IProviderInfo {
 	return {
 		id: 'test-provider',
-		name: 'Test Provider',
+		label: 'Test Provider',
 		...overrides,
 	};
 }
@@ -93,16 +92,16 @@ function makeProvider(overrides: Partial<IProviderInfo> = {}): IProviderInfo {
 function makeModel(overrides: Partial<IModelInfo> = {}): IModelInfo {
 	return {
 		id: 'test-model',
-		name: 'Test Model',
-		providerId: 'test-provider',
+		label: 'Test Model',
+		provider: 'test-provider',
 		...overrides,
 	};
 }
 
 function makeSessionInfo(overrides: Partial<ISessionInfo> = {}): ISessionInfo {
 	return {
-		id: 'session-1',
-		name: 'Test Session',
+		mode: 'craft',
+		taskCount: 0,
 		...overrides,
 	};
 }
@@ -120,6 +119,7 @@ function makeContextUsage(overrides: Partial<IContextUsage> = {}): IContextUsage
 function makeCheckpointInfo(overrides: Partial<ICheckpointInfo> = {}): ICheckpointInfo {
 	return {
 		id: 'cp-1',
+		label: 'Checkpoint 1',
 		timestamp: Date.now(),
 		fileCount: 3,
 		files: [
@@ -168,13 +168,8 @@ suite('ChatBox Comprehensive - Unit Tests', () => {
 	});
 
 	suite('Tool Call States', () => {
-		test('pending tool call', () => {
-			const tc = makeToolCall({ status: 'pending' });
-			assert.strictEqual(tc.status, 'pending');
-		});
-
 		test('running tool call', () => {
-			const tc = makeToolCall({ status: 'running', args: '{}' });
+			const tc = makeToolCall({ status: 'running' });
 			assert.strictEqual(tc.status, 'running');
 		});
 
@@ -186,11 +181,6 @@ suite('ChatBox Comprehensive - Unit Tests', () => {
 		test('error tool call', () => {
 			const tc = makeToolCall({ status: 'error', result: 'failed' });
 			assert.strictEqual(tc.status, 'error');
-		});
-
-		test('rejected tool call', () => {
-			const tc = makeToolCall({ status: 'rejected' });
-			assert.strictEqual(tc.status, 'rejected');
 		});
 
 		test('tool call with render type', () => {
@@ -297,16 +287,16 @@ suite('ChatBox Comprehensive - Unit Tests', () => {
 			assert.strictEqual<StreamPhase>('idle', 'idle');
 		});
 
-		test('thinking phase', () => {
-			assert.strictEqual<StreamPhase>('thinking', 'thinking');
+		test('llm_streaming phase', () => {
+			assert.strictEqual<StreamPhase>('llm_streaming', 'llm_streaming');
 		});
 
-		test('streaming phase', () => {
-			assert.strictEqual<StreamPhase>('streaming', 'streaming');
+		test('tool_executing phase', () => {
+			assert.strictEqual<StreamPhase>('tool_executing', 'tool_executing');
 		});
 
-		test('tool_execution phase', () => {
-			assert.strictEqual<StreamPhase>('tool_execution', 'tool_execution');
+		test('awaiting_approval phase', () => {
+			assert.strictEqual<StreamPhase>('awaiting_approval', 'awaiting_approval');
 		});
 	});
 
@@ -405,19 +395,16 @@ suite('ChatBox Comprehensive - Functional Tests', () => {
 	});
 
 	suite('Tool Call Lifecycle', () => {
-		test('pending to running to completed', () => {
-			let tc = makeToolCall({ status: 'pending' });
-			assert.strictEqual(tc.status, 'pending');
-
-			tc = { ...tc, status: 'running' };
+		test('running to completed', () => {
+			let tc = makeToolCall({ status: 'running' });
 			assert.strictEqual(tc.status, 'running');
 
-			tc = { ...tc, status: 'completed', result: 'ok' };
+			tc = { ...tc, status: 'completed' };
 			assert.strictEqual(tc.status, 'completed');
 		});
 
-		test('pending to error', () => {
-			let tc = makeToolCall({ status: 'pending' });
+		test('running to error', () => {
+			let tc = makeToolCall({ status: 'running' });
 			tc = { ...tc, status: 'error', result: 'failed' };
 			assert.strictEqual(tc.status, 'error');
 		});
@@ -441,12 +428,12 @@ suite('ChatBox Comprehensive - Functional Tests', () => {
 	suite('Session Management', () => {
 		test('create session info', () => {
 			const session = makeSessionInfo();
-			assert.ok(session.id);
+			assert.ok(session.mode);
 		});
 
-		test('session with message count', () => {
-			const session = makeSessionInfo({ messageCount: 100 });
-			assert.strictEqual(session.messageCount, 100);
+		test('session with task count', () => {
+			const session = makeSessionInfo({ taskCount: 100 });
+			assert.strictEqual(session.taskCount, 100);
 		});
 	});
 
@@ -454,7 +441,7 @@ suite('ChatBox Comprehensive - Functional Tests', () => {
 		test('complete chat flow', () => {
 			// 1. Create agent
 			const agent = makeAgent();
-			assert.strictEqual(agent.status, 'idle');
+			assert.strictEqual(agent.status, AgentStatus.Idle);
 
 			// 2. Create user message
 			const userMsg = makeMessage({ role: 'user', content: 'Help me' });
@@ -540,8 +527,8 @@ suite('ChatBox Comprehensive - Smoke Tests', () => {
 	});
 
 	test('minimal agent', () => {
-		const agent: IAgentInfo = { id: '1', name: 'A', status: 'idle' };
-		assert.strictEqual(agent.status, 'idle');
+		const agent: IAgentInfo = { id: '1', name: 'A', status: AgentStatus.Idle };
+		assert.strictEqual(agent.status, AgentStatus.Idle);
 	});
 
 	test('minimal worktree', () => {
@@ -562,7 +549,7 @@ suite('ChatBox Comprehensive - Smoke Tests', () => {
 	});
 
 	test('all stream phases', () => {
-		const phases: StreamPhase[] = ['idle', 'thinking', 'streaming', 'tool_execution'];
+		const phases: StreamPhase[] = ['idle', 'llm_streaming', 'tool_executing', 'awaiting_approval', 'compressing', 'error'];
 		phases.forEach(p => assert.ok(p));
 	});
 });

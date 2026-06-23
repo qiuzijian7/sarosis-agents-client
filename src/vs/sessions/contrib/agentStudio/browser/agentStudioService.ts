@@ -945,9 +945,18 @@ icon: "${agent.icon || '🤖'}"
 					continue;
 				}
 				seen.add(norm);
+
+				// Fetch extended metadata for this worktree (VS Code compatible)
+				let metadata: Partial<IWorktreeDetail> = {};
+				try {
+					metadata = await this.worktreeService.getWorktreeMetadata(d.path);
+				} catch (err) {
+					this.logService.warn(`[AgentStudio] getWorktrees: getWorktreeMetadata failed for "${d.path}"`, err);
+				}
+
 				// Annotate each worktree with its owning repository so the UI
 				// can group/label entries when multiple repos are associated.
-				aggregated.push({ ...d, repoRoot, repoName });
+				aggregated.push({ ...d, ...metadata, repoRoot, repoName });
 			}
 		}
 		this.logService.info(`[AgentStudio] getWorktrees(${workspaceId}): aggregated ${aggregated.length} worktree(s)`);

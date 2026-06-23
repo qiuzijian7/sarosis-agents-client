@@ -91,16 +91,30 @@ export interface IAgentHostSessionsProvider extends ISessionsProvider {
 }
 
 export const LOCAL_AGENT_HOST_PROVIDER_ID = 'local-agent-host';
+export const SAROS_LOCAL_AGENT_HOST_PROVIDER_ID = 'saros-local-agent-host';
 export const REMOTE_AGENT_HOST_PROVIDER_PREFIX = 'agenthost-';
 export const REMOTE_AGENT_HOST_PROVIDER_RE = /^agenthost-/;
-export const ANY_AGENT_HOST_PROVIDER_RE = /^(local-agent-host|agenthost-)/;
+export const ANY_AGENT_HOST_PROVIDER_RE = /^(local-agent-host|saros-local-agent-host|agenthost-)/;
 
 /**
  * Checks whether a provider is an agent host provider based on its
- * reserved provider ID (`local-agent-host` or `agenthost-*` prefix).
+ * reserved provider ID (`local-agent-host`, `saros-local-agent-host`, or
+ * `agenthost-*` prefix).
  */
 export function isAgentHostProvider(provider: ISessionsProvider): provider is IAgentHostSessionsProvider {
-	return provider.id === LOCAL_AGENT_HOST_PROVIDER_ID || provider.id.startsWith(REMOTE_AGENT_HOST_PROVIDER_PREFIX);
+	return provider.id === LOCAL_AGENT_HOST_PROVIDER_ID
+		|| provider.id === SAROS_LOCAL_AGENT_HOST_PROVIDER_ID
+		|| provider.id.startsWith(REMOTE_AGENT_HOST_PROVIDER_PREFIX);
+}
+
+/**
+ * Checks whether a provider ID belongs to a **local** agent host provider
+ * (either the plain {@link LOCAL_AGENT_HOST_PROVIDER_ID} or the Saros-enhanced
+ * {@link SAROS_LOCAL_AGENT_HOST_PROVIDER_ID}). Excludes remote agent hosts.
+ */
+export function isLocalAgentHostProviderId(providerId: string): boolean {
+	return providerId === LOCAL_AGENT_HOST_PROVIDER_ID
+		|| providerId === SAROS_LOCAL_AGENT_HOST_PROVIDER_ID;
 }
 
 /**

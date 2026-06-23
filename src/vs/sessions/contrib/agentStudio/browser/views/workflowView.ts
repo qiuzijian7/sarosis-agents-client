@@ -365,6 +365,9 @@ export class WorkflowViewPane extends ViewPane {
 			this._workflows = [wf, ...this._workflows];
 			this._renderList();
 
+			// 2. Auto-open the new workflow in the editor area (middle column)
+			this._openWorkflow(wf);
+
 			// 3. Auto-select the new agent and open the right-side chat panel
 			if (agentCreated && wf.agentId) {
 				void this._selectWorkflowAgentInChat(wf);

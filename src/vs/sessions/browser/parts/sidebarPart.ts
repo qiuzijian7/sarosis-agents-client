@@ -468,7 +468,26 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	private async _loadWorkspaces(): Promise<void> {
 		if (!this._wsAgentStudioService) { return; }
 		this._workspaces = await this._wsAgentStudioService.getWorkspaces();
-		this._activeWorkspaceId = this._wsAgentStudioService.getActiveWorkspaceId();
+		// 1. Try in-memory active workspace first
+		let activeId = this._wsAgentStudioService.getActiveWorkspaceId();
+		// 2. If not set, try restoring from persisted storage (e.g., after window reload)
+		if (!activeId && this._workspaces.length > 0) {
+			try {
+				const lastId = await this._wsAgentStudioService.getLastActiveWorkspaceId();
+				if (lastId && this._workspaces.some(w => w.id === lastId)) {
+					activeId = lastId;
+					await this._wsAgentStudioService.setActiveWorkspace(activeId);
+				}
+			} catch {
+				// Restore failed — fall through
+			}
+		}
+		// 3. Fallback: select first workspace if still none selected
+		if (!activeId && this._workspaces.length > 0) {
+			activeId = this._workspaces[0].id;
+			await this._wsAgentStudioService.setActiveWorkspace(activeId);
+		}
+		this._activeWorkspaceId = activeId;
 		this._updateSelectorLabel();
 		// Re-render the list whenever data refreshes AND the dropdown is open,
 		// so an async load that resolves after _openWorkspaceDropdown() still

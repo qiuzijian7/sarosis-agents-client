@@ -18,7 +18,7 @@ import { ITerminalInstance, ITerminalService } from '../../../../workbench/contr
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { Menus } from '../../../browser/menus.js';
-import { isAgentHostProvider, LOCAL_AGENT_HOST_PROVIDER_ID } from '../../../common/agentHostSessionsProvider.js';
+import { isAgentHostProvider, isLocalAgentHostProviderId } from '../../../common/agentHostSessionsProvider.js';
 import { SessionsWelcomeVisibleContext, IsPhoneLayoutContext } from '../../../common/contextkeys.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { isWorkspaceAgentSessionType, ISession } from '../../../services/sessions/common/session.js';
@@ -89,7 +89,7 @@ export class SessionsTerminalContribution extends Disposable implements IWorkben
 
 		const profileOverride = derived(reader => {
 			const session = this._sessionsManagementService.activeSession.read(reader);
-			if (!session || session.providerId === LOCAL_AGENT_HOST_PROVIDER_ID) {
+			if (!session || isLocalAgentHostProviderId(session.providerId)) {
 				return; // no need to override local default profiles with the local AH
 			}
 

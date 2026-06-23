@@ -60,11 +60,21 @@ export class WorkflowEditorPane extends EditorPane {
 	): Promise<void> {
 		await super.setInput(input, _options, _context, token);
 
+		// ── DIAGNOSTIC LOG ──
+		console.log('[WorkflowEditorPane.setInput] CALLED', {
+			isWorkflowInput: input instanceof WorkflowEditorInput,
+			hasContainer: !!this._container,
+			inputType: input.constructor.name,
+			tokenCancelled: token.isCancellationRequested,
+		});
+
 		if (!(input instanceof WorkflowEditorInput) || !this._container) {
+			console.warn('[WorkflowEditorPane.setInput] EARLY RETURN — not WorkflowEditorInput or no container');
 			return;
 		}
 
 		if (token.isCancellationRequested) {
+			console.warn('[WorkflowEditorPane.setInput] EARLY RETURN — token cancelled');
 			return;
 		}
 
@@ -74,8 +84,12 @@ export class WorkflowEditorPane extends EditorPane {
 		// Otherwise (first open or different workflow), recreate the webview.
 		if (this._webviewController && this._currentWorkflowId === workflowId) {
 			// Same tab reactivation — the webview already has the latest state
+			console.log('[WorkflowEditorPane.setInput] REUSING existing webview for workflowId=', workflowId);
 			return;
 		}
+
+		console.log(`[WorkflowEditorPane.setInput] CREATING new webview for workflowId=${workflowId}, name=${input.workflow.name}, nodes=${input.workflow.nodes?.length ?? 0}`);
+		console.log(`[WorkflowEditorPane.setInput] About to create AgentStudioWebviewController with panelType='workflow-editor', initialData=`, { type: 'workflow', workflowId: workflowId });
 
 		// Different workflow or first open — dispose old and create new
 		this._disposeWebview();

@@ -31,7 +31,6 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
-import * as path from '../../../../../../base/common/path.js';
 import { IFileService, FileType } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
@@ -50,6 +49,7 @@ import { IAgentOSService } from '../../../common/agentOS.js';
 import { SubAgentType, SubAgentResult, UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../../../common/workflowStorage.js';
+import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
 
 
 type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<IToolResultContent[]>;
@@ -246,38 +246,16 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			}
 		}
 
-		// 去重
-		const uniqueRoots = [...new Set(allowedRoots)];
-
-		// 如果是相对路径，基于第一个允许的工作区根目录解析为绝对路径
-		let resolvedPath = requestedPath;
-		if (!path.isAbsolute(requestedPath)) {
-			if (uniqueRoots.length > 0) {
-				resolvedPath = path.join(uniqueRoots[0], requestedPath);
-				resolvedPath = path.normalize(resolvedPath);
-			}
-		}
-
-		const normalizedUri = URI.file(resolvedPath);
-		const requestedFsPath = normalizedUri.fsPath;
-		// 归一化路径用于边界比较：统一分隔符为正斜杠 + 去尾斜杠 + 小写。
-		// ⚠️ worktreeRoot/workspace.path 等可能保留正斜杠（如 G:/foo/bar），
-		// 而 path.join + URI.file().fsPath 在 Windows 上产出反斜杠（G:\foo\bar），
-		// 若不统一分隔符，startsWith 比较会因 `\` vs `/` 不一致而误判越界。
-		const canonicalize = (p: string): string =>
-			p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-		const normalizedRequest = canonicalize(requestedFsPath);
-
-		// 检查请求路径是否在任一允许根目录下
-		const isAllowed = uniqueRoots.some(root => {
-			const normalizedRoot = canonicalize(root);
-			return normalizedRequest === normalizedRoot ||
-				normalizedRequest.startsWith(normalizedRoot + '/');
-		});
+		// 边界校验：用 URI + isEqualOrParent（见 workspacePathResolver.ts），
+		// 替代旧的手动 `canonicalize`（一刀切 toLowerCase + startsWith）。
+		// 后者在大小写敏感文件系统（Linux）上会把 `/Foo/x` 误判为落在 `/foo`
+		// 沙箱内，是一处跨平台越界隐患；新实现按 scheme/平台正确处理大小写、
+		// 盘符与正/反斜杠归一化。
+		const { resolvedPath, isAllowed, normalizedRoots } = resolveWorkspacePath(requestedPath, allowedRoots);
 
 		if (!isAllowed) {
-			const allowedList = uniqueRoots.length > 0
-				? uniqueRoots.map(r => `  - ${r}`).join('\n')
+			const allowedList = normalizedRoots.length > 0
+				? normalizedRoots.map(r => `  - ${r}`).join('\n')
 				: '  (无 — 请确认已正确配置工作区)';
 			if (worktreeRoot) {
 				throw new Error(

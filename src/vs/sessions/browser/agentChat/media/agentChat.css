@@ -3231,6 +3231,7 @@
 	display: flex;
 	align-items: center;
 	position: relative;
+	margin-right: 6px;
 }
 
 .chat-header-worktree-btn {
@@ -3356,6 +3357,57 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* Worktree dropdown - loading & main repo & divider */
+.chat-worktree-dropdown-loading {
+	padding: 12px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground, #8b949e);
+	font-size: 12px;
+}
+
+.chat-worktree-dropdown-item-icon {
+	margin-right: 8px;
+	font-size: 14px;
+}
+
+.chat-worktree-dropdown-item-name {
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.chat-worktree-dropdown-item-check {
+	margin-left: auto;
+	color: var(--vscode-button-background, #0e639c);
+	font-weight: 600;
+}
+
+.chat-worktree-dropdown-divider {
+	height: 1px;
+	background-color: var(--as-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+	margin: 4px 0;
+}
+
+/* Worktree dropdown - change count badges (VS Code compatible) */
+.chat-worktree-dropdown-changes {
+	display: inline-flex;
+	gap: 4px;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #8b949e);
+	margin-left: 4px;
+}
+
+.chat-worktree-dropdown-changes-out {
+	color: var(--vscode-gitDecoration-untrackedResourceForeground, #6cc644);
+}
+
+.chat-worktree-dropdown-changes-in {
+	color: var(--vscode-gitDecoration-modifiedResourceForeground, #c09853);
+}
+
+.chat-worktree-dropdown-changes-uncommitted {
+	color: var(--vscode-gitDecoration-conflictingResourceForeground, #bd2c00);
 }
 
 /* Message-nav dropdown */

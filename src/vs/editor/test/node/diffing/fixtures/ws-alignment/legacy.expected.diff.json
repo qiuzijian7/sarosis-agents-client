@@ -1,62 +1,62 @@
 {
 	"original": {
-		"content": "import { Stack, Text } from '@fluentui/react';\nimport { View } from '../../layout/layout';\n\nexport const WelcomeView = () => {\n\treturn (\n\t\t<View title='VS Code Tools'>\n\t\t\t<Stack grow={true} verticalFill={true}>\n\t\t\t\t<Stack.Item>\n\t\t\t\t\t<Text>\n\t\t\t\t\t\tWelcome to the VS Code Tools application.\n\t\t\t\t\t</Text>\n\t\t\t\t</Stack.Item>\n\t\t\t</Stack>\n\t\t</View>\n\t);\n}\n",
+		"content": "// @ts-nocheck\nimport { Stack, Text } from '@fluentui/react';\nimport { View } from '../../layout/layout';\n\nexport const WelcomeView = () => {\n\treturn (\n\t\t<View title='VS Code Tools'>\n\t\t\t<Stack grow={true} verticalFill={true}>\n\t\t\t\t<Stack.Item>\n\t\t\t\t\t<Text>\n\t\t\t\t\t\tWelcome to the VS Code Tools application.\n\t\t\t\t\t</Text>\n\t\t\t\t</Stack.Item>\n\t\t\t</Stack>\n\t\t</View>\n\t);\n}\n",
 		"fileName": "./1.tsx"
 	},
 	"modified": {
-		"content": "import { Nav } from '@fluentui/react';\nimport { View } from '../../layout/layout';\n\nexport const WelcomeView = () => {\n\treturn (\n\t\t<View title='VS Code Tools'>\n\t\t\t<Nav\n\t\t\t\tgroups={[\n\t\t\t\t\t{\n\t\t\t\t\t\tlinks: [\n\t\t\t\t\t\t\t{ name: 'VS Code Standup (Redmond)', url: 'https://vscode-standup.azurewebsites.net', icon: 'JoinOnlineMeeting', target: '_blank' },\n\t\t\t\t\t\t\t{ name: 'VS Code Standup (Zurich)', url: 'https://stand.azurewebsites.net/', icon: 'JoinOnlineMeeting', target: '_blank' },\n\t\t\t\t\t\t\t{ name: 'VS Code Errors', url: 'https://errors.code.visualstudio.com', icon: 'ErrorBadge', target: '_blank' },\n\t\t\t\t\t\t]\n\t\t\t\t\t}\n\t\t\t\t]}>\n\t\t\t</Nav>\n\t\t</View>\n\t);\n}\n",
+		"content": "// @ts-nocheck\nimport { Nav } from '@fluentui/react';\nimport { View } from '../../layout/layout';\n\nexport const WelcomeView = () => {\n\treturn (\n\t\t<View title='VS Code Tools'>\n\t\t\t<Nav\n\t\t\t\tgroups={[\n\t\t\t\t\t{\n\t\t\t\t\t\tlinks: [\n\t\t\t\t\t\t\t{ name: 'VS Code Standup (Redmond)', url: 'https://vscode-standup.azurewebsites.net', icon: 'JoinOnlineMeeting', target: '_blank' },\n\t\t\t\t\t\t\t{ name: 'VS Code Standup (Zurich)', url: 'https://stand.azurewebsites.net/', icon: 'JoinOnlineMeeting', target: '_blank' },\n\t\t\t\t\t\t\t{ name: 'VS Code Errors', url: 'https://errors.code.visualstudio.com', icon: 'ErrorBadge', target: '_blank' },\n\t\t\t\t\t\t]\n\t\t\t\t\t}\n\t\t\t\t]}>\n\t\t\t</Nav>\n\t\t</View>\n\t);\n}\n",
 		"fileName": "./2.tsx"
 	},
 	"diffs": [
 		{
-			"originalRange": "[1,2)",
-			"modifiedRange": "[1,2)",
+			"originalRange": "[2,3)",
+			"modifiedRange": "[2,3)",
 			"innerChanges": [
 				{
-					"originalRange": "[1,10 -> 1,21]",
-					"modifiedRange": "[1,10 -> 1,13]"
+					"originalRange": "[2,10 -> 2,21]",
+					"modifiedRange": "[2,10 -> 2,13]"
 				}
 			]
 		},
 		{
-			"originalRange": "[7,14)",
-			"modifiedRange": "[7,18)",
+			"originalRange": "[8,15)",
+			"modifiedRange": "[8,19)",
 			"innerChanges": [
 				{
-					"originalRange": "[7,5 -> 7,11]",
-					"modifiedRange": "[7,5 -> 8,5]"
+					"originalRange": "[8,5 -> 8,11]",
+					"modifiedRange": "[8,5 -> 9,5]"
 				},
 				{
-					"originalRange": "[7,14 -> 7,43 EOL]",
-					"modifiedRange": "[8,8 -> 11,140 EOL]"
+					"originalRange": "[8,14 -> 8,43 EOL]",
+					"modifiedRange": "[9,8 -> 12,140 EOL]"
 				},
 				{
-					"originalRange": "[8,5 -> 8,6]",
-					"modifiedRange": "[12,5 -> 12,25]"
+					"originalRange": "[9,5 -> 9,6]",
+					"modifiedRange": "[13,5 -> 13,25]"
 				},
 				{
-					"originalRange": "[8,9 -> 9,12 EOL]",
-					"modifiedRange": "[12,28 -> 12,131 EOL]"
+					"originalRange": "[9,9 -> 10,12 EOL]",
+					"modifiedRange": "[13,28 -> 13,131 EOL]"
 				},
 				{
-					"originalRange": "[10,7 -> 10,22]",
-					"modifiedRange": "[13,7 -> 13,17]"
+					"originalRange": "[11,7 -> 11,22]",
+					"modifiedRange": "[14,7 -> 14,17]"
 				},
 				{
-					"originalRange": "[10,30 -> 10,48 EOL]",
-					"modifiedRange": "[13,25 -> 14,8 EOL]"
+					"originalRange": "[11,30 -> 11,48 EOL]",
+					"modifiedRange": "[14,25 -> 15,8 EOL]"
 				},
 				{
-					"originalRange": "[11,6 -> 11,13 EOL]",
-					"modifiedRange": "[15,6 -> 15,7 EOL]"
+					"originalRange": "[12,6 -> 12,13 EOL]",
+					"modifiedRange": "[16,6 -> 16,7 EOL]"
 				},
 				{
-					"originalRange": "[12,5 -> 12,17]",
-					"modifiedRange": "[16,5 -> 16,7]"
+					"originalRange": "[13,5 -> 13,17]",
+					"modifiedRange": "[17,5 -> 17,7]"
 				},
 				{
-					"originalRange": "[13,6 -> 13,11]",
-					"modifiedRange": "[17,6 -> 17,9]"
+					"originalRange": "[14,6 -> 14,11]",
+					"modifiedRange": "[18,6 -> 18,9]"
 				}
 			]
 		}

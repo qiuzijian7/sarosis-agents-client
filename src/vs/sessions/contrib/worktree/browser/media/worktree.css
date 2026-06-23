@@ -213,6 +213,15 @@
 	background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.1));
 }
 
+/* Checkpoint button */
+.worktree-item-action .codicon-save {
+	color: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
+}
+
+.worktree-item-action:hover .codicon-save {
+	color: var(--vscode-foreground, #cccccc);
+}
+
 /* Deleting spinner animation */
 .worktree-item-spinner {
 	width: 16px;

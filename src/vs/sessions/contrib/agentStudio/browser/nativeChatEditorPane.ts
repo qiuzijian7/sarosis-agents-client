@@ -526,6 +526,29 @@ export class NativeChatEditorPane extends EditorPane {
 					console.error('[NativeChatEditorPane] onSelectWorktree failed:', err);
 				}
 			},
+			// 参考 React WorktreeSwitcher 逻辑：下拉框打开时主动加载 worktree 列表
+			onLoadWorktrees: async () => {
+				return await this._getWorktrees();
+			},
+			// 参考 React WorktreeSwitcher 逻辑：清除 worktree 选择（切换到"主仓库"）
+			onClearWorktree: async () => {
+				const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
+				if (!workspaceId || !this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onClearWorktree: missing workspaceId or agentId');
+					return;
+				}
+				try {
+					await this._agentStudioService.upsertAgentBinding(workspaceId, this._currentAgentId, {
+						worktreePath: undefined,
+						worktreeBranch: undefined,
+					});
+					// Update local state
+					this._chatPanel?.setSelectedWorktree('');
+					console.log(`[NativeChatEditorPane] onClearWorktree: switched to main repo`);
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onClearWorktree failed:', err);
+				}
+			},
 			onScrollToMessage: (messageId: string) => {
 				console.log('[NativeChatEditorPane] onScrollToMessage:', messageId);
 				// TODO: Implement scroll to message logic
@@ -1009,10 +1032,13 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 			this._currentWorkspaceId = workspaceId;
 			const worktrees = await this._agentStudioService.getWorktrees(workspaceId);
-			// Adapt to IWorktreeItem format
+			// Adapt to IWorktreeItem format (include change counts for VS Code compatibility)
 			const items = worktrees.map(wt => ({
 				path: wt.path,
 				branch: wt.branch,
+				outgoingChanges: wt.outgoingChanges,
+				incomingChanges: wt.incomingChanges,
+				uncommittedChanges: wt.uncommittedChanges,
 			}));
 			this._chatPanel.setWorktrees(items);
 			// Set selected worktree from agent binding
@@ -1030,6 +1056,28 @@ export class NativeChatEditorPane extends EditorPane {
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _loadWorktrees failed:', err);
 			this._chatPanel.setWorktrees([]);
+		}
+	}
+
+	/** 获取 worktree 列表（供 AgentChatPanel 的 onLoadWorktrees 回调使用） */
+	private async _getWorktrees(): Promise<ReadonlyArray<{ path: string; branch: string; outgoingChanges?: number; incomingChanges?: number; uncommittedChanges?: number }>> {
+		const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
+		if (!workspaceId) {
+			console.warn('[NativeChatEditorPane] _getWorktrees: no workspaceId');
+			return [];
+		}
+		try {
+			const worktrees = await this._agentStudioService.getWorktrees(workspaceId);
+			return worktrees.map(wt => ({
+				path: wt.path,
+				branch: wt.branch,
+				outgoingChanges: wt.outgoingChanges,
+				incomingChanges: wt.incomingChanges,
+				uncommittedChanges: wt.uncommittedChanges,
+			}));
+		} catch (err) {
+			console.warn('[NativeChatEditorPane] _getWorktrees failed:', err);
+			return [];
 		}
 	}
 

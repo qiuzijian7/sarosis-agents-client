@@ -351,10 +351,15 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	private _createWebview(): void {
-		this._createWebviewAsync();
+		// Fire-and-forget, but surface any synchronous or early async errors
+		this._createWebviewAsync().catch((err) => {
+			this.logService.error('[AS-DIAG] _createWebviewAsync FAILED', err);
+		});
 	}
 
 	private async _createWebviewAsync(): Promise<void> {
+		// ── DIAGNOSTIC: confirm this method is actually entered ──
+		this.logService.info(`[AS-DIAG] _createWebviewAsync ENTERED — panelType=${this.panelType}, hasInitialData=${!!this.initialData}`);
 		const mediaUri = this._getMediaUri();
 
 		// ── WAIT-FOR-POOL: if the pool is currently warming, wait for it ──
@@ -398,6 +403,9 @@ export class AgentStudioWebviewController extends Disposable {
 
 			this._webview = pooled.webview;
 			this._register(this._webview);
+
+			// ── DIAGNOSTIC LOG: hot path initialData ──
+			this.logService.info(`[AS-DIAG] HOT PATH — panelType=${this.panelType}, initialData type=${typeof this.initialData}, value=${JSON.stringify(this.initialData)?.substring(0, 500)}`);
 
 			// CRITICAL: iframes cannot be re-parented without losing state (Chromium
 			// limitation). Use absolute-position overlay: keep the pool container on
@@ -461,6 +469,8 @@ export class AgentStudioWebviewController extends Disposable {
 
 		// ── COLD PATH: create a new webview from scratch ──
 		this.logService.info(`[AS-PERF][cold-path] panelType=${this.panelType} — no pool instance, creating new webview`);
+		// ── DIAGNOSTIC LOG: cold path initialData ──
+		this.logService.info(`[AS-DIAG] COLD PATH — panelType=${this.panelType}, initialData type=${typeof this.initialData}, value=${JSON.stringify(this.initialData)?.substring(0, 500)}`);
 
 		// ── Inline bundles: read JS+CSS from disk so we can embed them
 		// directly into the HTML. This lets us use a srcdoc iframe that

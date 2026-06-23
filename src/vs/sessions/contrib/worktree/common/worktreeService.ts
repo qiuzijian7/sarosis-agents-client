@@ -165,4 +165,51 @@ export interface IWorktreeService {
 	 * @param repoPath Absolute path to the git repository root
 	 */
 	listGitBranches(repoPath: string): Promise<string[]>;
+
+	// ─── Extended metadata (VS Code compatible) ─────────────────────
+
+	/**
+	 * Get extended metadata for a worktree (base commit, PR info, change counts).
+	 * This enriches the basic IWorktreeDetail with information that requires
+	 * additional git commands (beyond `git worktree list`).
+	 */
+	getWorktreeMetadata(worktreePath: string): Promise<Partial<IWorktreeDetail>>;
+
+	/**
+	 * Get the list of changed files in a worktree compared to its base.
+	 * Returns file paths with their change status (added/modified/deleted).
+	 * Compatible with VS Code's getWorktreeChanges.
+	 */
+	getWorktreeChanges(worktreePath: string): Promise<readonly { filePath: string; status: 'added' | 'modified' | 'deleted' }[]>;
+
+	/**
+	 * Refresh worktree metadata (re-fetch from git).
+	 * Triggers onDidChangeWorktreeState event if metadata changed.
+	 */
+	refreshWorktreeMetadata(worktreePath: string): Promise<void>;
+
+	/**
+	 * Check if a worktree has uncommitted changes.
+	 * Quick check without full diff - uses `git status --porcelain`.
+	 */
+	hasUncommittedChanges(worktreePath: string): Promise<boolean>;
+
+	// ─── Checkpoint lifecycle (VS Code compatible) ─────────────────
+
+	/**
+	 * Notify that a request is starting for a session.
+	 * This triggers baseline checkpoint creation.
+	 * @param sessionId The session ID
+	 * @param worktreePath The worktree path
+	 */
+	notifyRequestStart(sessionId: string, worktreePath: string): Promise<void>;
+
+	/**
+	 * Notify that a request has completed for a session.
+	 * This triggers post-turn checkpoint creation.
+	 * @param sessionId The session ID
+	 * @param worktreePath The worktree path
+	 * @param requestId The request ID
+	 */
+	notifyRequestComplete(sessionId: string, worktreePath: string, requestId: string): Promise<void>;
 }

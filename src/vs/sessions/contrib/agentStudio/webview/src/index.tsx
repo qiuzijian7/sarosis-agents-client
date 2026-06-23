@@ -654,6 +654,20 @@ initMessageClient((type, data) => {
 				perfHtmlTs?: number;
 				perfRendererOrigin?: number;
 			} | undefined;
+
+			// ── DIAGNOSTIC: DOM-based (survives esbuild console drop) ──
+			try {
+				let _del = document.getElementById('__as_diag_overlay');
+				if (!_del) {
+					_del = document.createElement('div');
+					_del.id = '__as_diag_overlay';
+					_del.setAttribute('style', 'position:fixed;top:0;left:0;z-index:999999;background:rgba(20,20,20,0.95);color:#0f0;font:11px/1.4 monospace;padding:8px;max-width:90vw;max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-all;border-bottom:2px solid #f00;');
+					document.body.appendChild(_del);
+				}
+				const _ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+				_del.textContent = `[${_ts}] [index] pool.activate: panelType=${String(payload?.panelType)}, initialData=${JSON.stringify(payload?.initialData)?.substring(0, 400) ?? 'undefined'}\n` + _del.textContent;
+			} catch { /* silent */ }
+
 			if (payload) {
 				(window as any).__AGENT_STUDIO_PANEL_TYPE__ = payload.panelType ?? undefined;
 				if (payload.initialTheme) {

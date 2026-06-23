@@ -20,7 +20,7 @@ import { ISessionsProvidersChangeEvent, ISessionsProvidersService } from './sess
 import { ISendRequestOptions, ISessionChangeEvent, ISessionsProvider } from '../common/sessionsProvider.js';
 import { IChat, ISession, isWorkspaceAgentSessionType, SessionStatus, ISessionType } from '../common/session.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { LOCAL_AGENT_HOST_PROVIDER_ID } from '../../../common/agentHostSessionsProvider.js';
+import { isLocalAgentHostProviderId } from '../../../common/agentHostSessionsProvider.js';
 
 const ACTIVE_SESSION_STATES_KEY = 'agentSessions.activeSessionStates';
 
@@ -541,7 +541,7 @@ export function deduplicateSessions(sessions: ISession[]): ISession[] {
 		const existing = seen.get(key);
 		if (!existing) {
 			seen.set(key, session);
-		} else if (existing.providerId !== LOCAL_AGENT_HOST_PROVIDER_ID && session.providerId === LOCAL_AGENT_HOST_PROVIDER_ID) {
+		} else if (!isLocalAgentHostProviderId(existing.providerId) && isLocalAgentHostProviderId(session.providerId)) {
 			seen.set(key, session);
 		}
 	}

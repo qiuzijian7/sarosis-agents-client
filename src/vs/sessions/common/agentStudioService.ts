@@ -163,9 +163,15 @@ export interface IAgentStudioService {
 
 	/**
 	 * List git worktrees for a workspace.
-	 * Returns array of { path, branch } objects.
+	 * Returns array of worktree items with optional change counts.
 	 */
-	getWorktrees(workspaceId: string): Promise<Array<{ path: string; branch: string }>>;
+	getWorktrees(workspaceId: string): Promise<Array<{
+		path: string;
+		branch: string;
+		outgoingChanges?: number;
+		incomingChanges?: number;
+		uncommittedChanges?: number;
+	}>>;
 
 	/** Event fired when a workspace's worktree status changes */
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }>;

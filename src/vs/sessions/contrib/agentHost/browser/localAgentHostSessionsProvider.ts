@@ -39,7 +39,7 @@ const LOCAL_RESOURCE_SCHEME_PREFIX = 'agent-host-';
  */
 export class LocalAgentHostSessionsProvider extends BaseAgentHostSessionsProvider {
 
-	readonly id = LOCAL_AGENT_HOST_PROVIDER_ID;
+	readonly id: string = LOCAL_AGENT_HOST_PROVIDER_ID;
 	readonly label: string;
 	readonly icon: ThemeIcon = Codicon.vm;
 	readonly browseActions: readonly ISessionWorkspaceBrowseAction[];

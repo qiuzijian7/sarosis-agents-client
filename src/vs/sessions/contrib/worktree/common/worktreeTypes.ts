@@ -51,6 +51,28 @@ export interface IWorktreeDetail {
 	mainFolder: string;
 	/** Branch name if on a branch */
 	branch?: string;
+
+	// ─── Extended metadata (VS Code compatible) ─────────────────────────
+	/** Base commit hash (the commit this worktree was created from) */
+	baseCommit?: string;
+	/** Base branch name (e.g. "main", "master") */
+	baseBranch?: string;
+	/** Upstream branch (e.g. "origin/feature-xyz") */
+	upstreamBranch?: string;
+	/** Pull request URL if this branch has an associated PR */
+	pullRequestUrl?: string;
+	/** Pull request state ("open", "closed", "merged") */
+	pullRequestState?: string;
+	/** Number of incoming changes (commits from remote) */
+	incomingChanges?: number;
+	/** Number of outgoing changes (local commits not pushed) */
+	outgoingChanges?: number;
+	/** Number of uncommitted changes (working tree modifications) */
+	uncommittedChanges?: number;
+	/** Whether this worktree has a GitHub remote */
+	hasGitHubRemote?: boolean;
+	/** Last commit message (for display in UI) */
+	lastCommitMessage?: string;
 }
 
 /**
