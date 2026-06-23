@@ -188,4 +188,78 @@ suite('AgentIconConsistency', () => {
 		assert.ok(result.header, 'Header should be parsed');
 		assert.strictEqual(result.header!.icon, '🔬', 'PromptHeader.icon should return the unquoted emoji');
 	});
+
+	/**
+	 * Test 9: Icon backfill — agents without an icon field can derive it from
+	 * the matching builtin agent by presetId / id / name.
+	 *
+	 * This simulates the backfill logic in AgentStudioService.getAgents() which
+	 * handles agents stored in older data files (e.g. employees.json) that lack
+	 * the icon field. Without this, the webview agent dropdown shows fallback
+	 * avatars instead of the preset emoji.
+	 */
+	test('icon backfill derives icon from builtin agent by presetId', () => {
+		const builtins = getBuiltinAgents();
+
+		// Build the lookup map (same logic as getAgents() backfill)
+		const builtinByKey = new Map<string, string>();
+		for (const b of builtins) {
+			if (b.icon) {
+				builtinByKey.set(b.id.toLowerCase(), b.icon);
+				builtinByKey.set(b.name.toLowerCase(), b.icon);
+			}
+		}
+
+		// Simulate agents from employees.json (no icon, but has presetId)
+		const storedAgents = [
+			{ id: '1779681355627-7m8935i', name: 'Planner', presetId: 'planner', icon: undefined as string | undefined },
+			{ id: '1779771531976-413no35', name: 'Coder', presetId: 'coder', icon: undefined as string | undefined },
+			{ id: 'xyz', name: 'Researcher', presetId: 'researcher', icon: undefined as string | undefined },
+		];
+
+		const expectedAfterBackfill: Record<string, string> = {
+			'Planner': '📋',
+			'Coder': '👨‍💻',
+			'Researcher': '🔬',
+		};
+
+		for (const agent of storedAgents) {
+			if (!agent.icon) {
+				const derived =
+					(agent.presetId && builtinByKey.get(agent.presetId.toLowerCase())) ||
+					builtinByKey.get(agent.id.toLowerCase()) ||
+					builtinByKey.get(agent.name.toLowerCase());
+				if (derived) {
+					agent.icon = derived;
+				}
+			}
+			assert.strictEqual(
+				agent.icon,
+				expectedAfterBackfill[agent.name],
+				`Backfilled icon for "${agent.name}" should be ${expectedAfterBackfill[agent.name]}`
+			);
+		}
+	});
+
+	/**
+	 * Test 10: Icon backfill by name when presetId is absent.
+	 */
+	test('icon backfill derives icon from builtin agent by name', () => {
+		const builtins = getBuiltinAgents();
+		const builtinByKey = new Map<string, string>();
+		for (const b of builtins) {
+			if (b.icon) {
+				builtinByKey.set(b.id.toLowerCase(), b.icon);
+				builtinByKey.set(b.name.toLowerCase(), b.icon);
+			}
+		}
+
+		// Agent with no presetId and no icon — backfill by name only
+		const agent = { id: 'custom-123', name: 'Designer', presetId: undefined as string | undefined, icon: undefined as string | undefined };
+		const derived =
+			(agent.presetId && builtinByKey.get(agent.presetId.toLowerCase())) ||
+			builtinByKey.get(agent.id.toLowerCase()) ||
+			builtinByKey.get(agent.name.toLowerCase());
+		assert.strictEqual(derived, '🎨', 'Should derive Designer icon by name');
+	});
 });

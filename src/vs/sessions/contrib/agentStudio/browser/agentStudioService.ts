@@ -388,6 +388,31 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		for (const c of customById.values()) {
 			result.push(c);
 		}
+
+		// Backfill missing icons: agents stored in older data files (e.g.
+		// employees.json) may lack the `icon` field. Derive it from the
+		// matching builtin agent (by presetId / id / name) so the preset
+		// panel and chat dropdown show consistent emoji icons.
+		const builtinByKey = new Map<string, string>();
+		for (const b of builtins) {
+			if (b.icon) {
+				builtinByKey.set(b.id.toLowerCase(), b.icon);
+				builtinByKey.set(b.name.toLowerCase(), b.icon);
+			}
+		}
+		for (const agent of result) {
+			if (!agent.icon) {
+				const presetId = (agent as any).presetId as string | undefined;
+				const derived =
+					(presetId && builtinByKey.get(presetId.toLowerCase())) ||
+					builtinByKey.get(agent.id.toLowerCase()) ||
+					builtinByKey.get(agent.name.toLowerCase());
+				if (derived) {
+					agent.icon = derived;
+				}
+			}
+		}
+
 		const t2 = Date.now();
 		// DEBUG: Log first builtin agent to verify systemPrompt/skills are populated
 		if (builtins.length > 0) {
