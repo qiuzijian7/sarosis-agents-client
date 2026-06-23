@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { AgentTurnStatus } from '../../common/agentDriver.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
+import { AgentTurnStatus } from '../../common/agentDriver';
 
 suite('Agent Driver Service (Phase 2)', () => {
 

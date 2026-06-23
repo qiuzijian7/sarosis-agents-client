@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { uniqueMsgId } from '../../../../browser/agentChat/agentChatTypes.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
+import { uniqueMsgId } from '../../../../browser/agentChat/agentChatTypes';
 import type {
 	IAgentChatMessage,
 	IToolCall,
@@ -18,7 +18,7 @@ import type {
 	IMessageNavItem,
 	AgentStatus,
 	ChatMode,
-} from '../../../../browser/agentChat/agentChatTypes.js';
+} from '../../../../browser/agentChat/agentChatTypes';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

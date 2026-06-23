@@ -54,7 +54,7 @@ function onExtensionCompilationEnd(): void {
 // 	ignore: ['**/out/**', '**/node_modules/**']
 // });
 const compilations = [
-	'extensions/codebuddy-provider/tsconfig.json',
+	// 'extensions/codebuddy-provider/tsconfig.json' — compiled separately via npm run compile-codebuddy-provider (after compile-shared)
 	'extensions/configuration-editing/tsconfig.json',
 	'extensions/css-language-features/client/tsconfig.json',
 	'extensions/css-language-features/server/tsconfig.json',

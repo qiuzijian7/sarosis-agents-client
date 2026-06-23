@@ -4,11 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
 import {
 	IMemoryProvider, IToolProvider,
 	IPlanningProvider, IExecutionProvider, IRetrievalProvider, IKanbanProvider,
-} from '../../common/providers.js';
+} from '../../common/providers';
 
 suite('SlotRegistry (Phase 1)', () => {
 

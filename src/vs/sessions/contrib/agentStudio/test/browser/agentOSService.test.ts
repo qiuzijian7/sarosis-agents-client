@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { Event } from '../../../../../base/common/event.js';
-import { ModelAuthStatus } from '../../common/providers.js';
-import { IModelProvider, IMemoryProvider, IToolProvider } from '../../common/providers.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
+import { Event } from '../../../../../base/common/event';
+import { ModelAuthStatus } from '../../common/providers';
+import { IModelProvider, IMemoryProvider, IToolProvider } from '../../common/providers';
 
 suite('AgentOS Service (Phase 1)', () => {
 

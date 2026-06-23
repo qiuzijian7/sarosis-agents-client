@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { UnifiedSubAgentDispatch, SubAgentType } from '../../common/unifiedSubAgentDispatch.js';
-import { IterationBudget } from '../../common/iterationBudget.js';
-import type { IAgentTurnRequest, IChatStreamDelta } from '../../common/providers.js';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { UnifiedSubAgentDispatch, SubAgentType } from '../../common/unifiedSubAgentDispatch';
+import { IterationBudget } from '../../common/iterationBudget';
+import type { IAgentTurnRequest, IChatStreamDelta } from '../../common/providers';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils';
 
 suite('UnifiedSubAgentDispatch', () => {
 
