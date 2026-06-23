@@ -875,11 +875,13 @@ export class NativeChatEditorPane extends EditorPane {
 						name: emp.name,
 						role: emp.role,
 						avatarUrl: emp.avatar,
+						icon: emp.icon,
 						status: (emp.status ?? 'idle') as AgentChatAgentStatus,
 						isPM: emp.id === 'pm' || emp.role?.toLowerCase().includes('project manager'),
 						customPrompt: emp.systemPrompt,
 						model: emp.model,
 						provider: undefined,
+						agentType: ((emp as any).agentType ?? (emp.id === 'pm' ? 'planner' : 'general')) as 'general' | 'planner' | string,
 					}))
 				);
 
