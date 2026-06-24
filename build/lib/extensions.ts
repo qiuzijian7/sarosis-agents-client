@@ -193,6 +193,15 @@ function fromLocalNormal(extensionPath: string): Stream {
 		.then(fileNames => {
 			const files = fileNames
 				.map(fileName => path.join(extensionPath, fileName))
+				.filter(filePath => {
+					// Filter out directories — vsce may list them, but fs.createReadStream
+					// throws EISDIR on directories
+					try {
+						return fs.statSync(filePath).isFile();
+					} catch {
+						return false;
+					}
+				})
 				.map(filePath => new File({
 					path: filePath,
 					stat: fs.statSync(filePath),
