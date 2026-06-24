@@ -120,7 +120,8 @@ export interface IToolCall {
 	name: string;
 	args?: string;
 	result?: string;
-	status?: 'running' | 'completed' | 'error';
+	/** Status: running | success | error | approval_required | rejected | pending | canceled */
+	status?: 'running' | 'success' | 'error' | 'approval_required' | 'rejected' | 'pending' | 'canceled';
 	displayName?: string;
 	renderType?: string;
 	defaultShow?: boolean;
@@ -136,6 +137,10 @@ export interface IToolCall {
 	error?: string;
 	/** Process exit code (for terminal tools) */
 	exitCode?: number;
+	/** Security level for approval UI */
+	securityLevel?: 'safe' | 'cautious' | 'dangerous';
+	/** Whether this tool was server-executed (no client confirmation needed) */
+	serverExecuted?: boolean;
 }
 
 /** 文本内容片段（阶段E 有序模型） */
@@ -225,8 +230,8 @@ export function adaptPersistedToolCall(c: any, i: number): IToolCall {
 					? JSON.stringify(c.arguments)
 					: (c?.args !== undefined ? JSON.stringify(c.args) : undefined))),
 		result: typeof c?.result === 'string' ? c.result : (c?.result ? JSON.stringify(c.result) : undefined),
-		// 持久化 status 'running'|'done'|'error' → UI 'running'|'completed'|'error'（保留 error 失败态）。
-		status: c?.status === 'running' ? 'running' : (c?.status === 'error' ? 'error' : 'completed'),
+		// 持久化 status 'running'|'done'|'error' → UI 'running'|'success'|'error'（保留 error 失败态）。
+		status: c?.status === 'running' ? 'running' : (c?.status === 'error' ? 'error' : 'success'),
 		// textPosition 仅供本次派生 parts 使用，不再向后传递。
 		textPosition: typeof c?.textPosition === 'number' ? c.textPosition : undefined,
 		displayName: typeof c?.displayName === 'string' ? c.displayName : undefined,
@@ -272,6 +277,28 @@ export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
 		}
 	}
 
+	// ── 恢复工作流相关字段（这些字段在持久化时由 agentChatPanel 写入）───
+	// workflowExecutions: Record<string, ILiveWorkflowExecution>
+	let workflowExecutions: Record<string, ILiveWorkflowExecution> | undefined;
+	if (m.workflowExecutions && typeof m.workflowExecutions === 'object') {
+		workflowExecutions = m.workflowExecutions;
+	}
+	// workflowEvents: ILiveWorkflowEvent[]
+	let workflowEvents: ILiveWorkflowEvent[] | undefined;
+	if (Array.isArray(m.workflowEvents)) {
+		workflowEvents = m.workflowEvents;
+	}
+	// collectVariables: Record<string, ILiveCollectVariable>
+	let collectVariables: Record<string, ILiveCollectVariable> | undefined;
+	if (m.collectVariables && typeof m.collectVariables === 'object') {
+		collectVariables = m.collectVariables;
+	}
+	// askUsers: ILiveWorkflowAskUser[]
+	let askUsers: ILiveWorkflowAskUser[] | undefined;
+	if (Array.isArray(m.askUsers)) {
+		askUsers = m.askUsers;
+	}
+
 	return {
 		id: m.id,
 		role,
@@ -285,6 +312,10 @@ export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
 		streamPhase: m.streamPhase,
 		metadata: m.metadata,
 		tokenUsage: m.tokenUsage,
+		workflowExecutions,
+		workflowEvents,
+		collectVariables,
+		askUsers,
 	};
 }
 

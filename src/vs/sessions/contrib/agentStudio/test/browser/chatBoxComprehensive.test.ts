@@ -31,7 +31,7 @@ function makeToolCall(overrides: Partial<IToolCall> = {}): IToolCall {
 	return {
 		id: 'tc-1',
 		name: 'write_to_file',
-		status: 'completed',
+		status: 'success',
 		displayName: 'Write File',
 		renderType: 'CodeEditor',
 		defaultShow: true,
@@ -174,8 +174,8 @@ suite('ChatBox Comprehensive - Unit Tests', () => {
 		});
 
 		test('completed tool call', () => {
-			const tc = makeToolCall({ status: 'completed', result: 'ok' });
-			assert.strictEqual(tc.status, 'completed');
+			const tc = makeToolCall({ status: 'success', result: 'ok' });
+			assert.strictEqual(tc.status, 'success');
 		});
 
 		test('error tool call', () => {
@@ -456,8 +456,8 @@ suite('ChatBox Comprehensive - Functional Tests', () => {
 			assert.strictEqual(asstMsg.toolCalls![0].status, 'running');
 
 			// 4. Update tool call to completed
-			const updatedToolCall = { ...asstMsg.toolCalls![0], status: 'completed' as const };
-			assert.strictEqual(updatedToolCall.status, 'completed');
+			const updatedToolCall = { ...asstMsg.toolCalls![0], status: 'success' as const };
+			assert.strictEqual(updatedToolCall.status, 'success');
 		});
 	});
 
@@ -501,7 +501,7 @@ suite('ChatBox Comprehensive - Smoke Tests', () => {
 	});
 
 	test('minimal tool call', () => {
-		const tc: IToolCall = { id: '1', name: 't', status: 'completed' };
+		const tc: IToolCall = { id: '1', name: 't', status: 'success' };
 		assert.strictEqual(tc.name, 't');
 	});
 

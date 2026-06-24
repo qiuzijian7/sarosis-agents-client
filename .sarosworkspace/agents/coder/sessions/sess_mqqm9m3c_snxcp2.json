@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782217471551_du52ih0",
+    "role": "user",
+    "content": "{{input-requirement.output}}",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqm9m3c_snxcp2",
+    "timestamp": "2026-06-23T12:24:31.551Z"
+  },
+  {
+    "id": "msg_1782217476241_0_wwx37",
+    "role": "assistant",
+    "content": "I'll help you with your request. However, I notice that `{{input-requirement.output}}` appears to be a template variable or placeholder that wasn't properly substituted with actual content.\n\nCould you please provide:\n1. The actual requirement or task you'd like me to help with, or\n2. Clarify what `input-requirement.output` should contain?\n\nOnce I have the specific details, I can assist you with:\n- Code generation\n- Code review\n- Refactoring\n- File operations\n- Command execution\n- Or any other task within the sarosis-agents-client workspace\n\nWhat would you like me to do for you?",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqm9m3c_snxcp2",
+    "turnId": "turn_1782217476241_ksvdm53",
+    "timestamp": "2026-06-23T12:24:36.241Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I'll help you with your request. However, I notice that `{{input-requirement.output}}` appears to be a template variable or placeholder that wasn't properly substituted with actual content.\n\nCould you please provide:\n1. The actual requirement or task you'd like me to help with, or\n2. Clarify what `input-requirement.output` should contain?\n\nOnce I have the specific details, I can assist you with:\n- Code generation\n- Code review\n- Refactoring\n- File operations\n- Command execution\n- Or any other task within the sarosis-agents-client workspace\n\nWhat would you like me to do for you?"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29309,
+      "output": 139,
+      "total": 29448
+    }
+  }
+]

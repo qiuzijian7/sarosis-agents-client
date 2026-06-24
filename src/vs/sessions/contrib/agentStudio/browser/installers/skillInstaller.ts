@@ -1,0 +1,179 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Sarosis. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/**
+ * SkillInstaller —— skill 资源的安装器实现。
+ *
+ * install: 解压目录的 SKILL.md → 写入 ~/.saros/skills-library/{id}/SKILL.md
+ *          （回写 storeId/version 到 frontmatter）→ ISkillRegistry.reload()
+ * preparePack: 读 ~/.saros/skills-library/{id}/SKILL.md frontmatter → 构造 manifest
+ * getInstalledVersion: 从 ISkillRegistry.getSkill(id).version 读取
+ */
+
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { ISkillRegistry } from '../../common/skills.js';
+import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
+import { PackageKind, IInstallResult } from '../../common/marketplace.js';
+import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
+
+const SKILL_SUBDIR = 'skills-library';
+
+export class SkillInstaller extends Disposable implements IPackageInstaller {
+	declare readonly _serviceBrand: undefined;
+	readonly kind: PackageKind = 'skill';
+
+	constructor(
+		@IFileService private readonly fileService: IFileService,
+		@ILogService private readonly logService: ILogService,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
+		@IPathService private readonly pathService: IPathService,
+	) {
+		super();
+	}
+
+	async install(manifest: PackageManifest, extractedDir: URI): Promise<IInstallResult> {
+		const skillFile = URI.joinPath(extractedDir, 'SKILL.md');
+		if (!await this.fileService.exists(skillFile)) {
+			throw new Error('包内缺少 SKILL.md');
+		}
+		const content = (await this.fileService.readFile(skillFile)).value.toString();
+
+		// 回写 storeId/version 到 frontmatter，使该 skill 可被升级检查溯源
+		const updated = this.injectFrontmatter(content, { storeId: manifest.id, version: manifest.version });
+
+		const targetDir = await this.resolveDir(manifest.id);
+		await this.fileService.createFolder(targetDir);
+		await this.fileService.writeFile(URI.joinPath(targetDir, 'SKILL.md'), VSBuffer.fromString(updated));
+
+		await this.skillRegistry.reload();
+		this.logService.info(`[SkillInstaller] 安装完成: ${manifest.id} v${manifest.version} → ${targetDir.fsPath}`);
+
+		return { kind: 'skill', storeId: manifest.id, version: manifest.version, targetDir: targetDir.fsPath };
+	}
+
+	async preparePack(localId: string): Promise<IPreparePackResult> {
+		const localDir = await this.resolveDir(localId);
+		if (!await this.fileService.exists(localDir)) {
+			throw new Error(`skill 目录不存在: ${localDir.fsPath}`);
+		}
+		const skillFile = URI.joinPath(localDir, 'SKILL.md');
+		const content = (await this.fileService.readFile(skillFile)).value.toString();
+		const fm = this.parseFrontmatter(content);
+
+		const name = (fm.name as string | undefined) || localId;
+		const version = (fm.version as string | undefined) || '1.0.0';
+		const description = fm.description as string | undefined;
+		const category = fm.category as string | undefined;
+		const author = fm.author as string | undefined;
+
+		const manifest: PackageManifest = {
+			kind: 'skill',
+			id: localId,
+			name,
+			version,
+			description,
+			category,
+			author,
+			files: ['SKILL.md'],
+			skill: {
+				id: localId,
+				name,
+				description: description || '',
+				activation: (fm.activation as 'manual' | 'auto' | 'always') || 'manual',
+				match: fm.match as readonly string[] | undefined,
+				category,
+				version,
+				storeId: localId,
+			},
+		};
+		return { localDir, manifest };
+	}
+
+	getInstalledVersion(storeId: string): string | undefined {
+		const skill = this.skillRegistry.getSkill(storeId);
+		return skill?.version;
+	}
+
+	// ── 内部 ──────────────────────────────────────────────────
+
+	private async resolveDir(id: string): Promise<URI> {
+		const userHome = await this.pathService.userHome();
+		return URI.joinPath(userHome, '.saros', SKILL_SUBDIR, id);
+	}
+
+	/** 解析 SKILL.md frontmatter 为键值对象 */
+	private parseFrontmatter(text: string): Record<string, unknown> {
+		const meta: Record<string, unknown> = {};
+		if (!text.startsWith('---')) {
+			return meta;
+		}
+		const end = text.indexOf('\n---', 3);
+		if (end < 0) {
+			return meta;
+		}
+		const header = text.slice(3, end);
+		let currentKey = '';
+		for (const rawLine of header.split('\n')) {
+			const line = rawLine.replace(/\r$/, '');
+			// 数组项:  - value
+			const arrItem = /^\s+-\s+(.+)$/.exec(line);
+			if (arrItem && currentKey) {
+				const arr = (meta[currentKey] as unknown[]) || (meta[currentKey] = []);
+				if (Array.isArray(arr)) {
+					arr.push(arrItem[1].trim().replace(/^["']|["']$/g, ''));
+				}
+				continue;
+			}
+			const kv = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(line);
+			if (kv) {
+				currentKey = kv[1];
+				let val = kv[2].trim();
+				if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+					val = val.slice(1, -1);
+				}
+				if (val.startsWith('[') && val.endsWith(']')) {
+					meta[currentKey] = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+				} else if (val === '') {
+					meta[currentKey] = [];
+				} else {
+					meta[currentKey] = val;
+				}
+			}
+		}
+		return meta;
+	}
+
+	/** 向 frontmatter 注入字段（若不存在则添加） */
+	private injectFrontmatter(text: string, fields: Record<string, string>): string {
+		if (!text.startsWith('---')) {
+			const fm = ['---', ...Object.entries(fields).map(([k, v]) => `${k}: ${JSON.stringify(v)}`), '---', ''].join('\n');
+			return fm + text;
+		}
+		const end = text.indexOf('\n---', 3);
+		if (end < 0) {
+			return text;
+		}
+		const header = text.slice(3, end);
+		const rest = text.slice(end + 4); // skip \n---
+		const lines = header.split('\n');
+		const existing = new Set<string>();
+		for (const line of lines) {
+			const kv = /^([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(line.replace(/\r$/, ''));
+			if (kv) {
+				existing.add(kv[1]);
+			}
+		}
+		const toAdd = Object.entries(fields).filter(([k]) => !existing.has(k));
+		if (toAdd.length === 0) {
+			return text;
+		}
+		const newLines = [...lines, ...toAdd.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)];
+		return `---\n${newLines.join('\n')}\n---${rest}`;
+	}
+}

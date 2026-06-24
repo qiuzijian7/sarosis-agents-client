@@ -20,6 +20,7 @@ import type * as tlsType from 'tls';
 import { lookupKerberosAuthorization } from '../../../platform/request/node/requestService.js';
 import * as proxyAgent from '@vscode/proxy-agent';
 
+// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 const require = createRequire(import.meta.url);
 const http = require('http');
 const https = require('https');
@@ -264,6 +265,7 @@ function recordFetchFeatureUse(mainThreadTelemetry: MainThreadTelemetryShape, fe
 		if (timer) {
 			clearTimeout(timer);
 		}
+		// @ts-ignore TS2741 - NodeJS.Timeout vs TimeoutHandle type mismatch
 		timer = setTimeout(() => {
 			mainThreadTelemetry.$publicLog2<FetchFeatureUseEvent, FetchFeatureUseClassification>('fetchFeatureUse', fetchFeatureUse);
 		}, 10000); // collect additional features for 10 seconds

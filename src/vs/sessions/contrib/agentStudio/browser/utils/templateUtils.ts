@@ -25,7 +25,7 @@
 // accessing an upstream node's stored output (`nodeState.output`); the
 // `buildRuntimeValueMap` layer also adds the bare nodeId key, so a
 // missing suffix still resolves correctly.
-export const HOST_VARIABLE_PATTERN = /\{\{(\$?\w+(?:\.\w+)*)\}\}/g;
+export const HOST_VARIABLE_PATTERN = /\{\{(\$?[\w-]+(?:\.[\w-]+)*)\}\}/g;
 
 /** Built-in variable names that are auto-populated at runtime — never ask the user. */
 const BUILTIN_VAR_NAMES: ReadonlySet<string> = new Set([

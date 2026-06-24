@@ -225,7 +225,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_USE_NATIVE_CHAT_SETTING]: {
 			type: 'boolean',
 			default: true,
-			description: localize('agentStudio.chat.useNativeChat', "Use Native Chat UI (DOM-based) instead of React WebView. Native UI has better performance but may have missing features during migration."),
+			deprecationMessage: localize('agentStudio.chat.useNativeChat.deprecated', "已废弃 — NativeChatEditorPane 现在是唯一的聊天渲染器，此设置不再生效。"),
+			description: localize('agentStudio.chat.useNativeChat', "[已废弃] Use Native Chat UI (DOM-based) instead of React WebView."),
 		},
 		// --- Preferences ---
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
@@ -275,6 +276,22 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.preferences.checkUpdates', "Show update notification when a new version is available."),
+		},
+		// --- Marketplace ---
+		[MARKETPLACE_URL_SETTING]: {
+			type: 'string',
+			default: 'http://21.6.92.5:3040',
+			description: localize('agentStudio.marketplace.url', "Sarosis 商城服务端地址，用于浏览、上传下载 agent/skill/mcp/知识库。"),
+		},
+		[MARKETPLACE_AUTO_CHECK_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.marketplace.autoCheck', "启动时自动检查已安装资源的更新。"),
+		},
+		[MARKETPLACE_UPDATE_INTERVAL_SETTING]: {
+			type: 'number',
+			default: 3600,
+			description: localize('agentStudio.marketplace.updateInterval', "资源更新检查间隔（秒）。"),
 		},
 		// --- Knot AG-UI ---
 		// Knot configuration is registered by the knot-agui extension via its package.json
@@ -965,6 +982,10 @@ import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.j
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
 import { IAgentStudioWebviewPool, AgentStudioWebviewPool } from './agentStudioWebviewPool.js';
+import { IMarketplaceService, MARKETPLACE_URL_SETTING, MARKETPLACE_AUTO_CHECK_SETTING, MARKETPLACE_UPDATE_INTERVAL_SETTING } from '../common/marketplace.js';
+import { MarketplaceService } from './marketplaceService.js';
+import { IPackageInstallerRegistry } from '../common/packageInstaller.js';
+import { PackageInstallerRegistry } from './packageInstallerRegistry.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
 registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
@@ -972,6 +993,10 @@ registerSingleton(ICheckpointService, CheckpointService, InstantiationType.Delay
 // Re-added to repair partial-revert state: AgentStudioWebviewController injects
 // IAgentStudioWebviewPool, so the DI must have a registration for it.
 registerSingleton(IAgentStudioWebviewPool, AgentStudioWebviewPool, InstantiationType.Delayed);
+// Marketplace: 对接线上商城，实现 agent/skill/mcp/knowledge 的上传下载与升级
+registerSingleton(IMarketplaceService, MarketplaceService, InstantiationType.Delayed);
+// PackageInstallerRegistry: 按 kind 分发安装/打包逻辑（skill 已实现，其他后续补充）
+registerSingleton(IPackageInstallerRegistry, PackageInstallerRegistry, InstantiationType.Delayed);
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';
@@ -1156,15 +1181,14 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	 * `FileAccess.asBrowserUri` -- this works in renderer because the
 	 * resulting `vscode-file://vscode-app/...` URL is allowed by Electron's CSP.
 	 */
+	// NOTE: knot-agui and codebuddy-provider were removed from this list because:
+	//   1. They are CJS modules (cannot be loaded via ESM import() in the renderer)
+	//   2. They export activate/deactivate (not a Plugin class) — _resolvePluginClass would fail
+	//   3. They are already registered as ModelProviders via LMBridge
+	//      (languageModelChatProviders contribution → LanguageModelsToAgentOSBridge)
+	//   4. Their agentCapabilities contribution was removed from package.json to
+	//      prevent the extension-point path from attempting a futile renderer-side load.
 	private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
-		{
-			id: 'knot-agui',
-			name: 'Knot AG-UI Model Provider',
-			version: '1.0.0',
-			module: '../../../../extensions/knot-agui/src/extension.js',
-			appResource: 'vs/../../extensions/knot-agui/out/extension.js',
-			capabilities: [{ capability: 'model', provider: 'knot-agui', priority: 100 }],
-		},
 		{
 			id: 'hermes-agent',
 			name: 'Hermes Agent',
@@ -1271,9 +1295,20 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			pluginModule = await import(entry.module);
 		} catch (err) {
 			const e = err as any;
+			const errMsg = e?.message ?? String(err);
+
+			// CommonJS modules cannot be loaded via ESM import() in the renderer.
+			// This is expected for extensions built as CJS — downgrade to info.
+			if (this._isCjsModuleError(errMsg)) {
+				this.logService.info(
+					`[AgentCapabilityPlugins] ${entry.id} is a CommonJS module — skipped (cannot load via ESM import() in renderer).`,
+				);
+				return;
+			}
+
 			this.logService.warn(
 				`[AgentCapabilityPlugins][Diag] Primary import() failed for ${entry.id} (module=${entry.module}). `
-				+ `Error: ${e?.message ?? String(err)}`,
+				+ `Error: ${errMsg}`,
 			);
 
 			// Fallback: try the app-resource path (extensions/<id>/dist/extension.js)
@@ -1290,10 +1325,20 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 					importedFrom = fallbackUrl;
 				} catch (err2) {
 					const e2 = err2 as any;
+					const err2Msg = e2?.message ?? String(err2);
+
+					// CommonJS fallback also fails — same CJS-in-renderer issue
+					if (this._isCjsModuleError(err2Msg)) {
+						this.logService.info(
+							`[AgentCapabilityPlugins] ${entry.id} appResource is also CommonJS — skipped.`,
+						);
+						return;
+					}
+
 					this.logService.warn(
 						`[AgentCapabilityPlugins][Diag] Fallback import() also failed for ${entry.id} `
 						+ `(appResource=${entry.appResource}). `
-						+ `Error: ${e2?.message ?? String(err2)}\nStack: ${e2?.stack ?? '<no stack>'}\n`
+						+ `Error: ${err2Msg}\nStack: ${e2?.stack ?? '<no stack>'}\n`
 						+ `Hint: ensure either "npm run transpile-client" was run (produces out/vs/extensions/${entry.id}/src/extension.js) `
 						+ `or the extension itself has been built (produces extensions/${entry.id}/dist/extension.js).`,
 					);
@@ -1406,11 +1451,21 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			pluginModule = await import(resolved.mainModule);
 		} catch (err) {
 			const e = err as any;
-			this.logService.warn(
-				`[AgentCapabilityPlugins][Diag] import() failed for extension ${resolved.extensionId} `
-				+ `(mainModule=${resolved.mainModule}). `
-				+ `Error: ${e?.message ?? String(err)}\nStack: ${e?.stack ?? '<no stack>'}`,
-			);
+			const errMsg = e?.message ?? String(err);
+			// CJS modules ("module/exports is not defined") and unbuilt extensions
+			// ("Failed to fetch dynamically imported module") are expected in the
+			// renderer — downgrade to a concise info log without stack trace.
+			if (this._isCjsModuleError(errMsg) || this._isModuleNotFoundError(errMsg)) {
+				this.logService.info(
+					`[AgentCapabilityPlugins] ${resolved.extensionId} — skipped (cannot load via ESM import() in renderer: ${this._isCjsModuleError(errMsg) ? 'CJS module' : 'module not built'}).`,
+				);
+			} else {
+				this.logService.warn(
+					`[AgentCapabilityPlugins][Diag] import() failed for extension ${resolved.extensionId} `
+					+ `(mainModule=${resolved.mainModule}). `
+					+ `Error: ${errMsg}\nStack: ${e?.stack ?? '<no stack>'}`,
+				);
+			}
 			return;
 		}
 
@@ -1466,6 +1521,30 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	}
 
 	// --- Shared helpers -----------------------------------------------------
+
+	/**
+	 * Detect whether an import() error is caused by attempting to load a
+	 * CommonJS module via native ESM import() in the renderer. In the browser
+	 * context, `module`, `exports`, and `require` are not defined, so CJS
+	 * modules fail immediately with these ReferenceErrors.
+	 */
+	private _isCjsModuleError(errMsg: string): boolean {
+		return errMsg.includes('module is not defined')
+			|| errMsg.includes('exports is not defined')
+			|| errMsg.includes('require is not defined');
+	}
+
+	/**
+	 * Detect whether an import() error is caused by the module file not
+	 * existing on disk (e.g. extension not yet compiled, `out/extension.js`
+	 * missing). The browser ESM loader reports this as "Failed to fetch
+	 * dynamically imported module".
+	 */
+	private _isModuleNotFoundError(errMsg: string): boolean {
+		return errMsg.includes('Failed to fetch dynamically imported module')
+			|| errMsg.includes('Cannot find module')
+			|| errMsg.includes('ERR_FILE_NOT_FOUND');
+	}
 
 	/**
 	 * Find the exported plugin class from a module.

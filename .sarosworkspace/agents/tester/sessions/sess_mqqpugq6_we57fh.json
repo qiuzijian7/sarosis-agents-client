@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782223483208_8zfnw36",
+    "role": "user",
+    "content": "{{error-check.output}}",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqpugq6_we57fh",
+    "timestamp": "2026-06-23T14:04:43.208Z"
+  },
+  {
+    "id": "msg_1782223489857_0_rob4v",
+    "role": "assistant",
+    "content": "I don't see any content before `{{error-check.output}}` — it looks like the template placeholder wasn't replaced with actual content.\n\nCould you share the actual output or error message you'd like me to check? For example:\n- Paste the error text directly\n- Describe what you're seeing\n- Share a screenshot or log output\n\nOnce I can see the real content, I can help diagnose the issue.",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqpugq6_we57fh",
+    "turnId": "turn_1782223489857_76clp9z",
+    "timestamp": "2026-06-23T14:04:49.857Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I don't see any content before `{{error-check.output}}` — it looks like the template placeholder wasn't replaced with actual content.\n\nCould you share the actual output or error message you'd like me to check? For example:\n- Paste the error text directly\n- Describe what you're seeing\n- Share a screenshot or log output\n\nOnce I can see the real content, I can help diagnose the issue."
+      }
+    ],
+    "tokenUsage": {
+      "input": 29248,
+      "output": 87,
+      "total": 29335
+    }
+  }
+]

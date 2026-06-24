@@ -1,0 +1,19 @@
+[
+  {
+    "id": "msg_1782219038305_6z4htsd",
+    "role": "user",
+    "content": "{{input-requirement.output}}",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqn76zx_c4pdqh",
+    "timestamp": "2026-06-23T12:50:38.305Z"
+  },
+  {
+    "id": "msg_1782219068488_1ga4gx7",
+    "role": "assistant",
+    "content": "",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqn76zx_c4pdqh",
+    "parts": [],
+    "timestamp": "2026-06-23T12:51:08.488Z"
+  }
+]

@@ -413,7 +413,31 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		);
 	}
 
-	// ─── Public: getHistory / clearHistory ────────────────────────────────────
+	// ─── Public: updateMessage ─────────────────────────────────────────────
+	/**
+	 * Update an existing message in cache + session file.
+	 * Used by workflow trace deltas (workflowExecutions/events/collectVariables)
+	 * which mutate an existing assistant message in-place.
+	 */
+	async updateMessage(
+		agentId: string,
+		sessionId: string | undefined,
+		messageId: string,
+		updates: Partial<ChatMessage>,
+	): Promise<void> {
+		await this._ensureHistoryLoaded();
+		const key = this._cacheKey(agentId, sessionId);
+		const messages = this._historyCache.get(key);
+		if (!messages) { return; }
+		const idx = messages.findIndex(m => m.id === messageId);
+		if (idx < 0) { return; }
+		// In-place update (mutate the cached object so panel.updateMessage also sees it)
+		Object.assign(messages[idx], updates);
+		// Persist
+		await this._persistToSessionFile(agentId, sessionId, messages);
+	}
+
+	// ─── Public: getHistory / clearHistory ──────────────────────────────────
 
 	async getHistory(
 		agentId: string,
@@ -824,13 +848,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				priorMessages = undefined;
 			}
 
+			this.logService.info(`[AgentChatService] Creating stream (agentId=${agentId}, priorMsgs=${priorMessages?.length ?? 0})`);
+			const t0_stream = Date.now();
 			const stream = this.driverService.executeFromChatOptions(
 				agentId,
 				message,
 				options,
 				priorMessages,
 			);
+			this.logService.info(`[AgentChatService] Stream created in ${Date.now() - t0_stream}ms, starting iteration`);
+			let _deltaCount = 0;
 			for await (const delta of stream) {
+				_deltaCount++;
 				if (controller.signal.aborted) {
 					break;
 				}
@@ -976,6 +1005,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				}
 				onDelta(delta);
 			}
+
+			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
 
 			// Finalization safety net: the stream has fully completed, so any
 			// tool call still lacking a status must have finished. Mark it 'done'

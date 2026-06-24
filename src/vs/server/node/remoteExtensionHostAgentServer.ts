@@ -40,6 +40,7 @@ import { IServerEnvironmentService, ServerParsedArgs } from './serverEnvironment
 import { IServerLifetimeService } from './serverLifetimeService.js';
 import { setupServerServices, SocketServer } from './serverServices.js';
 import { CacheControl, serveError, serveFile, WebClientServer } from './webClientServer.js';
+// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 const require = createRequire(import.meta.url);
 
 declare namespace vsda {

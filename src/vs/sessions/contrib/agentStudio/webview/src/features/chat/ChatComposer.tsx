@@ -28,6 +28,9 @@ interface ChatComposerProps {
 	}>) => void;
 	onCancel?: () => void;
 	isLoading?: boolean;
+	/** Whether a workflow is currently running. When true, the send button
+	 *  always shows the stop icon (instead of only when input is empty). */
+	hasRunningWorkflow?: boolean;
 	placeholder?: string;
 	/** Called when a special command (e.g. /plan) is executed */
 	onCommand?: (commandId: string, args: string) => void;
@@ -58,7 +61,7 @@ function estimateTokens(text: string | undefined | null): number {
 	return Math.ceil(text.length / 4);
 }
 
-export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder, onCommand }: ChatComposerProps): React.ReactElement {
+export function ChatComposer({ onSend, onCancel, isLoading = false, hasRunningWorkflow = false, placeholder, onCommand }: ChatComposerProps): React.ReactElement {
 	const [input, setInput] = useState('');
 	const [showProviderDropdown, setShowProviderDropdown] = useState(false);
 	const [showAgentDropdown, setShowAgentDropdown] = useState(false);
@@ -707,14 +710,14 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 		// 默认处理：Enter 发送，Escape 取消
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			if (isLoading && !input.trim() && attachments.length === 0 && skillChips.length === 0) { return; }
+			if (isLoading && !input.trim() && attachments.length === 0 && skillChips.length === 0 && !hasRunningWorkflow) { return; }
 			handleSend();
 		}
-		if (e.key === 'Escape' && isLoading && onCancel) {
+		if (e.key === 'Escape' && (isLoading || hasRunningWorkflow) && onCancel) {
 			e.preventDefault();
 			onCancel();
 		}
-	}, [showSlashMenu, filteredSlashItems, selectedSlashIndex, input, isLoading, onCancel, handleSend, skillChips.length]);
+	}, [showSlashMenu, filteredSlashItems, selectedSlashIndex, input, isLoading, hasRunningWorkflow, onCancel, handleSend, skillChips.length]);
 
 	// 恢复保存的输入区域高度
 	useEffect(() => {
@@ -1218,16 +1221,35 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 					{/* 右侧发送/取消按钮 */}
 					<button
-						onClick={isLoading ? (input.trim() || attachments.length > 0 ? handleSend : onCancel) : handleSend}
-						disabled={!input.trim() && attachments.length === 0 && !isLoading}
-						className={`chat-send-circle ${isLoading && !input.trim() && attachments.length === 0 ? 'chat-cancel-circle' : ''}`}
-						title={isLoading ? (input.trim() || attachments.length > 0 ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)'}
+						onClick={() => {
+							if (hasRunningWorkflow && onCancel) {
+								onCancel();
+							} else if (isLoading) {
+								if (input.trim() || attachments.length > 0) {
+									handleSend();
+								} else if (onCancel) {
+									onCancel();
+								}
+							} else {
+								handleSend();
+							}
+						}}
+						disabled={!hasRunningWorkflow && !input.trim() && attachments.length === 0 && !isLoading}
+						className={`chat-send-circle ${hasRunningWorkflow || (isLoading && !input.trim() && attachments.length === 0) ? 'chat-cancel-circle' : ''}`}
+						title={hasRunningWorkflow ? '停止工作流 (Escape)' : (isLoading ? (input.trim() || attachments.length > 0 ? '发送新消息 (自动停止当前)' : '停止生成 (Escape)') : '发送 (Enter)')}
 					>
-						{isLoading && !input.trim() ? (
+						{hasRunningWorkflow ? (
+							/* 停止图标：明显的方形停止符号 */
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+								<rect x="5" y="5" width="14" height="14" rx="3" />
+							</svg>
+						) : isLoading ? (
+							/* 停止图标（流式输出时）*/
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
 								<rect x="6" y="6" width="12" height="12" rx="2" />
 							</svg>
 						) : (
+							/* 发送图标 */
 							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
 								<line x1="12" y1="19" x2="12" y2="5" />
 								<polyline points="5 12 12 5 19 12" />
@@ -1239,7 +1261,7 @@ export function ChatComposer({ onSend, onCancel, isLoading = false, placeholder,
 
 			{/* 快捷键提示 */}
 			<div className="composer-hint">
-				Enter 发送，Shift + Enter 换行{isLoading ? '，Escape 停止' : ''}
+				Enter 发送，Shift + Enter 换行{isLoading || hasRunningWorkflow ? '，Escape 停止' : ''}
 			</div>
 		</div>
 	);

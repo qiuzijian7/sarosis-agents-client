@@ -164,12 +164,6 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// `reasoningUIType` falls through to the `'switch'` branch.
 			const supportsReasoning = this._inferSupportsReasoning(id, metadata);
 			const supportsImages = this._inferSupportsImages(id, metadata);
-			// [VISION-DEBUG] node 1: bridge.listModels — raw id → inferred capability
-			// eslint-disable-next-line no-console
-			console.log(
-				`[VISION-DEBUG][bridge.listModels] vendor=${this.vendor} qualifiedId=${id} ` +
-				`bareId=${this._bareModelId(id)} supportsImages=${supportsImages} supportsReasoning=${supportsReasoning}`,
-			);
 			result.push({
 				id,                                       // qualified id, ready for sendChatRequest
 				name: this._friendlyModelName(id, metadata),
@@ -506,17 +500,25 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			this._logService.info(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
 		}
 
-		try {
-			const response = await this._lmService.sendChatRequest(
-				modelId,
-				meta.extension,                   // initiating extension = the provider extension itself
-				lmMessages,
-				requestOptions,
-				cts.token,
-			);
+	try {
+		this._logService.info(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})`);
+		const t0_sendRequest = Date.now();
+		const response = await this._lmService.sendChatRequest(
+			modelId,
+			meta.extension,                   // initiating extension = the provider extension itself
+			lmMessages,
+			requestOptions,
+			cts.token,
+		);
+		this._logService.info(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
 
-			let capturedResponseId: string | undefined;
-			for await (const part of response.stream) {
+		let capturedResponseId: string | undefined;
+		let _firstPartReceived = false;
+		for await (const part of response.stream) {
+			if (!_firstPartReceived) {
+				_firstPartReceived = true;
+				this._logService.info(`[LMBridge] sendChatRequest: first stream part received in ${Date.now() - t0_sendRequest}ms`);
+			}
 				const parts = Array.isArray(part) ? part : [part];
 				for (const p of parts) {
 					// 尝试从 part 上捕获响应流 id（部分扩展会在 part 上挂 id/responseId）。

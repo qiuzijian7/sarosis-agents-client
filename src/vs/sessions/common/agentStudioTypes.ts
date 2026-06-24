@@ -321,6 +321,11 @@ export interface Agent {
 	status?: AgentStatus;
 	sortOrder?: number;
 
+	/** 资源版本号（商城下载/升级溯源用，语义化版本） */
+	version?: string;
+	/** 商城 storeId（= slug，升级检查溯源用） */
+	storeId?: string;
+
 	/** Agent type: planner (can orchestrate) or worker (default). */
 	agentType?: AgentType;
 
@@ -400,11 +405,10 @@ export interface AgentMemoryConfig {
 	/**
 	 * Recall scope:
 	 *   - 'agent'     → only this agent's own L1 memory (strictest isolation)
-	 *   - 'workspace' → shared across all agents in the workspace
-	 *   - 'global'    → whole-library (legacy behavior)
+	 *   - 'global'    → whole-library (cross-agent sharing)
 	 * Defaults to 'agent' when undefined.
 	 */
-	scope?: 'agent' | 'workspace' | 'global';
+	scope?: 'agent' | 'global';
 	entries: Array<{
 		id: string;
 		key: string;
@@ -803,6 +807,22 @@ export interface ChatMessage {
 	 * rationale as `subAgents` — webview-only rendering, opaque on the host.
 	 */
 	askUsers?: any[];
+	/**
+	 * Live workflow execution state keyed by executionId.
+	 * Persisted so the workflow trace UI survives window reload.
+	 * Opaque on the host; structured in the webview by LiveWorkflowExecution.
+	 */
+	workflowExecutions?: Record<string, any>;
+	/**
+	 * Ordered log of workflow lifecycle events (start, end, subagent_start, …).
+	 * Persisted so the webview can rebuild the event log after reload.
+	 */
+	workflowEvents?: any[];
+	/**
+	 * Live collect-variable slots keyed by variable name.
+	 * Persisted so the webview can restore partially-filled forms after reload.
+	 */
+	collectVariables?: Record<string, any>;
 }
 
 export interface ToolCall {

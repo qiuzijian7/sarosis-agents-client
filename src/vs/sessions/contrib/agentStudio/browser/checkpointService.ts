@@ -198,7 +198,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 
 		if (!baseDir) {
 			// Fallback: user-data dir keeps the feature alive for virtual workspaces.
-			baseDir = joinPath(this.environmentService.userRoamingDataHome, 'saros-checkpoints');
+			baseDir = joinPath(this.environmentService.userRoamingDataHome, '.saros', 'checkpoints');
 		}
 
 		return joinPath(baseDir, '.sarosworkspace', 'checkpoints', agentId, sessionId);

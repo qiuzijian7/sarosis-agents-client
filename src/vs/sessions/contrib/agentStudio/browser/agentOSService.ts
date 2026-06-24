@@ -430,41 +430,41 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}
 
 		try {
-		// ─── Path 1: 用户明确选择了 Model → 直通模式 ───────────────
-		// 当用户在聊天框中显式选择了 Provider/Model 时，应直接使用该 Provider
-		// 的 chat() 方法，而不是走 ExecutionProvider（它可能是 example stub）。
-		const activeModelProvider = this._getActiveModelProvider();
-		if (activeModelProvider && this._activeSelection?.modelId) {
-			this._logService.info(
-				`[AgentOS] Active model selection detected (${this._activeSelection.providerId}/${this._activeSelection.modelId}), `
-				+ `using direct model call instead of ExecutionProvider`,
-			);
-			yield* this._executeWithFallbackDirectly(request);
-			return;
-		}
-
-		// ─── Path 2: 使用 ExecutionProvider（完整 Agent Loop）────────
-		const executionProvider = this.getActiveExecutionProvider();
-		if (executionProvider) {
-			this._logService.info(`[AgentOS] Using ExecutionProvider: ${executionProvider.id}`);
-			try {
-				yield* this._executeWithFallback(
-					() => executionProvider.runAgentLoop(request, this.getSlotRegistry()),
-					request,
+			// ─── Path 1: 用户明确选择了 Model → 直通模式 ───────────────
+			// 当用户在聊天框中显式选择了 Provider/Model 时，应直接使用该 Provider
+			// 的 chat() 方法，而不是走 ExecutionProvider（它可能是 example stub）。
+			const activeModelProvider = this._getActiveModelProvider();
+			if (activeModelProvider && this._activeSelection?.modelId) {
+				this._logService.info(
+					`[AgentOS] Active model selection detected (${this._activeSelection.providerId}/${this._activeSelection.modelId}), `
+					+ `using direct model call instead of ExecutionProvider`,
 				);
-			} catch (error) {
-				this._logService.error('[AgentOS] ExecutionProvider failed, trying fallback', error);
-				yield {
-					type: 'text',
-					content: `\n[System: ExecutionProvider failed, falling back to direct mode]\n`,
-				};
 				yield* this._executeWithFallbackDirectly(request);
+				return;
 			}
-			return;
-		}
 
-		// ─── Path 3: 退化模式：直接调用 Model Provider（带 Fallback）──
-		yield* this._executeWithFallbackDirectly(request);
+			// ─── Path 2: 使用 ExecutionProvider（完整 Agent Loop）────────
+			const executionProvider = this.getActiveExecutionProvider();
+			if (executionProvider) {
+				this._logService.info(`[AgentOS] Using ExecutionProvider: ${executionProvider.id}`);
+				try {
+					yield* this._executeWithFallback(
+						() => executionProvider.runAgentLoop(request, this.getSlotRegistry()),
+						request,
+					);
+				} catch (error) {
+					this._logService.error('[AgentOS] ExecutionProvider failed, trying fallback', error);
+					yield {
+						type: 'text',
+						content: `\n[System: ExecutionProvider failed, falling back to direct mode]\n`,
+					};
+					yield* this._executeWithFallbackDirectly(request);
+				}
+				return;
+			}
+
+			// ─── Path 3: 退化模式：直接调用 Model Provider（带 Fallback）──
+			yield* this._executeWithFallbackDirectly(request);
 		} finally {
 			// v39: restore the original selection after the turn completes.
 			if (request.modelOverride?.providerId && request.modelOverride?.modelId) {
@@ -544,11 +544,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// 直接用 AgentDriver 在 enrichedRequest 上提前计算好的字段，
 				// 避免 OSService 重复访问 IAgentStudioService（它没有这个依赖）。
 				// 缺省时按 'agent' 严格隔离，与 AgentDriver 默认对齐。
-				const recallScope: 'agent' | 'workspace' | 'global' = request.memoryScope ?? 'agent';
-				const recallAllowedKeys = request.memoryAllowedSessionKeys;
-				const recallOptions = recallScope === 'workspace'
-					? { scope: recallScope, allowedSessionKeys: recallAllowedKeys }
-					: { scope: recallScope };
+				const recallScope: 'agent' | 'global' = request.memoryScope ?? 'agent';
+				const recallOptions = { scope: recallScope };
 
 				const memoryContext = await memoryProvider.loadContext(
 					request.agentId,
@@ -746,8 +743,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const endedToolIds = new Set<string>();
 
 			try {
+				this._logService.info(`[AgentOS] modelProvider.chat: creating stream...`);
+				const t0_modelCall = Date.now();
 				const stream = modelProvider.chat(selection.modelId, messages, modelOptions, context);
+				let _firstDeltaReceived = false;
 				for await (const delta of stream) {
+					if (!_firstDeltaReceived) {
+						_firstDeltaReceived = true;
+						this._logService.info(`[AgentOS] modelProvider.chat: first delta received in ${Date.now() - t0_modelCall}ms`);
+					}
 					// ─── 捕获响应流 id（抓包对齐）──────────────────────────────
 					// 抓包证据：响应流每个 chunk 的 id 相同，且 = 下一次请求的
 					// previous_response_id。任意 delta 携带 responseId 即记下，供下一轮
@@ -821,6 +825,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						}
 					}
 				}
+				this._logService.info(`[AgentOS] modelProvider.chat: stream ended after ${Date.now() - t0_modelCall}ms (firstDelta=${_firstDeltaReceived ? 'yes' : 'no'})`);
 			} catch (error) {
 				this._logService.error(`[AgentOS] Model call failed on iteration ${iteration}:`, error);
 				// 如果是第一次迭代失败，尝试 fallback
@@ -1505,7 +1510,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * Skipped entries (validation failures) are yielded synchronously up
 	 * front so the UI can mark them done immediately.
 	 */
-	private async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
+	private async * _executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
 		// v17: same as the serial path — push the worktree down to tool providers
 		// (e.g. BuiltinToolProvider) so sub-agents inherit it.
 		if (worktreePath) {
@@ -2625,7 +2630,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * @param primaryExecution 主执行函数
 	 * @param request 请求参数
 	 */
-	private async *_executeWithFallback(
+	private async * _executeWithFallback(
 		primaryExecution: () => AsyncIterable<IChatStreamDelta>,
 		request: IAgentTurnRequest,
 	): AsyncIterable<IChatStreamDelta> {
@@ -2716,7 +2721,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		return this._modelProviders.find(p => p.id === this._activeSelection!.providerId);
 	}
 
-	private *_fallbackToDirectChat(request: IAgentTurnRequest): Generator<IChatStreamDelta, any, any> {
+	private * _fallbackToDirectChat(request: IAgentTurnRequest): Generator<IChatStreamDelta, any, any> {
 		// Phase 1: 直通模式 — 通过现有 agentChatService 发送
 		// 此方法在 Phase 2 重构 agentChatService 后可移除
 		this._logService.info('[AgentOS] Fallback: delegating to AgentChatService');

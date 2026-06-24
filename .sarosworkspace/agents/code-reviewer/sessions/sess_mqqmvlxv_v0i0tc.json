@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782218497845_u1qdvfo",
+    "role": "user",
+    "content": "There are no pending kanban tasks. I don't have a specific task assigned, and `{{input-requirement.output}}` was empty.\n\nCould you please tell me what you'd like me to work on? For example:\n\n- A specific file or feature in the VS Code / sarosis-agents-client codebase?\n- A bug to investigate?\n- A feature to implement?\n- A code review?\n- Something else?\n\nJust describe what you need and I'll get started right away.",
+    "agentId": "code-reviewer",
+    "agentSessionId": "sess_mqqmvlxv_v0i0tc",
+    "timestamp": "2026-06-23T12:41:37.845Z"
+  },
+  {
+    "id": "msg_1782218502261_0_izu4m",
+    "role": "assistant",
+    "content": "It looks like you've pasted some template text along with the skill activation messages. The `{{input-requirement.output}}` looks like an unresolved template variable.\n\nI'm ready to help! Since you're in the `sarosis-agents-client` workspace, just \n- **Code review** — point me at a file, diff, or PR\n- **Feature implementation** — describe what you want built\n- **Bug investigation** — tell me what's broken\n- **Refactoring / analysis** — point me at the relevant code\n- **Something else entirely**\n\nWhat would you like to work on?",
+    "agentId": "code-reviewer",
+    "agentSessionId": "sess_mqqmvlxv_v0i0tc",
+    "turnId": "turn_1782218502261_40nnme7",
+    "timestamp": "2026-06-23T12:41:42.261Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "It looks like you've pasted some template text along with the skill activation messages. The `{{input-requirement.output}}` looks like an unresolved template variable.\n\nI'm ready to help! Since you're in the `sarosis-agents-client` workspace, just \n- **Code review** — point me at a file, diff, or PR\n- **Feature implementation** — describe what you want built\n- **Bug investigation** — tell me what's broken\n- **Refactoring / analysis** — point me at the relevant code\n- **Something else entirely**\n\nWhat would you like to work on?"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29715,
+      "output": 129,
+      "total": 29844
+    }
+  }
+]

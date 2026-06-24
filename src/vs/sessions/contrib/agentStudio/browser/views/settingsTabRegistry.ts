@@ -7,10 +7,8 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IExtensionService } from '../../../../../workbench/services/extensions/common/extensions.js';
-// @ts-ignore
-import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 
-// ─── Contribution Point Types ─────────────────────────────────────────────────
+// ─── Contribution Point Types ─────────────────────────────────────────
 
 /**
  * Supported field types for the agentStudioSettingsTab contribution point.
@@ -117,7 +115,7 @@ export interface ISettingsTabDescriptor {
  */
 export type AgentStudioSettingsTabContribution = ISettingsTabDescriptor | ISettingsTabDescriptor[];
 
-// ─── Registry ─────────────────────────────────────────────────────────────────
+// ─── Registry ─────────────────────────────────────────────────────────
 
 export const ISettingsTabRegistry = createDecorator<ISettingsTabRegistry>('settingsTabRegistry');
 

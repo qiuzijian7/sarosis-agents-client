@@ -103,6 +103,11 @@ export interface StreamChunk {
 	 * accumulateChunk 据此把 StreamState.compactedBaseline 下调，让圆环进度条立即回落。
 	 */
 	compactedInputTokens?: number;
+	/** 上下文压缩详情（type === 'context_compacted' 时携带） */
+	compressionOriginalCount?: number;
+	compressionCompressedCount?: number;
+	compressionTokensSaved?: number;
+	compressionDurationMs?: number;
 }
 
 /**

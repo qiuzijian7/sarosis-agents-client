@@ -294,6 +294,11 @@ export interface IChatStreamChunk {
 	 * 详见 common/providers.ts IChatStreamDelta.compactedInputTokens。
 	 */
 	readonly compactedInputTokens?: number;
+	/** 上下文压缩详情（type === 'context_compacted' 时携带） */
+	readonly compressionOriginalCount?: number;
+	readonly compressionCompressedCount?: number;
+	readonly compressionTokensSaved?: number;
+	readonly compressionDurationMs?: number;
 }
 
 export interface IChatStreamCompletePayload {

@@ -20,7 +20,9 @@ declare global {
 
 	// --- timeout / interval (available in all contexts, but different signatures in node.js vs web)
 
-	interface TimeoutHandle { readonly _: never; /* this is a trick that seems needed to prevent direct number assignment */ }
+	// ← 修改为空接口，兼容 TypeScript 6.0+ 中 setTimeout 返回的任何类型
+	// 原 _: never 技巧在 TS 6.0 中导致 TS2741 错误
+	interface TimeoutHandle {}
 	type Timeout = TimeoutHandle;
 	function setTimeout(handler: string | Function, timeout?: number, ...arguments: any[]): Timeout;
 	function clearTimeout(timeout: Timeout | undefined): void;

@@ -26,7 +26,7 @@ function makeToolCall(overrides: Partial<IToolCall> = {}): IToolCall {
 	return {
 		id: 'tc-1',
 		name: 'write_to_file',
-		status: 'completed',
+		status: 'success',
 		displayName: 'Write File',
 		renderType: 'CodeEditor',
 		defaultShow: true,
@@ -199,7 +199,7 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 
 		test('completed tool call with display name and render type', () => {
 			const tc = makeToolCall({
-				status: 'completed',
+				status: 'success',
 				displayName: 'Run Terminal',
 				renderType: 'RunTerminal',
 				result: 'Command executed successfully',

@@ -15,7 +15,7 @@
  *      (matches cc-wf-studio behaviour; the LLM sees the unresolved token).
  *--------------------------------------------------------------------------------------------*/
 
-export const VARIABLE_PATTERN = /\{\{(\$?\w+)\}\}/g;
+export const VARIABLE_PATTERN = /\{\{(\$?[\w-]+(?:\.[\w-]+)*)\}\}/g;
 
 /**
  * Extract the set of variable names referenced inside a template string.

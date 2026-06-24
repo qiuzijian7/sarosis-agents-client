@@ -143,12 +143,14 @@ export abstract class BaseWindow extends Disposable {
 				// this can happen for timeouts on unfocused windows
 				let didClear = false;
 
-				const handle = (window as { vscodeOriginalSetTimeout?: typeof window.setTimeout }).vscodeOriginalSetTimeout?.apply(this, [(...args: unknown[]) => {
+				// 直接使用函数调用替代 .apply()，避免 TypeScript 6.0 中 apply 的参数类型检查问题
+				const vsCodeSetTimeout = (window as { vscodeOriginalSetTimeout?: typeof window.setTimeout }).vscodeOriginalSetTimeout;
+				const handle = vsCodeSetTimeout?.((...callbackArgs: unknown[]) => {
 					if (didClear) {
 						return;
 					}
-					handlerFn(...args);
-				}, timeout, ...args]);
+					handlerFn(...callbackArgs);
+				}, timeout, ...args as any[]);
 
 				const timeoutDisposable = toDisposable(() => {
 					didClear = true;

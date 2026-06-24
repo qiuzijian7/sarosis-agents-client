@@ -125,6 +125,7 @@ export class WebSocketProtocolServer extends Disposable implements IProtocolServ
 			import('http'),
 			import('url'),
 		]);
+		// @ts-ignore TS2740 - @types/ws mismatch with built-in WebSocket type
 		return new WebSocketProtocolServer(options, logService, ws, http, url);
 	}
 

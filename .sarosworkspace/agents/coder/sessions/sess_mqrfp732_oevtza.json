@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782266907465_fmwubqd",
+    "role": "user",
+    "content": "需求描述：test10",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqrfp732_oevtza",
+    "timestamp": "2026-06-24T02:08:27.465Z"
+  },
+  {
+    "id": "msg_1782266913123_0_ayf4g",
+    "role": "assistant",
+    "content": "我看到您提供了一个需求描述\"test10\"，但这只是一个简单的标题或描述，缺少详细的背景信息。\n\n请问您希望我帮您做什么？例如：\n- 在 TAPD 中创建一个标题为\"test10\"的需求？\n- 在本地创建相关的代码文件或文档？\n- 分析或完善这个需求描述？\n- 其他操作？\n\n请告诉我您的具体需求，我会帮您完成。",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqrfp732_oevtza",
+    "turnId": "turn_1782266913123_5uhm4oo",
+    "timestamp": "2026-06-24T02:08:33.123Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "我看到您提供了一个需求描述\"test10\"，但这只是一个简单的标题或描述，缺少详细的背景信息。\n\n请问您希望我帮您做什么？例如：\n- 在 TAPD 中创建一个标题为\"test10\"的需求？\n- 在本地创建相关的代码文件或文档？\n- 分析或完善这个需求描述？\n- 其他操作？\n\n请告诉我您的具体需求，我会帮您完成。"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29307,
+      "output": 89,
+      "total": 29396
+    }
+  }
+]

@@ -61,6 +61,7 @@ export class EditorWorkerService extends Disposable implements IEditorWorkerServ
 
 	public static readonly workerDescriptor = new WebWorkerDescriptor({
 		esmModuleLocation: () => FileAccess.asBrowserUri('vs/editor/common/services/editorWebWorkerMain.js'),
+		// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 		esmModuleLocationBundler: () => new URL('../../common/services/editorWebWorkerMain.ts?esm', import.meta.url),
 		label: 'editorWorkerService'
 	});

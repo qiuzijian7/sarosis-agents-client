@@ -30,13 +30,6 @@
 				"displayName": "CodeBuddy"
 			}
 		],
-		"agentCapabilities": [
-			{
-				"capability": "model",
-				"provider": "codebuddy-provider",
-				"priority": 100
-			}
-		],
 		"configuration": {
 			"type": "object",
 			"title": "CodeBuddy Provider",

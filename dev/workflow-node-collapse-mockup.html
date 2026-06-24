@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Node Card 收缩/展开按钮 — Mockup</title>
+<style>
+:root {
+	--ec-bg-primary: #1e1e1e;
+	--ec-bg-secondary: #252525;
+	--ec-bg-tertiary: #2d2d2d;
+	--ec-border-primary: #333;
+	--ec-text-primary: #e0e0e0;
+	--ec-text-secondary: #888;
+	--vscode-textCodeBlock-background: #1a1a1a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+	background: var(--ec-bg-primary);
+	color: var(--ec-text-primary);
+	font-family: -apple-system, "Segoe UI", "Segoe WPC", sans-serif;
+	font-size: 13px;
+	padding: 20px;
+}
+.mockup-container { max-width: 760px; margin: 0 auto; }
+.mockup-label {
+	font-size: 14px; font-weight: 600; color: #aaa;
+	margin: 30px 0 12px 0; padding-bottom: 6px;
+	border-bottom: 1px solid #333;
+}
+.mockup-label:first-child { margin-top: 0; }
+.mockup-label .tag {
+	font-size: 11px; font-weight: 400;
+	padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+}
+.mockup-label .tag.before { background: rgba(248,113,113,0.15); color: #f87171; }
+.mockup-label .tag.after { background: rgba(74,222,128,0.15); color: #4ade80; }
+
+/* ═══ 共用样式 ═══ */
+.wf-card {
+	border-radius: 10px; overflow: hidden;
+	border: 1px solid var(--ec-border-primary);
+	background: var(--ec-bg-secondary);
+}
+.wf-card.completed { border-color: rgba(96,165,250,0.3); }
+.wf-header {
+	display: flex; align-items: center; gap: 10px;
+	padding: 12px 14px; background: var(--ec-bg-tertiary);
+}
+.wf-toggle { color: #666; font-size: 11px; cursor: pointer; }
+.wf-icon { font-size: 15px; }
+.wf-name { font-weight: 600; font-size: 13px; flex: 1; }
+.wf-status-badge {
+	display: inline-flex; align-items: center; gap: 5px;
+	padding: 3px 10px; border-radius: 20px;
+	font-size: 11px; font-weight: 500;
+}
+.wf-status-badge.completed {
+	background: rgba(96,165,250,0.12); color: #60a5fa;
+	border: 1px solid rgba(96,165,250,0.3);
+}
+.wf-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Node Card ── */
+.node-card {
+	border-radius: 8px; overflow: hidden;
+	border: 1px solid var(--ec-border-primary);
+	transition: border-color 0.2s ease;
+}
+.node-card.running {
+	border-color: rgba(74,222,128,0.4);
+	box-shadow: 0 0 0 1px rgba(74,222,128,0.15);
+}
+.node-card.done { border-color: rgba(96,165,250,0.3); }
+.node-header {
+	display: flex; align-items: center; gap: 10px;
+	padding: 10px 12px; background: var(--ec-bg-tertiary);
+	user-select: none;
+}
+.node-type-icon {
+	width: 28px; height: 28px; border-radius: 6px;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 14px; flex-shrink: 0;
+}
+.node-type-icon.agent { background: rgba(168,85,247,0.15); color: #a855f7; }
+.node-info { flex: 1; min-width: 0; }
+.node-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
+.node-task { color: #888; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-status { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.node-status .spinner {
+	width: 14px; height: 14px;
+	border: 2px solid rgba(74,222,128,0.2);
+	border-top-color: #4ade80; border-radius: 50%;
+	animation: wf-spin 0.8s linear infinite;
+}
+@keyframes wf-spin { to { transform: rotate(360deg); } }
+.node-status .check { color: #60a5fa; font-size: 14px; }
+
+/* ═══════════════════════════════════════════════════════════
+   收缩/展开按钮 — 核心新样式
+   ═══════════════════════════════════════════════════════════ */
+/* 按钮容器 */
+.node-collapse-btn {
+	width: 22px; height: 22px;
+	border-radius: 4px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; user-select: none;
+	flex-shrink: 0;
+	margin-right: 4px;
+	border: none;
+	background: transparent;
+	color: #666;
+	font-size: 12px;
+	line-height: 1;
+	transition: background 0.15s ease, color 0.15s ease;
+}
+.node-collapse-btn:hover {
+	background: rgba(255,255,255,0.08);
+	color: #bbb;
+}
+.node-collapse-btn:active {
+	background: rgba(255,255,255,0.12);
+	color: #fff;
+}
+/* 展开状态 → 显示 ▼ (chevron down) */
+.node-collapse-btn.expanded .icon-chevron::before { content: "▼"; }
+/* 收缩状态 → 显示 ◀ (chevron right) */
+.node-collapse-btn.collapsed .icon-chevron::before { content: "▶"; }
+.icon-chevron { font-size: 9px; }
+
+/* 收缩后的 body */
+.node-body {
+	padding: 0 12px 12px 12px;
+	transition: opacity 0.2s ease, max-height 0.25s ease;
+}
+/* 当 node-card 有 collapsed 类时，隐藏 body */
+.node-card.collapsed .node-body {
+	display: none;
+}
+
+/* 收缩后显示摘要行 */
+.node-summary {
+	display: none; /* 默认隐藏 */
+	padding: 4px 12px 8px 12px;
+	font-size: 11px;
+	color: #888;
+}
+.node-card.collapsed .node-summary {
+	display: block;
+}
+.node-summary-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 100%;
+}
+.node-summary-count {
+	color: #60a5fa;
+	font-weight: 500;
+	margin-left: 4px;
+}
+
+/* ── Stream 样式（复用之前的） ── */
+.node-stream {
+	margin-top: 8px;
+	display: flex; flex-direction: column; gap: 6px;
+	font-size: 12px; color: #aaa; line-height: 1.6;
+}
+.stream-text { padding: 0 2px; }
+.stream-text p { margin-bottom: 4px; }
+.stream-text p:last-child { margin-bottom: 0; }
+
+.stream-tool-card {
+	border-radius: 6px;
+	border: 1px solid var(--ec-border-primary, #333);
+	background: rgba(255,255,255,0.02);
+	overflow: hidden;
+	margin: 2px 0;
+}
+.stream-tool-card.done { border-color: rgba(96,165,250,0.2); }
+.stream-tool-card.error { border-color: rgba(248,113,113,0.3); }
+.stream-tool-header {
+	display: flex; align-items: center; gap: 8px;
+	padding: 7px 10px; cursor: pointer; user-select: none;
+}
+.stream-tool-header:hover { background: rgba(255,255,255,0.03); }
+.stream-tool-icon {
+	width: 20px; height: 20px; border-radius: 4px;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 11px; flex-shrink: 0;
+}
+.stream-tool-icon.file { background: rgba(96,165,250,0.15); color: #60a5fa; }
+.stream-tool-icon.search { background: rgba(168,85,247,0.15); color: #a855f7; }
+.stream-tool-icon.code { background: rgba(20,184,166,0.15); color: #14b8a6; }
+.stream-tool-title { flex: 1; font-size: 12px; font-weight: 500; color: #ccc; }
+.stream-tool-badge {
+	font-size: 10px; padding: 1px 7px; border-radius: 10px;
+	display: inline-flex; align-items: center; gap: 4px;
+}
+.stream-tool-badge.done { background: rgba(96,165,250,0.12); color: #60a5fa; }
+.stream-tool-badge.error { background: rgba(248,113,113,0.12); color: #f87171; }
+.stream-tool-detail {
+	padding: 8px 10px;
+	background: var(--vscode-textCodeBlock-background, #1a1a1a);
+	font-size: 11px; color: #888;
+	max-height: 120px; overflow-y: auto;
+	border-top: 1px solid rgba(255,255,255,0.04);
+	font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+	white-space: pre-wrap; word-break: break-all;
+}
+.stream-tool-detail .label { color: #666; font-weight: 600; }
+.stream-tool-detail .content { color: #aaa; }
+.stream-tool-detail .result-ok { color: #4ade80; }
+.streaming-cursor {
+	display: inline-block;
+	color: #4ade80;
+	animation: blink 1s steps(2) infinite;
+	font-weight: bold;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── Timeline ── */
+.wf-timeline {
+	display: flex; align-items: center; gap: 4px;
+	padding: 8px 14px;
+	border-top: 1px solid rgba(255,255,255,0.04);
+	overflow-x: auto; flex-wrap: nowrap;
+}
+.wf-timeline-item {
+	padding: 2px 8px; border-radius: 10px;
+	font-size: 11px; white-space: nowrap; flex-shrink: 0;
+}
+.wf-timeline-item.active { background: rgba(74,222,128,0.12); color: #4ade80; }
+.wf-timeline-item.done { background: rgba(96,165,250,0.12); color: #60a5fa; }
+.wf-timeline-arrow { color: #444; font-size: 10px; }
+
+/* 说明框 */
+.note {
+	background: rgba(96,165,250,0.05);
+	border: 1px solid rgba(96,165,250,0.15);
+	border-radius: 8px;
+	padding: 12px 16px;
+	margin-bottom: 20px;
+	font-size: 12px;
+	color: #8ab4f8;
+	line-height: 1.6;
+}
+.note strong { color: #60a5fa; }
+.note ul { margin: 6px 0 0 16px; }
+.note li { margin-bottom: 3px; }
+.note code {
+	background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 3px;
+	font-size: 11px;
+}
+
+/* 交互提示标注 */
+.highlight-circle {
+	position: relative;
+}
+.highlight-circle::after {
+	content: "";
+	position: absolute;
+	top: -4px; right: -4px;
+	width: 26px; height: 26px;
+	border: 2px solid #f59e0b;
+	border-radius: 4px;
+	animation: pulse-highlight 1.5s ease-in-out infinite;
+	pointer-events: none;
+}
+@keyframes pulse-highlight {
+	0%, 100% { border-color: rgba(245,158,11,0.6); box-shadow: 0 0 0 0 rgba(245,158,11,0.2); }
+	50% { border-color: rgba(245,158,11,1); box-shadow: 0 0 6px 2px rgba(245,158,11,0.25); }
+}
+</style>
+</head>
+<body>
+<div class="mockup-container">
+
+<div class="note">
+	<strong>新增功能：</strong>每个 Node 节点卡片的 header 右侧增加<strong>收缩/展开按钮</strong>（▼ / ▶）。
+	<ul>
+		<li><strong>默认展开</strong>：显示完整内容（文本流 + 工具卡片）</li>
+		<li><strong>用户点击收缩</strong>：隐藏 body 内容，仅保留 header + 一行摘要</li>
+		<li><strong>关键行为</strong>：用户手动收缩后，<strong>不再自动展开</strong>（即使有新的流式数据到达）</li>
+		<li><strong>摘要行</strong>：收缩后显示简要信息，如"已完成 3 个工具调用"</li>
+	</ul>
+</div>
+
+<!-- ══════ 场景1：全部展开（默认状态） ══════ -->
+<div class="mockup-label">
+	场景 1：默认 — 全部展开 <span class="tag after">DEFAULT</span>
+</div>
+
+<div class="wf-card completed">
+	<div class="wf-header">
+		<span class="wf-toggle">▼</span>
+		<span class="wf-icon">🔀</span>
+		<span class="wf-name">需求开发测试流程</span>
+		<span class="wf-status-badge completed">✓ 已完成</span>
+	</div>
+	<div class="wf-body">
+
+		<!-- Node 1: 展开 -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">需求分析</div>
+					<div class="node-task">分析用户需求，拆解开发任务</div>
+				</div>
+				<!-- ★ 收缩/展开按钮（展开态 ▼）-->
+				<button class="node-collapse-btn expanded highlight-circle" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<!-- body 可见 -->
+			<div class="node-body">
+				<div class="node-stream">
+					<div class="stream-text"><p>让我先分析需求文档，了解需要实现的功能...</p></div>
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon file">📄</div>
+							<span class="stream-tool-title">读取文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/docs/requirements.md</span>
+<span class="label">result:</span> <span class="result-ok">读取成功 (248行)</span></div>
+					</div>
+					<div class="stream-text"><p>让我搜索一下现有代码中是否有类似的实现...</p></div>
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon search">🔍</div>
+							<span class="stream-tool-title">搜索代码</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">query:</span> <span class="content">user authentication login</span>
+<span class="label">result:</span> <span class="result-ok">找到 3 处匹配</span></div>
+					</div>
+					<div class="stream-text">
+						<p>根据分析，需要实现以下功能模块：</p>
+						<p>1. 用户登录注册模块</p>
+						<p>2. 数据看板模块</p>
+						<p>3. 订单管理模块</p>
+						<p>现在将分析结果写入文档...</p>
+					</div>
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon file">📝</div>
+							<span class="stream-tool-title">写入文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/docs/analysis.md</span>
+<span class="label">result:</span> <span class="result-ok">写入成功 (186行)</span></div>
+					</div>
+					<div class="stream-text"><p>需求分析完成，已将结果保存到 <code>analysis.md</code>。</p></div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node 2: 展开（运行中） -->
+		<div class="node-card running">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">代码开发</div>
+					<div class="node-task">根据需求分析结果实现代码</div>
+				</div>
+				<button class="node-collapse-btn expanded" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="spinner"></span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<div class="stream-text"><p>开始实现用户登录注册模块，先创建基础文件结构...</p></div>
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon file">📝</div>
+							<span class="stream-tool-title">写入文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/src/auth/login.ts</span>
+<span class="label">result:</span> <span class="result-ok">写入成功 (124行)</span></div>
+					</div>
+					<div class="stream-text">
+						<p>文件创建成功，现在修改路由配置以接入新的登录页面...</p>
+						<p>正在等待文件编辑完成<span class="streaming-cursor">|</span></p>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node 3: 展开（待执行） -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">测试验证</div>
+					<div class="node-task">运行单元测试验证功能</div>
+				</div>
+				<button class="node-collapse-btn expanded" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<div class="stream-text"><p>所有测试通过，测试验证完成。</p></div>
+				</div>
+			</div>
+		</div>
+
+	</div>
+	<div class="wf-timeline">
+		<span class="wf-timeline-item done">start</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">需求分析</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item active">代码开发</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">测试验证</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">end</span>
+	</div>
+</div>
+
+
+<!-- ══════ 场景2：用户手动收缩了 Node 1 ══════ -->
+<div class="mockup-label">
+	场景 2：用户点击收缩了「需求分析」节点 <span class="tag after">COLLAPSED BY USER</span>
+</div>
+
+<div class="wf-card completed">
+	<div class="wf-header">
+		<span class="wf-toggle">▼</span>
+		<span class="wf-icon">🔀</span>
+		<span class="wf-name">需求开发测试流程</span>
+		<span class="wf-status-badge completed">✓ 已完成</span>
+	</div>
+	<div class="wf-body">
+
+		<!-- Node 1: 已被用户手动收缩 → collapsed 类 + 摘要行 -->
+		<div class="node-card collapsed done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">需求分析</div>
+					<div class="node-task">分析用户需求，拆解开发任务</div>
+				</div>
+				<!-- ★ 收缩态 ▶ 按钮 -->
+				<button class="node-collapse-btn collapsed" title="点击展开">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<!-- body 隐藏 -->
+			<div class="node-body" style="display:none;">
+				<div class="node-stream">...</div>
+			</div>
+			<!-- ★ 摘要行（收缩时可见） -->
+			<div class="node-summary">
+				<span class="node-summary-text">已完成 3 个工具调用 · 输出约 120 字</span>
+			</div>
+		</div>
+
+		<!-- Node 2: 仍然展开（运行中，即使有新数据也不会自动展开已收缩的 Node 1） -->
+		<div class="node-card running">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">代码开发</div>
+					<div class="node-task">根据需求分析结果实现代码</div>
+				</div>
+				<button class="node-collapse-btn expanded" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="spinner"></span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<div class="stream-text"><p>正在继续处理代码逻辑...</p></div>
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon code">✏️</div>
+							<span class="stream-tool-title">编辑文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/src/router/index.ts</span>
+<span class="label">result:</span> <span class="result-ok">路由更新成功</span></div>
+					</div>
+					<div class="stream-text"><p>路由配置完成<span class="streaming-cursor">|</span></p></div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node 3: 仍然展开 -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">测试验证</div>
+					<div class="node-task">运行单元测试验证功能</div>
+				</div>
+				<button class="node-collapse-btn expanded" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<div class="stream-text"><p>等待执行...</p></div>
+				</div>
+			</div>
+		</div>
+
+	</div>
+	<div class="wf-timeline">
+		<span class="wf-timeline-item done">start</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">需求分析</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item active">代码开发</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item">测试验证</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item">end</span>
+	</div>
+</div>
+
+
+<!-- ══════ 场景3：多个节点混合状态 + 运行中节点收缩 ══════ -->
+<div class="mockup-label">
+	场景 3：运行中的节点也可收缩 <span class="tag after">RUNNING + COLLAPSED</span>
+</div>
+
+<div class="wf-card completed">
+	<div class="wf-header">
+		<span class="wf-toggle">▼</span>
+		<span class="wf-icon">🔀</span>
+		<span class="wf-name">数据处理流水线</span>
+		<span class="wf-status-badge completed">● 执行中</span>
+	</div>
+	<div class="wf-body">
+
+		<!-- Node A: 完成 + 收缩 -->
+		<div class="node-card collapsed done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">数据采集</div>
+					<div class="node-task">从多源采集原始数据</div>
+				</div>
+				<button class="node-collapse-btn collapsed" title="点击展开">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<div class="node-body" style="display:none;"></div>
+			<div class="node-summary">
+				<span class="node-summary-text">已完成 2 个工具调用 · 数据量 1.2GB</span>
+			</div>
+		</div>
+
+		<!-- Node B: 运行中 + 收缩（用户主动收起，不会因新数据自动展开） -->
+		<div class="node-card collapsed running">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">数据清洗</div>
+					<div class="node-task">去重、格式化、异常值处理</div>
+				</div>
+				<button class="node-collapse-btn collapsed" title="点击展开">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="spinner"></span></div>
+			</div>
+			<div class="node-body" style="display:none;"></div>
+			<div class="node-summary">
+				<span class="node-summary-text">处理中... 已完成 5/8 步<span class="streaming-cursor" style="font-size:10px;">|</span></span>
+			</div>
+		</div>
+
+		<!-- Node C: 运行中 + 展开 -->
+		<div class="node-card running">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">数据分析</div>
+					<div class="node-task">统计分析与可视化生成</div>
+				</div>
+				<button class="node-collapse-btn expanded highlight-circle" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status"><span class="spinner"></span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<div class="stream-text"><p>正在对清洗后的数据进行统计分析...</p></div>
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon search">🔍</div>
+							<span class="stream-tool-title">聚合查询</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">query:</span> <span class="content">SELECT category, COUNT(*) FROM data GROUP BY category</span>
+<span class="label">result:</span> <span class="result-ok">返回 12 行聚合结果</span></div>
+					</div>
+					<div class="stream-text">
+						<p>发现数据分布异常，需要进一步检查...</p>
+						<span class="streaming-cursor">|</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node D: 待执行 -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">报告输出</div>
+					<div class="node-task">生成最终分析报告</div>
+				</div>
+				<button class="node-collapse-btn expanded" title="点击收缩">
+					<span class="icon-chevron"></span>
+				</button>
+				<div class="node-status" style="color:#555;">○</div>
+			</div>
+		</div>
+
+	</div>
+	<div class="wf-timeline">
+		<span class="wf-timeline-item done">start</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">数据采集</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item active">数据清洗</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item active">数据分析</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item">报告输出</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item">end</span>
+	</div>
+</div>
+
+
+<!-- ══════ 按钮细节放大展示 ══════ -->
+<div class="mockup-label">
+	按钮交互细节放大 <span class="tag after">DETAIL</span>
+</div>
+
+<div class="wf-card completed">
+	<div class="wf-body">
+		<div style="display:flex; gap: 24px; flex-wrap:wrap;">
+			<!-- 展开态按钮 -->
+			<div style="flex:1; min-width:240px;">
+				<div style="font-size:11px;color:#888;margin-bottom:8px;">展开态（默认）— 点击后收缩：</div>
+				<div class="node-card done">
+					<div class="node-header" style="padding:14px 16px;">
+						<div class="node-type-icon agent">🤖</div>
+						<div class="node-info">
+							<div class="node-name">某个节点名称</div>
+							<div class="node-task">节点描述文字</div>
+						</div>
+						<button class="node-collapse-btn expanded" title="点击收缩">
+							<span class="icon-chevron"></span>
+						</button>
+						<div class="node-status"><span class="check">✓</span></div>
+					</div>
+				</div>
+			</div>
+			<!-- 收缩态按钮 -->
+			<div style="flex:1; min-width:240px;">
+				<div style="font-size:11px;color:#888;margin-bottom:8px;">收缩态（用户点击后）— 点击后展开：</div>
+				<div class="node-card done">
+					<div class="node-header" style="padding:14px 16px;">
+						<div class="node-type-icon agent">🤖</div>
+						<div class="node-info">
+							<div class="node-name">某个节点名称</div>
+							<div class="node-task">节点描述文字</div>
+						</div>
+						<button class="node-collapse-btn collapsed" title="点击展开">
+							<span class="icon-chevron"></span>
+						</button>
+						<div class="node-status"><span class="check">✓</span></div>
+					</div>
+					<div class="node-summary" style="display:block;padding:6px 16px 10px;">
+						<span class="node-summary-text">已完成 3 个工具调用 · 输出约 120 字</span>
+					</div>
+				</div>
+			</div>
+			<!-- hover 态说明 -->
+			<div style="flex:1; min-width:240px;">
+				<div style="font-size:11px;color:#888;margin-bottom:8px;">Hover 态：</div>
+				<div class="node-card done">
+					<div class="node-header" style="padding:14px 16px;">
+						<div class="node-type-icon agent">🤖</div>
+						<div class="node-info">
+							<div class="node-name">某个节点名称</div>
+							<div class="node-task">节点描述文字</div>
+						</div>
+						<button class="node-collapse-btn expanded" style="background:rgba(255,255,255,0.08);color:#bbb;" title="点击收缩">
+							<span class="icon-chevron"></span>
+						</button>
+						<div class="node-status"><span class="check">✓</span></div>
+					</div>
+				</div>
+				<div style="font-size:10px;color:#666;margin-top:6px;padding-left:4px;">→ 背景高亮 + 文字变亮</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<div class="note" style="margin-top: 24px;">
+	<strong>实现要点：</strong>
+	<ul>
+		<li><strong>按钮位置</strong>：<code>.node-header</code> 内部，<code>.node-status</code> 左侧（如截图红框所示位置）</li>
+		<li><strong>状态存储</strong>：每条 node 记录新增 <code>userCollapsed: boolean</code> 字段，初始 <code>false</code></li>
+		<li><strong>"不自动展开"机制</strong>：当 <code>userCollapsed === true</code> 时，跳过所有自动展开逻辑（包括 delta 推送时的滚动/展开）。只有用户再次点击按钮才会设为 <code>false</code> 并展开</li>
+		<li><strong>摘要行</strong>：收缩后显示 <code>&lt;div class="node-summary"&gt;</code>，包含工具调用计数和输出字数统计</li>
+		<li><strong>样式</strong>：22x22px 小按钮，hover 高亮，使用 chevron 图标（▼ 展开态 / ▶ 收缩态），无需外部图标库</li>
+	</ul>
+</div>
+
+</div>
+</body>
+</html>

@@ -30,13 +30,6 @@
 				"displayName": "Knot"
 			}
 		],
-		"agentCapabilities": [
-			{
-				"capability": "model",
-				"provider": "knot-agui",
-				"priority": 100
-			}
-		],
 		"configuration": {
 			"type": "object",
 			"title": "Knot AG-UI",

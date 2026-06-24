@@ -1,0 +1,10 @@
+[
+  {
+    "id": "msg_1782221979540_lq1cfon",
+    "role": "user",
+    "content": "{{error-check.output}}",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqoy8e8_ko6rem",
+    "timestamp": "2026-06-23T13:39:39.540Z"
+  }
+]

@@ -211,28 +211,38 @@ export class AgentStudioWebviewController extends Disposable {
 	) {
 		super();
 
-		// Feature Flag check: if Native Chat mode is enabled, skip webview creation
-		// The system will use NativeChatEditorPane instead of this WebView controller.
-		this._useNativeMode = configurationService.getValue<boolean>('sessions.agentStudio.chat.useNativeChat') ?? false;
+		// ── DIAGNOSTIC: confirm constructor is entered ──
+		this.logService.info(`[AS-DIAG] AgentStudioWebviewController CONSTRUCTOR — panelType=${this.panelType}, hasInitialData=${!!this.initialData}, container=${!!this.container}`);
+
+		// NativeChatEditorPane is now the sole chat renderer (React AgentChat deprecated).
+		// For 'chat' panelType, always use native mode — skip webview creation.
+		// workflow-editor / taskboard / settings still need the webview.
+		this._useNativeMode = (this.panelType === 'chat' || this.panelType === undefined);
+
+		// ── DIAGNOSTIC: log _useNativeMode value ──
+		this.logService.info(`[AS-DIAG] _useNativeMode=${this._useNativeMode} (panelType=${this.panelType})`);
 
 		if (this._useNativeMode) {
 			// Native mode: skip webview creation, just set up session service
-			this._sessionService = new WorkspaceSessionService(
+			// Register with _register() so it is disposed when the controller is disposed.
+			this._sessionService = this._register(new WorkspaceSessionService(
 				logService,
 				this.fileService,
 				agentStudioService,
-			);
+			));
 			// Note: We still need _registerServiceListeners() for non-webview features
 			// but most listeners send events to webview which doesn't exist.
 			// TODO: Consider removing this controller entirely in native mode.
+			this.logService.info(`[AS-DIAG] EARLY RETURN — native mode enabled, skipping webview creation`);
 			return; // Early return - no webview created
 		}
 
-		this._sessionService = new WorkspaceSessionService(
+		// Register with _register() so it is disposed when the controller is disposed.
+		this._sessionService = this._register(new WorkspaceSessionService(
 			logService,
 			this.fileService,
 			agentStudioService,
-		);
+		));
 		this._createWebview();
 		this._registerServiceListeners();
 
@@ -329,6 +339,11 @@ export class AgentStudioWebviewController extends Disposable {
 		// owner agent's chat can render subagent cards.
 		this._register(
 			this.workflowExecutionService.onDidExecutionTrace((trace) => {
+				// Skip verbose logging for delta events — hundreds fire during streaming
+				// and the console I/O contributes to UI thread saturation.
+				if (trace.kind !== 'delta') {
+					console.log(`[AgentStudioWebviewController] onDidExecutionTrace: kind=${trace.kind} node=${(trace as any).nodeId} execId=${trace.executionId} session=${trace.sessionId}`);
+				}
 				this._sendEvent('workflow.executionTrace', { ...trace });
 			}),
 		);
@@ -351,9 +366,11 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	private _createWebview(): void {
+		this.logService.info(`[AS-DIAG] _createWebview() CALLED — panelType=${this.panelType}`);
 		// Fire-and-forget, but surface any synchronous or early async errors
 		this._createWebviewAsync().catch((err) => {
-			this.logService.error('[AS-DIAG] _createWebviewAsync FAILED', err);
+			// Use console.error directly (logService may not be available in catch)
+			console.error('[AS-DIAG] _createWebviewAsync FAILED', err);
 		});
 	}
 
@@ -3097,12 +3114,6 @@ export class AgentStudioWebviewController extends Disposable {
 					vendor: m.vendor,
 					credits: m.credits,
 				}));
-				// [VISION-DEBUG] node 2: Host _handleProvidersList — provider source + per-model supportsImages
-				this.logService.info(
-					`[VISION-DEBUG][Host.providersList] providerId=${provider.id} providerName=${provider.name} ` +
-					`modelCount=${models.length} models=` +
-					JSON.stringify(models.map((m) => ({ id: m.id, vendor: m.vendor, img: m.supportsImages }))),
-				);
 			} catch {
 				// ignore
 			}
@@ -3663,21 +3674,27 @@ export class AgentStudioWebviewController extends Disposable {
 				return { success: false };
 			}
 
+			const existing = await this.workflowStorageService.getWorkflow(wf.id);
+
+			// v7: ensure the workflow has an owner agent. If it was created without
+			// one (e.g. agent creation failed at creation time), create it now.
+			if (existing && !existing.agentId) {
+				this.logService.info(`[AgentStudioWebviewController] Workflow ${wf.id} has no agentId; creating owner agent on save.`);
+				await this._ensureWorkflowAgent(existing);
+			}
+
 			// v9: if the name changed, also rename the bound agent so they stay in sync.
-			if (typeof wf.name === 'string') {
-				const existing = await this.workflowStorageService.getWorkflow(wf.id);
-				if (existing && existing.name !== wf.name && existing.agentId) {
-					try {
-						// v9: agent name = workflow name (no suffix)
-						await this.agentStudioService.updateAgent(existing.agentId, {
-							name: wf.name,
-						});
-						this.logService.info(
-							`[AgentStudioWebviewController] Synced agent name: workflow="${existing.name}" → "${wf.name}", agentId=${existing.agentId}`,
-						);
-					} catch (err) {
-						this.logService.warn('[AgentStudioWebviewController] Failed to sync agent name:', err);
-					}
+			if (typeof wf.name === 'string' && existing && existing.name !== wf.name && existing.agentId) {
+				try {
+					// v9: agent name = workflow name (no suffix)
+					await this.agentStudioService.updateAgent(existing.agentId, {
+						name: wf.name,
+					});
+					this.logService.info(
+						`[AgentStudioWebviewController] Synced agent name: workflow="${existing.name}" → "${wf.name}", agentId=${existing.agentId}`,
+					);
+				} catch (err) {
+					this.logService.warn('[AgentStudioWebviewController] Failed to sync agent name:', err);
 				}
 			}
 
@@ -3698,8 +3715,25 @@ export class AgentStudioWebviewController extends Disposable {
 	private async _handleWorkflowExecute(payload: { workflowId: string; agentId?: string; context?: Record<string, unknown> }): Promise<Record<string, unknown> | null> {
 		try {
 			this.logService.info(`[AgentStudioWebviewController] workflow.execute: workflowId=${payload.workflowId}, agentId=${payload.agentId}`);
+
+			// v7: ensure the workflow has an owner agent before executing.
+			// If workflow.agentId is missing (e.g. workflow created without deploying),
+			// create a dedicated agent on-the-fly so the chat trace and __workflow__
+			// event work correctly.
+			let agentId = payload.agentId;
+			if (!agentId) {
+				const wf = await this.workflowStorageService.getWorkflow(payload.workflowId);
+				if (wf) {
+					agentId = wf.agentId;
+					if (!agentId) {
+						this.logService.info(`[AgentStudioWebviewController] Workflow has no agentId; creating owner agent on-the-fly.`);
+						agentId = await this._ensureWorkflowAgent(wf);
+					}
+				}
+			}
+
 			const executionId = await this.workflowExecutionService.executeWorkflow(payload.workflowId, {
-				agentId: payload.agentId,
+				agentId,
 				context: payload.context,
 			});
 			// P4: include the owner-agent session info so the webview can
@@ -3712,6 +3746,76 @@ export class AgentStudioWebviewController extends Disposable {
 			this.logService.error('[AgentStudioWebviewController] workflow.execute failed', err);
 			throw err;
 		}
+	}
+
+	/**
+	 * v7: Ensure the workflow has a dedicated owner agent. If it doesn't, create
+	 * one on-the-fly and persist the agentId binding. Replicates the logic from
+	 * `workflowView._ensureWorkflowAgent` / `_createWorkflowAgent` so that
+	 * workflows executed directly from the editor (without prior deployment)
+	 * still get a chat trace.
+	 */
+	private async _ensureWorkflowAgent(wf: import('../common/workflowStorage.js').IStoredWorkflow): Promise<string | undefined> {
+		try {
+			const agentName = wf.name || 'Workflow Agent';
+			const systemPrompt = this._buildWorkflowSystemPrompt(wf);
+			const agent = await this.agentStudioService.createAgent({
+				name: agentName,
+				role: 'Workflow Manager',
+				description: `Manages and executes workflow: ${wf.name}`,
+				model: 'claude-sonnet-4-20250514',
+				systemPrompt,
+				skills: ['workflow-execution'],
+				tools: [
+					'read_file', 'list_dir', 'search_files', 'grep_search',
+					'write_to_file', 'replace_in_file', 'terminal', 'use_skill',
+					'workflow_get', 'workflow_get_schema', 'workflow_apply', 'workflow_list',
+				],
+				source: 'custom',
+				category: 'workflow',
+				icon: '🔀',
+			} as any);
+			if (agent?.id) {
+				await this.workflowStorageService.updateWorkflow(wf.id, { agentId: agent.id });
+				wf.agentId = agent.id; // Update in-memory so callers see the new agentId.
+				this.logService.info(`[AgentStudioWebviewController] Created workflow owner agent: ${agent.id} for workflow ${wf.id}`);
+				return agent.id;
+			}
+		} catch (err) {
+			this.logService.error(`[AgentStudioWebviewController] Failed to create workflow owner agent: ${err instanceof Error ? err.message : err}`);
+		}
+		return undefined;
+	}
+
+	/**
+	 * Build a system prompt for the workflow owner agent.
+	 * Replicates `workflowView._buildWorkflowSystemPrompt`.
+	 */
+	private _buildWorkflowSystemPrompt(wf: import('../common/workflowStorage.js').IStoredWorkflow): string {
+		const lines: string[] = [];
+		lines.push(`You manage workflow "${wf.name}" (id: \`${wf.id}\`).`);
+		lines.push('');
+		lines.push('You are responsible for both executing AND editing this workflow graph.');
+		lines.push('Users may ask you to add, remove, or modify nodes. You have full control.');
+		lines.push('');
+		if (wf.description) {
+			lines.push('## Workflow Description');
+			lines.push(wf.description);
+			lines.push('');
+		}
+		const nodes = wf.nodes;
+		if (nodes && nodes.length > 0) {
+			const userNodes = nodes.filter((n: any) => n.type !== 'start' && n.type !== 'end' && n.type !== 'group');
+			if (userNodes.length > 0) {
+				lines.push('## Current Workflow Graph');
+				userNodes.forEach((n: any, i: number) => {
+					const label = (n.data?.label as string) || n.name || `Node ${i + 1}`;
+					lines.push(`- **${label}** (${n.type})`);
+				});
+				lines.push('');
+			}
+		}
+		return lines.join('\n');
 	}
 
 	/**

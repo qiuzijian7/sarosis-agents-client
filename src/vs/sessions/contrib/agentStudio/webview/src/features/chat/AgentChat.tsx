@@ -443,6 +443,12 @@ const LiveWorkflowTraceViewRaw = React.memo(function LiveWorkflowTraceView({ exe
 
 const LiveWorkflowTraceView = LiveWorkflowTraceViewRaw;
 
+/**
+ * @deprecated React AgentChat 已废弃。聊天框统一使用 NativeChatEditorPane
+ *（`src/vs/sessions/contrib/agentStudio/browser/nativeChatEditorPane.ts`）。
+ * 此组件仅保留用于 workflow-editor / taskboard 等非 chat 面板中内嵌的聊天预览，
+ * 不再作为主聊天渲染器。新功能请在 NativeChatEditorPane 中实现。
+ */
 export function AgentChat(): React.ReactElement {
 	const { messages, streamState, sendMessage, cancelStream, activeAgentId, setActiveAgent, isLoading, chatMode, activeAgentSessionId, liveWorkflowExecutions, liveAskUsers, liveCollectVariables, liveWorkflowEvents, cancelCurrentWorkflow } = useChatStore();
 	// v22: derive "any workflow is currently executing" from the live map.
@@ -451,6 +457,20 @@ export function AgentChat(): React.ReactElement {
 	const hasRunningWorkflow = useMemo(() => {
 		return Object.values(liveWorkflowExecutions).some(e => e.status === 'running');
 	}, [liveWorkflowExecutions]);
+	// v7: resolve the effective workflow session for rendering.
+	// If __workflow__ root event was lost, the execution container may live
+	// under a different session key (e.g. the sub-agent's own session or a
+	// fallback). Fall back to ANY session that currently has a running
+	// execution so the sub-agent cards still render.
+	const effectiveWorkflowSessionId = useMemo(() => {
+		if (activeAgentSessionId && liveWorkflowExecutions[activeAgentSessionId]) {
+			return activeAgentSessionId;
+		}
+		// Fallback: find any session with a running execution
+		const runningEntry = Object.entries(liveWorkflowExecutions)
+			.find(([, exec]) => exec.status === 'running');
+		return runningEntry?.[0] ?? activeAgentSessionId;
+	}, [activeAgentSessionId, liveWorkflowExecutions]);
 	const { agents, selectedAgentId, selectAgent } = useAgentStore();
 	const { selection, loadSelectionForAgent } = useProviderStore();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1364,21 +1384,21 @@ export function AgentChat(): React.ReactElement {
 							/>
 						)}
 
-						{/* ── P4: live workflow execution trace (owner-agent chat) ──────── */}
-						{activeAgentSessionId && liveWorkflowExecutions[activeAgentSessionId] && (
-						<LiveWorkflowTraceView
-							execution={liveWorkflowExecutions[activeAgentSessionId]}
-							askUsers={liveAskUsers[activeAgentSessionId] ?? []}
-							collectVariables={liveCollectVariables[activeAgentSessionId] ?? []}
-						/>
-						)}
+					{/* ── P4: live workflow execution trace (owner-agent chat) ──────── */}
+					{effectiveWorkflowSessionId && liveWorkflowExecutions[effectiveWorkflowSessionId] && (
+					<LiveWorkflowTraceView
+						execution={liveWorkflowExecutions[effectiveWorkflowSessionId]}
+						askUsers={liveAskUsers[effectiveWorkflowSessionId] ?? []}
+						collectVariables={liveCollectVariables[effectiveWorkflowSessionId] ?? []}
+					/>
+					)}
 
-						<div ref={messagesEndRef} />
-					</div>
+					<div ref={messagesEndRef} />
+				</div>
 
 					{/* v5b: execution timeline panel (bottom-anchored) */}
-					{activeAgentSessionId && (liveWorkflowEvents[activeAgentSessionId]?.length ?? 0) > 0 && (
-						<ExecutionTimelinePanel sessionId={activeAgentSessionId} />
+					{effectiveWorkflowSessionId && (liveWorkflowEvents[effectiveWorkflowSessionId]?.length ?? 0) > 0 && (
+						<ExecutionTimelinePanel sessionId={effectiveWorkflowSessionId} />
 					)}
 
 					{/* v22: Scroll-to-top button — appears when there are messages above
@@ -1425,6 +1445,7 @@ export function AgentChat(): React.ReactElement {
 				// isLoading prop and whether the input has text.
 				onCancel={isPhaseActive(streamState.phase) ? cancelStream : cancelCurrentWorkflow}
 				isLoading={isPhaseActive(streamState.phase) || hasRunningWorkflow}
+				hasRunningWorkflow={hasRunningWorkflow}
 				onCommand={handleCommand}
 			/>
 		</div>

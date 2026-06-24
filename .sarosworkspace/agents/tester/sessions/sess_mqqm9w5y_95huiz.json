@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782217484606_ajzc6ma",
+    "role": "user",
+    "content": "{{error-check.output}}",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqm9w5y_95huiz",
+    "timestamp": "2026-06-23T12:24:44.606Z"
+  },
+  {
+    "id": "msg_1782217489207_0_c60uw",
+    "role": "assistant",
+    "content": "I notice you've sent `{{error-check.output}}` which appears to be a template variable or placeholder rather than an actual request.\n\nCould you please clarify what you'd like me to help you with? For example:\n- Are you trying to check for errors in some output?\n- Do you want me to analyze or debug something?\n- Is there a specific file or code you'd like me to review?\n\nOnce you provide more details about what you need, I'll be happy to help using the appropriate tools available in your sarosis-agents-client workspace.",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqm9w5y_95huiz",
+    "turnId": "turn_1782217489207_8utk1yu",
+    "timestamp": "2026-06-23T12:24:49.207Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I notice you've sent `{{error-check.output}}` which appears to be a template variable or placeholder rather than an actual request.\n\nCould you please clarify what you'd like me to help you with? For example:\n- Are you trying to check for errors in some output?\n- Do you want me to analyze or debug something?\n- Is there a specific file or code you'd like me to review?\n\nOnce you provide more details about what you need, I'll be happy to help using the appropriate tools available in your sarosis-agents-client workspace."
+      }
+    ],
+    "tokenUsage": {
+      "input": 29248,
+      "output": 117,
+      "total": 29365
+    }
+  }
+]

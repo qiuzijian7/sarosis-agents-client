@@ -22,8 +22,9 @@ import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../commo
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
+import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo } from '../../../browser/agentChat/agentChatTypes.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo, ILiveWorkflowAskUser } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
@@ -55,6 +56,18 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentMaxContextTokens: number | undefined;
 	/** Reusable streaming-send function, captured from the panel's onSendMessage. */
 	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[]) => Promise<void>;
+	/** Live workflow execution state for trace rendering in Native Chat. */
+	private _liveWorkflowExecId: string | null = null;
+	private _liveWorkflowMsgId: string | null = null;
+	private _liveWorkflowSubAgents: any[] = [];
+	private _liveWorkflowEvents: any[] = [];
+	private _liveWorkflowCollectVars: Record<string, any> = {};
+	private _liveWorkflowAskUsers: ILiveWorkflowAskUser[] = [];
+	private _liveWorkflowReady = false;
+	/** Throttle timer for delta-driven UI refreshes. During streaming, hundreds of
+	 *  delta events fire in rapid succession; without throttling each one triggers
+	 *  a full DOM rebuild via updateMessage(), overwhelming the UI thread. */
+	private _deltaRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(
 		group: IEditorGroup,
@@ -67,6 +80,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IModelSelectorService private readonly _modelSelector: IModelSelectorService,
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ICommandService private readonly _commandService: ICommandService,
+		@IWorkflowExecutionService private readonly _workflowExecutionService: IWorkflowExecutionService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -219,7 +233,7 @@ export class NativeChatEditorPane extends EditorPane {
 									if (!assistantMsg || !assistantId) return;
 									const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 									if (endCall) {
-										endCall.status = 'completed';
+										endCall.status = 'success';
 										this._chatPanel?.updateMessage(assistantId, {
 											toolCalls: assistantMsg.toolCalls!.slice(),
 											isStreaming: true,
@@ -233,7 +247,7 @@ export class NativeChatEditorPane extends EditorPane {
 									const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 									if (resultCall) {
 										resultCall.result = delta.content;
-										if (resultCall.status === 'running') { resultCall.status = 'completed'; }
+										if (resultCall.status === 'running') { resultCall.status = 'success'; }
 										this._chatPanel?.updateMessage(assistantId, {
 											toolCalls: assistantMsg.toolCalls!.slice(),
 										});
@@ -260,7 +274,7 @@ export class NativeChatEditorPane extends EditorPane {
 									if (assistantMsg && assistantId) {
 										if (assistantMsg.toolCalls) {
 											for (const tc of assistantMsg.toolCalls) {
-												if (tc.status === 'running') { tc.status = 'completed'; }
+												if (tc.status === 'running') { tc.status = 'success'; }
 											}
 										}
 										this._chatPanel?.setStreamPhase('idle');
@@ -327,8 +341,15 @@ export class NativeChatEditorPane extends EditorPane {
 				void this._handleEditMessage(messageId, newText);
 			},
 			onCancelExecution: () => {
-				// TODO: Use this._currentAgentId and this._currentSessionId when available
 				try {
+					// If a workflow execution is active, cancel it (this aborts
+					// the in-flight LLM call and fires execution_end).
+					if (this._liveWorkflowExecId) {
+						this._workflowExecutionService.cancelExecution(this._liveWorkflowExecId).catch(err => {
+							console.error('[NativeChatEditorPane] cancelWorkflowExecution failed:', err);
+						});
+					}
+					// Also cancel any in-flight chat stream
 					const agentId = this._currentAgentId ?? 'claw';
 					const sessionId = this._currentSessionId ?? undefined;
 					this._chatService.cancelStream(agentId, sessionId);
@@ -581,7 +602,24 @@ export class NativeChatEditorPane extends EditorPane {
 			},
 			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
 				console.log('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
-				// TODO: Implement ask user submit logic
+				// Optimistically mark the AskUser as answered
+				this._liveWorkflowAskUsers = this._liveWorkflowAskUsers.map(a =>
+					a.id === askUserId
+						? { ...a, status: 'answered' as const, selection, answeredAt: Date.now() }
+						: a
+				);
+				this._refreshLiveWorkflowMessage();
+				// Resume the paused workflow execution
+				this._workflowExecutionService.resumeExecution(executionId, selection).catch(err => {
+					console.error('[NativeChatEditorPane] Failed to resume workflow:', err);
+					// Rollback on failure
+					this._liveWorkflowAskUsers = this._liveWorkflowAskUsers.map(a =>
+						a.id === askUserId
+							? { ...a, status: 'pending' as const, selection: undefined, answeredAt: undefined }
+							: a
+					);
+					this._refreshLiveWorkflowMessage();
+				});
 			},
 			onQuestionClick: (question: any) => {
 				console.log('[NativeChatEditorPane] onQuestionClick:', question);
@@ -599,10 +637,16 @@ export class NativeChatEditorPane extends EditorPane {
 				console.log('[NativeChatEditorPane] onTipDismiss:', tipId);
 				// TODO: Implement tip dismiss logic
 			},
-			onApplyCode: (code: string, language: string, filePath?: string) => {
-				console.log('[NativeChatEditorPane] onApplyCode:', language, filePath);
-				// TODO: Implement apply code logic (refer to chatBarPart.ts)
-			},
+		onApplyCode: (code: string, language: string, filePath?: string) => {
+			console.log('[NativeChatEditorPane] onApplyCode:', language, filePath);
+			// TODO: Implement apply code logic (refer to chatBarPart.ts)
+		},
+		onSubmitVariables: (executionId: string, values: Record<string, string>) => {
+			console.log('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
+			this._workflowExecutionService.submitWorkflowVariables(executionId, values).catch(err => {
+				console.error('[NativeChatEditorPane] Failed to submit variables:', err);
+			});
+		},
 			onOpenFile: (filePath: string) => {
 				console.log('[NativeChatEditorPane] onOpenFile:', filePath);
 				// TODO: Implement open file logic (refer to chatBarPart.ts)
@@ -685,7 +729,475 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		}));
 
+		// ── Workflow execution: build live workflow message in Native Chat,
+		//    handle variable collection, subagent updates, and execution end. ──
+		this._register(this._workflowExecutionService.onDidExecutionTrace(async (trace) => {
+			// Skip events from other sessions, EXCEPT for the workflow-root
+			// subagent_start which carries the NEW session we need to switch to.
+			//
+			// v7: also allow events that belong to the current execution (same
+			// executionId). Non-root subagent events carry the SUB-AGENT's own
+			// sessionId which differs from the owner session, so a pure sessionId
+			// match would incorrectly drop them.
+			const isWorkflowRoot = trace.kind === 'subagent_start' && (trace as any).nodeId === '__workflow__';
+			const isCurrentExecution = this._liveWorkflowExecId && trace.executionId === this._liveWorkflowExecId;
+			if (!isWorkflowRoot && !isCurrentExecution && this._currentSessionId && trace.sessionId && trace.sessionId !== this._currentSessionId) {
+				return;
+			}
+
+
+			switch (trace.kind) {
+				case 'subagent_start': {
+					if (trace.nodeId === '__workflow__') {
+						// Workflow root: switch session + create live message
+						const { workflowAgentId, sessionId, nodeName } = trace;
+						console.log(`[NativeChatEditorPane] Workflow started: agent=${workflowAgentId}, session=${sessionId}, name=${nodeName}`);
+						this._currentAgentId = workflowAgentId;
+						this._currentSessionId = sessionId;
+						this._liveWorkflowExecId = trace.executionId;
+					this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
+					this._liveWorkflowSubAgents = [];
+					this._liveWorkflowEvents = [];
+					this._liveWorkflowCollectVars = {};
+					this._liveWorkflowAskUsers = [];
+					this._liveWorkflowReady = false;
+					// Update chat input: switch send button to stop icon + start context ring tracking
+					this._chatPanel?.setSending(true);
+					this._isSending = true;
+					this._chatPanel?.setStreamPhase('llm_streaming');
+					this._chatPanel?.setStreamTextBuffer('');
+					this._chatPanel?.setStreamThinkingBuffer('');
+					try {
+						const history = await this._chatService.getHistory(workflowAgentId, sessionId);
+							this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+							this._activateCheckpointSession(workflowAgentId, sessionId);
+							await this._refreshSessionList();
+						} catch (err) {
+							console.warn('[NativeChatEditorPane] Failed to load workflow session history:', err);
+						}
+						// Add live workflow assistant message with CURRENT state
+						// (events arriving during await already updated the arrays)
+						this._chatPanel?.addMessage({
+							id: this._liveWorkflowMsgId!,
+							role: 'assistant',
+							content: `▶ **${nodeName}** — 执行中...`,
+							timestamp: Date.now(),
+							isStreaming: true,
+							workflowExecutions: {
+								[trace.executionId]: {
+									executionId: trace.executionId,
+									workflowName: nodeName,
+									status: 'running' as const,
+									subAgents: this._liveWorkflowSubAgents,
+									startTime: Date.now(),
+								},
+							},
+							workflowEvents: this._liveWorkflowEvents,
+							...(Object.keys(this._liveWorkflowCollectVars).length > 0
+								? { collectVariables: this._liveWorkflowCollectVars }
+								: {}),
+						} as any);
+						this._liveWorkflowReady = true;
+						// Safeguard: flush any state that accumulated during the await above.
+						// Events arriving between handler-start and addMessage updated the arrays
+						// but _refreshLiveWorkflowMessage returned early (!ready). Now that the
+						// message exists and ready=true, force a refresh so the DOM reflects
+						// the full accumulated state (subagents + toolCalls).
+						if (this._liveWorkflowSubAgents.length > 0) {
+							this._refreshLiveWorkflowMessage();
+						}
+				} else {
+					// Non-root subagent start: add to subAgents list
+					console.log(`[NativeChatEditorPane] subagent_start: node=${trace.nodeId}, name=${trace.nodeName}, type=${trace.nodeType}`);
+
+					// Fallback: if __workflow__ root event was missed (timing race
+					// or event dropped), auto-initialize the live workflow container
+					// so the sub-agent card can still render.
+					if (!this._liveWorkflowMsgId || !this._liveWorkflowExecId) {
+						console.warn(`[NativeChatEditorPane] subagent_start without __workflow__ root — auto-initializing live workflow (execId=${trace.executionId})`);
+						this._liveWorkflowExecId = trace.executionId;
+					this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
+					this._liveWorkflowSubAgents = [];
+					this._liveWorkflowEvents = [];
+					this._liveWorkflowCollectVars = {};
+					this._liveWorkflowAskUsers = [];
+					this._liveWorkflowReady = false;
+					// Update chat input: switch send button to stop icon + start context ring tracking
+					this._chatPanel?.setSending(true);
+					this._isSending = true;
+					this._chatPanel?.setStreamPhase('llm_streaming');
+					this._chatPanel?.setStreamTextBuffer('');
+					this._chatPanel?.setStreamThinkingBuffer('');
+					if (trace.workflowAgentId) { this._currentAgentId = trace.workflowAgentId; }
+						if (trace.sessionId) { this._currentSessionId = trace.sessionId; }
+						// Create the live workflow message immediately
+						this._chatPanel?.addMessage({
+							id: this._liveWorkflowMsgId!,
+							role: 'assistant',
+							content: `▶ **${trace.nodeName || trace.nodeId}** — 执行中...`,
+							timestamp: Date.now(),
+							isStreaming: true,
+							workflowExecutions: {
+								[trace.executionId]: {
+									executionId: trace.executionId,
+									workflowName: trace.nodeName || trace.nodeId,
+									status: 'running' as const,
+									subAgents: this._liveWorkflowSubAgents,
+									startTime: Date.now(),
+								},
+							},
+							workflowEvents: this._liveWorkflowEvents,
+						} as any);
+						this._liveWorkflowReady = true;
+					}
+
+					this._liveWorkflowSubAgents.push({
+						id: trace.nodeId,
+						name: trace.nodeName,
+						type: trace.nodeType,
+						task: trace.task,
+						status: 'running' as const,
+						startTime: Date.now(),
+					});
+					this._liveWorkflowEvents.push({
+						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						executionId: trace.executionId,
+						sessionId: trace.sessionId,
+						timestamp: Date.now(),
+						kind: 'subagent_start' as const,
+						nodeId: trace.nodeId,
+						nodeName: trace.nodeName,
+						nodeType: trace.nodeType,
+					});
+					this._refreshLiveWorkflowMessage();
+				}
+					break;
+				}
+				case 'collect_variables': {
+					console.log(`[NativeChatEditorPane] collect_variables: executionId=${trace.executionId}, vars=${trace.variables.map((v: any) => v.name).join(',')}`);
+					this._liveWorkflowEvents.push({
+						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						executionId: trace.executionId,
+						sessionId: trace.sessionId,
+						timestamp: Date.now(),
+						kind: 'collect_variables' as const,
+						nodeId: '',
+					});
+					this._liveWorkflowCollectVars[trace.executionId] = {
+						id: trace.executionId,
+						executionId: trace.executionId,
+						variables: trace.variables,
+						values: {},
+						status: 'pending' as const,
+						createdAt: Date.now(),
+					};
+					this._refreshLiveWorkflowMessage();
+					break;
+				}
+				case 'collect_variables_end': {
+					console.log(`[NativeChatEditorPane] collect_variables_end: executionId=${trace.executionId}, status=${trace.status}`);
+					this._liveWorkflowEvents.push({
+						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						executionId: trace.executionId,
+						sessionId: trace.sessionId,
+						timestamp: Date.now(),
+						kind: 'collect_variables_end' as const,
+						nodeId: '',
+						status: trace.status,
+					});
+					this._liveWorkflowCollectVars[trace.executionId] = {
+						id: trace.executionId,
+						executionId: trace.executionId,
+						variables: [],
+						values: {},
+						status: (trace.status === 'submitted' ? 'submitted' : 'skipped') as 'submitted' | 'skipped',
+						createdAt: Date.now(),
+					};
+					this._refreshLiveWorkflowMessage();
+					break;
+				}
+			case 'delta': {
+				// Update subAgent streamed text / tool calls.
+				// IMPORTANT: _sanitizeDelta() in workflowExecutionService.ts maps the raw
+				// stream chunk fields to: toolCallId, toolName, arguments, content.
+				// We must read those same field names here — NOT d.id/d.name/d.args.
+				const d = trace.delta as any;
+				if (d?.type === 'tool_start' || d?.type === 'tool_end' || d?.type === 'tool_args' || d?.type === 'tool_result') {
+					console.log(`[NativeChatEditorPane] delta: node=${trace.nodeId}, type=${d.type}, tool=${d.toolName ?? d.name ?? d.id}`, JSON.stringify(d).slice(0, 200));
+				}
+				const sa = this._liveWorkflowSubAgents.find(s => s.id === trace.nodeId);
+
+				// ── Stream phase + context ring updates ──
+				// Keep the chat input's token progress bar and send button in sync
+				// with workflow subagent streaming activity.
+				if (d) {
+					if (d.type === 'text') {
+						this._chatPanel?.setStreamPhase('llm_streaming');
+					} else if (d.type === 'thinking') {
+						this._chatPanel?.setStreamPhase('llm_streaming');
+					} else if (d.type === 'tool_start' || d.type === 'tool_args' || d.type === 'tool_end' || d.type === 'tool_result') {
+						this._chatPanel?.setStreamPhase('tool_executing');
+					}
+					// Usage delta — update real token counts for the context ring
+					if (d.type === 'usage' && d.usage) {
+						const limit = this._currentMaxContextTokens ?? 0;
+						if (limit > 0 || d.usage.inputTokens || d.usage.outputTokens) {
+							this._chatPanel?.setStreamUsage({
+								input: d.usage.inputTokens ?? 0,
+								output: d.usage.outputTokens ?? 0,
+								seen: true,
+							});
+						}
+					}
+				}
+
+				if (sa && d) {
+					if (d.type === 'text' && d.content) {
+						sa.streamedText = (sa.streamedText ?? '') + d.content;
+						// Update stream text buffer for context ring estimation
+						this._chatPanel?.setStreamTextBuffer(sa.streamedText);
+					} else if (d.type === 'thinking' && d.content) {
+						sa.streamedThinking = (sa.streamedThinking ?? '') + d.content;
+						this._chatPanel?.setStreamThinkingBuffer(sa.streamedThinking ?? '');
+					} else if (d.type === 'tool_start') {
+						sa.toolCalls = sa.toolCalls ?? [];
+						sa.toolCalls.push({
+							id: d.toolCallId ?? d.id ?? `tc_${Date.now()}`,
+							name: d.toolName ?? d.name ?? '',
+							status: 'running',
+							args: d.arguments ?? d.args ?? '',
+						});
+					} else if (d.type === 'tool_args') {
+						// Match by sanitized field name (toolCallId) with fallback
+						const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
+						if (tc) { tc.args = (tc.args ?? '') + (d.content ?? d.arguments ?? d.args ?? ''); }
+					} else if (d.type === 'tool_end') {
+						const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
+						if (tc) { tc.status = 'done'; tc.result = d.content ?? d.result ?? ''; }
+					} else if (d.type === 'tool_result') {
+						// Some streams emit tool_result instead of tool_end
+						const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
+						if (tc) {
+							tc.result = d.content ?? d.result ?? '';
+							if (tc.status === 'running') { tc.status = 'done'; }
+						}
+					}
+				}
+				this._scheduleDeltaRefresh();
+			break;
+			}
+			case 'subagent_end': {
+					const sa = this._liveWorkflowSubAgents.find(s => s.id === trace.nodeId);
+					if (sa) {
+						sa.status = trace.status === 'done' ? 'done' as const : trace.status === 'cancelled' ? 'cancelled' as const : 'error' as const;
+						sa.output = trace.output;
+						sa.error = trace.error;
+						sa.endTime = Date.now();
+					}
+					this._liveWorkflowEvents.push({
+						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						executionId: trace.executionId,
+						sessionId: trace.sessionId,
+						timestamp: Date.now(),
+						kind: 'subagent_end' as const,
+						nodeId: trace.nodeId,
+						status: trace.status,
+						summary: trace.output?.slice(0, 200),
+					});
+					this._refreshLiveWorkflowMessage();
+					break;
+				}
+				case 'ask_user': {
+					console.log(`[NativeChatEditorPane] ask_user: node=${trace.nodeId}, question=${trace.question?.substring(0, 60)}`);
+					const askId = `${trace.executionId}:${trace.nodeId}`;
+					// Dedup: skip if already registered
+					if (!this._liveWorkflowAskUsers.some(a => a.id === askId)) {
+						const entry: ILiveWorkflowAskUser = {
+							id: askId,
+							executionId: trace.executionId,
+							nodeId: trace.nodeId,
+							nodeName: trace.nodeName ?? trace.nodeId,
+							question: trace.question ?? '',
+							options: trace.options ?? [],
+							multiSelect: trace.multiSelect ?? false,
+							selectedIndices: [],
+							status: 'pending',
+							createdAt: Date.now(),
+						};
+						this._liveWorkflowAskUsers.push(entry);
+					}
+					this._liveWorkflowEvents.push({
+						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						executionId: trace.executionId,
+						sessionId: trace.sessionId,
+						timestamp: Date.now(),
+						kind: 'ask_user' as const,
+						nodeId: trace.nodeId,
+						nodeName: trace.nodeName,
+						summary: `❓ ${trace.question?.substring(0, 60) ?? ''}`,
+					});
+					this._refreshLiveWorkflowMessage();
+					break;
+				}
+				case 'ask_user_end': {
+					console.log(`[NativeChatEditorPane] ask_user_end: node=${trace.nodeId}, status=${trace.status}`);
+					const askId = `${trace.executionId}:${trace.nodeId}`;
+					const status = (trace.status as 'answered' | 'cancelled' | 'expired') ?? 'answered';
+					if (status !== 'answered') {
+						this._liveWorkflowAskUsers = this._liveWorkflowAskUsers.map(a =>
+							a.id === askId && a.status === 'pending'
+								? { ...a, status, answeredAt: Date.now() }
+								: a
+						);
+					}
+					this._liveWorkflowEvents.push({
+						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						executionId: trace.executionId,
+						sessionId: trace.sessionId,
+						timestamp: Date.now(),
+						kind: 'ask_user_end' as const,
+						nodeId: trace.nodeId,
+						status: trace.status,
+						summary: `已${status === 'answered' ? '回答' : status === 'cancelled' ? '取消' : '过期'}`,
+					});
+					this._refreshLiveWorkflowMessage();
+					break;
+				}
+				case 'execution_end': {
+					console.log(`[NativeChatEditorPane] execution_end: status=${trace.status}`);
+
+					// Snapshot data BEFORE any state mutation — we need it for the final
+					// card update AND for a safety-net delayed refresh.
+					const snapExecId = this._liveWorkflowExecId;
+					const snapMsgId = this._liveWorkflowMsgId;
+					const snapEvents = this._liveWorkflowEvents.slice();
+					const snapSubAgents = this._liveWorkflowSubAgents.slice();
+					const snapWorkflowName = (() => {
+						const we = snapEvents.find(e => e.kind === 'subagent_start' && e.nodeId === '__workflow__');
+						return we?.nodeName ?? '';
+					})();
+					const finalStatus = trace.status === 'completed' ? 'completed' as const
+						: trace.status === 'failed' ? 'failed' as const
+						: 'cancelled' as const;
+
+					// ── Step 1: Update the live workflow card to final status ──
+					this._refreshLiveWorkflowMessage({
+						workflowExecutions: snapExecId ? {
+							[snapExecId]: {
+								executionId: snapExecId,
+								workflowName: snapWorkflowName,
+								status: finalStatus,
+								subAgents: snapSubAgents,
+								startTime: Date.now(),
+								endTime: Date.now(),
+							},
+						} : undefined,
+					});
+
+					// ── Step 2: Reset chat input state immediately ──
+					this._chatPanel?.setSending(false);
+					this._isSending = false;
+					this._chatPanel?.setStreamPhase('idle');
+					this._chatPanel?.setStreamTextBuffer('');
+					this._chatPanel?.setStreamThinkingBuffer('');
+					this._chatPanel?.setStreamUsage(null);
+
+					// ── Step 3: Safety-net delayed refresh ──
+					// The _updateMessageDom rebuild may be batched by the browser.
+					// Schedule one more refresh in the next animation frame to guarantee
+					// the card renders with completed/failed/cancelled status (not stuck
+					// on "执行中...").  We capture values in closure so they survive the
+					// async gap below where _liveWorkflow* fields are cleared.
+					if (snapExecId && snapMsgId) {
+						const safetyExecId = snapExecId;
+						const safetyMsgId = snapMsgId;
+						requestAnimationFrame(() => {
+							if (!safetyExecId || !this._chatPanel) { return; }
+							// Re-push final status even if _liveWorkflow* was already cleared.
+							// This uses updateMessage directly (bypassing the !ready guard)
+							// since we know the message exists in the DOM.
+							this._chatPanel.updateMessage(safetyMsgId, {
+								isStreaming: false,
+								workflowExecutions: {
+									[safetyExecId]: {
+										executionId: safetyExecId,
+										workflowName: snapWorkflowName,
+										status: finalStatus,
+										subAgents: snapSubAgents,
+										startTime: Date.now(),
+										endTime: Date.now(),
+									},
+								},
+								workflowEvents: snapEvents,
+							} as any);
+						});
+					}
+
+					// ── Step 4: Clear live state (AFTER the safety-net closure captured its values) ──
+					// Do NOT clear _liveWorkflowReady or _liveWorkflowMsgId before the
+					// requestAnimationFrame above fires, or the closure's updateMessage
+					// is the only way to fix stale UI.
+					this._liveWorkflowExecId = null;
+					this._liveWorkflowMsgId = null;
+					this._liveWorkflowSubAgents = [];
+					this._liveWorkflowEvents = [];
+					this._liveWorkflowCollectVars = {};
+					this._liveWorkflowAskUsers = [];
+					this._liveWorkflowReady = false;
+
+					break;
+				}
+			}
+		}));
+
 		console.log('[NativeChatEditorPane] Chat panel initialized');
+	}
+
+	/**
+	 * Throttled refresh for delta events. During streaming, hundreds of deltas
+	 * fire in rapid succession; this coalesces them into at most one DOM update
+	 * per 100ms. Non-delta events (subagent_end, ask_user, etc.) call
+	 * _refreshLiveWorkflowMessage directly, which cancels any pending delta refresh.
+	 */
+	private _scheduleDeltaRefresh(): void {
+		if (this._deltaRefreshTimer) { return; } // already scheduled
+		this._deltaRefreshTimer = setTimeout(() => {
+			this._deltaRefreshTimer = null;
+			this._refreshLiveWorkflowMessage();
+		}, 100);
+	}
+
+	/** Update the live workflow message in the chat panel with current state. */
+	private _refreshLiveWorkflowMessage(overrides?: Record<string, unknown>): void {
+		// Cancel any pending throttled delta refresh — this is an immediate refresh.
+		if (this._deltaRefreshTimer) {
+			clearTimeout(this._deltaRefreshTimer);
+			this._deltaRefreshTimer = null;
+		}
+		if (!this._liveWorkflowMsgId || !this._liveWorkflowExecId) { return; }
+		// Skip if the message hasn't been added to the chat panel yet.
+		// State is already captured in the arrays; addMessage will include it.
+		if (!this._liveWorkflowReady) { return; }
+		const updates: Record<string, unknown> = {
+			workflowExecutions: {
+				[this._liveWorkflowExecId]: {
+					executionId: this._liveWorkflowExecId,
+					workflowName: '',
+					status: 'running',
+					subAgents: this._liveWorkflowSubAgents,
+					startTime: Date.now(),
+				},
+			},
+			workflowEvents: this._liveWorkflowEvents,
+			...(Object.keys(this._liveWorkflowCollectVars).length > 0
+				? { collectVariables: this._liveWorkflowCollectVars }
+				: {}),
+			...(this._liveWorkflowAskUsers.length > 0
+				? { askUsers: this._liveWorkflowAskUsers }
+				: {}),
+			...overrides,
+		};
+		this._chatPanel?.updateMessage(this._liveWorkflowMsgId, updates);
 	}
 
 	private async _selectAndLoadAgent(agentId: string): Promise<void> {
@@ -726,6 +1238,8 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 				// Load worktrees for the selected agent
 				await this._loadWorktrees();
+				// Refresh chat-history panel
+				await this._refreshSessionList();
 			}
 		} catch (err) {
 			console.warn('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);

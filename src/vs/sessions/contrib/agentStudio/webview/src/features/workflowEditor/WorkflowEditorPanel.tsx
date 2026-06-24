@@ -38,24 +38,6 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const [executionStatus, setExecutionStatus] = useState<string | null>(null);
 	const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
 
-	// ── DIAGNOSTIC helper (DOM-based, survives esbuild console drop) ──
-	const wfdiag = (tag: string, msg: string) => {
-		try {
-			let el = document.getElementById('__as_diag_overlay');
-			if (!el) {
-				el = document.createElement('div');
-				el.id = '__as_diag_overlay';
-				el.setAttribute('style', 'position:fixed;top:0;left:0;z-index:999999;background:rgba(20,20,20,0.95);color:#0f0;font:11px/1.4 monospace;padding:8px;max-width:90vw;max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-all;border-bottom:2px solid #f00;');
-				document.body.appendChild(el);
-			}
-			const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
-			el.textContent = `[${ts}] [WF] ${tag}: ${msg}\n` + el.textContent;
-		} catch { /* silent */ }
-	};
-
-	// Log initial state immediately on mount
-	wfdiag('mount', `__AGENT_STUDIO_INITIAL_DATA__=${JSON.stringify((window as any).__AGENT_STUDIO_INITIAL_DATA__)?.substring(0, 400) ?? 'null'}, PANEL_TYPE=${String((window as any).__AGENT_STUDIO_PANEL_TYPE__)}`);
-
 	// v12: ensure workspace store is populated so child components can read activeWorkspaceId
 	const loadWorkspaces = useWorkspaceStore(s => s.loadWorkspaces);
 	useEffect(() => {
@@ -96,15 +78,12 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const [loadAttempt, setLoadAttempt] = useState(0);
 	useEffect(() => {
 		if (loaded) { return; }
-		if (loadAttempt >= 20) { wfdiag('loadData', `GAVE UP after ${loadAttempt} attempts, __AGENT_STUDIO_INITIAL_DATA__=${JSON.stringify((window as any).__AGENT_STUDIO_INITIAL_DATA__)?.substring(0, 200) ?? 'null'}`); return; }
+		if (loadAttempt >= 20) { return; }
 
 		const initialData = (window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
 			{ type: string; workflow: IStoredWorkflow } | null | undefined;
 
-		wfdiag('loadData', `attempt=${loadAttempt}, initialData type=${typeof initialData}, hasType=${!!initialData?.type}, typeVal=${String(initialData?.type)}, hasWorkflow=${!!(initialData as any)?.workflow}`);
-
 		if (initialData?.type === 'workflow' && initialData.workflow) {
-			wfdiag('loadData', `SUCCESS loading workflow id=${initialData.workflow.id} name=${initialData.workflow.name} nodes=${initialData.workflow.nodes?.length ?? 0}`);
 			loadWorkflow(initialData.workflow);
 			setLoaded(true);
 			// v18: auto-switch chat panel to workflow's bound agent

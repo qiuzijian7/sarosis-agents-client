@@ -1,0 +1,44 @@
+[
+  {
+    "id": "wf_trigger_wf_exec_1782262278279_503nhm",
+    "role": "user",
+    "content": "▶ Run workflow: **需求开发测试流程**\n\n完整的开发流程：Prompt输入需求 -> 开发 -> 错误检查 -> 测试 -> 确认提交",
+    "timestamp": "2026-06-24T00:51:18.292Z",
+    "agentSessionId": "sess_mqrcxz7s_z7y12h"
+  },
+  {
+    "id": "prompt_input-requirement_1782262283136",
+    "role": "user",
+    "content": "需求描述：test8",
+    "timestamp": "2026-06-24T00:51:23.136Z",
+    "agentSessionId": "sess_mqrcxz7s_z7y12h"
+  },
+  {
+    "id": "msg_1782262291613_5rith1b",
+    "role": "user",
+    "content": "You are at a decision point in the workflow. Evaluate the following branches and decide which one to follow.\n\n**Branches:**\n0. **无错误**: no errors found\n1. **有错误**: errors found\n\nBased on the context of all previous steps, which branch should be followed?\nRespond with ONLY the branch number (e.g., \"0\") on the first line.",
+    "agentId": "1782202837601-fy8zvh5",
+    "agentSessionId": "sess_mqrcxz7s_z7y12h",
+    "timestamp": "2026-06-24T00:51:31.613Z"
+  },
+  {
+    "id": "msg_1782262295246_0_l6517",
+    "role": "assistant",
+    "content": "0",
+    "agentId": "1782202837601-fy8zvh5",
+    "agentSessionId": "sess_mqrcxz7s_z7y12h",
+    "turnId": "turn_1782262295246_5yx34y3",
+    "timestamp": "2026-06-24T00:51:35.246Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "0"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29165,
+      "output": 2,
+      "total": 29167
+    }
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782217476353_sghrp4j",
+    "role": "user",
+    "content": "I'll help you with your request. However, I notice that `{{input-requirement.output}}` appears to be a template variable or placeholder that wasn't properly substituted with actual content.\n\nCould you please provide:\n1. The actual requirement or task you'd like me to help with, or\n2. Clarify what `input-requirement.output` should contain?\n\nOnce I have the specific details, I can assist you with:\n- Code generation\n- Code review\n- Refactoring\n- File operations\n- Command execution\n- Or any other task within the sarosis-agents-client workspace\n\nWhat would you like me to do for you?",
+    "agentId": "code-reviewer",
+    "agentSessionId": "sess_mqqm9pru_d2h7y6",
+    "timestamp": "2026-06-23T12:24:36.353Z"
+  },
+  {
+    "id": "msg_1782217480237_0_lrgen",
+    "role": "assistant",
+    "content": "I notice you've sent what appears to be a template variable `{{input-requirement.output}}` - this looks like a placeholder that should have been replaced with actual content.\n\nCould you please provide:\n- The actual requirement, task, or question you'd like help with?\n- Or clarify what content should replace that template variable?\n\nOnce I understand what you need, I can help you with code analysis, file operations, command execution, or any other task within your `sarosis-agents-client` workspace.",
+    "agentId": "code-reviewer",
+    "agentSessionId": "sess_mqqm9pru_d2h7y6",
+    "turnId": "turn_1782217480237_cbkphg1",
+    "timestamp": "2026-06-23T12:24:40.237Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I notice you've sent what appears to be a template variable `{{input-requirement.output}}` - this looks like a placeholder that should have been replaced with actual content.\n\nCould you please provide:\n- The actual requirement, task, or question you'd like help with?\n- Or clarify what content should replace that template variable?\n\nOnce I understand what you need, I can help you with code analysis, file operations, command execution, or any other task within your `sarosis-agents-client` workspace."
+      }
+    ],
+    "tokenUsage": {
+      "input": 29750,
+      "output": 107,
+      "total": 29857
+    }
+  }
+]

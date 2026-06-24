@@ -23,7 +23,6 @@ import {
 	flattenMessageParts,
 	IChatAttachment,
 	ISubAgentData,
-	ISubAgentBlock,
 	IConfirmationData,
 	IAgentInfo,
 	IProviderInfo,
@@ -44,6 +43,7 @@ import {
 	ILiveWorkflowAskUser,
 	ILiveWorkflowExecution,
 	ILiveWorkflowEvent,
+	ILiveWorkflowSubAgent,
 	ILiveCollectVariable,
 	ITodoItem,
 	ITipMessage,
@@ -247,6 +247,10 @@ export class AgentChatPanel extends Disposable {
 	// -- Markdown render disposables --
 	private _markdownDisposables = new Map<HTMLElement, IDisposable>();
 
+	// -- Node collapse state (persists across DOM rebuilds) --
+	// Keyed by sub-agent node id; true = user manually collapsed.
+	private _nodeCollapsedState = new Map<string, boolean>();
+
 	// -- Context baseline --
 
 	// -- Callbacks --
@@ -277,7 +281,10 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onTipAction?: (tipId: string, actionId: string) => void;
 	private readonly _onTipDismiss?: (tipId: string) => void;
 	private readonly _onApplyCode?: (code: string, language: string, filePath?: string) => void;
+	private readonly _onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 	private readonly _onOpenFile?: (filePath: string) => void;
+	/** Tool approval callback (for security-level tool calls) */
+	private readonly _onToolApprove?: (toolCallId: string, decision: string) => void;
 	// Orchestration plan callbacks
 	private readonly _onApprovePlan?: (planId: string) => void;
 	private readonly _onRejectPlan?: (planId: string) => void;
@@ -316,7 +323,10 @@ export class AgentChatPanel extends Disposable {
 		onTipAction?: (tipId: string, actionId: string) => void;
 		onTipDismiss?: (tipId: string) => void;
 		onApplyCode?: (code: string, language: string, filePath?: string) => void;
+		onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 		onOpenFile?: (filePath: string) => void;
+		/** Tool approval callback (for security-level tool calls) */
+		onToolApprove?: (toolCallId: string, decision: string) => void;
 		onDecomposeTask?: (planId: string, taskId: string) => void;
 		// Orchestration plan callbacks
 		onApprovePlan?: (planId: string) => void;
@@ -354,7 +364,9 @@ export class AgentChatPanel extends Disposable {
 		this._onTipAction = opts.onTipAction;
 		this._onTipDismiss = opts.onTipDismiss;
 		this._onApplyCode = opts.onApplyCode;
+		this._onSubmitVariables = opts.onSubmitVariables;
 		this._onOpenFile = opts.onOpenFile;
+		this._onToolApprove = opts.onToolApprove;
 		// Orchestration plan callbacks
 		this._onApprovePlan = opts.onApprovePlan;
 		this._onRejectPlan = opts.onRejectPlan;
@@ -1331,6 +1343,9 @@ export class AgentChatPanel extends Disposable {
 		if (!this._messagesContainer) {
 			return;
 		}
+		// Clean up all markdown disposables before clearing the DOM,
+		// to prevent renderMarkdown disposable leaks across setMessages calls.
+		this._cleanupMarkdownDisposables(this._messagesContainer);
 		clearNode(this._messagesContainer);
 
 		if (this._messages.length === 0) {
@@ -1371,7 +1386,10 @@ export class AgentChatPanel extends Disposable {
 		const hasStructuralChange =
 			hasToolCalls ||
 			msg.confirmation ||
-			(msg.subAgents && msg.subAgents.length > 0);
+			(msg.subAgents && msg.subAgents.length > 0) ||
+			(msg.workflowExecutions && Object.keys(msg.workflowExecutions).length > 0) ||
+			(msg.workflowEvents && msg.workflowEvents.length > 0) ||
+			(msg.collectVariables && Object.keys(msg.collectVariables).length > 0);
 
 		// Fast path 1: no structural change, streaming text-only update
 		if (!hasStructuralChange && msg.isStreaming && msg.content) {
@@ -1402,6 +1420,9 @@ export class AgentChatPanel extends Disposable {
 		}
 
 		// Slow path: rebuild this single message element and replace in DOM
+		// Clean up any markdown disposables associated with the old element
+		// before replacing it, to prevent renderMarkdown() disposable leaks.
+		this._cleanupMarkdownDisposables(existingEl);
 		const newEl = this._createMessageElement(msg);
 		this._messagesContainer.replaceChild(newEl, existingEl);
 	}
@@ -1444,6 +1465,8 @@ export class AgentChatPanel extends Disposable {
 
 	/** 完整重建消息元素并替换到 DOM */
 	private _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentChatMessage): void {
+		// Clean up markdown disposables before replacing the old element
+		this._cleanupMarkdownDisposables(existingEl);
 		const newEl = this._createMessageElement(msg);
 		const parent = existingEl.parentNode;
 		if (parent) {
@@ -1535,11 +1558,33 @@ export class AgentChatPanel extends Disposable {
 			}
 		}
 
-		// Sub-agent cards
+		// Sub-agent cards (with grouping for parallel execution)
 		if (!isUser && msg.subAgents && msg.subAgents.length > 0) {
 			const section = append(bubble, $(".subagent-cards-section"));
+
+			// Group sub-agents by groupId (for parallel execution display)
+			const groups = new Map<string, ISubAgentData[]>();
 			for (const sa of msg.subAgents) {
-				section.appendChild(this._createSubAgentCard(sa));
+				const groupKey = sa.groupId || 'default';
+				if (!groups.has(groupKey)) {
+					groups.set(groupKey, []);
+				}
+				groups.get(groupKey)!.push(sa);
+			}
+
+			// Render grouped sub-agents
+			for (const [groupId, agents] of groups) {
+				// If multiple groups, add a group label
+				if (groups.size > 1) {
+					const groupLabel = append(section, $('.subagent-group-label'));
+					const groupText = groupId === 'default' ? 'SubAgents' : `批次 ${groupId} (${agents.length} 个任务)`;
+					groupLabel.textContent = groupText;
+				}
+
+				// Render each sub-agent in this group
+				for (const sa of agents) {
+					section.appendChild(this._createSubAgentCard(sa));
+				}
 			}
 		}
 
@@ -1595,12 +1640,13 @@ export class AgentChatPanel extends Disposable {
 		}
 
 		// Streaming cursor — 策略：
-		//   有工具卡时：文本内嵌光标已由 CSS `.has-tool-cards .streaming-container::after {content:none}` 隐藏，
-		//               改用气泡末尾的 span.streaming-cursor 跟在所有内容之后（工具卡下方）。
+		//   有工具卡/工作流卡时：文本内嵌光标已由 CSS 隐藏，
+		//               改用气泡末尾的 span.streaming-cursor 跟在所有内容之后。
 		//   无工具卡时：仅在无 `.streaming-container` 时显示（否则 `::after` 已在文本末尾渲染光标）。
 		if (!isUser && msg.isStreaming) {
 			const hasToolCards = bubble.querySelector('.tool-header-wrapper') !== null;
-			if (hasToolCards || !bubble.querySelector('.streaming-container')) {
+			const hasWorkflowTrace = bubble.querySelector('.wf-trace') !== null;
+			if (hasToolCards || hasWorkflowTrace || !bubble.querySelector('.streaming-container')) {
 				append(bubble, $("span.streaming-cursor")).textContent = "|";
 			}
 		}
@@ -1687,10 +1733,17 @@ export class AgentChatPanel extends Disposable {
 		const key = (tc.name || '').toLowerCase();
 		const isRunning = tc.status === 'running';
 		const isError = tc.status === 'error';
-		const isSuccess = !isRunning && !isError;
+		const isSuccess = tc.status === 'success' || (!isRunning && !isError && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
+		const isApproval = tc.status === 'approval_required';
+		const isRejected = tc.status === 'rejected';
+		const isCanceled = tc.status === 'canceled';
 
 		// 状态驱动外壳类（与 void-tool-card.css 对齐）
-		const statusClass = isError ? 'tool-card-error' : isRunning ? 'tool-card-running' : 'tool-card-success';
+		let statusClass = 'tool-card-success';
+		if (isError) { statusClass = 'tool-card-error'; }
+		else if (isRunning) { statusClass = 'tool-card-running'; }
+		else if (isApproval) { statusClass = 'tool-card-approval'; }
+		else if (isRejected || isCanceled) { statusClass = 'tool-card-rejected'; }
 		const wrapper = $(`.tool-header-wrapper.${statusClass}`);
 		const headerEl = append(wrapper, $('.tool-header'));
 		const row = append(headerEl, $('.tool-header-row'));
@@ -1730,11 +1783,81 @@ export class AgentChatPanel extends Disposable {
 			this._svgSpinner(right, 'tool-header-spinner-icon');
 		} else if (isError) {
 			this._svgAlert(right, 'tool-header-error-icon');
+		} else if (isApproval) {
+			this._svgAlert(right, 'tool-header-approval-icon');
+		} else if (isRejected || isCanceled) {
+			this._svgAlert(right, 'tool-header-rejected-icon');
 		} else if (isSuccess) {
 			this._svgCheck(right, 'tool-header-success-icon');
 		}
-		if (typeof tc.duration === 'number' && tc.duration >= 0 && !isRunning) {
+		if (typeof tc.duration === 'number' && tc.duration >= 0 && !isRunning && !isApproval) {
 			append(right, $('span.tool-header-desc2')).textContent = this._formatDuration(tc.duration);
+		}
+
+		// ── 审批按钮（approval_required 状态）──
+		if (isApproval) {
+			const approvalRow = append(wrapper, $('.tool-approval-row'));
+			const securityLabel = tc.securityLevel === 'dangerous'
+				? '危险操作'
+				: tc.securityLevel === 'cautious'
+					? '需谨慎'
+					: '需确认';
+			const labelEl = append(approvalRow, $('span.tool-approval-label'));
+			// 添加盾牌图标
+			const shieldSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			shieldSvg.setAttribute('width', '13');
+			shieldSvg.setAttribute('height', '13');
+			shieldSvg.setAttribute('viewBox', '0 0 24 24');
+			shieldSvg.setAttribute('fill', 'none');
+			shieldSvg.setAttribute('stroke', 'currentColor');
+			shieldSvg.setAttribute('stroke-width', '2');
+			const shieldPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			shieldPath.setAttribute('d', 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z');
+			shieldSvg.appendChild(shieldPath);
+			labelEl.appendChild(shieldSvg);
+			labelEl.appendChild(document.createTextNode(securityLabel));
+
+			// 允许一次按钮
+			const allowOnceBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-primary'));
+			allowOnceBtn.textContent = '允许一次';
+			allowOnceBtn.title = '仅允许此次执行';
+			this._register(addDisposableListener(allowOnceBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onToolApprove?.(tc.id, 'allow_once');
+			}));
+
+			// 会话中允许按钮
+			const allowSessionBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-secondary'));
+			allowSessionBtn.textContent = '会话中允许';
+			allowSessionBtn.title = '在当前会话中自动允许';
+			this._register(addDisposableListener(allowSessionBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onToolApprove?.(tc.id, 'allow_session');
+			}));
+
+			// 始终允许按钮
+			const allowAlwaysBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-secondary'));
+			allowAlwaysBtn.textContent = '始终允许';
+			allowAlwaysBtn.title = '始终自动允许此工具';
+			this._register(addDisposableListener(allowAlwaysBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onToolApprove?.(tc.id, 'allow_always');
+			}));
+
+			// 拒绝按钮
+			const denyBtn = append(approvalRow, $('button.tool-approval-btn.tool-approval-btn-reject'));
+			denyBtn.textContent = '拒绝';
+			denyBtn.title = '拒绝此工具调用';
+			this._register(addDisposableListener(denyBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onToolApprove?.(tc.id, 'deny');
+			}));
+		}
+
+		// ── 拒绝通知（rejected 状态）──
+		if (isRejected) {
+			const rejectedNotice = append(wrapper, $('.tool-rejected-notice'));
+			rejectedNotice.textContent = '用户已拒绝此工具调用';
 		}
 
 		// ── Body（可折叠 dropdown）──
@@ -1993,232 +2116,417 @@ export class AgentChatPanel extends Disposable {
 		return `${minutes}m${remainSec}s`;
 	}
 
-	// --- Sub-agent card (enhanced: blocks, traces, grouping) ---
+	// --- Sub-agent card (enhanced panel-style matching React screenshot) ---
 
 	private _createSubAgentCard(sa: ISubAgentData): HTMLElement {
-		const statusMap: Record<string, { icon: string; label: string; color: string }> = {
-			pending: { icon: '⏳', label: '等待中', color: '#9ca3af' },
-			running: { icon: '⚙️', label: '运行中', color: '#60a5fa' },
-			done: { icon: '✅', label: '完成', color: '#34d399' },
-			error: { icon: '❌', label: '错误', color: '#f87171' },
-			cancelled: { icon: '⛔', label: '已取消', color: '#9ca3af' },
-		};
-		const info = statusMap[sa.status] || statusMap.pending;
-		const typeLabel = sa.type === 'explore' ? '探索' : sa.type === 'scout' ? '侦察' : '通用';
-		const card = $(`.subagent-card.status-${sa.status}`);
-		const header = append(card, $('.subagent-card-header'));
-		append(header, $('span.subagent-card-icon', undefined, info.icon));
-		append(header, $('span.subagent-card-name', undefined, `SubAgent (${typeLabel})`));
-		append(header, $('span.subagent-card-status', undefined, info.label)).style.color = info.color;
+		const isRunning = sa.status === 'running';
+		const isDone = sa.status === 'done';
+		const isError = sa.status === 'error';
 
-		const body = append(card, $('.subagent-card-body'));
+		// Type config
+		const typeConfig = sa.type === 'explore' ? { icon: '🔍', label: '探索' } :
+							sa.type === 'scout' ? { icon: '🌐', label: '研究' } :
+							{ icon: '⚙️', label: '通用' };
 
-		// Task description
-		if (sa.task) {
-			append(body, $('p.subagent-card-task', undefined, sa.task));
+		// ── Card container ──
+		const saCard = $(`.subagent-card.enhanced${isRunning ? '.active' : ''}${isDone || isError ? '.collapsed' : ''}`);
+
+		// ── Header ──
+		const saHeader = append(saCard, $('.subagent-card-header'));
+		// Icon
+		const headerIcon = append(saHeader, $('span.subagent-card-header-icon'));
+		headerIcon.textContent = typeConfig.icon;
+		// Title (with shimmer if running)
+		const saTitle = append(saHeader, $(`span.subagent-card-title${isRunning ? '.shimmer' : ''}`));
+		saTitle.textContent = sa.task || `SubAgent (${typeConfig.label})`;
+		// Close button (X icon)
+		const closeBtn = append(saHeader, $('button.subagent-card-close-btn'));
+		closeBtn.appendChild(this._createCloseIconSVG());
+
+		// ── Body (markdown content) ──
+		const saBody = append(saCard, $('.subagent-card-body'));
+		const bodyContent = append(saBody, $('.subagent-card-body-content'));
+
+		// Render content based on status
+		if (isDone && sa.output) {
+			// Done: show output with markdown rendering
+			const mdString: IMarkdownString = { value: sa.output, isTrusted: true, supportHtml: true };
+			// Track disposable to prevent leaks on DOM rebuild
+			const prevDisposable = this._markdownDisposables.get(bodyContent);
+			if (prevDisposable) { prevDisposable.dispose(); }
+			this._markdownDisposables.set(bodyContent, renderMarkdown(mdString, undefined, bodyContent));
+		} else if (isError && sa.error) {
+			// Error: show error message
+			const errorEl = append(bodyContent, $('div.subagent-card-error'));
+			errorEl.textContent = sa.error;
+		} else if (sa.task) {
+			// Fallback: show task description
+			const taskEl = append(bodyContent, $('p.subagent-card-task'));
+			taskEl.textContent = sa.task;
 		}
 
-		// Progress
-		if (sa.progress) {
-			append(body, $('p.subagent-card-progress', undefined, sa.progress));
+		// ── Footer (Execution Summary) ──
+		const saFooter = append(saCard, $('.subagent-card-footer'));
+
+		// Status summary
+		const statusSummary = append(saFooter, $('span.subagent-exec-summary'));
+		const statusLabel = append(statusSummary, $('span.subagent-exec-summary-label'));
+		statusLabel.textContent = '状态: ';
+		const statusValue = append(statusSummary, $('span.subagent-exec-stat'));
+		statusValue.textContent = isRunning ? '运行中' : isDone ? '完成' : isError ? '失败' : '未知';
+
+		// Tool calls summary (if available)
+		if (sa.toolTraces && sa.toolTraces.length > 0) {
+			const toolsSummary = append(saFooter, $('span.subagent-exec-summary'));
+			const toolsLabel = append(toolsSummary, $('span.subagent-exec-summary-label'));
+			toolsLabel.textContent = '工具: ';
+			const toolsValue = append(toolsSummary, $('span.subagent-exec-stat'));
+			const runningCount = sa.toolTraces.filter(t => t.status === 'running').length;
+			const doneCount = sa.toolTraces.filter(t => t.status === 'done').length;
+			const errorCount = sa.toolTraces.filter(t => t.status === 'error').length;
+			toolsValue.textContent = `${doneCount}完成 · ${runningCount}运行 · ${errorCount}失败`;
 		}
 
-		// Enhanced blocks: Input → Thinking → ToolTrace → Output
-		const blocks: { label: string; items: ISubAgentBlock[] | undefined }[] = [
-			{ label: '输入', items: sa.inputBlocks },
-			{ label: '思考', items: sa.thinkingBlocks },
-		];
-		for (const { label, items } of blocks) {
-			if (!items?.length) continue;
-			for (const blk of items) {
-				const blkEl = append(body, $(`.subagent-block.${blk.collapsed ? 'collapsed' : ''}`));
-				const blkHeader = append(blkEl, $('.subagent-block-header'));
-				append(blkHeader, $('span.subagent-block-label', undefined, label));
-				if (blk.title) { append(blkHeader, $('span.subagent-block-title', undefined, blk.title)); }
-				const blkBody = append(blkEl, $('.subagent-block-content'));
-				blkBody.textContent = blk.content.slice(0, 3000) + (blk.content.length > 3000 ? '...' : '');
-				if (blk.collapsed) { blkBody.style.display = 'none'; }
-			}
-		}
+		// ── Interactions ──
+		// Header click → toggle collapse (excluding close button)
+		this._register(addDisposableListener(saHeader, EventType.CLICK, () => {
+			saCard.classList.toggle('collapsed');
+		}));
 
-		// Tool traces
-		if (sa.toolTraces?.length) {
-			for (const tt of sa.toolTraces) {
-				const traceEl = append(body, $(`.subagent-tool-trace.status-${tt.status}`));
-				const traceHeader = append(traceEl, $('.subagent-tool-trace-header'));
-				append(traceHeader, $('span.subagent-tool-trace-icon', undefined, tt.status === 'running' ? '⚙️' : '✓'));
-				append(traceHeader, $('span.subagent-tool-trace-name', undefined, tt.name));
-				if (tt.result) {
-					append(traceEl, $('pre.subagent-tool-trace-result', undefined, tt.result.slice(0, 1000)));
-				}
-			}
-		}
+		// Close button → remove card (with stopPropagation to prevent toggle)
+		this._register(addDisposableListener(closeBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			saCard.remove();
+		}));
 
-		// Output blocks
-		if (sa.outputBlocks?.length) {
-			for (const blk of sa.outputBlocks) {
-				const outEl = append(body, $('.subagent-output-block'));
-				const outContent = append(outEl, $('pre.subagent-block-output'));
-				outContent.textContent = blk.content.slice(0, 3000) + (blk.content.length > 3000 ? '...' : '');
-			}
-		}
-
-		// Legacy output
-		if (sa.output && !sa.outputBlocks?.length) {
-			const out = append(body, $('pre.subagent-card-output'));
-			out.textContent = sa.output.slice(0, 2000) + (sa.output.length > 2000 ? '...' : '');
-		}
-		if (sa.error) {
-			const err = append(body, $('pre.subagent-card-error'));
-			err.textContent = sa.error;
-			err.style.color = '#f87171';
-		}
-		return card;
+		return saCard;
 	}
 
-	// --- LiveWorkflowTraceView -----------------------------------
+	// --- LiveWorkflowTraceView -------------------}
+
+// --- LiveWorkflowTraceView -----------------------------------
+
+	/** Create an SVG close (X) icon using DOM API (avoids TrustedHTML innerHTML issues). */
+	private _createCloseIconSVG(): SVGElement {
+		const ns = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(ns, 'svg');
+		svg.setAttribute('width', '12');
+		svg.setAttribute('height', '12');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor');
+		svg.setAttribute('stroke-width', '2.5');
+		const l1 = document.createElementNS(ns, 'line');
+		l1.setAttribute('x1', '18'); l1.setAttribute('y1', '6'); l1.setAttribute('x2', '6'); l1.setAttribute('y2', '18');
+		const l2 = document.createElementNS(ns, 'line');
+		l2.setAttribute('x1', '6'); l2.setAttribute('y1', '6'); l2.setAttribute('x2', '18'); l2.setAttribute('y2', '18');
+		svg.appendChild(l1); svg.appendChild(l2);
+		return svg;
+	}
 
 	private _createLiveWorkflowTraceView(
 		workflowExecutions: Record<string, ILiveWorkflowExecution>,
 		workflowEvents?: ILiveWorkflowEvent[],
 		collectVariables?: Record<string, ILiveCollectVariable>
 	): HTMLElement {
-		const container = $('.live-workflow-trace-view');
+		const container = $('.wf-trace');
 
 		for (const [execId, exec] of Object.entries(workflowExecutions)) {
-			const execCard = append(container, $('.workflow-execution-card'));
+			// ── Workflow Card ──
+			const card = append(container, $('.wf-card'));
+			card.classList.add(exec.status); // running | completed | failed | cancelled
 
-			// Header - collapsible
-			const header = append(execCard, $('.workflow-execution-header'));
-			const toggleBtn = append(header, $('span.workflow-toggle', undefined, '▼'));
-			append(header, $('span.workflow-name', undefined, exec.workflowName));
+			// ── Header ──
+			const header = append(card, $('.wf-header'));
+			const toggle = append(header, $('span.wf-toggle', undefined, '▼'));
+			append(header, $('span.wf-icon', undefined, '🔀'));
+			append(header, $('span.wf-name', undefined, exec.workflowName || 'Workflow'));
+			const statusMap: Record<string, { label: string; cls: string }> = {
+				running: { label: '运行中', cls: 'running' },
+				completed: { label: '已完成', cls: 'completed' },
+				failed: { label: '失败', cls: 'failed' },
+				cancelled: { label: '已取消', cls: 'cancelled' },
+			};
+			const sInfo = statusMap[exec.status] ?? { label: exec.status, cls: 'running' };
+			const badge = append(header, $('span.wf-status-badge'));
+			badge.classList.add(sInfo.cls);
+			if (sInfo.cls === 'running') {
+				append(badge, $('span.dot'));
+				append(badge, document.createTextNode(sInfo.label));
+			} else {
+				const icon = sInfo.cls === 'completed' ? '✓' : sInfo.cls === 'failed' ? '✗' : '⛔';
+				append(badge, document.createTextNode(`${icon} ${sInfo.label}`));
+			}
 
-			const statusInfo = exec.status === 'running' ? { icon: '⚙️', label: '运行中', color: '#60a5fa' } :
-								exec.status === 'completed' ? { icon: '✅', label: '完成', color: '#34d399' } :
-								exec.status === 'failed' ? { icon: '❌', label: '失败', color: '#f87171' } :
-								{ icon: '⛔', label: '已取消', color: '#9ca3af' };
-			append(header, $('span.workflow-status', undefined, `${statusInfo.icon} ${statusInfo.label}`)).style.color = statusInfo.color;
+			// ── Body ──
+			const body = append(card, $('.wf-body'));
 
-			// Body - collapsible content
-			const body = append(execCard, $('.workflow-execution-body'));
-
-			// Sub-agents
-			if (exec.subAgents.length > 0) {
-				const subAgentsSection = append(body, $('.workflow-subagents-section'));
-				append(subAgentsSection, $('h4.workflow-section-title', undefined, '子代理'));
-
-				for (const subAgent of exec.subAgents) {
-					const saCard = append(subAgentsSection, $('.workflow-subagent-card'));
-					const saHeader = append(saCard, $('.workflow-subagent-header'));
-
-					const saStatusInfo = subAgent.status === 'pending' ? { icon: '⏳', label: '等待中', color: '#9ca3af' } :
-										subAgent.status === 'running' ? { icon: '⚙️', label: '运行中', color: '#60a5fa' } :
-										subAgent.status === 'done' ? { icon: '✅', label: '完成', color: '#34d399' } :
-										subAgent.status === 'error' ? { icon: '❌', label: '错误', color: '#f87171' } :
-										{ icon: '⛔', label: '已取消', color: '#9ca3af' };
-
-					append(saHeader, $('span.subagent-status-icon', undefined, saStatusInfo.icon));
-					append(saHeader, $('span.subagent-name', undefined, subAgent.name));
-					append(saHeader, $('span.subagent-status-label', undefined, saStatusInfo.label)).style.color = saStatusInfo.color;
-
-					// Task description
-					if (subAgent.task) {
-						append(saCard, $('p.subagent-task', undefined, subAgent.task));
-					}
-
-					// Streamed text (collapsible)
-					if (subAgent.streamedText) {
-						const textEl = append(saCard, $('pre.subagent-streamed-text'));
-						textEl.textContent = subAgent.streamedText.slice(0, 2000) + (subAgent.streamedText.length > 2000 ? '...' : '');
-					}
-
-					// Output
-					if (subAgent.output) {
-						const outputEl = append(saCard, $('pre.subagent-output'));
-						outputEl.textContent = subAgent.output.slice(0, 2000) + (subAgent.output.length > 2000 ? '...' : '');
-					}
-
-					// Error
-					if (subAgent.error) {
-						const errorEl = append(saCard, $('pre.subagent-error'));
-						errorEl.textContent = subAgent.error;
-						errorEl.style.color = '#f87171';
+			// ── Collect Variables Card (if pending) ──
+			if (collectVariables) {
+				const vars = Object.values(collectVariables).filter(v => v.executionId === execId);
+				for (const cv of vars) {
+					if (cv.status === 'pending') {
+						body.appendChild(this._createCollectVarsCard(execId, cv));
 					}
 				}
 			}
 
-			// Events timeline (if available)
+			// ── Node Cards ──
+			for (const sa of exec.subAgents) {
+				if (sa.id === '__workflow__') { continue; } // skip synthetic root
+				body.appendChild(this._createNodeCard(sa));
+			}
+
+			// ── Timeline ──
 			if (workflowEvents && workflowEvents.length > 0) {
 				const events = workflowEvents.filter(e => e.executionId === execId);
 				if (events.length > 0) {
-					const eventsSection = append(body, $('.workflow-events-section'));
-					append(eventsSection, $('h4.workflow-section-title', undefined, '事件时间线'));
-
-					for (const event of events) {
-						const eventEl = append(eventsSection, $('.workflow-event-item'));
-						const eventHeader = append(eventEl, $('.workflow-event-header'));
-
-						const kindLabel = event.kind === 'subagent_start' ? '子代理开始' :
-										event.kind === 'subagent_end' ? '子代理结束' :
-										event.kind === 'delta' ? '增量更新' :
-										event.kind === 'ask_user' ? '询问用户' :
-										event.kind === 'ask_user_end' ? '询问用户结束' :
-										event.kind === 'collect_variables' ? '收集变量' :
-										event.kind === 'collect_variables_end' ? '收集变量结束' :
-										event.kind === 'execution_end' ? '执行结束' :
-										event.kind === 'breakpoint_hit' ? '断点命中' : event.kind;
-
-						append(eventHeader, $('span.workflow-event-kind', undefined, kindLabel));
-						if (event.nodeName) {
-							append(eventHeader, $('span.workflow-event-node', undefined, event.nodeName));
-						}
-
-						// Event details
-						if (event.ask) {
-							append(eventEl, $('p.workflow-event-ask', undefined, event.ask));
-						}
-						if (event.summary) {
-							append(eventEl, $('p.workflow-event-summary', undefined, event.summary));
-						}
-					}
+					card.appendChild(this._createTimeline(exec, events));
 				}
 			}
 
-			// Collect variables (if available)
-			if (collectVariables) {
-				const vars = Object.values(collectVariables).filter(v => v.executionId === execId);
-				if (vars.length > 0) {
-					const varsSection = append(body, $('.workflow-collect-variables-section'));
-					append(varsSection, $('h4.workflow-section-title', undefined, '收集变量'));
-
-					for (const cv of vars) {
-						const cvEl = append(varsSection, $('.workflow-collect-variable-item'));
-						append(cvEl, $('p.workflow-cv-status', undefined, `状态: ${cv.status}`));
-
-						// Variables list
-						if (cv.variables.length > 0) {
-							const varsList = append(cvEl, $('.workflow-cv-variables-list'));
-							for (const v of cv.variables) {
-								const vEl = append(varsList, $('.workflow-cv-variable-item'));
-								append(vEl, $('span.workflow-cv-variable-name', undefined, v.name));
-								if (v.defaultValue) {
-									append(vEl, $('span.workflow-cv-variable-default', undefined, `(默认: ${v.defaultValue})`));
-								}
-							}
-						}
-					}
-				}
-			}
-
-			// Collapse toggle functionality
-			header.addEventListener('click', () => {
-				const isCollapsed = body.style.display === 'none';
-				body.style.display = isCollapsed ? 'block' : 'none';
-				toggleBtn.textContent = isCollapsed ? '▼' : '▶';
-			});
+			// ── Header toggle ──
+			this._register(addDisposableListener(header, EventType.CLICK, () => {
+				const isHidden = body.style.display === 'none';
+				body.style.display = isHidden ? '' : 'none';
+				toggle.textContent = isHidden ? '▼' : '▶';
+				toggle.classList.toggle('collapsed', !isHidden);
+			}));
 		}
 
 		return container;
+	}
+
+	/** Create a collect-variables card with input fields and submit button. */
+	private _createCollectVarsCard(execId: string, cv: ILiveCollectVariable): HTMLElement {
+		const card = $('.collect-vars-card');
+		const header = append(card, $('.collect-vars-header'));
+		append(header, $('span.icon', undefined, '📝'));
+		append(header, $('span.title', undefined, '请填入工作流变量'));
+
+		const form = append(card, $('.collect-vars-form'));
+		const inputs: HTMLInputElement[] = [];
+		for (const v of cv.variables) {
+			const field = append(form, $('.collect-vars-field'));
+			append(field, $('label', undefined, `${v.name}${v.defaultValue ? ` (默认: ${v.defaultValue})` : ''}`));
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.className = 'collect-vars-input';
+			input.placeholder = v.defaultValue ? `默认: ${v.defaultValue}` : `请输入 ${v.name}`;
+			input.value = cv.values[v.name] ?? v.defaultValue ?? '';
+			field.appendChild(input);
+			inputs.push(input);
+		}
+		if (this._onSubmitVariables) {
+			const btn = append(form, $('button.collect-vars-submit', undefined, '提交')) as HTMLButtonElement;
+			this._register(addDisposableListener(btn, EventType.CLICK, () => {
+				const values: Record<string, string> = {};
+				cv.variables.forEach((v, i) => { values[v.name] = inputs[i]?.value ?? v.defaultValue ?? ''; });
+				this._onSubmitVariables!(execId, values);
+				btn.disabled = true;
+				btn.textContent = '已提交';
+			}));
+		}
+		return card;
+	}
+
+	/** Create a single node card (subagent / prompt / skill / tool). */
+	private _createNodeCard(sa: ILiveWorkflowSubAgent): HTMLElement {
+		const isRunning = sa.status === 'running';
+		const isDone = sa.status === 'done';
+		const isError = sa.status === 'error';
+
+		const card = $('.node-card');
+		card.classList.add(sa.status); // running | done | error | pending | cancelled
+
+		// ── Collapse state (persists across re-renders) ──
+		const userCollapsed = this._nodeCollapsedState.get(sa.id) === true;
+		if (userCollapsed) { card.classList.add('collapsed'); }
+
+		// ── Header ──
+		const header = append(card, $('.node-header'));
+
+		// Type icon
+		const typeIcons: Record<string, { icon: string; cls: string }> = {
+			agent: { icon: '🤖', cls: 'agent' },
+			prompt: { icon: '📝', cls: 'prompt' },
+			skill: { icon: '⚡', cls: 'skill' },
+			tool: { icon: '🔧', cls: 'tool' },
+		};
+		const typeKey = (sa as any).type ?? 'agent';
+		const tInfo = typeIcons[typeKey] ?? typeIcons.agent;
+		const iconEl = append(header, $('.node-type-icon'));
+		iconEl.classList.add(tInfo.cls);
+		iconEl.textContent = tInfo.icon;
+
+		// Info (name + task)
+		const info = append(header, $('.node-info'));
+		append(info, $('.node-name', undefined, sa.name));
+		if (sa.task) {
+			append(info, $('.node-task', undefined, sa.task));
+		}
+
+		// ── Collapse/expand button ──
+		const collapseBtn = append(header, $('button.node-collapse-btn'));
+		collapseBtn.classList.add(userCollapsed ? 'collapsed' : 'expanded');
+		collapseBtn.title = userCollapsed ? '点击展开' : '点击收缩';
+		const chevron = append(collapseBtn, $('span.icon-chevron'));
+		chevron.textContent = userCollapsed ? '▶' : '▼';
+
+		// Status indicator
+		const statusEl = append(header, $('.node-status'));
+		// Duration
+		const dur = sa.endTime ? ((sa.endTime - sa.startTime) / 1000).toFixed(1) + 's' : isRunning ? '...' : '';
+		if (dur) { append(statusEl, $('span.node-duration', undefined, dur)); }
+		// Icon
+		if (isRunning) {
+			append(statusEl, $('span.spinner'));
+		} else if (isDone) {
+			append(statusEl, $('span.check', undefined, '✓'));
+		} else if (isError) {
+			append(statusEl, $('span.error', undefined, '✗'));
+		} else {
+			append(statusEl, $('span.node-pending', undefined, '等待中'));
+		}
+
+		// ── Body (collapsible) ──
+		const nodeBody = append(card, $('.node-body'));
+		if (userCollapsed) { nodeBody.style.display = 'none'; }
+
+		// Streamed text / output / error
+		if (isRunning && sa.streamedText) {
+			const out = append(nodeBody, $('.node-output.running'));
+			const md: IMarkdownString = { value: sa.streamedText, isTrusted: true, supportHtml: true };
+			// Use renderMarkdown with parent element to track disposable lifecycle
+			const prevDisposable = this._markdownDisposables.get(out);
+			if (prevDisposable) { prevDisposable.dispose(); }
+			this._markdownDisposables.set(out, renderMarkdown(md, undefined, out));
+		} else if (isDone && (sa.output || sa.streamedText)) {
+			const out = append(nodeBody, $('.node-output.done'));
+			const text = sa.output || sa.streamedText || '';
+			const md: IMarkdownString = { value: text, isTrusted: true, supportHtml: true };
+			const prevDisposable = this._markdownDisposables.get(out);
+			if (prevDisposable) { prevDisposable.dispose(); }
+			this._markdownDisposables.set(out, renderMarkdown(md, undefined, out));
+		} else if (isError && sa.error) {
+			const out = append(nodeBody, $('.node-output.error'));
+			out.textContent = sa.error;
+		}
+
+		// Tool calls
+		if (sa.toolCalls && sa.toolCalls.length > 0) {
+			const toolList = append(nodeBody, $('.tool-list'));
+			for (const tc of sa.toolCalls as any[]) {
+				const item = append(toolList, $('.tool-item'));
+				const ti = append(item, $('.tool-icon'));
+				ti.textContent = '🔧';
+				append(item, $('span.tool-name', undefined, tc.name ?? 'unknown'));
+				const ts = append(item, $('span.tool-status'));
+				ts.classList.add(tc.status ?? 'done');
+				const tIcon = tc.status === 'running' ? 'running...' : tc.status === 'error' ? '✗ error' : '✓ done';
+				ts.textContent = tIcon;
+			}
+		}
+
+		// ── Summary row (visible only when collapsed) ──
+		const summary = append(card, $('.node-summary'));
+		summary.style.display = userCollapsed ? 'block' : 'none';
+		const toolCount = sa.toolCalls?.length ?? 0;
+		const outputLen = (sa.output?.length ?? sa.streamedText?.length ?? 0);
+		const parts: string[] = [];
+		if (toolCount > 0) { parts.push(`${toolCount} 个工具调用`); }
+		if (outputLen > 0) { parts.push(`输出约 ${outputLen} 字`); }
+		if (isRunning) { parts.unshift('处理中'); }
+		append(summary, $('span.node-summary-text', undefined, parts.join(' · ') || '暂无输出'));
+
+		// ── Collapse/expand interaction ──
+		// Toggle via button click. State is persisted in _nodeCollapsedState
+		// so that DOM rebuilds (streaming updates) respect the user's choice
+		// and do NOT auto-expand a manually-collapsed node.
+		this._register(addDisposableListener(collapseBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			this._toggleNodeCollapse(sa.id, card, nodeBody, summary, collapseBtn, chevron);
+		}));
+		// Also allow header click (excluding the button itself) to toggle
+		this._register(addDisposableListener(header, EventType.CLICK, (e) => {
+			if (e.target === collapseBtn || collapseBtn.contains(e.target as Node)) { return; }
+			this._toggleNodeCollapse(sa.id, card, nodeBody, summary, collapseBtn, chevron);
+		}));
+
+		return card;
+	}
+
+	/** Toggle a node card's collapsed/expanded state and persist it. */
+	private _toggleNodeCollapse(
+		nodeId: string,
+		card: HTMLElement,
+		nodeBody: HTMLElement,
+		summary: HTMLElement,
+		collapseBtn: HTMLElement,
+		chevron: HTMLElement,
+	): void {
+		const isCollapsed = this._nodeCollapsedState.get(nodeId) === true;
+		const newCollapsed = !isCollapsed;
+		this._nodeCollapsedState.set(nodeId, newCollapsed);
+
+		nodeBody.style.display = newCollapsed ? 'none' : '';
+		summary.style.display = newCollapsed ? 'block' : 'none';
+		card.classList.toggle('collapsed', newCollapsed);
+
+		collapseBtn.classList.toggle('collapsed', newCollapsed);
+		collapseBtn.classList.toggle('expanded', !newCollapsed);
+		collapseBtn.title = newCollapsed ? '点击展开' : '点击收缩';
+		chevron.textContent = newCollapsed ? '▶' : '▼';
+	}
+
+	/** Create the bottom timeline bar showing node progress. */
+	private _createTimeline(exec: ILiveWorkflowExecution, events: ILiveWorkflowEvent[]): HTMLElement {
+		const timeline = $('.wf-timeline');
+
+		// Build ordered node list from events
+		const nodeOrder: string[] = [];
+		const nodeStatus: Record<string, string> = {};
+		for (const e of events) {
+			if (e.kind === 'subagent_start' && e.nodeId !== '__workflow__' && !nodeOrder.includes(e.nodeId)) {
+				nodeOrder.push(e.nodeId);
+			}
+			if (e.kind === 'subagent_start') {
+				nodeStatus[e.nodeId] = 'active';
+			}
+			if (e.kind === 'subagent_end') {
+				nodeStatus[e.nodeId] = e.status === 'done' ? 'done' : e.status === 'error' ? 'error' : 'done';
+			}
+		}
+		// Also include nodes from subAgents
+		for (const sa of exec.subAgents) {
+			if (sa.id === '__workflow__') { continue; }
+			if (!nodeOrder.includes(sa.id)) { nodeOrder.push(sa.id); }
+			if (sa.status === 'running') { nodeStatus[sa.id] = 'active'; }
+			else if (sa.status === 'done') { nodeStatus[sa.id] = 'done'; }
+			else if (sa.status === 'error') { nodeStatus[sa.id] = 'error'; }
+		}
+
+		// Render: start → node1 → node2 → ... → end
+		append(timeline, this._createTimelineItem('start', exec.status === 'running' ? 'active' : 'done'));
+		for (let i = 0; i < nodeOrder.length; i++) {
+			const nodeId = nodeOrder[i];
+			const label = events.find(e => e.nodeId === nodeId)?.nodeName ?? nodeId;
+			const st = nodeStatus[nodeId] ?? '';
+			append(timeline, $('span.wf-timeline-arrow', undefined, '→'));
+			append(timeline, this._createTimelineItem(label, st));
+		}
+	append(timeline, $('span.wf-timeline-arrow', undefined, '→'));
+	const endStatus = exec.status === 'completed' ? 'done' : exec.status === 'failed' ? 'error' : exec.status === 'cancelled' ? 'done' : 'active';
+	append(timeline, this._createTimelineItem('end', endStatus));
+
+		return timeline;
+	}
+
+	private _createTimelineItem(label: string, status: string): HTMLElement {
+		const el = $('.wf-timeline-item');
+		if (status) { el.classList.add(status); }
+		el.textContent = label;
+		return el;
 	}
 
 	// --- Confirmation card -----------------------------------
@@ -3157,6 +3465,24 @@ export class AgentChatPanel extends Disposable {
 
 
 
+
+	/**
+	 * Dispose all markdown render disposables associated with elements inside
+	 * the given root element. Called before rebuilding a message DOM to prevent
+	 * renderMarkdown disposable leaks (event listeners, etc.).
+	 */
+	private _cleanupMarkdownDisposables(root: HTMLElement): void {
+		const toRemove: HTMLElement[] = [];
+		for (const [el, disposable] of this._markdownDisposables) {
+			if (root.contains(el)) {
+				disposable.dispose();
+				toRemove.push(el);
+			}
+		}
+		for (const el of toRemove) {
+			this._markdownDisposables.delete(el);
+		}
+	}
 
 	private _renderMarkdownContent(parent: HTMLElement, content: string): void {
 		const md: IMarkdownString = { value: content, isTrusted: true };
@@ -5677,6 +6003,7 @@ export class AgentChatPanel extends Disposable {
 			disposable.dispose();
 		}
 		this._markdownDisposables.clear();
+		this._nodeCollapsedState.clear();
 
 		super.dispose();
 	}

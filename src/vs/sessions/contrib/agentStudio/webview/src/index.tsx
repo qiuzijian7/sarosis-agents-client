@@ -42,7 +42,23 @@ initMessageClient((type, data) => {
 	 *
 	 * v4: also routes `ask_user` / `ask_user_end` events for interactive
 	 * cards in the workflow owner agent's chat.
+	 *
+	 * v7: tracks executionId → ownerSessionId mapping so non-root events
+	 * (which carry the sub-agent's own sessionId) can be resolved back to
+	 * the owner session where the live container lives.
 	 */
+	const _workflowOwnerSessions = new Map<string, string>();
+
+	/** Resolve the owner-session key for a workflow trace event.
+	 *  Non-root events carry the sub-agent's own session; we must map them
+	 *  back to the owner session recorded from the `__workflow__` root event. */
+	function _resolveWorkflowSessionId(trace: { executionId: string; sessionId: string }): string {
+		const owner = _workflowOwnerSessions.get(trace.executionId);
+		if (owner) { return owner; }
+		// Fallback: if we never saw __workflow__, use whatever session we have.
+		return trace.sessionId;
+	}
+
 	function routeWorkflowTrace(trace: { executionId: string; sessionId: string; workflowAgentId: string;
 		kind: string; nodeId: string; nodeName?: string; nodeType?: string;
 		task?: string; delta?: unknown; output?: string; error?: string; status?: string;
@@ -50,6 +66,7 @@ initMessageClient((type, data) => {
 		multiSelect?: boolean; selection?: string | string[];
 		variables?: Array<{ name: string; defaultValue?: string }> }): void {
 		const store = useChatStore.getState();
+		const wfSessionId = _resolveWorkflowSessionId(trace);
 
 		// v6 (refined): append ONLY node-level events to the execution timeline.
 		// Deltas (streaming text/thinking/tool args) are intentionally excluded —
@@ -87,7 +104,7 @@ initMessageClient((type, data) => {
 			} else if (trace.kind === 'collect_variables_end') {
 				summary = `变量${trace.status === 'submitted' ? '已提交' : '已跳过'}`;
 			}
-			store.appendWorkflowEvent(trace.sessionId, {
+			store.appendWorkflowEvent(wfSessionId, {
 				executionId: trace.executionId,
 				sessionId: trace.sessionId,
 				kind: trace.kind as any,
@@ -102,7 +119,17 @@ initMessageClient((type, data) => {
 
 		if (trace.kind === 'subagent_start') {
 			if (trace.nodeId === '__workflow__') {
-				store.startWorkflowExecution(trace.executionId, trace.sessionId, trace.nodeName ?? 'Workflow');
+				// v7: resolve the container key. When the service couldn't create
+				// an owner session (workflowAgentId falsy), sessionId may be a
+				// fallback like 'unknown'. In that case, use the current active
+				// session so the container is stored under a key the renderer
+				// can actually find.
+				let containerKey = trace.sessionId;
+				if (!containerKey || containerKey === 'unknown') {
+					containerKey = useChatStore.getState().activeAgentSessionId ?? 'unknown';
+				}
+				_workflowOwnerSessions.set(trace.executionId, containerKey);
+				store.startWorkflowExecution(trace.executionId, containerKey, trace.nodeName ?? 'Workflow');
 
 				// v6: auto-switch the chat panel to the workflow's owner agent
 				// session so the user immediately sees the execution trace.
@@ -126,7 +153,7 @@ initMessageClient((type, data) => {
 					}
 				})();
 			} else {
-				store.startWorkflowSubAgent(trace.sessionId, {
+				store.startWorkflowSubAgent(wfSessionId, {
 					id: trace.nodeId,
 					name: trace.nodeName ?? trace.nodeId,
 					type: trace.nodeType ?? 'agent',
@@ -137,10 +164,10 @@ initMessageClient((type, data) => {
 				});
 			}
 		} else if (trace.kind === 'delta') {
-			store.appendWorkflowTraceDelta(trace.sessionId, trace.nodeId, trace.delta);
+			store.appendWorkflowTraceDelta(wfSessionId, trace.nodeId, trace.delta);
 		} else if (trace.kind === 'subagent_end') {
 			store.endWorkflowSubAgent(
-				trace.sessionId,
+				wfSessionId,
 				trace.nodeId,
 				// v21: trace.status can be 'cancelled' when the user clicked
 				// Cancel mid-stream. endWorkflowSubAgent's type union already
@@ -153,7 +180,7 @@ initMessageClient((type, data) => {
 			// v4: register an interactive AskUser card. The card will call
 			// submitAskUser() when the user picks an option, which sends
 			// `workflow.resume` to the host.
-			store.startAskUser(trace.sessionId, {
+			store.startAskUser(wfSessionId, {
 				executionId: trace.executionId,
 				nodeId: trace.nodeId,
 				nodeName: trace.nodeName ?? trace.nodeId,
@@ -168,25 +195,27 @@ initMessageClient((type, data) => {
 			// card, but we still pass through for any cross-replica case.
 			const status = (trace.status as 'answered' | 'cancelled' | 'expired') ?? 'answered';
 			if (status !== 'answered') {
-				store.cancelAskUser(trace.sessionId, `${trace.executionId}:${trace.nodeId}`, status);
+				store.cancelAskUser(wfSessionId, `${trace.executionId}:${trace.nodeId}`, status);
 			}
 		} else if (trace.kind === 'collect_variables') {
 			// v6: register a variable collection card so the user can fill in values.
-			store.startCollectVariables(trace.sessionId, {
+			store.startCollectVariables(wfSessionId, {
 				executionId: trace.executionId,
 				variables: trace.variables ?? [],
 			});
 		} else if (trace.kind === 'collect_variables_end') {
 			// v6: server resolved variable collection — mark card as submitted/skipped.
 			if (trace.status === 'skipped') {
-				store.cancelCollectVariables(trace.sessionId, trace.executionId);
+				store.cancelCollectVariables(wfSessionId, trace.executionId);
 			}
 			// 'submitted' is already handled by submitCollectVariables optimistically
 		} else if (trace.kind === 'execution_end') {
 			store.commitWorkflowExecution(
-				trace.sessionId,
+				wfSessionId,
 				(trace.status as 'completed' | 'failed' | 'cancelled') ?? 'completed',
 			);
+			// Clean up owner-session mapping so stale entries don't leak across runs.
+			_workflowOwnerSessions.delete(trace.executionId);
 		}
 	}
 
@@ -655,19 +684,6 @@ initMessageClient((type, data) => {
 				perfRendererOrigin?: number;
 			} | undefined;
 
-			// ── DIAGNOSTIC: DOM-based (survives esbuild console drop) ──
-			try {
-				let _del = document.getElementById('__as_diag_overlay');
-				if (!_del) {
-					_del = document.createElement('div');
-					_del.id = '__as_diag_overlay';
-					_del.setAttribute('style', 'position:fixed;top:0;left:0;z-index:999999;background:rgba(20,20,20,0.95);color:#0f0;font:11px/1.4 monospace;padding:8px;max-width:90vw;max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-all;border-bottom:2px solid #f00;');
-					document.body.appendChild(_del);
-				}
-				const _ts = new Date().toLocaleTimeString('en-US', { hour12: false });
-				_del.textContent = `[${_ts}] [index] pool.activate: panelType=${String(payload?.panelType)}, initialData=${JSON.stringify(payload?.initialData)?.substring(0, 400) ?? 'undefined'}\n` + _del.textContent;
-			} catch { /* silent */ }
-
 			if (payload) {
 				(window as any).__AGENT_STUDIO_PANEL_TYPE__ = payload.panelType ?? undefined;
 				if (payload.initialTheme) {
@@ -722,7 +738,10 @@ initMessageClient((type, data) => {
 		const trace = data as { executionId: string; sessionId: string; workflowAgentId: string;
 			kind: string; nodeId: string; nodeName?: string; nodeType?: string;
 			task?: string; delta?: unknown; output?: string; error?: string; status?: string };
-		console.log(`[AgentStudio] workflow.executionTrace → kind=${trace.kind} node=${trace.nodeId} session=${trace.sessionId}`);
+		// Skip verbose logging for delta events — hundreds fire during streaming
+		if (trace.kind !== 'delta') {
+			console.log(`[AgentStudio] workflow.executionTrace → kind=${trace.kind} node=${trace.nodeId} session=${trace.sessionId}`);
+		}
 		routeWorkflowTrace(trace);
 		break;
 	}

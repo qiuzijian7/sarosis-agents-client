@@ -18,7 +18,7 @@ import type { IChatStreamDelta } from '../../common/agentStudio.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
 import { IAgentOSService } from '../../common/agentOS.js';
 import { $ } from '../../../../../base/browser/dom.js';
-import type { ChatMessage } from '../../common/types.js';
+import { ChatMessage } from '../../common/types.js';
 
 /**
  * Claw Chat View - 主聊天界面，支持与Agent对话
@@ -388,7 +388,7 @@ export class ClawChatViewPane extends ViewPane {
 			<h3>欢迎使用 Claw Chat</h3>
 			<p>与你的 AI Agent 开始对话。提问、委托任务，或获取工作区帮助。</p>
 			<div class="welcome-suggestions">
-				<button class="suggestion-btn" data-msg="帮我了解这个工作区">💡 了解工作区</button>
+				<button class="suggestion-btn" data-msg="帮我了解这个工作区">📡 了解工作区</button>
 				<button class="suggestion-btn" data-msg="列出我的当前任务">📋 列出任务</button>
 				<button class="suggestion-btn" data-msg="有哪些可用的 Agent？">🤖 可用 Agent</button>
 			</div>
@@ -413,7 +413,7 @@ export class ClawChatViewPane extends ViewPane {
 			id: crypto.randomUUID(),
 			role,
 			content,
-		agentId: this.modelSelectorService.getSelection()?.providerId || 'claw-default',
+			agentId: this.modelSelectorService.getSelection()?.providerId || 'claw-default',
 			timestamp: new Date().toISOString(),
 		});
 	}

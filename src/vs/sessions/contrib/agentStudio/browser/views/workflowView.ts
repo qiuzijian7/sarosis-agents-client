@@ -203,9 +203,19 @@ export class WorkflowViewPane extends ViewPane {
 	 * 4. 打开右侧 ClawChat 视图 — 聊天框切换到该 agent
 	 */
 	private _openWorkflow(wf: IStoredWorkflow): void {
-		// 1. Open the editor
 		const input = new WorkflowEditorInput(wf);
-		this.editorService.openEditor(input, { pinned: true });
+
+		// Deduplicate: if an editor with the same workflow is already open,
+		// reuse it instead of creating a new input (avoids disposable leak).
+		const existingEditors = this.editorService.findEditors(input);
+		if (existingEditors.length > 0) {
+			// Reveal the existing editor — dispose the newly created input since it won't be used.
+			const existing = existingEditors[0];
+			void this.editorService.openEditor(existing.editor, { revealIfVisible: true }, existing.groupId);
+			input.dispose();
+		} else {
+			this.editorService.openEditor(input, { pinned: true });
+		}
 
 		// 2-4. Select the corresponding agent and open the chat view (no prompt sent)
 		void this._selectWorkflowAgentInChat(wf);

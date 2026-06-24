@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782259206830_l97rag6",
+    "role": "user",
+    "content": "需求描述：test6",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqrb458r_s3av5n",
+    "timestamp": "2026-06-24T00:00:06.830Z"
+  },
+  {
+    "id": "msg_1782259213101_0_7xm3w",
+    "role": "assistant",
+    "content": "I can see you've entered \"test6\" as a requirement description. \n1. **Requirement Analysis** - Do you want me to help analyze or break down this requirement?\n2. **Code Implementation** - Do you need code implementation related to this requirement?\n3. **Test Case Creation** - Do you need test cases for this requirement?\n4. **Project Management** - Do you want to create a task or story in TAPD for this requirement?\n5. **Documentation** - Do you need technical documentation or API documentation?\n\nCould you please provide more details about:\n- What specific functionality does \"test6\" refer to?\n- What do you want me to help you accomplish?\n- Is this related to an existing project or a new initiative?\n\nThe more context you provide, the better I can assist you!",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqrb458r_s3av5n",
+    "turnId": "turn_1782259213101_lv4hb4d",
+    "timestamp": "2026-06-24T00:00:13.101Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I can see you've entered \"test6\" as a requirement description. \n1. **Requirement Analysis** - Do you want me to help analyze or break down this requirement?\n2. **Code Implementation** - Do you need code implementation related to this requirement?\n3. **Test Case Creation** - Do you need test cases for this requirement?\n4. **Project Management** - Do you want to create a task or story in TAPD for this requirement?\n5. **Documentation** - Do you need technical documentation or API documentation?\n\nCould you please provide more details about:\n- What specific functionality does \"test6\" refer to?\n- What do you want me to help you accomplish?\n- Is this related to an existing project or a new initiative?\n\nThe more context you provide, the better I can assist you!"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29307,
+      "output": 175,
+      "total": 29482
+    }
+  }
+]

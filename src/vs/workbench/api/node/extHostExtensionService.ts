@@ -24,6 +24,7 @@ import { assertType } from '../../../base/common/types.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import { BidirectionalMap } from '../../../base/common/map.js';
 import { DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
+// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 const require = nodeModule.createRequire(import.meta.url);
 
 class NodeModuleRequireInterceptor extends RequireInterceptor {
@@ -68,6 +69,7 @@ class NodeModuleRequireInterceptor extends RequireInterceptor {
 				// Some extensions have been using `require.resolve('vsda', { paths: require.main.paths })`
 				// to find the `vsda` module in our app root. To be backwards compatible with this pattern,
 				// we help by filling in the `paths` array with the node modules paths of the current module.
+				// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 				options.paths = node_module._nodeModulePaths(import.meta.dirname);
 			}
 			return originalResolveFilename.call(this, request, parent, isMain, options);

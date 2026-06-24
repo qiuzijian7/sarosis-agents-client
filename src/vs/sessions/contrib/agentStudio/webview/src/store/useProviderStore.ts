@@ -161,64 +161,53 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		// Try to restore selection from the active agent's agent.yaml first,
 		// then fall back to the global selection saved in settings.json
 		const activeAgentId = getChatStore()?.getState()?.activeAgentId;
-		console.log(`[ProviderStore] loadProviders: activeAgentId=${activeAgentId}`);
 
-			try {
-				let savedSelection: { providerId: string; modelId: string; agentId?: string } | null = null;
+		try {
+			let savedSelection: { providerId: string; modelId: string; agentId?: string } | null = null;
 
-				if (activeAgentId) {
-					// Prefer agent-specific selection from agent.yaml
-					savedSelection = await sendRequest<{ agentId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
-						'providers.getSelectionForAgent',
-						{ agentId: activeAgentId }
-					);
-					console.log(`[ProviderStore] loadProviders: agent.yaml selection for ${activeAgentId}:`, savedSelection);
-				}
-
-				if (!savedSelection) {
-					// Fall back to global selection
-					savedSelection = await sendRequest<unknown, { providerId: string; modelId: string; agentId?: string } | null>(
-						'providers.getSelection',
-						{}
-					);
-					console.log('[ProviderStore] loadProviders: global selection fallback:', savedSelection);
-				}
-
-			if (savedSelection) {
-				const provider = (providers || []).find(p => p.id === savedSelection!.providerId);
-				// Tolerate transient non-authenticated states (e.g. 'validating'):
-				// as long as the saved provider is REGISTERED, keep its selection.
-				// `updateProviders` will keep this stable when the auth status
-				// transitions, and `providers.changed` will catch us up.
-				// We only fall back to auto-select if the saved provider has
-				// truly disappeared from the host's registry.
-				if (provider) {
-					set({
-						selection: {
-							providerId: savedSelection.providerId,
-							providerName: provider.name,
-							modelId: savedSelection.modelId,
-							agentId: savedSelection.agentId,
-						},
-					});
-					// Sync restored selection to Host so AgentOSService._activeSelection
-					// matches what the webview shows.
-					postMessage('providers.select', {
-						providerId: savedSelection.providerId,
-						modelId: savedSelection.modelId,
-						agentId: savedSelection.agentId,
-					});
-					console.log(
-						`[ProviderStore] loadProviders: restored selection → ${savedSelection.providerId}/${savedSelection.modelId} ` +
-						`(authStatus=${provider.authStatus})`,
-					);
-					return; // 成功恢复了保存的选择，不再自动选中
-				}
-				console.log(
-					`[ProviderStore] loadProviders: saved provider '${savedSelection.providerId}' ` +
-					`not registered — falling back to auto-select`,
+			if (activeAgentId) {
+				// Prefer agent-specific selection from agent.yaml
+				savedSelection = await sendRequest<{ agentId: string }, { providerId: string; modelId: string; agentId?: string } | null>(
+					'providers.getSelectionForAgent',
+					{ agentId: activeAgentId }
 				);
 			}
+
+			if (!savedSelection) {
+				// Fall back to global selection
+				savedSelection = await sendRequest<unknown, { providerId: string; modelId: string; agentId?: string } | null>(
+					'providers.getSelection',
+					{}
+				);
+			}
+
+		if (savedSelection) {
+			const provider = (providers || []).find(p => p.id === savedSelection!.providerId);
+			// Tolerate transient non-authenticated states (e.g. 'validating'):
+			// as long as the saved provider is REGISTERED, keep its selection.
+			// `updateProviders` will keep this stable when the auth status
+			// transitions, and `providers.changed` will catch us up.
+			// We only fall back to auto-select if the saved provider has
+			// truly disappeared from the host's registry.
+			if (provider) {
+				set({
+					selection: {
+						providerId: savedSelection.providerId,
+						providerName: provider.name,
+						modelId: savedSelection.modelId,
+						agentId: savedSelection.agentId,
+					},
+				});
+				// Sync restored selection to Host so AgentOSService._activeSelection
+				// matches what the webview shows.
+				postMessage('providers.select', {
+					providerId: savedSelection.providerId,
+					modelId: savedSelection.modelId,
+					agentId: savedSelection.agentId,
+				});
+				return; // 成功恢复了保存的选择，不再自动选中
+			}
+		}
 			} catch {
 				// ignore — fallback to auto-select below
 			}
@@ -248,7 +237,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 							modelId: firstModel.id,
 							agentId: firstAgent?.id,
 						});
-						console.log(`[ProviderStore] loadProviders: auto-selected first authenticated → ${first.id}/${firstModel.id}`);
 					}
 				}
 			}
@@ -274,11 +262,8 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 	loadSelectionForAgent: async (agentId: string) => {
 		const { providers } = get();
 		if (!agentId || providers.length === 0) {
-			console.log(`[ProviderStore] loadSelectionForAgent: skipped (agentId=${agentId}, providers=${providers.length})`);
 			return;
 		}
-
-		console.log(`[ProviderStore] loadSelectionForAgent: loading for ${agentId}`);
 
 		const applySelection = (
 			providerId: string,
@@ -293,7 +278,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 		const pickAndPersistFallback = (reason: string) => {
 			const authenticated = providers.filter(p => p.authStatus === 'authenticated');
 			if (authenticated.length === 0) {
-				console.log(`[ProviderStore] loadSelectionForAgent: ${reason}, but no authenticated provider available`);
 				set({ selection: null });
 				return;
 			}
@@ -301,11 +285,9 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			const firstModel = first.models[0];
 			const firstAgent = first.agents?.[0];
 			if (!firstModel) {
-				console.log(`[ProviderStore] loadSelectionForAgent: ${reason}, first authenticated provider has no models`);
 				return;
 			}
 			applySelection(first.id, first.name, firstModel.id, firstAgent?.id);
-			console.log(`[ProviderStore] loadSelectionForAgent: ${reason} → auto-picked ${first.id}/${firstModel.id} and persisting back to agent.yaml`);
 			// Persist the auto-picked selection to agent.yaml so the chat bar
 			// and canvas card stay in sync next time and don't drift to a
 			// stale global fallback again.
@@ -548,12 +530,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 			return null;
 		}
 		const model = provider.models.find(m => m.id === selection.modelId) ?? null;
-		// [VISION-DEBUG] node 3: webview store — resolved selected model capability
-		console.log(
-			`[VISION-DEBUG][store.currentModelInfo] sel=${selection.providerId}/${selection.modelId} ` +
-			`found=${!!model} supportsImages=${model?.supportsImages} ` +
-			`modelCount=${provider.models.length}`,
-		);
 		return model;
 	},
 

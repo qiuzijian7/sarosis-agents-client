@@ -346,14 +346,30 @@ export interface ChatMessage {
 	/** Suggested questions for user to ask - VS Code chatQuestionCarouselPart pattern */
 	questions?: SuggestedQuestion[];
 	/** Sub-agent executions (parallel or sequential) - VS Code chatSubagentContentPart pattern */
-	subAgents?: SubAgentInfo[];
-	/**
-	 * v5d: answered AskUser cards persisted alongside the workflow run.
-	 * Each entry is a completed (status='answered') LiveWorkflowAskUser.
-	 * Renders as read-only AskUserCard in the assistant message bubble.
-	 */
-	askUsers?: LiveWorkflowAskUser[];
-	/** Checkpoint data for time-travel navigation (Void-inspired) */
+		subAgents?: SubAgentInfo[];
+		/**
+		 * v5d: answered AskUser cards persisted alongside the workflow run.
+		 * Each entry is a completed (status='answered') LiveWorkflowAskUser.
+		 * Renders as read-only AskUserCard in the assistant message bubble.
+		 */
+		askUsers?: LiveWorkflowAskUser[];
+		/**
+		 * LiveWorkflowTraceView: workflow execution trace attached to this message.
+		 * Key = executionId, value = execution state with subAgents + toolCalls.
+		 * Persisted so the trace card survives reload.
+		 */
+		workflowExecutions?: Record<string, LiveWorkflowExecution>;
+		/**
+		 * LiveWorkflowTraceView: workflow events timeline.
+		 * Persisted so the events timeline survives reload.
+		 */
+		workflowEvents?: LiveWorkflowEvent[];
+		/**
+		 * LiveWorkflowTraceView: collect-variables requests.
+		 * Persisted so the collect-variables card survives reload.
+		 */
+		collectVariables?: Record<string, LiveCollectVariable>;
+		/** Checkpoint data for time-travel navigation (Void-inspired) */
 	checkpoint?: CheckpointData;
 	/** User-uploaded attachments (images/files) - Void-inspired attachment support */
 	attachments?: Array<{
@@ -1933,8 +1949,20 @@ export const useChatStore = create<ChatState>((set, get) => {
 		startWorkflowSubAgent: (sessionId: string, subAgent: LiveWorkflowSubAgent) => {
 			console.log(`[ChatStore] startWorkflowSubAgent: sessionId=${sessionId} nodeId=${subAgent.id} name=${subAgent.name}`);
 			set(state => {
-				const exec = state.liveWorkflowExecutions[sessionId];
-				if (!exec) { return state; }
+				let exec = state.liveWorkflowExecutions[sessionId];
+				if (!exec) {
+					// Fallback: __workflow__ root event was missed (e.g. timing race
+					// or event dropped). Auto-create the execution container so the
+					// sub-agent card can still render.
+					console.warn(`[ChatStore] startWorkflowSubAgent: execution not found for session=${sessionId}, auto-creating fallback container`);
+					exec = {
+						executionId: `fallback_${sessionId}`,
+						workflowName: subAgent.name || 'Workflow',
+						status: 'running' as const,
+						subAgents: [],
+						startTime: Date.now(),
+					};
+				}
 				// If a previous entry for this node exists (e.g. from a previous run),
 				// replace it. Otherwise append.
 				const existingIdx = exec.subAgents.findIndex(sa => sa.id === subAgent.id);
@@ -2098,12 +2126,26 @@ export const useChatStore = create<ChatState>((set, get) => {
 				const askUsersForMessage = (state.liveAskUsers[sessionId] ?? [])
 					.filter(a => a.status === 'answered');
 
+				// v7: flatten all subAgent tool calls into top-level toolCalls
+				// so that Native Chat's AgentChatPanel can render ToolCallCards.
+				const allToolCalls = exec.subAgents.flatMap(sa =>
+					(sa.toolCalls ?? []).map(tc => ({
+						id: tc.id,
+						name: tc.name,
+						args: tc.arguments,
+						result: tc.result,
+						status: (tc.status === 'done' ? 'completed' as const : tc.status) as ('running' | 'completed' | 'error' | undefined),
+					}))
+				);
+
 				const assistantMessage: ChatMessage = {
 					id: `wf_run_${exec.executionId}`,
 					role: 'assistant',
 					content: `▶ Workflow run: **${exec.workflowName}** — ${status === 'completed' ? '✓ 完成' : status === 'failed' ? '✗ 失败' : '已取消'}`,
 					timestamp: new Date(exec.startTime).toISOString(),
 					subAgents: subAgentsForMessage,
+					// v7: include top-level toolCalls for NativeChat rendering
+					...(allToolCalls.length > 0 ? { toolCalls: allToolCalls } : {}),
 					// v5d: persist only when there are answered AskUser cards
 					// (omit the field entirely when empty to keep messages lean).
 					...(askUsersForMessage.length > 0 ? { askUsers: askUsersForMessage } : {}),

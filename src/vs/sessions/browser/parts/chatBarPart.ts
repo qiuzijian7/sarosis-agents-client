@@ -43,7 +43,7 @@ import { ISkillRegistry } from '../../contrib/agentStudio/common/skills.js';
 import { IEditorService } from '../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../workbench/services/editor/common/editorGroupsService.js';
 import { autorun } from '../../../base/common/observable.js';
-import type { AgentStatus as AgentChatAgentStatus, ChatMode, StreamPhase, IAgentChatMessage, IAgentSessionMeta, IWorktreeItem, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, ICheckpointInfo, IContextUsage, ILiveWorkflowExecution, ILiveWorkflowSubAgent, ILiveWorkflowEvent, ILiveCollectVariable } from '../agentChat/agentChatTypes.js';
+import type { AgentStatus as AgentChatAgentStatus, ChatMode, StreamPhase, IAgentChatMessage, IAgentSessionMeta, IWorktreeItem, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, ICheckpointInfo, IContextUsage, ILiveWorkflowExecution, ILiveWorkflowSubAgent, ILiveWorkflowEvent, ILiveCollectVariable, IToolCall } from '../agentChat/agentChatTypes.js';
 import { uniqueMsgId, adaptPersistedChatMessage } from '../agentChat/agentChatTypes.js';
 
 export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not be a AbstractPaneCompositePart but instead a custom Part with a CompositeBar
@@ -800,7 +800,7 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 								c.id === delta.toolCallId
 									? {
 										...c,
-										status: 'completed' as const,
+										status: 'success' as const,
 										result: delta.content ?? c.result,
 										displayName: delta.displayName ?? c.displayName,
 										renderType: delta.renderType ?? c.renderType,
@@ -937,9 +937,9 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				case 'tool_approval_request': {
 					const calls = (assistantMsg.toolCalls ?? []).map(c =>
 						c.id === delta.toolCallId
-							? { ...c, status: 'approval_required' as any, securityLevel: delta.securityLevel }
+							? { ...c, status: 'approval_required' as const, securityLevel: delta.securityLevel } as IToolCall
 							: c
-					);
+					) as IToolCall[];
 					assistantMsg.toolCalls = calls;
 					assistantMsg.streamPhase = 'awaiting_approval';
 					panel.setStreamPhase('awaiting_approval');
@@ -1086,6 +1086,11 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				if (!assistantMsg.workflowExecutions) { assistantMsg.workflowExecutions = {}; }
 				assistantMsg.workflowExecutions[executionId] = workflowExec;
 				panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				// Persist the updated message so workflow trace survives reload
+				void this._chatService.updateMessage(
+					agentId, this._currentSessionId, assistantMsg.id,
+					{ workflowExecutions: assistantMsg.workflowExecutions },
+				).catch(err => this._logService.warn('[ChatBarPart] workflow_start persist failed', err));
 				break;
 			}
 			case 'workflow_end': {
@@ -1097,6 +1102,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						endTime: Date.now(),
 					};
 					panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+					void this._chatService.updateMessage(
+						agentId, this._currentSessionId, assistantMsg.id,
+						{ workflowExecutions: assistantMsg.workflowExecutions },
+					).catch(err => this._logService.warn('[ChatBarPart] workflow_end persist failed', err));
 				}
 				break;
 			}
@@ -1123,6 +1132,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 					};
 				}
 				panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+				void this._chatService.updateMessage(
+					agentId, this._currentSessionId, assistantMsg.id,
+					{ workflowExecutions: assistantMsg.workflowExecutions },
+				).catch(err => this._logService.warn('[ChatBarPart] workflow_subagent_start persist failed', err));
 				break;
 			}
 			case 'workflow_subagent_end': {
@@ -1139,6 +1152,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						subAgents,
 					};
 					panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+					void this._chatService.updateMessage(
+						agentId, this._currentSessionId, assistantMsg.id,
+						{ workflowExecutions: assistantMsg.workflowExecutions },
+					).catch(err => this._logService.warn('[ChatBarPart] workflow_subagent_end persist failed', err));
 				}
 				break;
 			}
@@ -1161,6 +1178,11 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						subAgents,
 					};
 					panel.updateMessage(assistantId, { workflowExecutions: assistantMsg.workflowExecutions });
+					// Persist delta updates (throttled by panel.updateMessage频率)
+					void this._chatService.updateMessage(
+						agentId, this._currentSessionId, assistantMsg.id,
+						{ workflowExecutions: assistantMsg.workflowExecutions },
+					).catch(err => this._logService.warn('[ChatBarPart] workflow_delta persist failed', err));
 				}
 				break;
 			}
@@ -1181,15 +1203,23 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				if (!assistantMsg.workflowEvents) { assistantMsg.workflowEvents = []; }
 				assistantMsg.workflowEvents.push(askUserEvent);
 				panel.updateMessage(assistantId, { workflowEvents: assistantMsg.workflowEvents });
+				void this._chatService.updateMessage(
+					agentId, this._currentSessionId, assistantMsg.id,
+					{ workflowEvents: assistantMsg.workflowEvents },
+				).catch(err => this._logService.warn('[ChatBarPart] workflow_ask_user persist failed', err));
 				break;
 			}
 		case 'workflow_ask_user_end': {
-			const eventId = delta.eventId ?? '';
+				const eventId = delta.eventId ?? '';
 				if (assistantMsg.workflowEvents) {
 					assistantMsg.workflowEvents = assistantMsg.workflowEvents.map(evt =>
 						evt.id === eventId ? { ...evt, kind: 'ask_user_end' as any } : evt
 					);
 					panel.updateMessage(assistantId, { workflowEvents: assistantMsg.workflowEvents });
+					void this._chatService.updateMessage(
+						agentId, this._currentSessionId, assistantMsg.id,
+						{ workflowEvents: assistantMsg.workflowEvents },
+					).catch(err => this._logService.warn('[ChatBarPart] workflow_ask_user_end persist failed', err));
 				}
 				break;
 			}
@@ -1206,6 +1236,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				if (!assistantMsg.collectVariables) { assistantMsg.collectVariables = {}; }
 				assistantMsg.collectVariables[collectVar.id] = collectVar;
 				panel.updateMessage(assistantId, { collectVariables: assistantMsg.collectVariables });
+				void this._chatService.updateMessage(
+					agentId, this._currentSessionId, assistantMsg.id,
+					{ collectVariables: assistantMsg.collectVariables },
+				).catch(err => this._logService.warn('[ChatBarPart] workflow_collect_variables persist failed', err));
 				break;
 			}
 			case 'workflow_collect_variables_end': {
@@ -1217,6 +1251,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 						values: (delta.values as Record<string, string>) ?? assistantMsg.collectVariables[collectId].values,
 					};
 					panel.updateMessage(assistantId, { collectVariables: assistantMsg.collectVariables });
+					void this._chatService.updateMessage(
+						agentId, this._currentSessionId, assistantMsg.id,
+						{ collectVariables: assistantMsg.collectVariables },
+					).catch(err => this._logService.warn('[ChatBarPart] workflow_collect_variables_end persist failed', err));
 				}
 				break;
 			}
@@ -1236,6 +1274,10 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				if (!assistantMsg.workflowEvents) { assistantMsg.workflowEvents = []; }
 				assistantMsg.workflowEvents.push(bpEvent);
 				panel.updateMessage(assistantId, { workflowEvents: assistantMsg.workflowEvents });
+				void this._chatService.updateMessage(
+					agentId, this._currentSessionId, assistantMsg.id,
+					{ workflowEvents: assistantMsg.workflowEvents },
+				).catch(err => this._logService.warn('[ChatBarPart] workflow_breakpoint_hit persist failed', err));
 				break;
 			}
 			default:

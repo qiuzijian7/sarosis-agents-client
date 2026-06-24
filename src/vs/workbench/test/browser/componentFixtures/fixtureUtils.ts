@@ -250,11 +250,17 @@ const mockEnvironmentService: IEnvironmentService = Object.create(null);
 // as raw text (not parsed JSON) — this lets VS Code's JSONC parser handle
 // comments and trailing commas the way it does in the real product.
 /* eslint-disable local/code-import-patterns */
+// @ts-ignore TS2856 - import attributes not supported in CJS output
 import dark_modern from '../../../../../../extensions/theme-defaults/themes/dark_modern.json' with { type: 'json' };
+// @ts-ignore TS2856
 import dark_plus from '../../../../../../extensions/theme-defaults/themes/dark_plus.json' with { type: 'json' };
+// @ts-ignore TS2856
 import dark_vs from '../../../../../../extensions/theme-defaults/themes/dark_vs.json' with { type: 'json' };
+// @ts-ignore TS2856
 import light_modern from '../../../../../../extensions/theme-defaults/themes/light_modern.json' with { type: 'json' };
+// @ts-ignore TS2856
 import light_plus from '../../../../../../extensions/theme-defaults/themes/light_plus.json' with { type: 'json' };
+// @ts-ignore TS2856
 import light_vs from '../../../../../../extensions/theme-defaults/themes/light_vs.json' with { type: 'json' };
 /* eslint-enable local/code-import-patterns */
 

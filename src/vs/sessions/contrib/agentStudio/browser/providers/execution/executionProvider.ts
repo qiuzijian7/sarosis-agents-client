@@ -76,13 +76,10 @@ export class ExecutionProvider implements IExecutionProvider {
 				const recallQuery = [...request.messages].reverse().find(m => m.role === 'user')?.content ?? '';
 
 				// ── 召回作用域（2026-06）─────────────────────────────────
-				// 复用 AgentDriver 在 enrichedRequest 上提前算好的 scope/allowedKeys。
+				// 复用 AgentDriver 在 enrichedRequest 上提前算好的 scope。
 				// 缺省按 'agent' 严格隔离。
-				const recallScope: 'agent' | 'workspace' | 'global' = request.memoryScope ?? 'agent';
-				const recallAllowedKeys = request.memoryAllowedSessionKeys;
-				const recallOptions = recallScope === 'workspace'
-					? { scope: recallScope, allowedSessionKeys: recallAllowedKeys }
-					: { scope: recallScope };
+				const recallScope: 'agent' | 'global' = request.memoryScope ?? 'agent';
+				const recallOptions = { scope: recallScope };
 
 				const memoryContext = await memoryProvider.loadContext(
 					request.agentId,
@@ -376,8 +373,13 @@ export class ExecutionProvider implements IExecutionProvider {
 					}
 				}
 
-				// 7.7 更新记忆（如果有 Memory Provider）
-				if (memoryProvider) {
+			// 7.7 更新记忆（如果有 Memory Provider）
+			// Fire-and-forget: writeMemory may trigger an HTTP POST /capture to the
+			// tdb-am-gateway. If the gateway is slow or unresponsive, awaiting it
+			// would block this async generator, freezing the entire chat stream.
+			// Same pattern as agentDriverService.ts Step 5.
+			if (memoryProvider) {
+				void (async () => {
 					try {
 						await memoryProvider.writeMemory(request.agentId, {
 							id: `msg-${Date.now()}`,
@@ -397,7 +399,8 @@ export class ExecutionProvider implements IExecutionProvider {
 					} catch (error) {
 						this._logService.error('[ExecutionProvider] Failed to write memory:', error);
 					}
-				}
+				})();
+			}
 
 				// 7.8 消耗迭代预算
 				budget.consume(1);

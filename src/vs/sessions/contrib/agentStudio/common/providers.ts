@@ -386,16 +386,10 @@ export interface IMemoryProvider {
 	 * `query` 参数（可选）：当前轮次的用户输入文本，用于驱动 vendor 的语义/关键词
 	 * 召回。若不传，provider 实现可走"全量摘要"或返回空，但召回质量会大幅下降。
 	 *
-	 * 历史 bug：早期接口没有 query 参数，TdbAmMemoryProvider 只能用占位字符串
-	 * `_loadContext_` 当 query，导致 vendor FTS5 永远召不回任何 L1 记忆。
-	 * 加了第 3 参后，调用方应把 messages 中最近一条 user 消息抽出来传入。
-	 *
 	 * `options.scope` (2026-06 新增) —— 控制召回的作用域：
-	 *   - 'agent'     → 仅本 Agent 自己写入的记忆
-	 *   - 'workspace' → 当前 workspace 下所有 agent 的记忆（需配合
-	 *     `options.allowedSessionKeys` 提供兄弟 agent 的 sessionKey 列表）
-	 *   - 'global'    → 全库（旧行为）
-	 * 不传时 provider 实现按"global"兜底，保持向后兼容；老的 provider
+	 *   - 'agent'     → 仅本 Agent 自己写入的记忆（默认，严格隔离）
+	 *   - 'global'    → 全库（跨 agent 共享）
+	 * 不传时 provider 实现按"agent"兜底，保持向后兼容；老的 provider
 	 * 实现可以忽略此参数（接口已声明为可选）。
 	 */
 	loadContext(
@@ -412,8 +406,7 @@ export interface IMemoryProvider {
  * 记忆召回的可选作用域参数（2026-06 新增）。详见 IMemoryProvider.loadContext 注释。
  */
 export interface IMemoryRecallOptions {
-	scope?: 'agent' | 'workspace' | 'global';
-	allowedSessionKeys?: readonly string[];
+	scope?: 'agent' | 'global';
 }
 
 export interface IMemoryContext {
@@ -429,6 +422,7 @@ export interface IMemoryEntry {
 	readonly content: string;
 	readonly metadata?: Record<string, unknown>;
 	readonly timestamp?: number;
+	readonly importance?: number; // 0-10，重要性评分
 	readonly score?: number; // for search results
 }
 
@@ -675,17 +669,11 @@ export interface IAgentTurnRequest {
 	readonly memoryMaxEntries?: number;
 	/**
 	 * Memory 召回作用域（2026-06 新增，来自 Agent 的 memoryConfig.scope）：
-	 *   - 'agent'     → 仅本 Agent 自己写入的 L1 记忆
-	 *   - 'workspace' → 当前 workspace 下所有 agent 共享 L1（需配合 memoryAllowedSessionKeys）
-	 *   - 'global'    → 全库 L1（旧行为）
+	 *   - 'agent'     → 仅本 Agent 自己写入的 L1 记忆（默认，严格隔离）
+	 *   - 'global'    → 全库 L1（跨 agent 共享）
 	 * 未指定时按 'agent' 处理（C2 默认严格隔离）。
 	 */
-	readonly memoryScope?: 'agent' | 'workspace' | 'global';
-	/**
-	 * 当 memoryScope === 'workspace' 时，调用方负责把"同 workspace 下所有 agent 的
-	 * sessionKey（agent:<id>）"列出来传下去。Provider 自身没有能力枚举兄弟 agent。
-	 */
-	readonly memoryAllowedSessionKeys?: readonly string[];
+	readonly memoryScope?: 'agent' | 'global';
 	/**
 	 * 任务级 worktree 路径（来自 TaskBoardRecord.worktreePath）。
 	 * 当设置时，agent 执行的工作目录应优先使用此路径（高于 AgentBinding.worktreePath）。
@@ -775,6 +763,14 @@ export interface IChatStreamDelta {
 	 * 立即下调（compactedBaseline），实现"压缩后圆圈同步回落"。下一轮真实 usage 回来后自然覆盖。
 	 */
 	readonly compactedInputTokens?: number;
+	/**
+	 * 上下文压缩详情（type === 'context_compacted' 时携带）。
+	 * 用于在聊天消息流中渲染压缩提示卡片。
+	 */
+	readonly compressionOriginalCount?: number;
+	readonly compressionCompressedCount?: number;
+	readonly compressionTokensSaved?: number;
+	readonly compressionDurationMs?: number;
 	/**
 	 * Sub-agent lifecycle fields. Carried on `sub_agent_start | sub_agent_progress | sub_agent_end`
 	 * delta types so that the Host can drive the WebView's SubAgentCard. Field names are kept

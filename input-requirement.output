@@ -1,0 +1,54 @@
+[
+  {
+    "id": "req-001",
+    "title": "实现用户登录功能",
+    "description": "实现用户登录功能，支持用户名密码登录",
+    "type": "新功能开发",
+    "priority": "高",
+    "status": "待开发",
+    "input": "用户名、密码",
+    "output": "登录成功/失败",
+    "scope": "前端登录页面、后端认证API",
+    "acceptanceCriteria": [
+      "用户输入正确的用户名密码后成功登录",
+      "用户输入错误的用户名密码后显示错误信息",
+      "登录失败后保留用户输入的用户名",
+      "登录成功后跳转到首页"
+    ],
+    "affectedFiles": [
+      "src/components/LoginForm.tsx",
+      "src/services/authService.ts",
+      "src/App.tsx"
+    ],
+    "testStrategy": "单元测试 + 集成测试 + E2E测试",
+    "estimatedEffort": "3天",
+    "dependencies": [],
+    "createdAt": "2024-01-15T09:00:00Z",
+    "updatedAt": "2024-01-15T09:00:00Z"
+  },
+  {
+    "id": "req-002", 
+    "title": "修复登录页面闪烁问题",
+    "description": "修复用户登录后页面闪烁的问题",
+    "type": "Bug修复",
+    "priority": "中",
+    "status": "待修复",
+    "input": "正确的用户名密码",
+    "output": "页面闪烁后停留在登录页",
+    "scope": "前端登录页面、路由配置",
+    "acceptanceCriteria": [
+      "登录成功后页面平滑过渡到首页",
+      "不再出现页面闪烁现象",
+      "登录失败时有明确的错误提示"
+    ],
+    "affectedFiles": [
+      "src/components/LoginForm.tsx",
+      "src/router/index.tsx"
+    ],
+    "testStrategy": "E2E测试 + 手动测试",
+    "estimatedEffort": "1天",
+    "dependencies": ["req-001"],
+    "createdAt": "2024-01-16T10:30:00Z",
+    "updatedAt": "2024-01-16T10:30:00Z"
+  }
+]

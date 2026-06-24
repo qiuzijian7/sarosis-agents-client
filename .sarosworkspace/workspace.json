@@ -1,48 +1,12 @@
 [
   {
-    "id": "1779953376256-raoa25m",
-    "name": "GR_qiuzijian_main",
-    "path": "g:\\CustomWorkspaces\\AIProjects\\saros-agents-client",
-    "employees": [],
+    "id": "1782202833977-ajmbjk7",
+    "name": "sarosis-agents-client",
+    "path": "g:\\CustomWorkspaces\\AIProjects\\sarosis-agents-client",
+    "relatedFolders": [],
+    "agents": [],
     "connections": [],
-    "createdAt": "2026-05-28T07:29:36.256Z",
-    "updatedAt": "2026-05-31T22:43:14.719Z",
-    "layout": {
-      "nodes": [
-        {
-          "id": "1779953396483-6q2n5vf",
-          "type": "employee",
-          "position": {
-            "x": 289.0322580645161,
-            "y": -61.29032258064515
-          },
-          "data": {}
-        },
-        {
-          "id": "1779976451437-1rh37re",
-          "type": "employee",
-          "position": {
-            "x": 446.45161290322585,
-            "y": 263.22580645161287
-          },
-          "data": {}
-        },
-        {
-          "id": "1779976480366-xe2tw8q",
-          "type": "employee",
-          "position": {
-            "x": 124.51612903225805,
-            "y": 192.90322580645162
-          },
-          "data": {}
-        }
-      ],
-      "edges": [],
-      "viewport": {
-        "x": 0,
-        "y": 0,
-        "zoom": 1
-      }
-    }
+    "createdAt": "2026-06-23T08:20:33.977Z",
+    "updatedAt": "2026-06-23T08:20:33.977Z"
   }
 ]

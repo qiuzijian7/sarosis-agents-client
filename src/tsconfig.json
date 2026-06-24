@@ -34,8 +34,27 @@
 		"./vscode-dts/vscode.d.ts"
 	],
 	"exclude": [
-		"vs/workbench/contrib/webview/browser/pre/service-worker.js",
-		"vs/sessions/contrib/agentStudio/webview/**/*",
-		"vs/sessions/contrib/agentStudio/test/**/*"
+		"./vs/workbench/contrib/webview/browser/pre/service-worker.js",
+		"./vs/sessions/contrib/agentStudio/webview/**/*",
+		"./vs/sessions/contrib/agentStudio/test/**/*",
+		"./bootstrap-esm.ts",
+		"./bootstrap-fork.ts",
+		"./bootstrap-meta.ts",
+		"./bootstrap-node.ts",
+		"./cli.ts",
+		"./main.ts",
+		"./server-cli.ts",
+		"./server-main.ts",
+		"./vs/editor/browser/services/editorWorkerService.ts",
+		"./vs/platform/agentHost/node/agentHostServerMain.ts",
+		"./vs/platform/agentHost/node/sshRemoteAgentHostService.ts",
+		"./vs/platform/agentHost/node/webSocketTransport.ts",
+		"./vs/platform/agentHost/test/**/*",
+		"./vs/server/node/remoteExtensionHostAgentServer.ts",
+		"./vs/workbench/api/node/extHostExtensionService.ts",
+		"./vs/workbench/api/node/extensionHostProcess.ts",
+		"./vs/workbench/api/node/proxyResolver.ts",
+		"./vs/workbench/services/extensions/browser/webWorkerExtensionHost.ts",
+		"./vs/workbench/test/**/*"
 	]
 }

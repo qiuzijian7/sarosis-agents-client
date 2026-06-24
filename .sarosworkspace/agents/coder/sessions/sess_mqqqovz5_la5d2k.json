@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782224902664_qk83xvg",
+    "role": "user",
+    "content": "需求描述：test",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqqovz5_la5d2k",
+    "timestamp": "2026-06-23T14:28:22.664Z"
+  },
+  {
+    "id": "msg_1782224907350_0_4zy7d",
+    "role": "assistant",
+    "content": "您好！看起来您输入了\"test\"作为需求描述。\n\n请问您需要什么帮助？您可以：\n\n1. **创建TAPD需求** - 如果您想在TAPD项目中创建一个新需求\n2. **查询TAPD需求** - 如果您想查看现有需求列表\n3. **代码相关** - 如果您需要代码生成、重构或代码审查\n4. **其他功能** - 或者告诉我您具体想做什么\n\n请详细描述您的需求，我会为您提供相应的帮助！😊",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqqovz5_la5d2k",
+    "turnId": "turn_1782224907350_ruudyo4",
+    "timestamp": "2026-06-23T14:28:27.350Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "您好！看起来您输入了\"test\"作为需求描述。\n\n请问您需要什么帮助？您可以：\n\n1. **创建TAPD需求** - 如果您想在TAPD项目中创建一个新需求\n2. **查询TAPD需求** - 如果您想查看现有需求列表\n3. **代码相关** - 如果您需要代码生成、重构或代码审查\n4. **其他功能** - 或者告诉我您具体想做什么\n\n请详细描述您的需求，我会为您提供相应的帮助！😊"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29306,
+      "output": 107,
+      "total": 29413
+    }
+  }
+]

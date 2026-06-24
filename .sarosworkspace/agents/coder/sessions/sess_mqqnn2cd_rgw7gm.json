@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782219778755_756opyt",
+    "role": "user",
+    "content": "{{input-requirement.output}}",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqnn2cd_rgw7gm",
+    "timestamp": "2026-06-23T13:02:58.755Z"
+  },
+  {
+    "id": "msg_1782219783876_0_3ie8e",
+    "role": "assistant",
+    "content": "I understand you want me to work with the `{{input-requirement.output}}` content, but I don't see the actual content or requirement in your message. The placeholder `{{input-requirement.output}}` appears to be a template variable that wasn't replaced with the actual content.\n\nCould you please:\n\n1. **Provide the actual content** you'd like me to work with, or\n2. **Clarify what you need help with** - for example:\n   - Do you want me to analyze some code?\n   - Review a document?\n   - Generate something based on requirements?\n   - Debug an issue?\n   - Something else?\n\nOnce you provide the actual content or clarify your request, I'll be happy to help using the appropriate tools from the workspace!",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqnn2cd_rgw7gm",
+    "turnId": "turn_1782219783876_q9a2bea",
+    "timestamp": "2026-06-23T13:03:03.876Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I understand you want me to work with the `{{input-requirement.output}}` content, but I don't see the actual content or requirement in your message. The placeholder `{{input-requirement.output}}` appears to be a template variable that wasn't replaced with the actual content.\n\nCould you please:\n\n1. **Provide the actual content** you'd like me to work with, or\n2. **Clarify what you need help with** - for example:\n   - Do you want me to analyze some code?\n   - Review a document?\n   - Generate something based on requirements?\n   - Debug an issue?\n   - Something else?\n\nOnce you provide the actual content or clarify your request, I'll be happy to help using the appropriate tools from the workspace!"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29309,
+      "output": 168,
+      "total": 29477
+    }
+  }
+]

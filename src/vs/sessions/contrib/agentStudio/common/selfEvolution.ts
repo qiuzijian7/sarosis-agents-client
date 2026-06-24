@@ -17,7 +17,7 @@
  * - 所有进化操作记录为 EvolutionRecord，可追溯
  *
  * 存储位置：
- *   全局: `<userRoamingDataHome>/saros/evolution/`
+ *   全局: `<userRoamingDataHome>/.saros/evolution/`
  *   工作区: `<workspace>/.sarosworkspace/agents/<agentId>/evolution/`
  */
 

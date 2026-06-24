@@ -110,15 +110,21 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		this._onDidExecutionStatusChange.fire(executionState);
 
 		// P4: Create a fresh session on the workflow's owner agent (workflow.agentId)
-		// and post a user "trigger" message. The session is where the owner chat will
-		// render subagent cards for each node executed in this run.
+		// BEFORE returning so that `_handleWorkflowExecute` can include sessionInfo
+		// in the `workflow.execute` response. Session creation is fast (in-memory +
+		// single file write), so this won't block the response.
 		const workflowAgentId = workflow.agentId || options?.agentId;
+		let ownerSessionId: string | undefined;
+		let ownerAgentId: string | undefined;
+
 		if (workflowAgentId) {
 			try {
 				const meta = await this.agentChatService.createAgentSession(
 					workflowAgentId,
 					`▶ ${workflow.name || workflowId}`,
 				);
+				ownerSessionId = meta.id;
+				ownerAgentId = workflowAgentId;
 				this._executionSession.set(executionId, {
 					workflowAgentId,
 					sessionId: meta.id,
@@ -135,18 +141,6 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					agentSessionId: meta.id,
 				} as any);
 
-				// Forward session info to webview so it can switch the active chat.
-				this._onDidExecutionTrace.fire({
-					kind: 'subagent_start',
-					executionId,
-					workflowAgentId,
-					sessionId: meta.id,
-					nodeId: '__workflow__',
-					nodeName: workflow.name || workflowId,
-					nodeType: 'workflow',
-					task: workflow.description || `Run workflow: ${workflow.name || workflowId}`,
-				} as any);
-
 				this.logService.info(
 					`[WorkflowExecution] Created owner-agent session ${meta.id} for ${workflowAgentId} (execution=${executionId})`,
 				);
@@ -157,77 +151,38 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			}
 		} else {
 			this.logService.warn(
-				`[WorkflowExecution] Workflow has no agentId; chat trace will be skipped.`,
+				`[WorkflowExecution] Workflow has no agentId; will fire __workflow__ with fallback session.`,
 			);
 		}
 
-		// v6: Collect template variables from agent/prompt nodes before execution.
-		// If any {{variable}} patterns are found, show an interactive card in the
-		// chat panel so the user can fill in values before nodes start running.
-		const variables = WorkflowExecutionService._collectTemplateVariables(workflow);
-		const ownerSession = this._executionSession.get(executionId);
-		if (variables.length > 0 && ownerSession) {
-			// v40: skip variable collection card when pre-filled from context (e.g. task board)
-			if (options?.skipVariableCollection) {
-				this.logService.info(
-					`[WorkflowExecution] Skipping variable collection card (skipVariableCollection=true), ` +
-					`auto-resolving ${variables.length} variable(s) from context`,
-				);
-				// Auto-resolve variables from options.context
-				const autoValues: Record<string, string> = {};
-				const ctx = options.context ?? {};
-				for (const v of variables) {
-					autoValues[v.name] = String(ctx[v.name] ?? v.defaultValue ?? '');
-				}
-				WorkflowExecutionService._substituteVariables(workflow, autoValues);
-			} else {
-			this.logService.info(
-				`[WorkflowExecution] Found ${variables.length} template variable(s): ` +
-				variables.map(v => v.name).join(', '),
-			);
-			this._onDidExecutionTrace.fire({
-				kind: 'collect_variables',
-				executionId,
-				sessionId: ownerSession.sessionId,
-				variables,
-			});
+		// v7: ALWAYS fire __workflow__ so the webview can create a live container.
+		// Without this, subagent cards never render because the container is never
+		// created. If we have an owner session, use it; otherwise fire with a
+		// fallback so the webview's fallback-container logic can kick in.
+		const wfSessionId = ownerSessionId || options?.context?.sessionId || 'unknown';
+		console.log(`[WorkflowExecution] Firing __workflow__ trace: execId=${executionId} session=${wfSessionId} agent=${ownerAgentId ?? '(none)'}`);
+		this._onDidExecutionTrace.fire({
+			kind: 'subagent_start',
+			executionId,
+			workflowAgentId: ownerAgentId,
+			sessionId: wfSessionId,
+			nodeId: '__workflow__',
+			nodeName: workflow.name || workflowId,
+			nodeType: 'workflow',
+			ask: workflow.description || `Run workflow: ${workflow.name || workflowId}`,
+		} as any);
 
-			// Wait for the user to fill in variable values via the webview card.
-			// The card sends workflow.submitVariables which resolves this promise.
-			try {
-				const values = await new Promise<Record<string, string>>((resolve) => {
-					this._variableResolvers.set(executionId, resolve);
-				});
-				this.logService.info(
-					`[WorkflowExecution] Variables collected: ${JSON.stringify(values)}`,
-				);
-				WorkflowExecutionService._substituteVariables(workflow, values);
-				this._onDidExecutionTrace.fire({
-					kind: 'collect_variables_end',
-					executionId,
-					sessionId: ownerSession.sessionId,
-					status: 'submitted',
-				});
-			} catch {
-				// User skipped or cancelled
-				this._onDidExecutionTrace.fire({
-					kind: 'collect_variables_end',
-					executionId,
-					sessionId: ownerSession.sessionId,
-					status: 'skipped',
-				});
-			}
-			} // end else (skipVariableCollection)
-		}
-
-		// Start execution (fire-and-forget)
-		this._executeWorkflowAsync(executionState, workflow, options).catch(err => {
-			this.logService.error(`[WorkflowExecution] Execution ${executionId} failed:`, err);
+		// ── FIX: kick off variable collection + execution asynchronously.
+		//     Variable collection uses `await` (waiting for user input), which would
+		//     block the `workflow.execute` request/response and cause a 30 s timeout.
+		//     By firing this asynchronously, `executeWorkflow` returns immediately
+		//     with the executionId (and sessionInfo), unblocking the response.
+		this._collectVariablesAndExecute(executionId, executionState, workflow, options).catch(err => {
+			this.logService.error(`[WorkflowExecution] Execution failed for ${executionId}:`, err);
 			executionState.status = WorkflowExecutionStatus.Failed;
 			executionState.error = err instanceof Error ? err.message : String(err);
 			executionState.endTime = new Date().toISOString();
 			this._onDidExecutionStatusChange.fire(executionState);
-			// P4: also fire execution_end so the owner chat can mark the run as failed.
 			const ownerSession = this._executionSession.get(executionId);
 			if (ownerSession) {
 				this._onDidExecutionTrace.fire({
@@ -240,6 +195,74 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		});
 
 		return executionId;
+	}
+
+	/**
+	 * Async: collect template variables (if any), then start workflow execution.
+	 * Run fire-and-forget from `executeWorkflow` so the request returns immediately.
+	 */
+	private async _collectVariablesAndExecute(
+		executionId: string,
+		executionState: IWorkflowExecutionState,
+		workflow: any,
+		options?: IWorkflowExecutionOptions,
+	): Promise<void> {
+		// v6: Collect template variables from agent/prompt nodes before execution.
+		const variables = WorkflowExecutionService._collectTemplateVariables(workflow);
+		const ownerSession = this._executionSession.get(executionId);
+		if (variables.length > 0 && ownerSession) {
+			// v40: skip variable collection card when pre-filled from context (e.g. task board)
+			if (options?.skipVariableCollection) {
+				this.logService.info(
+					`[WorkflowExecution] Skipping variable collection card (skipVariableCollection=true), ` +
+					`auto-resolving ${variables.length} variable(s) from context`,
+				);
+				const autoValues: Record<string, string> = {};
+				const ctx = options.context ?? {};
+				for (const v of variables) {
+					autoValues[v.name] = String(ctx[v.name] ?? v.defaultValue ?? '');
+				}
+				WorkflowExecutionService._substituteVariables(workflow, autoValues);
+			} else {
+				this.logService.info(
+					`[WorkflowExecution] Found ${variables.length} template variable(s): ` +
+					variables.map(v => v.name).join(', '),
+				);
+				this._onDidExecutionTrace.fire({
+					kind: 'collect_variables',
+					executionId,
+					sessionId: ownerSession.sessionId,
+					variables,
+				});
+
+				// Wait for the user to fill in variable values via the webview card.
+				try {
+					const values = await new Promise<Record<string, string>>((resolve) => {
+						this._variableResolvers.set(executionId, resolve);
+					});
+					this.logService.info(
+						`[WorkflowExecution] Variables collected: ${JSON.stringify(values)}`,
+					);
+					WorkflowExecutionService._substituteVariables(workflow, values);
+					this._onDidExecutionTrace.fire({
+						kind: 'collect_variables_end',
+						executionId,
+						sessionId: ownerSession.sessionId,
+						status: 'submitted',
+					});
+				} catch {
+					this._onDidExecutionTrace.fire({
+						kind: 'collect_variables_end',
+						executionId,
+						sessionId: ownerSession.sessionId,
+						status: 'skipped',
+					});
+				}
+			} // end else (skipVariableCollection)
+		}
+
+		// Start execution (fire-and-forget)
+		await this._executeWorkflowAsync(executionState, workflow, options);
 	}
 
 	async pauseExecution(executionId: string, nodeId: string, question: string, options: IAskUserOption[]): Promise<string | string[]> {
@@ -890,12 +913,19 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			// the in-flight LLM call. Previously the bare `sendMessage` await
 			// kept running even after status flipped to Cancelled, so the UI
 			// button had no effect during long agent turns.
+			// 获取或创建 agent session，避免消息被 cross-session leakage guard 丢弃
+			const taskSessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+			const taskSessionId = await this._getOrCreateAgentSession(
+				agentId,
+				executionState.executionId,
+				taskSessionName,
+			);
 			const message = await this._sendAndTrackStream(
 				executionState,
 				node,
 				agentId,
 				taskDescription,
-				undefined,
+				taskSessionId,
 				(delta) => {
 					// 可选：转发流式响应
 					this.logService.debug(`[WorkflowExecution] Task ${node.id} delta: ${delta.content?.substring(0, 50)}`);
@@ -1051,6 +1081,12 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				nodeType: 'agent',
 				task: nodePrompt.substring(0, 200),
 			});
+		} else {
+			this.logService.warn(
+				`[WorkflowExecution] _executeAgentNode: ownerSession not found for executionId=${executionState.executionId}, ` +
+				`subagent_start event not fired — subagent cards will not show in chat. ` +
+				`Check that workflow.agentId is set and executeWorkflow() successfully created the owner session.`,
+			);
 		}
 
 		try {
@@ -1360,12 +1396,19 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// the in-flight LLM call. The bare `sendMessage` await previously
 		// ignored the Cancelled status, so cancel had no effect during
 		// long-running skill executions.
+		// 获取或创建 agent session，避免消息被 cross-session leakage guard 丢弃
+		const skillSessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+		const skillSessionId = await this._getOrCreateAgentSession(
+			agentId,
+			executionState.executionId,
+			skillSessionName,
+		);
 		const message = await this._sendAndTrackStream(
 			executionState,
 			node,
 			agentId,
 			executionPrompt,
-			undefined,
+			skillSessionId,
 			() => { /* noop onDelta */ },
 		);
 
@@ -1407,12 +1450,19 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// v21: route through _sendAndTrackStream so cancelExecution can abort
 		// the in-flight LLM call (cancel previously had no effect while a
 		// tool's agent turn was streaming).
+		// 获取或创建 agent session，避免消息被 cross-session leakage guard 丢弃
+		const toolSessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+		const toolSessionId = await this._getOrCreateAgentSession(
+			agentId,
+			executionState.executionId,
+			toolSessionName,
+		);
 		const message = await this._sendAndTrackStream(
 			executionState,
 			node,
 			agentId,
 			executionPrompt,
-			undefined,
+			toolSessionId,
 			() => { /* noop onDelta */ },
 		);
 
@@ -1543,16 +1593,25 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 				'Respond with ONLY the branch number (e.g., "0") on the first line.',
 			].join('\n');
 
-			try {
-				this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: asking agent to evaluate`);
-				const message = await this._sendAndTrackStream(
-					executionState,
-					node,
-					agentId,
-					evaluationPrompt,
-					undefined,
-					() => { /* noop onDelta */ },
-				);
+		try {
+			this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: asking agent to evaluate`);
+			const t0_eval = Date.now();
+			// 获取或创建 agent session，避免消息被 cross-session leakage guard 丢弃
+			const sessionName = WorkflowExecutionService._buildSessionName(executionState, workflow);
+			const ifElseSessionId = await this._getOrCreateAgentSession(
+				agentId,
+				executionState.executionId,
+				sessionName,
+			);
+			const message = await this._sendAndTrackStream(
+				executionState,
+				node,
+				agentId,
+				evaluationPrompt,
+				ifElseSessionId,
+				() => { /* noop onDelta */ },
+			);
+				this.logService.info(`[WorkflowExecution] IfElse/Switch ${node.id}: evaluation returned in ${Date.now() - t0_eval}ms, contentLen=${message?.content?.length ?? 0}`);
 
 				// v31: robust parsing — scan the first non-empty line for a
 				// standalone integer, falling back to the old /\b([0-9]+)\b/
@@ -2154,10 +2213,13 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 
 		let idleHandle: any;
 
-		try {
-			// v31/v32: timeout protection via Promise.race.
-			const runTimeoutMs = timeoutConfig?.runTimeoutMs ?? 300_000; // default 5 min
-			const idleTimeoutMsVal = timeoutConfig?.idleTimeoutMs;
+	try {
+		// v31/v32: timeout protection via Promise.race.
+		const runTimeoutMs = timeoutConfig?.runTimeoutMs ?? 300_000; // default 5 min
+		// v40: default idle timeout 120s — if no delta received within 120s,
+		// the stream is likely stuck (e.g. model call hanging, executeTurn
+		// blocked on an await). Without this, the UI freezes indefinitely.
+		const idleTimeoutMsVal = timeoutConfig?.idleTimeoutMs ?? 120_000;
 
 			const promises: Promise<any>[] = [];
 
@@ -2221,6 +2283,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			// this specific workflow node.
 			const nodeData = node.data as Record<string, any>;
 			const agentConfig = nodeData?.agentConfig as { providerId?: string; modelId?: string } | undefined;
+			this.logService.info(`[WorkflowExecution] _sendAndTrackStream: calling sendMessage (agentId=${agentId}, promptLen=${prompt.length}, sessionId=${agentSessionId ?? 'none'})`);
+			const t0_send = Date.now();
 			const sendPromise = this.agentChatService.sendMessage(
 				agentId,
 				prompt,
@@ -2235,7 +2299,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			);
 			promises.push(sendPromise);
 
+			this.logService.info(`[WorkflowExecution] _sendAndTrackStream: awaiting Promise.race (${promises.length} promises, node=${node.id})`);
 			const result = await Promise.race(promises);
+			this.logService.info(`[WorkflowExecution] _sendAndTrackStream: Promise.race resolved in ${Date.now() - t0_send}ms (node=${node.id})`);
 
 			return result;
 		} finally {

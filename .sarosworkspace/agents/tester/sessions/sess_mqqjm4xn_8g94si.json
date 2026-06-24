@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782213016976_povlwdz",
+    "role": "user",
+    "content": "{{error-check.output}}",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqjm4xn_8g94si",
+    "timestamp": "2026-06-23T11:10:16.976Z"
+  },
+  {
+    "id": "msg_1782213020606_0_4nu1j",
+    "role": "assistant",
+    "content": "I see you've shared what appears to be a template or placeholder output (`{{error-check.output}}`). \n\nHow can I help you today? I'm ready to assist with tasks in your Sarosis workspace, including:\n\n- Reading/writing files\n- Running commands\n- Searching code\n- Working with TAPD, Gongfeng, or other integrated tools\n- Code generation and analysis\n- And more!\n\nJust let me know what you'd like to do.",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqjm4xn_8g94si",
+    "turnId": "turn_1782213020606_vxz02fz",
+    "timestamp": "2026-06-23T11:10:20.606Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I see you've shared what appears to be a template or placeholder output (`{{error-check.output}}`). \n\nHow can I help you today? I'm ready to assist with tasks in your Sarosis workspace, including:\n\n- Reading/writing files\n- Running commands\n- Searching code\n- Working with TAPD, Gongfeng, or other integrated tools\n- Code generation and analysis\n- And more!\n\nJust let me know what you'd like to do."
+      }
+    ],
+    "tokenUsage": {
+      "input": 24615,
+      "output": 100,
+      "total": 24715
+    }
+  }
+]

@@ -123,6 +123,7 @@ export class WebWorkerExtensionHost extends Disposable implements IExtensionHost
 
 		const relativeExtensionHostIframeSrc = this._webWorkerService.getWorkerUrl(new WebWorkerDescriptor({
 			esmModuleLocation: FileAccess.asBrowserUri(iframeModulePath),
+			// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 			esmModuleLocationBundler: new URL(`../worker/webWorkerExtensionHostIframe.html`, import.meta.url),
 			label: 'webWorkerExtensionHostIframe'
 		}));
@@ -173,6 +174,7 @@ export class WebWorkerExtensionHost extends Disposable implements IExtensionHost
 			barrier.open();
 		};
 
+		// @ts-ignore TS2741 - NodeJS.Timeout vs TimeoutHandle type mismatch
 		startTimeout = setTimeout(() => {
 			console.warn(`The Web Worker Extension Host did not start in 60s, that might be a problem.`);
 		}, 60000);
@@ -360,5 +362,6 @@ export class WebWorkerExtensionHost extends Disposable implements IExtensionHost
 const extensionHostWorkerMainDescriptor = new WebWorkerDescriptor({
 	label: 'extensionHostWorkerMain',
 	esmModuleLocation: () => FileAccess.asBrowserUri('vs/workbench/api/worker/extensionHostWorkerMain.js'),
+	// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 	esmModuleLocationBundler: () => new URL('../../../api/worker/extensionHostWorkerMain.ts?esm', import.meta.url),
 });

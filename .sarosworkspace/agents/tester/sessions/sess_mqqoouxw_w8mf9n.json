@@ -1,0 +1,46 @@
+[
+  {
+    "id": "msg_1782221542069_2a62ovt",
+    "role": "user",
+    "content": "{{error-check.output}}",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqoouxw_w8mf9n",
+    "timestamp": "2026-06-23T13:32:22.069Z"
+  },
+  {
+    "id": "msg_1782221548990_0_75xx0",
+    "role": "assistant",
+    "content": "It looks like you pasted `{{error-check.output}}` — that's a template placeholder, not an actual message. \n\nCould you tell me what you'd like help with? For example:\n- Check for errors in a specific file or project?\n- Review code/output you have?\n- Something else?\n\nPaste the actual content or describe the problem and I'll take a look!",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqoouxw_w8mf9n",
+    "turnId": "turn_1782221548990_x1e1ox8",
+    "timestamp": "2026-06-23T13:32:28.990Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "It looks like you pasted `{{error-check.output}}` — that's a template placeholder, not an actual message. \n\nCould you tell me what you'd like help with? For example:\n- Check for errors in a specific file or project?\n- Review code/output you have?\n- Something else?\n\nPaste the actual content or describe the problem and I'll take a look!"
+      }
+    ]
+  },
+  {
+    "id": "msg_1782221548990_1_tyw92",
+    "role": "assistant",
+    "content": "I understand your frustration, {\"I didn't make any tool calls in my previous response because your message contained `{{error-check.output}}`, which is a template placeholder rather than an actual request or file content. I have no task to work on until you give me something concrete.\"}",
+    "agentId": "tester",
+    "agentSessionId": "sess_mqqoouxw_w8mf9n",
+    "turnId": "turn_1782221548990_x1e1ox8",
+    "timestamp": "2026-06-23T13:32:28.990Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I understand your frustration, {\"I didn't make any tool calls in my previous response because your message contained `{{error-check.output}}`, which is a template placeholder rather than an actual request or file content. I have no task to work on until you give me something concrete.\"}"
+      }
+    ],
+    "tokenUsage": {
+      "input": 58660,
+      "output": 141,
+      "total": 58801,
+      "cached": 29184
+    }
+  }
+]

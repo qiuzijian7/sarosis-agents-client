@@ -425,6 +425,7 @@ export class SSHRemoteAgentHostMainService extends Disposable implements ISSHRem
 	private async _getNativeRequire(): Promise<NodeJS.Require> {
 		if (!this._nativeRequire) {
 			const nodeModule = await import('node:module');
+			// @ts-ignore TS1470 - ESM meta used in NodeNext CJS context
 			this._nativeRequire = nodeModule.createRequire(import.meta.url);
 		}
 		return this._nativeRequire;

@@ -21,6 +21,6 @@
 			"DOM",
 			"DOM.Iterable",
 			"WebWorker.ImportScripts"
-		]
+		],
 	}
 }

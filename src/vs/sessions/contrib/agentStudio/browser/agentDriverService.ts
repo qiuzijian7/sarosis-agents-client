@@ -72,22 +72,23 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 		// Step 1 计算出的召回作用域选项 —— 同时被 Step 1 (loadContext) 和
 		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 agent 配置。
-		let resolvedMemoryScope: 'agent' | 'workspace' | 'global' = 'agent';
-		let resolvedMemoryAllowedKeys: readonly string[] | undefined;
+		let resolvedMemoryScope: 'agent' | 'global' = 'agent';
 
-		try {
-			this._updateTurnStatus(turnId, AgentTurnStatus.Running);
+	try {
+		this._updateTurnStatus(turnId, AgentTurnStatus.Running);
+		this._logService.info(`[AgentDriver] executeTurn START: agentId=${request.agentId}, sessionId=${request.sessionId ?? 'none'}, messages=${request.messages.length}, turnId=${turnId}`);
 
-			// ─── 完整编排逻辑 ─────────────────────────────────
+		// ─── 完整编排逻辑 ─────────────────────────────────
 			// 1. Planning Slot 分析意图（如果有 Planning Provider）
 			// 2. Memory Slot 加载上下文（如果有 Memory Provider）
 			// 3. 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
 			// 4. Memory Slot 写回记忆（如果有 Memory Provider）
 			// 5. 返回结果给 UI
 
-			// Step 1: 加载 Memory 上下文
-			let memoryContext: IMemoryContext | undefined;
-			if (memoryProvider) {
+		// Step 1: 加载 Memory 上下文
+		let memoryContext: IMemoryContext | undefined;
+		this._logService.info(`[AgentDriver] Step 1: loading memory context (provider=${memoryProvider ? 'yes' : 'no'})`);
+		if (memoryProvider) {
 				try {
 					// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
 					// 做 FTS5/embedding 匹配，而不是占位字符串。
@@ -96,63 +97,47 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					// ── 召回作用域（2026-06）──────────────────────────────────────
 					// 决定本 agent 能看到哪些 agent 的 L1 记忆：
 					//   - 'agent'(默认)   → 仅本 agent 自己的
-					//   - 'workspace'     → 同 workspace 下所有 agent 共享
-					//   - 'global'        → 全库（旧行为）
+					//   - 'global'        → 全库（跨 agent 共享）
 					// 老 agent 配置缺省值视作 'agent'（C2：严格隔离），与文档
 					// Memory-Strategy.md §recall-scope 对齐。
-					let recallOptions: { scope: 'agent' | 'workspace' | 'global'; allowedSessionKeys?: readonly string[] } | undefined;
-					try {
-						// Recall scope + sibling enumeration are per-workspace runtime
-						// state → read from the AgentBinding, not the global Agent.
-						const wsId = await this._resolveWorkspaceId(request.sessionId);
-						const binding = wsId
-							? await this._agentStudioService.getAgentBinding(wsId, request.agentId)
-							: undefined;
-						const scope: 'agent' | 'workspace' | 'global' =
-							binding?.memoryConfig?.scope ?? 'agent';
+				let recallOptions: { scope: 'agent' | 'global' } | undefined;
+				try {
+					// Recall scope is per-workspace runtime state → read from
+					// the AgentBinding, not the global Agent.
+					this._logService.info(`[AgentDriver] Step 1a: resolving workspaceId (sessionId=${request.sessionId ?? 'none'})`);
+					const wsId = await this._resolveWorkspaceId(request.sessionId);
+					this._logService.info(`[AgentDriver] Step 1a: resolved workspaceId=${wsId ?? 'none'}`);
+					this._logService.info(`[AgentDriver] Step 1b: getting agent binding (agentId=${request.agentId})`);
+					const binding = wsId
+						? await this._agentStudioService.getAgentBinding(wsId, request.agentId)
+						: undefined;
+					this._logService.info(`[AgentDriver] Step 1b: got binding=${binding ? 'yes' : 'no'}`);
+					const scope: 'agent' | 'global' = binding?.memoryConfig?.scope ?? 'agent';
 
-						if (scope === 'workspace') {
-							// 拿当前 workspace 下所有有绑定的 agent 的 sessionKey（agent:<id>）
-							const siblings = wsId
-								? await this._agentStudioService.getAgentBindings(wsId)
-								: [];
-							const siblingKeys = siblings
-								.map(s => s.agentId)
-								.filter((id): id is string => typeof id === 'string' && id.length > 0)
-								.map(id => `agent:${id}`);
-							// 兜底：若 workspace 拉不到任何 sibling（不该发生），至少包含自己
-							const selfKey = `agent:${request.agentId}`;
-							const allowed = siblingKeys.length > 0 ? siblingKeys : [selfKey];
-							recallOptions = { scope: 'workspace', allowedSessionKeys: allowed };
-						} else if (scope === 'global') {
-							recallOptions = { scope: 'global' };
-						} else {
-							// 'agent' 或未知值
-							recallOptions = { scope: 'agent' };
-						}
-					} catch (scopeErr) {
-						// 解析作用域失败时按最严格策略（agent）兜底，永远不会"误开放"
-						this._logService.warn(
-							`[AgentDriver] resolve memory scope failed, falling back to 'agent': ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
-						);
+					if (scope === 'global') {
+						recallOptions = { scope: 'global' };
+					} else {
 						recallOptions = { scope: 'agent' };
 					}
-
-					// 同步到外层变量，让 Step 6 enrichedRequest 复用，避免重复解析。
-					resolvedMemoryScope = recallOptions.scope;
-					resolvedMemoryAllowedKeys = recallOptions.allowedSessionKeys;
-
-					memoryContext = await memoryProvider.loadContext(
-						request.agentId,
-						request.sessionId || '',
-						recallQuery,
-						recallOptions,
+				} catch (scopeErr) {
+					// 解析作用域失败时按最严格策略（agent）兜底，永远不会"误开放"
+					this._logService.warn(
+						`[AgentDriver] resolve memory scope failed, falling back to 'agent': ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
 					);
-					this._logService.debug(
-						`[AgentDriver] Loaded memory context for ${request.agentId} ` +
-						`(queryLen=${recallQuery.length}, scope=${recallOptions?.scope ?? 'agent'}, ` +
-						`allowedKeys=${recallOptions?.allowedSessionKeys?.length ?? 0})`,
-					);
+					recallOptions = { scope: 'agent' };
+				}
+
+				// 同步到外层变量，让 Step 6 enrichedRequest 复用，避免重复解析。
+				resolvedMemoryScope = recallOptions.scope;
+
+				this._logService.info(`[AgentDriver] Step 1c: loading memory context (scope=${recallOptions.scope}, queryLen=${recallQuery.length})`);
+				memoryContext = await memoryProvider.loadContext(
+					request.agentId,
+					request.sessionId || '',
+					recallQuery,
+					recallOptions,
+				);
+				this._logService.info(`[AgentDriver] Step 1c: memory context loaded (hasContext=${memoryContext ? 'yes' : 'no'})`);
 				} catch (error) {
 					this._logService.error('[AgentDriver] Failed to load memory context:', error);
 				}
@@ -181,9 +166,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 
-			// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
-			const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
-			let enrichedRequest = request;
+		// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
+		const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
+		let enrichedRequest = request;
+		this._logService.info(`[AgentDriver] Step 3: enriching request (memoryCtx=${memoryContext ? 'yes' : 'no'}, planningCtx=${memoryContext ? 'yes' : 'no'})`);
 
 			try {
 				// 3a. 生成已安装技能清单 —— 借鉴 OpenClaw 轻量目录模式
@@ -631,21 +617,21 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					memoryStrategy,
 					memoryMaxEntries,
 					memoryScope: resolvedMemoryScope,
-					memoryAllowedSessionKeys: resolvedMemoryAllowedKeys,
 				};
 
 				this._logService.info(`[AgentDriver] Injected memory_extract guidance (${memoryExtractGuide.length} chars) — provider=${activeModelSelection?.providerId ?? 'none'}`);
 				this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills (lightweight XML catalog injected), systemPrompt length: ${mergedSystemPrompt.length}`);
 				this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 300)}...`);
-				this._logService.info(`[AgentDriver] Memory injection policy: strategy=${memoryStrategy}, maxEntries=${memoryMaxEntries ?? 'unlimited'}, scope=${resolvedMemoryScope}, allowedKeys=${resolvedMemoryAllowedKeys?.length ?? 0} (raw=${rawStrategy ?? 'undefined'})`);
+				this._logService.info(`[AgentDriver] Memory injection policy: strategy=${memoryStrategy}, maxEntries=${memoryMaxEntries ?? 'unlimited'}, scope=${resolvedMemoryScope} (raw=${rawStrategy ?? 'undefined'})`);
 			} catch (error) {
 				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
 				// Skill 解析失败不阻塞主流程
 			}
 
-			// Step 4: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
-			// 同时累积 assistant 文本，便于 Step 5 写回完整一轮的 assistant 记忆。
-			const osStream = this._agentOS.executeAgentTurn(enrichedRequest);
+		// Step 4: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
+		// 同时累积 assistant 文本，便于 Step 5 写回完整一轮的 assistant 记忆。
+		this._logService.info(`[AgentDriver] Step 4: delegating to AgentOS (enrichedMsgs=${enrichedRequest.messages.length})`);
+		const osStream = this._agentOS.executeAgentTurn(enrichedRequest);
 
 			// ── 流式记忆标签剥离缓冲区 ──────────────────────────────────────────
 			// Knot 可能在回复末尾输出记忆标签，需要在流式阶段就剥离，避免用户看到。

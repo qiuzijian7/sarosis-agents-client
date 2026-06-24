@@ -10,12 +10,14 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 import type { AgentStudioPanelType } from '../common/constants.js';
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { AGENT_STUDIO_USE_NATIVE_CHAT_SETTING } from '../common/constants.js';
 
 // ─── Global reference to ConfigurationService (HACK for static method access) ───
 // Stored here so static getOrCreate() can read Feature Flag without DI.
 // Set by setConfigService() called from contribution.ts or similar.
+// @deprecated _configService is no longer read (isNativeChatEnabled always returns true),
+//   but setConfigService() is still called from contribution.ts so the export is kept.
 let _configService: IConfigurationService | undefined;
+void _configService; // suppress TS6133 (declared but never read)
 
 export function setConfigService(cs: IConfigurationService): void {
 	_configService = cs;
@@ -24,18 +26,13 @@ export function setConfigService(cs: IConfigurationService): void {
 /**
  * Helper: Check if Native Chat mode is enabled.
  * Uses global _configService (set by setConfigService()).
+ *
+ * @deprecated React AgentChat 已废弃，NativeChatEditorPane 现在是唯一的聊天渲染器。
+ *             此函数始终返回 true，保留签名仅为向后兼容。
  */
 function isNativeChatEnabled(): boolean {
-	if (!_configService) {
-		console.warn('[agentStudioEditorInput] _configService not set, assuming WebView mode');
-		return false;
-	}
-	try {
-		return _configService.getValue<boolean>(AGENT_STUDIO_USE_NATIVE_CHAT_SETTING) ?? false;
-	} catch (e) {
-		console.error('[agentStudioEditorInput] Error reading config:', e);
-		return false;
-	}
+	// NativeChatEditorPane is now the sole chat renderer; always return true.
+	return true;
 }
 
 /**

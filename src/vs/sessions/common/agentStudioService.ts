@@ -498,6 +498,13 @@ export interface IAgentChatService {
 	appendMessage(agentId: string, message: ChatMessage): Promise<void>;
 
 	/**
+	 * Update an existing message in the chat history (by id) and persist.
+	 * Used by workflow trace updates (workflowExecutions/events/collectVariables)
+	 * which modify an existing assistant message in-place.
+	 */
+	updateMessage(agentId: string, sessionId: string | undefined, messageId: string, updates: Partial<ChatMessage>): Promise<void>;
+
+	/**
 	 * Create a new agent session (e.g. for workflow execution isolation).
 	 * Returns the session metadata including the session id.
 	 */

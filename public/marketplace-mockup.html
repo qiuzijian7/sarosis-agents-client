@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vsSarosis 商城使用说明 · Mockup</title>
+<style>
+:root{
+  --primary:#1677ff;--primary-dark:#0958d9;--success:#52c41a;--warning:#faad14;
+  --error:#ff4d4f;--purple:#722ed1;--orange:#fa8c16;
+  --bg:#f5f7fa;--card:#fff;--border:#e8e8e8;--text:#1f1f1f;--text-2:#595959;--text-3:#8c8c8c;
+  --radius:8px;--shadow:0 2px 8px rgba(0,0,0,.08);--shadow-lg:0 8px 24px rgba(0,0,0,.12);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+a{color:var(--primary);text-decoration:none}
+
+/* ===== Layout ===== */
+.app{display:flex;min-height:100vh}
+.sidebar{width:260px;background:#001529;color:#fff;position:fixed;height:100vh;overflow-y:auto;padding:16px 0;z-index:100}
+.sidebar .logo{padding:16px 24px;font-size:18px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid rgba(255,255,255,.1)}
+.sidebar .logo .icon{font-size:24px}
+.sidebar nav{padding:8px 0}
+.sidebar nav a{display:block;padding:10px 24px;color:rgba(255,255,255,.65);transition:all .2s;font-size:14px}
+.sidebar nav a:hover{color:#fff;background:rgba(255,255,255,.08)}
+.sidebar nav a.active{color:#fff;background:var(--primary);border-right:3px solid #fff}
+.sidebar nav .group-title{padding:16px 24px 8px;font-size:11px;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:1px}
+.main{flex:1;margin-left:260px;padding:32px 40px;max-width:1100px}
+
+/* ===== Top bar in mockups ===== */
+.topbar{background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;box-shadow:var(--shadow)}
+.topbar .left{display:flex;align-items:center;gap:16px}
+.topbar .brand{font-size:16px;font-weight:700;display:flex;align-items:center;gap:6px}
+.topbar .menu{display:flex;gap:4px}
+.topbar .menu span{padding:6px 12px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-2);transition:.2s}
+.topbar .menu span:hover{background:var(--bg);color:var(--primary)}
+.topbar .right{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--text-2)}
+
+/* ===== Sections ===== */
+.section{margin-bottom:48px;scroll-margin-top:20px}
+.section h2{font-size:24px;margin-bottom:8px;padding-bottom:12px;border-bottom:2px solid var(--primary);display:flex;align-items:center;gap:8px}
+.section h3{font-size:18px;margin:24px 0 12px;color:var(--text)}
+.section p{margin-bottom:12px;color:var(--text-2)}
+.section ul,.section ol{margin:8px 0 16px 20px;color:var(--text-2)}
+.section li{margin-bottom:6px}
+.section code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-family:'Consolas','Monaco',monospace;font-size:13px;color:var(--primary-dark)}
+
+/* ===== Mockup window ===== */
+.mockup{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);margin:16px 0}
+.mockup .title-bar{background:#fafafa;border-bottom:1px solid var(--border);padding:8px 16px;font-size:13px;color:var(--text-3);display:flex;align-items:center;justify-content:space-between}
+.mockup .title-bar .dots{display:flex;gap:6px}
+.mockup .title-bar .dot{width:12px;height:12px;border-radius:50%}
+.mockup .dot.red{background:#ff5f57}.mockup .dot.yellow{background:#febc2e}.mockup .dot.green{background:#28c840}
+.mockup .body{padding:0}
+
+/* ===== Marketplace mockup styles ===== */
+.mp-toolbar{padding:12px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:#fff}
+.mp-tabs{display:flex;gap:4px}
+.mp-tab{padding:6px 16px;border-radius:4px;font-size:13px;cursor:pointer;color:var(--text-2);transition:.2s}
+.mp-tab.active{background:var(--primary);color:#fff}
+.mp-tab:not(.active):hover{background:var(--bg)}
+.mp-search{flex:1;display:flex;align-items:center;gap:8px;background:var(--bg);padding:6px 12px;border-radius:4px;max-width:300px}
+.mp-search input{border:none;background:none;outline:none;flex:1;font-size:13px}
+.mp-cats{display:flex;gap:8px;padding:12px 20px;border-bottom:1px solid var(--border);background:#fafafa}
+.mp-cat{padding:4px 12px;border-radius:16px;font-size:12px;cursor:pointer;transition:.2s;border:1px solid var(--border);background:#fff;color:var(--text-2)}
+.mp-cat.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+.mp-grid{padding:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.mp-card{border:1px solid var(--border);border-radius:var(--radius);padding:16px;cursor:pointer;transition:.2s;background:#fff}
+.mp-card:hover{box-shadow:var(--shadow-lg);transform:translateY(-2px);border-color:var(--primary)}
+.mp-card .icon{font-size:32px;margin-bottom:8px}
+.mp-card .name{font-weight:600;font-size:14px;margin-bottom:4px}
+.mp-card .meta{font-size:12px;color:var(--text-3);display:flex;gap:8px;align-items:center}
+.mp-card .ver{color:var(--primary);font-weight:600}
+.mp-card .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge-skill{background:#e6f4ff;color:#1677ff}
+.badge-agent{background:#f6ffed;color:#52c41a}
+.badge-mcp{background:#fff7e6;color:#fa8c16}
+.badge-knowledge{background:#f9f0ff;color:#722ed1}
+.mp-card .stats{font-size:12px;color:var(--text-3);margin-top:8px;display:flex;gap:12px}
+.mp-card .btn{margin-top:12px;width:100%;padding:6px;border:1px solid var(--primary);color:var(--primary);border-radius:4px;text-align:center;font-size:13px;cursor:pointer;transition:.2s}
+.mp-card .btn:hover{background:var(--primary);color:#fff}
+.mp-pagination{padding:16px 20px;display:flex;justify-content:center;gap:8px;border-top:1px solid var(--border)}
+.mp-page{padding:4px 12px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:13px}
+.mp-page.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+/* ===== Dialog mockup ===== */
+.dialog-overlay{background:rgba(0,0,0,.05);padding:24px;display:flex;align-items:center;justify-content:center}
+.dialog{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow-lg);width:100%;max-width:480px;overflow:hidden}
+.dialog .head{padding:16px 20px;border-bottom:1px solid var(--border);font-weight:600;font-size:16px}
+.dialog .content{padding:20px}
+.dialog .row{margin-bottom:16px}
+.dialog .label{font-size:13px;color:var(--text-2);margin-bottom:6px}
+.dialog .val{font-size:14px;color:var(--text);padding:8px 12px;background:var(--bg);border-radius:4px}
+.dialog .input{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:4px;font-size:14px;outline:none}
+.dialog .input:focus{border-color:var(--primary)}
+.dialog .actions{padding:16px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.btn-primary{padding:6px 16px;background:var(--primary);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px}
+.btn-primary:hover{background:var(--primary-dark)}
+.btn-default{padding:6px 16px;background:#fff;color:var(--text-2);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:13px}
+.btn-default:hover{border-color:var(--primary);color:var(--primary)}
+
+/* ===== Progress ===== */
+.progress-bar{background:var(--bg);border-radius:4px;height:8px;overflow:hidden;margin:12px 0}
+.progress-fill{height:100%;background:var(--primary);border-radius:4px;transition:width .3s}
+.progress-steps{font-size:13px;color:var(--text-3);margin-top:8px}
+.progress-step{padding:4px 0;display:flex;align-items:center;gap:8px}
+.progress-step.done{color:var(--success)}
+.progress-step .check{color:var(--success)}
+
+/* ===== Result banner ===== */
+.banner{padding:16px 20px;border-radius:var(--radius);display:flex;align-items:center;gap:12px;margin:16px 0}
+.banner.success{background:#f6ffed;border:1px solid #b7eb8f;color:var(--success)}
+.banner.warning{background:#fffbe6;border:1px solid #ffe58f;color:var(--warning)}
+.banner .icon{font-size:24px}
+.banner .text{flex:1}
+.banner .text .title{font-weight:600;margin-bottom:4px}
+.banner .text .desc{font-size:13px;color:var(--text-2)}
+
+/* ===== Table ===== */
+.tbl{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
+.tbl th{background:#fafafa;padding:10px 12px;text-align:left;border-bottom:2px solid var(--border);font-weight:600;color:var(--text-2)}
+.tbl td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text)}
+.tbl tr:hover td{background:#fafafa}
+
+/* ===== Code block ===== */
+.code-block{background:#1e1e1e;color:#d4d4d4;padding:16px 20px;border-radius:var(--radius);overflow-x:auto;margin:12px 0;font-family:'Consolas','Monaco',monospace;font-size:13px;line-height:1.5}
+.code-block .kw{color:#569cd6}.code-block .str{color:#ce9178}.code-block .cmt{color:#6a9955}.code-block .fn{color:#dcdcaa}.code-block .var{color:#9cdcfe}
+
+/* ===== Flow diagram ===== */
+.flow{display:flex;align-items:center;gap:0;margin:20px 0;flex-wrap:wrap}
+.flow-step{background:#fff;border:2px solid var(--primary);border-radius:var(--radius);padding:12px 20px;text-align:center;font-size:13px;min-width:120px}
+.flow-step .step-icon{font-size:24px;margin-bottom:4px}
+.flow-step .step-label{font-weight:600;color:var(--primary)}
+.flow-arrow{color:var(--primary);font-size:20px;padding:0 4px}
+
+/* ===== Notification ===== */
+.notification{position:relative;background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:16px 20px;margin:16px 0;max-width:420px;border-left:4px solid var(--warning)}
+.notification .nt-title{font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.notification .nt-list{font-size:13px;color:var(--text-2)}
+.notification .nt-list div{padding:2px 0}
+.notification .nt-actions{margin-top:12px;display:flex;gap:8px}
+
+/* ===== Install list ===== */
+.installed-list{padding:16px 20px}
+.installed-item{border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px;display:flex;align-items:center;gap:16px}
+.installed-item:hover{box-shadow:var(--shadow)}
+.installed-item .ii-icon{font-size:28px}
+.installed-item .ii-info{flex:1}
+.installed-item .ii-name{font-weight:600;font-size:14px}
+.installed-item .ii-meta{font-size:12px;color:var(--text-3);margin-top:2px}
+.installed-item .ii-actions{display:flex;gap:8px}
+.tag-update{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:#fff7e6;color:var(--warning);cursor:pointer}
+
+/* ===== Settings ===== */
+.settings-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}
+.settings-row .sr-label{font-size:14px}
+.settings-row .sr-desc{font-size:12px;color:var(--text-3);margin-top:2px}
+.settings-row .sr-val{font-size:13px;color:var(--primary);font-family:monospace}
+.toggle{width:40px;height:22px;background:var(--success);border-radius:11px;position:relative;cursor:pointer}
+.toggle::after{content:'';position:absolute;width:18px;height:18px;background:#fff;border-radius:50%;top:2px;right:2px;transition:.2s}
+
+/* ===== FAQ ===== */
+.faq-item{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;overflow:hidden}
+.faq-q{padding:14px 20px;font-weight:600;cursor:pointer;display:flex;justify-content:space-between;align-items:center;background:#fff}
+.faq-q:hover{background:#fafafa}
+.faq-a{padding:0 20px 14px;font-size:14px;color:var(--text-2);display:none}
+.faq-item.open .faq-a{display:block}
+.faq-item.open .faq-q .arrow{transform:rotate(180deg)}
+.faq-q .arrow{transition:.2s;color:var(--text-3)}
+
+/* ===== Misc ===== */
+.hero{background:linear-gradient(135deg,#1677ff 0%,#722ed1 100%);color:#fff;padding:32px;border-radius:var(--radius);margin-bottom:24px}
+.hero h1{font-size:28px;margin-bottom:8px}
+.hero p{color:rgba(255,255,255,.85);font-size:14px}
+.note{background:#e6f4ff;border:1px solid #91caff;border-radius:var(--radius);padding:12px 16px;margin:12px 0;font-size:13px;color:var(--text-2)}
+.note .note-title{font-weight:600;color:var(--primary);margin-bottom:4px}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ===== Sidebar ===== -->
+  <aside class="sidebar">
+    <div class="logo"><span class="icon">🛒</span> Sarosis 商城</div>
+    <nav>
+      <div class="group-title">概览</div>
+      <a href="#overview" class="active">界面概览</a>
+      <a href="#login">登录商城</a>
+      <div class="group-title">核心操作</div>
+      <a href="#browse">浏览搜索</a>
+      <a href="#install">安装资源</a>
+      <a href="#manage">管理资源</a>
+      <a href="#publish">发布资源</a>
+      <a href="#update">更新资源</a>
+      <div class="group-title">参考</div>
+      <a href="#flow">完整流程</a>
+      <a href="#faq">常见问题</a>
+      <a href="#api">API 示例</a>
+    </nav>
+  </aside>
+
+  <!-- ===== Main ===== -->
+  <main class="main">
+
+    <!-- Hero -->
+    <div class="hero">
+      <h1>🛒 vsSarosis 商城使用说明</h1>
+      <p>Mockup 演示版 · 在 vsSarosis 客户端中安装、下载、更新 Skill / Agent / MCP / 知识库</p>
+      <p style="margin-top:8px;font-size:12px;opacity:.7">商城地址: http://21.6.92.5:3040 · 默认账号: admin / admin123</p>
+    </div>
+
+    <!-- ===== 1. Overview ===== -->
+    <section class="section" id="overview">
+      <h2>🖥️ 一、界面概览</h2>
+      <p>在 vsSarosis 中，商城功能通过以下入口访问：</p>
+      <ul>
+        <li><strong>方法 1</strong>：点击顶部菜单 <code>🛒 商城</code></li>
+        <li><strong>方法 2</strong>：命令面板 <code>Ctrl+Shift+P</code> → 输入 <code>Marketplace: Open</code></li>
+        <li><strong>方法 3</strong>：在 Agent / Skill / MCP / 知识库编辑器中，点击 <code>🛒 浏览商城</code> 按钮</li>
+      </ul>
+
+      <div class="mockup">
+        <div class="title-bar">
+          <span>vsSarosis 主界面</span>
+          <div class="dots"><div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div></div>
+        </div>
+        <div class="body">
+          <div class="topbar">
+            <div class="left">
+              <div class="brand">🤖 vsSarosis</div>
+              <div class="menu">
+                <span>📁 文件</span><span>🔍 搜索</span><span>🤖 Agent</span>
+                <span>🛠️ Skill</span><span>🔌 MCP</span><span>📚 知识库</span>
+                <span style="background:var(--primary);color:#fff">🛒 商城</span>
+              </div>
+            </div>
+            <div class="right">admin ▾</div>
+          </div>
+          <div style="padding:40px;text-align:center;color:var(--text-3);font-size:13px;background:var(--bg)">主工作区</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 2. Login ===== -->
+    <section class="section" id="login">
+      <h2>🔐 二、登录商城</h2>
+      <p>打开商城面板后，如果未登录，会显示登录界面。输入用户名/邮箱和密码，点击「登录」即可。</p>
+
+      <div class="mockup">
+        <div class="title-bar"><span>商城 · 登录</span></div>
+        <div class="body">
+          <div class="dialog-overlay">
+            <div class="dialog">
+              <div class="head">🔐 请登录商城</div>
+              <div class="content">
+                <div class="row">
+                  <div class="label">用户名 / 邮箱</div>
+                  <input class="input" value="admin" readonly>
+                </div>
+                <div class="row">
+                  <div class="label">密码</div>
+                  <input class="input" type="password" value="••••••••" readonly>
+                </div>
+                <div style="font-size:12px;color:var(--text-3);margin-top:8px">
+                  商城地址: http://21.6.92.5:3040 · <a href="#">修改</a>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn-default">注册</button>
+                <button class="btn-primary">登录</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note">
+        <div class="note-title">💡 登录状态保持</div>
+        登录后，token 会保存在本地，下次打开商城面板会自动登录。退出登录：点击右上角用户头像 → 「退出登录」。
+      </div>
+    </section>
+
+    <!-- ===== 3. Browse ===== -->
+    <section class="section" id="browse">
+      <h2>🔎 三、浏览和搜索资源</h2>
+      <p>登录后显示商城首页，包含搜索框、分类筛选、资源卡片网格和分页。</p>
+
+      <div class="mockup">
+        <div class="title-bar"><span>商城首页</span></div>
+        <div class="body">
+          <div class="mp-toolbar">
+            <div class="mp-tabs">
+              <div class="mp-tab active">📦 首页</div>
+              <div class="mp-tab">📂 我的资源</div>
+              <div class="mp-tab">📤 发布资源</div>
+            </div>
+            <div class="mp-search">
+              <span>🔍</span>
+              <input placeholder="搜索资源..." value="pdf">
+            </div>
+            <div style="font-size:13px;color:var(--text-2)">🔄 刷新</div>
+          </div>
+          <div class="mp-cats">
+            <div class="mp-cat">全部</div>
+            <div class="mp-cat active">📄 Skill</div>
+            <div class="mp-cat">🤖 Agent</div>
+            <div class="mp-cat">🔌 MCP</div>
+            <div class="mp-cat">📚 知识库</div>
+          </div>
+          <div class="mp-grid">
+            <div class="mp-card">
+              <div class="icon">📄</div>
+              <div class="name">PDF Skill</div>
+              <div class="meta"><span class="badge badge-skill">Skill</span> <span class="ver">v1.0.0</span></div>
+              <div class="stats">⭐ 4.5 · ↓ 128</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">📝</div>
+              <div class="name">Code Review Skill</div>
+              <div class="meta"><span class="badge badge-skill">Skill</span> <span class="ver">v1.0.0</span></div>
+              <div class="stats">⭐ 4.7 · ↓ 96</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">🤖</div>
+              <div class="name">Deep Researcher</div>
+              <div class="meta"><span class="badge badge-agent">Agent</span> <span class="ver">v1.1.0</span></div>
+              <div class="stats">⭐ 4.8 · ↓ 256</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">🏗️</div>
+              <div class="name">Code Architect</div>
+              <div class="meta"><span class="badge badge-agent">Agent</span> <span class="ver">v1.0.0</span></div>
+              <div class="stats">⭐ 4.6 · ↓ 88</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">🔌</div>
+              <div class="name">Filesystem MCP</div>
+              <div class="meta"><span class="badge badge-mcp">MCP</span> <span class="ver">v0.5.0</span></div>
+              <div class="stats">⭐ 4.2 · ↓ 64</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">🌐</div>
+              <div class="name">Fetch MCP</div>
+              <div class="meta"><span class="badge badge-mcp">MCP</span> <span class="ver">v0.4.0</span></div>
+              <div class="stats">⭐ 4.0 · ↓ 42</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">📚</div>
+              <div class="name">Sarosis Handbook</div>
+              <div class="meta"><span class="badge badge-knowledge">知识库</span> <span class="ver">v2026.06</span></div>
+              <div class="stats">⭐ 4.9 · ↓ 32</div>
+              <div class="btn">查看详情</div>
+            </div>
+            <div class="mp-card">
+              <div class="icon">📖</div>
+              <div class="name">VSCode Dev Guide</div>
+              <div class="meta"><span class="badge badge-knowledge">知识库</span> <span class="ver">v1.0.0</span></div>
+              <div class="stats">⭐ 4.5 · ↓ 28</div>
+              <div class="btn">查看详情</div>
+            </div>
+          </div>
+          <div class="mp-pagination">
+            <div class="mp-page">‹ 上一页</div>
+            <div class="mp-page active">1</div>
+            <div class="mp-page">2</div>
+            <div class="mp-page">3</div>
+            <div class="mp-page">下一页 ›</div>
+          </div>
+        </div>
+      </div>
+
+      <h3>资源详情页</h3>
+      <p>点击资源卡片上的「查看详情」按钮，打开资源详情页，包含版本历史、下载按钮和评论。</p>
+
+      <div class="mockup">
+        <div class="title-bar"><span>资源详情 · PDF Skill</span></div>
+        <div class="body" style="padding:24px">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+            <span style="font-size:36px">📄</span>
+            <div>
+              <div style="font-size:20px;font-weight:700">PDF Skill <span style="color:var(--primary);font-size:14px">v1.0.0</span></div>
+              <div style="font-size:13px;color:var(--text-3)">作者: admin · 更新: 2026-06-20 · 下载: 128</div>
+            </div>
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <button class="btn-default">🌐 访问网页</button>
+              <button class="btn-primary">⬇ 下载安装</button>
+            </div>
+          </div>
+          <div style="margin:16px 0">
+            <span class="badge badge-skill" style="margin-right:4px">Skill</span>
+            <span style="font-size:13px;color:var(--text-2)">标签: pdf, document, extract</span>
+          </div>
+          <h3 style="margin-top:20px">📋 描述</h3>
+          <p>用于处理 PDF 文件的技能。支持提取文本、表格、图片，以及 PDF 转 Markdown。</p>
+          <h3 style="margin-top:20px">📜 版本历史</h3>
+          <table class="tbl">
+            <thead><tr><th>版本</th><th>发布日期</th><th>下载量</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr><td><strong>v1.0.0</strong> <span style="color:var(--success);font-size:12px">(最新)</span></td><td>2026-06-20</td><td>128</td><td><button class="btn-primary">下载</button></td></tr>
+            </tbody>
+          </table>
+          <h3 style="margin-top:20px">💬 评论</h3>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:var(--radius);font-size:13px">
+            ⭐⭐⭐⭐⭐ <strong>user1</strong> · 2026-06-21<br>
+            很好用！PDF 转 Markdown 效果不错。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 4. Install ===== -->
+    <section class="section" id="install">
+      <h2>📥 四、安装资源</h2>
+
+      <h3>4.1 从商城安装（通用流程）</h3>
+      <p>在资源详情页点击「下载安装」按钮后，会弹出确认对话框，确认后自动下载、解压、安装。</p>
+
+      <div class="flow">
+        <div class="flow-step"><div class="step-icon">🖱️</div><div class="step-label">点击下载</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">✅</div><div class="step-label">确认安装</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">⬇️</div><div class="step-label">下载中</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">📦</div><div class="step-label">解压安装</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">🎉</div><div class="step-label">安装完成</div></div>
+      </div>
+
+      <div class="mockup">
+        <div class="title-bar"><span>安装确认对话框</span></div>
+        <div class="body">
+          <div class="dialog-overlay">
+            <div class="dialog">
+              <div class="head">安装资源</div>
+              <div class="content">
+                <div class="row"><div class="label">名称</div><div class="val">📄 PDF Skill</div></div>
+                <div class="row"><div class="label">版本</div><div class="val">1.0.0</div></div>
+                <div class="row"><div class="label">类型</div><div class="val"><span class="badge badge-skill">Skill</span></div></div>
+                <div class="row"><div class="label">大小</div><div class="val">24 KB</div></div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:14px;margin-top:12px">
+                  <span style="width:16px;height:16px;background:var(--primary);border-radius:3px;display:inline-block;position:relative">
+                    <span style="position:absolute;top:2px;left:5px;color:#fff;font-size:10px">✓</span>
+                  </span>
+                  安装后自动启用
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn-default">取消</button>
+                <button class="btn-primary">确认安装</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h3>安装进度</h3>
+      <div class="mockup">
+        <div class="title-bar"><span>安装进度</span></div>
+        <div class="body" style="padding:24px">
+          <div style="font-size:14px;margin-bottom:8px">正在安装 PDF Skill v1.0.0...</div>
+          <div class="progress-bar"><div class="progress-fill" style="width:85%"></div></div>
+          <div class="progress-steps">
+            <div class="progress-step done"><span class="check">✓</span> 下载资源包 (24 KB)</div>
+            <div class="progress-step done"><span class="check">✓</span> 解压文件</div>
+            <div class="progress-step done"><span class="check">✓</span> 注册到 Skill Registry</div>
+            <div class="progress-step"><span>⏳</span> 正在重新加载...</div>
+          </div>
+        </div>
+      </div>
+
+      <h3>安装成功</h3>
+      <div class="banner success">
+        <div class="icon">✅</div>
+        <div class="text">
+          <div class="title">PDF Skill 已成功安装！</div>
+          <div class="desc">安装位置: ~/.saros/skills-library/pdf-skill/</div>
+        </div>
+      </div>
+
+      <h3>4.2 安装 Agent</h3>
+      <p>安装 Agent 类型资源时，会额外执行：下载 <code>agent.json</code> 和引导文件 → 调用 <code>createAgent()</code> → 写入 <code>custom-agents.json</code> → 在 Agent 列表中显示。</p>
+
+      <h3>4.3 安装 MCP</h3>
+      <div class="mockup">
+        <div class="title-bar"><span>MCP 安装提示</span></div>
+        <div class="body" style="padding:20px">
+          <div class="banner warning">
+            <div class="icon">⚠️</div>
+            <div class="text">
+              <div class="title">需要手动操作</div>
+              <div class="desc">MCP 服务器配置已下载到 ~/.saros/mcp-servers/filesystem-mcp/config.json</div>
+              <div class="desc" style="margin-top:8px">请执行以下操作之一完成注册：<br>
+                1. 命令面板运行 <code>MCP: Install Server</code><br>
+                2. 在集成视图中点击 <code>+</code> 添加 MCP 服务器
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h3>4.4 安装知识库</h3>
+      <div class="banner success">
+        <div class="icon">📚</div>
+        <div class="text">
+          <div class="title">Sarosis 使用手册 已成功下载！</div>
+          <div class="desc">文件位置: ~/.saros/knowledge-base/sarosis-handbook/</div>
+          <div class="desc" style="margin-top:4px">如需在 RAG 检索中使用，请在 Agent 配置中添加知识库引用。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 5. Manage ===== -->
+    <section class="section" id="manage">
+      <h2>📂 五、管理已安装资源</h2>
+      <p>在「我的资源」标签页中，可以查看所有已安装的资源、检查更新、卸载。</p>
+
+      <div class="mockup">
+        <div class="title-bar"><span>我的资源</span></div>
+        <div class="body">
+          <div class="mp-toolbar">
+            <div class="mp-tabs">
+              <div class="mp-tab">📦 首页</div>
+              <div class="mp-tab active">📂 我的资源</div>
+              <div class="mp-tab">📤 发布资源</div>
+            </div>
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <button class="btn-default" style="font-size:12px">🔄 批量更新</button>
+              <button class="btn-default" style="font-size:12px">🗑 批量卸载</button>
+            </div>
+          </div>
+          <div class="installed-list">
+            <div class="installed-item">
+              <div class="ii-icon">📄</div>
+              <div class="ii-info">
+                <div class="ii-name">PDF Skill <span style="color:var(--text-3);font-weight:400;font-size:12px">v1.0.0</span> <span class="tag-update">更新可用 v1.1.0 ▼</span></div>
+                <div class="ii-meta">admin · Skill · 2026-06-20</div>
+              </div>
+              <div class="ii-actions">
+                <button class="btn-default">打开</button>
+                <button class="btn-primary">更新</button>
+                <button class="btn-default">卸载</button>
+              </div>
+            </div>
+            <div class="installed-item">
+              <div class="ii-icon">🤖</div>
+              <div class="ii-info">
+                <div class="ii-name">Deep Researcher <span style="color:var(--text-3);font-weight:400;font-size:12px">v1.1.0</span></div>
+                <div class="ii-meta">admin · Agent · 2026-06-18</div>
+              </div>
+              <div class="ii-actions">
+                <button class="btn-default">打开</button>
+                <button class="btn-default">卸载</button>
+              </div>
+            </div>
+            <div class="installed-item">
+              <div class="ii-icon">📝</div>
+              <div class="ii-info">
+                <div class="ii-name">Code Review Skill <span style="color:var(--text-3);font-weight:400;font-size:12px">v1.0.0</span> <span class="tag-update">更新可用 v1.2.0 ▼</span></div>
+                <div class="ii-meta">admin · Skill · 2026-06-15</div>
+              </div>
+              <div class="ii-actions">
+                <button class="btn-default">打开</button>
+                <button class="btn-primary">更新</button>
+                <button class="btn-default">卸载</button>
+              </div>
+            </div>
+            <div class="installed-item">
+              <div class="ii-icon">📚</div>
+              <div class="ii-info">
+                <div class="ii-name">Sarosis Handbook <span style="color:var(--text-3);font-weight:400;font-size:12px">v2026.06</span></div>
+                <div class="ii-meta">admin · 知识库 · 2026-06-10</div>
+              </div>
+              <div class="ii-actions">
+                <button class="btn-default">打开</button>
+                <button class="btn-default">卸载</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h3>更新资源</h3>
+      <p>当资源有新版本时，「更新可用」标签会显示。点击后可查看更新日志并确认更新。</p>
+
+      <div class="mockup">
+        <div class="title-bar"><span>更新资源 · PDF Skill</span></div>
+        <div class="body">
+          <div class="dialog-overlay">
+            <div class="dialog">
+              <div class="head">更新资源</div>
+              <div class="content">
+                <div style="margin-bottom:12px;font-size:16px;font-weight:600">📄 PDF Skill</div>
+                <div class="row"><div class="label">当前版本</div><div class="val" style="color:var(--text-3)">1.0.0</div></div>
+                <div class="row"><div class="label">新版本</div><div class="val" style="color:var(--success);font-weight:600">1.1.0</div></div>
+                <div class="row">
+                  <div class="label">更新日志</div>
+                  <div class="val" style="line-height:1.8">
+                    • 新增 PDF 表格提取功能<br>
+                    • 优化大文件处理速度<br>
+                    • 修复中文编码问题
+                  </div>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn-default">跳过此版本</button>
+                <button class="btn-default">取消</button>
+                <button class="btn-primary">更新</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 6. Publish ===== -->
+    <section class="section" id="publish">
+      <h2>📤 六、发布资源到商城</h2>
+      <p>在 Skill / Agent / MCP / 知识库编辑器中，点击「🛒 发布到商城」按钮，填写信息并上传 <code>.tar.gz</code> 包即可发布。</p>
+
+      <div class="mockup">
+        <div class="title-bar"><span>发布资源向导</span></div>
+        <div class="body">
+          <div class="dialog-overlay">
+            <div class="dialog" style="max-width:560px">
+              <div class="head">📤 发布资源到商城</div>
+              <div class="content">
+                <div class="row">
+                  <div class="label">资源类型</div>
+                  <div style="display:flex;gap:8px">
+                    <label style="display:flex;align-items:center;gap:4px;font-size:14px"><input type="radio" checked> Skill</label>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:14px"><input type="radio"> Agent</label>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:14px"><input type="radio"> MCP</label>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:14px"><input type="radio"> 知识库</label>
+                  </div>
+                </div>
+                <div class="row"><div class="label">资源名称</div><input class="input" value="PDF Skill" readonly></div>
+                <div class="row"><div class="label">资源标识 (storeId)</div><input class="input" value="pdf-skill" readonly></div>
+                <div class="row"><div class="label">版本号</div><input class="input" value="1.0.0" readonly></div>
+                <div class="row">
+                  <div class="label">描述</div>
+                  <textarea class="input" rows="3" readonly>用于处理 PDF 文件的技能。支持提取文本、表格、图片，以及 PDF 转 Markdown。</textarea>
+                </div>
+                <div class="row"><div class="label">分类</div><input class="input" value="document" readonly></div>
+                <div class="row">
+                  <div class="label">标签</div>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap">
+                    <span class="badge badge-skill">pdf</span>
+                    <span class="badge badge-skill">document</span>
+                    <span class="badge badge-skill">extract</span>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="label">可见性</div>
+                  <div style="font-size:14px">
+                    <label><input type="radio" checked> 公开（所有人可见）</label><br>
+                    <label><input type="radio"> 私有（仅自己可见）</label>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="label">上传文件 (.tar.gz)</div>
+                  <div style="border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;color:var(--text-3);font-size:13px">
+                    📁 拖拽文件到这里，或 <a href="#">选择文件</a>
+                  </div>
+                </div>
+                <div class="row"><div class="label">更新日志</div><input class="input" value="初始版本发布" readonly></div>
+              </div>
+              <div class="actions">
+                <button class="btn-default">取消</button>
+                <button class="btn-primary">发布</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 7. Update ===== -->
+    <section class="section" id="update">
+      <h2>🔄 七、更新资源</h2>
+      <p>如果启用了「自动检查更新」设置，vsSarosis 启动时会自动检查已安装资源的更新。有可用更新时会在右下角显示通知。</p>
+
+      <div class="notification">
+        <div class="nt-title">🔔 有 3 个资源有可用更新</div>
+        <div class="nt-list">
+          <div>📄 PDF Skill: 1.0.0 → 1.1.0</div>
+          <div>📝 Code Review Skill: 1.0.0 → 1.2.0</div>
+          <div>🤖 Deep Researcher: 1.1.0 → 1.2.0</div>
+        </div>
+        <div class="nt-actions">
+          <button class="btn-primary" style="font-size:12px">全部更新</button>
+          <button class="btn-default" style="font-size:12px">查看详情</button>
+          <button class="btn-default" style="font-size:12px">忽略</button>
+        </div>
+      </div>
+
+      <h3>更新设置</h3>
+      <div class="mockup">
+        <div class="title-bar"><span>设置 · Marketplace</span></div>
+        <div class="body" style="padding:20px">
+          <div class="settings-row">
+            <div><div class="sr-label">Marketplace: Url</div><div class="sr-desc">商城服务端地址</div></div>
+            <div class="sr-val">http://21.6.92.5:3040</div>
+          </div>
+          <div class="settings-row">
+            <div><div class="sr-label">Marketplace: Auto Check Updates</div><div class="sr-desc">启动时自动检查更新</div></div>
+            <div class="toggle"></div>
+          </div>
+          <div class="settings-row">
+            <div><div class="sr-label">Marketplace: Update Interval</div><div class="sr-desc">更新检查间隔（秒）</div></div>
+            <div class="sr-val">3600</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 8. Flow ===== -->
+    <section class="section" id="flow">
+      <h2>🔄 八、完整操作流程</h2>
+      <p>从浏览资源到安装完成的完整流程图：</p>
+      <div class="flow">
+        <div class="flow-step"><div class="step-icon">🛒</div><div class="step-label">打开商城</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">🔐</div><div class="step-label">登录</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">🔎</div><div class="step-label">浏览搜索</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">📄</div><div class="step-label">查看详情</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">⬇️</div><div class="step-label">下载安装</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="step-icon">✅</div><div class="step-label">安装完成</div></div>
+      </div>
+
+      <h3>资源类型对照表</h3>
+      <table class="tbl">
+        <thead><tr><th>资源类型</th><th>图标</th><th>颜色</th><th>安装目录</th></tr></thead>
+        <tbody>
+          <tr><td>Skill</td><td>📄</td><td><span style="color:var(--primary)">蓝色</span></td><td><code>~/.saros/skills-library/{id}/</code></td></tr>
+          <tr><td>Agent</td><td>🤖</td><td><span style="color:var(--success)">绿色</span></td><td><code>~/.saros/agents/custom/{id}/</code></td></tr>
+          <tr><td>MCP</td><td>🔌</td><td><span style="color:var(--orange)">橙色</span></td><td><code>~/.saros/mcp-servers/{id}/</code></td></tr>
+          <tr><td>知识库</td><td>📚</td><td><span style="color:var(--purple)">紫色</span></td><td><code>~/.saros/knowledge-base/{id}/</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3>各类型支持状态</h3>
+      <table class="tbl">
+        <thead><tr><th>类型</th><th>下载安装</th><th>上传发布</th><th>升级检查</th><th>实现深度</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge badge-skill">Skill</span></td><td>✅</td><td>✅</td><td>✅ 同步</td><td>完整（registry reload + 版本回写）</td></tr>
+          <tr><td><span class="badge badge-agent">Agent</span></td><td>✅</td><td>✅</td><td>✅ installed-packages.json</td><td>完整（createAgent 落地）</td></tr>
+          <tr><td><span class="badge badge-mcp">MCP</span></td><td>✅</td><td>✅</td><td>❌ 无版本</td><td>文件落地（平台注册留后续）</td></tr>
+          <tr><td><span class="badge badge-knowledge">知识库</span></td><td>✅</td><td>✅</td><td>✅ 读 index.json</td><td>文件落地（RAG 留后续）</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ===== 9. FAQ ===== -->
+    <section class="section" id="faq">
+      <h2>❓ 九、常见问题</h2>
+      <div class="faq-item open">
+        <div class="faq-q">安装 Skill 后，在 Skill 列表中找不到？<span class="arrow">▾</span></div>
+        <div class="faq-a">安装成功后需要重新加载窗口。按 <code>Ctrl+Shift+P</code>，输入 <code>Developer: Reload Window</code>，或关闭并重新打开 vsSarosis。</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">发布资源时提示「版本已存在」？<span class="arrow">▾</span></div>
+        <div class="faq-a">同一资源的同一版本只能发布一次。请发布新版本（如从 1.0.0 升到 1.1.0）。</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">下载速度很慢？<span class="arrow">▾</span></div>
+        <div class="faq-a">检查商城服务端的网络连接，或在设置中修改商城地址为更近的服务器。</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">安装 MCP 后无法在集成视图中找到？<span class="arrow">▾</span></div>
+        <div class="faq-a">当前版本需要手动导入 MCP 配置。请参考第四节 4.3 中的说明，运行 <code>MCP: Install Server</code> 或在集成视图中手动添加。</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">如何删除已发布的资源？<span class="arrow">▾</span></div>
+        <div class="faq-a">在商城网页版（http://21.6.92.5:3040）登录 → 进入「我的资源」→ 找到资源 → 点击「删除」。注意：删除会同时删除所有版本且无法恢复。</div>
+      </div>
+    </section>
+
+    <!-- ===== 10. API ===== -->
+    <section class="section" id="api">
+      <h2>💻 十、API 调用示例（开发者参考）</h2>
+      <p>在代码中通过 <code>IMarketplaceService</code> 调用商城功能：</p>
+      <div class="code-block">
+<span class="cmt">// 获取 MarketplaceService 实例</span>
+<span class="kw">const</span> <span class="var">marketplace</span> = <span class="var">accessor</span>.<span class="fn">get</span>(<span class="var">IMarketplaceService</span>);
+
+<span class="cmt">// 登录</span>
+<span class="kw">await</span> <span class="var">marketplace</span>.<span class="fn">login</span>(<span class="str">'admin'</span>, <span class="str">'admin123'</span>);
+
+<span class="cmt">// 搜索 Skill</span>
+<span class="kw">const</span> <span class="var">result</span> = <span class="kw">await</span> <span class="var">marketplace</span>.<span class="fn">listPackages</span>({ <span class="var">kind</span>: <span class="str">'skill'</span>, <span class="var">search</span>: <span class="str">'pdf'</span>, <span class="var">pageSize</span>: <span class="str">10</span> });
+
+<span class="cmt">// 下载并安装</span>
+<span class="kw">await</span> <span class="var">marketplace</span>.<span class="fn">download</span>(<span class="str">'pdf-skill'</span>, <span class="str">'1.0.0'</span>, <span class="str">'skill'</span>);
+
+<span class="cmt">// 发布资源</span>
+<span class="kw">await</span> <span class="var">marketplace</span>.<span class="fn">publish</span>(<span class="str">'my-skill'</span>, <span class="str">'skill'</span>, { <span class="var">changelog</span>: <span class="str">'初始版本'</span> });
+
+<span class="cmt">// 检查更新</span>
+<span class="kw">const</span> <span class="var">updates</span> = <span class="kw">await</span> <span class="var">marketplace</span>.<span class="fn">checkUpgrades</span>([
+  { <span class="var">kind</span>: <span class="str">'skill'</span>, <span class="var">storeId</span>: <span class="str">'pdf-skill'</span>, <span class="var">version</span>: <span class="str">'1.0.0'</span> },
+]);
+      </div>
+
+      <h3>资源包格式 (manifest.json)</h3>
+      <div class="code-block">
+{
+  <span class="str">"id"</span>: <span class="str">"pdf-skill"</span>,
+  <span class="str">"kind"</span>: <span class="str">"skill"</span>,
+  <span class="str">"name"</span>: <span class="str">"PDF Skill"</span>,
+  <span class="str">"version"</span>: <span class="str">"1.0.0"</span>,
+  <span class="str">"description"</span>: <span class="str">"用于处理 PDF 文件的技能"</span>,
+  <span class="str">"author"</span>: <span class="str">"admin"</span>,
+  <span class="str">"tags"</span>: [<span class="str">"pdf"</span>, <span class="str">"document"</span>],
+  <span class="str">"files"</span>: [<span class="str">"SKILL.md"</span>, <span class="str">"README.md"</span>]
+}
+      </div>
+
+      <h3>各类资源必须包含的文件</h3>
+      <table class="tbl">
+        <thead><tr><th>资源类型</th><th>必须文件</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>Skill</td><td><code>SKILL.md</code></td><td>技能定义（frontmatter + markdown）</td></tr>
+          <tr><td>Agent</td><td><code>agent.json</code>, <code>.agent.md</code></td><td>Agent 定义 + 引导文件</td></tr>
+          <tr><td>MCP</td><td><code>config.json</code></td><td>MCP 服务器配置</td></tr>
+          <tr><td>知识库</td><td><code>index.json</code>, <code>docs/</code></td><td>知识库索引 + 文档目录</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <div style="text-align:center;padding:32px;color:var(--text-3);font-size:13px;border-top:1px solid var(--border);margin-top:48px">
+      <p>vsSarosis 商城使用说明 · Mockup 演示版 · v1.0</p>
+      <p>商城地址: http://21.6.92.5:3040 · 默认账号: admin / admin123</p>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// Sidebar active link on scroll
+const sections = document.querySelectorAll('.section');
+const navLinks = document.querySelectorAll('.sidebar nav a');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(sec => {
+    if (window.scrollY >= sec.offsetTop - 60) current = sec.id;
+  });
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+});
+
+// FAQ toggle
+document.querySelectorAll('.faq-q').forEach(q => {
+  q.addEventListener('click', () => q.parentElement.classList.toggle('open'));
+});
+
+// Smooth scroll
+navLinks.forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth' });
+  });
+});
+</script>
+</body>
+</html>

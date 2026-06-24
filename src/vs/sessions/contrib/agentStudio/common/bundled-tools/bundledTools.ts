@@ -544,6 +544,36 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "spotify",
 		source: 'hermes-bundled',
 	},
+
+	// ── memory tools ─────────────────────────────────────
+	{
+		name: "memory_remember",
+		description: "Save a memory entry (short-term or long-term). Use this to persist important information across sessions.",
+		inputSchema: {"type":"object","properties":{"content":{"type":"string","description":"Memory content to save"},"memory_type":{"type":"string","enum":["short_term","long_term"],"description":"Memory type (default: long_term)"},"tags":{"type":"array","items":{"type":"string"},"description":"Optional tags for filtering"}},"required":["content"]},
+		category: "memory",
+		source: 'hermes-bundled',
+	},
+	{
+		name: "memory_search",
+		description: "Search memories by keyword or tag. Returns matching entries sorted by recency.",
+		inputSchema: {"type":"object","properties":{"query":{"type":"string","description":"Search query. Supports: tag:foo, type:short, type:long"},"limit":{"type":"number","description":"Max results (default: 10)"}},"required":["query"]},
+		category: "memory",
+		source: 'hermes-bundled',
+	},
+	{
+		name: "memory_delete",
+		description: "Delete a memory entry by its ID. Use memory_search first to find the entry ID.",
+		inputSchema: {"type":"object","properties":{"id":{"type":"string","description":"Memory entry ID to delete"},"memory_type":{"type":"string","enum":["short_term","long_term"],"description":"Memory type to delete from"}},"required":["id","memory_type"]},
+		category: "memory",
+		source: 'hermes-bundled',
+	},
+	{
+		name: "memory_list",
+		description: "List all memory entries of a given type.",
+		inputSchema: {"type":"object","properties":{"memory_type":{"type":"string","enum":["short_term","long_term"],"description":"Memory type to list (default: long_term)"},"limit":{"type":"number","description":"Max entries to return (default: 20)"}}},
+		category: "memory",
+		source: 'hermes-bundled',
+	},
 ];
 
 /**
@@ -613,7 +643,7 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 	},
 	"memory": {
 		description: "Persistent memory",
-		tools: ["memory"],
+		tools: ["memory_remember","memory_search","memory_delete","memory_list"],
 		includes: [],
 	},
 	"session_search": {

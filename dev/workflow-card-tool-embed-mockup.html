@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Subagent 工具卡片嵌入输出文本 — Mockup</title>
+<style>
+:root {
+	--ec-bg-primary: #1e1e1e;
+	--ec-bg-secondary: #252525;
+	--ec-bg-tertiary: #2d2d2d;
+	--ec-border-primary: #333;
+	--ec-text-primary: #e0e0e0;
+	--ec-text-secondary: #888;
+	--vscode-textCodeBlock-background: #1a1a1a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+	background: var(--ec-bg-primary);
+	color: var(--ec-text-primary);
+	font-family: -apple-system, "Segoe UI", "Segoe WPC", sans-serif;
+	font-size: 13px;
+	padding: 20px;
+}
+.mockup-container { max-width: 760px; margin: 0 auto; }
+.mockup-label {
+	font-size: 14px; font-weight: 600; color: #aaa;
+	margin: 30px 0 12px 0; padding-bottom: 6px;
+	border-bottom: 1px solid #333;
+}
+.mockup-label:first-child { margin-top: 0; }
+.mockup-label .tag {
+	font-size: 11px; font-weight: 400;
+	padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+}
+.mockup-label .tag.before { background: rgba(248,113,113,0.15); color: #f87171; }
+.mockup-label .tag.after { background: rgba(74,222,128,0.15); color: #4ade80; }
+
+/* ═══ 共用样式（从 agentChat.css 移植） ═══ */
+.wf-card {
+	border-radius: 10px; overflow: hidden;
+	border: 1px solid var(--ec-border-primary);
+	background: var(--ec-bg-secondary);
+}
+.wf-card.completed { border-color: rgba(96,165,250,0.3); }
+.wf-header {
+	display: flex; align-items: center; gap: 10px;
+	padding: 12px 14px; background: var(--ec-bg-tertiary);
+}
+.wf-toggle { color: #666; font-size: 11px; cursor: pointer; }
+.wf-icon { font-size: 15px; }
+.wf-name { font-weight: 600; font-size: 13px; flex: 1; }
+.wf-status-badge {
+	display: inline-flex; align-items: center; gap: 5px;
+	padding: 3px 10px; border-radius: 20px;
+	font-size: 11px; font-weight: 500;
+}
+.wf-status-badge.completed {
+	background: rgba(96,165,250,0.12); color: #60a5fa;
+	border: 1px solid rgba(96,165,250,0.3);
+}
+.wf-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Node Card ── */
+.node-card {
+	border-radius: 8px; overflow: hidden;
+	border: 1px solid var(--ec-border-primary);
+	transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.node-card.running {
+	border-color: rgba(74,222,128,0.4);
+	box-shadow: 0 0 0 1px rgba(74,222,128,0.15);
+}
+.node-card.done { border-color: rgba(96,165,250,0.3); }
+.node-header {
+	display: flex; align-items: center; gap: 10px;
+	padding: 10px 12px; background: var(--ec-bg-tertiary);
+	cursor: pointer; user-select: none;
+}
+.node-header:hover { background: rgba(255,255,255,0.03); }
+.node-type-icon {
+	width: 28px; height: 28px; border-radius: 6px;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 14px; flex-shrink: 0;
+}
+.node-type-icon.agent { background: rgba(168,85,247,0.15); color: #a855f7; }
+.node-info { flex: 1; min-width: 0; }
+.node-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
+.node-task { color: #888; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-status { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.node-status .spinner {
+	width: 14px; height: 14px;
+	border: 2px solid rgba(74,222,128,0.2);
+	border-top-color: #4ade80; border-radius: 50%;
+	animation: wf-spin 0.8s linear infinite;
+}
+@keyframes wf-spin { to { transform: rotate(360deg); } }
+.node-status .check { color: #60a5fa; font-size: 14px; }
+.node-body { padding: 0 12px 12px 12px; }
+
+/* ── 旧版：分离的输出和工具列表 ── */
+.node-output {
+	background: var(--vscode-textCodeBlock-background, #1a1a1a);
+	border-radius: 6px; padding: 10px 12px; margin-top: 8px;
+	font-size: 12px; color: #aaa; line-height: 1.5;
+	max-height: 160px; overflow-y: auto;
+	border-left: 2px solid #444;
+}
+.node-output.running { border-left-color: #4ade80; }
+.node-output.done { border-left-color: #60a5fa; }
+.node-output p { margin-bottom: 6px; }
+.node-output p:last-child { margin-bottom: 0; }
+.tool-list {
+	margin-top: 8px; display: flex; flex-direction: column; gap: 4px;
+}
+.tool-item {
+	display: flex; align-items: center; gap: 8px;
+	padding: 6px 10px; border-radius: 5px;
+	background: rgba(255,255,255,0.03);
+	font-size: 11px;
+}
+.tool-icon { font-size: 12px; }
+.tool-name { color: #ccc; flex: 1; }
+.tool-status { font-size: 10px; }
+.tool-status.done { color: #60a5fa; }
+.tool-status.running { color: #4ade80; }
+
+/* ═══════════════════════════════════════════════════════════
+   新版：工具卡片嵌入到文本流中
+   ═══════════════════════════════════════════════════════════ */
+.node-stream {
+	margin-top: 8px;
+	display: flex; flex-direction: column; gap: 6px;
+	font-size: 12px; color: #aaa; line-height: 1.6;
+}
+/* 文本片段 */
+.stream-text {
+	padding: 0 2px;
+}
+.stream-text p { margin-bottom: 4px; }
+.stream-text p:last-child { margin-bottom: 0; }
+/* 嵌入式工具调用卡片 */
+.stream-tool-card {
+	border-radius: 6px;
+	border: 1px solid var(--ec-border-primary, #333);
+	background: rgba(255,255,255,0.02);
+	overflow: hidden;
+	margin: 2px 0;
+	transition: border-color 0.3s ease;
+}
+.stream-tool-card.running {
+	border-color: rgba(74,222,128,0.3);
+}
+.stream-tool-card.done {
+	border-color: rgba(96,165,250,0.2);
+}
+.stream-tool-card.error {
+	border-color: rgba(248,113,113,0.3);
+}
+.stream-tool-header {
+	display: flex; align-items: center; gap: 8px;
+	padding: 7px 10px; cursor: pointer; user-select: none;
+}
+.stream-tool-header:hover { background: rgba(255,255,255,0.03); }
+.stream-tool-icon {
+	width: 20px; height: 20px; border-radius: 4px;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 11px; flex-shrink: 0;
+}
+.stream-tool-icon.file { background: rgba(96,165,250,0.15); color: #60a5fa; }
+.stream-tool-icon.search { background: rgba(168,85,247,0.15); color: #a855f7; }
+.stream-tool-icon.code { background: rgba(20,184,166,0.15); color: #14b8a6; }
+.stream-tool-icon.bash { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.stream-tool-title { flex: 1; font-size: 12px; font-weight: 500; color: #ccc; }
+.stream-tool-badge {
+	font-size: 10px; padding: 1px 7px; border-radius: 10px;
+	display: inline-flex; align-items: center; gap: 4px;
+}
+.stream-tool-badge.running {
+	background: rgba(74,222,128,0.12); color: #4ade80;
+}
+.stream-tool-badge.done {
+	background: rgba(96,165,250,0.12); color: #60a5fa;
+}
+.stream-tool-badge.error {
+	background: rgba(248,113,113,0.12); color: #f87171;
+}
+.stream-tool-badge .mini-spinner {
+	width: 9px; height: 9px;
+	border: 1.5px solid rgba(74,222,128,0.2);
+	border-top-color: #4ade80; border-radius: 50%;
+	animation: wf-spin 0.8s linear infinite;
+}
+.stream-tool-detail {
+	padding: 8px 10px;
+	background: var(--vscode-textCodeBlock-background, #1a1a1a);
+	font-size: 11px; color: #888;
+	max-height: 120px; overflow-y: auto;
+	border-top: 1px solid rgba(255,255,255,0.04);
+	font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+	white-space: pre-wrap; word-break: break-all;
+}
+.stream-tool-detail .label { color: #666; font-weight: 600; }
+.stream-tool-detail .content { color: #aaa; }
+.stream-tool-detail .result-ok { color: #4ade80; }
+.stream-tool-detail .result-err { color: #f87171; }
+
+/* 流式光标 */
+.streaming-cursor {
+	display: inline-block;
+	color: #4ade80;
+	animation: blink 1s steps(2) infinite;
+	font-weight: bold;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── Timeline ── */
+.wf-timeline {
+	display: flex; align-items: center; gap: 4px;
+	padding: 8px 14px;
+	border-top: 1px solid rgba(255,255,255,0.04);
+	overflow-x: auto; flex-wrap: nowrap;
+}
+.wf-timeline-item {
+	padding: 2px 8px; border-radius: 10px;
+	font-size: 11px; white-space: nowrap; flex-shrink: 0;
+}
+.wf-timeline-item.active { background: rgba(74,222,128,0.12); color: #4ade80; }
+.wf-timeline-item.done { background: rgba(96,165,250,0.12); color: #60a5fa; }
+.wf-timeline-arrow { color: #444; font-size: 10px; }
+
+/* 说明框 */
+.note {
+	background: rgba(96,165,250,0.05);
+	border: 1px solid rgba(96,165,250,0.15);
+	border-radius: 8px;
+	padding: 12px 16px;
+	margin-bottom: 20px;
+	font-size: 12px;
+	color: #8ab4f8;
+	line-height: 1.6;
+}
+.note strong { color: #60a5fa; }
+.note ul { margin: 6px 0 0 16px; }
+.note li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+<div class="mockup-container">
+
+<div class="note">
+	<strong>优化目标：</strong>将 subagent 卡片中的工具调用从底部独立列表，改为嵌入到输出文本流中间，类似 ChatGPT/Claude 的流式展示方式。<br>
+	<strong>核心变化：</strong>
+	<ul>
+		<li>文本片段（<code>.stream-text</code>）和工具卡片（<code>.stream-tool-card</code>）交替排列</li>
+		<li>工具卡片带可展开/折叠的详情区（参数 + 结果）</li>
+		<li>运行中工具显示 spinner，完成显示 ✓，错误显示 ✗</li>
+	</ul>
+</div>
+
+<!-- ══════ BEFORE: 当前效果 ══════ -->
+<div class="mockup-label">
+	当前效果 <span class="tag before">BEFORE</span>
+</div>
+
+<div class="wf-card completed">
+	<div class="wf-header">
+		<span class="wf-toggle">▼</span>
+		<span class="wf-icon">🔀</span>
+		<span class="wf-name">需求开发测试流程</span>
+		<span class="wf-status-badge completed">✓ 已完成</span>
+	</div>
+	<div class="wf-body">
+		<!-- Node: 需求分析 Agent -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">需求分析</div>
+					<div class="node-task">分析用户需求，拆解开发任务</div>
+				</div>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<div class="node-body">
+				<!-- 输出文本 -->
+				<div class="node-output done">
+					<p>让我先分析需求文档，了解需要实现的功能...</p>
+					<p>根据分析，需要实现以下功能模块：</p>
+					<p>1. 用户登录注册模块</p>
+					<p>2. 数据看板模块</p>
+					<p>3. 订单管理模块</p>
+				</div>
+				<!-- 工具列表（分离的，在输出下方） -->
+				<div class="tool-list">
+					<div class="tool-item">
+						<span class="tool-icon">🔧</span>
+						<span class="tool-name">read_file</span>
+						<span class="tool-status done">✓ done</span>
+					</div>
+					<div class="tool-item">
+						<span class="tool-icon">🔧</span>
+						<span class="tool-name">search_code</span>
+						<span class="tool-status done">✓ done</span>
+					</div>
+					<div class="tool-item">
+						<span class="tool-icon">🔧</span>
+						<span class="tool-name">write_file</span>
+						<span class="tool-status done">✓ done</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node: 代码开发 Agent (running) -->
+		<div class="node-card running">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">代码开发</div>
+					<div class="node-task">根据需求分析结果实现代码</div>
+				</div>
+				<div class="node-status"><span class="spinner"></span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-output running">
+					<p>正在实现用户登录注册模块...</p>
+				</div>
+				<div class="tool-list">
+					<div class="tool-item">
+						<span class="tool-icon">🔧</span>
+						<span class="tool-name">write_file</span>
+						<span class="tool-status done">✓ done</span>
+					</div>
+					<div class="tool-item">
+						<span class="tool-icon">🔧</span>
+						<span class="tool-name">edit_file</span>
+						<span class="tool-status running">running...</span>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+	<div class="wf-timeline">
+		<span class="wf-timeline-item done">start</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">需求分析</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item active">代码开发</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item">end</span>
+	</div>
+</div>
+
+<!-- ══════ AFTER: 优化后效果 ══════ -->
+<div class="mockup-label">
+	优化后效果 <span class="tag after">AFTER</span>
+</div>
+
+<div class="wf-card completed">
+	<div class="wf-header">
+		<span class="wf-toggle">▼</span>
+		<span class="wf-icon">🔀</span>
+		<span class="wf-name">需求开发测试流程</span>
+		<span class="wf-status-badge completed">✓ 已完成</span>
+	</div>
+	<div class="wf-body">
+		<!-- Node: 需求分析 Agent (完成状态) -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">需求分析</div>
+					<div class="node-task">分析用户需求，拆解开发任务</div>
+				</div>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<div class="node-body">
+				<!-- 嵌入式流：文本 → 工具卡 → 文本 → 工具卡 → 文本 → 工具卡 → 文本 -->
+				<div class="node-stream">
+					<!-- 文本片段 1 -->
+					<div class="stream-text">
+						<p>让我先分析需求文档，了解需要实现的功能...</p>
+					</div>
+					<!-- 嵌入工具卡 1: read_file (完成) -->
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon file">📄</div>
+							<span class="stream-tool-title">读取文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/docs/requirements.md</span>
+<span class="label">result:</span> <span class="result-ok">读取成功 (248行)</span></div>
+					</div>
+					<!-- 文本片段 2 -->
+					<div class="stream-text">
+						<p>让我搜索一下现有代码中是否有类似的实现...</p>
+					</div>
+					<!-- 嵌入工具卡 2: search_code (完成) -->
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon search">🔍</div>
+							<span class="stream-tool-title">搜索代码</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">query:</span> <span class="content">user authentication login</span>
+<span class="label">result:</span> <span class="result-ok">找到 3 处匹配</span></div>
+					</div>
+					<!-- 文本片段 3 -->
+					<div class="stream-text">
+						<p>根据分析，需要实现以下功能模块：</p>
+						<p>1. 用户登录注册模块</p>
+						<p>2. 数据看板模块</p>
+						<p>3. 订单管理模块</p>
+						<p>现在将分析结果写入文档...</p>
+					</div>
+					<!-- 嵌入工具卡 3: write_file (完成) -->
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon file">📝</div>
+							<span class="stream-tool-title">写入文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/docs/analysis.md</span>
+<span class="label">result:</span> <span class="result-ok">写入成功 (186行)</span></div>
+					</div>
+					<!-- 文本片段 4 -->
+					<div class="stream-text">
+						<p>需求分析完成，已将结果保存到 <code>analysis.md</code>。</p>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node: 代码开发 Agent (运行中) -->
+		<div class="node-card running">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">代码开发</div>
+					<div class="node-task">根据需求分析结果实现代码</div>
+				</div>
+				<div class="node-status"><span class="spinner"></span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<!-- 文本片段 1 -->
+					<div class="stream-text">
+						<p>开始实现用户登录注册模块，先创建基础文件结构...</p>
+					</div>
+					<!-- 嵌入工具卡 1: write_file (完成) -->
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon file">📝</div>
+							<span class="stream-tool-title">写入文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/src/auth/login.ts</span>
+<span class="label">result:</span> <span class="result-ok">写入成功 (124行)</span></div>
+					</div>
+					<!-- 文本片段 2 -->
+					<div class="stream-text">
+						<p>文件创建成功，现在修改路由配置以接入新的登录页面...</p>
+					</div>
+					<!-- 嵌入工具卡 2: edit_file (运行中) -->
+					<div class="stream-tool-card running">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon code">✏️</div>
+							<span class="stream-tool-title">编辑文件</span>
+							<span class="stream-tool-badge running">
+								<span class="mini-spinner"></span> 运行中
+							</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/src/router/index.ts</span>
+<span class="label">status:</span> <span class="content">正在应用编辑...</span></div>
+					</div>
+					<!-- 文本片段 3 (流式中，带光标) -->
+					<div class="stream-text">
+						<p>正在等待文件编辑完成<span class="streaming-cursor">|</span></p>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Node: 测试 Agent (错误状态) -->
+		<div class="node-card done">
+			<div class="node-header">
+				<div class="node-type-icon agent">🤖</div>
+				<div class="node-info">
+					<div class="node-name">测试验证</div>
+					<div class="node-task">运行单元测试验证功能</div>
+				</div>
+				<div class="node-status"><span class="check">✓</span></div>
+			</div>
+			<div class="node-body">
+				<div class="node-stream">
+					<!-- 文本片段 1 -->
+					<div class="stream-text">
+						<p>开始运行单元测试...</p>
+					</div>
+					<!-- 嵌入工具卡 1: run_tests (错误) -->
+					<div class="stream-tool-card error">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon bash">⚡</div>
+							<span class="stream-tool-title">运行测试</span>
+							<span class="stream-tool-badge error">✗ 失败</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">command:</span> <span class="content">npm test -- --grep "auth"</span>
+<span class="label">result:</span> <span class="result-err">2 passed, 1 failed</span>
+<span class="label">error:</span> <span class="result-err">AssertionError: expected 200 but got 401</span></div>
+					</div>
+					<!-- 文本片段 2 -->
+					<div class="stream-text">
+						<p>测试发现 1 个失败用例，原因是登录接口的 token 验证逻辑有误。修复中...</p>
+					</div>
+					<!-- 嵌入工具卡 2: edit_file (完成) -->
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon code">✏️</div>
+							<span class="stream-tool-title">编辑文件</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">path:</span> <span class="content">/project/src/auth/login.ts</span>
+<span class="label">result:</span> <span class="result-ok">修复成功</span></div>
+					</div>
+					<!-- 嵌入工具卡 3: run_tests (完成) -->
+					<div class="stream-tool-card done">
+						<div class="stream-tool-header">
+							<div class="stream-tool-icon bash">⚡</div>
+							<span class="stream-tool-title">运行测试</span>
+							<span class="stream-tool-badge done">✓</span>
+						</div>
+						<div class="stream-tool-detail">
+<span class="label">command:</span> <span class="content">npm test -- --grep "auth"</span>
+<span class="label">result:</span> <span class="result-ok">3 passed, 0 failed</span></div>
+					</div>
+					<!-- 文本片段 3 -->
+					<div class="stream-text">
+						<p>所有测试通过，测试验证完成。</p>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+	<div class="wf-timeline">
+		<span class="wf-timeline-item done">start</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">需求分析</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">代码开发</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">测试验证</span>
+		<span class="wf-timeline-arrow">→</span>
+		<span class="wf-timeline-item done">end</span>
+	</div>
+</div>
+
+<div class="note" style="margin-top: 24px;">
+	<strong>实现要点：</strong>
+	<ul>
+		<li><strong>数据结构</strong>：subAgent 需要新增 <code>streamParts</code> 数组，按时间顺序存储文本片段和工具调用（<code>{ type: 'text', content } | { type: 'tool', toolCall }</code>）</li>
+		<li><strong>渲染逻辑</strong>：<code>_createNodeCard</code> 中遍历 <code>streamParts</code>，文本用 <code>.stream-text</code> 渲染，工具用 <code>.stream-tool-card</code> 渲染</li>
+		<li><strong>delta 事件</strong>：text delta 追加到最后一个 text part；tool_start 创建新的 tool part；tool_end 更新对应 tool part 状态</li>
+		<li><strong>兼容性</strong>：无 streamParts 的旧数据回退到当前渲染方式（node-output + tool-list）</li>
+		<li><strong>展开/折叠</strong>：工具卡详情默认折叠，点击 header 展开/收起</li>
+	</ul>
+</div>
+
+</div>
+</body>
+</html>

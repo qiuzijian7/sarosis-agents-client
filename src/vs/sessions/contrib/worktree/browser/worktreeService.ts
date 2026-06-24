@@ -74,6 +74,10 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	/** Pending waiters for worktree ready/failed */
 	private readonly _worktreeWaiters = new Map<string, Array<(status: WorktreeStatus) => void>>();
 
+	/** Short-lived cache for getWorktreeMetadata (30s TTL) to avoid redundant git commands */
+	private readonly _metadataCache = new Map<string, { result: Partial<IWorktreeDetail>; timestamp: number }>();
+	private static readonly METADATA_CACHE_TTL = 30_000; // 30 seconds
+
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
@@ -85,6 +89,22 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
 			this._repositoryRoot = undefined;
 			this._onDidChangeWorktrees.fire();
+		}));
+
+		// Invalidate metadata cache when worktree state changes
+		this._register(this._onDidChangeWorktreeState.event(e => {
+			this._metadataCache.delete(e.directory);
+			this.logService.debug(`[WorktreeService] metadata cache invalidated for ${e.directory}`);
+		}));
+
+		// Invalidate entire metadata cache when worktree list changes or a worktree is removed
+		this._register(this._onDidChangeWorktrees.event(() => {
+			this._metadataCache.clear();
+			this.logService.debug('[WorktreeService] metadata cache cleared (worktree list changed)');
+		}));
+		this._register(this._onDidRemoveWorktree.event(path => {
+			this._metadataCache.delete(path);
+			this.logService.debug(`[WorktreeService] metadata cache invalidated for removed worktree ${path}`);
 		}));
 	}
 
@@ -593,10 +613,10 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 							this.logService.info(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
 							return result.stdout;
 						}
-						// Use warn (not error) because non-zero exit codes are normal git behavior
-						// (e.g. "no upstream configured", "no changes", etc.) and are handled by callers.
-						this.logService.warn(`[WorktreeService] execGit: git exited with code ${result.exitCode}, stderr="${result.stderr}"`);
-						throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
+					// Use info (not warn/error) because non-zero exit codes are normal git behavior
+					// (e.g. "no upstream configured", "no changes", etc.) and are handled by callers.
+					this.logService.info(`[WorktreeService] execGit: git exited with code ${result.exitCode}, stderr="${result.stderr}"`);
+					throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
 					}
 			}
 
@@ -611,9 +631,9 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			this.logService.error('[WorktreeService] execGit: No git execution method available');
 			throw new Error('Git execution not available in this context');
 		} catch (err) {
-			// Use warn: most errors here are expected git command failures (non-zero exit)
+			// Use info (not warn): most errors here are expected git command failures (non-zero exit)
 			// which are already logged above; unexpected errors (IPC failure, etc.) are rare.
-			this.logService.warn('[WorktreeService] execGit: error:', err);
+			this.logService.info('[WorktreeService] execGit: error:', err);
 			throw err;
 		}
 	}
@@ -753,7 +773,14 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async getWorktreeMetadata(worktreePath: string): Promise<Partial<IWorktreeDetail>> {
 		try {
-			this.logService.info(`[WorktreeService] getWorktreeMetadata: ${worktreePath}`);
+			// Check cache first (avoids redundant git commands when called frequently)
+			const cached = this._metadataCache.get(worktreePath);
+			if (cached && (Date.now() - cached.timestamp) < WorktreeService.METADATA_CACHE_TTL) {
+				this.logService.debug(`[WorktreeService] getWorktreeMetadata: cache hit for ${worktreePath}`);
+				return cached.result;
+			}
+
+			this.logService.debug(`[WorktreeService] getWorktreeMetadata: computing for ${worktreePath}`);
 
 			const metadata: Partial<IWorktreeDetail> = {};
 
@@ -818,7 +845,11 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				// Ignore
 			}
 
-			this.logService.info(`[WorktreeService] getWorktreeMetadata: result=`, metadata);
+			this.logService.debug(`[WorktreeService] getWorktreeMetadata: result=`, metadata);
+
+			// Store in cache
+			this._metadataCache.set(worktreePath, { result: metadata, timestamp: Date.now() });
+
 			return metadata;
 		} catch (e) {
 			this.logService.error('[WorktreeService] getWorktreeMetadata failed:', e);

@@ -1,0 +1,317 @@
+{
+  "id": "92c79e99-c460-4a69-b9ac-85b464176905",
+  "name": "需求开发测试流程",
+  "description": "完整的开发流程：Prompt输入需求 -> 开发 -> 错误检查 -> 测试 -> 确认提交",
+  "steps": [],
+  "isActive": false,
+  "createdAt": 1782199560555,
+  "updatedAt": 1782268560921,
+  "presetId": "workflow-agent",
+  "workspaceId": "1782199508892-va0l1a7",
+  "agentId": "1782202837601-fy8zvh5",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "name": "start",
+      "position": {
+        "x": 80,
+        "y": 250
+      },
+      "data": {
+        "hasBreakpoint": false,
+        "label": "start"
+      }
+    },
+    {
+      "id": "input-requirement",
+      "type": "prompt",
+      "name": "input-requirement",
+      "position": {
+        "x": 240,
+        "y": 165
+      },
+      "data": {
+        "prompt": "需求描述：{{input}}",
+        "variables": {},
+        "hasBreakpoint": false,
+        "label": "input-requirement"
+      }
+    },
+    {
+      "id": "develop",
+      "type": "agent",
+      "name": "develop",
+      "position": {
+        "x": 480,
+        "y": 180
+      },
+      "data": {
+        "agentId": "coder",
+        "agentConfig": {
+          "modelId": "claude-sonnet-4-20250514"
+        },
+        "prompt": "{{input-requirement.output}}",
+        "hasBreakpoint": false,
+        "label": "develop"
+      }
+    },
+    {
+      "id": "error-check",
+      "type": "agent",
+      "name": "error-check",
+      "position": {
+        "x": 800,
+        "y": 250
+      },
+      "data": {
+        "agentId": "code-reviewer",
+        "agentConfig": {
+          "modelId": "claude-sonnet-4-20250514"
+        },
+        "prompt": "{{develop.output}}",
+        "hasBreakpoint": false,
+        "label": "error-check"
+      }
+    },
+    {
+      "id": "check-result",
+      "type": "ifElse",
+      "name": "check-result",
+      "position": {
+        "x": 1050,
+        "y": 250
+      },
+      "data": {
+        "evaluationTarget": "error-check-output",
+        "branches": [
+          {
+            "id": "branch-0",
+            "label": "无错误",
+            "condition": "no errors found"
+          },
+          {
+            "id": "branch-1",
+            "label": "有错误",
+            "condition": "errors found"
+          }
+        ],
+        "hasBreakpoint": false,
+        "label": "check-result"
+      }
+    },
+    {
+      "id": "fix-errors",
+      "type": "agent",
+      "name": "fix-errors",
+      "position": {
+        "x": 1050,
+        "y": 450
+      },
+      "data": {
+        "agentId": "coder",
+        "agentConfig": {
+          "modelId": "claude-sonnet-4-20250514"
+        },
+        "prompt": "{{error-check.output}}",
+        "hasBreakpoint": false,
+        "label": "fix-errors"
+      }
+    },
+    {
+      "id": "test",
+      "type": "agent",
+      "name": "test",
+      "position": {
+        "x": 1300,
+        "y": 250
+      },
+      "data": {
+        "agentId": "tester",
+        "agentConfig": {
+          "modelId": "claude-sonnet-4-20250514"
+        },
+        "prompt": "{{error-check.output}}",
+        "hasBreakpoint": false,
+        "label": "test"
+      }
+    },
+    {
+      "id": "test-result",
+      "type": "ifElse",
+      "name": "test-result",
+      "position": {
+        "x": 1550,
+        "y": 250
+      },
+      "data": {
+        "evaluationTarget": "test-output",
+        "branches": [
+          {
+            "id": "branch-0",
+            "label": "测试通过",
+            "condition": "test passed"
+          },
+          {
+            "id": "branch-1",
+            "label": "测试失败",
+            "condition": "test failed"
+          }
+        ],
+        "hasBreakpoint": false,
+        "label": "test-result"
+      }
+    },
+    {
+      "id": "fix-and-retest",
+      "type": "agent",
+      "name": "fix-and-retest",
+      "position": {
+        "x": 1550,
+        "y": 450
+      },
+      "data": {
+        "agentId": "coder",
+        "agentConfig": {
+          "modelId": "claude-sonnet-4-20250514"
+        },
+        "prompt": "{{test.output}}",
+        "hasBreakpoint": false,
+        "label": "fix-and-retest"
+      }
+    },
+    {
+      "id": "confirm-submit",
+      "type": "askUser",
+      "name": "confirm-submit",
+      "position": {
+        "x": 1800,
+        "y": 250
+      },
+      "data": {
+        "questionText": "测试成功！是否提交代码？",
+        "options": [
+          {
+            "label": "提交",
+            "description": "提交代码到版本库"
+          },
+          {
+            "label": "不提交",
+            "description": "暂不提交，继续修改"
+          }
+        ],
+        "hasBreakpoint": false,
+        "label": "confirm-submit"
+      }
+    },
+    {
+      "id": "submit",
+      "type": "agent",
+      "name": "submit",
+      "position": {
+        "x": 2050,
+        "y": 250
+      },
+      "data": {
+        "agentId": "version-manager",
+        "agentConfig": {
+          "modelId": "claude-sonnet-4-20250514"
+        },
+        "prompt": "{{test.output}}",
+        "hasBreakpoint": false,
+        "label": "submit"
+      }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "name": "end",
+      "position": {
+        "x": 2300,
+        "y": 250
+      },
+      "data": {
+        "hasBreakpoint": false,
+        "label": "end"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "e-start-input",
+      "from": "start",
+      "to": "input-requirement"
+    },
+    {
+      "id": "e-input-develop",
+      "from": "input-requirement",
+      "to": "develop"
+    },
+    {
+      "id": "e-develop-check",
+      "from": "develop",
+      "to": "error-check"
+    },
+    {
+      "id": "e-check-result",
+      "from": "error-check",
+      "to": "check-result"
+    },
+    {
+      "id": "e-no-error-test",
+      "from": "check-result",
+      "to": "test",
+      "fromPort": "branch-0"
+    },
+    {
+      "id": "e-has-error-fix",
+      "from": "check-result",
+      "to": "fix-errors",
+      "fromPort": "branch-1"
+    },
+    {
+      "id": "e-fix-check",
+      "from": "fix-errors",
+      "to": "error-check"
+    },
+    {
+      "id": "e-test-result",
+      "from": "test",
+      "to": "test-result"
+    },
+    {
+      "id": "e-test-pass-confirm",
+      "from": "test-result",
+      "to": "confirm-submit",
+      "fromPort": "branch-0"
+    },
+    {
+      "id": "e-test-fail-fix",
+      "from": "test-result",
+      "to": "fix-and-retest",
+      "fromPort": "branch-1"
+    },
+    {
+      "id": "e-fix-retest",
+      "from": "fix-and-retest",
+      "to": "test"
+    },
+    {
+      "id": "e-confirm-submit",
+      "from": "confirm-submit",
+      "to": "submit",
+      "fromPort": "option-0"
+    },
+    {
+      "id": "e-submit-end",
+      "from": "submit",
+      "to": "end"
+    },
+    {
+      "id": "e-confirm-cancel",
+      "from": "confirm-submit",
+      "to": "develop",
+      "fromPort": "option-1"
+    }
+  ]
+}

@@ -291,7 +291,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 		}
 
 		const providers = this._agentOSService.getModelProviders();
-		this._logService.info(
+		this._logService.trace(
 			`[ModelSelector][Diag] getAvailableModels(): ${providers.length} provider(s) registered `
 			+ `[ids=${providers.map(p => p.id).join(',') || '<none>'}]`,
 		);
@@ -302,7 +302,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			
 			// 只显示已认证的 Provider
 			if (authStatus !== 'authenticated') {
-				this._logService.info(`[ModelSelector][Diag]   provider=${provider.id} skipped (authStatus=${authStatus})`);
+				this._logService.trace(`[ModelSelector][Diag]   provider=${provider.id} skipped (authStatus=${authStatus})`);
 				continue;
 			}
 
@@ -316,12 +316,9 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 
 			try {
 				const models = await provider.listModels();
-				this._logService.info(
+				this._logService.trace(
 					`[ModelSelector][Diag]   provider=${provider.id} name="${provider.name}" `
-					+ `auth=${authStatus} models=${models.length}`
-					+ (models.length === 0
-						? ' (will NOT appear in selector -- empty model list)'
-						: ` [${models.slice(0, 5).map(m => m.id).join(',')}${models.length > 5 ? ',...' : ''}]`),
+					+ `auth=${authStatus} models=${models.length}`,
 				);
 				for (const model of models) {
 					items.push({
@@ -334,7 +331,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			}
 		}
 
-		this._logService.info(
+		this._logService.trace(
 			`[ModelSelector][Diag] getAvailableModels() result: ${items.length} item(s) total`,
 		);
 		this._cachedModelItems = items;

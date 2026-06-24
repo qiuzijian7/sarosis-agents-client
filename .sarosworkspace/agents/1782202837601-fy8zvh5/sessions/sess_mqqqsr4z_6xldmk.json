@@ -1,0 +1,16 @@
+[
+  {
+    "id": "wf_trigger_wf_exec_1782225082977_hcseem",
+    "role": "user",
+    "content": "▶ Run workflow: **需求开发测试流程**\n\n完整的开发流程：Prompt输入需求 -> 开发 -> 错误检查 -> 测试 -> 确认提交",
+    "timestamp": "2026-06-23T14:31:23.013Z",
+    "agentSessionId": "sess_mqqqsr4z_6xldmk"
+  },
+  {
+    "id": "prompt_input-requirement_1782225086712",
+    "role": "user",
+    "content": "需求描述：test1",
+    "timestamp": "2026-06-23T14:31:26.712Z",
+    "agentSessionId": "sess_mqqqsr4z_6xldmk"
+  }
+]

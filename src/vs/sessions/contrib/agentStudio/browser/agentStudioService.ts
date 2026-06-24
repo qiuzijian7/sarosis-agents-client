@@ -266,7 +266,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			if (customPath) {
 				this._globalDataUri = URI.file(customPath);
 			} else {
-				this._globalDataUri = URI.joinPath(this.environmentService.userRoamingDataHome, 'agent-studio');
+				this._globalDataUri = URI.joinPath(this.environmentService.userRoamingDataHome, '.saros');
 			}
 			this.logService.debug(`[AgentStudio] Global data directory: ${this._globalDataUri.toString()}`);
 		}
@@ -467,6 +467,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			configMd: data.configMd,
 			sortOrder: data.sortOrder,
 			status: data.status,
+			version: data.version,
+			storeId: data.storeId,
 			source: 'custom', createdAt: now, updatedAt: now,
 		};
 		// NOTE: per-workspace runtime state (workspaceId / worktreePath /

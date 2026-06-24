@@ -32,6 +32,7 @@ export const AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING = 'sessions.agentStudio.s
 export const AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING = 'sessions.agentStudio.skills.maxSkillsPromptChars';
 
 // Configuration keys — Chat UI Mode (React WebView vs Native DOM)
+/** @deprecated NativeChatEditorPane 现在是唯一聊天渲染器，此设置不再生效。保留仅为向后兼容。 */
 export const AGENT_STUDIO_USE_NATIVE_CHAT_SETTING = 'sessions.agentStudio.chat.useNativeChat';
 
 // Configuration keys — Auxiliary Models

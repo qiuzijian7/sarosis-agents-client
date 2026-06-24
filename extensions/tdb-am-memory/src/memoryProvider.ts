@@ -130,6 +130,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T | null> {
 	const url = `${gatewayBase()}${path}`;
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	const startMs = Date.now();
 	try {
 		const resp = await fetch(url, {
 			method: 'POST',
@@ -137,15 +138,20 @@ async function postJson<T>(path: string, body: unknown): Promise<T | null> {
 			body: JSON.stringify(body),
 			signal: ctrl.signal,
 		});
+		const elapsed = Date.now() - startMs;
 		if (!resp.ok) {
 			let detail = '';
 			try { detail = (await resp.text()).slice(0, 200); } catch { /* ignore */ }
-			console.warn(`[TdbAmMemory] ${path} -> HTTP ${resp.status} ${detail}`);
+			console.warn(`[TdbAmMemory] ${path} -> HTTP ${resp.status} (${elapsed}ms) ${detail}`);
 			return null;
 		}
-		return (await resp.json()) as T;
+		const result = (await resp.json()) as T;
+		console.log(`[TdbAmMemory] ⏱ ${path} OK (${elapsed}ms)`);
+		return result;
 	} catch (err) {
-		console.warn(`[TdbAmMemory] ${path} failed: ${(err as Error).message}`);
+		const elapsed = Date.now() - startMs;
+		const errMsg = (err as Error).message || String(err);
+		console.warn(`[TdbAmMemory] ⚠ ${path} FAILED after ${elapsed}ms: ${errMsg}`);
 		return null;
 	} finally {
 		clearTimeout(timer);
@@ -378,6 +384,7 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 			allowedSessionKeys?: readonly string[];
 		},
 	): Promise<IMemoryContext> {
+		const t0 = Date.now();
 		const sessionKey = deriveSessionKey(agentId, {
 			id: '', type: 'short_term', content: '',
 			metadata: { sessionId },
@@ -414,10 +421,12 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 			systemPrompt: undefined,
 			relevantDocuments: [],
 		};
+		console.log(`[TdbAmMemory] ⏱ loadContext done in ${Date.now() - t0}ms (hasContext=${!!result?.context})`);
 		return ctx;
 	}
 
 	async writeMemory(agentId: string, entry: IMemoryEntry): Promise<void> {
+		const t0 = Date.now();
 		const sessionKey = deriveSessionKey(agentId, entry);
 		const role = inferRole(entry, this._pendingUser.has(sessionKey));
 
@@ -428,12 +437,13 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 		// 诊断日志：让 DevTools console 能看到每次 writeMemory 是怎么被分类的。
 		try {
 			const mdKeys = entry.metadata ? Object.keys(entry.metadata).join(',') : '<none>';
-			const preview = cleanedContent.slice(0, 60).replace(/\n/g, ' ');
+			const preview = cleanedContent.slice(0, 80).replace(/\n/g, ' ');
 			console.log(`[TdbAmMemory] writeMemory: agentId=${agentId} sessionKey=${sessionKey} role=${role} mdKeys=[${mdKeys}] content="${preview}"`);
 		} catch { /* ignore */ }
 
 		if (role === 'user') {
 			this._pendingUser.set(sessionKey, cleanedContent);
+			console.log(`[TdbAmMemory] ⏱ writeMemory (user) done in ${Date.now() - t0}ms (buffered, no HTTP)`);
 			return;
 		}
 
@@ -470,6 +480,7 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 			return;
 		}
 
+		console.log(`[TdbAmMemory] /capture: sending POST (userLen=${userContent.length}, assistantLen=${assistantForCapture.length})`);
 		const result = await postJson<CaptureResponse>('/capture', {
 			user_content: userContent,
 			assistant_content: assistantForCapture,
@@ -479,9 +490,13 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 		});
 
 		if (result) {
-			console.log(`[TdbAmMemory] ✅ /capture l0_recorded=${result.l0_recorded} scheduler_notified=${result.scheduler_notified}`);
+			const totalMs = Date.now() - t0;
+			console.log(`[TdbAmMemory] ✅ /capture l0_recorded=${result.l0_recorded} scheduler_notified=${result.scheduler_notified} totalMs=${totalMs}`);
 			// 每次成功 capture 后重置 L2 空闲定时器（60 秒无活动触发 L2 蒸馏）
 			this._resetL2IdleTimer(sessionKey);
+		} else {
+			const totalMs = Date.now() - t0;
+			console.warn(`[TdbAmMemory] ⚠ /capture returned null (totalMs=${totalMs})`);
 		}
 
 		// 不论成功失败，都清掉缓存——下一轮重新累积。
@@ -493,13 +508,17 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 		if (!query || query.trim().length === 0) {
 			return [];
 		}
+		const t0 = Date.now();
 		const resp = await postJson<SearchMemoriesResponse>('/search/memories', {
 			query,
 			limit: 10,
 		});
 		if (!resp) {
+			console.log(`[TdbAmMemory] ⏱ searchMemory done in ${Date.now() - t0}ms (null response)`);
 			return [];
 		}
-		return parseMemoryResults(resp.results);
+		const parsed = parseMemoryResults(resp.results);
+		console.log(`[TdbAmMemory] ⏱ searchMemory done in ${Date.now() - t0}ms (results=${parsed.length})`);
+		return parsed;
 	}
 }

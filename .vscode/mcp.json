@@ -23,6 +23,10 @@
 				"--use-daemon",
 				"-vv"
 			]
+		},
+		"codebase-memory-mcp": {
+			"type": "stdio",
+			"command": "C:/Users/qiuzijian/AppData/Local/Programs/codebase-memory-mcp/codebase-memory-mcp.exe"
 		}
 	},
 	"inputs": []

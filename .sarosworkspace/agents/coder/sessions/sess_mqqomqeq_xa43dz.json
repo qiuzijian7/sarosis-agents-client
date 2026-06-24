@@ -1,0 +1,30 @@
+[
+  {
+    "id": "msg_1782221442921_veoi8vl",
+    "role": "user",
+    "content": "{{input-requirement.output}}",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqomqeq_xa43dz",
+    "timestamp": "2026-06-23T13:30:42.921Z"
+  },
+  {
+    "id": "msg_1782221448112_0_ev9qy",
+    "role": "assistant",
+    "content": "I'll help you with your requirement. However, I notice that `{{input-requirement.output}}` appears to be a template variable that wasn't replaced with actual content.\n\nCould you please provide:\n\n1. **The actual requirement or task** you'd like me to help with\n2. **Context about the sarosis-agents-client project** if relevant\n3. **Any specific goals or expected outcomes** you have in mind\n\nOnce you share the details, I can assist you with:\n- Code generation or modification\n- Project structure analysis\n- Implementation planning\n- Code review\n- Refactoring\n- Or any other development tasks\n\nWhat would you like to work on?",
+    "agentId": "coder",
+    "agentSessionId": "sess_mqqomqeq_xa43dz",
+    "turnId": "turn_1782221448112_vjfewlo",
+    "timestamp": "2026-06-23T13:30:48.112Z",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I'll help you with your requirement. However, I notice that `{{input-requirement.output}}` appears to be a template variable that wasn't replaced with actual content.\n\nCould you please provide:\n\n1. **The actual requirement or task** you'd like me to help with\n2. **Context about the sarosis-agents-client project** if relevant\n3. **Any specific goals or expected outcomes** you have in mind\n\nOnce you share the details, I can assist you with:\n- Code generation or modification\n- Project structure analysis\n- Implementation planning\n- Code review\n- Refactoring\n- Or any other development tasks\n\nWhat would you like to work on?"
+      }
+    ],
+    "tokenUsage": {
+      "input": 29309,
+      "output": 143,
+      "total": 29452
+    }
+  }
+]

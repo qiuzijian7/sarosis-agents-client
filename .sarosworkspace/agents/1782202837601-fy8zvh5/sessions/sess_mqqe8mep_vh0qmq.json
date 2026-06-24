@@ -1,0 +1,17 @@
+[
+  {
+    "id": "wf_trigger_wf_exec_1782203988335_p8v9i3",
+    "role": "user",
+    "content": "▶ Run workflow: **需求开发测试流程**\n\n完整的开发流程：Prompt输入需求 -> 开发 -> 错误检查 -> 测试 -> 确认提交",
+    "timestamp": "2026-06-23T08:39:48.351Z",
+    "agentSessionId": "sess_mqqe8mep_vh0qmq"
+  },
+  {
+    "id": "wf_run_wf_exec_1782203988335_p8v9i3",
+    "role": "assistant",
+    "content": "▶ Workflow run: **需求开发测试流程** — 已取消",
+    "timestamp": "2026-06-23T08:39:48.371Z",
+    "subAgents": [],
+    "agentSessionId": "sess_mqqe8mep_vh0qmq"
+  }
+]
