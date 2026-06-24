@@ -428,11 +428,11 @@ export function isWebExtension(manifest: IExtensionManifest): boolean {
 	return true;
 }
 
-function packageNonNativeLocalExtensionsStream(forWeb: boolean, disableMangle: boolean): Stream {
+export function packageNonNativeLocalExtensionsStream(forWeb: boolean, disableMangle: boolean): Stream {
 	return doPackageLocalExtensionsStream(forWeb, disableMangle, false);
 }
 
-function packageNativeLocalExtensionsStream(forWeb: boolean, disableMangle: boolean): Stream {
+export function packageNativeLocalExtensionsStream(forWeb: boolean, disableMangle: boolean): Stream {
 	return doPackageLocalExtensionsStream(forWeb, disableMangle, true);
 }
 
