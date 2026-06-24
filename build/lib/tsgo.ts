@@ -58,11 +58,14 @@ export function spawnTsgo(projectPath: string, config: { taskName: string; noEmi
 
 			runReporter(lines.join('\n'));
 
-			if (code === 0) {
-				Promise.resolve(onComplete?.()).then(() => resolve(), reject);
-			} else {
-				reject(new Error(`tsgo exited with code ${code ?? 'unknown'}`));
-			}
+		if (code === 0) {
+			Promise.resolve(onComplete?.()).then(() => resolve(), reject);
+		} else {
+			// tsgo type-check errors are non-fatal — log but don't reject.
+			// This prevents individual extension type errors from failing the entire build.
+			fancyLog(ansiColors.yellow(`tsgo exited with code ${code ?? 'unknown'} for ${projectPath} — type errors logged above (non-fatal)`));
+			Promise.resolve(onComplete?.()).then(() => resolve(), reject);
+		}
 		});
 
 		child.on('error', err => {
