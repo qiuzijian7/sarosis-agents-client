@@ -513,3 +513,11 @@ export function packageNonMinifiedLocalExtensionsStream(forWeb: boolean, disable
 		})
 	);
 }
+
+/**
+ * Package the copilot extension for the build.
+ * Copilot is in the excludedExtensions list, so this returns an empty stream.
+ */
+export function packageCopilotExtensionStream(_forWeb: boolean): Stream {
+	return es.readArray([]);
+}
