@@ -87,7 +87,14 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 			NameShort: product.nameShort,
 			DirName: product.win32DirName,
 			Version: pkg.version,
-			RawVersion: pkg.version.replace(/-\w+$/, ''),
+			// Inno Setup VersionInfoVersion requires exactly 4 segments (x.y.z.w),
+			// each segment 0-65535. commitCount-based patch can exceed this, so clamp with % 65536.
+			// Pad to 4 segments by appending .0 if needed.
+			RawVersion: (() => {
+				const parts = pkg.version.replace(/-\w+$/, '').split('.').map(p => { const n = parseInt(p, 10); return isNaN(n) ? 0 : n % 65536; });
+				while (parts.length < 4) parts.push(0);
+				return parts.slice(0, 4).join('.');
+			})(),
 			Commit: commit,
 			NameVersion: product.win32NameVersion + (target === 'user' ? ' (User)' : ''),
 			ExeBasename: product.nameShort,
