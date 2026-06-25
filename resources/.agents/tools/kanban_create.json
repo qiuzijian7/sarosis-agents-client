@@ -1,0 +1,26 @@
+{
+  "name": "kanban_create",
+  "description": "Create a new kanban task (orchestrator only).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Task title"
+      },
+      "description": {
+        "type": "string",
+        "description": "Task description"
+      },
+      "assignee": {
+        "type": "string",
+        "description": "Assignee name (optional)"
+      }
+    },
+    "required": [
+      "title"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "browser_back",
+  "description": "Navigate back in browser history.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {}
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

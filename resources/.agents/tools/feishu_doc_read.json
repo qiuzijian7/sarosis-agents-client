@@ -1,0 +1,18 @@
+{
+  "name": "feishu_doc_read",
+  "description": "Read the content of a Feishu/Lark document.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "doc_id": {
+        "description": "Feishu document ID or URL",
+        "type": "string"
+      }
+    },
+    "required": [
+      "doc_id"
+    ]
+  },
+  "category": "feishu",
+  "source": "hermes-bundled"
+}

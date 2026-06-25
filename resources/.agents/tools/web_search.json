@@ -1,0 +1,22 @@
+{
+  "name": "web_search",
+  "description": "Search the web for information. Returns search results with titles, URLs, and snippets.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query"
+      },
+      "num_results": {
+        "type": "number",
+        "description": "Number of results to return (default: 10)"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "category": "web",
+  "source": "hermes-bundled"
+}

@@ -20,7 +20,7 @@ VsSarosis（`saros-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\sar
 ## 前置知识
 
 1. **项目根**：`G:\CustomWorkspaces\AIProjects\saros-agents-client`
-2. **安装包**：仅发布用户级 `VsSarosisUserSetup.exe`（无需管理员权限）
+2. **安装包**：仅发布用户级 `VsSarosUserSetup.exe`（无需管理员权限）
 3. **Release 仓库**：`https://git.woa.com/zijianqiu/vssaros_issue`（项目 ID: 1790708），不是 saros-agents-client
 4. **更新代理**：DevCloud `http://zijianqiu-any1.devcloud.woa.com:3030`，自动从工蜂 Release 描述提取下载 URL + SHA256
 5. **Git 远程**：`origin`=工蜂 saros-agents-client / `backup`=GitHub / `upstream`=microsoft/vscode（禁止 push）
@@ -65,21 +65,39 @@ npx gulp vscode-win32-x64-user-setup
 **校验体积**：
 
 ```bash
-ls -lh .build/win32-x64/user-setup/VsSarosisUserSetup.exe
+ls -lh .build/win32-x64/user-setup/VsSarosUserSetup.exe
 ```
 
 期望 ~96 MB，异常（< 70 或 > 150）需检查 `code.iss`。
 
-### Stage 2：计算 SHA256 + 上传到 DevCloud
+### Stage 2：上传到更新服务器（HTTP upload 端点）
+
+> ⚠️ DevCloud SSH 仅限内网，**蓝盾 CI 无法 scp**。改用更新服务器的 HTTP 上传端点 `POST /admin/upload`，
+> 服务器自动存盘 + 算 sha256 + 更新 manifest，一步完成（无需手动 gen-manifest）。
+
+**方式 A：一键脚本（推荐，蓝盾流水线用）**
 
 ```bash
-# 计算哈希
-sha256sum .build/win32-x64/user-setup/VsSarosisUserSetup.exe
-
-# 上传到 DevCloud 更新服务器（使更新代理可提供下载）
-scp .build/win32-x64/user-setup/VsSarosisUserSetup.exe \
-    root@zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/downloads/
+bash deploy-package/scripts/upload-to-update-server.sh \
+  --exe .build/win32-x64/user-setup/VsSarosUserSetup.exe \
+  --commit $GIT_COMMIT \
+  --version 1.120.0 \
+  --token $UPLOAD_TOKEN
 ```
+
+**方式 B：直接 curl**
+
+```bash
+curl -sS -X POST \
+  -H "X-Upload-Token: $UPLOAD_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @.build/win32-x64/user-setup/VsSarosUserSetup.exe \
+  "http://zijianqiu-any1.devcloud.woa.com:3030/admin/upload?platform=win32-x64-user&commit=$GIT_COMMIT&productVersion=1.120.0"
+```
+
+响应：`{"ok":true,"platform":"win32-x64-user","version":"...","url":"http://.../downloads/VsSarosUserSetup.exe","sha256hash":"...","size":...}`
+
+> 服务器需设置环境变量 `UPLOAD_TOKEN`（鉴权）和 `PUBLIC_BASE_URL`（拼接下载 url，留空则用 Host 头）。
 
 ### Stage 3：打 Git Tag
 
@@ -92,17 +110,17 @@ git push backup v0.1.X     # GitHub
 ### Stage 4：创建工蜂 Release（vssaros_issue）
 
 > ⚠️ **关键**：Release 创建在 `zijianqiu/vssaros_issue` 仓库（ID: 1790708），不是 saros-agents-client。
-> 更新代理从 Release 描述中解析下载 URL（格式：`[VsSarosisUserSetup.exe](url)`）和 SHA256（格式：`SHA256: 64位hex`）。
+> 更新代理从 Release 描述中解析下载 URL（格式：`[VsSarosUserSetup.exe](url)`）和 SHA256（格式：`SHA256: 64位hex`）。
 
 **步骤 4.1**：上传 EXE 到工蜂
 
 ```bash
 curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
-  -F "file=@.build/win32-x64/user-setup/VsSarosisUserSetup.exe" \
+  -F "file=@.build/win32-x64/user-setup/VsSarosUserSetup.exe" \
   "https://git.woa.com/api/v3/projects/1790708/uploads"
 ```
 
-响应示例：`{"url":"/uploads/xxxxxxxx/VsSarosisUserSetup.exe"}`，拼接为 `https://git.woa.com/zijianqiu/vssaros_issue/uploads/xxxxxxxx/VsSarosisUserSetup.exe`
+响应示例：`{"url":"/uploads/xxxxxxxx/VsSarosUserSetup.exe"}`，拼接为 `https://git.woa.com/zijianqiu/vssaros_issue/uploads/xxxxxxxx/VsSarosUserSetup.exe`
 
 **步骤 4.2**：在 vssaros_issue 创建 tag（如不存在）
 
@@ -124,7 +142,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
   -d '{
     "tag": "v0.1.X",
     "name": "VsSarosis v0.1.X",
-    "description": "## VsSarosis v0.1.X\n\n### 修复内容\n- xxx\n\n### 下载\n\n| 平台 | 类型 | 下载 |\n|------|------|------|\n| Windows x64 | 用户级安装（无需管理员） | [VsSarosisUserSetup.exe](http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosisUserSetup.exe) |\n\n### 校验\n```\nSHA256: <64位hash>\n大小: 96 MB\n```\n\n### 提交信息\n- 基于 saros-agents-client commit: `<short-sha>`"
+    "description": "## VsSarosis v0.1.X\n\n### 修复内容\n- xxx\n\n### 下载\n\n| 平台 | 类型 | 下载 |\n|------|------|------|\n| Windows x64 | 用户级安装（无需管理员） | [VsSarosUserSetup.exe](http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe) |\n\n### 校验\n```\nSHA256: <64位hash>\n大小: 96 MB\n```\n\n### 提交信息\n- 基于 saros-agents-client commit: `<short-sha>`"
   }'
 ```
 
@@ -132,7 +150,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
 
 | 字段 | 格式 | 正则 |
 |------|------|------|
-| 下载 URL | `[VsSarosisUserSetup.exe](URL)` | `/\[VsSarosisUserSetup\.exe\]\(([^)]+)\)/` |
+| 下载 URL | `[VsSarosUserSetup.exe](URL)` | `/\[VsSarosUserSetup\.exe\]\(([^)]+)\)/` |
 | SHA256 | `SHA256: 64位hex` | `/SHA256[：:]\s*([a-f0-9]{64})/i` |
 
 ### Stage 5：验证
@@ -141,7 +159,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
 # 测试更新 API（用旧 commit）
 curl -s http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64/saros/old-commit
 
-# 预期返回：{ "version":"v0.1.X", "url":"http://.../downloads/VsSarosisUserSetup.exe", "sha256hash":"<hash>" }
+# 预期返回：{ "version":"v0.1.X", "url":"http://.../downloads/VsSarosUserSetup.exe", "sha256hash":"<hash>" }
 ```
 
 ---

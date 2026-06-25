@@ -110,18 +110,8 @@ export async function previewAgentConfigMd(
 			agentSessionId = forkAgentSessionId;
 		}
 	} catch { /* store unavailable */ }
-	if (!agentSessionId) {
-		try {
-			const { useChatStore } = require('../store/useChatStore');
-			const cs = useChatStore.getState();
-			// Only attach a session id if the chat panel is showing the
-			// same agent — otherwise the captured id would be for an
-			// unrelated agent and would silently mis-route imgui submits.
-			if (cs.activeAgentId === agentId) {
-				agentSessionId = cs.activeAgentSessionId ?? undefined;
-			}
-		} catch { /* store unavailable */ }
-	}
+	// Chat panel session ID lookup removed — chat is now handled natively
+	// by NativeChatEditorPane. The host resolves agent session IDs directly.
 
 	await sendRequest('files.openHtmlPreview', {
 		path: r.path,

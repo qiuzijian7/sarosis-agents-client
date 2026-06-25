@@ -39,11 +39,10 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { getAccountProfileImageUrl, getAccountTitleBarBadgeKey, getAccountTitleBarState, resolveAccountInfo } from '../../../browser/accountTitleBarState.js';
 import { IsPhoneLayoutContext, SessionsWelcomeVisibleContext } from '../../../common/contextkeys.js';
 import { IsAuxiliaryWindowContext } from '../../../../workbench/common/contextkeys.js';
-import { IAuthenticationAccessService } from '../../../../workbench/services/authentication/browser/authenticationAccessService.js';
-import { IAuthenticationUsageService } from '../../../../workbench/services/authentication/browser/authenticationUsageService.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 import { IChatDashboardService } from '../../../browser/chatDashboardService.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { ITofAuthService, ITofUser } from '../../agentStudio/common/tofAuth.js';
 
 
 // --- Account Menu Items --- //
@@ -66,7 +65,7 @@ registerUpdateTitleBarMenuPlacement(Menus.TitleBarRightLayout, {
 	order: 99,
 });
 
-// Sign In (shown when signed out)
+// Sign In (shown when signed out) — 走 TOF (太湖 OA) 浏览器登录流程
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
@@ -81,12 +80,31 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const defaultAccountService = accessor.get(IDefaultAccountService);
-		await defaultAccountService.signIn();
+		const tofAuthService = accessor.get(ITofAuthService);
+		const notificationService = accessor.get(INotificationService);
+		// 如果已登录，不重复登录
+		if (tofAuthService.currentUser) {
+			return;
+		}
+		// 显示进度提示
+		const progress = notificationService.prompt(
+			Severity.Info,
+			localize('tofLoginInProgress', "正在打开浏览器进行 OA 登录…"),
+			[],
+			{ sticky: true }
+		);
+		try {
+			const user = await tofAuthService.login();
+			progress.close();
+			notificationService.info(`登录成功：${user.login_name}（工号 ${user.staff_id}）`);
+		} catch (e) {
+			progress.close();
+			notificationService.error(`登录失败：${(e as Error).message}`);
+		}
 	}
 });
 
-// Sign Out (shown when signed in)
+// Sign Out (shown when signed in) — 清除 TOF 本地票据
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
@@ -101,34 +119,22 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const defaultAccountService = accessor.get(IDefaultAccountService);
+		const tofAuthService = accessor.get(ITofAuthService);
+		const notificationService = accessor.get(INotificationService);
 		const dialogService = accessor.get(IDialogService);
-		const authenticationService = accessor.get(IAuthenticationService);
-		const authenticationUsageService = accessor.get(IAuthenticationUsageService);
-		const authenticationAccessService = accessor.get(IAuthenticationAccessService);
-		const defaultAccount = await defaultAccountService.getDefaultAccount();
-		if (!defaultAccount) {
-			return;
-		}
-
-		const providerId = defaultAccount.authenticationProvider.id;
-		const accountLabel = defaultAccount.accountName;
+		const user = tofAuthService.currentUser;
+		const accountLabel = user ? user.login_name : '当前账号';
 		const { confirmed } = await dialogService.confirm({
 			type: Severity.Info,
 			message: localize('agenticSignOutMessage', "Sign out of the Agents app?"),
 			detail: localize('agenticSignOutDetail', "This will sign out '{0}' from the Agents app.", accountLabel),
 			primaryButton: localize({ key: 'agenticSignOutButton', comment: ['&& denotes a mnemonic'] }, "&&Sign Out")
 		});
-
 		if (!confirmed) {
 			return;
 		}
-
-		const allSessions = await authenticationService.getSessions(providerId);
-		const sessions = allSessions.filter(session => session.account.label === accountLabel);
-		await Promise.all(sessions.map(session => authenticationService.removeSession(providerId, session.id)));
-		authenticationUsageService.removeAccountUsage(providerId, accountLabel);
-		authenticationAccessService.removeAllowedExtensions(providerId, accountLabel);
+		await tofAuthService.logout();
+		notificationService.info('已登出');
 	}
 });
 
@@ -201,6 +207,7 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		@IHoverService private readonly hoverService: IHoverService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IChatEntitlementService private readonly chatEntitlementService: ChatEntitlementService,
+		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 	) {
 		super(undefined, action, options);
 		this.lastState = getAccountTitleBarState({
@@ -212,11 +219,30 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 
 		this._register(this.defaultAccountService.onDidChangeDefaultAccount(() => this.refreshAccount()));
 		this._register(this.authenticationService.onDidChangeSessions(() => this.refreshAccount()));
+		// TOF 登录状态变更 → 直接更新显示
+		this._register(this.tofAuthService.onDidChangeUser((user: ITofUser | null) => this._onTofUserChanged(user)));
 		this._register(this.chatEntitlementService.onDidChangeEntitlement(() => this.renderState()));
 		this._register(this.chatEntitlementService.onDidChangeSentiment(() => this.renderState()));
 		this._register(this.chatEntitlementService.onDidChangeQuotaExceeded(() => this.renderState()));
 		this._register(this.chatEntitlementService.onDidChangeQuotaRemaining(() => this.renderState()));
 		this.refreshAccount();
+	}
+
+	/** TOF 用户变更：直接更新 accountName 并渲染（不依赖 Copilot entitlement） */
+	private _onTofUserChanged(user: ITofUser | null): void {
+		if (user) {
+			this.accountName = user.login_name;
+			this.accountProviderId = 'tof';
+			this.accountProviderLabel = 'OA';
+			this.isAccountLoading = false;
+			this.currentAvatarUrl = undefined;
+			this.loadedAvatarUrl = undefined;
+		} else {
+			this.accountName = undefined;
+			this.accountProviderId = undefined;
+			this.accountProviderLabel = undefined;
+		}
+		this.renderState();
 	}
 
 	override setFocusable(_focusable: boolean): void {
@@ -255,6 +281,20 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		this.isAccountLoading = true;
 		this.renderState();
 
+		// 优先使用 TOF（太湖 OA）登录用户
+		const tofUser = this.tofAuthService.currentUser;
+		if (tofUser) {
+			this.accountName = tofUser.login_name;
+			this.accountProviderId = 'tof';
+			this.accountProviderLabel = 'OA';
+			this.isAccountLoading = false;
+			this.currentAvatarUrl = undefined;
+			this.loadedAvatarUrl = undefined;
+			this.renderState();
+			return;
+		}
+
+		// Fallback: 原生 Copilot / GitHub 账户流程
 		const info = await resolveAccountInfo(this.defaultAccountService, this.authenticationService);
 		if (requestId !== this.accountRequestCounter) {
 			return;
@@ -743,16 +783,48 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const defaultAccountService = accessor.get(IDefaultAccountService);
+		const tofAuthService = accessor.get(ITofAuthService);
 		const dialogService = accessor.get(IDialogService);
-		const account = await defaultAccountService.getDefaultAccount();
-		if (account) {
+		const notificationService = accessor.get(INotificationService);
+		const user = tofAuthService.currentUser;
+		if (user) {
+			// 已登录 → 显示用户信息
 			await dialogService.info(
-				localize('personalInfoTitle', "Personal"),
-				localize('personalInfoMessage', "Signed in as {0}", account.accountName)
+				localize('personalInfoTitle', "个人中心"),
+				localize('personalInfoMessage', "当前登录：{0}（工号 {1}{2}）",
+					user.login_name, user.staff_id,
+					user.team ? '，团队 ' + user.team : '')
 			);
 		} else {
-			await defaultAccountService.signIn();
+			// 未登录 → 确认后发起 TOF 登录
+			const { confirmed } = await dialogService.confirm({
+				type: Severity.Info,
+				message: localize('tofLoginConfirmTitle', "OA 登录"),
+				detail: localize('tofLoginConfirmDetail', "点击「登录」后将打开系统浏览器，请在浏览器中完成 iOA 登录。\n登录成功后浏览器会自动跳回客户端。"),
+				primaryButton: localize({ key: 'tofLoginButton', comment: ['&& denotes a mnemonic'] }, "&&登录"),
+				cancelButton: localize('cancel', "取消")
+			});
+			if (!confirmed) {
+				return;
+			}
+
+			// 显示进度提示
+			const progress = notificationService.prompt(
+				Severity.Info,
+				localize('tofLoginInProgress', "正在打开浏览器进行 OA 登录…"),
+				[],
+				{ sticky: true }
+			);
+
+			try {
+				const user = await tofAuthService.login();
+				progress.close();
+				notificationService.info(`登录成功：${user.login_name}（工号 ${user.staff_id}）`);
+			} catch (e) {
+				progress.close();
+				const msg = (e as Error).message;
+				notificationService.error(`登录失败：${msg}`);
+			}
 		}
 	}
 });

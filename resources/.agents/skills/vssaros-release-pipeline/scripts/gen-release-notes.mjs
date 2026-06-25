@@ -116,8 +116,8 @@ for (const c of commits) {
 const setupTargets = [
 	{
 		platform: 'win32-x64-user',
-		label: 'VsSarosisUserSetup.exe（用户级，无需管理员）',
-		path: path.join(cwd, '.build', 'win32-x64', 'user-setup', 'VsSarosisUserSetup.exe')
+		label: 'VsSarosUserSetup.exe（用户级，无需管理员）',
+		path: path.join(cwd, '.build', 'win32-x64', 'user-setup', 'VsSarosUserSetup.exe')
 	}
 ];
 
@@ -165,7 +165,7 @@ md += `## 🔄 更新方式\n\n`;
 md += `- **已安装用户**：客户端会在 1 小时内自动检测到新版本并后台静默下载，重启即应用更新\n`;
 md += `- **新用户**：直接从本 Release 页面下载安装包\n`;
 md += `  - 系统级（需管理员）：\`VsSarosisSetup.exe\`\n`;
-md += `  - 用户级（普通权限）：\`VsSarosisUserSetup.exe\`\n\n`;
+md += `  - 用户级（普通权限）：\`VsSarosUserSetup.exe\`\n\n`;
 
 // 末尾的元数据行（热更新 Worker 解析必需）
 md += `---\n\n`;

@@ -1,13 +1,18 @@
 #!/bin/sh
 
 # VsSarosis pre-commit hook
-# 每次提交前自动更新 package.json 版本号为 {major}.{minor}.{commitCount}
+# 每次提交前自动更新版本号文件（package.json + product.json）
+# 版本号格式: {major}.{a}.{b}，a=floor(commitCount/65536), b=commitCount%65536
 
-echo "📦 自动更新 package.json 版本号..."
+echo "📦 自动更新版本号..."
 
+# 更新 package.json 版本号
 node build/saros/set-package-version.mjs
 
-# 将更新后的 package.json 加入暂存区
-git add package.json
+# 更新 product.json 版本号
+node build/saros/set-version.mjs
+
+# 将更新后的文件加入暂存区
+git add package.json product.json
 
 echo "✅ pre-commit hook 完成"

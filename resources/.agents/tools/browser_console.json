@@ -1,0 +1,23 @@
+{
+  "name": "browser_console",
+  "description": "Execute JavaScript in the browser console or view console output.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "execute",
+          "logs"
+        ],
+        "description": "Action: execute JS or view console logs"
+      },
+      "code": {
+        "type": "string",
+        "description": "JavaScript code to execute (for execute action)"
+      }
+    }
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

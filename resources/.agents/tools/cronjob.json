@@ -1,0 +1,39 @@
+{
+  "name": "cronjob",
+  "description": "Manage scheduled tasks: create, list, update, pause, resume, and remove cron jobs.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "list",
+          "update",
+          "pause",
+          "resume",
+          "remove",
+          "trigger"
+        ],
+        "description": "Action to perform"
+      },
+      "name": {
+        "type": "string",
+        "description": "Cron job name"
+      },
+      "schedule": {
+        "type": "string",
+        "description": "Cron schedule expression (e.g., \"0 9 * * *\")"
+      },
+      "task": {
+        "type": "string",
+        "description": "Task description for the scheduled job"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "cronjob",
+  "source": "hermes-bundled"
+}

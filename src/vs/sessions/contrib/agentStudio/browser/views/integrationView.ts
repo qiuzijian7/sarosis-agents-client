@@ -32,11 +32,26 @@ import { BUNDLED_MCP_PRESETS } from '../../common/bundled-tools/bundledMcpPreset
 import { KNOT_MCP_MARKET } from '../../common/bundled-tools/knotMcpMarket.js';
 import { McpServerEditorInput } from '../mcpServerEditorInput.js';
 import { McpDetailEditorInput } from '../mcpDetailEditorInput.js';
+import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
 import { SkillMarketEditorInput } from '../skillMarketEditorInput.js';
+import { MarketplaceEditorInput } from '../marketplaceEditorInput.js';
+import { IMarketplaceService, PackageKind } from '../../common/marketplace.js';
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type IntegrationTab = 'skill' | 'tools' | 'mcp';
+type IntegrationTab = 'skill' | 'tools' | 'mcp' | 'kb';
+
+interface KnowledgeBaseItem {
+	id: string;
+	name: string;
+	version: string;
+	description: string;
+	docCount: number;
+	path: string;
+}
 
 interface ToolDefinitionUI {
 	id: string;
@@ -142,6 +157,17 @@ export class IntegrationViewPane extends ViewPane {
 	private _mcpServerRefs: Map<string, IMcpServer> = new Map();
 	/** Server IDs the user manually turned OFF (persisted in storage) */
 	private _mcpDisabledIds: Set<string> = new Set();
+
+	// ── Knowledge Base state ──────────────────────────────────────
+	private kbItems: KnowledgeBaseItem[] = [];
+	private kbSearchQuery = '';
+	private kbSearchInput!: HTMLInputElement;
+
+	// ── Tools/MCP search state ────────────────────────────────────
+	private toolsSearchQuery = '';
+	private toolsSearchInput!: HTMLInputElement;
+	private mcpSearchQuery = '';
+	private mcpSearchInput!: HTMLInputElement;
 	private static readonly MCP_DISABLED_STORAGE_KEY = 'agentStudio.mcpDisabledServers';
 	/** Server definition IDs that are NOT MCP servers (e.g. model providers, built-in collections) */
 	private static readonly NON_MCP_SERVER_IDS = new Set(['knot-agui', 'knot_agui']);
@@ -234,6 +260,10 @@ export class IntegrationViewPane extends ViewPane {
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@IFileService private readonly fileService: IFileService,
+		@IPathService private readonly pathService: IPathService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -300,12 +330,36 @@ export class IntegrationViewPane extends ViewPane {
 		super.renderBody(container);
 		container.classList.add('integration-view');
 
-		// Tab bar
+		// Global action bar — unified upload/download/check-updates for all resource kinds
+		// NOTE: Placed ABOVE tab bar to match mockup layout (⬆ 🛒 🔄 on top)
+		const globalBar = $('div.integration-global-bar');
+		const uploadBtn = $('button.integration-global-btn');
+		uploadBtn.textContent = '\u2B06';
+		uploadBtn.title = '\u4E0A\u4F20\u5F53\u524D\u8D44\u6E90\u5230\u5546\u57CE'; // 上传当前资源到商城
+		uploadBtn.onclick = () => this._handleUpload(this.activeTab);
+		globalBar.appendChild(uploadBtn);
+
+		const marketBtn = $('button.integration-global-btn');
+		marketBtn.classList.add('primary');
+		marketBtn.textContent = '\u{1F6D2} \u5546\u57CE'; // 🛒 商城
+		marketBtn.title = '\u6D4F\u89C8\u5546\u57CE'; // 浏览商城
+		marketBtn.onclick = () => this._handleBrowseMarket(this.activeTab);
+		globalBar.appendChild(marketBtn);
+
+		const checkUpdateBtn = $('button.integration-global-btn');
+		checkUpdateBtn.textContent = '\u{1F504}';
+		checkUpdateBtn.title = '\u68C0\u67E5\u66F4\u65B0'; // 检查更新
+		checkUpdateBtn.onclick = () => this._handleCheckUpdates();
+		globalBar.appendChild(checkUpdateBtn);
+		container.appendChild(globalBar);
+
+		// Tab bar (below global actions)
 		this.tabBar = $('div.integration-tab-bar');
 		const tabDefs: { id: IntegrationTab; label: string; icon: string }[] = [
-			{ id: 'skill', label: 'Skill', icon: '\u{1F4A1}' },
-			{ id: 'tools', label: 'Tools', icon: '\u{1F527}' },
+			{ id: 'skill', label: '\u6280\u80FD', icon: '\u{1F4A1}' }, // 技能
+			{ id: 'tools', label: '\u5DE5\u5177', icon: '\u{1F527}' }, // 工具
 			{ id: 'mcp', label: 'MCP', icon: '\u{1F50C}' },
+			{ id: 'kb', label: '\u77E5\u8BC6\u5E93', icon: '\u{1F4DA}' }, // 知识库
 		];
 		for (const tab of tabDefs) {
 			const btn = $('button.integration-tab');
@@ -349,7 +403,7 @@ export class IntegrationViewPane extends ViewPane {
 		// Update tab button styles
 		const allTabs = this.tabBar.querySelectorAll('.integration-tab');
 		allTabs.forEach(b => b.classList.remove('active'));
-		const tabOrder: IntegrationTab[] = ['skill', 'tools', 'mcp'];
+		const tabOrder: IntegrationTab[] = ['skill', 'tools', 'mcp', 'kb'];
 		const idx = tabOrder.indexOf(tab);
 		if (idx >= 0) {
 			allTabs[idx].classList.add('active');
@@ -393,6 +447,16 @@ export class IntegrationViewPane extends ViewPane {
 				} else {
 					this._buildMcpDom();
 					this._renderMcpContent();
+				}
+				break;
+			case 'kb':
+				if (!this.tabsRendered.has('kb')) {
+					this._buildKbDom();
+					this.tabsRendered.add('kb');
+					void this._reloadKb();
+				} else {
+					this._buildKbDom();
+					this._renderKbList();
 				}
 				break;
 		}
@@ -613,24 +677,13 @@ export class IntegrationViewPane extends ViewPane {
 			info.appendChild(descEl);
 			item.appendChild(info);
 
-			if (skill.source === 'user') {
-				const uninstallBtn = $('button.skill-uninstall-btn');
-				uninstallBtn.textContent = '\u2715';
-				uninstallBtn.title = 'Uninstall this skill';
-				uninstallBtn.onclick = async (e) => {
-					e.stopPropagation();
-					const confirmed = await this.dialogService.confirm({
-						message: `Uninstall skill "${skill.name}"?`,
-						detail: 'This will remove the SKILL.md file from your user skills directory.',
-						primaryButton: 'Uninstall',
-					});
-					if (confirmed.confirmed) {
-						await this.skillInstallService.uninstallSkill(skill.id);
-						this._refreshSkills();
-					}
-				};
-				item.appendChild(uninstallBtn);
-			}
+			// Unified action buttons (hover-visible) — replaces old uninstall button
+			const skillActions = this._createActionButtons('skill', skill.id, skill.name, {
+				showUpload: skill.source === 'user',
+				showDelete: skill.source === 'user',
+			});
+			item.appendChild(skillActions);
+			this._attachHoverActions(item);
 
 			item.style.cursor = skill.resource ? 'pointer' : 'default';
 			item.onclick = (e) => {
@@ -1033,6 +1086,27 @@ export class IntegrationViewPane extends ViewPane {
 		}
 		container.appendChild(tabs);
 
+		// Search bar
+		const searchRow = $('div.skills-search-row');
+		this.toolsSearchInput = $('input.skills-search-input') as HTMLInputElement;
+		this.toolsSearchInput.type = 'text';
+		this.toolsSearchInput.placeholder = '\u{1F50D} \u641C\u7D22\u5DE5\u5177...'; // 🔍 搜索工具...
+		this.toolsSearchInput.oninput = () => {
+			this.toolsSearchQuery = this.toolsSearchInput.value.trim().toLowerCase();
+			this._renderToolsList();
+		};
+		searchRow.appendChild(this.toolsSearchInput);
+		const toolsClearBtn = $('button.skills-search-clear-btn');
+		toolsClearBtn.textContent = '\u2715';
+		toolsClearBtn.title = 'Clear search';
+		toolsClearBtn.onclick = () => {
+			this.toolsSearchInput.value = '';
+			this.toolsSearchQuery = '';
+			this._renderToolsList();
+		};
+		searchRow.appendChild(toolsClearBtn);
+		container.appendChild(searchRow);
+
 		// List
 		const listContainer = $('div.integration-tools-list');
 		listContainer.id = 'integration-tools-list';
@@ -1084,9 +1158,16 @@ export class IntegrationViewPane extends ViewPane {
 		if (!listEl) { return; }
 		clearNode(listEl);
 
-		const filtered = this.toolsActiveTab === 'all'
+		let filtered = this.toolsActiveTab === 'all'
 			? this.tools
 			: this.tools.filter(t => t.category === this.toolsActiveTab);
+
+		if (this.toolsSearchQuery) {
+			filtered = filtered.filter(t =>
+				t.name.toLowerCase().includes(this.toolsSearchQuery) ||
+				t.description.toLowerCase().includes(this.toolsSearchQuery)
+			);
+		}
 
 		if (filtered.length === 0) {
 			const empty = $('div.tools-empty');
@@ -1152,6 +1233,13 @@ export class IntegrationViewPane extends ViewPane {
 			}
 			item.appendChild(info);
 
+			// Action buttons (hover-visible) — only for custom tools
+			if (tool.category === 'custom') {
+				const actions = this._createActionButtons('skill', tool.id, tool.name, { showUpload: true, showDelete: true });
+				item.appendChild(actions);
+				this._attachHoverActions(item);
+			}
+
 			listEl.appendChild(item);
 		}
 	}
@@ -1179,7 +1267,41 @@ export class IntegrationViewPane extends ViewPane {
 			this.editorService.openEditor(input, { pinned: true });
 		};
 		header.appendChild(addBtn);
+
+		// Codebase Memory button — opens install/upgrade/status panel
+		const cbmBtn = $('button.mcp-add-btn');
+		cbmBtn.textContent = '🧠 Codebase Memory';
+		cbmBtn.title = 'Open Codebase Memory MCP panel (install / upgrade / status)';
+		cbmBtn.style.background = 'rgba(197,134,192,0.15)';
+		cbmBtn.style.borderColor = 'rgba(197,134,192,0.3)';
+		cbmBtn.onclick = () => {
+			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
+			this.editorService.openEditor(input, { pinned: true });
+		};
+		header.appendChild(cbmBtn);
+
 		container.appendChild(header);
+
+		// Search bar
+		const searchRow = $('div.skills-search-row');
+		this.mcpSearchInput = $('input.skills-search-input') as HTMLInputElement;
+		this.mcpSearchInput.type = 'text';
+		this.mcpSearchInput.placeholder = '\u{1F50D} \u641C\u7D22 MCP...'; // 🔍 搜索 MCP...
+		this.mcpSearchInput.oninput = () => {
+			this.mcpSearchQuery = this.mcpSearchInput.value.trim().toLowerCase();
+			this._renderMcpContent();
+		};
+		searchRow.appendChild(this.mcpSearchInput);
+		const mcpClearBtn = $('button.skills-search-clear-btn');
+		mcpClearBtn.textContent = '\u2715';
+		mcpClearBtn.title = 'Clear search';
+		mcpClearBtn.onclick = () => {
+			this.mcpSearchInput.value = '';
+			this.mcpSearchQuery = '';
+			this._renderMcpContent();
+		};
+		searchRow.appendChild(mcpClearBtn);
+		container.appendChild(searchRow);
 
 		// Content list — shows all MCP tools directly
 		const listContainer = $('div.integration-mcp-list');
@@ -1489,9 +1611,22 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		} finally {
 			this._startingMcpIds.delete(serverId);
 			console.log(`[MCP-AutoStart] "${serverId}" finally: connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()}`);
-			// Refresh to show final state
+			// Update server status in-place to avoid _reloadMcp → auto-start infinite loop.
+			// Calling _reloadMcp() here would re-trigger step 6 (auto-start) for this server,
+			// causing an endless cycle: _reloadMcp → _autoStartServer → finally → _reloadMcp → ...
+			const connState = ref.connectionState.get();
+			const isRunning = connState.state === McpConnectionState.Kind.Running;
+			const srv = this.mcpServers.find(s => s.id === serverId);
+			if (srv) {
+				srv.status = isRunning ? 'connected' as const
+					: connState.state === McpConnectionState.Kind.Error ? 'error' as const
+					: 'disconnected' as const;
+				if (isRunning) {
+					srv.toolCount = ref.tools.get().length;
+				}
+			}
 			if (this.tabsRendered.has('mcp')) {
-				void this._reloadMcp();
+				this._renderMcpContent();
 			}
 		}
 	}
@@ -1585,7 +1720,16 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			}
 		}
 
-		for (const [, group] of byServer) {
+		// Apply search filter
+		let serverEntries = [...byServer.entries()];
+		if (this.mcpSearchQuery) {
+			serverEntries = serverEntries.filter(([, group]) =>
+				group.server.name.toLowerCase().includes(this.mcpSearchQuery) ||
+				group.server.id.toLowerCase().includes(this.mcpSearchQuery)
+			);
+		}
+
+		for (const [, group] of serverEntries) {
 			const groupHeader = $('div.mcp-group-header');
 			groupHeader.style.display = 'flex';
 			groupHeader.style.alignItems = 'center';
@@ -1597,8 +1741,19 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			groupHeader.style.borderBottom = '1px solid var(--vscode-panel-border)';
 			groupHeader.style.cursor = 'pointer';
 
-			// Click to open McpDetailEditorPane for this specific MCP server
+			// Click to open detail EditorPane for this specific MCP server
 			groupHeader.onclick = () => {
+				// Special case: codebase-memory-mcp opens its own custom EditorPane
+				// (with install/upgrade/status UI), not the generic McpDetailEditorPane.
+				const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
+				const sid = sanitize(group.server.id);
+				const sname = sanitize(group.server.name);
+				if (sid.includes('codebase_memory_mcp') || sname.includes('codebase_memory_mcp') ||
+					group.server.name === 'codebase-memory-mcp') {
+					const input = CodebaseMemoryDetailEditorInput.getOrCreate();
+					this.editorService.openEditor(input, { pinned: true });
+					return;
+				}
 				const marketId = IntegrationViewPane._resolveMcpMarketId(group.server.id, group.server.name);
 				if (marketId) {
 					const input = McpDetailEditorInput.getInstance(marketId);
@@ -1703,7 +1858,379 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 				groupHeader.appendChild(countEl);
 			}
 
+			// Action buttons (hover-visible)
+			const mcpActions = this._createActionButtons('mcp', group.server.id, group.server.name, { showUpload: true, showDelete: true });
+			groupHeader.appendChild(mcpActions);
+			this._attachHoverActions(groupHeader);
+
 			listEl.appendChild(groupHeader);
+		}
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	//  KNOWLEDGE BASE TAB
+	// ══════════════════════════════════════════════════════════════════════════
+
+	private _buildKbDom(): void {
+		const container = this.contentContainer;
+		clearNode(container);
+
+		// Header
+		const header = $('div.skills-header');
+		const title = $('h3.skills-title');
+		title.classList.add('integration-section-title');
+		title.textContent = '\u{1F4DA} \u77E5\u8BC6\u5E93'; // 📚 知识库
+		header.appendChild(title);
+
+		const countBadge = $('span.skills-count');
+		countBadge.textContent = `${this.kbItems.length} bases`;
+		header.appendChild(countBadge);
+		container.appendChild(header);
+
+		// Search bar
+		const searchRow = $('div.skills-search-row');
+		this.kbSearchInput = $('input.skills-search-input') as HTMLInputElement;
+		this.kbSearchInput.type = 'text';
+		this.kbSearchInput.placeholder = '\u{1F50D} \u641C\u7D22\u77E5\u8BC6\u5E93...'; // 🔍 搜索知识库...
+		this.kbSearchInput.oninput = () => {
+			this.kbSearchQuery = this.kbSearchInput.value.trim().toLowerCase();
+			this._renderKbList();
+		};
+		searchRow.appendChild(this.kbSearchInput);
+		const clearBtn = $('button.skills-search-clear-btn');
+		clearBtn.textContent = '\u2715';
+		clearBtn.title = 'Clear search';
+		clearBtn.onclick = () => {
+			this.kbSearchInput.value = '';
+			this.kbSearchQuery = '';
+			this._renderKbList();
+		};
+		searchRow.appendChild(clearBtn);
+		container.appendChild(searchRow);
+
+		// List
+		const listContainer = $('div.integration-skills-list');
+		listContainer.id = 'integration-kb-list';
+		container.appendChild(listContainer);
+	}
+
+	private async _reloadKb(): Promise<void> {
+		const userHome = await this.pathService.userHome();
+		const kbDirUri = URI.joinPath(userHome, '.saros', 'knowledge-base');
+		const items: KnowledgeBaseItem[] = [];
+		try {
+			const stat = await this.fileService.resolve(kbDirUri);
+			if (!stat.children) { return; }
+			for (const entry of stat.children) {
+				if (!entry.isDirectory) { continue; }
+				const entryPath = entry.resource.fsPath;
+				// Read index.json for metadata
+				const indexUri = URI.joinPath(entry.resource, 'index.json');
+				let version = '1.0.0';
+				let name = entry.name;
+				let description = '';
+				let docCount = 0;
+				try {
+					const content = await this.fileService.readFile(indexUri);
+					const indexData = JSON.parse(content.value.toString());
+					version = indexData.version ?? '1.0.0';
+					name = indexData.name ?? entry.name;
+					description = indexData.description ?? '';
+				} catch { /* use defaults */ }
+				// Count docs
+				try {
+					const docsUri = URI.joinPath(entry.resource, 'docs');
+					const docsStat = await this.fileService.resolve(docsUri);
+					if (docsStat.children) {
+						docCount = docsStat.children.filter(c => c.name.endsWith('.md') || c.name.endsWith('.txt')).length;
+					}
+				} catch { /* no docs dir */ }
+				items.push({ id: entry.name, name, version, description, docCount, path: entryPath });
+			}
+		} catch {
+			// Directory doesn't exist — empty list
+		}
+		this.kbItems = items;
+		this._renderKbList();
+	}
+
+	private _renderKbList(): void {
+		const listEl = this.contentContainer.querySelector('#integration-kb-list') as HTMLElement;
+		if (!listEl) { return; }
+		clearNode(listEl);
+
+		let filtered = this.kbItems;
+		if (this.kbSearchQuery) {
+			filtered = filtered.filter(kb =>
+				kb.name.toLowerCase().includes(this.kbSearchQuery) ||
+				kb.description.toLowerCase().includes(this.kbSearchQuery) ||
+				kb.id.toLowerCase().includes(this.kbSearchQuery)
+			);
+		}
+
+		if (filtered.length === 0) {
+			const empty = $('div.skills-empty');
+			const p = $('p');
+			p.textContent = this.kbSearchQuery
+				? `\u6CA1\u6709\u5339\u914D\u7684\u77E5\u8BC6\u5E93"${this.kbSearchQuery}"\u3002` // 没有匹配的知识库
+				: '\u672A\u5B89\u88C5\u77E5\u8BC6\u5E93\u3002\u70B9\u51FB \u{1F6D2} \u5546\u57CE \u4E0B\u8F7D\u3002'; // 未安装知识库。点击 🛒 商城 下载。
+			empty.appendChild(p);
+			listEl.appendChild(empty);
+			return;
+		}
+
+		for (const kb of filtered) {
+			const item = $('div.skill-item');
+			item.classList.add('skill-enabled');
+
+			const iconEl = $('span.skill-icon');
+			iconEl.textContent = '\u{1F4DA}';
+			item.appendChild(iconEl);
+
+			const info = $('div.skill-info');
+			const nameRow = $('div.skill-name-row');
+			const nameEl = $('span.skill-name');
+			nameEl.textContent = kb.name;
+			nameRow.appendChild(nameEl);
+
+			const verBadge = $('span.skill-category-badge');
+			verBadge.textContent = `v${kb.version}`;
+			verBadge.style.color = 'var(--vscode-textLink-foreground)';
+			nameRow.appendChild(verBadge);
+
+			const catBadge = $('span.skill-category-badge');
+			catBadge.textContent = `${kb.docCount} docs`;
+			nameRow.appendChild(catBadge);
+			info.appendChild(nameRow);
+
+			const descEl = $('div.skill-desc');
+			descEl.textContent = kb.description || kb.path;
+			info.appendChild(descEl);
+			item.appendChild(info);
+
+			// Action buttons
+			const actions = this._createActionButtons('knowledge', kb.id, kb.name, { showUpload: true, showDelete: true });
+			item.appendChild(actions);
+
+			listEl.appendChild(item);
+		}
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	//  UNIFIED ACTION BUTTONS & HANDLERS
+	// ══════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * Create a hover-visible action button group for a resource card.
+	 * Returns a div with inline-styled buttons that appear on card hover.
+	 */
+	private _createActionButtons(
+		kind: PackageKind,
+		id: string,
+		name: string,
+		opts: { showUpgrade?: boolean; showDownload?: boolean; showUpload?: boolean; showDelete?: boolean }
+	): HTMLElement {
+		const container = $('div.item-actions');
+
+		const makeBtn = (icon: string, title: string, onClick: () => void, extraClass?: string) => {
+			const btn = $('button.act-btn');
+			if (extraClass) { btn.classList.add(extraClass); }
+			btn.textContent = icon;
+			btn.title = title;
+			btn.onclick = (e) => { e.stopPropagation(); onClick(); };
+			return btn;
+		};
+
+		if (opts.showUpgrade) {
+			container.appendChild(makeBtn('\u2B06', '\u5347\u7EA7\u5230\u65B0\u7248\u672C', // 升级到新版本
+				() => this._handleUpgrade(kind, id), 'upgrade'));
+		}
+		if (opts.showDownload) {
+			container.appendChild(makeBtn('\u2B07', '\u4ECE\u5546\u57CE\u4E0B\u8F7D', // 从商城下载
+				() => this._handleDownload(kind, id), 'download'));
+		}
+		if (opts.showUpload) {
+			container.appendChild(makeBtn('\u{1F4E4}', '\u4E0A\u4F20\u5230\u5546\u57CE', // 上传到商城
+				() => this._handleUpload(this.activeTab, id), 'upload'));
+		}
+		if (opts.showDelete) {
+			container.appendChild(makeBtn('\u2715', `\u5220\u9664"${name}"`, // 删除
+				() => this._handleDelete(this.activeTab, id, name), 'delete'));
+		}
+		return container;
+	}
+
+	/** Attach mouseenter/leave to show/hide action buttons on a card */
+	private _attachHoverActions(item: HTMLElement): void {
+		// CSS handles hover via .skill-item:hover .item-actions — no JS needed
+	}
+
+	// ── Upload handler ─────────────────────────────────────────────
+
+	private async _handleUpload(tab: IntegrationTab, id?: string): Promise<void> {
+		const kind = this._tabToKind(tab);
+		if (!kind || !id) {
+			this.notificationService.info('Please select a specific resource to upload.');
+			return;
+		}
+		if (!this.marketplaceService.isLoggedIn()) {
+			this.notificationService.info('Please log in to the marketplace first (Settings > Sarosis > Marketplace).');
+			return;
+		}
+		try {
+			this.notificationService.info(`Uploading ${id} to marketplace...`);
+			const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });
+			this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
+		} catch (err) {
+			this.notificationService.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Download handler ───────────────────────────────────────────
+
+	private async _handleDownload(kind: PackageKind, storeId: string): Promise<void> {
+		if (!this.marketplaceService.isLoggedIn()) {
+			this.notificationService.info('Please log in to the marketplace first.');
+			return;
+		}
+		try {
+			// Get latest version from marketplace
+			const pkg = await this.marketplaceService.getPackage(storeId);
+			if (!pkg || !pkg.latestVersion) {
+				this.notificationService.warn(`Package "${storeId}" not found on marketplace.`);
+				return;
+			}
+			this.notificationService.info(`Downloading ${storeId} v${pkg.latestVersion}...`);
+			await this.marketplaceService.download(storeId, pkg.latestVersion, kind);
+			this.notificationService.info(`\u2705 Installed ${storeId} v${pkg.latestVersion}.`);
+			// Refresh current tab
+			this._refreshActiveTab();
+		} catch (err) {
+			this.notificationService.error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Browse marketplace handler ─────────────────────────────────
+
+	private _handleBrowseMarket(tab: IntegrationTab): void {
+		// Open the marketplace page in the editor area (as a tab),
+		// alongside other editor tabs like SKILL.md, agent.json, etc.
+		const input = MarketplaceEditorInput.getInstance();
+		this.editorService.openEditor(input, { pinned: true });
+	}
+
+	// ── Check updates handler ──────────────────────────────────────
+
+	private async _handleCheckUpdates(): Promise<void> {
+		if (!this.marketplaceService.isLoggedIn()) {
+			this.notificationService.info('Please log in to the marketplace first.');
+			return;
+		}
+		try {
+			// Read installed-packages.json directly
+			const userHome = await this.pathService.userHome();
+			const installedUri = URI.joinPath(userHome, '.saros', 'installed-packages.json');
+			let installed: { kind: PackageKind; storeId: string; version: string }[] = [];
+			try {
+				const content = await this.fileService.readFile(installedUri);
+				const data = JSON.parse(content.value.toString());
+				installed = Array.isArray(data) ? data : (data.items ?? []);
+			} catch {
+				this.notificationService.info('No installed packages found to check.');
+				return;
+			}
+			if (installed.length === 0) {
+				this.notificationService.info('No installed packages found to check.');
+				return;
+			}
+			const updates = await this.marketplaceService.checkUpgrades(
+				installed.map(i => ({ kind: i.kind, storeId: i.storeId, version: i.version }))
+			);
+			if (updates.length === 0) {
+				this.notificationService.info('\u2705 All resources are up to date.');
+			} else {
+				const names = updates.map(u => `${u.storeId}: ${u.current} \u2192 ${u.latest}`).join('\n');
+				this.notificationService.info(`\u{1F504} ${updates.length} update(s) available:\n${names}`);
+			}
+		} catch (err) {
+			this.notificationService.error(`Check updates failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Upgrade handler ────────────────────────────────────────────
+
+	private async _handleUpgrade(kind: PackageKind, storeId: string): Promise<void> {
+		if (!this.marketplaceService.isLoggedIn()) {
+			this.notificationService.info('Please log in to the marketplace first.');
+			return;
+		}
+		try {
+			const pkg = await this.marketplaceService.getPackage(storeId);
+			if (!pkg || !pkg.latestVersion) {
+				this.notificationService.warn(`No marketplace package found for "${storeId}".`);
+				return;
+			}
+			this.notificationService.info(`Upgrading ${storeId} to v${pkg.latestVersion}...`);
+			await this.marketplaceService.download(storeId, pkg.latestVersion, kind);
+			this.notificationService.info(`\u2705 Upgraded ${storeId} to v${pkg.latestVersion}.`);
+			this._refreshActiveTab();
+		} catch (err) {
+			this.notificationService.error(`Upgrade failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Delete handler ─────────────────────────────────────────────
+
+	private async _handleDelete(tab: IntegrationTab, id: string, name: string): Promise<void> {
+		const confirmed = await this.dialogService.confirm({
+			message: `Delete "${name}"?`,
+			detail: `This will remove the local files for "${id}". Marketplace resources are not affected.`,
+			primaryButton: 'Delete',
+			type: 'warning',
+		});
+		if (!confirmed.confirmed) { return; }
+
+		try {
+			switch (tab) {
+				case 'skill':
+					await this.skillInstallService.uninstallSkill(id);
+					this._refreshSkills();
+					break;
+				case 'kb': {
+					const userHome = await this.pathService.userHome();
+					const kbUri = URI.joinPath(userHome, '.saros', 'knowledge-base', id);
+					await this.fileService.del(kbUri, { recursive: true });
+					await this._reloadKb();
+					break;
+				}
+				case 'tools':
+				case 'mcp':
+					this.notificationService.info(`Cannot delete built-in ${tab}. Disable it via the toggle instead.`);
+					return;
+			}
+			this.notificationService.info(`\u2705 Deleted "${name}".`);
+		} catch (err) {
+			this.notificationService.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Helpers ────────────────────────────────────────────────────
+
+	private _tabToKind(tab: IntegrationTab): PackageKind | undefined {
+		switch (tab) {
+			case 'skill': return 'skill';
+			case 'tools': return 'skill'; // tools are packaged as skills for marketplace purposes
+			case 'mcp': return 'mcp';
+			case 'kb': return 'knowledge';
+		}
+	}
+
+	private _refreshActiveTab(): void {
+		switch (this.activeTab) {
+			case 'skill': this._refreshSkills(); break;
+			case 'tools': void this._reloadTools(); break;
+			case 'mcp': void this._reloadMcp(); break;
+			case 'kb': void this._reloadKb(); break;
 		}
 	}
 }

@@ -1,0 +1,11 @@
+{
+  "id": "sqlite",
+  "name": "SQLite",
+  "description": "SQLite database access for queries and schema inspection",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-sqlite"
+  ]
+}

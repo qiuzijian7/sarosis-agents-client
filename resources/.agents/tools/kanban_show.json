@@ -1,0 +1,10 @@
+{
+  "name": "kanban_show",
+  "description": "Show the current kanban board with all tasks and their statuses.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {}
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

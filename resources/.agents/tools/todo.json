@@ -1,0 +1,42 @@
+{
+  "name": "todo",
+  "description": "Manage a task list for tracking multi-step work. Add, list, update, and remove tasks.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "add",
+          "list",
+          "update",
+          "remove",
+          "clear"
+        ],
+        "description": "Action to perform"
+      },
+      "id": {
+        "type": "string",
+        "description": "Task ID (for update/remove)"
+      },
+      "text": {
+        "type": "string",
+        "description": "Task description (for add)"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "in_progress",
+          "completed"
+        ],
+        "description": "Task status (for update)"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "todo",
+  "source": "hermes-bundled"
+}

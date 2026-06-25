@@ -1,0 +1,23 @@
+{
+  "name": "memory_search",
+  "description": "Search memories by keyword or tag. Returns matching entries sorted by recency.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "description": "Search query. Supports: tag:foo, type:short, type:long",
+        "type": "string"
+      },
+      "limit": {
+        "default": 10,
+        "description": "Max results (default: 10)",
+        "type": "number"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "category": "memory",
+  "source": "hermes-bundled"
+}

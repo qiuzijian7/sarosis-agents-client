@@ -1,0 +1,10 @@
+{
+  "id": "time",
+  "name": "Time",
+  "description": "Time and timezone conversion utilities",
+  "transportType": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-time"
+  ]
+}

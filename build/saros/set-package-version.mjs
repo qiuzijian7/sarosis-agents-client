@@ -2,7 +2,10 @@
 /**
  * set-package-version.mjs — 自动更新 package.json 版本号
  *
- * 版本号格式: {major}.{minor}.{commitCount}
+ * 版本号格式: {major}.{a}.{b}
+ *   a = floor(commitCount / 65536)  — 进位段，每 65536 次提交 +1
+ *   b = commitCount % 65536          — 余数段，范围 0-65535
+ * 这样 commitCount=156950 → 2.2.25878（每段均 < 65536，Windows PE 合规）
  * 与 build/saros/set-version.mjs 保持一致的版本号规则
  *
  * 用法:
@@ -43,17 +46,20 @@ function main() {
 		process.exit(1);
 	}
 
-	// 2. 解析当前版本，获取 major.minor
-	const currentVersion = pkg.version || '2.1.0';
+	// 2. 解析当前版本，获取 major（固定为 2）
+	const currentVersion = pkg.version || '2.0.0';
 	const versionParts = currentVersion.split('.');
 	const major = versionParts[0] || '2';
-	const minor = versionParts[1] || '1';
 
 	// 3. 获取 commit count
 	const commitCount = getCommitCount(ROOT);
 
-	// 4. 设置新版本号
-	const newVersion = `${major}.${minor}.${commitCount}`;
+	// 4. 设置新版本号: {major}.{a}.{b}
+	//    a = floor(commitCount / 65536), b = commitCount % 65536
+	//    每段均 < 65536，满足 Windows PE 版本资源 16 位限制
+	const a = Math.floor(commitCount / 65536);
+	const b = commitCount % 65536;
+	const newVersion = `${major}.${a}.${b}`;
 
 	// 如果版本号没有变化，跳过
 	if (pkg.version === newVersion) {

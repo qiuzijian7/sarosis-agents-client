@@ -1,0 +1,11 @@
+{
+  "id": "memory",
+  "name": "Memory",
+  "description": "Knowledge graph-based persistent memory system",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-memory"
+  ]
+}

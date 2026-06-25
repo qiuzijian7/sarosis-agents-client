@@ -1,0 +1,14 @@
+{
+  "id": "brave-search",
+  "name": "Brave Search",
+  "description": "Web search using Brave Search API",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-brave-search"
+  ],
+  "envKeys": [
+    "BRAVE_API_KEY"
+  ]
+}

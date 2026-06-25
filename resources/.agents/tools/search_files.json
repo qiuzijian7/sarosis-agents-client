@@ -1,0 +1,35 @@
+{
+  "name": "search_files",
+  "description": "Search for a pattern in files. Supports regex and file glob patterns. Returns matching file paths and line content.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Directory to search in"
+      },
+      "pattern": {
+        "type": "string",
+        "description": "Search pattern (literal or regex)"
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Glob pattern to filter files (e.g., \"*.py\")"
+      },
+      "ignore_case": {
+        "type": "boolean",
+        "description": "Case-insensitive search (default: true)"
+      },
+      "max_results": {
+        "type": "number",
+        "description": "Maximum number of results (default: 50)"
+      }
+    },
+    "required": [
+      "path",
+      "pattern"
+    ]
+  },
+  "category": "file",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "kanban_unblock",
+  "description": "Unblock a kanban task that was previously blocked.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to unblock"
+      }
+    },
+    "required": [
+      "task_id"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

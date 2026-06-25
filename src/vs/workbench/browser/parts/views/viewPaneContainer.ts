@@ -623,16 +623,12 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 	}
 
 	layout(dimension: Dimension): void {
-		console.log(`[Sarosis-Debug] ViewPaneContainer.layout() called: id=${this.viewContainer.id}, width=${dimension.width}, height=${dimension.height}`);
 		if (this.paneview) {
 			if (this.paneview.orientation !== this.orientation) {
 				this.paneview.flipOrientation(dimension.height, dimension.width);
 			}
 
-			console.log(`[Sarosis-Debug] Calling paneview.layout(height=${dimension.height}, width=${dimension.width})`);
 			this.paneview.layout(dimension.height, dimension.width);
-		} else {
-			console.log('[Sarosis-Debug] paneview is undefined!');
 		}
 
 		this.dimension = dimension;
@@ -657,7 +653,6 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 
 	addPanes(panes: { pane: ViewPane; size: number; index?: number; disposable: IDisposable }[]): void {
 		const wasMerged = this.isViewMergedWithContainer();
-		console.warn(`[Sarosis-Debug] addPanes: container=${this.viewContainer.id}, paneCount=${panes.length}, wasMerged=${wasMerged}, areExtensionsReady=${this.areExtensionsReady}`);
 
 		for (const { pane, size, index, disposable } of panes) {
 			this.addPane(pane, size, disposable, index);
@@ -665,7 +660,6 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 
 		this.updateViewHeaders();
 		const isMergedNow = this.isViewMergedWithContainer();
-		console.warn(`[Sarosis-Debug] addPanes after updateViewHeaders: container=${this.viewContainer.id}, isMergedNow=${isMergedNow}, paneItems[0].expanded=${this.paneItems[0]?.pane.isExpanded()}, paneItems[0].headerVisible=${this.paneItems[0]?.pane.headerVisible}`);
 		if (isMergedNow !== wasMerged) {
 			this.updateTitleArea();
 		}
@@ -777,7 +771,6 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 		const panesToAdd: { pane: ViewPane; size: number; index: number; disposable: IDisposable }[] = [];
 
 		for (const { viewDescriptor, collapsed, index, size } of added) {
-			console.warn(`[Sarosis-Debug] onDidAddViewDescriptors: container=${this.viewContainer.id}, view=${viewDescriptor.id}, collapsed=${collapsed}, size=${size}, index=${index}`);
 			const pane = this.createView(viewDescriptor,
 				{
 					id: viewDescriptor.id,
@@ -789,9 +782,7 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 
 			try {
 				pane.render();
-				console.warn(`[Sarosis-Debug] pane.render() succeeded: view=${viewDescriptor.id}, isExpanded=${pane.isExpanded()}, headerVisible=${pane.headerVisible}, draggableElement=${!!pane.draggableElement}`);
 			} catch (error) {
-				console.warn(`[Sarosis-Debug] pane.render() FAILED: view=${viewDescriptor.id}`, error);
 				this.logService.error(`Fail to render view ${viewDescriptor.id}`, error);
 				continue;
 			}

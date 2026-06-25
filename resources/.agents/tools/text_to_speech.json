@@ -1,0 +1,38 @@
+{
+  "name": "text_to_speech",
+  "description": "Convert text to speech audio. Supports Edge TTS (free), ElevenLabs, OpenAI, MiniMax, Mistral, and xAI providers.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Text to convert to speech"
+      },
+      "voice": {
+        "type": "string",
+        "description": "Voice name or ID (provider-dependent)"
+      },
+      "provider": {
+        "type": "string",
+        "enum": [
+          "edge",
+          "elevenlabs",
+          "openai",
+          "minimax",
+          "mistral",
+          "xai"
+        ],
+        "description": "TTS provider (default: edge)"
+      },
+      "output_path": {
+        "type": "string",
+        "description": "File path to save audio (optional)"
+      }
+    },
+    "required": [
+      "text"
+    ]
+  },
+  "category": "tts",
+  "source": "hermes-bundled"
+}

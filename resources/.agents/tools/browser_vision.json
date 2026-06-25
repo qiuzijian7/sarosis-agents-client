@@ -1,0 +1,15 @@
+{
+  "name": "browser_vision",
+  "description": "Take a screenshot of the current page and analyze it with a vision model.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "What to look for or analyze in the screenshot"
+      }
+    }
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

@@ -35,7 +35,7 @@
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
-import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
+import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IDisposable } from '../../../../../../base/common/lifecycle.js';
 import { IMemoryProvider, IMemoryContext, IMemoryEntry } from '../../../common/providers.js';
@@ -58,7 +58,7 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 
 	constructor(
 		private readonly fileService: IFileService,
-		private readonly environmentService: IEnvironmentService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		private readonly logService: ILogService,
 	) { }
 
@@ -204,12 +204,12 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 
 	private _memFile(agentId: string, fileName: string): URI {
 		const safe = agentId.replace(/[^A-Za-z0-9_.-]/g, '_');
-		return URI.joinPath(this.environmentService.userRoamingDataHome, '.saros', 'memory', safe, fileName);
+		return URI.joinPath(this.environmentService.userHome, '.saros', 'memory', safe, fileName);
 	}
 
 	private _lockKey(agentId: string): string {
 		const safe = agentId.replace(/[^A-Za-z0-9_.-]/g, '_');
-		return URI.joinPath(this.environmentService.userRoamingDataHome, '.saros', 'memory', safe, '.lock').toString();
+		return URI.joinPath(this.environmentService.userHome, '.saros', 'memory', safe, '.lock').toString();
 	}
 
 	/** 使指定 agentId 的所有会话缓存失效 */

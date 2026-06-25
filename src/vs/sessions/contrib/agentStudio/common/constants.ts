@@ -110,6 +110,13 @@ export const AGENT_STUDIO_WIKI_MAX_PROPOSAL_SETTING = 'agentStudio.wiki.maxPropo
 export const AGENT_STUDIO_WORKTREE_VIEW_ID = 'agentStudio.worktreeView';
 export const AGENT_STUDIO_GRAPH_VIEW_ID = 'agentStudio.graphView';
 
+// --- TOF (Taihu OA Framework) 登录配置 ---
+// 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)
+export const TOF_PAASID_SETTING = 'sessions.agentStudio.tof.paasid';
+export const TOF_SITE_BASE_URL_SETTING = 'sessions.agentStudio.tof.siteBaseUrl';
+export const TOF_GATEWAY_BASE_URL_SETTING = 'sessions.agentStudio.tof.gatewayBaseUrl';
+export const TOF_LOGIN_TIMEOUT_SETTING = 'sessions.agentStudio.tof.loginTimeout';
+
 // Channel keys — ALL channels supported by OpenClaw
 // Sources: ChannelsConfig explicit properties (9) + UI renderChannel switch (8)
 //          + official-external-channel-catalog.json + extensions/ directories

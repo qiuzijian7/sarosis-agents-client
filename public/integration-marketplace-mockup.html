@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vsSarosis 集成 + 商城 · Mockup</title>
+<style>
+:root{
+  --bg:#1e1e1e;--bg-2:#252526;--bg-3:#2d2d2d;--bg-hover:#2a2d2e;--bg-editor:#1e1e1e;
+  --border:#3c3c3c;--border-2:#464647;
+  --text:#cccccc;--text-2:#9d9d9d;--text-3:#6e6e6e;
+  --accent:#007acc;--accent-hover:#1f8ad2;--accent-bg:rgba(14,99,156,.3);
+  --success:#4ec9b0;--success-bg:rgba(78,201,176,.15);
+  --warning:#dcdcaa;--warning-bg:rgba(220,220,170,.15);
+  --error:#f48771;--error-bg:rgba(244,135,113,.15);
+  --purple:#c586c0;--orange:#ce9178;--blue:#569cd6;--green:#6a9955;
+  --tab-active:#1e1e1e;--tab-inactive:#2d2d2d;
+  --radius:4px;--radius-lg:6px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);font-size:13px;height:100vh;overflow:hidden}
+
+/* ===== IDE Layout ===== */
+.ide{display:flex;height:100vh;flex-direction:column}
+.titlebar{height:30px;background:var(--bg-2);display:flex;align-items:center;padding:0 12px;font-size:12px;color:var(--text-2);border-bottom:1px solid var(--border);gap:16px;flex-shrink:0}
+.titlebar .menu-item{cursor:pointer;padding:2px 6px;border-radius:3px}
+.titlebar .menu-item:hover{background:var(--bg-hover)}
+.main-area{display:flex;flex:1;overflow:hidden}
+
+/* Activity Bar */
+.activity-bar{width:48px;background:var(--bg-2);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px;flex-shrink:0}
+.act-icon{width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-3);cursor:pointer;position:relative;transition:.15s}
+.act-icon:hover{color:var(--text)}
+.act-icon.active{color:var(--text)}
+.act-icon.active::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--text)}
+
+/* ===== Integration Side Bar (保持不变) ===== */
+.side-bar{width:280px;background:var(--bg-2);border-right:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;overflow:hidden}
+.sb-header{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.sb-header .title{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-3);font-weight:600}
+.sb-header .global-actions{display:flex;gap:4px}
+.gbtn{padding:3px 8px;border:1px solid var(--border);background:var(--bg-3);color:var(--text-2);border-radius:var(--radius);cursor:pointer;font-size:11px;display:flex;align-items:center;gap:3px;transition:.15s}
+.gbtn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.gbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* Tab Bar */
+.tab-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg-2);flex-shrink:0}
+.tab{flex:1;padding:6px 4px;text-align:center;cursor:pointer;font-size:12px;color:var(--text-2);border-bottom:2px solid transparent;transition:.15s;display:flex;align-items:center;justify-content:center;gap:4px}
+.tab:hover{color:var(--text);background:var(--bg-hover)}
+.tab.active{color:var(--text);border-bottom-color:var(--accent);background:var(--bg)}
+.tab .count{font-size:9px;background:var(--bg-3);padding:1px 5px;border-radius:8px;color:var(--text-3)}
+.tab.active .count{background:var(--accent);color:#fff}
+
+/* Toolbar */
+.toolbar{padding:6px 8px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;flex-shrink:0;background:var(--bg-2);flex-wrap:wrap}
+.search-box{flex:1;min-width:120px;display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:3px 6px}
+.search-box:focus-within{border-color:var(--accent)}
+.search-box input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:12px;min-width:0}
+.search-box input::placeholder{color:var(--text-3)}
+.search-box .clear{cursor:pointer;color:var(--text-3);font-size:13px;display:none}
+.search-box.has-text .clear{display:block}
+.filter-chips{display:flex;gap:3px;flex-wrap:wrap}
+.chip{padding:2px 8px;border:1px solid var(--border);border-radius:10px;font-size:10px;cursor:pointer;color:var(--text-2);background:var(--bg);transition:.15s}
+.chip:hover{border-color:var(--accent);color:var(--text)}
+.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* List */
+.list{flex:1;overflow-y:auto;padding:2px 0}
+.list::-webkit-scrollbar{width:6px}
+.list::-webkit-scrollbar-track{background:var(--bg)}
+.list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* Item Card */
+.item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid rgba(60,60,60,.4);transition:.15s;cursor:default}
+.item:hover{background:var(--bg-hover)}
+.item.disabled{opacity:.5}
+.item.disabled .item-name{text-decoration:line-through;color:var(--text-3)}
+
+.toggle{position:relative;width:28px;height:15px;flex-shrink:0;cursor:pointer}
+.toggle input{opacity:0;width:0;height:0;position:absolute}
+.toggle .slider{position:absolute;inset:0;background:var(--border);border-radius:8px;transition:.2s}
+.toggle .slider::before{content:'';position:absolute;width:11px;height:11px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked + .slider{background:var(--success)}
+.toggle input:checked + .slider::before{transform:translateX(13px)}
+
+.item-icon{font-size:16px;width:20px;text-align:center;flex-shrink:0}
+.item-info{flex:1;min-width:0}
+.item-name-row{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.item-name{font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+.item-ver{font-size:10px;color:var(--blue);font-family:monospace}
+.tag{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:500;white-space:nowrap}
+.tag-skill{background:rgba(86,156,214,.2);color:var(--blue)}
+.tag-tool{background:rgba(78,201,176,.15);color:var(--success)}
+.tag-mcp{background:rgba(206,145,120,.15);color:var(--orange)}
+.tag-kb{background:rgba(197,134,192,.15);color:var(--purple)}
+.tag-cat{background:var(--bg-3);color:var(--text-2)}
+.tag-update{background:var(--warning-bg);color:var(--warning);cursor:pointer;display:flex;align-items:center;gap:2px}
+.tag-update::before{content:'↑';font-weight:bold}
+.tag-source{background:var(--bg-3);color:var(--text-3)}
+.item-desc{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+
+.item-actions{display:flex;gap:1px;opacity:0;transition:.15s;flex-shrink:0}
+.item:hover .item-actions{opacity:1}
+.act-btn{width:20px;height:20px;display:flex;align-items:center;justify-content:center;border:none;background:none;color:var(--text-3);border-radius:var(--radius);cursor:pointer;font-size:12px;transition:.15s}
+.act-btn:hover{background:var(--bg-3);color:var(--text)}
+.act-btn.upgrade:hover{color:var(--warning)}
+.act-btn.download:hover{color:var(--blue)}
+.act-btn.upload:hover{color:var(--success)}
+.act-btn.delete:hover{color:var(--error);background:var(--error-bg)}
+
+.empty{text-align:center;padding:30px 16px;color:var(--text-3)}
+.empty .icon{font-size:28px;margin-bottom:6px;opacity:.5}
+
+.sb-bottom{padding:4px 10px;border-top:1px solid var(--border);background:var(--bg-2);font-size:10px;color:var(--text-3);display:flex;justify-content:space-between;flex-shrink:0}
+
+/* ===== Editor Area ===== */
+.editor-area{flex:1;display:flex;flex-direction:column;background:var(--bg-editor);overflow:hidden}
+
+/* Tab Strip */
+.tab-strip{display:flex;background:var(--bg-2);border-bottom:1px solid var(--border);flex-shrink:0;height:35px}
+.ed-tab{display:flex;align-items:center;gap:6px;padding:0 12px;height:35px;cursor:pointer;font-size:13px;color:var(--text-3);background:var(--tab-inactive);border-right:1px solid var(--border);transition:.15s;white-space:nowrap}
+.ed-tab:hover{color:var(--text-2)}
+.ed-tab.active{color:var(--text);background:var(--tab-active);border-top:2px solid var(--accent);height:37px;margin-top:-2px}
+.ed-tab .close{width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:14px;opacity:.5}
+.ed-tab .close:hover{opacity:1;background:var(--bg-hover)}
+
+.editor-content{flex:1;overflow:hidden;position:relative}
+
+/* ===== Marketplace Page ===== */
+.mp-page{height:100%;display:flex;flex-direction:column}
+
+.mp-header{padding:14px 24px 12px;border-bottom:1px solid var(--border);background:var(--bg-2);flex-shrink:0}
+.mp-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.mp-title-row h1{font-size:17px;font-weight:600;display:flex;align-items:center;gap:8px}
+.mp-user{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2)}
+.mp-user .avatar{width:24px;height:24px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600}
+
+.mp-toolbar{display:flex;gap:8px;align-items:center}
+.mp-search{flex:1;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px 10px}
+.mp-search:focus-within{border-color:var(--accent)}
+.mp-search input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:13px}
+.mp-search input::placeholder{color:var(--text-3)}
+
+.mp-cats{display:flex;gap:4px;flex-wrap:wrap}
+.mp-cat{padding:4px 12px;border:1px solid var(--border);border-radius:14px;font-size:12px;cursor:pointer;color:var(--text-2);background:var(--bg);transition:.15s}
+.mp-cat:hover{border-color:var(--accent);color:var(--text)}
+.mp-cat.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+.mp-grid{flex:1;overflow-y:auto;padding:16px 24px}
+.mp-grid::-webkit-scrollbar{width:8px}
+.mp-grid::-webkit-scrollbar-track{background:var(--bg)}
+.mp-grid::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+
+.mp-section-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.mp-section-title .count{font-size:11px;color:var(--text-3);font-weight:400}
+
+.mp-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+
+.mp-card{background:var(--bg-2);border:1px solid var(--border);border-radius:6px;padding:14px;transition:.15s;cursor:pointer}
+.mp-card:hover{border-color:var(--accent);background:var(--bg-3);transform:translateY(-1px)}
+.card-top{display:flex;align-items:flex-start;gap:10px;margin-bottom:6px}
+.card-icon{font-size:24px;flex-shrink:0}
+.card-info{flex:1;min-width:0}
+.card-name{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px}
+.card-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.card-ver{font-size:10px;color:var(--blue);font-family:monospace}
+.card-author{font-size:10px;color:var(--text-3)}
+.card-desc{font-size:12px;color:var(--text-2);line-height:1.5;margin-bottom:10px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card-footer{display:flex;align-items:center;justify-content:space-between}
+.card-stats{font-size:10px;color:var(--text-3);display:flex;gap:8px}
+.card-badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600}
+.badge-skill{background:rgba(86,156,214,.2);color:var(--blue)}
+.badge-agent{background:rgba(78,201,176,.15);color:var(--success)}
+.badge-mcp{background:rgba(206,145,120,.15);color:var(--orange)}
+.badge-kb{background:rgba(197,134,192,.15);color:var(--purple)}
+
+.install-btn{padding:4px 14px;background:var(--accent);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;font-weight:500;transition:.15s}
+.install-btn:hover{background:var(--accent-hover)}
+.install-btn.installed{background:var(--success);cursor:default}
+
+.mp-pagination{display:flex;justify-content:center;gap:6px;padding:14px 0;border-top:1px solid var(--border);margin-top:12px}
+.mp-page-btn{padding:4px 12px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-2);border-radius:3px;cursor:pointer;font-size:12px}
+.mp-page-btn:hover{border-color:var(--accent);color:var(--text)}
+.mp-page-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.mp-page-btn:disabled{opacity:.4;cursor:default}
+
+/* Detail panel */
+.mp-detail{display:none;position:absolute;inset:0;background:var(--bg-editor);z-index:100;flex-direction:column}
+.mp-detail.show{display:flex}
+.md-back{padding:10px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text-2);font-size:13px;flex-shrink:0}
+.md-back:hover{color:var(--text)}
+.md-content{flex:1;overflow-y:auto;padding:20px 24px}
+.md-content h2{font-size:18px;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.md-meta{display:flex;gap:10px;font-size:12px;color:var(--text-3);margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.md-desc{font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:16px;padding:14px;background:var(--bg-2);border-radius:6px;border:1px solid var(--border)}
+.md-versions{margin-bottom:16px}
+.md-versions h3{font-size:13px;margin-bottom:6px}
+.ver-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px}
+.ver-item.latest{border-color:var(--success)}
+.md-install-bar{padding:14px 0;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center}
+
+/* Install overlay */
+.install-overlay{display:none;position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:center;justify-content:center}
+.install-overlay.show{display:flex}
+.install-dialog{background:var(--bg-2);border:1px solid var(--border);border-radius:8px;width:400px;max-width:90%;box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:hidden}
+.id-head{padding:12px 18px;border-bottom:1px solid var(--border);font-weight:600;font-size:14px;display:flex;align-items:center;justify-content:space-between}
+.id-body{padding:16px 18px}
+.id-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(60,60,60,.3)}
+.id-row:last-child{border-bottom:none}
+.id-label{font-size:12px;color:var(--text-3)}
+.id-val{font-size:13px;color:var(--text)}
+.id-progress{margin:14px 0}
+.id-bar{height:5px;background:var(--bg-3);border-radius:3px;overflow:hidden}
+.id-fill{height:100%;background:var(--accent);border-radius:3px;transition:width .5s;width:0}
+.id-steps{font-size:11px;color:var(--text-3);margin-top:6px}
+.id-step{padding:2px 0;display:flex;align-items:center;gap:5px}
+.id-step.done{color:var(--success)}
+.id-step.done::before{content:'✓';color:var(--success)}
+.id-step.pending::before{content:'○';color:var(--text-3)}
+.id-step.active::before{content:'●';color:var(--accent)}
+.id-actions{padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.id-btn{padding:5px 14px;border-radius:4px;cursor:pointer;font-size:13px;border:1px solid var(--border);background:var(--bg-3);color:var(--text-2)}
+.id-btn:hover{border-color:var(--accent)}
+.id-btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* Status Bar */
+.status-bar{height:22px;background:var(--accent);color:#fff;display:flex;align-items:center;padding:0 12px;font-size:11px;gap:14px;flex-shrink:0}
+.sb-item{display:flex;align-items:center;gap:3px;cursor:pointer}
+.sb-right{margin-left:auto;display:flex;gap:10px}
+
+/* Upload dialog (from integration side) */
+.upload-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:300;align-items:center;justify-content:center}
+.upload-overlay.show{display:flex}
+.upload-box{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-lg);width:420px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.uhead{padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.ubody{padding:16px}
+.urow{margin-bottom:12px}
+.ulabel{font-size:12px;color:var(--text-2);margin-bottom:4px}
+.uinput{width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;outline:none}
+.uinput:focus{border-color:var(--accent)}
+.uactions{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.ubtn{padding:5px 14px;border-radius:var(--radius);cursor:pointer;font-size:13px;border:1px solid var(--border);background:var(--bg-3);color:var(--text)}
+.ubtn:hover{border-color:var(--accent)}
+.ubtn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.uclose{cursor:pointer;color:var(--text-3);font-size:18px}
+.uclose:hover{color:var(--text)}
+.dropzone{border:2px dashed var(--border);border-radius:var(--radius);padding:20px;text-align:center;color:var(--text-3);font-size:12px;cursor:pointer}
+.dropzone:hover{border-color:var(--accent);color:var(--text)}
+
+/* Light theme */
+body.light{
+  --bg:#ffffff;--bg-2:#f3f3f3;--bg-3:#e8e8e8;--bg-hover:#eaeaea;--bg-editor:#ffffff;
+  --border:#d4d4d4;--border-2:#c0c0c0;
+  --text:#333333;--text-2:#666666;--text-3:#999999;
+  --accent:#0066cc;--accent-hover:#0052a3;--accent-bg:rgba(0,102,204,.1);
+  --success:#107c10;--success-bg:rgba(16,124,16,.1);
+  --warning:#8a6d00;--warning-bg:rgba(138,109,0,.1);
+  --error:#c42b1c;--error-bg:rgba(196,43,28,.1);
+  --purple:#883293;--orange:#b35c00;--blue:#0066cc;--green:#107c10;
+  --tab-active:#ffffff;--tab-inactive:#ececec;
+}
+</style>
+</head>
+<body>
+<div class="ide">
+  <!-- Title Bar -->
+  <div class="titlebar">
+    <span class="menu-item">文件</span>
+    <span class="menu-item">编辑</span>
+    <span class="menu-item">查看</span>
+    <span class="menu-item">运行</span>
+    <span class="menu-item">终端</span>
+    <span class="menu-item">帮助</span>
+    <span style="margin-left:auto;font-size:11px;color:var(--text-3)">vsSarosis — 集成 + 商城 Mockup</span>
+    <button class="gbtn" style="margin-left:8px" onclick="document.body.classList.toggle('light')">🌓</button>
+  </div>
+
+  <div class="main-area">
+    <!-- Activity Bar -->
+    <div class="activity-bar">
+      <div class="act-icon" title="Explorer">📁</div>
+      <div class="act-icon" title="Search">🔍</div>
+      <div class="act-icon" title="Agent">🤖</div>
+      <div class="act-icon active" title="Integration">🧩</div>
+      <div class="act-icon" title="Plugins">🔌</div>
+      <div style="margin-top:auto"></div>
+      <div class="act-icon" title="Settings">⚙️</div>
+    </div>
+
+    <!-- ===== Integration Side Bar (保持不变) ===== -->
+    <div class="side-bar">
+      <div class="sb-header">
+        <span class="title">Integration</span>
+        <div class="global-actions">
+          <button class="gbtn" onclick="showUploadDialog()" title="上传当前资源到商城">⬆</button>
+          <button class="gbtn primary" onclick="openMarketplace()" title="浏览商城">🛒 商城</button>
+          <button class="gbtn" onclick="checkUpdates()" title="检查更新">🔄</button>
+        </div>
+      </div>
+
+      <div class="tab-bar">
+        <div class="tab active" data-tab="skill" onclick="switchTab('skill')">💡 技能 <span class="count">6</span></div>
+        <div class="tab" data-tab="tool" onclick="switchTab('tool')">🔧 工具 <span class="count">5</span></div>
+        <div class="tab" data-tab="mcp" onclick="switchTab('mcp')">🔌 MCP <span class="count">3</span></div>
+        <div class="tab" data-tab="kb" onclick="switchTab('kb')">📚 知识库 <span class="count">2</span></div>
+      </div>
+
+      <!-- Skill Tab -->
+      <div class="tab-content" id="tab-skill" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+        <div class="toolbar">
+          <div class="search-box" id="search-skill">
+            <span>🔍</span>
+            <input placeholder="搜索技能..." oninput="onSearch(this,'skill')">
+            <span class="clear" onclick="clearSearch('skill')">✕</span>
+          </div>
+        </div>
+        <div class="filter-chips" style="padding:4px 8px;border-bottom:1px solid var(--border)">
+          <div class="chip active">全部</div>
+          <div class="chip">code</div>
+          <div class="chip">docs</div>
+          <div class="chip">git</div>
+          <div class="chip">review</div>
+        </div>
+        <div class="list" id="list-skill"></div>
+      </div>
+
+      <!-- Tool Tab -->
+      <div class="tab-content" id="tab-tool" style="display:none;flex-direction:column;flex:1;overflow:hidden">
+        <div class="toolbar">
+          <div class="search-box" id="search-tool">
+            <span>🔍</span>
+            <input placeholder="搜索工具..." oninput="onSearch(this,'tool')">
+            <span class="clear" onclick="clearSearch('tool')">✕</span>
+          </div>
+        </div>
+        <div class="filter-chips" style="padding:4px 8px;border-bottom:1px solid var(--border)">
+          <div class="chip active">全部</div>
+          <div class="chip">内置</div>
+          <div class="chip">自定义</div>
+        </div>
+        <div class="list" id="list-tool"></div>
+      </div>
+
+      <!-- MCP Tab -->
+      <div class="tab-content" id="tab-mcp" style="display:none;flex-direction:column;flex:1;overflow:hidden">
+        <div class="toolbar">
+          <div class="search-box" id="search-mcp">
+            <span>🔍</span>
+            <input placeholder="搜索 MCP..." oninput="onSearch(this,'mcp')">
+            <span class="clear" onclick="clearSearch('mcp')">✕</span>
+          </div>
+        </div>
+        <div class="filter-chips" style="padding:4px 8px;border-bottom:1px solid var(--border)">
+          <div class="chip active">全部</div>
+          <div class="chip">已连接</div>
+          <div class="chip">未连接</div>
+        </div>
+        <div class="list" id="list-mcp"></div>
+      </div>
+
+      <!-- KB Tab -->
+      <div class="tab-content" id="tab-kb" style="display:none;flex-direction:column;flex:1;overflow:hidden">
+        <div class="toolbar">
+          <div class="search-box" id="search-kb">
+            <span>🔍</span>
+            <input placeholder="搜索知识库..." oninput="onSearch(this,'kb')">
+            <span class="clear" onclick="clearSearch('kb')">✕</span>
+          </div>
+        </div>
+        <div class="filter-chips" style="padding:4px 8px;border-bottom:1px solid var(--border)">
+          <div class="chip active">全部</div>
+          <div class="chip">本地</div>
+          <div class="chip">商城</div>
+        </div>
+        <div class="list" id="list-kb"></div>
+      </div>
+
+      <div class="sb-bottom">
+        <span id="status-text">6 技能 · 2 更新</span>
+        <span>21.6.92.5:3040 ✅</span>
+      </div>
+    </div>
+
+    <!-- ===== Editor Area (商城页面) ===== -->
+    <div class="editor-area">
+      <div class="tab-strip">
+        <div class="ed-tab"><span>📄</span><span>SKILL.md</span><span class="close">✕</span></div>
+        <div class="ed-tab"><span>🤖</span><span>agent.json</span><span class="close">✕</span></div>
+        <div class="ed-tab active" id="marketTab"><span>🛒</span><span>VsSaros 商城</span><span class="close" onclick="closeMarketplace()">✕</span></div>
+      </div>
+
+      <div class="editor-content">
+        <div class="mp-page">
+          <!-- MP Header -->
+          <div class="mp-header">
+            <div class="mp-title-row">
+              <h1>🛒 VsSaros 商城</h1>
+              <div class="mp-user">
+                <div class="avatar">A</div>
+                <span>admin</span>
+                <span style="color:var(--text-3)">|</span>
+                <span style="color:var(--success)">● 已连接</span>
+              </div>
+            </div>
+            <div class="mp-toolbar">
+              <div class="mp-search">
+                <span>🔍</span>
+                <input placeholder="搜索资源名称、描述、标签..." id="searchInput" oninput="filterCards()">
+              </div>
+              <div class="mp-cats">
+                <div class="mp-cat active" onclick="filterCategory(this,'all')">全部</div>
+                <div class="mp-cat" onclick="filterCategory(this,'skill')">📄 技能</div>
+                <div class="mp-cat" onclick="filterCategory(this,'agent')">🤖 Agent</div>
+                <div class="mp-cat" onclick="filterCategory(this,'mcp')">🔌 MCP</div>
+                <div class="mp-cat" onclick="filterCategory(this,'kb')">📚 知识库</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- MP Grid -->
+          <div class="mp-grid" id="mpGrid">
+            <div class="mp-section-title">📦 商城资源 <span class="count" id="resultCount">8 个资源</span></div>
+            <div class="mp-cards" id="mpCards"></div>
+            <div class="mp-pagination">
+              <div class="mp-page-btn" disabled>‹ 上一页</div>
+              <div class="mp-page-btn active">1</div>
+              <div class="mp-page-btn">2</div>
+              <div class="mp-page-btn">下一页 ›</div>
+            </div>
+          </div>
+
+          <!-- Detail Panel -->
+          <div class="mp-detail" id="mpDetail">
+            <div class="md-back" onclick="closeDetail()">← 返回商城列表</div>
+            <div class="md-content" id="mdContent"></div>
+          </div>
+
+          <!-- Install Overlay -->
+          <div class="install-overlay" id="installOverlay">
+            <div class="install-dialog">
+              <div class="id-head">
+                <span id="installTitle">安装资源</span>
+                <span style="cursor:pointer;color:var(--text-3);font-size:18px" onclick="closeInstall()">✕</span>
+              </div>
+              <div class="id-body" id="installBody"></div>
+              <div class="id-actions" id="installActions">
+                <button class="id-btn" onclick="closeInstall()">关闭</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div class="sb-item">🧩 Integration</div>
+    <div class="sb-item">💡 6</div>
+    <div class="sb-item">🔧 5</div>
+    <div class="sb-item">🔌 3</div>
+    <div class="sb-item">📚 2</div>
+    <div class="sb-right">
+      <div class="sb-item">🛒 21.6.92.5:3040</div>
+      <div class="sb-item">UTF-8</div>
+      <div class="sb-item">TypeScript</div>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Dialog -->
+<div class="upload-overlay" id="uploadOverlay">
+  <div class="upload-box">
+    <div class="uhead"><span>⬆ 上传资源到商城</span><span class="uclose" onclick="hideUploadDialog()">✕</span></div>
+    <div class="ubody">
+      <div class="urow">
+        <div class="ulabel">资源类型</div>
+        <div style="display:flex;gap:12px;font-size:13px">
+          <label><input type="radio" name="utype" checked> 技能</label>
+          <label><input type="radio" name="utype"> Agent</label>
+          <label><input type="radio" name="utype"> MCP</label>
+          <label><input type="radio" name="utype"> 知识库</label>
+        </div>
+      </div>
+      <div class="urow"><div class="ulabel">资源标识 (storeId)</div><input class="uinput" value="pdf-skill" readonly></div>
+      <div class="urow"><div class="ulabel">版本号</div><input class="uinput" value="1.1.0"></div>
+      <div class="urow"><div class="ulabel">更新日志</div><input class="uinput" placeholder="如：新增表格提取功能"></div>
+      <div class="urow"><div class="ulabel">资源包 (自动打包)</div><div class="dropzone">📦 将自动打包 ~/.saros/skills-library/pdf-skill/<br><span style="font-size:11px">含 SKILL.md + manifest.json</span></div></div>
+    </div>
+    <div class="uactions">
+      <button class="ubtn" onclick="hideUploadDialog()">取消</button>
+      <button class="ubtn primary" onclick="hideUploadDialog()">发布</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Integration Data =====
+const data = {
+  skill: [
+    {id:'pdf-skill',name:'PDF Skill',icon:'📄',ver:'1.0.0',cat:'docs',source:'user',enabled:true,desc:'处理 PDF 文件，提取文本、表格、图片',hasUpdate:true,newVer:'1.1.0',installed:true},
+    {id:'code-review',name:'Code Review',icon:'🔍',ver:'1.0.0',cat:'review',source:'user',enabled:true,desc:'代码审查技能，自动检查代码质量',hasUpdate:false,installed:true},
+    {id:'git-helper',name:'Git Helper',icon:'🔀',ver:'2.1.0',cat:'git',source:'user',enabled:false,desc:'Git 操作辅助，生成 commit message',hasUpdate:false,installed:true},
+    {id:'refactor',name:'Refactor Pro',icon:'💻',ver:'1.2.0',cat:'code',source:'extension',enabled:true,desc:'智能代码重构，提取函数、重命名',hasUpdate:true,newVer:'1.3.0',installed:true},
+    {id:'doc-gen',name:'Doc Generator',icon:'📝',ver:'0.9.0',cat:'docs',source:'builtin',enabled:true,desc:'自动生成 API 文档、README',hasUpdate:false,installed:true},
+    {id:'data-viz',name:'Data Visualizer',icon:'📊',ver:'1.0.0',cat:'data',source:'user',enabled:false,desc:'数据可视化，生成图表、报告',hasUpdate:false,installed:true},
+  ],
+  tool: [
+    {id:'web-search',name:'Web Search',icon:'🌐',ver:'1.0',cat:'builtin',source:'knot',enabled:true,desc:'网络搜索工具，获取实时信息',hasUpdate:false,installed:true},
+    {id:'file-reader',name:'File Reader',icon:'📖',ver:'1.0',cat:'builtin',source:'knot',enabled:true,desc:'读取本地文件内容',hasUpdate:false,installed:true},
+    {id:'code-exec',name:'Code Executor',icon:'⚡',ver:'2.0',cat:'builtin',source:'knot',enabled:true,desc:'执行代码并返回结果',hasUpdate:false,installed:true},
+    {id:'terminal',name:'Terminal',icon:'💻',ver:'1.0',cat:'builtin',source:'knot',enabled:false,desc:'执行终端命令',hasUpdate:false,installed:true},
+    {id:'custom-api',name:'Custom API Tool',icon:'🧩',ver:'0.1.0',cat:'custom',source:'user',enabled:true,desc:'自定义 API 调用工具',hasUpdate:false,installed:true},
+  ],
+  mcp: [
+    {id:'filesystem',name:'filesystem',icon:'📁',ver:'0.5.0',cat:'connected',source:'npx',enabled:true,desc:'文件系统访问 MCP（8 tools）',hasUpdate:false,installed:true,status:'connected'},
+    {id:'fetch',name:'fetch',icon:'🌐',ver:'0.4.0',cat:'connected',source:'npx',enabled:true,desc:'网络请求 MCP（3 tools）',hasUpdate:true,newVer:'0.5.0',installed:true,status:'connected'},
+    {id:'sqlite',name:'sqlite',icon:'🗄️',ver:'1.0.0',cat:'disconnected',source:'npx',enabled:false,desc:'SQLite 数据库 MCP（5 tools）',hasUpdate:false,installed:true,status:'disconnected'},
+  ],
+  kb: [
+    {id:'sarosis-handbook',name:'Sarosis 使用手册',icon:'📚',ver:'2026.06',cat:'local',source:'user',enabled:true,desc:'vsSarosis 完整使用手册',hasUpdate:false,installed:true},
+    {id:'vscode-dev',name:'VSCode 扩展开发指南',icon:'📖',ver:'1.0.0',cat:'market',source:'user',enabled:true,desc:'VSCode 扩展 API 参考、调试技巧',hasUpdate:true,newVer:'1.1.0',installed:true},
+  ],
+};
+
+const tagClass = {skill:'tag-skill',tool:'tag-tool',mcp:'tag-mcp',kb:'tag-kb'};
+const catLabel = {docs:'文档',review:'审查',git:'Git',code:'代码',data:'数据',builtin:'内置',custom:'自定义',connected:'已连接',disconnected:'未连接',local:'本地',market:'商城'};
+
+function renderItem(tab, item){
+  const disabled = !item.enabled ? 'disabled' : '';
+  const updateTag = item.hasUpdate ? `<span class="tag tag-update" onclick="event.stopPropagation();alert('升级到 v${item.newVer}')">v${item.newVer}</span>` : '';
+  const verTag = item.ver ? `<span class="item-ver">v${item.ver}</span>` : '';
+  const catTag = item.cat ? `<span class="tag tag-cat">${catLabel[item.cat]||item.cat}</span>` : '';
+  const sourceTag = item.source ? `<span class="tag tag-source">${item.source}</span>` : '';
+  const statusDot = item.status === 'connected' ? '🟢' : (item.status === 'disconnected' ? '🔴' : '');
+  return `<div class="item ${disabled}" data-search="${(item.name+item.desc+item.id).toLowerCase()}">
+    <label class="toggle"><input type="checkbox" ${item.enabled?'checked':''} onchange="toggleItem(this)"><span class="slider"></span></label>
+    <span class="item-icon">${item.icon}</span>
+    <div class="item-info">
+      <div class="item-name-row">${statusDot}<span class="item-name">${item.name}</span>${verTag}<span class="tag ${tagClass[tab]}">${({skill:'Skill',tool:'Tool',mcp:'MCP',kb:'KB'})[tab]}</span>${catTag}${sourceTag}${updateTag}</div>
+      <div class="item-desc">${item.desc}</div>
+    </div>
+    <div class="item-actions">
+      ${item.hasUpdate ? `<button class="act-btn upgrade" title="升级到 v${item.newVer}" onclick="alert('升级 ${item.name}')">⬆</button>` : ''}
+      <button class="act-btn upload" title="上传到商城" onclick="showUploadDialog()">📤</button>
+      <button class="act-btn delete" title="删除" onclick="confirmDelete('${item.name}')">✕</button>
+    </div>
+  </div>`;
+}
+
+function renderList(tab){
+  const el = document.getElementById('list-'+tab);
+  const items = data[tab];
+  if(!items || items.length === 0){
+    el.innerHTML = `<div class="empty"><div class="icon">📭</div><div>没有匹配的资源</div></div>`;
+    return;
+  }
+  el.innerHTML = items.map(i => renderItem(tab, i)).join('');
+}
+
+function renderAll(){ renderList('skill');renderList('tool');renderList('mcp');renderList('kb'); }
+
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.style.display = c.id === 'tab-'+tab ? 'flex' : 'none');
+  const counts = {skill:`${data.skill.length} 技能 · ${data.skill.filter(s=>s.hasUpdate).length} 更新`,tool:`${data.tool.length} 工具`,mcp:`${data.mcp.length} MCP`,kb:`${data.kb.length} 知识库`};
+  document.getElementById('status-text').textContent = counts[tab];
+}
+
+function onSearch(input, tab){
+  const box = document.getElementById('search-'+tab);
+  box.classList.toggle('has-text', input.value.length > 0);
+  const q = input.value.toLowerCase();
+  document.querySelectorAll('#list-'+tab+' .item').forEach(item => {
+    item.style.display = item.dataset.search.includes(q) ? '' : 'none';
+  });
+}
+function clearSearch(tab){ const input = document.querySelector('#search-'+tab+' input'); input.value=''; onSearch(input, tab); }
+function toggleItem(cb){ cb.closest('.item').classList.toggle('disabled', !cb.checked); }
+function confirmDelete(name){ if(confirm(`确定删除「${name}」？\n此操作删除本地文件，不影响商城资源。`)) alert('已删除'); }
+function checkUpdates(){ alert('🔄 检查更新...\n\n发现 2 个可用更新：\n• PDF Skill: 1.0.0 → 1.1.0\n• fetch MCP: 0.4.0 → 0.5.0'); }
+function showUploadDialog(){ document.getElementById('uploadOverlay').classList.add('show'); }
+function hideUploadDialog(){ document.getElementById('uploadOverlay').classList.remove('show'); }
+
+// ===== Marketplace Data =====
+const resources = [
+  {id:'pdf-skill',name:'PDF Skill',icon:'📄',kind:'skill',kindLabel:'Skill',ver:'1.0.0',author:'admin',desc:'处理 PDF 文件的技能。支持提取文本、表格、图片，以及 PDF 转 Markdown。',downloads:128,rating:4.5,tags:['pdf','document']},
+  {id:'code-review',name:'Code Review',icon:'🔍',kind:'skill',kindLabel:'Skill',ver:'1.0.0',author:'admin',desc:'代码审查技能，自动检查代码质量、安全漏洞、最佳实践。',downloads:96,rating:4.7,tags:['review','code']},
+  {id:'deep-researcher',name:'Deep Researcher',icon:'🤖',kind:'agent',kindLabel:'Agent',ver:'1.1.0',author:'admin',desc:'深度研究 Agent，支持网络搜索、信息整合、报告生成。',downloads:256,rating:4.8,tags:['research','search']},
+  {id:'code-architect',name:'Code Architect',icon:'🏗️',kind:'agent',kindLabel:'Agent',ver:'1.0.0',author:'admin',desc:'代码架构师 Agent，辅助系统设计、架构决策、技术选型。',downloads:88,rating:4.6,tags:['architecture']},
+  {id:'filesystem-mcp',name:'Filesystem MCP',icon:'📁',kind:'mcp',kindLabel:'MCP',ver:'0.5.0',author:'admin',desc:'文件系统访问 MCP 服务器，提供文件读写、目录遍历功能。',downloads:64,rating:4.2,tags:['filesystem']},
+  {id:'fetch-mcp',name:'Fetch MCP',icon:'🌐',kind:'mcp',kindLabel:'MCP',ver:'0.4.0',author:'admin',desc:'网络请求 MCP 服务器，支持 HTTP/HTTPS 请求、网页抓取。',downloads:42,rating:4.0,tags:['fetch','http']},
+  {id:'sarosis-handbook',name:'Sarosis 使用手册',icon:'📚',kind:'kb',kindLabel:'知识库',ver:'2026.06',author:'admin',desc:'vsSarosis 完整使用手册，含配置指南、最佳实践、FAQ。',downloads:32,rating:4.9,tags:['docs','guide']},
+  {id:'vscode-dev',name:'VSCode 扩展开发指南',icon:'📖',kind:'kb',kindLabel:'知识库',ver:'1.0.0',author:'admin',desc:'VSCode 扩展 API 参考、调试技巧、发布流程。',downloads:28,rating:4.5,tags:['vscode','dev']},
+];
+
+const kindBadge = {skill:'badge-skill',agent:'badge-agent',mcp:'badge-mcp',kb:'badge-kb'};
+let activeCategory = 'all';
+let installedIds = new Set();
+
+function renderCards(){
+  const container = document.getElementById('mpCards');
+  let filtered = resources;
+  const searchQ = document.getElementById('searchInput').value.toLowerCase();
+  if(activeCategory !== 'all') filtered = filtered.filter(r => r.kind === activeCategory);
+  if(searchQ) filtered = filtered.filter(r => r.name.toLowerCase().includes(searchQ) || r.desc.toLowerCase().includes(searchQ) || r.tags.some(t => t.includes(searchQ)));
+  document.getElementById('resultCount').textContent = `${filtered.length} 个资源`;
+  if(filtered.length === 0){ container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-3)">没有匹配的资源</div>'; return; }
+  container.innerHTML = filtered.map(r => {
+    const installed = installedIds.has(r.id);
+    return `<div class="mp-card" onclick="openDetail('${r.id}')">
+      <div class="card-top"><div class="card-icon">${r.icon}</div><div class="card-info">
+        <div class="card-name">${r.name}</div>
+        <div class="card-meta"><span class="card-badge ${kindBadge[r.kind]}">${r.kindLabel}</span><span class="card-ver">v${r.ver}</span><span class="card-author">by ${r.author}</span></div>
+      </div></div>
+      <div class="card-desc">${r.desc}</div>
+      <div class="card-footer"><div class="card-stats"><span>⭐ ${r.rating}</span><span>⬇ ${r.downloads}</span></div>
+        <button class="install-btn ${installed?'installed':''}" onclick="event.stopPropagation();${installed?'':`startInstall('${r.id}')`}">${installed ? '✅ 已安装' : '安装'}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function filterCategory(el, cat){ document.querySelectorAll('.mp-cat').forEach(c => c.classList.remove('active')); el.classList.add('active'); activeCategory = cat; renderCards(); }
+function filterCards(){ renderCards(); }
+
+function openDetail(id){
+  const r = resources.find(x => x.id === id); if(!r) return;
+  const installed = installedIds.has(r.id);
+  document.getElementById('mdContent').innerHTML = `
+    <h2>${r.icon} ${r.name} <span style="font-size:14px;color:var(--blue);font-family:monospace">v${r.ver}</span></h2>
+    <div class="md-meta"><span class="card-badge ${kindBadge[r.kind]}">${r.kindLabel}</span><span>作者: ${r.author}</span><span>⭐ ${r.rating}</span><span>⬇ ${r.downloads}</span><span>标签: ${r.tags.map(t=>'#'+t).join(' ')}</span></div>
+    <div class="md-desc">${r.desc}</div>
+    <div class="md-versions"><h3>📜 版本历史</h3>
+      <div class="ver-item latest"><div><strong>v${r.ver}</strong><span style="color:var(--success);font-size:12px;margin-left:8px">(最新)</span><div style="font-size:11px;color:var(--text-3);margin-top:3px">2026-06-20 · 24 KB</div></div>
+        <button class="install-btn ${installed?'installed':''}" onclick="${installed?'':`startInstall('${r.id}')`}">${installed ? '✅ 已安装' : '安装'}</button></div>
+    </div>
+    <div class="md-install-bar"><button class="install-btn" style="font-size:13px;padding:7px 20px" onclick="${installed?'':`startInstall('${r.id}')`}">${installed ? '✅ 已安装' : '⬇ 下载并安装'}</button><span style="font-size:11px;color:var(--text-3)">安装到 ~/.saros/ 目录，自动启用</span></div>`;
+  document.getElementById('mpDetail').classList.add('show');
+}
+function closeDetail(){ document.getElementById('mpDetail').classList.remove('show'); }
+
+function startInstall(id){
+  const r = resources.find(x => x.id === id); if(!r) return;
+  document.getElementById('installTitle').textContent = `安装 ${r.name}`;
+  document.getElementById('installBody').innerHTML = `
+    <div class="id-row"><span class="id-label">名称</span><span class="id-val">${r.icon} ${r.name}</span></div>
+    <div class="id-row"><span class="id-label">版本</span><span class="id-val" style="color:var(--blue)">v${r.ver}</span></div>
+    <div class="id-row"><span class="id-label">类型</span><span class="id-val"><span class="card-badge ${kindBadge[r.kind]}">${r.kindLabel}</span></span></div>
+    <div class="id-row"><span class="id-label">安装位置</span><span class="id-val" style="font-family:monospace;font-size:11px">~/.saros/${r.kind==='kb'?'knowledge-base':r.kind==='mcp'?'mcp-servers':r.kind==='agent'?'agents/custom':'skills-library'}/${r.id}/</span></div>
+    <div class="id-progress"><div class="id-bar"><div class="id-fill" id="progressFill"></div></div>
+      <div class="id-steps" id="progressSteps"><div class="id-step pending">下载资源包</div><div class="id-step pending">解压文件</div><div class="id-step pending">安装到本地目录</div><div class="id-step pending">注册并重新加载</div></div>
+    </div>`;
+  document.getElementById('installActions').innerHTML = '<button class="id-btn" onclick="closeInstall()">取消</button>';
+  document.getElementById('installOverlay').classList.add('show');
+  const steps = document.getElementById('progressSteps').children;
+  const fill = document.getElementById('progressFill');
+  let step = 0;
+  const tick = () => {
+    if(step < steps.length){
+      steps[step].classList.remove('pending'); steps[step].classList.add('active');
+      fill.style.width = ((step+1)/steps.length*100) + '%';
+      setTimeout(() => { steps[step].classList.remove('active'); steps[step].classList.add('done'); step++; tick(); }, 700);
+    } else {
+      installedIds.add(id);
+      setTimeout(() => {
+        document.getElementById('installBody').innerHTML = `<div style="text-align:center;padding:16px 0"><div style="font-size:40px;margin-bottom:8px">✅</div><div style="font-size:15px;font-weight:600;margin-bottom:6px">${r.name} 安装成功！</div><div style="font-size:12px;color:var(--text-3)">版本 v${r.ver} · 已安装到本地</div><div style="font-size:11px;color:var(--text-3);margin-top:6px">资源已自动启用，可在 Integration 面板中使用</div></div>`;
+        document.getElementById('installActions').innerHTML = `<button class="id-btn" onclick="closeInstall();closeDetail();renderCards();">完成</button><button class="id-btn primary" onclick="closeInstall();closeDetail();renderCards();">打开资源</button>`;
+      }, 300);
+    }
+  };
+  setTimeout(tick, 400);
+}
+function closeInstall(){ document.getElementById('installOverlay').classList.remove('show'); }
+
+function openMarketplace(){ /* already open */ }
+function closeMarketplace(){
+  if(confirm('关闭商城标签页？')) {
+    document.getElementById('marketTab').style.display = 'none';
+  }
+}
+
+// Init
+renderAll();
+renderCards();
+</script>
+</body>
+</html>

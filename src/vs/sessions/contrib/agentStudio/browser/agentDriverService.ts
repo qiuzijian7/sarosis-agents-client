@@ -640,6 +640,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			//   2. [MEMORY:L1:type:priority:scene]内容[/MEMORY]  （旧格式，兼容）
 			// 由于标签可能跨多个 delta 分片，使用缓冲区处理跨片情况。
 			let tagBuffer = '';
+			/** 收集本次 processTextChunk 调用中捕获的记忆标签，供主循环 yield memory_extracted 事件 */
+			const capturedMemoryTags: Array<{ content: string; type?: string; priority?: number; sceneName?: string; raw: string }> = [];
 			// 注意：rawDeltaChunks 已提升到 try 外层声明，此处仅引用并清空（防止跨轮残留）。
 			rawDeltaChunks.length = 0;
 			// 两种格式的开头标记（取最短公共前缀用于快速判断）
@@ -715,8 +717,20 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							remaining = '';
 						} else {
 							// 找到完整标签，剥离它（不输出给用户）
-							// ── 诊断日志：让 DevTools console 能看到 Knot 是否真的输出了 memory 标签 ──
 							const fullTag = remaining.slice(0, closeIdx + tagClose.length);
+							// 解析记忆数据，推入 capturedMemoryTags 供主循环 yield
+							const tagContent = remaining.slice(matchedOpen.length, closeIdx).trim();
+							let parsed: { content?: string; type?: string; priority?: number; scene_name?: string } | null = null;
+							if (matchedOpen === '<memory_extract>') {
+								try { parsed = JSON.parse(tagContent); } catch { /* noop */ }
+							}
+							capturedMemoryTags.push({
+								content: parsed?.content ?? tagContent,
+								type: parsed?.type,
+								priority: parsed?.priority,
+								sceneName: parsed?.scene_name,
+								raw: fullTag,
+							});
 							const diagMsg = `[AgentDriver] 🧠 Captured memory tag (open="${matchedOpen}", len=${fullTag.length}): ${fullTag.replace(/\s+/g, ' ').slice(0, 300)}`;
 							this._logService.info(diagMsg);
 							// 镜像到 DevTools console，便于排查（_logService 默认走 OutputChannel/log 文件，DevTools 不可见）
@@ -745,10 +759,15 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					// 【诊断】先累积 raw 文本（剥离前），用于流结束后排查标签输出情况
 					rawDeltaChunks.push(delta.content);
 					// 流式剥离记忆标签：用户看不到标签，assistantChunks 收集干净文本
+					capturedMemoryTags.length = 0;
 					const cleanContent = processTextChunk(delta.content);
 					if (cleanContent.length > 0) {
 						assistantChunks.push(cleanContent);
 						yield { ...delta, content: cleanContent };
+					}
+					// 捕获到记忆标签 → yield memory_extracted 事件供前端渲染卡片
+					for (const mem of capturedMemoryTags) {
+						yield { type: 'memory_extracted', content: mem.content, metadata: { memoryType: mem.type, priority: mem.priority, sceneName: mem.sceneName } };
 					}
 					// 如果 cleanContent 为空（整个 delta 都是标签），不 yield
 				} else if (delta.type === 'content_replace' && typeof delta.content === 'string') {
@@ -758,10 +777,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					rawDeltaChunks.push(delta.content);
 					// 对完整内容做一次全量剥离
 					tagBuffer = '';
+					capturedMemoryTags.length = 0;
 					const cleanContent = processTextChunk(delta.content) + flushTagBuffer();
 					assistantChunks.length = 0;
 					assistantChunks.push(cleanContent);
 					yield { ...delta, content: cleanContent };
+					for (const mem of capturedMemoryTags) {
+						yield { type: 'memory_extracted', content: mem.content, metadata: { memoryType: mem.type, priority: mem.priority, sceneName: mem.sceneName } };
+					}
 				} else if ((delta as any).type === 'discard_prior_text') {
 					// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────
 					// 参考 Hermes `conversation_loop.py` 的 `_empty_recovery_synthetic`
@@ -824,7 +847,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				this._logService.warn(`[AgentDriver] raw output diagnostic failed: ${(diagErr as Error).message}`);
 			}
 
+			this._logService.info(`[AgentDriver] Before _updateTurnStatus(Done)`);
 			this._updateTurnStatus(turnId, AgentTurnStatus.Done);
+			this._logService.info(`[AgentDriver] After _updateTurnStatus(Done)`);
 
 		} catch (error) {
 			this._logService.error(`[AgentDriver] Turn ${turnId} failed:`, error);
@@ -835,22 +860,45 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			};
 		} finally {
 			this._activeTurns.delete(turnId);
+			this._logService.info(`[AgentDriver] finally block START (turnId=${turnId})`);
 
 			// ── 恢复 AgentBinding.worktreePath ─────────────────────────
+			// ⚠ 同 memory write 的教训（行 861-866 注释）：async generator 的 finally
+			// 块中 await 会阻塞 generator 的 return，进而阻塞 consumer（agentChatService）
+			// 的 for-await 循环退出。worktree 恢复同样改为 fire-and-forget + 超时保护。
 			if (originalBindingWorktreePath !== undefined) {
-				try {
-					const workspaceId = await this._resolveWorkspaceId(request.sessionId);
-					if (workspaceId) {
-						await this._agentStudioService.upsertAgentBinding(
-							workspaceId,
-							request.agentId,
-							{ worktreePath: originalBindingWorktreePath || undefined },
+				const restoreStart = Date.now();
+				void (async () => {
+					try {
+						// 超时保护：5 秒内未完成则放弃，避免 finally 块永远挂起
+						const timeoutPromise = new Promise<never>((_, reject) =>
+							setTimeout(() => reject(new Error('worktree restore timeout (5s)')), 5000)
 						);
-						this._logService.info(`[AgentDriver] Restored binding.worktreePath="${originalBindingWorktreePath || '(none)'}" after task execution`);
+						const workspaceId = await Promise.race([
+							this._resolveWorkspaceId(request.sessionId),
+							timeoutPromise,
+						]);
+						if (workspaceId) {
+							await Promise.race([
+								this._agentStudioService.upsertAgentBinding(
+									workspaceId,
+									request.agentId,
+									{ worktreePath: originalBindingWorktreePath || undefined },
+								),
+								timeoutPromise,
+							]);
+							this._logService.info(
+								`[AgentDriver] Restored binding.worktreePath="${originalBindingWorktreePath || '(none)'}" ` +
+								`after task execution (${Date.now() - restoreStart}ms)`
+							);
+						}
+					} catch (err) {
+						this._logService.warn(
+							`[AgentDriver] Failed to restore binding worktreePath (${Date.now() - restoreStart}ms):`,
+							err
+						);
 					}
-				} catch (err) {
-					this._logService.warn('[AgentDriver] Failed to restore binding worktreePath:', err);
-				}
+				})();
 			}
 
 			// Step 5: 写回记忆（放在 finally 确保即使 generator 被外层提前终止也能执行）
@@ -907,8 +955,19 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						this._logService.error('[AgentDriver] Failed to write memory:', error);
 					}
 				})();
+
+				// ─── L1 自动提取触发（对齐 TDB-AM L0→L1 pipeline）──────────────
+				// 每 N 轮对话后，后台调用 LLM 从最近对话中提取结构化长期记忆。
+				// 不依赖 LLM 主动调 memory_remember，系统自动提取值得记住的事实。
+				this._agentOS.triggerL1Extraction(
+					request.agentId,
+					request.sessionId,
+					lastUserMessage?.content ?? '',
+					assistantContent,
+				);
 			}
 		}
+		this._logService.info(`[AgentDriver] finally block END (turnId=${turnId}) — generator returning, for-await loop will exit`);
 	}
 
 	// ─── 取消轮次 ─────────────────────────────────────
@@ -935,7 +994,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 	private _updateTurnStatus(turnId: string, status: AgentTurnStatus): void {
 		this._turnStatusMap.set(turnId, status);
-		this._onDidChangeTurnStatus.fire({ status, turnId });
+		try {
+			this._onDidChangeTurnStatus.fire({ status, turnId });
+		} catch (e) {
+			this._logService.warn(`[AgentDriver] _onDidChangeTurnStatus.fire() threw for status=${status}:`, e);
+		}
 	}
 
 	/**

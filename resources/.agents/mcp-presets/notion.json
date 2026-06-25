@@ -1,0 +1,7 @@
+{
+  "id": "notion",
+  "name": "Notion",
+  "description": "Notion workspace access for pages, databases, and content",
+  "transportType": "http",
+  "url": "https://mcp.notion.com/mcp"
+}

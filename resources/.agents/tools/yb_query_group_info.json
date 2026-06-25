@@ -1,0 +1,18 @@
+{
+  "name": "yb_query_group_info",
+  "description": "Query Yuanbao group information.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "group_id": {
+        "description": "Group ID",
+        "type": "string"
+      }
+    },
+    "required": [
+      "group_id"
+    ]
+  },
+  "category": "yuanbao",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "feishu_drive_reply_comment",
+  "description": "Reply to a comment on a Feishu/Lark drive file.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "description": "Reply content",
+        "type": "string"
+      },
+      "comment_id": {
+        "description": "Comment ID",
+        "type": "string"
+      },
+      "file_id": {
+        "description": "File ID",
+        "type": "string"
+      },
+      "file_type": {
+        "description": "File type",
+        "type": "string"
+      }
+    },
+    "required": [
+      "file_id",
+      "comment_id",
+      "content",
+      "file_type"
+    ]
+  },
+  "category": "feishu",
+  "source": "hermes-bundled"
+}

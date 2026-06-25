@@ -10,7 +10,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -73,7 +73,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
@@ -256,9 +256,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	// ─── Data directory helpers ─────────────────────────────────────────────────
 
 	/**
-	 * Global data directory (userRoamingDataHome/agent-studio).
+	 * Global data directory (~/.saros).
 	 * Stores the global workspace index (workspaces.json) and fallback data
 	 * for workspaces that don't have a local path.
+	 *
+	 * All user-level global data is stored under `~/.saros/` (userHome)
+	 * for consistency with other modules (skills, marketplace, memory, etc.).
 	 */
 	private _getGlobalDataUri(): URI {
 		if (!this._globalDataUri) {
@@ -266,7 +269,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			if (customPath) {
 				this._globalDataUri = URI.file(customPath);
 			} else {
-				this._globalDataUri = URI.joinPath(this.environmentService.userRoamingDataHome, '.saros');
+				this._globalDataUri = URI.joinPath(this.environmentService.userHome, '.saros');
 			}
 			this.logService.debug(`[AgentStudio] Global data directory: ${this._globalDataUri.toString()}`);
 		}

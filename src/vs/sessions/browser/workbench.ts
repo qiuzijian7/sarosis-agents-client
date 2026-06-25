@@ -131,6 +131,45 @@ export const IAgentWorkbenchLayoutService = refineServiceDecorator<IWorkbenchLay
 
 export const CLOSE_MOBILE_SIDEBAR_DRAWER_COMMAND_ID = 'sessions.closeMobileSidebarDrawer';
 
+/**
+ * Wrapper around an ISerializableView that overrides `maximumWidth` with a
+ * dynamic value (provided by a getter function). Used to constrain the Agent
+ * Studio right panel to at most 1/2 of the app window width.
+ *
+ * The wrapper re-fires the inner view's `onDidChange` events, and also fires
+ * on window resize so the grid re-reads the dynamic `maximumWidth` and
+ * re-clamps the sash position.
+ */
+class MaxWidthConstrainedView implements ISerializableView {
+	readonly element: HTMLElement;
+	private readonly _onDidChange = new Emitter<{ width: number; height: number } | undefined>();
+	readonly onDidChange = this._onDidChange.event;
+
+	constructor(
+		private readonly _inner: ISerializableView,
+		private readonly _getMaxWidth: () => number,
+	) {
+		this.element = _inner.element;
+		// Forward inner view's change events
+		_inner.onDidChange(e => this._onDidChange.fire(e));
+		// On window resize, fire so the grid re-reads maximumWidth
+		mainWindow.addEventListener('resize', () => this._onDidChange.fire(undefined));
+	}
+
+	get minimumWidth(): number { return this._inner.minimumWidth; }
+	get minimumHeight(): number { return this._inner.minimumHeight; }
+	get maximumWidth(): number { return this._getMaxWidth(); }
+	get maximumHeight(): number { return this._inner.maximumHeight; }
+
+	layout(width: number, height: number, top: number, left: number): void {
+		this._inner.layout(width, height, top, left);
+	}
+
+	toJSON(): object {
+		return this._inner.toJSON?.() ?? {};
+	}
+}
+
 export class Workbench extends Disposable implements IAgentWorkbenchLayoutService {
 
 	declare readonly _serviceBrand: undefined;
@@ -1573,7 +1612,13 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.titleBarPartView = titleBar;
 		this.sideBarPartView = sideBar;
 		this.editorPartView = editorPart;
-		this.agentEditorPartView = agentEditorPart;
+		// Wrap the agent editor part view to constrain its maximum width to
+		// 1/2 of the app window. The grid/sash system reads maximumWidth to
+		// clamp sash dragging. The wrapper re-fires onDidChange on window
+		// resize so the grid re-reads the dynamic maximumWidth.
+		this.agentEditorPartView = new MaxWidthConstrainedView(agentEditorPart, () => {
+			return Math.max(220, Math.floor(mainWindow.innerWidth / 2));
+		});
 
 		const viewMap: { [key: string]: ISerializableView } = {
 			[Parts.TITLEBAR_PART]: this.titleBarPartView,

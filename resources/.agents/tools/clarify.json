@@ -1,0 +1,25 @@
+{
+  "name": "clarify",
+  "description": "Ask the user a clarifying question with multiple-choice or open-ended options. Pauses the agent loop until the user responds.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "description": "The question to ask the user"
+      },
+      "options": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Multiple-choice options (optional)"
+      }
+    },
+    "required": [
+      "question"
+    ]
+  },
+  "category": "clarify",
+  "source": "hermes-bundled"
+}

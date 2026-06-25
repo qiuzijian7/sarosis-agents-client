@@ -5,7 +5,6 @@
 
 import { create } from 'zustand';
 import { sendRequest } from '../bridge/messageClient';
-import { useChatStore } from './useChatStore';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -220,26 +219,6 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
 				isPlanDialogOpen: false,
 				isLoading: false,
 			}));
-
-			// Update the plan message metadata so AgentChat re-renders the
-			// message list (ChatMessageRaw is memo-wrapped; the list must
-			// re-render for the memo comparator to run). Also append a
-			// rejection system message.
-			const goal = updatedPlan.goal || '任务计划';
-			useChatStore.setState(state => {
-				const updatedMessages = state.messages.map(m =>
-					m.metadata?.type === 'orchestration_plan' && m.metadata.planId === planId
-						? { ...m, metadata: { ...m.metadata, _planStatus: updatedPlan.status } }
-						: m
-				);
-				const rejectMessage = {
-					id: `reject_${planId}_${Date.now()}`,
-					role: 'system' as const,
-					content: `❌ 任务计划「${goal}」已被拒绝。您可以重新发送 /plan 命令来创建新的计划。`,
-					timestamp: new Date().toISOString(),
-				};
-				return { messages: [...updatedMessages, rejectMessage] };
-			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			set({ isLoading: false, error: message });

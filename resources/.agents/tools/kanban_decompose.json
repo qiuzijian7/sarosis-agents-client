@@ -1,0 +1,30 @@
+{
+  "name": "kanban_decompose",
+  "description": "Decompose a kanban task into 2-N concrete subtasks using an LLM, creating child tasks with parent dependencies. Use fanout=true for independent/parallel subtasks, false for sequential ones.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Parent task ID to decompose (full or last-6 short ID)"
+      },
+      "fanout": {
+        "type": "boolean",
+        "description": "true=parallel/independent subtasks (default), false=sequential subtasks"
+      },
+      "max_subtasks": {
+        "type": "number",
+        "description": "Maximum number of subtasks (default 6, hard cap 12)"
+      },
+      "assignee": {
+        "type": "string",
+        "description": "Default assignee for created subtasks (optional)"
+      }
+    },
+    "required": [
+      "task_id"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

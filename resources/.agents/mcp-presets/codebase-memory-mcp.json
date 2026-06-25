@@ -1,0 +1,9 @@
+{
+  "id": "codebase-memory-mcp",
+  "name": "Codebase Memory",
+  "description": "Code intelligence engine: full-indexes repositories into a knowledge graph of functions, classes, call chains, and cross-service links. 14 MCP tools for structural queries.",
+  "transportType": "stdio",
+  "command": "codebase-memory-mcp",
+  "icon": "🧠",
+  "builtin": true
+}

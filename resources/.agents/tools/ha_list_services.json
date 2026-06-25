@@ -1,0 +1,15 @@
+{
+  "name": "ha_list_services",
+  "description": "List available Home Assistant services, optionally filtered by domain.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "domain": {
+        "type": "string",
+        "description": "Filter by domain (optional)"
+      }
+    }
+  },
+  "category": "homeassistant",
+  "source": "hermes-bundled"
+}

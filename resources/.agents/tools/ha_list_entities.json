@@ -1,0 +1,19 @@
+{
+  "name": "ha_list_entities",
+  "description": "List Home Assistant entities with their states. Filter by domain or area.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "domain": {
+        "type": "string",
+        "description": "Filter by domain (e.g., \"light\", \"switch\", \"sensor\")"
+      },
+      "area": {
+        "type": "string",
+        "description": "Filter by area name"
+      }
+    }
+  },
+  "category": "homeassistant",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,34 @@
+{
+  "name": "spotify_search",
+  "description": "Search Spotify for tracks, albums, artists, or playlists.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "description": "Search query",
+        "type": "string"
+      },
+      "type": {
+        "default": "track",
+        "description": "Type of results (default: track)",
+        "enum": [
+          "track",
+          "album",
+          "artist",
+          "playlist"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "default": 10,
+        "description": "Max results (default: 10)",
+        "type": "number"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

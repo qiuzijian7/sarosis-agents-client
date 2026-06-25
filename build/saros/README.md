@@ -43,12 +43,12 @@ npm run fix-branding        # 检测并自动修复所有品牌字段
 # 系统级安装包 → .build/win32-x64/system-setup/VsSarosisSetup.exe
 npm run gulp vscode-win32-x64-system-setup
 
-# 用户级安装包（免管理员权限）→ .build/win32-x64/user-setup/VsSarosisUserSetup.exe
+# 用户级安装包（免管理员权限）→ .build/win32-x64/user-setup/VsSarosUserSetup.exe
 npm run gulp vscode-win32-x64-user-setup
 ```
 
 > `code.iss` 已改为根据 InstallTarget 区分输出名：
-> user → `VsSarosisUserSetup.exe`，system → `VsSarosisSetup.exe`，两者不再互相覆盖。
+> user → `VsSarosUserSetup.exe`，system → `VsSarosisSetup.exe`，两者不再互相覆盖。
 
 | 维度 | 系统级 (system) | 用户级 (user) |
 |------|----------------|---------------|
@@ -102,7 +102,7 @@ wrangler deploy
 # 把得到的 URL 写入 product.json 的 updateUrl
 ```
 
-数据源是 GitHub Releases：发版时上传 `VsSarosisUserSetup.exe` / `VsSarosisSetup.exe` 到 release，
+数据源是 GitHub Releases：发版时上传 `VsSarosUserSetup.exe` / `VsSarosisSetup.exe` 到 release，
 并在 release body 写一行 `commit: <40位完整sha>`（可选 `sha256-win32-x64-user: <hash>`）。
 
 ### 部署方式 B：本地 / 自托管 Node 服务
@@ -129,9 +129,9 @@ npm run gulp vscode-win32-x64-user-setup
 # 3. 生成 manifest 条目（自动算 sha256 + 读当前 git commit）
 node build/saros/update-server/gen-manifest.mjs \
   --platform win32-x64-user \
-  --exe ".build/win32-x64/user-setup/VsSarosisUserSetup.exe" \
+  --exe ".build/win32-x64/user-setup/VsSarosUserSetup.exe" \
   --version 1.2.3 \
-  --url "https://your-host/VsSarosisUserSetup-1.2.3.exe"
+  --url "https://your-host/VsSarosUserSetup-1.2.3.exe"
 
 # 4. 重启/部署 update server，旧客户端即可检测到更新
 ```

@@ -1,0 +1,15 @@
+{
+  "name": "skills_list",
+  "description": "List all available skills with their names, categories, and descriptions.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "category": {
+        "type": "string",
+        "description": "Filter by category (optional)"
+      }
+    }
+  },
+  "category": "skills",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "spotify_playlists",
+  "description": "Manage Spotify playlists: list, create, add tracks, remove tracks.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Playlist action",
+        "enum": [
+          "list",
+          "create",
+          "add_track",
+          "remove_track"
+        ],
+        "type": "string"
+      },
+      "name": {
+        "description": "Playlist name (for create)",
+        "type": "string"
+      },
+      "playlist_id": {
+        "description": "Playlist ID",
+        "type": "string"
+      },
+      "track_uri": {
+        "description": "Track URI to add/remove",
+        "type": "string"
+      }
+    }
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

@@ -1,10 +1,10 @@
 # VsSarosis 快速部署指南
 
-本指南帮助你在服务器 `21.91.41.66` 上快速部署 VsSarosis 更新服务器。
+本指南帮助你在服务器 `zijianqiu-any1.devcloud.woa.com` 上快速部署 VsSarosis 更新服务器。
 
 ## 前提条件
 
-- 服务器 `21.91.41.66` 已安装 Node.js 18+
+- 服务器 `zijianqiu-any1.devcloud.woa.com` 已安装 Node.js 18+
 - 你有服务器的 SSH 或 RDP 访问权限
 
 ## 部署步骤
@@ -15,7 +15,7 @@
 
 ```bash
 # 在本地执行
-scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssaros-update/
+scp -r deploy-package/update-server/ root@zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/
 ```
 
 #### 方式 B: 使用 PowerShell (Windows 服务器)
@@ -32,7 +32,7 @@ New-Item -ItemType Directory -Force -Path C:\vssaros-update
 
 ```bash
 # SSH 登录服务器
-ssh root@21.91.41.66
+ssh root@zijianqiu-any1.devcloud.woa.com
 
 # 进入更新服务器目录
 cd /opt/vssaros-update/update-server
@@ -82,10 +82,10 @@ New-NetFirewallRule -DisplayName "VsSarosis Update Server" -Direction Inbound -P
 
 ```bash
 # 测试健康检查
-curl http://21.91.41.66:3030/health
+curl http://zijianqiu-any1.devcloud.woa.com:3030/health
 
 # 测试更新 API (使用一个假的 commit)
-curl http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
+curl http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
 ```
 
 预期响应 (JSON):
@@ -107,12 +107,12 @@ curl http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000
 # 1. 修复品牌配置
 npm run fix-branding
 
-# 2. 更新 product.json 中的 updateUrl (改为 http://21.91.41.66:3030)
+# 2. 更新 product.json 中的 updateUrl (改为 http://zijianqiu-any1.devcloud.woa.com:3030)
 
 # 3. 构建安装包
 npm run gulp vscode-win32-x64-user-setup
 
-# 4. 安装包位于: .build\win32-x64\user-setup\VsSarosisUserSetup.exe
+# 4. 安装包位于: .build\win32-x64\user-setup\VsSarosUserSetup.exe
 ```
 
 ### 步骤 6: 上传安装包并更新 manifest.json
@@ -125,10 +125,10 @@ npm run gulp vscode-win32-x64-user-setup
 
 部署成功后，你应该能够：
 
-1. **访问更新服务器健康检查**: `http://21.91.41.66:3030/health`
+1. **访问更新服务器健康检查**: `http://zijianqiu-any1.devcloud.woa.com:3030/health`
    - 预期响应: `{"ok":true,"service":"vssaros-update-server","mode":"manifest"}`
 
-2. **访问更新 API**: `http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000`
+2. **访问更新 API**: `http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000`
    - 预期响应: JSON 包含版本信息
 
 3. **客户端自动检测更新** (安装并运行 VsSarosis 后)
@@ -156,7 +156,7 @@ node server.mjs
 
 - 检查服务器防火墙设置
 - 检查安全组/网络ACL设置
-- 使用 `telnet 21.91.41.66 3030` 测试端口连通性
+- 使用 `telnet zijianqiu-any1.devcloud.woa.com 3030` 测试端口连通性
 
 ### manifest.json 配置错误
 
@@ -166,7 +166,7 @@ node server.mjs
   "win32-x64-user": {
     "version": "<40位git commit sha>",
     "productVersion": "1.0.0",
-    "url": "http://21.91.41.66:3030/downloads/VsSarosisUserSetup.exe",
+    "url": "http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe",
     "sha256hash": "<sha256哈希>",
     "timestamp": 1700000000000
   }

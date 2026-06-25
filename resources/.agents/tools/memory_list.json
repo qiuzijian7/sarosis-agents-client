@@ -1,0 +1,25 @@
+{
+  "name": "memory_list",
+  "description": "List all memory entries of a given type.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "default": 20,
+        "description": "Max entries to return (default: 20)",
+        "type": "number"
+      },
+      "memory_type": {
+        "default": "long_term",
+        "description": "Memory type to list (default: long_term)",
+        "enum": [
+          "short_term",
+          "long_term"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  "category": "memory",
+  "source": "hermes-bundled"
+}

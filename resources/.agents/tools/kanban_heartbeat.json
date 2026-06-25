@@ -1,0 +1,22 @@
+{
+  "name": "kanban_heartbeat",
+  "description": "Send a heartbeat for a kanban task to indicate the agent is still working on it.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to heartbeat"
+      },
+      "progress": {
+        "type": "string",
+        "description": "Progress update message (optional)"
+      }
+    },
+    "required": [
+      "task_id"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

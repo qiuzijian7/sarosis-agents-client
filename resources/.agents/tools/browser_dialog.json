@@ -1,0 +1,26 @@
+{
+  "name": "browser_dialog",
+  "description": "Handle browser dialogs (alert, confirm, prompt). Accept or dismiss the dialog, optionally providing input text.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "accept",
+          "dismiss"
+        ],
+        "description": "Action to take on the dialog"
+      },
+      "text": {
+        "type": "string",
+        "description": "Text to enter in prompt dialogs (optional)"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

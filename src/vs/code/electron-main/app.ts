@@ -563,16 +563,35 @@ export class CodeApplication extends Disposable {
 
 				let stdout = '';
 				let stderr = '';
+				let settled = false;
+
+				// Timeout: kill the process after 30 seconds to prevent indefinite hanging
+				// (e.g. git waiting for auth, network issues with remote refs)
+				const timeoutHandle = setTimeout(() => {
+					if (!settled) {
+						settled = true;
+						try { child.kill('SIGKILL'); } catch { /* ignore */ }
+						resolve({ success: false, stdout, stderr: stderr + '\n[timeout: git process killed after 30s]', exitCode: -1 });
+					}
+				}, 30000);
 
 				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
 				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
 				child.on('error', (err) => {
-					resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
+					if (!settled) {
+						settled = true;
+						clearTimeout(timeoutHandle);
+						resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
+					}
 				});
 
 				child.on('close', (code) => {
-					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+					if (!settled) {
+						settled = true;
+						clearTimeout(timeoutHandle);
+						resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+					}
 				});
 			});
 		});

@@ -1,0 +1,23 @@
+{
+  "name": "file_write",
+  "description": "Write content to a file. Creates the file and parent directories if they don't exist.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path to write"
+      },
+      "content": {
+        "type": "string",
+        "description": "Content to write"
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ]
+  },
+  "category": "file",
+  "source": "hermes-bundled"
+}

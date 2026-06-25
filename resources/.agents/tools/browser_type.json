@@ -1,0 +1,31 @@
+{
+  "name": "browser_type",
+  "description": "Type text into an input element. Clears existing text first unless append is true.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "ref": {
+        "type": "string",
+        "description": "Element reference to type into"
+      },
+      "text": {
+        "type": "string",
+        "description": "Text to type"
+      },
+      "append": {
+        "type": "boolean",
+        "description": "Append to existing text instead of clearing (default: false)"
+      },
+      "submit": {
+        "type": "boolean",
+        "description": "Press Enter after typing (default: false)"
+      }
+    },
+    "required": [
+      "ref",
+      "text"
+    ]
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

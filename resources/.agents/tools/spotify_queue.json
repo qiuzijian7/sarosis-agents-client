@@ -1,0 +1,23 @@
+{
+  "name": "spotify_queue",
+  "description": "Manage Spotify playback queue: view queue or add tracks.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Queue action",
+        "enum": [
+          "list",
+          "add"
+        ],
+        "type": "string"
+      },
+      "uri": {
+        "description": "Spotify URI to add (for add action)",
+        "type": "string"
+      }
+    }
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

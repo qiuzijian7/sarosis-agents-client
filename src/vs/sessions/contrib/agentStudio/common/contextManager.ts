@@ -55,10 +55,20 @@ import type { Agent, ChatMessage, PlanTask, PlanTaskStatus } from './types.js';
 import type { IAgentStudioService } from '../../../common/agentStudioService.js';
 import type { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 
+// ─── Logger Interface (避免 common 层依赖 platform) ─────────────────────────────
+
+/** 最小日志接口，供 ContextManager 输出诊断日志到 VS Code Output 面板 */
+export interface IContextLogger {
+	info(msg: string): void;
+	warn(msg: string): void;
+	error(msg: string, error?: unknown): void;
+	debug(msg: string): void;
+}
+
 // ─── Default Configuration ──────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: IContextManagerConfig = {
-	compressionThreshold: 0.25, // 25% threshold — lowered from 0.5 to catch mid-size workflows earlier
+	compressionThreshold: 0.40, // 40% threshold — 避免 25% 过低导致频繁压缩（压缩后几条消息又超阈值）
 	maxRecentMessages: 20, // Keep 20 recent messages
 	minMessagesToCompress: 10, // Minimum 10 messages to compress
 	maxSnapshotHistory: 10, // Keep 10 snapshots
@@ -120,6 +130,13 @@ export class ContextManager implements IContextManager {
 	// === Anti-thrashing State (P2: 防止反复低效压缩抖动) ===
 	/** 连续低效压缩计数。达到 MAX_INEFFECTIVE_COMPRESSIONS 后 compressContext 直接 noop。 */
 	private _ineffectiveCompressionCount = 0;
+	/** 上次压缩时的真实 prompt token 数。用于检测 token 显著增长后重置 anti-thrashing。 */
+	private _lastCompressRealTokens: number | null = null;
+	/** 上次压缩的时间戳。用于冷却期判定，避免短时间内反复压缩。 */
+	private _lastCompressionTime: number = 0;
+
+	// === Logger (可选，由 executionProvider 注入) ===
+	private _logger: IContextLogger | undefined;
 
 	constructor(
 		modelProvider: IModelProvider,
@@ -134,6 +151,25 @@ export class ContextManager implements IContextManager {
 		this._compressionThreshold = this._config.compressionThreshold;
 		this._maxRecentMessages = this._config.maxRecentMessages;
 		this._minMessagesToCompress = this._config.minMessagesToCompress;
+	}
+
+	/**
+	 * 注入日志服务，使压缩诊断日志输出到 VS Code Output 面板而非仅 console。
+	 * 未注入时退化为 console.warn/error。
+	 */
+	setLogger(logger: IContextLogger): void {
+		this._logger = logger;
+	}
+
+	/** 统一日志输出：有注入 logger 用 logger，否则 fallback 到 console */
+	private _log(level: 'info' | 'warn' | 'error' | 'debug', msg: string, error?: unknown): void {
+		if (this._logger) {
+			this._logger[level](msg, error);
+		} else {
+			if (level === 'error') { console.error(msg, error ?? ''); }
+			else if (level === 'warn') { console.warn(msg); }
+			else { console.log(msg); }
+		}
 	}
 
 	// ─── Dependency Injection ──────────────────────────────────────────────────
@@ -960,16 +996,24 @@ export class ContextManager implements IContextManager {
 				}
 			}
 
-			const trimmed = summary.trim();
-			if (trimmed) {
-				return trimmed;
-			}
-			// 空响应 → fallback
-			return this._buildFallbackSummary(messages, existingSummary);
-		} catch (error) {
-			console.error('[ContextManager] Structured summary generation failed, using fallback:', error);
-			return this._buildFallbackSummary(messages, existingSummary);
+		const trimmed = summary.trim();
+		if (trimmed) {
+			return trimmed;
 		}
+		// 空响应 → fallback
+		this._log('warn',
+			`[ContextManager][Compression] Summary LLM returned empty, using fallback summary. ` +
+			`model=${this._config.summaryModelId || this._modelId} messages=${messages.length}`
+		);
+		return this._buildFallbackSummary(messages, existingSummary);
+	} catch (error) {
+		this._log('warn',
+			`[ContextManager][Compression] Summary LLM call failed, using fallback summary. ` +
+			`model=${this._config.summaryModelId || this._modelId} error=${error instanceof Error ? error.message : String(error)}`,
+			error
+		);
+		return this._buildFallbackSummary(messages, existingSummary);
+	}
 	}
 
 	/**
@@ -1556,6 +1600,8 @@ ${conversationText}
 	private static readonly TAIL_BUDGET_RATIO = 0.20;
 	/** 保护尾硬保底条数（即使预算很小也至少保留这么多条）。 */
 	private static readonly TAIL_MIN_MESSAGES = 3;
+	/** 保护尾硬顶条数（防止 tail 过大导致无中间段可压缩）。 */
+	private static readonly TAIL_MAX_MESSAGES = 15;
 	/** 上下文窗口硬地板：低于此值按此值计算阈值，避免小窗口频繁压缩。 */
 	private static readonly MINIMUM_CONTEXT_WINDOW = 64000;
 	/** 摘要 LLM 调用的最大输出 token。 */
@@ -1569,6 +1615,20 @@ ${conversationText}
 	private static readonly MAX_INEFFECTIVE_COMPRESSIONS = 2;
 	/** P2 anti-thrashing：一次压缩 token 节省比例低于此值视为"低效"。 */
 	private static readonly MIN_EFFECTIVE_SAVING_RATIO = 0.10;
+	/** P2 anti-thrashing reset：真实 token 较上次压缩增长超过此比例时，重置低效计数。
+	 *  原因：estimatedTokens（char/4 粗估）与 realPromptTokens 可能有 3-4 倍偏差，
+	 *  导致 savingRatio 基于粗估计算时虚低。当真实 token 已大幅增长，说明有新内容可压缩，
+	 *  应重置 anti-thrashing 允许再次尝试。 */
+	private static readonly REAL_TOKEN_GROWTH_RESET_THRESHOLD = 0.25;
+	/** 压缩冷却期（毫秒）。上次压缩后此时间内不再次压缩，避免频繁压缩抖动。 */
+	private static readonly COMPRESSION_COOLDOWN_MS = 60_000;
+	/** 重新压缩的增量 token 阈值比例（占上下文窗口）。
+	 *  检测到已有摘要时，自上次压缩以来的增量 token 低于此比例则跳过重新压缩，
+	 *  解决窗口重载后 ContextManager 内存状态丢失导致每次都重新压缩的问题。
+	 *  与增量消息数门槛（minMessagesToCompress）联合判定，两者均达标才允许重新压缩。 */
+	private static readonly RECOMPRESSION_DELTA_TOKEN_RATIO = 0.10;
+	/** 嵌入摘要消息中的压缩元数据标记前缀，格式：<!-- saros-compaction: msgCount=X estTokens=Y ts=Z --> */
+	private static readonly COMPRESSION_META_PATTERN = /<!-- saros-compaction: msgCount=(\d+) estTokens=(\d+) ts=(\d+) -->/;
 
 	/**
 	 * Compress context to reduce token usage (Hermes 三段式).
@@ -1626,13 +1686,26 @@ ${conversationText}
 			ineffectiveCompressionCount: this._ineffectiveCompressionCount,
 		};
 
-		const noop = (reason: string): IContextCompressionResult => ({
-			originalMessageCount: messages.length,
-			compressedMessageCount: messages.length,
-			summary: '',
-			compressedMessages: [...messages],
-			metadata: { compressionRatio: 1.0, skipped: reason, ...diagnostics },
-		});
+			const noop = (reason: string): IContextCompressionResult => {
+			// ── 诊断日志：跳过压缩时输出 warn，解释"为什么没触发" ──
+			this._log('warn',
+				`[ContextManager][Compression] SKIPPED reason=${reason} | ` +
+				`effectiveTokens=${effectiveTokens} thresholdTokens=${thresholdTokens} ` +
+				`(window=${effectiveWindow}×${compressionConfig.compressionThreshold}) | ` +
+				`tokenSource=${hasRealUsage ? 'real_usage' : 'rough_estimate'} ` +
+				`realPromptTokens=${hasRealUsage ? realPromptTokens! : 'null'} ` +
+				`estimatedTokens=${estimatedTokens} | ` +
+				`messageCount=${messages.length} minMessagesToCompress=${compressionConfig.minMessagesToCompress} | ` +
+				`ineffectiveCompressionCount=${this._ineffectiveCompressionCount}`
+			);
+			return {
+				originalMessageCount: messages.length,
+				compressedMessageCount: messages.length,
+				summary: '',
+				compressedMessages: [...messages],
+				metadata: { compressionRatio: 1.0, skipped: reason, ...diagnostics },
+			};
+		};
 
 		// 触发条件：token 超阈值 且 消息数达到下限。区分具体跳过原因便于诊断。
 		// P1: 用 effectiveTokens（真实优先）而非纯粗估判定。
@@ -1647,13 +1720,90 @@ ${conversationText}
 			return noop(reason);
 		}
 
+		// P4: 窗口重载后防止重复压缩 —— 基于摘要嵌入的元数据判断增量
+		// ContextManager 每次 runAgentLoop 新建，_lastCompressionTime 等内存状态丢失。
+		// 但摘要 system 消息随消息历史持久化，其中嵌入了上次压缩时的 msgCount/estTokens。
+		// 检测到已有摘要时，解析元数据计算增量；增量不足则跳过压缩，避免窗口重载后
+		// 每次都要重新压缩一遍已经压缩过的内容（原方案仅设 60 秒冷却期，过期后仍会重压）。
+		if (this._lastCompressionTime === 0) {
+			const summaryMsg = messages.find(m => this._isSummaryMessage(m));
+			if (summaryMsg) {
+				const meta = this._extractCompressionMeta(summaryMsg);
+				if (meta) {
+					const deltaMsgCount = messages.length - meta.msgCount;
+					const currentEstTokens = this._estimateTokens(messages as any);
+					const deltaTokens = Math.max(0, currentEstTokens - meta.estTokens);
+					const deltaTokenThreshold = effectiveWindow * ContextManager.RECOMPRESSION_DELTA_TOKEN_RATIO;
+					// 双重门槛：增量消息数 AND 增量 token 均需达标才允许重新压缩。
+					// 避免窗口重载后 head+tail 本身就占大量 token 导致误触发重新压缩。
+					if (deltaMsgCount < compressionConfig.minMessagesToCompress && deltaTokens < deltaTokenThreshold) {
+						this._lastCompressionTime = Date.now();
+						this._log('info',
+							`[ContextManager][Compression] EXISTING_SUMMARY_VALID: ` +
+							`deltaMsgCount=${deltaMsgCount} < ${compressionConfig.minMessagesToCompress}, ` +
+							`deltaTokens=${deltaTokens} < ${deltaTokenThreshold.toFixed(0)} ` +
+							`(meta: msgCount=${meta.msgCount} estTokens=${meta.estTokens}) ` +
+							`→ skipping re-compression (window reloaded with existing summary, no significant delta)`
+						);
+						return noop('existing_summary_valid');
+					}
+				this._log('info',
+					`[ContextManager][Compression] EXISTING_SUMMARY_STALE: ` +
+					`deltaMsgCount=${deltaMsgCount} (threshold=${compressionConfig.minMessagesToCompress}), ` +
+					`deltaTokens=${deltaTokens} (threshold=${deltaTokenThreshold.toFixed(0)}) ` +
+					`→ proceeding with re-compression (iterative summary to merge new content)`
+				);
+				// 增量充足：不设 _lastCompressionTime，让压缩流程继续执行（P3 冷却期
+				// 仅在 _lastCompressionTime > 0 时拦截，此处保持 0 让压缩通过）。
+				// 压缩成功后由方法末尾统一设置 _lastCompressionTime 触发后续防抖。
+				} else {
+					// 有摘要但无元数据（旧版本生成的摘要）—— 无法计算增量，
+					// 直接允许压缩流程继续（回退到 P4 添加前的行为），生成带元数据的新摘要。
+					// 不设冷却期，避免阻止迭代摘要。
+					this._log('info',
+						`[ContextManager][Compression] Existing summary detected (no embedded meta) — proceeding with compression to generate meta-enriched summary`
+					);
+				}
+			}
+		}
+
+		// P3: 冷却期检查。上次压缩后 60 秒内不再次压缩，避免压缩后几条消息又超阈值
+		// 导致频繁压缩抖动。仅在已有压缩历史时生效（首次压缩不受限）。
+		if (this._lastCompressionTime > 0) {
+			const elapsed = Date.now() - this._lastCompressionTime;
+			if (elapsed < ContextManager.COMPRESSION_COOLDOWN_MS) {
+				return noop(`cooldown (${Math.round((ContextManager.COMPRESSION_COOLDOWN_MS - elapsed) / 1000)}s remaining)`);
+			}
+		}
+
 		// P2: anti-thrashing 防抖。连续 N 次压缩均"低效"（节省比例 < 阈值）后，
 		// 说明已无可压缩空间（如全是受保护的头尾 + 不可再小的摘要），继续压缩只是
 		// 反复抖动、空耗 LLM 摘要调用。此时直接 noop，直到真实 usage 再次显著增长
 		// （update 真实 token 时由调用方/下次有效压缩自然重置计数）。对齐 Hermes
 		// _ineffective_compression_count >= 2。
+		//
+		// P3 修复：estimatedTokens（char/4 粗估）与 realPromptTokens 可能有 3-4 倍偏差，
+		// 导致 savingRatio 虚低 → anti_thrashing 误触发 → 真实 token 持续增长却无法压缩。
+		// 修复：当 realPromptTokens 较上次压缩增长 > 25% 时，重置低效计数，允许再次尝试。
 		if (this._ineffectiveCompressionCount >= ContextManager.MAX_INEFFECTIVE_COMPRESSIONS) {
-			return noop('anti_thrashing');
+			if (hasRealUsage && this._lastCompressRealTokens !== null) {
+				const growthRatio = (realPromptTokens! - this._lastCompressRealTokens) / this._lastCompressRealTokens;
+				if (growthRatio >= ContextManager.REAL_TOKEN_GROWTH_RESET_THRESHOLD) {
+					this._ineffectiveCompressionCount = 0;
+					this._log('info',
+						`[ContextManager][Compression] ANTI_THRASHING RESET: ` +
+						`realTokens grew ${ (growthRatio * 100).toFixed(1)}% ` +
+						`(${this._lastCompressRealTokens}→${realPromptTokens}) ` +
+						`≥ ${ContextManager.REAL_TOKEN_GROWTH_RESET_THRESHOLD * 100}% → ` +
+						`ineffectiveCompressionCount reset to 0, retrying compression`
+					);
+					// 不 return，继续往下执行压缩
+				} else {
+					return noop('anti_thrashing');
+				}
+			} else {
+				return noop('anti_thrashing');
+			}
 		}
 
 		// ── 1. 拆分三段 ──────────────────────────────────────────────
@@ -1669,7 +1819,8 @@ ${conversationText}
 		const tail = this._selectTailByBudget(
 			conversation.slice(headCount),
 			tailBudget,
-			ContextManager.TAIL_MIN_MESSAGES
+			ContextManager.TAIL_MIN_MESSAGES,
+			ContextManager.TAIL_MAX_MESSAGES
 		);
 
 		// 中间段 = 既不在头也不在尾的旧消息
@@ -1678,6 +1829,14 @@ ${conversationText}
 
 		if (middle.length === 0) {
 			// 没有可压缩的中间段（头尾已覆盖全部）→ 不压缩
+			this._log('warn',
+				`[ContextManager][Compression] nothing_to_compress: ` +
+				`conversation=${conversation.length} head=${head.length} tail=${tail.length} ` +
+				`→ head+tail 已覆盖全部对话，无中间段可压缩。` +
+				`PROTECT_FIRST_N=${ContextManager.PROTECT_FIRST_N} ` +
+				`TAIL_BUDGET_RATIO=${ContextManager.TAIL_BUDGET_RATIO} ` +
+				`tailBudget=${tailBudget.toFixed(0)} tokens`
+			);
 			return noop('nothing_to_compress');
 		}
 
@@ -1687,6 +1846,7 @@ ${conversationText}
 		const summary = await this._generateStructuredSummary(prunedMiddle, existingSummary);
 
 		// ── 3. 重组：保护头(system) + 摘要 + 保护头(对话) + 保护尾 ──────
+		// 先构造不含元数据的摘要消息，待 sanitized + token 计算完成后回填元数据。
 		const summaryMessage = {
 			role: 'system',
 			content: `${ContextManager.SUMMARY_PREFIX}\n\n${summary}`,
@@ -1702,6 +1862,12 @@ ${conversationText}
 		const sanitized = this._sanitizeToolPairs(compressedMessages);
 		const estimatedTokensAfter = this._estimateTokens(sanitized as any);
 
+		// 回填压缩元数据到摘要消息（随消息历史持久化，供窗口重载后增量判断）。
+		// summaryMessage 与 sanitized 中的摘要消息是同一对象引用，修改 content 同步生效。
+		// 元数据格式为 HTML 注释，不影响 LLM 理解摘要内容。
+		const compressionMetaComment = `<!-- saros-compaction: msgCount=${sanitized.length} estTokens=${estimatedTokensAfter} ts=${Date.now()} -->`;
+		summaryMessage.content = `${ContextManager.SUMMARY_PREFIX}\n${compressionMetaComment}\n\n${summary}`;
+
 		// P2: anti-thrashing 计数更新。以 token 节省比例衡量本次压缩是否"有效"。
 		// 节省 < MIN_EFFECTIVE_SAVING_RATIO（10%）记为一次低效压缩，连续累计；
 		// 一旦有一次有效压缩立即清零。达到上限后由上方判定拦截后续压缩。
@@ -1710,9 +1876,23 @@ ${conversationText}
 			: 0;
 		if (savingRatio < ContextManager.MIN_EFFECTIVE_SAVING_RATIO) {
 			this._ineffectiveCompressionCount++;
+			this._log('warn',
+				`[ContextManager][Compression] LOW-EFFICIENCY: savingRatio=${(savingRatio * 100).toFixed(1)}% ` +
+				`< ${ContextManager.MIN_EFFECTIVE_SAVING_RATIO * 100}% → ` +
+				`ineffectiveCompressionCount=${this._ineffectiveCompressionCount}/${ContextManager.MAX_INEFFECTIVE_COMPRESSIONS} ` +
+				`(tokens: ${estimatedTokens}→${estimatedTokensAfter}, saved=${estimatedTokens - estimatedTokensAfter})`
+			);
 		} else {
 			this._ineffectiveCompressionCount = 0;
+			this._log('info',
+				`[ContextManager][Compression] EFFECTIVE: savingRatio=${(savingRatio * 100).toFixed(1)}% ` +
+				`→ ineffectiveCompressionCount reset to 0`
+			);
 		}
+
+		// P3: 记录本次压缩时的真实 token 数，用于后续 anti-thrashing 增长重置判定。
+		this._lastCompressRealTokens = hasRealUsage ? realPromptTokens! : effectiveTokens;
+		this._lastCompressionTime = Date.now();
 
 		return {
 			originalMessageCount: messages.length,
@@ -1743,7 +1923,8 @@ ${conversationText}
 	private _selectTailByBudget(
 		candidates: ReadonlyArray<ChatMessage>,
 		tokenBudget: number,
-		minMessages: number
+		minMessages: number,
+		maxMessages: number
 	): ChatMessage[] {
 		if (candidates.length === 0) {
 			return [];
@@ -1755,7 +1936,9 @@ ${conversationText}
 			const msgTokens = this._estimateTokens([msg] as any);
 			const withinBudget = usedTokens + msgTokens <= tokenBudget;
 			const belowMin = tail.length < minMessages;
-			if (withinBudget || belowMin) {
+			const belowMax = tail.length < maxMessages;
+			// 修复：belowMin 阶段强制保留；之后必须同时满足预算和最大条数
+			if (belowMin || (withinBudget && belowMax)) {
 				tail.unshift(msg);
 				usedTokens += msgTokens;
 			} else {
@@ -1802,13 +1985,33 @@ ${conversationText}
 			&& m.content.startsWith(ContextManager.SUMMARY_PREFIX);
 	}
 
-	/** 从既有 system 消息中提取上一轮摘要正文（用于迭代摘要）。 */
+	/** 从既有 system 消息中提取上一轮摘要正文（用于迭代摘要）。
+	 *  自动去除嵌入的压缩元数据注释行，只保留摘要正文。 */
 	private _extractExistingSummary(systemMessages: ReadonlyArray<ChatMessage>): string {
 		const prev = systemMessages.find(m => this._isSummaryMessage(m));
 		if (!prev) {
 			return '';
 		}
-		return (prev.content || '').slice(ContextManager.SUMMARY_PREFIX.length).trim();
+		let body = (prev.content || '').slice(ContextManager.SUMMARY_PREFIX.length);
+		// 去除嵌入的压缩元数据注释行
+		body = body.replace(ContextManager.COMPRESSION_META_PATTERN, '').trim();
+		return body;
+	}
+
+	/** 从摘要消息中解析压缩元数据（msgCount/estTokens/ts）。
+	 *  元数据在压缩时嵌入摘要消息 content，随消息历史持久化，
+	 *  窗口重载后用于计算增量判断是否需要重新压缩。 */
+	private _extractCompressionMeta(message: ChatMessage): { msgCount: number; estTokens: number; ts: number } | undefined {
+		const content = typeof message.content === 'string' ? message.content : '';
+		const match = content.match(ContextManager.COMPRESSION_META_PATTERN);
+		if (!match) {
+			return undefined;
+		}
+		return {
+			msgCount: parseInt(match[1], 10),
+			estTokens: parseInt(match[2], 10),
+			ts: parseInt(match[3], 10),
+		};
 	}
 
 	/**

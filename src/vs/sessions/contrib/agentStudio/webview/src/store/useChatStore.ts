@@ -1,13 +1,30 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Chat Store (Zustand)
+ *
+ *  Phase 2: Chat streaming is now handled natively by NativeChatEditorPane.
+ *  This store is retained ONLY for workflow trace state (liveWorkflowExecutions,
+ *  liveWorkflowEvents, etc.) used by the WorkflowEditorPanel and index.tsx.
+ *  The streamHandler import has been replaced with inline no-op stubs.
  *--------------------------------------------------------------------------------------------*/
 
 
 /* eslint-disable local/code-no-unexternalized-strings */
 import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
-import { subscribeStream, onStreamComplete, getStreamState, resetStream, resetStreamSilent, switchActiveStream, buildChatMessagesFromState, type StreamState, type StreamError, isPhaseActive } from '../bridge/streamHandler';
 import { useAgentStore } from './useAgentStore';
+
+// ── streamHandler stubs (Phase 2: streamHandler.ts deleted) ──
+// These were chat streaming functions. Chat is now native; these are no-ops.
+interface StreamState { [key: string]: unknown }
+interface StreamError { [key: string]: unknown }
+function subscribeStream(_a: string, _b: string, _h: object): () => void { return () => {}; }
+function onStreamComplete(_a: string, _m: unknown): void {}
+function getStreamState(_a: string): StreamState | null { return null; }
+function resetStream(_a: string): void {}
+function resetStreamSilent(_a: string): void {}
+function switchActiveStream(_a: string): void {}
+function buildChatMessagesFromState(): unknown[] { return []; }
+function isPhaseActive(_p: string): boolean { return false; }
 
 /**
  * Phantom tool names — DEPRECATED: visibility is now controlled solely by
@@ -861,10 +878,24 @@ export const useChatStore = create<ChatState>((set, get) => {
 			};
 			// Atomically commit the new message AND the reset streamState
 			// so React never sees "no streaming bubble + no message" in between.
+			// 如果本轮触发了上下文压缩，在助手消息之前插入压缩提示系统消息，
+			// 让压缩提示卡片在流结束后仍然保留在聊天历史中。
+			const compressionMsg: ChatMessage | null = finalState.compressionInfo ? {
+				id: `compression_${Date.now()}`,
+				role: 'system',
+				content: `📦 上下文已压缩：${finalState.compressionInfo.originalCount} 条消息 → ${finalState.compressionInfo.compressedCount} 条消息` +
+					(finalState.compressionInfo.tokensSaved > 0
+						? ` · 节省 ${finalState.compressionInfo.tokensSaved.toLocaleString()} tokens`
+						: ''),
+				timestamp: new Date(finalState.compressionInfo.timestamp).toISOString(),
+			} : null;
 			set(state => {
 				console.log('[ChatStore] Committing assistant message, current messages count:', state.messages.length, ', new msg id:', assistantMessage.id);
+				const newMsgs = compressionMsg
+					? [...state.messages, compressionMsg, assistantMessage]
+					: [...state.messages, assistantMessage];
 				return {
-					messages: [...state.messages, assistantMessage],
+					messages: newMsgs,
 					streamState: getStreamState(),
 				};
 			});

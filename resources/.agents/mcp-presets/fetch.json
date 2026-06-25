@@ -1,0 +1,10 @@
+{
+  "id": "fetch",
+  "name": "Fetch",
+  "description": "HTTP request tool for fetching web content",
+  "transportType": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-fetch"
+  ]
+}

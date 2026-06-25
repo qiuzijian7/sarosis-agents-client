@@ -1,0 +1,26 @@
+{
+  "name": "send_message",
+  "description": "Send a message to a user on a connected messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, etc.).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "platform": {
+        "type": "string",
+        "description": "Messaging platform (e.g., \"telegram\", \"discord\", \"slack\")"
+      },
+      "chat_id": {
+        "type": "string",
+        "description": "Chat/channel ID to send to"
+      },
+      "text": {
+        "type": "string",
+        "description": "Message text"
+      }
+    },
+    "required": [
+      "text"
+    ]
+  },
+  "category": "messaging",
+  "source": "hermes-bundled"
+}

@@ -111,7 +111,7 @@ function buildUpdateResponse(release, requestCommit) {
     if (requestCommit !== release.tag) {
         // 尝试从 description 中提取下载 URL（markdown 链接格式）
         let url;
-        const urlMatch = desc.match(/\[VsSarosisUserSetup\.exe\]\(([^)]+)\)/);
+        const urlMatch = desc.match(/\[VsSarosUserSetup\.exe\]\(([^)]+)\)/);
         if (urlMatch) {
             url = urlMatch[1];
         }

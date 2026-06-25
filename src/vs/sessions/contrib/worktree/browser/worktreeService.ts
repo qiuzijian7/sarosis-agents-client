@@ -63,7 +63,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	readonly selectedWorktree = this._selectedWorktree;
 
 	setSelectedWorktree(selection: ISelectedWorktree | undefined): void {
-		console.log('[WT-DIAG][service] setSelectedWorktree called. instanceId=', (this as any)._diagId ?? ((this as any)._diagId = Math.random().toString(36).slice(2, 8)), 'selection=', JSON.stringify(selection));
+
 		this._selectedWorktree.set(selection, undefined);
 	}
 
@@ -110,12 +110,12 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async getRepositoryRoot(): Promise<string | undefined> {
 		if (this._repositoryRoot !== undefined) {
-			this.logService.info(`[WorktreeService] getRepositoryRoot: cached "${this._repositoryRoot}"`);
+			this.logService.debug(`[WorktreeService] getRepositoryRoot: cached "${this._repositoryRoot}"`);
 			return this._repositoryRoot;
 		}
 
 		const folders = this.workspaceContextService.getWorkspace().folders;
-		this.logService.info(`[WorktreeService] getRepositoryRoot: workspace folders count=${folders.length}`);
+		this.logService.debug(`[WorktreeService] getRepositoryRoot: workspace folders count=${folders.length}`);
 		if (folders.length === 0) {
 			this.logService.error('[WorktreeService] getRepositoryRoot: no workspace folders!');
 			return undefined;
@@ -128,7 +128,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				const stat = await this.fileService.stat(gitPath);
 				if (stat) {
 					this._repositoryRoot = folder.uri.fsPath;
-					this.logService.info(`[WorktreeService] getRepositoryRoot: found .git at "${folder.uri.fsPath}", repoRoot="${this._repositoryRoot}"`);
+					this.logService.debug(`[WorktreeService] getRepositoryRoot: found .git at "${folder.uri.fsPath}", repoRoot="${this._repositoryRoot}"`);
 					return this._repositoryRoot;
 				}
 			} catch {
@@ -142,14 +142,14 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async getAllRepositoryRoots(): Promise<string[]> {
 		const folders = this.workspaceContextService.getWorkspace().folders;
-		this.logService.info(`[WorktreeService] getAllRepositoryRoots: workspace folders count=${folders.length}`);
+		this.logService.debug(`[WorktreeService] getAllRepositoryRoots: workspace folders count=${folders.length}`);
 		if (folders.length === 0) {
 			this.logService.warn('[WorktreeService] getAllRepositoryRoots: no workspace folders');
 			return [];
 		}
 
 		const roots = await this.filterGitRepositoryRoots(folders.map(f => f.uri.fsPath));
-		this.logService.info(`[WorktreeService] getAllRepositoryRoots: ${roots.length} repo root(s)`);
+		this.logService.debug(`[WorktreeService] getAllRepositoryRoots: ${roots.length} repo root(s)`);
 		return roots;
 	}
 
@@ -170,7 +170,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				if (stat) {
 					seen.add(norm);
 					roots.push(fsPath);
-					this.logService.info(`[WorktreeService] filterGitRepositoryRoots: found .git at "${fsPath}"`);
+					this.logService.debug(`[WorktreeService] filterGitRepositoryRoots: found .git at "${fsPath}"`);
 				}
 			} catch {
 				// No .git in this folder, skip
@@ -181,11 +181,11 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async listWorktrees(repoPath: string): Promise<IWorktreeDetail[]> {
 		try {
-			this.logService.info(`[WorktreeService] listWorktrees: repoPath="${repoPath}"`);
+			this.logService.debug(`[WorktreeService] listWorktrees: repoPath="${repoPath}"`);
 			const output = await this.execGit(repoPath, ['worktree', 'list', '--porcelain']);
-			this.logService.info(`[WorktreeService] listWorktrees: output="${output}"`);
+			this.logService.debug(`[WorktreeService] listWorktrees: output="${output}"`);
 			const result = this.parseWorktreeList(output, repoPath);
-			this.logService.info(`[WorktreeService] listWorktrees: parsed ${result.length} worktrees`);
+			this.logService.debug(`[WorktreeService] listWorktrees: parsed ${result.length} worktrees`);
 			return result;
 		} catch (e) {
 			this.logService.error('[WorktreeService] Failed to list worktrees:', e);
@@ -221,7 +221,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	// ─── Two-phase creation (opencode pattern) ──────────────────────────────────
 
 	async makeWorktreeInfo(options?: IWorktreeInfoOptions): Promise<IWorktreeInfo> {
-		this.logService.info('[WorktreeService] makeWorktreeInfo: called', { options });
+		this.logService.debug('[WorktreeService] makeWorktreeInfo: called', { options });
 		const repoRoot = await this.getRepositoryRoot();
 		if (!repoRoot) {
 			throw new Error('No git repository found');
@@ -236,7 +236,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		// Branch naming: use options.branch if provided, otherwise default to "worktree/<slug>"
 		const branch = options?.detached ? undefined : (options?.branch || `worktree/${name}`);
-		this.logService.info('[WorktreeService] makeWorktreeInfo: computed', { name, branch, detached: options?.detached });
+		this.logService.debug('[WorktreeService] makeWorktreeInfo: computed', { name, branch, detached: options?.detached });
 
 		// Directory: <repoRoot>/.worktrees/<name>
 		// The worktree lives inside the git repository root (the folder that
@@ -260,7 +260,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				await this.fileService.stat(dirUri);
 				// Directory exists, need to add suffix
 				conflict = true;
-				this.logService.info(`[WorktreeService] makeWorktreeInfo: directory exists, will add suffix: ${finalDirectory}`);
+				this.logService.debug(`[WorktreeService] makeWorktreeInfo: directory exists, will add suffix: ${finalDirectory}`);
 			} catch {
 				// Directory doesn't exist — good
 			}
@@ -271,7 +271,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 					await this.execGit(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${finalBranch}`]);
 					// Branch exists, need to add suffix
 					conflict = true;
-					this.logService.info(`[WorktreeService] makeWorktreeInfo: branch exists, will add suffix: ${finalBranch}`);
+					this.logService.debug(`[WorktreeService] makeWorktreeInfo: branch exists, will add suffix: ${finalBranch}`);
 				} catch {
 					// Branch doesn't exist — good
 				}
@@ -308,7 +308,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			// Directory exists, good
 		} catch {
 			// Directory doesn't exist, create it
-			this.logService.info(`[WorktreeService] Creating .worktrees directory: ${worktreeBaseUri.fsPath}`);
+			this.logService.debug(`[WorktreeService] Creating .worktrees directory: ${worktreeBaseUri.fsPath}`);
 			await this.fileService.createFolder(worktreeBaseUri);
 		}
 
@@ -349,7 +349,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 			// Mark as ready
 			this.setWorktreeState(info.directory, WorktreeStatus.Ready);
-			this.logService.info(`[WorktreeService] Worktree boot complete: ${info.directory}`);
+			this.logService.debug(`[WorktreeService] Worktree boot complete: ${info.directory}`);
 		} catch (e) {
 			const message = e instanceof Error ? e.message : String(e);
 			this.setWorktreeState(info.directory, WorktreeStatus.Failed, message);
@@ -444,7 +444,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			const worktrees = await this.listWorktrees(repoRoot);
 			const stillExists = worktrees.some(w => w.path === worktreePath);
 			if (!stillExists) {
-				this.logService.info('[WorktreeService] Worktree already removed from git list');
+				this.logService.debug('[WorktreeService] Worktree already removed from git list');
 			} else {
 				throw e; // Re-throw if it still exists
 			}
@@ -456,7 +456,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			const stat = await this.fileService.stat(dirUri);
 			if (stat) {
 				await this.fileService.del(dirUri, { recursive: true });
-				this.logService.info(`[WorktreeService] Cleaned up residual directory: ${worktreePath}`);
+				this.logService.debug(`[WorktreeService] Cleaned up residual directory: ${worktreePath}`);
 			}
 		} catch {
 			// Directory already gone, that's fine
@@ -469,7 +469,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			if (worktreeName) {
 				const branchName = `opencode/${worktreeName}`;
 				await this.execGit(repoRoot, ['branch', '-D', branchName]);
-				this.logService.info(`[WorktreeService] Deleted branch: ${branchName}`);
+				this.logService.debug(`[WorktreeService] Deleted branch: ${branchName}`);
 			}
 		} catch {
 			// Branch may not exist or may be the current branch — ignore
@@ -585,7 +585,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	private async execGit(cwd: string, args: string[]): Promise<string> {
 		try {
-			this.logService.info(`[WorktreeService] execGit: git ${args.join(' ')} (cwd: ${cwd})`);
+			this.logService.debug(`[WorktreeService] execGit: git ${args.join(' ')} (cwd: ${cwd})`);
 
 			// Use the ipcRenderer bridge exposed by the Electron preload script
 			// to invoke the 'vscode:execGit' handler in the main process.
@@ -593,7 +593,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			if (vscodeBridge?.ipcRenderer?.invoke) {
 				let result: { success: boolean; stdout: string; stderr: string; exitCode: number } | undefined;
 				try {
-					this.logService.info('[WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge');
+					this.logService.debug('[WorktreeService] execGit: using vscode.ipcRenderer.invoke bridge');
 					result = await vscodeBridge.ipcRenderer.invoke('vscode:execGit', cwd, args);
 				} catch (invokeErr) {
 					// ONLY a genuine IPC transport failure lands here — fall through to the
@@ -610,12 +610,12 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 					// OUTSIDE the try above, so real git errors propagate verbatim to the caller.
 					if (result !== undefined) {
 						if (result.success) {
-							this.logService.info(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
+							this.logService.debug(`[WorktreeService] execGit: success, stdout length=${result.stdout.length}`);
 							return result.stdout;
 						}
 					// Use info (not warn/error) because non-zero exit codes are normal git behavior
 					// (e.g. "no upstream configured", "no changes", etc.) and are handled by callers.
-					this.logService.info(`[WorktreeService] execGit: git exited with code ${result.exitCode}, stderr="${result.stderr}"`);
+					this.logService.debug(`[WorktreeService] execGit: git exited with code ${result.exitCode}, stderr="${result.stderr}"`);
 					throw new Error(result.stderr || `git exited with code ${result.exitCode}`);
 					}
 			}
@@ -623,7 +623,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 			// Fallback: use Node.js child_process if available in this context
 			// (Electron renderer with nodeIntegration or contextBridge)
 			if (typeof process !== 'undefined' && (process as any).versions?.electron) {
-				this.logService.info('[WorktreeService] execGit: falling back to child_process.spawn');
+				this.logService.debug('[WorktreeService] execGit: falling back to child_process.spawn');
 				return await this._execGitNodeFallback(cwd, args);
 			}
 
@@ -633,7 +633,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 		} catch (err) {
 			// Use info (not warn): most errors here are expected git command failures (non-zero exit)
 			// which are already logged above; unexpected errors (IPC failure, etc.) are rare.
-			this.logService.info('[WorktreeService] execGit: error:', err);
+			this.logService.debug('[WorktreeService] execGit: error:', err);
 			throw err;
 		}
 	}
@@ -644,7 +644,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				// In Electron renderer, we can require child_process through the node integration
 				// eslint-disable-next-line local/code-import-patterns
 				const cp = require('child_process') as typeof import('child_process');
-				this.logService.info(`[WorktreeService] _execGitNodeFallback: spawning git ${args.join(' ')} in ${cwd}`);
+				this.logService.debug(`[WorktreeService] _execGitNodeFallback: spawning git ${args.join(' ')} in ${cwd}`);
 				const child = cp.spawn('git', args, {
 					cwd,
 					env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -664,7 +664,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 				child.on('close', (code) => {
 					if (code === 0) {
-						this.logService.info(`[WorktreeService] _execGitNodeFallback: success, stdout length=${stdout.length}`);
+						this.logService.debug(`[WorktreeService] _execGitNodeFallback: success, stdout length=${stdout.length}`);
 						resolve(stdout);
 					} else {
 						this.logService.error(`[WorktreeService] _execGitNodeFallback: failed, code=${code}, stderr="${stderr}"`);
@@ -859,7 +859,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async getWorktreeChanges(worktreePath: string): Promise<readonly { filePath: string; status: 'added' | 'modified' | 'deleted' }[]> {
 		try {
-			this.logService.info(`[WorktreeService] getWorktreeChanges: ${worktreePath}`);
+			this.logService.debug(`[WorktreeService] getWorktreeChanges: ${worktreePath}`);
 
 			// Use git status --porcelain to get ALL changed files (staged + unstaged + untracked)
 			const output = await this.execGit(worktreePath, ['status', '--porcelain']);
@@ -893,7 +893,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				changes.push({ filePath, status });
 			}
 
-			this.logService.info(`[WorktreeService] getWorktreeChanges: ${changes.length} changed file(s)`);
+			this.logService.debug(`[WorktreeService] getWorktreeChanges: ${changes.length} changed file(s)`);
 			return changes;
 		} catch (e) {
 			this.logService.error('[WorktreeService] getWorktreeChanges failed:', e);
@@ -903,7 +903,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async refreshWorktreeMetadata(worktreePath: string): Promise<void> {
 		try {
-			this.logService.info(`[WorktreeService] refreshWorktreeMetadata: ${worktreePath}`);
+			this.logService.debug(`[WorktreeService] refreshWorktreeMetadata: ${worktreePath}`);
 
 			// Re-fetch metadata (result can be used to update cache if needed)
 			await this.getWorktreeMetadata(worktreePath);
@@ -914,7 +914,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 				status: WorktreeStatus.Ready,
 			});
 
-			this.logService.info(`[WorktreeService] refreshWorktreeMetadata: completed`);
+			this.logService.debug(`[WorktreeService] refreshWorktreeMetadata: completed`);
 		} catch (e) {
 			this.logService.error('[WorktreeService] refreshWorktreeMetadata failed:', e);
 		}
@@ -933,7 +933,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async notifyRequestStart(sessionId: string, worktreePath: string): Promise<void> {
 		try {
-			this.logService.info(`[WorktreeService] notifyRequestStart: session=${sessionId}, worktree=${worktreePath}`);
+			this.logService.debug(`[WorktreeService] notifyRequestStart: session=${sessionId}, worktree=${worktreePath}`);
 
 		// Lazily get the checkpoint service
 		const checkpointService = this._instantiationService?.invokeFunction((accessor: any) => {
@@ -946,7 +946,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		if (checkpointService) {
 			await checkpointService.createBaselineCheckpoint(sessionId, worktreePath);
-			this.logService.info(`[WorktreeService] notifyRequestStart: baseline checkpoint created`);
+			this.logService.debug(`[WorktreeService] notifyRequestStart: baseline checkpoint created`);
 		} else {
 			this.logService.warn(`[WorktreeService] notifyRequestStart: WorktreeCheckpointService not available`);
 		}
@@ -957,7 +957,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 	async notifyRequestComplete(sessionId: string, worktreePath: string, requestId: string): Promise<void> {
 		try {
-			this.logService.info(`[WorktreeService] notifyRequestComplete: session=${sessionId}, request=${requestId}`);
+			this.logService.debug(`[WorktreeService] notifyRequestComplete: session=${sessionId}, request=${requestId}`);
 
 		// Lazily get the checkpoint service
 		const checkpointService = this._instantiationService?.invokeFunction((accessor: any) => {
@@ -970,7 +970,7 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 
 		if (checkpointService) {
 			await checkpointService.createPostTurnCheckpoint(sessionId, worktreePath, requestId);
-			this.logService.info(`[WorktreeService] notifyRequestComplete: post-turn checkpoint created`);
+			this.logService.debug(`[WorktreeService] notifyRequestComplete: post-turn checkpoint created`);
 		} else {
 			this.logService.warn(`[WorktreeService] notifyRequestComplete: WorktreeCheckpointService not available`);
 		}

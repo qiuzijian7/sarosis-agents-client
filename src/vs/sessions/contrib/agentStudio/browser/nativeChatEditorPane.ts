@@ -10,12 +10,22 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService, GroupsOrder } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
+import { CompressionDetailEditorInput } from './compressionDetailEditorInput.js';
+import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
+import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
+import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
@@ -24,7 +34,9 @@ import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo, ILiveWorkflowAskUser } from '../../../browser/agentChat/agentChatTypes.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo, ILiveWorkflowAskUser, IContextUsage } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
@@ -81,6 +93,11 @@ export class NativeChatEditorPane extends EditorPane {
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IWorkflowExecutionService private readonly _workflowExecutionService: IWorkflowExecutionService,
+		@IEditorService private readonly _editorService: IEditorService,
+		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
+		@IFileService private readonly _fileService: IFileService,
+		@IModelService private readonly _modelService: IModelService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -129,32 +146,46 @@ export class NativeChatEditorPane extends EditorPane {
 					};
 					this._chatPanel?.addMessage(userMsg);
 
-					// Set sending state BEFORE await — switches send button to stop icon immediately
-					this._chatPanel?.setSending(true);
-					this._isSending = true;
+				// Set sending state BEFORE await — switches send button to stop icon immediately
+				this._chatPanel?.setSending(true);
+				this._isSending = true;
 
-					// Assistant message — created lazily on first meaningful delta (text/thinking/tool_start).
-					// This avoids showing an empty placeholder bubble with "AI 正在输出..." text.
-					let assistantId: string | null = null;
-					let assistantMsg: IAgentChatMessage | null = null;
-					let assistantAdded = false;
+				// Create assistant message immediately with isThinking=true so the user
+				// sees a "正在思考..." indicator while waiting for the first LLM delta.
+				let assistantId: string | null = `msg_${Date.now()}_assistant`;
+				const turnId = `turn_${Date.now()}`;
+				let assistantMsg: IAgentChatMessage | null = {
+					id: assistantId,
+					role: 'assistant',
+					content: '',
+					timestamp: Date.now(),
+					isStreaming: true,
+					isThinking: true,
+					streamPhase: 'llm_streaming',
+					turnId,
+				};
+				this._chatPanel?.addMessage(assistantMsg);
+				let assistantAdded = true;
 
-					const ensureAssistantMsg = () => {
-						if (assistantAdded) { return; }
-						assistantId = `msg_${Date.now()}_assistant`;
-						const turnId = `turn_${Date.now()}`;
-						assistantMsg = {
-							id: assistantId,
-							role: 'assistant',
-							content: '',
-							timestamp: Date.now(),
-							isStreaming: true,
-							streamPhase: 'llm_streaming',
-							turnId,
-						};
-						this._chatPanel?.addMessage(assistantMsg);
-						assistantAdded = true;
+				// No longer lazy — message is created above. This is kept as a no-op
+				// guard for any code paths that still call it.
+				const ensureAssistantMsg = () => {
+					if (assistantAdded) { return; }
+					// Fallback: should not normally reach here since message is pre-created.
+					assistantId = `msg_${Date.now()}_assistant`;
+					assistantMsg = {
+						id: assistantId,
+						role: 'assistant',
+						content: '',
+						timestamp: Date.now(),
+						isStreaming: true,
+						isThinking: true,
+						streamPhase: 'llm_streaming',
+						turnId: `turn_${Date.now()}`,
 					};
+					this._chatPanel?.addMessage(assistantMsg);
+					assistantAdded = true;
+				};
 					
 					await this._chatService.sendMessage(
 						agentId,
@@ -168,20 +199,21 @@ export class NativeChatEditorPane extends EditorPane {
 							if (!delta) return;
 							
 							switch (delta.type) {
-								case 'text':
-									// First text delta → ensure assistant message exists, then update
-									ensureAssistantMsg();
-									if (!assistantMsg || !assistantId) return;
-									const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
-									assistantMsg.content = textContent;
-									this._chatPanel?.setStreamPhase('llm_streaming');
-									this._chatPanel?.setStreamTextBuffer(textContent);
-									this._chatPanel?.updateMessage(assistantId, {
-										content: textContent,
-										isStreaming: true,
-										streamPhase: 'llm_streaming',
-									});
-									break;
+							case 'text':
+								// First text delta → ensure assistant message exists, then update
+								ensureAssistantMsg();
+								if (!assistantMsg || !assistantId) return;
+								const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
+								assistantMsg.content = textContent;
+								this._chatPanel?.setStreamPhase('llm_streaming');
+								this._chatPanel?.setStreamTextBuffer(textContent);
+								this._chatPanel?.updateMessage(assistantId, {
+									content: textContent,
+									isStreaming: true,
+									isThinking: false,
+									streamPhase: 'llm_streaming',
+								});
+								break;
 								case 'thinking':
 									ensureAssistantMsg();
 									if (!assistantMsg || !assistantId) return;
@@ -208,12 +240,13 @@ export class NativeChatEditorPane extends EditorPane {
 										defaultShow: delta.defaultShow,
 										textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
 									});
-									this._chatPanel?.setStreamPhase('tool_executing');
-									this._chatPanel?.updateMessage(assistantId, {
-										toolCalls: assistantMsg.toolCalls.slice(),
-										isStreaming: true,
-										streamPhase: 'tool_executing',
-									});
+								this._chatPanel?.setStreamPhase('tool_executing');
+								this._chatPanel?.updateMessage(assistantId, {
+									toolCalls: assistantMsg.toolCalls.slice(),
+									isStreaming: true,
+									isThinking: false,
+									streamPhase: 'tool_executing',
+								});
 									break;
 								}
 								case 'tool_args': {
@@ -229,19 +262,23 @@ export class NativeChatEditorPane extends EditorPane {
 									}
 									break;
 								}
-								case 'tool_end': {
-									if (!assistantMsg || !assistantId) return;
-									const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-									if (endCall) {
-										endCall.status = 'success';
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls!.slice(),
-											isStreaming: true,
-											streamPhase: 'llm_streaming',
-										});
-									}
-									break;
+							case 'tool_end': {
+								if (!assistantMsg || !assistantId) return;
+								const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+								if (endCall) {
+									endCall.status = 'success';
+									// After a tool completes, the LLM will process the result and
+									// generate the next response. Show "正在思考..." while waiting.
+									this._chatPanel?.setStreamPhase('llm_streaming');
+									this._chatPanel?.updateMessage(assistantId, {
+										toolCalls: assistantMsg.toolCalls!.slice(),
+										isStreaming: true,
+										isThinking: true,
+										streamPhase: 'llm_streaming',
+									});
 								}
+								break;
+							}
 								case 'tool_result': {
 									if (!assistantMsg || !assistantId) return;
 									const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
@@ -325,9 +362,74 @@ export class NativeChatEditorPane extends EditorPane {
 											});
 										}
 									}
-									break;
-								default:
-									break;
+								break;
+							case 'context_compacted': {
+								// 上下文压缩完成：更新上下文环基线 + 添加压缩提示卡片
+								const compacted = (delta as any).compactedInputTokens ?? 0;
+								if (compacted > 0) {
+									this._chatPanel?.setCompactedBaseline(compacted);
+									// 持久化到 localStorage，窗口重载后可恢复 token 进度条基线
+									this._saveCompactedBaseline(compacted);
+								}
+								const limit = this._currentMaxContextTokens ?? 0;
+								if (limit > 0 && compacted > 0) {
+									const ratio = Math.max(0, Math.min(1, compacted / limit));
+									this._chatPanel?.setContextUsage({
+										used: compacted,
+										limit,
+										ratio,
+										percent: ratio * 100,
+									} as IContextUsage);
+								}
+								// 添加压缩提示卡片（对齐 webview 的 CompressionNoticeCard）
+								const origCount = (delta as any).compressionOriginalCount ?? 0;
+								const compCount = (delta as any).compressionCompressedCount ?? 0;
+								const tokensSaved = (delta as any).compressionTokensSaved ?? 0;
+								const durationMs = (delta as any).compressionDurationMs ?? 0;
+								if (origCount > 0 && compCount > 0 && compCount < origCount) {
+									this._chatPanel?.addCompressionNotice({
+										originalCount: origCount,
+										compressedCount: compCount,
+										tokensSaved,
+										durationMs,
+										beforeText: (delta as any).compressionBeforeText,
+										afterText: (delta as any).compressionAfterText,
+										summary: (delta as any).compressionSummary,
+									});
+								}
+								break;
+							}
+						case 'memory_extracted': {
+							// LLM 输出 <memory_extract> 标签被捕获 → 显示记忆卡片
+							const memContent = (delta as any).content ?? '';
+							const memMeta = (delta as any).metadata ?? {};
+							if (memContent) {
+								this._chatPanel?.addMemoryNotice({
+									content: memContent,
+									memoryType: memMeta.memoryType,
+									priority: memMeta.priority,
+									sceneName: memMeta.sceneName,
+									assistantContentPreview: memMeta.assistantContentPreview,
+									iteration: memMeta.iteration,
+								});
+								}
+								break;
+							}
+							case 'codebase_operation': {
+								// codebase-memory MCP 工具被调用 → 显示代码库记忆卡片
+								const cbMeta = (delta as any).metadata ?? {};
+								const operation = cbMeta.operation ?? 'search';
+								const toolName = cbMeta.toolName ?? (delta as any).content ?? '';
+								if (toolName) {
+									this._chatPanel?.addCodebaseNotice({
+										operation,
+										detail: toolName,
+									});
+								}
+								break;
+							}
+							default:
+								break;
 							}
 						},
 					);
@@ -363,11 +465,11 @@ export class NativeChatEditorPane extends EditorPane {
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
-			onChangeMode: (mode: ChatMode) => {
-				this._currentChatMode = mode;
-				console.log(`[NativeChatEditorPane] onChangeMode: switched to ${mode} mode`);
-				// TODO: Update UI or reconfigure chat panel if needed
-			},
+		onChangeMode: (mode: ChatMode) => {
+			this._currentChatMode = mode;
+			// Persist the chat mode so it survives reloads.
+			try { localStorage.setItem('agentChatMode', mode); } catch { /* ignore */ }
+		},
 		onOpenSettings: async () => {
 			// Open agent settings page (refer to AgentChat.tsx settings button)
 			if (!this._currentAgentId) {
@@ -399,6 +501,8 @@ export class NativeChatEditorPane extends EditorPane {
 				console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
 				// Clear messages in UI
 				this._chatPanel?.setMessages([]);
+				// 新会话无压缩历史 → 重置压缩基线
+				this._restoreCompactedBaseline();
 				// New session has no checkpoints yet — reset bar & scope checkpoints to it.
 				this._activateCheckpointSession(this._currentAgentId, session.id);
 				// Refresh session list
@@ -418,6 +522,8 @@ export class NativeChatEditorPane extends EditorPane {
 					this._currentSessionId = sessionId;
 					const history = await this._chatService.getHistory(agentId, sessionId);
 					this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+					// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
+					this._restoreCompactedBaseline();
 					// Scope checkpoints to the newly opened session & refresh the bar.
 					this._activateCheckpointSession(agentId, sessionId);
 				} catch (err) {
@@ -570,10 +676,10 @@ export class NativeChatEditorPane extends EditorPane {
 					console.error('[NativeChatEditorPane] onClearWorktree failed:', err);
 				}
 			},
-			onScrollToMessage: (messageId: string) => {
-				console.log('[NativeChatEditorPane] onScrollToMessage:', messageId);
-				// TODO: Implement scroll to message logic
-			},
+		onScrollToMessage: (_messageId: string) => {
+			// Scrolling is handled internally by AgentChatPanel._scrollToMessage().
+			// This callback is a notification hook only — no host-side action needed.
+		},
 			onSelectProvider: (providerId: string) => {
 				const cur = this._modelSelector.getSelection();
 				this._modelSelector.setSelection({
@@ -593,13 +699,12 @@ export class NativeChatEditorPane extends EditorPane {
 				});
 				void this._refreshModelSelector();
 			},
-			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => {
-				void this._handleCheckpointAction(action, payload);
-			},
-			onConfirmationAction: (confirmationId: string, buttonId: string) => {
-				console.log('[NativeChatEditorPane] onConfirmationAction:', confirmationId, buttonId);
-				// TODO: Implement confirmation action logic
-			},
+		onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => {
+			void this._handleCheckpointAction(action, payload);
+		},
+		onConfirmationAction: (confirmationId: string, buttonId: string) => {
+			void this._handleConfirmationAction(confirmationId, buttonId);
+		},
 			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
 				console.log('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
 				// Optimistically mark the AskUser as answered
@@ -621,40 +726,86 @@ export class NativeChatEditorPane extends EditorPane {
 					this._refreshLiveWorkflowMessage();
 				});
 			},
-			onQuestionClick: (question: any) => {
-				console.log('[NativeChatEditorPane] onQuestionClick:', question);
-				// TODO: Implement question click logic
-			},
-			onReferenceClick: (ref: any) => {
-				console.log('[NativeChatEditorPane] onReferenceClick:', ref);
-				// TODO: Implement reference click logic
-			},
-			onTipAction: (tipId: string, actionId: string) => {
-				console.log('[NativeChatEditorPane] onTipAction:', tipId, actionId);
-				// TODO: Implement tip action logic
-			},
-			onTipDismiss: (tipId: string) => {
-				console.log('[NativeChatEditorPane] onTipDismiss:', tipId);
-				// TODO: Implement tip dismiss logic
-			},
-		onApplyCode: (code: string, language: string, filePath?: string) => {
-			console.log('[NativeChatEditorPane] onApplyCode:', language, filePath);
-			// TODO: Implement apply code logic (refer to chatBarPart.ts)
+		onQuestionClick: (question: { label: string }) => {
+			// Send the suggested question as a new user message.
+			if (question?.label) {
+				void this._sendMessageInternal?.(question.label);
+			}
 		},
+		onReferenceClick: (ref: { kind: string; uri?: string; name: string; range?: { startLine: number } }) => {
+			// Open file references in the editor, URL references in the URL preview.
+			if (ref?.kind === 'url' && ref.uri) {
+				const input = UrlPreviewEditorInput.getOrCreate(ref.uri);
+				this._editorService.openEditor(input, { pinned: true }).catch(err => {
+					console.error('[NativeChatEditorPane] onReferenceClick: failed to open URL:', err);
+				});
+			} else if (ref?.kind === 'file' || ref?.kind === 'code' || ref?.kind === 'symbol') {
+				const filePath = ref.uri || ref.name;
+				if (filePath) {
+					void this._openFileInEditor(filePath, ref.range?.startLine);
+				}
+			}
+		},
+		onTipAction: (_tipId: string, _actionId: string) => {
+			// Tip actions are forward-compatible hooks. Common actionIds like
+			// 'openSettings' or 'openMarket' can be routed here in the future.
+			// For now, tip actions are handled by the panel's internal logic.
+		},
+		onTipDismiss: (_tipId: string) => {
+			// Tip dismissal is a UI-only operation. The AgentChatPanel handles
+			// hiding the tip card internally; no host-side persistence needed.
+		},
+	onApplyCode: (code: string, language: string, filePath?: string) => {
+		void this._handleApplyCode(code, language, filePath);
+	},
 		onSubmitVariables: (executionId: string, values: Record<string, string>) => {
 			console.log('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
 			this._workflowExecutionService.submitWorkflowVariables(executionId, values).catch(err => {
 				console.error('[NativeChatEditorPane] Failed to submit variables:', err);
 			});
 		},
-			onOpenFile: (filePath: string) => {
-				console.log('[NativeChatEditorPane] onOpenFile:', filePath);
-				// TODO: Implement open file logic (refer to chatBarPart.ts)
-			},
+	onOpenFile: (filePath: string) => {
+		void this._openFileInEditor(filePath);
+	},
+		onOpenLink: (url: string) => {
+			// Open http(s) links from LLM output in the editor area (middle
+			// column) instead of an external browser.
+			const input = UrlPreviewEditorInput.getOrCreate(url);
+			this._editorService.openEditor(input, { pinned: true }).catch(err => {
+				console.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
+			});
+		},
 		}));
 
 		this._container.appendChild(this._chatPanel.element);
 		this._isInitialized = true;
+
+		// 设置系统消息面板的详情回调
+		this._chatPanel?.setOpenCompressionDetailCallback((data) => {
+			const input = CompressionDetailEditorInput.getOrCreate(data as any);
+			this._editorService.openEditor(input, { pinned: true }).catch(err => {
+				console.error('[NativeChatEditorPane] Failed to open compression detail:', err);
+			});
+		});
+		this._chatPanel?.setOpenMemoryDetailCallback((agentId, memoryType, contentPreview) => {
+			const input = MemoryDetailEditorInput.getOrCreate(agentId);
+			input.targetMemoryId = null;
+			input.targetLayer = memoryType ?? null;
+			this._editorService.openEditor(input, { pinned: true }).then(() => {
+				const pane = this._editorService.activeEditorPane;
+				if (pane instanceof MemoryDetailEditorPane) {
+					pane.navigateToTarget(memoryType ?? undefined, contentPreview);
+				}
+			}).catch(err => {
+				console.error('[NativeChatEditorPane] Failed to open memory detail:', err);
+			});
+		});
+		this._chatPanel?.setOpenCodebaseDetailCallback(() => {
+			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
+			this._editorService.openEditor(input, { pinned: true }).catch(err => {
+				console.error('[NativeChatEditorPane] Failed to open codebase memory detail:', err);
+			});
+		});
 
 		// Load available agents
 		this._loadAvailableAgents();
@@ -699,12 +850,13 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		}));
 
-		// Listen for orchestration task changes
-		this._register(this._taskOrchestrationService.onDidChangeTask(({ planId, task }) => {
-			// When a task changes, we might want to refresh the current plan dialog
-			// For now, we'll just log it
-			console.log(`[NativeChatEditorPane] Task changed: planId=${planId}, taskId=${task.id}, status=${task.status}`);
-			// TODO: refresh the current plan dialog if it's open
+		// Listen for orchestration task changes — refresh the plan dialog if open
+		this._register(this._taskOrchestrationService.onDidChangeTask(async ({ planId }) => {
+			// Reload the plan and update the dialog if it's currently shown
+			const plan = await this._taskOrchestrationService.getPlan(planId);
+			if (plan) {
+				this._chatPanel?.showOrchestrationPlanDialog(plan);
+			}
 		}));
 
 		// Listen for worktree changes (agent binding or list changes)
@@ -1227,6 +1379,8 @@ export class NativeChatEditorPane extends EditorPane {
 					try {
 						const history = await this._chatService.getHistory(agentId, this._currentSessionId);
 						this._chatPanel.setMessages(this._adaptHistoryMessages(history));
+						// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
+						this._restoreCompactedBaseline();
 					} catch (err) {
 						console.warn('[NativeChatEditorPane] Failed to load history:', err);
 						this._chatPanel.setMessages([]);
@@ -1255,6 +1409,37 @@ export class NativeChatEditorPane extends EditorPane {
 		return (history ?? [])
 			.map(m => adaptPersistedChatMessage(m))
 			.filter((m): m is IAgentChatMessage => !!m);
+	}
+
+	/** 持久化压缩基线到 localStorage（key 按 agentId:sessionId 隔离）。 */
+	private _saveCompactedBaseline(baseline: number): void {
+		if (!this._currentAgentId || !this._currentSessionId) { return; }
+		try {
+			const key = `saros:compactedBaseline:${this._currentAgentId}:${this._currentSessionId}`;
+			localStorage.setItem(key, String(baseline));
+		} catch { /* localStorage may be unavailable */ }
+	}
+
+	/** 从 localStorage 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）。
+	 *  新会话或无压缩历史时清除基线，避免残留旧值。 */
+	private _restoreCompactedBaseline(): void {
+		if (!this._currentAgentId || !this._currentSessionId) {
+			this._chatPanel?.setCompactedBaseline(0);
+			return;
+		}
+		try {
+			const key = `saros:compactedBaseline:${this._currentAgentId}:${this._currentSessionId}`;
+			const saved = localStorage.getItem(key);
+			if (saved) {
+				const baseline = parseInt(saved, 10);
+				if (baseline > 0) {
+					this._chatPanel?.setCompactedBaseline(baseline);
+					return;
+				}
+			}
+		} catch { /* localStorage may be unavailable */ }
+		// 无保存的基线 → 重置为 0（新会话或从未压缩过）
+		this._chatPanel?.setCompactedBaseline(0);
 	}
 
 	// ---------- checkpoint wiring (aligned with ChatBarPart) ----------
@@ -1329,45 +1514,45 @@ export class NativeChatEditorPane extends EditorPane {
 
 	private async _refreshCheckpointBar(): Promise<void> {
 		if (!this._currentAgentId || !this._currentSessionId || !this._chatPanel) {
-			this._chatPanel?.setCheckpoint(null);
+			this._chatPanel?.setCheckpoints([]);
 			return;
 		}
 		try {
 			const list = await this._checkpointService.listCheckpoints(this._currentAgentId, this._currentSessionId);
-			const live = list.filter(cp => !cp.isGhost);
-			if (live.length === 0) {
-				this._chatPanel.setCheckpoint(null);
-				return;
-			}
-			// Aggregate file changes across all live checkpoints (de-dup by path, last wins)
-			const byPath = new Map<string, { path: string; status: 'modified' | 'created' | 'deleted' }>();
-			for (const cp of live) {
-				if (!cp.files) { continue; }
-				for (const f of cp.files) {
-					const status: 'modified' | 'created' | 'deleted' =
-						(f as any).status === 'created' ? 'created'
-							: (f as any).status === 'deleted' ? 'deleted'
-								: 'modified';
-					const path = (f as any).path ?? (f as any).uri ?? '';
-					byPath.set(path, { path, status });
+			// Build ICheckpointInfo for each checkpoint (including ghosts)
+			const infos: ICheckpointInfo[] = [];
+			for (const cp of list) {
+			const files = (cp.files ?? []).map(f => {
+				// ICheckpointFileChange has: uri (URI string), fsPath (filesystem path), fileName, additions, deletions
+				// Use fsPath for the editor (URI.file() compatible); fall back to uri parsed via URI.parse
+				const cf = f as { fsPath?: string; uri?: string; fileName?: string; additions?: number; deletions?: number };
+				let resolvedPath = cf.fsPath ?? '';
+				if (!resolvedPath && cf.uri) {
+					try { resolvedPath = URI.parse(cf.uri).fsPath; } catch { resolvedPath = cf.uri; }
 				}
+				// Derive status: only-additions → created; only-deletions → deleted; otherwise modified
+				const adds = cf.additions ?? 0;
+				const dels = cf.deletions ?? 0;
+				const status: 'modified' | 'created' | 'deleted' =
+					(adds > 0 && dels === 0) ? 'created' :
+					(adds === 0 && dels > 0) ? 'deleted' : 'modified';
+				return { path: resolvedPath, status };
+			}).filter(f => !!f.path);
+				infos.push({
+					id: cp.id,
+					label: cp.label || (cp.type === 'tool_edit' ? '工具修改' : '用户检查点'),
+					timestamp: cp.createdAt,
+					fileCount: files.length || cp.fileSnapshotIds.length,
+					files,
+				});
 			}
-			const files = Array.from(byPath.values()).filter(f => !!f.path);
-			const latest = live[live.length - 1];
-			const info: ICheckpointInfo = {
-				id: latest.id,
-				label: latest.label || (latest.type === 'tool_edit' ? '工具修改' : '用户检查点'),
-				timestamp: latest.createdAt,
-				fileCount: files.length || latest.fileSnapshotIds.length,
-				files,
-			};
-			this._chatPanel.setCheckpoint(info);
+			this._chatPanel.setCheckpoints(infos);
 		} catch {
-			this._chatPanel.setCheckpoint(null);
+			this._chatPanel.setCheckpoints([]);
 		}
 	}
 
-	private async _handleCheckpointAction(action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }): Promise<void> {
+	private async _handleCheckpointAction(action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }): Promise<void> {
 		if (!this._currentAgentId || !this._currentSessionId) {
 			return;
 		}
@@ -1377,19 +1562,19 @@ export class NativeChatEditorPane extends EditorPane {
 			if (action === 'undoAll') {
 				await this._checkpointService.revertAllCheckpoints(agentId, sessionId);
 				await this._checkpointService.deleteAllCheckpoints(agentId, sessionId);
-				this._chatPanel?.setCheckpoint(null);
+				this._chatPanel?.setCheckpoints([]);
 				return;
 			}
 			if (action === 'keepAll') {
 				await this._checkpointService.deleteAllCheckpoints(agentId, sessionId);
-				this._chatPanel?.setCheckpoint(null);
+				this._chatPanel?.setCheckpoints([]);
 				return;
 			}
 			if (action === 'openDiff') {
 				try {
 					await this._commandService.executeCommand(
 						'agentStudio.openCheckpointDiff',
-						{ agentId, sessionId, filePath: payload?.filePath },
+						{ agentId, sessionId, filePath: payload?.filePath, checkpointId: payload?.checkpointId },
 					);
 				} catch { /* command not registered — silently ignore */ }
 			}
@@ -1619,6 +1804,111 @@ export class NativeChatEditorPane extends EditorPane {
 		if (this._container) {
 			this._container.style.width = `${dimension.width}px`;
 			this._container.style.height = '100%';
+		}
+	}
+
+	// ─── File / Code helpers ──────────────────────────────────────────
+
+	/**
+	 * Apply code content to a file. If filePath is provided, write/replace
+	 * the file content (mirrors agentStudioWebviewController._handleApplyCode).
+	 * If no filePath, open an untitled text editor with the code.
+	 */
+	private async _handleApplyCode(code: string, _language: string, filePath?: string): Promise<void> {
+		try {
+			if (filePath) {
+				const resource = URI.file(filePath);
+				const model = this._modelService.getModel(resource);
+				if (model) {
+					// File is already open in editor — apply edit via model
+					model.applyEdits([{
+						range: model.getFullModelRange(),
+						text: code,
+					}]);
+				} else {
+					// File not open — write directly via file service
+					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
+				}
+				// Open the file in the editor so the user sees the result
+				await this._openFileInEditor(filePath);
+			} else {
+				// No file path — open as untitled text editor
+				await this._editorService.openEditor({
+					resource: undefined,
+					contents: code,
+					options: { pinned: true },
+				});
+			}
+		} catch (err) {
+			console.error('[NativeChatEditorPane] _handleApplyCode failed:', err);
+		}
+	}
+
+	/**
+	 * Open a file in the center editor area (first/leftmost group).
+	 * Resolves relative paths against workspace folders.
+	 */
+	private async _openFileInEditor(filePath: string, lineNumber?: number): Promise<void> {
+		try {
+			let absPath = filePath;
+
+			// Resolve relative paths against workspace folders
+			if (!this._isAbsolutePath(absPath)) {
+				const folders = this._workspaceContextService.getWorkspace().folders;
+				for (const folder of folders) {
+					const candidate = URI.joinPath(folder.uri, absPath);
+					try {
+						const stat = await this._fileService.stat(candidate);
+						if (stat) {
+							absPath = candidate.fsPath;
+							break;
+						}
+					} catch {
+						// File doesn't exist in this folder, try next
+					}
+				}
+			}
+
+			const resource = URI.file(absPath);
+			const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+
+			const selection = lineNumber && lineNumber > 0
+				? { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber, endColumn: 1 }
+				: undefined;
+
+			await this._editorService.openEditor({
+				resource,
+				options: {
+					pinned: false,
+					...(selection ? { selection } : {}),
+				},
+			}, targetGroup);
+		} catch (err) {
+			console.error('[NativeChatEditorPane] _openFileInEditor failed:', err);
+		}
+	}
+
+	private _isAbsolutePath(p: string): boolean {
+		if (!p) { return false; }
+		if (p.startsWith('/') || p.startsWith('\\\\')) { return true; }
+		return /^[a-zA-Z]:[\\/]/.test(p);
+	}
+
+	/**
+	 * Handle confirmation card button clicks (tool approval / denial).
+	 * Updates the message to remove the confirmation card and dispatches
+	 * the decision through the command service.
+	 */
+	private async _handleConfirmationAction(confirmationId: string, buttonId: string): Promise<void> {
+		try {
+			// Dispatch the tool approval decision. The chat service / tool
+			// approval handler listens for this command and resolves the
+			// pending approval promise, unblocking the agent loop.
+			await this._commandService.executeCommand('agentStudio.confirmationAction', confirmationId, buttonId);
+		} catch {
+			// Command may not be registered in all configurations — that's OK,
+			// the confirmation card is still dismissed in the UI.
 		}
 	}
 

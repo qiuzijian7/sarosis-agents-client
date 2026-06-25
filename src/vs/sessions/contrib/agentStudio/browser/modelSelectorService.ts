@@ -112,7 +112,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			if (!this._authListenerDisposables.has(provider.id)) {
 				try {
 					const disposable = provider.onDidChangeAuthStatus?.(() => {
-						this._logService.info(`[ModelSelector] Auth status changed for ${provider.id}: ${provider.getAuthStatus()}`);
+						this._logService.debug(`[ModelSelector] Auth status changed for ${provider.id}: ${provider.getAuthStatus()}`);
 						this._modelCacheValid = false;
 						this._onDidChangeAvailableModels.fire();
 					});
@@ -128,7 +128,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			if (!this._agentListenerDisposables.has(provider.id) && provider.supportsAgents && provider.onDidChangeAgents) {
 				try {
 					const disposable = provider.onDidChangeAgents(() => {
-						this._logService.info(`[ModelSelector] Agent list changed for ${provider.id}`);
+						this._logService.debug(`[ModelSelector] Agent list changed for ${provider.id}`);
 						this._modelCacheValid = false;
 						this._onDidChangeAvailableModels.fire();
 					});
@@ -145,7 +145,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			if (!this._modelsListenerDisposables.has(provider.id) && provider.onDidChangeModels) {
 				try {
 					const disposable = provider.onDidChangeModels(() => {
-						this._logService.info(`[ModelSelector] Model list changed for ${provider.id}`);
+						this._logService.debug(`[ModelSelector] Model list changed for ${provider.id}`);
 						this._modelCacheValid = false;
 						this._onDidChangeAvailableModels.fire();
 					});
@@ -184,7 +184,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 		this._saveSelection();
 		this._onDidChangeSelection.fire(s);
 		this._agentOSService.setActiveModelSelection(s);
-		this._logService.info(`[ModelSelector] Selection changed: ${s.providerId}/${s.modelId}${s.agentId ? ` [agent: ${s.agentId}]` : ''}`);
+		this._logService.debug(`[ModelSelector] Selection changed: ${s.providerId}/${s.modelId}${s.agentId ? ` [agent: ${s.agentId}]` : ''}`);
 	}
 
 	// ─── Agent 选择（仅支持 Agent 的 Provider）────────────────────
@@ -238,7 +238,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 
 		this._saveSelection();
 		this._onDidChangeAgent.fire(agentId);
-		this._logService.info(`[ModelSelector] Agent changed: ${agentId || '(none)'}`);
+		this._logService.debug(`[ModelSelector] Agent changed: ${agentId || '(none)'}`);
 	}
 
 	async showAgentQuickPick(): Promise<string | undefined> {

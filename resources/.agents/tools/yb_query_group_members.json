@@ -1,0 +1,18 @@
+{
+  "name": "yb_query_group_members",
+  "description": "Query members of a Yuanbao group.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "group_id": {
+        "description": "Group ID",
+        "type": "string"
+      }
+    },
+    "required": [
+      "group_id"
+    ]
+  },
+  "category": "yuanbao",
+  "source": "hermes-bundled"
+}

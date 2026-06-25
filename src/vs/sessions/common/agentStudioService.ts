@@ -240,7 +240,9 @@ export interface IChatStreamDelta {
 	| "workflow_ask_user_end"
 	| "workflow_collect_variables"
 	| "workflow_collect_variables_end"
-	| "workflow_breakpoint_hit";
+	| "workflow_breakpoint_hit"
+	| "memory_extracted"
+	| "codebase_operation";
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;

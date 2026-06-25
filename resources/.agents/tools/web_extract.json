@@ -1,0 +1,22 @@
+{
+  "name": "web_extract",
+  "description": "Extract and summarize content from a web page. Returns the page text content.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL to extract content from"
+      },
+      "query": {
+        "type": "string",
+        "description": "Optional focus query for targeted extraction"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  },
+  "category": "web",
+  "source": "hermes-bundled"
+}

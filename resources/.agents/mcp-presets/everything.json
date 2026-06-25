@@ -1,0 +1,11 @@
+{
+  "id": "everything",
+  "name": "MCP Everything",
+  "description": "Test server with all MCP features (tools, resources, prompts, sampling)",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-everything"
+  ]
+}

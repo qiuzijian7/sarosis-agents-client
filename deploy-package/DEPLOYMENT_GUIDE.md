@@ -9,7 +9,7 @@
     |
     | 每小时检查更新
     v
-[更新服务器 http://21.91.41.66:3030]
+[更新服务器 http://zijianqiu-any1.devcloud.woa.com:3030]
     |
     | 返回更新信息 (版本、下载URL、SHA256)
     v
@@ -26,11 +26,11 @@
 
 #### 1.1 上传更新服务器代码到目标服务器
 
-将 `deploy-package/update-server/` 目录上传到服务器 `21.91.41.66` 的 `/opt/vssaros-update/` 目录。
+将 `deploy-package/update-server/` 目录上传到服务器 `zijianqiu-any1.devcloud.woa.com` 的 `/opt/vssaros-update/` 目录。
 
 **方式 A: 使用 SCP (Linux服务器)**
 ```bash
-scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssaros-update/
+scp -r deploy-package/update-server/ root@zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/
 ```
 
 **方式 B: 使用 PowerShell (Windows服务器)**
@@ -44,7 +44,7 @@ Copy-Item -Recurse -Force deploy-package\update-server C:\vssaros-update\
 
 **Linux (使用 PM2):**
 ```bash
-ssh root@21.91.41.66
+ssh root@zijianqiu-any1.devcloud.woa.com
 cd /opt/vssaros-update/update-server
 
 # 安装 PM2 (如果未安装)
@@ -97,7 +97,7 @@ npm run fix-branding
 编辑 `product.json`，将 `updateUrl` 改为你的更新服务器地址：
 
 ```json
-"updateUrl": "http://21.91.41.66:3030"
+"updateUrl": "http://zijianqiu-any1.devcloud.woa.com:3030"
 ```
 
 #### 2.3 构建安装包
@@ -111,7 +111,7 @@ npm run gulp vscode-win32-x64-system-setup
 ```
 
 构建完成后，安装包位于：
-- 用户级: `.build\win32-x64\user-setup\VsSarosisUserSetup.exe`
+- 用户级: `.build\win32-x64\user-setup\VsSarosUserSetup.exe`
 - 系统级: `.build\win32-x64\system-setup\VsSarosisSetup.exe`
 
 ### 步骤 3: 上传安装包
@@ -125,7 +125,7 @@ npm run gulp vscode-win32-x64-system-setup
 mkdir -p /opt/vssaros-update/downloads
 
 # 上传安装包
-scp .build\win32-x64\user-setup\VsSarosisUserSetup.exe root@21.91.41.66:/opt/vssaros-update/downloads/
+scp .build\win32-x64\user-setup\VsSarosUserSetup.exe root@zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/downloads/
 ```
 
 #### 方式 B: 上传到 GitHub Releases (推荐用于公开分发)
@@ -143,7 +143,7 @@ scp .build\win32-x64\user-setup\VsSarosisUserSetup.exe root@21.91.41.66:/opt/vss
   "win32-x64-user": {
     "version": "<完整的git commit sha>",
     "productVersion": "1.0.0",
-    "url": "http://21.91.41.66:3030/downloads/VsSarosisUserSetup.exe",
+    "url": "http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe",
     "sha256hash": "<安装包的sha256哈希>",
     "timestamp": 1700000000000
   }
@@ -152,7 +152,7 @@ scp .build\win32-x64\user-setup\VsSarosisUserSetup.exe root@21.91.41.66:/opt/vss
 
 **计算 SHA256 哈希:**
 ```powershell
-Get-FileHash .build\win32-x64\user-setup\VsSarosisUserSetup.exe -Algorithm SHA256
+Get-FileHash .build\win32-x64\user-setup\VsSarosUserSetup.exe -Algorithm SHA256
 ```
 
 ### 步骤 5: 重启更新服务器
@@ -171,10 +171,10 @@ pm2 restart vssaros-update
 
 ```bash
 # 测试健康检查
-curl http://21.91.41.66:3030/health
+curl http://zijianqiu-any1.devcloud.woa.com:3030/health
 
 # 测试更新检查 API (使用一个假的 commit)
-curl http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
+curl http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
 ```
 
 应该返回 JSON：
@@ -190,7 +190,7 @@ curl http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000
 
 #### 6.2 安装并测试客户端
 
-1. 在安装包机器上运行 `VsSarosisUserSetup.exe` 安装 VsSarosis
+1. 在安装包机器上运行 `VsSarosUserSetup.exe` 安装 VsSarosis
 2. 打开 VsSarosis
 3. 等待约 1 小时，或手动触发更新检查（通过帮助菜单）
 4. 应该看到更新提示，后台下载并安装更新
@@ -235,7 +235,7 @@ curl http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000
 
 - 检查 `product.json` 中的 `updateUrl` 是否正确
 - 检查客户端日志 (Help > Toggle Developer Tools > Console)
-- 手动测试更新 API: `curl http://21.91.41.66:3030/api/update/...`
+- 手动测试更新 API: `curl http://zijianqiu-any1.devcloud.woa.com:3030/api/update/...`
 
 ### 更新下载失败
 

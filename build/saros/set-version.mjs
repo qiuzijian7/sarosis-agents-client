@@ -2,8 +2,10 @@
 /**
  * set-version.mjs — VsSarosis 版本号设置脚本
  *
- * 将 product.json 的 version 字段设置为 {major}.{minor}.{commitCount} 格式。
- * 其中 major.minor 来自 product.json 当前版本的前两位，commitCount 来自 git rev-list --count HEAD。
+ * 将 product.json 的 version 字段设置为 {major}.{a}.{b} 格式。
+ *   a = floor(commitCount / 65536)  — 进位段，每 65536 次提交 +1
+ *   b = commitCount % 65536          — 余数段，范围 0-65535
+ * 这样每段均 < 65536，满足 Windows PE 版本资源 16 位限制。
  *
  * 用法:
  *   node build/saros/set-version.mjs
@@ -45,17 +47,27 @@ function main() {
 		process.exit(1);
 	}
 
-	// 2. 解析当前版本，获取 major.minor
-	const currentVersion = product.version || '2.1.0';
+	// 2. 解析当前版本，获取 major（固定为 2）
+	const currentVersion = product.version || '2.0.0';
 	const versionParts = currentVersion.split('.');
 	const major = versionParts[0] || '2';
-	const minor = versionParts[1] || '1';
 
 	// 3. 获取 commit count
 	const commitCount = getCommitCount(ROOT);
 
-	// 4. 设置新版本号
-	const newVersion = `${major}.${minor}.${commitCount}`;
+	// 4. 设置新版本号: {major}.{a}.{b}
+	//    a = floor(commitCount / 65536), b = commitCount % 65536
+	//    每段均 < 65536，满足 Windows PE 版本资源 16 位限制
+	const a = Math.floor(commitCount / 65536);
+	const b = commitCount % 65536;
+	const newVersion = `${major}.${a}.${b}`;
+
+	// 如果版本号没有变化，跳过写入
+	if (product.version === newVersion) {
+		console.log(`ℹ️  版本号无变化: ${newVersion}`);
+		return;
+	}
+
 	product.version = newVersion;
 
 	// 5. 写回 product.json (保持 tab 格式)

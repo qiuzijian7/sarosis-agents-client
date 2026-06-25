@@ -1,0 +1,23 @@
+{
+  "name": "yb_send_dm",
+  "description": "Send a direct message to a Yuanbao user.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "user_id": {
+        "description": "User ID",
+        "type": "string"
+      },
+      "text": {
+        "description": "Message text",
+        "type": "string"
+      }
+    },
+    "required": [
+      "user_id",
+      "text"
+    ]
+  },
+  "category": "yuanbao",
+  "source": "hermes-bundled"
+}

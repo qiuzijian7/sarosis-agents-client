@@ -51,6 +51,8 @@ import {
 } from '../common/toolExtractionUtils.js';
 
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
+import { ContextManager } from '../common/contextManager.js';
+import type { ChatMessage } from '../common/types.js';
 
 // ─── Agent OS Service Implementation ────────────────────────────────────
 
@@ -85,6 +87,35 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _conversationIdBySession = new Map<string, string>();
 	/** sessionId → 上一次响应流的 id（作为下一轮请求的 previous_response_id） */
 	private readonly _lastResponseIdBySession = new Map<string, string>();
+
+	// ─── L1 自动提取管线状态 ──────────────────────────────────────────
+	// 对齐 TDB-AM 的 L0→L1 pipeline：对话轮次达到阈值后，后台调用 LLM
+	// 从最近对话中提取结构化长期记忆。不再完全依赖 LLM 主动调 memory_remember。
+	/** agentId → 对话轮次计数（达到 L1_THRESHOLD 后触发提取并清零） */
+	private readonly _l1ConversationCountByAgent = new Map<string, number>();
+	/** L1 提取的对话轮次阈值（每 N 轮触发一次） */
+	private static readonly L1_EXTRACTION_THRESHOLD = 3;
+
+	// ─── L2 场景提取管线状态 ──────────────────────────────────────────
+	// 对齐 TDB-AM L2：per-agent timer，L1 完成后延迟触发场景级摘要提取。
+	/** agentId → L2 定时器（L1 完成后延迟触发） */
+	private readonly _l2TimersByAgent = new Map<string, ReturnType<typeof setTimeout>>();
+	/** L2 延迟触发时间（ms，L1 完成后等待此时间再触发 L2） */
+	private static readonly L2_DELAY_AFTER_L1_MS = 30_000; // 30 秒
+	/** L2 最小间隔（ms，两次 L2 之间的最小间隔） */
+	private static readonly L2_MIN_INTERVAL_MS = 300_000; // 5 分钟
+	/** agentId → 上次 L2 执行时间（epoch ms） */
+	private readonly _l2LastRunTime = new Map<string, number>();
+
+	// ─── L3 人格生成管线状态 ──────────────────────────────────────────
+	// 对齐 TDB-AM L3：global mutex (concurrency=1) + pending flag dedup。
+	/** L3 是否正在运行（全局互斥） */
+	private _l3Running = false;
+	/** L3 是否有待处理请求（dedup：运行中再来请求只设 flag，不重复入队） */
+	private _l3Pending = false;
+	/** 压缩冷却期：上次压缩时间戳。跨用户消息持久化，避免频繁压缩。 */
+	private _lastCompressionTime: number = 0;
+	private static readonly COMPRESSION_COOLDOWN_MS = 60_000;
 
 	/** 取（或惰性创建）某会话的稳定 conversationId。无 sessionId 时回退到随机串。 */
 	private _getOrCreateConversationId(sessionId: string | undefined): string {
@@ -650,6 +681,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const MAX_TOOL_ITERATIONS = 50;
 		let iteration = 0;
 		let invalidToolNameCount = 0;
+
+		// ─── 上下文压缩初始化（对齐 ExecutionProvider Path 2）──────────
+		// Direct Mode 之前完全没有压缩，消息数一路增长直到撑爆上下文窗口。
+		// 这里复用 ContextManager.compressContext 做 Hermes 三段式压缩，
+		// 与 ExecutionProvider 保持一致的触发阈值和诊断日志。
+		const contextManager = new ContextManager(modelProvider, selection.modelId);
+		contextManager.setLogger({
+			info: (msg: string) => this._logService.info(msg),
+			warn: (msg: string) => this._logService.warn(msg),
+			error: (msg: string, error?: unknown) => this._logService.error(msg, error),
+			debug: (msg: string) => this._logService.debug(msg),
+		});
+		// 解析模型真实上下文窗口（token），用于计算压缩阈值
+		const compressionWindow = await this._resolveContextWindow(modelProvider, selection.modelId);
+		// P1: 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
+		// compressContext 优先用它判定，取代低估的 char/4 粗估。首轮=0 自动退回粗估。
+		let lastRealPromptTokens = 0;
 		// ─── 续跑兜底计数 ────────────────────────────────────────────────
 		// 某些模型（如 hy3-preview-ioa）在多轮 agent loop 中会把"接下来我要做 X"
 		// 当作最终回复输出，而不实际发出工具调用，导致任务半途而废。检测到这种
@@ -672,6 +720,167 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		while (iteration < MAX_TOOL_ITERATIONS) {
 			iteration++;
 			this._logService.info(`[AgentOS] Direct mode iteration ${iteration}/${MAX_TOOL_ITERATIONS}`);
+
+			// ─── 上下文压缩（对齐 ExecutionProvider 7.1）──────────────────
+			// 每轮迭代开头检查是否需要压缩，压缩发生时：
+			// 1. yield phase_change='compressing' 通知 UI
+			// 2. 替换 messages 为压缩后的消息
+			// 3. yield context_compacted 回传压缩后 token 基线
+			// 4. yield phase_change='llm_streaming' 切回流式态
+			{
+				const compressionStartTime = Date.now();
+				const originalMessageCount = messages.length;
+				const originalEstimatedTokens = this._estimateMessagesTokens(messages);
+				this._logService.info(
+					`[AgentOS][Compression] BEFORE: messages=${originalMessageCount}, ` +
+					`estimatedTokens=${originalEstimatedTokens}, compressionWindow=${compressionWindow}, ` +
+					`lastRealPromptTokens=${lastRealPromptTokens}`
+				);
+
+				// 跨消息冷却期检查（ContextManager 每次新建，冷却期需在 AgentOSService 层持久化）
+				let compressionResult;
+				const cooldownElapsed = this._lastCompressionTime > 0
+					? Date.now() - this._lastCompressionTime
+					: Infinity;
+				if (cooldownElapsed < AgentOSService.COMPRESSION_COOLDOWN_MS) {
+					this._logService.info(
+						`[AgentOS][Compression] COOLDOWN: ${Math.round((AgentOSService.COMPRESSION_COOLDOWN_MS - cooldownElapsed) / 1000)}s remaining, skipping`
+					);
+					compressionResult = {
+						originalMessageCount: messages.length,
+						compressedMessageCount: messages.length,
+						summary: '',
+						compressedMessages: [...messages] as unknown as ChatMessage[],
+						metadata: { compressionRatio: 1.0, skipped: 'cooldown' },
+					};
+				} else {
+					try {
+						compressionResult = await contextManager.compressContext(
+							messages as unknown as ReadonlyArray<ChatMessage>,
+							undefined,
+							compressionWindow,
+							lastRealPromptTokens
+						);
+					} catch (compressionError) {
+						this._logService.error(
+							`[AgentOS][Compression] EXCEPTION during compressContext: ` +
+							`${compressionError instanceof Error ? compressionError.message : String(compressionError)}`,
+							compressionError
+						);
+						compressionResult = {
+							originalMessageCount: messages.length,
+							compressedMessageCount: messages.length,
+							summary: '',
+							compressedMessages: [...messages] as unknown as ChatMessage[],
+							metadata: { compressionRatio: 1.0, skipped: 'exception', error: String(compressionError) },
+						};
+					}
+				}
+				const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
+				const compressionDurationMs = Date.now() - compressionStartTime;
+				const cmpMeta = compressionResult.metadata ?? {};
+				const logFn = didCompress
+					? this._logService.info.bind(this._logService)
+					: this._logService.warn.bind(this._logService);
+				logFn(
+					`[AgentOS][Compression] didCompress=${didCompress} ` +
+					`skipped=${JSON.stringify(cmpMeta.skipped ?? null)} ` +
+					`tokenSource=${cmpMeta.tokenSource ?? 'n/a'} ` +
+					`effectiveTokens=${cmpMeta.effectiveTokens ?? 'n/a'} ` +
+					`realPromptTokens=${cmpMeta.realPromptTokens ?? 'n/a'} ` +
+					`estimatedTokens=${cmpMeta.estimatedTokens ?? 'n/a'} ` +
+					`thresholdTokens=${cmpMeta.thresholdTokens ?? 'n/a'} ` +
+					`effectiveWindow=${cmpMeta.effectiveWindow ?? 'n/a'} ` +
+					`compressionWindow=${compressionWindow} ` +
+					`messageCount=${cmpMeta.messageCount ?? messages.length} ` +
+					`minMessagesToCompress=${cmpMeta.minMessagesToCompress ?? 'n/a'} ` +
+					`ineffectiveCompressionCount=${cmpMeta.ineffectiveCompressionCount ?? 'n/a'} ` +
+					`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
+				);
+				if (didCompress) {
+					this._lastCompressionTime = Date.now();
+					yield { type: 'phase_change', phase: 'compressing' };
+					// 捕获压缩前后文本（用于详情编辑器对比显示）
+					// 消息级别截断：只在消息边界截断，避免在消息块中间切断导致公共后缀匹配失败
+					const fmtBlock = (m: any) => `[${m.role ?? 'unknown'}] ${(typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).slice(0, 300)}`;
+					const MAX_TEXT_LEN = 50000;
+					// afterText：压缩后消息数少，直接顺序拼接即可
+					const fmtListSequential = (msgs: any[]): string => {
+						const blocks: string[] = [];
+						let totalLen = 0;
+						for (const m of msgs) {
+							const block = fmtBlock(m);
+							if (totalLen + block.length + 2 > MAX_TEXT_LEN && blocks.length > 0) { break; }
+							blocks.push(block);
+							totalLen += block.length + 2;
+						}
+						return blocks.join('\n\n');
+					};
+					// beforeText：原始消息可能很多（400+条），必须用"头尾保留+中间截断"策略
+					// 否则从头截断会丢失尾部消息，导致 _computeStructuredDiff 公共后缀匹配失败
+					const fmtListBefore = (msgs: any[]): string => {
+						const allBlocks: string[] = [];
+						let totalLen = 0;
+						for (const m of msgs) {
+							const block = fmtBlock(m);
+							allBlocks.push(block);
+							totalLen += block.length + 2;
+						}
+						// 未超限则直接返回
+						if (totalLen <= MAX_TEXT_LEN) { return allBlocks.join('\n\n'); }
+						// 超限时：保留头尾，截断中间
+						// 头部占一半预算，尾部占一半预算
+						const halfBudget = Math.floor(MAX_TEXT_LEN / 2);
+						const headBlocks: string[] = [];
+						let headLen = 0;
+						for (const block of allBlocks) {
+							if (headLen + block.length + 2 > halfBudget && headBlocks.length > 0) { break; }
+							headBlocks.push(block);
+							headLen += block.length + 2;
+						}
+						const tailBlocks: string[] = [];
+						let tailLen = 0;
+						for (let i = allBlocks.length - 1; i >= headBlocks.length; i--) {
+							const block = allBlocks[i];
+							if (tailLen + block.length + 2 > halfBudget && tailBlocks.length > 0) { break; }
+							tailBlocks.unshift(block);
+							tailLen += block.length + 2;
+						}
+						const omitted = allBlocks.length - headBlocks.length - tailBlocks.length;
+						const parts = [...headBlocks];
+						if (omitted > 0) {
+							parts.push(`[... 省略 ${omitted} 条消息 ...]`);
+						}
+						parts.push(...tailBlocks);
+						return parts.join('\n\n');
+					};
+					const beforeText = fmtListBefore(messages);
+					messages = [...compressionResult.compressedMessages] as any[];
+					const afterText = fmtListSequential(messages);
+					const compressedEstimatedTokens = this._estimateMessagesTokens(messages);
+					const tokensSaved = originalEstimatedTokens - compressedEstimatedTokens;
+					const savePercent = originalEstimatedTokens > 0
+						? Math.round(tokensSaved / originalEstimatedTokens * 100)
+						: 0;
+					this._logService.info(
+						`[AgentOS][Compression] AFTER: messages=${compressionResult.compressedMessageCount}, ` +
+						`estimatedTokens=${compressedEstimatedTokens}, saved=${tokensSaved} (${savePercent}%), ` +
+						`duration=${compressionDurationMs}ms`
+					);
+					yield {
+						type: 'context_compacted',
+						compactedInputTokens: compressedEstimatedTokens,
+						compressionOriginalCount: originalMessageCount,
+						compressionCompressedCount: compressionResult.compressedMessageCount,
+						compressionTokensSaved: tokensSaved,
+						compressionDurationMs,
+						compressionBeforeText: beforeText,
+						compressionAfterText: afterText,
+						compressionSummary: compressionResult.summary || '',
+					} as IChatStreamDelta;
+					yield { type: 'phase_change', phase: 'llm_streaming' };
+				}
+			}
 
 			// 构建模型选项（注入工具）
 			const modelOptions: IModelOptions = {
@@ -756,10 +965,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					// 抓包证据：响应流每个 chunk 的 id 相同，且 = 下一次请求的
 					// previous_response_id。任意 delta 携带 responseId 即记下，供下一轮
 					// （或下一条用户消息）作 previousResponseId 链式衔接。
-					if (delta.responseId && request.sessionId) {
-						this._lastResponseIdBySession.set(request.sessionId, delta.responseId);
+				if (delta.responseId && request.sessionId) {
+					this._lastResponseIdBySession.set(request.sessionId, delta.responseId);
+				}
+				// ─── P1: 截获真实 prompt token，供下一轮 compressContext 优先判定 ──
+				// 完整 prompt = inputTokens + 缓存读 + 缓存写（缓存 token 同样占窗口）。
+				if (delta.type === 'usage' && delta.usage) {
+					const u = delta.usage;
+					const realPrompt = (u.inputTokens ?? 0) + (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+					if (realPrompt > 0) {
+						lastRealPromptTokens = realPrompt;
+						this._logService.info(
+							`[AgentOS][Compression] captured real prompt usage: inputTokens=${u.inputTokens ?? 0} ` +
+							`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens}`
+						);
 					}
-					// 收集完整的助手消息数据
+				}
+				// 收集完整的助手消息数据
 					if (delta.type === 'text' && delta.content) {
 						assistantContent += delta.content;
 					} else if (delta.type === 'thinking' && delta.content) {
@@ -1245,7 +1467,82 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 				}
 			}
-		}
+
+			// ─── codebase memory 工具调用检测 ──────────────────────────────────
+			// 当 LLM 调用 codebase-memory MCP 工具时，yield codebase_operation 事件
+			// 供前端系统消息面板显示
+			for (const tc of effectiveToolCalls) {
+				if (tc.name.includes('codebase') || tc.name.includes('index_repository') ||
+					tc.name.includes('search_graph') || tc.name.includes('search_code') ||
+					tc.name.includes('trace_path') || tc.name.includes('get_architecture') ||
+					tc.name.includes('detect_changes') || tc.name.includes('list_projects')) {
+					const opMap: Record<string, string> = {
+						index_repository: 'index', search_graph: 'graph', search_code: 'search',
+						trace_path: 'trace', get_architecture: 'graph', detect_changes: 'changes',
+						list_projects: 'index', get_code_snippet: 'search', index_status: 'index',
+					};
+					let op = 'search';
+					for (const [key, val] of Object.entries(opMap)) {
+						if (tc.name.includes(key)) { op = val; break; }
+					}
+					yield {
+						type: 'codebase_operation' as any,
+						content: tc.name,
+						metadata: { operation: op, toolName: tc.name },
+					} as any;
+				}
+			}
+
+			// ─── per-iteration memory write（对齐 ExecutionProvider 7.7）──────────
+			// Direct Mode 之前完全没有 per-iteration memory write，仅靠 AgentDriver
+			// 的 finally 块在整轮结束时写一条 user + 一条 assistant。这意味着：
+			// 1. 工具执行结果未被记忆
+			// 2. 长对话被中断时，中间轮次的记忆丢失
+			// 这里补全 fire-and-forget writeMemory，与 ExecutionProvider 行为对齐。
+			const memProvider = this.getActiveMemoryProvider();
+			if (memProvider && (trimmedAssistantContent || toolResults.length > 0)) {
+				const memTs = Date.now();
+				const toolSummary = toolResults.length > 0
+					? ` [工具: ${effectiveToolCalls.map(tc => tc.name).join(', ')}]`
+					: '';
+				// yield 记忆事件：仅显示记忆操作信息（不含工具调用详情，避免 Bug 1）
+				// 同时传递 contentPreview 作为稳定标识符，供 EditorPane 精确匹配 TDB-AM 记忆
+				const assistantContentPreview = (trimmedAssistantContent || '').slice(0, 120);
+				yield {
+					type: 'memory_extracted',
+					content: `L0 记忆写入：迭代 ${iteration}，助手回复 ${(trimmedAssistantContent || '').length} 字符`,
+					metadata: {
+						memoryType: 'short_term',
+						sceneName: `L0 迭代 ${iteration}`,
+						priority: 50,
+						assistantContentPreview,
+						iteration,
+					},
+				};
+				void (async () => {
+					try {
+						await memProvider.writeMemory(request.agentId, {
+							id: `memory-iter-${memTs}`,
+							type: 'short_term',
+							content: (trimmedAssistantContent || 'Tool execution completed') + toolSummary,
+							metadata: {
+								owner: 'default',
+								userId: 'default',
+								agentId: request.agentId,
+								role: 'assistant',
+								toolCalls: effectiveToolCalls.length,
+								toolResults: toolResults.length,
+								iteration,
+								sessionId: request.sessionId,
+							},
+							timestamp: memTs,
+						});
+					} catch (error) {
+						this._logService.error('[AgentOS] Failed to write per-iteration memory:', error);
+					}
+				})();
+			}
+		} // end while
 
 		if (iteration >= MAX_TOOL_ITERATIONS) {
 			this._logService.warn(`[AgentOS] Reached max tool iterations (${MAX_TOOL_ITERATIONS})`);
@@ -2773,6 +3070,466 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return { type: 'usage', usage: delta.usage };
 		}
 		return { type: 'text', content: '' };
+	}
+
+	// ─── L1 自动提取管线（对齐 TDB-AM L0→L1 pipeline）────────────────────
+
+	/**
+	 * L1 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取
+	 * 结构化长期记忆（persona/episodic/instruction），写入 Memory Provider。
+	 *
+	 * 设计参考 TDB-AM 的 auto-capture + pipeline-manager：
+	 * - TDB-AM 在 agent_end hook 自动记录 L0，由 pipeline-manager 调度 L1 提取
+	 * - 本方法在 AgentDriver finally 块调用，计数达阈值后 fire-and-forget 触发
+	 * - 不依赖 LLM 主动调 memory_remember，系统自动提取值得记住的事实
+	 */
+	triggerL1Extraction(
+		agentId: string,
+		sessionId: string | undefined,
+		recentUserText: string,
+		recentAssistantText: string
+	): void {
+		const count = (this._l1ConversationCountByAgent.get(agentId) ?? 0) + 1;
+		this._l1ConversationCountByAgent.set(agentId, count);
+
+		if (count < AgentOSService.L1_EXTRACTION_THRESHOLD) {
+			this._logService.info(`[AgentOS][L1] Conversation count for ${agentId}: ${count}/${AgentOSService.L1_EXTRACTION_THRESHOLD} — not yet triggering extraction`);
+			return;
+		}
+
+		// 达到阈值，清零并触发提取
+		this._l1ConversationCountByAgent.set(agentId, 0);
+		this._logService.info(`[AgentOS][L1] Threshold reached (${count}≥${AgentOSService.L1_EXTRACTION_THRESHOLD}), triggering L1 extraction for agent ${agentId}`);
+
+		// fire-and-forget：不阻塞 AgentDriver 的 finally 块
+		void this._performL1Extraction(agentId, sessionId, recentUserText, recentAssistantText);
+	}
+
+	/**
+	 * 实际执行 L1 提取：调用 LLM 分析最近对话，提取结构化长期记忆。
+	 * 失败时静默记录日志，不影响主流程。
+	 */
+	private async _performL1Extraction(
+		agentId: string,
+		sessionId: string | undefined,
+		recentUserText: string,
+		recentAssistantText: string
+	): Promise<void> {
+		const memProvider = this.getActiveMemoryProvider();
+		const modelProvider = this._getActiveModelProvider();
+		const selection = this.getActiveModelSelection();
+		if (!memProvider || !modelProvider || !selection?.modelId) {
+			this._logService.info(`[AgentOS][L1] Skipping extraction: memoryProvider=${!!memProvider} modelProvider=${!!modelProvider} modelId=${selection?.modelId ?? 'none'}`);
+			return;
+		}
+
+		// 截取最近对话（避免 prompt 过长）
+		const maxChars = 8000;
+		const userText = recentUserText.slice(-maxChars);
+		const assistantText = recentAssistantText.slice(-maxChars);
+
+		const extractionPrompt = [
+			'You are a memory extraction assistant. Analyze the following conversation and extract durable facts worth remembering across sessions.',
+			'Only extract information that is: (1) a personal preference, (2) a project convention, (3) a naming rule, (4) an environment specific, (5) a long-term goal, or (6) an explicit "remember this" instruction.',
+			'Do NOT extract transient task details, tool outputs, or temporary context.',
+			'',
+			'Output format: one fact per line, each as a JSON object:',
+			'{"content":"<concise fact>","type":"<persona|episodic|instruction>"}',
+			'',
+			'If nothing worth remembering, output exactly: NONE',
+			'',
+			'--- Recent User Message ---',
+			userText,
+			'',
+			'--- Recent Assistant Response ---',
+			assistantText,
+		].join('\n');
+
+		try {
+			const t0 = Date.now();
+			const stream = modelProvider.chat(
+				selection.modelId,
+				[{ role: 'user', content: extractionPrompt } as any],
+				{ temperature: 0.3, maxTokens: 1000 },
+				{}
+			);
+
+			let extractionResult = '';
+			for await (const delta of stream) {
+				if (delta.type === 'text' && delta.content) {
+					extractionResult += delta.content;
+				}
+				if (delta.type === 'done') {
+					break;
+				}
+			}
+
+			const durationMs = Date.now() - t0;
+			const trimmed = extractionResult.trim();
+
+			if (!trimmed || trimmed === 'NONE') {
+				this._logService.info(`[AgentOS][L1] Extraction completed in ${durationMs}ms — nothing worth remembering`);
+				return;
+			}
+
+			// 解析提取结果：每行一个 JSON 对象
+			const lines = trimmed.split('\n').filter(l => l.trim().startsWith('{'));
+			let extractedCount = 0;
+			const ts = Date.now();
+			for (const line of lines) {
+				try {
+					const fact = JSON.parse(line.trim());
+					if (fact.content && fact.type) {
+						await memProvider.writeMemory(agentId, {
+							id: `l1-extract-${ts}-${extractedCount}`,
+							type: 'long_term',
+							content: fact.content,
+							metadata: {
+								owner: 'default',
+								userId: 'default',
+								agentId,
+								sessionId: sessionId ?? '',
+								memoryType: fact.type,
+								source: 'l1_auto_extraction',
+								extractedAt: new Date().toISOString(),
+							},
+							timestamp: ts + extractedCount,
+						});
+						extractedCount++;
+					}
+				} catch {
+					// 单行 JSON 解析失败，跳过继续
+				}
+			}
+
+			this._logService.info(
+				`[AgentOS][L1] Extraction completed in ${durationMs}ms — extracted ${extractedCount} long-term memories for agent ${agentId}`
+			);
+
+			// L1 完成后触发 L2 场景提取（对齐 TDB-AM delay-after-L1 触发路径）
+			if (extractedCount > 0) {
+				this.triggerL2Extraction(agentId);
+			}
+		} catch (error) {
+			this._logService.warn(
+				`[AgentOS][L1] Extraction failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+			);
+		}
+	}
+
+	// ─── L2 场景提取管线（对齐 TDB-AM L2）────────────────────────────────
+
+	/**
+	 * L2 场景提取触发：L1 完成后延迟触发，提取场景级摘要。
+	 * 使用 per-agent 定时器，支持 downward-only 语义（只能提前不能延后）。
+	 */
+	triggerL2Extraction(agentId: string): void {
+		const now = Date.now();
+		const lastRun = this._l2LastRunTime.get(agentId) ?? 0;
+		const minIntervalRemaining = Math.max(0, AgentOSService.L2_MIN_INTERVAL_MS - (now - lastRun));
+		const delay = Math.max(AgentOSService.L2_DELAY_AFTER_L1_MS, minIntervalRemaining);
+
+		// Downward-only：如果已有定时器，只在新的延迟更短时重新设置
+		const existingTimer = this._l2TimersByAgent.get(agentId);
+		if (existingTimer !== undefined) {
+			// 已有定时器在等待，不重复设置（downward-only 语义由 delay 计算保证）
+			this._logService.info(`[AgentOS][L2] Timer already pending for ${agentId}, skipping (downward-only)`);
+			return;
+		}
+
+		this._logService.info(`[AgentOS][L2] Scheduling scene extraction for ${agentId} in ${delay}ms`);
+		const timer = setTimeout(() => {
+			this._l2TimersByAgent.delete(agentId);
+			void this._performL2Extraction(agentId);
+		}, delay);
+		this._l2TimersByAgent.set(agentId, timer);
+	}
+
+	/**
+	 * 执行 L2 场景提取：搜索近期 L1 记忆，调 LLM 生成场景级摘要。
+	 */
+	private async _performL2Extraction(agentId: string): Promise<void> {
+		const memProvider = this.getActiveMemoryProvider();
+		const modelProvider = this._getActiveModelProvider();
+		const selection = this.getActiveModelSelection();
+		if (!memProvider || !modelProvider || !selection?.modelId) {
+			this._logService.info(`[AgentOS][L2] Skipping: missing provider or model`);
+			return;
+		}
+
+		this._l2LastRunTime.set(agentId, Date.now());
+
+		try {
+			// 搜索近期 L1 提取的记忆（source=l1_auto_extraction）
+			const recentMemories = await memProvider.searchMemory(agentId, '*');
+			if (!recentMemories || recentMemories.length === 0) {
+				this._logService.info(`[AgentOS][L2] No L1 memories found for ${agentId}, skipping scene extraction`);
+				return;
+			}
+
+			// 构建场景提取 prompt
+			const memoryText = recentMemories
+				.slice(0, 20) // 最多取 20 条
+				.map((m: any) => `- ${m.content ?? ''}`)
+				.join('\n');
+
+			const scenePrompt = [
+				'You are a scene extraction assistant. Analyze the following memory entries and extract high-level scene summaries.',
+				'A scene summary captures the broader context of what the user is working on, their goals, and recurring patterns.',
+				'',
+				'Output format: one scene per line, each as a JSON object:',
+				'{"scene_name":"<short label>","summary":"<1-2 sentence scene description>","keywords":["<keyword1>","<keyword2>"]}',
+				'',
+				'If no clear scenes emerge, output exactly: NONE',
+				'',
+				'--- Recent Memory Entries ---',
+				memoryText,
+			].join('\n');
+
+			const t0 = Date.now();
+			const stream = modelProvider.chat(
+				selection.modelId,
+				[{ role: 'user', content: scenePrompt } as any],
+				{ temperature: 0.3, maxTokens: 1000 },
+				{}
+			);
+
+			let sceneResult = '';
+			for await (const delta of stream) {
+				if (delta.type === 'text' && delta.content) {
+					sceneResult += delta.content;
+				}
+				if (delta.type === 'done') { break; }
+			}
+
+			const durationMs = Date.now() - t0;
+			const trimmed = sceneResult.trim();
+
+			if (!trimmed || trimmed === 'NONE') {
+				this._logService.info(`[AgentOS][L2] Scene extraction completed in ${durationMs}ms — no scenes extracted`);
+				return;
+			}
+
+			// 解析场景摘要并写入
+			const lines = trimmed.split('\n').filter(l => l.trim().startsWith('{'));
+			let sceneCount = 0;
+			const ts = Date.now();
+			for (const line of lines) {
+				try {
+					const scene = JSON.parse(line.trim());
+					if (scene.scene_name && scene.summary) {
+						await memProvider.writeMemory(agentId, {
+							id: `l2-scene-${ts}-${sceneCount}`,
+							type: 'long_term',
+							content: `[${scene.scene_name}] ${scene.summary}`,
+							metadata: {
+								owner: 'default',
+								userId: 'default',
+								agentId,
+								memoryType: 'scene',
+								source: 'l2_scene_extraction',
+								keywords: scene.keywords ?? [],
+								extractedAt: new Date().toISOString(),
+							},
+							timestamp: ts + sceneCount,
+						});
+						sceneCount++;
+					}
+				} catch { /* skip unparseable lines */ }
+			}
+
+			this._logService.info(
+				`[AgentOS][L2] Scene extraction completed in ${durationMs}ms — extracted ${sceneCount} scenes for agent ${agentId}`
+			);
+
+			// L2 完成后触发 L3 人格生成
+			this.triggerL3Generation();
+
+		} catch (error) {
+			this._logService.warn(
+				`[AgentOS][L2] Scene extraction failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+			);
+		}
+	}
+
+	// ─── L3 人格生成管线（对齐 TDB-AM L3）────────────────────────────────
+
+	/**
+	 * L3 人格生成触发：L2 完成后触发，全局互斥 (concurrency=1) + pending dedup。
+	 * 如果 L3 正在运行，只设 pending flag；运行中的 L3 结束后检查 flag 并重新触发。
+	 */
+	triggerL3Generation(): void {
+		if (this._l3Running) {
+			// 已有 L3 在运行 → 设 pending flag，运行结束后自动重新触发
+			this._l3Pending = true;
+			this._logService.info(`[AgentOS][L3] Already running, setting pending flag for next round`);
+			return;
+		}
+		void this._performL3Generation();
+	}
+
+	/**
+	 * 执行 L3 人格生成：搜索所有场景摘要，调 LLM 生成用户人格画像。
+	 * 全局互斥：同时只有一个 L3 运行。
+	 */
+	private async _performL3Generation(): Promise<void> {
+		const memProvider = this.getActiveMemoryProvider();
+		const modelProvider = this._getActiveModelProvider();
+		const selection = this.getActiveModelSelection();
+		if (!memProvider || !modelProvider || !selection?.modelId) {
+			this._logService.info(`[AgentOS][L3] Skipping: missing provider or model`);
+			return;
+		}
+
+		this._l3Running = true;
+		try {
+			// 搜索所有场景摘要（memoryType=scene）
+			const sceneMemories = await memProvider.searchMemory('*', 'scene');
+			if (!sceneMemories || sceneMemories.length === 0) {
+				this._logService.info(`[AgentOS][L3] No scene memories found, skipping persona generation`);
+				return;
+			}
+
+			const sceneText = sceneMemories
+				.slice(0, 30)
+				.map((m: any) => `- ${m.content ?? ''}`)
+				.join('\n');
+
+			const personaPrompt = [
+				'You are a persona generation assistant. Analyze the following scene summaries and generate a concise user persona profile.',
+				'Focus on: professional domain, technical preferences, communication style, recurring goals, and working patterns.',
+				'',
+				'Output format (single JSON object):',
+				'{"domain":"<professional domain>","expertise_level":"<beginner|intermediate|expert>","preferences":["<pref1>","<pref2>"],"communication_style":"<concise|detailed|casual|formal>","recurring_goals":["<goal1>"],"working_patterns":"<description>"}',
+				'',
+				'If insufficient data for a persona, output exactly: NONE',
+				'',
+				'--- Scene Summaries ---',
+				sceneText,
+			].join('\n');
+
+			const t0 = Date.now();
+			const stream = modelProvider.chat(
+				selection.modelId,
+				[{ role: 'user', content: personaPrompt } as any],
+				{ temperature: 0.3, maxTokens: 800 },
+				{}
+			);
+
+			let personaResult = '';
+			for await (const delta of stream) {
+				if (delta.type === 'text' && delta.content) {
+					personaResult += delta.content;
+				}
+				if (delta.type === 'done') { break; }
+			}
+
+			const durationMs = Date.now() - t0;
+			const trimmed = personaResult.trim();
+
+			if (!trimmed || trimmed === 'NONE') {
+				this._logService.info(`[AgentOS][L3] Persona generation completed in ${durationMs}ms — insufficient data`);
+				return;
+			}
+
+			// 解析人格画像并写入
+			try {
+				// 提取第一个 JSON 对象（可能被 markdown 包裹）
+				const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+				if (!jsonMatch) {
+					this._logService.warn(`[AgentOS][L3] Could not parse persona JSON from LLM response`);
+					return;
+				}
+				const persona = JSON.parse(jsonMatch[0]);
+				const ts = Date.now();
+				await memProvider.writeMemory('*', {
+					id: `l3-persona-${ts}`,
+					type: 'long_term',
+					content: JSON.stringify(persona),
+					metadata: {
+						owner: 'default',
+						userId: 'default',
+						memoryType: 'persona',
+						source: 'l3_persona_generation',
+						extractedAt: new Date().toISOString(),
+					},
+					timestamp: ts,
+				});
+
+				this._logService.info(
+					`[AgentOS][L3] Persona generation completed in ${durationMs}ms — persona written`
+				);
+			} catch (parseErr) {
+				this._logService.warn(`[AgentOS][L3] Failed to parse persona JSON: ${parseErr}`);
+			}
+
+		} catch (error) {
+			this._logService.warn(
+				`[AgentOS][L3] Persona generation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+			);
+		} finally {
+			this._l3Running = false;
+			// 检查 pending flag：如果在运行期间有新的 L3 请求，重新触发
+			if (this._l3Pending) {
+				this._l3Pending = false;
+				this._logService.info(`[AgentOS][L3] Pending flag detected, re-triggering L3`);
+				void this._performL3Generation();
+			}
+		}
+	}
+
+	// ─── 上下文压缩辅助方法（对齐 ExecutionProvider）──────────────────────
+
+	/**
+	 * 解析模型真实上下文窗口（token）。优先 maxInputTokens，其次 contextWindow，
+	 * 取不到时回退到 128000。查询失败也回退，绝不抛出。
+	 */
+	private async _resolveContextWindow(
+		provider: IModelProvider,
+		modelId: string
+	): Promise<number> {
+		const FALLBACK = 128000;
+		try {
+			const models = await provider.listModels?.();
+			const info = models?.find((m: any) => m.id === modelId);
+			const win = info?.maxInputTokens ?? info?.contextWindow;
+			if (typeof win === 'number' && win > 0) {
+				return win;
+			}
+		} catch (err) {
+			this._logService.warn(`[AgentOS] _resolveContextWindow failed for ${modelId}, falling back to ${FALLBACK}: ${err}`);
+		}
+		return FALLBACK;
+	}
+
+	/**
+	 * 粗略估算消息输入 token（char/4，与 ContextManager._estimateTokens 口径一致）。
+	 * 用于压缩后回传 context_compacted 让圆环基线同步回落。
+	 */
+	private _estimateMessagesTokens(messages: ReadonlyArray<any>): number {
+		const IMAGE_TOKEN_COST = 1500;
+		let totalChars = 0;
+		let imageTokens = 0;
+		for (const m of messages) {
+			if (!m) { continue; }
+			const shadow: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+				if (k === 'contentParts' && Array.isArray(v)) {
+					shadow[k] = v.map((p: any) => (p && p.type === 'image' ? { type: 'image', data: '[stripped]' } : p));
+				} else {
+					shadow[k] = v;
+				}
+			}
+			if (Array.isArray(shadow.contentParts)) {
+				imageTokens += shadow.contentParts.filter((p: any) => p?.type === 'image').length * IMAGE_TOKEN_COST;
+			}
+			try {
+				totalChars += JSON.stringify(shadow).length;
+			} catch {
+				totalChars += (typeof m.content === 'string' ? m.content.length : 0);
+			}
+		}
+		return Math.ceil(totalChars / 4) + imageTokens;
 	}
 
 }

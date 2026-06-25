@@ -1,0 +1,26 @@
+{
+  "name": "video_generate",
+  "description": "Generate a video from a text prompt and optionally an image. Supports text-to-video and image-to-video generation.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Video generation prompt"
+      },
+      "image_url": {
+        "type": "string",
+        "description": "Reference image URL for image-to-video (optional)"
+      },
+      "duration": {
+        "type": "number",
+        "description": "Video duration in seconds (default: 5)"
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  },
+  "category": "video_gen",
+  "source": "hermes-bundled"
+}

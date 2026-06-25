@@ -1,0 +1,23 @@
+{
+  "name": "kanban_comment",
+  "description": "Add a comment to a kanban task thread.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to comment on"
+      },
+      "comment": {
+        "type": "string",
+        "description": "Comment text"
+      }
+    },
+    "required": [
+      "task_id",
+      "comment"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

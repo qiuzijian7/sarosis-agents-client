@@ -1,0 +1,14 @@
+{
+  "id": "gitlab",
+  "name": "GitLab",
+  "description": "GitLab API access for projects, issues, MRs, and more",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-gitlab"
+  ],
+  "envKeys": [
+    "GITLAB_PERSONAL_ACCESS_TOKEN"
+  ]
+}

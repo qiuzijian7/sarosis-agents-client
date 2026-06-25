@@ -1,0 +1,23 @@
+{
+  "name": "kanban_link",
+  "description": "Link a kanban task to a parent or related task.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to link"
+      },
+      "linked_task_id": {
+        "type": "string",
+        "description": "Target task ID to link to"
+      }
+    },
+    "required": [
+      "task_id",
+      "linked_task_id"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

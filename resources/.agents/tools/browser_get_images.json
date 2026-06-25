@@ -1,0 +1,10 @@
+{
+  "name": "browser_get_images",
+  "description": "Get all images on the current page with their source URLs and alt text.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {}
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

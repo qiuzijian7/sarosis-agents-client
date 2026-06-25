@@ -1,0 +1,22 @@
+{
+  "name": "session_search",
+  "description": "Search and recall past conversation sessions. Returns summarized matching sessions.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query for past sessions"
+      },
+      "limit": {
+        "type": "number",
+        "description": "Maximum number of results (default: 5)"
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "category": "session_search",
+  "source": "hermes-bundled"
+}

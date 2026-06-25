@@ -1,0 +1,31 @@
+{
+  "name": "ha_call_service",
+  "description": "Call a Home Assistant service to control devices (e.g., turn on lights, set climate temperature).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "domain": {
+        "type": "string",
+        "description": "Service domain (e.g., \"light\", \"switch\")"
+      },
+      "service": {
+        "type": "string",
+        "description": "Service name (e.g., \"turn_on\", \"toggle\")"
+      },
+      "entity_id": {
+        "type": "string",
+        "description": "Target entity ID"
+      },
+      "data": {
+        "type": "object",
+        "description": "Additional service data"
+      }
+    },
+    "required": [
+      "domain",
+      "service"
+    ]
+  },
+  "category": "homeassistant",
+  "source": "hermes-bundled"
+}

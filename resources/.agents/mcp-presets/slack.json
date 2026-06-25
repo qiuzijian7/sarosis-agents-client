@@ -1,0 +1,15 @@
+{
+  "id": "slack",
+  "name": "Slack",
+  "description": "Slack workspace access for channels, messages, and users",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-slack"
+  ],
+  "envKeys": [
+    "SLACK_BOT_TOKEN",
+    "SLACK_TEAM_ID"
+  ]
+}

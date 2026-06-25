@@ -21,11 +21,11 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, type IStoredWorkflow } from '../common/workflowStorage.js';
-import { WORKSPACE_DATA_DIR } from '../common/constants.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
+const USER_SAROS_DIR = '.saros';
 const WORKFLOWS_DIR = 'workflows';
 const DEFAULT_WORKFLOW_PRESET_ID = 'workflow-agent';
 
@@ -39,7 +39,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		@ILogService private readonly _logService: ILogService,
 		@IFileService private readonly _fileService: IFileService,
 		@IAgentStudioService private readonly _studioService: IAgentStudioService,
-		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
 	) {
 		super();
 	}
@@ -47,31 +47,18 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	// ─── Directory resolution ────────────────────────────────────────────
 
 	/**
-	 * 解析当前工作区的 `.sarosworkspace/workflows/` 目录 URI。
-	 * 优先用激活工作区的 path，回退到 IDE 第一个打开的文件夹。
+	 * 解析用户级的 `~/.saros/workflows/` 目录 URI。
+	 * 所有工作流全局存储，不再按工作区隔离。
 	 */
-	private async _resolveWorkflowsDir(workspaceId?: string): Promise<URI | undefined> {
-		// 1. 优先用传入或激活的 workspaceId 取 workspace.path
-		const id = workspaceId ?? this._studioService.getActiveWorkspaceId();
-		if (id) {
-			try {
-				const ws = await this._studioService.getWorkspace(id);
-				if (ws?.path) {
-					return URI.joinPath(URI.file(ws.path), WORKSPACE_DATA_DIR, WORKFLOWS_DIR);
-				}
-			} catch (err) {
-				this._logService.warn('[WorkflowStorage] getWorkspace failed', err);
-			}
+	private async _resolveWorkflowsDir(_workspaceId?: string): Promise<URI | undefined> {
+		try {
+			const userHome = this._envService.userHome;
+			const dir = URI.joinPath(userHome, USER_SAROS_DIR, WORKFLOWS_DIR);
+			return dir;
+		} catch (err) {
+			this._logService.error('[WorkflowStorage] Failed to resolve user workflows dir', err);
+			return undefined;
 		}
-
-		// 2. 回退：IDE 当前打开的第一个文件夹
-		const folders = this._workspaceContextService.getWorkspace().folders;
-		if (folders.length > 0) {
-			return URI.joinPath(folders[0].uri, WORKSPACE_DATA_DIR, WORKFLOWS_DIR);
-		}
-
-		this._logService.warn('[WorkflowStorage] No workspace path available — cannot resolve workflows dir');
-		return undefined;
 	}
 
 	private async _ensureDir(dirUri: URI): Promise<void> {
@@ -143,7 +130,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	): Promise<IStoredWorkflow> {
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) {
-			throw new Error('No active workspace — cannot create workflow. Please open or select a workspace first.');
+			throw new Error('Cannot resolve workflows directory. Please ensure your home directory is accessible.');
 		}
 		await this._ensureDir(dir);
 

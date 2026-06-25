@@ -1,0 +1,23 @@
+{
+  "name": "vision_analyze",
+  "description": "Analyze an image using a multimodal vision model. Provide an image URL or base64 data and a query about the image.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "image": {
+        "type": "string",
+        "description": "Image URL or base64-encoded image data"
+      },
+      "query": {
+        "type": "string",
+        "description": "Question or instruction about the image"
+      }
+    },
+    "required": [
+      "image",
+      "query"
+    ]
+  },
+  "category": "vision",
+  "source": "hermes-bundled"
+}

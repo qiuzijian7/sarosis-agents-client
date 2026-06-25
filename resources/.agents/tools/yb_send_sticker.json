@@ -1,0 +1,23 @@
+{
+  "name": "yb_send_sticker",
+  "description": "Send a sticker in a Yuanbao chat.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "chat_id": {
+        "description": "Chat ID",
+        "type": "string"
+      },
+      "sticker_id": {
+        "description": "Sticker ID",
+        "type": "string"
+      }
+    },
+    "required": [
+      "chat_id",
+      "sticker_id"
+    ]
+  },
+  "category": "yuanbao",
+  "source": "hermes-bundled"
+}

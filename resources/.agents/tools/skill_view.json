@@ -1,0 +1,18 @@
+{
+  "name": "skill_view",
+  "description": "View the full content of a specific skill document by name or ID.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Skill name or ID to view"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "category": "skills",
+  "source": "hermes-bundled"
+}

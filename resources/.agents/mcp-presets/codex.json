@@ -1,0 +1,10 @@
+{
+  "id": "codex",
+  "name": "Codex",
+  "description": "OpenAI Codex MCP server for code generation",
+  "transportType": "stdio",
+  "command": "codex",
+  "args": [
+    "mcp-server"
+  ]
+}

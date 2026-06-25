@@ -1,0 +1,36 @@
+{
+  "name": "spotify_playback",
+  "description": "Control Spotify playback: play, pause, skip, previous, seek, set volume.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Playback action",
+        "enum": [
+          "play",
+          "pause",
+          "next",
+          "previous",
+          "seek",
+          "volume",
+          "shuffle",
+          "repeat"
+        ],
+        "type": "string"
+      },
+      "position_ms": {
+        "description": "Position in milliseconds (for seek)",
+        "type": "number"
+      },
+      "volume_percent": {
+        "description": "Volume percentage 0-100 (for volume)",
+        "type": "number"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

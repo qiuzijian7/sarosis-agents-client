@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Checkpoint 系统栏 Mockup v5 — 收起状态计数摘要</title>
+<style>
+  :root {
+    --bg-primary: #0f1419;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #1c2128;
+    --bg-hover: #21262d;
+    --border: #30363d;
+    --border-soft: #21262d;
+    --text: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #484f58;
+    --accent: #58a6ff;
+    --success: #34d399;
+    --warning: #f59e0b;
+    --error: #f87171;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg-primary); color: var(--text); font-family: -apple-system, 'Segoe UI', sans-serif; font-size: 13px; padding: 24px; }
+  h2 { margin-bottom: 16px; font-size: 16px; font-weight: 600; }
+  h3 { margin: 16px 0 8px; font-size: 13px; color: var(--text-secondary); }
+
+  .chat-panel { width: 420px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; margin-bottom: 24px; }
+  .chat-header { height: 40px; background: var(--bg-tertiary); display: flex; align-items: center; padding: 0 12px; gap: 8px; border-bottom: 1px solid var(--border-soft); }
+  .avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg, #3b82f6, #8b5cf6); flex-shrink: 0; }
+  .agent-name { font-size: 12px; font-weight: 600; }
+  .chat-messages { flex: 1; min-height: 60px; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .chat-message { display: flex; gap: 8px; align-items: flex-start; }
+  .chat-message.user { flex-direction: row-reverse; }
+  .bubble { max-width: 80%; padding: 10px 14px; border-radius: 14px; font-size: 12px; line-height: 1.6; }
+  .bubble.assistant { background: var(--bg-tertiary); border: 1px solid var(--border-soft); border-bottom-left-radius: 4px; }
+  .bubble.user { background: linear-gradient(135deg, var(--accent), #4c8fe0); color: white; border-bottom-right-radius: 4px; }
+
+  /* ═══ 系统栏（收起） ═══ */
+  .sysmsg-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 12px; min-height: 30px;
+    background: var(--bg-tertiary); border-top: 1px solid var(--border-soft);
+    cursor: pointer; font-size: 11px; flex-shrink: 0;
+  }
+  .sysmsg-bar:hover { background: var(--bg-hover); }
+  .sysmsg-toggle { font-size: 8px; color: var(--text-muted); transition: transform 0.2s; flex-shrink: 0; }
+  .sysmsg-toggle.expanded { transform: rotate(90deg); }
+
+  /* ── 计数摘要 chip ── */
+  .summary-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; flex-shrink: 0;
+  }
+  .summary-chip .chip-icon { font-size: 11px; }
+  .summary-chip .chip-count { font-weight: 600; }
+  .summary-chip .chip-label { color: var(--text-secondary); }
+
+  .summary-chip.checkpoint {
+    background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.25);
+    color: var(--warning);
+  }
+  .summary-chip.compression {
+    background: rgba(78,201,176,0.10); border: 1px solid rgba(78,201,176,0.20);
+    color: var(--success);
+  }
+  .summary-chip.memory {
+    background: rgba(86,156,214,0.10); border: 1px solid rgba(86,156,214,0.20);
+    color: #569cd6;
+  }
+
+  /* ── 展开列表 ── */
+  .sysmsg-list { max-height: 0; overflow: hidden; transition: max-height 0.2s; background: var(--bg-tertiary); }
+  .sysmsg-list.expanded { max-height: 320px; overflow-y: auto; border-top: 1px solid var(--border-soft); }
+
+  .cp-detail { padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+  .cp-detail-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+  .cp-detail-icon { font-size: 12px; }
+  .cp-detail-title { font-size: 11px; font-weight: 600; color: var(--warning); }
+  .cp-detail-time { font-size: 9px; color: var(--text-muted); margin-left: auto; }
+  .cp-detail-actions { display: flex; gap: 3px; }
+  .cp-action-btn { padding: 2px 8px; font-size: 9px; border-radius: 3px; border: 1px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .cp-action-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+  .cp-action-btn.danger { color: var(--error); }
+  .cp-action-btn.success { color: var(--success); }
+  .cp-files { display: flex; flex-direction: column; gap: 2px; padding-left: 18px; }
+  .cp-file { display: flex; align-items: center; gap: 6px; padding: 2px 4px; font-size: 10px; cursor: pointer; border-radius: 2px; color: var(--text-secondary); }
+  .cp-file:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .file-status { width: 12px; font-family: monospace; font-weight: 600; text-align: center; flex-shrink: 0; }
+  .file-status.M { color: var(--warning); }
+  .file-status.A { color: var(--success); }
+  .file-status.D { color: var(--error); }
+  .file-path { font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ghost-tag { font-size: 8px; padding: 1px 4px; border-radius: 4px; background: rgba(128,128,128,0.15); color: var(--text-muted); }
+
+  .sysmsg-item { display: flex; align-items: flex-start; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border-soft); font-size: 11px; }
+  .sysmsg-item-icon { font-size: 12px; flex-shrink: 0; }
+  .sysmsg-item-content { flex: 1; color: var(--text-secondary); }
+  .sysmsg-item-badge { padding: 1px 5px; border-radius: 8px; font-size: 9px; font-weight: 600; }
+  .sysmsg-item-badge.compression { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+  .sysmsg-item-badge.memory { background: rgba(86,156,214,0.15); color: #569cd6; }
+
+  .chat-input { padding: 10px 12px; border-top: 1px solid var(--border-soft); }
+  .input-box { background: var(--bg-tertiary); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--text-muted); min-height: 32px; }
+
+  .mockup-section { margin-bottom: 28px; }
+  .mockup-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; padding-left: 4px; }
+  .side-by-side { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  .panel-tall { height: 540px; }
+  .panel-short { height: 360px; }
+</style>
+</head>
+<body>
+
+<h2>系统栏 Mockup v5 — 收起状态计数摘要</h2>
+
+<div class="side-by-side">
+
+  <!-- A: 收起状态 — 计数摘要 -->
+  <div class="mockup-section">
+    <div class="mockup-label">A: 收起状态 <span style="color:var(--accent);">→</span> 检查点个数 + 压缩个数 + 记忆个数</div>
+    <div class="chat-panel panel-tall">
+      <div class="chat-header"><div class="avatar"></div><span class="agent-name">Saros-Claw</span></div>
+      <div class="chat-messages">
+        <div class="chat-message user"><div class="bubble user">修改 workbench.ts</div></div>
+        <div class="chat-message"><div class="avatar"></div><div class="bubble assistant">已创建检查点。</div></div>
+        <div class="chat-message user"><div class="bubble user">再修改 agentChatPanel.ts</div></div>
+        <div class="chat-message"><div class="avatar"></div><div class="bubble assistant">已创建第二个检查点。</div></div>
+      </div>
+
+      <div class="sysmsg-bar">
+        <span class="sysmsg-toggle">▶</span>
+        <span class="summary-chip checkpoint">
+          <span class="chip-icon">📝</span>
+          <span class="chip-count">2</span>
+          <span class="chip-label">检查点</span>
+        </span>
+        <span class="summary-chip compression">
+          <span class="chip-icon">📦</span>
+          <span class="chip-count">1</span>
+          <span class="chip-label">压缩</span>
+        </span>
+        <span class="summary-chip memory">
+          <span class="chip-icon">🧠</span>
+          <span class="chip-count">1</span>
+          <span class="chip-label">记忆</span>
+        </span>
+      </div>
+
+      <div class="chat-input"><div class="input-box">输入消息...</div></div>
+    </div>
+  </div>
+
+  <!-- B: 展开状态 — 详情列表 -->
+  <div class="mockup-section">
+    <div class="mockup-label">B: 展开状态 <span style="color:var(--accent);">→</span> 检查点详情 + 系统消息</div>
+    <div class="chat-panel panel-tall">
+      <div class="chat-header"><div class="avatar"></div><span class="agent-name">Saros-Claw</span></div>
+      <div class="chat-messages" style="min-height: 40px;">
+        <div class="chat-message user"><div class="bubble user">再修改 agentChatPanel.ts</div></div>
+        <div class="chat-message"><div class="avatar"></div><div class="bubble assistant">完成。</div></div>
+      </div>
+
+      <div class="sysmsg-bar">
+        <span class="sysmsg-toggle expanded">▶</span>
+        <span class="summary-chip checkpoint">
+          <span class="chip-icon">📝</span>
+          <span class="chip-count">2</span>
+          <span class="chip-label">检查点</span>
+        </span>
+        <span class="summary-chip compression">
+          <span class="chip-icon">📦</span>
+          <span class="chip-count">1</span>
+          <span class="chip-label">压缩</span>
+        </span>
+        <span class="summary-chip memory">
+          <span class="chip-icon">🧠</span>
+          <span class="chip-count">1</span>
+          <span class="chip-label">记忆</span>
+        </span>
+      </div>
+
+      <div class="sysmsg-list expanded">
+        <div class="cp-detail">
+          <div class="cp-detail-header">
+            <span class="cp-detail-icon">📝</span>
+            <span class="cp-detail-title">检查点 #2: tool_edit</span>
+            <span class="cp-detail-time">2分钟前</span>
+            <div class="cp-detail-actions">
+              <button class="cp-action-btn danger">撤销</button>
+              <button class="cp-action-btn success">保留</button>
+              <button class="cp-action-btn">差异</button>
+            </div>
+          </div>
+          <div class="cp-files">
+            <div class="cp-file"><span class="file-status M">M</span><span class="file-path">src/.../workbench.ts</span></div>
+            <div class="cp-file"><span class="file-status M">M</span><span class="file-path">src/.../agentChatPanel.ts</span></div>
+            <div class="cp-file"><span class="file-status A">A</span><span class="file-path">src/.../agentChat.css</span></div>
+          </div>
+        </div>
+        <div class="cp-detail">
+          <div class="cp-detail-header">
+            <span class="cp-detail-icon">📝</span>
+            <span class="cp-detail-title">检查点 #1: tool_edit</span>
+            <span class="ghost-tag">ghost</span>
+            <span class="cp-detail-time">5分钟前</span>
+            <div class="cp-detail-actions">
+              <button class="cp-action-btn danger">撤销</button>
+              <button class="cp-action-btn success">保留</button>
+              <button class="cp-action-btn">差异</button>
+            </div>
+          </div>
+          <div class="cp-files">
+            <div class="cp-file"><span class="file-status M">M</span><span class="file-path">src/.../workbench.ts</span></div>
+            <div class="cp-file"><span class="file-status M">M</span><span class="file-path">src/.../nativeChatEditorPane.ts</span></div>
+          </div>
+        </div>
+        <div class="sysmsg-item">
+          <span class="sysmsg-item-icon">📦</span>
+          <div class="sysmsg-item-content">上下文已压缩：190 → 19 条，节省 178,909 tokens</div>
+          <span class="sysmsg-item-badge compression">-91%</span>
+        </div>
+        <div class="sysmsg-item">
+          <span class="sysmsg-item-icon">🧠</span>
+          <div class="sysmsg-item-content">已提取记忆：用户偏好简体中文交互</div>
+          <span class="sysmsg-item-badge memory">L1</span>
+        </div>
+      </div>
+
+      <div class="chat-input"><div class="input-box">输入消息...</div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="side-by-side">
+  <!-- C: 仅检查点 -->
+  <div class="mockup-section">
+    <div class="mockup-label">C: 仅检查点 <span style="color:var(--accent);">→</span> 无压缩/记忆</div>
+    <div class="chat-panel panel-short">
+      <div class="chat-header"><div class="avatar"></div><span class="agent-name">Saros-Claw</span></div>
+      <div class="chat-messages">
+        <div class="chat-message user"><div class="bubble user">修改文件</div></div>
+        <div class="chat-message"><div class="avatar"></div><div class="bubble assistant">完成。</div></div>
+      </div>
+      <div class="sysmsg-bar">
+        <span class="sysmsg-toggle">▶</span>
+        <span class="summary-chip checkpoint">
+          <span class="chip-icon">📝</span>
+          <span class="chip-count">1</span>
+          <span class="chip-label">检查点</span>
+        </span>
+      </div>
+      <div class="chat-input"><div class="input-box">输入消息...</div></div>
+    </div>
+  </div>
+
+  <!-- D: 无系统消息 -->
+  <div class="mockup-section">
+    <div class="mockup-label">D: 无系统消息 <span style="color:var(--accent);">→</span> 系统栏隐藏</div>
+    <div class="chat-panel panel-short">
+      <div class="chat-header"><div class="avatar"></div><span class="agent-name">Saros-Claw</span></div>
+      <div class="chat-messages">
+        <div class="chat-message user"><div class="bubble user">你好</div></div>
+        <div class="chat-message"><div class="avatar"></div><div class="bubble assistant">你好！</div></div>
+      </div>
+      <!-- 系统栏不显示 -->
+      <div class="chat-input"><div class="input-box">输入消息...</div></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

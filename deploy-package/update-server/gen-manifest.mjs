@@ -5,9 +5,9 @@
  * 用法：
  *   node build/saros/update-server/gen-manifest.mjs \
  *     --platform win32-x64-user \
- *     --exe ".build/win32-x64/user-setup/VsSarosisUserSetup.exe" \
+ *     --exe ".build/win32-x64/user-setup/VsSarosUserSetup.exe" \
  *     --version 1.2.3 \
- *     --url "https://github.com/owner/repo/releases/download/v1.2.3/VsSarosisUserSetup.exe"
+ *     --url "https://github.com/owner/repo/releases/download/v1.2.3/VsSarosUserSetup.exe"
  *
  * commit 默认从 `git rev-parse HEAD` 读取（也可 --commit 显式指定）。
  */

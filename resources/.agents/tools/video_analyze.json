@@ -1,0 +1,23 @@
+{
+  "name": "video_analyze",
+  "description": "Analyze a video using a multimodal model. Extract frames and understand video content.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "video_url": {
+        "type": "string",
+        "description": "URL of the video to analyze"
+      },
+      "query": {
+        "type": "string",
+        "description": "Question or instruction about the video"
+      }
+    },
+    "required": [
+      "video_url",
+      "query"
+    ]
+  },
+  "category": "video",
+  "source": "hermes-bundled"
+}

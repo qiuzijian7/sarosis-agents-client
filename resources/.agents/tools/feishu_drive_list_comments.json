@@ -1,0 +1,23 @@
+{
+  "name": "feishu_drive_list_comments",
+  "description": "List comments on a Feishu/Lark drive file.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "file_id": {
+        "description": "File ID",
+        "type": "string"
+      },
+      "file_type": {
+        "description": "File type (e.g., \"doc\", \"sheet\")",
+        "type": "string"
+      }
+    },
+    "required": [
+      "file_id",
+      "file_type"
+    ]
+  },
+  "category": "feishu",
+  "source": "hermes-bundled"
+}

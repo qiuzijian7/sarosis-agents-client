@@ -1,0 +1,11 @@
+{
+  "id": "filesystem",
+  "name": "Filesystem",
+  "description": "Secure file system access for reading, writing, and searching files",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-filesystem"
+  ]
+}

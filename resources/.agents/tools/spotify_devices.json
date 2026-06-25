@@ -1,0 +1,10 @@
+{
+  "name": "spotify_devices",
+  "description": "List available Spotify devices for playback.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {}
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

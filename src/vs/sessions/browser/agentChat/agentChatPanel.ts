@@ -161,10 +161,28 @@ export class AgentChatPanel extends Disposable {
 	private _textarea!: HTMLTextAreaElement;
 	private _scrollToBottomBtn!: HTMLElement;
 	private _sendBtn!: HTMLElement;
-	private _checkpointBarContainer: HTMLElement | null = null;
+	private _systemMsgBar: HTMLElement | null = null;
+	private _systemMsgList: HTMLElement | null = null;
+	private _systemMsgExpanded = false;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
+	/** 系统消息列表（压缩、记忆、代码库等非聊天消息） */
+	private _systemMessages: Array<{
+		id: string;
+		type: 'compression' | 'memory' | 'codebase';
+		icon: string;
+		badge: string;
+		badgeClass: string;
+		content: string;
+		details: string[];
+		timestamp: number;
+		rawData?: Record<string, unknown>;
+	}> = [];
+	/** 系统消息面板回调（打开编辑器详情） */
+	private _onOpenCompressionDetail: ((data: Record<string, unknown>) => void) | null = null;
+	private _onOpenMemoryDetail: ((agentId: string, memoryType?: string, contentPreview?: string) => void) | null = null;
+	private _onOpenCodebaseDetail: (() => void) | null = null;
 	/**
 	 * 工具卡展开态（按 toolCall id 记忆）。流式期间消息会被频繁整条重建
 	 * （_rebuildMessageElement），若不持久化展开态，用户点开的卡会被下一帧重建合上。
@@ -199,7 +217,7 @@ export class AgentChatPanel extends Disposable {
 	private _streamThinkingBuffer: string = '';
 	private _compactedBaseline: number = 0;
 	private _checkpoint: ICheckpointInfo | null = null;
-	private _checkpointFilesExpanded = false;
+	private _checkpoints: ICheckpointInfo[] = [];
 	private _attachments: IChatAttachment[] = [];
 	private _fileInput: HTMLInputElement | null = null;
 	// -- Agent dropdown state --
@@ -269,7 +287,7 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onChangeMode?: (mode: ChatMode) => void;
 	private readonly _onSelectProvider?: (providerId: string) => void;
 	private readonly _onSelectModel?: (modelId: string) => void;
-	private readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
+	private readonly _onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
 	private readonly _onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 	/** Edit a prior user message: truncate the conversation after it and regenerate from the new text. */
 	private readonly _onEditMessage?: (messageId: string, newText: string) => void;
@@ -283,6 +301,8 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onApplyCode?: (code: string, language: string, filePath?: string) => void;
 	private readonly _onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 	private readonly _onOpenFile?: (filePath: string) => void;
+	/** Click handler for http(s) links in LLM output. Opens the URL in the editor area. */
+	private readonly _onOpenLink?: (url: string) => void;
 	/** Tool approval callback (for security-level tool calls) */
 	private readonly _onToolApprove?: (toolCallId: string, decision: string) => void;
 	// Orchestration plan callbacks
@@ -312,7 +332,7 @@ export class AgentChatPanel extends Disposable {
 		onChangeMode?: (mode: ChatMode) => void;
 		onSelectProvider?: (providerId: string) => void;
 		onSelectModel?: (modelId: string) => void;
-		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string }) => void;
+		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
 		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 		onEditMessage?: (messageId: string, newText: string) => void;
 		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
@@ -325,6 +345,8 @@ export class AgentChatPanel extends Disposable {
 		onApplyCode?: (code: string, language: string, filePath?: string) => void;
 		onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 		onOpenFile?: (filePath: string) => void;
+		/** Click handler for http(s) links in LLM output. Opens the URL in the editor area. */
+		onOpenLink?: (url: string) => void;
 		/** Tool approval callback (for security-level tool calls) */
 		onToolApprove?: (toolCallId: string, decision: string) => void;
 		onDecomposeTask?: (planId: string, taskId: string) => void;
@@ -366,6 +388,7 @@ export class AgentChatPanel extends Disposable {
 		this._onApplyCode = opts.onApplyCode;
 		this._onSubmitVariables = opts.onSubmitVariables;
 		this._onOpenFile = opts.onOpenFile;
+		this._onOpenLink = opts.onOpenLink;
 		this._onToolApprove = opts.onToolApprove;
 		// Orchestration plan callbacks
 		this._onApprovePlan = opts.onApprovePlan;
@@ -417,6 +440,287 @@ export class AgentChatPanel extends Disposable {
 		this._appendMessageDom(message);
 		// 新增消息 → instant 滚动（force=true）
 		this._scrollToBottom(true);
+	}
+
+	/**
+	 * 添加上下文压缩提示到系统消息面板。
+	 */
+	addCompressionNotice(info: {
+		originalCount: number;
+		compressedCount: number;
+		tokensSaved: number;
+		durationMs: number;
+		beforeText?: string;
+		afterText?: string;
+		summary?: string;
+	}): void {
+		const savePercent = info.originalCount > 0
+			? Math.round((1 - info.compressedCount / info.originalCount) * 100)
+			: 0;
+		const details: string[] = [];
+		if (savePercent > 0) { details.push(`-${savePercent}%`); }
+		if (info.tokensSaved > 0) { details.push(`节省 ${info.tokensSaved.toLocaleString()} tokens`); }
+		if (info.durationMs > 0) { details.push(`${(info.durationMs / 1000).toFixed(1)}s`); }
+		this._addSystemMessage({
+			type: 'compression',
+			icon: '📦',
+			badge: '压缩',
+			badgeClass: 'compression',
+			content: `上下文已压缩：${info.originalCount} → ${info.compressedCount} 条消息`,
+			details,
+			rawData: { ...info, savePercent },
+		});
+	}
+
+	/**
+	 * 添加记忆提取提示到系统消息面板。
+	 */
+	addMemoryNotice(info: {
+		content: string;
+		memoryType?: string;
+		priority?: number;
+		sceneName?: string;
+		assistantContentPreview?: string;
+		iteration?: number;
+	}): void {
+		const typeLabels: Record<string, string> = {
+			persona: '人格',
+			episodic: '情景',
+			instruction: '指令',
+			short_term: 'L0',
+		};
+		const typeLabel = info.memoryType ? (typeLabels[info.memoryType] ?? info.memoryType) : '记忆';
+		const details: string[] = [];
+		if (info.sceneName) { details.push(String(info.sceneName)); }
+		if (typeof info.priority === 'number' && info.priority > 0) { details.push(`P${info.priority}`); }
+		this._addSystemMessage({
+			type: 'memory',
+			icon: '🧠',
+			badge: typeLabel,
+			badgeClass: info.memoryType === 'short_term' ? 'memory-l0' : 'memory',
+			content: info.content,
+			details,
+			rawData: { ...info },
+		});
+	}
+
+	/** 设置打开压缩详情编辑器的回调 */
+	setOpenCompressionDetailCallback(cb: (data: Record<string, unknown>) => void): void {
+		this._onOpenCompressionDetail = cb;
+	}
+
+	/** 设置打开记忆详情编辑器的回调 */
+	setOpenMemoryDetailCallback(cb: (agentId: string, memoryType?: string, contentPreview?: string) => void): void {
+		this._onOpenMemoryDetail = cb;
+	}
+
+	/** 设置打开代码库记忆详情编辑器的回调 */
+	setOpenCodebaseDetailCallback(cb: () => void): void {
+		this._onOpenCodebaseDetail = cb;
+	}
+
+	/**
+	 * 添加代码库记忆操作提示到系统消息面板。
+	 */
+	addCodebaseNotice(info: {
+		operation: string;
+		detail?: string;
+	}): void {
+		const opLabels: Record<string, string> = {
+			index: '索引',
+			search: '搜索',
+			graph: '图谱',
+			trace: '追踪',
+			changes: '变更检测',
+		};
+		const label = opLabels[info.operation] ?? info.operation;
+		const details: string[] = [];
+		if (info.detail) { details.push(info.detail); }
+		this._addSystemMessage({
+			type: 'codebase',
+			icon: '🗂️',
+			badge: label,
+			badgeClass: 'codebase',
+			content: info.detail || `代码库记忆操作: ${info.operation}`,
+			details,
+		});
+	}
+
+	/** 添加一条系统消息并刷新面板 */
+	private _addSystemMessage(msg: {
+		type: 'compression' | 'memory' | 'codebase';
+		icon: string;
+		badge: string;
+		badgeClass: string;
+		content: string;
+		details: string[];
+		rawData?: Record<string, unknown>;
+	}): void {
+		this._systemMessages.push({
+			id: `sysmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+			timestamp: Date.now(),
+			...msg,
+		});
+		this._renderSystemMsgPanel();
+		// 有新消息时自动展开
+		if (!this._systemMsgExpanded) {
+			this._toggleSystemMsgPanel();
+		}
+	}
+
+	/** 清空系统消息 */
+	clearSystemMessages(): void {
+		this._systemMessages = [];
+		this._renderSystemMsgPanel();
+	}
+
+	/** 切换系统消息面板展开/收起 */
+	private _toggleSystemMsgPanel(): void {
+		this._systemMsgExpanded = !this._systemMsgExpanded;
+		this._renderSystemMsgPanel();
+	}
+
+	/** 渲染系统消息面板（栏 + 列表） */
+	private _renderSystemMsgPanel(): void {
+		if (!this._systemMsgBar) { return; }
+		const bar = this._systemMsgBar;
+		const list = this._systemMsgList;
+		if (!list) { return; }
+
+		const cpCount = this._checkpoints.length;
+		const sysCount = this._systemMessages.length;
+		const totalCount = cpCount + sysCount;
+
+		// 清空栏内容
+		while (bar.firstChild) { bar.removeChild(bar.firstChild); }
+
+		// 切换图标
+		const toggleEl = document.createElement('span');
+		toggleEl.className = 'sysmsg-toggle-icon' + (this._systemMsgExpanded ? ' expanded' : '');
+		toggleEl.textContent = '▶';
+		bar.appendChild(toggleEl);
+
+		if (totalCount === 0) {
+			bar.style.display = 'none';
+			list.style.maxHeight = '0';
+			return;
+		}
+
+		bar.style.display = 'flex';
+
+		// ── 计数摘要 chips（每个类型一个 chip，显示个数） ──
+		if (cpCount > 0) {
+			const chip = document.createElement('span');
+			chip.className = 'summary-chip checkpoint';
+			const ic = document.createElement('span'); ic.className = 'chip-icon'; ic.textContent = '📝';
+			chip.appendChild(ic);
+			const cnt = document.createElement('span'); cnt.className = 'chip-count'; cnt.textContent = String(cpCount);
+			chip.appendChild(cnt);
+			const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = '检查点';
+			chip.appendChild(lbl);
+			bar.appendChild(chip);
+		}
+
+		const types = new Set(this._systemMessages.map(m => m.type));
+		if (types.has('compression')) {
+			const compCount = this._systemMessages.filter(m => m.type === 'compression').length;
+			const chip = document.createElement('span');
+			chip.className = 'summary-chip compression';
+			const ic = document.createElement('span'); ic.className = 'chip-icon'; ic.textContent = '📦';
+			chip.appendChild(ic);
+			const cnt = document.createElement('span'); cnt.className = 'chip-count'; cnt.textContent = String(compCount);
+			chip.appendChild(cnt);
+			const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = '压缩';
+			chip.appendChild(lbl);
+			bar.appendChild(chip);
+		}
+		if (types.has('memory')) {
+			const memCount = this._systemMessages.filter(m => m.type === 'memory').length;
+			const chip = document.createElement('span');
+			chip.className = 'summary-chip memory';
+			const ic = document.createElement('span'); ic.className = 'chip-icon'; ic.textContent = '🧠';
+			chip.appendChild(ic);
+			const cnt = document.createElement('span'); cnt.className = 'chip-count'; cnt.textContent = String(memCount);
+			chip.appendChild(cnt);
+			const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = '记忆';
+			chip.appendChild(lbl);
+			bar.appendChild(chip);
+		}
+
+		// ── 渲染展开列表 ──
+		while (list.firstChild) { list.removeChild(list.firstChild); }
+
+		// 检查点详情卡片（从新到旧）
+		for (let i = this._checkpoints.length - 1; i >= 0; i--) {
+			const cp = this._checkpoints[i];
+			const isLatest = i === this._checkpoints.length - 1;
+			const seqNum = i + 1;
+			list.appendChild(this._createCheckpointDetailCard(cp, isLatest, seqNum));
+		}
+
+		// 其他系统消息（倒序：最新在前）
+		for (let mi = this._systemMessages.length - 1; mi >= 0; mi--) {
+			const msg = this._systemMessages[mi];
+			const item = document.createElement('div');
+			item.className = 'sysmsg-item sysmsg-item-clickable';
+
+			const iconEl = document.createElement('span');
+			iconEl.className = 'sysmsg-item-icon';
+			iconEl.textContent = msg.icon;
+			item.appendChild(iconEl);
+
+			const body = document.createElement('div');
+			body.className = 'sysmsg-item-body';
+
+			const header = document.createElement('div');
+			header.className = 'sysmsg-item-header';
+			const badge = document.createElement('span');
+			badge.className = `sysmsg-item-badge ${msg.badgeClass}`;
+			badge.textContent = msg.badge;
+			header.appendChild(badge);
+			const time = document.createElement('span');
+			time.className = 'sysmsg-item-time';
+			time.textContent = new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+			header.appendChild(time);
+			body.appendChild(header);
+
+			const content = document.createElement('div');
+			content.className = 'sysmsg-item-content';
+			content.textContent = msg.content;
+			body.appendChild(content);
+
+			if (msg.details.length > 0) {
+				const detail = document.createElement('div');
+				detail.className = 'sysmsg-item-detail';
+				for (const d of msg.details) {
+					const span = document.createElement('span');
+					span.textContent = d;
+					detail.appendChild(span);
+				}
+				body.appendChild(detail);
+			}
+			item.appendChild(body);
+			item.addEventListener('click', (e) => {
+				e.stopPropagation();
+				if (msg.type === 'compression' && msg.rawData && this._onOpenCompressionDetail) {
+					this._onOpenCompressionDetail(msg.rawData);
+				} else if (msg.type === 'memory' && this._onOpenMemoryDetail && this._agent) {
+					this._onOpenMemoryDetail(this._agent.id, msg.rawData?.['memoryType'] as string | undefined, msg.rawData?.['assistantContentPreview'] as string | undefined);
+				} else if (msg.type === 'codebase' && this._onOpenCodebaseDetail) {
+					this._onOpenCodebaseDetail();
+				}
+			});
+			list.appendChild(item);
+		}
+
+		// 展开/收起
+		if (this._systemMsgExpanded) {
+			list.style.maxHeight = '300px';
+			list.style.overflowY = 'auto';
+		} else {
+			list.style.maxHeight = '0';
+			list.style.overflowY = 'hidden';
+		}
 	}
 
 	updateMessage(
@@ -549,7 +853,14 @@ export class AgentChatPanel extends Disposable {
 
 	setCheckpoint(info: ICheckpointInfo | null): void {
 		this._checkpoint = info;
-		this._renderCheckpointBar();
+		this._checkpoints = info ? [info] : [];
+		this._renderSystemMsgPanel();
+	}
+
+	setCheckpoints(list: ICheckpointInfo[]): void {
+		this._checkpoints = list;
+		this._checkpoint = list.length > 0 ? list[list.length - 1] : null;
+		this._renderSystemMsgPanel();
 	}
 
 	focusInput(): void {
@@ -585,9 +896,6 @@ export class AgentChatPanel extends Disposable {
 
 		// Messages wrapper
 		this._renderMessagesArea();
-
-		// Checkpoint bar container (always present so updates can re-render in place)
-		this._renderCheckpointBarContainer();
 
 		// Input area
 		this._renderInputArea();
@@ -1381,6 +1689,15 @@ export class AgentChatPanel extends Disposable {
 		if (idx >= children.length) { return; }
 		const existingEl = children[idx] as HTMLElement;
 
+		// Force rebuild when isThinking state changes — the thinking indicator
+		// needs to be added/removed, which fast paths don't handle.
+		const existingIndicator = existingEl.querySelector('.thinking-indicator');
+		const shouldShowIndicator = !!(msg.isStreaming && msg.isThinking && !msg.thinking);
+		if (!!existingIndicator !== shouldShowIndicator) {
+			this._rebuildMessageElement(existingEl, msg);
+			return;
+		}
+
 		const partsToolCount = msg.parts ? msg.parts.filter(p => p.kind === 'tool').length : 0;
 		const hasToolCalls = (msg.toolCalls && msg.toolCalls.length > 0) || partsToolCount > 0;
 		const hasStructuralChange =
@@ -1508,16 +1825,19 @@ export class AgentChatPanel extends Disposable {
 			$(`.chat-bubble.${isUser ? "user" : "assistant"}`),
 		);
 
-		// Thinking card (assistant only)
-		if (!isUser && (msg.thinking || msg.isThinking)) {
+		// Thinking card (assistant only) — only show when there's actual thinking
+		// content. When isThinking is true but no thinking text yet, we show a
+		// dedicated "正在思考..." indicator below instead.
+		if (!isUser && msg.thinking) {
 			bubble.appendChild(this._createThinkingCard(msg));
 		}
 
-		// Streaming cursor — shown for assistant messages that are actively streaming.
-		// Note: We intentionally do NOT show "AI 正在输出..." or any step-indicator text here.
-		// The send button already changes to stop-icon during streaming, which is sufficient
-		// to indicate activity. Showing placeholder text caused visual confusion (duplicate
-		// bubbles) when combined with optimistic message creation in the editor pane.
+		// "正在思考..." indicator — shown when waiting for LLM response (before
+		// first delta, or during loop wait after a tool call completes).
+		// Shows at the bottom of the bubble when content/tool calls already exist.
+		if (!isUser && msg.isStreaming && msg.isThinking && !msg.thinking) {
+			bubble.appendChild(this._createThinkingIndicator());
+		}
 
 		// Content + Tool calls — interleaved rendering for assistant messages
 		// (Void-inspired: tool cards inserted at text positions inside markdown),
@@ -1725,6 +2045,23 @@ export class AgentChatPanel extends Disposable {
 		);
 
 		return card;
+	}
+
+	/**
+	 * "正在思考..." indicator — a compact, animated placeholder shown in the
+	 * assistant bubble while waiting for the LLM's first response delta, and
+	 * again during the agent loop (after a tool call completes, before the
+	 * next LLM response). Displays three pulsing dots for visual feedback.
+	 */
+	private _createThinkingIndicator(): HTMLElement {
+		const indicator = $('.thinking-indicator');
+		const label = append(indicator, $('span.thinking-indicator-label'));
+		label.textContent = '正在思考';
+		const dots = append(indicator, $('span.thinking-indicator-dots'));
+		for (let i = 0; i < 3; i++) {
+			append(dots, $('span.thinking-indicator-dot'));
+		}
+		return indicator;
 	}
 
 	// --- Tool call card (Void ToolHeaderWrapper parity) ---
@@ -3046,8 +3383,8 @@ export class AgentChatPanel extends Disposable {
 		copyBtn.appendChild(copySvg);
 		this._register(addDisposableListener(copyBtn, EventType.CLICK, async (e) => {
 			e.stopPropagation();
-			try {
-				await navigator.clipboard.writeText(msg.content);
+			const ok = await this._copyToClipboard(msg.content);
+			if (ok) {
 				// 替换为对号图标
 				copyBtn.removeChild(copySvg);
 				const checkSvg = this._svgCheckSmall();
@@ -3058,7 +3395,7 @@ export class AgentChatPanel extends Disposable {
 					copyBtn.removeChild(checkSvg);
 					copyBtn.appendChild(copySvg);
 				}, 1500);
-			} catch { /* ignore */ }
+			}
 		}));
 
 		if (this._onCheckpointAction) {
@@ -3449,6 +3786,36 @@ export class AgentChatPanel extends Disposable {
 		return svg;
 	}
 
+	/**
+	 * Copy text to clipboard with fallback for Electron workbench contexts
+	 * where navigator.clipboard.writeText may be unavailable or fail.
+	 */
+	private async _copyToClipboard(text: string): Promise<boolean> {
+		// Try modern Clipboard API first
+		if (navigator.clipboard?.writeText) {
+			try {
+				await navigator.clipboard.writeText(text);
+				return true;
+			} catch { /* fall through to legacy method */ }
+		}
+		// Fallback: temporary textarea + execCommand('copy')
+		try {
+			const ta = document.createElement('textarea');
+			ta.value = text;
+			ta.style.position = 'fixed';
+			ta.style.left = '-9999px';
+			ta.style.top = '0';
+			document.body.appendChild(ta);
+			ta.focus();
+			ta.select();
+			const ok = document.execCommand('copy');
+			document.body.removeChild(ta);
+			return ok;
+		} catch {
+			return false;
+		}
+	}
+
 	/** Small check SVG for copy button feedback */
 	private _svgCheckSmall(): SVGElement {
 		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -3635,6 +4002,45 @@ export class AgentChatPanel extends Disposable {
 		// renderMarkdown returns a disposable that must be managed
 		const disposable = renderMarkdown(md, options, parent);
 		this._markdownDisposables.set(parent, disposable);
+
+		// Intercept clicks on http(s) links so they open in the editor area
+		// (middle column) instead of the system browser. Event delegation on
+		// the parent element covers all <a> tags rendered by renderMarkdown,
+		// including those added during streaming updates.
+		this._attachLinkInterceptor(parent);
+	}
+
+	/**
+	 * Attach a click interceptor on `parent` that catches clicks on `<a>` tags
+	 * with http/https hrefs and routes them to `onOpenLink` (which opens the
+	 * URL in the workbench editor area). Non-http links (e.g. `command:`,
+	 * `file:`) are left to the default handler.
+	 */
+	private _attachLinkInterceptor(parent: HTMLElement): void {
+		const handler = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (!target) { return; }
+			const anchor = target.closest('a') as HTMLAnchorElement | null;
+			if (!anchor) { return; }
+			const href = anchor.getAttribute('data-href') || anchor.href;
+			if (!href) { return; }
+			// Only intercept http(s) links.
+			if (!/^https?:\/\//i.test(href)) { return; }
+			e.preventDefault();
+			e.stopPropagation();
+			this._onOpenLink?.(href);
+		};
+		parent.addEventListener('click', handler);
+		// Track the listener for disposal when the parent is cleaned up.
+		const existingDisposable = this._markdownDisposables.get(parent);
+		if (existingDisposable) {
+			this._markdownDisposables.set(parent, {
+				dispose: () => {
+					parent.removeEventListener('click', handler);
+					existingDisposable.dispose();
+				},
+			});
+		}
 	}
 
 	// --- Ordered parts renderer (阶段E：按 parts 数组顺序遍历，取代 textPosition 交织) ---
@@ -3673,7 +4079,7 @@ export class AgentChatPanel extends Disposable {
 			const startY = downEv.clientY;
 			const startH = this._textarea?.offsetHeight ?? this._resizeMaxH;
 			const onMove = (moveEv: MouseEvent) => {
-				const newH = Math.max(60, Math.min(500, startH + (startY - moveEv.clientY)));
+				const newH = Math.max(60, Math.min(800, startH + (startY - moveEv.clientY)));
 				this._resizeMaxH = newH;
 				this._userHasAdjustedHeight = true; // 标记用户已调整过高度
 				if (this._textarea) { this._textarea.style.height = `${newH}px`; }
@@ -3691,6 +4097,13 @@ export class AgentChatPanel extends Disposable {
 			document.addEventListener('mousemove', onMove);
 			document.addEventListener('mouseup', onUp);
 		}));
+
+		// ── 系统消息面板（可伸缩，位于消息区和输入框之间）──
+		this._systemMsgBar = append(this._container, $('.sysmsg-bar'));
+		this._systemMsgList = append(this._container, $('.sysmsg-list'));
+		this._systemMsgBar.style.display = 'none'; // 初始隐藏（无消息时）
+		this._register(addDisposableListener(this._systemMsgBar, EventType.CLICK, () => this._toggleSystemMsgPanel()));
+		this._renderSystemMsgPanel();
 
 		const inputArea = append(this._container, $(".chat-input-area"));
 
@@ -3720,7 +4133,7 @@ export class AgentChatPanel extends Disposable {
 			const savedHeight = localStorage.getItem('agentChatComposerHeight');
 			if (savedHeight) {
 				const height = parseInt(savedHeight, 10);
-				if (!isNaN(height) && height >= 60 && height <= 500) {
+				if (!isNaN(height) && height >= 60 && height <= 800) {
 					this._resizeMaxH = height;
 					this._userHasAdjustedHeight = true;
 					this._textarea.style.height = `${height}px`;
@@ -3737,8 +4150,8 @@ export class AgentChatPanel extends Disposable {
 				t.style.height = "auto";
 				// 如果用户调整过高度，使用 max（内容高度和用户调整高度的较大值）作为高度
 				// 否则使用 min（内容高度不超过 resizeMaxH）
-				// 同时限制最大高度为 500px
-				const maxAllowed = 500;
+				// 同时限制最大高度为 800px
+				const maxAllowed = 800;
 				const newHeight = this._userHasAdjustedHeight
 					? Math.min(Math.max(t.scrollHeight, this._resizeMaxH), maxAllowed)
 					: Math.min(t.scrollHeight, this._resizeMaxH);
@@ -4181,93 +4594,114 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	// =========================================================
-	// CheckpointBar
+	// Checkpoint detail card (rendered in system message list)
 	// =========================================================
 
-	private _renderCheckpointBarContainer(): void {
-		this._checkpointBarContainer = append(this._container, $(".chat-checkpoint-bar-container"));
-		this._renderCheckpointBar();
-	}
+	/**
+	 * Create a checkpoint detail card for the system message expanded list.
+	 * Shows checkpoint label, timestamp, file list, and inline action buttons
+	 * (撤销 / 保留 / 差异). Clicking a file opens its diff in the editor.
+	 */
+	private _createCheckpointDetailCard(cp: ICheckpointInfo, isLatest: boolean, seqNum: number): HTMLElement {
+		const card = document.createElement('div');
+		card.className = 'cp-detail';
 
-	private _renderCheckpointBar(): void {
-		if (!this._checkpointBarContainer) { return; }
-		clearNode(this._checkpointBarContainer);
-		if (!this._checkpoint) { return; }
-		const cp = this._checkpoint;
-		const bar = append(this._checkpointBarContainer, $(".chat-checkpoint-bar"));
+		// Header
+		const header = document.createElement('div');
+		header.className = 'cp-detail-header';
 
-		const main = append(bar, $(".chat-checkpoint-bar-main"));
+		const icon = document.createElement('span');
+		icon.className = 'cp-detail-icon';
+		icon.textContent = '📝';
+		header.appendChild(icon);
 
-		// Files toggle
-		const toggle = append(main, $(`.chat-checkpoint-bar-files-toggle${this._checkpointFilesExpanded ? '.expanded' : ''}`));
-		const togSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		togSvg.setAttribute('width', '12');
-		togSvg.setAttribute('height', '12');
-		togSvg.setAttribute('viewBox', '0 0 24 24');
-		togSvg.setAttribute('fill', 'none');
-		togSvg.setAttribute('stroke', 'currentColor');
-		togSvg.setAttribute('stroke-width', '2.5');
-		togSvg.setAttribute('stroke-linecap', 'round');
-		togSvg.setAttribute('stroke-linejoin', 'round');
-		const togPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-		togPath.setAttribute('d', this._checkpointFilesExpanded ? 'M6 9l6 6 6-6' : 'M9 18l6-6-6-6');
-		togSvg.appendChild(togPath);
-		toggle.appendChild(togSvg);
-		append(toggle, $("span", undefined, `${cp.fileCount} 个文件`));
-		this._register(
-			addDisposableListener(toggle, EventType.CLICK, () => {
-				this._checkpointFilesExpanded = !this._checkpointFilesExpanded;
-				this._renderCheckpointBar();
-			}),
-		);
+		const title = document.createElement('span');
+		title.className = 'cp-detail-title';
+		title.textContent = `检查点 #${seqNum}: ${cp.label}`;
+		header.appendChild(title);
 
-		// Label
-		const label = append(main, $(".chat-checkpoint-bar-label"));
-		label.textContent = cp.label;
-
-		// Actions
-		const actions = append(main, $(".chat-checkpoint-bar-actions"));
-
-		const undoBtn = append(actions, $("button.chat-checkpoint-bar-btn.undo"));
-		undoBtn.textContent = '撤销全部';
-		this._register(
-			addDisposableListener(undoBtn, EventType.CLICK, () => {
-				this._onCheckpointAction?.('undoAll');
-			}),
-		);
-
-		const keepBtn = append(actions, $("button.chat-checkpoint-bar-btn.keep"));
-		keepBtn.textContent = '保留全部';
-		this._register(
-			addDisposableListener(keepBtn, EventType.CLICK, () => {
-				this._onCheckpointAction?.('keepAll');
-			}),
-		);
-
-		const diffBtn = append(actions, $("button.chat-checkpoint-bar-btn.diff"));
-		diffBtn.textContent = '查看差异';
-		this._register(
-			addDisposableListener(diffBtn, EventType.CLICK, () => {
-				this._onCheckpointAction?.('openDiff');
-			}),
-		);
-
-		// File list (expanded)
-		if (this._checkpointFilesExpanded) {
-			const files = append(bar, $(".chat-checkpoint-bar-files"));
-			for (const f of cp.files) {
-				const fileEl = append(files, $(".chat-checkpoint-bar-file"));
-				const status = append(fileEl, $(`.chat-checkpoint-bar-file-status.${f.status}`));
-				status.textContent = f.status === 'modified' ? 'M' : f.status === 'created' ? 'A' : 'D';
-				const path = append(fileEl, $("span.chat-checkpoint-bar-file-path"));
-				path.textContent = f.path;
-				this._register(
-					addDisposableListener(fileEl, EventType.CLICK, () => {
-						this._onCheckpointAction?.('openDiff', { filePath: f.path });
-					}),
-				);
-			}
+		if (!isLatest) {
+			const ghost = document.createElement('span');
+			ghost.className = 'ghost-tag';
+			ghost.textContent = 'ghost';
+			header.appendChild(ghost);
 		}
+
+		const time = document.createElement('span');
+		time.className = 'cp-detail-time';
+		time.textContent = new Date(cp.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+		header.appendChild(time);
+
+		// Inline action buttons
+		const actions = document.createElement('div');
+		actions.className = 'cp-detail-actions';
+
+		const undoBtn = document.createElement('button');
+		undoBtn.className = 'cp-action-btn danger';
+		undoBtn.textContent = '撤销';
+		undoBtn.title = '撤销此检查点的所有文件改动';
+		undoBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this._onCheckpointAction?.('undoAll', { checkpointId: cp.id });
+		});
+		actions.appendChild(undoBtn);
+
+		const keepBtn = document.createElement('button');
+		keepBtn.className = 'cp-action-btn success';
+		keepBtn.textContent = '保留';
+		keepBtn.title = '保留此检查点的所有文件改动';
+		keepBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this._onCheckpointAction?.('keepAll', { checkpointId: cp.id });
+		});
+		actions.appendChild(keepBtn);
+
+		if (cp.files.length > 0) {
+			const diffBtn = document.createElement('button');
+			diffBtn.className = 'cp-action-btn diff';
+			diffBtn.textContent = '差异';
+			diffBtn.title = '查看此检查点的文件差异';
+			diffBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this._onCheckpointAction?.('openDiff', { checkpointId: cp.id });
+			});
+			actions.appendChild(diffBtn);
+		}
+
+		header.appendChild(actions);
+		card.appendChild(header);
+
+		// File list
+		if (cp.files.length > 0) {
+			const files = document.createElement('div');
+			files.className = 'cp-files';
+			for (const f of cp.files) {
+				const fileEl = document.createElement('div');
+				fileEl.className = 'cp-file';
+
+				const status = document.createElement('span');
+				status.className = `file-status ${f.status === 'modified' ? 'M' : f.status === 'created' ? 'A' : 'D'}`;
+				status.textContent = f.status === 'modified' ? 'M' : f.status === 'created' ? 'A' : 'D';
+				fileEl.appendChild(status);
+
+				const path = document.createElement('span');
+				path.className = 'file-path';
+				// Show shortened path: basename only for readability; full path in title tooltip
+				const displayName = f.path.replace(/\\/g, '/').split('/').pop() || f.path;
+				path.textContent = displayName;
+				path.title = f.path;
+				fileEl.appendChild(path);
+
+				fileEl.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this._onOpenFile?.(f.path);
+				});
+				files.appendChild(fileEl);
+			}
+			card.appendChild(files);
+		}
+
+		return card;
 	}
 
 	// =========================================================
@@ -4470,7 +4904,7 @@ export class AgentChatPanel extends Disposable {
 		// Auto-resize and reposition cursor to end
 		this._textarea.style.height = 'auto';
 		// 使用新的高度计算逻辑（考虑用户是否调整过高度）
-		const maxAllowed = 500;
+		const maxAllowed = 800;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
@@ -5207,7 +5641,7 @@ export class AgentChatPanel extends Disposable {
 		this._textarea.value = "";
 		this._textarea.style.height = "auto";
 		// 重新计算高度（考虑用户是否调整过高度）
-		const maxAllowed = 500;
+		const maxAllowed = 800;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);

@@ -2,7 +2,7 @@
 # 在目标服务器上部署 VsSarosis 更新服务器
 
 param(
-    [string]$ServerIP = "21.91.41.66",
+    [string]$ServerIP = "zijianqiu-any1.devcloud.woa.com",
     [string]$DeployPath = "C:\vssaros-update",
     [int]$Port = 3030
 )

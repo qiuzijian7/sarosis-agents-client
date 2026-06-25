@@ -3,6 +3,256 @@
  *  Styles for all 12 Activity Bar toolbar view panes
  *--------------------------------------------------------------------------------------------*/
 
+/* ─── Integration Global Action Bar ─────────────────────────────────────────── */
+
+.integration-global-bar {
+	display: flex;
+	gap: 4px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-sideBarSectionHeader-background);
+}
+
+.integration-global-btn {
+	padding: 3px 8px;
+	border: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-button-secondaryBackground, transparent);
+	color: var(--vscode-descriptionForeground);
+	border-radius: 3px;
+	cursor: pointer;
+	font-size: 11px;
+	white-space: nowrap;
+	transition: background 0.15s, color 0.15s;
+}
+
+.integration-global-btn:hover {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-background);
+}
+
+.integration-global-btn.primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-background);
+}
+
+.integration-global-btn.primary:hover {
+	background: var(--vscode-button-hoverBackground);
+	border-color: var(--vscode-button-hoverBackground);
+}
+
+/* ─── Integration Toggle Switch (matches mockup) ────────────────────────────── */
+
+.integration-toggle {
+	position: relative;
+	width: 28px;
+	height: 15px;
+	flex-shrink: 0;
+	cursor: pointer;
+	display: inline-block;
+}
+
+.integration-toggle input {
+	opacity: 0;
+	width: 0;
+	height: 0;
+	position: absolute;
+}
+
+.integration-toggle .slider {
+	position: absolute;
+	inset: 0;
+	background: var(--vscode-input-border, #3c3c3c);
+	border-radius: 8px;
+	transition: 0.2s;
+}
+
+.integration-toggle .slider::before {
+	content: '';
+	position: absolute;
+	width: 11px;
+	height: 11px;
+	left: 2px;
+	top: 2px;
+	background: #fff;
+	border-radius: 50%;
+	transition: 0.2s;
+}
+
+.integration-toggle input:checked + .slider {
+	background: var(--vscode-testing-iconPassed, #4ec9b0);
+}
+
+.integration-toggle input:checked + .slider::before {
+	transform: translateX(13px);
+}
+
+/* ─── Integration Item Actions (hover-visible, matches mockup) ──────────────── */
+
+.integration-content .item-actions {
+	display: flex;
+	gap: 1px;
+	opacity: 0;
+	transition: opacity 0.15s;
+	flex-shrink: 0;
+}
+
+.integration-content .skill-item:hover .item-actions,
+.integration-content .mcp-group-header:hover .item-actions {
+	opacity: 1;
+}
+
+.integration-content .item-actions .act-btn {
+	width: 20px;
+	height: 20px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: none;
+	background: none;
+	color: var(--vscode-descriptionForeground);
+	border-radius: 3px;
+	cursor: pointer;
+	font-size: 12px;
+	transition: 0.15s;
+}
+
+.integration-content .item-actions .act-btn:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-editor-foreground);
+}
+
+.integration-content .item-actions .act-btn.upgrade:hover {
+	color: var(--vscode-editorWarning-foreground, #dcdcaa);
+}
+
+.integration-content .item-actions .act-btn.upload:hover {
+	color: var(--vscode-testing-iconPassed, #4ec9b0);
+}
+
+.integration-content .item-actions .act-btn.delete:hover {
+	color: var(--vscode-errorForeground);
+	background: rgba(244, 135, 113, 0.15);
+}
+
+/* ─── Integration Filter Chips (matches mockup) ─────────────────────────────── */
+
+.integration-filter-chips {
+	display: flex;
+	gap: 3px;
+	flex-wrap: wrap;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+}
+
+.integration-filter-chip {
+	padding: 2px 8px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 10px;
+	font-size: 10px;
+	cursor: pointer;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-editor-background);
+	transition: 0.15s;
+}
+
+.integration-filter-chip:hover {
+	border-color: var(--vscode-button-background);
+	color: var(--vscode-editor-foreground);
+}
+
+.integration-filter-chip.active {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-background);
+}
+
+/* ─── Integration Item Card (matches mockup) ────────────────────────────────── */
+
+.integration-content .skill-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-bottom: 1px solid rgba(60, 60, 60, 0.4);
+	transition: 0.15s;
+	cursor: default;
+}
+
+.integration-content .skill-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.integration-content .skill-item.disabled {
+	opacity: 0.5;
+}
+
+.integration-content .skill-item.disabled .skill-name {
+	text-decoration: line-through;
+	color: var(--vscode-descriptionForeground);
+}
+
+.integration-content .skill-item .skill-icon {
+	font-size: 16px;
+	width: 20px;
+	text-align: center;
+	flex-shrink: 0;
+}
+
+.integration-content .skill-item .skill-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.integration-content .skill-item .skill-name-row {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.integration-content .skill-item .skill-name {
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 120px;
+}
+
+.integration-content .skill-item .skill-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	margin-top: 1px;
+}
+
+.integration-content .skill-item .skill-category-badge {
+	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	font-weight: 500;
+	white-space: nowrap;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+/* ─── Integration Bottom Bar (matches mockup) ───────────────────────────────── */
+
+.integration-bottom-bar {
+	padding: 4px 10px;
+	border-top: 1px solid var(--vscode-panel-border);
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	display: flex;
+	justify-content: space-between;
+	flex-shrink: 0;
+}
+
 /* ─── Common Styles ──────────────────────────────────────────────────────────── */
 
 .claw-chat-view,

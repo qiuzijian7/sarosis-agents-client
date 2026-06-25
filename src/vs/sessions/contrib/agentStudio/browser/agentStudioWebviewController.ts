@@ -2044,6 +2044,13 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	private _sendEvent(type: string, data: unknown): void {
+		// Phase 3: Chat is now handled natively by NativeChatEditorPane.
+		// Skip chat-specific events that the webview no longer handles.
+		// Non-chat panels (workflow-editor, agent-settings, taskboard) still
+		// receive their events normally.
+		if (type.startsWith('chat.') || type === 'agentSessions.changed') {
+			return;
+		}
 		const event: IEventMessage = {
 			direction: "toWebview" as const,
 			type: type as IEventMessage["type"],

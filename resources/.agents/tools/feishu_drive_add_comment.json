@@ -1,0 +1,28 @@
+{
+  "name": "feishu_drive_add_comment",
+  "description": "Add a comment to a Feishu/Lark drive file.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "description": "Comment content",
+        "type": "string"
+      },
+      "file_id": {
+        "description": "File ID",
+        "type": "string"
+      },
+      "file_type": {
+        "description": "File type",
+        "type": "string"
+      }
+    },
+    "required": [
+      "file_id",
+      "content",
+      "file_type"
+    ]
+  },
+  "category": "feishu",
+  "source": "hermes-bundled"
+}

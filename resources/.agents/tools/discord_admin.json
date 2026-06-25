@@ -1,0 +1,38 @@
+{
+  "name": "discord_admin",
+  "description": "Discord server administration: list channels/roles, pin messages, assign roles.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Action to perform",
+        "enum": [
+          "list_channels",
+          "list_roles",
+          "pin_message",
+          "assign_role",
+          "unpin_message"
+        ],
+        "type": "string"
+      },
+      "channel_id": {
+        "description": "Channel ID",
+        "type": "string"
+      },
+      "message_id": {
+        "description": "Message ID",
+        "type": "string"
+      },
+      "user_id": {
+        "description": "User ID",
+        "type": "string"
+      },
+      "role_id": {
+        "description": "Role ID",
+        "type": "string"
+      }
+    }
+  },
+  "category": "discord",
+  "source": "hermes-bundled"
+}

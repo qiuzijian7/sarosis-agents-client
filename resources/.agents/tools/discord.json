@@ -1,0 +1,33 @@
+{
+  "name": "discord",
+  "description": "Discord read and participate: fetch messages, search members, create threads.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Action to perform",
+        "enum": [
+          "fetch_messages",
+          "search_members",
+          "create_thread",
+          "send_message"
+        ],
+        "type": "string"
+      },
+      "channel_id": {
+        "description": "Channel ID",
+        "type": "string"
+      },
+      "query": {
+        "description": "Search query",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Number of messages to fetch (default: 25)",
+        "type": "number"
+      }
+    }
+  },
+  "category": "discord",
+  "source": "hermes-bundled"
+}

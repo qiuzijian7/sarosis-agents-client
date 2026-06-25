@@ -1,0 +1,33 @@
+{
+  "name": "delegate_task",
+  "description": "Spawn a subagent with isolated context to handle a specific task. Supports single and batch delegation.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "Task description for the subagent"
+      },
+      "tasks": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Multiple tasks for batch delegation"
+      },
+      "model": {
+        "type": "string",
+        "description": "Model override for the subagent (optional)"
+      },
+      "toolsets": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Toolsets to give the subagent (optional)"
+      }
+    }
+  },
+  "category": "delegation",
+  "source": "hermes-bundled"
+}

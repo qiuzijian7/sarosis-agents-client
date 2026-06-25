@@ -1,0 +1,18 @@
+{
+  "name": "browser_navigate",
+  "description": "Navigate the browser to a URL. Waits for the page to load and returns a snapshot.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL to navigate to"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

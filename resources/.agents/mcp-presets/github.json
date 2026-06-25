@@ -1,0 +1,14 @@
+{
+  "id": "github",
+  "name": "GitHub",
+  "description": "GitHub API access for repos, issues, PRs, and more",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-github"
+  ],
+  "envKeys": [
+    "GITHUB_PERSONAL_ACCESS_TOKEN"
+  ]
+}

@@ -2,14 +2,14 @@
   "win32-x64-user": {
     "version": "d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3",
     "productVersion": "1.120.0",
-    "url": "http://21.91.41.66:3030/downloads/VsSarosisUserSetup.exe",
+    "url": "http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe",
     "sha256hash": "3369FEE8E9E7209946EA19F556261632EB23BDC1097D2A7DC54EC20B72F52595",
     "timestamp": 1717372800000
   },
   "win32-x64": {
     "version": "d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3",
     "productVersion": "1.120.0",
-    "url": "http://21.91.41.66:3030/downloads/VsSarosisSetup.exe",
+    "url": "http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosisSetup.exe",
     "sha256hash": "",
     "timestamp": 1717372800000
   }

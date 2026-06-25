@@ -26,6 +26,10 @@ import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 
+// Codebase-Memory-MCP bootstrap — auto-detect, install, and start on app launch.
+// Side-effect import: the module self-registers a workbench contribution.
+import './codebaseMemoryMcpBootstrap.js';
+
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
@@ -120,6 +124,10 @@ import {
 	AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING,
 	AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING,
 	AGENT_STUDIO_USE_NATIVE_CHAT_SETTING,
+	TOF_PAASID_SETTING,
+	TOF_SITE_BASE_URL_SETTING,
+	TOF_GATEWAY_BASE_URL_SETTING,
+	TOF_LOGIN_TIMEOUT_SETTING,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
@@ -141,6 +149,8 @@ import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
 import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
 import { SkillMarketEditorPane } from './skillMarketEditorPane.js';
 import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
+import { MarketplaceEditorPane } from './marketplaceEditorPane.js';
+import { MarketplaceEditorInput } from './marketplaceEditorInput.js';
 import { NativeChatEditorPane } from './nativeChatEditorPane.js';
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import './views/media/toolbarViews.css';
@@ -164,6 +174,8 @@ import { WikiViewPane } from './views/wikiView.js';
 import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
 import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
+import { ITofAuthService } from '../common/tofAuth.js';
+import { TofAuthService } from './tofAuthService.js';
 import { WorktreeViewPane } from '../../worktree/browser/worktreeView.js';
 import { WorktreeCommands } from '../../worktree/common/worktreeTypes.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
@@ -179,6 +191,15 @@ import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { HtmlPreviewEditorPane } from './htmlPreviewEditorPane.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
+import { UrlPreviewEditorPane } from './urlPreviewEditorPane.js';
+import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
+import { CompressionDetailEditorPane } from './compressionDetailEditorPane.js';
+import { CompressionDetailEditorInput } from './compressionDetailEditorInput.js';
+import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
+import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
+import { CodebaseMemoryDetailEditorPane } from './codebaseMemoryDetailEditorPane.js';
+import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
+import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { WorkflowEditorPane } from './workflowEditorPane.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { ISelfEvolutionService } from '../common/selfEvolution.js';
@@ -424,6 +445,23 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean', default: true,
 			description: localize('agentStudio.cli.saveHistory', "Save CLI interaction history for recall and reuse."),
 		},
+		// --- TOF (Taihu OA Framework) 登录 ---
+		[TOF_PAASID_SETTING]: {
+			type: 'string', default: 'sls_mcp_app',
+			description: localize('agentStudio.tof.paasid', "TOF 应用 appkey (paasid)，用于构造 passport.woa.com 登录 URL。"),
+		},
+		[TOF_SITE_BASE_URL_SETTING]: {
+			type: 'string', default: 'http://saroasis-mcp.woa.com',
+			description: localize('agentStudio.tof.siteBaseUrl', "网关站点基础 URL，TOF 回调地址前缀（须为 .woa.com 白名单域名）。"),
+		},
+		[TOF_GATEWAY_BASE_URL_SETTING]: {
+			type: 'string', default: 'http://21.169.46.116:8080',
+			description: localize('agentStudio.tof.gatewayBaseUrl', "鉴权网关基础 URL，用于调用 /api/v1/whoami 校验身份。"),
+		},
+		[TOF_LOGIN_TIMEOUT_SETTING]: {
+			type: 'number', default: 180,
+			description: localize('agentStudio.tof.loginTimeout', "TOF 浏览器登录超时时间（秒）。"),
+		},
 	},
 });
 
@@ -483,6 +521,8 @@ registerSingleton(ISkillLifecycleService, SkillLifecycleService, InstantiationTy
 // rather than appearing as tabs in the Settings page.
 registerSingleton(ISettingsTabRegistry, SettingsTabRegistry, InstantiationType.Delayed);
 registerSingleton(IWikiTagService, WikiTagServiceImpl, InstantiationType.Delayed);
+// TOF 登录服务 — 对接 OAuthSystem 网关，提供 OA 浏览器登录 + 票据持久化
+registerSingleton(ITofAuthService, TofAuthService, InstantiationType.Delayed);
 registerSingleton(ISelfEvolutionService, SelfEvolutionService, InstantiationType.Delayed);
 // Kanban triage (LLM-driven specify/decompose). Delayed: only instantiated when
 // a triage action is invoked from the board UI or a kanban tool.
@@ -493,6 +533,9 @@ registerSingleton(IKanbanDiagnosticsService, KanbanDiagnosticsService, Instantia
 // Swarm (multi-agent collaboration). Delayed: only instantiated when a swarm is
 // created from the board UI or the kanban_swarm tool.
 registerSingleton(ISwarmService, SwarmService, InstantiationType.Delayed);
+// Codebase-Memory-MCP service — detect, install, upgrade, configure MCP.
+// Delayed: instantiated by bootstrap contribution or EditorPane.
+registerSingleton(ICodebaseMemoryMcpService, CodebaseMemoryMcpService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -614,6 +657,58 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register UrlPreviewEditorPane — renders an external URL inside the editor
+// area. Opened when the user clicks a hyperlink in an LLM chat response;
+// the page loads in the middle column instead of an external browser.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		UrlPreviewEditorPane,
+		UrlPreviewEditorPane.ID,
+		localize('urlPreviewEditor', "URL Preview"),
+	),
+	[
+		new SyncDescriptor(UrlPreviewEditorInput)
+	]
+);
+
+// Register CompressionDetailEditorPane — shows before/after comparison
+// of context compression. Opened from the system message panel toolbar.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		CompressionDetailEditorPane,
+		CompressionDetailEditorPane.ID,
+		localize('compressionDetailEditor', "Compression Detail"),
+	),
+	[
+		new SyncDescriptor(CompressionDetailEditorInput)
+	]
+);
+
+// Register MemoryDetailEditorPane — shows memory entries (L0/L1/L2/L3)
+// for the current agent. Opened from the system message panel toolbar.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		MemoryDetailEditorPane,
+		MemoryDetailEditorPane.ID,
+		localize('memoryDetailEditor', "Memory Detail"),
+	),
+	[
+		new SyncDescriptor(MemoryDetailEditorInput)
+	]
+);
+
+// Register CodebaseMemoryDetailEditorPane — shows codebase memory info.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		CodebaseMemoryDetailEditorPane,
+		CodebaseMemoryDetailEditorPane.ID,
+		localize('codebaseMemoryDetailEditor', "Codebase Memory Detail"),
+	),
+	[
+		new SyncDescriptor(CodebaseMemoryDetailEditorInput)
+	]
+);
+
 // Register WorkflowEditorPane — renders workflow details in the editor area.
 // Clicking a workflow in the Workflow sidebar view opens its detail view.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
@@ -680,6 +775,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(SkillMarketEditorInput)
+	]
+);
+
+// Register MarketplaceEditorPane so that the Sarosis Marketplace page opens
+// in the editor area. Triggered by clicking "🛒 Market" in the Integration
+// sidebar view's global action bar.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		MarketplaceEditorPane,
+		MarketplaceEditorPane.ID,
+		localize('marketplaceEditor', "VsSaros Marketplace"),
+	),
+	[
+		new SyncDescriptor(MarketplaceEditorInput)
 	]
 );
 
@@ -977,7 +1086,7 @@ import { SwarmService } from './providers/swarm/swarmService.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
 import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
@@ -1007,7 +1116,7 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IFileService private readonly fileService: IFileService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IMcpService private readonly mcpService: IMcpService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		// Touch ISkillRegistry so the singleton is created and starts its filesystem
@@ -2059,6 +2168,104 @@ registerAction2(class extends Action2 {
 // but its content is CSS-hidden. This contribution intercepts that activation and
 // opens the SettingsEditorPane in the editor area instead.
 
+// ─── TOF 登录命令 ───────────────────────────────────────────────────────────
+// agentStudio.tofLogin  — 发起 OA 浏览器登录
+// agentStudio.tofLogout — 登出并清除本地票据
+// agentStudio.tofStatus — 查看当前登录状态
+// 启动时自动恢复上次会话（restoreSession）。
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.tofLogin',
+			title: localize2('agentStudio.tofLogin', 'OA 登录'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const tofAuthService = accessor.get(ITofAuthService);
+		const notificationService = accessor.get(INotificationService);
+		try {
+			const user = await tofAuthService.login();
+			notificationService.info(`登录成功：${user.login_name}（工号 ${user.staff_id}）`);
+		} catch (e) {
+			notificationService.error(`登录失败：${(e as Error).message}`);
+		}
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.tofLogout',
+			title: localize2('agentStudio.tofLogout', 'OA 登出'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const tofAuthService = accessor.get(ITofAuthService);
+		const notificationService = accessor.get(INotificationService);
+		await tofAuthService.logout();
+		notificationService.info('已登出');
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.tofStatus',
+			title: localize2('agentStudio.tofStatus', '查看登录状态'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const tofAuthService = accessor.get(ITofAuthService);
+		const notificationService = accessor.get(INotificationService);
+		const user = tofAuthService.currentUser;
+		if (user) {
+			notificationService.info(`当前登录用户：${user.login_name}（工号 ${user.staff_id}${user.team ? '，团队 ' + user.team : ''}）`);
+		} else {
+			notificationService.info('当前未登录');
+		}
+	}
+});
+
+// 启动时自动恢复上次 TOF 会话
+class TofSessionRestoreContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.tofSessionRestore';
+
+	constructor(
+		@IConfigurationService configurationService: IConfigurationService,
+		@ITofAuthService tofAuthService: ITofAuthService,
+		@ILogService logService: ILogService,
+	) {
+		super();
+		if (!configurationService.getValue<boolean>(AGENT_STUDIO_ENABLED_SETTING)) {
+			return;
+		}
+		// fire-and-forget：不阻塞启动
+		void tofAuthService.restoreSession().then(user => {
+			if (user) {
+				logService.info(`[TofAuth] Session restored: ${user.login_name}`);
+			} else {
+				logService.info('[TofAuth] No saved session or session expired');
+			}
+		}).catch(err => {
+			logService.warn('[TofAuth] Session restore failed:', err);
+		});
+	}
+}
+
+registerWorkbenchContribution2(TofSessionRestoreContribution.ID, TofSessionRestoreContribution, WorkbenchPhase.AfterRestored);
+
+// --- Settings Icon → EditorPane Redirect ----------------------------------------
+// When the Settings sidebar icon is clicked, the sidebar ViewContainer is activated
+// but its content is CSS-hidden. This contribution intercepts that activation and
+// opens the SettingsEditorPane in the editor area instead.
+
 class SettingsEditorRedirectContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.settingsEditorRedirect';
 
@@ -2097,3 +2304,26 @@ class SettingsEditorRedirectContribution extends Disposable implements IWorkbenc
 }
 
 registerWorkbenchContribution2(SettingsEditorRedirectContribution.ID, SettingsEditorRedirectContribution, WorkbenchPhase.Eventually);
+
+// --- Marketplace URL Handler (vssaros://marketplace/install) -------------------
+// Registers a handler for `vssaros://marketplace/install?slug=&version=&kind=` URIs
+// triggered by the "安装到 VsSaros" button on the web marketplace detail page.
+// When clicked in the browser, the OS launches VsSaros which receives the URI,
+// downloads the package from the marketplace, and installs it via IMarketplaceService.
+
+import { IURLService } from '../../../../platform/url/common/url.js';
+import { MarketplaceUrlHandler } from './marketplaceUrlHandler.js';
+
+class MarketplaceUrlHandlerContribution implements IWorkbenchContribution {
+	static readonly ID = 'sessions.marketplaceUrlHandler';
+
+	constructor(
+		@IInstantiationService instantiationService: IInstantiationService,
+		@IURLService urlService: IURLService,
+	) {
+		const handler = instantiationService.createInstance(MarketplaceUrlHandler);
+		urlService.registerHandler(handler);
+	}
+}
+
+registerWorkbenchContribution2(MarketplaceUrlHandlerContribution.ID, MarketplaceUrlHandlerContribution, WorkbenchPhase.AfterRestored);

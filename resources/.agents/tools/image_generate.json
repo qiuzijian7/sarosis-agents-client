@@ -1,0 +1,38 @@
+{
+  "name": "image_generate",
+  "description": "Generate an image from a text prompt using FLUX or other image generation models.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Image generation prompt"
+      },
+      "negative_prompt": {
+        "type": "string",
+        "description": "What to avoid in the generated image"
+      },
+      "width": {
+        "type": "number",
+        "description": "Image width in pixels (default: 1024)"
+      },
+      "height": {
+        "type": "number",
+        "description": "Image height in pixels (default: 1024)"
+      },
+      "num_images": {
+        "type": "number",
+        "description": "Number of images to generate (default: 1)"
+      },
+      "image_url": {
+        "type": "string",
+        "description": "Reference image URL for image-to-image generation (optional)"
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  },
+  "category": "image_gen",
+  "source": "hermes-bundled"
+}

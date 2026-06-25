@@ -1,0 +1,36 @@
+{
+  "name": "memory",
+  "description": "Manage persistent memory across sessions. Save and recall personal notes and user profile information.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "save",
+          "recall",
+          "search",
+          "clear"
+        ],
+        "description": "Action to perform"
+      },
+      "key": {
+        "type": "string",
+        "description": "Memory key or category"
+      },
+      "content": {
+        "type": "string",
+        "description": "Memory content to save"
+      },
+      "query": {
+        "type": "string",
+        "description": "Search query (for search action)"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "memory",
+  "source": "hermes-bundled"
+}

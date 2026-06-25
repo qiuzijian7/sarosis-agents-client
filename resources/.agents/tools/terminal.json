@@ -1,0 +1,34 @@
+{
+  "name": "terminal",
+  "description": "Execute a command in the terminal. Supports local, SSH, Docker, Modal, Daytona, and other backends. Returns stdout, stderr, and exit code.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+      },
+      "background": {
+        "type": "boolean",
+        "description": "Run command in background (default: false)"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Command timeout in seconds (default: 180)"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Working directory for command execution"
+      },
+      "notify_on_complete": {
+        "type": "boolean",
+        "description": "Notify when background command completes (default: true)"
+      }
+    },
+    "required": [
+      "command"
+    ]
+  },
+  "category": "terminal",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "kanban_block",
+  "description": "Block a kanban task, indicating it needs human input or is waiting on a dependency.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to block"
+      },
+      "reason": {
+        "type": "string",
+        "description": "Reason for blocking"
+      }
+    },
+    "required": [
+      "task_id",
+      "reason"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

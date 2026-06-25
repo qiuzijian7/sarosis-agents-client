@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * MarketplaceService 实现 —— 对接 Sarosis 商城服务端。
+ * MarketplaceService 实现 —— 对接 VsSaros 商城服务端。
  *
  * HTTP 通过 IRequestService（无 CORS）。tar 打包/解压需要 Node.js 环境。
  * 四类资源的差异化安装/打包委托给 IPackageInstallerRegistry（按 kind 分发）。

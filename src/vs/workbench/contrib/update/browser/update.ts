@@ -12,7 +12,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IUpdateService, State as UpdateState, StateType } from '../../../../platform/update/common/update.js';
+import { IUpdateService, IUpdate, State as UpdateState, StateType } from '../../../../platform/update/common/update.js';
 import { INotificationService, NotificationPriority, Severity } from '../../../../platform/notification/common/notification.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IBrowserWorkbenchEnvironmentService } from '../../../services/environment/browser/environmentService.js';
@@ -209,6 +209,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 	private readonly badgeDisposable = this._register(new MutableDisposable());
 	private updateStateContextKey: IContextKey<string>;
 	private majorMinorUpdateAvailableContextKey: IContextKey<boolean>;
+	private _updatePromptShown = false;
 
 	constructor(
 		@IStorageService storageService: IStorageService,
@@ -217,6 +218,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 		@IActivityService private readonly activityService: IActivityService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IProductService private readonly productService: IProductService,
+		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super();
 		this.state = updateService.state;
@@ -250,6 +252,11 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 		this.updateStateContextKey.set(state.type);
 
 		switch (state.type) {
+			case StateType.AvailableForDownload: {
+				// vssaros: 检测到新版本，弹窗提示用户选择"更新/暂不"
+				this.promptForUpdate(state.update);
+				break;
+			}
 			case StateType.Ready: {
 				const productVersion = state.update.productVersion;
 				if (productVersion) {
@@ -259,6 +266,11 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 				}
 				break;
 			}
+		}
+
+		// 离开 AvailableForDownload 状态时重置提示标志，以便下次检测到更新可再次提示
+		if (state.type !== StateType.AvailableForDownload) {
+			this._updatePromptShown = false;
 		}
 
 		let badge: IBadge | undefined = undefined;
@@ -280,6 +292,32 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 		}
 
 		this.state = state;
+	}
+
+	/**
+	 * vssaros: 检测到新版本时弹窗，让用户手动选择"立即更新"或"暂不更新"。
+	 * 选"更新" → 后台下载并在下次重启时应用；选"暂不" → 保持 AvailableForDownload 状态，
+	 * 活动栏徽章持续提示，用户可随时从齿轮菜单选 "Download Update" 触发。
+	 */
+	private async promptForUpdate(update: IUpdate): Promise<void> {
+		// 防止重复弹窗（onStateChange 可能多次触发 AvailableForDownload）
+		if (this._updatePromptShown) {
+			return;
+		}
+		this._updatePromptShown = true;
+
+		const res = await this.dialogService.confirm({
+			type: 'info',
+			message: nls.localize('updateAvailableMsg', "A new version of {0} ({1}) is available. Update now?", this.productService.nameShort, update.productVersion || update.version),
+			detail: nls.localize('updateAvailableDetail', "The update will be downloaded in the background and applied on next restart."),
+			primaryButton: nls.localize({ key: 'updateNow', comment: ['&& denotes a mnemonic'] }, "&&Update"),
+			cancelButton: nls.localize('updateLater', "La&&ter")
+		});
+
+		if (res.confirmed) {
+			this.updateService.downloadUpdate(true);
+		}
+		// "暂不"：保持 AvailableForDownload 状态，活动栏徽章持续提示
 	}
 
 	private registerGlobalActivityActions(): void {

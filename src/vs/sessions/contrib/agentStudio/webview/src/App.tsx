@@ -1,17 +1,12 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio WebView - Root App Component
- *  Supports two modes:
- *    A) Independent panel mode — renders a single panel based on window.__AGENT_STUDIO_PANEL_TYPE__
- *       ('chat')
- *    B) Legacy full layout — single-zone chat layout when panelType is undefined
+ *  Renders non-chat panels (workflow-editor, agent-settings, taskboard).
+ *  Chat is handled natively by NativeChatEditorPane — the webview no longer
+ *  renders a chat panel.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useCallback, useState, Component, type ReactNode } from 'react';
-import { WorkspaceToolbar } from './features/title/WorkspaceToolbar';
-/** @deprecated React AgentChat 已废弃，聊天框统一使用 NativeChatEditorPane。仅 workflow-editor 等非 chat 面板仍内嵌使用。 */
-import { AgentChat } from './features/chat/AgentChat';
+import React, { useEffect, useState, Component } from 'react';
 import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
-import { CreateAgentModal } from './features/agents/CreateAgentModal';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 
@@ -20,9 +15,6 @@ import { useWorkspaceStore } from './store/useWorkspaceStore';
 const WorkflowEditorPanel = React.lazy(() => import('./features/workflowEditor/WorkflowEditorPanel'));
 import { useAgentStore } from './store/useAgentStore';
 import { useProviderStore } from './store/useProviderStore';
-import { useChatStore } from './store/useChatStore';
-import { sendRequest } from './bridge/messageClient';
-import { perfTrace } from './utils/perfTrace';
 
 // Read the panel type injected by the VS Code host
 type PanelType = 'chat' | 'taskboard' | 'workflow-editor' | 'agent-settings' | '__pooled__' | undefined;
@@ -69,107 +61,6 @@ class PanelErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryStat
  * Independent panel components (rendered when panelType is set)
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
-function ChatPanel(): React.ReactElement {
-	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
-	const { loadProviders } = useProviderStore();
-
-	useEffect(() => {
-		// Load workspaces and providers; agents will be loaded once activeWorkspaceId is set
-		perfTrace.mark('chat-panel-mount');
-		loadWorkspaces().then(() => {
-			perfTrace.mark('workspaces-loaded');
-			const store = useWorkspaceStore.getState();
-			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
-				store.setActiveWorkspace(pick.id);
-			}
-			// Fallback: if no workspaces registered, try loading agents directly.
-			if (store.workspaces.length === 0) {
-				useAgentStore.getState().loadAgents().then(() => perfTrace.mark('agents-loaded'));
-			}
-		});
-		loadProviders();
-	}, []);
-
-	useEffect(() => {
-		if (activeWorkspaceId) {
-			useAgentStore.getState().loadAgents(activeWorkspaceId).then(() => perfTrace.mark('agents-loaded'));
-		}
-	}, [activeWorkspaceId]);
-
-	useEffect(() => {
-		const onAgentsChanged = () => {
-			// Read activeWorkspaceId from store at event-time (not from stale closure).
-			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
-			useAgentStore.getState().loadAgents(currentActiveId || undefined);
-		};
-		const onActiveWorkspaceChanged = (e: Event) => {
-			const detail = (e as CustomEvent).detail;
-			if (detail?.workspaceId && detail.workspaceId !== useWorkspaceStore.getState().activeWorkspaceId) {
-				setActiveWorkspace(detail.workspaceId);
-			}
-		};
-		window.addEventListener('agentStudio:agents-changed', onAgentsChanged);
-		window.addEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
-		return () => {
-			window.removeEventListener('agentStudio:agents-changed', onAgentsChanged);
-			window.removeEventListener('agentStudio:workspace-active-changed', onActiveWorkspaceChanged);
-		};
-	}, [activeWorkspaceId, setActiveWorkspace]);
-
-	// Phase 3: register the (agentId, agentSessionId) currently visible
-	// in this chat panel with the host. The host needs this so that imgui
-	// form submits originating in a separate ConfigMD preview pane can be
-	// routed back into the same Fork session the user is looking at, and
-	// so that multiple chat panels don't double-handle the same submit.
-	//
-	// We use zustand's plain `subscribe` (no selector middleware required)
-	// and dedupe by comparing previous values. The initial state is also
-	// flushed once on mount so the host learns about the currently selected
-	// agent even if the user never switches.
-	useEffect(() => {
-		let prevAgentId: string | null | undefined = undefined;
-		let prevAgentSessionId: string | null | undefined = undefined;
-		const flush = (agentId: string | null, agentSessionId: string | null) => {
-			if (agentId === prevAgentId && agentSessionId === prevAgentSessionId) {
-				return;
-			}
-			prevAgentId = agentId;
-			prevAgentSessionId = agentSessionId;
-			console.log(`[ChatPanel] notify host chat.activeSessionChanged: agentId=${agentId} agentSessionId=${agentSessionId}`);
-			sendRequest('chat.activeSessionChanged', {
-				agentId,
-				agentSessionId,
-			}).catch((err: unknown) =>
-				console.warn('[ChatPanel] chat.activeSessionChanged failed:', err)
-			);
-		};
-		// Flush initial state.
-		const initial = useChatStore.getState();
-		flush(initial.activeAgentId, initial.activeAgentSessionId);
-		// Subscribe to subsequent changes.
-		const unsubscribe = useChatStore.subscribe((state) => {
-			flush(state.activeAgentId, state.activeAgentSessionId);
-		});
-		return () => {
-			unsubscribe();
-			// On unmount (panel closed), clear the registration.
-			sendRequest('chat.activeSessionChanged', {
-				agentId: null,
-				agentSessionId: null,
-			}).catch(() => { /* shutting down */ });
-		};
-	}, []);
-
-	return (
-		<div className="panel-standalone">
-			<PanelErrorBoundary panelType="ChatPanel">
-				<AgentChat />
-			</PanelErrorBoundary>
-		</div>
-	);
-}
-
 function TaskboardPanel(): React.ReactElement {
 	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
 
@@ -207,96 +98,6 @@ function TaskboardPanel(): React.ReactElement {
 					<TaskBoardPanel />
 				</PanelErrorBoundary>
 			</div>
-		</div>
-	);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════
- * Full layout (legacy mode, rendered when panelType is undefined)
- * ═══════════════════════════════════════════════════════════════════════════════ */
-
-function FullLayout(): React.ReactElement {
-	const { loadWorkspaces, activeWorkspaceId } = useWorkspaceStore();
-	const { loadProviders } = useProviderStore();
-
-	// Initialize on mount
-	useEffect(() => {
-		// Load workspaces and providers; agents will be loaded once activeWorkspaceId is set
-		loadWorkspaces().then(() => {
-			const store = useWorkspaceStore.getState();
-			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
-				const pick = store.workspaces.find(w => !!(w as any).path) ?? store.workspaces[0];
-				store.setActiveWorkspace(pick.id);
-			}
-		});
-		loadProviders();
-	}, []);
-
-	// Reload agents when workspace changes
-	useEffect(() => {
-		if (activeWorkspaceId) {
-			useAgentStore.getState().loadAgents(activeWorkspaceId);
-		}
-	}, [activeWorkspaceId]);
-
-	// Listen for host events
-	useEffect(() => {
-		const onAgentsChanged = () => {
-			// Read activeWorkspaceId from store at event-time (not from stale closure).
-			const currentActiveId = useWorkspaceStore.getState().activeWorkspaceId;
-			useAgentStore.getState().loadAgents(currentActiveId || undefined);
-		};
-		const onWorkspaceChanged = () => { loadWorkspaces(); };
-
-		window.addEventListener('agentStudio:agents-changed', onAgentsChanged);
-		window.addEventListener('agentStudio:workspace-changed', onWorkspaceChanged);
-
-		return () => {
-			window.removeEventListener('agentStudio:agents-changed', onAgentsChanged);
-			window.removeEventListener('agentStudio:workspace-changed', onWorkspaceChanged);
-		};
-	}, [loadWorkspaces, activeWorkspaceId]);
-
-
-	const handleAddAgent = useCallback(() => {
-		setShowAddAgentModal(true);
-	}, []);
-
-	const [showAddAgentModal, setShowAddAgentModal] = useState(false);
-
-	const handleRefresh = useCallback(() => {
-		if (activeWorkspaceId) {
-			useAgentStore.getState().loadAgents(activeWorkspaceId);
-		}
-	}, [activeWorkspaceId]);
-
-	return (
-		<div className="app-root">
-			{/* ① Title Bar */}
-			<WorkspaceToolbar
-				onAddAgent={handleAddAgent}
-				onRefresh={handleRefresh}
-			/>
-
-			{/* Main content area: chat */}
-			<div className="main-content">
-				{/* ② Chat panel (full width) */}
-				<div className="workspace-panel">
-					<AgentChat />
-				</div>
-			</div>
-
-			{/* Create Agent Modal */}
-			<CreateAgentModal
-				isOpen={showAddAgentModal}
-				onClose={() => {
-					setShowAddAgentModal(false);
-					if (activeWorkspaceId) {
-						useAgentStore.getState().loadAgents(activeWorkspaceId);
-					}
-				}}
-				workspaceId={activeWorkspaceId || undefined}
-			/>
 		</div>
 	);
 }
@@ -420,8 +221,6 @@ export function App(): React.ReactElement {
 	}
 
 	switch (panelType) {
-		case 'chat':
-			return <ChatPanel />;
 		case 'taskboard':
 			return <TaskboardPanel />;
 		case 'workflow-editor':
@@ -437,6 +236,12 @@ export function App(): React.ReactElement {
 		case 'agent-settings':
 			return <AgentSettingsPanel />;
 		default:
-			return <FullLayout />;
+			// Chat is now handled natively by NativeChatEditorPane.
+			// If we reach here, the webview was activated without a valid panel type.
+			return (
+				<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--vscode-descriptionForeground)' }}>
+					<span style={{ fontSize: 13, opacity: 0.7 }}>Agent Studio</span>
+				</div>
+			);
 	}
 }

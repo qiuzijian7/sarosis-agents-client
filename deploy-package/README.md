@@ -23,7 +23,7 @@ deploy-package/
 
 ### 1. 准备工作
 
-确保目标服务器 (21.91.41.66) 已安装：
+确保目标服务器 (zijianqiu-any1.devcloud.woa.com) 已安装：
 - Node.js 18+ 
 - npm
 - (可选) Nginx 用于反向代理
@@ -54,12 +54,12 @@ npm run fix-branding
 # 构建用户级安装包
 npm run gulp vscode-win32-x64-user-setup
 
-# 输出: .build/win32-x64/user-setup/VsSarosisUserSetup.exe
+# 输出: .build/win32-x64/user-setup/VsSarosUserSetup.exe
 ```
 
 ### 4. 上传安装包
 
-将构建好的 `VsSarosisUserSetup.exe` 上传到更新服务器的下载目录或 GitHub Releases。
+将构建好的 `VsSarosUserSetup.exe` 上传到更新服务器的下载目录或 GitHub Releases。
 
 ### 5. 更新 manifest.json
 
@@ -70,7 +70,7 @@ npm run gulp vscode-win32-x64-user-setup
   "win32-x64-user": {
     "version": "<完整的git commit sha>",
     "productVersion": "1.0.0",
-    "url": "http://21.91.41.66:3030/downloads/VsSarosisUserSetup.exe",
+    "url": "http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe",
     "sha256hash": "<exe文件的sha256哈希>",
     "timestamp": 1700000000000
   }
@@ -82,7 +82,7 @@ npm run gulp vscode-win32-x64-user-setup
 在源代码中更新 `product.json` 的 `updateUrl` 字段：
 
 ```json
-"updateUrl": "http://21.91.41.66:3030"
+"updateUrl": "http://zijianqiu-any1.devcloud.woa.com:3030"
 ```
 
 然后重新构建安装包（使客户端包含正确的更新地址）。
@@ -90,7 +90,7 @@ npm run gulp vscode-win32-x64-user-setup
 ## 热更新工作流程
 
 1. **客户端启动** → 每小时检查更新
-2. **请求更新服务器** → `GET http://21.91.41.66:3030/api/update/win32-x64-user/saros/<commit>`
+2. **请求更新服务器** → `GET http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/<commit>`
 3. **服务器响应** → 返回新版本信息或 204（无更新）
 4. **客户端下载** → 后台静默下载新版本安装包
 5. **应用更新** → 下次重启时由 `inno_updater.exe` 应用更新
@@ -105,5 +105,5 @@ pm2 logs vssaros-update
 pm2 restart vssaros-update
 
 # 检查服务器健康状态
-curl http://21.91.41.66:3030/health
+curl http://zijianqiu-any1.devcloud.woa.com:3030/health
 ```

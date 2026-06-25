@@ -12,8 +12,8 @@
  * - 在达到阈值时触发后台进化审查
  * - 提供记录查询接口给 UI (EvolutionViewPane / EvolutionDetailEditorPane)
  *
- * 存储结构：
- *   <userRoamingDataHome>/.saros/evolution/
+ * 存储结构（统一使用 ~/.saros/ 路径）：
+ *   ~/.saros/evolution/
  *     records.json          — 全局进化记录
  *     configs/
  *       <agentId>.json      — 每个 agent 的进化配置
@@ -23,7 +23,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import {
@@ -61,13 +61,13 @@ export class SelfEvolutionService extends Disposable implements ISelfEvolutionSe
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@ILogService private readonly logService: ILogService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	) {
 		super();
 
-		// Use userRoamingDataHome for cross-workspace persistence
-		this._evolutionDir = URI.joinPath(this.environmentService.userRoamingDataHome, '.saros', 'evolution');
+		// Use userHome for consistency with other modules (~/.saros/)
+		this._evolutionDir = URI.joinPath(this.environmentService.userHome, '.saros', 'evolution');
 		this._recordsFile = URI.joinPath(this._evolutionDir, 'records.json');
 
 		// Load on construction

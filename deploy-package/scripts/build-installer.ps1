@@ -44,7 +44,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # 3. 查找构建产物
 Write-Host "[3/4] 查找构建产物..." -ForegroundColor Cyan
-$expectedName = if ($BuildType -eq "user") { "VsSarosisUserSetup.exe" } else { "VsSarosisSetup.exe" }
+$expectedName = if ($BuildType -eq "user") { "VsSarosUserSetup.exe" } else { "VsSarosisSetup.exe" }
 $buildOutputPath = ".build\win32-x64\$BuildType-setup\$expectedName"
 
 if (-not (Test-Path $buildOutputPath)) {

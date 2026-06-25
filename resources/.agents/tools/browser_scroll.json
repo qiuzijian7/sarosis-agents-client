@@ -1,0 +1,27 @@
+{
+  "name": "browser_scroll",
+  "description": "Scroll the page or a specific element in a direction.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "direction": {
+        "type": "string",
+        "enum": [
+          "up",
+          "down"
+        ],
+        "description": "Scroll direction"
+      },
+      "amount": {
+        "type": "number",
+        "description": "Scroll amount in pixels (default: 500)"
+      },
+      "ref": {
+        "type": "string",
+        "description": "Element reference to scroll within (optional)"
+      }
+    }
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

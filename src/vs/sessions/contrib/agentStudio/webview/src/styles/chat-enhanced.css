@@ -2003,10 +2003,267 @@
 	30% { opacity: 1; }
 }
 
+/* ════════════════════════════════════════════════════════════════
+ *  Compression Notice Card — 上下文压缩提示卡片
+ *  在聊天消息流中渲染，告知用户本轮对话触发了上下文压缩。
+ *  设计：全宽卡片（非气泡），左侧紫色竖线 accent，非侵入式。
+ * ════════════════════════════════════════════════════════════════ */
+
+.compression-notice-card {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 8px 12px;
+	padding: 10px 14px;
+	background: rgba(157, 124, 216, 0.08);
+	border-left: 3px solid #9d7cd8;
+	border-radius: 6px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #cccccc);
+	animation: compressionNoticeFadeIn 0.3s ease-out;
+}
+
+.compression-notice-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	color: #9d7cd8;
+	opacity: 0.85;
+}
+
+.compression-notice-body {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	flex: 1;
+	min-width: 0;
+}
+
+.compression-notice-title {
+	font-weight: 600;
+	color: #c4a7e7;
+	font-size: 12px;
+}
+
+.compression-notice-detail {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #999999);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.compression-notice-time {
+	flex-shrink: 0;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #666666);
+	opacity: 0.7;
+}
+
+@keyframes compressionNoticeFadeIn {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+/* Dark theme tweaks for high-contrast */
+.vs-dark .compression-notice-card {
+	background: rgba(157, 124, 216, 0.10);
+}
+
+.vs-dark .compression-notice-title {
+	color: #c4a7e7;
+}
+
+.vs-dark .compression-notice-icon {
+	color: #9d7cd8;
+}
+
 .tool-call-running-text {
 	font-size: 12px;
 	color: var(--as-accent, #3b82f6);
 	font-weight: 500;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ *  Memory Tool Card — 记忆工具卡片样式
+ *  用于 memory_remember / memory_search / memory_delete / memory_list
+ *  点击内容/结果区域可跳转到记忆存储文件
+ * ════════════════════════════════════════════════════════════════ */
+
+.memory-tool-params {
+	padding: 6px 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.memory-tool-param-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 11px;
+}
+
+.memory-tool-param-label {
+	color: var(--vscode-descriptionForeground, #999);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	min-width: 48px;
+	flex-shrink: 0;
+}
+
+.memory-tool-param-value {
+	color: var(--vscode-foreground, #ccc);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 记忆类型 badge */
+.memory-type-badge {
+	display: inline-block;
+	padding: 1px 8px;
+	border-radius: 10px;
+	font-size: 10px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.memory-type-badge.long {
+	background: rgba(157, 124, 216, 0.15);
+	color: #c4a7e7;
+	border: 1px solid rgba(157, 124, 216, 0.3);
+}
+
+.memory-type-badge.short {
+	background: rgba(59, 130, 246, 0.15);
+	color: #7bb3f0;
+	border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+/* 重要性星级 */
+.memory-importance-stars {
+	color: #eab308;
+	letter-spacing: 1px;
+	font-size: 11px;
+}
+
+.memory-importance-num {
+	color: var(--vscode-descriptionForeground, #999);
+	font-size: 10px;
+}
+
+/* 标签 chips */
+.memory-tag-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.memory-tag-chip {
+	display: inline-block;
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-size: 10px;
+	background: rgba(128, 128, 128, 0.12);
+	color: var(--vscode-descriptionForeground, #aaa);
+	border: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+/* 去重提示 */
+.memory-duplicate-notice {
+	padding: 6px 10px;
+	margin: 4px 0;
+	border-radius: 4px;
+	font-size: 11px;
+	background: rgba(234, 179, 8, 0.08);
+	border-left: 2px solid rgba(234, 179, 8, 0.5);
+	color: #eab308;
+}
+
+/* 内容/结果区域 — 可点击跳转 */
+.memory-tool-section-label {
+	display: block;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground, #999);
+	margin-bottom: 3px;
+}
+
+.memory-tool-content,
+.memory-tool-result {
+	padding: 6px 10px;
+	margin: 4px 0;
+	border-radius: 4px;
+	background: rgba(128, 128, 128, 0.04);
+}
+
+.memory-tool-content.clickable,
+.memory-tool-result.clickable {
+	cursor: pointer;
+	transition: background 0.15s ease;
+}
+
+.memory-tool-content.clickable:hover,
+.memory-tool-result.clickable:hover {
+	background: rgba(157, 124, 216, 0.08);
+}
+
+.memory-tool-content-text {
+	font-size: 12px;
+	color: var(--vscode-foreground, #ccc);
+	line-height: 1.5;
+}
+
+.memory-tool-result-text {
+	margin: 0;
+	font-size: 11px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	color: var(--vscode-foreground, #ccc);
+	white-space: pre-wrap;
+	word-break: break-all;
+	line-height: 1.5;
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+/* 文件链接 */
+.memory-tool-file-links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 4px 0;
+	margin-top: 4px;
+	border-top: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+.memory-file-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 10px;
+	color: var(--as-accent, #3b82f6);
+	cursor: pointer;
+	padding: 2px 6px;
+	border-radius: 3px;
+	transition: background 0.1s ease;
+	font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.memory-file-link:hover {
+	background: rgba(59, 130, 246, 0.1);
+	text-decoration: underline;
 }
 
 

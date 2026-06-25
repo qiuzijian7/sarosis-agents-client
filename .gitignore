@@ -92,3 +92,15 @@ venv/
 .session/
 .saros/sessions/*
 !.saros/sessions/.gitkeep
+.agent/*
+.profile-oss/*
+.codebuddy/*
+.sarosworkspace/*
+.vscode-oss-agents-dev/*
+.vs/*
+.workbuddy/*
+build/*
+
+deploy-package/*
+resources/thirdparty/*
+generated-images/A_clean__modern_VS_Code_dark_t_2026-06-24T02-46-37.png

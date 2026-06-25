@@ -1,0 +1,55 @@
+{
+  "name": "computer_use",
+  "description": "Control a macOS desktop in the background via cua-driver. Supports screenshots, mouse clicks, keyboard input, scrolling, and drag operations without stealing focus.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Action to perform",
+        "enum": [
+          "screenshot",
+          "click",
+          "double_click",
+          "type",
+          "press",
+          "scroll",
+          "drag",
+          "move"
+        ],
+        "type": "string"
+      },
+      "coordinate": {
+        "description": "X, Y coordinates for click/scroll/drag",
+        "items": {
+          "type": "number"
+        },
+        "type": "array"
+      },
+      "text": {
+        "description": "Text to type (for type action)",
+        "type": "string"
+      },
+      "key": {
+        "description": "Key to press (for press action)",
+        "type": "string"
+      },
+      "direction": {
+        "description": "Scroll direction",
+        "enum": [
+          "up",
+          "down"
+        ],
+        "type": "string"
+      },
+      "amount": {
+        "description": "Scroll amount",
+        "type": "number"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "computer_use",
+  "source": "hermes-bundled"
+}

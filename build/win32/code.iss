@@ -16,7 +16,7 @@ DefaultGroupName={#NameLong}
 AllowNoIcons=yes
 OutputDir={#OutputDir}
 #if "user" == InstallTarget
-OutputBaseFilename=VsSarosisUserSetup
+OutputBaseFilename=VsSarosUserSetup
 #else
 OutputBaseFilename=VsSarosisSetup
 #endif

@@ -1,0 +1,11 @@
+{
+  "id": "sequential-thinking",
+  "name": "Sequential Thinking",
+  "description": "Dynamic problem-solving through structured thinking steps",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-sequential-thinking"
+  ]
+}

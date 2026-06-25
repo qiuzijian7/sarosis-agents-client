@@ -272,62 +272,10 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 					return Promise.resolve(null);
 				}
 
-				const startTime = Date.now();
-				this.setState(State.Downloading(update, explicit, this._overwrite, 0, undefined, startTime));
-
-				return this.cleanup(update.version).then(() => {
-					return this.getUpdatePackagePath(update.version).then(updatePackagePath => {
-						return pfs.Promises.exists(updatePackagePath).then(exists => {
-							if (exists) {
-								return Promise.resolve(updatePackagePath);
-							}
-
-							const downloadPath = `${updatePackagePath}.tmp`;
-
-							return this.requestService.request({ url: update.url, callSite: 'updateService.win32.downloadUpdate' }, CancellationToken.None)
-								.then(context => {
-									// Get total size from Content-Length header
-									const contentLengthHeader = context.res.headers['content-length'];
-									const contentLength = typeof contentLengthHeader === 'string' ? contentLengthHeader : undefined;
-									const totalBytes = contentLength ? parseInt(contentLength, 10) : undefined;
-
-									// Track downloaded bytes and update state periodically using Delayer
-									let downloadedBytes = 0;
-									const progressDelayer = new Delayer<void>(500);
-									const progressStream = transform<VSBuffer, VSBuffer>(
-										context.stream,
-										{
-											data: data => {
-												downloadedBytes += data.byteLength;
-												progressDelayer.trigger(() => {
-													this.setState(State.Downloading(update, explicit, this._overwrite, downloadedBytes, totalBytes, startTime));
-												});
-												return data;
-											}
-										},
-										chunks => VSBuffer.concat(chunks)
-									);
-
-									return this.fileService.writeFile(URI.file(downloadPath), progressStream)
-										.finally(() => progressDelayer.dispose());
-								})
-								.then(update.sha256hash ? () => checksum(downloadPath, update.sha256hash) : () => undefined)
-								.then(() => pfs.Promises.rename(downloadPath, updatePackagePath, false /* no retry */))
-								.then(() => updatePackagePath);
-						});
-					}).then(packagePath => {
-						this.availableUpdate = { packagePath };
-						this.saveUpdateMetadata(update);
-						this.setState(State.Downloaded(update, explicit, this._overwrite));
-
-						const fastUpdatesEnabled = this.configurationService.getValue('update.enableWindowsBackgroundUpdates');
-						if (fastUpdatesEnabled && this.productService.target === 'user') {
-							this.doApplyUpdate();
-						} else {
-							this.setState(State.Ready(update, explicit, this._overwrite));
-						}
-					});
-				});
+				// vssaros: 检测到 Setup 更新后不自动下载，进入 AvailableForDownload 状态，
+			// 由前端 UpdateContribution 弹窗提示用户选择"更新/暂不"，用户确认后再下载。
+			this.setState(State.AvailableForDownload(update));
+			return Promise.resolve(null);
 			})
 			.then(undefined, err => {
 				this.telemetryService.publicLog2<{ messageHash: string }, UpdateErrorClassification>('update:error', { messageHash: String(hash(String(err))) });
@@ -348,10 +296,86 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 	}
 
 	protected override async doDownloadUpdate(state: AvailableForDownload): Promise<void> {
-		if (state.update.url) {
-			this.nativeHostMainService.openExternal(undefined, state.update.url);
+		const updateType = getUpdateType();
+		if (updateType === UpdateType.Archive) {
+			// Archive 类型：打开浏览器下载（保留原行为）
+			if (state.update.url) {
+				this.nativeHostMainService.openExternal(undefined, state.update.url);
+			}
+			this.setState(State.Idle(updateType));
+			return;
 		}
-		this.setState(State.Idle(getUpdateType()));
+
+		// Setup 类型：后台下载并应用（用户在前端确认"更新"后触发）
+		await this.startBackgroundDownload(state.update, true);
+	}
+
+	/**
+	 * vssaros: 后台下载并应用 Setup 更新（从 doCheckForUpdates 抽出，供 doDownloadUpdate 调用）。
+	 * 原本在检测到更新后立即执行，现改为用户确认后才执行。
+	 */
+	private async startBackgroundDownload(update: IUpdate, explicit: boolean): Promise<void> {
+		const startTime = Date.now();
+		this.setState(State.Downloading(update, explicit, this._overwrite, 0, undefined, startTime));
+
+		try {
+			await this.cleanup(update.version);
+			const updatePackagePath = await this.getUpdatePackagePath(update.version);
+
+			if (!(await pfs.Promises.exists(updatePackagePath))) {
+				const downloadPath = `${updatePackagePath}.tmp`;
+
+				const context = await this.requestService.request({ url: update.url, callSite: 'updateService.win32.downloadUpdate' }, CancellationToken.None);
+
+				// Get total size from Content-Length header
+				const contentLengthHeader = context.res.headers['content-length'];
+				const contentLength = typeof contentLengthHeader === 'string' ? contentLengthHeader : undefined;
+				const totalBytes = contentLength ? parseInt(contentLength, 10) : undefined;
+
+				// Track downloaded bytes and update state periodically using Delayer
+				let downloadedBytes = 0;
+				const progressDelayer = new Delayer<void>(500);
+				try {
+					const progressStream = transform<VSBuffer, VSBuffer>(
+						context.stream,
+						{
+							data: data => {
+								downloadedBytes += data.byteLength;
+								progressDelayer.trigger(() => {
+									this.setState(State.Downloading(update, explicit, this._overwrite, downloadedBytes, totalBytes, startTime));
+								});
+								return data;
+							}
+						},
+						chunks => VSBuffer.concat(chunks)
+					);
+
+					await this.fileService.writeFile(URI.file(downloadPath), progressStream);
+				} finally {
+					progressDelayer.dispose();
+				}
+
+				if (update.sha256hash) {
+					await checksum(downloadPath, update.sha256hash);
+				}
+				await pfs.Promises.rename(downloadPath, updatePackagePath, false /* no retry */);
+			}
+
+			this.availableUpdate = { packagePath: updatePackagePath };
+			this.saveUpdateMetadata(update);
+			this.setState(State.Downloaded(update, explicit, this._overwrite));
+
+			const fastUpdatesEnabled = this.configurationService.getValue('update.enableWindowsBackgroundUpdates');
+			if (fastUpdatesEnabled && this.productService.target === 'user') {
+				this.doApplyUpdate();
+			} else {
+				this.setState(State.Ready(update, explicit, this._overwrite));
+			}
+		} catch (err) {
+			this.telemetryService.publicLog2<{ messageHash: string }, UpdateErrorClassification>('update:error', { messageHash: String(hash(String(err))) });
+			this.logService.error(err);
+			this.setState(State.Idle(getUpdateType(), explicit ? ((err as Error).message || String(err)) : undefined));
+		}
 	}
 
 	private async getUpdatePackagePath(version: string): Promise<string> {

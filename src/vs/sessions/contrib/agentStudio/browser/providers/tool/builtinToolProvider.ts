@@ -33,7 +33,7 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IFileService, FileType } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
-import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
+import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel, IAgentTurnRequest, IChatStreamDelta } from '../../../common/providers.js';
@@ -160,7 +160,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@ITriageService private readonly triageService: ITriageService,
 		@ISwarmService private readonly swarmService: ISwarmService,
 	@ICheckpointService private readonly checkpointService: ICheckpointService,
-	@IEnvironmentService private readonly environmentService: IEnvironmentService,
+	@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 	) {
 		super();
@@ -827,14 +827,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					}
 					if (memType === 'short_term') { while (existing.length > 200) existing.shift(); }
 					await self._writeAtomic(file, existing);
-					return [{ type: 'text', text: `Memory updated (duplicate detected, similarity >= ${BuiltinToolProvider.MEMORY_DUPLICATE_THRESHOLD}): ${content.slice(0, 100)}` }];
+					return [{ type: 'text', text: `Memory updated (duplicate detected, similarity >= ${BuiltinToolProvider.MEMORY_DUPLICATE_THRESHOLD}): ${content.slice(0, 100)}\n[memory_file: ${file.toString()}]` }];
 				}
 
 				// 无重复，写入新记忆
 				existing.push(entry);
 				if (memType === 'short_term') { while (existing.length > 200) existing.shift(); }
 				await self._writeAtomic(file, existing);
-				return [{ type: 'text', text: `Memory saved (${memType}, importance=${importance}): ${content.slice(0, 100)}` }];
+				return [{ type: 'text', text: `Memory saved (${memType}, importance=${importance}): ${content.slice(0, 100)}\n[memory_file: ${file.toString()}]` }];
 			},
 		});
 
@@ -884,9 +884,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				});
 				matched.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 				const slice = matched.slice(0, limit);
-				if (slice.length === 0) { return [{ type: 'text', text: 'No matching memories found.' }]; }
-				const lines = slice.map(e => `- [${e.type}] ${new Date(e.timestamp).toLocaleString()}: ${e.content.slice(0, 200)}`);
-				return [{ type: 'text', text: `Found ${slice.length} matching memories:\n${lines.join('\n')}` }];
+			if (slice.length === 0) { return [{ type: 'text', text: 'No matching memories found.' }]; }
+			const lines = slice.map(e => `- [${e.type}] ${new Date(e.timestamp).toLocaleString()}: ${e.content.slice(0, 200)}`);
+			const memFiles = [
+				`[memory_file: ${self._getMemFile(agentId, 'short-term.jsonl').toString()}]`,
+				`[memory_file: ${self._getMemFile(agentId, 'long-term.jsonl').toString()}]`,
+			];
+			return [{ type: 'text', text: `Found ${slice.length} matching memories:\n${lines.join('\n')}\n${memFiles.join('\n')}` }];
 			},
 		});
 
@@ -911,11 +915,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				const existing = await self._readJsonl(file);
 				const before = existing.length;
 				const filtered = existing.filter(e => e.id !== id);
-				if (filtered.length === before) {
-					return [{ type: 'text', text: `Memory entry ${id} not found in ${memType}.` }];
-				}
-				await self._writeAtomic(file, filtered);
-				return [{ type: 'text', text: `Deleted memory entry ${id} from ${memType}.` }];
+			if (filtered.length === before) {
+				return [{ type: 'text', text: `Memory entry ${id} not found in ${memType}.\n[memory_file: ${file.toString()}]` }];
+			}
+			await self._writeAtomic(file, filtered);
+			return [{ type: 'text', text: `Deleted memory entry ${id} from ${memType}.\n[memory_file: ${file.toString()}]` }];
 			},
 		});
 
@@ -939,9 +943,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				const entries = await self._readJsonl(file);
 				entries.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 				const slice = entries.slice(0, limit);
-				if (slice.length === 0) { return [{ type: 'text', text: `No ${memType} memories found.` }]; }
-				const lines = slice.map(e => `[${e.id.slice(-8)}] ${new Date(e.timestamp).toLocaleString()}: ${e.content.slice(0, 200)}`);
-				return [{ type: 'text', text: `${memType} memories (${slice.length}/${entries.length}):\n${lines.join('\n')}` }];
+			if (slice.length === 0) { return [{ type: 'text', text: `No ${memType} memories found.\n[memory_file: ${file.toString()}]` }]; }
+			const lines = slice.map(e => `[${e.id.slice(-8)}] ${new Date(e.timestamp).toLocaleString()}: ${e.content.slice(0, 200)}`);
+			return [{ type: 'text', text: `${memType} memories (${slice.length}/${entries.length}):\n${lines.join('\n')}\n[memory_file: ${file.toString()}]` }];
 			},
 		});
 
@@ -2681,7 +2685,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 	private _getMemFile(agentId: string, fileName: string): URI {
 		const safe = agentId.replace(/[^A-Za-z0-9_.-]/g, '_');
-		return URI.joinPath(this.environmentService.userRoamingDataHome, '.saros', 'memory', safe, fileName);
+		return URI.joinPath(this.environmentService.userHome, '.saros', 'memory', safe, fileName);
 	}
 
 	private async _readJsonl(file: URI): Promise<any[]> {

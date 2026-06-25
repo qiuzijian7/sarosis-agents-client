@@ -21,8 +21,8 @@
  */
 
 const ASSET_NAME_BY_PLATFORM = {
-	'win32-x64-user': 'VsSarosisUserSetup',
-	'win32-arm64-user': 'VsSarosisUserSetup',
+	'win32-x64-user': 'VsSarosUserSetup',
+	'win32-arm64-user': 'VsSarosUserSetup',
 	'win32-x64': 'VsSarosisSetup',
 	'win32-arm64': 'VsSarosisSetup'
 };

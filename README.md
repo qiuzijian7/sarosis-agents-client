@@ -1,235 +1,380 @@
-# CarbonTrack Pro - 企业碳排放管理系统
+# VsSaros - AI-Enhanced Code Editor with Real-Time Collaboration
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.1.156951-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![React](https://img.shields.io/badge/react-18.2.0-blue)
-![Material-UI](https://img.shields.io/badge/MUI-5.14.0-blue)
+![Electron](https://img.shields.io/badge/Electron-39.8.7-blue)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0.0-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
-CarbonTrack Pro 是一个符合 ISO 14064 和 GB/T 32150 标准的碳排放管理系统，帮助企业轻松追踪、管理和报告其碳排放数据。
+**VsSaros** is a customized version of Visual Studio Code (VS Code) that integrates **real-time collaborative editing** (Saros) and **AI-assisted programming** (Claude SDK + GitHub Copilot) to provide a modern, intelligent development experience.
 
-## 🌟 核心功能
+---
 
-### 1. 碳排放数据录入
-- ✅ 手动录入界面，支持范围一、二、三排放源
-- ✅ 批量导入功能（CSV/Excel）
-- ✅ 自动计算排放量（活动量 × 排放因子）
-- ✅ 数据验证和异常检测
+## 🚀 Core Features
 
-### 2. 数据管理与可视化
-- ✅ 交互式仪表盘，实时显示排放趋势
-- ✅ 多维度分析（时间、部门、排放范围）
-- ✅ 高级过滤和搜索功能
-- ✅ 数据导出（PDF、Excel、CSV）
+### 1. **Code Editor (Monaco Editor)**
+- ✅ Advanced code editing with IntelliSense
+- ✅ Syntax highlighting for 100+ languages
+- ✅ Multi-cursor and snippet support
+- ✅ Integrated terminal (Xterm.js)
+- ✅ Git version control integration
 
-### 3. 报告生成
-- ✅ 自动生成符合标准的碳排放报告
-- ✅ 支持年度、月度、季度报告
-- ✅ 图表可视化（柱状图、饼图、趋势图）
-- ✅ 自定义报告模板
+### 2. **Real-Time Collaboration (Saros)**
+- ✅ Live collaborative editing (multiple users)
+- ✅ Real-time cursor and selection sharing
+- ✅ Integrated chat and comments
+- ✅ Session recording and playback
+- ✅ Conflict resolution algorithms
 
-### 4. 系统管理
-- ✅ 排放因子库管理
-- ✅ 用户权限管理
-- ✅ 数据备份与恢复
-- ✅ 系统配置
+### 3. **AI-Assisted Programming**
+- ✅ **Claude AI SDK** (@anthropic-ai/sdk ^0.82.0)
+- ✅ **GitHub Copilot** (@github/copilot-sdk ^0.3.0)
+- ✅ Code completion and generation
+- ✅ Intelligent refactoring suggestions
+- ✅ Natural language code search
 
-## 🚀 快速开始
+### 4. **Remote Development**
+- ✅ SSH remote development
+- ✅ Dev Containers support
+- ✅ GitHub Codespaces integration
+- ✅ Microsoft Dev Tunnels
 
-### 环境要求
-- Node.js 16.0 或更高版本
-- npm 8.0 或更高版本
+### 5. **Extensibility**
+- ✅ Full VS Code extension API compatibility
+- ✅ Custom extension marketplace
+- ✅ Built-in extensions (Copilot, Saros, etc.)
 
-### 安装步骤
+---
 
-1. 克隆项目
+## 📦 Quick Start
+
+### Prerequisites
+- **Node.js**: 22.18.10 or higher
+- **npm**: 10.0.0 or higher
+- **Electron**: 39.8.7
+- **Git**: 2.40.0 or higher
+
+### Installation
+
+#### Option A: Download Pre-built Release (Recommended)
 ```bash
-git clone https://github.com/your-org/carbon-track-pro.git
-cd carbon-track-pro
+# Download from GitHub Releases (coming soon)
+# https://github.com/your-org/vssaros/releases
 ```
 
-2. 安装依赖
+#### Option B: Build from Source
 ```bash
+# 1. Clone the repository
+git clone https://github.com/your-org/vssaros.git
+cd vssaros
+
+# 2. Install dependencies (requires 8GB+ RAM)
 npm install
-```
 
-3. 启动开发服务器
-```bash
+# 3. Compile the project (takes 10-30 minutes)
+npm run compile
+
+# 4. Run VsSaros
 npm start
 ```
 
-应用将在 [http://localhost:3000](http://localhost:3000) 启动
+### Development Workflow
 
-### 生产构建
-
+#### Start Development Mode (with hot reload)
 ```bash
-npm run build
+# Terminal 1: Start the compiler in watch mode
+npm run watch
+
+# Terminal 2: Launch VsSaros (with debugger attached)
+npm run electron
 ```
 
-构建产物将生成在 `build` 文件夹中
+#### Run Tests
+```bash
+# Unit tests (browser)
+npm run test-browser
 
-## 📊 使用指南
+# Unit tests (Node.js)
+npm run test-node
 
-### 登录系统
+# Extension tests
+npm run test-extension
 
-使用以下演示账号登录：
-- 用户名: `admin`
-- 密码: 任意密码
-
-### 数据录入
-
-1. 导航到"数据录入"页面
-2. 选择排放范围（范围一/二/三）
-3. 选择排放源类型
-4. 输入活动量
-5. 系统自动计算排放量
-6. 点击"保存记录"
-
-### 批量导入
-
-1. 在数据录入页面，点击"批量导入"
-2. 下载 CSV 模板
-3. 按照模板格式填写数据
-4. 上传填好的 CSV 文件
-5. 确认并导入
-
-### 生成报告
-
-1. 导航到"报告生成"页面
-2. 选择报告类型（年度/月度/季度）
-3. 选择年份
-4. 点击"导出 PDF"或"导出 Excel"
-5. 报告将自动下载
-
-## 🏗️ 项目结构
-
-```
-carbon-track-pro/
-├── public/
-│   ├── index.html              # HTML 模板
-│   └── favicon.ico            # 网站图标
-├── src/
-│   ├── components/             # React 组件
-│   │   └── Layout.js          # 主布局组件
-│   ├── context/                # Context API
-│   │   ├── AuthContext.js     # 认证上下文
-│   │   └── EmissionContext.js # 排放数据上下文
-│   ├── pages/                  # 页面组件
-│   │   ├── Dashboard.js       # 驾驶舱页面
-│   │   ├── EmissionEntry.js   # 数据录入页面
-│   │   ├── DataManagement.js  # 数据管理页面
-│   │   ├── Reports.js         # 报告生成页面
-│   │   ├── Settings.js        # 系统设置页面
-│   │   └── Login.js           # 登录页面
-│   ├── App.js                  # 主应用组件
-│   ├── index.js                # 应用入口
-│   ├── index.css               # 全局样式
-│   └── reportWebVitals.js     # 性能监控
-├── package.json                # 项目依赖
-└── README.md                  # 项目说明
+# E2E tests (Playwright)
+npm run test-browser-no-install
 ```
 
-## 🔧 技术栈
+---
 
-### 前端框架
-- **React 18.2.0** - UI 框架
-- **React Router 6.14.0** - 路由管理
-- **Material-UI 5.14.0** - UI 组件库
+## 🏗️ Project Structure
 
-### 数据可视化
-- **Recharts 2.10.3** - 图表库
+```
+vssaros/
+├── src/                          # Source code (TypeScript)
+│   ├── vs/                       # VS Code core (customized)
+│   │   ├── base/                  # Base utilities
+│   │   ├── code/                  # Code editor core
+│   │   ├── editor/                # Editor UI components
+│   │   ├── platform/              # Platform abstraction (Windows/macOS/Linux)
+│   │   ├── server/                # Server-side code (remote development)
+│   │   ├── sessions/              # Session management (Saros collaboration)
+│   │   ├── workbench/             # Workbench UI
+│   │   └── bootstrap-*.ts        # Bootstrap files
+│   └── typings/                  # TypeScript type definitions
+├── build/                        # Build scripts and tools
+│   ├── lib/                       # Build libraries
+│   ├── saros/                     # Saros-specific build scripts
+│   ├── checker/                   # Code quality checkers
+│   ├── npm/                       # npm hook scripts
+│   └── rspack/                   # Rspack bundler config
+├── extensions/                    # Built-in extensions
+│   ├── copilot/                   # GitHub Copilot integration
+│   ├── saros/                     # Saros collaboration plugin
+│   ├── shared/                    # Shared extension code
+│   └── tdb-am-gateway/           # TDB integration
+├── cli/                          # Command-line interface
+├── config/                        # Configuration files
+├── doc/                          # Project documentation
+├── docs/                         # User documentation
+├── examples/                     # Example code and extensions
+├── scripts/                      # Utility scripts
+├── test/                         # Test suites
+├── out/                          # Compiled output (main application)
+├── out-build/                     # Build output
+├── out-vscode/                   # VS Code output
+├── dist/                         # Distribution packages
+├── node_modules/                 # Node.js dependencies
+├── package.json                  # Node.js project configuration
+├── product.json                  # VsSaros product configuration
+├── tsconfig.json                 # TypeScript configuration
+├── gulpfile.mjs                  # Gulp build tasks
+└── README.md                    # This file
+```
 
-### 文件导出
-- **jsPDF 2.5.1** - PDF 生成
-- **SheetJS (xlsx) 0.18.5** - Excel 导出
+---
 
-### 其他工具
-- **Axios 1.5.0** - HTTP 客户端
-- **date-fns 2.30.0** - 日期处理
-- **React Scripts 5.0.1** - 构建工具
+## 🔧 Technology Stack
 
-## 📝 数据模型
+### Runtime
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| **Electron** | 39.8.7 | Desktop application framework |
+| **Node.js** | 22.18.10 | JavaScript runtime |
+| **TypeScript** | 6.0.0-dev | Primary development language |
 
-### 排放记录
-```javascript
+### Frontend
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| **Monaco Editor** | * | Code editor core |
+| **Xterm.js** | 6.1.0-beta.213 | Terminal emulation |
+| **React** | 18.2.0 | UI components (optional) |
+
+### Build Tools
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| **Gulp** | 4.0.0 | Task automation |
+| **Rspack** | * | Module bundler (replacing Webpack) |
+| **ESBuild** | 0.28.0 | Fast TypeScript compilation |
+| **Playwright** | 1.59.1 | E2E testing |
+
+### AI and Collaboration
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| **@anthropic-ai/sdk** | ^0.82.0 | Claude AI SDK |
+| **@github/copilot-sdk** | ^0.3.0 | GitHub Copilot |
+| **Saros** | * | Real-time collaboration plugin |
+
+---
+
+## 🎯 Key Scripts
+
+### Build Scripts
+```bash
+npm run compile              # Full compilation (main + extensions)
+npm run watch               # Watch mode (hot reload)
+npm run compile-web         # Web version compilation
+npm run compile-cli         # CLI tool compilation
+```
+
+### Development Scripts
+```bash
+npm start                   # Launch VsSaros
+npm run electron            # Launch Electron with debugger
+npm run workflow            # AI-assisted development workflow
+npm run workflow:basic      # Basic development workflow
+```
+
+### Quality Scripts
+```bash
+npm run eslint              # Run ESLint
+npm run stylelint           # Run Stylelint
+npm run hygiene             # Run code hygiene checks
+npm test                    # Run tests (see "Run Tests" above)
+```
+
+---
+
+## 📝 Configuration
+
+### product.json
+VsSaros product configuration (name, version, extensions, etc.):
+```json
 {
-  id: "emission-123456",
-  date: "2024-01-15",
-  category: "scope2",           // scope1 | scope2 | scope3
-  activityType: "electricity",
-  activityAmount: 1000,         // 活动量
-  emissionFactor: 0.5703,      // 排放因子
-  emissionAmount: 570.3,        // 排放量 (kg CO2eq)
-  unit: "kWh",
-  department: "生产部",
-  notes: "1月份用电量",
-  status: "verified",           // draft | verified
-  createdAt: "2024-01-15T08:00:00Z",
-  updatedAt: "2024-01-15T10:00:00Z"
-}
-```
-
-### 排放因子
-```javascript
-{
-  electricity: {
-    name: "外购电力",
-    factor: 0.5703,           // kg CO2/kWh
-    unit: "kWh",
-    source: "GB/T 32150-2015",
-    category: "scope2"
+  "name": "VsSaros",
+  "version": "2.1.156951",
+  "extensionsGallery": {
+    "serviceUrl": "https://marketplace.visualstudio.com/_apis/public/gallery"
   }
 }
 ```
 
-## 🎯 路线图
-
-### 已完成 ✅
-- [x] 核心数据录入功能
-- [x] 数据可视化仪表盘
-- [x] 报告生成（PDF/Excel）
-- [x] 用户认证系统
-- [x] 排放因子管理
-
-### 进行中 🚧
-- [ ] 高级数据验证规则
-- [ ] 实时协作功能
-- [ ] 移动端适配
-
-### 计划中 📋
-- [ ] 与 ERP 系统对接
-- [ ] 碳足迹计算器
-- [ ] 多语言支持（英文、日文）
-- [ ] 云部署版本
-- [ ] AI 辅助数据分析
-
-## 🤝 贡献指南
-
-我们欢迎任何形式的贡献！
-
-1. Fork 项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情
-
-## 🙏 致谢
-
-- ISO 14064 标准文档
-- GB/T 32150 标准文档
-- IPCC 2006 排放因子数据库
-- Material-UI 团队
-- Recharts 团队
-
-## 📧 联系方式
-
-- 项目主页：[https://github.com/your-org/carbon-track-pro](https://github.com/your-org/carbon-track-pro)
-- 问题反馈：[https://github.com/your-org/carbon-track-pro/issues](https://github.com/your-org/carbon-track-pro/issues)
-- 邮箱：support@carbontrackpro.com
+### .saros/ Directory
+Saros collaboration configuration:
+```
+.saros/
+├── config.json             # Saros session settings
+├── accounts.json           # User accounts
+└── sessions/              # Session data
+```
 
 ---
 
-**Made with ❤️ for a sustainable future**
+## 🤝 Contributing
+
+We welcome contributions! Please follow these steps:
+
+### 1. Fork the Repository
+```bash
+git fork https://github.com/your-org/vssaros.git
+```
+
+### 2. Create a Feature Branch
+```bash
+git checkout -b feature/your-feature-name
+```
+
+### 3. Make Changes and Commit
+```bash
+# Run code quality checks before committing
+npm run hygiene
+npm run eslint
+
+# Commit with a descriptive message
+git commit -m "feat: add your feature"
+```
+
+### 4. Push and Create Pull Request
+```bash
+git push origin feature/your-feature-name
+# Open a Pull Request on GitHub
+```
+
+### Code Style Guide
+- **Language**: TypeScript (strict mode)
+- **Indentation**: 2 spaces
+- **Quotes**: Single quotes (')
+- **Semicolons**: Required
+- **Linting**: ESLint + Prettier
+
+---
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+#### 1. Compilation Fails (Out of Memory)
+**Solution**: Increase Node.js heap size
+```bash
+export NODE_OPTIONS="--max-old-space-size=8192"
+npm run compile
+```
+
+#### 2. Electron Fails to Launch
+**Solution**: Reinstall Electron
+```bash
+npm exec electron --version
+# If error, reinstall:
+rm -rf node_modules/electron
+npm install
+```
+
+#### 3. Saros Plugin Not Working
+**Solution**: Check Saros configuration
+```bash
+cat .saros/config.json
+# Ensure valid session settings
+```
+
+#### 4. AI Features Not Available
+**Solution**: Check API keys
+```bash
+# Ensure Claude API key is set
+export ANTHROPIC_API_KEY="your-key-here"
+
+# Ensure GitHub Copilot is authenticated
+npm run copilot:get_token
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** - see the [LICENSE.txt](LICENSE.txt) file for details.
+
+### Third-Party Notices
+See [ThirdPartyNotices.txt](ThirdPartyNotices.txt) for attribution to open-source libraries.
+
+---
+
+## 📞 Contact & Support
+
+### Official Channels
+- **GitHub Issues**: [Report a bug](https://github.com/your-org/vssaros/issues)
+- **GitHub Discussions**: [Community forum](https://github.com/your-org/vssaros/discussions)
+- **Documentation**: [docs/](docs/) directory
+
+### Community
+- **Discord**: [Join our server](https://discord.gg/your-invite-link)
+- **Stack Overflow**: Tag questions with `vssaros`
+
+### Email
+- **General Inquiry**: support@vssaros.com
+- **Security Issues**: security@vssaros.com
+
+---
+
+## 🙏 Acknowledgments
+
+- **Microsoft VS Code Team** - Core editor platform
+- **Saros Community** - Real-time collaboration
+- **Anthropic** - Claude AI SDK
+- **GitHub** - Copilot integration
+- **Electron Team** - Desktop application framework
+
+---
+
+## 🗺️ Roadmap
+
+### Current Version (2.1.156951)
+- ✅ Real-time collaboration (Saros)
+- ✅ AI-assisted programming (Claude + Copilot)
+- ✅ Remote development (SSH + Dev Containers)
+- ✅ Advanced code editing (Monaco Editor)
+
+### Upcoming Features (v2.2)
+- [ ] Enhanced AI code generation
+- [ ] Multi-user session recording
+- [ ] Plugin marketplace
+- [ ] Mobile companion app
+
+### Future Vision (v3.0)
+- [ ] Cloud-native version
+- [ ] Advanced code analysis (static + dynamic)
+- [ ] Integration with more AI models
+- [ ] Real-time code review tools
+
+---
+
+**Built with ❤️ by the VsSaros Team**
+
+*Customized from Microsoft VS Code (https://github.com/microsoft/vscode)*

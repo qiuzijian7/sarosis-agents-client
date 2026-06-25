@@ -11,7 +11,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import {
@@ -80,7 +80,7 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IAgentStudioService private readonly studioService: IAgentStudioService,
 	) {
 		super();
@@ -197,8 +197,9 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		}
 
 		if (!baseDir) {
-			// Fallback: user-data dir keeps the feature alive for virtual workspaces.
-			baseDir = joinPath(this.environmentService.userRoamingDataHome, '.saros', 'checkpoints');
+			// Fallback: user-home dir keeps the feature alive for virtual workspaces.
+			// Unified with other modules under ~/.saros/ (userHome).
+			baseDir = joinPath(this.environmentService.userHome, '.saros', 'checkpoints');
 		}
 
 		return joinPath(baseDir, '.sarosworkspace', 'checkpoints', agentId, sessionId);

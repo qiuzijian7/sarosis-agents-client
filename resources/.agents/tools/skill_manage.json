@@ -1,0 +1,36 @@
+{
+  "name": "skill_manage",
+  "description": "Create, edit, or delete skill documents. Skills are reusable procedure documents the agent can load.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "edit",
+          "delete"
+        ],
+        "description": "Action to perform"
+      },
+      "name": {
+        "type": "string",
+        "description": "Skill name"
+      },
+      "content": {
+        "type": "string",
+        "description": "Skill content (for create/edit)"
+      },
+      "category": {
+        "type": "string",
+        "description": "Skill category (for create)"
+      }
+    },
+    "required": [
+      "action",
+      "name"
+    ]
+  },
+  "category": "skills",
+  "source": "hermes-bundled"
+}

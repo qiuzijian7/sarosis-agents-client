@@ -11,7 +11,6 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { perfTrace } from './utils/perfTrace.js';
 import { initMessageClient, postMessage } from './bridge/messageClient.js';
-import { handleStreamDelta, handleStreamComplete, handleStreamError, applyToolApprovalRequest } from './bridge/streamHandler.js';
 import { useAgentStore } from './store/useAgentStore.js';
 import { useProviderStore } from './store/useProviderStore.js';
 import { useThemeStore } from './store/useThemeStore.js';
@@ -130,28 +129,6 @@ initMessageClient((type, data) => {
 				}
 				_workflowOwnerSessions.set(trace.executionId, containerKey);
 				store.startWorkflowExecution(trace.executionId, containerKey, trace.nodeName ?? 'Workflow');
-
-				// v6: auto-switch the chat panel to the workflow's owner agent
-				// session so the user immediately sees the execution trace.
-				// This runs in the CHAT webview (which also receives trace events).
-				// We need to set the active agent first (to load the chat panel for
-				// that agent), then switch to the specific session.
-				void (async () => {
-					try {
-						const chatStore = useChatStore.getState();
-						// Only switch if not already on this agent/session.
-						if (chatStore.activeAgentId !== trace.workflowAgentId ||
-							chatStore.activeAgentSessionId !== trace.sessionId) {
-							chatStore.setActiveAgent(trace.workflowAgentId);
-							// Give setActiveAgent a tick to propagate.
-							await new Promise(r => setTimeout(r, 50));
-							await chatStore.switchAgentSession(trace.sessionId);
-							console.log(`[trace-router] auto-switched chat to agent=${trace.workflowAgentId} session=${trace.sessionId}`);
-						}
-					} catch (err) {
-						console.warn('[trace-router] auto-switch chat failed:', err);
-					}
-				})();
 			} else {
 				store.startWorkflowSubAgent(wfSessionId, {
 					id: trace.nodeId,
@@ -220,64 +197,6 @@ initMessageClient((type, data) => {
 	}
 
 	switch (type) {
-		case 'chat.stream.delta': {
-			// v31: when a workflow execution is running for this agent, the
-			// delta text is already rendered inside LiveWorkflowTraceView's
-			// SubAgentOutputBlock. Suppress the regular stream state update
-			// to prevent the text from appearing twice in the chat panel.
-			// We check ALL sessions' workflowExecutions because a workflow
-			// could be running in a different session than the one currently
-			// active (and both share the same agent).
-			const deltaData = data as { agentId?: string; sessionId?: string };
-			const chatStore = useChatStore.getState();
-			const hasRunningWf = Object.values(chatStore.liveWorkflowExecutions).some(
-				e => e.status === 'running'
-			);
-			// Only suppress when (a) a workflow is running AND (b) the
-			// streaming agent matches what we have loaded. If a workflow
-			// is running for agent A and user chats with agent B in a
-			// different tab, agent B's deltas should still render normally.
-			const isWorkflowAgent = hasRunningWf && deltaData.agentId && (
-				chatStore.activeAgentId === deltaData.agentId
-			);
-			if (!isWorkflowAgent) {
-				handleStreamDelta(deltaData as Parameters<typeof handleStreamDelta>[0]);
-			}
-			break;
-		}
-		case 'chat.stream.complete': {
-			const completeData = data as Parameters<typeof handleStreamComplete>[0];
-			const msg = completeData.message as Record<string, unknown> | undefined;
-			console.log(`[AgentStudio] Routing chat.stream.complete → handleStreamComplete, ` +
-				`agentId=${completeData.agentId}, ` +
-				`hostMsg.contentLen=${typeof msg?.content === 'string' ? msg.content.length : 'N/A'}, ` +
-				`hostMsg.error=${msg?.error ?? 'none'}`);
-			handleStreamComplete(completeData);
-			break;
-		}
-		case 'chat.stream.error': {
-			const errData = data as Parameters<typeof handleStreamError>[0];
-			console.error(`[AgentStudio] Routing chat.stream.error → handleStreamError, ` +
-				`agentId=${errData.agentId}, error="${errData.error}"`);
-			handleStreamError(errData);
-			break;
-		}
-		case 'chat.userMessageAppended': {
-			// Mirrors `useChatStore.sendMessage`'s optimistic local append for
-			// messages that originated outside the chat input (currently only
-			// imgui form submits routed via the host controller).
-			const detail = data as {
-				agentId: string;
-				agentSessionId?: string;
-				message: { id: string; role: 'user'; content: string; timestamp: string };
-			} | undefined;
-			if (detail?.agentId && detail.message) {
-				console.log(`[AgentStudio] Routing chat.userMessageAppended → store: ` +
-					`agentId=${detail.agentId}, id=${detail.message.id}, len=${detail.message.content.length}`);
-				useChatStore.getState().appendExternalUserMessage(detail.agentId, detail.message);
-			}
-			break;
-		}
 		case 'agent.selected': {
 			const { agentId } = (data as { agentId: string | null }) ?? {};
 			console.log(`[AgentStudio] received 'agent.selected' event: agentId=${agentId}, panelType=${(window as any).__AGENT_STUDIO_PANEL_TYPE__}`);
@@ -288,22 +207,6 @@ initMessageClient((type, data) => {
 				useAgentStore.setState({ selectedAgentId: agentId });
 			} else {
 				console.warn(`[AgentStudio] agent.selected event missing agentId, data=`, data);
-			}
-			break;
-		}
-		case 'chat.injectPrompt': {
-			// Host injects a prompt into the chat panel (e.g. workflow ▶ Run button).
-			// Only the chat panel should act on this; other panels ignore it.
-			const panelType = (window as any).__AGENT_STUDIO_PANEL_TYPE__;
-			if (panelType !== 'chat') { break; }
-			const { agentId: injectAgentId, message: injectMessage } = (data as { agentId: string; message: string }) ?? {};
-			if (injectAgentId && injectMessage) {
-				console.log(`[AgentStudio] chat.injectPrompt: sending message for agent=${injectAgentId}`);
-				useAgentStore.setState({ selectedAgentId: injectAgentId });
-				// Defer send so React can process the agent switch first
-				setTimeout(() => {
-					void useChatStore.getState().sendMessage(injectMessage);
-				}, 100);
 			}
 			break;
 		}
@@ -389,28 +292,9 @@ initMessageClient((type, data) => {
 		}
 		case 'workspace.sessionUpdated': {
 			const detail = data as { workspaceId?: string; agentId?: string; agentSessionId?: string };
-			// If host assigned a new agentSessionId, update the chat store
-			// regardless of whether a Fork active session exists. This is
-			// important for Root-mode imgui submits: the host lazily creates
-			// an agent session and emits this event, and the webview must
-			// pick it up so the next history reload aims at the same session.
+			// Fork-mode bookkeeping: if the agent belongs to the active
+			// Fork session, mirror the new agentSessionId there too.
 			if (detail.agentId && detail.agentSessionId) {
-				const chatStore = useChatStore.getState();
-				if (chatStore.activeAgentId === detail.agentId) {
-					if (chatStore.activeAgentSessionId !== detail.agentSessionId) {
-						console.log(
-							`[AgentStudio] workspace.sessionUpdated → chatStore.activeAgentSessionId = ${detail.agentSessionId} ` +
-							`(was ${chatStore.activeAgentSessionId})`
-						);
-						useChatStore.setState({ activeAgentSessionId: detail.agentSessionId });
-						// Refresh the session list so the new session shows up
-						// in the session picker (Root mode).
-						chatStore.loadAgentSessions(detail.agentId);
-					}
-				}
-
-				// Fork-mode bookkeeping: if the agent belongs to the active
-				// Fork session, mirror the new agentSessionId there too.
 				const sessionStore = useWorkspaceSessionStore.getState();
 				const activeSession = sessionStore.getActiveSession();
 				if (activeSession) {
@@ -448,33 +332,6 @@ initMessageClient((type, data) => {
 			console.log(`[AgentStudio] orchestration.planUpdated: planId=${plan?.id}, status=${plan?.status}`);
 			useOrchestrationStore.getState().updatePlanFromEvent(plan);
 			window.dispatchEvent(new CustomEvent('agentStudio:orchestration-plan-updated', { detail: plan }));
-
-			// When a plan status changes (e.g. rejected from TaskOverviewEditorPane),
-			// update the matching chat message metadata so AgentChat re-renders
-			// its message list.  This is necessary because:
-			//   1. ChatMessageRaw is wrapped in React.memo — the memo comparator
-			//      only runs when the parent (AgentChat) re-renders.
-			//   2. The Zustand subscription inside ChatMessageRaw may not fire if
-			//      the plan data in the store doesn't match the message's planId
-			//      (e.g. the host sends a stale or different plan object).
-			//   3. AgentChat only re-renders when the messages array changes.
-			// Mutating the metadata._planStatus forces a new message object ref,
-			// which triggers AgentChat → ChatMessageComponent → ChatMessageRaw
-			// → OrchestrationPlanInline to re-render with fresh data.
-			if (plan?.id && plan.status !== 'pending_approval') {
-				useChatStore.setState(state => {
-					const updatedMessages = state.messages.map(m =>
-						m.metadata?.type === 'orchestration_plan' && m.metadata.planId === plan.id
-							? { ...m, metadata: { ...m.metadata, _planStatus: plan.status } }
-							: m
-					);
-					const hasChanges = updatedMessages.some((m, i) => m !== state.messages[i]);
-					if (hasChanges) {
-						console.log(`[AgentStudio] Updated chat message metadata for plan ${plan.id} → ${plan.status}`);
-					}
-					return hasChanges ? { messages: updatedMessages } : state;
-				});
-			}
 			break;
 		}
 		case 'orchestration.taskUpdated': {
@@ -495,179 +352,6 @@ initMessageClient((type, data) => {
 			const detail = data as { agentId: string };
 			if (detail?.agentId) {
 				dispatchConfigMdEvent(detail.agentId, type, data);
-			}
-			break;
-		}
-		case 'agentSessions.changed': {
-			// Agent session list changed (created/renamed/deleted/updated).
-			// Refresh the session list in the chat store if the affected agent
-			// is currently active so the L0 panel updates automatically.
-			const detail = data as { agentId: string } | undefined;
-			if (detail?.agentId) {
-				const chatStore = useChatStore.getState();
-				if (chatStore.activeAgentId === detail.agentId) {
-					console.log(`[AgentStudio] agentSessions.changed → reloading sessions for ${detail.agentId}`);
-					chatStore.loadAgentSessions(detail.agentId);
-				}
-			}
-			break;
-		}
-		case 'chat.switchToSession': {
-			// Host requests switching to a specific agent session
-			// (e.g. from the SessionExplorerViewPane in the sidebar)
-			const detail = data as { agentId: string; agentSessionId: string } | undefined;
-			if (detail?.agentId && detail?.agentSessionId) {
-				const chatStore = useChatStore.getState();
-				// First select the agent if not already active
-				if (chatStore.activeAgentId !== detail.agentId) {
-					chatStore.setActiveAgent(detail.agentId);
-				}
-				// Then switch to the session
-				chatStore.switchAgentSession(detail.agentSessionId);
-				console.log(`[AgentStudio] chat.switchToSession → switched to session ${detail.agentSessionId} for agent ${detail.agentId}`);
-			}
-			break;
-		}
-		case 'chat.toolApprovalRequest': {
-			// Host requests tool approval UI — find the tool call and set status to 'approval_required'
-			const payload = data as {
-				toolCallId: string;
-				toolName: string;
-				arguments: Record<string, unknown>;
-				securityLevel: 'safe' | 'cautious' | 'dangerous';
-				reason?: string;
-			};
-
-			// ── Step 1: streaming tool calls (PRIMARY path) ──────────────────
-			// During streaming, the tool call lives in streamState.toolCalls
-			// (rendered by StreamingBubble), NOT the committed `messages` array.
-			// This is the common case — a tool requiring approval mid-stream. If
-			// we don't update the stream state, the approval card never renders,
-			// the user can't approve, and agentOSService.checkAndApprove() awaits
-			// forever → stream stuck at "执行中..." (the reported bug).
-			const appliedToStream = applyToolApprovalRequest({
-				toolCallId: payload.toolCallId,
-				toolName: payload.toolName,
-				securityLevel: payload.securityLevel,
-			});
-
-			// ── Step 2: committed messages (FALLBACK path) ───────────────────
-			// If the tool call was already committed to `messages` (e.g. the
-			// stream completed but a deferred approval is still being requested),
-			// update it there too.
-			const store = useChatStore.getState();
-			const messages = store.messages;
-			let updatedCommitted = false;
-			const newMessages = messages.map(msg => {
-				if (msg.toolCalls) {
-					const newToolCalls = msg.toolCalls.map(tc => {
-						if (tc.id === payload.toolCallId) {
-							updatedCommitted = true;
-							return { ...tc, status: 'approval_required', securityLevel: payload.securityLevel };
-						}
-						return tc;
-					});
-					if (newToolCalls !== msg.toolCalls) {
-						return { ...msg, toolCalls: newToolCalls };
-					}
-				}
-				return msg;
-			});
-
-			if (updatedCommitted) {
-				useChatStore.setState({ messages: newMessages });
-			}
-
-			if (appliedToStream || updatedCommitted) {
-				console.log(`[AgentStudio] Tool approval requested: toolCallId=${payload.toolCallId}, toolName=${payload.toolName} (stream=${appliedToStream}, committed=${updatedCommitted})`);
-			} else {
-				// v7: tool approval during workflow execution — the tool call lives
-				// in liveWorkflowExecutions (not in the chat's streamState/messages).
-				// Search all live workflow executions and auto-approve if found.
-				const liveExecs = useChatStore.getState().liveWorkflowExecutions;
-				let foundInWorkflow = false;
-				for (const [, exec] of Object.entries(liveExecs)) {
-					for (const sa of exec.subAgents) {
-						const tool = sa.toolCalls?.find(tc => tc.id === payload.toolCallId);
-						if (tool) {
-							foundInWorkflow = true;
-							console.log(`[AgentStudio] Tool approval auto-approved for workflow tool: toolCallId=${payload.toolCallId}, toolName=${payload.toolName}, subAgent=${sa.id}`);
-							// Mark the tool call in the store so the SubAgentCard can show the status.
-							useChatStore.setState(state => {
-								const newExec = { ...state.liveWorkflowExecutions };
-								for (const [sid, e] of Object.entries(newExec)) {
-									const idx = e.subAgents.findIndex(s => s.id === sa.id);
-									if (idx < 0) { continue; }
-									const sub = e.subAgents[idx];
-									const tcIdx = (sub.toolCalls ?? []).findIndex(tc => tc.id === payload.toolCallId);
-									if (tcIdx < 0) { continue; }
-									const newTC = [...(sub.toolCalls ?? [])];
-									newTC[tcIdx] = { ...newTC[tcIdx], status: 'running' };
-									newExec[sid] = {
-										...e,
-										subAgents: e.subAgents.map((s, i) => i === idx ? { ...s, toolCalls: newTC } : s),
-									};
-								}
-								return { liveWorkflowExecutions: newExec };
-							});
-							// Auto-approve (allow_once). The user already explicitly started the workflow.
-							void postMessage('chat.toolApprove', {
-								toolCallId: payload.toolCallId,
-								decision: 'allow_once',
-							});
-							break;
-						}
-					}
-					if (foundInWorkflow) { break; }
-				}
-				if (!foundInWorkflow) {
-					console.warn(`[AgentStudio] chat.toolApprovalRequest: toolCallId=${payload.toolCallId} not found in stream, messages, or live workflow executions`);
-				}
-			}
-			break;
-		}
-		case 'chat.checkpointCreated': {
-			// Host created a checkpoint (user_edit anchor or tool_edit snapshot).
-			// Render an inline checkpoint card so the user can time-travel back.
-			const cp = data as {
-				id: string;
-				agentId?: string;
-				sessionId: string;
-				type: 'user_edit' | 'tool_edit';
-				label?: string;
-				description?: string;
-				createdAt: number;
-				fileSnapshotIds?: string[];
-				isGhost?: boolean;
-				messageId?: string;
-				files?: Array<{
-					uri: string;
-					fileName: string;
-					fsPath: string;
-					additions: number;
-					deletions: number;
-				}>;
-			} | undefined;
-			if (cp?.id) {
-				const chatStore = useChatStore.getState();
-				// Only render for the currently active agent/session to avoid
-				// leaking checkpoints from background agents into the open chat.
-				// Skip user_edit anchors: they carry no file snapshot (empty set)
-				// and exist purely as message-boundary markers for range rollback.
-				// Rendering them would spam an empty card before every turn.
-				// Only tool_edit checkpoints (real file snapshots) get a card.
-				if (chatStore.activeAgentId === cp.agentId && cp.type === 'tool_edit') {
-					console.log(`[AgentStudio] chat.checkpointCreated → ${cp.type} ${cp.id} (${cp.fileSnapshotIds?.length ?? 0} files, files=${cp.files?.length ?? 0})`);
-					chatStore.addCheckpoint({
-						id: cp.id,
-						type: cp.type,
-						timestamp: new Date(cp.createdAt).toISOString(),
-						description: cp.description || cp.label,
-						filesChanged: cp.files?.length ?? cp.fileSnapshotIds?.length ?? 0,
-						files: cp.files,
-						isGhost: cp.isGhost ?? false,
-					});
-				}
 			}
 			break;
 		}

@@ -1,0 +1,22 @@
+{
+  "name": "kanban_complete",
+  "description": "Mark a kanban task as completed with an optional result summary.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to complete"
+      },
+      "result": {
+        "type": "string",
+        "description": "Result summary (optional)"
+      }
+    },
+    "required": [
+      "task_id"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

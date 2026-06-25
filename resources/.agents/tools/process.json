@@ -1,0 +1,28 @@
+{
+  "name": "process",
+  "description": "Manage background processes: list running processes, get output, or terminate them.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "output",
+          "terminate",
+          "wait"
+        ],
+        "description": "Action to perform"
+      },
+      "pid": {
+        "type": "string",
+        "description": "Process ID (for output/terminate/wait actions)"
+      }
+    },
+    "required": [
+      "action"
+    ]
+  },
+  "category": "terminal",
+  "source": "hermes-bundled"
+}

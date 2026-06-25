@@ -8,6 +8,11 @@
  *
  * 这些预置定义了常见的 MCP 服务器启动配置，用户在 Sarosis 中
  * 添加 MCP 服务器时可直接选择预置，简化配置流程。
+ *
+ * 资源文件化：
+ *   - 预设定义已从硬编码迁移到 JSON 文件：resources/.agents/mcp-presets/*.json
+ *   - 运行时通过 loadMcpPresetsFromResources() 从 JSON 文件加载
+ *   - BUNDLED_MCP_PRESETS 作为 fallback，在 JSON 加载失败时使用
  */
 
 /**
@@ -29,9 +34,21 @@ export interface IMcpServerPreset {
 	readonly envKeys?: readonly string[];
 	readonly headers?: Readonly<Record<string, string>>;
 	readonly icon?: string;
+	/** Built-in MCP: auto-installed and auto-started on app launch. */
+	readonly builtin?: boolean;
 }
 
-export const BUNDLED_MCP_PRESETS: readonly IMcpServerPreset[] = [
+// ── Hardcoded fallback (used when JSON loading fails) ─────────────────────
+const FALLBACK_PRESETS: readonly IMcpServerPreset[] = [
+	{
+		id: "codebase-memory-mcp",
+		name: "Codebase Memory",
+		description: "Code intelligence engine: full-indexes repositories into a knowledge graph of functions, classes, call chains, and cross-service links. 14 MCP tools for structural queries.",
+		transportType: "stdio",
+		command: "codebase-memory-mcp",
+		icon: "🧠",
+		builtin: true,
+	},
 	{
 		id: "filesystem",
 		name: "Filesystem",
@@ -165,3 +182,30 @@ export const BUNDLED_MCP_PRESETS: readonly IMcpServerPreset[] = [
 		args: ["-y","@modelcontextprotocol/server-everything"],
 	},
 ];
+
+/**
+ * 当前生效的 MCP 预设列表（可被 JSON 文件覆盖）。
+ * 使用 `getMcpPresets()` 获取最新值。
+ */
+let _mcpPresets: IMcpServerPreset[] = [...FALLBACK_PRESETS];
+
+/**
+ * 获取当前的 MCP 预设列表。
+ * 优先返回从 JSON 文件加载的预设；如果 JSON 加载失败，返回硬编码 fallback。
+ */
+export function getMcpPresets(): IMcpServerPreset[] {
+	return _mcpPresets;
+}
+
+/**
+ * 为了向后兼容，导出 `BUNDLED_MCP_PRESETS` 作为 `getMcpPresets()` 的别名。
+ * @deprecated 使用 `getMcpPresets()` 代替。
+ */
+export const BUNDLED_MCP_PRESETS: readonly IMcpServerPreset[] = FALLBACK_PRESETS;
+
+/**
+ * 直接传入预设数组来更新（用于测试或自定义）。
+ */
+export function setMcpPresets(presets: IMcpServerPreset[]): void {
+	_mcpPresets = presets;
+}

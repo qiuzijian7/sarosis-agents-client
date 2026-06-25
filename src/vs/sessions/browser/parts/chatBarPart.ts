@@ -851,6 +851,19 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 					}
 					break;
 				}
+				case 'memory_extracted': {
+					const memContent = (delta as any).content ?? '';
+					const memMeta = (delta as any).metadata ?? {};
+					if (memContent) {
+						panel.addMemoryNotice({
+							content: memContent,
+							memoryType: memMeta.memoryType,
+							priority: memMeta.priority,
+							sceneName: memMeta.sceneName,
+						});
+					}
+					break;
+				}
 						case 'sub_agent_start': {
 							const subs = (assistantMsg.subAgents ?? []).slice();
 							subs.push({

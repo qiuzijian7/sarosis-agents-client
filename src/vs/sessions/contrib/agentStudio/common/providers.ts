@@ -737,7 +737,9 @@ export interface IChatStreamDelta {
 	//   - metadata.turnIndex：iteration 序号（调试用）
 	// chatService 收到后把"当前累加器"快照成一条 turn，重置进入下一轮；done 后
 	// 按 turn 持久化多条 ChatMessage（同回合共享 turnId），历史因果天然正确。
-	| 'assistant_turn';
+	| 'assistant_turn'
+	| 'memory_extracted'
+	| 'codebase_operation';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;

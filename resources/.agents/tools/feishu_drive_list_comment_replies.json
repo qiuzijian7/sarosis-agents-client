@@ -1,0 +1,28 @@
+{
+  "name": "feishu_drive_list_comment_replies",
+  "description": "List replies to a comment on a Feishu/Lark drive file.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "comment_id": {
+        "description": "Comment ID",
+        "type": "string"
+      },
+      "file_id": {
+        "description": "File ID",
+        "type": "string"
+      },
+      "file_type": {
+        "description": "File type",
+        "type": "string"
+      }
+    },
+    "required": [
+      "file_id",
+      "comment_id",
+      "file_type"
+    ]
+  },
+  "category": "feishu",
+  "source": "hermes-bundled"
+}

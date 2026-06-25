@@ -504,11 +504,49 @@ export class TdbAmMemoryProvider implements IMemoryProvider {
 	}
 
 	async searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]> {
-		// vendor /search/memories 要求 query 非空
-		if (!query || query.trim().length === 0) {
-			return [];
-		}
 		const t0 = Date.now();
+		const sessionKey = deriveSessionKey(agentId, { id: '', type: 'short_term', content: '', metadata: {} });
+
+		// 空查询 → 列出所有记忆（L0 + L1）
+		if (!query || query.trim().length === 0) {
+			const [l0Resp, l1Resp] = await Promise.all([
+				postJson<{ items?: Array<{ record_id?: string; message_text?: string; role?: string; timestamp?: number }>; total?: number }>('/list/conversations', {
+					session_key: sessionKey,
+					limit: 200,
+				}),
+				postJson<{ items?: Array<{ id?: string; content?: string; timestamp?: string }>; total?: number }>('/list/memories', {
+					type: 'L1',
+					limit: 200,
+					session_key: sessionKey,
+				}),
+			]);
+
+			const entries: IMemoryEntry[] = [];
+			// L0 对话记录
+			for (const r of l0Resp?.items ?? []) {
+				entries.push({
+					id: r.record_id ?? '',
+					type: 'short_term',
+					content: r.message_text ?? '',
+					timestamp: typeof r.timestamp === 'number' ? r.timestamp : 0,
+					metadata: { role: r.role, sessionKey },
+				});
+			}
+			// L1 结构化记忆
+			for (const r of l1Resp?.items ?? []) {
+				entries.push({
+					id: r.id ?? '',
+					type: 'long_term',
+					content: r.content ?? '',
+					timestamp: r.timestamp ? new Date(r.timestamp).getTime() : 0,
+					metadata: { sessionKey },
+				});
+			}
+			console.log(`[TdbAmMemory] ⏱ searchMemory (list all) done in ${Date.now() - t0}ms (L0=${l0Resp?.items?.length ?? 0}, L1=${l1Resp?.items?.length ?? 0})`);
+			return entries;
+		}
+
+		// 非空查询 → 关键词搜索
 		const resp = await postJson<SearchMemoriesResponse>('/search/memories', {
 			query,
 			limit: 10,

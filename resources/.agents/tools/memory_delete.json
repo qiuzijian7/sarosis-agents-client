@@ -1,0 +1,27 @@
+{
+  "name": "memory_delete",
+  "description": "Delete a memory entry by its ID. Use memory_search first to find the entry ID.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "description": "Memory entry ID to delete",
+        "type": "string"
+      },
+      "memory_type": {
+        "description": "Memory type to delete from",
+        "enum": [
+          "short_term",
+          "long_term"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "memory_type"
+    ]
+  },
+  "category": "memory",
+  "source": "hermes-bundled"
+}

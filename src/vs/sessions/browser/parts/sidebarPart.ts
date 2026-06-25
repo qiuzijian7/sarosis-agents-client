@@ -301,6 +301,8 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		}));
 
 		// ── 2. Version label ──
+		// productService.version 在启动时从 product.json 读取（product.ts:28-51），
+		// 重新加载窗口即会刷新。与 VS Code 原生行为一致，无需额外异步读取文件。
 		const versionLabel = append(toolbar, $('span.sidebar-toolbar-version'));
 		let version = '';
 		let nameLong = 'VsSaros';

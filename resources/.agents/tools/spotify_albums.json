@@ -1,0 +1,18 @@
+{
+  "name": "spotify_albums",
+  "description": "Get album information from Spotify.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "album_id": {
+        "description": "Spotify album ID",
+        "type": "string"
+      }
+    },
+    "required": [
+      "album_id"
+    ]
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

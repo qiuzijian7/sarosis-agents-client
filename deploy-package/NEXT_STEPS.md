@@ -3,7 +3,7 @@
 ## 🎉 已完成的工作
 
 ### 1. ✅ 构建完成
-- **安装包**: `G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-setup\VsSarosisUserSetup.exe`
+- **安装包**: `G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-setup\VsSarosUserSetup.exe`
 - **大小**: 158.25 MB
 - **SHA256**: `3369FEE8E9E7209946EA19F556261632EB23BDC1097D2A7DC54EC20B72F52595`
 - **Git Commit**: `d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3`
@@ -21,13 +21,13 @@
 
 ## 🚀 下一步操作（3个选项）
 
-### 选项 A: 手动部署到服务器 21.91.41.66（推荐）
+### 选项 A: 手动部署到服务器 zijianqiu-any1.devcloud.woa.com（推荐）
 
 #### A1. 上传更新服务器代码到服务器
 
 ```bash
 # 方式 1: 使用 SCP (Linux服务器)
-scp -r deploy-package/update-server/ root@21.91.41.66:/opt/vssaros-update/
+scp -r deploy-package/update-server/ root@zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/
 
 # 方式 2: 先压缩再上传（如果SCP慢）
 # 在本地压缩
@@ -39,7 +39,7 @@ Compress-Archive -Path deploy-package\update-server -DestinationPath update-serv
 
 ```bash
 # SSH 登录服务器
-ssh root@21.91.41.66
+ssh root@zijianqiu-any1.devcloud.woa.com
 
 # 进入目录
 cd /opt/vssaros-update/update-server
@@ -72,17 +72,17 @@ firewall-cmd --permanent --add-port=3030/tcp
 firewall-cmd --reload
 
 # 测试外部访问（在本地执行）
-curl http://21.91.41.66:3030/health
+curl http://zijianqiu-any1.devcloud.woa.com:3030/health
 ```
 
 #### A4. 上传安装包到更新服务器
 
 ```bash
 # 在服务器上创建 downloads 目录
-ssh root@21.91.41.66 "mkdir -p /opt/vssaros-update/downloads"
+ssh root@zijianqiu-any1.devcloud.woa.com "mkdir -p /opt/vssaros-update/downloads"
 
 # 上传安装包
-scp "G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-setup\VsSarosisUserSetup.exe" root@21.91.41.66:/opt/vssaros-update/downloads/VsSarosisUserSetup.exe
+scp "G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-setup\VsSarosUserSetup.exe" root@zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/downloads/VsSarosUserSetup.exe
 ```
 
 #### A5. 验证部署
@@ -91,7 +91,7 @@ scp "G:\CustomWorkspaces\AIProjects\saros-agents-client\.build\win32-x64\user-se
 
 ```bash
 # 测试更新 API
-curl "http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000"
+curl "http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000"
 ```
 
 **预期响应**:
@@ -99,7 +99,7 @@ curl "http://21.91.41.66:3030/api/update/win32-x64-user/saros/000000000000000000
 {
   "version": "d7440c06c8f7d55c9b3ffd5b234b84e91a4b4da3",
   "productVersion": "1.120.0",
-  "url": "http://21.91.41.66:3030/downloads/VsSarosisUserSetup.exe",
+  "url": "http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe",
   "sha256hash": "3369FEE8E9E7209946EA19F556261632EB23BDC1097D2A7DC54EC20B72F52595",
   "timestamp": 1717372800000
 }
@@ -141,7 +141,7 @@ curl "http://21.91.41.66:3030/api/update/win32-x64-user/saros/000000000000000000
 
 ## 📋 部署检查清单
 
-- [ ] 更新服务器代码已上传到 `21.91.41.66:/opt/vssaros-update/`
+- [ ] 更新服务器代码已上传到 `zijianqiu-any1.devcloud.woa.com:/opt/vssaros-update/`
 - [ ] 更新服务器已启动 (PM2 或 node)
 - [ ] 端口 3030 已开放防火墙
 - [ ] 安装包已上传到 `/opt/vssaros-update/downloads/`
@@ -174,7 +174,7 @@ node server.mjs
 curl http://localhost:3030/health
 
 # 在本地测试外部访问
-curl http://21.91.41.66:3030/health
+curl http://zijianqiu-any1.devcloud.woa.com:3030/health
 
 # 检查防火墙
 iptables -L -n | grep 3030
@@ -202,9 +202,9 @@ firewall-cmd --list-ports
 
 部署成功后，你应该能够：
 
-1. **访问更新服务器**: http://21.91.41.66:3030/health
-2. **查看更新 API 响应**: http://21.91.41.66:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
-3. **安装客户端并测试更新**: 安装 `VsSarosisUserSetup.exe`，打开 VS Code，等待更新检测
+1. **访问更新服务器**: http://zijianqiu-any1.devcloud.woa.com:3030/health
+2. **查看更新 API 响应**: http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000
+3. **安装客户端并测试更新**: 安装 `VsSarosUserSetup.exe`，打开 VS Code，等待更新检测
 
 ---
 

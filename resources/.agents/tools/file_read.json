@@ -1,0 +1,26 @@
+{
+  "name": "file_read",
+  "description": "Read a file and return its content. Supports reading specific line ranges.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Absolute or relative file path"
+      },
+      "start_line": {
+        "type": "number",
+        "description": "Start line number (1-based, optional)"
+      },
+      "end_line": {
+        "type": "number",
+        "description": "End line number (inclusive, optional)"
+      }
+    },
+    "required": [
+      "path"
+    ]
+  },
+  "category": "file",
+  "source": "hermes-bundled"
+}

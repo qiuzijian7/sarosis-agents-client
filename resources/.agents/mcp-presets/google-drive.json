@@ -1,0 +1,11 @@
+{
+  "id": "google-drive",
+  "name": "Google Drive",
+  "description": "Google Drive file access and search",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-google-drive"
+  ]
+}

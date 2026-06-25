@@ -156,6 +156,13 @@ export class ExecutionProvider implements IExecutionProvider {
 
 		// 5. 初始化上下文管理器
 		const contextManager = new ContextManager(modelProvider, this._getModelId(slots));
+		// 注入日志服务，使压缩诊断日志输出到 VS Code Output 面板
+		contextManager.setLogger({
+			info: (msg: string) => this._logService.info(msg),
+			warn: (msg: string) => this._logService.warn(msg),
+			error: (msg: string, error?: unknown) => this._logService.error(msg, error),
+			debug: (msg: string) => this._logService.debug(msg),
+		});
 		let modelId = this._getModelId(slots);
 		// 真实上下文窗口：优先读模型 maxInputTokens / contextWindow，取不到回退 _contextWindow（128000）。
 		const compressionWindow = await this._resolveContextWindow(modelProvider, modelId);
@@ -191,41 +198,83 @@ export class ExecutionProvider implements IExecutionProvider {
 				// 复用现有 StreamPhase 机制：压缩前发 phase='compressing' 驱动 "正在压缩上下文..." UI，
 				// 压缩结束后发 phase='llm_streaming' 切回（后续 model text delta 也会自动切回，此处显式更稳妥）。
 				{
-					const compressionResult = await contextManager.compressContext(
+					const compressionStartTime = Date.now();
+				const originalMessageCount = messages.length;
+				const originalEstimatedTokens = this._estimateMessagesTokens(messages as unknown as IChatMessage[]);
+				this._logService.info(
+					`[ExecutionProvider][Compression] BEFORE: messages=${originalMessageCount}, ` +
+					`estimatedTokens=${originalEstimatedTokens}, compressionWindow=${compressionWindow}, ` +
+					`lastRealPromptTokens=${lastRealPromptTokens}`
+				);
+
+				let compressionResult;
+				try {
+					compressionResult = await contextManager.compressContext(
 						messages as unknown as ReadonlyArray<ChatMessage>,
 						undefined,
 						compressionWindow,
 						lastRealPromptTokens
 					);
-					const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
-					// ─── 压缩判定诊断日志（与 AgentOS Path 1 一致）──────────────
-					const cmpMeta = compressionResult.metadata ?? {};
-					this._logService.info(
-						`[ExecutionProvider][Compression] didCompress=${didCompress} ` +
-						`skipped=${JSON.stringify(cmpMeta.skipped ?? null)} ` +
-						`tokenSource=${cmpMeta.tokenSource ?? 'n/a'} ` +
-						`effectiveTokens=${cmpMeta.effectiveTokens ?? 'n/a'} ` +
-						`realPromptTokens=${cmpMeta.realPromptTokens ?? 'n/a'} ` +
-						`estimatedTokens=${cmpMeta.estimatedTokens ?? 'n/a'} ` +
-						`thresholdTokens=${cmpMeta.thresholdTokens ?? 'n/a'} ` +
-						`effectiveWindow=${cmpMeta.effectiveWindow ?? 'n/a'} ` +
-						`compressionWindow=${compressionWindow} ` +
-						`messageCount=${cmpMeta.messageCount ?? messages.length} ` +
-						`minMessagesToCompress=${cmpMeta.minMessagesToCompress ?? 'n/a'} ` +
-						`ineffectiveCompressionCount=${cmpMeta.ineffectiveCompressionCount ?? 'n/a'} ` +
-						`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
+				} catch (compressionError) {
+					// 压缩异常不应中断 Agent 主循环，记录后跳过本轮压缩继续执行
+					this._logService.error(
+						`[ExecutionProvider][Compression] EXCEPTION during compressContext: ` +
+						`${compressionError instanceof Error ? compressionError.message : String(compressionError)}`,
+						compressionError
 					);
+					compressionResult = {
+						originalMessageCount: messages.length,
+						compressedMessageCount: messages.length,
+						summary: '',
+						compressedMessages: [...messages] as unknown as ChatMessage[],
+						metadata: { compressionRatio: 1.0, skipped: 'exception', error: String(compressionError) },
+					};
+				}
+				const didCompress = compressionResult.compressedMessageCount < compressionResult.originalMessageCount;
+				const compressionDurationMs = Date.now() - compressionStartTime;
+				// ─── 压缩判定诊断日志（与 AgentOS Path 1 一致）──────────────
+				const cmpMeta = compressionResult.metadata ?? {};
+				// didCompress=false 时用 warn 级别更醒目，便于在日志中快速定位"为什么没压缩"
+				const logFn = didCompress ? this._logService.info.bind(this._logService) : this._logService.warn.bind(this._logService);
+				logFn(
+					`[ExecutionProvider][Compression] didCompress=${didCompress} ` +
+					`skipped=${JSON.stringify(cmpMeta.skipped ?? null)} ` +
+					`tokenSource=${cmpMeta.tokenSource ?? 'n/a'} ` +
+					`effectiveTokens=${cmpMeta.effectiveTokens ?? 'n/a'} ` +
+					`realPromptTokens=${cmpMeta.realPromptTokens ?? 'n/a'} ` +
+					`estimatedTokens=${cmpMeta.estimatedTokens ?? 'n/a'} ` +
+					`thresholdTokens=${cmpMeta.thresholdTokens ?? 'n/a'} ` +
+					`effectiveWindow=${cmpMeta.effectiveWindow ?? 'n/a'} ` +
+					`compressionWindow=${compressionWindow} ` +
+					`messageCount=${cmpMeta.messageCount ?? messages.length} ` +
+					`minMessagesToCompress=${cmpMeta.minMessagesToCompress ?? 'n/a'} ` +
+					`ineffectiveCompressionCount=${cmpMeta.ineffectiveCompressionCount ?? 'n/a'} ` +
+					`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
+				);
 					if (didCompress) {
 						// 压缩真正发生：通知 UI 进入压缩态（仅在确实压缩时发，避免无谓闪烁）
 						yield { type: 'phase_change', phase: 'compressing' };
 						messages = [...compressionResult.compressedMessages] as unknown as IChatMessage[];
+						const compressedEstimatedTokens = this._estimateMessagesTokens(messages);
+						const tokensSaved = originalEstimatedTokens - compressedEstimatedTokens;
+						const savePercent = originalEstimatedTokens > 0
+							? Math.round(tokensSaved / originalEstimatedTokens * 100)
+							: 0;
 						this._logService.info(
-							`[ExecutionProvider] Context compressed: ${compressionResult.originalMessageCount} → ` +
-							`${compressionResult.compressedMessageCount} msgs (window=${compressionWindow}), ` +
-							`tokens ${JSON.stringify(compressionResult.metadata?.tokensSaved ?? 'n/a')} saved`
+							`[ExecutionProvider][Compression] AFTER: messages=${compressionResult.compressedMessageCount}, ` +
+							`estimatedTokens=${compressedEstimatedTokens}, saved=${tokensSaved} (${savePercent}%), ` +
+							`duration=${compressionDurationMs}ms`
 						);
 						// 回传压缩后估算输入 token，让聊天框圆环进度条立即同步回落。
-						yield { type: 'context_compacted', compactedInputTokens: this._estimateMessagesTokens(messages) };
+						yield {
+							type: 'context_compacted',
+							compactedInputTokens: compressedEstimatedTokens,
+							// 压缩详情：用于在聊天消息流中渲染压缩提示卡片
+							compressionOriginalCount: originalMessageCount,
+							compressionCompressedCount: compressionResult.compressedMessageCount,
+							compressionTokensSaved: tokensSaved,
+							compressionDurationMs,
+						};
 						// 压缩完成，切回流式输出态
 						yield { type: 'phase_change', phase: 'llm_streaming' };
 					}

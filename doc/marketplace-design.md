@@ -526,7 +526,7 @@ upgrade(storeId, kind):
 | 更新对象 | vsSarosis 客户端本体（exe） | agent/skill/mcp/知识库 资源包 |
 | 协议 | `GET /api/update/{platform}/{quality}/{commit}` | `POST /api/v1/upgrade/check` |
 | 比较基准 | git commit sha | 语义化版本 |
-| 部署位置 | 21.91.41.66:3030 | AnyDev :3040（新服务） |
+| 部署位置 | zijianqiu-any1.devcloud.woa.com:3030 | AnyDev :3040（新服务） |
 | 触发 | 客户端启动每小时 | 资源管理面板 + 定时 |
 
 > 两者独立运行、互不干扰。可后续统一到一个域名下用路径区分。

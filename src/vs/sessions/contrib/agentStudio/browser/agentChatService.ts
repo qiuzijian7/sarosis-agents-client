@@ -1008,6 +1008,24 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
 
+			// 诊断日志：for-await 循环已退出，即将进入 finalization。
+			// 如果此日志不出现，说明 generator 的 finally 块阻塞了 for-await 退出。
+			this.logService.info(`[AgentChatService] for-await loop exited, starting finalization`);
+
+			// L0 记忆写入通知：流结束后通知前端系统消息面板显示记忆卡片
+			// finally 块中的 writeMemory 是 fire-and-forget，这里仅做 UI 反馈
+			if (fullContent.length > 0) {
+				onDelta({
+					type: 'memory_extracted' as any,
+					content: `L0 记忆已保存：用户消息 + 助手回复 (${fullContent.length} 字符)`,
+					metadata: {
+						memoryType: 'short_term',
+						sceneName: 'L0 写入',
+						priority: 50,
+					},
+				} as any);
+			}
+
 			// Finalization safety net: the stream has fully completed, so any
 			// tool call still lacking a status must have finished. Mark it 'done'
 			// so the persisted card restores in a completed state rather than the

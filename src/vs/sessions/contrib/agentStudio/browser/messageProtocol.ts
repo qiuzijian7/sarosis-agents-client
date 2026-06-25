@@ -224,7 +224,7 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change' | 'context_compacted' | 'discard_prior_text';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change' | 'context_compacted' | 'discard_prior_text' | 'memory_extracted' | 'codebase_operation';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;

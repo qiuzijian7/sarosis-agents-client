@@ -1,0 +1,67 @@
+{
+  "name": "kanban_swarm",
+  "description": "Spawn a multi-agent swarm to collaboratively accomplish a goal. Creates a kanban topology (root → parallel workers → verifier → synthesizer), runs the workers in parallel as sub-agents, then verifies and synthesizes their outputs into a final result. Workers share a blackboard. Use for complex goals that benefit from parallel specialized agents.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Swarm title (becomes the root task title)"
+      },
+      "goal": {
+        "type": "string",
+        "description": "Overall goal description, injected into every worker's context"
+      },
+      "workers": {
+        "description": "Worker specs (at least 1)",
+        "items": {
+          "properties": {
+            "body": {
+              "description": "What this worker should do",
+              "type": "string"
+            },
+            "priority": {
+              "description": "Scheduling priority",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            "profile": {
+              "description": "Worker role/persona (optional)",
+              "type": "string"
+            },
+            "title": {
+              "description": "Worker card title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_verifier": {
+        "default": true,
+        "description": "Enable the verifier stage (default true when >=2 workers)",
+        "type": "boolean"
+      },
+      "enable_synthesizer": {
+        "default": true,
+        "description": "Enable the synthesizer stage (default true)",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "title",
+      "workers"
+    ]
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

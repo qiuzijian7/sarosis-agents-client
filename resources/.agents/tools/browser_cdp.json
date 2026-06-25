@@ -1,0 +1,22 @@
+{
+  "name": "browser_cdp",
+  "description": "Execute Chrome DevTools Protocol commands directly for advanced browser automation.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "method": {
+        "type": "string",
+        "description": "CDP method name (e.g., \"Runtime.evaluate\", \"DOM.querySelector\")"
+      },
+      "params": {
+        "type": "object",
+        "description": "CDP method parameters"
+      }
+    },
+    "required": [
+      "method"
+    ]
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

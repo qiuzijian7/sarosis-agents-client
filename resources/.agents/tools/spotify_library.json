@@ -1,0 +1,25 @@
+{
+  "name": "spotify_library",
+  "description": "Manage Spotify library: save/remove tracks, check saved status.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "description": "Library action",
+        "enum": [
+          "saved_tracks",
+          "save_track",
+          "remove_track",
+          "contains"
+        ],
+        "type": "string"
+      },
+      "track_id": {
+        "description": "Track ID (for save/remove/contains)",
+        "type": "string"
+      }
+    }
+  },
+  "category": "spotify",
+  "source": "hermes-bundled"
+}

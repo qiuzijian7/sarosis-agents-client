@@ -1,0 +1,19 @@
+{
+  "name": "browser_snapshot",
+  "description": "Take an accessibility snapshot of the current page. Returns the DOM tree in a structured format for analysis.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "ref": {
+        "type": "string",
+        "description": "Element reference to snapshot (optional, defaults to full page)"
+      },
+      "raw": {
+        "type": "boolean",
+        "description": "Return raw HTML instead of structured snapshot (default: false)"
+      }
+    }
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

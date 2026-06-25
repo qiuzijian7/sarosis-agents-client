@@ -1,0 +1,18 @@
+{
+  "name": "browser_press",
+  "description": "Press a keyboard key (e.g., Enter, Tab, Escape, ArrowDown).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "Key to press (e.g., \"Enter\", \"Tab\", \"Escape\", \"ArrowDown\")"
+      }
+    },
+    "required": [
+      "key"
+    ]
+  },
+  "category": "browser",
+  "source": "hermes-bundled"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "puppeteer",
+  "name": "Puppeteer",
+  "description": "Browser automation using Puppeteer for web scraping and interaction",
+  "transportType": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-puppeteer"
+  ]
+}

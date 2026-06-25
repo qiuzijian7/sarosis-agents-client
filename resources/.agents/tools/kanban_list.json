@@ -1,0 +1,19 @@
+{
+  "name": "kanban_list",
+  "description": "List kanban tasks, optionally filtered by status or assignee.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "description": "Filter by status (optional)"
+      },
+      "assignee": {
+        "type": "string",
+        "description": "Filter by assignee (optional)"
+      }
+    }
+  },
+  "category": "kanban",
+  "source": "hermes-bundled"
+}

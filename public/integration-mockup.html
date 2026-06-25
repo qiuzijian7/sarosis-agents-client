@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vsSarosis 集成页面优化 Mockup</title>
+<style>
+/* ===== VS Code Dark Theme Variables ===== */
+:root{
+  --bg:#1e1e1e;--bg-2:#252526;--bg-3:#2d2d2d;--bg-hover:#2a2d2e;
+  --border:#3c3c3c;--border-2:#464647;
+  --text:#cccccc;--text-2:#9d9d9d;--text-3:#6e6e6e;
+  --accent:#007acc;--accent-hover:#1f8ad2;--accent-bg:rgba(14,99,156,.3);
+  --success:#4ec9b0;--success-bg:rgba(78,201,176,.15);
+  --warning:#dcdcaa;--warning-bg:rgba(220,220,170,.15);
+  --error:#f48771;--error-bg:rgba(244,135,113,.15);
+  --purple:#c586c0;--orange:#ce9178;--blue:#569cd6;--green:#6a9955;
+  --radius:4px;--radius-lg:6px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;overflow-x:hidden}
+
+/* ===== Header ===== */
+.header{background:var(--bg-2);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+.header .badge{font-size:10px;padding:2px 8px;border-radius:10px;background:var(--accent);color:#fff;font-weight:600}
+.header .actions{display:flex;gap:8px}
+.header .theme-btn{padding:4px 10px;border:1px solid var(--border);background:var(--bg-3);color:var(--text-2);border-radius:var(--radius);cursor:pointer;font-size:12px}
+.header .theme-btn:hover{border-color:var(--accent);color:var(--text)}
+
+/* ===== Layout ===== */
+.container{display:flex;max-width:1200px;margin:0 auto;padding:20px;gap:0}
+.sidebar-sim{width:48px;background:var(--bg-2);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px;border-radius:var(--radius-lg) 0 0 var(--radius-lg)}
+.sidebar-sim .icon{width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius);cursor:pointer;font-size:16px;color:var(--text-3)}
+.sidebar-sim .icon:hover{color:var(--text)}
+.sidebar-sim .icon.active{color:var(--text);border-left:2px solid var(--text);background:var(--bg-hover)}
+.panel{flex:1;background:var(--bg);border:1px solid var(--border);border-left:none;border-radius:0 var(--radius-lg) var(--radius-lg) 0;min-height:700px;display:flex;flex-direction:column}
+
+/* ===== Panel Header ===== */
+.panel-header{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.panel-header .title{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-3);font-weight:600}
+.panel-header .global-actions{display:flex;gap:4px}
+.gbtn{padding:3px 8px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-2);border-radius:var(--radius);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px;transition:.15s}
+.gbtn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.gbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.gbtn.primary:hover{background:var(--accent-hover)}
+
+/* ===== Tab Bar ===== */
+.tab-bar{display:flex;border-bottom:1px solid var(--border);background:var(--bg-2);flex-shrink:0}
+.tab{flex:1;padding:8px 12px;text-align:center;cursor:pointer;font-size:13px;color:var(--text-2);border-bottom:2px solid transparent;transition:.15s;display:flex;align-items:center;justify-content:center;gap:6px}
+.tab:hover{color:var(--text);background:var(--bg-hover)}
+.tab.active{color:var(--text);border-bottom-color:var(--accent);background:var(--bg)}
+.tab .count{font-size:10px;background:var(--bg-3);padding:1px 6px;border-radius:8px;color:var(--text-3)}
+.tab.active .count{background:var(--accent);color:#fff}
+
+/* ===== Toolbar ===== */
+.toolbar{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0;background:var(--bg-2)}
+.search-box{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px}
+.search-box:focus-within{border-color:var(--accent)}
+.search-box input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:13px}
+.search-box input::placeholder{color:var(--text-3)}
+.search-box .clear{cursor:pointer;color:var(--text-3);font-size:14px;display:none}
+.search-box.has-text .clear{display:block}
+.filter-chips{display:flex;gap:4px;flex-wrap:wrap}
+.chip{padding:3px 10px;border:1px solid var(--border);border-radius:12px;font-size:11px;cursor:pointer;color:var(--text-2);background:var(--bg);transition:.15s}
+.chip:hover{border-color:var(--accent);color:var(--text)}
+.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* ===== List ===== */
+.list{flex:1;overflow-y:auto;padding:4px 0}
+.list::-webkit-scrollbar{width:8px}
+.list::-webkit-scrollbar-track{background:var(--bg)}
+.list::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.list::-webkit-scrollbar-thumb:hover{background:var(--border-2)}
+
+/* ===== Item Card ===== */
+.item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(60,60,60,.4);transition:.15s;cursor:default}
+.item:hover{background:var(--bg-hover)}
+.item.disabled{opacity:.5}
+.item.disabled .item-name{text-decoration:line-through;color:var(--text-3)}
+
+/* Toggle switch */
+.toggle{position:relative;width:30px;height:16px;flex-shrink:0;cursor:pointer}
+.toggle input{opacity:0;width:0;height:0;position:absolute}
+.toggle .slider{position:absolute;inset:0;background:var(--border);border-radius:8px;transition:.2s}
+.toggle .slider::before{content:'';position:absolute;width:12px;height:12px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked + .slider{background:var(--success)}
+.toggle input:checked + .slider::before{transform:translateX(14px)}
+
+/* Item icon */
+.item-icon{font-size:18px;width:24px;text-align:center;flex-shrink:0}
+
+/* Item info */
+.item-info{flex:1;min-width:0}
+.item-name-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.item-name{font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.item-ver{font-size:11px;color:var(--blue);font-family:monospace}
+.tag{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:500;white-space:nowrap}
+.tag-skill{background:rgba(86,156,214,.2);color:var(--blue)}
+.tag-tool{background:rgba(78,201,176,.15);color:var(--success)}
+.tag-mcp{background:rgba(206,145,120,.15);color:var(--orange)}
+.tag-kb{background:rgba(197,134,192,.15);color:var(--purple)}
+.tag-cat{background:var(--bg-3);color:var(--text-2)}
+.tag-update{background:var(--warning-bg);color:var(--warning);cursor:pointer;display:flex;align-items:center;gap:3px}
+.tag-update::before{content:'↑';font-weight:bold}
+.tag-installed{background:var(--success-bg);color:var(--success)}
+.tag-source{background:var(--bg-3);color:var(--text-3)}
+.item-desc{font-size:12px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+
+/* Item actions */
+.item-actions{display:flex;gap:2px;opacity:0;transition:.15s;flex-shrink:0}
+.item:hover .item-actions{opacity:1}
+.act-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:none;color:var(--text-3);border-radius:var(--radius);cursor:pointer;font-size:14px;transition:.15s}
+.act-btn:hover{background:var(--bg-3);color:var(--text)}
+.act-btn.upgrade:hover{color:var(--warning)}
+.act-btn.download:hover{color:var(--blue)}
+.act-btn.upload:hover{color:var(--success)}
+.act-btn.delete:hover{color:var(--error);background:var(--error-bg)}
+
+/* Empty state */
+.empty{text-align:center;padding:40px 20px;color:var(--text-3)}
+.empty .icon{font-size:32px;margin-bottom:8px;opacity:.5}
+.empty .text{font-size:13px}
+
+/* ===== Bottom bar ===== */
+.bottom-bar{padding:6px 12px;border-top:1px solid var(--border);background:var(--bg-2);font-size:11px;color:var(--text-3);display:flex;justify-content:space-between;flex-shrink:0}
+
+/* ===== Tooltip legend ===== */
+.legend{max-width:1200px;margin:0 auto 20px;padding:0 20px}
+.legend-card{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 20px}
+.legend-card h3{font-size:13px;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.legend-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.legend-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2)}
+.legend-item .act-btn{opacity:1;position:relative;width:28px;height:28px;border:1px solid var(--border)}
+
+/* ===== Dialog preview ===== */
+.dialog-preview{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;align-items:center;justify-content:center}
+.dialog-preview.show{display:flex}
+.dialog-box{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-lg);width:420px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.dialog-box .dhead{padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.dialog-box .dbody{padding:16px}
+.dialog-box .drow{margin-bottom:12px}
+.dialog-box .dlabel{font-size:12px;color:var(--text-2);margin-bottom:4px}
+.dialog-box .dval{font-size:13px;color:var(--text);padding:6px 10px;background:var(--bg);border-radius:var(--radius)}
+.dialog-box .dinput{width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;outline:none}
+.dialog-box .dinput:focus{border-color:var(--accent)}
+.dialog-box .dactions{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.dialog-box .dbtn{padding:5px 14px;border-radius:var(--radius);cursor:pointer;font-size:13px;border:1px solid var(--border);background:var(--bg-3);color:var(--text)}
+.dialog-box .dbtn:hover{border-color:var(--accent)}
+.dialog-box .dbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.dialog-box .dclose{cursor:pointer;color:var(--text-3);font-size:18px}
+.dialog-box .dclose:hover{color:var(--text)}
+.dropzone{border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;color:var(--text-3);font-size:13px;cursor:pointer}
+.dropzone:hover{border-color:var(--accent);color:var(--text)}
+
+/* Light theme override */
+body.light{
+  --bg:#ffffff;--bg-2:#f3f3f3;--bg-3:#e8e8e8;--bg-hover:#eaeaea;
+  --border:#d4d4d4;--border-2:#c0c0c0;
+  --text:#333333;--text-2:#666666;--text-3:#999999;
+  --accent:#0066cc;--accent-hover:#0052a3;--accent-bg:rgba(0,102,204,.1);
+  --success:#107c10;--success-bg:rgba(16,124,16,.1);
+  --warning:#8a6d00;--warning-bg:rgba(138,109,0,.1);
+  --error:#c42b1c;--error-bg:rgba(196,43,28,.1);
+  --purple:#883293;--orange:#b35c00;--blue:#0066cc;--green:#107c10;
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1>🧩 vsSarosis 集成页面优化 · Mockup <span class="badge">待确认</span></h1>
+  <div class="actions">
+    <button class="theme-btn" onclick="document.body.classList.toggle('light')">🌓 切换主题</button>
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-card">
+    <h3>📋 操作按钮说明（悬停卡片显示）</h3>
+    <div class="legend-grid">
+      <div class="legend-item"><div class="act-btn upgrade" title="升级">⬆</div> 升级 — 从商城下载新版本</div>
+      <div class="legend-item"><div class="act-btn download" title="下载">⬇</div> 下载 — 从商城安装</div>
+      <div class="legend-item"><div class="act-btn upload" title="上传">⬆</div> 上传 — 发布到商城</div>
+      <div class="legend-item"><div class="act-btn delete" title="删除">✕</div> 删除 — 卸载本地资源</div>
+      <div class="legend-item"><div class="toggle" title="开关"><input type="checkbox" checked><span class="slider"></span></div> 开关 — 启用/禁用</div>
+      <div class="legend-item"><span class="tag tag-update">↑ v1.1.0</span> 有可用更新</div>
+    </div>
+  </div>
+</div>
+
+<!-- Main Container -->
+<div class="container">
+  <!-- Simulated Activity Bar -->
+  <div class="sidebar-sim">
+    <div class="icon" title="Explorer">📁</div>
+    <div class="icon" title="Search">🔍</div>
+    <div class="icon" title="Agent">🤖</div>
+    <div class="icon active" title="Integration">🧩</div>
+    <div class="icon" title="Plugins">🔌</div>
+  </div>
+
+  <!-- Panel -->
+  <div class="panel">
+    <!-- Panel Header -->
+    <div class="panel-header">
+      <span class="title">Integration</span>
+      <div class="global-actions">
+        <button class="gbtn primary" onclick="showDialog('upload')">⬆ 上传</button>
+        <button class="gbtn" onclick="showDialog('download')">⬇ 商城</button>
+        <button class="gbtn" onclick="alert('检查所有已安装资源的更新...')">🔄 检查更新</button>
+      </div>
+    </div>
+
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+      <div class="tab active" data-tab="skill" onclick="switchTab('skill')">💡 技能 <span class="count">6</span></div>
+      <div class="tab" data-tab="tool" onclick="switchTab('tool')">🔧 工具 <span class="count">5</span></div>
+      <div class="tab" data-tab="mcp" onclick="switchTab('mcp')">🔌 MCP <span class="count">3</span></div>
+      <div class="tab" data-tab="kb" onclick="switchTab('kb')">📚 知识库 <span class="count">2</span></div>
+    </div>
+
+    <!-- Skill Tab -->
+    <div class="tab-content" id="tab-skill">
+      <div class="toolbar">
+        <div class="search-box" id="search-skill">
+          <span>🔍</span>
+          <input placeholder="搜索技能名称、描述、ID..." oninput="onSearch(this,'skill')">
+          <span class="clear" onclick="clearSearch('skill')">✕</span>
+        </div>
+        <div class="filter-chips">
+          <div class="chip active">全部</div>
+          <div class="chip">code</div>
+          <div class="chip">docs</div>
+          <div class="chip">git</div>
+          <div class="chip">review</div>
+        </div>
+      </div>
+      <div class="list" id="list-skill"></div>
+    </div>
+
+    <!-- Tool Tab -->
+    <div class="tab-content" id="tab-tool" style="display:none">
+      <div class="toolbar">
+        <div class="search-box" id="search-tool">
+          <span>🔍</span>
+          <input placeholder="搜索工具名称、描述..." oninput="onSearch(this,'tool')">
+          <span class="clear" onclick="clearSearch('tool')">✕</span>
+        </div>
+        <div class="filter-chips">
+          <div class="chip active">全部</div>
+          <div class="chip">内置</div>
+          <div class="chip">自定义</div>
+        </div>
+      </div>
+      <div class="list" id="list-tool"></div>
+    </div>
+
+    <!-- MCP Tab -->
+    <div class="tab-content" id="tab-mcp" style="display:none">
+      <div class="toolbar">
+        <div class="search-box" id="search-mcp">
+          <span>🔍</span>
+          <input placeholder="搜索 MCP 服务器、工具..." oninput="onSearch(this,'mcp')">
+          <span class="clear" onclick="clearSearch('mcp')">✕</span>
+        </div>
+        <div class="filter-chips">
+          <div class="chip active">全部</div>
+          <div class="chip">已连接</div>
+          <div class="chip">未连接</div>
+        </div>
+      </div>
+      <div class="list" id="list-mcp"></div>
+    </div>
+
+    <!-- Knowledge Tab -->
+    <div class="tab-content" id="tab-kb" style="display:none">
+      <div class="toolbar">
+        <div class="search-box" id="search-kb">
+          <span>🔍</span>
+          <input placeholder="搜索知识库..." oninput="onSearch(this,'kb')">
+          <span class="clear" onclick="clearSearch('kb')">✕</span>
+        </div>
+        <div class="filter-chips">
+          <div class="chip active">全部</div>
+          <div class="chip">本地</div>
+          <div class="chip">商城</div>
+        </div>
+      </div>
+      <div class="list" id="list-kb"></div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div class="bottom-bar">
+      <span id="status-text">6 个技能 · 2 个有更新</span>
+      <span>商城: 21.6.92.5:3040 · ✅ 已连接</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Dialog: Upload ===== -->
+<div class="dialog-preview" id="dlg-upload">
+  <div class="dialog-box">
+    <div class="dhead">
+      <span>⬆ 上传资源到商城</span>
+      <span class="dclose" onclick="hideDialog()">✕</span>
+    </div>
+    <div class="dbody">
+      <div class="drow">
+        <div class="dlabel">资源类型</div>
+        <div style="display:flex;gap:12px;font-size:13px">
+          <label><input type="radio" name="utype" checked> 技能</label>
+          <label><input type="radio" name="utype"> 工具</label>
+          <label><input type="radio" name="utype"> MCP</label>
+          <label><input type="radio" name="utype"> 知识库</label>
+        </div>
+      </div>
+      <div class="drow">
+        <div class="dlabel">资源标识 (storeId)</div>
+        <input class="dinput" value="pdf-skill" readonly>
+      </div>
+      <div class="drow">
+        <div class="dlabel">版本号</div>
+        <input class="dinput" value="1.1.0">
+      </div>
+      <div class="drow">
+        <div class="dlabel">更新日志</div>
+        <input class="dinput" placeholder="如：新增表格提取功能">
+      </div>
+      <div class="drow">
+        <div class="dlabel">资源包 (自动打包)</div>
+        <div class="dropzone">📦 将自动打包 ~/.saros/skills-library/pdf-skill/<br><span style="font-size:11px">含 SKILL.md + manifest.json</span></div>
+      </div>
+    </div>
+    <div class="dactions">
+      <button class="dbtn" onclick="hideDialog()">取消</button>
+      <button class="dbtn primary" onclick="hideDialog()">发布</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Dialog: Download ===== -->
+<div class="dialog-preview" id="dlg-download">
+  <div class="dialog-box">
+    <div class="dhead">
+      <span>⬇ 从商城下载</span>
+      <span class="dclose" onclick="hideDialog()">✕</span>
+    </div>
+    <div class="dbody">
+      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px">从 VsSaros 商城浏览并安装资源</div>
+      <div class="drow">
+        <div class="dlabel">商城地址</div>
+        <input class="dinput" value="http://21.6.92.5:3040" readonly>
+      </div>
+      <div class="drow">
+        <div class="dlabel">搜索</div>
+        <input class="dinput" placeholder="输入关键词搜索商城资源...">
+      </div>
+      <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
+        <div class="item" style="cursor:pointer">
+          <div class="item-icon">📄</div>
+          <div class="item-info"><div class="item-name-row"><span class="item-name">PDF Skill</span><span class="tag tag-skill">Skill</span><span class="item-ver">v1.0.0</span></div><div class="item-desc">PDF 文件处理技能</div></div>
+          <button class="dbtn primary" style="font-size:11px;padding:2px 8px">安装</button>
+        </div>
+        <div class="item" style="cursor:pointer">
+          <div class="item-icon">🤖</div>
+          <div class="item-info"><div class="item-name-row"><span class="item-name">Deep Researcher</span><span class="tag tag-mcp">Agent</span><span class="item-ver">v1.1.0</span></div><div class="item-desc">深度研究 Agent</div></div>
+          <button class="dbtn primary" style="font-size:11px;padding:2px 8px">安装</button>
+        </div>
+        <div class="item" style="cursor:pointer">
+          <div class="item-icon">🔌</div>
+          <div class="item-info"><div class="item-name-row"><span class="item-name">Filesystem MCP</span><span class="tag tag-mcp">MCP</span><span class="item-ver">v0.5.0</span></div><div class="item-desc">文件系统 MCP 服务器</div></div>
+          <button class="dbtn primary" style="font-size:11px;padding:2px 8px">安装</button>
+        </div>
+        <div class="item" style="cursor:pointer">
+          <div class="item-icon">📚</div>
+          <div class="item-info"><div class="item-name-row"><span class="item-name">Sarosis Handbook</span><span class="tag tag-kb">知识库</span><span class="item-ver">v2026.06</span></div><div class="item-desc">使用手册</div></div>
+          <button class="dbtn primary" style="font-size:11px;padding:2px 8px">安装</button>
+        </div>
+      </div>
+    </div>
+    <div class="dactions">
+      <button class="dbtn" onclick="hideDialog()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Sample Data =====
+const data = {
+  skill: [
+    {id:'pdf-skill',name:'PDF Skill',icon:'📄',ver:'1.0.0',cat:'docs',source:'user',enabled:true,desc:'处理 PDF 文件，提取文本、表格、图片，PDF 转 Markdown',hasUpdate:true,newVer:'1.1.0',installed:true},
+    {id:'code-review',name:'Code Review',icon:'🔍',ver:'1.0.0',cat:'review',source:'user',enabled:true,desc:'代码审查技能，自动检查代码质量、安全漏洞、最佳实践',hasUpdate:false,installed:true},
+    {id:'git-helper',name:'Git Helper',icon:'🔀',ver:'2.1.0',cat:'git',source:'user',enabled:false,desc:'Git 操作辅助，生成 commit message、解决冲突、PR 描述',hasUpdate:false,installed:true},
+    {id:'refactor',name:'Refactor Pro',icon:'💻',ver:'1.2.0',cat:'code',source:'extension',enabled:true,desc:'智能代码重构，提取函数、重命名、优化结构',hasUpdate:true,newVer:'1.3.0',installed:true},
+    {id:'doc-gen',name:'Doc Generator',icon:'📝',ver:'0.9.0',cat:'docs',source:'builtin',enabled:true,desc:'自动生成 API 文档、README、注释',hasUpdate:false,installed:true},
+    {id:'data-viz',name:'Data Visualizer',icon:'📊',ver:'1.0.0',cat:'data',source:'user',enabled:false,desc:'数据可视化，生成图表、分析报告',hasUpdate:false,installed:true},
+  ],
+  tool: [
+    {id:'web-search',name:'Web Search',icon:'🌐',ver:'1.0',cat:'builtin',source:'knot',enabled:true,desc:'网络搜索工具，获取实时信息',hasUpdate:false,installed:true},
+    {id:'file-reader',name:'File Reader',icon:'📖',ver:'1.0',cat:'builtin',source:'knot',enabled:true,desc:'读取本地文件内容',hasUpdate:false,installed:true},
+    {id:'code-exec',name:'Code Executor',icon:'⚡',ver:'2.0',cat:'builtin',source:'knot',enabled:true,desc:'执行代码并返回结果',hasUpdate:false,installed:true},
+    {id:'terminal',name:'Terminal',icon:'💻',ver:'1.0',cat:'builtin',source:'knot',enabled:false,desc:'执行终端命令',hasUpdate:false,installed:true},
+    {id:'custom-api',name:'Custom API Tool',icon:'🧩',ver:'0.1.0',cat:'custom',source:'user',enabled:true,desc:'自定义 API 调用工具',hasUpdate:false,installed:true},
+  ],
+  mcp: [
+    {id:'filesystem',name:'filesystem',icon:'📁',ver:'0.5.0',cat:'connected',source:'npx',enabled:true,desc:'文件系统访问 MCP 服务器（8 tools）',hasUpdate:false,installed:true,status:'connected',toolCount:8},
+    {id:'fetch',name:'fetch',icon:'🌐',ver:'0.4.0',cat:'connected',source:'npx',enabled:true,desc:'网络请求 MCP 服务器（3 tools）',hasUpdate:true,newVer:'0.5.0',installed:true,status:'connected',toolCount:3},
+    {id:'sqlite',name:'sqlite',icon:'🗄️',ver:'1.0.0',cat:'disconnected',source:'npx',enabled:false,desc:'SQLite 数据库 MCP（5 tools）',hasUpdate:false,installed:true,status:'disconnected',toolCount:0},
+  ],
+  kb: [
+    {id:'sarosis-handbook',name:'Sarosis 使用手册',icon:'📚',ver:'2026.06',cat:'local',source:'user',enabled:true,desc:'vsSarosis 完整使用手册，含 Agent/Skill/MCP 配置指南',hasUpdate:false,installed:true},
+    {id:'vscode-dev',name:'VSCode 扩展开发指南',icon:'📖',ver:'1.0.0',cat:'market',source:'user',enabled:true,desc:'VSCode 扩展 API 参考、调试技巧、发布流程',hasUpdate:true,newVer:'1.1.0',installed:true},
+  ],
+};
+
+const tagClass = {skill:'tag-skill',tool:'tag-tool',mcp:'tag-mcp',kb:'tag-kb'};
+const catLabel = {
+  docs:'文档',review:'审查',git:'Git',code:'代码',data:'数据',
+  builtin:'内置',custom:'自定义',connected:'已连接',disconnected:'未连接',
+  local:'本地',market:'商城'
+};
+
+// ===== Render =====
+function renderItem(tab, item){
+  const disabled = !item.enabled ? 'disabled' : '';
+  const updateTag = item.hasUpdate ? `<span class="tag tag-update" onclick="event.stopPropagation();alert('升级到 v${item.newVer}')">v${item.newVer}</span>` : '';
+  const verTag = item.ver ? `<span class="item-ver">v${item.ver}</span>` : '';
+  const catTag = item.cat ? `<span class="tag tag-cat">${catLabel[item.cat]||item.cat}</span>` : '';
+  const sourceTag = item.source ? `<span class="tag tag-source">${item.source}</span>` : '';
+  const statusDot = item.status === 'connected' ? '🟢' : (item.status === 'disconnected' ? '🔴' : '');
+
+  return `
+  <div class="item ${disabled}" data-search="${(item.name+item.desc+item.id).toLowerCase()}">
+    <label class="toggle">
+      <input type="checkbox" ${item.enabled?'checked':''} onchange="toggleItem(this)">
+      <span class="slider"></span>
+    </label>
+    <span class="item-icon">${item.icon}</span>
+    <div class="item-info">
+      <div class="item-name-row">
+        ${statusDot}
+        <span class="item-name">${item.name}</span>
+        ${verTag}
+        <span class="tag ${tagClass[tab]}">${({skill:'Skill',tool:'Tool',mcp:'MCP',kb:'KB'})[tab]}</span>
+        ${catTag}
+        ${sourceTag}
+        ${updateTag}
+      </div>
+      <div class="item-desc">${item.desc}</div>
+    </div>
+    <div class="item-actions">
+      ${item.hasUpdate ? `<button class="act-btn upgrade" title="升级到 v${item.newVer}" onclick="alert('升级 ${item.name} 到 v${item.newVer}')">⬆</button>` : ''}
+      ${!item.installed ? `<button class="act-btn download" title="从商城下载" onclick="alert('下载 ${item.name}')">⬇</button>` : ''}
+      <button class="act-btn upload" title="上传到商城" onclick="showDialog('upload')">⬆</button>
+      <button class="act-btn delete" title="删除" onclick="confirmDelete('${item.name}')">✕</button>
+    </div>
+  </div>`;
+}
+
+function renderList(tab){
+  const el = document.getElementById('list-'+tab);
+  const items = data[tab];
+  if(items.length === 0){
+    el.innerHTML = `<div class="empty"><div class="icon">📭</div><div class="text">没有匹配的资源</div></div>`;
+    return;
+  }
+  el.innerHTML = items.map(i => renderItem(tab, i)).join('');
+}
+
+function renderAll(){
+  renderList('skill');renderList('tool');renderList('mcp');renderList('kb');
+}
+
+// ===== Tab Switch =====
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.style.display = c.id === 'tab-'+tab ? '' : 'none');
+  const counts = {skill:`${data.skill.length} 个技能 · ${data.skill.filter(s=>s.hasUpdate).length} 个有更新`,
+                   tool:`${data.tool.length} 个工具 · ${data.tool.filter(s=>s.hasUpdate).length} 个有更新`,
+                   mcp:`${data.mcp.length} 个 MCP 服务器 · ${data.mcp.filter(s=>s.hasUpdate).length} 个有更新`,
+                   kb:`${data.kb.length} 个知识库 · ${data.kb.filter(s=>s.hasUpdate).length} 个有更新`};
+  document.getElementById('status-text').textContent = counts[tab];
+}
+
+// ===== Search =====
+function onSearch(input, tab){
+  const box = document.getElementById('search-'+tab);
+  box.classList.toggle('has-text', input.value.length > 0);
+  const q = input.value.toLowerCase();
+  document.querySelectorAll('#list-'+tab+' .item').forEach(item => {
+    const match = item.dataset.search.includes(q);
+    item.style.display = match ? '' : 'none';
+  });
+}
+function clearSearch(tab){
+  const input = document.querySelector('#search-'+tab+' input');
+  input.value = '';
+  onSearch(input, tab);
+}
+
+// ===== Toggle =====
+function toggleItem(cb){
+  const item = cb.closest('.item');
+  item.classList.toggle('disabled', !cb.checked);
+}
+
+// ===== Delete =====
+function confirmDelete(name){
+  if(confirm(`确定要删除「${name}」吗？\n\n此操作会删除本地文件，不影响商城中的资源。`)){
+    alert('已删除');
+  }
+}
+
+// ===== Dialog =====
+function showDialog(type){
+  document.getElementById('dlg-'+type).classList.add('show');
+}
+function hideDialog(){
+  document.querySelectorAll('.dialog-preview').forEach(d => d.classList.remove('show'));
+}
+
+// ===== Init =====
+renderAll();
+</script>
+</body>
+</html>

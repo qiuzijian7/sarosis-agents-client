@@ -26,7 +26,7 @@ import type { IStoredWorkflow } from '../../types/workflowStorage';
 
 export const WorkflowEditorPanel: React.FC = () => {
 	const [paletteCollapsed, setPaletteCollapsed] = useState(false);
-	const [paletteWidth, setPaletteWidth] = useState(200); // v40: resizable palette width
+	const paletteWidth = 400; // fixed at maximum width, no drag resize
 	const [editingDescription, setEditingDescription] = useState(false); // v41: multi-line edit toggle
 	const [loaded, setLoaded] = useState(false);
 	const [saving, setSaving] = useState(false);
@@ -58,18 +58,11 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// Agents list (to look up the workflow's bound agent)
 	const agents = useAgentStore(s => s.agents);
 
-	// v18: When a workflow is loaded, auto-switch the chat panel to its bound agent
-	// and restore the agent's most recent session.
-	const autoSwitchChatToWorkflowAgent = useCallback(async (workflowAgentId: string) => {
-		if (!workflowAgentId) { return; }
-		try {
-			const mod = await import('../../store/useChatStore');
-			const chatStore = mod.useChatStore.getState();
-			console.log(`[WorkflowEditor] auto-switching chat to workflow agent: ${workflowAgentId}`);
-			chatStore.setActiveAgent(workflowAgentId, { autoActivateLatestSession: true });
-		} catch (err) {
-			console.warn('[WorkflowEditor] failed to auto-switch chat panel:', err);
-		}
+	// v18: When a workflow is loaded, auto-switch the chat panel to its bound agent.
+	// Chat is now handled natively by NativeChatEditorPane — this is a no-op.
+	const autoSwitchChatToWorkflowAgent = useCallback(async (_workflowAgentId: string) => {
+		// No-op: chat panel auto-switching is handled natively.
+	}, []);
 	}, []);
 
 	// Load initial data from the host-injected __AGENT_STUDIO_INITIAL_DATA__
@@ -270,27 +263,8 @@ export const WorkflowEditorPanel: React.FC = () => {
 				| { workflowAgentId: string; sessionId: string; workflowName: string }
 				| undefined;
 			if (sessionInfo?.workflowAgentId && sessionInfo?.sessionId) {
-				const chatStore = (window as any).__AGENT_STUDIO_CHAT_STORE__;
-				// Prefer direct store hook (cleaner), fall back to global if not exposed
-				try {
-					const mod = await import('../../store/useChatStore');
-					// 🔧 2026-06-12 fix: only auto-switch when we're not already on the
-					// target agent+session. Without this guard the second switch wipes
-					// `liveWorkflowExecutions[newSessionId]` (which the trace event
-					// handler just populated via `startWorkflowExecution`), causing
-					// all subsequent subagent_start events to be dropped silently —
-					// resulting in no tool cards showing in the chat panel. The trace
-					// event's own auto-switch already handles the actual transition.
-					const cur = mod.useChatStore.getState();
-					if (cur.activeAgentId !== sessionInfo.workflowAgentId ||
-						cur.activeAgentSessionId !== sessionInfo.sessionId) {
-						mod.useChatStore.getState().setActiveAgent(sessionInfo.workflowAgentId);
-						await mod.useChatStore.getState().switchAgentSession(sessionInfo.sessionId);
-						console.log(`[WorkflowEditor] auto-switched to owner agent ${sessionInfo.workflowAgentId} session ${sessionInfo.sessionId}`);
-					}
-				} catch (err) {
-					console.warn('[WorkflowEditor] failed to auto-switch chat panel:', err);
-				}
+				// Chat panel auto-switching is now handled natively by NativeChatEditorPane.
+				// No webview action needed.
 			}
 		} catch (err) {
 			console.error('[WorkflowEditor] Failed to execute workflow:', err);
@@ -340,28 +314,6 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 		setTimeout(() => setValidationMsg(null), 5000);
 	}, []);
-
-	// v40: Resize handler for NodePalette panel
-	const handleResizeStart = useCallback((e: React.MouseEvent) => {
-		e.preventDefault();
-		const startX = e.clientX;
-		const startWidth = paletteWidth;
-		const onMouseMove = (ev: MouseEvent) => {
-			const dx = ev.clientX - startX;
-			const newWidth = Math.max(120, Math.min(400, startWidth + dx));
-			setPaletteWidth(newWidth);
-		};
-		const onMouseUp = () => {
-			document.removeEventListener('mousemove', onMouseMove);
-			document.removeEventListener('mouseup', onMouseUp);
-			document.body.style.cursor = '';
-			document.body.style.userSelect = '';
-		};
-		document.addEventListener('mousemove', onMouseMove);
-		document.addEventListener('mouseup', onMouseUp);
-		document.body.style.cursor = 'col-resize';
-		document.body.style.userSelect = 'none';
-	}, [paletteWidth]);
 
 	return (
 		<ReactFlowProvider>
@@ -620,20 +572,6 @@ export const WorkflowEditorPanel: React.FC = () => {
 						onToggle={() => setPaletteCollapsed(!paletteCollapsed)}
 						width={paletteWidth}
 					/>
-					{/* Resize handle — attached to palette right edge, part of overlay */}
-					{!paletteCollapsed && (
-						<div
-							onMouseDown={handleResizeStart}
-							style={{
-								width: '4px',
-								cursor: 'col-resize',
-								backgroundColor: 'transparent',
-								transition: 'background-color 0.15s ease',
-							}}
-							onMouseEnter={e => { (e.target as HTMLElement).style.backgroundColor = 'var(--vscode-focusBorder)'; }}
-							onMouseLeave={e => { (e.target as HTMLElement).style.backgroundColor = 'transparent'; }}
-						/>
-					)}
 				</div>
 
 				{/* Collapsed-state floating trigger — slides in when palette is hidden */}
