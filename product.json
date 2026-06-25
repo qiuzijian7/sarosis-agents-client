@@ -130,6 +130,21 @@
 				},
 				"publisherDisplayName": "TDB-AM"
 			}
+		},
+		{
+			"name": "tof-authentication",
+			"version": "0.0.1",
+			"sha256": "",
+			"metadata": {
+				"id": "tof-authentication",
+				"publisherId": {
+					"publisherId": "saros",
+					"publisherName": "saros",
+					"displayName": "Sarosis",
+					"flags": ""
+				},
+				"publisherDisplayName": "Sarosis"
+			}
 		}
 	],
 	"defaultChatAgent": {

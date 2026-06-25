@@ -7,7 +7,7 @@ import { app, Details, GPUFeatureStatus, powerMonitor, protocol, session, Sessio
 import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
 import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
 import { execFile, spawn, type ChildProcess } from 'child_process';
-import { hostname, release } from 'os';
+import { hostname, homedir, release } from 'os';
 import { existsSync } from 'fs';
 import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
 import { VSBuffer } from '../../base/common/buffer.js';
@@ -1919,6 +1919,7 @@ export class CodeApplication extends Disposable {
 				...process.env,
 				TDAI_GATEWAY_PORT: process.env['TDAI_GATEWAY_PORT'] ?? '8420',
 				TDAI_GATEWAY_HOST: '127.0.0.1',
+				TDAI_DATA_DIR: process.env['TDAI_DATA_DIR'] ?? join(homedir(), '.saros', '.tdai'),
 				TDAI_LLM_BASE_URL: process.env['TDAI_LLM_BASE_URL'] ?? 'http://127.0.0.1:8421/v1',
 				TDAI_LLM_API_KEY: process.env['TDAI_LLM_API_KEY'] ?? 'saros-knot-bridge-token',
 				TDAI_LLM_MODEL: process.env['TDAI_LLM_MODEL'] ?? 'knot-default',

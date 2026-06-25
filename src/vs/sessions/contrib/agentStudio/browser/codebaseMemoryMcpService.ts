@@ -53,6 +53,10 @@ export interface ICodebaseMemoryMcpService {
 	readonly onDidInstallComplete: Event<void>;
 	/** Fired after a graph sync attempt (push to remote Git repo). */
 	readonly onDidSyncGraph: Event<ISyncGraphResult>;
+	/** Fired with progress lines during index_repository execution. */
+	readonly onDidIndexProgress: Event<string>;
+	/** Fired after index_repository completes (success or failure). */
+	readonly onDidIndexComplete: Event<IIndexResult>;
 	getStatus(): ICodebaseMemoryMcpStatus;
 	refreshStatus(): Promise<void>;
 	/** Detect binary, configure MCP if found (no download). For bootstrap use. */
@@ -62,6 +66,12 @@ export interface ICodebaseMemoryMcpService {
 	openEditor(): Promise<void>;
 	/** Sync graph to remote Git repository for team sharing. */
 	syncGraph(workspacePath?: string): Promise<ISyncGraphResult>;
+	/** Get local graph status (exists, size, last modified, git info). */
+	getGraphStatus(workspacePath?: string): Promise<IGraphStatus>;
+	/** Pull graph from remote Git repository (team sharing). */
+	pullGraph(workspacePath?: string): Promise<IPullGraphResult>;
+	/** Index the workspace repository (calls MCP index_repository tool). */
+	indexRepository(workspacePath?: string): Promise<IIndexResult>;
 }
 
 export interface ISyncGraphResult {
@@ -69,6 +79,28 @@ export interface ISyncGraphResult {
 	message: string;
 	branch?: string;
 	remote?: string;
+}
+
+export interface IGraphStatus {
+	exists: boolean;
+	graphPath?: string;
+	size?: number;
+	lastModified?: string;
+	gitBranch?: string;
+	gitCommit?: string;
+	gitRemote?: string;
+}
+
+export interface IPullGraphResult {
+	success: boolean;
+	message: string;
+	branch?: string;
+}
+
+export interface IIndexResult {
+	success: boolean;
+	message: string;
+	duration?: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -98,6 +130,12 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 
 	private readonly _onDidSyncGraph = this._register(new Emitter<ISyncGraphResult>());
 	readonly onDidSyncGraph = this._onDidSyncGraph.event;
+
+	private readonly _onDidIndexProgress = this._register(new Emitter<string>());
+	readonly onDidIndexProgress = this._onDidIndexProgress.event;
+
+	private readonly _onDidIndexComplete = this._register(new Emitter<IIndexResult>());
+	readonly onDidIndexComplete = this._onDidIndexComplete.event;
 
 	private _status: ICodebaseMemoryMcpStatus = {
 		state: 'not_installed',
@@ -592,6 +630,321 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		} catch (err: any) {
 			throw new Error(err.stderr?.trim() || err.message);
 		}
+	}
+
+	// ─── Graph Status & Pull ─────────────────────────────────────────────
+
+	async getGraphStatus(workspacePath?: string): Promise<IGraphStatus> {
+		// 1. Resolve workspace path
+		let wsPath = workspacePath;
+		if (!wsPath) {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) {
+				return { exists: false };
+			}
+			wsPath = folders[0].uri.fsPath;
+		}
+
+		// 2. Check graph dir
+		const path = this._node('path');
+		const fs = this._node('fs');
+		if (!path || !fs) {
+			return { exists: false };
+		}
+		const graphDir = path.join(wsPath, '.sarosworkspace', '.codebase-memory');
+		if (!fs.existsSync(graphDir)) {
+			return { exists: false };
+		}
+
+		// 3. Get graph.db.zst stats
+		const graphPath = path.join(graphDir, 'graph.db.zst');
+		let size: number | undefined;
+		let lastModified: string | undefined;
+		if (fs.existsSync(graphPath)) {
+			const stats = fs.statSync(graphPath);
+			size = stats.size;
+			lastModified = stats.mtime.toISOString();
+		}
+
+		// 4. Get git info
+		let gitBranch: string | undefined;
+		let gitCommit: string | undefined;
+		let gitRemote: string | undefined;
+		try {
+			gitBranch = this._gitExec('rev-parse --abbrev-ref HEAD', graphDir);
+		} catch { /* not a git repo */ }
+		try {
+			gitCommit = this._gitExec('rev-parse --short HEAD', graphDir);
+		} catch { /* no commits */ }
+		try {
+			gitRemote = this._gitExec('remote get-url origin', graphDir);
+		} catch { /* no remote */ }
+
+		return {
+			exists: true,
+			graphPath,
+			size,
+			lastModified,
+			gitBranch,
+			gitCommit,
+			gitRemote,
+		};
+	}
+
+	async pullGraph(workspacePath?: string): Promise<IPullGraphResult> {
+		// 1. Resolve workspace path
+		let wsPath = workspacePath;
+		if (!wsPath) {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) {
+				const result: IPullGraphResult = { success: false, message: 'No workspace folder open' };
+				return result;
+			}
+			wsPath = folders[0].uri.fsPath;
+		}
+
+		// 2. Extract project name and graph dir
+		const path = this._node('path');
+		if (!path) {
+			const result: IPullGraphResult = { success: false, message: 'Node.js path module not available' };
+			return result;
+		}
+		const projectName = path.basename(wsPath);
+		const graphDir = path.join(wsPath, '.sarosworkspace', '.codebase-memory');
+
+		// 3. Check graph dir exists (create if not)
+		const fs = this._node('fs');
+		if (!fs) {
+			const result: IPullGraphResult = { success: false, message: 'Node.js fs module not available' };
+			return result;
+		}
+		if (!fs.existsSync(graphDir)) {
+			fs.mkdirSync(graphDir, { recursive: true });
+		}
+
+		// 4. Run git pull
+		try {
+			this.logService.info(LOG_TAG, `Pulling graph for project "${projectName}"...`);
+
+			// Init git repo if not already
+			try {
+				this._gitExec('status', graphDir);
+			} catch {
+				this._gitExec('init', graphDir);
+			}
+
+			// Set remote
+			try {
+				this._gitExec(`remote set-url origin ${GRAPH_SYNC_REMOTE}`, graphDir);
+			} catch {
+				this._gitExec(`remote add origin ${GRAPH_SYNC_REMOTE}`, graphDir);
+			}
+
+			// Fetch + checkout or reset
+			this._gitExec(`fetch origin`, graphDir);
+			try {
+				this._gitExec(`checkout ${projectName}`, graphDir);
+			} catch {
+				this._gitExec(`checkout -b ${projectName} origin/${projectName}`, graphDir);
+			}
+			this._gitExec(`reset --hard origin/${projectName}`, graphDir);
+
+			const result: IPullGraphResult = {
+				success: true,
+				message: `Graph pulled from origin/${projectName}`,
+				branch: projectName,
+			};
+			this.logService.info(LOG_TAG, `✓ ${result.message}`);
+			return result;
+		} catch (err: any) {
+			const result: IPullGraphResult = {
+				success: false,
+				message: `Pull failed: ${err?.message || err}`,
+			};
+			this.logService.warn(LOG_TAG, result.message);
+			return result;
+		}
+	}
+
+	// ─── Index Repository (MCP tools/call) ──────────────────────────────────
+
+	async indexRepository(workspacePath?: string): Promise<IIndexResult> {
+		// 1. Resolve workspace path
+		let wsPath = workspacePath;
+		if (!wsPath) {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) {
+				const result: IIndexResult = { success: false, message: 'No workspace folder open' };
+				this._onDidIndexComplete.fire(result);
+				return result;
+			}
+			wsPath = folders[0].uri.fsPath;
+		}
+
+		// 2. Detect binary
+		const binaryPath = await this._detectBinary();
+		if (!binaryPath) {
+			const result: IIndexResult = { success: false, message: 'Codebase Memory MCP binary not found. Please install first.' };
+			this._onDidIndexComplete.fire(result);
+			return result;
+		}
+
+		// 3. Spawn process and communicate via MCP JSON-RPC (stdio)
+		const cp = this._node('child_process');
+		if (!cp) {
+			const result: IIndexResult = { success: false, message: 'child_process not available' };
+			this._onDidIndexComplete.fire(result);
+			return result;
+		}
+
+		this.logService.info(LOG_TAG, `Starting index_repository for "${wsPath}"...`);
+		this._onDidIndexProgress.fire(`▶ 开始索引代码库: ${wsPath}`);
+
+		const startTime = Date.now();
+
+		return new Promise<IIndexResult>((resolve) => {
+			let resolved = false;
+			const child = cp.spawn(binaryPath, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+			let stdoutBuffer = '';
+			let stderrBuffer = '';
+
+			const finish = (result: IIndexResult) => {
+				if (resolved) { return; }
+				resolved = true;
+				result.duration = Math.round((Date.now() - startTime) / 1000);
+				try { child.kill(); } catch { /* ignore */ }
+				this.logService.info(LOG_TAG, `index_repository finished: ${result.message} (${result.duration}s)`);
+				this._onDidIndexComplete.fire(result);
+				resolve(result);
+			};
+
+			// Timeout: 30 minutes
+			const timeout = setTimeout(() => {
+				finish({ success: false, message: 'Index timed out (30 min)' });
+			}, 30 * 60 * 1000);
+
+			const sendMessage = (msg: any) => {
+				child.stdin.write(JSON.stringify(msg) + '\n');
+			};
+
+			const handleMessage = (msg: any) => {
+				// Initialize response
+				if (msg.id === 1 && msg.result) {
+					this._onDidIndexProgress.fire('✓ MCP 连接已建立');
+					// Send initialized notification
+					sendMessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
+					// Call index_repository
+					sendMessage({
+						jsonrpc: '2.0',
+						id: 2,
+						method: 'tools/call',
+						params: {
+							name: 'index_repository',
+							arguments: { project_path: wsPath },
+						},
+					});
+					this._onDidIndexProgress.fire('▶ 调用 index_repository 工具...');
+					return;
+				}
+
+				// index_repository response
+				if (msg.id === 2) {
+					clearTimeout(timeout);
+					if (msg.error) {
+						finish({ success: false, message: `MCP error: ${msg.error.message || JSON.stringify(msg.error)}` });
+					} else {
+						// Extract text from result.content array
+						let text = '';
+						const content = msg.result?.content;
+						if (Array.isArray(content)) {
+							text = content.map((c: any) => c.text || '').join('\n').trim();
+						} else if (typeof content === 'string') {
+							text = content;
+						}
+						if (!text) { text = '索引完成'; }
+						this._onDidIndexProgress.fire(`✓ ${text}`);
+						finish({ success: true, message: text });
+					}
+					return;
+				}
+
+				// Progress notifications (notifications/progress or logging)
+				if (msg.method === 'notifications/progress' || msg.method === 'notifications/message') {
+					const p = msg.params;
+					const progressText = p?.message || p?.value?.message || (typeof p === 'string' ? p : '');
+					if (progressText) {
+						this._onDidIndexProgress.fire(`📊 ${progressText}`);
+					}
+					return;
+				}
+
+				// Log notifications
+				if (msg.method === 'notifications/log') {
+					const p = msg.params;
+					const logText = p?.message || (typeof p === 'string' ? p : JSON.stringify(p));
+					this._onDidIndexProgress.fire(`  ${logText}`);
+					return;
+				}
+			};
+
+			child.stdout.on('data', (data: Buffer) => {
+				stdoutBuffer += data.toString();
+				const lines = stdoutBuffer.split('\n');
+				stdoutBuffer = lines.pop() || '';
+				for (const line of lines) {
+					const trimmed = line.trim();
+					if (!trimmed) { continue; }
+					try {
+						const msg = JSON.parse(trimmed);
+						handleMessage(msg);
+					} catch { /* not JSON-RPC, ignore */ }
+				}
+			});
+
+			child.stderr.on('data', (data: Buffer) => {
+				stderrBuffer += data.toString();
+				// Log stderr lines as progress
+				const lines = stderrBuffer.split('\n');
+				stderrBuffer = lines.pop() || '';
+				for (const line of lines) {
+					const trimmed = line.trim();
+					if (trimmed) {
+						this.logService.info(LOG_TAG, `[stderr] ${trimmed}`);
+						this._onDidIndexProgress.fire(`  ${trimmed}`);
+					}
+				}
+			});
+
+			child.on('error', (err: Error) => {
+				clearTimeout(timeout);
+				finish({ success: false, message: `Failed to start process: ${err.message}` });
+			});
+
+			child.on('close', (code: number) => {
+				clearTimeout(timeout);
+				if (!resolved) {
+					const errMsg = stderrBuffer.trim();
+					finish({
+						success: code === 0,
+						message: code === 0
+							? '索引进程已结束'
+							: `索引进程退出 (code ${code})${errMsg ? ': ' + errMsg : ''}`,
+					});
+				}
+			});
+
+			// Send initialize request
+			sendMessage({
+				jsonrpc: '2.0',
+				id: 1,
+				method: 'initialize',
+				params: {
+					protocolVersion: '2024-11-05',
+					capabilities: {},
+					clientInfo: { name: 'vscode-cbm-index', version: '1.0.0' },
+				},
+			});
+		});
 	}
 
 	// ─── Node.js Module Loader ───────────────────────────────────────────────

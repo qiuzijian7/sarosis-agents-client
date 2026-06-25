@@ -61,7 +61,7 @@
 				"tdbam.dataDir": {
 					"type": "string",
 					"default": "",
-					"description": "TDB-AM 数据目录（SQLite / L0 jsonl 落盘位置）。留空使用默认 ~/.tdai。",
+					"description": "TDB-AM 数据目录（SQLite / L0 jsonl 落盘位置）。留空使用默认 ~/.saros/.tdai。",
 					"scope": "application"
 				},
 				"tdbam.recallStrategy": {

@@ -1,0 +1,4 @@
+{
+	"displayName": "腾讯 OA (TOF) 登录",
+	"description": "对接 OAuthSystem 网关提供 TOF 浏览器登录。在扩展宿主进程跑 Node http + LoopbackAuthServer，避免渲染进程 Mixed Content/CORS 限制。"
+}

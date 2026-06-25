@@ -5019,6 +5019,197 @@
 }
 
 /* ═══════════════════════════════════════════════════════
+   Message Nav Overlay — unified with chat-history
+   ═══════════════════════════════════════════════════════ */
+
+.chat-msg-nav-overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: var(--as-bg-primary, var(--vscode-editor-background, #1e1e1e));
+	z-index: 50;
+	display: flex;
+	flex-direction: column;
+	animation: chat-history-in 0.18s ease-out;
+}
+
+.chat-msg-nav-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 14px;
+	border-bottom: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
+	flex-shrink: 0;
+}
+
+.chat-msg-nav-title-left {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1;
+	color: var(--as-accent, #3b82f6);
+}
+
+.chat-msg-nav-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+	letter-spacing: 0.01em;
+}
+
+.chat-msg-nav-close-btn {
+	background: none;
+	border: none;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, rgba(128,128,128,0.7)));
+	cursor: pointer;
+	padding: 4px;
+	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.chat-msg-nav-close-btn:hover {
+	background: var(--as-bg-hover, rgba(128,128,128,0.08));
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+}
+
+.chat-msg-nav-search {
+	padding: 8px 12px;
+	border-bottom: 1px solid rgba(128,128,128,0.1);
+	flex-shrink: 0;
+}
+.chat-msg-nav-search input {
+	width: 100%;
+	height: 30px;
+	background: var(--as-bg-secondary, #252525);
+	border: 1px solid var(--as-border, rgba(128,128,128,0.15));
+	border-radius: 6px;
+	padding: 0 10px;
+	color: var(--as-fg-primary, #cccccc);
+	font-size: 12.5px;
+	outline: none;
+	transition: border-color 0.15s;
+}
+.chat-msg-nav-search input:focus {
+	border-color: var(--as-accent, #3b82f6);
+}
+.chat-msg-nav-search input::placeholder {
+	color: var(--as-fg-secondary, #555);
+}
+
+.chat-msg-nav-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 6px 8px;
+}
+.chat-msg-nav-list::-webkit-scrollbar { width: 4px; }
+.chat-msg-nav-list::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 4px; }
+
+.chat-msg-nav-empty {
+	padding: 40px 16px;
+	text-align: center;
+	color: var(--as-fg-secondary, rgba(128,128,128,0.7));
+	font-size: 13px;
+}
+
+.chat-msg-nav-date-divider {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 6px 4px;
+	font-size: 10.5px;
+	color: var(--as-fg-secondary, #666);
+	letter-spacing: 0.04em;
+}
+.chat-msg-nav-date-divider::after {
+	content: '';
+	flex: 1;
+	height: 1px;
+	background: rgba(128,128,128,0.1);
+}
+
+.chat-msg-nav-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.1s;
+	position: relative;
+	margin-bottom: 1px;
+}
+.chat-msg-nav-item:hover {
+	background: var(--as-bg-hover, rgba(255,255,255,0.04));
+}
+.chat-msg-nav-item.active {
+	background: rgba(59,130,246,0.08);
+}
+.chat-msg-nav-item.active::before {
+	content: '';
+	position: absolute;
+	left: 0; top: 4px; bottom: 4px;
+	width: 2.5px;
+	border-radius: 0 2px 2px 0;
+	background: var(--as-accent, #3b82f6);
+}
+
+.chat-msg-nav-role-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	margin-top: 1px;
+}
+.chat-msg-nav-role-dot[data-role="user"] { background: #3b82f6; }
+.chat-msg-nav-role-dot[data-role="assistant"] { background: #a78bfa; }
+.chat-msg-nav-role-dot[data-role="system"] { background: #34d399; }
+.chat-msg-nav-role-dot[data-role="tool"] { background: #f59e0b; }
+
+.chat-msg-nav-item-content {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.chat-msg-nav-item-text {
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--as-fg-secondary, #b0b0b0);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 220px;
+}
+.chat-msg-nav-item.active .chat-msg-nav-item-text {
+	color: var(--as-fg-primary, #d4d4d4);
+}
+.chat-msg-nav-item-time {
+	font-size: 10.5px;
+	color: var(--as-fg-secondary, #555);
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+.chat-msg-nav-item:hover .chat-msg-nav-item-time {
+	color: var(--as-fg-secondary, #888);
+}
+.chat-msg-nav-item.active .chat-msg-nav-item-time {
+	color: var(--as-accent, #6ea8fe);
+}
+
+.chat-msg-nav-footer {
+	padding: 8px 14px;
+	border-top: 1px solid var(--as-border, rgba(128,128,128,0.1));
+	font-size: 11px;
+	color: var(--as-fg-secondary, #555);
+	text-align: center;
+	flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════════════
    AskUser Card — Workflow interactive input
    ═══════════════════════════════════════════════════════ */
 

@@ -90,6 +90,7 @@ const compilations = [
 	'extensions/hermes-agent-provider/tsconfig.json',
 	'extensions/knot-agui/tsconfig.json',
 	'extensions/tdb-am-gateway/tsconfig.json',
+	'extensions/tof-authentication/tsconfig.json',
 	'extensions/tdb-am-memory/tsconfig.json',
 	'extensions/tdb-am-viewer/tsconfig.json',
 	'extensions/tunnel-forwarding/tsconfig.json',
@@ -203,9 +204,16 @@ const tasks = compilations.map(function (tsconfigFile) {
 		const tsgo = spawnTsgo(absolutePath, { taskName: 'extensions' }, () => rewriteTsgoSourceMappingUrlsIfNeeded(false, out, baseUrl));
 
 		await Promise.all([copyNonTs, tsgo]);
+
+		// Ensure Node loads .js files as CommonJS (root package.json has "type": "module")
+		fs.writeFileSync(path.join(out, 'package.json'), '{"type":"commonjs"}\n');
 	}));
 
 	const watchTask = task.define(`watch-extension:${name}`, task.series(cleanTask, () => {
+		// Ensure out/package.json exists so Node loads .js files as CommonJS
+		fs.mkdirSync(out, { recursive: true });
+		fs.writeFileSync(path.join(out, 'package.json'), '{"type":"commonjs"}\n');
+
 		const nonts = gulp.src(src, srcOpts).pipe(filter(['**', '!**/*.ts'], { dot: true }));
 		const watchInput = watcher(src, { ...srcOpts, ...{ readDelay: 200 } });
 		const watchNonTs = watchInput.pipe(filter(['**', '!**/*.ts'], { dot: true })).pipe(gulp.dest(out));

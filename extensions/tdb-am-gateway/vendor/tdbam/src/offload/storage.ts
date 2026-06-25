@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import type { OffloadEntry, PluginLogger } from "./types.js";
 
 /** Default root data directory (parent of all agent subdirectories) */
-export const DEFAULT_DATA_ROOT = join(homedir(), ".openclaw", "context-offload");
+export const DEFAULT_DATA_ROOT = join(homedir(), ".saros", ".tdai", "context-offload");
 
 // ─── StorageContext ──────────────────────────────────────────────────────────
 

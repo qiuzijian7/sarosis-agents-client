@@ -232,7 +232,7 @@ export class AgentChatPanel extends Disposable {
 	// -- Other floating dropdown refs --
 	private _worktreeDropdownEl: HTMLElement | null = null;
 	private _worktreeTrigger: HTMLElement | null = null;
-	private _msgNavDropdownEl: HTMLElement | null = null;
+	private _msgNavOverlayEl: HTMLElement | null = null;
 	private _msgNavTrigger: HTMLElement | null = null;
 	private _modeDropdownEl: HTMLElement | null = null;
 	private _modeTrigger: HTMLElement | null = null;
@@ -905,6 +905,11 @@ export class AgentChatPanel extends Disposable {
 			this._renderHistoryOverlay();
 		}
 
+		// Message-nav overlay (right-side panel, same as history)
+		if (this._activeHeaderPanel === 'message-nav') {
+			this._renderMsgNavOverlay();
+		}
+
 		// 初始加载后滚动到底部
 		this._wasLoading = true;
 		this._scrollToBottom(true);
@@ -913,7 +918,11 @@ export class AgentChatPanel extends Disposable {
 	private _closeAllDropdowns(): void {
 		this._closeAgentDropdown();
 		this._closeWorktreeDropdown();
-		this._closeMsgNavDropdown();
+		// Message-nav overlay is closed via _activeHeaderPanel (managed in _render())
+		if (this._msgNavOverlayEl) {
+			this._msgNavOverlayEl.remove();
+			this._msgNavOverlayEl = null;
+		}
 		this._closeModeDropdown();
 		this._closeProviderDropdown();
 		this._closeModelDropdown();
@@ -1152,11 +1161,13 @@ export class AgentChatPanel extends Disposable {
 			addDisposableListener(this._msgNavTrigger, EventType.CLICK, (e) => {
 				e.stopPropagation();
 				if (this._msgNavTrigger && this._msgNavTrigger.classList.contains('disabled')) { return; }
-				if (this._msgNavDropdownEl) {
-					this._closeMsgNavDropdown();
+				// Toggle: same pattern as history button
+				if (this._activeHeaderPanel === 'message-nav') {
+					this._activeHeaderPanel = null;
 				} else {
-					this._openMsgNavDropdown();
+					this._activeHeaderPanel = 'message-nav';
 				}
+				this._render();
 			}),
 		);
 
@@ -5199,54 +5210,194 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	// =========================================================
-	// Message-nav dropdown
+	// Message-nav overlay (right-side panel, unified with history)
 	// =========================================================
 
-	private _openMsgNavDropdown(): void {
-		this._closeAllDropdowns();
-		this._activeHeaderPanel = 'message-nav';
-		if (this._msgNavTrigger) { this._msgNavTrigger.classList.add('active'); }
+	private _renderMsgNavOverlay(): void {
+		this._msgNavOverlayEl = append(this._container, $(".chat-msg-nav-overlay"));
+		this._renderMsgNavOverlayContent();
+	}
 
-		this._msgNavDropdownEl = append(mainWindow.document.body, $(".chat-message-nav-dropdown"));
-		this._positionDropdownBelow(this._msgNavDropdownEl, this._msgNavTrigger, true /* rightAlign */);
+	private _renderMsgNavOverlayContent(): void {
+		if (!this._msgNavOverlayEl) { return; }
+		clearNode(this._msgNavOverlayEl);
 
-		const head = append(this._msgNavDropdownEl, $(".chat-message-nav-dropdown-header"));
-		head.textContent = '会话消息';
+		// Header (title + close button)
+		const header = append(this._msgNavOverlayEl, $(".chat-msg-nav-header"));
+		const titleLeft = append(header, $(".chat-msg-nav-title-left"));
+		const listIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		listIcon.setAttribute('width', '16');
+		listIcon.setAttribute('height', '16');
+		listIcon.setAttribute('viewBox', '0 0 20 20');
+		listIcon.setAttribute('fill', 'none');
+		listIcon.setAttribute('stroke', 'currentColor');
+		listIcon.setAttribute('stroke-width', '1.6');
+		const li1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		li1.setAttribute('d', 'M3 5h14M3 10h14M3 15h14');
+		li1.setAttribute('stroke-linecap', 'round');
+		listIcon.appendChild(li1);
+		titleLeft.appendChild(listIcon);
+		append(titleLeft, $("span.chat-msg-nav-title", undefined, '会话消息'));
 
-		const list = append(this._msgNavDropdownEl, $(".chat-message-nav-dropdown-list"));
-		const userMsgs = this._messages.filter(m => m.role === 'user');
+		// Close button (right-aligned)
+		const closeBtn = append(header, $("button.chat-msg-nav-close-btn"));
+		closeBtn.title = '关闭';
+		const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		closeSvg.setAttribute('width', '16');
+		closeSvg.setAttribute('height', '16');
+		closeSvg.setAttribute('viewBox', '0 0 24 24');
+		closeSvg.setAttribute('fill', 'none');
+		closeSvg.setAttribute('stroke', 'currentColor');
+		closeSvg.setAttribute('stroke-width', '2');
+		closeSvg.setAttribute('stroke-linecap', 'round');
+		closeSvg.setAttribute('stroke-linejoin', 'round');
+		const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		closePath.setAttribute('d', 'M18 6L6 18M6 6l12 12');
+		closeSvg.appendChild(closePath);
+		closeBtn.appendChild(closeSvg);
+		this._register(
+			addDisposableListener(closeBtn, EventType.CLICK, () => {
+				this._activeHeaderPanel = null;
+				this._render();
+			}),
+		);
 
-		if (userMsgs.length === 0) {
-			append(list, $(".chat-message-nav-empty", undefined, '当前对话还没有消息'));
+		// Search box
+		const searchWrap = append(this._msgNavOverlayEl, $(".chat-msg-nav-search"));
+		const searchInput = append(searchWrap, $("input.chat-msg-nav-search-input", { type: 'text', placeholder: '搜索消息...' })) as HTMLInputElement;
+
+		// Message list (grouped by date)
+		const listEl = append(this._msgNavOverlayEl, $(".chat-msg-nav-list"));
+
+		if (this._messages.length === 0) {
+			append(listEl, $(".chat-msg-nav-empty", undefined, '当前对话还没有消息'));
 		} else {
-			for (let i = 0; i < userMsgs.length; i++) {
-				const m = userMsgs[i];
-				const item = append(list, $(".chat-message-nav-dropdown-item"));
-				append(item, $("span.chat-message-nav-index", undefined, `#${userMsgs.length - i}`));
-				const trimmedContent = (m.content || '').trim();
-				const summary = trimmedContent.slice(0, 80).replace(/\n/g, ' ') + (trimmedContent.length > 80 ? '…' : '');
-				append(item, $("span.chat-message-nav-summary", undefined, summary));
+			this._renderMsgNavItems(listEl, searchInput);
+		}
+
+		// Footer (message count)
+		const footer = append(this._msgNavOverlayEl, $(".chat-msg-nav-footer"));
+		footer.textContent = `共 ${this._messages.length} 条消息`;
+
+		// Search filter
+		this._register(
+			addDisposableListener(searchInput, EventType.INPUT, () => {
+				this._renderMsgNavItems(listEl, searchInput);
+			}),
+		);
+	}
+
+	private _renderMsgNavItems(listEl: HTMLElement, searchInput: HTMLInputElement): void {
+		clearNode(listEl);
+		const query = (searchInput.value || '').toLowerCase();
+
+		// Group messages by date
+		const groups = this._groupMessagesByDate();
+
+		for (const group of groups) {
+			if (group.msgs.length === 0) { continue; }
+
+			// Date divider
+			const divider = append(listEl, $(".chat-msg-nav-date-divider"));
+			divider.textContent = group.label;
+
+			for (const m of group.msgs) {
+				const summary = this._getMessageSummary(m);
+				if (query && !summary.toLowerCase().includes(query)) { continue; }
+
+				const item = append(listEl, $(".chat-msg-nav-item"));
+
+				// Role dot
+				const dot = append(item, $("span.chat-msg-nav-role-dot", { 'data-role': m.role }));
+				dot.title = m.role === 'user' ? '你' : m.role === 'assistant' ? '助手' : m.role === 'system' ? '系统' : '工具';
+
+				// Content
+				const content = append(item, $(".chat-msg-nav-item-content"));
+				const text = append(content, $("span.chat-msg-nav-item-text"));
+				text.textContent = summary;
+				const time = append(content, $("span.chat-msg-nav-item-time"));
+				time.textContent = this._formatMsgTime(m.timestamp);
+
 				this._register(
 					addDisposableListener(item, EventType.CLICK, () => {
-						this._closeMsgNavDropdown();
+						this._activeHeaderPanel = null;
+						this._render();
 						this._scrollToMessage(m.id);
 						this._onScrollToMessage?.(m.id);
 					}),
 				);
 			}
 		}
-
-		this._registerOutsideClickClose(this._msgNavDropdownEl, this._msgNavTrigger, () => this._closeMsgNavDropdown());
 	}
 
-	private _closeMsgNavDropdown(): void {
-		if (this._msgNavDropdownEl) {
-			this._msgNavDropdownEl.remove();
-			this._msgNavDropdownEl = null;
+	private _groupMessagesByDate(): { label: string; msgs: IAgentChatMessage[] }[] {
+		const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+		const yesterdayStart = new Date(todayStart.getTime() - 86400000);
+		const weekStart = new Date(todayStart.getTime() - 7 * 86400000);
+
+		const groups: { label: string; msgs: IAgentChatMessage[]; order: number }[] = [
+			{ label: '今天', msgs: [], order: 0 },
+			{ label: '昨天', msgs: [], order: 1 },
+			{ label: '本周更早', msgs: [], order: 2 },
+			{ label: '更早', msgs: [], order: 3 },
+		];
+
+		for (const m of this._messages) {
+			const t = m.timestamp ? new Date(m.timestamp).getTime() : 0;
+			if (t >= todayStart.getTime()) {
+				groups[0].msgs.push(m);
+			} else if (t >= yesterdayStart.getTime()) {
+				groups[1].msgs.push(m);
+			} else if (t >= weekStart.getTime()) {
+				groups[2].msgs.push(m);
+			} else {
+				groups[3].msgs.push(m);
+			}
 		}
-		if (this._msgNavTrigger) { this._msgNavTrigger.classList.remove('active'); }
-		if (this._activeHeaderPanel === 'message-nav') {
-			this._activeHeaderPanel = null;
+
+		return groups.filter(g => g.msgs.length > 0).map(({ label, msgs }) => ({ label, msgs }));
+	}
+
+	private _getMessageSummary(m: IAgentChatMessage): string {
+		const roleLabel = m.role === 'user' ? '你' : m.role === 'assistant' ? '助手' : m.role === 'system' ? '系统' : '工具';
+		let content = '';
+		if (m.content) {
+			content = (m.content || '').replace(/\n/g, ' ').trim();
+		} else if (m.toolCalls && m.toolCalls.length > 0) {
+			const tc = m.toolCalls[0];
+			content = `${tc.name} · ${tc.args || ''}`.slice(0, 60);
+		}
+		const summary = content.slice(0, 50) + (content.length > 50 ? '…' : '');
+		return `${roleLabel}：${summary}`;
+	}
+
+	private _formatMsgTime(timestamp: number | undefined): string {
+		if (!timestamp) { return ''; }
+		try {
+			const d = new Date(timestamp);
+			const now = new Date();
+			const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+			const msgDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+			const diffDays = Math.round((todayStart.getTime() - msgDate.getTime()) / 86400000);
+
+			const hh = d.getHours().toString().padStart(2, '0');
+			const mm = d.getMinutes().toString().padStart(2, '0');
+
+			if (diffDays === 0) {
+				// Within 5 minutes: "刚刚"
+				const diffMin = Math.round((now.getTime() - d.getTime()) / 60000);
+				if (diffMin <= 1) { return '刚刚'; }
+				if (diffMin <= 60) { return `${diffMin}分钟前`; }
+				return `${hh}:${mm}`;
+			} else if (diffDays === 1) {
+				return `昨天 ${hh}:${mm}`;
+			} else if (diffDays <= 7) {
+				return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+			} else {
+				return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+			}
+		} catch {
+			return '';
 		}
 	}
 

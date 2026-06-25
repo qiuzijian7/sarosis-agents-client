@@ -308,7 +308,7 @@ function stopAdminServer() {
 function applyEnvDefaults() {
 	const port = process.env.TDAI_GATEWAY_PORT || '8420';
 	const host = process.env.TDAI_GATEWAY_HOST || '127.0.0.1';
-	const dataDir = process.env.TDAI_DATA_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '.', '.tdai');
+	const dataDir = process.env.TDAI_DATA_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '.', '.saros', '.tdai');
 	const llmBase = process.env.TDAI_LLM_BASE_URL || 'http://127.0.0.1:8421/v1';
 	const llmKey = process.env.TDAI_LLM_API_KEY || 'saros-knot-bridge-token';
 	const llmModel = process.env.TDAI_LLM_MODEL || 'knot-default';

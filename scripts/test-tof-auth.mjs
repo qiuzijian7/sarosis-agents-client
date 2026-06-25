@@ -229,7 +229,6 @@ async function runTests() {
 		assert.ok(url.includes('oauth=true'));
 		assert.ok(url.includes('appkey=sls_mcp_app'));
 		// cb_port 和 state 在 gw_callback URL 中，整个 URL 被 encodeURIComponent 编码
-		// 所以 = 变成 %3D
 		assert.ok(url.includes('cb_port%3D12345') || url.includes('cb_port=12345'));
 		assert.ok(url.includes('state%3Dstate123') || url.includes('state=state123'));
 	});

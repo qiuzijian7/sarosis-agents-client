@@ -5,15 +5,18 @@
 
 import { $, append, clearNode } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { URI } from '../../../../base/common/uri.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
-import { ICodebaseMemoryMcpService, ICodebaseMemoryMcpStatus, ISyncGraphResult } from './codebaseMemoryMcpService.js';
+import { ICodebaseMemoryMcpService, ICodebaseMemoryMcpStatus, ISyncGraphResult, IGraphStatus, IIndexResult } from './codebaseMemoryMcpService.js';
 
 const CSS_TEXT = `
 .cbm-container { padding: 24px 32px; overflow-y: auto; height: 100%; font-size: 13px; color: var(--vscode-foreground); }
@@ -84,12 +87,15 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	private _logContent: HTMLElement | null = null;
 	private _status: ICodebaseMemoryMcpStatus | null = null;
 	private _syncResult: ISyncGraphResult | null = null;
+	private _graphStatus: IGraphStatus | null = null;
 
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@IOpenerService private readonly openerService: IOpenerService,
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
 	) {
 		super(CodebaseMemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -113,6 +119,20 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		this._register(this.cbmService.onDidSyncGraph(result => {
 			this._syncResult = result;
 			this._renderSyncResult();
+		}));
+		// Subscribe to index progress
+		this._register(this.cbmService.onDidIndexProgress(line => {
+			this._appendLogLine(line);
+		}));
+		// Subscribe to index complete
+		this._register(this.cbmService.onDidIndexComplete((result: IIndexResult) => {
+			if (result.success) {
+				this.notificationService.info(`索引完成 (${result.duration}s)`);
+			} else {
+				this.notificationService.warn(`索引失败: ${result.message}`);
+			}
+			// Refresh graph status after index completes
+			this._renderGraphStatus();
 		}));
 	}
 
@@ -230,6 +250,9 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		// Render sync result if available
 		this._renderSyncResult();
 
+		// Render graph status and actions
+		this._renderGraphStatus();
+
 		// Render existing log
 		this._renderLog();
 	}
@@ -266,6 +289,169 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			el.style.border = '1px solid rgba(244,135,113,0.3)';
 			el.innerHTML = `<span style="color:#f48771;">✗ ${r.message}</span>`;
 			this._appendLogLine(`✗ 同步失败: ${r.message}`);
+		}
+	}
+
+	// ─── Graph Status & Actions ─────────────────────────────────────
+
+	private async _renderGraphStatus(): Promise<void> {
+		if (!this._statusContent) { return; }
+		// Remove old graph section if exists
+		const old = this._statusContent.querySelector('.cbm-graph-section');
+		if (old) { old.remove(); }
+
+		// Fetch graph status
+		this._graphStatus = await this.cbmService.getGraphStatus();
+
+		const section = append(this._statusContent, $('.cbm-graph-section')) as HTMLElement;
+		section.style.cssText = 'margin-top:20px;padding:16px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;';
+
+		// Title
+		const title = append(section, $('.cbm-graph-title')) as HTMLElement;
+		title.textContent = '🧠 代码库 Graph';
+		title.style.cssText = 'font-size:14px;font-weight:600;margin-bottom:12px;';
+
+		if (!this._graphStatus.exists) {
+			// No graph yet — show index button to create one
+			const empty = append(section, $('.cbm-graph-empty')) as HTMLElement;
+			empty.textContent = '暂无 Graph 数据。点击下方按钮索引代码库。';
+			empty.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:12px;margin-bottom:12px;';
+
+			// Index button (shown even when no graph exists)
+			const noGraphActions = append(section, $('.cbm-graph-actions')) as HTMLElement;
+			noGraphActions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+			this._appendIndexButton(noGraphActions);
+			return;
+		}
+
+		// Graph info
+		const info = append(section, $('.cbm-graph-info')) as HTMLElement;
+		info.style.cssText = 'margin-bottom:12px;';
+
+		if (this._graphStatus.size !== undefined) {
+			const sizeStr = this._graphStatus.size > 1024 * 1024
+				? `${(this._graphStatus.size / (1024 * 1024)).toFixed(2)} MB`
+				: this._graphStatus.size > 1024
+					? `${(this._graphStatus.size / 1024).toFixed(2)} KB`
+					: `${this._graphStatus.size} B`;
+			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
+			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
+			const key = append(row, $('span')) as HTMLElement;
+			key.textContent = '大小: ';
+			key.style.color = 'var(--vscode-descriptionForeground)';
+			const val = append(row, $('span')) as HTMLElement;
+			val.textContent = sizeStr;
+			val.style.color = 'var(--vscode-foreground)';
+		}
+
+		if (this._graphStatus.lastModified) {
+			const date = new Date(this._graphStatus.lastModified);
+			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
+			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
+			const key = append(row, $('span')) as HTMLElement;
+			key.textContent = '最后更新: ';
+			key.style.color = 'var(--vscode-descriptionForeground)';
+			const val = append(row, $('span')) as HTMLElement;
+			val.textContent = date.toLocaleString();
+			val.style.color = 'var(--vscode-foreground)';
+		}
+
+		if (this._graphStatus.gitBranch) {
+			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
+			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
+			const key = append(row, $('span')) as HTMLElement;
+			key.textContent = '分支: ';
+			key.style.color = 'var(--vscode-descriptionForeground)';
+			const val = append(row, $('span')) as HTMLElement;
+			val.textContent = this._graphStatus.gitBranch;
+			val.style.color = 'var(--vscode-foreground)';
+		}
+
+		if (this._graphStatus.gitCommit) {
+			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
+			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
+			const key = append(row, $('span')) as HTMLElement;
+			key.textContent = '提交: ';
+			key.style.color = 'var(--vscode-descriptionForeground)';
+			const val = append(row, $('span')) as HTMLElement;
+			val.textContent = this._graphStatus.gitCommit;
+			val.style.color = 'var(--vscode-foreground)';
+		}
+
+		// Actions
+		const actions = append(section, $('.cbm-graph-actions')) as HTMLElement;
+		actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+
+		// Index repository button (primary action)
+		this._appendIndexButton(actions);
+
+		// Pull from team button
+		const pullBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
+		pullBtn.textContent = '⬇ 下载团队 Graph';
+		pullBtn.title = '从远程 Git 仓库拉取团队共享的 Graph';
+		pullBtn.onclick = async () => {
+			pullBtn.disabled = true;
+			pullBtn.textContent = '⏳ 下载中...';
+			this._appendLogLine('▶ 开始从远程仓库下载 Graph...');
+			const result = await this.cbmService.pullGraph();
+			if (result.success) {
+				this.notificationService.info(result.message);
+				this._appendLogLine(`✓ ${result.message}`);
+			} else {
+				this.notificationService.warn(result.message);
+				this._appendLogLine(`✗ ${result.message}`);
+			}
+			pullBtn.disabled = false;
+			pullBtn.textContent = '⬇ 下载团队 Graph';
+			// Refresh graph status
+			this._graphStatus = await this.cbmService.getGraphStatus();
+			this._renderGraphStatus();
+		};
+
+		// Open graph directory button
+		const openBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
+		openBtn.textContent = '📂 打开 Graph 目录';
+		openBtn.title = '在文件管理器中打开 Graph 目录';
+		openBtn.onclick = () => {
+			if (this._graphStatus?.graphPath) {
+				const path = (globalThis as any).require?.('path');
+				const dir = path?.dirname(this._graphStatus!.graphPath);
+				if (dir) {
+					this._openFolder(dir);
+				}
+			}
+		};
+	}
+
+	private _appendIndexButton(parent: HTMLElement): void {
+		const indexBtn = append(parent, $('.cbm-btn.primary')) as HTMLButtonElement;
+		indexBtn.textContent = '🔍 索引代码库';
+		indexBtn.title = '扫描并索引当前代码库，构建代码知识图谱';
+		indexBtn.onclick = async () => {
+			indexBtn.disabled = true;
+			indexBtn.textContent = '⏳ 索引中...';
+			this._appendLogLine('▶ 开始索引代码库...');
+			const result = await this.cbmService.indexRepository();
+			if (result.success) {
+				this.notificationService.info(`索引完成 (${result.duration}s)`);
+				this._appendLogLine(`✓ 索引完成: ${result.message} (${result.duration}s)`);
+			} else {
+				this.notificationService.warn(`索引失败: ${result.message}`);
+				this._appendLogLine(`✗ 索引失败: ${result.message}`);
+			}
+			indexBtn.disabled = false;
+			indexBtn.textContent = '🔍 索引代码库';
+		};
+	}
+
+	private _openFolder(dir: string): void {
+		const { shell } = (globalThis as any).require?.('electron') || {};
+		if (shell) {
+			shell.openPath(dir);
+		} else {
+			// Fallback: use VS Code's opener
+			const uri = URI.file(dir);
+			this.openerService?.open(uri, { openExternal: true });
 		}
 	}
 

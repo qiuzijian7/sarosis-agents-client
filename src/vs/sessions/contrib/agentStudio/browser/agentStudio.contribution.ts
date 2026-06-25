@@ -1297,31 +1297,21 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	//      (languageModelChatProviders contribution → LanguageModelsToAgentOSBridge)
 	//   4. Their agentCapabilities contribution was removed from package.json to
 	//      prevent the extension-point path from attempting a futile renderer-side load.
-	private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
-		{
-			id: 'hermes-agent',
-			name: 'Hermes Agent',
-			version: '1.0.0',
-			module: '../../../../extensions/hermes-agent/src/extension.js',
-			appResource: 'vs/../../extensions/hermes-agent/dist/extension.js',
-			capabilities: [
-				{ capability: 'model', provider: 'hermes-agent', priority: 50 },
-				{ capability: 'execution', provider: 'hermes-agent', priority: 80 },
-				{ capability: 'tool', provider: 'hermes-agent', priority: 90 },
-				{ capability: 'memory', provider: 'hermes-agent', priority: 70 },
-			],
-		},
-		{
-			// tdb-am-memory：把每轮对话通过 POST /capture 上报给 tdb-am-gateway 子进程，
-			// 让 vendor TdaiGateway 写入 L0/L1/L2/L3 SQLite。
-			//
-			// priority 80 > 内置 SessionMemoryProvider(50)，因此 saros 会优先调用本
-			// provider 的 writeMemory；同时 hermes-agent.memory(70) 也低于本条，确保在
-			// 同时启用时仍然由 tdb-am 拿走数据。
-			//
-			// 注意：模块路径必须指向 `out/extension.js`（运行时实际产物），不能指向
-			// `src/extension.js`，因为 src 是 .ts，浏览器 ESM loader 不识别。
-			id: 'tdb-am-memory',
+private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
+	{
+		// tdb-am-memory：把每轮对话通过 POST /capture 上报给 tdb-am-gateway 子进程，
+		// 让 vendor TdaiGateway 写入 L0/L1/L2/L3 SQLite。
+		//
+		// priority 80 > 内置 SessionMemoryProvider(50)，因此 saros 会优先调用本
+		// provider 的 writeMemory。
+		//
+		// 注意：模块路径必须指向 `out/extension.js`（运行时实际产物），不能指向
+		// `src/extension.js`，因为 src 是 .ts，浏览器 ESM loader 不识别。
+		//
+		// 注：hermes-agent 已从此清单移除——其 dist 产物是 CJS（依赖
+		// "child_process" 等 bare specifier），无法在渲染端 ESM import() 中加载，
+		// 导致每次启动报 ERR_FILE_NOT_FOUND / Failed to resolve module specifier。
+		id: 'tdb-am-memory',
 			name: 'TDB-AM Memory',
 			version: '1.0.0',
 			module: '../../../../extensions/tdb-am-memory/out/extension.js',

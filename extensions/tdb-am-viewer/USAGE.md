@@ -56,7 +56,7 @@ npm run watch-extensions
   "tdbam.gatewayPort": 8420,                    // 内嵌网关端口
   "tdbam.knotBridgePort": 8421,                 // Knot 桥端口
   "tdbam.knotAgentId": "your-agent-id",         // 留空时取 knot.agents[0].id
-  "tdbam.dataDir": "",                           // 留空 = ~/.tdai
+  "tdbam.dataDir": "",                           // 留空 = ~/.saros/.tdai
   "tdbam.recallStrategy": "keyword",            // 仅支持 keyword（向量已禁用）
   "tdbam.autoStart": true
 }

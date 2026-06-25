@@ -21,7 +21,7 @@
 **实现现状**：通过 **TDB-AM L0 Raw Log** 实现。每一轮对话原封不动落盘到本地 SQLite + jsonl，永不删除。
 
 - 写入端点：`POST /capture`
-- 落盘位置：`~/.tdai/l0/<session>.jsonl` + SQLite `l0_conversations`
+- 落盘位置：`~/.saros/.tdai/l0/<session>.jsonl` + SQLite `l0_conversations`
 - 不进 prompt（避免长会话爆 context），仅作为可追溯的真相之源
 
 **提升优化方向**：

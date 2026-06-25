@@ -1,0 +1,68 @@
+{
+	"name": "tof-authentication",
+	"displayName": "%displayName%",
+	"description": "%description%",
+	"version": "0.0.1",
+	"publisher": "saros",
+	"license": "MIT",
+	"main": "./out/extension.js",
+	"engines": {
+		"vscode": "^1.100.0"
+	},
+	"extensionKind": [
+		"ui"
+	],
+	"capabilities": {
+		"virtualWorkspaces": false,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"activationEvents": [
+		"onAuthenticationRequest:tof"
+	],
+	"contributes": {
+		"authentication": [
+			{
+				"label": "腾讯 OA (TOF)",
+				"id": "tof"
+			}
+		],
+		"configuration": [
+			{
+				"title": "TOF 登录",
+				"properties": {
+					"sessions.agentStudio.tof.paasid": {
+						"type": "string",
+						"default": "sls_mcp_app",
+						"markdownDescription": "TOF OAuth appkey（参见 passport.woa.com 应用配置）"
+					},
+					"sessions.agentStudio.tof.siteBaseUrl": {
+						"type": "string",
+						"default": "http://saroasis-mcp.woa.com",
+						"markdownDescription": "OAuthSystem 网关 site base URL，用于构造 callback"
+					},
+					"sessions.agentStudio.tof.gatewayBaseUrl": {
+						"type": "string",
+						"default": "http://21.169.46.116:8080",
+						"markdownDescription": "OAuthSystem 网关 base URL，用于调用 /api/v1/whoami"
+					},
+					"sessions.agentStudio.tof.loginTimeout": {
+						"type": "number",
+						"default": 180,
+						"markdownDescription": "登录超时（秒），超时未完成浏览器登录则失败"
+					}
+				}
+			}
+		]
+	},
+	"scripts": {
+		"compile": "tsc -p ./tsconfig.json && node -e \"require('fs').writeFileSync('out/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\"",
+		"watch": "tsc -watch -p ./tsconfig.json"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"@types/vscode": "^1.100.0",
+		"typescript": "^5.8.2"
+	}
+}

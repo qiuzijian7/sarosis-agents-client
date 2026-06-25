@@ -1,0 +1,30 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": [
+			"ES2022",
+			"DOM"
+		],
+		"module": "commonjs",
+		"types": [
+			"node"
+		],
+		"outDir": "out",
+		"rootDir": "src",
+		"sourceMap": true,
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"noImplicitAny": false
+	},
+	// saros 顶层 gulpfile 流水线（build/lib/tsgo.ts）会扫描这个 tsconfig
+	"include": [
+		"src/**/*",
+		"../../src/vscode-dts/vscode.d.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"out"
+	]
+}
