@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>记忆系统优化 — 实时查看器 Mockup</title>
+<style>
+  :root {
+    --bg-window: #ffffff;
+    --bg-titlebar: #f1efe8;
+    --bg-sidebar: #fafaf8;
+    --bg-panel: #f5f4f1;
+    --bg-card: #faf9f6;
+    --bg-hover: #f0eee8;
+    --bg-active: #eef4fc;
+    --bg-tag: #e8e6df;
+    --border: #d3d1c7;
+    --border-strong: #b4b2a9;
+    --border-soft: #e8e6df;
+    --text-main: #2c2c2a;
+    --text-sub: #5f5e5a;
+    --text-dim: #888780;
+    --text-faint: #b4b2a9;
+    --accent-file: #d4537e;
+    --accent-agent: #ba7517;
+    --accent-sidebar: #d85a30;
+    --accent-blue: #378add;
+    --accent-green: #5dcaa5;
+    --accent-red: #e24b4a;
+    --accent-purple: #7f77dd;
+    --accent-cyan: #29abe2;
+    --strength-high: #5dcaa5;
+    --strength-mid: #f0a04b;
+    --strength-low: #e24b4a;
+    --obs-color: #7f77dd;
+    --graph-node: #378add;
+    --graph-edge: #b4b2a9;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #e9e7e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 16px;
+    color: var(--text-main);
+  }
+  .page-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #1d1d1b;
+  }
+  .page-sub {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 24px;
+    text-align: center;
+  }
+
+  /* ===== Window ===== */
+  .window {
+    width: 1200px;
+    max-width: 100%;
+    background: var(--bg-window);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.12);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ===== Editor Title Bar ===== */
+  .editor-titlebar {
+    height: 36px;
+    background: var(--bg-titlebar);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .et-tab {
+    height: 28px;
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border-radius: 6px 6px 0 0;
+    cursor: default;
+  }
+  .et-tab.active {
+    background: var(--bg-window);
+    color: var(--accent-agent);
+    border: 1px solid var(--border);
+    border-bottom: 1px solid var(--bg-window);
+    font-weight: 500;
+  }
+  .et-tab .et-icon {
+    font-size: 14px;
+    opacity: 0.6;
+  }
+  .et-tab.active .et-icon { opacity: 0.8; }
+
+  /* ===== Tab Bar (viewer tabs) ===== */
+  .viewer-tabs {
+    height: 38px;
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .vtab {
+    height: 28px;
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border-radius: 6px;
+    cursor: default;
+    transition: background .12s, color .12s;
+  }
+  .vtab:hover { background: var(--bg-hover); color: var(--text-sub); }
+  .vtab.active {
+    background: #faeeda;
+    color: #633806;
+    border: 1px solid #e0c590;
+    font-weight: 500;
+  }
+  .vtab .vtab-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-tag);
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+  .vtab.active .vtab-badge {
+    background: #e0c590;
+    color: #633806;
+  }
+  .vtab-spacer { flex: 1; }
+  .vtab-action {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .vtab-action .va-item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .12s;
+  }
+  .vtab-action .va-item:hover { background: var(--bg-hover); }
+
+  /* ===== Content Area ===== */
+  .content-area {
+    flex: 1;
+    min-height: 560px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-window);
+    overflow: hidden;
+  }
+  .tab-content { display: none; flex: 1; min-height: 0; }
+  .tab-content.active { display: flex; flex-direction: column; }
+
+  /* ===== P0 Indicator (small badge) ===== */
+  .phase-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .phase-p0 { background: #fde0e0; color: #c0392b; }
+  .phase-p1 { background: #fef3e0; color: #d35400; }
+  .phase-p2 { background: #e0f0fe; color: #2471a3; }
+  .phase-p3 { background: #e8f8e8; color: #1e8449; }
+
+  /* ===== 1. Memory List Tab ===== */
+  .mem-list-layout { flex: 1; display: flex; min-height: 0; }
+  .mem-search-bar {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .search-input {
+    flex: 1;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0 12px;
+    font-size: 12px;
+    color: var(--text-main);
+    background: var(--bg-window);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .search-input .si-icon { color: var(--text-dim); font-size: 13px; }
+  .search-input .si-text { flex: 1; color: var(--text-sub); }
+  .search-mode {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .mode-chip {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    background: var(--bg-tag);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .mode-chip.active {
+    background: var(--bg-active);
+    color: var(--accent-blue);
+    font-weight: 500;
+  }
+
+  .mem-list-body { flex: 1; overflow: auto; padding: 8px 12px; }
+  .mem-item {
+    padding: 12px 14px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: var(--bg-card);
+    cursor: pointer;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .mem-item:hover {
+    border-color: var(--border-strong);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+  .mem-item-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .mem-type-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+  .badge-long { background: #e1f5ee; color: #1e8449; border: 1px solid #5dcaa5; }
+  .badge-short { background: #fef3e0; color: #d35400; border: 1px solid #f0a04b; }
+  .mem-importance {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .imp-stars { color: #f0a04b; letter-spacing: 1px; }
+  .mem-timestamp {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-left: auto;
+  }
+  .mem-content {
+    font-size: 12px;
+    color: var(--text-sub);
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+  .mem-footer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .mem-strength {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .strength-bar {
+    width: 60px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-tag);
+    overflow: hidden;
+  }
+  .strength-fill {
+    height: 100%;
+    border-radius: 2px;
+  }
+  .mem-tags {
+    display: flex;
+    gap: 4px;
+  }
+  .mem-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-tag);
+    color: var(--text-dim);
+  }
+  .mem-redacted {
+    display: inline;
+    background: #fde0e0;
+    color: #c0392b;
+    font-size: 10px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+  }
+
+  /* ===== 2. Observation Stream Tab ===== */
+  .obs-layout { flex: 1; display: flex; min-height: 0; }
+  .obs-stream {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+  }
+  .obs-timeline {
+    position: relative;
+    padding-left: 28px;
+  }
+  .obs-timeline::before {
+    content: '';
+    position: absolute;
+    left: 10px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .obs-entry {
+    position: relative;
+    margin-bottom: 16px;
+  }
+  .obs-dot {
+    position: absolute;
+    left: -24px;
+    top: 4px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-window);
+    z-index: 1;
+  }
+  .dot-tool { background: var(--accent-blue); }
+  .dot-user { background: var(--accent-agent); }
+  .dot-error { background: var(--accent-red); }
+  .dot-memory { background: var(--accent-green); }
+  .dot-session { background: var(--accent-purple); }
+  .obs-card {
+    padding: 10px 14px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--bg-card);
+  }
+  .obs-card.live {
+    border-color: var(--accent-green);
+    box-shadow: 0 0 0 2px rgba(93,202,165,0.15);
+  }
+  .obs-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .obs-hook-type {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+    font-family: monospace;
+  }
+  .hook-post_tool { background: #e0f0fe; color: #2471a3; }
+  .hook-pre_tool { background: #fef3e0; color: #d35400; }
+  .hook-user_prompt { background: #faece7; color: #d85a30; }
+  .hook-session_start { background: #cecbf6; color: #5e54b8; }
+  .hook-session_end { background: #f0eee8; color: #5f5e5a; }
+  .hook-error { background: #fde0e0; color: #c0392b; }
+  .obs-tool-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-main);
+  }
+  .obs-time {
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-left: auto;
+  }
+  .obs-body {
+    font-size: 11px;
+    color: var(--text-sub);
+    line-height: 1.5;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    background: var(--bg-sidebar);
+    padding: 8px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border-soft);
+  }
+  .obs-memory-write {
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: #e1f5ee;
+    border: 1px solid #5dcaa5;
+    border-radius: 4px;
+    font-size: 10px;
+    color: #1e8449;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* ===== 3. Knowledge Graph Tab ===== */
+  .graph-layout { flex: 1; display: flex; min-height: 0; }
+  .graph-canvas {
+    flex: 1;
+    background: var(--bg-sidebar);
+    position: relative;
+    overflow: hidden;
+    background-image:
+      radial-gradient(circle, var(--border-soft) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+  .graph-node {
+    position: absolute;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    border: 2px solid;
+    background: var(--bg-window);
+    cursor: pointer;
+    z-index: 2;
+    white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  .node-file { border-color: var(--accent-blue); color: var(--accent-blue); }
+  .node-function { border-color: var(--accent-green); color: #1e8449; }
+  .node-concept { border-color: var(--accent-purple); color: #5e54b8; }
+  .node-error { border-color: var(--accent-red); color: #c0392b; }
+  .node-decision { border-color: var(--accent-agent); color: #633806; }
+  .node-pattern { border-color: var(--accent-cyan); color: #1a7ba8; }
+  .graph-svg {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 1;
+    pointer-events: none;
+  }
+  .graph-legend {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    background: var(--bg-window);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 11px;
+    z-index: 3;
+  }
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .legend-row:last-child { margin-bottom: 0; }
+  .legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 2px solid;
+  }
+  .graph-stats {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--bg-window);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 11px;
+    z-index: 3;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 4px;
+  }
+  .stat-row:last-child { margin-bottom: 0; }
+  .stat-label { color: var(--text-dim); }
+  .stat-value { font-weight: 600; color: var(--text-main); }
+
+  /* ===== 4. Decay Dashboard Tab ===== */
+  .decay-layout { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 16px; gap: 16px; }
+  .decay-summary {
+    display: flex;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .summary-card {
+    flex: 1;
+    padding: 14px 16px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--bg-card);
+    text-align: center;
+  }
+  .summary-card .sc-value {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 2px;
+  }
+  .summary-card .sc-label {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .sc-green .sc-value { color: var(--strength-high); }
+  .sc-mid .sc-value { color: var(--strength-mid); }
+  .sc-red .sc-value { color: var(--strength-low); }
+  .sc-blue .sc-value { color: var(--accent-blue); }
+
+  .decay-table-wrap {
+    flex: 1;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    overflow: auto;
+    background: var(--bg-window);
+  }
+  .decay-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .decay-table th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--bg-sidebar);
+    position: sticky;
+    top: 0;
+    font-size: 11px;
+  }
+  .decay-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-sub);
+  }
+  .decay-table tr:hover td { background: var(--bg-hover); }
+  .decay-table tr.evict td { color: var(--text-faint); text-decoration: line-through; }
+  .strength-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .strength-cell .strength-bar {
+    width: 80px;
+  }
+
+  /* ===== 5. Session Replay Tab ===== */
+  .replay-layout { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .replay-controls {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .replay-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-window);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text-sub);
+    transition: background .12s;
+  }
+  .replay-btn:hover { background: var(--bg-hover); }
+  .replay-btn.play { background: var(--accent-blue); color: white; border-color: var(--accent-blue); }
+  .replay-speed {
+    display: flex;
+    gap: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .speed-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+    background: var(--bg-window);
+    color: var(--text-dim);
+    cursor: pointer;
+    border: none;
+  }
+  .speed-btn.active { background: var(--bg-active); color: var(--accent-blue); }
+  .replay-timeline {
+    flex: 1;
+    height: 8px;
+    background: var(--bg-tag);
+    border-radius: 4px;
+    position: relative;
+    margin: 0 8px;
+  }
+  .replay-progress {
+    width: 35%;
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 4px;
+  }
+  .replay-marker {
+    position: absolute;
+    top: -3px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--bg-window);
+    border: 2px solid var(--accent-blue);
+    cursor: grab;
+  }
+  .replay-body {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+  }
+  .replay-event {
+    margin-bottom: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--bg-card);
+  }
+  .replay-event.current {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(55,138,221,0.15);
+  }
+  .replay-event-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .replay-step {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tag);
+    color: var(--text-dim);
+    font-family: monospace;
+  }
+  .replay-role {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+  }
+  .replay-content {
+    font-size: 12px;
+    color: var(--text-sub);
+    line-height: 1.6;
+  }
+  .replay-tool {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg-sidebar);
+    border-radius: 4px;
+    border: 1px solid var(--border-soft);
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--text-sub);
+  }
+
+  /* ===== 6. Audit Trail Tab ===== */
+  .audit-layout { flex: 1; overflow: auto; padding: 16px; }
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .audit-table th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--bg-sidebar);
+    position: sticky;
+    top: 0;
+    font-size: 11px;
+  }
+  .audit-table td {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-sub);
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 11px;
+  }
+  .audit-op {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    font-family: -apple-system, sans-serif;
+  }
+  .op-write { background: #e1f5ee; color: #1e8449; }
+  .op-search { background: #e0f0fe; color: #2471a3; }
+  .op-delete { background: #fde0e0; color: #c0392b; }
+  .op-decay { background: #fef3e0; color: #d35400; }
+  .op-reinforce { background: #cecbf6; color: #5e54b8; }
+  .op-forget { background: #f0eee8; color: #5f5e5a; }
+</style>
+</head>
+<body>
+
+<div class="page-title">记忆系统优化 — 实时查看器 Mockup</div>
+<div class="page-sub">参考 agentmemory v0.9.27 viewer · P0-P3 优化方案可视化 · 对应 memory-optimization-plan-based-on-agentmemory.md</div>
+
+<div class="window">
+
+  <!-- Editor Title Bar -->
+  <div class="editor-titlebar">
+    <div class="et-tab active">
+      <span class="et-icon">◈</span>
+      Memory Detail · coder
+    </div>
+    <div class="et-tab">
+      <span class="et-icon">📄</span>
+      sessionMemoryProvider.ts
+    </div>
+  </div>
+
+  <!-- Viewer Tab Bar -->
+  <div class="viewer-tabs">
+    <div class="vtab active" onclick="switchTab('list')">
+      记忆列表 <span class="vtab-badge">142</span>
+    </div>
+    <div class="vtab" onclick="switchTab('stream')">
+      观察流 <span class="vtab-badge" style="background:#5dcaa5;color:#fff;">●</span>
+    </div>
+    <div class="vtab" onclick="switchTab('graph')">
+      知识图谱 <span class="vtab-badge">38</span>
+    </div>
+    <div class="vtab" onclick="switchTab('decay')">
+      衰减看板 <span class="phase-badge phase-p1">P1</span>
+    </div>
+    <div class="vtab" onclick="switchTab('replay')">
+      会话回放
+    </div>
+    <div class="vtab" onclick="switchTab('audit')">
+      审计 Trail <span class="phase-badge phase-p2">P2</span>
+    </div>
+    <div class="vtab-spacer"></div>
+    <div class="vtab-action">
+      <div class="va-item">Agent: coder</div>
+      <div class="va-item">Scope: agent</div>
+    </div>
+  </div>
+
+  <!-- Content Area -->
+  <div class="content-area">
+
+    <!-- ═══ Tab 1: Memory List ═══ -->
+    <div class="tab-content active" id="tab-list">
+      <div class="mem-search-bar">
+        <div class="search-input">
+          <span class="si-icon">🔍</span>
+          <span class="si-text">数据库性能优化</span>
+        </div>
+        <div class="search-mode">
+          <span class="mode-chip active">RRF 混合<span class="phase-badge phase-p0">P0</span></span>
+          <span class="mode-chip">BM25</span>
+          <span class="mode-chip">向量</span>
+          <span class="mode-chip">子串</span>
+        </div>
+      </div>
+      <div class="mem-list-body">
+
+        <div class="mem-item">
+          <div class="mem-item-head">
+            <span class="mem-type-badge badge-long">长期</span>
+            <span class="mem-importance">重要性 <span class="imp-stars">★★★★★★★★</span> 8/10</span>
+            <span class="mem-timestamp">2026-06-24 14:32</span>
+          </div>
+          <div class="mem-content">
+            用户项目使用 JWT 中间件认证，位于 <code>src/middleware/auth.ts</code>，测试覆盖 token 验证（<code>test/auth.test.ts</code>），选择 jose 而非 jsonwebtoken 以兼容 Edge Runtime。
+          </div>
+          <div class="mem-footer">
+            <div class="mem-strength">
+              <span>强度</span>
+              <div class="strength-bar"><div class="strength-fill" style="width:92%;background:var(--strength-high)"></div></div>
+              <span>0.92</span>
+            </div>
+            <div>访问 15 次</div>
+            <div class="mem-tags">
+              <span class="mem-tag">auth</span>
+              <span class="mem-tag">jwt</span>
+              <span class="mem-tag">middleware</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mem-item">
+          <div class="mem-item-head">
+            <span class="mem-type-badge badge-long">长期</span>
+            <span class="mem-importance">重要性 <span class="imp-stars">★★★★★★★★★</span> 9/10</span>
+            <span class="mem-timestamp">2026-06-24 15:08</span>
+          </div>
+          <div class="mem-content">
+            N+1 查询问题修复：使用 DataLoader 批量加载关联数据，将 <code>getUserPosts</code> 的 100 次查询降为 1 次，数据库响应从 1200ms 降至 45ms。
+          </div>
+          <div class="mem-footer">
+            <div class="mem-strength">
+              <span>强度</span>
+              <div class="strength-bar"><div class="strength-fill" style="width:88%;background:var(--strength-high)"></div></div>
+              <span>0.88</span>
+            </div>
+            <div>访问 12 次</div>
+            <div class="mem-tags">
+              <span class="mem-tag">database</span>
+              <span class="mem-tag">performance</span>
+              <span class="mem-tag">dataloader</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mem-item">
+          <div class="mem-item-head">
+            <span class="mem-type-badge badge-long">长期</span>
+            <span class="mem-importance">重要性 <span class="imp-stars">★★★★★★★</span> 7/10</span>
+            <span class="mem-timestamp">2026-06-25 09:15</span>
+          </div>
+          <div class="mem-content">
+            速率限制中间件采用 express-rate-limit，默认 100 请求/15分钟。配置存储在 <code>config/rateLimit.ts</code>，生产环境需调整 windowMs 和 max。
+          </div>
+          <div class="mem-footer">
+            <div class="mem-strength">
+              <span>强度</span>
+              <div class="strength-bar"><div class="strength-fill" style="width:78%;background:var(--strength-high)"></div></div>
+              <span>0.78</span>
+            </div>
+            <div>访问 6 次</div>
+            <div class="mem-tags">
+              <span class="mem-tag">rate-limit</span>
+              <span class="mem-tag">middleware</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mem-item">
+          <div class="mem-item-head">
+            <span class="mem-type-badge badge-short">短期</span>
+            <span class="mem-importance">重要性 <span class="imp-stars">★★★★</span> 4/10</span>
+            <span class="mem-timestamp">2026-06-25 10:42</span>
+          </div>
+          <div class="mem-content">
+            [PostToolUse: readFile] 读取 <code>package.json</code> 发现依赖 express@4.18.2, jose@5.6.3, dataloader@2.2.2。API Key <span class="mem-redacted">[REDACTED_SECRET]</span> 已被隐私过滤剥离。<span class="phase-badge phase-p0">P0.1</span>
+          </div>
+          <div class="mem-footer">
+            <div class="mem-strength">
+              <span>强度</span>
+              <div class="strength-bar"><div class="strength-fill" style="width:55%;background:var(--strength-mid)"></div></div>
+              <span>0.55</span>
+            </div>
+            <div>访问 2 次</div>
+            <div class="mem-tags">
+              <span class="mem-tag">post_tool_use</span>
+              <span class="mem-tag">readFile</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mem-item">
+          <div class="mem-item-head">
+            <span class="mem-type-badge badge-long">长期</span>
+            <span class="mem-importance">重要性 <span class="imp-stars">★★★★★★</span> 6/10</span>
+            <span class="mem-timestamp">2026-05-28 16:20</span>
+          </div>
+          <div class="mem-content">
+            PostgreSQL 连接池配置：max=10, idleTimeoutMillis=30000。早期使用直连导致连接泄漏，后改用 pg-pool 统一管理。
+          </div>
+          <div class="mem-footer">
+            <div class="mem-strength">
+              <span>强度</span>
+              <div class="strength-bar"><div class="strength-fill" style="width:35%;background:var(--strength-mid)"></div></div>
+              <span>0.35 · 衰减中</span>
+            </div>
+            <div>访问 3 次 · 28天未访问</div>
+            <div class="mem-tags">
+              <span class="mem-tag">database</span>
+              <span class="mem-tag">connection-pool</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ═══ Tab 2: Observation Stream ═══ -->
+    <div class="tab-content" id="tab-stream">
+      <div class="obs-layout">
+        <div class="obs-stream">
+          <div class="obs-timeline">
+
+            <div class="obs-entry">
+              <div class="obs-dot dot-session"></div>
+              <div class="obs-card">
+                <div class="obs-card-head">
+                  <span class="obs-hook-type hook-session_start">session_start</span>
+                  <span class="obs-tool-name">会话启动</span>
+                  <span class="obs-time">10:30:00</span>
+                </div>
+                <div class="obs-body">project: saros-marketplace · cwd: G:\AIProjects\saros-marketplace · agentId: coder</div>
+              </div>
+            </div>
+
+            <div class="obs-entry">
+              <div class="obs-dot dot-user"></div>
+              <div class="obs-card">
+                <div class="obs-card-head">
+                  <span class="obs-hook-type hook-user_prompt">user_prompt</span>
+                  <span class="obs-tool-name">用户输入</span>
+                  <span class="obs-time">10:30:05</span>
+                </div>
+                <div class="obs-body">帮我修复 N+1 查询问题，数据库响应太慢了</div>
+              </div>
+            </div>
+
+            <div class="obs-entry">
+              <div class="obs-dot dot-tool"></div>
+              <div class="obs-card">
+                <div class="obs-card-head">
+                  <span class="obs-hook-type hook-pre_tool">pre_tool_use</span>
+                  <span class="obs-tool-name">readFile</span>
+                  <span class="obs-time">10:30:08</span>
+                </div>
+                <div class="obs-body">path: src/resolvers/userResolver.ts</div>
+              </div>
+            </div>
+
+            <div class="obs-entry">
+              <div class="obs-dot dot-tool"></div>
+              <div class="obs-card live">
+                <div class="obs-card-head">
+                  <span class="obs-hook-type hook-post_tool">post_tool_use</span>
+                  <span class="obs-tool-name">readFile</span>
+                  <span class="obs-time">10:30:09</span>
+                  <span style="font-size:10px;color:var(--strength-high)">● LIVE</span>
+                </div>
+                <div class="obs-body">发现 getPosts() 在循环中逐个查询用户 → N+1 查询</div>
+                <div class="obs-memory-write">
+                  <span>✓</span> 写入短期记忆 · importance: 4 · [REDACTED_SECRET] 已剥离
+                </div>
+              </div>
+            </div>
+
+            <div class="obs-entry">
+              <div class="obs-dot dot-memory"></div>
+              <div class="obs-card">
+                <div class="obs-card-head">
+                  <span class="obs-hook-type hook-session_end" style="background:#e1f5ee;color:#1e8449">L1 提取</span>
+                  <span class="obs-tool-name">结构化长期记忆</span>
+                  <span class="obs-time">10:33:15</span>
+                </div>
+                <div class="obs-body">type: pattern · "N+1 查询修复：使用 DataLoader 批量加载，100次→1次，1200ms→45ms"</div>
+                <div class="obs-memory-write">
+                  <span>✓</span> 写入长期记忆 · strength: 0.88 · 向量索引已更新
+                </div>
+              </div>
+            </div>
+
+            <div class="obs-entry">
+              <div class="obs-dot dot-error"></div>
+              <div class="obs-card">
+                <div class="obs-card-head">
+                  <span class="obs-hook-type hook-error">post_tool_failure</span>
+                  <span class="obs-tool-name">executeCommand</span>
+                  <span class="obs-time">10:35:22</span>
+                </div>
+                <div class="obs-body">npm test 失败 · Error: Timeout - DataLoader batch function returned undefined</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Tab 3: Knowledge Graph ═══ -->
+    <div class="tab-content" id="tab-graph">
+      <div class="graph-layout">
+        <div class="graph-canvas">
+
+          <!-- SVG edges -->
+          <svg class="graph-svg" viewBox="0 0 800 500" preserveAspectRatio="none">
+            <!-- auth.ts → jose -->
+            <line x1="120" y1="100" x2="280" y2="60" stroke="var(--graph-edge)" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- auth.ts → auth.test.ts -->
+            <line x1="120" y1="100" x2="120" y2="240" stroke="var(--graph-edge)" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- userResolver.ts → DataLoader -->
+            <line x1="380" y1="100" x2="560" y2="60" stroke="var(--graph-edge)" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- userResolver.ts → database -->
+            <line x1="380" y1="100" x2="380" y2="240" stroke="var(--graph-edge)" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- database → N+1 query -->
+            <line x1="380" y1="240" x2="560" y2="240" stroke="var(--graph-edge)" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+            <!-- rateLimit.ts → express -->
+            <line x1="650" y1="100" x2="560" y2="60" stroke="var(--graph-edge)" stroke-width="1" marker-end="url(#arrow)"/>
+            <!-- auth.ts → rateLimit.ts (related) -->
+            <line x1="120" y1="100" x2="650" y2="100" stroke="var(--graph-edge)" stroke-width="1" stroke-dasharray="2,3"/>
+
+            <defs>
+              <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L6,3 L0,6 Z" fill="var(--graph-edge)"/>
+              </marker>
+            </defs>
+          </svg>
+
+          <!-- Nodes -->
+          <div class="graph-node node-file" style="left:60px; top:80px;">📄 auth.ts</div>
+          <div class="graph-node node-file" style="left:340px; top:80px;">📄 userResolver.ts</div>
+          <div class="graph-node node-file" style="left:610px; top:80px;">📄 rateLimit.ts</div>
+          <div class="graph-node node-concept" style="left:250px; top:40px;">jose</div>
+          <div class="graph-node node-concept" style="left:530px; top:40px;">DataLoader</div>
+          <div class="graph-node node-file" style="left:60px; top:220px;">📄 auth.test.ts</div>
+          <div class="graph-node node-concept" style="left:340px; top:220px;">PostgreSQL</div>
+          <div class="graph-node node-error" style="left:520px; top:220px;">⚠ N+1 Query</div>
+          <div class="graph-node node-pattern" style="left:300px; top:340px;">⟳ Batch Loading</div>
+          <div class="graph-node node-decision" style="left:500px; top:340px;">◇ Edge Runtime</div>
+
+          <!-- Stats -->
+          <div class="graph-stats">
+            <div class="stat-row"><span class="stat-label">节点</span><span class="stat-value">38</span></div>
+            <div class="stat-row"><span class="stat-label">边</span><span class="stat-value">52</span></div>
+            <div class="stat-row"><span class="stat-label">实体类型</span><span class="stat-value">6</span></div>
+            <div class="stat-row"><span class="stat-label">最大度</span><span class="stat-value">7</span></div>
+          </div>
+
+          <!-- Legend -->
+          <div class="graph-legend">
+            <div class="legend-row"><div class="legend-dot" style="border-color:var(--accent-blue)"></div> File</div>
+            <div class="legend-row"><div class="legend-dot" style="border-color:var(--accent-green)"></div> Function</div>
+            <div class="legend-row"><div class="legend-dot" style="border-color:var(--accent-purple)"></div> Concept</div>
+            <div class="legend-row"><div class="legend-dot" style="border-color:var(--accent-red)"></div> Error</div>
+            <div class="legend-row"><div class="legend-dot" style="border-color:var(--accent-agent)"></div> Decision</div>
+            <div class="legend-row"><div class="legend-dot" style="border-color:var(--accent-cyan)"></div> Pattern</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Tab 4: Decay Dashboard ═══ -->
+    <div class="tab-content" id="tab-decay">
+      <div class="decay-layout">
+
+        <div class="decay-summary">
+          <div class="summary-card sc-green">
+            <div class="sc-value">87</div>
+            <div class="sc-label">活跃 (strength &gt; 0.5)</div>
+          </div>
+          <div class="summary-card sc-mid">
+            <div class="sc-value">38</div>
+            <div class="sc-label">衰减中 (0.2-0.5)</div>
+          </div>
+          <div class="summary-card sc-red">
+            <div class="sc-value">12</div>
+            <div class="sc-label">待清除 (&lt; 0.2)</div>
+          </div>
+          <div class="summary-card sc-blue">
+            <div class="sc-value">5</div>
+            <div class="sc-label">已过期 (TTL)</div>
+          </div>
+        </div>
+
+        <div class="decay-table-wrap">
+          <table class="decay-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>内容摘要</th>
+                <th>类型</th>
+                <th>强度</th>
+                <th>访问次数</th>
+                <th>最后访问</th>
+                <th>重要性</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>mem_a3f2</td>
+                <td>JWT 中间件认证架构</td>
+                <td>architecture</td>
+                <td><div class="strength-cell"><div class="strength-bar"><div class="strength-fill" style="width:92%;background:var(--strength-high)"></div></div>0.92</div></td>
+                <td>15</td>
+                <td>2小时前</td>
+                <td>8</td>
+                <td style="color:var(--strength-high)">活跃</td>
+              </tr>
+              <tr>
+                <td>mem_b7e1</td>
+                <td>N+1 查询修复：DataLoader</td>
+                <td>pattern</td>
+                <td><div class="strength-cell"><div class="strength-bar"><div class="strength-fill" style="width:88%;background:var(--strength-high)"></div></div>0.88</div></td>
+                <td>12</td>
+                <td>1天前</td>
+                <td>9</td>
+                <td style="color:var(--strength-high)">活跃</td>
+              </tr>
+              <tr>
+                <td>mem_c4d8</td>
+                <td>PostgreSQL 连接池配置</td>
+                <td>fact</td>
+                <td><div class="strength-cell"><div class="strength-bar"><div class="strength-fill" style="width:35%;background:var(--strength-mid)"></div></div>0.35</div></td>
+                <td>3</td>
+                <td>28天前</td>
+                <td>6</td>
+                <td style="color:var(--strength-mid)">衰减中</td>
+              </tr>
+              <tr>
+                <td>mem_d9a2</td>
+                <td>旧的认证方案（jsonwebtoken）</td>
+                <td>decision</td>
+                <td><div class="strength-cell"><div class="strength-bar"><div class="strength-fill" style="width:15%;background:var(--strength-low)"></div></div>0.15</div></td>
+                <td>1</td>
+                <td>45天前</td>
+                <td>3</td>
+                <td style="color:var(--strength-low)">待清除</td>
+              </tr>
+              <tr class="evict">
+                <td>mem_e1b5</td>
+                <td>express 4.17 路由配置（已被 4.18 取代）</td>
+                <td>fact</td>
+                <td><div class="strength-cell"><div class="strength-bar"><div class="strength-fill" style="width:8%;background:var(--strength-low)"></div></div>0.08</div></td>
+                <td>0</td>
+                <td>60天前</td>
+                <td>2</td>
+                <td style="color:var(--strength-low)">superseded</td>
+              </tr>
+              <tr class="evict">
+                <td>mem_f3c7</td>
+                <td>临时调试日志（TTL 过期）</td>
+                <td>fact</td>
+                <td><div class="strength-cell"><div class="strength-bar"><div class="strength-fill" style="width:50%;background:var(--strength-mid)"></div></div>0.50</div></td>
+                <td>5</td>
+                <td>10天前</td>
+                <td>4</td>
+                <td style="color:var(--accent-red)">expired_ttl</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ═══ Tab 5: Session Replay ═══ -->
+    <div class="tab-content" id="tab-replay">
+      <div class="replay-layout">
+
+        <div class="replay-controls">
+          <div class="replay-btn" title="上一步">⏮</div>
+          <div class="replay-btn play" title="播放/暂停">▶</div>
+          <div class="replay-btn" title="下一步">⏭</div>
+          <div class="replay-speed">
+            <button class="speed-btn">0.5×</button>
+            <button class="speed-btn active">1×</button>
+            <button class="speed-btn">2×</button>
+            <button class="speed-btn">4×</button>
+          </div>
+          <div class="replay-timeline">
+            <div class="replay-progress"></div>
+            <div class="replay-marker" style="left:35%"></div>
+          </div>
+          <div style="font-size:11px;color:var(--text-dim)">Step 7 / 20</div>
+        </div>
+
+        <div class="replay-body">
+
+          <div class="replay-event current">
+            <div class="replay-event-head">
+              <span class="replay-step">STEP 7</span>
+              <span class="replay-role">Assistant</span>
+              <span style="font-size:10px;color:var(--text-dim);margin-left:auto">10:33:15</span>
+            </div>
+            <div class="replay-content">
+              我发现了 N+1 查询问题。在 <code>userResolver.ts</code> 中，<code>getPosts()</code> 在循环内逐个查询用户信息，导致每个请求产生 100 次数据库查询。建议使用 DataLoader 进行批量加载。
+            </div>
+            <div class="replay-tool">
+              [PostToolUse] editFile → src/resolvers/userResolver.ts<br>
+              &nbsp;&nbsp;+ import DataLoader from 'dataloader';<br>
+              &nbsp;&nbsp;+ const userLoader = new DataLoader(async (ids) => { ... });
+            </div>
+          </div>
+
+          <div class="replay-event">
+            <div class="replay-event-head">
+              <span class="replay-step">STEP 6</span>
+              <span class="replay-role">Tool · readFile</span>
+              <span style="font-size:10px;color:var(--text-dim);margin-left:auto">10:30:09</span>
+            </div>
+            <div class="replay-content">
+              读取 <code>src/resolvers/userResolver.ts</code>（85 行）
+            </div>
+            <div class="replay-tool">
+              L23: for (const post of posts) {<br>
+              L24:&nbsp;&nbsp;&nbsp;const user = await User.findById(post.userId); // ← N+1<br>
+              L25: }
+            </div>
+          </div>
+
+          <div class="replay-event">
+            <div class="replay-event-head">
+              <span class="replay-step">STEP 5</span>
+              <span class="replay-role">User</span>
+              <span style="font-size:10px;color:var(--text-dim);margin-left:auto">10:30:05</span>
+            </div>
+            <div class="replay-content">
+              帮我修复 N+1 查询问题，数据库响应太慢了
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ═══ Tab 6: Audit Trail ═══ -->
+    <div class="tab-content" id="tab-audit">
+      <div class="audit-layout">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>操作</th>
+              <th>目标 ID</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>10:33:15</td>
+              <td><span class="audit-op op-write">write</span></td>
+              <td>mem_b7e1</td>
+              <td>type=long_term, strength=0.88, source=l1_extraction</td>
+            </tr>
+            <tr>
+              <td>10:33:16</td>
+              <td><span class="audit-op op-reinforce">reinforce</span></td>
+              <td>mem_a3f2</td>
+              <td>search hit, strength 0.85→0.92, accessCount 14→15</td>
+            </tr>
+            <tr>
+              <td>10:33:10</td>
+              <td><span class="audit-op op-search">search</span></td>
+              <td>—</td>
+              <td>query="数据库性能优化", mode=hybrid, results=5, latency=14ms</td>
+            </tr>
+            <tr>
+              <td>10:30:09</td>
+              <td><span class="audit-op op-write">write</span></td>
+              <td>mem_x1k4</td>
+              <td>type=short_term, hook=post_tool_use, tool=readFile, privacy_filtered=1</td>
+            </tr>
+            <tr>
+              <td>09:00:00</td>
+              <td><span class="audit-op op-decay">decay</span></td>
+              <td>—</td>
+              <td>applied to 142 entries, 38 decayed, 0 below floor</td>
+            </tr>
+            <tr>
+              <td>09:00:01</td>
+              <td><span class="audit-op op-forget">forget</span></td>
+              <td>mem_e1b5</td>
+              <td>reason=superseded_by mem_b7e1, dryRun=false</td>
+            </tr>
+            <tr>
+              <td>09:00:02</td>
+              <td><span class="audit-op op-delete">delete</span></td>
+              <td>mem_f3c7</td>
+              <td>reason=expired_ttl, forgetAfter=1719300000000</td>
+            </tr>
+            <tr>
+              <td>08:00:00</td>
+              <td><span class="audit-op op-decay">decay</span></td>
+              <td>—</td>
+              <td>scheduled sweep, evicted 12 entries below strength floor</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function switchTab(name) {
+  document.querySelectorAll('.vtab').forEach((t, i) => {
+    t.classList.toggle('active', i === ['list','stream','graph','decay','replay','audit'].indexOf(name));
+  });
+  document.querySelectorAll('.tab-content').forEach(c => {
+    c.classList.toggle('active', c.id === 'tab-' + name);
+  });
+}
+</script>
+
+</body>
+</html>

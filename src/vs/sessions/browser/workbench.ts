@@ -307,6 +307,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private editorPartView!: ISerializableView;
 	private agentEditorPartView!: ISerializableView;
 
+	/** Whether the Agent editor (right column) is currently collapsed */
+	private isRightColumnCollapsed = false;
+	/** Saved width of the Agent editor before collapse (for restore) */
+	private preToggleWidth = 500;
+
 	private readonly partVisibility: IPartVisibilityState = {
 		sidebar: true,
 		auxiliaryBar: false,
@@ -1187,19 +1192,17 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		canvasGroup.lock(true);
 
 		// ── 伸缩按钮：折叠/展开右侧 Agent Studio 栏 ──
-		let isRightColumnCollapsed = false;
-		let preToggleWidth = 500;
 		const toggleHandler: EventListener = () => {
 			if (!this.workbenchGrid || !this.agentEditorPartView) { return; }
 			try {
-				if (isRightColumnCollapsed) {
+				if (this.isRightColumnCollapsed) {
 					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
-					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: preToggleWidth, height: 1000 });
-					isRightColumnCollapsed = false;
+					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: this.preToggleWidth, height: 1000 });
+					this.isRightColumnCollapsed = false;
 				} else {
-					preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+					this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
 					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
-					isRightColumnCollapsed = true;
+					this.isRightColumnCollapsed = true;
 				}
 			} catch { /* Grid 未就绪 */ }
 		};
@@ -1265,19 +1268,19 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 					// 恢复右侧栏
 					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
-					const w = preToggleWidth > 0 ? preToggleWidth : 500;
+					const w = this.preToggleWidth > 0 ? this.preToggleWidth : 500;
 					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: w, height: 1000 });
-					isRightColumnCollapsed = false;
+					this.isRightColumnCollapsed = false;
 					wasPoppedOut = false;
 					console.warn('[Sarosis][Popout] agent editor restored, width=' + w);
 				} else {
 					// ── 弹出聊天窗口 ──
-					// 先保存 agent editor 当前宽度（用于恢复）
-					if (!isRightColumnCollapsed) {
-						try {
-							preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
-						} catch { /* grid may not be fully layouted */ }
-					}
+				// 先保存 agent editor 当前宽度（用于恢复）
+				if (!this.isRightColumnCollapsed) {
+					try {
+						this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+					} catch { /* grid may not be fully layouted */ }
+				}
 
 					// ① 在右侧栏仍可见时，先定位 pane 和它对应的 webview 覆盖层。
 					// 覆盖层是 body 直接子节点中、包含 iframe.webview 且 rect 与 pane
@@ -1297,9 +1300,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 						console.warn('[Sarosis][Popout] pane found, overlay(webview) found=' + !!overlay);
 					}
 
-					// ② 隐藏右侧栏（与收缩按钮效果一致）
-					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
-					isRightColumnCollapsed = true;
+				// ② 隐藏右侧栏（与收缩按钮效果一致）
+				this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
+				this.isRightColumnCollapsed = true;
 
 					// 隐藏 titlebar 上的弹出按钮和伸缩按钮（右侧栏已隐藏，这两个按钮不再有用）
 					setToggleContainerVisible(false);
@@ -1470,6 +1473,53 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		};
 
 		installCloseGuard(canvasGroup);
+
+		// ── Reopen chat after popout aux window closes ───────────────────
+		// When the user closes the popped-out auxiliary window, VS Code may
+		// auto-move the editor back into the agent part — but it creates a
+		// NEW group instead of reusing the original one. We intercept with
+		// a merge: if the editor already exists in a non-canvas group, merge
+		// that group into canvasGroup. If it doesn't exist at all, open it
+		// directly in canvasGroup (never create a new group).
+		const reopenChatHandler: EventListener = (e) => {
+			const detail = (e as CustomEvent).detail as { isNativeChat?: boolean } | undefined;
+			const panelType = detail?.isNativeChat ? 'native-chat' : 'chat';
+			console.warn(`[Sarosis][AgentEditor] reopen-chat event: panelType='${panelType}', groups=${agentPart.groups.length}`);
+
+			// Check if the editor already exists in any group (VS Code auto-moved it back)
+			const existingGroup = agentPart.groups.find(g =>
+				g.editors.some(ed =>
+					(ed instanceof AgentStudioEditorInput && ed.panelType === panelType) ||
+					(ed instanceof NativeChatEditorInput && panelType === 'native-chat')
+				)
+			);
+
+			if (existingGroup && existingGroup !== canvasGroup) {
+				// Editor was auto-moved back into a NEW group — merge it into canvasGroup
+				console.warn(`[Sarosis][AgentEditor] merging group#${existingGroup.id} into canvasGroup#${canvasGroup.id}`);
+				agentPart.mergeAllGroups(canvasGroup);
+				return;
+			}
+
+			if (existingGroup === canvasGroup) {
+				// Editor is already in canvasGroup — nothing to do
+				console.warn(`[Sarosis][AgentEditor] editor already in canvasGroup, no action needed`);
+				return;
+			}
+
+			// Editor doesn't exist anywhere — open it in canvasGroup (not activeGroup,
+			// which might be a different group and cause a new split)
+			console.warn(`[Sarosis][AgentEditor] opening editor in canvasGroup#${canvasGroup.id}`);
+			if (panelType === 'native-chat') {
+				const input = NativeChatEditorInput.getInstance();
+				canvasGroup.openEditor(input, { pinned: true, sticky: true });
+			} else {
+				const input = AgentStudioEditorInput.getOrCreate(panelType as any);
+				canvasGroup.openEditor(input, { pinned: true, sticky: true });
+			}
+		};
+		document.addEventListener('agent-studio:reopen-chat', reopenChatHandler);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:reopen-chat', reopenChatHandler) });
 
 		// ── Single Chat layout (every launch) ────────────────────────────
 		// The Agent part is created with `restorePreviousState: false`, so it
@@ -2047,9 +2097,24 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			case Parts.EDITOR_PART:
 				// Editor cannot be hidden in this layout
 				break;
-			case Parts.AGENT_EDITOR_PART:
-				// Agent editor (right column) cannot be hidden in this layout
-				break;
+		case Parts.AGENT_EDITOR_PART:
+			// Toggle Agent editor (right column) visibility
+			if (hidden) {
+				if (!this.isRightColumnCollapsed) {
+					try {
+						this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+					} catch { /* grid not ready */ }
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
+					this.isRightColumnCollapsed = true;
+				}
+			} else {
+				if (this.isRightColumnCollapsed) {
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
+					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: this.preToggleWidth > 0 ? this.preToggleWidth : 500, height: 1000 });
+					this.isRightColumnCollapsed = false;
+				}
+			}
+			break;
 			// Panel, AuxiliaryBar, ChatBar are not in this layout - no-op
 		}
 	}

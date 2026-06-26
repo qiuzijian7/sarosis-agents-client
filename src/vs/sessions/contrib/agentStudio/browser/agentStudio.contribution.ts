@@ -930,6 +930,9 @@ registerAction2(class extends Action2 {
 			return;
 		}
 
+		// Remember the editor type for re-opening after aux window closes
+		const isNativeChat = targetEditor instanceof NativeChatEditorInput;
+
 		try {
 			// Open an auxiliary BrowserWindow (independent OS window with
 			// native window controls) and move the chat editor into it.
@@ -939,12 +942,36 @@ registerAction2(class extends Action2 {
 				auxPart.activeGroup,
 			);
 
-			// Hide the chat bar (right sidebar) after popping out
-			layoutService.setPartHidden(true, Parts.CHATBAR_PART);
+			// Hide the Agent editor (right column) after popping out
+			layoutService.setPartHidden(true, Parts.AGENT_EDITOR_PART);
 
-			// When the auxiliary window is closed, re-show the chat bar
+			// Hide the titlebar toggle buttons (right column is gone, they're useless)
+			const toggleContainer = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
+			if (toggleContainer) {
+				toggleContainer.style.display = 'none';
+			}
+
+			// When the auxiliary window is closed, re-show the Agent editor
+			// and re-open the chat editor in the main window's right column.
 			auxPart.onWillDispose(() => {
-				layoutService.setPartHidden(false, Parts.CHATBAR_PART);
+				// Restore right column visibility first
+				layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
+
+				// Restore titlebar toggle buttons
+				const tc = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
+				if (tc) {
+					tc.style.display = '';
+				}
+
+				// Dispatch a custom event so workbench.ts can re-open the chat
+				// editor in the main window's agent part (it has the context
+				// needed to target the correct group). Use a small delay to
+				// ensure the right column is fully laid out first.
+				setTimeout(() => {
+					mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:reopen-chat', {
+						detail: { isNativeChat }
+					}));
+				}, 100);
 			});
 		} catch {
 			// Last-resort fallback: dispatch the legacy in-window overlay event
