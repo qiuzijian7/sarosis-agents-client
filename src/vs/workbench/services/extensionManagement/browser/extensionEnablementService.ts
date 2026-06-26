@@ -41,6 +41,14 @@ type WorkspaceType = { readonly virtual: boolean; readonly trusted: boolean };
 
 const EXTENSION_UNIFICATION_SETTING = 'chat.extensionUnification.enabled';
 
+// VsSaros: Extensions disabled at the product level because they require
+// GitHub authentication. VsSaros uses TOF auth (sessions.agentStudio.tof)
+// instead, so these extensions only produce GitHubLoginFailed errors.
+const VSSAROS_DISABLED_EXTENSIONS = [
+	'GitHub.copilot',
+	'GitHub.copilot-chat',
+];
+
 export class ExtensionEnablementService extends Disposable implements IWorkbenchExtensionEnablementService {
 
 	declare readonly _serviceBrand: undefined;
@@ -494,6 +502,13 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 
 		// Check if this is the better merge extension which was migrated to a built-in extension
 		if (areSameExtensions({ id: BetterMergeId.value }, extension.identifier)) {
+			return true;
+		}
+
+		// VsSaros: Disable GitHub Copilot extensions — VsSaros uses TOF auth
+		// (sessions.agentStudio.tof) instead of GitHub auth. Copilot extensions
+		// require GitHub login which causes GitHubLoginFailed errors.
+		if (VSSAROS_DISABLED_EXTENSIONS.some(id => areSameExtensions({ id }, extension.identifier))) {
 			return true;
 		}
 

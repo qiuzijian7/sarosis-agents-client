@@ -42,6 +42,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { stringHash } from '../../../../base/common/hash.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
@@ -174,7 +175,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
-		@ILogService private readonly logService: ILogService,
+		@IAgentStudioLogService private readonly logService: ILogService,
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@IPathService private readonly pathService: IPathService,

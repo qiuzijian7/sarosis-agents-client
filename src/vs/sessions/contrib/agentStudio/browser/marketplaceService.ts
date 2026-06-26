@@ -31,6 +31,7 @@ import {
 	PackageKind, MARKETPLACE_URL_SETTING,
 } from '../common/marketplace.js';
 import { IPackageInstallerRegistry, PackageManifest } from '../common/packageInstaller.js';
+import { ITofAuthService } from '../common/tofAuth.js';
 
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
@@ -69,11 +70,37 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		@IConfigurationService private readonly configService: IConfigurationService,
 		@IPathService private readonly pathService: IPathService,
 		@IPackageInstallerRegistry private readonly installerRegistry: IPackageInstallerRegistry,
+		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 	) {
 		super();
 		const userJson = this.storageService.get(USER_KEY, StorageScope.APPLICATION);
 		if (userJson) {
 			try { this._user = JSON.parse(userJson); } catch { /* ignore */ }
+		}
+
+		// ── 监听 TOF 登录态变化，自动同步商城登录 ──
+		this._register(this.tofAuthService.onDidChangeUser(user => {
+			if (user) {
+				// TOF 用户登录/恢复 → 自动登录商城
+				this._syncTofLogin().catch(err => {
+					this.logService.warn('[Marketplace] TOF 自动登录失败:', err);
+				});
+			} else {
+				// TOF 用户登出 → 清除商城登录态
+				this.logout();
+			}
+		}));
+
+		// ── 启动时检查 TOF 是否已登录（Delayed 实例化可能错过 onDidChangeUser 事件）──
+		// MarketplaceService 是 Delayed 实例化，TOF 会话恢复可能在构造前已完成。
+		// 此处主动检查 currentUser，若已有 TOF 用户则立即同步。
+		if (this.tofAuthService.currentUser && this.tofAuthService.currentTicket) {
+			// TOF 已登录但商城未登录（或用户名不一致）→ 异步同步
+			if (!this._user || this._user.username !== this.tofAuthService.currentUser.login_name) {
+				this._syncTofLogin().catch(err => {
+					this.logService.warn('[Marketplace] 启动时 TOF 同步失败:', err);
+				});
+			}
 		}
 	}
 
@@ -103,6 +130,43 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		this.storageService.remove(USER_KEY, StorageScope.APPLICATION);
 		this._user = undefined;
 		this._onDidChangeLogin.fire();
+	}
+
+	/**
+	 * 用 TOF 票据登录商城（复用 VsSaros 登录态）。
+	 * 用 x-tai-identity ticket 调 /auth/tof，服务端验证后返回商城 JWT。
+	 */
+	async loginWithTof(): Promise<void> {
+		const ticket = this.tofAuthService.currentTicket;
+		if (!ticket) {
+			throw new Error('未找到 TOF 登录票据，请先登录 VsSaros');
+		}
+		const res = await this.api<{ token: string; user: any; tofUser?: { staff_id: string; team: string | null } }>('POST', '/auth/tof', { ticket });
+		this.storageService.store(TOKEN_KEY, res.token, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._user = {
+			id: res.user.id, username: res.user.username,
+			displayName: res.user.display_name ?? undefined, role: res.user.role,
+			avatarUrl: res.user.avatar_url ?? undefined,
+		};
+		this.storageService.store(USER_KEY, JSON.stringify(this._user), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._onDidChangeLogin.fire();
+		this.logService.info(`[Marketplace] TOF 登录成功: ${res.user.username} (staff_id=${res.tofUser?.staff_id})`);
+	}
+
+	/**
+	 * 同步 TOF 登录态到商城（内部方法）。
+	 * 当 TOF 用户变化时自动调用，静默处理失败。
+	 */
+	private async _syncTofLogin(): Promise<void> {
+		// 已登录且用户名一致则跳过
+		const tofUser = this.tofAuthService.currentUser;
+		if (!tofUser) { return; }
+		if (this._user && this._user.username === tofUser.login_name) { return; }
+		try {
+			await this.loginWithTof();
+		} catch (err) {
+			this.logService.warn('[Marketplace] TOF 同步登录失败:', err);
+		}
 	}
 
 	// ── 浏览 ──────────────────────────────────────────────────

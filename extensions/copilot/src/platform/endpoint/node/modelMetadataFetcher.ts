@@ -231,7 +231,21 @@ export class ModelMetadataFetcher extends Disposable implements IModelMetadataFe
 		}
 		const requestStartTime = Date.now();
 
-		const copilotToken = (await this._authService.getCopilotToken()).token;
+		// VsSaros: When GitHub login is not available (e.g. using TOF auth),
+		// silently skip model metadata fetching instead of throwing
+		// GitHubLoginFailedError. This allows the chat box to fall back to
+		// BYOK model providers without console errors.
+		let copilotToken: string;
+		try {
+			copilotToken = (await this._authService.getCopilotToken()).token;
+		} catch (e) {
+			const err = e as Error;
+			if (err.message?.includes('GitHubLoginFailed') || err.constructor?.name === 'GitHubLoginFailedError') {
+				this._logService.info('Skipping model metadata fetch: GitHub login not available (VsSaros TOF mode)');
+				return;
+			}
+			throw e;
+		}
 		const requestId = generateUuid();
 		const requestMetadata: RequestMetadata = { type: RequestType.Models, isModelLab: this._isModelLab };
 

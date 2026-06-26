@@ -14,6 +14,26 @@
 	border-bottom-left-radius: 8px;
 	box-sizing: border-box;
 	overflow: hidden;
+	/*
+	 * [Sarosis] Force the part element to fill its split-view-view container
+	 * in both dimensions. The base VS Code layout relies on JS-set inline
+	 * dimensions cascading through, but the sessions three-column horizontal
+	 * split (Sidebar | FileEditor | AgentEditor) leaves the .part.editor
+	 * element without an explicit height — causing it to size to its content
+	 * instead of the allocated grid space, which pushes the bottom of the
+	 * editor (and its scrollbar) beyond the window boundary.
+	 */
+	height: 100%;
+	width: 100%;
+}
+
+/*
+ * [Sarosis] Ensure the .content wrapper also fills the part so the
+ * editor-group-container and its children are properly constrained.
+ */
+.agent-sessions-workbench .part.editor:not(.modal-editor-part) > .content {
+	height: 100%;
+	width: 100%;
 }
 
 .agent-sessions-workbench.nosidebar.nochatbar .part.editor:not(.modal-editor-part) {
@@ -85,6 +105,18 @@
 	min-height: 35px !important;
 	flex-shrink: 0 !important;
 }
+
+/*
+ * [Sarosis] Force column flex on the agent editor group so children
+ * stack vertically (title bar → editor container) and the editor
+ * container consumes all remaining vertical space.
+ *
+ * NOTE: These rules are intentionally scoped to .agent-editor-part only.
+ * The File-zone editor (MainEditorPart) uses standard Monaco code editors
+ * that rely on JS-set inline heights for .editor-container. Applying
+ * flex:1 !important there would override the JS height calculation and
+ * cause layout mismatches.
+ */
 
 /* Force column flex on the editor group so children stack vertically */
 .agent-sessions-workbench .agent-editor-part .editor-group-container {

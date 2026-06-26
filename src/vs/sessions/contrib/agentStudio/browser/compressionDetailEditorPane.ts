@@ -35,7 +35,7 @@ export class CompressionDetailEditorPane extends EditorPane {
 		this._container = append(parent, $('.compression-detail-container'));
 		const style = document.createElement('style');
 		style.textContent = `
-			.compression-detail-container { padding: 20px; overflow-y: auto; height: 100%; }
+			.compression-detail-container { padding: 20px; overflow-y: auto; height: 100%; box-sizing: border-box; }
 			.compression-detail-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--vscode-foreground); }
 			.compression-detail-empty { padding: 40px; text-align: center; color: var(--vscode-descriptionForeground); }
 			.compression-detail-stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }

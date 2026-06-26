@@ -21,11 +21,13 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IMcpService, IMcpServer, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { startServerAndWaitForLiveTools } from '../../../../workbench/contrib/mcp/common/mcpTypesUtils.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { timeout } from '../../../../base/common/async.js';
 import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 
 const LOG_TAG = '[CodebaseMemoryMcp]';
 const SERVER_NAME = 'codebase-memory-mcp';
@@ -36,9 +38,10 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 	constructor(
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
 		@IMcpService private readonly mcpService: IMcpService,
-		@ILogService private readonly logService: ILogService,
+		@IAgentStudioLogService private readonly logService: ILogService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
+		@ITerminalService private readonly terminalService: ITerminalService,
 	) {
 		super();
 
@@ -89,71 +92,55 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 			return;
 		}
 
-		const fs = this._node('fs');
-		const path = this._node('path');
-		if (!fs || !path) {
-			this.logService.warn(LOG_TAG, 'Node.js fs/path not available, cannot create junction.');
-			return;
-		}
+		const isWindows = typeof process !== 'undefined' && process.platform === 'win32';
 
-	const isWindows = process.platform === 'win32';
-
-	for (const folder of folders) {
+		for (const folder of folders) {
 			const workspacePath = folder.uri.fsPath;
-			const linkPath = path.join(workspacePath, '.codebase-memory');
-			const sarosWorkspaceDir = path.join(workspacePath, '.sarosworkspace');
-			const targetDir = path.join(sarosWorkspaceDir, '.codebase-memory');
+			const linkUri = URI.joinPath(URI.file(workspacePath), '.codebase-memory');
+			const targetUri = URI.joinPath(URI.file(workspacePath), '.sarosworkspace', '.codebase-memory');
 
 			try {
 				// 1. Ensure .sarosworkspace/.codebase-memory/ directory exists
 				try {
-					await this.fileService.createFolder(URI.file(targetDir));
-					this.logService.info(LOG_TAG, `Ensured target directory: ${targetDir}`);
+					await this.fileService.createFolder(targetUri);
+					this.logService.info(LOG_TAG, `Ensured target directory: ${targetUri.fsPath}`);
 				} catch {
 					// Directory might already exist — that's fine
 				}
 
 				// 2. Check if .codebase-memory already exists
-				let linkExists = false;
-				try {
-					fs.statSync(linkPath);
-					linkExists = true;
-				} catch {
-					// Doesn't exist — we can create the junction
-				}
-
+				const linkExists = await this.fileService.exists(linkUri);
 				if (linkExists) {
-					// Check if it's already the correct junction/symlink
-					try {
-						const realPath = fs.realpathSync(linkPath);
-						const normalizedReal = realPath.replace(/\\/g, '/');
-						const normalizedTarget = targetDir.replace(/\\/g, '/');
-						if (normalizedReal === normalizedTarget) {
-							this.logService.info(LOG_TAG, `Junction already correct: ${linkPath} → ${targetDir}`);
-							continue;
-						}
-					} catch {
-						// Not a symlink — it's a real directory or file
-					}
-
-					// .codebase-memory exists but is not the right junction
-					this.logService.warn(LOG_TAG,
-						`.codebase-memory already exists at ${linkPath} (not a junction to ${targetDir}). ` +
-						`Skipping. Remove it manually if you want to redirect graph storage.`);
+					this.logService.info(LOG_TAG, `.codebase-memory already exists at ${linkUri.fsPath}, skipping junction creation.`);
 					continue;
 				}
 
-				// 3. Create junction/symlink
+				// 3. Create junction/symlink via hidden terminal (sandbox-safe)
+				const command = isWindows
+					? `mklink /J "${linkUri.fsPath}" "${targetUri.fsPath}"`
+					: `ln -s "${targetUri.fsPath}" "${linkUri.fsPath}"`;
+
 				try {
-					if (isWindows) {
-						// Junction type on Windows does NOT require admin privileges
-						fs.symlinkSync(targetDir, linkPath, 'junction');
+					const terminal = await this.terminalService.createTerminal({
+						config: { name: 'CBM Junction Creator', hideFromUser: true } as any,
+					});
+					terminal.sendText(command, true);
+
+					// Wait for the command to execute
+					await timeout(3000);
+
+					// Verify junction was created
+					const created = await this.fileService.exists(linkUri);
+					if (created) {
+						this.logService.info(LOG_TAG, `Created junction: ${linkUri.fsPath} → ${targetUri.fsPath}`);
 					} else {
-						fs.symlinkSync(targetDir, linkPath, 'dir');
+						this.logService.info(LOG_TAG, `Junction creation may have failed. Graph will be stored in .codebase-memory directly.`);
 					}
-					this.logService.info(LOG_TAG, `Created junction: ${linkPath} → ${targetDir}`);
+
+					// Dispose the hidden terminal
+					terminal.dispose();
 				} catch (err: any) {
-					this.logService.warn(LOG_TAG, `Failed to create junction at ${linkPath}: ${err?.message || err}`);
+					this.logService.info(LOG_TAG, `Could not create junction via terminal: ${err?.message || err}. Graph will be stored in .codebase-memory directly.`);
 				}
 			} catch (err) {
 				this.logService.warn(LOG_TAG, `Failed to ensure junction for ${workspacePath}:`, err);
@@ -218,11 +205,6 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 			return id === target || label === target ||
 				id.includes('codebase_memory_mcp') || label.includes('codebase_memory_mcp');
 		});
-	}
-
-	/** Load Node.js built-in module (available in Electron renderer). */
-	private _node(name: string): any {
-		try { return (globalThis as any).require?.(name); } catch { return undefined; }
 	}
 }
 

@@ -11,15 +11,17 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
-import { ICodebaseMemoryMcpService, ICodebaseMemoryMcpStatus, ISyncGraphResult, IGraphStatus, IIndexResult } from './codebaseMemoryMcpService.js';
+import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
+import { ICodebaseMemoryMcpService, ICodebaseMemoryMcpStatus, ISyncGraphResult, IGraphStatus, IIndexResult, IIndexConfig } from './codebaseMemoryMcpService.js';
 
 const CSS_TEXT = `
-.cbm-container { padding: 24px 32px; overflow-y: auto; height: 100%; font-size: 13px; color: var(--vscode-foreground); }
+.cbm-container { padding: 24px 32px; overflow-y: auto; height: 100%; box-sizing: border-box; font-size: 13px; color: var(--vscode-foreground); }
 .cbm-title { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
 .cbm-status-card {
 	background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border);
@@ -55,8 +57,9 @@ const CSS_TEXT = `
 	background: var(--vscode-terminal-background, #1e1e1e); border: 1px solid var(--vscode-widget-border);
 	border-radius: 8px; padding: 12px 16px; font-family: var(--vscode-terminal-font-family, monospace);
 	font-size: 12px; line-height: 1.6; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+	user-select: text; -webkit-user-select: text; cursor: text;
 }
-.cbm-log-line { color: var(--vscode-terminal-foreground, #cccccc); }
+.cbm-log-line { color: var(--vscode-terminal-foreground, #cccccc); user-select: text; -webkit-user-select: text; }
 .cbm-log-line.success { color: #4ec9b0; }
 .cbm-log-line.error { color: #f48771; }
 .cbm-log-line.warn { color: #dcdcaa; }
@@ -88,6 +91,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	private _status: ICodebaseMemoryMcpStatus | null = null;
 	private _syncResult: ISyncGraphResult | null = null;
 	private _graphStatus: IGraphStatus | null = null;
+	private _logLines: string[] = [];
 
 	constructor(
 		group: IEditorGroup,
@@ -95,7 +99,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IOpenerService private readonly openerService: IOpenerService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IEditorService private readonly editorService: IEditorService,
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
 	) {
 		super(CodebaseMemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -155,7 +160,34 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 
 		// Log section
 		const logSection = append(this._container, $('.cbm-log-section'));
-		append(logSection, $('.cbm-log-title')).textContent = '安装日志';
+		const logTitleRow = append(logSection, $('.cbm-log-title-row')) as HTMLElement;
+		logTitleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
+		const logTitle = append(logTitleRow, $('.cbm-log-title'));
+		logTitle.textContent = '安装日志';
+		logTitle.style.marginBottom = '0';
+		const copyBtn = append(logTitleRow, $('.cbm-copy-btn')) as HTMLButtonElement;
+		copyBtn.textContent = '📋 复制全部';
+		copyBtn.title = '复制所有日志到剪贴板';
+		copyBtn.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-widget-border);background:var(--vscode-editorWidget-background);color:var(--vscode-descriptionForeground);';
+		copyBtn.onclick = async () => {
+			const text = this._logLines.join('\n');
+			try {
+				await navigator.clipboard.writeText(text);
+				copyBtn.textContent = '✓ 已复制';
+			} catch {
+				// Fallback: use textarea + execCommand
+				const ta = document.createElement('textarea');
+				ta.value = text;
+				ta.style.position = 'fixed';
+				ta.style.opacity = '0';
+				document.body.appendChild(ta);
+				ta.select();
+				document.execCommand('copy');
+				document.body.removeChild(ta);
+				copyBtn.textContent = '✓ 已复制';
+			}
+			setTimeout(() => { copyBtn.textContent = '📋 复制全部'; }, 1500);
+		};
 		this._logContent = append(logSection, $('.cbm-log-box'));
 	}
 
@@ -320,6 +352,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			// Index button (shown even when no graph exists)
 			const noGraphActions = append(section, $('.cbm-graph-actions')) as HTMLElement;
 			noGraphActions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+			this._appendIndexConfig(section);
 			this._appendIndexButton(noGraphActions);
 			return;
 		}
@@ -382,8 +415,21 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		const actions = append(section, $('.cbm-graph-actions')) as HTMLElement;
 		actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
 
+		// Index configuration
+		this._appendIndexConfig(section);
+
 		// Index repository button (primary action)
 		this._appendIndexButton(actions);
+
+		// View 3D Graph visualization button
+		const viewBtn = append(actions, $('.cbm-btn.primary')) as HTMLButtonElement;
+		viewBtn.textContent = '🌐 查看 3D Graph';
+		viewBtn.title = '在新标签页中打开 3D Graph 可视化（Built-in 3D graph visualization）';
+		viewBtn.style.background = '#c586c0';
+		viewBtn.onclick = () => {
+			const input = CodebaseGraphViewerEditorInput.getOrCreate();
+			this.editorService.openEditor(input, { pinned: true });
+		};
 
 		// Pull from team button
 		const pullBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
@@ -414,12 +460,79 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		openBtn.title = '在文件管理器中打开 Graph 目录';
 		openBtn.onclick = () => {
 			if (this._graphStatus?.graphPath) {
-				const path = (globalThis as any).require?.('path');
-				const dir = path?.dirname(this._graphStatus!.graphPath);
-				if (dir) {
-					this._openFolder(dir);
-				}
+				this._openFolder(this._graphStatus.graphPath);
 			}
+		};
+	}
+
+	private _appendIndexConfig(parent: HTMLElement): void {
+		const config = this.cbmService.getIndexConfig();
+		const cfgSection = append(parent, $('.cbm-index-config')) as HTMLElement;
+		cfgSection.style.cssText = 'margin-bottom:12px;padding:10px 12px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;';
+
+		// 标题
+		const title = append(cfgSection, $('div')) as HTMLElement;
+		title.textContent = '⚙ 索引配置';
+		title.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:8px;color:var(--vscode-foreground);';
+
+		// Mode 选择
+		const modeRow = append(cfgSection, $('div')) as HTMLElement;
+		modeRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+		const modeLabel = append(modeRow, $('label')) as HTMLLabelElement;
+		modeLabel.textContent = '索引模式:';
+		modeLabel.style.cssText = 'font-size:12px;min-width:70px;color:var(--vscode-descriptionForeground);';
+		const modeSelect = append(modeRow, $('select')) as HTMLSelectElement;
+		modeSelect.style.cssText = 'flex:1;max-width:200px;font-size:12px;padding:2px 4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px;';
+		const modes: { value: string; label: string }[] = [
+			{ value: 'fast', label: 'Fast — 过滤文件，无语义分析（推荐，内存小）' },
+			{ value: 'moderate', label: 'Moderate — 过滤文件 + 语义分析' },
+			{ value: 'full', label: 'Full — 全部文件 + 语义分析（最慢，内存大）' },
+		];
+		for (const m of modes) {
+			const opt = append(modeSelect, $('option')) as HTMLOptionElement;
+			opt.value = m.value;
+			opt.textContent = m.label;
+			if (m.value === config.mode) { opt.selected = true; }
+		}
+
+		// 索引路径（子目录）
+		const subRow = append(cfgSection, $('div')) as HTMLElement;
+		subRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+		const subLabel = append(subRow, $('label')) as HTMLLabelElement;
+		subLabel.textContent = '索引路径:';
+		subLabel.style.cssText = 'font-size:12px;min-width:70px;color:var(--vscode-descriptionForeground);';
+		const subInput = append(subRow, $('input')) as HTMLInputElement;
+		subInput.type = 'text';
+		subInput.value = config.subPath || '';
+		subInput.placeholder = '留空=整个工作区，或输入子目录如 src/vs/sessions';
+		subInput.style.cssText = 'flex:1;font-size:12px;padding:3px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px;';
+
+		// 排除目录输入
+		const exclRow = append(cfgSection, $('div')) as HTMLElement;
+		exclRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+		const exclLabel = append(exclRow, $('label')) as HTMLLabelElement;
+		exclLabel.textContent = '排除目录:';
+		exclLabel.style.cssText = 'font-size:12px;min-width:70px;color:var(--vscode-descriptionForeground);';
+		const exclInput = append(exclRow, $('input')) as HTMLInputElement;
+		exclInput.type = 'text';
+		exclInput.value = config.excludeDirs.join(', ');
+		exclInput.placeholder = 'node_modules, .git, build, out, dist';
+		exclInput.style.cssText = 'flex:1;font-size:12px;padding:3px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px;';
+
+		// 保存按钮
+		const saveBtn = append(cfgSection, $('.cbm-btn')) as HTMLButtonElement;
+		saveBtn.textContent = '💾 保存配置';
+		saveBtn.style.cssText = 'font-size:12px;padding:3px 10px;';
+		saveBtn.onclick = () => {
+			const mode = modeSelect.value as IIndexConfig['mode'];
+			const excludeDirs = exclInput.value.split(',').map(s => s.trim()).filter(s => s);
+			const subPath = subInput.value.trim();
+			const newConfig: IIndexConfig = { mode, excludeDirs, subPath: subPath || undefined };
+			this.cbmService.setIndexConfig(newConfig);
+			const pathDesc = subPath ? `路径: ${subPath}` : '路径: 整个工作区';
+			this.notificationService.info(`索引配置已保存 (模式: ${mode}, ${pathDesc}, 排除 ${excludeDirs.length} 个目录)`);
+			// 重新渲染 graph 区域，让 UI 反映最新配置
+			this._renderGraphStatus();
 		};
 	}
 
@@ -428,41 +541,54 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		indexBtn.textContent = '🔍 索引代码库';
 		indexBtn.title = '扫描并索引当前代码库，构建代码知识图谱';
 		indexBtn.onclick = async () => {
-			indexBtn.disabled = true;
-			indexBtn.textContent = '⏳ 索引中...';
+			// 正在索引中 → 点击取消
+			if (this.cbmService.isIndexing) {
+				indexBtn.disabled = true;
+				indexBtn.textContent = '⏳ 取消中...';
+				this.cbmService.cancelIndex();
+				return;
+			}
+			// 开始索引：按钮变为可取消状态
+			indexBtn.textContent = '✗ 取消索引';
+			indexBtn.title = '点击取消正在进行的索引操作';
 			this._appendLogLine('▶ 开始索引代码库...');
 			const result = await this.cbmService.indexRepository();
 			if (result.success) {
 				this.notificationService.info(`索引完成 (${result.duration}s)`);
 				this._appendLogLine(`✓ 索引完成: ${result.message} (${result.duration}s)`);
 			} else {
-				this.notificationService.warn(`索引失败: ${result.message}`);
-				this._appendLogLine(`✗ 索引失败: ${result.message}`);
+				this.notificationService.warn(result.message);
+				this._appendLogLine(`✗ ${result.message}`);
 			}
 			indexBtn.disabled = false;
 			indexBtn.textContent = '🔍 索引代码库';
+			indexBtn.title = '扫描并索引当前代码库，构建代码知识图谱';
 		};
 	}
 
-	private _openFolder(dir: string): void {
-		const { shell } = (globalThis as any).require?.('electron') || {};
-		if (shell) {
-			shell.openPath(dir);
-		} else {
-			// Fallback: use VS Code's opener
-			const uri = URI.file(dir);
-			this.openerService?.open(uri, { openExternal: true });
-		}
+	private _openFolder(filePath: string): void {
+		// 使用 VS Code 内置 revealFileInOS 命令，在文件管理器中打开并选中文件
+		// （sandbox 环境下 require('path'/'electron') 不可用，改用此方案）
+		const uri = URI.file(filePath);
+		this.commandService.executeCommand('revealFileInOS', uri);
 	}
 
 	private _renderLog(): void {
-		if (!this._logContent || !this._status) { return; }
+		if (!this._logContent) { return; }
+		// Merge installLog from status into _logLines (if any new entries)
+		if (this._status?.installLog && this._status.installLog.length > 0) {
+			for (const line of this._status.installLog) {
+				if (!this._logLines.includes(line)) {
+					this._logLines.push(line);
+				}
+			}
+		}
 		clearNode(this._logContent);
-		if (this._status.installLog.length === 0) {
+		if (this._logLines.length === 0) {
 			this._logContent.textContent = '暂无日志';
 			return;
 		}
-		for (const line of this._status.installLog) {
+		for (const line of this._logLines) {
 			const el = append(this._logContent, $('.cbm-log-line'));
 			el.textContent = line;
 			if (line.startsWith('✓')) { el.classList.add('success'); }
@@ -474,6 +600,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	}
 
 	private _appendLogLine(line: string): void {
+		// Persist to instance variable for survival across re-renders
+		this._logLines.push(line);
 		if (!this._logContent) { return; }
 		// Remove "暂无日志" placeholder
 		if (this._logContent.children.length === 0 || this._logContent.textContent === '暂无日志') {

@@ -38,7 +38,10 @@ import { MarketplaceEditorInput } from '../marketplaceEditorInput.js';
 import { IMarketplaceService, PackageKind } from '../../common/marketplace.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IAgentStudioLogService } from '../agentStudioLogService.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -149,8 +152,6 @@ export class IntegrationViewPane extends ViewPane {
 	// ── MCP state ─────────────────────────────────────────────────
 	private mcpTools: McpToolUI[] = [];
 	private mcpServers: McpServerUI[] = [];
-	/** Preset IDs that have been manually connected (synced from McpServerEditorPane) */
-	private _connectedMcpPresetIds: Set<string> = new Set();
 	/** Preset IDs currently being started (from EventBridge 'add' event, cleared when tools appear) */
 	private _startingMcpIds: Set<string> = new Set();
 	/** Server definition ID → IMcpServer instances for start/stop operations */
@@ -264,6 +265,7 @@ export class IntegrationViewPane extends ViewPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileService private readonly fileService: IFileService,
 		@IPathService private readonly pathService: IPathService,
+		@IAgentStudioLogService private readonly logService: ILogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -272,11 +274,9 @@ export class IntegrationViewPane extends ViewPane {
 			const data = event.data;
 			if (data?.action === 'add' && data.presetId) {
 				if (!IntegrationViewPane._isNonMcpServer(data.presetId)) {
-					this._connectedMcpPresetIds.add(data.presetId);
 					// Don't add to _startingMcpIds — EditorPane already started the server
 				}
 			} else if (data?.action === 'remove' && data.serverId) {
-				this._connectedMcpPresetIds.delete(data.serverId);
 				this._startingMcpIds.delete(data.serverId);
 			}
 			if (this.tabsRendered.has('mcp')) {
@@ -638,7 +638,7 @@ export class IntegrationViewPane extends ViewPane {
 					skill.enabled = toggle.checked;
 					item.classList.toggle('skill-enabled', skill.enabled !== false);
 				} catch (err) {
-					console.error('[IntegrationView] Failed to toggle skill:', err);
+					this.logService.error('[IntegrationView] Failed to toggle skill:', err);
 					toggle.checked = !toggle.checked;
 				}
 			};
@@ -1141,7 +1141,7 @@ export class IntegrationViewPane extends ViewPane {
 				this.toolsRetryCount = 0;
 			}
 		} catch (err) {
-			console.error('[IntegrationView] Failed to load tools:', err);
+			this.logService.error('[IntegrationView] Failed to load tools:', err);
 			if (this.toolsRetryCount < this.toolsMaxRetries) {
 				this.toolsRetryCount++;
 				setTimeout(() => { void this._reloadTools(); }, 2000);
@@ -1197,7 +1197,7 @@ export class IntegrationViewPane extends ViewPane {
 					tool.enabled = toggle.checked;
 					item.classList.toggle('tool-enabled', tool.enabled);
 				} catch (err) {
-					console.error('[IntegrationView] Failed to toggle tool:', err);
+					this.logService.error('[IntegrationView] Failed to toggle tool:', err);
 					toggle.checked = !toggle.checked;
 				}
 			};
@@ -1311,6 +1311,15 @@ export class IntegrationViewPane extends ViewPane {
 
 	private async _reloadMcp(): Promise<void> {
 		try {
+			// 0. Build whitelist from ~/.saros/mcp.json — only show servers configured there
+			const sarosConfig = await this._readSarosMcpConfig();
+			const sarosServerNames = new Set<string>();
+			if (sarosConfig?.servers) {
+				for (const name of Object.keys(sarosConfig.servers)) {
+					sarosServerNames.add(name.toLowerCase());
+				}
+			}
+
 			// 1. Fast path: try AgentOSService (tools via McpToolProvider)
 			const toolsWithState = await this.agentOSService.listAllToolsWithState('viewer');
 			const mcpTools = toolsWithState.filter(t =>
@@ -1340,18 +1349,20 @@ export class IntegrationViewPane extends ViewPane {
 			//    This ensures we always have accurate server status (connection state, tool count)
 			//    and covers the case where servers are configured but McpToolProvider hasn't propagated.
 			{
-				const d = autorun(reader => {
-					this._mcpServerRefs.clear();
-					const servers = (this.mcpService.servers as IObservable<readonly IMcpServer[]>).read(reader);
-					const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
-					for (const server of servers) {
-						const defId = server.definition.id;
-						const label = server.definition.label;
-						// Skip non-MCP server IDs (e.g. model providers)
-						if (IntegrationViewPane._isNonMcpServer(defId)) { continue; }
+			const d = autorun(reader => {
+				this._mcpServerRefs.clear();
+				const servers = (this.mcpService.servers as IObservable<readonly IMcpServer[]>).read(reader);
+				this.logService.info('[IntegrationView] IMcpService.servers:', servers.map(s => `${s.definition.label} (id=${s.definition.id})`));
+				const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
+				for (const server of servers) {
+					const defId = server.definition.id;
+					const label = server.definition.label;
+					// Skip non-MCP server IDs (e.g. model providers)
+					if (IntegrationViewPane._isNonMcpServer(defId)) { continue; }
+					// Only show servers configured in ~/.saros/mcp.json
+					if (!sarosServerNames.has(label.toLowerCase())) { continue; }
 						// Normalize to the install name (label), not the full definition ID.
-						// McpToolProvider uses <sanitize(installName)> as the tool prefix,
-						// and _connectedMcpPresetIds also use sanitize(installName).
+						// McpToolProvider uses <sanitize(installName)> as the tool prefix.
 						// Using sanitize(defId) would produce "mcp_config_xxx_name" which
 						// doesn't match the simple prefix → duplicate server entries.
 						const normName = sanitize(label);
@@ -1402,15 +1413,17 @@ export class IntegrationViewPane extends ViewPane {
 				d.dispose();
 			}
 
-			// 3. Sync installed server names from management service (for placeholder entries).
-			//    Servers are now INSTALLED (not in settings.json's deprecated mcp.servers).
-			try {
-				const installed = await this.mcpManagementService.getInstalled();
-				const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
-				for (const s of installed) {
-					const normId = sanitize(s.name);
-					if (IntegrationViewPane._isNonMcpServer(normId)) { continue; }
-					this._connectedMcpPresetIds.add(normId);
+		// 3. Sync installed server names from management service (for placeholder entries).
+		//    Servers are now INSTALLED (not in settings.json's deprecated mcp.servers).
+		try {
+			const installed = await this.mcpManagementService.getInstalled();
+			this.logService.info('[IntegrationView] getInstalled() returned:', installed.map(s => `${s.name} (id=${(s as any).id ?? '?'}, scope=${(s as any).scope ?? '?'})`));
+			const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
+			for (const s of installed) {
+				const normId = sanitize(s.name);
+				if (IntegrationViewPane._isNonMcpServer(normId)) { continue; }
+				// Only show servers configured in ~/.saros/mcp.json
+				if (!sarosServerNames.has(s.name.toLowerCase())) { continue; }
 					// Cross-check: if serverMap already has an entry under a different
 					// (definition-derived) key but with the same install name, skip.
 					let alreadyPresent = serverMap.has(normId);
@@ -1427,7 +1440,7 @@ export class IntegrationViewPane extends ViewPane {
 					}
 				}
 			} catch (e) {
-				console.warn('[IntegrationView] getInstalled failed:', e);
+				this.logService.warn('[IntegrationView] getInstalled failed:', e);
 			}
 
 			// 4. Clear _startingMcpIds for servers that have tools OR are running (prevent stuck spinner)
@@ -1475,7 +1488,7 @@ export class IntegrationViewPane extends ViewPane {
 		this.mcpTools = toolList;
 
 		// 6. Auto-start enabled servers that are not running (fire-and-forget, non-blocking)
-		console.log('[MCP-AutoStart] _reloadMcp done. serverMap:', this.mcpServers.map(s => ({
+		this.logService.info('[MCP-AutoStart] _reloadMcp done. serverMap:', this.mcpServers.map(s => ({
 			id: s.id,
 			status: s.status,
 			toolCount: s.toolCount,
@@ -1483,21 +1496,21 @@ export class IntegrationViewPane extends ViewPane {
 			inStarting: this._startingMcpIds.has(s.id),
 			hasRef: this._mcpServerRefs.has(s.id),
 		})));
-		console.log('[MCP-AutoStart] _mcpServerRefs keys:', Array.from(this._mcpServerRefs.keys()));
+		this.logService.info('[MCP-AutoStart] _mcpServerRefs keys:', Array.from(this._mcpServerRefs.keys()));
 		for (const srv of this.mcpServers) {
 			if (IntegrationViewPane._isNonMcpServer(srv.id)) { continue; }
 			const enabled = this._isMcpServerEnabled(srv.id);
 			const notRunning = srv.status !== 'connected';
 			const notStarting = !this._startingMcpIds.has(srv.id);
 			if (enabled && notRunning && notStarting) {
-				console.log(`[MCP-AutoStart] -> triggering _autoStartServer("${srv.id}")`);
+				this.logService.info(`[MCP-AutoStart] -> triggering _autoStartServer("${srv.id}")`);
 				void this._autoStartServer(srv.id);
 			} else {
-				console.log(`[MCP-AutoStart] skip "${srv.id}": enabled=${enabled} notRunning=${notRunning} notStarting=${notStarting}`);
+				this.logService.info(`[MCP-AutoStart] skip "${srv.id}": enabled=${enabled} notRunning=${notRunning} notStarting=${notStarting}`);
 			}
 		}
 	} catch (err) {
-		console.warn('[IntegrationView] Failed to load MCP data:', err);
+		this.logService.warn('[IntegrationView] Failed to load MCP data:', err);
 	}
 	this._renderMcpContent();
 	}
@@ -1539,6 +1552,60 @@ export class IntegrationViewPane extends ViewPane {
 		this._saveMcpDisabledState();
 	}
 
+	// ══════════════════════════════════════════════════════════════════════════
+	//  ~/.saros/mcp.json CONFIG MANAGEMENT (for preset toggle-on-install)
+	// ══════════════════════════════════════════════════════════════════════════
+
+	/** Get ~/.saros/mcp.json URI. */
+	private async _getSarosMcpConfigUri(): Promise<URI> {
+		const userHome = await this.pathService.userHome();
+		return URI.joinPath(userHome, '.saros', 'mcp.json');
+	}
+
+	/** Read and parse ~/.saros/mcp.json. Returns undefined on error. */
+	private async _readSarosMcpConfig(): Promise<{ servers: Record<string, any> } | undefined> {
+		try {
+			const configUri = await this._getSarosMcpConfigUri();
+			const exists = await this.fileService.exists(configUri);
+			if (!exists) { return undefined; }
+			const content = await this.fileService.readFile(configUri);
+			return JSON.parse(content.value.toString());
+		} catch (e) {
+			this.logService.warn('[IntegrationView] Failed to read ~/.saros/mcp.json:', e);
+			return undefined;
+		}
+	}
+
+	/** Write full config object to ~/.saros/mcp.json. */
+	private async _writeSarosMcpConfig(data: { servers: Record<string, any> }): Promise<void> {
+		const configUri = await this._getSarosMcpConfigUri();
+		const dirUri = URI.joinPath(configUri, '..');
+		try { await this.fileService.createFolder(dirUri); } catch { /* might already exist */ }
+		await this.fileService.writeFile(configUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
+	}
+
+	/** Remove a single server entry from ~/.saros/mcp.json. */
+	private async _removeSarosMcpConfigEntry(name: string): Promise<void> {
+		const data = await this._readSarosMcpConfig();
+		if (!data?.servers || !(name in data.servers)) { return; }
+		delete data.servers[name];
+		await this._writeSarosMcpConfig(data);
+	}
+
+	/** Uninstall a server from VS Code user config. */
+	private async _uninstallServerFromVsCode(name: string): Promise<void> {
+		try {
+			const installed = await this.mcpManagementService.getInstalled();
+			const server = installed.find(s => s.name === name);
+			if (server) {
+				await this.mcpManagementService.uninstall(server);
+				this.logService.info(`[IntegrationView] Uninstalled "${name}" from VS Code config.`);
+			}
+		} catch (e) {
+			this.logService.warn(`[IntegrationView] Failed to uninstall "${name}":`, e);
+		}
+	}
+
 	/**
 	 * Wait for McpToolProvider's autorun to register tools from the given server into AgentOSService.
 	 * The propagation chain is:
@@ -1574,10 +1641,10 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 	private async _autoStartServer(serverId: string): Promise<void> {
 		const ref = this._mcpServerRefs.get(serverId);
 		if (!ref) {
-			console.warn(`[MCP-AutoStart] NO REF for "${serverId}". Available refs:`, Array.from(this._mcpServerRefs.keys()));
+			this.logService.warn(`[MCP-AutoStart] NO REF for "${serverId}". Available refs:`, Array.from(this._mcpServerRefs.keys()));
 			return;
 		}
-		console.log(`[MCP-AutoStart] _autoStartServer("${serverId}") ref found: defId=${ref.definition.id} label=${ref.definition.label} connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()}`);
+		this.logService.info(`[MCP-AutoStart] _autoStartServer("${serverId}") ref found: defId=${ref.definition.id} label=${ref.definition.label} connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()}`);
 
 		this._startingMcpIds.add(serverId);
 		// Re-render immediately to show spinner
@@ -1590,27 +1657,27 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 					// so on app restart we auto-restore it WITHOUT showing a trust dialog.
 					// Without this, TrustedOnNonce servers would hang waiting for a trust prompt
 					// that the user never sees during background auto-start.
-					console.log(`[MCP-AutoStart] "${serverId}" calling startServerAndWaitForLiveTools...`);
+					this.logService.info(`[MCP-AutoStart] "${serverId}" calling startServerAndWaitForLiveTools...`);
 					await startServerAndWaitForLiveTools(ref, { promptType: 'all-untrusted', autoTrustChanges: true });
-					console.log(`[MCP-AutoStart] "${serverId}" startServerAndWaitForLiveTools RESOLVED. connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()} toolsCount=${ref.tools.get().length}`);
+					this.logService.info(`[MCP-AutoStart] "${serverId}" startServerAndWaitForLiveTools RESOLVED. connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()} toolsCount=${ref.tools.get().length}`);
 					const propagated = await this._waitForAgentOSTools(ref, 3000);
-					console.log(`[MCP-AutoStart] "${serverId}" _waitForAgentOSTools returned ${propagated}`);
+					this.logService.info(`[MCP-AutoStart] "${serverId}" _waitForAgentOSTools returned ${propagated}`);
 					return true;
 				})(),
-				timeout(30000).then(() => { console.warn(`[MCP-AutoStart] "${serverId}" 30s TIMEOUT branch hit`); return false; }),
+				timeout(30000).then(() => { this.logService.warn(`[MCP-AutoStart] "${serverId}" 30s TIMEOUT branch hit`); return false; }),
 			]);
 
 			if (!started) {
-				console.warn(`[MCP-AutoStart] Auto-start timed out for ${serverId}, marking as disabled`);
+				this.logService.warn(`[MCP-AutoStart] Auto-start timed out for ${serverId}, marking as disabled`);
 				this._setMcpServerEnabled(serverId, false);
 			}
 		} catch (err) {
-			console.warn(`[MCP-AutoStart] Auto-start FAILED for ${serverId}:`, err);
+			this.logService.warn(`[MCP-AutoStart] Auto-start FAILED for ${serverId}:`, err);
 			// Mark as disabled so it won't retry on next load
 			this._setMcpServerEnabled(serverId, false);
 		} finally {
 			this._startingMcpIds.delete(serverId);
-			console.log(`[MCP-AutoStart] "${serverId}" finally: connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()}`);
+			this.logService.info(`[MCP-AutoStart] "${serverId}" finally: connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()}`);
 			// Update server status in-place to avoid _reloadMcp → auto-start infinite loop.
 			// Calling _reloadMcp() here would re-trigger step 6 (auto-start) for this server,
 			// causing an endless cycle: _reloadMcp → _autoStartServer → finally → _reloadMcp → ...
@@ -1636,7 +1703,7 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		if (!listEl) { return; }
 		clearNode(listEl);
 
-		if (this.mcpTools.length === 0 && this.mcpServers.length === 0 && this._connectedMcpPresetIds.size === 0) {
+		if (this.mcpTools.length === 0 && this.mcpServers.length === 0) {
 			const empty = $('div.mcp-empty');
 			const p = $('p');
 			p.append('No MCP tools available. Click ', $('b', undefined, '+ Manage Servers'), ' to add an MCP server.');
@@ -1664,19 +1731,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 				});
 			}
 			byServer.get(tool.serverId)!.tools.push(tool);
-		}
-
-		// Phase 3: add placeholder for configured-but-not-yet-discovered presets
-		for (const presetId of this._connectedMcpPresetIds) {
-			if (!byServer.has(presetId) && !IntegrationViewPane._isNonMcpServer(presetId)) {
-				const preset = BUNDLED_MCP_PRESETS.find(p => p.id === presetId);
-				if (preset) {
-					byServer.set(presetId, {
-						server: { id: preset.id, name: preset.name, status: 'disconnected', toolCount: 0 },
-						tools: [],
-					});
-				}
-			}
 		}
 
 		// Phase 4: sync toolCount/status from mcpServers (runtime truth source)
@@ -1774,9 +1828,11 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			const isEnabled = this._isMcpServerEnabled(group.server.id);
 			const toggleContainer = $('div.tool-toggle');
 			toggleContainer.style.flexShrink = '0';
+			// Prevent click from bubbling to groupHeader.onclick (which opens detail editor)
+			toggleContainer.onclick = (ev) => { ev.stopPropagation(); };
 			const toggle = $('input.tool-toggle-input') as HTMLInputElement;
 			toggle.type = 'checkbox';
-			// Default ON: toggle reflects user intent (enabled/disabled), not runtime connection state
+			// Toggle reflects user intent (enabled/disabled) for installed servers
 			toggle.checked = isEnabled;
 			toggle.disabled = isStarting;
 			toggle.title = isEnabled
@@ -1784,21 +1840,34 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 				: 'MCP server disabled — click to enable';
 			toggle.onchange = async (e) => {
 				e.stopPropagation();
-				if (!serverRef) { return; }
+
 				try {
 					if (toggle.checked) {
+						// ── Toggle ON ──
 						toggle.disabled = true;
 						this._setMcpServerEnabled(group.server.id, true);
 						this._startingMcpIds.add(group.server.id);
-						// User explicitly toggled ON → treat as trust intent, skip trust dialog.
-						await startServerAndWaitForLiveTools(serverRef, { promptType: 'all-untrusted', autoTrustChanges: true });
-						await this._waitForAgentOSTools(serverRef, 5000);
+						if (this.tabsRendered.has('mcp')) { this._renderMcpContent(); }
+
+						if (serverRef) {
+							await startServerAndWaitForLiveTools(serverRef, { promptType: 'all-untrusted', autoTrustChanges: true });
+							await this._waitForAgentOSTools(serverRef, 5000);
+						} else {
+							this.logService.warn(`[IntegrationView] Toggle ON for "${group.server.id}" but no serverRef found.`);
+						}
 					} else {
+						// ── Toggle OFF ──
 						this._setMcpServerEnabled(group.server.id, false);
-						await serverRef.stop();
+						if (serverRef) {
+							try { await serverRef.stop(); } catch { /* ignore */ }
+						}
+						// Remove from ~/.saros/mcp.json + uninstall from VS Code config
+						await this._removeSarosMcpConfigEntry(group.server.id);
+						await this._uninstallServerFromVsCode(group.server.id);
+						this.logService.info(`[IntegrationView] Server "${group.server.id}" removed from ~/.saros/mcp.json.`);
 					}
 				} catch (err) {
-					console.error(`[IntegrationView] MCP server ${group.server.id} toggle failed:`, err);
+					this.logService.error(`[IntegrationView] MCP server ${group.server.id} toggle failed:`, err);
 					toggle.checked = !toggle.checked;
 					this._setMcpServerEnabled(group.server.id, !toggle.checked);
 				} finally {

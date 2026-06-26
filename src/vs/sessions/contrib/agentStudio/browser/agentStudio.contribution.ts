@@ -42,6 +42,7 @@ import { IAgentDriverService } from '../common/agentDriver.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { IAgentInstanceService, IAgentGalleryService } from '../common/agentInstance.js';
+import { IAgentStudioLogService, AgentStudioLogService } from './agentStudioLogService.js';
 import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
 import { ConfigHtmlService } from './configHtmlService.js';
@@ -199,6 +200,8 @@ import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorPane } from './codebaseMemoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
+import { CodebaseGraphViewerEditorPane } from './codebaseGraphViewerEditorPane.js';
+import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
 import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { WorkflowEditorPane } from './workflowEditorPane.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
@@ -482,6 +485,7 @@ registerWorkbenchContribution2(BuiltinAgentMdSyncContribution.ID, BuiltinAgentMd
 
 // --- Services Registration -------------------------------------------------------
 
+registerSingleton(IAgentStudioLogService, AgentStudioLogService, InstantiationType.Delayed);
 registerSingleton(IAgentStudioService, AgentStudioService, InstantiationType.Delayed);
 registerSingleton(IAgentChatService, AgentChatService, InstantiationType.Delayed);
 registerSingleton(IAgentOSService, AgentOSService, InstantiationType.Delayed);
@@ -706,6 +710,18 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(CodebaseMemoryDetailEditorInput)
+	]
+);
+
+// Register CodebaseGraphViewerEditorPane — shows 3D graph visualization.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		CodebaseGraphViewerEditorPane,
+		CodebaseGraphViewerEditorPane.ID,
+		localize('codebaseGraphViewerEditor', "Codebase Graph Viewer"),
+	),
+	[
+		new SyncDescriptor(CodebaseGraphViewerEditorInput)
 	]
 );
 
