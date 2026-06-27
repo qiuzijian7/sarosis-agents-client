@@ -161,6 +161,17 @@ const RRF_K = 60;
 const SHORT_TERM_FILE = 'short-term.jsonl';
 const LONG_TERM_FILE = 'long-term.jsonl';
 const VECTOR_INDEX_FILE = 'vector-index.json';
+const VECTOR_MANIFEST_FILE = 'vector-index.manifest.json';
+const INDEX_SHARD_CHARS = 2_000_000; // 2MB per shard
+const FAILURE_LOG_THROTTLE_MS = 60_000; // 错误日志节流
+const HEALTH_MONITOR_INTERVAL_MS = 60_000; // 健康监控间隔
+
+// ─── KV Scope constants (1:1 parity with agentmemory schema.ts) ───────────
+// SQLite KV store uses scope-based namespacing, mirroring iii-engine StateKV.
+function kvScope(agentId: string, type: 'long' | 'short' | 'vector' | 'slots' | 'lessons' | 'meta'): string {
+	return `mem:${type}:${agentId}`;
+}
+const KV_KEY = 'data'; // single key per scope (full payload)
 const SHORT_TERM_LIMIT = 200;
 const DECAY_DAYS = 30;
 const DECAY_FACTOR = 0.9;
@@ -215,8 +226,23 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T | nul
 
 async function readFile(agentId: string, file: string): Promise<string> {
 	const url = `${serverBase()}/mem/${encodeURIComponent(agentId)}/${file}`;
-	const result = await fetchJson<string>(url);
-	return result ?? '';
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const resp = await fetch(url, { signal: ctrl.signal });
+		if (!resp.ok) {
+			console.warn(`[AgentMemory] GET ${url} -> HTTP ${resp.status}`);
+			return '';
+		}
+		// 使用 text() 而非 json()，因为 JSONL 文件是文本格式，不是有效 JSON
+		const text = await resp.text();
+		return text ?? '';
+	} catch (err) {
+		console.warn(`[AgentMemory] GET ${url} FAILED: ${(err as Error).message}`);
+		return '';
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function writeFile(agentId: string, file: string, content: string): Promise<boolean> {
@@ -233,6 +259,76 @@ async function writeFile(agentId: string, file: string, content: string): Promis
 	} catch (err) {
 		console.error(`[AgentMemory] writeFile: ${agentId}/${file} FAILED:`, err);
 		return false;
+	}
+}
+
+// ─── KV API (SQLite-backed, mirrors iii-engine StateKV) ───────────────────
+
+async function kvGet(scope: string, key: string): Promise<string | null> {
+	const url = `${serverBase()}/kv/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`;
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const resp = await fetch(url, { signal: ctrl.signal });
+		if (!resp.ok) return null;
+		const text = await resp.text();
+		return text === 'null' ? null : text;
+	} catch (err) {
+		console.warn(`[AgentMemory] kvGet(${scope}/${key}) FAILED: ${(err as Error).message}`);
+		return null;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function kvSet(scope: string, key: string, value: string): Promise<boolean> {
+	const url = `${serverBase()}/kv/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`;
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const resp = await fetch(url, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: value,
+			signal: ctrl.signal,
+		});
+		return resp.ok;
+	} catch (err) {
+		console.warn(`[AgentMemory] kvSet(${scope}/${key}) FAILED: ${(err as Error).message}`);
+		return false;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function kvDelete(scope: string, key: string): Promise<boolean> {
+	const url = `${serverBase()}/kv/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`;
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const resp = await fetch(url, { method: 'DELETE', signal: ctrl.signal });
+		return resp.ok;
+	} catch (err) {
+		console.warn(`[AgentMemory] kvDelete(${scope}/${key}) FAILED: ${(err as Error).message}`);
+		return false;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function kvList(scope: string, withValues = false): Promise<Record<string, string> | string[]> {
+	const url = `${serverBase()}/kv/${encodeURIComponent(scope)}${withValues ? '?values=true' : ''}`;
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const resp = await fetch(url, { signal: ctrl.signal });
+		if (!resp.ok) return withValues ? {} : [];
+		return await resp.json();
+	} catch (err) {
+		console.warn(`[AgentMemory] kvList(${scope}) FAILED: ${(err as Error).message}`);
+		return withValues ? {} : [];
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
@@ -284,6 +380,10 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	/** Health check cache */
 	private _healthChecked = false;
 	private _serverAvailable = false;
+	private _healthRetryCount = 0;
+	private _lastFailureLogAt = 0;
+	private _healthMonitorTimer: ReturnType<typeof setInterval> | undefined;
+	private _lastHealthCheckAt = 0;
 
 	/** Session tracking: agentId → { sessionId, startedAt, observationCount } */
 	private _activeSessions = new Map<string, { sessionId: string; startedAt: number; observationCount: number }>();
@@ -488,13 +588,84 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			if (this._dirtyAgents.size > 0) {
 				console.log(`[AgentMemory] periodic flush: ${this._dirtyAgents.size} dirty agent(s)`);
 				this._flushPendingWrites().catch(err => {
-					console.error('[AgentMemory] periodic flush failed:', err);
+					this._logPersistenceFailure('periodic flush', err);
 				});
 			}
 		}, 30_000);
 		// Don't keep the process alive just for this timer
 		if (this._periodicFlushTimer && typeof (this._periodicFlushTimer as any).unref === 'function') {
 			(this._periodicFlushTimer as any).unref();
+		}
+
+		// P5: 健康监控 — 每60秒检查服务器状态，恢复后自动重载数据
+		this._healthMonitorTimer = setInterval(async () => {
+			if (!this._serverAvailable) {
+				try {
+					const healthy = await checkHealth();
+					if (healthy) {
+						console.log('[AgentMemory] health monitor: server recovered! reloading all agents...');
+						this._serverAvailable = true;
+						this._healthChecked = true;
+						// 重新加载所有已加载的 agent
+						const loadedAgents = Array.from(this._loaded);
+						for (const agentId of loadedAgents) {
+							this._loaded.delete(agentId);
+						}
+						// 触发 dirty agents 的重新加载 + 保存
+						if (this._dirtyAgents.size > 0) {
+							this._flushPendingWrites().catch(err => {
+								this._logPersistenceFailure('health monitor reload', err);
+							});
+						}
+					}
+					// 失败时不记录日志 — _ensureLoaded 的节流日志已覆盖
+				} catch {
+					// 静默失败 — 节流日志在 _logPersistenceFailure 中处理
+				}
+			}
+		}, HEALTH_MONITOR_INTERVAL_MS);
+		if (this._healthMonitorTimer && typeof (this._healthMonitorTimer as any).unref === 'function') {
+			(this._healthMonitorTimer as any).unref();
+		}
+
+		// P4: beforeunload — 窗口关闭前同步刷盘（使用同步 XHR 确保数据发送）
+		if (typeof window !== 'undefined') {
+			window.addEventListener('beforeunload', () => {
+				if (this._dirtyAgents.size === 0) return;
+				console.log(`[AgentMemory] beforeunload: flushing ${this._dirtyAgents.size} agent(s) via sync XHR`);
+				const agents: Array<{ scope: string; key: string; content: string }> = [];
+				for (const agentId of this._dirtyAgents) {
+					const longEntries = this._longTerm.get(agentId) ?? [];
+					const shortEntries = this._shortTerm.get(agentId) ?? [];
+					agents.push({
+						scope: kvScope(agentId, 'long'),
+						key: KV_KEY,
+						content: longEntries.map(e => JSON.stringify(e)).join('\n') + '\n',
+					});
+					agents.push({
+						scope: kvScope(agentId, 'short'),
+						key: KV_KEY,
+						content: shortEntries.map(e => JSON.stringify(e)).join('\n') + '\n',
+					});
+					const vectorIdx = this._vector.get(agentId);
+					if (vectorIdx && vectorIdx.size > 0) {
+						agents.push({
+							scope: kvScope(agentId, 'vector'),
+							key: KV_KEY,
+							content: vectorIdx.serialize(),
+						});
+					}
+				}
+				try {
+					const xhr = new XMLHttpRequest();
+					xhr.open('POST', `${serverBase()}/flush-all`, false); // 同步请求
+					xhr.setRequestHeader('Content-Type', 'application/json');
+					xhr.send(JSON.stringify({ agents }));
+					console.log('[AgentMemory] beforeunload: flush complete');
+				} catch (err) {
+					console.error('[AgentMemory] beforeunload flush failed:', err);
+				}
+			});
 		}
 	}
 
@@ -655,6 +826,10 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			clearInterval(this._periodicFlushTimer);
 			this._periodicFlushTimer = undefined;
 		}
+		if (this._healthMonitorTimer) {
+			clearInterval(this._healthMonitorTimer);
+			this._healthMonitorTimer = undefined;
+		}
 		if (this._configUnsub) {
 			this._configUnsub();
 			this._configUnsub = null;
@@ -744,26 +919,51 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	private async _ensureLoaded(agentId: string): Promise<void> {
 		if (this._loaded.has(agentId)) return;
 
-		// Check server health once
-		if (!this._healthChecked) {
+		// Check server health — 基于时间间隔重试（30秒），避免频繁检查
+		const now = Date.now();
+		if (!this._healthChecked || (!this._serverAvailable && (now - this._lastHealthCheckAt) > 30_000)) {
+			this._lastHealthCheckAt = now;
 			this._serverAvailable = await checkHealth();
 			this._healthChecked = true;
 			if (!this._serverAvailable) {
-				console.warn('[AgentMemory] file server not available, running in memory-only mode');
+				this._logPersistenceFailure('health check', new Error('file server not available'));
 			}
 		}
 
 		if (!this._serverAvailable) {
-			this._loaded.add(agentId);
+			// 不标记为已加载，允许后续重试（30秒后）
 			return;
 		}
 
-		// Load JSONL files + vector index
-		const [shortRaw, longRaw, vectorRaw] = await Promise.all([
-			readFile(agentId, SHORT_TERM_FILE),
-			readFile(agentId, LONG_TERM_FILE),
-			readFile(agentId, VECTOR_INDEX_FILE),
+		// Load from SQLite KV store (with legacy JSONL fallback migration)
+		let [shortRaw, longRaw, vectorRaw] = await Promise.all([
+			kvGet(kvScope(agentId, 'short'), KV_KEY),
+			kvGet(kvScope(agentId, 'long'), KV_KEY),
+			kvGet(kvScope(agentId, 'vector'), KV_KEY),
 		]);
+
+		// Data migration: if KV is empty, try legacy JSONL files
+		if ((!shortRaw || shortRaw.trim().length === 0) && (!longRaw || longRaw.trim().length === 0)) {
+			console.log(`[AgentMemory] KV empty for ${agentId}, checking legacy JSONL files...`);
+			const [legacyShort, legacyLong, legacyVector] = await Promise.all([
+				readFile(agentId, SHORT_TERM_FILE),
+				readFile(agentId, LONG_TERM_FILE),
+				this._readShardedIndex(agentId, VECTOR_INDEX_FILE),
+			]);
+			if ((legacyShort && legacyShort.trim().length > 0) || (legacyLong && legacyLong.trim().length > 0)) {
+				console.log(`[AgentMemory] migrating ${agentId} from JSONL to SQLite KV...`);
+				shortRaw = legacyShort || '';
+				longRaw = legacyLong || '';
+				vectorRaw = legacyVector || '';
+				// Write to KV
+				await Promise.all([
+					kvSet(kvScope(agentId, 'short'), KV_KEY, shortRaw),
+					kvSet(kvScope(agentId, 'long'), KV_KEY, longRaw),
+					vectorRaw ? kvSet(kvScope(agentId, 'vector'), KV_KEY, vectorRaw) : Promise.resolve(true),
+				]);
+				console.log(`[AgentMemory] migration complete for ${agentId}`);
+			}
+		}
 
 		const shortEntries = this._parseJsonl(shortRaw);
 		const longEntries = this._parseJsonl(longRaw);
@@ -779,23 +979,44 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		const vector = new VectorIndex();
 		// Try to restore persisted vectors first (avoids re-embedding)
 		let restoredVectors = 0;
+		let needRebuild = false;
 		if (vectorRaw && vectorRaw.trim().length > 0) {
+			// P1: 维度校验 — 检测当前 embedding 维度
+			const testVec = embedSyncCached('test');
+			const expectedDim = testVec?.length ?? 0;
+			if (expectedDim > 0) {
+				vector['_dimension'] = expectedDim; // 设置期望维度供 deserialize 校验
+			}
 			restoredVectors = vector.deserialize(vectorRaw);
+			if (restoredVectors === 0 && expectedDim > 0) {
+				console.warn(`[AgentMemory] vector dimension mismatch or corrupt index, will rebuild from ${longEntries.length} entries`);
+				needRebuild = true;
+			}
+		}
+		// P2: 索引重建 — 无持久化向量时从 entries 重建
+		if (restoredVectors === 0 && longEntries.length > 0) {
+			console.log(`[AgentMemory] no persisted vectors, rebuilding index from ${longEntries.length} entries`);
+			needRebuild = true;
+		}
+		if (needRebuild) {
+			vector.clear();
+			for (const entry of longEntries) {
+				if (entry.supersededBy) continue;
+				const vec = embedSyncCached(entry.content);
+				if (vec) vector.add(entry.id, vec);
+			}
+			// 标记为 dirty，触发持久化
+			this._schedulePersist(agentId);
 		}
 		for (const entry of longEntries) {
 			if (entry.supersededBy) continue; // skip superseded
 			bm25.add(entry.id, entry.content);
-			// Only compute embedding if not already restored from disk
-			if (!vectorRaw || vectorRaw.trim().length === 0) {
-				const vec = embedSyncCached(entry.content);
-				if (vec) vector.add(entry.id, vec);
-			}
 		}
 		this._bm25.set(agentId, bm25);
 		this._vector.set(agentId, vector);
 
-		// Async: upgrade embeddings to real ones (only if not already upgraded)
-		if (restoredVectors === 0) {
+		// Async: upgrade embeddings to real ones (only if not already upgraded/rebuilt)
+		if (restoredVectors === 0 && !needRebuild) {
 			this._upgradeEmbeddings(agentId).catch(() => { /* best effort */ });
 		}
 
@@ -804,13 +1025,14 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	}
 
 	private _parseJsonl(raw: string): InternalMemoryEntry[] {
-		if (!raw || raw.trim().length === 0) return [];
-		// Handle both JSON array and JSONL format
+		if (!raw || typeof raw !== 'string') return [];
 		const trimmed = raw.trim();
+		if (trimmed.length === 0) return [];
+		// Handle both JSON array and JSONL format
 		if (trimmed.startsWith('[')) {
 			try {
 				const arr = JSON.parse(trimmed);
-				return arr.map((e: any) => this._normalizeEntry(e));
+				return Array.isArray(arr) ? arr.map((e: any) => this._normalizeEntry(e)) : [];
 			} catch { return []; }
 		}
 		const entries: InternalMemoryEntry[] = [];
@@ -889,6 +1111,25 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		this._dirtyAgents.clear();
 		if (agents.length === 0) return;
 		console.log(`[AgentMemory] _flushPendingWrites: saving ${agents.length} agent(s): ${agents.join(', ')}`);
+
+		// 如果服务器之前不可用，重新检查健康状态（服务器可能已启动）
+		if (!this._serverAvailable) {
+			console.log('[AgentMemory] _flushPendingWrites: server was unavailable, re-checking health...');
+			this._serverAvailable = await checkHealth();
+			this._healthChecked = true;
+			if (this._serverAvailable) {
+				console.log('[AgentMemory] _flushPendingWrites: server is now available!');
+				// 服务器刚恢复，重新加载所有 dirty agent 的数据，避免覆盖磁盘上的已有数据
+				for (const agentId of agents) {
+					this._loaded.delete(agentId);
+					await this._ensureLoaded(agentId);
+				}
+			} else {
+				console.warn('[AgentMemory] _flushPendingWrites: server still not available, data will be lost on restart');
+				return;
+			}
+		}
+
 		await Promise.all(agents.map(async (agentId) => {
 			if (!this._serverAvailable) {
 				console.warn(`[AgentMemory] _flushPendingWrites: server not available, skipping ${agentId}`);
@@ -902,18 +1143,19 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			// Also persist vector index (avoids re-embedding on next startup)
 			const vectorIdx = this._vector.get(agentId);
 			const vectorJson = vectorIdx && vectorIdx.size > 0 ? vectorIdx.serialize() : '';
-			const writes: Promise<boolean>[] = [
-				writeFile(agentId, LONG_TERM_FILE, longJsonl),
-				writeFile(agentId, SHORT_TERM_FILE, shortJsonl),
+			// Write to SQLite KV store
+			const kvWrites: Promise<boolean>[] = [
+				kvSet(kvScope(agentId, 'long'), KV_KEY, longJsonl),
+				kvSet(kvScope(agentId, 'short'), KV_KEY, shortJsonl),
 			];
 			if (vectorJson) {
-				writes.push(writeFile(agentId, VECTOR_INDEX_FILE, vectorJson));
+				kvWrites.push(kvSet(kvScope(agentId, 'vector'), KV_KEY, vectorJson));
 			}
 			try {
-				const results = await Promise.all(writes);
-				console.log(`[AgentMemory] _flushPendingWrites: ${agentId} save results: long=${results[0]}, short=${results[1]}, vector=${results[2] ?? 'skipped'}`);
+				const results = await Promise.all(kvWrites);
+				console.log(`[AgentMemory] _flushPendingWrites: ${agentId} KV save results: long=${results[0]}, short=${results[1]}, vector=${results[2] ?? 'skipped'}`);
 			} catch (err) {
-				console.error(`[AgentMemory] _flushPendingWrites: ${agentId} save failed:`, err);
+				this._logPersistenceFailure(`_flushPendingWrites: ${agentId} save failed`, err);
 			}
 		}));
 	}
@@ -924,6 +1166,94 @@ export class AgentMemoryProvider implements IMemoryProvider {
 
 	private async _persistShortTerm(agentId: string): Promise<void> {
 		this._schedulePersist(agentId);
+	}
+
+	// ─── P0: Sharded index persistence ───────────────────────────────────────
+
+	/**
+	 * Write a large serialized index in shards (~2MB each) + manifest.
+	 * Falls back to single-file write for small data.
+	 */
+	private async _writeShardedIndex(agentId: string, baseFile: string, serialized: string): Promise<void> {
+		if (serialized.length <= INDEX_SHARD_CHARS) {
+			// Small enough — write as single file (backward compatible)
+			await writeFile(agentId, baseFile, serialized);
+			// Clean up any stale shards from previous large writes
+			await this._cleanupShards(agentId, baseFile);
+			return;
+		}
+		// Large index — split into shards
+		const shardCount = Math.ceil(serialized.length / INDEX_SHARD_CHARS);
+		const manifest = { v: 1, shardCount, chars: serialized.length, shardSize: INDEX_SHARD_CHARS };
+		console.log(`[AgentMemory] writing ${baseFile} in ${shardCount} shards (${serialized.length} chars)`);
+
+		const writes: Promise<boolean>[] = [];
+		writes.push(writeFile(agentId, VECTOR_MANIFEST_FILE, JSON.stringify(manifest)));
+		for (let i = 0; i < shardCount; i++) {
+			const shardData = serialized.slice(i * INDEX_SHARD_CHARS, (i + 1) * INDEX_SHARD_CHARS);
+			writes.push(writeFile(agentId, `${baseFile}.shard.${i}`, shardData));
+		}
+		// Also write the full file as fallback (for old readers)
+		writes.push(writeFile(agentId, baseFile, serialized));
+		await Promise.all(writes);
+	}
+
+	/**
+	 * Read a sharded index (manifest + shards) or fall back to single file.
+	 */
+	private async _readShardedIndex(agentId: string, baseFile: string): Promise<string> {
+		// Try manifest first
+		const manifestRaw = await readFile(agentId, VECTOR_MANIFEST_FILE);
+		if (manifestRaw && manifestRaw.trim().length > 0) {
+			try {
+				const manifest = JSON.parse(manifestRaw) as { v: number; shardCount: number; chars: number };
+				if (manifest.v === 1 && manifest.shardCount > 1) {
+					console.log(`[AgentMemory] reading ${baseFile} from ${manifest.shardCount} shards`);
+					const shards = await Promise.all(
+						Array.from({ length: manifest.shardCount }, (_, i) =>
+							readFile(agentId, `${baseFile}.shard.${i}`)
+						)
+					);
+					const joined = shards.join('');
+					if (joined.length === manifest.chars) {
+						return joined;
+					}
+					console.warn(`[AgentMemory] shard size mismatch: expected ${manifest.chars}, got ${joined.length}, falling back to single file`);
+				}
+			} catch {
+				console.warn(`[AgentMemory] manifest parse failed, falling back to single file`);
+			}
+		}
+		// Fallback: read single file
+		return await readFile(agentId, baseFile);
+	}
+
+	/**
+	 * Clean up stale shard files after switching back to single-file mode.
+	 */
+	private async _cleanupShards(agentId: string, baseFile: string): Promise<void> {
+		const manifestRaw = await readFile(agentId, VECTOR_MANIFEST_FILE);
+		if (!manifestRaw || manifestRaw.trim().length === 0) return;
+		try {
+			const manifest = JSON.parse(manifestRaw) as { shardCount: number };
+			for (let i = 0; i < manifest.shardCount; i++) {
+				await writeFile(agentId, `${baseFile}.shard.${i}`, ''); // clear content
+			}
+			await writeFile(agentId, VECTOR_MANIFEST_FILE, ''); // clear manifest
+		} catch { /* best effort */ }
+	}
+
+	// ─── P3: Error handling (throttled logging) ─────────────────────────────
+
+	/**
+	 * Log persistence failures with 60s throttle to avoid log flooding.
+	 */
+	private _logPersistenceFailure(context: string, err: unknown): void {
+		const now = Date.now();
+		if (now - this._lastFailureLogAt < FAILURE_LOG_THROTTLE_MS) return;
+		this._lastFailureLogAt = now;
+		const message = err instanceof Error ? err.message : String(err);
+		console.error(`[AgentMemory] ${context} (throttled ${FAILURE_LOG_THROTTLE_MS}ms): ${message}`);
 	}
 
 	// ─── Statistics (for detail pane / diagnostics) ─────────────────────────

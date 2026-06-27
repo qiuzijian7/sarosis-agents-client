@@ -1,16 +1,25 @@
 /*---------------------------------------------------------------------------------------------
- *  AgentMemory file server — lightweight JSONL persistence server.
+ *  AgentMemory persistence server — SQLite KV store (1:1 parity with agentmemory).
  *
- *  This is NOT agentmemory + iii-engine. It's a ~60 line Node.js HTTP server
- *  that reads/writes JSONL files for the in-process AgentMemoryProvider.
+ *  Replaces the old JSONL file server with a SQLite-backed KV store that mirrors
+ *  the original agentmemory's StateKV architecture (iii-engine StateModule).
  *
- *  All smart algorithms (BM25, Vector, RRF, decay, privacy filter) run in the
- *  renderer process. This server only provides atomic file I/O.
+ *  Storage: ~/.saros/.agentmemory/state_store.db (SQLite, WAL mode)
  *
  *  Endpoints:
- *    GET  /mem/<agentId>/<file>           → read JSONL file
- *    PUT  /mem/<agentId>/<file>           → write JSONL file (atomic: tmp + rename)
  *    GET  /health                         → health check
+ *    POST /flush-all                       → batch flush (for beforeunload)
+ *
+ *  KV endpoints (scope-based, mirrors iii-engine state::get/set/list/delete):
+ *    GET  /kv/<scope>/<key>               → read value (returns null if missing)
+ *    PUT  /kv/<scope>/<key>               → write value (upsert)
+ *    DELETE /kv/<scope>/<key>             → delete value
+ *    GET  /kv/<scope>                     → list all keys in scope
+ *    GET  /kv/<scope>?values=true         → list all key-value pairs in scope
+ *
+ *  Legacy file endpoints (backward compatibility + data migration):
+ *    GET  /mem/<agentId>/<file>           → read file
+ *    PUT  /mem/<agentId>/<file>           → write file
  *
  *  Started by saros Electron main process (startAgentMemoryGateway in app.ts).
  *--------------------------------------------------------------------------------------------*/
@@ -18,9 +27,9 @@
 import http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
-const TAG = '[agentmemory-fileserver]';
+const TAG = '[agentmemory-store]';
 
 function emit(kind, msg, extra = {}) {
 	const obj = { kind, msg, ts: new Date().toISOString(), ...extra };
@@ -32,91 +41,238 @@ function resolveDataDir() {
 	return process.env.AGENTMEMORY_DATA_DIR || path.join(home, '.saros', '.agentmemory');
 }
 
-// Sanitize agentId/file to prevent path traversal
 function sanitize(str) {
-	return str.replace(/[^A-Za-z0-9_.-]/g, '_');
+	return str.replace(/[^A-Za-z0-9_.:-]/g, '_');
 }
 
 async function main() {
 	const port = parseInt(process.env.AGENTMEMORY_PORT || '3111', 10);
 	const dataDir = resolveDataDir();
-
-	// Ensure data directory exists
 	fs.mkdirSync(dataDir, { recursive: true });
 
-	emit('log', `${TAG} starting on port ${port}, dataDir=${dataDir}`);
+	// ── Initialize SQLite database ──────────────────────────────────────────
+	const dbPath = path.join(dataDir, 'state_store.db');
+	const db = new DatabaseSync(dbPath);
+
+	// Enable WAL mode for concurrent read access
+	db.exec('PRAGMA journal_mode = WAL');
+	db.exec('PRAGMA synchronous = NORMAL');
+	db.exec('PRAGMA busy_timeout = 5000');
+
+	// KV table — mirrors iii-engine StateModule structure
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS kv_store (
+			scope     TEXT NOT NULL,
+			key       TEXT NOT NULL,
+			value     TEXT,
+			updated_at INTEGER,
+			PRIMARY KEY (scope, key)
+		)
+	`);
+	db.exec('CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv_store(scope)');
+
+	emit('log', `${TAG} SQLite KV store ready: ${dbPath}`);
+
+	// Prepared statements (reused for performance)
+	const stmtGet = db.prepare('SELECT value FROM kv_store WHERE scope = ? AND key = ?');
+	const stmtSet = db.prepare(`
+		INSERT INTO kv_store (scope, key, value, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+	`);
+	const stmtDelete = db.prepare('DELETE FROM kv_store WHERE scope = ? AND key = ?');
+	const stmtListKeys = db.prepare('SELECT key FROM kv_store WHERE scope = ?');
+	const stmtListAll = db.prepare('SELECT key, value FROM kv_store WHERE scope = ?');
+	const stmtDeleteScope = db.prepare('DELETE FROM kv_store WHERE scope = ?');
+
+	let pendingWrites = 0;
 
 	const server = http.createServer(async (req, res) => {
+		// CORS
+		res.setHeader('Access-Control-Allow-Origin', '*');
+		res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
+		res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+		if (req.method === 'OPTIONS') {
+			res.writeHead(204);
+			res.end();
+			return;
+		}
+
 		try {
 			const url = new URL(req.url, `http://localhost:${port}`);
 
-			// Health check
+			// ── Health check ─────────────────────────────────────────────────
 			if (url.pathname === '/health') {
 				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify({ status: 'ok', dataDir, port }));
+				res.end(JSON.stringify({ status: 'ok', dataDir, port, engine: 'sqlite' }));
 				return;
 			}
 
-			// Memory file endpoints: /mem/<agentId>/<file>
-			const memMatch = url.pathname.match(/^\/mem\/([^/]+)\/(.+)$/);
-			if (!memMatch) {
-				res.writeHead(404, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify({ error: 'not found' }));
-				return;
-			}
-
-			const agentId = sanitize(memMatch[1]);
-			const fileName = sanitize(memMatch[2]);
-			const agentDir = path.join(dataDir, agentId);
-			const filePath = path.join(agentDir, fileName);
-
-			// Prevent path traversal
-			if (!filePath.startsWith(path.resolve(agentDir))) {
-				res.writeHead(403, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify({ error: 'forbidden' }));
-				return;
-			}
-
-			if (req.method === 'GET') {
-				try {
-					const content = fs.readFileSync(filePath, 'utf8');
-					res.writeHead(200, { 'Content-Type': 'application/json' });
-					res.end(content);
-				} catch (err) {
-					if (err.code === 'ENOENT') {
-						res.writeHead(200, { 'Content-Type': 'application/json' });
-						res.end('[]'); // empty array for missing files
-					} else {
-						res.writeHead(500, { 'Content-Type': 'application/json' });
-						res.end(JSON.stringify({ error: err.message }));
-					}
-				}
-				return;
-			}
-
-			if (req.method === 'PUT') {
-				// Collect body
+			// ── Batch flush (for beforeunload) ──────────────────────────────
+			if (url.pathname === '/flush-all' && req.method === 'POST') {
 				const chunks = [];
-				for await (const chunk of req) {
-					chunks.push(chunk);
-				}
+				for await (const chunk of req) { chunks.push(chunk); }
 				const body = Buffer.concat(chunks).toString('utf8');
-
-				// Ensure agent directory exists
-				fs.mkdirSync(agentDir, { recursive: true });
-
-				// Atomic write: tmp file + rename
-				const tmpPath = filePath + `.tmp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-				fs.writeFileSync(tmpPath, body, 'utf8');
-				fs.renameSync(tmpPath, filePath);
-
-				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify({ ok: true, bytes: body.length }));
+				pendingWrites++;
+				try {
+					const data = JSON.parse(body);
+					const tx = db.exec('BEGIN');
+					let written = 0;
+					try {
+						for (const item of data.agents) {
+							const scope = sanitize(item.scope || `mem:${sanitize(item.agentId)}`);
+							const key = sanitize(item.key || item.file);
+							stmtSet.run(scope, key, item.content, Date.now());
+							written++;
+						}
+						db.exec('COMMIT');
+					} catch (err) {
+						db.exec('ROLLBACK');
+						throw err;
+					}
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true, written }));
+				} finally {
+					pendingWrites--;
+				}
 				return;
 			}
 
-			res.writeHead(405, { 'Content-Type': 'application/json' });
-			res.end(JSON.stringify({ error: 'method not allowed' }));
+			// ── KV endpoints: /kv/<scope>/<key> ─────────────────────────────
+			const kvMatch = url.pathname.match(/^\/kv\/([^/]+)\/([^/]+)$/);
+			if (kvMatch) {
+				const scope = decodeURIComponent(kvMatch[1]);
+				const key = decodeURIComponent(kvMatch[2]);
+
+				if (req.method === 'GET') {
+					const row = stmtGet.get(scope, key);
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(row ? row.value : 'null');
+					return;
+				}
+
+				if (req.method === 'PUT') {
+					pendingWrites++;
+					try {
+						const chunks = [];
+						for await (const chunk of req) { chunks.push(chunk); }
+						const body = Buffer.concat(chunks).toString('utf8');
+						stmtSet.run(scope, key, body, Date.now());
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ ok: true, bytes: body.length }));
+					} finally {
+						pendingWrites--;
+					}
+					return;
+				}
+
+				if (req.method === 'DELETE') {
+					pendingWrites++;
+					try {
+						stmtDelete.run(scope, key);
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ ok: true }));
+					} finally {
+						pendingWrites--;
+					}
+					return;
+				}
+
+				res.writeHead(405, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ error: 'method not allowed' }));
+				return;
+			}
+
+			// ── KV list endpoint: /kv/<scope> ───────────────────────────────
+			const kvListMatch = url.pathname.match(/^\/kv\/([^/]+)$/);
+			if (kvListMatch && req.method === 'GET') {
+				const scope = decodeURIComponent(kvListMatch[1]);
+				const wantValues = url.searchParams.get('values') === 'true';
+
+				if (wantValues) {
+					const rows = stmtListAll.all(scope);
+					const result = {};
+					for (const row of rows) {
+						result[row.key] = row.value;
+					}
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify(result));
+				} else {
+					const rows = stmtListKeys.all(scope);
+					const keys = rows.map(r => r.key);
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify(keys));
+				}
+				return;
+			}
+
+			// ── KV delete scope: DELETE /kv/<scope> ─────────────────────────
+			if (kvListMatch && req.method === 'DELETE') {
+				const scope = decodeURIComponent(kvListMatch[1]);
+				pendingWrites++;
+				try {
+					stmtDeleteScope.run(scope);
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true }));
+				} finally {
+					pendingWrites--;
+				}
+				return;
+			}
+
+			// ── Legacy file endpoints (backward compat + migration) ─────────
+			const memMatch = url.pathname.match(/^\/mem\/([^/]+)\/(.+)$/);
+			if (memMatch) {
+				const agentId = sanitize(memMatch[1]);
+				const fileName = sanitize(memMatch[2]);
+				const agentDir = path.join(dataDir, agentId);
+				const filePath = path.join(agentDir, fileName);
+
+				if (!filePath.startsWith(path.resolve(agentDir))) {
+					res.writeHead(403, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ error: 'forbidden' }));
+					return;
+				}
+
+				if (req.method === 'GET') {
+					try {
+						const content = fs.readFileSync(filePath, 'utf8');
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(content);
+					} catch (err) {
+						if (err.code === 'ENOENT') {
+							res.writeHead(200, { 'Content-Type': 'application/json' });
+							res.end('[]');
+						} else {
+							res.writeHead(500, { 'Content-Type': 'application/json' });
+							res.end(JSON.stringify({ error: err.message }));
+						}
+					}
+					return;
+				}
+
+				if (req.method === 'PUT') {
+					pendingWrites++;
+					try {
+						const chunks = [];
+						for await (const chunk of req) { chunks.push(chunk); }
+						const body = Buffer.concat(chunks).toString('utf8');
+						fs.mkdirSync(agentDir, { recursive: true });
+						const tmpPath = filePath + `.tmp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+						fs.writeFileSync(tmpPath, body, 'utf8');
+						fs.renameSync(tmpPath, filePath);
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ ok: true, bytes: body.length }));
+					} finally {
+						pendingWrites--;
+					}
+					return;
+				}
+			}
+
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'not found' }));
 		} catch (err) {
 			res.writeHead(500, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: err.message }));
@@ -124,17 +280,22 @@ async function main() {
 	});
 
 	server.listen(port, '127.0.0.1', () => {
-		emit('ready', `file server ready on port ${port}`, { port, dataDir });
+		emit('ready', `KV store ready on port ${port}`, { port, dataDir, dbPath });
 	});
 
 	// Graceful shutdown
 	const shutdown = (sig) => {
-		emit('log', `${TAG} received ${sig}, shutting down...`);
-		server.close(() => {
-			process.exit(0);
-		});
-		// Force exit after 2s
-		setTimeout(() => process.exit(0), 2000);
+		emit('log', `${TAG} received ${sig}, shutting down... (pending writes: ${pendingWrites})`);
+		setTimeout(() => {
+			try {
+				db.close();
+				emit('log', `${TAG} database closed cleanly`);
+			} catch (err) {
+				emit('warn', `${TAG} database close error: ${err.message}`);
+			}
+			server.close(() => process.exit(0));
+			setTimeout(() => process.exit(0), 2000);
+		}, Math.min(pendingWrites * 100, 1000));
 	};
 
 	process.on('SIGTERM', () => shutdown('SIGTERM'));

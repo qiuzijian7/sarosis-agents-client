@@ -201,10 +201,32 @@ export class AgentChatPanel extends Disposable {
 	// 智能滚动状态（匹配 React isAtBottomRef / wasLoadingRef）
 	private _isAtBottom = true;
 	private _wasLoading = false;
+	// 流式结束后的宽限期标志——slow-path 重建（footer/token popup/语法高亮）
+	// 会增加内容高度，非流式路径的 80px 阈值检查会误判为"用户滚离"而禁用自动滚动。
+	// 此标志在流式结束后短暂为 true，绕过阈值检查。
+	private _streamJustEnded = false;
+	private _streamJustEndedTimer: number | null = null;
 	// 流式期间持续滚动 rAF 句柄——renderMarkdown 的 codeBlockRenderer 返回 Promise，
 	// 代码块在微任务中异步插入 DOM，同步 _scrollToBottom 读取的 scrollHeight 不含代码块高度，
 	// 导致流式过程中视图逐渐脱离底部。rAF 循环在微任务之后、绘制之前补滚，追平异步插入。
 	private _streamScrollRaf: number | null = null;
+
+	// ── 流式 markdown 渲染节流（参考 Void progressive rendering 50ms interval）──
+	// 每个 delta 都调用 _renderMarkdownContent 会触发完整 markdown 解析 + DOM 重建 +
+	// disposable 创建，是流式性能的头号瓶颈。节流策略：
+	//   1. delta 到达时用 textContent 立即显示原始文本（0 成本）
+	//   2. 每 200ms 做一次完整 markdown 渲染（格式化追上）
+	//   3. 流式结束后 slow-path 重建自动做最终渲染
+	private _streamingMdTimer: number | null = null;
+	private _streamingMdLastContent: string = '';
+	private _streamingMdTarget: { container: HTMLElement } | null = null;
+	private static readonly STREAMING_MD_INTERVAL = 200; // ms
+
+	// ── updateMessage rAF 批处理 ──
+	// 流式期间多个 delta 可能在同一帧内到达，rAF 批处理合并为每帧一次 DOM 更新。
+	// 参考 Void 的 Event.accumulate() 事件累积机制。
+	// 关键更新（isStreaming/toolCalls/parts 变化）立即处理，不批处理。
+	private _streamingUpdateRaf: number | null = null;
 	private _autoOrchestrateEnabled = false;
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
@@ -499,6 +521,7 @@ export class AgentChatPanel extends Disposable {
 		iteration?: number;
 		noticeId?: string;
 		status?: 'pending' | 'saved' | 'failed';
+		entries?: Array<{ type: string; content: string }>;
 	}): void {
 	const typeLabels: Record<string, string> = {
 		// 4-Tier Consolidation Model (agentmemory)
@@ -521,12 +544,20 @@ export class AgentChatPanel extends Disposable {
 		: (memType === 'procedural' ? 'memory-l3'
 		: (memType === 'injected' ? 'memory-injected'
 		: 'memory'))));
+		// 如果有注入记忆摘要列表，追加到 content 后面
+		let displayContent = info.content;
+		if (info.entries && info.entries.length > 0) {
+			const entryList = info.entries.map((e, i) =>
+				`  ${i + 1}. [${typeLabels[e.type] ?? e.type}] ${e.content}`
+			).join('\n');
+			displayContent = `${info.content}\n\n${entryList}`;
+		}
 		this._addSystemMessage({
 			type: 'memory',
 			icon: '🧠',
 			badge: typeLabel,
 			badgeClass,
-			content: info.content,
+			content: displayContent,
 			rawData: { ...info },
 			status: info.status,
 			noticeId: info.noticeId,
@@ -813,10 +844,47 @@ export class AgentChatPanel extends Disposable {
 					m.parts = undefined;
 				}
 			}
+
+			// 关键更新（结构变化、流式状态切换）→ 立即处理，不批处理
+			const isCritical =
+				updates.isStreaming !== undefined ||
+				updates.toolCalls !== undefined ||
+				updates.parts !== undefined ||
+				updates.confirmation !== undefined ||
+				updates.subAgents !== undefined ||
+				updates.tokenUsage !== undefined;
+			if (isCritical) {
+				if (this._streamingUpdateRaf !== null) {
+					cancelAnimationFrame(this._streamingUpdateRaf);
+					this._streamingUpdateRaf = null;
+				}
+				this._updateMessageDom(idx, m);
+				this._updateContextRing();
+				this._scrollToBottom(false);
+				return;
+			}
+
+			// 流式纯文本更新 → rAF 批处理，合并同帧多次 delta
+			if (m.isStreaming && this._streamingUpdateRaf !== null) {
+				// 已有 pending rAF — 跳过，rAF 回调会读取最新数据
+				return;
+			}
+			if (m.isStreaming) {
+				const rafIdx = idx;
+				this._streamingUpdateRaf = requestAnimationFrame(() => {
+					this._streamingUpdateRaf = null;
+					if (rafIdx < this._messages.length) {
+						this._updateMessageDom(rafIdx, this._messages[rafIdx]);
+					}
+					this._updateContextRing();
+					this._scrollToBottom(false);
+				});
+				return;
+			}
+
+			// 非流式非关键更新 → 立即处理
 			this._updateMessageDom(idx, m);
-			// 消息更新可能影响 inputBaselineTokens（如 tokenUsage 变化），需要重新计算 context ring
 			this._updateContextRing();
-			// 流式更新时自动滚动到底部（如果用户在底部）
 			this._scrollToBottom(false);
 		}
 	}
@@ -831,7 +899,47 @@ export class AgentChatPanel extends Disposable {
 		} else {
 			this._streamPhase = 'idle';
 			this._stopStreamScroll();
+			// 清理流式渲染节流定时器和 rAF 批处理
+			if (this._streamingMdTimer !== null) {
+				clearTimeout(this._streamingMdTimer);
+				this._streamingMdTimer = null;
+			}
+			this._streamingMdTarget = null;
+			this._streamingMdLastContent = '';
+			if (this._streamingUpdateRaf !== null) {
+				cancelAnimationFrame(this._streamingUpdateRaf);
+				this._streamingUpdateRaf = null;
+			}
+			// 流式结束后设置宽限期标志——slow-path 重建（footer/token popup）
+			// 增加的高度可能触发 80px 阈值检查误判为"用户滚离"。
+			// 500ms 宽限期覆盖异步渲染（语法高亮、markdown 布局）完成。
+			this._streamJustEnded = true;
+			if (this._streamJustEndedTimer !== null) { clearTimeout(this._streamJustEndedTimer); }
+			this._streamJustEndedTimer = setTimeout(() => {
+				this._streamJustEnded = false;
+				this._streamJustEndedTimer = null;
+			}, 500) as unknown as number;
+			// 调度延迟滚动追赶异步 DOM 变化
+			this._schedulePostStreamScroll();
 		}
+	}
+
+	/**
+	 * 流式结束后调度延迟滚动——rAF 循环已停止，但 slow-path 重建
+	 * （footer、token popup、markdown 渲染）可能在此之后才完成布局。
+	 * 双 rAF 确保：第一帧让浏览器处理 pending layout，第二帧在布局稳定后补滚。
+	 */
+	private _schedulePostStreamScroll(): void {
+		const doScroll = () => {
+			if (this._isAtBottom && this._messagesContainer) {
+				this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
+			}
+		};
+		requestAnimationFrame(() => {
+			doScroll();
+			// 第二帧追赶延迟渲染（语法高亮等）
+			requestAnimationFrame(doScroll);
+		});
 	}
 
 	setStreamPhase(phase: StreamPhase): void {
@@ -1868,8 +1976,22 @@ export class AgentChatPanel extends Disposable {
 			const streamingText = existingEl.querySelector('.streaming-text') as HTMLSpanElement | null;
 
 			if (streamingContainer) {
-				streamingContainer.textContent = '';
-				this._renderMarkdownContent(streamingContainer, msg.content);
+				// 节流 markdown 渲染：delta 到达时用 textContent 立即显示（0 成本），
+				// 定时器每 200ms 做一次完整 markdown 渲染（格式化追上）。
+				// 参考 Void chatListRenderer.ts 的 WindowIntervalTimer progressive rendering。
+				streamingContainer.textContent = msg.content;
+				this._streamingMdTarget = { container: streamingContainer };
+				this._streamingMdLastContent = msg.content;
+				if (this._streamingMdTimer === null) {
+					this._streamingMdTimer = window.setTimeout(() => {
+						this._streamingMdTimer = null;
+						const target = this._streamingMdTarget;
+						if (target && target.container.isConnected && this._streamingMdLastContent) {
+							target.container.textContent = '';
+							this._renderMarkdownContent(target.container, this._streamingMdLastContent);
+						}
+					}, AgentChatPanel.STREAMING_MD_INTERVAL);
+				}
 				return;
 			}
 
@@ -1925,8 +2047,20 @@ export class AgentChatPanel extends Disposable {
 		// 简单模式：streaming-container + 工具卡片分离 → 只更新文本容器
 		const streamingContainer = existingEl.querySelector('.streaming-container') as HTMLElement | null;
 		if (streamingContainer) {
-			streamingContainer.textContent = '';
-			this._renderMarkdownContent(streamingContainer, msg.content);
+			// 节流 markdown 渲染（同 fast path 1）
+			streamingContainer.textContent = msg.content;
+			this._streamingMdTarget = { container: streamingContainer };
+			this._streamingMdLastContent = msg.content;
+			if (this._streamingMdTimer === null) {
+				this._streamingMdTimer = window.setTimeout(() => {
+					this._streamingMdTimer = null;
+					const target = this._streamingMdTarget;
+					if (target && target.container.isConnected && this._streamingMdLastContent) {
+						target.container.textContent = '';
+						this._renderMarkdownContent(target.container, this._streamingMdLastContent);
+					}
+				}, AgentChatPanel.STREAMING_MD_INTERVAL);
+			}
 			return;
 		}
 
@@ -6933,7 +7067,9 @@ export class AgentChatPanel extends Disposable {
 
 		// Non-streaming: check if user scrolled away from bottom
 		const distFromBottom = this._messagesContainer.scrollHeight - this._messagesContainer.scrollTop - this._messagesContainer.clientHeight;
-		if (distFromBottom >= 80) {
+		// 流式刚结束时，slow-path 重建（footer/token popup）增加的高度可能
+		// 超过 80px 阈值，误判为"用户滚离"。宽限期内绕过此检查。
+		if (distFromBottom >= 80 && !this._streamJustEnded) {
 			// User likely scrolled up → disable auto-scroll
 			this._isAtBottom = false;
 			this._showScrollBtn = true;
@@ -6941,8 +7077,12 @@ export class AgentChatPanel extends Disposable {
 			return;
 		}
 
-		// 正常情况 → smooth 滚动
-		this._messagesContainer.scrollTo({ top: this._messagesContainer.scrollHeight, behavior: 'smooth' });
+		// 正常情况 → smooth 滚动（宽限期内用 instant 追赶高度变化）
+		if (this._streamJustEnded) {
+			this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
+		} else {
+			this._messagesContainer.scrollTo({ top: this._messagesContainer.scrollHeight, behavior: 'smooth' });
+		}
 	}
 
 	// Layout
@@ -7158,6 +7298,9 @@ export class AgentChatPanel extends Disposable {
 		this._closeAgentDropdown();
 		this._abortController?.abort();
 		this._stopStreamScroll();
+		if (this._streamJustEndedTimer !== null) { clearTimeout(this._streamJustEndedTimer); }
+		if (this._streamingMdTimer !== null) { clearTimeout(this._streamingMdTimer); }
+		if (this._streamingUpdateRaf !== null) { cancelAnimationFrame(this._streamingUpdateRaf); }
 
 		// Dispose all markdown disposables to avoid leakage
 		for (const disposable of this._markdownDisposables.values()) {

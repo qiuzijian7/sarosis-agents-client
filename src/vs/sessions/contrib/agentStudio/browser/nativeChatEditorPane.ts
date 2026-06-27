@@ -469,11 +469,13 @@ export class NativeChatEditorPane extends EditorPane {
 						case 'memory_injected': {
 							// 记忆上下文已注入 system prompt → 显示注入通知卡片
 							const memContent = (delta as any).content ?? '';
+							const memMeta = (delta as any).metadata ?? {};
 							if (memContent) {
 								this._chatPanel?.addMemoryNotice({
 									content: memContent,
 									memoryType: 'injected',
 									status: 'saved',
+									entries: memMeta.entries,
 								});
 							}
 							break;

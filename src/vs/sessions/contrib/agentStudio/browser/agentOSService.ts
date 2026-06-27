@@ -767,6 +767,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					);
 
 					// 通知 UI 系统消息栏：记忆已注入
+					const injectedEntries = [
+						...filteredLongTerm.map(e => ({ type: e.type ?? 'episodic', content: (e.content ?? '').slice(0, 120) })),
+						...filteredShortTerm.map(e => ({ type: e.type ?? 'working', content: (e.content ?? '').slice(0, 120) })),
+					];
 					yield {
 						type: 'memory_injected',
 						content: `已注入 ${filteredLongTerm.length + filteredShortTerm.length} 条记忆 (~${usedTokens} tokens)`,
@@ -776,6 +780,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							workingCount: filteredShortTerm.length,
 							usedTokens,
 							hasSystemPrompt: !!memoryContext.systemPrompt,
+							entries: injectedEntries,
 						},
 					} as any;
 				} else {

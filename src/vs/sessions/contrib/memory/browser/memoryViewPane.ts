@@ -136,7 +136,39 @@ export class MemoryViewPane extends ViewPane {
 		this._renderHeader();
 		this._renderActivity();
 		this._renderLayers();
-		this._loadMemory();
+
+		// 异步获取上次选择的 agent ID，确保重新加载窗口后能显示正确的记忆数据
+		if (!this._activeAgentId) {
+			console.log('[MemoryView] renderBody: no _activeAgentId, resolving...');
+			this._agentStudioService.getLastSelectedAgentId().then(async agentId => {
+				console.log('[MemoryView] getLastSelectedAgentId() returned:', agentId);
+				if (!agentId) {
+					// 没有上次选择的记录，从 agent 列表中获取第一个
+					try {
+						const agents = await this._agentStudioService.getAgents();
+						console.log('[MemoryView] getAgents() returned:', agents.length, 'agents, ids:', agents.map(a => a.id).join(', '));
+						if (agents.length > 0) {
+							agentId = agents[0].id;
+						}
+					} catch (err) {
+						console.warn('[MemoryView] getAgents() failed:', err);
+					}
+				}
+				if (agentId && !this._activeAgentId) {
+					this._activeAgentId = agentId;
+					console.log('[MemoryView] _activeAgentId set to:', agentId);
+				} else {
+					console.log('[MemoryView] _activeAgentId still:', this._activeAgentId ?? 'undefined');
+				}
+				this._loadMemory();
+			}).catch((err) => {
+				console.warn('[MemoryView] getLastSelectedAgentId() failed:', err);
+				this._loadMemory();
+			});
+		} else {
+			console.log('[MemoryView] renderBody: _activeAgentId already set:', this._activeAgentId);
+			this._loadMemory();
+		}
 		this._subscribeProviderEvents();
 	}
 

@@ -245,17 +245,17 @@ export class MemoryDetailEditorPane extends EditorPane {
 	private _renderEmpty(msg: string): void {
 		if (!this._container) { return; }
 		this._clearExceptStyle();
-		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `🧠 记忆详情 (${this._agentId})`;
-		append(this._container, $('.md-empty')).textContent = msg;
+		// 重新渲染视图导航栏，确保用户可以切换页签
+		this._renderViewNav();
+		const empty = append(this._container, $('.md-empty'));
+		empty.style.padding = '40px 20px';
+		empty.style.color = 'var(--vscode-descriptionForeground)';
+		empty.style.fontSize = '13px';
+		empty.textContent = msg;
 	}
 
-	private _renderFull(): void {
-		if (!this._container) { return; }
-		this._clearExceptStyle();
-
-		// View navigation bar
-		const viewNav = append(this._container, $('.md-view-nav'));
+	private _renderViewNav(): void {
+		const viewNav = append(this._container!, $('.md-view-nav'));
 		const views: Array<{ id: ViewName; label: string }> = [
 			{ id: 'memories', label: '🧠 记忆' },
 			{ id: 'slots', label: '📌 槽位' },
@@ -275,6 +275,14 @@ export class MemoryDetailEditorPane extends EditorPane {
 				this._renderFull();
 			});
 		}
+	}
+
+	private _renderFull(): void {
+		if (!this._container) { return; }
+		this._clearExceptStyle();
+
+		// View navigation bar
+		this._renderViewNav();
 
 		// Route to the appropriate view renderer
 		switch (this._currentView) {

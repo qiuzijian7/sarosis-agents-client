@@ -931,6 +931,17 @@ registerAction2(class extends Action2 {
 	}
 	async run(accessor: ServicesAccessor, agentId?: string): Promise<void> {
 		const editorService = accessor.get(IEditorService);
+		const agentStudioService = accessor.get(IAgentStudioService);
+		// 优先使用传入的 agentId，其次从持久化存储获取，最后从 agent 列表获取第一个
+		if (!agentId) {
+			agentId = (await agentStudioService.getLastSelectedAgentId()) ?? undefined;
+		}
+		if (!agentId) {
+			try {
+				const agents = await agentStudioService.getAgents();
+				agentId = agents[0]?.id;
+			} catch { /* best effort */ }
+		}
 		const id = agentId ?? 'default';
 		const input = MemoryDetailEditorInput.getOrCreate(id);
 		await editorService.openEditor(input, { pinned: true });

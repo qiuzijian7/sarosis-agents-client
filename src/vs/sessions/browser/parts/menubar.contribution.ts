@@ -208,6 +208,6 @@ registerAction2(class HelpFeedbackAction extends Action2 {
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const openerService = accessor.get(IOpenerService);
-		await openerService.open(URI.parse('https://git.woa.com/zijianqiu/VsSaros-Issues/issues/new'));
+		await openerService.open(URI.parse('https://www.tapd.cn/tapd_fe/30076258/storywall'));
 	}
 });

@@ -94,9 +94,13 @@ export function embedSync(text: string): Float32Array | null {
 export class VectorIndex {
 	private vectors = new Map<string, Float32Array>();
 	private _available = true;
+	private _dimension = 0;
 
 	add(id: string, embedding: Float32Array): void {
 		this.vectors.set(id, embedding);
+		if (this._dimension === 0 && embedding.length > 0) {
+			this._dimension = embedding.length;
+		}
 	}
 
 	remove(id: string): void {
@@ -128,9 +132,11 @@ export class VectorIndex {
 
 	get size(): number { return this.vectors.size; }
 	get available(): boolean { return this._available; }
+	get dimension(): number { return this._dimension; }
 
 	clear(): void {
 		this.vectors.clear();
+		this._dimension = 0;
 	}
 
 	// ─── P3-1: Vector persistence ───────────────────────────────────────
@@ -156,7 +162,11 @@ export class VectorIndex {
 		let imported = 0;
 		for (const entry of data) {
 			if (this.vectors.has(entry.id)) continue;
-			this.vectors.set(entry.id, new Float32Array(entry.vector));
+			const vec = new Float32Array(entry.vector);
+			this.vectors.set(entry.id, vec);
+			if (this._dimension === 0 && vec.length > 0) {
+				this._dimension = vec.length;
+			}
 			imported++;
 		}
 		return imported;
@@ -167,9 +177,9 @@ export class VectorIndex {
 	 */
 	serialize(): string {
 		return JSON.stringify({
-			v: 1,
+			v: 2,
 			size: this.vectors.size,
-			dimensions: 384,
+			dimensions: this._dimension || 384,
 			vectors: this.exportVectors(),
 			savedAt: Date.now(),
 		});
@@ -178,11 +188,20 @@ export class VectorIndex {
 	/**
 	 * Import from JSON string (loaded from disk).
 	 * Returns the number of vectors imported.
+	 * Supports v1 (no dimension check) and v2 (with dimension metadata).
 	 */
 	deserialize(json: string): number {
 		try {
-			const parsed = JSON.parse(json) as { v: number; vectors: Array<{ id: string; vector: number[] }> };
-			if (parsed.v !== 1 || !Array.isArray(parsed.vectors)) return 0;
+			const parsed = JSON.parse(json) as { v: number; dimensions?: number; vectors: Array<{ id: string; vector: number[] }> };
+			if (!Array.isArray(parsed.vectors)) return 0;
+			// v2+: validate dimension if metadata present
+			if (parsed.v >= 2 && typeof parsed.dimensions === 'number' && parsed.dimensions > 0) {
+				const storedDim = parsed.dimensions;
+				if (this._dimension > 0 && this._dimension !== storedDim) {
+					// Dimension mismatch — refuse to load (caller should rebuild)
+					return 0;
+				}
+			}
 			return this.importVectors(parsed.vectors);
 		} catch {
 			return 0;
