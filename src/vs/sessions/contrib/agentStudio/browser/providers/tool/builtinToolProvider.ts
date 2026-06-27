@@ -984,17 +984,30 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!agentId) { return [{ type: 'text', text: 'memory_remember error: agentId is required' }]; }
 				const content = args['content'] as string;
 				if (!content) { return [{ type: 'text', text: 'memory_remember error: content is required' }]; }
-				const memType = (args['memory_type'] as string || 'episodic') === 'working' ? 'working' : 'episodic';
+				const memType: 'working' | 'episodic' = (args['memory_type'] as string || 'episodic') === 'working' ? 'working' : 'episodic';
 				const tags = Array.isArray(args['tags']) ? args['tags'] as string[] : undefined;
 				const importance = typeof args['importance'] === 'number' ? Math.max(0, Math.min(10, args['importance'] as number)) : 5;
 				const entry = {
 					id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-					type: memType,
+					type: memType as 'working' | 'episodic' | 'semantic' | 'procedural',
 					content,
 					timestamp: Date.now(),
 					importance,
 					metadata: tags ? { tags } : undefined,
 				};
+
+				// ── 优先通过 IMemoryProvider 写入（同步到 provider 的索引/向量存储）──
+				const memProvider = this.agentOS.getActiveMemoryProvider();
+				if (memProvider) {
+					try {
+						await memProvider.writeMemory(agentId, entry);
+						return [{ type: 'text', text: `Memory saved (${memType}, importance=${importance}): ${content.slice(0, 100)}` }];
+					} catch (err) {
+						this.logService.warn('[BuiltinTools] memory_remember: provider write failed, falling back to local:', err);
+					}
+				}
+
+				// ── 降级：本地 JSONL 写入 ─────────────────────────────────
 				const file = self._getMemFile(agentId, memType === 'working' ? 'short-term.jsonl' : 'long-term.jsonl');
 				try { await self.fileService.createFolder(URI.joinPath(file, '..')); } catch {}
 				const existing = await self._readJsonl(file);
@@ -1028,7 +1041,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this.register({
 			definition: {
 				name: 'memory_search',
-				description: 'Search memories by keyword, tag, or time range. Returns matching entries sorted by recency.',
+				description: 'Search memories by keyword, tag, or time range. Returns matching entries sorted by relevance (semantic search when available, falls back to keyword matching).',
 				inputSchema: { type: 'object', properties: {
 					query: { type: 'string', description: "Search query. Supports prefixes: tag:foo, type:short, type:long, after:YYYY-MM-DD, before:YYYY-MM-DD, recent:7d (or 24h)" },
 					limit: { type: 'number', description: 'Max results (default: 10)' },
@@ -1040,6 +1053,29 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!agentId) { return [{ type: 'text', text: 'memory_search error: agentId is required' }]; }
 				const query = (args['query'] as string) || '';
 				const limit = typeof args['limit'] === 'number' ? Math.min(args['limit'] as number, 50) : 10;
+
+				// ── 优先使用 IMemoryProvider（支持语义搜索：BM25 + Vector + Graph 混合搜索）──
+				const memProvider = this.agentOS.getActiveMemoryProvider();
+				if (memProvider) {
+					try {
+						const results = await memProvider.searchMemory(agentId, query);
+						if (results.length > 0) {
+							const slice = results.slice(0, limit);
+							const lines = slice.map(e => {
+								const score = e.score !== undefined ? ` (score: ${e.score.toFixed(2)})` : '';
+								const imp = e.importance !== undefined ? ` [importance: ${e.importance}]` : '';
+								const ts = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
+								return `- [${e.type}]${imp}${score} ${ts}: ${e.content.slice(0, 200)}`;
+							});
+							return [{ type: 'text', text: `Found ${slice.length} matching memories (semantic search):\n${lines.join('\n')}` }];
+						}
+						// Provider returned empty — fall through to local search
+					} catch (err) {
+						this.logService.warn('[BuiltinTools] memory_search: provider search failed, falling back to local:', err);
+					}
+				}
+
+				// ── 降级：本地 JSONL 子串匹配 ──────────────────────────────
 				let typeFilter: 'working' | 'episodic' | 'semantic' | 'procedural' | undefined;
 				let tagFilter: string | undefined;
 				const tokens = query.split(/\s+/);
@@ -1072,11 +1108,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				const slice = matched.slice(0, limit);
 			if (slice.length === 0) { return [{ type: 'text', text: 'No matching memories found.' }]; }
 			const lines = slice.map(e => `- [${e.type}] ${new Date(e.timestamp).toLocaleString()}: ${e.content.slice(0, 200)}`);
-			const memFiles = [
-				`[memory_file: ${self._getMemFile(agentId, 'short-term.jsonl').toString()}]`,
-				`[memory_file: ${self._getMemFile(agentId, 'long-term.jsonl').toString()}]`,
-			];
-			return [{ type: 'text', text: `Found ${slice.length} matching memories:\n${lines.join('\n')}\n${memFiles.join('\n')}` }];
+			return [{ type: 'text', text: `Found ${slice.length} matching memories:\n${lines.join('\n')}` }];
 			},
 		});
 

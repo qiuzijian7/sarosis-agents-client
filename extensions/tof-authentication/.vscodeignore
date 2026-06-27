@@ -1,6 +1,5 @@
 .gitignore
 src/**
-out/**
 tsconfig*.json
 **/*.tsbuildinfo
 package-lock.json

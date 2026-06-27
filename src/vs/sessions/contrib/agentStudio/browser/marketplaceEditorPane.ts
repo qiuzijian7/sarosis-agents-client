@@ -159,6 +159,7 @@ export class MarketplaceEditorPane extends EditorPane {
 	private _container!: HTMLElement;
 	private _gridEl!: HTMLElement;
 	private _searchInput!: HTMLInputElement;
+	private _userEl!: HTMLElement;
 	private _resultCountEl!: HTMLElement;
 	private _detailEl!: HTMLElement;
 	private _detailContentEl!: HTMLElement;
@@ -180,6 +181,39 @@ export class MarketplaceEditorPane extends EditorPane {
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
 	) {
 		super(MarketplaceEditorPane.ID, group, telemetryService, themeService, storageService);
+
+		// 监听商城登录状态变化 → 更新用户信息 + 重新加载资源列表
+		this._register(this.marketplaceService.onDidChangeLogin(() => {
+			this._refreshUserDisplay();
+			this._loadPackages().catch(() => { /* ignore */ });
+		}));
+	}
+
+	/** 刷新用户信息显示区域 */
+	private _refreshUserDisplay(): void {
+		if (!this._userEl) { return; }
+		clearNode(this._userEl); // 不用 innerHTML（TrustedHTML CSP 拦截）
+		const user = this.marketplaceService.getCurrentUser();
+		console.log('[MarketplaceEditorPane] _refreshUserDisplay: user=', user ? user.username : 'null', 'isLoggedIn=', this.marketplaceService.isLoggedIn());
+		if (user) {
+			const avatar = document.createElement('div');
+			avatar.className = 'avatar';
+			avatar.textContent = (user.username || '?').charAt(0).toUpperCase();
+			this._userEl.appendChild(avatar);
+			const nameSpan = document.createElement('span');
+			nameSpan.textContent = user.username;
+			this._userEl.appendChild(nameSpan);
+			const sep = document.createElement('span');
+			sep.style.color = 'var(--vscode-descriptionForeground,#9d9d9d)';
+			sep.textContent = '|';
+			this._userEl.appendChild(sep);
+			const status = document.createElement('span');
+			status.style.color = '#4ec9b0';
+			status.textContent = '\u25CF \u5DF2\u8FDE\u63A5'; // ● 已连接
+			this._userEl.appendChild(status);
+		} else {
+			this._userEl.textContent = '\u26A0 \u672A\u767B\u5F55'; // ⚠ 未登录
+		}
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -205,26 +239,8 @@ export class MarketplaceEditorPane extends EditorPane {
 
 		const userEl = document.createElement('div');
 		userEl.className = 'mp-user';
-		const user = this.marketplaceService.getCurrentUser();
-		if (user) {
-			const avatar = document.createElement('div');
-			avatar.className = 'avatar';
-			avatar.textContent = (user.username || '?').charAt(0).toUpperCase();
-			userEl.appendChild(avatar);
-			const nameSpan = document.createElement('span');
-			nameSpan.textContent = user.username;
-			userEl.appendChild(nameSpan);
-			const sep = document.createElement('span');
-			sep.style.color = 'var(--vscode-descriptionForeground,#9d9d9d)';
-			sep.textContent = '|';
-			userEl.appendChild(sep);
-			const status = document.createElement('span');
-			status.style.color = '#4ec9b0';
-			status.textContent = '\u25CF \u5DF2\u8FDE\u63A5'; // ● 已连接
-			userEl.appendChild(status);
-		} else {
-			userEl.textContent = '\u26A0 \u672A\u767B\u5F55'; // ⚠ 未登录
-		}
+		this._userEl = userEl;
+		this._refreshUserDisplay(); // 使用统一方法填充内容
 		titleRow.appendChild(userEl);
 		header.appendChild(titleRow);
 

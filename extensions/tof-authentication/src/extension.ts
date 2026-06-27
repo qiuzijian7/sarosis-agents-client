@@ -37,6 +37,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			method: string;
 			body?: string;
 			headers?: Record<string, string>;
+			binary?: boolean;
 		}): Promise<{ statusCode: number; body: string; headers: Record<string, string> }> => {
 			return new Promise((resolve, reject) => {
 				const parsed = new URL(opts.url);
@@ -47,19 +48,22 @@ export function activate(context: vscode.ExtensionContext): void {
 					path: parsed.pathname + parsed.search,
 					method: opts.method || 'GET',
 					headers: opts.headers || {},
-					timeout: 15000,
+					timeout: 30000,
 				};
 
 				const req = lib.request(reqOptions, (res) => {
-					let data = '';
-					res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+					const chunks: Buffer[] = [];
+					res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
 					res.on('end', () => {
+						const buf = Buffer.concat(chunks);
 						const respHeaders: Record<string, string> = {};
 						for (const [k, v] of Object.entries(res.headers)) {
 							if (typeof v === 'string') { respHeaders[k] = v; }
 							else if (Array.isArray(v)) { respHeaders[k] = v.join(', '); }
 						}
-						resolve({ statusCode: res.statusCode || 0, body: data, headers: respHeaders });
+						// binary 模式返回 base64，否则返回字符串
+						const body = opts.binary ? buf.toString('base64') : buf.toString('utf-8');
+						resolve({ statusCode: res.statusCode || 0, body, headers: respHeaders });
 					});
 				});
 

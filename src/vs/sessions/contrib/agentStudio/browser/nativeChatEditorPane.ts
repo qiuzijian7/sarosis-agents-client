@@ -200,10 +200,19 @@ export class NativeChatEditorPane extends EditorPane {
 							agentSessionId: sessionId,
 							explicitSkillIds: explicitSkillIds,
 						},
-						(delta) => {
-							if (!delta) return;
-							
-							switch (delta.type) {
+					(delta) => {
+						if (!delta) return;
+
+						// Inter-turn gap: agent loop continued after `done` set _isSending=false.
+						// Re-activate streaming state so the panel uses the streaming scroll path
+						// (avoids the non-streaming 80px threshold falsely disabling auto-scroll
+						// when content growth between turns makes distFromBottom >= 80).
+						if (!this._isSending && (delta.type === 'text' || delta.type === 'thinking' || delta.type === 'tool_start' || delta.type === 'tool_result')) {
+							this._chatPanel?.setSending(true);
+							this._isSending = true;
+						}
+
+						switch (delta.type) {
 							case 'text':
 								// First text delta → ensure assistant message exists, then update
 								ensureAssistantMsg();
@@ -819,6 +828,22 @@ export class NativeChatEditorPane extends EditorPane {
 	onOpenFile: (filePath: string) => {
 		void this._openFileInEditor(filePath);
 	},
+		// P0-2: @mention 文件搜索
+		onSearchFiles: async (query: string): Promise<Array<{ path: string; name: string }>> => {
+			return this._searchWorkspaceFiles(query);
+		},
+		// P0-2: @提及文件选择后添加为上下文
+		onAddFileContext: (filePath: string) => {
+			void this._addFileContextToChat(filePath);
+		},
+		// P1-1: 终端运行代码
+		onRunInTerminal: (code: string) => {
+			void this._runInTerminal(code);
+		},
+		// P1-3: 添加编辑器选中代码到聊天
+		onAddSelectionToChat: () => {
+			void this._addEditorSelectionToChat();
+		},
 		onOpenLink: (url: string) => {
 			// Open http(s) links from LLM output in the editor area (middle
 			// column) instead of an external browser.
@@ -1898,29 +1923,52 @@ export class NativeChatEditorPane extends EditorPane {
 	// ─── File / Code helpers ──────────────────────────────────────────
 
 	/**
-	 * Apply code content to a file. If filePath is provided, write/replace
-	 * the file content (mirrors agentStudioWebviewController._handleApplyCode).
-	 * If no filePath, open an untitled text editor with the code.
+	 * P0-3: Apply code — 对已有文件打开 diff 编辑器（原始 vs 新内容），
+	 * 用户保存右侧编辑器 = 接受变更，关闭不保存 = 拒绝。
+	 * 无 filePath 时打开 untitled 编辑器。回退到直接写入。
 	 */
 	private async _handleApplyCode(code: string, _language: string, filePath?: string): Promise<void> {
 		try {
 			if (filePath) {
-				const resource = URI.file(filePath);
-				const model = this._modelService.getModel(resource);
-				if (model) {
-					// File is already open in editor — apply edit via model
-					model.applyEdits([{
-						range: model.getFullModelRange(),
-						text: code,
-					}]);
+				let resource: URI;
+				if (this._isAbsolutePath(filePath)) {
+					resource = URI.file(filePath);
 				} else {
-					// File not open — write directly via file service
-					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
+					const folders = this._workspaceContextService.getWorkspace().folders;
+					if (folders.length === 0) {
+						await this._editorService.openEditor({ resource: undefined, contents: code, options: { pinned: true } });
+						return;
+					}
+					resource = URI.joinPath(folders[0].uri, filePath);
 				}
-				// Open the file in the editor so the user sees the result
-				await this._openFileInEditor(filePath);
+				// 读取原始内容
+				let originalContent: string;
+				try {
+					const fc = await this._fileService.readFile(resource);
+					originalContent = fc.value.toString();
+				} catch {
+					// 文件不存在 → 直接创建
+					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
+					await this._openFileInEditor(filePath);
+					return;
+				}
+				if (originalContent === code) {
+					await this._openFileInEditor(filePath);
+					return;
+				}
+				// P0-3: 打开 diff 编辑器
+				const fileName = filePath.split(/[\\/]/).pop() || filePath;
+				// 使用 modelService 获取已打开文件的语言 ID（如果有）
+				const existingModel = this._modelService.getModel(resource);
+				const langId = _language || existingModel?.getLanguageId() || undefined;
+				await this._editorService.openEditor({
+					original: { resource },
+					modified: { resource: undefined, contents: code, languageId: langId },
+					label: `Apply: ${fileName}`,
+					description: '保存右侧编辑器以接受变更',
+					options: { pinned: true },
+				} as any);
 			} else {
-				// No file path — open as untitled text editor
 				await this._editorService.openEditor({
 					resource: undefined,
 					contents: code,
@@ -1929,6 +1977,14 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		} catch (err) {
 			console.error('[NativeChatEditorPane] _handleApplyCode failed:', err);
+			// 回退：直接写入
+			if (filePath) {
+				try {
+					const resource = URI.file(filePath);
+					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
+					await this._openFileInEditor(filePath);
+				} catch { /* ignore */ }
+			}
 		}
 	}
 
@@ -1981,6 +2037,115 @@ export class NativeChatEditorPane extends EditorPane {
 		if (!p) { return false; }
 		if (p.startsWith('/') || p.startsWith('\\\\')) { return true; }
 		return /^[a-zA-Z]:[\\/]/.test(p);
+	}
+
+	/**
+	 * P0-2: 搜索工作区文件——递归遍历 workspace folders，按文件名模糊匹配。
+	 * 跳过 node_modules/.git/dist/out 等目录，限制深度 4 层 + 最多 200 个结果。
+	 */
+	private async _searchWorkspaceFiles(query: string): Promise<Array<{ path: string; name: string }>> {
+		const results: Array<{ path: string; name: string }> = [];
+		const q = query.toLowerCase();
+		const MAX_RESULTS = 50;
+		const MAX_DEPTH = 4;
+		const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', '.codebuddy', '__pycache__', '.sarosworkspace']);
+
+		const searchRecursive = async (uri: URI, depth: number): Promise<void> => {
+			if (depth > MAX_DEPTH || results.length >= MAX_RESULTS) { return; }
+			try {
+				const entry = await this._fileService.resolve(uri, { resolveMetadata: false });
+				if (!entry.children) { return; }
+				for (const child of entry.children) {
+					if (results.length >= MAX_RESULTS) { return; }
+					if (child.isDirectory) {
+						if (SKIP_DIRS.has(child.name) || child.name.startsWith('.')) { continue; }
+						await searchRecursive(child.resource, depth + 1);
+					} else {
+						if (child.name.toLowerCase().includes(q)) {
+							// 路径相对于 workspace folder
+							const wsFolder = this._workspaceContextService.getWorkspace().folders[0];
+							const relPath = child.resource.fsPath.replace(wsFolder?.uri.fsPath ?? '', '').replace(/^[\\/]/, '');
+							results.push({ name: child.name, path: relPath || child.name });
+						}
+					}
+				}
+			} catch { /* ignore permission errors */ }
+		};
+
+		const workspace = this._workspaceContextService.getWorkspace();
+		for (const folder of workspace.folders) {
+			await searchRecursive(folder.uri, 0);
+		}
+		return results;
+	}
+
+	/**
+	 * P0-2: 读取文件内容并添加为聊天上下文附件。
+	 */
+	private async _addFileContextToChat(filePath: string): Promise<void> {
+		try {
+			let uri: URI;
+			if (this._isAbsolutePath(filePath)) {
+				uri = URI.file(filePath);
+			} else {
+				const folders = this._workspaceContextService.getWorkspace().folders;
+				if (folders.length === 0) { return; }
+				uri = URI.joinPath(folders[0].uri, filePath);
+			}
+			const content = await this._fileService.readFile(uri);
+			const text = content.value.toString();
+			// 文件过大时截断
+			const maxSize = 100 * 1024; // 100KB
+			const truncated = text.length > maxSize ? text.slice(0, maxSize) + '\n... (truncated)' : text;
+			this._chatPanel?.addFileContext(filePath, truncated);
+		} catch (err) {
+			console.warn('[NativeChatEditorPane] _addFileContextToChat: failed to read file:', filePath, err);
+		}
+	}
+
+	/**
+	 * P1-1: 在集成终端中运行代码。
+	 * 先聚焦/创建终端，然后通过 sendSequence 发送代码。
+	 */
+	private async _runInTerminal(code: string): Promise<void> {
+		try {
+			// 聚焦现有终端（如果不存在会自动创建）
+			await this._commandService.executeCommand('workbench.action.terminal.focus');
+			// 发送代码到终端
+			await this._commandService.executeCommand('workbench.action.terminal.sendSequence', { text: code + '\n' });
+		} catch (err) {
+			console.error('[NativeChatEditorPane] _runInTerminal failed:', err);
+			// 回退：尝试创建新终端
+			try {
+				await this._commandService.executeCommand('workbench.action.terminal.new');
+				await this._commandService.executeCommand('workbench.action.terminal.sendSequence', { text: code + '\n' });
+			} catch (err2) {
+				console.error('[NativeChatEditorPane] _runInTerminal fallback failed:', err2);
+			}
+		}
+	}
+
+	/**
+	 * P1-3: 获取编辑器当前选中的代码，添加为聊天上下文附件。
+	 * 参考 Void SidebarChat 的 CodeSelection 上下文功能。
+	 */
+	private async _addEditorSelectionToChat(): Promise<void> {
+		try {
+			const codeEditor = this._editorService.activeTextEditorControl as any;
+			if (!codeEditor || typeof codeEditor.getModel !== 'function') { return; }
+			const model = codeEditor.getModel();
+			if (!model) { return; }
+			const selection = codeEditor.getSelection();
+			if (!selection || selection.isEmpty) { return; }
+			const selectedText = model.getValueInRange(selection);
+			if (!selectedText.trim()) { return; }
+			// 获取文件名
+			const resource = model.uri;
+			const fileName = resource?.path.split('/').pop() || 'selection';
+			this._chatPanel?.addFileContext(`${fileName} (L${selection.startLineNumber}-${selection.endLineNumber})`, selectedText);
+		} catch (err) {
+			console.warn('[NativeChatEditorPane] _addEditorSelectionToChat: no active editor or selection:', err);
+		}
 	}
 
 	/**

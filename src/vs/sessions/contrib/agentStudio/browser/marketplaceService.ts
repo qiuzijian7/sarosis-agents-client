@@ -15,12 +15,11 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { URI } from '../../../../base/common/uri.js';
-import { VSBuffer, streamToBuffer } from '../../../../base/common/buffer.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IRequestService, asText } from '../../../../platform/request/common/request.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
@@ -63,7 +62,6 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	private _user: IMarketplaceUser | undefined;
 
 	constructor(
-		@IRequestService private readonly requestService: IRequestService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IStorageService private readonly storageService: IStorageService,
@@ -71,15 +69,28 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		@IPathService private readonly pathService: IPathService,
 		@IPackageInstallerRegistry private readonly installerRegistry: IPackageInstallerRegistry,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
+		this.logService.info('[Marketplace] Constructor: 初始化开始');
+
 		const userJson = this.storageService.get(USER_KEY, StorageScope.APPLICATION);
 		if (userJson) {
-			try { this._user = JSON.parse(userJson); } catch { /* ignore */ }
+			try {
+				this._user = JSON.parse(userJson);
+				this.logService.info(`[Marketplace] Constructor: 从 storage 恢复用户: ${this._user?.username}`);
+			} catch { /* ignore */ }
+		} else {
+			this.logService.info('[Marketplace] Constructor: storage 中无用户信息');
 		}
+
+		const tofUser = this.tofAuthService.currentUser;
+		const tofTicket = this.tofAuthService.currentTicket;
+		this.logService.info(`[Marketplace] Constructor: TOF currentUser=${tofUser?.login_name ?? 'null'}, ticket=${tofTicket ? '有' : '无'}`);
 
 		// ── 监听 TOF 登录态变化，自动同步商城登录 ──
 		this._register(this.tofAuthService.onDidChangeUser(user => {
+			this.logService.info(`[Marketplace] onDidChangeUser: user=${user?.login_name ?? 'null'}`);
 			if (user) {
 				// TOF 用户登录/恢复 → 自动登录商城
 				this._syncTofLogin().catch(err => {
@@ -92,15 +103,18 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		}));
 
 		// ── 启动时检查 TOF 是否已登录（Delayed 实例化可能错过 onDidChangeUser 事件）──
-		// MarketplaceService 是 Delayed 实例化，TOF 会话恢复可能在构造前已完成。
-		// 此处主动检查 currentUser，若已有 TOF 用户则立即同步。
-		if (this.tofAuthService.currentUser && this.tofAuthService.currentTicket) {
-			// TOF 已登录但商城未登录（或用户名不一致）→ 异步同步
-			if (!this._user || this._user.username !== this.tofAuthService.currentUser.login_name) {
+		if (tofUser && tofTicket) {
+			this.logService.info(`[Marketplace] Constructor: TOF 已登录 (${tofUser.login_name})，检查是否需要同步`);
+			if (!this._user || this._user.username !== tofUser.login_name) {
+				this.logService.info('[Marketplace] Constructor: 商城未登录或用户名不一致，触发同步');
 				this._syncTofLogin().catch(err => {
 					this.logService.warn('[Marketplace] 启动时 TOF 同步失败:', err);
 				});
+			} else {
+				this.logService.info('[Marketplace] Constructor: 商城已登录且用户名一致，跳过同步');
 			}
+		} else {
+			this.logService.info('[Marketplace] Constructor: TOF 未登录，等待 onDidChangeUser 事件');
 		}
 	}
 
@@ -135,13 +149,34 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	/**
 	 * 用 TOF 票据登录商城（复用 VsSaros 登录态）。
 	 * 用 x-tai-identity ticket 调 /auth/tof，服务端验证后返回商城 JWT。
+	 * 通过扩展宿主代理请求，绕过渲染进程 CORS 限制。
 	 */
 	async loginWithTof(): Promise<void> {
 		const ticket = this.tofAuthService.currentTicket;
 		if (!ticket) {
+			this.logService.warn('[Marketplace] loginWithTof: currentTicket 为空');
 			throw new Error('未找到 TOF 登录票据，请先登录 VsSaros');
 		}
-		const res = await this.api<{ token: string; user: any; tofUser?: { staff_id: string; team: string | null } }>('POST', '/auth/tof', { ticket });
+		const url = `${this.endpoint}/api/v1/auth/tof`;
+		const body = JSON.stringify({ ticket });
+		this.logService.info(`[Marketplace] loginWithTof: 调用代理请求 POST ${url}, ticket 长度=${ticket.length}`);
+
+		// 使用扩展宿主代理请求（Node.js 环境，无 CORS 限制）
+		const resp = await this.commandService.executeCommand<{
+			statusCode: number; body: string; headers: Record<string, string>;
+		}>('marketplace.proxyRequest', {
+			url, method: 'POST', body,
+			headers: { 'Content-Type': 'application/json' },
+		});
+
+		this.logService.info(`[Marketplace] loginWithTof: 代理响应 statusCode=${resp?.statusCode}, body 长度=${resp?.body?.length ?? 0}`);
+
+		if (!resp || resp.statusCode >= 400) {
+			const errMsg = resp ? (JSON.parse(resp.body || '{}').error || `HTTP ${resp.statusCode}`) : '代理请求无响应';
+			this.logService.error(`[Marketplace] loginWithTof: 登录失败 - ${errMsg}`);
+			throw new Error(`TOF 登录失败: ${errMsg}`);
+		}
+		const res = JSON.parse(resp.body) as { token: string; user: any; tofUser?: { staff_id: string; team: string | null } };
 		this.storageService.store(TOKEN_KEY, res.token, StorageScope.APPLICATION, StorageTarget.MACHINE);
 		this._user = {
 			id: res.user.id, username: res.user.username,
@@ -150,7 +185,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		};
 		this.storageService.store(USER_KEY, JSON.stringify(this._user), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		this._onDidChangeLogin.fire();
-		this.logService.info(`[Marketplace] TOF 登录成功: ${res.user.username} (staff_id=${res.tofUser?.staff_id})`);
+		this.logService.info(`[Marketplace] loginWithTof: 登录成功 user=${res.user.username}, fire onDidChangeLogin`);
 	}
 
 	/**
@@ -160,12 +195,19 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	private async _syncTofLogin(): Promise<void> {
 		// 已登录且用户名一致则跳过
 		const tofUser = this.tofAuthService.currentUser;
-		if (!tofUser) { return; }
-		if (this._user && this._user.username === tofUser.login_name) { return; }
+		if (!tofUser) {
+			this.logService.info('[Marketplace] _syncTofLogin: TOF currentUser 为空，跳过');
+			return;
+		}
+		if (this._user && this._user.username === tofUser.login_name) {
+			this.logService.info(`[Marketplace] _syncTofLogin: 已登录 (${this._user.username})，跳过`);
+			return;
+		}
+		this.logService.info(`[Marketplace] _syncTofLogin: 需要同步, tofUser=${tofUser.login_name}, currentMarketplaceUser=${this._user?.username ?? 'null'}`);
 		try {
 			await this.loginWithTof();
 		} catch (err) {
-			this.logService.warn('[Marketplace] TOF 同步登录失败:', err);
+			this.logService.warn('[Marketplace] _syncTofLogin: 失败:', err);
 		}
 	}
 
@@ -221,18 +263,18 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 		const url = `${this.endpoint}/api/v1/packages/${storeId}/versions/${version}/download`;
 
-		// 1. 下载 tar.gz — 携带 JWT token
+		// 1. 下载 tar.gz — 通过扩展宿主代理绕过 CORS，携带 JWT token
 		const token = this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION);
 		const headers: Record<string, string> = {};
 		if (token) { headers['Authorization'] = `Bearer ${token}`; }
-		const ctx = await this.requestService.request(
-			{ type: 'GET', url, headers, callSite: 'marketplaceService.download' },
-			CancellationToken.None,
-		);
-		if (ctx.res.statusCode && ctx.res.statusCode >= 400) {
-			throw new Error(`下载失败: HTTP ${ctx.res.statusCode}`);
+		const resp = await this.commandService.executeCommand<{
+			statusCode: number; body: string;
+		}>('marketplace.proxyRequest', { url, method: 'GET', headers, binary: true });
+		if (!resp || resp.statusCode >= 400) {
+			throw new Error(`下载失败: HTTP ${resp?.statusCode || '无响应'}`);
 		}
-		const buffer = await streamToBuffer(ctx.stream);
+		// base64 → VSBuffer
+		const buffer = VSBuffer.wrap(Buffer.from(resp.body, 'base64'));
 
 		// 2. 准备临时目录
 		const userHome = await this.pathService.userHome();
@@ -367,16 +409,22 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		}
 		const token = this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION);
 		if (token) { headers['Authorization'] = `Bearer ${token}`; }
-		const ctx = await this.requestService.request({
-			type: method as any, url: `${this.apiBase}${urlPath}`, headers, data, callSite: 'marketplaceService.api',
-		}, CancellationToken.None);
-		const text = await asText(ctx);
-		if (ctx.res.statusCode && ctx.res.statusCode >= 400) {
-			let msg = `HTTP ${ctx.res.statusCode}`;
-			try { msg = text ? JSON.parse(text).error || msg : msg; } catch { /* ignore */ }
+
+		const url = `${this.apiBase}${urlPath}`;
+		// 使用扩展宿主代理请求，绕过渲染进程 CORS 限制
+		const resp = await this.commandService.executeCommand<{
+			statusCode: number; body: string;
+		}>('marketplace.proxyRequest', { url, method, body: data, headers });
+
+		if (!resp) {
+			throw new Error('代理请求无响应（marketplace.proxyRequest 命令未注册或扩展未激活）');
+		}
+		if (resp.statusCode >= 400) {
+			let msg = `HTTP ${resp.statusCode}`;
+			try { msg = resp.body ? JSON.parse(resp.body).error || msg : msg; } catch { /* ignore */ }
 			throw new Error(msg);
 		}
-		return text ? JSON.parse(text) as T : (undefined as T);
+		return resp.body ? JSON.parse(resp.body) as T : (undefined as T);
 	}
 
 	/** 安全地执行 tar 命令（仅在支持 require 的 Node 环境中可用） */

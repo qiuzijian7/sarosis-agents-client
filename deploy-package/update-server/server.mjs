@@ -421,6 +421,19 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	// vssaros: 如果客户端的 productVersion 与 manifest 中的 productVersion 相同，也返回 204。
+	// 客户端通过 User-Agent 头发送版本号，格式：Code/{productVersion} Electron/... Windows NT ...
+	// 这样即使 commit SHA 不同（例如多次构建同一版本号），也不会提示"升级"到相同版本。
+	const userAgent = req.headers['user-agent'] || '';
+	const clientVersionMatch = userAgent.match(/Code\/(\S+)/);
+	const clientProductVersion = clientVersionMatch ? clientVersionMatch[1] : '';
+	if (clientProductVersion && latest.productVersion && clientProductVersion === latest.productVersion) {
+		console.log(`[update] same productVersion (${clientProductVersion}), skipping update`);
+		res.writeHead(204);
+		res.end();
+		return;
+	}
+
 	const payload = {
 		version: latest.version,
 		productVersion: latest.productVersion,

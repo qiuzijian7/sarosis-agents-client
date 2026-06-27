@@ -813,6 +813,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		let iteration = 0;
 		let invalidToolNameCount = 0;
 
+
+		// ─── Plan-Execute-Reflect 反思阶段跟踪 ───────────────────
+		// 当 LLM 完成工具调用并给出最终回复后，注入反思提示让它检查是否有遗漏。
+		// 参考 OpenSearch ML Commons 的 PLAN_EXECUTE_AND_REFLECT 模式。
+		let hasModifiedFiles = false;   // 是否执行过文件修改类工具（写入/编辑/删除）
+		let reflectCount = 0;           // 反思阶段计数（最多 1 次）
+		const MAX_REFLECT_ITERATIONS = 1;
+		// 文件修改类工具名集合 — 仅在这些工具被使用后才触发反思
+		const FILE_MODIFICATION_TOOLS = new Set([
+			'file_write', 'write_to_file', 'replace_in_file', 'edit_file',
+			'delete_file', 'write_to_file',
+		]);
+
 		// ─── 上下文压缩初始化（对齐 ExecutionProvider Path 2）──────────
 		// Direct Mode 之前完全没有压缩，消息数一路增长直到撑爆上下文窗口。
 		// 这里复用 ContextManager.compressContext 做 Hermes 三段式压缩，
@@ -1473,8 +1486,40 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					continue; // 进入下一轮迭代
 				}
 
-				// 没有工具调用，对话结束
-				this._logService.info('[AgentOS] No tool calls, ending conversation');
+				// 没有工具调用 — 检查是否需要反思阶段
+				// ─── Plan-Execute-Reflect 模式 ──────────────────────────
+				// 当 LLM 执行过工具并给出最终回复后，注入反思提示让它自查是否有遗漏。
+				// 参考 OpenSearch ML Commons 的 PLAN_EXECUTE_AND_REFLECT Agent 类型。
+				if (hasModifiedFiles && reflectCount < MAX_REFLECT_ITERATIONS && trimmedAssistantContent) {
+					reflectCount++;
+					this._logService.info(`[AgentOS] Entering reflect phase (${reflectCount}/${MAX_REFLECT_ITERATIONS})`);
+					// Reconcile orphaned tool_starts before reflect
+					for (const orphanId of startedToolIds) {
+						if (!endedToolIds.has(orphanId)) {
+							const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (reflect phase)' })));
+							yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
+							yield { type: 'tool_end', toolCallId: orphanId, success: false };
+							endedToolIds.add(orphanId);
+						}
+					}
+					// 注入反思提示，让 LLM 检查工作是否有遗漏
+					yield { type: 'text', content: '\n\n---\n**[Reflection Phase]** Reviewing completed work...' };
+					messages.push({
+						role: 'user',
+						content:
+							'Before finalizing, please review your completed work:\n' +
+							'1. Did you modify all necessary files? Are there missing imports or references?\n' +
+							'2. Are there any compilation errors or lint warnings you should fix?\n' +
+							'3. Did you handle edge cases and error paths?\n' +
+							'4. Are your changes complete, consistent, and tested?\n\n' +
+							'If you find issues, fix them now using the appropriate tools.\n' +
+							'If everything is correct, provide your final summary.',
+					});
+					continue; // 进入反思迭代
+				}
+
+				// 反思已完成或无需反思 — 真正结束
+				this._logService.info('[AgentOS] No tool calls, ending conversation' + (reflectCount > 0 ? ` (after ${reflectCount} reflect phase(s))` : ''));
 				// Reconcile orphaned tool_starts before ending (e.g., phantom tools
 				// that were filtered out had a tool_start but no execution path).
 				for (const orphanId of startedToolIds) {
@@ -1494,6 +1539,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// Knot AG-UI 等服务端 Agent 会在服务端执行工具并标记 server_executed=true。
 			// 这些工具不需要（也不应该）在客户端再次执行——本地没有对应的 provider，
 			// 强行执行只会报 "No provider available" 错误，导致 tool card 显示"错误详情"。
+			// 标记是否使用了文件修改类工具（用于反思阶段判断）
+			if (effectiveToolCalls.length > 0) {
+				for (const tc of effectiveToolCalls) {
+					if (FILE_MODIFICATION_TOOLS.has(tc.name)) { hasModifiedFiles = true; break; }
+				}
+			}
 			//
 			// 对于 serverExecuted 的工具：
 			//   - 发送 tool_result（占位成功结果）+ tool_end(success=true)

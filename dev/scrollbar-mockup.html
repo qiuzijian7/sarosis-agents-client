@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>滚动条标记 Mockup</title>
+<style>
+:root {
+  --bg: #1e1e1e;
+  --bg-chat: #1a1a1a;
+  --bg-bubble-user: #2d4a7a;
+  --bg-bubble-assistant: #2a2a2a;
+  --bg-toolbar: #2d2d2d;
+  --text: #cccccc;
+  --text-dim: #888;
+  --accent: #4fc3f7;
+  --accent-dim: #2d6a8a;
+  --marker-color: #4fc3f7;
+  --marker-hover: #81d4fa;
+  --scrollbar-track: rgba(255,255,255,0.04);
+  --scrollbar-thumb: rgba(255,255,255,0.18);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.35);
+  --popup-bg: #2d2d2d;
+  --popup-border: #555;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  font-family: -apple-system, "Segoe UI", "Cascadia Code", sans-serif;
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+/* ── Chat Panel Container ── */
+.chat-panel {
+  width: 720px;
+  height: 600px;
+  background: var(--bg-chat);
+  border: 1px solid #333;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ── Header ── */
+.chat-header {
+  height: 44px;
+  background: var(--bg-toolbar);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid #333;
+  gap: 8px;
+}
+.chat-header .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ── Messages Area (scroll container + custom scrollbar wrapper) ── */
+.messages-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.messages-container {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px 20px 16px 20px;
+  /* Reserve space for custom scrollbar */
+  padding-right: 28px;
+  scroll-behavior: auto;
+}
+
+/* ── Custom Scrollbar ── */
+.custom-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 100%;
+  background: var(--scrollbar-track);
+  z-index: 10;
+  cursor: pointer;
+}
+
+.scrollbar-track {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: calc(100% - 8px);
+  background: transparent;
+  border-radius: 3px;
+}
+
+.scrollbar-thumb {
+  position: absolute;
+  width: 6px;
+  left: 0;
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+  transition: background 0.15s, width 0.15s, left 0.15s;
+}
+
+.custom-scrollbar:hover .scrollbar-thumb {
+  background: var(--scrollbar-thumb-hover);
+  width: 10px;
+  left: -2px;
+}
+
+/* ── User Message Markers on Scrollbar ── */
+.scroll-marker {
+  position: absolute;
+  right: 1px;
+  width: 10px;
+  height: 3px;
+  background: var(--marker-color);
+  border-radius: 2px;
+  opacity: 0.7;
+  cursor: pointer;
+  transition: all 0.15s;
+  z-index: 11;
+}
+
+.scroll-marker:hover {
+  opacity: 1;
+  background: var(--marker-hover);
+  width: 14px;
+  height: 4px;
+  box-shadow: 0 0 6px rgba(79, 195, 247, 0.6);
+}
+
+/* ── Hover Popup ── */
+.marker-popup {
+  position: absolute;
+  right: 24px;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  max-width: 320px;
+  min-width: 180px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 0.15s, transform 0.15s;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.marker-popup.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.marker-popup .popup-label {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.marker-popup .popup-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #444;
+}
+
+.marker-popup .popup-preview {
+  line-height: 1.5;
+  max-height: 60px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* ── Chat Messages ── */
+.chat-message {
+  margin-bottom: 16px;
+  display: flex;
+  gap: 10px;
+}
+.chat-message.user { flex-direction: row-reverse; }
+
+.avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+.avatar.user { background: #3b6ea5; color: #fff; }
+.avatar.assistant { background: #4a4a4a; color: #ccc; }
+
+.bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.bubble.user {
+  background: var(--bg-bubble-user);
+  color: #e8e8e8;
+  border-bottom-right-radius: 4px;
+}
+.bubble.assistant {
+  background: var(--bg-bubble-assistant);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble pre {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-family: "Cascadia Code", monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  color: #ce9178;
+}
+
+/* ── Input Area ── */
+.chat-input {
+  height: 52px;
+  background: var(--bg-toolbar);
+  border-top: 1px solid #333;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+}
+.chat-input input {
+  flex: 1;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.chat-input input:focus { border-color: var(--accent); }
+.chat-input button {
+  background: var(--accent-dim);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.chat-input button:hover { background: var(--accent); }
+
+/* ── Scroll-to-bottom button ── */
+.scroll-bottom-btn {
+  position: absolute;
+  bottom: 60px;
+  right: 24px;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: var(--bg-toolbar);
+  border: 1px solid #555;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 15;
+  color: var(--text);
+  font-size: 16px;
+}
+.scroll-bottom-btn.visible { display: flex; }
+.scroll-bottom-btn:hover { background: #383838; border-color: var(--accent); }
+
+/* ── Info banner ── */
+.info-banner {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2d2d2d;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--text);
+  z-index: 100;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.info-banner .badge {
+  background: var(--accent-dim);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+</style>
+</head>
+<body>
+
+<div class="info-banner">
+  <span class="badge">MOCKUP</span>
+  <span>自定义滚动条 + 用户消息标记（蓝线）| hover 显示预览 | 点击跳转</span>
+</div>
+
+<div class="chat-panel">
+  <div class="chat-header">
+    <span class="dot"></span>
+    <span>Sarosis Agent · Craft Mode</span>
+  </div>
+
+  <div class="messages-wrapper" id="messagesWrapper">
+    <div class="messages-container" id="messagesContainer">
+      <!-- Messages will be generated by JS -->
+    </div>
+
+    <!-- Custom Scrollbar -->
+    <div class="custom-scrollbar" id="customScrollbar">
+      <div class="scrollbar-track" id="scrollbarTrack">
+        <div class="scrollbar-thumb" id="scrollbarThumb"></div>
+      </div>
+      <!-- Markers will be injected by JS -->
+    </div>
+
+    <!-- Hover Popup -->
+    <div class="marker-popup" id="markerPopup">
+      <div class="popup-label">👤 用户消息</div>
+      <div class="popup-preview" id="popupPreview"></div>
+      <div class="popup-time" id="popupTime"></div>
+    </div>
+
+    <!-- Scroll to bottom button -->
+    <div class="scroll-bottom-btn" id="scrollBottomBtn">↓</div>
+  </div>
+
+  <div class="chat-input">
+    <input type="text" placeholder="输入消息..." />
+    <button>发送</button>
+  </div>
+</div>
+
+<script>
+// ── Generate sample conversation ──
+const userMessages = [
+  { id: 'u1', text: '帮我分析一下这个项目的架构，特别是模块之间的依赖关系', time: '14:01' },
+  { id: 'u2', text: '能把 src/vs/sessions 这个目录的代码结构详细说明一下吗？', time: '14:05' },
+  { id: 'u3', text: '我发现聊天框流式输出时滚动条会卡住，帮我排查一下', time: '14:12' },
+  { id: 'u4', text: '参考 Void 项目的聊天框架，对比本项目有哪些性能差距', time: '14:20' },
+  { id: 'u5', text: '开始执行 P0 优化：增量 Markdown 渲染 + Disposable 生命周期修复', time: '14:35' },
+  { id: 'u6', text: '聊天框滚动条一键到底功能优化，增加未读消息计数 badge', time: '14:50' },
+  { id: 'u7', text: '流式输出完毕后光标没有消失，检查一下 streaming-cursor 的清理逻辑', time: '15:02' },
+  { id: 'u8', text: '对比 void 项目源码，聊天框中还有哪些功能差异？拖放、@提及、diff 视图', time: '15:15' },
+  { id: 'u9', text: '修复 bug：聊天输入框上方的拖拽线重复创建多个', time: '15:30' },
+  { id: 'u10', text: '优化滚动条样式，增加用户消息标记，hover 显示预览，点击跳转', time: '15:45' },
+];
+
+const assistantResponses = [
+  '好的，我来分析项目架构。这个项目是基于 VS Code 的 fork，主要模块包括：\n\n```ts\nsrc/vs/sessions/\n  browser/agentChat/     // 聊天面板 UI\n  contrib/agentStudio/   // Agent Studio 核心\n  common/                // 共享类型定义\n```\n\n模块之间通过依赖注入解耦，`AgentOSService` 是核心调度器，负责 Agent 执行循环、工具调用、上下文压缩等。',
+  '`src/vs/sessions` 目录结构如下：\n\n- `browser/agentChat/` — 聊天面板的 DOM 渲染层\n- `contrib/agentStudio/browser/` — Agent Studio 编辑器面板\n- `contrib/agentStudio/common/adapters/` — LLM 适配器（Gemini、CodeBuddy 等）\n\n关键文件 `agentChatPanel.ts` 约 7900 行，包含消息渲染、流式处理、滚动管理、工具卡渲染等全部逻辑。',
+  '排查滚动条卡住问题。通过诊断日志定位到根因：`_startStreamScroll` 的 rAF 循环在 `_isAtBottom=false` 时直接停止且永不重启。WHEEL 处理器对任何 `deltaY<0` 立即禁用自动滚动，包括触控板惯性误触。\n\n修复方案：改为自愈设计——循环在流式期间始终存活，仅在 `_isAtBottom=true` 时钉底。',
+  '对比分析完成。VS Code 原生使用 `WorkbenchObjectTree` 虚拟化渲染，Void 复用该框架。本项目用扁平 DOM 全量挂载。\n\n| 维度 | VS Code/Void | Sarosis |\n|------|-------------|---------|\n| 列表渲染 | 虚拟化 | 全量挂载 |\n| 流式渲染 | 50ms 定时器 | 200ms 节流 |\n| 内容更新 | 逐 part diff | 全量 re-parse |',
+  'P0 优化已实施：\n\n1. **增量 Markdown 更新** — `_tryIncrementalMarkdownRender` 只渲染追加部分\n2. **Disposable 生命周期修复** — `clearNode` 前 dispose 所有 disposable\n3. **isStreaming 转换优化** — `_transitionStreamingToComplete` 避免全量重建\n4. **消息列表懒加载** — IntersectionObserver 按需加载\n\n性能提升 5-10x。',
+  '滚动到底部按钮功能增强完成：\n\n- 未读消息计数 badge（`scroll-badge`）\n- 平滑滚动（`behavior: smooth`）\n- 新消息脉冲提示动画\n- hover/active 增强',
+  '已修复。流式结束后的 slow-path 工具卡增量更新路径未移除 `streaming-cursor`。在 `_updateToolCardStatuses` 返回前补充了光标移除 + footer 追加逻辑。',
+  '功能差异对比完成，产出文档 `doc/chat-features-comparison.md`。需补齐：\n\n1. 代码块 Diff 视图（Accept/Reject）\n2. @提及文件搜索\n3. 拖放文件到聊天框\n4. 终端运行按钮\n5. 代码选择作为上下文',
+  '已修复。根因是 `dragenter` 事件计数器管理有误，未检查已存在的 overlay。添加 `querySelector(\'.chat-drag-overlay\')` 前置检查，避免重复创建。',
+  '正在设计滚动条标记 mockup。功能包括：\n\n1. 加宽滚动条（14px）\n2. 用户消息位置标记（蓝线）\n3. hover 显示消息预览 popup\n4. 点击跳转到对应消息',
+];
+
+const container = document.getElementById('messagesContainer');
+const userMsgMap = new Map(); // id -> element
+
+userMessages.forEach((um, i) => {
+  // User message
+  const userEl = document.createElement('div');
+  userEl.className = 'chat-message user';
+  userEl.id = um.id;
+  userEl.innerHTML = `
+    <div class="avatar user">U</div>
+    <div class="bubble user">${um.text}</div>
+  `;
+  container.appendChild(userEl);
+  userMsgMap.set(um.id, userEl);
+
+  // Assistant response
+  const ar = assistantResponses[i] || '处理中...';
+  const assistantEl = document.createElement('div');
+  assistantEl.className = 'chat-message assistant';
+  const htmlContent = ar.replace(/```ts\n([\s\S]*?)```/g, '<pre>$1</pre>');
+  assistantEl.innerHTML = `
+    <div class="avatar assistant">A</div>
+    <div class="bubble assistant">${htmlContent.replace(/\n/g, '<br>')}</div>
+  `;
+  container.appendChild(assistantEl);
+});
+
+// ── Custom Scrollbar Logic ──
+const wrapper = document.getElementById('messagesWrapper');
+const scrollbar = document.getElementById('customScrollbar');
+const track = document.getElementById('scrollbarTrack');
+const thumb = document.getElementById('scrollbarThumb');
+const popup = document.getElementById('markerPopup');
+const popupPreview = document.getElementById('popupPreview');
+const popupTime = document.getElementById('popupTime');
+const scrollBtn = document.getElementById('scrollBottomBtn');
+const scrollContainer = document.getElementById('messagesContainer');
+
+function updateScrollbar() {
+  const el = scrollContainer;
+  const ratio = el.clientHeight / el.scrollHeight;
+  const thumbHeight = Math.max(30, el.clientHeight * ratio);
+  const scrollTop = el.scrollTop;
+  const maxScroll = el.scrollHeight - el.clientHeight;
+  const thumbTop = (scrollTop / maxScroll) * (track.offsetHeight - thumbHeight);
+
+  thumb.style.height = thumbHeight + 'px';
+  thumb.style.top = thumbTop + 'px';
+
+  // Update markers
+  updateMarkers(thumbHeight, thumbTop);
+
+  // Scroll-to-bottom button
+  const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+  scrollBtn.classList.toggle('visible', distFromBottom > 80);
+}
+
+function updateMarkers(thumbHeight, thumbTop) {
+  // Remove old markers
+  scrollbar.querySelectorAll('.scroll-marker').forEach(m => m.remove());
+
+  const el = scrollContainer;
+  const maxScroll = el.scrollHeight - el.clientHeight;
+  if (maxScroll <= 0) return;
+
+  const trackHeight = track.offsetHeight;
+  const usableHeight = trackHeight - thumbHeight;
+
+  userMessages.forEach((um) => {
+    const msgEl = document.getElementById(um.id);
+    if (!msgEl) return;
+
+    // Calculate message position relative to scroll content
+    const msgTop = msgEl.offsetTop;
+    const msgRatio = msgTop / el.scrollHeight;
+    // Map to scrollbar track position (account for thumb)
+    const markerTop = 4 + msgRatio * (trackHeight - 8);
+
+    const marker = document.createElement('div');
+    marker.className = 'scroll-marker';
+    marker.style.top = markerTop + 'px';
+    marker.dataset.msgId = um.id;
+    marker.dataset.text = um.text;
+    marker.dataset.time = um.time;
+
+    // Hover popup
+    marker.addEventListener('mouseenter', (e) => {
+      const preview = um.text.length > 120 ? um.text.substring(0, 120) + '...' : um.text;
+      popupPreview.textContent = preview;
+      popupTime.textContent = '🕐 ' + um.time + ' · 点击跳转';
+      popup.style.top = Math.min(markerTop, trackHeight - 100) + 'px';
+      popup.classList.add('visible');
+    });
+    marker.addEventListener('mouseleave', () => {
+      popup.classList.remove('visible');
+    });
+
+    // Click to jump
+    marker.addEventListener('click', (e) => {
+      e.stopPropagation();
+      msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Flash highlight
+      msgEl.style.transition = 'background 0.3s';
+      msgEl.style.background = 'rgba(79, 195, 247, 0.15)';
+      setTimeout(() => { msgEl.style.background = ''; }, 1000);
+    });
+
+    scrollbar.appendChild(marker);
+  });
+}
+
+// ── Scroll event ──
+scrollContainer.addEventListener('scroll', updateScrollbar);
+scrollContainer.addEventListener('resize', updateScrollbar);
+
+// ── Drag scrollbar thumb ──
+let isDragging = false;
+let dragStartY = 0;
+let dragStartScrollTop = 0;
+
+thumb.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  dragStartY = e.clientY;
+  dragStartScrollTop = scrollContainer.scrollTop;
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const deltaY = e.clientY - dragStartY;
+  const maxScroll = scrollContainer.scrollHeight - scrollContainer.clientHeight;
+  const trackH = track.offsetHeight - thumb.offsetHeight;
+  const scrollDelta = (deltaY / trackH) * maxScroll;
+  scrollContainer.scrollTop = dragStartScrollTop + scrollDelta;
+});
+
+document.addEventListener('mouseup', () => { isDragging = false; });
+
+// ── Click on track to jump ──
+track.addEventListener('click', (e) => {
+  if (e.target !== thumb) {
+    const rect = track.getBoundingClientRect();
+    const clickRatio = (e.clientY - rect.top) / rect.height;
+    scrollContainer.scrollTop = clickRatio * (scrollContainer.scrollHeight - scrollContainer.clientHeight);
+  }
+});
+
+// ── Scroll to bottom button ──
+scrollBtn.addEventListener('click', () => {
+  scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+});
+
+// ── Init ──
+updateScrollbar();
+// Scroll to bottom initially
+scrollContainer.scrollTop = scrollContainer.scrollHeight;
+updateScrollbar();
+</script>
+
+</body>
+</html>
