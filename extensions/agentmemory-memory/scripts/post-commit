@@ -1,0 +1,60 @@
+#!/bin/sh
+# ──────────────────────────────────────────────────────────────────────
+# Git post-commit hook — 捕获提交信息到 AgentMemory
+#
+# 安装方法：
+#   cp extensions/agentmemory-memory/scripts/post-commit .git/hooks/post-commit
+#   chmod +x .git/hooks/post-commit
+#
+# 或使用 VS Code 命令安装：
+#   AgentStudio: Install Git Post-Commit Hook
+#
+# 工作原理：
+#   1. git commit 后自动触发
+#   2. 提取提交信息（SHA、消息、作者、文件变更统计）
+#   3. 通过 VS Code CLI 发送到 AgentMemory 扩展
+#   4. 扩展将提交信息作为 episodic 记忆存储
+# ──────────────────────────────────────────────────────────────────────
+
+# 提取提交信息
+COMMIT_SHA=$(git rev-parse HEAD)
+COMMIT_MSG=$(git log -1 --pretty=%B)
+COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+COMMIT_AUTHOR_EMAIL=$(git log -1 --pretty=%ae)
+COMMIT_TIMESTAMP=$(git log -1 --pretty=%ct)
+COMMIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+
+# 提取变更统计
+STATS=$(git show --stat --format="" HEAD)
+INSERTIONS=$(echo "$STATS" | grep -oP '\d+(?= insertion)' | tail -1 || echo "0")
+DELETIONS=$(echo "$STATS" | grep -oP '\d+(?= deletion)' | tail -1 || echo "0")
+
+# 提取变更文件列表（JSON 数组格式）
+FILES_CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD | jq -R . | jq -s . 2>/dev/null || echo "[]")
+
+# 构建 JSON payload
+PAYLOAD=$(cat <<EOF
+{
+  "command": "agentStudio.captureGitCommit",
+  "sha": "$COMMIT_SHA",
+  "message": $(echo "$COMMIT_MSG" | jq -Rs .),
+  "author": "$COMMIT_AUTHOR",
+  "authorEmail": "$COMMIT_AUTHOR_EMAIL",
+  "timestamp": $COMMIT_TIMESTAMP,
+  "branch": "$COMMIT_BRANCH",
+  "repoPath": "$REPO_PATH",
+  "filesChanged": $FILES_CHANGED,
+  "insertions": ${INSERTIONS:-0},
+  "deletions": ${DELETIONS:-0}
+}
+EOF
+)
+
+# 尝试通过 VS Code CLI 发送（如果 code 命令可用）
+if command -v code &> /dev/null; then
+  code --execute-command "agentStudio.captureGitCommit" "$PAYLOAD" 2>/dev/null || true
+fi
+
+# 静默成功（不干扰 git 操作）
+exit 0

@@ -106,18 +106,18 @@ export class ExecutionProvider implements IExecutionProvider {
 				// ── 收集所有记忆内容 ──
 				const memoryParts: string[] = [];
 
-				// longTermMemories（L1/L2 召回内容）——TDB-AM 的核心记忆
+				// longTermMemories（L1/L2 召回内容）——AgentMemory 的核心记忆
 				if (filteredLongTerm.length > 0) {
 					const ltContents = filteredLongTerm
 						.map(m => m.content)
 						.filter(Boolean)
 						.join('\n\n');
 					if (ltContents.trim().length > 0) {
-						memoryParts.push(`## Long-term Memory (TDB-AM Recall)\n\n${ltContents}`);
+						memoryParts.push(`## Long-term Memory (AgentMemory Recall)\n\n${ltContents}`);
 					}
 				}
 
-				// shortTermMemories（最近几轮摘要，通常为空，因 TDB-AM 不填此字段）
+				// shortTermMemories（最近几轮摘要，通常为空，因 AgentMemory 不填此字段）
 				if (filteredShortTerm.length > 0) {
 					const stContents = filteredShortTerm
 						.map(m => m.content)
@@ -424,7 +424,7 @@ export class ExecutionProvider implements IExecutionProvider {
 
 			// 7.7 更新记忆（如果有 Memory Provider）
 			// Fire-and-forget: writeMemory may trigger an HTTP POST /capture to the
-			// tdb-am-gateway. If the gateway is slow or unresponsive, awaiting it
+			// agentmemory-gateway. If the gateway is slow or unresponsive, awaiting it
 			// would block this async generator, freezing the entire chat stream.
 			// Same pattern as agentDriverService.ts Step 5.
 			if (memoryProvider) {
@@ -432,7 +432,7 @@ export class ExecutionProvider implements IExecutionProvider {
 					try {
 						await memoryProvider.writeMemory(request.agentId, {
 							id: `msg-${Date.now()}`,
-							type: 'short_term',
+							type: 'working',
 							content: assistantContent || 'Tool execution completed',
 							metadata: {
 								// ── memory 合并 schema 预留（参见 doc/Memory-Strategy.md §2.7）──

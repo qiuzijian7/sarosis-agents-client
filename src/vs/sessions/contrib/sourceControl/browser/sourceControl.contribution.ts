@@ -265,7 +265,6 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 		// _pruneVisibleRepositories and covers the case where a repo registers
 		// later than the t+1000ms window.
 		this._register(this.scmService.onDidAddRepository(repo => {
-			console.log(`[SourceControlWorkspaceSync] onDidAddRepository root=${repo.provider.rootUri?.fsPath ?? '<no-root>'} — reconciling against current allowedRoots`);
 			this._pruneVisibleRepositories(this._currentAllowedRoots);
 		}));
 
@@ -295,10 +294,8 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 	}
 
 	private async _syncWorkspaceFolder(workspaceId: string): Promise<void> {
-		console.log(`[SourceControlWorkspaceSync] _syncWorkspaceFolder ENTER workspaceId=${workspaceId}`);
 		const workspace = await this.agentStudioService.getWorkspace(workspaceId);
 		if (!workspace) {
-			console.log(`[SourceControlWorkspaceSync] _syncWorkspaceFolder workspace not found, hiding all`);
 			this._hasGitRepoKey.set(false);
 			return;
 		}

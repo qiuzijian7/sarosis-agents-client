@@ -64,6 +64,24 @@ export const READ_ONLY_TOOL_PATTERNS: readonly RegExp[] = [
 	/^symbol/i, /^references$/i, /^definition$/i, /^hover$/i,
 ];
 
+/**
+ * MCP tool name suffixes that are read-only (safe for ask/plan mode).
+ * These provide code analysis capabilities without modifying state.
+ *
+ * @deprecated 使用 MCP ToolAnnotations 或 securityLevel 替代。
+ * McpToolProvider._inferSecurityLevel() 已从 annotations/description 推断安全等级，
+ * isToolAllowedInAskMode 通过 securityLevel === Safe 判断，无需硬编码后缀。
+ * 保留此常量仅用于日志/诊断目的。
+ */
+export const MCP_READ_ONLY_SUFFIXES: readonly string[] = [];
+
+/**
+ * MCP tool name suffixes that have side effects (NOT allowed in ask/plan mode).
+ *
+ * @deprecated 同上。
+ */
+export const MCP_DESTRUCTIVE_SUFFIXES: readonly string[] = [];
+
 /** Tool names that are exclusive to Plan mode (added on top of read-only). */
 export const PLAN_EXCLUSIVE_TOOL_PATTERNS: readonly RegExp[] = [
 	/^enter_plan_mode$/i, /^exit_plan_mode$/i, /^ask_user_question$/i,
@@ -111,15 +129,45 @@ function isToolAllowedInAskMode(tool: IToolDefinition): boolean {
 		return true;
 	}
 	// Include by security level: safe tools are allowed
+	// McpToolProvider 通过 MCP ToolAnnotations 或描述推断设置 securityLevel
 	if (tool.securityLevel === ToolSecurityLevel.Safe) {
 		return true;
+	}
+	// Exclude tools explicitly marked as dangerous
+	if (tool.securityLevel === ToolSecurityLevel.Dangerous) {
+		return false;
 	}
 	// Include by category
 	if (READ_ONLY_CATEGORIES.has((tool.category || '').toLowerCase())) {
 		return true;
 	}
+	// Fallback: 对于 securityLevel 未设置的工具（非 MCP 工具），
+	// 从描述启发式推断是否为只读
+	if (tool.securityLevel === undefined && tool.description) {
+		return _inferReadOnlyFromDescription(tool.description);
+	}
 	// Unknown tools are excluded by default in ask mode
 	return false;
+}
+
+/**
+ * 从工具描述启发式推断是否为只读工具。
+ * 不依赖工具名硬编码，只分析描述语义。
+ */
+function _inferReadOnlyFromDescription(description: string): boolean {
+	const desc = description.toLowerCase();
+	const readOnlyKeywords = [
+		'get ', 'search ', 'list ', 'query ', 'trace ', 'read ',
+		'check ', 'find ', 'inspect ', 'view ', 'show ', 'count ',
+	];
+	const destructiveKeywords = [
+		'write', 'delete', 'create', 'index ', 'update', 'ingest',
+		'manage', 'modify', 'remove', 'insert', 'build', 'rebuild',
+		'sync', 'push', 'pull', 'deploy',
+	];
+	const isReadOnly = readOnlyKeywords.some(kw => desc.includes(kw));
+	const isDestructive = destructiveKeywords.some(kw => desc.includes(kw));
+	return isReadOnly && !isDestructive;
 }
 
 function isToolAllowedInPlanMode(tool: IToolDefinition): boolean {

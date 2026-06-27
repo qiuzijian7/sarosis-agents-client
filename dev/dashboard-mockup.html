@@ -1,0 +1,1293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentStudio Dashboard — VS Code Mockup</title>
+<style>
+  /* ===== VS Code Dark Theme Variables ===== */
+  :root {
+    --vscode-bg: #1e1e1e;
+    --vscode-bg-light: #252526;
+    --vscode-bg-lighter: #2d2d2d;
+    --vscode-bg-hover: #37373d;
+    --vscode-bg-input: #3c3c3c;
+    --vscode-border: #3c3c3c;
+    --vscode-text: #cccccc;
+    --vscode-text-muted: #858585;
+    --vscode-text-dim: #6b6b6b;
+    --vscode-accent: #0078d4;
+    --vscode-accent-hover: #1f8ad2;
+    --vscode-focus: #007fd4;
+    --badge-bg: #4d4d4d;
+    --titlebar-bg: #3c3c3c;
+    --activitybar-bg: #333333;
+    --sidebar-bg: #252526;
+    --editor-bg: #1e1e1e;
+    --tab-active: #1e1e1e;
+    --tab-inactive: #2d2d2d;
+    --statusbar-bg: #007acc;
+    /* Status colors */
+    --status-running: #4ec9b0;
+    --status-idle: #dcdcaa;
+    --status-failed: #f48771;
+    --status-completed: #89d185;
+    --status-stopped: #c586c0;
+    /* Chart colors */
+    --chart-1: #0078d4;
+    --chart-2: #4ec9b0;
+    --chart-3: #dcdcaa;
+    --chart-4: #ce9178;
+    --chart-5: #c586c0;
+    --chart-6: #89d185;
+    /* Warning */
+    --warn-bg: #5a2d0c;
+    --warn-border: #bb8200;
+    --warn-text: #ffb000;
+    --success-bg: #143a12;
+    --success-text: #89d185;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Cascadia Code', sans-serif;
+    background: var(--vscode-bg);
+    color: var(--vscode-text);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow: hidden;
+  }
+
+  /* ===== VS Code Window Shell ===== */
+  .window {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* Title Bar */
+  .titlebar {
+    height: 30px;
+    background: var(--titlebar-bg);
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+  }
+  .titlebar-title {
+    font-size: 12px;
+    color: var(--vscode-text-muted);
+    flex: 1;
+    text-align: center;
+  }
+  .window-controls { display: flex; gap: 8px; }
+  .window-controls span {
+    width: 16px; height: 16px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--vscode-text-muted); cursor: pointer;
+    font-size: 11px;
+  }
+  .window-controls span:hover { color: var(--vscode-text); }
+
+  /* Main Content Row */
+  .content-row {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ===== Activity Bar ===== */
+  .activitybar {
+    width: 48px;
+    background: var(--activitybar-bg);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    padding-top: 4px;
+  }
+  .activity-item {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    position: relative;
+    color: var(--vscode-text-muted);
+    transition: color 0.15s;
+  }
+  .activity-item:hover { color: var(--vscode-text); }
+  .activity-item.active { color: var(--vscode-text); }
+  .activity-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--vscode-text);
+  }
+  .activity-item svg { width: 24px; height: 24px; fill: currentColor; }
+  .activity-item .badge {
+    position: absolute;
+    top: 8px; right: 8px;
+    background: var(--vscode-accent);
+    color: #fff;
+    font-size: 9px;
+    padding: 0 4px;
+    border-radius: 8px;
+    min-width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+  }
+  .activity-spacer { flex: 1; }
+
+  /* ===== Side Bar ===== */
+  .sidebar {
+    width: 280px;
+    background: var(--sidebar-bg);
+    flex-shrink: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-right: 1px solid var(--vscode-border);
+    display: none;
+  }
+  .sidebar.visible { display: block; }
+  .sidebar-header {
+    padding: 8px 12px 8px 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--vscode-text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .sidebar-actions { display: flex; gap: 4px; }
+  .sidebar-actions svg { width: 16px; height: 16px; fill: var(--vscode-text-muted); cursor: pointer; }
+  .sidebar-actions svg:hover { fill: var(--vscode-text); }
+
+  /* ===== Editor Area ===== */
+  .editor-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--editor-bg);
+  }
+  .editor-tabs {
+    display: flex;
+    background: var(--tab-inactive);
+    height: 35px;
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .editor-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    height: 35px;
+    background: var(--tab-inactive);
+    color: var(--vscode-text-muted);
+    cursor: pointer;
+    border-right: 1px solid var(--vscode-border);
+    font-size: 12px;
+    white-space: nowrap;
+    position: relative;
+  }
+  .editor-tab.active {
+    background: var(--tab-active);
+    color: var(--vscode-text);
+  }
+  .editor-tab.active::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--vscode-accent);
+  }
+  .editor-tab svg { width: 14px; height: 14px; fill: currentColor; }
+  .editor-tab .close { opacity: 0.6; margin-left: 4px; }
+  .editor-tab .close:hover { opacity: 1; }
+
+  .editor-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  /* ===== Status Bar ===== */
+  .statusbar {
+    height: 22px;
+    background: var(--statusbar-bg);
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 11px;
+    color: #fff;
+    flex-shrink: 0;
+    gap: 12px;
+  }
+  .statusbar-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    opacity: 0.9;
+  }
+  .statusbar-item:hover { opacity: 1; }
+  .statusbar-spacer { flex: 1; }
+  .statusbar svg { width: 12px; height: 12px; fill: currentColor; }
+
+  /* ===================================================================
+     SIDEBAR: Explorer View (compact, just for context)
+     =================================================================== */
+  .explorer-tree { padding: 4px 0; }
+  .tree-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 12px 2px 20px;
+    font-size: 12px;
+    color: var(--vscode-text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tree-item:hover { background: var(--vscode-bg-hover); }
+  .tree-item.folder { font-weight: 500; }
+  .tree-item .chevron { width: 12px; fill: var(--vscode-text-muted); }
+  .tree-item .file-icon { width: 14px; height: 14px; flex-shrink: 0; }
+
+  /* ===================================================================
+     SIDEBAR: Dashboard View
+     =================================================================== */
+  .dash-sidebar { padding: 0 12px 16px; }
+
+  /* Mini KPI in sidebar */
+  .mini-kpi-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .mini-kpi {
+    background: var(--vscode-bg);
+    border-radius: 4px;
+    padding: 10px;
+    border: 1px solid var(--vscode-border);
+  }
+  .mini-kpi-label {
+    font-size: 10px;
+    color: var(--vscode-text-muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .mini-kpi-value {
+    font-size: 20px;
+    font-weight: 300;
+  }
+  .mini-kpi-value .unit { font-size: 11px; color: var(--vscode-text-muted); }
+  .mini-kpi-sub {
+    font-size: 10px;
+    margin-top: 2px;
+  }
+  .mini-kpi-sub.up { color: var(--success-text); }
+  .mini-kpi-sub.down { color: var(--status-failed); }
+
+  /* Open Dashboard Button */
+  .open-dash-btn {
+    width: 100%;
+    background: var(--vscode-accent);
+    color: #fff;
+    border: none;
+    padding: 7px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 14px;
+    transition: background 0.15s;
+  }
+  .open-dash-btn:hover { background: var(--vscode-accent-hover); }
+  .open-dash-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+  /* Sidebar section */
+  .sb-section {
+    margin-bottom: 16px;
+  }
+  .sb-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    padding: 0 2px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .sb-section-title .count {
+    background: var(--badge-bg);
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    color: var(--vscode-text);
+  }
+
+  /* Sidebar session item */
+  .sb-session {
+    background: var(--vscode-bg);
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-left: 3px solid var(--vscode-border);
+    cursor: pointer;
+  }
+  .sb-session:hover { background: var(--vscode-bg-hover); }
+  .sb-session.running { border-left-color: var(--status-running); }
+  .sb-session.idle { border-left-color: var(--status-idle); }
+  .sb-session.failed { border-left-color: var(--status-failed); }
+  .sb-session.completed { border-left-color: var(--status-completed); }
+  .sb-session-name {
+    font-size: 11px;
+    color: var(--vscode-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 3px;
+  }
+  .sb-session-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--vscode-text-muted);
+  }
+  .sb-session-status {
+    font-size: 9px;
+    padding: 0 5px;
+    border-radius: 8px;
+  }
+  .sb-session-status.running { background: rgba(78,201,176,0.15); color: var(--status-running); }
+  .sb-session-status.idle { background: rgba(220,220,170,0.15); color: var(--status-idle); }
+  .sb-session-status.failed { background: rgba(244,135,113,0.15); color: var(--status-failed); }
+  .sb-session-status.completed { background: rgba(137,209,133,0.15); color: var(--status-completed); }
+
+  /* Sidebar alert */
+  .sb-alert {
+    background: var(--vscode-bg);
+    border-radius: 4px;
+    padding: 7px 10px;
+    margin-bottom: 6px;
+    border-left: 3px solid var(--warn-border);
+  }
+  .sb-alert.info { border-left-color: var(--vscode-accent); }
+  .sb-alert.success { border-left-color: var(--success-text); }
+  .sb-alert-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--warn-text);
+    margin-bottom: 2px;
+  }
+  .sb-alert.info .sb-alert-title { color: var(--vscode-accent); }
+  .sb-alert.success .sb-alert-title { color: var(--success-text); }
+  .sb-alert-desc {
+    font-size: 9px;
+    color: var(--vscode-text-muted);
+  }
+
+  /* ===================================================================
+     EDITOR: Full Dashboard Content
+     =================================================================== */
+  .dashboard {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 16px 24px 40px;
+  }
+
+  /* Dashboard Header */
+  .dashboard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0 20px;
+    border-bottom: 1px solid var(--vscode-border);
+    margin-bottom: 20px;
+  }
+  .dashboard-title { display: flex; align-items: center; gap: 10px; }
+  .dashboard-title h1 { font-size: 20px; font-weight: 400; color: var(--vscode-text); }
+  .dashboard-title .icon { width: 24px; height: 24px; fill: var(--vscode-accent); }
+  .dashboard-controls { display: flex; align-items: center; gap: 12px; }
+  .date-range {
+    display: flex;
+    background: var(--vscode-bg-light);
+    border: 1px solid var(--vscode-border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .date-range button {
+    background: none; border: none;
+    color: var(--vscode-text-muted);
+    padding: 5px 12px; font-size: 12px;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .date-range button.active { background: var(--vscode-accent); color: #fff; }
+  .date-range button:hover:not(.active) { background: var(--vscode-bg-hover); color: var(--vscode-text); }
+  .btn-refresh {
+    background: var(--vscode-bg-light);
+    border: 1px solid var(--vscode-border);
+    color: var(--vscode-text);
+    padding: 5px 10px; border-radius: 4px;
+    cursor: pointer; font-size: 12px;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .btn-refresh:hover { background: var(--vscode-bg-hover); }
+  .live-indicator { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--status-running); }
+  .live-dot { width: 7px; height: 7px; background: var(--status-running); border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+  /* KPI Cards */
+  .kpi-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 20px; }
+  .kpi-card {
+    background: var(--vscode-bg-light);
+    border: 1px solid var(--vscode-border);
+    border-radius: 6px; padding: 16px;
+    position: relative; overflow: hidden;
+  }
+  .kpi-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+  .kpi-card.sessions::before { background: var(--chart-1); }
+  .kpi-card.tokens::before { background: var(--chart-2); }
+  .kpi-card.compression::before { background: var(--chart-3); }
+  .kpi-card.memory::before { background: var(--chart-5); }
+  .kpi-label {
+    font-size: 11px; color: var(--vscode-text-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+  }
+  .kpi-value { font-size: 28px; font-weight: 300; margin-bottom: 4px; }
+  .kpi-value .unit { font-size: 14px; color: var(--vscode-text-muted); font-weight: 400; }
+  .kpi-sub { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+  .kpi-trend { display: flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+  .kpi-trend.up { background: var(--success-bg); color: var(--success-text); }
+  .kpi-trend.down { background: var(--warn-bg); color: var(--warn-text); }
+  .kpi-detail { color: var(--vscode-text-dim); font-size: 11px; }
+  .kpi-breakdown { display: flex; gap: 10px; margin-top: 6px; font-size: 10px; }
+  .kpi-breakdown span { display: flex; align-items: center; gap: 3px; }
+  .kpi-breakdown .dot { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* Main Grid */
+  .main-grid { display: grid; grid-template-columns: 1fr 1fr 320px; gap: 16px; margin-bottom: 20px; }
+
+  /* Panel */
+  .panel { background: var(--vscode-bg-light); border: 1px solid var(--vscode-border); border-radius: 6px; overflow: hidden; }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--vscode-border);
+    background: var(--vscode-bg-lighter);
+  }
+  .panel-title { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .panel-body { padding: 14px; }
+
+  /* Charts */
+  .chart-container { position: relative; height: 200px; }
+  .chart-legend { display: flex; gap: 14px; margin-bottom: 10px; font-size: 11px; }
+  .chart-legend span { display: flex; align-items: center; gap: 5px; color: var(--vscode-text-muted); }
+  .chart-legend .dot { width: 10px; height: 3px; border-radius: 2px; }
+
+  /* Skills bars */
+  .skills-chart { display: flex; flex-direction: column; gap: 10px; }
+  .skill-bar-row { display: flex; align-items: center; gap: 10px; }
+  .skill-name { width: 130px; font-size: 11px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .skill-bar-track { flex: 1; height: 20px; background: var(--vscode-bg); border-radius: 3px; overflow: hidden; display: flex; }
+  .skill-bar-used { height: 100%; background: var(--chart-1); }
+  .skill-bar-loaded { height: 100%; background: var(--vscode-text-dim); opacity: 0.4; }
+  .skill-count { width: 55px; font-size: 11px; color: var(--vscode-text-muted); font-variant-numeric: tabular-nums; }
+  .skill-count .used { color: var(--chart-2); font-weight: 600; }
+
+  /* Compression metrics */
+  .compression-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .comp-metric { background: var(--vscode-bg); border-radius: 4px; padding: 10px 12px; }
+  .comp-metric-label { font-size: 10px; color: var(--vscode-text-muted); text-transform: uppercase; margin-bottom: 4px; }
+  .comp-metric-value { font-size: 18px; font-weight: 400; color: var(--chart-3); }
+  .comp-metric-value.green { color: var(--success-text); }
+  .comp-metric-value .small { font-size: 11px; color: var(--vscode-text-muted); }
+  .comp-vs-cache { background: var(--vscode-bg); border-radius: 4px; padding: 12px; }
+  .comp-vs-cache-title { font-size: 11px; color: var(--vscode-text-muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .comp-bar { display: flex; height: 24px; border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
+  .comp-bar-saved { background: var(--success-text); display: flex; align-items: center; justify-content: center; font-size: 10px; color: #000; font-weight: 600; }
+  .comp-bar-lost { background: var(--status-failed); display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; }
+  .comp-net { text-align: center; font-size: 12px; color: var(--success-text); font-weight: 600; }
+
+  /* Session list */
+  .session-list { display: flex; flex-direction: column; gap: 8px; }
+  .session-item { background: var(--vscode-bg); border-radius: 4px; padding: 10px 12px; border-left: 3px solid var(--vscode-border); cursor: pointer; }
+  .session-item:hover { background: var(--vscode-bg-hover); }
+  .session-item.running { border-left-color: var(--status-running); }
+  .session-item.idle { border-left-color: var(--status-idle); }
+  .session-item.failed { border-left-color: var(--status-failed); }
+  .session-item.completed { border-left-color: var(--status-completed); }
+  .session-row1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .session-name { font-size: 12px; font-weight: 500; }
+  .session-status { font-size: 10px; padding: 1px 7px; border-radius: 10px; text-transform: uppercase; font-weight: 600; }
+  .session-status.running { background: rgba(78,201,176,0.15); color: var(--status-running); }
+  .session-status.idle { background: rgba(220,220,170,0.15); color: var(--status-idle); }
+  .session-status.failed { background: rgba(244,135,113,0.15); color: var(--status-failed); }
+  .session-status.completed { background: rgba(137,209,133,0.15); color: var(--status-completed); }
+  .session-row2 { display: flex; justify-content: space-between; font-size: 10px; color: var(--vscode-text-muted); }
+  .session-meta { display: flex; gap: 12px; }
+  .session-meta span { display: flex; align-items: center; gap: 3px; }
+  .model-badge { background: var(--badge-bg); padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+
+  /* Memory list */
+  .memory-list { display: flex; flex-direction: column; gap: 8px; }
+  .memory-item { background: var(--vscode-bg); border-radius: 4px; padding: 8px 12px; border-left: 3px solid var(--chart-5); }
+  .memory-row1 { display: flex; justify-content: space-between; margin-bottom: 3px; }
+  .memory-type { font-size: 11px; font-weight: 500; }
+  .memory-type.long_term { color: var(--chart-2); }
+  .memory-type.short_term { color: var(--chart-3); }
+  .memory-type.episodic { color: var(--chart-4); }
+  .memory-time { font-size: 10px; color: var(--vscode-text-dim); }
+  .memory-content { font-size: 11px; color: var(--vscode-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .memory-source { font-size: 9px; color: var(--vscode-text-dim); margin-top: 2px; }
+
+  /* Alerts */
+  .alert-item { background: var(--vscode-bg); border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; border-left: 3px solid var(--warn-border); }
+  .alert-item.info { border-left-color: var(--vscode-accent); }
+  .alert-item.success { border-left-color: var(--success-text); }
+  .alert-title { font-size: 11px; font-weight: 600; color: var(--warn-text); margin-bottom: 4px; }
+  .alert-item.info .alert-title { color: var(--vscode-accent); }
+  .alert-item.success .alert-title { color: var(--success-text); }
+  .alert-desc { font-size: 10px; color: var(--vscode-text-muted); }
+
+  /* Bottom row */
+  .bottom-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  /* Budget */
+  .budget-container { display: flex; flex-direction: column; gap: 12px; }
+  .budget-item { background: var(--vscode-bg); border-radius: 4px; padding: 10px 12px; }
+  .budget-header { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 11px; }
+  .budget-name { font-weight: 500; }
+  .budget-amount { color: var(--vscode-text-muted); }
+  .budget-bar { height: 8px; background: var(--vscode-bg-lighter); border-radius: 4px; overflow: hidden; }
+  .budget-fill { height: 100%; border-radius: 4px; }
+  .budget-fill.normal { background: var(--success-text); }
+  .budget-fill.warning { background: var(--warn-text); }
+  .budget-fill.critical { background: var(--status-failed); }
+
+  /* Donut */
+  .donut-container { display: flex; align-items: center; gap: 20px; justify-content: center; padding: 10px 0; }
+  .donut-legend { display: flex; flex-direction: column; gap: 8px; }
+  .donut-legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+  .donut-legend-item .dot { width: 10px; height: 10px; border-radius: 2px; }
+  .donut-legend-item .val { margin-left: auto; color: var(--vscode-text-muted); font-variant-numeric: tabular-nums; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--vscode-border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--vscode-text-dim); }
+
+  /* Hide all sidebar views by default, show active */
+  .sidebar-view { display: none; }
+  .sidebar-view.active { display: block; }
+
+  /* Editor pages */
+  .editor-page { display: none; }
+  .editor-page.active { display: block; }
+</style>
+</head>
+<body>
+
+<div class="window">
+  <!-- ===== Title Bar ===== -->
+  <div class="titlebar">
+    <div class="window-controls">
+      <span title="最小化">—</span>
+      <span title="最大化">▢</span>
+      <span title="关闭">✕</span>
+    </div>
+    <div class="titlebar-title">AgentStudio Dashboard — Sarosis Agents Client</div>
+    <div style="width:60px"></div>
+  </div>
+
+  <!-- ===== Content Row ===== -->
+  <div class="content-row">
+
+    <!-- ===== Activity Bar ===== -->
+    <div class="activitybar">
+      <div class="activity-item active" data-view="explorer" title="资源管理器 (Ctrl+Shift+E)">
+        <svg viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v5h-8V3zM3 13h8v8H3v-8zm10 3h8v5h-8v-5z"/></svg>
+      </div>
+      <div class="activity-item" data-view="search" title="搜索 (Ctrl+Shift+F)">
+        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+      </div>
+      <div class="activity-item" data-view="scm" title="源代码管理 (Ctrl+Shift+G)">
+        <svg viewBox="0 0 24 24"><path d="M6 3a3 3 0 0 1 3 3c0 1.31-.83 2.42-2 2.83v6.34c1.17.41 2 1.52 2 2.83a3 3 0 0 1-6 0c0-1.31.83-2.42 2-2.83V8.83A3 3 0 0 1 6 3zm12 0a3 3 0 0 1 3 3c0 1.31-.83 2.42-2 2.83v6.34c1.17.41 2 1.52 2 2.83a3 3 0 0 1-6 0c0-1.31.83-2.42 2-2.83V8.83A3 3 0 0 1 18 3z"/></svg>
+        <span class="badge">7</span>
+      </div>
+      <div class="activity-item" data-view="run" title="运行和调试 (Ctrl+Shift+D)">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </div>
+      <div class="activity-item" data-view="extensions" title="扩展 (Ctrl+Shift+X)">
+        <svg viewBox="0 0 24 24"><path d="M6 2a4 4 0 0 0-4 4v12a4 4 0 0 0 4 4h12a4 4 0 0 0 4-4V6a4 4 0 0 0-4-4H6zm0 2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm6 3a3 3 0 0 0-3 3v3h6v-3a3 3 0 0 0-3-3zm-3 8v1a3 3 0 0 0 6 0v-1H9z"/></svg>
+      </div>
+      <!-- Dashboard Activity -->
+      <div class="activity-item" data-view="dashboard" title="AgentStudio Dashboard" id="dash-activity">
+        <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+        <span class="badge">5</span>
+      </div>
+      <div class="activity-spacer"></div>
+      <div class="activity-item" data-view="account" title="账户">
+        <svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4 0-9 2-9 5v3h18v-3c0-3-5-5-9-5z"/></svg>
+      </div>
+      <div class="activity-item" data-view="settings" title="管理">
+        <svg viewBox="0 0 24 24"><path d="M19.14 12.94a7.49 7.49 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.16 7.16 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.16 7.16 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.49 7.49 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .61.22l2.39-.96a7.16 7.16 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54a7.16 7.16 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>
+      </div>
+    </div>
+
+    <!-- ===== Side Bar ===== -->
+    <div class="sidebar visible" id="sidebar">
+
+      <!-- Explorer View -->
+      <div class="sidebar-view active" id="view-explorer">
+        <div class="sidebar-header">
+          资源管理器
+          <div class="sidebar-actions">
+            <svg viewBox="0 0 16 16"><path d="M2 2h2v2H2V2zm4 0h8v2H6V2zM2 6h2v2H2V6zm4 0h8v2H6V6zM2 10h2v2H2v-2zm4 0h8v2H6v-2z"/></svg>
+          </div>
+        </div>
+        <div class="explorer-tree">
+          <div class="tree-item folder"><svg class="chevron" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4V4z"/></svg> SAROSIS-AGENTS-CLIENT</div>
+          <div class="tree-item folder" style="padding-left:32px"><svg class="chevron" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4V4z"/></svg> src</div>
+          <div class="tree-item folder" style="padding-left:44px"><svg class="chevron" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4V4z"/></svg> vs</div>
+          <div class="tree-item" style="padding-left:56px;color:var(--vscode-text-muted);font-size:11px">... agentStudio</div>
+          <div class="tree-item folder" style="padding-left:32px"><svg class="chevron" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4V4z"/></svg> extensions</div>
+          <div class="tree-item" style="padding-left:32px"><svg class="file-icon" viewBox="0 0 16 16" fill="#dcdcaa"><path d="M3 1h7l4 4v10H3V1z"/></svg> product.json</div>
+          <div class="tree-item" style="padding-left:32px"><svg class="file-icon" viewBox="0 0 16 16" fill="#89d185"><path d="M1 3h14v10H1V3zm1 1v8h12V4H2z"/></svg> AGENTS.md</div>
+          <div class="tree-item folder" style="padding-left:32px"><svg class="chevron" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4V4z"/></svg> dev</div>
+          <div class="tree-item" style="padding-left:44px;color:var(--chart-1)"><svg class="file-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1h7l4 4v10H3V1z"/></svg> dashboard-mockup.html</div>
+        </div>
+      </div>
+
+      <!-- Dashboard View -->
+      <div class="sidebar-view" id="view-dashboard">
+        <div class="sidebar-header">
+          AgentStudio Dashboard
+          <div class="sidebar-actions">
+            <svg viewBox="0 0 16 16"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
+          </div>
+        </div>
+        <div class="dash-sidebar">
+
+          <!-- Open Full Dashboard Button -->
+          <button class="open-dash-btn" onclick="openDashboardEditor()">
+            <svg viewBox="0 0 16 16"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"/></svg>
+            打开完整 Dashboard
+          </button>
+
+          <!-- Mini KPIs -->
+          <div class="mini-kpi-grid">
+            <div class="mini-kpi">
+              <div class="mini-kpi-label">活跃会话</div>
+              <div class="mini-kpi-value">12</div>
+              <div class="mini-kpi-sub up">↑ 3 较昨日</div>
+            </div>
+            <div class="mini-kpi">
+              <div class="mini-kpi-label">Token 今日</div>
+              <div class="mini-kpi-value">847<span class="unit">K</span></div>
+              <div class="mini-kpi-sub down">↓ 12% ¥4.23</div>
+            </div>
+            <div class="mini-kpi">
+              <div class="mini-kpi-label">压缩节省</div>
+              <div class="mini-kpi-value">63<span class="unit">%</span></div>
+              <div class="mini-kpi-sub up">↑ 8% 1.4M tok</div>
+            </div>
+            <div class="mini-kpi">
+              <div class="mini-kpi-label">记忆条数</div>
+              <div class="mini-kpi-value">1.2<span class="unit">K</span></div>
+              <div class="mini-kpi-sub up">↑ 47 L1×8</div>
+            </div>
+          </div>
+
+          <!-- Active Sessions -->
+          <div class="sb-section">
+            <div class="sb-section-title">
+              活跃会话
+              <span class="count">5</span>
+            </div>
+            <div class="sb-session running">
+              <div class="sb-session-name">重构 AgentOSService 执行路径</div>
+              <div class="sb-session-meta">
+                <span class="sb-session-status running">运行中</span>
+                <span>142K · 23m</span>
+              </div>
+            </div>
+            <div class="sb-session running">
+              <div class="sb-session-name">实现 Dashboard mockup 页面</div>
+              <div class="sb-session-meta">
+                <span class="sb-session-status running">运行中</span>
+                <span>38K · 5m</span>
+              </div>
+            </div>
+            <div class="sb-session idle">
+              <div class="sb-session-name">修复 Feedback Modal OAuth</div>
+              <div class="sb-session-meta">
+                <span class="sb-session-status idle">空闲</span>
+                <span>287K · 1h</span>
+              </div>
+            </div>
+            <div class="sb-session failed">
+              <div class="sb-session-name">部署 update-server</div>
+              <div class="sb-session-meta">
+                <span class="sb-session-status failed">失败</span>
+                <span>12K · 2h</span>
+              </div>
+            </div>
+            <div class="sb-session completed">
+              <div class="sb-session-name">codebase-memory 第13轮</div>
+              <div class="sb-session-meta">
+                <span class="sb-session-status completed">完成</span>
+                <span>456K · 3h</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alerts -->
+          <div class="sb-section">
+            <div class="sb-section-title">
+              告警通知
+              <span class="count">5</span>
+            </div>
+            <div class="sb-alert">
+              <div class="sb-alert-title">⚠ 预算告警</div>
+              <div class="sb-alert-desc">sarosis-agents-client 已用 78%</div>
+            </div>
+            <div class="sb-alert">
+              <div class="sb-alert-title">⚠ 压缩低效</div>
+              <div class="sb-alert-desc">会话 #a3f2 连续 2 次节省 <10%</div>
+            </div>
+            <div class="sb-alert info">
+              <div class="sb-alert-title">ℹ L1 记忆提取</div>
+              <div class="sb-alert-desc">8 条长期记忆待确认</div>
+            </div>
+            <div class="sb-alert success">
+              <div class="sb-alert-title">✓ 索引完成</div>
+              <div class="sb-alert-desc">98,625 文件 · 2m34s</div>
+            </div>
+            <div class="sb-alert info">
+              <div class="sb-alert-title">ℹ 审批待处理</div>
+              <div class="sb-alert-desc">2 个 Plan 操作 (1 高风险)</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Other Views (placeholder) -->
+      <div class="sidebar-view" id="view-search">
+        <div class="sidebar-header">搜索</div>
+        <div style="padding:12px;color:var(--vscode-text-muted);font-size:12px">搜索视图 (略)</div>
+      </div>
+      <div class="sidebar-view" id="view-scm">
+        <div class="sidebar-header">源代码管理</div>
+        <div style="padding:12px;color:var(--vscode-text-muted);font-size:12px">7 个文件变更</div>
+      </div>
+      <div class="sidebar-view" id="view-run">
+        <div class="sidebar-header">运行和调试</div>
+        <div style="padding:12px;color:var(--vscode-text-muted);font-size:12px">运行视图 (略)</div>
+      </div>
+      <div class="sidebar-view" id="view-extensions">
+        <div class="sidebar-header">扩展</div>
+        <div style="padding:12px;color:var(--vscode-text-muted);font-size:12px">扩展视图 (略)</div>
+      </div>
+      <div class="sidebar-view" id="view-account">
+        <div class="sidebar-header">账户</div>
+        <div style="padding:12px;color:var(--vscode-text-muted);font-size:12px">已登录: qiuzijian</div>
+      </div>
+      <div class="sidebar-view" id="view-settings">
+        <div class="sidebar-header">设置</div>
+        <div style="padding:12px;color:var(--vscode-text-muted);font-size:12px">设置 (略)</div>
+      </div>
+
+    </div>
+
+    <!-- ===== Editor Area ===== -->
+    <div class="editor-area">
+      <!-- Editor Tabs -->
+      <div class="editor-tabs" id="editor-tabs">
+        <div class="editor-tab active" data-page="dashboard-page" onclick="switchTab(this)">
+          <svg viewBox="0 0 16 16" fill="var(--chart-1)"><path d="M3 13h8V3H3v10zm0 0h8v-6H3v6zm10 0h8V11h-8v2zm0-18v6h8V3h-8z" transform="scale(0.7) translate(3 3)"/></svg>
+          <span>AgentStudio Dashboard</span>
+          <span class="close">✕</span>
+        </div>
+        <div class="editor-tab" data-page="code-page" onclick="switchTab(this)">
+          <svg viewBox="0 0 16 16" fill="#dcdcaa"><path d="M3 1h7l4 4v10H3V1z"/></svg>
+          <span>product.json</span>
+          <span class="close">✕</span>
+        </div>
+      </div>
+
+      <!-- Editor Content -->
+      <div class="editor-content">
+        <!-- Dashboard Page -->
+        <div class="editor-page active" id="dashboard-page">
+          <div class="dashboard">
+            <!-- Header -->
+            <div class="dashboard-header">
+              <div class="dashboard-title">
+                <svg class="icon" viewBox="0 0 16 16"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"/></svg>
+                <h1>AgentStudio Dashboard</h1>
+                <span class="live-indicator"><span class="live-dot"></span>实时</span>
+              </div>
+              <div class="dashboard-controls">
+                <div class="date-range">
+                  <button>今日</button>
+                  <button class="active">7天</button>
+                  <button>30天</button>
+                  <button>全部</button>
+                </div>
+                <button class="btn-refresh">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
+                  刷新
+                </button>
+              </div>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="kpi-row">
+              <div class="kpi-card sessions">
+                <div class="kpi-label">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-1)"><path d="M1 3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z M0 12h16v.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 12.5V12z"/></svg>
+                  活跃会话
+                </div>
+                <div class="kpi-value">12</div>
+                <div class="kpi-sub">
+                  <span class="kpi-trend up">↑ 3</span>
+                  <span class="kpi-detail">较昨日</span>
+                </div>
+                <div class="kpi-breakdown">
+                  <span><span class="dot" style="background:var(--status-running)"></span>运行 5</span>
+                  <span><span class="dot" style="background:var(--status-idle)"></span>空闲 4</span>
+                  <span><span class="dot" style="background:var(--status-failed)"></span>失败 2</span>
+                  <span><span class="dot" style="background:var(--status-completed)"></span>完成 1</span>
+                </div>
+              </div>
+              <div class="kpi-card tokens">
+                <div class="kpi-label">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-2)"><path d="M1.5 1.5h13v13h-13z M3 3h10v10H3z M5 5h6v1H5z M5 7h6v1H5z M5 9h4v1H5z"/></svg>
+                  Token 消耗 (今日)
+                </div>
+                <div class="kpi-value">847<span class="unit">K</span></div>
+                <div class="kpi-sub">
+                  <span class="kpi-trend down">↓ 12%</span>
+                  <span class="kpi-detail">¥4.23</span>
+                </div>
+                <div class="kpi-breakdown">
+                  <span><span class="dot" style="background:var(--chart-1)"></span>输入 521K</span>
+                  <span><span class="dot" style="background:var(--chart-6)"></span>缓存 203K</span>
+                  <span><span class="dot" style="background:var(--chart-2)"></span>输出 123K</span>
+                </div>
+              </div>
+              <div class="kpi-card compression">
+                <div class="kpi-label">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-3)"><path d="M8 1l2 4 4 .5-3 3 1 4-4-2-4 2 1-4-3-3 4-.5z"/></svg>
+                  压缩节省
+                </div>
+                <div class="kpi-value">63<span class="unit">%</span></div>
+                <div class="kpi-sub">
+                  <span class="kpi-trend up">↑ 8%</span>
+                  <span class="kpi-detail">节省 1.4M tokens</span>
+                </div>
+                <div class="kpi-breakdown">
+                  <span><span class="dot" style="background:var(--chart-3)"></span>压缩 28 次</span>
+                  <span><span class="dot" style="background:var(--status-failed)"></span>低效 2 次</span>
+                </div>
+              </div>
+              <div class="kpi-card memory">
+                <div class="kpi-label">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-5)"><path d="M8 1a2 2 0 0 0-2 2v1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1h-2V3a2 2 0 0 0-2-2z"/></svg>
+                  记忆条数
+                </div>
+                <div class="kpi-value">1,284</div>
+                <div class="kpi-sub">
+                  <span class="kpi-trend up">↑ 47</span>
+                  <span class="kpi-detail">L1 提取 8 次</span>
+                </div>
+                <div class="kpi-breakdown">
+                  <span><span class="dot" style="background:var(--chart-2)"></span>长期 412</span>
+                  <span><span class="dot" style="background:var(--chart-3)"></span>短期 698</span>
+                  <span><span class="dot" style="background:var(--chart-4)"></span>情景 174</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Main Grid -->
+            <div class="main-grid">
+              <!-- Token Trend -->
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-1)"><path d="M0 14h16v1H0V14zm1-1l4-6 3 3 5-7 2 3v7H1z"/></svg>
+                    Token 使用趋势
+                  </div>
+                  <span style="font-size:10px;color:var(--vscode-text-dim)">最近 7 天</span>
+                </div>
+                <div class="panel-body">
+                  <div class="chart-legend">
+                    <span><span class="dot" style="background:var(--chart-1)"></span>输入</span>
+                    <span><span class="dot" style="background:var(--chart-6)"></span>缓存命中</span>
+                    <span><span class="dot" style="background:var(--chart-2)"></span>输出</span>
+                  </div>
+                  <div class="chart-container">
+                    <svg width="100%" height="200" viewBox="0 0 400 200" preserveAspectRatio="none">
+                      <line x1="0" y1="40" x2="400" y2="40" stroke="var(--vscode-border)" stroke-width="0.5" stroke-dasharray="2"/>
+                      <line x1="0" y1="80" x2="400" y2="80" stroke="var(--vscode-border)" stroke-width="0.5" stroke-dasharray="2"/>
+                      <line x1="0" y1="120" x2="400" y2="120" stroke="var(--vscode-border)" stroke-width="0.5" stroke-dasharray="2"/>
+                      <line x1="0" y1="160" x2="400" y2="160" stroke="var(--vscode-border)" stroke-width="0.5" stroke-dasharray="2"/>
+                      <path d="M0,140 L57,120 L114,100 L171,110 L229,70 L286,85 L343,55 L400,60 L400,200 L0,200 Z" fill="var(--chart-1)" opacity="0.15"/>
+                      <path d="M0,140 L57,120 L114,100 L171,110 L229,70 L286,85 L343,55 L400,60" fill="none" stroke="var(--chart-1)" stroke-width="1.5"/>
+                      <path d="M0,165 L57,155 L114,140 L171,150 L229,120 L286,130 L343,105 L400,110 L400,200 L0,200 Z" fill="var(--chart-6)" opacity="0.15"/>
+                      <path d="M0,165 L57,155 L114,140 L171,150 L229,120 L286,130 L343,105 L400,110" fill="none" stroke="var(--chart-6)" stroke-width="1.5"/>
+                      <path d="M0,180 L57,175 L114,168 L171,172 L229,160 L286,165 L343,155 L400,158" fill="none" stroke="var(--chart-2)" stroke-width="1.5"/>
+                      <text x="0" y="195" fill="var(--vscode-text-dim)" font-size="9">6/20</text>
+                      <text x="57" y="195" fill="var(--vscode-text-dim)" font-size="9">6/21</text>
+                      <text x="114" y="195" fill="var(--vscode-text-dim)" font-size="9">6/22</text>
+                      <text x="171" y="195" fill="var(--vscode-text-dim)" font-size="9">6/23</text>
+                      <text x="229" y="195" fill="var(--vscode-text-dim)" font-size="9">6/24</text>
+                      <text x="286" y="195" fill="var(--vscode-text-dim)" font-size="9">6/25</text>
+                      <text x="343" y="195" fill="var(--vscode-text-dim)" font-size="9">6/26</text>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Skills Usage -->
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-2)"><path d="M2 2v12h12V2H2zm1 1h10v10H3V3zm2 2h6v1H5V5zm0 2h6v1H5V7zm0 2h4v1H5V9z"/></svg>
+                    Skills / MCP 使用分析
+                  </div>
+                  <span style="font-size:10px;color:var(--vscode-text-dim)">■ 已用 / ▒ 已加载</span>
+                </div>
+                <div class="panel-body">
+                  <div class="skills-chart">
+                    <div class="skill-bar-row"><div class="skill-name">memory_search</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:72%"></div><div class="skill-bar-loaded" style="width:18%"></div></div><div class="skill-count"><span class="used">286</span>/362</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">read_file</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:58%"></div><div class="skill-bar-loaded" style="width:22%"></div></div><div class="skill-count"><span class="used">231</span>/318</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">edit_file</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:45%"></div><div class="skill-bar-loaded" style="width:25%"></div></div><div class="skill-count"><span class="used">178</span>/278</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">memory_remember</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:38%"></div><div class="skill-bar-loaded" style="width:30%"></div></div><div class="skill-count"><span class="used">152</span>/272</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">execute_command</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:28%"></div><div class="skill-bar-loaded" style="width:32%"></div></div><div class="skill-count"><span class="used">112</span>/240</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">search_code</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:22%"></div><div class="skill-bar-loaded" style="width:35%"></div></div><div class="skill-count"><span class="used">88</span>/228</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">semantic_search</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:15%"></div><div class="skill-bar-loaded" style="width:40%"></div></div><div class="skill-count"><span class="used">60</span>/220</div></div>
+                    <div class="skill-bar-row"><div class="skill-name">execute_cypher</div><div class="skill-bar-track"><div class="skill-bar-used" style="width:8%"></div><div class="skill-bar-loaded" style="width:42%"></div></div><div class="skill-count"><span class="used">32</span>/200</div></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Alerts -->
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--warn-text)"><path d="M8 1.5a6 6 0 0 0-6 6c0 1.5.5 3 1.5 4L4 13v1.5h8V13l.5-1.5c1-1 1.5-2.5 1.5-4a6 6 0 0 0-6-6zM6.5 14v.5h3V14h-3z"/></svg>
+                    告警与通知
+                  </div>
+                </div>
+                <div class="panel-body" style="padding:10px">
+                  <div class="alert-item">
+                    <div class="alert-title">⚠ 预算告警 — sarosis-agents-client</div>
+                    <div class="alert-desc">本月 Token 预算已用 78%（¥312/¥400），预计 3 天后超支</div>
+                  </div>
+                  <div class="alert-item">
+                    <div class="alert-title">⚠ 压缩低效</div>
+                    <div class="alert-desc">会话 #a3f2 连续 2 次压缩节省 < 10%，已暂停自动压缩（anti-thrashing）</div>
+                  </div>
+                  <div class="alert-item info">
+                    <div class="alert-title">ℹ L1 记忆提取</div>
+                    <div class="alert-desc">8 条长期记忆已自动提取，等待确认（来源：l1_auto_extraction）</div>
+                  </div>
+                  <div class="alert-item success">
+                    <div class="alert-title">✓ 索引完成</div>
+                    <div class="alert-desc">codebase-memory 已索引 98,625 文件，耗时 2m 34s</div>
+                  </div>
+                  <div class="alert-item info">
+                    <div class="alert-title">ℹ 审批待处理</div>
+                    <div class="alert-desc">2 个 Plan 模式操作等待审批（1 个高风险）</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Compression Metrics -->
+            <div class="panel" style="margin-bottom:20px">
+              <div class="panel-header">
+                <div class="panel-title">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-3)"><path d="M4 1h8v2H4V1zm8 3H4l-1 3h10l-1-3zM3 8h10v6H3V8zm2 2h2v2H5v-2zm4 0h2v2H9v-2z"/></svg>
+                  上下文压缩指标
+                </div>
+                <span style="font-size:10px;color:var(--vscode-text-dim)">ContextManager · 三段式压缩</span>
+              </div>
+              <div class="panel-body">
+                <div class="compression-grid">
+                  <div class="comp-metric"><div class="comp-metric-label">压缩前 Token</div><div class="comp-metric-value">2,240<span class="small">K</span></div></div>
+                  <div class="comp-metric"><div class="comp-metric-label">压缩后 Token</div><div class="comp-metric-value green">828<span class="small">K</span></div></div>
+                  <div class="comp-metric"><div class="comp-metric-label">节省 Token</div><div class="comp-metric-value green">1,412<span class="small">K (63%)</span></div></div>
+                  <div class="comp-metric"><div class="comp-metric-label">压缩次数 / 低效次数</div><div class="comp-metric-value">28 <span class="small">/ 2</span></div></div>
+                </div>
+                <div class="comp-vs-cache">
+                  <div class="comp-vs-cache-title">
+                    <span>压缩节省 vs 缓存失效损失</span>
+                    <span style="color:var(--success-text)">净收益 +1,289K tokens</span>
+                  </div>
+                  <div class="comp-bar">
+                    <div class="comp-bar-saved" style="width:82%">压缩节省 1,412K</div>
+                    <div class="comp-bar-lost" style="width:18%">缓存失效 -123K</div>
+                  </div>
+                  <div class="comp-net">↑ 净节省 1,289K tokens（压缩收益远大于缓存失效损失）</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Bottom Row -->
+            <div class="bottom-row">
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--status-running)"><path d="M3 3h10v10H3V3zm2 2v6h6V5H5z"/></svg>
+                    活跃会话
+                  </div>
+                  <span style="font-size:10px;color:var(--vscode-text-dim)">5 运行 / 4 空闲 / 2 失败</span>
+                </div>
+                <div class="panel-body">
+                  <div class="session-list">
+                    <div class="session-item running">
+                      <div class="session-row1"><span class="session-name">重构 AgentOSService 执行路径</span><span class="session-status running">运行中</span></div>
+                      <div class="session-row2"><div class="session-meta"><span class="model-badge">claude-sonnet-4</span><span>⏱ 23分钟</span><span>🔄 第 8 轮</span></div><span>142K tokens</span></div>
+                    </div>
+                    <div class="session-item running">
+                      <div class="session-row1"><span class="session-name">实现 Dashboard mockup 页面</span><span class="session-status running">运行中</span></div>
+                      <div class="session-row2"><div class="session-meta"><span class="model-badge">gemini-2.5-pro</span><span>⏱ 5分钟</span><span>🔄 第 2 轮</span></div><span>38K tokens</span></div>
+                    </div>
+                    <div class="session-item idle">
+                      <div class="session-row1"><span class="session-name">修复 Feedback Modal OAuth 认证</span><span class="session-status idle">空闲</span></div>
+                      <div class="session-row2"><div class="session-meta"><span class="model-badge">claude-sonnet-4</span><span>⏱ 1小时前</span><span>🔄 第 12 轮</span></div><span>287K tokens</span></div>
+                    </div>
+                    <div class="session-item failed">
+                      <div class="session-row1"><span class="session-name">部署 update-server 到 DevCloud</span><span class="session-status failed">失败</span></div>
+                      <div class="session-row2"><div class="session-meta"><span class="model-badge">claude-haiku-4</span><span>⏱ 2小时前</span><span>❌ 连接超时</span></div><span>12K tokens</span></div>
+                    </div>
+                    <div class="session-item completed">
+                      <div class="session-row1"><span class="session-name">codebase-memory 第13轮补齐</span><span class="session-status completed">完成</span></div>
+                      <div class="session-row2"><div class="session-meta"><span class="model-badge">claude-sonnet-4</span><span>⏱ 3小时前</span><span>✓ 16 模块</span></div><span>456K tokens</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-5)"><path d="M8 1a2 2 0 0 0-2 2v1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1h-2V3a2 2 0 0 0-2-2z M6 7h4v1H6V7zm0 2h4v1H6V9z"/></svg>
+                    最近记忆提取
+                  </div>
+                  <span style="font-size:10px;color:var(--vscode-text-dim)">L0 原始 + L1 自动提取</span>
+                </div>
+                <div class="panel-body">
+                  <div class="memory-list">
+                    <div class="memory-item">
+                      <div class="memory-row1"><span class="memory-type long_term">长期记忆</span><span class="memory-time">3分钟前</span></div>
+                      <div class="memory-content">用户偏好使用原生 DOM 构建 UI 而非 webview，因 TrustedHTML 限制</div>
+                      <div class="memory-source">来源：l1_auto_extraction · 会话 #a3f2</div>
+                    </div>
+                    <div class="memory-item">
+                      <div class="memory-row1"><span class="memory-type long_term">长期记忆</span><span class="memory-time">3分钟前</span></div>
+                      <div class="memory-content">AgentOSService 三条执行路径：Direct Mode / ExecutionProvider / 退化模式</div>
+                      <div class="memory-source">来源：l1_auto_extraction · 会话 #a3f2</div>
+                    </div>
+                    <div class="memory-item">
+                      <div class="memory-row1"><span class="memory-type short_term">短期记忆</span><span class="memory-time">12分钟前</span></div>
+                      <div class="memory-content">修改了 feedbackModal.ts 的 OAuth 认证流程，改为客户端模式</div>
+                      <div class="memory-source">来源：L0 原始写入 · 会话 #b7e1</div>
+                    </div>
+                    <div class="memory-item">
+                      <div class="memory-row1"><span class="memory-type episodic">情景记忆</span><span class="memory-time">25分钟前</span></div>
+                      <div class="memory-content">用户在调试 codebaseGraphService 时遇到 SQLite WASM 初始化失败</div>
+                      <div class="memory-source">来源：L0 原始写入 · 会话 #c2d4</div>
+                    </div>
+                    <div class="memory-item">
+                      <div class="memory-row1"><span class="memory-type long_term">长期记忆</span><span class="memory-time">1小时前</span></div>
+                      <div class="memory-content">版本号格式 2.a.b：a=floor(commitCount/65536)，b=commitCount%65536</div>
+                      <div class="memory-source">来源：l1_auto_extraction · 会话 #d5f8</div>
+                    </div>
+                    <div class="memory-item">
+                      <div class="memory-row1"><span class="memory-type short_term">短期记忆</span><span class="memory-time">2小时前</span></div>
+                      <div class="memory-content">update-server 新增 /admin/manifest 端点，支持仅更新 manifest 不上传 exe</div>
+                      <div class="memory-source">来源：L0 原始写入 · 会话 #e9a2</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Budget + Donut -->
+            <div class="bottom-row" style="margin-top:20px">
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--warn-text)"><path d="M8 1l7 4v6l-7 4-7-4V5l7-4zm0 2L3 6l5 3 5-3-5-3z"/></svg>
+                    预算管理
+                  </div>
+                  <span style="font-size:10px;color:var(--vscode-text-dim)">本月 · 6月</span>
+                </div>
+                <div class="panel-body">
+                  <div class="budget-container">
+                    <div class="budget-item"><div class="budget-header"><span class="budget-name">sarosis-agents-client</span><span class="budget-amount">¥312 / ¥400 (78%)</span></div><div class="budget-bar"><div class="budget-fill warning" style="width:78%"></div></div></div>
+                    <div class="budget-item"><div class="budget-header"><span class="budget-name">saros-marketplace</span><span class="budget-amount">¥45 / ¥200 (22%)</span></div><div class="budget-bar"><div class="budget-fill normal" style="width:22%"></div></div></div>
+                    <div class="budget-item"><div class="budget-header"><span class="budget-name">codebase-memory-mcp</span><span class="budget-amount">¥88 / ¥100 (88%)</span></div><div class="budget-bar"><div class="budget-fill critical" style="width:88%"></div></div></div>
+                    <div class="budget-item"><div class="budget-header"><span class="budget-name">OAuthSystem</span><span class="budget-amount">¥12 / ¥100 (12%)</span></div><div class="budget-bar"><div class="budget-fill normal" style="width:12%"></div></div></div>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--chart-4)"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1v6h6a6 6 0 0 1-6 6V2z"/></svg>
+                    Token 分布 (按模型)
+                  </div>
+                </div>
+                <div class="panel-body">
+                  <div class="donut-container">
+                    <svg width="140" height="140" viewBox="0 0 140 140">
+                      <circle cx="70" cy="70" r="55" fill="none" stroke="var(--vscode-bg-lighter)" stroke-width="20"/>
+                      <circle cx="70" cy="70" r="55" fill="none" stroke="var(--chart-1)" stroke-width="20" stroke-dasharray="166 345" stroke-dashoffset="0" transform="rotate(-90 70 70)"/>
+                      <circle cx="70" cy="70" r="55" fill="none" stroke="var(--chart-2)" stroke-width="20" stroke-dasharray="86 345" stroke-dashoffset="-166" transform="rotate(-90 70 70)"/>
+                      <circle cx="70" cy="70" r="55" fill="none" stroke="var(--chart-3)" stroke-width="20" stroke-dasharray="52 345" stroke-dashoffset="-252" transform="rotate(-90 70 70)"/>
+                      <circle cx="70" cy="70" r="55" fill="none" stroke="var(--chart-4)" stroke-width="20" stroke-dasharray="41 345" stroke-dashoffset="-304" transform="rotate(-90 70 70)"/>
+                      <text x="70" y="65" text-anchor="middle" fill="var(--vscode-text)" font-size="20" font-weight="300">847K</text>
+                      <text x="70" y="82" text-anchor="middle" fill="var(--vscode-text-muted)" font-size="10">今日总量</text>
+                    </svg>
+                    <div class="donut-legend">
+                      <div class="donut-legend-item"><span class="dot" style="background:var(--chart-1)"></span><span>claude-sonnet-4</span><span class="val">407K (48%)</span></div>
+                      <div class="donut-legend-item"><span class="dot" style="background:var(--chart-2)"></span><span>gemini-2.5-pro</span><span class="val">212K (25%)</span></div>
+                      <div class="donut-legend-item"><span class="dot" style="background:var(--chart-3)"></span><span>claude-haiku-4</span><span class="val">127K (15%)</span></div>
+                      <div class="donut-legend-item"><span class="dot" style="background:var(--chart-4)"></span><span>gpt-4o</span><span class="val">101K (12%)</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Code Page (placeholder) -->
+        <div class="editor-page" id="code-page">
+          <div style="padding:40px;text-align:center;color:var(--vscode-text-muted)">
+            <pre style="font-size:12px;text-align:left;display:inline-block">{
+  "nameShort": "Sarosis",
+  "nameLong": "Sarosis Agents Client",
+  "updateUrl": "http://zijianqiu-any1.devcloud.woa.com:3030",
+  "quality": "saros",
+  "commit": "61889cc1",
+  ...
+}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Status Bar ===== -->
+  <div class="statusbar">
+    <div class="statusbar-item">
+      <svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1z"/></svg>
+      main
+    </div>
+    <div class="statusbar-item">
+      <svg viewBox="0 0 16 16"><path d="M3 3h10v10H3V3zm2 2v6h6V5H5z"/></svg>
+      0 ✕ 3 ↓
+    </div>
+    <div class="statusbar-item">
+      <svg viewBox="0 0 16 16"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"/></svg>
+      AgentStudio: 5 活跃会话
+    </div>
+    <div class="statusbar-spacer"></div>
+    <div class="statusbar-item">UTF-8</div>
+    <div class="statusbar-item">LF</div>
+    <div class="statusbar-item">TypeScript</div>
+    <div class="statusbar-item">
+      <svg viewBox="0 0 16 16"><path d="M8 1l2 4 4 .5-3 3 1 4-4-2-4 2 1-4-3-3 4-.5z"/></svg>
+      847K tokens · ¥4.23
+    </div>
+    <div class="statusbar-item">CodeBuddy CN</div>
+  </div>
+</div>
+
+<script>
+  // ===== Activity Bar Switching =====
+  const activityItems = document.querySelectorAll('.activity-item');
+  const sidebarViews = document.querySelectorAll('.sidebar-view');
+  const sidebar = document.getElementById('sidebar');
+
+  activityItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const view = item.dataset.view;
+      // Remove active from all
+      activityItems.forEach(i => i.classList.remove('active'));
+      sidebarViews.forEach(v => v.classList.remove('active'));
+      // Add active to clicked
+      item.classList.add('active');
+      const targetView = document.getElementById('view-' + view);
+      if (targetView) {
+        sidebar.classList.add('visible');
+        targetView.classList.add('active');
+      }
+      // If dashboard clicked, also focus the dashboard editor tab
+      if (view === 'dashboard') {
+        openDashboardEditor();
+      }
+    });
+  });
+
+  // ===== Editor Tab Switching =====
+  function switchTab(tab) {
+    document.querySelectorAll('.editor-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.editor-page').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    const page = document.getElementById(tab.dataset.page);
+    if (page) page.classList.add('active');
+  }
+
+  // ===== Open Dashboard in Editor =====
+  function openDashboardEditor() {
+    const dashTab = document.querySelector('.editor-tab[data-page="dashboard-page"]');
+    if (dashTab) {
+      switchTab(dashTab);
+    }
+  }
+
+  // ===== Tab close =====
+  document.querySelectorAll('.editor-tab .close').forEach(close => {
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tab = close.closest('.editor-tab');
+      // Don't actually close in mockup, just show feedback
+      tab.style.opacity = '0.5';
+      setTimeout(() => tab.style.opacity = '1', 200);
+    });
+  });
+
+  // ===== Auto-open dashboard on load =====
+  // Simulate clicking the dashboard activity on page load to showcase
+  // (comment out to start on Explorer)
+  // document.getElementById('dash-activity').click();
+</script>
+
+</body>
+</html>

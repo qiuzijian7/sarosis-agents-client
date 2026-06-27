@@ -1,0 +1,31 @@
+{
+	"name": "agentmemory-gateway",
+	"displayName": "AgentMemory Gateway",
+	"description": "agentmemory 内嵌网关：主进程启动 agentmemory server (port 3111)，提供 BM25+Vector+Graph 混合搜索 + 4 层记忆固化。",
+	"version": "0.0.1",
+	"publisher": "saros",
+	"license": "MIT",
+	"main": "./out/extension.js",
+	"engines": {
+		"vscode": "^1.100.0"
+	},
+	"capabilities": {
+		"virtualWorkspaces": true,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"contributes": {},
+	"scripts": {
+		"compile": "tsc -p ./tsconfig.json && node -e \"require('fs').writeFileSync('out/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\"",
+		"watch": "tsc -watch -p ./tsconfig.json"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"@types/vscode": "^1.100.0",
+		"typescript": "^5.8.2"
+	}
+}

@@ -9,11 +9,12 @@
  * 设计要点：
  *   - 不重新实现 MCP 客户端：上游 `vs/workbench/contrib/mcp/common/mcpService.ts`
  *     已经做完了 server 发现、stdio/http 传输、能力协商、tools 列表 observable。
- *   - 我们只观察 `IMcpService.servers`，把每台 server 的 `tools` 平铺成
- *     `<serverPrefix>.<toolName>` 形式，避免命名冲突 —— 与 hermes 的
- *     `mcp-<server>` toolset 命名思路同构。
- *   - 调用 `executeTool` 时按前缀路由到对应 IMcpServer.tools 中的 IMcpTool。
+ *   - 使用 VS Code MCP 系统的 `tool.id` 作为路由名（含 `mcp_` 前缀 + 64 字符限制），
+ *     不自创命名方案。例: `mcp_codebase-mem_get_architecture`。
+ *   - 调用 `executeTool` 时按 `tool.id` 路由到对应 IMcpServer.tools 中的 IMcpTool。
  *   - tools 列表来自 IObservable，所以变化时通过 onDidChangeTools 通知 OS。
+ *   - 工具描述透传 MCP server 原始描述（不自加前缀），保留 server 端的自文档化引导。
+ *   - 安全等级从 MCP ToolAnnotations 推断，无注解时从描述首句启发式推断。
  *
  * NB: 该 Provider 在 web 与 desktop 端都可用。stdio 类 server 仅 desktop 能跑，
  * 但是否能跑由 IMcpService 自己决定，这里只做透明转发。
@@ -25,9 +26,9 @@ import { CancellationToken } from '../../../../../../base/common/cancellation.js
 import { IObservable, autorun } from '../../../../../../base/common/observable.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { IMcpService, IMcpServer, IMcpTool, McpConnectionState } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent } from '../../../common/providers.js';
+import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel } from '../../../common/providers.js';
 
-const SEPARATOR = '__'; // tool name 中的 server-prefix 与原 tool name 之间的分隔符
+// 不再需要 SEPARATOR — 使用 VS Code MCP 系统的 tool.id 作为路由名
 
 interface IRoutedTool {
 	server: IMcpServer;
@@ -41,6 +42,8 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 
 	private readonly _routes = new Map<string, IRoutedTool>();
 	private readonly _disabledTools = new Set<string>();
+	/** 缓存 _inferSecurityLevel 结果，避免每次 _toDefinition 调用都重新推断 */
+	private readonly _securityLevelCache = new Map<string, ToolSecurityLevel>();
 	private readonly _onDidChangeTools = this._register(new Emitter<void>());
 	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
@@ -136,7 +139,18 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	}
 
 	async executeTool(_agentId: string, call: IToolCall, signal?: AbortSignal): Promise<IToolResult> {
-		const routed = this._routes.get(call.name);
+		let routed = this._routes.get(call.name);
+		// Fallback: 如果 LLM 用 tool.id（如 mcp_codebase-memo_get_architecture）调用，
+		// 但路由表用的是 referenceName（如 get_architecture），尝试反向查找
+		if (!routed) {
+			for (const [name, entry] of this._routes) {
+				if (entry.tool.id === call.name || entry.tool.referenceName === call.name) {
+					routed = entry;
+					this.logService.info(`[McpToolProvider] executeTool fallback: "${call.name}" → "${name}"`);
+					break;
+				}
+			}
+		}
 		if (!routed) {
 			return { toolCallId: call.id, success: false, content: [], error: `Unknown MCP tool: ${call.name}` };
 		}
@@ -177,21 +191,44 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		// 监听 IMcpService.servers，每当 server 列表或某 server 的 tools 列表变化时刷新路由表
 		this._register(autorun(reader => {
 			const servers = (this.mcpService.servers as IObservable<readonly IMcpServer[]>).read(reader);
-			const next = new Map<string, IRoutedTool>();
+			this.logService.info(`[McpToolProvider] _wire autorun fired: ${servers.length} server(s) discovered`);
+
+			// 第一遍：收集所有工具和 referenceName，检测碰撞
+			const allTools: Array<{ server: IMcpServer; tool: IMcpTool; refName: string }> = [];
+			const refNameCount = new Map<string, number>();
 			for (const server of servers) {
 				const tools = server.tools.read(reader);
-				const prefix = this._serverPrefix(server);
+				const connState = server.connectionState.get();
+				this.logService.info(
+					`[McpToolProvider] Server: id=${server.definition.id}, label="${server.definition.label}", ` +
+					`connState=${connState.state}, tools=${tools.length}`
+				);
 				for (const tool of tools) {
-					const routedName = `${prefix}${SEPARATOR}${this._sanitize(tool.definition.name)}`;
-					next.set(routedName, { server, tool });
+					const refName = tool.referenceName || tool.definition.name;
+					allTools.push({ server, tool, refName });
+					refNameCount.set(refName, (refNameCount.get(refName) ?? 0) + 1);
 				}
 			}
+
+			// 第二遍：构建路由表 — 优先使用 referenceName（短名），碰撞时回退到 tool.id
+			const next = new Map<string, IRoutedTool>();
+			for (const { server, tool, refName } of allTools) {
+				// referenceName 无碰撞 → 用短名（如 'get_architecture'）
+				// referenceName 有碰撞 → 用 tool.id（如 'mcp_codebase-memo_get_architecture'）
+				const routedName = (refNameCount.get(refName) ?? 0) <= 1 ? refName : tool.id;
+				next.set(routedName, { server, tool });
+				this.logService.info(`[McpToolProvider]   route: ${routedName}${routedName === refName ? '' : ' (ref=' + refName + ')'}`);
+			}
+
 			// 仅在变化时更新（避免无意义的 onDidChange）
 			if (!this._sameRoutes(next)) {
 				this._routes.clear();
+				this._securityLevelCache.clear(); // 路由变更时清空安全等级缓存
 				for (const [k, v] of next) { this._routes.set(k, v); }
 				this._onDidChangeTools.fire();
-				this.logService.info(`[McpToolProvider] tool routes updated: ${this._routes.size} tool(s)`);
+				this.logService.info(`[McpToolProvider] tool routes updated: ${this._routes.size} tool(s): [${[...this._routes.keys()].join(', ')}]`);
+			} else {
+				this.logService.info(`[McpToolProvider] routes unchanged (${this._routes.size} tool(s))`);
 			}
 		}));
 	}
@@ -204,27 +241,99 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		return true;
 	}
 
-	private _serverPrefix(server: IMcpServer): string {
-		// IMcpServer.definition.id 在所有 collection 中是稳定的，按 hermes 同款做 sanitize
-		return this._sanitize(server.definition.id);
-	}
-
 	private _sanitize(name: string): string {
 		return name.replace(/[^A-Za-z0-9_]/g, '_');
 	}
 
 	private _toDefinition(routedName: string, server: IMcpServer, tool: IMcpTool): IToolDefinition {
 		const def = tool.definition;
-		const desc = def.description
-			? `[via MCP server "${server.definition.label}"] ${def.description}`
-			: `MCP tool from "${server.definition.label}"`;
+		// 透传 MCP server 原始描述，不自加前缀。
+		// codebase-memory-mcp 的描述是自文档化的（含 "Use INSTEAD OF grep" 等引导），
+		// 添加前缀会干扰 LLM 对描述语义的解析。
+		const desc = def.description || `MCP tool from server "${server.definition.label}"`;
 		return {
 			name: routedName,
 			description: desc,
 			inputSchema: def.inputSchema as Record<string, unknown>,
 			category: `mcp:${this._sanitize(server.definition.id)}`,
 			source: this.id,
+			securityLevel: this._inferSecurityLevel(tool),
 		};
+	}
+
+	/**
+	 * 从 MCP ToolAnnotations 或描述启发式推断安全等级。
+	 *
+	 * 优先级：
+	 * 1. MCP 协议 annotations.readOnlyHint === true → Safe
+	 * 2. MCP 协议 annotations.destructiveHint === true → Dangerous
+	 * 3. 无 annotations → 从描述首句推断（首句描述主要操作，避免正文中的示例误判）
+	 *
+	 * 首句匹配优于全文匹配：codebase-memory-mcp 的 search_graph 描述中
+	 * "update settings" 是搜索示例而非写操作，全文匹配会误判为 Dangerous。
+	 */
+	private _inferSecurityLevel(tool: IMcpTool): ToolSecurityLevel {
+		const toolName = tool.definition.name;
+		// 缓存命中 → 直接返回，不打日志
+		const cached = this._securityLevelCache.get(toolName);
+		if (cached !== undefined) {
+			return cached;
+		}
+
+		const annotations = (tool.definition as any).annotations;
+		let result: ToolSecurityLevel;
+		// 1. MCP 协议标准注解
+		if (annotations?.readOnlyHint === true) {
+			result = ToolSecurityLevel.Safe;
+			this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Safe (annotations.readOnlyHint=true)`);
+		} else if (annotations?.destructiveHint === true) {
+			result = ToolSecurityLevel.Dangerous;
+			this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Dangerous (annotations.destructiveHint=true)`);
+		} else {
+			// 2. 无注解时从描述首句推断
+			result = this._inferFromDescription(toolName, tool.definition.description);
+		}
+
+		this._securityLevelCache.set(toolName, result);
+		return result;
+	}
+
+	/**
+	 * 从描述首句推断安全等级。
+	 * 取描述的第一个句子（到第一个 ". " 为止），检查是否以只读或破坏性动词开头。
+	 */
+	private _inferFromDescription(toolName: string, description: string | undefined): ToolSecurityLevel {
+		if (!description) {
+			this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Cautious (no description)`);
+			return ToolSecurityLevel.Cautious;
+		}
+
+		// 取首句：到第一个 ". " 或前 100 字符
+		const firstSentenceMatch = description.match(/^(.+?\. )/);
+		const firstSentence = (firstSentenceMatch ? firstSentenceMatch[1] : description.slice(0, 100)).toLowerCase();
+
+		// 只读动词：描述首句以这些动词开头通常表示读取/查询操作
+		const readOnlyVerbs = /^(get|search|list|query|trace|read|check|find|inspect|view|show|count|detect|execute)\b/i;
+		// 破坏性动词：描述首句以这些动词开头通常表示写入/修改操作
+		const destructiveVerbs = /^(write|delete|create|index|ingest|manage|modify|remove|insert|build|rebuild|deploy)\b/i;
+
+		const isReadOnly = readOnlyVerbs.test(firstSentence);
+		const isDestructive = destructiveVerbs.test(firstSentence);
+
+		let result: ToolSecurityLevel;
+		if (isDestructive && !isReadOnly) {
+			result = ToolSecurityLevel.Dangerous;
+		} else if (isReadOnly && !isDestructive) {
+			result = ToolSecurityLevel.Safe;
+		} else if (isReadOnly && isDestructive) {
+			// 两个都匹配（如 "create or update"）→ 偏向 Dangerous
+			result = ToolSecurityLevel.Dangerous;
+		} else {
+			result = ToolSecurityLevel.Cautious;
+		}
+
+		this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → ${result} (first sentence: "${firstSentence.trim().slice(0, 60)}")`);
+		return result;
 	}
 
 	private _adaptContent(content: readonly any[] | undefined): IToolResultContent[] {
@@ -253,10 +362,16 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 
 	private _extractErrorText(content: readonly any[] | undefined): string {
 		if (!content) { return 'MCP tool reported error'; }
+		// 收集所有 text 内容，保留 codebase-memory-mcp 返回的结构化错误中的 hint 字段
+		const texts: string[] = [];
 		for (const c of content) {
-			if (c?.type === 'text' && typeof c.text === 'string') { return c.text; }
+			if (c?.type === 'text' && typeof c.text === 'string') {
+				texts.push(c.text);
+			}
 		}
-		return 'MCP tool reported error';
+		if (texts.length === 0) { return 'MCP tool reported error'; }
+		// 多个 text 块时合并（可能包含 error + hint），用换行分隔
+		return texts.join('\n');
 	}
 
 	override dispose(): void {

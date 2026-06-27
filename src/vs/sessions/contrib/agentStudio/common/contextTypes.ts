@@ -219,6 +219,19 @@ export interface IContextCompressionResult {
 }
 
 /**
+ * Pre-compact injection callback — called inside compressContext after compression
+ * succeeds, allowing the caller to inject relevant memories into the compressed result.
+ * The injected context is prepended as a system message to compressedMessages.
+ */
+export type PreCompactInjectFn = (ctx: {
+	agentId: string;
+	sessionId: string;
+	messages: Array<{ role: string; content: string; timestamp: number }>;
+	tokensSaved: number;
+	contextWindow: number;
+}) => { injectedContext: string; totalTokens: number } | undefined;
+
+/**
  * Session Context - Chat session information
  */
 export interface ISessionContext {
@@ -388,7 +401,7 @@ export interface IAgentMemory {
 
 export interface MemoryEntry {
 	readonly id: string;
-	readonly type: 'short_term' | 'long_term';
+	readonly type: 'working' | 'episodic';
 	readonly content: string;
 	readonly timestamp: string;
 	readonly metadata?: Record<string, unknown>;
@@ -556,7 +569,8 @@ export interface IContextManager {
 		messages: ReadonlyArray<ChatMessage>,
 		config?: Partial<IContextCompressionConfig>,
 		contextWindow?: number,
-		realPromptTokens?: number
+		realPromptTokens?: number,
+		preCompactInject?: PreCompactInjectFn
 	): Promise<IContextCompressionResult>;
 
 	/**

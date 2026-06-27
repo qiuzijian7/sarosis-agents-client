@@ -47,9 +47,12 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 
 		// Listen for install/upgrade completion → auto-start server
 		this._register(this.cbmService.onDidInstallComplete(() => {
-			this.logService.info(LOG_TAG, 'Received onDidInstallComplete — starting server...');
-			this._tryStartServer().catch(err =>
-				this.logService.warn(LOG_TAG, 'Auto-start after install failed:', err));
+			this.logService.info(LOG_TAG, 'Received onDidInstallComplete — starting server after delay...');
+			// Wait for VS Code to process the config change before trying to start
+			timeout(5000).then(() =>
+				this._tryStartServer().catch(err =>
+					this.logService.warn(LOG_TAG, 'Auto-start after install failed:', err))
+			);
 		}));
 
 		this._bootstrap().catch(err => this.logService.error(LOG_TAG, 'Bootstrap failed:', err));
@@ -61,9 +64,12 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 		await this._ensureCodebaseMemoryJunction();
 
 		// 1. Detect binary + sync ~/.saros/mcp.json → VS Code config
-		const configured = await this.cbmService.ensureConfigured();
-		if (!configured) {
-			this.logService.info(LOG_TAG, 'Not installed. Open the Codebase Memory EditorPane to install.');
+		await this.cbmService.ensureConfigured();
+
+		// 1b. Check if binary is installed — skip server start if not
+		const status = this.cbmService.getStatus();
+		if (status.state === 'not_installed') {
+			this.logService.info(LOG_TAG, 'Binary not installed yet. Open the Codebase Memory EditorPane to install.');
 			return;
 		}
 
@@ -177,18 +183,38 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 					return;
 				}
 
-				// Start the server
-				try {
-					this.logService.info(LOG_TAG, 'Starting server...');
-					await Promise.race([
-						startServerAndWaitForLiveTools(server, { promptType: 'all-untrusted', autoTrustChanges: true }),
-						timeout(60000).then(() => { throw new Error('60s timeout'); }),
-					]);
-					this.logService.info(LOG_TAG, 'Server started successfully.');
-				} catch (err) {
-					this.logService.warn(LOG_TAG, 'Server start failed:', err);
-					this.logService.info(LOG_TAG, 'Server can be started manually from the MCP tab.');
+				// Error state — try stopping first, then restart
+				if (connState.state === McpConnectionState.Kind.Error) {
+					this.logService.info(LOG_TAG, 'Server in Error state, attempting stop + restart...');
+					try {
+						await (server as any).stop();
+						this.logService.info(LOG_TAG, 'Server stopped, waiting before restart...');
+					} catch (e: any) {
+						this.logService.info(LOG_TAG, `Stop attempt: ${e?.message || e}`);
+					}
+					await timeout(3000);
 				}
+
+				// Start the server (with retry)
+				for (let attempt = 1; attempt <= 2; attempt++) {
+					try {
+						this.logService.info(LOG_TAG, `Starting server (attempt ${attempt})...`);
+						await Promise.race([
+							startServerAndWaitForLiveTools(server, { promptType: 'all-untrusted', autoTrustChanges: true }),
+							timeout(60000).then(() => { throw new Error('60s timeout'); }),
+						]);
+						this.logService.info(LOG_TAG, 'Server started successfully.');
+						return;
+					} catch (err) {
+						this.logService.warn(LOG_TAG, `Server start attempt ${attempt} failed:`, err);
+						if (attempt < 2) {
+							this.logService.info(LOG_TAG, 'Retrying in 5 seconds...');
+							try { await (server as any).stop(); } catch { /* ignore */ }
+							await timeout(5000);
+						}
+					}
+				}
+				this.logService.info(LOG_TAG, 'Server can be started manually from the MCP tab.');
 				return;
 			}
 			await timeout(500);

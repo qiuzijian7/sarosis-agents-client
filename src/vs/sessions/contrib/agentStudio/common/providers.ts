@@ -400,6 +400,126 @@ export interface IMemoryProvider {
 	): Promise<IMemoryContext>;
 	writeMemory(agentId: string, entry: IMemoryEntry): Promise<void>;
 	searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]>;
+
+	// ─── Extended Lifecycle Methods (optional, AgentMemoryProvider implements) ──
+
+	/** Pre-compact injection: called before context compression to inject relevant memories */
+	onPreCompact?(agentId: string, sessionId: string, messages: Array<{ role: string; content: string; timestamp: number }>, tokenBudget: number): { injectedContext: string; totalTokens: number };
+
+	/** Called when a task is completed */
+	onTaskCompleted?(agentId: string, sessionId: string, taskSubject: string, taskId?: string): void;
+
+	/** Called when a git commit is made */
+	onGitCommit?(commit: { sha: string; message: string; author: string; filesChanged: string[]; insertions: number; deletions: number; timestamp: number; branch?: string }): unknown;
+
+	/** Called when a subagent starts */
+	onSubagentStart?(parentAgentId: string, task: string): unknown;
+
+	/** Called when a subagent stops */
+	onSubagentStop?(agentId: string, status: 'completed' | 'failed' | 'cancelled', result?: string, error?: string): boolean;
+
+	/** Get extended stats (for memory detail pane) */
+	getExtendedStats?(agentId: string): Record<string, unknown>;
+
+	/** Run extended diagnostics */
+	runExtendedDiagnostics?(agentId: string): Record<string, unknown>;
+
+	/** Flush pending writes */
+	flush?(): Promise<void>;
+
+	// ─── Hook System (for agentOSService lifecycle integration) ────────────
+	/**
+	 * Trigger a lifecycle hook. Called by agentOSService at key lifecycle points:
+	 * session_start, prompt_submit, pre_tool_use, post_tool_use, post_tool_failure,
+	 * pre_compact, stop, session_end, task_completed.
+	 */
+	triggerHook?(type: string, ctx: Record<string, unknown>): Promise<void>;
+
+	/** Get hook system statistics (for memory detail panel) */
+	getHookStats?(): { totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> };
+
+	// ─── Extended Memory APIs (for memory detail panel) ────────────────────
+
+	/** Get basic memory stats */
+	getStats?(agentId: string): Record<string, unknown>;
+
+	/** Get project profile */
+	getProfile?(agentId: string): Record<string, unknown> | null;
+
+	/** Get timeline of memory events */
+	getTimeline?(agentId: string): Array<Record<string, unknown>>;
+
+	/** Get all pinned slots */
+	getSlots?(agentId: string): Array<{ name: string; content: string }>;
+
+	/** Set a pinned slot's content */
+	setSlot?(agentId: string, label: string, content: string): void;
+
+	/** Get all lessons */
+	getLessons?(agentId: string): Array<{ id: string; content: string; context?: string; tags?: string[] }>;
+
+	/** Add a manual lesson */
+	addLesson?(agentId: string, content: string, context?: string, tags?: string[]): Record<string, unknown>;
+
+	/** Delete a lesson */
+	deleteLesson?(agentId: string, lessonId: string): void;
+
+	/** Get episodic memories (consolidated) */
+	getEpisodicMemories?(agentId: string): Array<Record<string, unknown>>;
+
+	/** Get semantic memories (consolidated) */
+	getSemanticMemories?(agentId: string): Array<Record<string, unknown>>;
+
+	/** Get procedural memories (consolidated) */
+	getProceduralMemories?(agentId: string): Array<Record<string, unknown>>;
+
+	/** Get consolidation context as text */
+	getConsolidationContext?(agentId: string): string;
+
+	/** Get relations for a memory */
+	getRelations?(agentId: string, memoryId: string): Array<Record<string, unknown>>;
+
+	/** Get relation statistics */
+	getRelationStats?(agentId: string): Record<string, number>;
+
+	/** Trace provenance chain for a memory */
+	traceProvenance?(agentId: string, memoryId: string): Record<string, unknown> | null;
+
+	/** Get audit log */
+	getAuditLog?(filter?: { operation?: string; agentId?: string; limit?: number }): Array<Record<string, unknown>>;
+
+	/** Get audit summary */
+	getAuditSummary?(): Record<string, number>;
+
+	// ─── Report & Git APIs (for memory detail panel) ──────────────────────
+
+	/** Generate a system report */
+	generateReport?(type: string, agentId: string): Promise<Record<string, unknown>>;
+
+	/** Get recent git commits captured into memory */
+	getRecentCommits?(limit?: number): Array<Record<string, unknown>>;
+
+	/** Get git commit statistics */
+	getCommitStats?(): Record<string, unknown>;
+
+	// ─── Memory Lifecycle Events (for accurate UI feedback) ──────────────────
+	// 替代旧的 fire-and-forget + 假"已保存" UI 反馈模式。
+	// Provider 在 writeMemory 成功/失败时通过这些回调通知调用方，
+	// 调用方据此更新聊天系统栏记忆卡片状态 (pending → saved/failed)。
+
+	/**
+	 * 订阅记忆写入成功事件。
+	 * @param handler 回调，接收 agentId、memoryId 和可选的 noticeId（来自 entry.metadata.noticeId）
+	 * @returns 取消订阅函数
+	 */
+	onMemoryWritten?(handler: (agentId: string, data: { memoryId: string; noticeId?: string; memoryType?: string; contentLength?: number }) => void): () => void;
+
+	/**
+	 * 订阅记忆写入失败事件。
+	 * @param handler 回调，接收 agentId、错误信息和可选的 noticeId
+	 * @returns 取消订阅函数
+	 */
+	onMemoryWriteFailed?(handler: (agentId: string, data: { noticeId?: string; error: string; memoryType?: string }) => void): () => void;
 }
 
 /**
@@ -418,7 +538,7 @@ export interface IMemoryContext {
 
 export interface IMemoryEntry {
 	readonly id: string;
-	readonly type: 'short_term' | 'long_term';
+	readonly type: 'working' | 'episodic' | 'semantic' | 'procedural';
 	readonly content: string;
 	readonly metadata?: Record<string, unknown>;
 	readonly timestamp?: number;
@@ -660,8 +780,8 @@ export interface IAgentTurnRequest {
 	readonly chatMode?: 'craft' | 'ask' | 'plan' | 'workflow';
 	/**
 	 * Memory 注入策略（来自 Agent 的 memoryConfig.strategy）：
-	 *   - 'full'    → 仅注入 L0（原始对话 / shortTermMemories）
-	 *   - 'summary' → 仅注入 L1（摘要 / longTermMemories）
+	 *   - 'full'    → 仅注入 Working（原始对话 / shortTermMemories）
+	 *   - 'summary' → 仅注入 Episodic（摘要 / longTermMemories）
 	 * 未指定时按 'full' 处理，保留旧行为兼容。
 	 */
 	readonly memoryStrategy?: 'summary' | 'full';
@@ -669,8 +789,8 @@ export interface IAgentTurnRequest {
 	readonly memoryMaxEntries?: number;
 	/**
 	 * Memory 召回作用域（2026-06 新增，来自 Agent 的 memoryConfig.scope）：
-	 *   - 'agent'     → 仅本 Agent 自己写入的 L1 记忆（默认，严格隔离）
-	 *   - 'global'    → 全库 L1（跨 agent 共享）
+	 *   - 'agent'     → 仅本 Agent 自己写入的 Episodic 记忆（默认，严格隔离）
+	 *   - 'global'    → 全库 Episodic（跨 agent 共享）
 	 * 未指定时按 'agent' 处理（C2 默认严格隔离）。
 	 */
 	readonly memoryScope?: 'agent' | 'global';
@@ -739,6 +859,18 @@ export interface IChatStreamDelta {
 	// 按 turn 持久化多条 ChatMessage（同回合共享 turnId），历史因果天然正确。
 	| 'assistant_turn'
 	| 'memory_extracted'
+	// ─── 记忆生命周期 deltas（替代旧的单一 memory_extracted 假"已保存"信号）──────
+	// 设计原则（对齐 agentmemory Working→Episodic→Semantic→Procedural 层级模型）：
+	//   memory_writing      → Working 写入开始（pending 状态，含 noticeId 供后续更新）
+	//   memory_written      → Working 写入成功（provider 事件桥接，含 noticeId 匹配）
+	//   memory_write_failed → Working 写入失败（provider 事件桥接，含 error）
+	//   memory_extracted    → LLM <memory_extract> 标签捕获（同步，memory IS extracted，保持 saved 状态）
+	//   memory_episodic_extracted → Episodic 记忆提取完成
+	//   memory_semantic_extracted     → Semantic 记忆提取完成
+	//   memory_procedural_extracted   → Procedural 记忆生成完成
+	| 'memory_writing' | 'memory_written' | 'memory_write_failed'
+	| 'memory_episodic_extracted' | 'memory_semantic_extracted' | 'memory_procedural_extracted'
+	| 'memory_injected'
 	| 'codebase_operation';
 	readonly content?: string;
 	readonly toolCallId?: string;

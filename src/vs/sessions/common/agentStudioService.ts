@@ -242,6 +242,9 @@ export interface IChatStreamDelta {
 	| "workflow_collect_variables_end"
 	| "workflow_breakpoint_hit"
 	| "memory_extracted"
+	| "memory_writing" | "memory_written" | "memory_write_failed"
+	| "memory_episodic_extracted" | "memory_semantic_extracted" | "memory_procedural_extracted"
+	| "memory_injected"
 	| "codebase_operation";
 	readonly content?: string;
 	readonly toolCallId?: string;
@@ -312,6 +315,10 @@ export interface IChatStreamDelta {
 		readonly cachedTokens?: number;
 		/** Cache-write tokens (Anthropic `cache_creation_input_tokens`). */
 		readonly cacheWriteTokens?: number;
+		/** Total tokens (some gateways provide total_tokens in final chunk; defaults to input+output). */
+		readonly totalTokens?: number;
+		/** Billing credits consumed by this call (from gateway final-chunk usage.credit, e.g. CodeBuddy). */
+		readonly credit?: number;
 	};
 	/** UI display name for tool card (from model's display_name field) */
 	readonly displayName?: string;

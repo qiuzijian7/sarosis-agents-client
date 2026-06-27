@@ -295,6 +295,35 @@ export function repairToolName(
 		return normMatch;
 	}
 
+	// 4.5. camelCase → snake_case + MCP prefix stripping
+	// Handles LLM hallucinations like "indexRepository" → "index_repository"
+	// matching against MCP tools like "mcp_config_*__index_repository"
+	const snakeCase = rawName
+		.replace(/([A-Z])/g, "_$1")
+		.toLowerCase()
+		.replace(/^_/, "");
+	const mcpShortMatch = validNames.find((n) => {
+		// Strip "mcp_config_*__" prefix to get short name
+		const shortName = n.includes("__") ? n.split("__").pop()!.toLowerCase() : n.toLowerCase();
+		return shortName === snakeCase;
+	});
+	if (mcpShortMatch) {
+		return mcpShortMatch;
+	}
+
+	// 4.6. Partial keyword matching for MCP tools
+	// Handles "indexWorkspace" → matches "index" in "index_repository"
+	if (snakeCase.includes("_")) {
+		const firstWord = snakeCase.split("_")[0];
+		const keywordMatch = validNames.filter((n) => {
+			const shortName = n.includes("__") ? n.split("__").pop()!.toLowerCase() : n.toLowerCase();
+			return shortName.startsWith(firstWord);
+		});
+		if (keywordMatch.length === 1) {
+			return keywordMatch[0];
+		}
+	}
+
 	// 5. Substring containment — only if exactly one candidate matches
 	const containedBy = validNames.filter((n) =>
 		n.toLowerCase().includes(lowerName),

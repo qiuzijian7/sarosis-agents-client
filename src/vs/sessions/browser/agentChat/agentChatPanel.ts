@@ -164,6 +164,8 @@ export class AgentChatPanel extends Disposable {
 	private _systemMsgBar: HTMLElement | null = null;
 	private _systemMsgList: HTMLElement | null = null;
 	private _systemMsgExpanded = false;
+	/** Tracks if the user manually collapsed the panel — prevents auto-expand. */
+	private _systemMsgUserCollapsed = false;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
@@ -175,9 +177,13 @@ export class AgentChatPanel extends Disposable {
 		badge: string;
 		badgeClass: string;
 		content: string;
-		details: string[];
+		details?: string[];
 		timestamp: number;
 		rawData?: Record<string, unknown>;
+		/** 记忆卡片状态：pending(写入中) → saved(已保存) → failed(失败) */
+		status?: 'pending' | 'saved' | 'failed';
+		/** 关联 ID，用于 updateMemoryNotice 匹配 */
+		noticeId?: string;
 	}> = [];
 	/** 系统消息面板回调（打开编辑器详情） */
 	private _onOpenCompressionDetail: ((data: Record<string, unknown>) => void) | null = null;
@@ -195,6 +201,10 @@ export class AgentChatPanel extends Disposable {
 	// 智能滚动状态（匹配 React isAtBottomRef / wasLoadingRef）
 	private _isAtBottom = true;
 	private _wasLoading = false;
+	// 流式期间持续滚动 rAF 句柄——renderMarkdown 的 codeBlockRenderer 返回 Promise，
+	// 代码块在微任务中异步插入 DOM，同步 _scrollToBottom 读取的 scrollHeight 不含代码块高度，
+	// 导致流式过程中视图逐渐脱离底部。rAF 循环在微任务之后、绘制之前补滚，追平异步插入。
+	private _streamScrollRaf: number | null = null;
 	private _autoOrchestrateEnabled = false;
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
@@ -426,13 +436,17 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	setMessages(messages: IAgentChatMessage[]): void {
+		const t0 = performance.now();
 		this._messages = this._aggregateTurns(messages);
+		const tAgg = performance.now();
 		this._renderMessages();
+		const tRender = performance.now();
 		// 加载历史消息 → 标记 wasLoading，确保 instant 滚动
 		this._wasLoading = true;
 		this._scrollToBottom(false);
 		// 消息变化影响 inputBaselineTokens，需要重新计算 context ring
 		this._updateContextRing();
+		console.warn(`[AgentChatPanel] setMessages: total=${messages.length} aggregate=${(tAgg - t0).toFixed(1)}ms render=${(tRender - tAgg).toFixed(1)}ms total=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
 	addMessage(message: IAgentChatMessage): void {
@@ -474,6 +488,7 @@ export class AgentChatPanel extends Disposable {
 
 	/**
 	 * 添加记忆提取提示到系统消息面板。
+	 * 支持三阶段生命周期：pending → saved → failed（对齐 agentmemory 写入模型）。
 	 */
 	addMemoryNotice(info: {
 		content: string;
@@ -482,26 +497,62 @@ export class AgentChatPanel extends Disposable {
 		sceneName?: string;
 		assistantContentPreview?: string;
 		iteration?: number;
+		noticeId?: string;
+		status?: 'pending' | 'saved' | 'failed';
 	}): void {
-		const typeLabels: Record<string, string> = {
-			persona: '人格',
-			episodic: '情景',
-			instruction: '指令',
-			short_term: 'L0',
-		};
-		const typeLabel = info.memoryType ? (typeLabels[info.memoryType] ?? info.memoryType) : '记忆';
-		const details: string[] = [];
-		if (info.sceneName) { details.push(String(info.sceneName)); }
-		if (typeof info.priority === 'number' && info.priority > 0) { details.push(`P${info.priority}`); }
+	const typeLabels: Record<string, string> = {
+		// 4-Tier Consolidation Model (agentmemory)
+		working: 'Working',
+		episodic: 'Episodic',
+		semantic: 'Semantic',
+		procedural: 'Procedural',
+		// Injection (context loaded into system prompt)
+		injected: '注入',
+		// Episodic sub-types
+		pattern: 'pattern', preference: 'preference', architecture: 'architecture',
+		bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
+	};
+	const typeLabel = info.memoryType ? (typeLabels[info.memoryType] ?? info.memoryType) : '记忆';
+	// Map badge class to 4-Tier colors (direct type matching, no legacy mapping)
+	const memType = info.memoryType ?? '';
+	const badgeClass = memType === 'working' ? 'memory-l0'
+		: (memType === 'episodic' ? 'memory-l1'
+		: (memType === 'semantic' ? 'memory-l2'
+		: (memType === 'procedural' ? 'memory-l3'
+		: (memType === 'injected' ? 'memory-injected'
+		: 'memory'))));
 		this._addSystemMessage({
 			type: 'memory',
 			icon: '🧠',
 			badge: typeLabel,
-			badgeClass: info.memoryType === 'short_term' ? 'memory-l0' : 'memory',
+			badgeClass,
 			content: info.content,
-			details,
 			rawData: { ...info },
+			status: info.status,
+			noticeId: info.noticeId,
 		});
+	}
+
+	/**
+	 * 更新已有记忆卡片的状态（pending → saved/failed）。
+	 * 由 provider 事件桥接触发，提供真实的写入结果反馈。
+	 */
+	updateMemoryNotice(noticeId: string, status: 'saved' | 'failed', newContent?: string): void {
+		const msg = this._systemMessages.find(m => m.noticeId === noticeId);
+		if (!msg) { return; }
+		msg.status = status;
+		if (newContent) { msg.content = newContent; }
+		this._renderSystemMsgPanel();
+	}
+
+	/**
+	 * 移除已有记忆卡片（如写入内容为空时无需展示）。
+	 */
+	removeMemoryNotice(noticeId: string): void {
+		const idx = this._systemMessages.findIndex(m => m.noticeId === noticeId);
+		if (idx < 0) { return; }
+		this._systemMessages.splice(idx, 1);
+		this._renderSystemMsgPanel();
 	}
 
 	/** 设置打开压缩详情编辑器的回调 */
@@ -553,8 +604,10 @@ export class AgentChatPanel extends Disposable {
 		badge: string;
 		badgeClass: string;
 		content: string;
-		details: string[];
+		details?: string[];
 		rawData?: Record<string, unknown>;
+		status?: 'pending' | 'saved' | 'failed';
+		noticeId?: string;
 	}): void {
 		this._systemMessages.push({
 			id: `sysmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -562,8 +615,8 @@ export class AgentChatPanel extends Disposable {
 			...msg,
 		});
 		this._renderSystemMsgPanel();
-		// 有新消息时自动展开
-		if (!this._systemMsgExpanded) {
+		// 有新消息时自动展开（但如果用户手动折叠了则不自动展开）
+		if (!this._systemMsgExpanded && !this._systemMsgUserCollapsed) {
 			this._toggleSystemMsgPanel();
 		}
 	}
@@ -577,6 +630,14 @@ export class AgentChatPanel extends Disposable {
 	/** 切换系统消息面板展开/收起 */
 	private _toggleSystemMsgPanel(): void {
 		this._systemMsgExpanded = !this._systemMsgExpanded;
+		// Track user's manual collapse/expand choice
+		if (this._systemMsgExpanded) {
+			// User manually expanded → clear the collapsed flag
+			this._systemMsgUserCollapsed = false;
+		} else {
+			// User manually collapsed → set flag to prevent auto-expand
+			this._systemMsgUserCollapsed = true;
+		}
 		this._renderSystemMsgPanel();
 	}
 
@@ -663,10 +724,20 @@ export class AgentChatPanel extends Disposable {
 			const msg = this._systemMessages[mi];
 			const item = document.createElement('div');
 			item.className = 'sysmsg-item sysmsg-item-clickable';
+			if (msg.status) { item.classList.add(`mem-status-${msg.status}`); }
 
 			const iconEl = document.createElement('span');
 			iconEl.className = 'sysmsg-item-icon';
-			iconEl.textContent = msg.icon;
+			// 状态指示器：pending(⏳) / saved(✅) / failed(❌) / 默认原 icon
+			if (msg.type === 'memory' && msg.status === 'pending') {
+				iconEl.textContent = '⏳';
+			} else if (msg.type === 'memory' && msg.status === 'saved') {
+				iconEl.textContent = '✅';
+			} else if (msg.type === 'memory' && msg.status === 'failed') {
+				iconEl.textContent = '❌';
+			} else {
+				iconEl.textContent = msg.icon;
+			}
 			item.appendChild(iconEl);
 
 			const body = document.createElement('div');
@@ -689,7 +760,7 @@ export class AgentChatPanel extends Disposable {
 			content.textContent = msg.content;
 			body.appendChild(content);
 
-			if (msg.details.length > 0) {
+			if (msg.details?.length) {
 				const detail = document.createElement('div');
 				detail.className = 'sysmsg-item-detail';
 				for (const d of msg.details) {
@@ -756,8 +827,10 @@ export class AgentChatPanel extends Disposable {
 		if (sending) {
 			// 追踪加载状态：新消息或切换 Agent 时，下一帧滚动用 instant
 			this._wasLoading = true;
+			this._startStreamScroll();
 		} else {
 			this._streamPhase = 'idle';
+			this._stopStreamScroll();
 		}
 	}
 
@@ -905,10 +978,15 @@ export class AgentChatPanel extends Disposable {
 			this._renderHistoryOverlay();
 		}
 
-		// Message-nav overlay (right-side panel, same as history)
-		if (this._activeHeaderPanel === 'message-nav') {
-			this._renderMsgNavOverlay();
-		}
+	// Message-nav overlay (right-side panel, same as history)
+	if (this._activeHeaderPanel === 'message-nav') {
+		this._renderMsgNavOverlay();
+	}
+
+	// Settings overlay (right-side panel, unified with history)
+	if (this._activeHeaderPanel === 'settings') {
+		this._renderSettingsOverlay();
+	}
 
 		// 初始加载后滚动到底部
 		this._wasLoading = true;
@@ -1224,11 +1302,16 @@ export class AgentChatPanel extends Disposable {
 			c.setAttribute('r', '3');
 			gearSvg.insertBefore(c, gearSvg.firstChild);
 		}
-		this._register(
-			addDisposableListener(settingsBtn, EventType.CLICK, () => {
-				this._onOpenSettings?.();
-			}),
-		);
+	this._register(
+		addDisposableListener(settingsBtn, EventType.CLICK, () => {
+			if (this._activeHeaderPanel === 'settings') {
+				this._activeHeaderPanel = null;
+			} else {
+				this._activeHeaderPanel = 'settings';
+			}
+			this._render();
+		}),
+	);
 	}
 
 	// Header-action button helper
@@ -1586,23 +1669,32 @@ export class AgentChatPanel extends Disposable {
 			}
 		};
 
-		// ── SCROLL 事件：恢复/暂停自动滚动 ──
+		// ── SCROLL 事件：恢复/暂停自动滚动（rAF 节流）──
+		let scrollRafId: number | null = null;
 		this._register(
 			addDisposableListener(this._messagesContainer, EventType.SCROLL, () => {
-				const atBottom = checkAtBottom();
-				if (atBottom) { this._isAtBottom = true; } // 用户滚到底 → 恢复自动跟随
-				updateScrollButtons(atBottom);
+				if (scrollRafId !== null) { return; }
+				scrollRafId = requestAnimationFrame(() => {
+					scrollRafId = null;
+					const atBottom = checkAtBottom();
+					if (atBottom) { this._isAtBottom = true; }
+					// 流式期间由 _startStreamScroll rAF 循环持续钉底，
+					// 程序滚动触发的 SCROLL 事件不更新按钮（避免异步内容增长导致的误闪）
+					if (!this._isSending) {
+						updateScrollButtons(atBottom);
+					}
+				});
 			}),
 		);
+		this._register({ dispose: () => { if (scrollRafId !== null) { cancelAnimationFrame(scrollRafId); } } });
 
-		// ── WHEEL 事件：精细控制自动滚动 + 取消 smooth 动画 ──
+		// ── WHEEL 事件：精细控制自动滚动 ──
 		this._register(
 			addDisposableListener(this._messagesContainer, EventType.WHEEL, (e: WheelEvent) => {
 				if (e.deltaY < 0) {
-					// 向上滚 → 立即暂停自动滚动 + 中断任何进行中的 scrollIntoView 动画
+					// 向上滚 → 立即暂停自动滚动
 					this._isAtBottom = false;
 					updateScrollButtons(false);
-					this._messagesContainer.scrollTop = this._messagesContainer.scrollTop; // 取消 smooth 动画
 				} else if (e.deltaY > 0) {
 					// 向下滚 → 检测是否到底，恢复自动跟随
 					requestAnimationFrame(() => {
@@ -1673,8 +1765,59 @@ export class AgentChatPanel extends Disposable {
 			return;
 		}
 
-		for (const msg of this._messages) {
-			this._appendMessageDom(msg);
+		// Chunked rendering: for large message lists (>30), render the last
+		// chunk immediately (so user sees recent history), then render older
+		// messages in background chunks via requestAnimationFrame. This keeps
+		// the input box interactive during history reload.
+		const CHUNK_SIZE = 30;
+		const total = this._messages.length;
+
+		if (total <= CHUNK_SIZE) {
+			// Small list — render synchronously
+			for (const msg of this._messages) {
+				this._appendMessageDom(msg);
+			}
+			return;
+		}
+
+		// Large list — render last CHUNK_SIZE immediately, rest in background
+		console.warn(`[AgentChatPanel] _renderMessages: chunked mode total=${total} CHUNK_SIZE=${CHUNK_SIZE}`);
+		// Render in order (oldest → newest) but start from the last chunk
+		// so the scroll position is correct.
+		const renderRange = (start: number, end: number) => {
+			for (let i = start; i < end && i < total; i++) {
+				this._appendMessageDom(this._messages[i]);
+			}
+		};
+
+		// Phase 1: render last CHUNK_SIZE messages immediately
+		const firstBatchStart = Math.max(0, total - CHUNK_SIZE);
+		renderRange(firstBatchStart, total);
+
+		// Phase 2: render older messages in background chunks
+		if (firstBatchStart > 0) {
+			let rendered = firstBatchStart;
+			const renderOlderChunk = () => {
+				if (rendered <= 0 || !this._messagesContainer) { return; }
+				const chunkStart = Math.max(0, rendered - CHUNK_SIZE);
+				// Create a DocumentFragment to insert before the first child
+				const frag = document.createDocumentFragment();
+				const tempContainer = this._messagesContainer;
+				for (let i = chunkStart; i < rendered; i++) {
+					// Temporarily append to frag via a dummy approach:
+					// _appendMessageDom appends to this._messagesContainer, so
+					// we need to insert before the first child.
+					const el = this._createMessageElement(this._messages[i]);
+					frag.appendChild(el);
+				}
+				// Insert older messages at the top (before existing children)
+				tempContainer.insertBefore(frag, tempContainer.firstChild);
+				rendered = chunkStart;
+				if (rendered > 0) {
+					requestAnimationFrame(renderOlderChunk);
+				}
+			};
+			requestAnimationFrame(renderOlderChunk);
 		}
 	}
 
@@ -1982,17 +2125,124 @@ export class AgentChatPanel extends Disposable {
 			}
 		}
 
-		// Footer: time + tokens
-		const footer = append(bubble, $(".chat-bubble-footer"));
-		const time = append(footer, $("span.chat-bubble-time"));
-		time.textContent = new Date(msg.timestamp).toLocaleTimeString("zh-CN", {
-			hour: "2-digit",
-			minute: "2-digit",
-		});
-		if (!isUser && msg.tokenUsage && msg.tokenUsage.total > 0) {
-			const tokens = append(footer, $("span.chat-bubble-tokens"));
-			tokens.textContent = `${msg.tokenUsage.total} tokens`;
-			tokens.title = `输入: ${msg.tokenUsage.input} / 输出: ${msg.tokenUsage.output}`;
+		// Footer: copy | score | tokens | duration — 仅在 LLM 流式输出结束后显示
+		if (!isUser && !msg.isStreaming) {
+			const footer = append(bubble, $(".chat-bubble-footer"));
+
+			// ── 复制按钮（样式同用户消息的复制按钮）──
+			const copyBtn = append(footer, $("button.chat-msg-action-btn.chat-msg-copy-btn")) as HTMLButtonElement;
+			copyBtn.title = "复制";
+			const copySvg = this._svgCopyIcon();
+			copyBtn.appendChild(copySvg);
+			this._register(addDisposableListener(copyBtn, EventType.CLICK, async (e: Event) => {
+				e.stopPropagation();
+				const ok = await this._copyToClipboard(msg.content ?? '');
+				if (ok) {
+					copyBtn.removeChild(copySvg);
+					const checkSvg = this._svgCheckSmall();
+					copyBtn.appendChild(checkSvg);
+					copyBtn.classList.add("chat-msg-copy-copied");
+					setTimeout(() => {
+						copyBtn.classList.remove("chat-msg-copy-copied");
+						try { copyBtn.removeChild(checkSvg); } catch { /* already removed */ }
+						copyBtn.appendChild(copySvg);
+					}, 1500);
+				}
+			}));
+
+			// ── 分隔线 ──
+			append(footer, $(".chat-bubble-footer-sep"));
+
+			// ── 积分（来自 tokenUsage.credit）──
+			if (msg.tokenUsage?.credit !== undefined && msg.tokenUsage.credit > 0) {
+				const scoreWrap = append(footer, $("span.chat-bubble-footer-item"));
+				const scoreIcon = append(scoreWrap, $('span.chat-bubble-footer-icon'));
+				scoreIcon.textContent = '◎';
+				append(scoreWrap, $('span', undefined, `${msg.tokenUsage.credit.toFixed(2)}`));
+				scoreWrap.title = `积分: ${msg.tokenUsage.credit}`;
+			}
+
+			// ── Tokens ──
+			if (msg.tokenUsage?.total !== undefined && msg.tokenUsage.total > 0) {
+				const tokenWrap = append(footer, $("span.chat-bubble-footer-item.tokens-item"));
+				const tokenIcon = append(tokenWrap, $('span.chat-bubble-footer-icon'));
+				tokenIcon.textContent = '◈';
+				append(tokenWrap, $('span', undefined, `${msg.tokenUsage.total.toLocaleString()}`));
+
+				// ── Token 消耗明细 Popup ──
+				const tu = msg.tokenUsage;
+				const cachedRead = tu.cachedRead ?? tu.cached ?? 0;
+				const cacheWrite = tu.cacheWrite ?? 0;
+				const cacheMiss = tu.cacheMiss ?? Math.max(0, tu.input - cachedRead - cacheWrite);
+				const reasoning = tu.reasoning ?? 0;
+				const contentTokens = tu.output - reasoning;
+				const hitRate = tu.cacheHitRate ?? (tu.input > 0 ? (cachedRead / tu.input) * 100 : 0);
+
+				const popup = append(tokenWrap, $('div.tokens-popup'));
+				// Title
+				append(popup, $('div.tokens-popup-title', undefined, 'Token 消耗明细'));
+				// 总计
+				const totalRow = append(popup, $('div.tokens-popup-total'));
+				append(totalRow, $('span.label', undefined, '总计'));
+				append(totalRow, $('span.value', undefined, tu.total.toLocaleString()));
+				// 输入分组
+				const inputGroup = append(popup, $('div.tokens-popup-group'));
+				const inputTitle = append(inputGroup, $('div.tokens-popup-group-title'));
+				append(inputTitle, $('span', undefined, '输入'));
+				append(inputTitle, $('span.group-value', undefined, tu.input.toLocaleString()));
+				if (cachedRead > 0 || cacheMiss > 0 || cacheWrite > 0) {
+					if (cachedRead > 0) {
+						const row = append(inputGroup, $('div.tokens-popup-sub-row'));
+						append(row, $('span.sub-label', undefined, '缓存命中'));
+						append(row, $('span.sub-value.highlight', undefined, cachedRead.toLocaleString()));
+					}
+					if (cacheMiss > 0) {
+						const row = append(inputGroup, $('div.tokens-popup-sub-row'));
+						append(row, $('span.sub-label', undefined, '缓存未命中'));
+						append(row, $('span.sub-value', undefined, cacheMiss.toLocaleString()));
+					}
+					if (cacheWrite > 0) {
+						const row = append(inputGroup, $('div.tokens-popup-sub-row'));
+						append(row, $('span.sub-label', undefined, '缓存写入'));
+						append(row, $('span.sub-value', undefined, cacheWrite.toLocaleString()));
+					}
+				}
+				// 输出分组
+				const outputGroup = append(popup, $('div.tokens-popup-group'));
+				const outputTitle = append(outputGroup, $('div.tokens-popup-group-title'));
+				append(outputTitle, $('span', undefined, '输出'));
+				append(outputTitle, $('span.group-value', undefined, tu.output.toLocaleString()));
+				if (reasoning > 0 || contentTokens > 0) {
+					if (reasoning > 0) {
+						const row = append(outputGroup, $('div.tokens-popup-sub-row'));
+						append(row, $('span.sub-label', undefined, '思考过程'));
+						append(row, $('span.sub-value', undefined, reasoning.toLocaleString()));
+					}
+					const row = append(outputGroup, $('div.tokens-popup-sub-row'));
+					append(row, $('span.sub-label', undefined, '回复内容'));
+					append(row, $('span.sub-value', undefined, contentTokens.toLocaleString()));
+				}
+				// 缓存命中率
+				if (hitRate > 0 || cachedRead > 0) {
+					const hitRateEl = append(popup, $('div.tokens-popup-hit-rate'));
+					append(hitRateEl, $('span.rate-icon', undefined, '⚡'));
+					append(hitRateEl, $('span.rate-label', undefined, '缓存命中率'));
+					append(hitRateEl, $('span.rate-value', undefined, `${hitRate.toFixed(1)}%`));
+				}
+			}
+
+			// ── 耗时（单次 LLM 开始到结束，由上游在流式结束时写入 metadata.durationMs）──
+			const durMs = typeof (msg.metadata?.durationMs) === 'number'
+				? (msg.metadata.durationMs as number)
+				: 0;
+			if (durMs > 0) {
+				const durWrap = append(footer, $("span.chat-bubble-footer-item.duration-item"));
+				const durIcon = append(durWrap, $('span.chat-bubble-footer-icon'));
+				durIcon.textContent = '⏱';
+				const durText = append(durWrap, $('span'));
+				durText.textContent = this._formatDuration(durMs);
+				durWrap.title = `耗时: ${this._formatDuration(durMs)}`;
+			}
 		}
 
 		return messageEl;
@@ -5210,6 +5460,287 @@ export class AgentChatPanel extends Disposable {
 	}
 
 	// =========================================================
+	// Settings overlay (right-side panel, unified with history)
+	// =========================================================
+
+	private _settingsOverlayEl: HTMLElement | null = null;
+
+	private _renderSettingsOverlay(): void {
+		this._settingsOverlayEl = append(this._container, $(".chat-settings-overlay"));
+		this._renderSettingsOverlayContent('prompt');
+	}
+
+	private _renderSettingsOverlayContent(activeTab: string): void {
+		if (!this._settingsOverlayEl) { return; }
+		clearNode(this._settingsOverlayEl);
+
+		// Header (title + close button)
+		const header = append(this._settingsOverlayEl, $(".chat-settings-header"));
+		const titleLeft = append(header, $(".chat-settings-title-left"));
+		const gearIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		gearIcon.setAttribute('width', '16');
+		gearIcon.setAttribute('height', '16');
+		gearIcon.setAttribute('viewBox', '0 0 24 24');
+		gearIcon.setAttribute('fill', 'none');
+		gearIcon.setAttribute('stroke', 'currentColor');
+		gearIcon.setAttribute('stroke-width', '2');
+		const gearPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		gearPath.setAttribute('d', 'M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z');
+		gearIcon.appendChild(gearPath);
+		const gearCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+		gearCircle.setAttribute('cx', '12');
+		gearCircle.setAttribute('cy', '12');
+		gearCircle.setAttribute('r', '3');
+		gearIcon.appendChild(gearCircle);
+		titleLeft.appendChild(gearIcon);
+		append(titleLeft, $("span.chat-settings-title", undefined, 'Agent 配置'));
+
+		// Close button (right-aligned)
+		const closeBtn = append(header, $("button.chat-settings-close-btn"));
+		closeBtn.title = '关闭';
+		const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		closeSvg.setAttribute('width', '16');
+		closeSvg.setAttribute('height', '16');
+		closeSvg.setAttribute('viewBox', '0 0 24 24');
+		closeSvg.setAttribute('fill', 'none');
+		closeSvg.setAttribute('stroke', 'currentColor');
+		closeSvg.setAttribute('stroke-width', '2');
+		closeSvg.setAttribute('stroke-linecap', 'round');
+		const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		closePath.setAttribute('d', 'M18 6L6 18M6 6l12 12');
+		closeSvg.appendChild(closePath);
+		closeBtn.appendChild(closeSvg);
+		this._register(
+			addDisposableListener(closeBtn, EventType.CLICK, () => {
+				this._activeHeaderPanel = null;
+				this._render();
+			}),
+		);
+
+		// Tab bar
+		const tabBar = append(this._settingsOverlayEl, $(".chat-settings-tabs"));
+		const tabs: { id: string; icon: string; label: string }[] = [
+			{ id: 'prompt', icon: '💬', label: 'Prompt' },
+			{ id: 'skills', icon: '🛠', label: '技能' },
+			{ id: 'memory', icon: '🧠', label: 'Memory' },
+			{ id: 'knowledge', icon: '📚', label: '知识库' },
+			{ id: 'rules', icon: '📏', label: '规则' },
+		];
+		for (const tab of tabs) {
+			const tabBtn = append(tabBar, $("button.chat-settings-tab"));
+			if (tab.id === activeTab) { tabBtn.classList.add('active'); }
+			append(tabBtn, $("span.tab-icon", undefined, tab.icon));
+			append(tabBtn, $("span.tab-label", undefined, tab.label));
+			this._register(
+				addDisposableListener(tabBtn, EventType.CLICK, () => {
+					this._renderSettingsOverlayContent(tab.id);
+				}),
+			);
+		}
+
+		// Content area
+		const contentArea = append(this._settingsOverlayEl, $(".chat-settings-content"));
+
+		// Render tab content
+		if (activeTab === 'prompt') {
+			this._renderSettingsPromptTab(contentArea);
+		} else if (activeTab === 'skills') {
+			this._renderSettingsSkillsTab(contentArea);
+		} else if (activeTab === 'memory') {
+			this._renderSettingsMemoryTab(contentArea);
+		} else if (activeTab === 'knowledge') {
+			this._renderSettingsKnowledgeTab(contentArea);
+		} else if (activeTab === 'rules') {
+			this._renderSettingsRulesTab(contentArea);
+		}
+
+		// Footer with "Open full editor" button
+		const footer = append(this._settingsOverlayEl, $(".chat-settings-footer"));
+		const openFullBtn = append(footer, $("button.chat-settings-open-full-btn"));
+		openFullBtn.textContent = '在完整编辑器中打开 →';
+		this._register(
+			addDisposableListener(openFullBtn, EventType.CLICK, () => {
+				this._activeHeaderPanel = null;
+				this._render();
+				this._onOpenSettings?.();
+			}),
+		);
+	}
+
+	private _renderSettingsPromptTab(container: HTMLElement): void {
+		const desc = append(container, $(".chat-settings-tab-desc"));
+		desc.textContent = '编辑 Agent 的系统提示词';
+
+		const textarea = append(container, $("textarea.chat-settings-prompt-editor")) as HTMLTextAreaElement;
+		textarea.spellcheck = false;
+		textarea.placeholder = '输入系统提示词...';
+		textarea.value = 'You are an AI coding assistant. Follow the user\'s instructions and use tools to solve coding tasks.';
+
+		const actions = append(container, $(".chat-settings-tab-actions"));
+		append(actions, $("span.dirty-hint", undefined, '● 未保存'));
+		const spacer = append(actions, $("div"));
+		spacer.style.flex = '1';
+		const saveBtn = append(actions, $("button.action-btn.primary", undefined, '保存'));
+		this._register(
+			addDisposableListener(saveBtn, EventType.CLICK, () => {
+				// TODO: save system prompt via callback
+				console.log('[Settings] Save prompt clicked');
+			}),
+		);
+	}
+
+	private _renderSettingsSkillsTab(container: HTMLElement): void {
+		const desc = append(container, $(".chat-settings-tab-desc"));
+		desc.textContent = '已启用的技能列表';
+
+		const list = append(container, $(".chat-settings-skills-list"));
+		const skills = this._onListSkills();
+		if (skills.length === 0) {
+			append(list, $(".chat-settings-empty", undefined, '暂无已启用的技能'));
+		} else {
+			for (const skill of skills) {
+				const row = append(list, $(".chat-settings-skill-row"));
+				append(row, $("span.skill-icon", undefined, '🛠'));
+				const info = append(row, $(".skill-info"));
+				append(info, $("span.skill-name", undefined, skill.name));
+				append(info, $("span.skill-desc", undefined, skill.description));
+				const toggle = append(row, $("div.toggle-switch.on"));
+				toggle.title = '点击切换';
+				this._register(
+					addDisposableListener(toggle, EventType.CLICK, (e) => {
+						e.stopPropagation();
+						toggle.classList.toggle('on');
+					}),
+				);
+			}
+		}
+	}
+
+	private _renderSettingsMemoryTab(container: HTMLElement): void {
+		const desc = append(container, $(".chat-settings-tab-desc"));
+		desc.textContent = '记忆系统配置';
+
+		const section = append(container, $(".chat-settings-section.expanded"));
+		const sectionHeader = append(section, $(".config-section-header", undefined, '基础设置'));
+		sectionHeader.style.padding = '8px 12px';
+		sectionHeader.style.fontSize = '12px';
+		sectionHeader.style.fontWeight = '600';
+		sectionHeader.style.borderBottom = '1px solid rgba(128,128,128,0.1)';
+
+		const body = append(section, $(".config-section-body"));
+		body.style.padding = '10px 12px';
+		body.style.display = 'flex';
+		body.style.flexDirection = 'column';
+		body.style.gap = '10px';
+
+		// Enable toggle
+		const row1 = append(body, $(".config-row"));
+		row1.style.display = 'flex';
+		row1.style.alignItems = 'center';
+		row1.style.justifyContent = 'space-between';
+		append(row1, $("span.config-row-label", undefined, '启用 Memory'));
+		const toggle1 = append(row1, $("div.toggle-switch.on"));
+		this._register(
+			addDisposableListener(toggle1, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				toggle1.classList.toggle('on');
+			}),
+		);
+
+		// Strategy
+		const row2 = append(body, $(".config-row"));
+		row2.style.display = 'flex';
+		row2.style.alignItems = 'center';
+		row2.style.justifyContent = 'space-between';
+		append(row2, $("span.config-row-label", undefined, '策略'));
+		const select = append(row2, $("select.config-select")) as HTMLSelectElement;
+		for (const opt of ['full（完整记忆）', 'summary（摘要记忆）', 'hybrid（混合）']) {
+			const o = document.createElement('option');
+			o.textContent = opt;
+			select.appendChild(o);
+		}
+
+		// Max entries
+		const row3 = append(body, $(".config-row"));
+		row3.style.display = 'flex';
+		row3.style.alignItems = 'center';
+		row3.style.justifyContent = 'space-between';
+		append(row3, $("span.config-row-label", undefined, '最大条目数'));
+		const input = append(row3, $("input.config-input")) as HTMLInputElement;
+		input.type = 'number';
+		input.value = '100';
+	}
+
+	private _renderSettingsKnowledgeTab(container: HTMLElement): void {
+		const desc = append(container, $(".chat-settings-tab-desc"));
+		desc.textContent = '知识库检索配置';
+
+		const section = append(container, $(".chat-settings-section.expanded"));
+		const sectionHeader = append(section, $(".config-section-header", undefined, '基础设置'));
+		sectionHeader.style.padding = '8px 12px';
+		sectionHeader.style.fontSize = '12px';
+		sectionHeader.style.fontWeight = '600';
+		sectionHeader.style.borderBottom = '1px solid rgba(128,128,128,0.1)';
+
+		const body = append(section, $(".config-section-body"));
+		body.style.padding = '10px 12px';
+		body.style.display = 'flex';
+		body.style.flexDirection = 'column';
+		body.style.gap = '10px';
+
+		const row1 = append(body, $(".config-row"));
+		row1.style.display = 'flex';
+		row1.style.alignItems = 'center';
+		row1.style.justifyContent = 'space-between';
+		append(row1, $("span.config-row-label", undefined, '启用知识库'));
+		const toggle1 = append(row1, $("div.toggle-switch.on"));
+		this._register(
+			addDisposableListener(toggle1, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				toggle1.classList.toggle('on');
+			}),
+		);
+
+		const row2 = append(body, $(".config-row"));
+		row2.style.display = 'flex';
+		row2.style.alignItems = 'center';
+		row2.style.justifyContent = 'space-between';
+		append(row2, $("span.config-row-label", undefined, '检索策略'));
+		const select = append(row2, $("select.config-select")) as HTMLSelectElement;
+		for (const opt of ['hybrid（混合）', 'vector（向量）', 'keyword（关键词）']) {
+			const o = document.createElement('option');
+			o.textContent = opt;
+			select.appendChild(o);
+		}
+	}
+
+	private _renderSettingsRulesTab(container: HTMLElement): void {
+		const desc = append(container, $(".chat-settings-tab-desc"));
+		desc.textContent = 'Agent 行为规则和约束';
+
+		const list = append(container, $(".chat-settings-rules-list"));
+		const rules = [
+			{ icon: '🔒', name: '安全规则', desc: '禁止执行危险命令（rm -rf 等）' },
+			{ icon: '📝', name: '代码审查规则', desc: '修改前先阅读文件，修改后检查 lint' },
+			{ icon: '🎯', name: '任务完成规则', desc: '完成后验证编译并总结改动' },
+		];
+		for (const rule of rules) {
+			const card = append(list, $(".chat-settings-rule-card"));
+			append(card, $("span.rule-icon", undefined, rule.icon));
+			const content = append(card, $(".rule-content"));
+			append(content, $("div.rule-name", undefined, rule.name));
+			append(content, $("div.rule-desc", undefined, rule.desc));
+			const toggle = append(card, $("div.toggle-switch.on"));
+			this._register(
+				addDisposableListener(toggle, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					toggle.classList.toggle('on');
+				}),
+			);
+		}
+	}
+
+	// =========================================================
 	// Message-nav overlay (right-side panel, unified with history)
 	// =========================================================
 
@@ -5588,8 +6119,11 @@ export class AgentChatPanel extends Disposable {
 		if (!this._historyOverlayEl) { return; }
 		clearNode(this._historyOverlayEl);
 
-		// Header (close button + title)
+		// Header (title + close button)
 		const header = append(this._historyOverlayEl, $(".chat-history-header"));
+		const historyTitle = append(header, $("span.chat-history-title", undefined, '聊天历史'));
+
+		// Close button (right-aligned)
 		const closeBtn = append(header, $("button.chat-history-close-btn"));
 		closeBtn.title = '关闭';
 		const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -5611,7 +6145,7 @@ export class AgentChatPanel extends Disposable {
 				this._render();
 			}),
 		);
-		append(header, $("span.chat-history-title", undefined, '聊天历史'));
+		void historyTitle;
 
 		// Content area (list or empty)
 		const content = append(this._historyOverlayEl, $(".chat-history-content"));
@@ -6331,7 +6865,38 @@ export class AgentChatPanel extends Disposable {
 		document.body.appendChild(overlay);
 	}
 
+
 	// ─── Scroll ──────────────────────────────────────────────────────
+
+	/**
+	 * 流式期间启动 rAF 循环，持续将 scrollTop 钉在底部。
+	 *
+	 * 根因：VS Code 的 renderMarkdown 对代码块走 codeBlockRenderer → Promise.resolve(wrapper)，
+	 * 代码块在微任务中异步插入 DOM。_scrollToBottom 在 _renderMarkdownContent 之后同步执行，
+	 * 此时 scrollHeight 尚未包含代码块高度 → 滚动位置偏低 → 代码块插入后视图脱离底部。
+	 * rAF 在微任务之后、绘制之前运行，可追平异步插入的内容。
+	 *
+	 * 循环在 _isSending=false 或 _isAtBottom=false（用户滚离）时自动停止。
+	 */
+	private _startStreamScroll(): void {
+		if (this._streamScrollRaf !== null) { return; }
+		const tick = () => {
+			this._streamScrollRaf = null;
+			if (!this._isSending || !this._isAtBottom || !this._messagesContainer) {
+				return;
+			}
+			this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
+			this._streamScrollRaf = requestAnimationFrame(tick);
+		};
+		this._streamScrollRaf = requestAnimationFrame(tick);
+	}
+
+	private _stopStreamScroll(): void {
+		if (this._streamScrollRaf !== null) {
+			cancelAnimationFrame(this._streamScrollRaf);
+			this._streamScrollRaf = null;
+		}
+	}
 
 	/**
 	 * 滚动到底部（匹配 React useLayoutEffect 逻辑）
@@ -6357,9 +6922,19 @@ export class AgentChatPanel extends Disposable {
 		// 用户不在底部 → 不自动滚动
 		if (!this._isAtBottom) { return; }
 
-		// 双重验证 DOM（匹配 React 安全校验）
+		// During streaming, always use instant scroll to stay pinned to bottom.
+		// Smooth scroll can't keep up with continuous content growth — it falls
+		// behind, creating a growing gap that eventually triggers the 80px
+		// threshold check, causing jumpy behavior.
+		if (this._isSending) {
+			this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
+			return;
+		}
+
+		// Non-streaming: check if user scrolled away from bottom
 		const distFromBottom = this._messagesContainer.scrollHeight - this._messagesContainer.scrollTop - this._messagesContainer.clientHeight;
 		if (distFromBottom >= 80) {
+			// User likely scrolled up → disable auto-scroll
 			this._isAtBottom = false;
 			this._showScrollBtn = true;
 			if (this._scrollToBottomBtn) { this._scrollToBottomBtn.style.display = "flex"; }
@@ -6582,6 +7157,7 @@ export class AgentChatPanel extends Disposable {
 	override dispose(): void {
 		this._closeAgentDropdown();
 		this._abortController?.abort();
+		this._stopStreamScroll();
 
 		// Dispose all markdown disposables to avoid leakage
 		for (const disposable of this._markdownDisposables.values()) {

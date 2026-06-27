@@ -89,10 +89,7 @@ const compilations = [
 	'extensions/agent-studio/tsconfig.json',
 	'extensions/hermes-agent-provider/tsconfig.json',
 	'extensions/knot-agui/tsconfig.json',
-	'extensions/tdb-am-gateway/tsconfig.json',
 	'extensions/tof-authentication/tsconfig.json',
-	'extensions/tdb-am-memory/tsconfig.json',
-	'extensions/tdb-am-viewer/tsconfig.json',
 	'extensions/tunnel-forwarding/tsconfig.json',
 	'extensions/typescript-language-features/web/tsconfig.json',
 	'extensions/typescript-language-features/tsconfig.json',
@@ -205,14 +202,27 @@ const tasks = compilations.map(function (tsconfigFile) {
 
 		await Promise.all([copyNonTs, tsgo]);
 
-		// Ensure Node loads .js files as CommonJS (root package.json has "type": "module")
-		fs.writeFileSync(path.join(out, 'package.json'), '{"type":"commonjs"}\n');
+		// Ensure Node loads .js files as CommonJS (root package.json has "type": "module").
+		// Skip for ESM extensions whose package.json declares "type": "module" —
+		// writing "commonjs" here would override their ESM setting and break loading.
+		const extPkgPath = path.join(path.dirname(absolutePath), 'package.json');
+		let isESM = false;
+		try { isESM = JSON.parse(fs.readFileSync(extPkgPath, 'utf8')).type === 'module'; } catch { }
+		if (!isESM) {
+			fs.writeFileSync(path.join(out, 'package.json'), '{"type":"commonjs"}\n');
+		}
 	}));
 
 	const watchTask = task.define(`watch-extension:${name}`, task.series(cleanTask, () => {
-		// Ensure out/package.json exists so Node loads .js files as CommonJS
+		// Ensure out/ exists; write out/package.json as CommonJS for CJS extensions.
+		// Skip the package.json write for ESM extensions (their package.json has "type": "module").
 		fs.mkdirSync(out, { recursive: true });
-		fs.writeFileSync(path.join(out, 'package.json'), '{"type":"commonjs"}\n');
+		const watchExtPkgPath = path.join(path.dirname(absolutePath), 'package.json');
+		let watchIsESM = false;
+		try { watchIsESM = JSON.parse(fs.readFileSync(watchExtPkgPath, 'utf8')).type === 'module'; } catch { }
+		if (!watchIsESM) {
+			fs.writeFileSync(path.join(out, 'package.json'), '{"type":"commonjs"}\n');
+		}
 
 		const nonts = gulp.src(src, srcOpts).pipe(filter(['**', '!**/*.ts'], { dot: true }));
 		const watchInput = watcher(src, { ...srcOpts, ...{ readDelay: 200 } });

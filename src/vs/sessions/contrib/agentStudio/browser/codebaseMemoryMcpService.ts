@@ -247,13 +247,18 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		});
 		this.logService.info(LOG_TAG, 'Config updated to thirdparty path:', thirdpartyPath);
 
-		// 3. Sync all servers from ~/.saros/mcp.json to VS Code user config
-		await this._syncToVsCodeConfig();
+		// 3. Only sync to VS Code config if binary exists
+		//    (prevents VS Code from auto-starting a non-existent binary → Error state)
+		const binaryExists = await this._detectBinary();
+		if (binaryExists) {
+			await this._syncToVsCodeConfig();
+			this._clearDisabledState();
+			this.logService.info(LOG_TAG, 'Binary found, synced to VS Code config.');
+		} else {
+			this.logService.info(LOG_TAG, 'Binary not found yet, skipping VS Code config sync (prevents Error state).');
+		}
 
-		// 4. Clear disabled state (server may have been disabled by a previous failed auto-start)
-		this._clearDisabledState();
-
-		// 5. Refresh status
+		// 4. Refresh status
 		await this.refreshStatus();
 		return this._status.mcpConfigured;
 	}
@@ -572,7 +577,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 			return result;
 		}
 		const projectName = path.basename(wsPath);
-		const graphDir = path.join(wsPath, '.sarosworkspace', '.codebase-memory');
+		const graphDir = path.join(wsPath, '.codebase-memory');
 
 		// 3. Check graph dir exists
 		const fs = this._node('fs');
@@ -832,7 +837,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 			return result;
 		}
 		const projectName = path.basename(wsPath);
-		const graphDir = path.join(wsPath, '.sarosworkspace', '.codebase-memory');
+		const graphDir = path.join(wsPath, '.codebase-memory');
 
 		// 3. Check graph dir exists (create if not)
 		const fs = this._node('fs');

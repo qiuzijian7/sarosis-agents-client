@@ -1332,10 +1332,12 @@ export class IntegrationViewPane extends ViewPane {
 			for (const tool of mcpTools) {
 				const parts = tool.name.split('__');
 				const serverId = parts.length >= 2 ? parts[0] : ((tool as any).serverId ?? 'unknown');
-				// Skip non-MCP server IDs
-				if (IntegrationViewPane._isNonMcpServer(serverId)) { continue; }
+				// Skip non-MCP server IDs and 'unknown' (not a real MCP tool)
+				if (IntegrationViewPane._isNonMcpServer(serverId) || serverId === 'unknown') { continue; }
 				const descMatch = tool.description?.match(/\[via MCP server "([^"]+)"/);
 				const serverName = descMatch ? descMatch[1] : serverId;
+				// Only show servers configured in ~/.saros/mcp.json
+				if (!sarosServerNames.has(serverName.toLowerCase()) && !sarosServerNames.has(serverId.toLowerCase())) { continue; }
 
 				if (!serverMap.has(serverId)) {
 					serverMap.set(serverId, { id: serverId, name: serverName, status: 'connected' as const, toolCount: 0 });

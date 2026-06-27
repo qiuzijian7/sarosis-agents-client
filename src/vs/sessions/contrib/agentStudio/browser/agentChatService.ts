@@ -72,6 +72,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private readonly configurationService: IConfigurationService;
 	private readonly studioService: IAgentStudioService;
 
+	/** 当前活跃的 onDelta 回调（供 provider 事件桥接使用） */
+	private _activeOnDelta: ((delta: IChatStreamDelta) => void) | null = null;
+	/** provider 事件取消订阅函数 */
+	private _memoryEventUnsub: (() => void) | null = null;
+
 	/** In-memory cache: compositeKey → messages */
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
 	private _historyLoaded = false;
@@ -755,6 +760,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		const controller = new AbortController();
 		this._activeStreams.set(streamKey, controller);
 
+		// ─── Memory provider 事件桥接 ──────────────────────────────────────
+		// 订阅 provider 的 onMemoryWritten/onMemoryWriteFailed 事件，
+		// 将真实的写入结果转发给 onDelta，使 UI 卡片从 pending → saved/failed。
+		// 替代旧的 fire-and-forget + 假"已保存"信号模式。
+		this._activeOnDelta = onDelta;
+		this._setupMemoryEventBridge();
+
 		let fullContent = "";
 		let fullThinking = "";
 		let toolCalls: ChatMessage["toolCalls"];
@@ -893,7 +905,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					fullThinking = "";
 					currentTurnTextLen = 0;
 					// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
-					onDelta(delta);
+					onDelta(delta as any);
 					continue;
 				}
 			// ─── Hermes-style 回合边界事件 ──────────────────────────────
@@ -1003,7 +1015,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.totalTokens === 'number') { usageTotalReported += delta.usage.totalTokens; }
 					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; }
 				}
-				onDelta(delta);
+				onDelta(delta as any);
 			}
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
@@ -1012,19 +1024,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// 如果此日志不出现，说明 generator 的 finally 块阻塞了 for-await 退出。
 			this.logService.info(`[AgentChatService] for-await loop exited, starting finalization`);
 
-			// L0 记忆写入通知：流结束后通知前端系统消息面板显示记忆卡片
-			// finally 块中的 writeMemory 是 fire-and-forget，这里仅做 UI 反馈
-			if (fullContent.length > 0) {
-				onDelta({
-					type: 'memory_extracted' as any,
-					content: `L0 记忆已保存：用户消息 + 助手回复 (${fullContent.length} 字符)`,
-					metadata: {
-						memoryType: 'short_term',
-						sceneName: 'L0 写入',
-						priority: 50,
-					},
-				} as any);
-			}
+			// L0 记忆写入通知：由 agentDriverService 在 finally 块中 yield memory_writing delta
+			// （含 noticeId），本处不再发送假的 "已保存" 信号。
+			// 真实的写入结果通过 provider 的 onMemoryWritten/onMemoryWriteFailed 事件桥接到 onDelta。
 
 			// Finalization safety net: the stream has fully completed, so any
 			// tool call still lacking a status must have finished. Mark it 'done'
@@ -1167,7 +1169,114 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			throw error;
 		} finally {
 			this._activeStreams.delete(streamKey);
+			// 不清除 _activeOnDelta：writeMemory 是 fire-and-forget，
+			// 其完成事件可能在流结束后才到达，需要 onDelta 仍可调用。
 		}
+	}
+
+	/**
+	 * 订阅 memory provider 的 lifecycle 事件，桥接为 onDelta 调用。
+	 * 替代旧的 fire-and-forget + 假"已保存" UI 信号。
+	 */
+	private _setupMemoryEventBridge(): void {
+		// 清理上一次的订阅
+		if (this._memoryEventUnsub) {
+			this._memoryEventUnsub();
+			this._memoryEventUnsub = null;
+		}
+
+		// Dedup: track processed noticeIds to prevent duplicate display
+		const processedNoticeIds = new Set<string>();
+		// Dedup map for Episodic/Semantic/Procedural extraction cards (no noticeId)
+		// Key: memoryType, Value: last shown timestamp — 5s window prevents duplicate cards
+		const recentExtractedTypes = new Map<string, number>();
+
+		const provider = this.driverService.getActiveMemoryProvider();
+		if (!provider?.onMemoryWritten) {
+			// Provider 不支持事件订阅（旧 provider），回退：不桥接
+			return;
+		}
+
+		const unsubWritten = provider.onMemoryWritten((agentId, data) => {
+			if (!this._activeOnDelta) return;
+			if (data.noticeId) {
+				// Dedup: skip if this noticeId was already processed
+				if (processedNoticeIds.has(data.noticeId)) {
+					return;
+				}
+				processedNoticeIds.add(data.noticeId);
+
+				// L0 写入完成：contentLength 为 0 时移除 pending 卡片，不显示"已保存"
+				if (!data.contentLength || data.contentLength === 0) {
+					this._activeOnDelta({
+						type: 'memory_written' as any,
+						content: '',
+						metadata: { noticeId: data.noticeId, memoryType: data.memoryType, remove: true },
+					} as any);
+					return;
+				}
+
+				// Use actual memoryType for the label instead of hardcoding "Working"
+				const memTypeLabels: Record<string, string> = {
+					working: 'Working',
+					episodic: 'Episodic',
+					scene: 'Semantic',
+					persona: 'Procedural',
+					pattern: 'pattern', preference: 'preference', architecture: 'architecture',
+					bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
+				};
+				const memLabel = memTypeLabels[data.memoryType ?? ''] ?? data.memoryType ?? 'Working';
+				this._activeOnDelta({
+					type: 'memory_written' as any,
+					content: `${memLabel} 已保存 ${data.contentLength}字`,
+					metadata: { noticeId: data.noticeId, memoryType: data.memoryType },
+				} as any);
+			} else {
+				// Episodic/Semantic/Procedural 写入完成：直接显示 saved 卡片（无对应 pending 卡片）
+				// Skip 'working' type — working memory writes always go through the noticeId path above.
+				// Hook-triggered working writes (post_tool_use) are redundant with per-iteration writes.
+				const memType = data.memoryType ?? 'episodic';
+				if (memType === 'working' || memType === 'short_term') {
+					return; // Working memory without noticeId = hook-triggered duplicate, skip
+				}
+				// Dedup: 同一 memoryType 在 5 秒内只显示一次（一次提取可能写入多条 fact）
+				const now = Date.now();
+				const lastShown = recentExtractedTypes.get(memType) ?? 0;
+				if (now - lastShown < 5000) {
+					return; // 5 秒内已显示过同类型卡片，跳过
+				}
+				recentExtractedTypes.set(memType, now);
+
+				const typeLabels: Record<string, string> = {
+					working: 'Working',
+					episodic: 'Episodic',
+					semantic: 'Semantic',
+					procedural: 'Procedural',
+					scene: 'Semantic',
+					persona: 'Procedural',
+					pattern: 'pattern', preference: 'preference', architecture: 'architecture',
+					bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
+				};
+				const label = typeLabels[memType] ?? memType ?? 'Episodic';
+				this._activeOnDelta({
+					type: 'memory_extracted' as any,
+					content: `${label} 已提取`,
+					metadata: { memoryType: memType, status: 'saved' },
+				} as any);
+			}
+		});
+
+		const unsubFailed = provider.onMemoryWriteFailed?.((_agentId, data) => {
+			if (this._activeOnDelta && data.noticeId) {
+				this._activeOnDelta({
+					type: 'memory_write_failed' as any,
+					content: `Working 写入失败: ${data.error}`,
+					metadata: { noticeId: data.noticeId, error: data.error },
+				} as any);
+			}
+		}) ?? (() => {});
+
+		this._memoryEventUnsub = () => { unsubWritten(); unsubFailed(); };
 	}
 
 	cancelStream(agentId: string, agentSessionId?: string): void {

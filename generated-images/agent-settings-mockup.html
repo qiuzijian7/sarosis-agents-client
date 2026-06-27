@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Agent 配置编辑器 — Mockup</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252525;
+    --bg-tertiary: #2b2b2b;
+    --bg-hover: rgba(128,128,128,0.08);
+    --fg-primary: #d4d4d4;
+    --fg-secondary: #888;
+    --fg-tertiary: #555;
+    --accent: #3b82f6;
+    --accent-light: rgba(59,130,246,0.15);
+    --border: rgba(128,128,128,0.2);
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #f87171;
+    --purple: #a78bfa;
+  }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #1a1a1a;
+    color: var(--fg-primary);
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  /* ════════ Agent Editor Pane ════════ */
+  .agent-editor-pane {
+    width: 700px;
+    height: 90vh;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ─── Header ─── */
+  .agent-editor-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .agent-editor-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-primary);
+  }
+  .agent-editor-icon { font-size: 14px; }
+  .agent-editor-close {
+    width: 24px; height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--fg-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .agent-editor-close:hover {
+    background: var(--bg-hover);
+    color: var(--fg-primary);
+  }
+
+  /* ─── Tab Bar ─── */
+  .agent-editor-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .agent-editor-tabs::-webkit-scrollbar { display: none; }
+  .agent-editor-tab {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border: none;
+    background: transparent;
+    color: var(--fg-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: background 0.1s, color 0.1s;
+  }
+  .agent-editor-tab:hover {
+    background: var(--bg-hover);
+    color: var(--fg-primary);
+  }
+  .agent-editor-tab.active {
+    background: var(--accent-light);
+    color: var(--accent);
+  }
+  .tab-icon { font-size: 12px; }
+  .tab-label { font-size: 11px; }
+
+  /* ─── Content Area ─── */
+  .agent-editor-content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .editor-tab-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .editor-tab-desc {
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--fg-secondary);
+    border-bottom: 1px solid rgba(128,128,128,0.1);
+    flex-shrink: 0;
+  }
+  .editor-tab-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid rgba(128,128,128,0.1);
+    flex-shrink: 0;
+  }
+  .dirty-hint {
+    font-size: 11px;
+    color: var(--warning);
+  }
+  .action-btn {
+    padding: 4px 12px;
+    font-size: 12px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.1s;
+  }
+  .action-btn.primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .action-btn.primary:hover { background: #2563eb; }
+  .action-btn.secondary {
+    background: transparent;
+    color: var(--fg-secondary);
+    border: 1px solid var(--border);
+  }
+  .action-btn.secondary:hover { background: var(--bg-hover); }
+
+  /* ════════ Tab: System Prompt ════════ */
+  .prompt-editor {
+    flex: 1;
+    resize: none;
+    border: none;
+    outline: none;
+    padding: 12px;
+    font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    background: var(--bg-primary);
+    color: var(--fg-primary);
+    tab-size: 4;
+    white-space: pre-wrap;
+    overflow-y: auto;
+  }
+
+  /* ════════ Tab: Skills (drag-drop) ════════ */
+  .skills-container {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .skills-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .skills-col-header {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(128,128,128,0.1);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .skills-col-header input {
+    flex: 1;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 6px;
+    color: var(--fg-primary);
+    font-size: 11px;
+    outline: none;
+  }
+  .skills-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .skill-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: grab;
+    transition: background 0.1s;
+    border: 1px solid transparent;
+  }
+  .skill-row:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+  .skill-row.dragging { opacity: 0.4; }
+  .skill-row.drag-over {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .skill-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+  }
+  .skill-icon { font-size: 13px; flex-shrink: 0; }
+  .skill-name { font-size: 12px; color: var(--fg-primary); }
+  .skill-cat {
+    font-size: 10px;
+    color: var(--fg-tertiary);
+    padding: 1px 5px;
+    background: rgba(128,128,128,0.1);
+    border-radius: 2px;
+  }
+  .skill-status {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .skill-status.enabled { background: rgba(34,197,94,0.12); color: var(--success); }
+  .skill-status.disabled { background: rgba(128,128,128,0.12); color: var(--fg-secondary); }
+
+  /* ════════ Tab: Memory ════════ */
+  .memory-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .config-section {
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .config-section-header {
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg-primary);
+    border-bottom: 1px solid rgba(128,128,128,0.1);
+  }
+  .config-section-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .config-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .config-row-label {
+    font-size: 12px;
+    color: var(--fg-primary);
+    flex-shrink: 0;
+  }
+  .config-row-control { display: flex; align-items: center; gap: 6px; }
+  .config-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 3px 8px;
+    color: var(--fg-primary);
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+  }
+  .config-input {
+    width: 70px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 3px 8px;
+    color: var(--fg-primary);
+    font-size: 12px;
+    outline: none;
+  }
+
+  /* Toggle switch */
+  .toggle-switch {
+    position: relative;
+    width: 32px; height: 18px;
+    background: #444;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .toggle-switch.on { background: var(--accent); }
+  .toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle-switch.on::after { transform: translateX(14px); }
+
+  /* Memory entries */
+  .memory-entries {
+    margin-top: 8px;
+  }
+  .memory-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid rgba(128,128,128,0.1);
+    border-radius: 5px;
+    margin-bottom: 6px;
+  }
+  .memory-entry-type {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    font-weight: 600;
+  }
+  .memory-entry-type.fact { background: rgba(59,130,246,0.15); color: var(--accent); }
+  .memory-entry-type.preference { background: rgba(167,139,250,0.15); color: var(--purple); }
+  .memory-entry-content {
+    flex: 1;
+    font-size: 12px;
+    color: var(--fg-primary);
+    line-height: 1.4;
+  }
+  .memory-entry-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .memory-entry-btn {
+    background: none;
+    border: none;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+  .memory-entry-btn:hover { background: var(--bg-hover); color: var(--fg-primary); }
+  .memory-entry-btn.delete:hover { color: var(--danger); }
+
+  .memory-add-btn {
+    width: 100%;
+    padding: 6px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.1s;
+  }
+  .memory-add-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ════════ Tab: Knowledge ════════ */
+  .knowledge-source {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid rgba(128,128,128,0.1);
+    border-radius: 5px;
+    margin-bottom: 6px;
+  }
+  .knowledge-source-icon { font-size: 14px; }
+  .knowledge-source-info { flex: 1; min-width: 0; }
+  .knowledge-source-name { font-size: 12px; color: var(--fg-primary); }
+  .knowledge-source-path {
+    font-size: 10px;
+    color: var(--fg-tertiary);
+    font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .knowledge-source-status {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .knowledge-source-status.ready { background: rgba(34,197,94,0.12); color: var(--success); }
+  .knowledge-source-status.indexing { background: rgba(245,158,11,0.12); color: var(--warning); }
+
+  /* ════════ Tab: Tools ════════ */
+  .tools-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tool-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: 4px;
+    transition: background 0.1s;
+  }
+  .tool-row:hover { background: var(--bg-hover); }
+  .tool-info { display: flex; align-items: center; gap: 8px; flex: 1; }
+  .tool-icon { font-size: 14px; }
+  .tool-name { font-size: 12px; color: var(--fg-primary); }
+  .tool-desc { font-size: 11px; color: var(--fg-secondary); margin-top: 1px; }
+
+  /* ════════ Tab: MCP ════════ */
+  .mcp-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+  }
+  .mcp-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .mcp-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+  }
+  .mcp-name { flex: 1; font-size: 12px; font-weight: 600; color: var(--fg-primary); }
+  .mcp-status {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .mcp-status.connected { background: rgba(34,197,94,0.12); color: var(--success); }
+  .mcp-status.disconnected { background: rgba(128,128,128,0.12); color: var(--fg-secondary); }
+  .mcp-body { padding: 8px 12px; }
+  .mcp-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .mcp-tool-tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: rgba(128,128,128,0.1);
+    border-radius: 3px;
+    color: var(--fg-secondary);
+  }
+
+  /* ════════ Tab: Rules ════════ */
+  .rules-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rule-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid rgba(128,128,128,0.1);
+    border-radius: 6px;
+  }
+  .rule-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+  .rule-content { flex: 1; }
+  .rule-name { font-size: 12px; font-weight: 600; color: var(--fg-primary); margin-bottom: 2px; }
+  .rule-desc { font-size: 11px; color: var(--fg-secondary); line-height: 1.4; }
+  .rule-toggle { flex-shrink: 0; }
+
+  /* ════════ Tab: ConfigHtml ════════ */
+  .configmd-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .configmd-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    border-bottom: 1px solid rgba(128,128,128,0.1);
+    flex-shrink: 0;
+  }
+  .configmd-toolbar-btn {
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .configmd-toolbar-btn:hover { background: var(--bg-hover); color: var(--fg-primary); }
+  .configmd-toolbar-btn.active { background: var(--accent-light); color: var(--accent); border-color: var(--accent); }
+  .configmd-editor {
+    flex: 1;
+    border: none;
+    outline: none;
+    padding: 12px;
+    font-family: "Cascadia Code", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    background: var(--bg-primary);
+    color: var(--fg-primary);
+    resize: none;
+    overflow-y: auto;
+  }
+</style>
+</head>
+<body>
+
+<div class="agent-editor-pane">
+  <!-- ═══ Header ═══ -->
+  <div class="agent-editor-header">
+    <div class="agent-editor-title">
+      <span class="agent-editor-icon">🤖</span>
+      <span>Claude Code Agent — 配置</span>
+    </div>
+    <button class="agent-editor-close" title="关闭">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M18 6L6 18M6 6l12 12"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- ═══ Tab Bar ═══ -->
+  <div class="agent-editor-tabs" id="tabBar">
+    <button class="agent-editor-tab active" data-tab="prompt" onclick="switchTab('prompt')"><span class="tab-icon">💬</span><span class="tab-label">System Prompt</span></button>
+    <button class="agent-editor-tab" data-tab="skills" onclick="switchTab('skills')"><span class="tab-icon">🛠</span><span class="tab-label">技能配置</span></button>
+    <button class="agent-editor-tab" data-tab="memory" onclick="switchTab('memory')"><span class="tab-icon">🧠</span><span class="tab-label">Memory</span></button>
+    <button class="agent-editor-tab" data-tab="knowledge" onclick="switchTab('knowledge')"><span class="tab-icon">📚</span><span class="tab-label">知识库</span></button>
+    <button class="agent-editor-tab" data-tab="tools" onclick="switchTab('tools')"><span class="tab-icon">🔧</span><span class="tab-label">Tool 配置</span></button>
+    <button class="agent-editor-tab" data-tab="mcp" onclick="switchTab('mcp')"><span class="tab-icon">🔌</span><span class="tab-label">MCP 配置</span></button>
+    <button class="agent-editor-tab" data-tab="rules" onclick="switchTab('rules')"><span class="tab-icon">📏</span><span class="tab-label">Rule 配置</span></button>
+    <button class="agent-editor-tab" data-tab="configmd" onclick="switchTab('configmd')"><span class="tab-icon">📝</span><span class="tab-label">ConfigHtml</span></button>
+  </div>
+
+  <!-- ═══ Content Area ═══ -->
+  <div class="agent-editor-content">
+
+    <!-- ─── Tab: System Prompt ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="prompt">
+      <div class="editor-tab-desc">编辑 Agent 的系统提示词，定义 AI 的角色、行为和约束</div>
+      <textarea class="prompt-editor" spellcheck="false">You are Claude Code, an AI coding assistant powered by Anthropic's Claude 3.5 Sonnet.
+
+You are pair programming with a USER to solve their coding task.
+
+## Core Principles
+1. Follow the USER's instructions at each message
+2. Use tools to gather information and make changes
+3. Be thorough and accurate in your responses
+4. Never hallucinate or make up information
+
+## Coding Guidelines
+- Write clean, maintainable code
+- Add appropriate error handling
+- Follow existing code conventions
+- Include necessary imports and dependencies</textarea>
+      <div class="editor-tab-actions">
+        <span class="dirty-hint">● 未保存的更改</span>
+        <div style="flex:1"></div>
+        <button class="action-btn secondary">重置为默认</button>
+        <button class="action-btn primary">保存</button>
+      </div>
+    </div>
+
+    <!-- ─── Tab: Skills ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="skills" style="display:none">
+      <div class="editor-tab-desc">拖拽技能到右侧启用，或从右侧拖回左侧禁用</div>
+      <div class="skills-container">
+        <div class="skills-col">
+          <div class="skills-col-header">
+            可用技能
+            <input type="text" placeholder="搜索...">
+          </div>
+          <div class="skills-list" id="availableSkills">
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">📄</span>
+                <span class="skill-name">file_read</span>
+                <span class="skill-cat">file</span>
+              </div>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">✏️</span>
+                <span class="skill-name">file_write</span>
+                <span class="skill-cat">file</span>
+              </div>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">🔍</span>
+                <span class="skill-name">search_code</span>
+                <span class="skill-cat">search</span>
+              </div>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">🖥</span>
+                <span class="skill-name">execute_cmd</span>
+                <span class="skill-cat">system</span>
+              </div>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">🌐</span>
+                <span class="skill-name">web_search</span>
+                <span class="skill-cat">web</span>
+              </div>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">📊</span>
+                <span class="skill-name">data_analysis</span>
+                <span class="skill-cat">data</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="skills-col" style="border-left: 1px solid var(--border);">
+          <div class="skills-col-header">
+            已启用技能
+            <input type="text" placeholder="搜索...">
+          </div>
+          <div class="skills-list" id="installedSkills">
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">📄</span>
+                <span class="skill-name">file_read</span>
+                <span class="skill-cat">file</span>
+              </div>
+              <span class="skill-status enabled">已启用</span>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">✏️</span>
+                <span class="skill-name">file_write</span>
+                <span class="skill-cat">file</span>
+              </div>
+              <span class="skill-status enabled">已启用</span>
+            </div>
+            <div class="skill-row" draggable="true">
+              <div class="skill-info">
+                <span class="skill-icon">🔍</span>
+                <span class="skill-name">search_code</span>
+                <span class="skill-cat">search</span>
+              </div>
+              <span class="skill-status enabled">已启用</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Tab: Memory ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="memory" style="display:none">
+      <div class="editor-tab-desc">配置 Agent 的记忆系统和 Persona Memory（永久事实）</div>
+      <div class="memory-container">
+        <div class="config-section">
+          <div class="config-section-header">基础设置</div>
+          <div class="config-section-body">
+            <div class="config-row">
+              <span class="config-row-label">启用 Memory</span>
+              <div class="toggle-switch on" onclick="toggle(this)"></div>
+            </div>
+            <div class="config-row">
+              <span class="config-row-label">最大条目数</span>
+              <div class="config-row-control">
+                <input class="config-input" type="number" value="100">
+              </div>
+            </div>
+            <div class="config-row">
+              <span class="config-row-label">策略</span>
+              <select class="config-select">
+                <option>full（完整记忆）</option>
+                <option>summary（摘要记忆）</option>
+                <option>hybrid（混合）</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <span class="config-row-label">作用域</span>
+              <select class="config-select">
+                <option>agent（按 Agent）</option>
+                <option>session（按会话）</option>
+                <option>global（全局）</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-header">Persona Memory（永久事实）</div>
+          <div class="config-section-body">
+            <div class="memory-entries">
+              <div class="memory-entry">
+                <span class="memory-entry-type fact">事实</span>
+                <div class="memory-entry-content">用户偏好使用 TypeScript 进行开发，项目使用 pnpm 作为包管理器</div>
+                <div class="memory-entry-actions">
+                  <button class="memory-entry-btn">✎</button>
+                  <button class="memory-entry-btn delete">✕</button>
+                </div>
+              </div>
+              <div class="memory-entry">
+                <span class="memory-entry-type preference">偏好</span>
+                <div class="memory-entry-content">代码风格：使用单引号、4 空格缩进、无分号</div>
+                <div class="memory-entry-actions">
+                  <button class="memory-entry-btn">✎</button>
+                  <button class="memory-entry-btn delete">✕</button>
+                </div>
+              </div>
+              <div class="memory-entry">
+                <span class="memory-entry-type fact">事实</span>
+                <div class="memory-entry-content">项目部署在 AnyDev 云研发平台，使用 tRPC 框架</div>
+                <div class="memory-entry-actions">
+                  <button class="memory-entry-btn">✎</button>
+                  <button class="memory-entry-btn delete">✕</button>
+                </div>
+              </div>
+            </div>
+            <button class="memory-add-btn">+ 添加 Persona Memory</button>
+          </div>
+        </div>
+      </div>
+      <div class="editor-tab-actions">
+        <div style="flex:1"></div>
+        <button class="action-btn primary">保存</button>
+      </div>
+    </div>
+
+    <!-- ─── Tab: Knowledge ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="knowledge" style="display:none">
+      <div class="editor-tab-desc">配置 Agent 的知识库检索和来源</div>
+      <div class="memory-container">
+        <div class="config-section">
+          <div class="config-section-header">基础设置</div>
+          <div class="config-section-body">
+            <div class="config-row">
+              <span class="config-row-label">启用知识库</span>
+              <div class="toggle-switch on" onclick="toggle(this)"></div>
+            </div>
+            <div class="config-row">
+              <span class="config-row-label">检索策略</span>
+              <select class="config-select">
+                <option>hybrid（混合）</option>
+                <option>vector（向量）</option>
+                <option>keyword（关键词）</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <span class="config-row-label">最大结果数</span>
+              <div class="config-row-control">
+                <input class="config-input" type="number" value="5">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-header">知识来源</div>
+          <div class="config-section-body">
+            <div class="knowledge-source">
+              <span class="knowledge-source-icon">📁</span>
+              <div class="knowledge-source-info">
+                <div class="knowledge-source-name">项目文档</div>
+                <div class="knowledge-source-path">/docs/*.md</div>
+              </div>
+              <span class="knowledge-source-status ready">已索引</span>
+            </div>
+            <div class="knowledge-source">
+              <span class="knowledge-source-icon">📄</span>
+              <div class="knowledge-source-info">
+                <div class="knowledge-source-name">API 文档</div>
+                <div class="knowledge-source-path">/docs/api/**/*.md</div>
+              </div>
+              <span class="knowledge-source-status ready">已索引</span>
+            </div>
+            <div class="knowledge-source">
+              <span class="knowledge-source-icon">🔗</span>
+              <div class="knowledge-source-info">
+                <div class="knowledge-source-name">外部知识库</div>
+                <div class="knowledge-source-path">https://wiki.example.com</div>
+              </div>
+              <span class="knowledge-source-status indexing">索引中...</span>
+            </div>
+            <button class="memory-add-btn">+ 添加知识来源</button>
+          </div>
+        </div>
+      </div>
+      <div class="editor-tab-actions">
+        <div style="flex:1"></div>
+        <button class="action-btn primary">保存</button>
+      </div>
+    </div>
+
+    <!-- ─── Tab: Tools ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="tools" style="display:none">
+      <div class="editor-tab-desc">配置 Agent 可使用的工具及其权限</div>
+      <div class="tools-list">
+        <div class="tool-row">
+          <div class="tool-info">
+            <span class="tool-icon">📄</span>
+            <div>
+              <div class="tool-name">read_file</div>
+              <div class="tool-desc">读取文件内容</div>
+            </div>
+          </div>
+          <div class="toggle-switch on" onclick="toggle(this)"></div>
+        </div>
+        <div class="tool-row">
+          <div class="tool-info">
+            <span class="tool-icon">✏️</span>
+            <div>
+              <div class="tool-name">write_file</div>
+              <div class="tool-desc">写入或创建文件</div>
+            </div>
+          </div>
+          <div class="toggle-switch on" onclick="toggle(this)"></div>
+        </div>
+        <div class="tool-row">
+          <div class="tool-info">
+            <span class="tool-icon">🔍</span>
+            <div>
+              <div class="tool-name">search_content</div>
+              <div class="tool-desc">在代码库中搜索内容</div>
+            </div>
+          </div>
+          <div class="toggle-switch on" onclick="toggle(this)"></div>
+        </div>
+        <div class="tool-row">
+          <div class="tool-info">
+            <span class="tool-icon">🖥</span>
+            <div>
+              <div class="tool-name">execute_command</div>
+              <div class="tool-desc">执行终端命令</div>
+            </div>
+          </div>
+          <div class="toggle-switch" onclick="toggle(this)"></div>
+        </div>
+        <div class="tool-row">
+          <div class="tool-info">
+            <span class="tool-icon">🌐</span>
+            <div>
+              <div class="tool-name">web_search</div>
+              <div class="tool-desc">网络搜索</div>
+            </div>
+          </div>
+          <div class="toggle-switch" onclick="toggle(this)"></div>
+        </div>
+        <div class="tool-row">
+          <div class="tool-info">
+            <span class="tool-icon">🐛</span>
+            <div>
+              <div class="tool-name">debug</div>
+              <div class="tool-desc">调试器集成</div>
+            </div>
+          </div>
+          <div class="toggle-switch" onclick="toggle(this)"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Tab: MCP ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="mcp" style="display:none">
+      <div class="editor-tab-desc">配置 Model Context Protocol 服务器</div>
+      <div class="mcp-list">
+        <div class="mcp-card">
+          <div class="mcp-header">
+            <span>🔗</span>
+            <span class="mcp-name">codebase-memory-mcp</span>
+            <span class="mcp-status connected">● 已连接</span>
+          </div>
+          <div class="mcp-body">
+            <div class="mcp-tools">
+              <span class="mcp-tool-tag">index_repository</span>
+              <span class="mcp-tool-tag">search_graph</span>
+              <span class="mcp-tool-tag">query_graph</span>
+              <span class="mcp-tool-tag">get_code_snippet</span>
+            </div>
+          </div>
+        </div>
+        <div class="mcp-card">
+          <div class="mcp-header">
+            <span>🔌</span>
+            <span class="mcp-name">knot-agui</span>
+            <span class="mcp-status connected">● 已连接</span>
+          </div>
+          <div class="mcp-body">
+            <div class="mcp-tools">
+              <span class="mcp-tool-tag">agent_run</span>
+              <span class="mcp-tool-tag">agent_list</span>
+            </div>
+          </div>
+        </div>
+        <div class="mcp-card">
+          <div class="mcp-header">
+            <span>🧠</span>
+            <span class="mcp-name">memory-service</span>
+            <span class="mcp-status disconnected">● 未连接</span>
+          </div>
+        </div>
+        <div class="mcp-card">
+          <div class="mcp-header">
+            <span>📊</span>
+            <span class="mcp-name">data-analysis</span>
+            <span class="mcp-status disconnected">● 未连接</span>
+          </div>
+        </div>
+      </div>
+      <div class="editor-tab-actions">
+        <div style="flex:1"></div>
+        <button class="action-btn secondary">+ 添加 MCP 服务器</button>
+      </div>
+    </div>
+
+    <!-- ─── Tab: Rules ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="rules" style="display:none">
+      <div class="editor-tab-desc">配置 Agent 的行为规则和约束</div>
+      <div class="rules-list">
+        <div class="rule-card">
+          <span class="rule-icon">🔒</span>
+          <div class="rule-content">
+            <div class="rule-name">安全规则</div>
+            <div class="rule-desc">禁止执行可能删除文件的命令（rm -rf, del /s 等），禁止修改 .git 目录</div>
+          </div>
+          <div class="toggle-switch on" onclick="toggle(this)"></div>
+        </div>
+        <div class="rule-card">
+          <span class="rule-icon">📝</span>
+          <div class="rule-content">
+            <div class="rule-name">代码审查规则</div>
+            <div class="rule-desc">修改代码前必须先阅读目标文件，修改后必须检查 lint 错误</div>
+          </div>
+          <div class="toggle-switch on" onclick="toggle(this)"></div>
+        </div>
+        <div class="rule-card">
+          <span class="rule-icon">🎯</span>
+          <div class="rule-content">
+            <div class="rule-name">任务完成规则</div>
+            <div class="rule-desc">完成任务后必须验证编译通过，并总结所做的改动</div>
+          </div>
+          <div class="toggle-switch on" onclick="toggle(this)"></div>
+        </div>
+        <div class="rule-card">
+          <span class="rule-icon">🌍</span>
+          <div class="rule-content">
+            <div class="rule-name">语言规则</div>
+            <div class="rule-desc">始终使用简体中文回复</div>
+          </div>
+          <div class="toggle-switch" onclick="toggle(this)"></div>
+        </div>
+      </div>
+      <div class="editor-tab-actions">
+        <div style="flex:1"></div>
+        <button class="action-btn secondary">+ 添加规则</button>
+      </div>
+    </div>
+
+    <!-- ─── Tab: ConfigHtml ─── -->
+    <div class="editor-tab-body tab-pane" data-pane="configmd" style="display:none">
+      <div class="configmd-container">
+        <div class="configmd-toolbar">
+          <button class="configmd-toolbar-btn active">编辑</button>
+          <button class="configmd-toolbar-btn">预览</button>
+          <div style="flex:1"></div>
+          <button class="configmd-toolbar-btn">⚙ 设置</button>
+          <button class="configmd-toolbar-btn">📤 导出</button>
+        </div>
+        <textarea class="configmd-editor" spellcheck="false"># Agent Configuration
+
+## Overview
+This agent is configured for code assistance with TypeScript projects.
+
+## Capabilities
+- **File operations**: read, write, search
+- **Code analysis**: AST parsing, dependency graph
+- **Testing**: unit test generation and execution
+
+## Constraints
+1. Must use pnpm for package management
+2. Follow existing code conventions
+3. Include proper TypeScript types
+4. Add JSDoc comments for public APIs</textarea>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  function switchTab(tabId) {
+    document.querySelectorAll('.agent-editor-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+    document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+    const pane = document.querySelector(`[data-pane="${tabId}"]`);
+    if (pane) pane.style.display = 'flex';
+  }
+
+  function toggle(el) {
+    if (event) event.stopPropagation();
+    el.classList.toggle('on');
+  }
+
+  // Simple drag-drop for skills
+  let draggedSkill = null;
+  document.querySelectorAll('.skill-row[draggable]').forEach(row => {
+    row.addEventListener('dragstart', (e) => {
+      draggedSkill = row;
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+    });
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drag-over');
+    });
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      if (draggedSkill && draggedSkill !== row) {
+        const targetList = row.parentElement;
+        targetList.insertBefore(draggedSkill, row);
+      }
+    });
+  });
+
+  // Also allow drop on empty list area
+  document.querySelectorAll('.skills-list').forEach(list => {
+    list.addEventListener('dragover', (e) => e.preventDefault());
+    list.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (draggedSkill) {
+        list.appendChild(draggedSkill);
+      }
+    });
+  });
+</script>
+
+</body>
+</html>

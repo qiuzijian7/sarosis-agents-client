@@ -18,67 +18,94 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
-import { ICodebaseMemoryMcpService, ICodebaseMemoryMcpStatus, ISyncGraphResult, IGraphStatus, IIndexResult, IIndexConfig } from './codebaseMemoryMcpService.js';
+import { ICodebaseMemoryMcpService, IIndexConfig } from './codebaseMemoryMcpService.js';
+import { ICodebaseGraphService, IGraphStatus } from './codebaseGraphService.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
 const CSS_TEXT = `
-.cbm-container { padding: 24px 32px; overflow-y: auto; height: 100%; box-sizing: border-box; font-size: 13px; color: var(--vscode-foreground); }
-.cbm-title { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
-.cbm-status-card {
-	background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border);
-	border-radius: 10px; padding: 16px 20px; margin-bottom: 16px;
-}
-.cbm-status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.cbm-status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.cbm-status-dot.running { background: #4ec9b0; box-shadow: 0 0 6px rgba(78,201,176,0.5); }
-.cbm-status-dot.installed { background: #569cd6; }
-.cbm-status-dot.not_installed { background: #f48771; }
-.cbm-status-dot.installing { background: #dcdcaa; animation: cbm-pulse 1s infinite; }
-@keyframes cbm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-.cbm-status-label { font-size: 14px; font-weight: 600; }
-.cbm-status-label.running { color: #4ec9b0; }
-.cbm-status-label.installed { color: #569cd6; }
-.cbm-status-label.not_installed { color: #f48771; }
-.cbm-status-label.installing { color: #dcdcaa; }
-.cbm-info-row { display: flex; gap: 8px; font-size: 12px; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
-.cbm-info-row .cbm-info-key { min-width: 70px; flex-shrink: 0; }
-.cbm-info-row .cbm-info-val { color: var(--vscode-foreground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; word-break: break-all; }
-.cbm-actions { display: flex; gap: 10px; margin-bottom: 16px; }
-.cbm-btn {
-	padding: 8px 20px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid var(--vscode-widget-border);
-	background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #fff); transition: opacity 0.15s;
-}
-.cbm-btn:hover { opacity: 0.85; }
+.cbm-container { padding: 24px 28px 48px; overflow-y: auto; height: 100%; box-sizing: border-box; font-size: 13px; color: var(--vscode-foreground); max-width: 900px; margin: 0 auto; }
+.cbm-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+.cbm-header-left { display: flex; align-items: center; gap: 14px; }
+.cbm-logo { width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, #80a0ff, #c586c0); display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: 0 0 20px rgba(128,160,255,0.3); flex-shrink: 0; }
+.cbm-title-group h1 { font-size: 18px; font-weight: 700; margin: 0; }
+.cbm-title-group p { font-size: 12px; color: var(--vscode-descriptionForeground); margin: 2px 0 0; }
+.cbm-header-status { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; }
+.cbm-header-status.ready { background: rgba(78,201,176,0.1); border: 1px solid rgba(78,201,176,0.3); }
+.cbm-header-status.indexing { background: rgba(220,220,170,0.1); border: 1px solid rgba(220,220,170,0.3); }
+.cbm-header-status.empty { background: rgba(244,135,113,0.1); border: 1px solid rgba(244,135,113,0.3); }
+.cbm-header-status .dot { width: 8px; height: 8px; border-radius: 50%; }
+.cbm-header-status.ready .dot { background: #4ec9b0; box-shadow: 0 0 6px #4ec9b0; animation: cbm-pulse 2s infinite; }
+.cbm-header-status.indexing .dot { background: #dcdcaa; animation: cbm-pulse 1s infinite; }
+.cbm-header-status.empty .dot { background: #f48771; }
+@keyframes cbm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+.cbm-header-status .text { font-size: 12px; font-weight: 600; }
+.cbm-header-status.ready .text { color: #4ec9b0; }
+.cbm-header-status.indexing .text { color: #dcdcaa; }
+.cbm-header-status.empty .text { color: #f48771; }
+.cbm-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.cbm-stat-card { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 10px; padding: 14px 16px; transition: all 0.15s ease; position: relative; overflow: hidden; }
+.cbm-stat-card:hover { border-color: var(--vscode-input-border); }
+.cbm-stat-card::before { content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 100%; }
+.cbm-stat-card.accent::before { background: #80a0ff; }
+.cbm-stat-card.green::before { background: #4ec9b0; }
+.cbm-stat-card.purple::before { background: #c586c0; }
+.cbm-stat-card.blue::before { background: #569cd6; }
+.cbm-stat-card .stat-icon { font-size: 16px; margin-bottom: 6px; }
+.cbm-stat-card .stat-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cbm-stat-card .stat-label { font-size: 10px; color: var(--vscode-descriptionForeground); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+.cbm-stat-card .stat-sub { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.7; margin-top: 2px; }
+.cbm-section { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 10px; margin-bottom: 12px; overflow: hidden; }
+.cbm-section-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--vscode-widget-border); background: rgba(255,255,255,0.02); }
+.cbm-section-header h2 { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.cbm-section-header .badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.cbm-section-header .badge.accent { background: rgba(128,160,255,0.15); color: #80a0ff; }
+.cbm-section-header .badge.warn { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+.cbm-section-header .badge.green { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+.cbm-section-body { padding: 14px 16px; }
+.cbm-config-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.cbm-config-row:last-child { margin-bottom: 0; }
+.cbm-config-label { min-width: 70px; font-size: 12px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+.cbm-segmented { display: flex; gap: 0; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; flex: 1; }
+.cbm-segmented button { flex: 1; padding: 6px 10px; border: none; background: transparent; color: var(--vscode-descriptionForeground); font-size: 12px; cursor: pointer; transition: all 0.15s ease; border-right: 1px solid var(--vscode-widget-border); }
+.cbm-segmented button:last-child { border-right: none; }
+.cbm-segmented button:hover { background: rgba(255,255,255,0.05); color: var(--vscode-foreground); }
+.cbm-segmented button.active { background: rgba(128,160,255,0.15); color: #80a0ff; font-weight: 600; }
+.cbm-input { flex: 1; padding: 6px 10px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; color: var(--vscode-input-foreground); font-size: 12px; outline: none; transition: all 0.15s ease; }
+.cbm-input:focus { border-color: #80a0ff; box-shadow: 0 0 0 2px rgba(128,160,255,0.15); }
+.cbm-input::placeholder { color: var(--vscode-descriptionForeground); opacity: 0.6; }
+.cbm-btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.cbm-btn { padding: 7px 16px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid var(--vscode-widget-border); background: var(--vscode-input-background); color: var(--vscode-foreground); transition: all 0.15s ease; display: flex; align-items: center; gap: 6px; }
+.cbm-btn:hover { border-color: var(--vscode-input-border); background: var(--vscode-editorWidget-background); }
 .cbm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.cbm-btn.primary { background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); border: none; }
-.cbm-btn.mcp-color { background: #c586c0; color: #fff; border: none; }
-.cbm-log-section { margin-top: 16px; }
-.cbm-log-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--vscode-descriptionForeground); }
-.cbm-log-box {
-	background: var(--vscode-terminal-background, #1e1e1e); border: 1px solid var(--vscode-widget-border);
-	border-radius: 8px; padding: 12px 16px; font-family: var(--vscode-terminal-font-family, monospace);
-	font-size: 12px; line-height: 1.6; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
-	user-select: text; -webkit-user-select: text; cursor: text;
-}
-.cbm-log-line { color: var(--vscode-terminal-foreground, #cccccc); user-select: text; -webkit-user-select: text; }
+.cbm-btn.primary { background: #80a0ff; color: #1a1a28; border-color: #80a0ff; font-weight: 600; }
+.cbm-btn.primary:hover { background: #90b0ff; box-shadow: 0 0 10px rgba(128,160,255,0.3); }
+.cbm-btn.purple { background: #c586c0; color: #fff; border-color: #c586c0; font-weight: 600; }
+.cbm-btn.purple:hover { background: #d496d0; }
+.cbm-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; }
+.cbm-info-item { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; gap: 8px; }
+.cbm-info-item .key { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.cbm-info-item .val { color: var(--vscode-foreground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; text-align: right; word-break: break-all; }
+.cbm-progress { height: 4px; background: var(--vscode-input-background); border-radius: 2px; overflow: hidden; margin-top: 10px; }
+.cbm-progress-bar { height: 100%; background: linear-gradient(90deg, #80a0ff, #c586c0); border-radius: 2px; transition: width 0.3s ease; }
+.cbm-progress-text { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 6px; display: flex; justify-content: space-between; }
+.cbm-log { background: var(--vscode-terminal-background, #1a1a28); border: 1px solid var(--vscode-widget-border); border-radius: 6px; padding: 10px 14px; font-family: var(--vscode-terminal-font-family, monospace); font-size: 11px; line-height: 1.7; max-height: 220px; overflow-y: auto; user-select: text; -webkit-user-select: text; cursor: text; }
+.cbm-log-line { color: var(--vscode-terminal-foreground, #ccc); user-select: text; }
 .cbm-log-line.success { color: #4ec9b0; }
 .cbm-log-line.error { color: #f48771; }
 .cbm-log-line.warn { color: #dcdcaa; }
+.cbm-log-line.info { color: #569cd6; }
 .cbm-log-empty { color: var(--vscode-descriptionForeground); font-style: italic; }
-.cbm-version-badge {
-	font-size: 11px; padding: 2px 8px; border-radius: 10px;
-	background: rgba(86,156,214,0.15); color: #569cd6; margin-left: 8px;
-}
-.cbm-version-badge.upgrade { background: rgba(220,220,170,0.15); color: #dcdcaa; cursor: pointer; }
-.cbm-stat-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.cbm-stat-card {
-	background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border);
-	border-radius: 8px; padding: 10px 16px; min-width: 90px;
-}
-.cbm-stat-card .cbm-stat-label { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
-.cbm-stat-card .cbm-stat-value { font-size: 18px; font-weight: 700; }
-.cbm-stat-card.green .cbm-stat-value { color: #4ec9b0; }
-.cbm-stat-card.blue .cbm-stat-value { color: #569cd6; }
-.cbm-stat-card.mcp .cbm-stat-value { color: #c586c0; }
+.cbm-lang-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.cbm-lang-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.cbm-lang-badge.ts { background: rgba(86,156,214,0.15); color: #569cd6; }
+.cbm-lang-badge.js { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+.cbm-lang-badge.py { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+.cbm-lang-badge.go { background: rgba(128,160,255,0.15); color: #80a0ff; }
+.cbm-lang-badge.rs { background: rgba(206,145,120,0.15); color: #ce9178; }
+.cbm-lang-badge.other { background: rgba(197,134,192,0.15); color: #c586c0; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--vscode-widget-border); border-radius: 3px; }
 `;
 
 export class CodebaseMemoryDetailEditorPane extends EditorPane {
@@ -86,10 +113,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	static readonly ID = 'workbench.editor.agentStudio.codebaseMemoryDetail';
 
 	private _container: HTMLElement | null = null;
-	private _statusContent: HTMLElement | null = null;
+	private _content: HTMLElement | null = null;
 	private _logContent: HTMLElement | null = null;
-	private _status: ICodebaseMemoryMcpStatus | null = null;
-	private _syncResult: ISyncGraphResult | null = null;
 	private _graphStatus: IGraphStatus | null = null;
 	private _logLines: string[] = [];
 
@@ -102,6 +127,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		@ICommandService private readonly commandService: ICommandService,
 		@IEditorService private readonly editorService: IEditorService,
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
+		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
+		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 	) {
 		super(CodebaseMemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -112,447 +139,225 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		style.textContent = CSS_TEXT;
 		this._container.appendChild(style);
 
-		// Subscribe to status changes
-		this._register(this.cbmService.onDidStatusChange(status => {
-			this._status = status;
-			this._renderStatus();
-		}));
-		this._register(this.cbmService.onDidInstallLog(line => {
+		// Subscribe to native graph service events
+		this._register(this._graphService.onDidIndexProgress(line => {
 			this._appendLogLine(line);
 		}));
-		// Subscribe to graph sync results
-		this._register(this.cbmService.onDidSyncGraph(result => {
-			this._syncResult = result;
-			this._renderSyncResult();
-		}));
-		// Subscribe to index progress
-		this._register(this.cbmService.onDidIndexProgress(line => {
-			this._appendLogLine(line);
-		}));
-		// Subscribe to index complete
-		this._register(this.cbmService.onDidIndexComplete((result: IIndexResult) => {
+		this._register(this._graphService.onDidIndexComplete(result => {
 			if (result.success) {
 				this.notificationService.info(`索引完成 (${result.duration}s)`);
 			} else {
 				this.notificationService.warn(`索引失败: ${result.message}`);
 			}
-			// Refresh graph status after index completes
-			this._renderGraphStatus();
+			this._renderAll();
 		}));
 	}
 
 	override async setInput(input: CodebaseMemoryDetailEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
-		this._renderSkeleton();
-		await this.cbmService.refreshStatus();
+		this._renderAll();
 	}
 
-	private _renderSkeleton(): void {
+	// ─── Main Render ──────────────────────────────────────────────────────
+
+	private async _renderAll(): Promise<void> {
 		if (!this._container) { return; }
 		const styleEl = this._container.querySelector('style');
 		clearNode(this._container);
 		if (styleEl) { this._container.appendChild(styleEl); }
 
-		append(this._container, $('.cbm-title')).textContent = '🧠 Codebase Memory MCP';
+		// Fetch graph status (lightweight, no full array creation)
+		this._graphStatus = await this._graphService.getGraphStatus();
+		const hasData = this._graphService.hasGraphData();
+		const schema = hasData ? this._graphService.getGraphSchema() : null;
+		const indexStatus = hasData ? this._graphService.getIndexStatus() : null;
+		const isIndexing = this._graphService.isIndexing;
 
-		this._statusContent = append(this._container, $('.cbm-status-content'));
-		this._statusContent.textContent = '检测中...';
+		this._content = append(this._container, $('div'));
 
-		// Log section
-		const logSection = append(this._container, $('.cbm-log-section'));
-		const logTitleRow = append(logSection, $('.cbm-log-title-row')) as HTMLElement;
-		logTitleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
-		const logTitle = append(logTitleRow, $('.cbm-log-title'));
-		logTitle.textContent = '安装日志';
-		logTitle.style.marginBottom = '0';
-		const copyBtn = append(logTitleRow, $('.cbm-copy-btn')) as HTMLButtonElement;
-		copyBtn.textContent = '📋 复制全部';
-		copyBtn.title = '复制所有日志到剪贴板';
-		copyBtn.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-widget-border);background:var(--vscode-editorWidget-background);color:var(--vscode-descriptionForeground);';
-		copyBtn.onclick = async () => {
-			const text = this._logLines.join('\n');
-			try {
-				await navigator.clipboard.writeText(text);
-				copyBtn.textContent = '✓ 已复制';
-			} catch {
-				// Fallback: use textarea + execCommand
-				const ta = document.createElement('textarea');
-				ta.value = text;
-				ta.style.position = 'fixed';
-				ta.style.opacity = '0';
-				document.body.appendChild(ta);
-				ta.select();
-				document.execCommand('copy');
-				document.body.removeChild(ta);
-				copyBtn.textContent = '✓ 已复制';
+		// Header
+		this._renderHeader(isIndexing);
+
+		// Stats dashboard (only when graph exists)
+		if (this._graphStatus.exists && hasData && schema && indexStatus) {
+			this._renderStats(schema, indexStatus);
+		}
+
+		// Index config section
+		this._renderIndexConfig();
+
+		// Graph details section (only when graph exists)
+		if (this._graphStatus.exists && schema) {
+			this._renderGraphDetails(schema);
+			// Architecture analysis — deferred for large graphs to avoid UI freeze
+			// analyzeArchitecture() iterates all nodes+edges multiple times (~5-10s for 250k nodes)
+			if (schema.totalNodes < 50000) {
+				this._renderArchitecture();
+			} else {
+				// Show placeholder, defer analysis
+				this._renderArchitectureDeferred();
 			}
-			setTimeout(() => { copyBtn.textContent = '📋 复制全部'; }, 1500);
-		};
-		this._logContent = append(logSection, $('.cbm-log-box'));
-	}
-
-	private _renderStatus(): void {
-		if (!this._statusContent || !this._status) { return; }
-		clearNode(this._statusContent);
-
-		const s = this._status;
-
-		// Status card
-		const card = append(this._statusContent, $('.cbm-status-card'));
-		const statusRow = append(card, $('.cbm-status-row'));
-		const dot = append(statusRow, $('.cbm-status-dot'));
-		dot.classList.add(s.state);
-		const label = append(statusRow, $('.cbm-status-label'));
-		label.classList.add(s.state);
-		const labels: Record<string, string> = {
-			not_installed: '未安装', installing: '安装中...', installed: '已安装', running: '运行中',
-		};
-		label.textContent = labels[s.state] ?? s.state;
-
-		// Version badge
-		if (s.version) {
-			const vBadge = append(statusRow, $('.cbm-version-badge'));
-			vBadge.textContent = s.version;
-		}
-		if (s.latestVersion && s.version && s.latestVersion !== s.version) {
-			const upBadge = append(statusRow, $('.cbm-version-badge.upgrade'));
-			upBadge.textContent = `可升级到 ${s.latestVersion}`;
-			upBadge.title = '点击升级';
-			upBadge.onclick = () => void this.cbmService.upgrade();
+			// Query console
+			this._renderQueryConsole();
+			// Analysis tools (P3 API)
+			this._renderAnalysisTools();
+			// Project management (multi-project)
+			this._renderProjectManager();
 		}
 
-		// Info rows
-		if (s.binaryPath) {
-			this._appendInfoRow(card, '路径', s.binaryPath);
-		}
-		if (s.latestVersion) {
-			this._appendInfoRow(card, '最新版本', s.latestVersion);
-		}
-		this._appendInfoRow(card, 'MCP 配置', s.mcpConfigured ? '✓ 已配置' : '✗ 未配置');
-		this._appendInfoRow(card, 'MCP 状态', s.mcpRunning ? '✓ 运行中' : '○ 未运行');
-
-		// Stats row (only when running)
-		if (s.state === 'running') {
-			const statsRow = append(this._statusContent, $('.cbm-stat-row'));
-			this._appendStatCard(statsRow, '工具数', '14', 'mcp');
-			this._appendStatCard(statsRow, '索引模式', 'FULL', 'blue');
-			this._appendStatCard(statsRow, '状态', '●', 'green');
+		// Indexing progress section (only when indexing)
+		if (isIndexing) {
+			this._renderProgress();
 		}
 
-		// Action buttons
-		const actions = append(this._statusContent, $('.cbm-actions'));
-		if (s.state === 'not_installed') {
-			const btn = append(actions, $('.cbm-btn.primary')) as HTMLButtonElement;
-			btn.textContent = '📦 安装';
-			btn.onclick = () => void this.cbmService.install();
-		} else if (s.state === 'installing') {
-			const btn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
-			btn.textContent = '⏳ 安装中...';
-			btn.disabled = true;
-		} else {
-			if (s.latestVersion && s.version && s.latestVersion !== s.version) {
-				const btn = append(actions, $('.cbm-btn.primary')) as HTMLButtonElement;
-				btn.textContent = '🔄 升级';
-				btn.onclick = () => void this.cbmService.upgrade();
-			}
-			if (!s.mcpConfigured) {
-				const btn = append(actions, $('.cbm-btn.mcp-color')) as HTMLButtonElement;
-				btn.textContent = '🔌 配置 MCP';
-				btn.onclick = async () => {
-					await this.cbmService.install();
-				};
-			}
-			// Sync to team button
-			const syncBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
-			syncBtn.textContent = '🌐 同步到团队';
-			syncBtn.title = '将 graph 同步到远程 Git 仓库（团队共享）';
-			syncBtn.onclick = async () => {
-				syncBtn.disabled = true;
-				syncBtn.textContent = '⏳ 同步中...';
-				this._appendLogLine('▶ 开始同步 graph 到远程仓库...');
-				await this.cbmService.syncGraph();
-				syncBtn.disabled = false;
-				syncBtn.textContent = '🌐 同步到团队';
-			};
-			const refreshBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
-			refreshBtn.textContent = '🔄 刷新';
-			refreshBtn.onclick = () => void this.cbmService.refreshStatus();
-		}
+		// Activity log
+		this._renderLogSection();
 
-		// Render sync result if available
-		this._renderSyncResult();
-
-		// Render graph status and actions
-		this._renderGraphStatus();
-
-		// Render existing log
+		// Render existing log lines
 		this._renderLog();
 	}
 
-	private _appendInfoRow(parent: HTMLElement, key: string, val: string): void {
-		const row = append(parent, $('.cbm-info-row'));
-		append(row, $('.cbm-info-key')).textContent = key;
-		append(row, $('.cbm-info-val')).textContent = val;
+	// ─── Header ───────────────────────────────────────────────────────────
+
+	private _renderHeader(isIndexing: boolean): void {
+		if (!this._content) { return; }
+		const header = append(this._content, $('.cbm-header'));
+		const left = append(header, $('.cbm-header-left'));
+		const logo = append(left, $('.cbm-logo'));
+		logo.textContent = '🧠';
+		const titleGroup = append(left, $('.cbm-title-group'));
+		append(titleGroup, $('h1')).textContent = 'Codebase Memory';
+		const subtitle = append(titleGroup, $('p'));
+		subtitle.textContent = 'Native tree-sitter code graph · No external binary required';
+
+		const statusCls = isIndexing ? 'indexing' : (this._graphStatus?.exists ? 'ready' : 'empty');
+		const statusText = isIndexing ? 'Indexing...' : (this._graphStatus?.exists ? 'Ready' : 'Not Indexed');
+		const statusEl = append(header, $('.cbm-header-status')) as HTMLElement;
+		statusEl.classList.add(statusCls);
+		append(statusEl, $('.dot'));
+		append(statusEl, $('.text')).textContent = statusText;
 	}
 
-	private _appendStatCard(parent: HTMLElement, label: string, value: string, cls: string): void {
+	// ─── Stats Dashboard ──────────────────────────────────────────────────
+
+	private _renderStats(schema: { nodeLabels: { label: string; count: number }[]; edgeTypes: { type: string; count: number }[]; totalNodes: number; totalEdges: number }, indexStatus: { project: string; exists: boolean; nodeCount: number; edgeCount: number; fileCount: number }): void {
+		if (!this._content) { return; }
+		const grid = append(this._content, $('.cbm-stats-grid'));
+
+		// Count file nodes from schema
+		const fileCount = schema.nodeLabels.find(l => l.label === 'file')?.count || indexStatus.fileCount || 0;
+
+		// Nodes card
+		this._appendStatCard(grid, 'accent', '🔗', String(schema.totalNodes), 'Nodes', 'functions · classes · interfaces');
+
+		// Edges card
+		this._appendStatCard(grid, 'green', '↔️', String(schema.totalEdges), 'Edges', 'calls · imports · defines');
+
+		// Files card
+		this._appendStatCard(grid, 'blue', '📁', String(fileCount), 'Files', 'indexed source files');
+
+		// Last index card
+		const lastModified = this._graphStatus?.lastModified;
+		const timeStr = lastModified ? this._formatTime(new Date(lastModified)) : '—';
+		this._appendStatCard(grid, 'purple', '⚡', timeStr, 'Last Index', this._graphStatus?.size ? this._formatSize(this._graphStatus.size) : '');
+	}
+
+	private _appendStatCard(parent: HTMLElement, cls: string, icon: string, value: string, label: string, sub: string): void {
 		const card = append(parent, $(`.cbm-stat-card.${cls}`));
-		append(card, $('.cbm-stat-label')).textContent = label;
-		append(card, $('.cbm-stat-value')).textContent = value;
+		append(card, $('.stat-icon')).textContent = icon;
+		append(card, $('.stat-value')).textContent = value;
+		append(card, $('.stat-label')).textContent = label;
+		if (sub) { append(card, $('.stat-sub')).textContent = sub; }
 	}
 
-	private _renderSyncResult(): void {
-		if (!this._statusContent || !this._syncResult) { return; }
-		// Remove old sync result if exists
-		const old = this._statusContent.querySelector('.cbm-sync-result');
-		if (old) { old.remove(); }
-		const r = this._syncResult;
-		const el = append(this._statusContent, $('.cbm-sync-result'));
-		el.style.cssText = 'margin-top:12px;padding:10px 16px;border-radius:8px;font-size:12px;';
-		if (r.success) {
-			el.style.background = 'rgba(78,201,176,0.1)';
-			el.style.border = '1px solid rgba(78,201,176,0.3)';
-			el.innerHTML = `<span style="color:#4ec9b0;">✓ ${r.message}</span>` +
-				(r.branch ? `<br><span style="color:var(--vscode-descriptionForeground);">分支: ${r.branch}</span>` : '') +
-				(r.remote ? `<br><span style="color:var(--vscode-descriptionForeground);">远程: ${r.remote}</span>` : '');
-			this._appendLogLine(`✓ 同步成功: ${r.message}`);
-		} else {
-			el.style.background = 'rgba(244,135,113,0.1)';
-			el.style.border = '1px solid rgba(244,135,113,0.3)';
-			el.innerHTML = `<span style="color:#f48771;">✗ ${r.message}</span>`;
-			this._appendLogLine(`✗ 同步失败: ${r.message}`);
-		}
-	}
+	// ─── Index Config Section ─────────────────────────────────────────────
 
-	// ─── Graph Status & Actions ─────────────────────────────────────
-
-	private async _renderGraphStatus(): Promise<void> {
-		if (!this._statusContent) { return; }
-		// Remove old graph section if exists
-		const old = this._statusContent.querySelector('.cbm-graph-section');
-		if (old) { old.remove(); }
-
-		// Fetch graph status
-		this._graphStatus = await this.cbmService.getGraphStatus();
-
-		const section = append(this._statusContent, $('.cbm-graph-section')) as HTMLElement;
-		section.style.cssText = 'margin-top:20px;padding:16px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;';
-
-		// Title
-		const title = append(section, $('.cbm-graph-title')) as HTMLElement;
-		title.textContent = '🧠 代码库 Graph';
-		title.style.cssText = 'font-size:14px;font-weight:600;margin-bottom:12px;';
-
-		if (!this._graphStatus.exists) {
-			// No graph yet — show index button to create one
-			const empty = append(section, $('.cbm-graph-empty')) as HTMLElement;
-			empty.textContent = '暂无 Graph 数据。点击下方按钮索引代码库。';
-			empty.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:12px;margin-bottom:12px;';
-
-			// Index button (shown even when no graph exists)
-			const noGraphActions = append(section, $('.cbm-graph-actions')) as HTMLElement;
-			noGraphActions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
-			this._appendIndexConfig(section);
-			this._appendIndexButton(noGraphActions);
-			return;
-		}
-
-		// Graph info
-		const info = append(section, $('.cbm-graph-info')) as HTMLElement;
-		info.style.cssText = 'margin-bottom:12px;';
-
-		if (this._graphStatus.size !== undefined) {
-			const sizeStr = this._graphStatus.size > 1024 * 1024
-				? `${(this._graphStatus.size / (1024 * 1024)).toFixed(2)} MB`
-				: this._graphStatus.size > 1024
-					? `${(this._graphStatus.size / 1024).toFixed(2)} KB`
-					: `${this._graphStatus.size} B`;
-			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
-			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
-			const key = append(row, $('span')) as HTMLElement;
-			key.textContent = '大小: ';
-			key.style.color = 'var(--vscode-descriptionForeground)';
-			const val = append(row, $('span')) as HTMLElement;
-			val.textContent = sizeStr;
-			val.style.color = 'var(--vscode-foreground)';
-		}
-
-		if (this._graphStatus.lastModified) {
-			const date = new Date(this._graphStatus.lastModified);
-			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
-			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
-			const key = append(row, $('span')) as HTMLElement;
-			key.textContent = '最后更新: ';
-			key.style.color = 'var(--vscode-descriptionForeground)';
-			const val = append(row, $('span')) as HTMLElement;
-			val.textContent = date.toLocaleString();
-			val.style.color = 'var(--vscode-foreground)';
-		}
-
-		if (this._graphStatus.gitBranch) {
-			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
-			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
-			const key = append(row, $('span')) as HTMLElement;
-			key.textContent = '分支: ';
-			key.style.color = 'var(--vscode-descriptionForeground)';
-			const val = append(row, $('span')) as HTMLElement;
-			val.textContent = this._graphStatus.gitBranch;
-			val.style.color = 'var(--vscode-foreground)';
-		}
-
-		if (this._graphStatus.gitCommit) {
-			const row = append(info, $('.cbm-graph-info-row')) as HTMLElement;
-			row.style.cssText = 'display:flex;gap:8px;margin-bottom:4px;font-size:12px;';
-			const key = append(row, $('span')) as HTMLElement;
-			key.textContent = '提交: ';
-			key.style.color = 'var(--vscode-descriptionForeground)';
-			const val = append(row, $('span')) as HTMLElement;
-			val.textContent = this._graphStatus.gitCommit;
-			val.style.color = 'var(--vscode-foreground)';
-		}
-
-		// Actions
-		const actions = append(section, $('.cbm-graph-actions')) as HTMLElement;
-		actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
-
-		// Index configuration
-		this._appendIndexConfig(section);
-
-		// Index repository button (primary action)
-		this._appendIndexButton(actions);
-
-		// View 3D Graph visualization button
-		const viewBtn = append(actions, $('.cbm-btn.primary')) as HTMLButtonElement;
-		viewBtn.textContent = '🌐 查看 3D Graph';
-		viewBtn.title = '在新标签页中打开 3D Graph 可视化（Built-in 3D graph visualization）';
-		viewBtn.style.background = '#c586c0';
-		viewBtn.onclick = () => {
-			const input = CodebaseGraphViewerEditorInput.getOrCreate();
-			this.editorService.openEditor(input, { pinned: true });
-		};
-
-		// Pull from team button
-		const pullBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
-		pullBtn.textContent = '⬇ 下载团队 Graph';
-		pullBtn.title = '从远程 Git 仓库拉取团队共享的 Graph';
-		pullBtn.onclick = async () => {
-			pullBtn.disabled = true;
-			pullBtn.textContent = '⏳ 下载中...';
-			this._appendLogLine('▶ 开始从远程仓库下载 Graph...');
-			const result = await this.cbmService.pullGraph();
-			if (result.success) {
-				this.notificationService.info(result.message);
-				this._appendLogLine(`✓ ${result.message}`);
-			} else {
-				this.notificationService.warn(result.message);
-				this._appendLogLine(`✗ ${result.message}`);
-			}
-			pullBtn.disabled = false;
-			pullBtn.textContent = '⬇ 下载团队 Graph';
-			// Refresh graph status
-			this._graphStatus = await this.cbmService.getGraphStatus();
-			this._renderGraphStatus();
-		};
-
-		// Open graph directory button
-		const openBtn = append(actions, $('.cbm-btn')) as HTMLButtonElement;
-		openBtn.textContent = '📂 打开 Graph 目录';
-		openBtn.title = '在文件管理器中打开 Graph 目录';
-		openBtn.onclick = () => {
-			if (this._graphStatus?.graphPath) {
-				this._openFolder(this._graphStatus.graphPath);
-			}
-		};
-	}
-
-	private _appendIndexConfig(parent: HTMLElement): void {
+	private _renderIndexConfig(): void {
+		if (!this._content) { return; }
 		const config = this.cbmService.getIndexConfig();
-		const cfgSection = append(parent, $('.cbm-index-config')) as HTMLElement;
-		cfgSection.style.cssText = 'margin-bottom:12px;padding:10px 12px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;';
 
-		// 标题
-		const title = append(cfgSection, $('div')) as HTMLElement;
-		title.textContent = '⚙ 索引配置';
-		title.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:8px;color:var(--vscode-foreground);';
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '⚙️ Index Configuration';
+		const badge = append(header, $('.badge.accent'));
+		badge.textContent = config.mode.toUpperCase();
 
-		// Mode 选择
-		const modeRow = append(cfgSection, $('div')) as HTMLElement;
-		modeRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
-		const modeLabel = append(modeRow, $('label')) as HTMLLabelElement;
-		modeLabel.textContent = '索引模式:';
-		modeLabel.style.cssText = 'font-size:12px;min-width:70px;color:var(--vscode-descriptionForeground);';
-		const modeSelect = append(modeRow, $('select')) as HTMLSelectElement;
-		modeSelect.style.cssText = 'flex:1;max-width:200px;font-size:12px;padding:2px 4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px;';
+		const body = append(section, $('.cbm-section-body'));
+
+		// Mode segmented control
+		const modeRow = append(body, $('.cbm-config-row'));
+		append(modeRow, $('.cbm-config-label')).textContent = 'Mode';
+		const segmented = append(modeRow, $('.cbm-segmented')) as HTMLElement;
 		const modes: { value: string; label: string }[] = [
-			{ value: 'fast', label: 'Fast — 过滤文件，无语义分析（推荐，内存小）' },
-			{ value: 'moderate', label: 'Moderate — 过滤文件 + 语义分析' },
-			{ value: 'full', label: 'Full — 全部文件 + 语义分析（最慢，内存大）' },
+			{ value: 'fast', label: '⚡ Fast' },
+			{ value: 'moderate', label: '⚖️ Moderate' },
+			{ value: 'full', label: '🔬 Full' },
 		];
+		const modeBtns: HTMLButtonElement[] = [];
 		for (const m of modes) {
-			const opt = append(modeSelect, $('option')) as HTMLOptionElement;
-			opt.value = m.value;
-			opt.textContent = m.label;
-			if (m.value === config.mode) { opt.selected = true; }
+			const btn = append(segmented, $('button')) as HTMLButtonElement;
+			btn.textContent = m.label;
+			btn.dataset.mode = m.value;
+			if (m.value === config.mode) { btn.classList.add('active'); }
+			modeBtns.push(btn);
 		}
+		// Mode selection toggle
+		segmented.addEventListener('click', (e) => {
+			const target = e.target as HTMLButtonElement;
+			if (target.tagName !== 'BUTTON') { return; }
+			modeBtns.forEach(b => b.classList.remove('active'));
+			target.classList.add('active');
+		});
 
-		// 索引路径（子目录）
-		const subRow = append(cfgSection, $('div')) as HTMLElement;
-		subRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
-		const subLabel = append(subRow, $('label')) as HTMLLabelElement;
-		subLabel.textContent = '索引路径:';
-		subLabel.style.cssText = 'font-size:12px;min-width:70px;color:var(--vscode-descriptionForeground);';
-		const subInput = append(subRow, $('input')) as HTMLInputElement;
-		subInput.type = 'text';
-		subInput.value = config.subPath || '';
-		subInput.placeholder = '留空=整个工作区，或输入子目录如 src/vs/sessions';
-		subInput.style.cssText = 'flex:1;font-size:12px;padding:3px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px;';
+		// Index path
+		const pathRow = append(body, $('.cbm-config-row'));
+		append(pathRow, $('.cbm-config-label')).textContent = 'Index Path';
+		const pathInput = append(pathRow, $('input.cbm-input')) as HTMLInputElement;
+		pathInput.type = 'text';
+		pathInput.value = config.subPath || '';
+		pathInput.placeholder = 'Leave empty for entire workspace, or e.g. src/vs/sessions';
 
-		// 排除目录输入
-		const exclRow = append(cfgSection, $('div')) as HTMLElement;
-		exclRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
-		const exclLabel = append(exclRow, $('label')) as HTMLLabelElement;
-		exclLabel.textContent = '排除目录:';
-		exclLabel.style.cssText = 'font-size:12px;min-width:70px;color:var(--vscode-descriptionForeground);';
-		const exclInput = append(exclRow, $('input')) as HTMLInputElement;
+		// Exclude dirs
+		const exclRow = append(body, $('.cbm-config-row'));
+		append(exclRow, $('.cbm-config-label')).textContent = 'Exclude';
+		const exclInput = append(exclRow, $('input.cbm-input')) as HTMLInputElement;
 		exclInput.type = 'text';
 		exclInput.value = config.excludeDirs.join(', ');
 		exclInput.placeholder = 'node_modules, .git, build, out, dist';
-		exclInput.style.cssText = 'flex:1;font-size:12px;padding:3px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px;';
 
-		// 保存按钮
-		const saveBtn = append(cfgSection, $('.cbm-btn')) as HTMLButtonElement;
-		saveBtn.textContent = '💾 保存配置';
-		saveBtn.style.cssText = 'font-size:12px;padding:3px 10px;';
-		saveBtn.onclick = () => {
-			const mode = modeSelect.value as IIndexConfig['mode'];
-			const excludeDirs = exclInput.value.split(',').map(s => s.trim()).filter(s => s);
-			const subPath = subInput.value.trim();
-			const newConfig: IIndexConfig = { mode, excludeDirs, subPath: subPath || undefined };
-			this.cbmService.setIndexConfig(newConfig);
-			const pathDesc = subPath ? `路径: ${subPath}` : '路径: 整个工作区';
-			this.notificationService.info(`索引配置已保存 (模式: ${mode}, ${pathDesc}, 排除 ${excludeDirs.length} 个目录)`);
-			// 重新渲染 graph 区域，让 UI 反映最新配置
-			this._renderGraphStatus();
-		};
-	}
+		// Action buttons
+		const btnGroup = append(body, $('.cbm-btn-group'));
 
-	private _appendIndexButton(parent: HTMLElement): void {
-		const indexBtn = append(parent, $('.cbm-btn.primary')) as HTMLButtonElement;
-		indexBtn.textContent = '🔍 索引代码库';
-		indexBtn.title = '扫描并索引当前代码库，构建代码知识图谱';
+		// Index button (primary)
+		const indexBtn = append(btnGroup, $('.cbm-btn.primary')) as HTMLButtonElement;
+		indexBtn.textContent = '🔍 Index Codebase';
+		indexBtn.title = 'Scan and index current codebase';
 		indexBtn.onclick = async () => {
-			// 正在索引中 → 点击取消
-			if (this.cbmService.isIndexing) {
+			if (this._graphService.isIndexing) {
 				indexBtn.disabled = true;
-				indexBtn.textContent = '⏳ 取消中...';
-				this.cbmService.cancelIndex();
+				indexBtn.textContent = '⏳ Cancelling...';
+				this._graphService.cancelIndex();
 				return;
 			}
-			// 开始索引：按钮变为可取消状态
-			indexBtn.textContent = '✗ 取消索引';
-			indexBtn.title = '点击取消正在进行的索引操作';
+			// Save config before indexing
+			const mode = modeBtns.find(b => b.classList.contains('active'))?.dataset.mode || 'fast';
+			const newConfig: IIndexConfig = {
+				mode: mode as IIndexConfig['mode'],
+				excludeDirs: exclInput.value.split(',').map(s => s.trim()).filter(s => s),
+				subPath: pathInput.value.trim() || undefined,
+			};
+			this.cbmService.setIndexConfig(newConfig);
+
+			indexBtn.textContent = '✗ Cancel Index';
+			indexBtn.title = 'Click to cancel indexing';
 			this._appendLogLine('▶ 开始索引代码库...');
-			const result = await this.cbmService.indexRepository();
+			const folders = this._workspaceService.getWorkspace().folders;
+			if (folders.length === 0) {
+				this._appendLogLine('✗ 未打开工作区');
+				return;
+			}
+			const wsPath = folders[0].uri.fsPath;
+			const result = await this._graphService.indexWorkspace(wsPath, newConfig);
 			if (result.success) {
 				this.notificationService.info(`索引完成 (${result.duration}s)`);
 				this._appendLogLine(`✓ 索引完成: ${result.message} (${result.duration}s)`);
@@ -561,58 +366,656 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 				this._appendLogLine(`✗ ${result.message}`);
 			}
 			indexBtn.disabled = false;
-			indexBtn.textContent = '🔍 索引代码库';
-			indexBtn.title = '扫描并索引当前代码库，构建代码知识图谱';
+			indexBtn.textContent = '🔍 Index Codebase';
+			indexBtn.title = 'Scan and index current codebase';
+		};
+
+		// Save config button
+		const saveBtn = append(btnGroup, $('.cbm-btn')) as HTMLButtonElement;
+		saveBtn.textContent = '💾 Save Config';
+		saveBtn.onclick = () => {
+			const mode = modeBtns.find(b => b.classList.contains('active'))?.dataset.mode || 'fast';
+			const newConfig: IIndexConfig = {
+				mode: mode as IIndexConfig['mode'],
+				excludeDirs: exclInput.value.split(',').map(s => s.trim()).filter(s => s),
+				subPath: pathInput.value.trim() || undefined,
+			};
+			this.cbmService.setIndexConfig(newConfig);
+			badge.textContent = mode.toUpperCase();
+			this.notificationService.info(`索引配置已保存 (${mode})`);
 		};
 	}
 
-	private _openFolder(filePath: string): void {
-		// 使用 VS Code 内置 revealFileInOS 命令，在文件管理器中打开并选中文件
-		// （sandbox 环境下 require('path'/'electron') 不可用，改用此方案）
-		const uri = URI.file(filePath);
-		this.commandService.executeCommand('revealFileInOS', uri);
+	// ─── Graph Details Section ────────────────────────────────────────────
+
+	private _renderGraphDetails(schema: { nodeLabels: { label: string; count: number }[]; edgeTypes: { type: string; count: number }[]; totalNodes: number; totalEdges: number }): void {
+		if (!this._content || !this._graphStatus) { return; }
+
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '📊 Graph Details';
+		const badge = append(header, $('.badge.green'));
+		badge.textContent = this._graphStatus.size ? this._formatSize(this._graphStatus.size) : 'graph.json';
+
+		const body = append(section, $('.cbm-section-body'));
+
+		// Node/edge type breakdown from schema (no array iteration needed)
+		const nodeTypesStr = schema.nodeLabels
+			.sort((a, b) => b.count - a.count)
+			.map(({ label, count }) => `${label}(${count})`)
+			.join(' · ');
+		const edgeTypesStr = schema.edgeTypes
+			.sort((a, b) => b.count - a.count)
+			.map(({ type, count }) => `${type.toLowerCase()}(${count})`)
+			.join(' · ');
+
+		const grid = append(body, $('.cbm-info-grid'));
+		this._appendInfoItem(grid, 'Storage', this._graphStatus.graphPath || 'N/A');
+		this._appendInfoItem(grid, 'Last Modified', this._graphStatus.lastModified ? new Date(this._graphStatus.lastModified).toLocaleString() : 'N/A');
+		this._appendInfoItem(grid, 'Node Types', nodeTypesStr);
+		this._appendInfoItem(grid, 'Edge Types', edgeTypesStr);
+
+		// Action buttons
+		const btnGroup = append(body, $('.cbm-btn-group'));
+
+		// View 3D Graph
+		const viewBtn = append(btnGroup, $('.cbm-btn.purple')) as HTMLButtonElement;
+		viewBtn.textContent = '🌐 View 3D Graph';
+		viewBtn.title = 'Open 3D graph visualization';
+		viewBtn.onclick = () => {
+			const input = CodebaseGraphViewerEditorInput.getOrCreate();
+			this.editorService.openEditor(input, { pinned: true });
+		};
+
+		// Refresh
+		const refreshBtn = append(btnGroup, $('.cbm-btn')) as HTMLButtonElement;
+		refreshBtn.textContent = '🔄 Refresh';
+		refreshBtn.onclick = () => { this._renderAll(); };
+
+		// Open directory
+		const openBtn = append(btnGroup, $('.cbm-btn')) as HTMLButtonElement;
+		openBtn.textContent = '📂 Open Directory';
+		openBtn.title = 'Open graph directory in file explorer';
+		openBtn.onclick = () => {
+			if (this._graphStatus?.graphPath) {
+				this._openFolder(this._graphStatus.graphPath);
+			}
+		};
+	}
+
+	private _appendInfoItem(parent: HTMLElement, key: string, val: string): void {
+		const item = append(parent, $('.cbm-info-item'));
+		append(item, $('.key')).textContent = key;
+		append(item, $('.val')).textContent = val;
+	}
+
+	// ─── Architecture Analysis ────────────────────────────────────────────
+
+	private _renderArchitecture(): void {
+		if (!this._content) { return; }
+
+		let report: any;
+		try { report = this._graphService.getArchitecture(); } catch { return; }
+		if (!report || report.totalNodes === 0) { return; }
+
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '🏗️ Architecture';
+		const badge = append(header, $('.badge.green'));
+		badge.textContent = `${report.communities?.length || 0} communities`;
+
+		const body = append(section, $('.cbm-section-body'));
+
+		// Languages
+		if (report.languages && report.languages.length > 0) {
+			const langRow = append(body, $('.cbm-lang-badges'));
+			for (const lang of report.languages.slice(0, 8)) {
+				const badge = append(langRow, $('.cbm-lang-badge'));
+				badge.textContent = `${lang.language} · ${lang.files}`;
+				const cls = lang.language.toLowerCase().includes('type') ? 'ts' :
+					lang.language.toLowerCase().includes('java') ? 'js' :
+						lang.language.toLowerCase().includes('python') ? 'py' :
+							lang.language.toLowerCase().includes('go') ? 'go' : 'other';
+				badge.classList.add(cls);
+			}
+		}
+
+		// Hotspots
+		if (report.hotspots && report.hotspots.length > 0) {
+			const hotTitle = append(body, $('div'));
+			hotTitle.style.cssText = 'font-size:11px;color:var(--vscode-descriptionForeground);margin-top:10px;margin-bottom:4px;';
+			hotTitle.textContent = '🔥 Hotspots (top 5 by connections):';
+			for (const h of report.hotspots.slice(0, 5)) {
+				const row = append(body, $('.cbm-info-item'));
+				append(row, $('.key')).textContent = h.node.name;
+				append(row, $('.val')).textContent = `in:${h.node.inDegree} out:${h.node.outDegree}`;
+			}
+		}
+
+		// Layers
+		if (report.layers && report.layers.length > 0) {
+			const layerCounts: { [key: string]: number } = {};
+			for (const l of report.layers) {
+				layerCounts[l.layer] = (layerCounts[l.layer] || 0) + 1;
+			}
+			const layerStr = Object.entries(layerCounts)
+				.sort((a, b) => b[1] - a[1])
+				.map(([k, v]) => `${k}(${v})`).join(' · ');
+			const layerRow = append(body, $('.cbm-info-item'));
+			append(layerRow, $('.key')).textContent = 'Layers';
+			append(layerRow, $('.val')).textContent = layerStr;
+		}
+
+		// Cross-package boundaries
+		if (report.crossBoundaries && report.crossBoundaries.length > 0) {
+			const cbRow = append(body, $('.cbm-info-item'));
+			append(cbRow, $('.key')).textContent = 'Cross-pkg';
+			append(cbRow, $('.val')).textContent = `${report.crossBoundaries.length} edges`;
+		}
+	}
+
+	/** 大图架构分析：显示占位符，异步延迟计算 */
+	private _renderArchitectureDeferred(): void {
+		if (!this._content) { return; }
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '🏗️ Architecture';
+		const badge = append(header, $('.badge.warn'));
+		badge.textContent = 'Deferred';
+
+		const body = append(section, $('.cbm-section-body'));
+		const placeholder = append(body, $('div'));
+		placeholder.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:12px;padding:8px 0;';
+		placeholder.textContent = '⏳ Architecture analysis deferred for large graphs (>50k nodes). Click to compute.';
+
+		const computeBtn = append(body, $('.cbm-btn')) as HTMLButtonElement;
+		computeBtn.textContent = '🔍 Compute Now';
+		computeBtn.style.fontSize = '12px';
+		computeBtn.onclick = () => {
+			computeBtn.disabled = true;
+			computeBtn.textContent = '⏳ Computing...';
+			// Defer to next tick so button updates
+			setTimeout(() => {
+				try {
+					section.remove();
+					this._renderArchitecture();
+				} catch {
+					computeBtn.textContent = '❌ Failed';
+				}
+			}, 0);
+		};
+	}
+
+	// ─── Query Console ─────────────────────────────────────────────────────
+
+	private _renderQueryConsole(): void {
+		if (!this._content) { return; }
+
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '🔍 Query Console';
+
+		const body = append(section, $('.cbm-section-body'));
+
+		// Query input
+		const inputRow = append(body, $('.cbm-config-row'));
+		const input = append(inputRow, $('input.cbm-input')) as HTMLInputElement;
+		input.placeholder = 'MATCH (n:Function) RETURN n.name, n.file_path LIMIT 10';
+		input.style.fontFamily = 'monospace';
+		input.style.fontSize = '11px';
+
+		// Execute button
+		const btnGroup = append(body, $('.cbm-btn-group'));
+		btnGroup.style.marginTop = '8px';
+		const execBtn = append(btnGroup, $('.cbm-btn.primary')) as HTMLButtonElement;
+		execBtn.textContent = '▶ Execute';
+		execBtn.style.fontSize = '12px';
+
+		// Semantic search button
+		const semBtn = append(btnGroup, $('.cbm-btn')) as HTMLButtonElement;
+		semBtn.textContent = '🧠 Semantic';
+		semBtn.style.fontSize = '12px';
+
+		// Results area
+		const resultsDiv = append(body, $('div')) as HTMLElement;
+		resultsDiv.style.cssText = 'margin-top:10px;max-height:300px;overflow-y:auto;background:var(--vscode-input-background);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:8px 12px;font-family:monospace;font-size:11px;';
+
+		const runQuery = () => {
+			const query = input.value.trim();
+			if (!query) { return; }
+			clearNode(resultsDiv);
+			resultsDiv.textContent = '⏳ Executing...';
+			resultsDiv.style.color = 'var(--vscode-descriptionForeground)';
+			execBtn.disabled = true;
+			setTimeout(() => {
+				try {
+					const result = this._graphService.executeCypher(query);
+					clearNode(resultsDiv);
+					if (result.rows.length === 0) {
+						resultsDiv.textContent = 'No results';
+						resultsDiv.style.color = 'var(--vscode-descriptionForeground)';
+						return;
+					}
+					// Render table
+					const table = append(resultsDiv, $('table')) as HTMLTableElement;
+					table.style.cssText = 'width:100%;border-collapse:collapse;';
+					const thead = append(table, $('thead'));
+					const headerRow = append(thead, $('tr'));
+					for (const col of result.columns) {
+						const th = append(headerRow, $('th')) as HTMLElement;
+						th.textContent = col;
+						th.style.cssText = 'text-align:left;padding:4px 8px;border-bottom:1px solid var(--vscode-widget-border);font-weight:600;';
+					}
+					const tbody = append(table, $('tbody'));
+					for (const row of result.rows.slice(0, 50)) {
+						const tr = append(tbody, $('tr'));
+						for (const cell of row) {
+							const td = append(tr, $('td'));
+							td.textContent = typeof cell === 'object' ? cell?.name || JSON.stringify(cell).substring(0, 80) : String(cell);
+							td.style.cssText = 'padding:3px 8px;border-bottom:1px solid var(--vscode-widget-border);';
+						}
+					}
+				} catch (err: any) {
+					resultsDiv.textContent = `Error: ${err.message}`;
+					resultsDiv.style.color = 'var(--vscode-errorForeground)';
+				} finally {
+					execBtn.disabled = false;
+				}
+			}, 0);
+		};
+
+		execBtn.onclick = runQuery;
+		input.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { runQuery(); }
+		});
+
+		semBtn.onclick = () => {
+			const query = input.value.trim();
+			if (!query) { return; }
+			clearNode(resultsDiv);
+			resultsDiv.textContent = '⏳ Searching...';
+			resultsDiv.style.color = 'var(--vscode-descriptionForeground)';
+			semBtn.disabled = true;
+			setTimeout(() => {
+				try {
+					const results = this._graphService.semanticSearch(query, 20);
+					clearNode(resultsDiv);
+					if (results.length === 0) {
+						resultsDiv.textContent = 'No results';
+						return;
+					}
+					for (const r of results) {
+						const row = append(resultsDiv, $('div'));
+						row.style.cssText = 'padding:4px 0;border-bottom:1px solid var(--vscode-widget-border);';
+						const nameSpan = append(row, $('span'));
+						nameSpan.textContent = r.node.name;
+						nameSpan.style.cssText = 'color:#80a0ff;font-weight:600;';
+						const scoreSpan = append(row, $('span'));
+						scoreSpan.textContent = ` (score: ${r.score.toFixed(3)})`;
+						scoreSpan.style.cssText = 'color:var(--vscode-descriptionForeground);';
+						const fileSpan = append(row, $('div'));
+						fileSpan.textContent = r.node.filePath || '';
+						fileSpan.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:10px;';
+					}
+				} catch (err: any) {
+					resultsDiv.textContent = `Error: ${err.message}`;
+					resultsDiv.style.color = 'var(--vscode-errorForeground)';
+				} finally {
+					semBtn.disabled = false;
+				}
+			}, 0);
+		};
+	}
+
+	// ─── Analysis Tools (P3 API) ──────────────────────────────────────────
+
+	private _renderAnalysisTools(): void {
+		if (!this._content) { return; }
+
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '🔬 Analysis Tools';
+
+		const body = append(section, $('.cbm-section-body'));
+
+		// Trace Path
+		const traceRow = append(body, $('.cbm-config-row'));
+		const traceSource = append(traceRow, $('input.cbm-input')) as HTMLInputElement;
+		traceSource.placeholder = 'Source function name...';
+		traceSource.style.fontSize = '11px';
+		const traceTarget = append(traceRow, $('input.cbm-input')) as HTMLInputElement;
+		traceTarget.placeholder = 'Target function (optional)...';
+		traceTarget.style.fontSize = '11px';
+		const traceBtn = append(body, $('.cbm-btn.primary')) as HTMLButtonElement;
+		traceBtn.textContent = '🔍 Trace Path';
+		traceBtn.style.fontSize = '12px';
+		traceBtn.style.marginTop = '6px';
+
+		const traceResult = append(body, $('div'));
+		traceResult.style.cssText = 'margin-top:8px;max-height:200px;overflow-y:auto;background:var(--vscode-input-background);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:8px;font-family:monospace;font-size:11px;';
+
+		traceBtn.onclick = () => {
+			const src = traceSource.value.trim();
+			if (!src) { return; }
+			clearNode(traceResult);
+			traceResult.textContent = '⏳ Tracing...';
+			traceResult.style.color = 'var(--vscode-descriptionForeground)';
+			traceBtn.disabled = true;
+			setTimeout(() => {
+				try {
+					const result = this._graphService.tracePathAdvanced(src, traceTarget.value.trim() || undefined, { mode: 'calls', maxDepth: 10 });
+					clearNode(traceResult);
+					if (!result || (result.path && result.path.length === 0)) {
+						traceResult.textContent = 'No path found';
+						traceResult.style.color = 'var(--vscode-descriptionForeground)';
+						return;
+					}
+					if (result.path) {
+						for (const node of result.path) {
+							const row = append(traceResult, $('div'));
+							row.style.cssText = 'padding:2px 0;';
+							row.textContent = `→ ${node.name || node.qualifiedName || node.id}`;
+						}
+						if (result.risk) {
+							const risk = append(traceResult, $('div'));
+							risk.style.cssText = 'margin-top:6px;color:var(--vscode-errorForeground);font-weight:600;';
+							risk.textContent = `⚠ Risk: ${result.risk}`;
+						}
+					}
+				} catch (err: any) {
+					traceResult.textContent = `Error: ${err.message}`;
+					traceResult.style.color = 'var(--vscode-errorForeground)';
+				} finally {
+					traceBtn.disabled = false;
+				}
+			}, 0);
+		};
+
+		// Dead Code Detection
+		const deadCodeBtn = append(body, $('.cbm-btn')) as HTMLButtonElement;
+		deadCodeBtn.textContent = '💀 Detect Dead Code';
+		deadCodeBtn.style.fontSize = '12px';
+		deadCodeBtn.style.marginTop = '8px';
+
+		const deadCodeResult = append(body, $('div'));
+		deadCodeResult.style.cssText = 'margin-top:8px;max-height:200px;overflow-y:auto;background:var(--vscode-input-background);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:8px;font-size:11px;';
+
+		deadCodeBtn.onclick = () => {
+			clearNode(deadCodeResult);
+			const nodeCount = this._graphService.getTotalNodeCount();
+			if (nodeCount > 50000) {
+				deadCodeResult.textContent = `⚠️ Graph too large (${nodeCount} nodes). Dead code detection requires <50k nodes.`;
+				deadCodeResult.style.color = 'var(--vscode-descriptionForeground)';
+				return;
+			}
+			deadCodeResult.textContent = '⏳ Analyzing...';
+			deadCodeResult.style.color = 'var(--vscode-descriptionForeground)';
+			deadCodeBtn.disabled = true;
+			// Defer to next tick so UI updates before heavy computation
+			setTimeout(() => {
+				try {
+					const report = this._graphService.getArchitectureAdvanced(['deadCode']);
+					clearNode(deadCodeResult);
+					if (report.deadCode) {
+						const dc = report.deadCode;
+						const summary = append(deadCodeResult, $('div'));
+						summary.style.cssText = 'font-weight:600;margin-bottom:6px;';
+						summary.textContent = `${dc.deadNodes} dead / ${dc.totalNodes} total (${dc.entryPoints} entry points)`;
+
+						if (dc.deadFunctions.length > 0) {
+							const title = append(deadCodeResult, $('div'));
+							title.style.cssText = 'color:var(--vscode-descriptionForeground);margin-top:6px;';
+							title.textContent = `Dead functions (${dc.deadFunctions.length}):`;
+							for (const fn of dc.deadFunctions.slice(0, 20)) {
+								const row = append(deadCodeResult, $('div'));
+								row.style.cssText = 'padding:1px 0 1px 12px;color:var(--vscode-errorForeground);';
+								row.textContent = `  ${fn.name} — ${fn.filePath}`;
+							}
+						}
+					}
+				} catch (err: any) {
+					deadCodeResult.textContent = `Error: ${err.message}`;
+					deadCodeResult.style.color = 'var(--vscode-errorForeground)';
+				} finally {
+					deadCodeBtn.disabled = false;
+				}
+			}, 0);
+		};
+
+		// Code Snippet Viewer
+		const snippetRow = append(body, $('.cbm-config-row'));
+		const snippetInput = append(snippetRow, $('input.cbm-input')) as HTMLInputElement;
+		snippetInput.placeholder = 'Qualified name (e.g., src/main::getUserInfo)...';
+		snippetInput.style.fontSize = '11px';
+		const snippetBtn = append(body, $('.cbm-btn')) as HTMLButtonElement;
+		snippetBtn.textContent = '📄 View Code';
+		snippetBtn.style.fontSize = '12px';
+		snippetBtn.style.marginTop = '6px';
+
+		const snippetResult = append(body, $('div'));
+		snippetResult.style.cssText = 'margin-top:8px;max-height:300px;overflow-y:auto;background:var(--vscode-input-background);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:8px;font-family:monospace;font-size:11px;white-space:pre-wrap;';
+
+		snippetBtn.onclick = async () => {
+			const qn = snippetInput.value.trim();
+			if (!qn) { return; }
+			clearNode(snippetResult);
+			snippetResult.textContent = 'Loading...';
+			snippetResult.style.color = 'var(--vscode-descriptionForeground)';
+			try {
+				const snippet = await this._graphService.getCodeSnippet(qn, 5);
+				clearNode(snippetResult);
+				if (!snippet) {
+					snippetResult.textContent = 'Node not found';
+					snippetResult.style.color = 'var(--vscode-descriptionForeground)';
+					return;
+				}
+				snippetResult.style.color = 'var(--vscode-editor-foreground)';
+				// Header
+				const header = append(snippetResult, $('div'));
+				header.style.cssText = 'color:#80a0ff;font-weight:600;margin-bottom:6px;border-bottom:1px solid var(--vscode-widget-border);padding-bottom:4px;';
+				header.textContent = `${snippet.filePath}:${snippet.startLine}-${snippet.endLine} (${snippet.language})`;
+				// Code content with line numbers
+				const code = append(snippetResult, $('div'));
+				code.textContent = snippet.content;
+				code.style.cssText = 'white-space:pre;';
+			} catch (err: any) {
+				clearNode(snippetResult);
+				snippetResult.textContent = `Error: ${err.message}`;
+				snippetResult.style.color = 'var(--vscode-errorForeground)';
+			}
+		};
+
+		// Change Detection
+		const changesBtn = append(body, $('.cbm-btn')) as HTMLButtonElement;
+		changesBtn.textContent = '📊 Detect Changes';
+		changesBtn.style.fontSize = '12px';
+		changesBtn.style.marginTop = '8px';
+
+		const changesResult = append(body, $('div'));
+		changesResult.style.cssText = 'margin-top:8px;font-size:11px;color:var(--vscode-descriptionForeground);';
+
+		changesBtn.onclick = async () => {
+			clearNode(changesResult);
+			changesResult.textContent = 'Analyzing...';
+			try {
+				const result = await this._graphService.detectChanges({ impactAnalysis: true });
+				clearNode(changesResult);
+				changesResult.textContent = `Changed: ${result.changedCount} files | Affected: ${result.affectedNodes} nodes | Downstream: ${result.downstreamImpact} | Risk: ${result.riskLevel}`;
+				changesResult.style.color = result.riskLevel === 'Critical' || result.riskLevel === 'High'
+					? 'var(--vscode-errorForeground)'
+					: 'var(--vscode-descriptionForeground)';
+			} catch (err: any) {
+				changesResult.textContent = `Error: ${err.message}`;
+				changesResult.style.color = 'var(--vscode-errorForeground)';
+			}
+		};
+	}
+
+	// ─── Project Manager (Multi-Project) ──────────────────────────────────
+
+	private _renderProjectManager(): void {
+		if (!this._content) { return; }
+
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '📁 Projects';
+
+		const body = append(section, $('.cbm-section-body'));
+
+		try {
+			const projects = this._graphService.listProjects();
+			if (projects.length === 0) {
+				const empty = append(body, $('div'));
+				empty.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:12px;';
+				empty.textContent = 'No indexed projects.';
+				return;
+			}
+
+			for (const proj of projects) {
+				const row = append(body, $('.cbm-info-item'));
+				append(row, $('.key')).textContent = proj.name;
+				append(row, $('.val')).textContent = `${proj.nodeCount} nodes · ${proj.edgeCount} edges · ${proj.fileCount} files`;
+
+				if (projects.length > 1) {
+					const delBtn = append(row, $('.cbm-btn')) as HTMLButtonElement;
+					delBtn.textContent = '✗';
+					delBtn.style.cssText = 'font-size:10px;padding:1px 6px;margin-left:8px;';
+					delBtn.onclick = () => {
+						try {
+							this._graphService.deleteProject(proj.name);
+							this._renderAll().catch(() => { });
+						} catch { /* ignore */ }
+					};
+				}
+			}
+		} catch { /* ignore */ }
+	}
+
+	// ─── Progress Section ─────────────────────────────────────────────────
+
+	private _renderProgress(): void {
+		if (!this._content) { return; }
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '⏳ Indexing...';
+		append(header, $('.badge.warn')).textContent = 'In Progress';
+
+		const body = append(section, $('.cbm-section-body'));
+		const progress = append(body, $('.cbm-progress'));
+		const bar = append(progress, $('.cbm-progress-bar')) as HTMLElement;
+		bar.style.width = '0%';
+
+		// Animate progress bar (indeterminate since we don't have exact progress)
+		let pct = 0;
+		const interval = setInterval(() => {
+			pct = Math.min(95, pct + Math.random() * 15);
+			bar.style.width = `${pct}%`;
+			if (!this._graphService.isIndexing) {
+				clearInterval(interval);
+				bar.style.width = '100%';
+			}
+		}, 1000);
+	}
+
+	// ─── Log Section ──────────────────────────────────────────────────────
+
+	private _renderLogSection(): void {
+		if (!this._content) { return; }
+		const section = append(this._content, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		append(header, $('h2')).textContent = '📋 Activity Log';
+
+		const copyBtn = append(header, $('.cbm-btn')) as HTMLButtonElement;
+		copyBtn.textContent = '📋 Copy All';
+		copyBtn.style.padding = '3px 10px';
+		copyBtn.style.fontSize = '11px';
+		copyBtn.onclick = async () => {
+			const text = this._logLines.join('\n');
+			try {
+				await navigator.clipboard.writeText(text);
+				copyBtn.textContent = '✓ Copied';
+			} catch {
+				const ta = document.createElement('textarea');
+				ta.value = text;
+				ta.style.position = 'fixed';
+				ta.style.opacity = '0';
+				document.body.appendChild(ta);
+				ta.select();
+				document.execCommand('copy');
+				document.body.removeChild(ta);
+				copyBtn.textContent = '✓ Copied';
+			}
+			setTimeout(() => { copyBtn.textContent = '📋 Copy All'; }, 1500);
+		};
+
+		const body = append(section, $('.cbm-section-body'));
+		this._logContent = append(body, $('.cbm-log'));
 	}
 
 	private _renderLog(): void {
 		if (!this._logContent) { return; }
-		// Merge installLog from status into _logLines (if any new entries)
-		if (this._status?.installLog && this._status.installLog.length > 0) {
-			for (const line of this._status.installLog) {
-				if (!this._logLines.includes(line)) {
-					this._logLines.push(line);
-				}
-			}
-		}
 		clearNode(this._logContent);
 		if (this._logLines.length === 0) {
 			this._logContent.textContent = '暂无日志';
+			this._logContent.classList.add('cbm-log-empty');
 			return;
 		}
+		this._logContent.classList.remove('cbm-log-empty');
 		for (const line of this._logLines) {
-			const el = append(this._logContent, $('.cbm-log-line'));
-			el.textContent = line;
-			if (line.startsWith('✓')) { el.classList.add('success'); }
-			else if (line.startsWith('✗')) { el.classList.add('error'); }
-			else if (line.startsWith('⚠') || line.startsWith('  !')) { el.classList.add('warn'); }
+			this._appendLogLineEl(line);
 		}
-		// Auto-scroll to bottom
 		this._logContent.scrollTop = this._logContent.scrollHeight;
 	}
 
 	private _appendLogLine(line: string): void {
-		// Persist to instance variable for survival across re-renders
 		this._logLines.push(line);
 		if (!this._logContent) { return; }
-		// Remove "暂无日志" placeholder
 		if (this._logContent.children.length === 0 || this._logContent.textContent === '暂无日志') {
 			clearNode(this._logContent);
+			this._logContent.classList.remove('cbm-log-empty');
 		}
-		const el = append(this._logContent, $('.cbm-log-line'));
-		el.textContent = line;
+		this._appendLogLineEl(line);
+		this._logContent.scrollTop = this._logContent.scrollHeight;
+	}
+
+	private _appendLogLineEl(line: string): void {
+		const el = append(this._logContent!, $('.cbm-log-line'));
+		const now = new Date();
+		const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+		const tsSpan = append(el, $('span'));
+		tsSpan.style.color = 'var(--vscode-descriptionForeground)';
+		tsSpan.style.marginRight = '8px';
+		tsSpan.textContent = ts;
+		const textSpan = append(el, $('span'));
+		textSpan.textContent = line;
 		if (line.startsWith('✓')) { el.classList.add('success'); }
 		else if (line.startsWith('✗')) { el.classList.add('error'); }
-		else if (line.startsWith('⚠') || line.startsWith('  !')) { el.classList.add('warn'); }
-		this._logContent.scrollTop = this._logContent.scrollHeight;
+		else if (line.startsWith('⚠') || line.startsWith('▶')) { el.classList.add('warn'); }
+		else if (line.startsWith('📊') || line.startsWith('⏳') || line.startsWith('🔗')) { el.classList.add('info'); }
+	}
+
+	// ─── Helpers ──────────────────────────────────────────────────────────
+
+	private _openFolder(filePath: string): void {
+		const uri = URI.file(filePath);
+		this.commandService.executeCommand('revealFileInOS', uri);
+	}
+
+	private _formatSize(bytes: number): string {
+		if (bytes > 1024 * 1024) { return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
+		if (bytes > 1024) { return `${(bytes / 1024).toFixed(2)} KB`; }
+		return `${bytes} B`;
+	}
+
+	private _formatTime(date: Date): string {
+		const now = new Date();
+		const diffMs = now.getTime() - date.getTime();
+		const diffMin = Math.floor(diffMs / 60000);
+		if (diffMin < 1) { return 'just now'; }
+		if (diffMin < 60) { return `${diffMin}m ago`; }
+		const diffHr = Math.floor(diffMin / 60);
+		if (diffHr < 24) { return `${diffHr}h ago`; }
+		return date.toLocaleDateString();
 	}
 
 	override layout(_dimension: { width: number; height: number }): void {

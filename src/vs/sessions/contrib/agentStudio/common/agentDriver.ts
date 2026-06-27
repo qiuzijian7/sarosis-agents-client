@@ -5,7 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import type { IAgentTurnRequest, IChatMessage, IChatStreamDelta } from './providers.js';
+import type { IAgentTurnRequest, IChatMessage, IChatStreamDelta, IMemoryProvider } from './providers.js';
 import type { IChatSendOptions } from './agentStudio.js';
 
 // ─── Agent Driver Service ─────────────────────────────────────────
@@ -63,6 +63,11 @@ export interface IAgentDriverService {
 	 * 获取指定轮次的当前状态
 	 */
 	getTurnStatus(turnId: string): AgentTurnStatus;
+
+	/**
+	 * 获取当前活跃的 Memory Provider（供 chatService 订阅其 lifecycle 事件）
+	 */
+	getActiveMemoryProvider(): IMemoryProvider | undefined;
 }
 
 export const enum AgentTurnStatus {

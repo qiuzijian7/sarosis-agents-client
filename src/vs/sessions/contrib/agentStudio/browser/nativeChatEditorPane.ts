@@ -103,6 +103,8 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	protected createEditor(parent: HTMLElement): void {
+		const t0 = performance.now();
+		console.warn(`[NativeChatEditorPane][Init] createEditor START t=${t0.toFixed(0)}ms`);
 		this._container = document.createElement('div');
 		this._container.classList.add('native-chat-editor-pane');
 		this._container.style.width = '100%';
@@ -111,12 +113,15 @@ export class NativeChatEditorPane extends EditorPane {
 		parent.appendChild(this._container);
 
 		this._initChatPanel();
+		console.warn(`[NativeChatEditorPane][Init] createEditor END t=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
 	private _initChatPanel(): void {
 		if (this._isInitialized || !this._container) {
 			return;
 		}
+		const t0 = performance.now();
+		console.warn(`[NativeChatEditorPane][Init] _initChatPanel START`);
 
 		this._chatPanel = this._register(new AgentChatPanel({
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[]) => {
@@ -279,18 +284,18 @@ export class NativeChatEditorPane extends EditorPane {
 								}
 								break;
 							}
-								case 'tool_result': {
-									if (!assistantMsg || !assistantId) return;
-									const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-									if (resultCall) {
-										resultCall.result = delta.content;
-										if (resultCall.status === 'running') { resultCall.status = 'success'; }
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls!.slice(),
-										});
-									}
-									break;
+							case 'tool_result': {
+								if (!assistantMsg || !assistantId) return;
+								const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+								if (resultCall) {
+									resultCall.result = delta.content;
+									if (resultCall.status === 'running') { resultCall.status = 'success'; }
+									this._chatPanel?.updateMessage(assistantId, {
+										toolCalls: assistantMsg.toolCalls!.slice(),
+									});
 								}
+								break;
+							}
 								case 'phase_change':
 									// Phase changes can arrive before any content — don't create msg for them
 									if (delta.phase) {
@@ -303,29 +308,32 @@ export class NativeChatEditorPane extends EditorPane {
 										});
 									}
 									break;
-								case 'done': {
-									// Edge case: if no content ever arrived, ensure msg exists for done-state
-									if (!assistantAdded && assistantId === null) {
-										ensureAssistantMsg();
-									}
-									if (assistantMsg && assistantId) {
-										if (assistantMsg.toolCalls) {
-											for (const tc of assistantMsg.toolCalls) {
-												if (tc.status === 'running') { tc.status = 'success'; }
-											}
-										}
-										this._chatPanel?.setStreamPhase('idle');
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
-											isStreaming: false,
-											isThinking: false,
-											streamPhase: 'idle',
-										});
-									}
-									this._chatPanel?.setSending(false);
-									this._isSending = false;
-									break;
+							case 'done': {
+								// Edge case: if no content ever arrived, ensure msg exists for done-state
+								if (!assistantAdded && assistantId === null) {
+									ensureAssistantMsg();
 								}
+								if (assistantMsg && assistantId) {
+									if (assistantMsg.toolCalls) {
+										for (const tc of assistantMsg.toolCalls) {
+											if (tc.status === 'running') { tc.status = 'success'; }
+										}
+									}
+									// 单次 LLM 开始到结束的耗时（ms）
+									const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
+									this._chatPanel?.setStreamPhase('idle');
+									this._chatPanel?.updateMessage(assistantId, {
+										toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
+										isStreaming: false,
+										isThinking: false,
+										streamPhase: 'idle',
+										metadata: { ...(assistantMsg.metadata || {}), durationMs },
+									});
+								}
+								this._chatPanel?.setSending(false);
+								this._isSending = false;
+								break;
+							}
 								case 'error':
 									// Ensure assistant msg exists to show error state
 									if (!assistantAdded && assistantId === null) {
@@ -343,25 +351,29 @@ export class NativeChatEditorPane extends EditorPane {
 									this._chatPanel?.setSending(false);
 									this._isSending = false;
 									break;
-								case 'usage':
-									if (delta.usage && assistantMsg && assistantId) {
-										const input = delta.usage.inputTokens ?? 0;
-										const output = delta.usage.outputTokens ?? 0;
-										const total = input + output;
-										assistantMsg.tokenUsage = { input, output, total };
-										this._chatPanel?.updateMessage(assistantId, {
-											tokenUsage: { input, output, total },
+							case 'usage':
+								if (delta.usage && assistantMsg && assistantId) {
+									const input = delta.usage.inputTokens ?? 0;
+									const output = delta.usage.outputTokens ?? 0;
+									const total = delta.usage.totalTokens ?? (input + output);
+									const cachedRead = delta.usage.cachedTokens ?? 0;
+									const cacheWrite = delta.usage.cacheWriteTokens ?? 0;
+									const credit = delta.usage.credit;
+									const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
+									const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
+									const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit };
+									assistantMsg.tokenUsage = tokenUsage;
+									this._chatPanel?.updateMessage(assistantId, { tokenUsage });
+									// 更新上下文环进度条
+									const limit = this._currentMaxContextTokens ?? 0;
+									if (limit > 0) {
+										this._chatPanel?.setStreamUsage({
+											input: delta.usage.inputTokens ?? 0,
+											output: delta.usage.outputTokens ?? 0,
+											seen: true,
 										});
-										// 更新上下文环进度条
-										const limit = this._currentMaxContextTokens ?? 0;
-										if (limit > 0) {
-											this._chatPanel?.setStreamUsage({
-												input: delta.usage.inputTokens ?? 0,
-												output: delta.usage.outputTokens ?? 0,
-												seen: true,
-											});
-										}
 									}
+								}
 								break;
 							case 'context_compacted': {
 								// 上下文压缩完成：更新上下文环基线 + 添加压缩提示卡片
@@ -400,7 +412,7 @@ export class NativeChatEditorPane extends EditorPane {
 								break;
 							}
 						case 'memory_extracted': {
-							// LLM 输出 <memory_extract> 标签被捕获 → 显示记忆卡片
+							// LLM 输出 <memory_extract> 标签被捕获 → 显示记忆卡片（同步，已提取）
 							const memContent = (delta as any).content ?? '';
 							const memMeta = (delta as any).metadata ?? {};
 							if (memContent) {
@@ -411,23 +423,61 @@ export class NativeChatEditorPane extends EditorPane {
 									sceneName: memMeta.sceneName,
 									assistantContentPreview: memMeta.assistantContentPreview,
 									iteration: memMeta.iteration,
+									status: 'saved',
 								});
 								}
 								break;
 							}
-							case 'codebase_operation': {
-								// codebase-memory MCP 工具被调用 → 显示代码库记忆卡片
-								const cbMeta = (delta as any).metadata ?? {};
-								const operation = cbMeta.operation ?? 'search';
-								const toolName = cbMeta.toolName ?? (delta as any).content ?? '';
-								if (toolName) {
-									this._chatPanel?.addCodebaseNotice({
-										operation,
-										detail: toolName,
-									});
-								}
-								break;
+						case 'memory_writing': {
+							// L0 记忆写入开始 → 显示 pending 卡片（含 noticeId 供后续更新）
+							const memContent = (delta as any).content ?? '';
+							const memMeta = (delta as any).metadata ?? {};
+							if (memContent) {
+								this._chatPanel?.addMemoryNotice({
+									content: memContent,
+									memoryType: memMeta.memoryType,
+									priority: memMeta.priority,
+									sceneName: memMeta.sceneName,
+									assistantContentPreview: memMeta.assistantContentPreview,
+									iteration: memMeta.iteration,
+									noticeId: memMeta.noticeId,
+									status: 'pending',
+								});
 							}
+							break;
+						}
+					case 'memory_written': {
+						// L0 记忆写入成功 → 更新 pending 卡片为 saved（或移除空内容卡片）
+						const memMeta = (delta as any).metadata ?? {};
+						if (memMeta.noticeId) {
+							if (memMeta.remove) {
+								this._chatPanel?.removeMemoryNotice(memMeta.noticeId);
+							} else {
+								this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'saved', (delta as any).content);
+							}
+						}
+						break;
+					}
+					case 'memory_write_failed': {
+						// L0 记忆写入失败 → 更新 pending 卡片为 failed
+						const memMeta = (delta as any).metadata ?? {};
+						if (memMeta.noticeId) {
+							this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'failed', (delta as any).content);
+						}
+						break;
+					}
+						case 'memory_injected': {
+							// 记忆上下文已注入 system prompt → 显示注入通知卡片
+							const memContent = (delta as any).content ?? '';
+							if (memContent) {
+								this._chatPanel?.addMemoryNotice({
+									content: memContent,
+									memoryType: 'injected',
+									status: 'saved',
+								});
+							}
+							break;
+						}
 							default:
 								break;
 							}
@@ -779,6 +829,7 @@ export class NativeChatEditorPane extends EditorPane {
 
 		this._container.appendChild(this._chatPanel.element);
 		this._isInitialized = true;
+		console.warn(`[NativeChatEditorPane][Init] _initChatPanel panel constructed + appended t=${(performance.now() - t0).toFixed(1)}ms`);
 
 		// 设置系统消息面板的详情回调
 		this._chatPanel?.setOpenCompressionDetailCallback((data) => {
@@ -806,18 +857,33 @@ export class NativeChatEditorPane extends EditorPane {
 				console.error('[NativeChatEditorPane] Failed to open codebase memory detail:', err);
 			});
 		});
+		console.warn(`[NativeChatEditorPane][Init] callbacks set up t=${(performance.now() - t0).toFixed(1)}ms`);
 
 		// Load available agents
+		console.warn(`[NativeChatEditorPane][Init] calling _loadAvailableAgents t=${(performance.now() - t0).toFixed(1)}ms`);
 		this._loadAvailableAgents();
 
 		// Model selector wiring — initialize provider/model data for toolbar
-		void this._refreshModelSelector();
+		// Debounce: multiple onDidChangeAvailableModels events fire in rapid
+		// succession as providers register (observed 7+ calls). Only refresh
+		// once after the burst settles.
+		let modelSelectorTimer: ReturnType<typeof setTimeout> | null = null;
+		const debouncedRefreshModelSelector = () => {
+			if (modelSelectorTimer) { clearTimeout(modelSelectorTimer); }
+			modelSelectorTimer = setTimeout(() => {
+				modelSelectorTimer = null;
+				void this._refreshModelSelector();
+			}, 300);
+		};
+		console.warn(`[NativeChatEditorPane][Init] calling _refreshModelSelector (debounced) t=${(performance.now() - t0).toFixed(1)}ms`);
+		debouncedRefreshModelSelector();
 		this._register(this._modelSelector.onDidChangeSelection(() => {
-			void this._refreshModelSelector();
+			debouncedRefreshModelSelector();
 		}));
 		this._register(this._modelSelector.onDidChangeAvailableModels(() => {
-			void this._refreshModelSelector();
+			debouncedRefreshModelSelector();
 		}));
+		this._register({ dispose: () => { if (modelSelectorTimer) { clearTimeout(modelSelectorTimer); } } });
 
 		// Listen for agent selection from agentStudio webview/external sources
 		this._register(this._agentStudioService.onDidSelectAgent(async (agentId) => {
@@ -1353,8 +1419,11 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	private async _selectAndLoadAgent(agentId: string): Promise<void> {
+		const t0 = performance.now();
+		console.warn(`[NativeChatEditorPane][Init] _selectAndLoadAgent START agentId=${agentId}`);
 		try {
 			const emp = await this._agentStudioService.getAgent(agentId);
+			console.warn(`[NativeChatEditorPane][Init] getAgent done t=${(performance.now() - t0).toFixed(1)}ms`);
 			if (emp && this._chatPanel) {
 				this._currentAgentId = agentId;
 				this._chatPanel.setAgent({
@@ -1371,14 +1440,24 @@ export class NativeChatEditorPane extends EditorPane {
 				});
 				// Auto-create or get active session for this agent
 				try {
+					console.warn(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
 					const session = await this._chatService.getOrCreateActiveSession(agentId);
 					this._currentSessionId = session.id;
-					console.log(`[NativeChatEditorPane] Active session for agent ${agentId}: ${session.id}`);
-					
+					console.warn(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
+
 					// Load history messages for this session
 					try {
+						console.warn(`[NativeChatEditorPane][Init] calling getHistory t=${(performance.now() - t0).toFixed(1)}ms`);
 						const history = await this._chatService.getHistory(agentId, this._currentSessionId);
-						this._chatPanel.setMessages(this._adaptHistoryMessages(history));
+						console.warn(`[NativeChatEditorPane][Init] getHistory done count=${history?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
+						// Yield to event loop: let the input box render and become
+						// interactive BEFORE the heavy synchronous setMessages call
+						// (which blocks ~1.4s for 259 messages).
+						const adapted = this._adaptHistoryMessages(history);
+						await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+						console.warn(`[NativeChatEditorPane][Init] setMessages START (after yield) t=${(performance.now() - t0).toFixed(1)}ms`);
+						this._chatPanel.setMessages(adapted);
+						console.warn(`[NativeChatEditorPane][Init] setMessages done t=${(performance.now() - t0).toFixed(1)}ms`);
 						// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
 						this._restoreCompactedBaseline();
 					} catch (err) {
@@ -1387,6 +1466,7 @@ export class NativeChatEditorPane extends EditorPane {
 					}
 					// Register active session for checkpoint scoping & refresh checkpoint bar
 					this._activateCheckpointSession(agentId, this._currentSessionId);
+					console.warn(`[NativeChatEditorPane][Init] _selectAndLoadAgent END t=${(performance.now() - t0).toFixed(1)}ms`);
 				} catch (err) {
 					console.warn('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
 				}
@@ -1584,8 +1664,11 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	private async _loadAvailableAgents(): Promise<void> {
+		const t0 = performance.now();
+		console.warn(`[NativeChatEditorPane][Init] _loadAvailableAgents START`);
 		try {
 			const agents = await this._agentStudioService.getAgents();
+			console.warn(`[NativeChatEditorPane][Init] _loadAvailableAgents getAgents done count=${agents?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 			console.info(
 				`[NativeChatEditorPane] _loadAvailableAgents: fetched ${agents?.length ?? 0} agents — ` +
 				`ids=[${(agents ?? []).map(a => a.id).join(', ')}]`
@@ -1634,8 +1717,11 @@ export class NativeChatEditorPane extends EditorPane {
 		if (!this._chatPanel) {
 			return;
 		}
+		const t0 = performance.now();
+		console.warn(`[NativeChatEditorPane][Init] _refreshModelSelector START`);
 		try {
 			const items = await this._modelSelector.getAvailableModels();
+			console.warn(`[NativeChatEditorPane][Init] _refreshModelSelector getAvailableModels done count=${items?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 
 			// Provider list — unique by id, preserving order
 			const seenProviders = new Set<string>();

@@ -6,7 +6,7 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
-import { IAgentTurnRequest, IMemoryContext } from '../common/providers.js';
+import { IAgentTurnRequest, IMemoryContext, IMemoryProvider } from '../common/providers.js';
 import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
@@ -19,6 +19,7 @@ import { filterToolsByChatMode } from '../common/chatModeConfig.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
+import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -41,6 +42,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly _fileService: IFileService,
+		@IMcpService private readonly _mcpService: IMcpService,
 	) {
 		super();
 		this._logService = logService;
@@ -216,7 +218,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 				// ── 注入 Persona Memory（永久事实，最高优先级）────────────────────
 				//
-				// 这些是用户在 Memory Tab 手动维护的硬性事实/规则，与 TDB-AM 的
+				// 这些是用户在 Memory Tab 手动维护的硬性事实/规则，与 AgentMemory 的
 				// L0/L1 自动召回互补：
 				//   - L0/L1：程序性记忆（对话历史/摘要），由模型自动产生，会随时间衰减
 				//   - Persona Memory：硬编码事实，由用户显式设定，永不衰减
@@ -311,18 +313,22 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					const alwaysSkills = allSkills.filter(s => s.activation === 'always');
 					const onDemandSkills = allSkills.filter(s => s.activation !== 'always');
 
-					// 构建 OpenClaw 风格的 XML 目录
-					const buildSkillEntry = (s: typeof allSkills[0], compact: boolean): string => {
-						const lines = ['  <skill>'];
-						lines.push(`    <name>${s.name}</name>`);
-						if (!compact && s.description) {
-							lines.push(`    <description>${s.description}</description>`);
-						}
-						lines.push(`    <id>${s.id}</id>`);
-						lines.push(`    <activation>${s.activation}</activation>`);
-						lines.push('  </skill>');
-						return lines.join('\n');
-					};
+				// 构建 OpenClaw 风格的 XML 目录
+				const buildSkillEntry = (s: typeof allSkills[0], compact: boolean): string => {
+					const lines = ['  <skill>'];
+					lines.push(`    <name>${s.name}</name>`);
+					if (!compact && s.description) {
+						// 截断描述到 80 字符，减少 XML 目录体积（参考 Hermes-Agent 60 字符策略）
+						const desc = s.description.length > 80
+							? s.description.slice(0, 77) + '...'
+							: s.description;
+						lines.push(`    <description>${desc}</description>`);
+					}
+					lines.push(`    <id>${s.id}</id>`);
+					lines.push(`    <activation>${s.activation}</activation>`);
+					lines.push('  </skill>');
+					return lines.join('\n');
+				};
 
 					// 策略：先尝试完整格式，超预算则降级为 compact（去 description）
 					let skillsToInclude = [...alwaysSkills, ...onDemandSkills].slice(0, MAX_SKILLS_IN_PROMPT);
@@ -363,6 +369,36 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					mergedSystemPrompt = mergedSystemPrompt + skillListSection;
 				}
 
+				// 3a-1b. 注入 MCP 服务器摘要（让 LLM 知道有哪些 MCP 能力可用，通过桥接工具访问）
+				{
+					const servers = this._mcpService.servers.get();
+					const runningServers = servers.filter(s => {
+						const conn = s.connectionState.get();
+						return conn.state === McpConnectionState.Kind.Running;
+					});
+					if (runningServers.length > 0) {
+						const serverLines = runningServers.map(s => {
+							const label = s.definition.label;
+							const toolCount = s.tools.get().length;
+							// 取第一个工具的描述首句作为服务器能力摘要
+							const tools = s.tools.get();
+							const firstDesc = tools.length > 0 ? (tools[0].definition.description || '') : '';
+							const summary = firstDesc.slice(0, 80);
+							return `  - ${label}: ${toolCount} tool(s)${summary ? `. ${summary}` : ''}`;
+						});
+						const mcpSection = [
+							'',
+							'## MCP Servers',
+							'',
+							'MCP tools are available via bridge tools. Use `mcp_tool_search(query)` to find tools, then `mcp_tool_call(name, args)` to execute.',
+							'',
+							...serverLines,
+							'',
+						].join('\n');
+						mergedSystemPrompt = mergedSystemPrompt + mcpSection;
+					}
+				}
+
 				// 3a-2. 注入已启用工具的使用指引（让模型知道有工具可用）
 				// 【Knot 特殊处理】当使用 Knot 作为 Model Provider 时，不注入 Available Tools
 				// 因为 Knot 在服务端处理工具，客户端不需要告诉模型有哪些工具
@@ -377,6 +413,24 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 						// Filter tools by chat mode (unified in chatModeConfig)
 						const enabledTools = filterToolsByChatMode(enabledToolsRaw, chatMode);
+
+						// ─── 诊断：系统提示词构建时的工具状态 ──────────────────
+						const mcpAll = allTools.filter(t => t.category?.startsWith('mcp:'));
+						const mcpEnabled = enabledToolsRaw.filter(t => t.category?.startsWith('mcp:'));
+						const mcpAfterFilter = enabledTools.filter(t => t.category?.startsWith('mcp:'));
+						this._logService.info(
+							`[AgentDriver] Tool inventory: all=${allTools.length}, enabled=${enabledToolsRaw.length}, ` +
+							`afterChatModeFilter=${enabledTools.length} (mode=${chatMode})\n` +
+							`  MCP: all=${mcpAll.length}, enabled=${mcpEnabled.length}, afterFilter=${mcpAfterFilter.length}\n` +
+							`  MCP tool names: [${mcpAll.map(t => t.name).join(', ')}]\n` +
+							`  MCP securityLevels: [${mcpAll.map(t => `${t.name}=${t.securityLevel ?? 'undefined'}`).join(', ')}]`
+						);
+						if (mcpAll.length === 0) {
+							this._logService.warn(`[AgentDriver] ⚠ NO MCP TOOLS discovered! McpToolProvider._routes may be empty (server not connected).`);
+						}
+						if (mcpEnabled.length > 0 && mcpAfterFilter.length === 0) {
+							this._logService.warn(`[AgentDriver] ⚠ MCP tools exist (${mcpEnabled.length}) but ALL filtered out by chatMode=${chatMode}! Check securityLevel inference.`);
+						}
 
 						if (enabledTools.length > 0) {
 							const toolSection = [
@@ -393,15 +447,107 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 								'',
 							];
 
-							if (chatMode !== 'ask') {
+						if (chatMode !== 'ask') {
+							toolSection.push(
+								'Usage rules:',
+								'- To execute a shell command (e.g., "print current directory", "list files"), use: **terminal** with {"command": "<your command>"}',
+								'- To read a file, use: **file_read** with {"path": "<file path>"}',
+								'- To write a file, use: **file_write** with {"path": "<file path>", "content": "<content>"}',
+								'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
+							);
+
+							// ─── 动态 MCP 工具引导（描述驱动，无硬编码）──────────────
+							// 不按工具名后缀硬编码匹配，而是：
+							// 1. 按服务器分组 MCP 工具
+							// 2. 从描述中提取使用引导（"Use INSTEAD OF", "First call"等）
+							// 3. 识别分析类工具（描述含 architecture/search/trace/structure 等）
+							// 4. 添加通用指令：分析任务优先使用专用工具而非逐文件读取
+							const mcpTools = enabledTools.filter(t => t.category?.startsWith('mcp:'));
+							if (mcpTools.length > 0) {
+								// 按服务器分组
+								const byServer = new Map<string, typeof mcpTools>();
+								for (const t of mcpTools) {
+									const serverId = t.category!.slice(4); // strip 'mcp:'
+									const arr = byServer.get(serverId) || [];
+									arr.push(t);
+									byServer.set(serverId, arr);
+								}
+
+								// 描述中的使用引导模式（从工具描述自动提取，非硬编码工具名）
+								const guidancePatterns = [
+									/\bUSE INSTEAD OF\b/i,
+									/\bFirst call\b/i,
+									/\bIMPORTANT\b/i,
+									/\bCALL THIS FIRST\b/i,
+									/\brecommended\b/i,
+									/\bMUST\b/i,
+								];
+
+								// 分析类关键词（描述中含这些词的工具更适合代码分析任务）
+								const analysisKeywords = [
+									'architecture', 'structure', 'search', 'trace', 'graph',
+									'code', 'function', 'class', 'call', 'dependency',
+									'relationship', 'snippet', 'path', 'change',
+								];
+
 								toolSection.push(
-									'Usage rules:',
-									'- To execute a shell command (e.g., "print current directory", "list files"), use: **terminal** with {"command": "<your command>"}',
-									'- To read a file, use: **file_read** with {"path": "<file path>"}',
-									'- To write a file, use: **file_write** with {"path": "<file path>", "content": "<content>"}',
-									'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
+									'',
+									'## ⚡ Specialized Tools (MCP) — PREFER THESE for analysis tasks',
+									'',
+									'You have access to specialized MCP tools that provide capabilities beyond basic',
+									'file reading. These tools can analyze code structure, search knowledge graphs,',
+									'trace call paths, and more — FAR more efficiently than reading files one by one.',
+									'',
+									'**When to prefer MCP tools over read_file/grep_search:**',
+									'- Analyzing project architecture, framework, or code structure (分析架构/框架/结构)',
+									'- Searching for code patterns, function definitions, or relationships (搜索代码/找函数)',
+									'- Tracing how functions call each other or data flows (追踪调用链/数据流)',
+									'- Understanding dependencies, modules, or service boundaries (依赖分析)',
+									'- Any task that would otherwise require reading many files sequentially',
+									'',
+									'**Available MCP tools (use EXACT names from the list above):**',
+								);
+
+								// 按服务器列出工具，从描述中提取使用引导
+								for (const [serverId, tools] of byServer) {
+									toolSection.push(`\n[Server: ${serverId}]`);
+									for (const t of tools) {
+										// 去掉 [via MCP server "X"] 前缀，获取原始描述
+										const rawDesc = (t.description || '').replace(/^\[via MCP server "[^"]*"\]\s*/, '');
+										// 检查描述中是否包含使用引导
+										const hasGuidance = guidancePatterns.some(p => p.test(rawDesc));
+										// 检查是否为分析类工具
+										const descLower = rawDesc.toLowerCase();
+										const isAnalysisTool = analysisKeywords.some(kw => descLower.includes(kw));
+
+										if (hasGuidance) {
+											// 高亮显示有使用引导的工具
+											toolSection.push(`- **${t.name}**: ${rawDesc}`);
+										} else if (isAnalysisTool) {
+											toolSection.push(`- **${t.name}**: ${rawDesc}`);
+										} else {
+											toolSection.push(`- ${t.name}: ${rawDesc}`);
+										}
+									}
+								}
+
+								toolSection.push(
+									'',
+									'**CRITICAL**: For code analysis tasks, you MUST try the appropriate MCP tool',
+									'INSTEAD of manually reading files with read_file/grep_search. MCP tools provide',
+									'structural understanding that file-by-file reading cannot. Only fall back to',
+									'read_file/grep_search if MCP tools return errors or are not applicable.',
+									'',
+									'**Tips:**',
+									'- Read each tool\'s description above — many contain usage guidance like',
+									'  "Use INSTEAD OF grep" or "First call X to find Y".',
+									'- If a tool mentions another tool in its description, follow that workflow.',
+									'- If tools return "not indexed" or similar errors, look for an indexing tool',
+									'  (description contains "index" or "build") and call it first.',
+									'',
 								);
 							}
+						}
 
 							toolSection.push(
 								'',
@@ -507,15 +653,15 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					}
 				}
 
-				// ── 注入 Memory Extract 提示（TDB-AM L1 写入的唯一上行通道）──
+				// ── 注入 Memory Extract 提示（AgentMemory L1 写入的唯一上行通道）──
 				//
-				// 背景：tdb-am-memory 的 L1 持久化依赖模型在回复末尾自行输出
+				// 背景：agentmemory-memory 的 L1 持久化依赖模型在回复末尾自行输出
 				//   <memory_extract>{...}</memory_extract>
 				// 标签。下行解析在 agentDriverService.ts 的 SSE 流式 buffer 和
-				// extensions/tdb-am-memory/src/memoryProvider.ts 都已实现，
+				// extensions/agentmemory-memory/src/memoryProvider.ts 都已实现，
 				// 但**没有任何地方告诉模型要输出这个标签**——除了 Knot 服务端
 				// 自己内置的提示词（不可控），其他 Provider 完全不会主动产出，
-				// 导致 L1 长期处于"接得到、收不到"的状态。
+				// 导致 Episodic 长期处于"接得到、收不到"的状态。
 				//
 				// 这里在 systemPrompt 尾部追加一段中性、模型无关的指令，
 				// 让所有 Provider 走这条链路时都能稳定写入 L1。
@@ -593,7 +739,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				// L0 短期记忆（即最近几轮 user+assistant 原文）与 messages 中的历史
 				// 完全重叠。若仍按 'full' 策略注入 L0，模型会看到两份相同的对话内容
 				// → 混淆 → 在回复中重复/回显之前的内容。因此当有历史灌入时，强制
-				// 切换为 'summary'（仅注入 L1 长期摘要），避免重复。
+				// 切换为 'summary'（仅注入 Episodic 长期摘要），避免重复。
 				const rawStrategy = personaBinding?.memoryConfig?.strategy;
 				const hasHistoryInMessages = mergedMessages.length > 1;
 				const memoryStrategy: 'summary' | 'full' =
@@ -640,6 +786,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			//   2. [MEMORY:L1:type:priority:scene]内容[/MEMORY]  （旧格式，兼容）
 			// 由于标签可能跨多个 delta 分片，使用缓冲区处理跨片情况。
 			let tagBuffer = '';
+			let tagOpenLogged = false; // 防止 "awaiting close" 日志在每个 delta 重复刷屏
 			/** 收集本次 processTextChunk 调用中捕获的记忆标签，供主循环 yield memory_extracted 事件 */
 			const capturedMemoryTags: Array<{ content: string; type?: string; priority?: number; sceneName?: string; raw: string }> = [];
 			// 注意：rawDeltaChunks 已提升到 try 外层声明，此处仅引用并清空（防止跨轮残留）。
@@ -655,6 +802,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				// 缓冲区里没有完整标签，把内容当普通文本返回
 				const result = tagBuffer;
 				tagBuffer = '';
+				tagOpenLogged = false;
 				return result;
 			};
 
@@ -707,14 +855,30 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						const tagClose = TAG_CLOSES[matchedOpen];
 						const closeIdx = remaining.indexOf(tagClose);
 						if (closeIdx === -1) {
-							// 标签未闭合，缓冲整个标签（等待后续 delta）
-							// 【诊断】这种情况意味着模型流可能在标签中间被截断，
-							// 后续若一直收不到闭合标签会导致 L1 抓不到记忆。
-							const seenOpenMsg = `[AgentDriver] ⏳ Memory tag open detected, awaiting close (open="${matchedOpen}", bufferedLen=${remaining.length}, preview="${remaining.replace(/\s+/g, ' ').slice(0, 200)}")`;
-							this._logService.info(seenOpenMsg);
-							try { console.warn(seenOpenMsg); } catch { /* noop */ }
-							tagBuffer = remaining;
-							remaining = '';
+							// 标签未闭合，缓冲等待后续 delta
+							// 但先检查：内容是否看起来像真正的标签（JSON 开头）
+							const afterTag = remaining.slice(matchedOpen.length).trimStart();
+							const MAX_BUFFER = 5000; // 安全阀：缓冲区超过此大小则按普通文本处理
+
+							if (matchedOpen === '<memory_extract>' && afterTag.length > 5 && !afterTag.startsWith('{')) {
+								// 内容不是 JSON 开头 → 模型只是在文档/讨论中提到了标签名，不是真正的记忆标签
+								// 当作普通文本输出，不缓冲
+								output += remaining;
+								remaining = '';
+							} else if (remaining.length > MAX_BUFFER) {
+								// 缓冲区过大，可能是模型输出了未闭合的标签 → 当作普通文本
+								output += remaining;
+								remaining = '';
+							} else {
+								// 真正的标签等待闭合 — 仅记录一次日志（避免每个 delta 刷屏）
+								if (!tagOpenLogged) {
+									tagOpenLogged = true;
+									const seenOpenMsg = `[AgentDriver] ⏳ Memory tag open detected, awaiting close (open="${matchedOpen}", bufferedLen=${remaining.length}, preview="${remaining.replace(/\s+/g, ' ').slice(0, 200)}")`;
+									this._logService.info(seenOpenMsg);
+								}
+								tagBuffer = remaining;
+								remaining = '';
+							}
 						} else {
 							// 找到完整标签，剥离它（不输出给用户）
 							const fullTag = remaining.slice(0, closeIdx + tagClose.length);
@@ -736,6 +900,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							// 镜像到 DevTools console，便于排查（_logService 默认走 OutputChannel/log 文件，DevTools 不可见）
 							try { console.warn(diagMsg); } catch { /* noop */ }
 							remaining = remaining.slice(closeIdx + tagClose.length);
+							tagOpenLogged = false; // 标签已闭合，重置日志标志供下次使用
 						}
 					}
 				}
@@ -903,7 +1068,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 			// Step 5: 写回记忆（放在 finally 确保即使 generator 被外层提前终止也能执行）
 			// ⚠ 关键：必须连续写两条——user 一条 + assistant 一条，
-			// 这样下游 Memory Provider（如 tdb-am-memory）才能配对成完整一轮，
+			// 这样下游 Memory Provider（如 agentmemory-memory）才能配对成完整一轮，
 			// 用于 vendor /capture 接口的 user_content + assistant_content。
 			//
 			// 🔧 2026-06-10 修复：memory 写回改为 fire-and-forget，不再 await。
@@ -927,15 +1092,28 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					sessionMeta['sessionId'] = request.sessionId;
 				}
 
-				// Fire-and-forget: 不阻塞 generator cleanup / consumer 的 for-await 退出
-				(async () => {
+			// Fire-and-forget: 不阻塞 generator cleanup / consumer 的 for-await 退出
+			// 生成 noticeId 供 UI 卡片状态跟踪 (pending → saved/failed)
+			const noticeId = `mem-l0-${ts}`;
+			// yield memory_writing delta：通知 UI 显示 pending 卡片
+			yield {
+				type: 'memory_writing',
+				content: `Working 记忆写入中：用户消息 + 助手回复 (${assistantContent.length} 字符)`,
+				metadata: {
+					memoryType: 'working',
+					sceneName: 'Working 写入',
+					priority: 50,
+					noticeId,
+				},
+			} as IChatStreamDelta;
+			(async () => {
 					try {
 						if (lastUserMessage) {
 							await memoryProvider.writeMemory(request.agentId, {
 								id: `memory-user-${ts}`,
-								type: 'short_term',
+								type: 'working',
 								content: lastUserMessage.content,
-								metadata: { ...sessionMeta, role: 'user' },
+								metadata: { ...sessionMeta, role: 'user', noticeId },
 								timestamp: ts,
 							});
 						}
@@ -943,9 +1121,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						if (assistantContent.length > 0) {
 							await memoryProvider.writeMemory(request.agentId, {
 								id: `memory-assistant-${ts + 1}`,
-								type: 'short_term',
+								type: 'working',
 								content: assistantContent,
-								metadata: { ...sessionMeta, role: 'assistant' },
+								metadata: { ...sessionMeta, role: 'assistant', noticeId },
 								timestamp: ts + 1,
 							});
 						}
@@ -956,15 +1134,22 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					}
 				})();
 
-				// ─── L1 自动提取触发（对齐 TDB-AM L0→L1 pipeline）──────────────
+				// ─── Episodic 自动提取触发（对齐 AgentMemory L0→L1 pipeline）──────────────
 				// 每 N 轮对话后，后台调用 LLM 从最近对话中提取结构化长期记忆。
 				// 不依赖 LLM 主动调 memory_remember，系统自动提取值得记住的事实。
-				this._agentOS.triggerL1Extraction(
-					request.agentId,
-					request.sessionId,
-					lastUserMessage?.content ?? '',
-					assistantContent,
-				);
+				// Wrapped in try-catch: L1 extraction is a background optimization
+				// and must NEVER break the main turn flow (which would skip assistant
+				// message persistence, causing messages to disappear after reload).
+				try {
+					this._agentOS.triggerEpisodicExtraction(
+						request.agentId,
+						request.sessionId,
+						lastUserMessage?.content ?? '',
+						assistantContent,
+					);
+				} catch (l1Err) {
+					this._logService.error('[AgentDriver] triggerEpisodicExtraction failed (non-fatal):', l1Err);
+				}
 			}
 		}
 		this._logService.info(`[AgentDriver] finally block END (turnId=${turnId}) — generator returning, for-await loop will exit`);
@@ -990,6 +1175,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 	getTurnStatus(turnId: string): AgentTurnStatus {
 		return this._turnStatusMap.get(turnId) ?? AgentTurnStatus.Idle;
+	}
+
+	getActiveMemoryProvider(): IMemoryProvider | undefined {
+		return this._agentOS.getActiveMemoryProvider();
 	}
 
 	private _updateTurnStatus(turnId: string, status: AgentTurnStatus): void {

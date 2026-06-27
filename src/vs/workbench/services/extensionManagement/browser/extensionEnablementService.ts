@@ -49,6 +49,14 @@ const VSSAROS_DISABLED_EXTENSIONS = [
 	'GitHub.copilot-chat',
 ];
 
+// VsSaros: Extensions that must run in the sessions window even though they
+// have executable code (main/browser). Without this, tof-authentication
+// would be disabled by _isDisabledBySessionsWindow, causing
+// "Timed out waiting for authentication provider 'tof' to register".
+const VSSAROS_SESSIONS_WINDOW_REQUIRED_EXTENSIONS = [
+	'saros.tof-authentication',
+];
+
 export class ExtensionEnablementService extends Disposable implements IWorkbenchExtensionEnablementService {
 
 	declare readonly _serviceBrand: undefined;
@@ -655,6 +663,14 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 
 		// Built-in extensions are always enabled in the sessions window.
 		if (extension.isBuiltin) {
+			return false;
+		}
+
+		// VsSaros: Some extensions (e.g. tof-authentication) must run in the
+		// sessions window even though they have executable code. Without this
+		// exception, the TOF auth provider would be disabled and login would
+		// time out with "Timed out waiting for authentication provider 'tof'".
+		if (VSSAROS_SESSIONS_WINDOW_REQUIRED_EXTENSIONS.some(id => areSameExtensions({ id }, extension.identifier))) {
 			return false;
 		}
 

@@ -1,0 +1,41 @@
+{
+	"name": "agentmemory-memory",
+	"displayName": "AgentMemory",
+	"description": "agentmemory 进程内记忆框架：BM25+Vector+RRF 混合搜索 + Ebbinghaus 衰减 + 隐私过滤，零外部依赖。",
+	"version": "0.0.2",
+	"publisher": "saros",
+	"license": "MIT",
+	"main": "./out/extension.js",
+	"engines": {
+		"vscode": "^1.100.0"
+	},
+	"capabilities": {
+		"virtualWorkspaces": true,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"contributes": {
+		"agentCapabilities": [
+			{
+				"capability": "memory",
+				"provider": "agentmemory",
+				"priority": 90
+			}
+		]
+	},
+	"scripts": {
+		"compile": "tsc -p ./tsconfig.json && node -e \"require('fs').writeFileSync('out/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\"",
+		"watch": "tsc -watch -p ./tsconfig.json"
+	},
+	"optionalDependencies": {
+		"@xenova/transformers": "^2.17.2"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "^5.8.2"
+	}
+}

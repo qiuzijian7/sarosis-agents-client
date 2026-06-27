@@ -109,6 +109,7 @@ export const AGENT_STUDIO_WIKI_ROOT_SETTING = 'agentStudio.wiki.root';
 export const AGENT_STUDIO_WIKI_MAX_PROPOSAL_SETTING = 'agentStudio.wiki.maxProposalCount';
 export const AGENT_STUDIO_WORKTREE_VIEW_ID = 'agentStudio.worktreeView';
 export const AGENT_STUDIO_GRAPH_VIEW_ID = 'agentStudio.graphView';
+export const AGENT_STUDIO_DASHBOARD_VIEW_ID = 'agentStudio.dashboardView';
 
 // --- TOF (Taihu OA Framework) 登录配置 ---
 // 对接 OAuthSystem 网关 (太湖 MCP 鉴权网关)

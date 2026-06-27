@@ -25,7 +25,7 @@ export async function activate(context: ExtensionContext) {
 	const logOutputChannel = window.createOutputChannel(languageServerDescription, { log: true });
 	context.subscriptions.push(logOutputChannel);
 
-	const serverMain = `./server/${clientPackageJSON.main.indexOf('/dist/') !== -1 ? 'dist' : 'out'}/node/jsonServerMain`;
+	const serverMain = `./server/${clientPackageJSON.main.indexOf('/dist/') !== -1 ? 'dist' : 'out'}/node/jsonServerMain.js`;
 	const serverModule = context.asAbsolutePath(serverMain);
 
 	// The debug options for the server

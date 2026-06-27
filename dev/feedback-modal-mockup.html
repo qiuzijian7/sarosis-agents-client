@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Feedback Modal — Mockup</title>
+<style>
+  /* ════════════════════════════════════════════════════════════════
+     VS Code Dark Theme Variables
+     ════════════════════════════════════════════════════════════════ */
+  :root {
+    --vscode-bg: #1e1e1e;
+    --vscode-bg-light: #252526;
+    --vscode-bg-input: #313131;
+    --vscode-bg-hover: #2a2d2e;
+    --vscode-border: #3c3c3c;
+    --vscode-border-focus: #007acc;
+    --vscode-text: #cccccc;
+    --vscode-text-secondary: #8b8b8b;
+    --vscode-text-muted: #6b6b6b;
+    --vscode-accent: #007acc;
+    --vscode-accent-hover: #1f8ad2;
+    --vscode-error: #f48771;
+    --vscode-error-bg: #5a1d1d;
+    --vscode-success: #89d185;
+    --vscode-success-bg: #1e3a1e;
+    --vscode-warn: #cca700;
+    --vscode-shadow: rgba(0, 0, 0, 0.5);
+    --vscode-radius: 6px;
+    --vscode-radius-sm: 4px;
+  }
+
+  /* Light theme */
+  body.light {
+    --vscode-bg: #ffffff;
+    --vscode-bg-light: #f3f3f3;
+    --vscode-bg-input: #ffffff;
+    --vscode-bg-hover: #e8e8e8;
+    --vscode-border: #cecece;
+    --vscode-text: #333333;
+    --vscode-text-secondary: #6c6c6c;
+    --vscode-text-muted: #9a9a9a;
+    --vscode-shadow: rgba(0, 0, 0, 0.25);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Segoe WPC', system-ui, sans-serif;
+    font-size: 13px;
+    background: var(--vscode-bg);
+    color: var(--vscode-text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     Demo Toolbar — simulates the Help/Feedback button
+     ════════════════════════════════════════════════════════════════ */
+  .demo-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--vscode-bg-light);
+    border-bottom: 1px solid var(--vscode-border);
+    height: 44px;
+  }
+  .demo-toolbar .left { display: flex; align-items: center; gap: 12px; }
+  .demo-toolbar .logo {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--vscode-text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .demo-toolbar .logo svg { width: 18px; height: 18px; }
+  .demo-toolbar .right { display: flex; align-items: center; gap: 8px; }
+
+  .demo-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--vscode-border);
+    border-radius: var(--vscode-radius-sm);
+    color: var(--vscode-text);
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .demo-btn:hover { background: var(--vscode-bg-hover); border-color: var(--vscode-accent); }
+  .demo-btn svg { width: 14px; height: 14px; }
+  .demo-btn.primary { background: var(--vscode-accent); border-color: var(--vscode-accent); color: #fff; }
+  .demo-btn.primary:hover { background: var(--vscode-accent-hover); }
+
+  .demo-content {
+    padding: 24px;
+    color: var(--vscode-text-muted);
+    font-size: 13px;
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     Modal Overlay
+     ════════════════════════════════════════════════════════════════ */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .modal-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     Modal
+     ════════════════════════════════════════════════════════════════ */
+  .feedback-modal {
+    background: var(--vscode-bg-light);
+    border: 1px solid var(--vscode-border);
+    border-radius: var(--vscode-radius);
+    box-shadow: 0 8px 32px var(--vscode-shadow), 0 0 0 1px rgba(255,255,255,0.04);
+    width: 480px;
+    max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 64px);
+    display: flex;
+    flex-direction: column;
+    transform: scale(0.96) translateY(8px);
+    transition: transform 0.2s ease;
+    overflow: hidden;
+  }
+  .modal-overlay.active .feedback-modal {
+    transform: scale(1) translateY(0);
+  }
+
+  /* ── Modal Header ── */
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--vscode-border);
+    flex-shrink: 0;
+  }
+  .modal-header .title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--vscode-text);
+  }
+  .modal-header .title svg { width: 20px; height: 20px; color: var(--vscode-accent); }
+  .modal-header .close-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--vscode-radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+  }
+  .modal-header .close-btn:hover { background: var(--vscode-bg-hover); color: var(--vscode-text); }
+  .modal-header .close-btn svg { width: 18px; height: 18px; }
+
+  /* ── Modal Body ── */
+  .modal-body {
+    padding: 14px;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  /* ── Login Required State ── */
+  .login-required {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 48px 24px;
+    gap: 16px;
+  }
+  .login-required.show { display: flex; }
+  .login-required .icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--vscode-warn);
+    opacity: 0.15;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .login-required .icon svg {
+    width: 28px;
+    height: 28px;
+    color: var(--vscode-warn);
+    opacity: 1;
+    position: absolute;
+  }
+  .login-required h3 { font-size: 16px; font-weight: 600; color: var(--vscode-text); }
+  .login-required p { font-size: 13px; color: var(--vscode-text-secondary); max-width: 360px; line-height: 1.6; }
+  .login-required .login-btn {
+    margin-top: 8px;
+    padding: 8px 24px;
+    background: var(--vscode-accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--vscode-radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .login-required .login-btn:hover { background: var(--vscode-accent-hover); }
+
+  /* ── Feedback Form ── */
+  .feedback-form { display: none; }
+  .feedback-form.show { display: block; }
+
+  .form-group { margin-bottom: 14px; }
+  .form-group:last-child { margin-bottom: 0; }
+
+  .form-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-text);
+    margin-bottom: 8px;
+    text-transform: none;
+  }
+  .form-label .required { color: var(--vscode-error); }
+
+  /* ── Type Selector (Segmented Control) ── */
+  .type-selector {
+    display: flex;
+    gap: 8px;
+  }
+  .type-option {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--vscode-bg-input);
+    border: 1px solid var(--vscode-border);
+    border-radius: var(--vscode-radius-sm);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    position: relative;
+  }
+  .type-option:hover { border-color: var(--vscode-text-secondary); background: var(--vscode-bg-hover); }
+  .type-option.selected[data-type="bug"] {
+    border-color: var(--vscode-error);
+    background: var(--vscode-error-bg);
+  }
+  .type-option.selected[data-type="feature"] {
+    border-color: var(--vscode-success);
+    background: var(--vscode-success-bg);
+  }
+  .type-option .radio-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--vscode-text-muted);
+    flex-shrink: 0;
+    position: relative;
+    transition: border-color 0.15s;
+  }
+  .type-option.selected[data-type="bug"] .radio-dot { border-color: var(--vscode-error); }
+  .type-option.selected[data-type="feature"] .radio-dot { border-color: var(--vscode-success); }
+  .type-option.selected .radio-dot::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .type-option.selected[data-type="bug"] .radio-dot::after { background: var(--vscode-error); }
+  .type-option.selected[data-type="feature"] .radio-dot::after { background: var(--vscode-success); }
+
+  .type-option .type-info { display: flex; flex-direction: column; gap: 2px; }
+  .type-option .type-label { font-size: 13px; font-weight: 600; color: var(--vscode-text); }
+  .type-option .type-desc { font-size: 11px; color: var(--vscode-text-secondary); }
+
+  .type-option svg { width: 18px; height: 18px; }
+  .type-option[data-type="bug"] svg { color: var(--vscode-error); }
+  .type-option[data-type="feature"] svg { color: var(--vscode-success); }
+
+  /* ── Textarea ── */
+  .textarea-wrapper {
+    position: relative;
+  }
+  .form-textarea {
+    width: 100%;
+    min-height: 90px;
+    padding: 10px 12px;
+    background: var(--vscode-bg-input);
+    border: 1px solid var(--vscode-border);
+    border-radius: var(--vscode-radius-sm);
+    color: var(--vscode-text);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .form-textarea:focus { border-color: var(--vscode-border-focus); }
+  .form-textarea::placeholder { color: var(--vscode-text-muted); }
+  .char-counter {
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    font-size: 11px;
+    color: var(--vscode-text-muted);
+    pointer-events: none;
+  }
+
+  /* ── Image Upload ── */
+  .image-upload-area {
+    border: 2px dashed var(--vscode-border);
+    border-radius: var(--vscode-radius-sm);
+    padding: 14px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .image-upload-area:hover { border-color: var(--vscode-accent); background: var(--vscode-bg-hover); }
+  .image-upload-area.dragover { border-color: var(--vscode-accent); background: rgba(0, 122, 204, 0.08); }
+  .image-upload-area svg { width: 24px; height: 24px; color: var(--vscode-text-secondary); }
+  .image-upload-area .upload-text { font-size: 13px; color: var(--vscode-text); }
+  .image-upload-area .upload-hint { font-size: 11px; color: var(--vscode-text-muted); }
+
+  .image-preview-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .image-preview-item {
+    position: relative;
+    width: 72px;
+    height: 72px;
+    border-radius: var(--vscode-radius-sm);
+    overflow: hidden;
+    border: 1px solid var(--vscode-border);
+  }
+  .image-preview-item img { width: 100%; height: 100%; object-fit: cover; }
+  .image-preview-item .remove-btn {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  .image-preview-item .remove-btn:hover { background: var(--vscode-error); }
+  .image-preview-item .remove-btn svg { width: 12px; height: 12px; }
+
+  /* ── User & Version Info ── */
+  .info-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 10px;
+    background: var(--vscode-bg);
+    border: 1px solid var(--vscode-border);
+    border-radius: var(--vscode-radius-sm);
+    margin-bottom: 14px;
+  }
+  .info-bar .info-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .info-bar .info-item .label { color: var(--vscode-text-secondary); }
+  .info-bar .info-item .value { color: var(--vscode-text); font-weight: 500; }
+  .info-bar .info-item svg { width: 14px; height: 14px; color: var(--vscode-text-secondary); }
+  .info-bar .divider { width: 1px; height: 16px; background: var(--vscode-border); }
+
+  /* ── Submitting State ── */
+  .submitting-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(30, 30, 30, 0.7);
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 10;
+  }
+  .submitting-overlay.show { display: flex; }
+  .submitting-overlay .spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--vscode-border);
+    border-top-color: var(--vscode-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .submitting-overlay .text { font-size: 13px; color: var(--vscode-text-secondary); }
+
+  /* ── Success State ── */
+  .success-state {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    gap: 16px;
+    text-align: center;
+  }
+  .success-state.show { display: flex; }
+  .success-state .icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--vscode-success);
+    opacity: 0.15;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .success-state .icon svg {
+    width: 28px;
+    height: 28px;
+    color: var(--vscode-success);
+    opacity: 1;
+    position: absolute;
+  }
+  .success-state h3 { font-size: 16px; font-weight: 600; }
+  .success-state p { font-size: 13px; color: var(--vscode-text-secondary); }
+  .success-state .issue-link {
+    color: var(--vscode-accent);
+    text-decoration: none;
+    font-size: 12px;
+  }
+  .success-state .issue-link:hover { text-decoration: underline; }
+
+  /* ── Modal Footer ── */
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--vscode-border);
+    flex-shrink: 0;
+  }
+  .modal-footer .footer-hint {
+    margin-right: auto;
+    font-size: 11px;
+    color: var(--vscode-text-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .footer-btn {
+    padding: 6px 16px;
+    border-radius: var(--vscode-radius-sm);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid var(--vscode-border);
+    background: transparent;
+    color: var(--vscode-text);
+  }
+  .footer-btn:hover { background: var(--vscode-bg-hover); }
+  .footer-btn.primary {
+    background: var(--vscode-accent);
+    border-color: var(--vscode-accent);
+    color: #fff;
+  }
+  .footer-btn.primary:hover { background: var(--vscode-accent-hover); }
+  .footer-btn.primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(121,121,121,0.4); border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(121,121,121,0.6); }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 16px;
+    background: var(--vscode-bg-light);
+    border: 1px solid var(--vscode-border);
+    border-left: 3px solid var(--vscode-error);
+    border-radius: var(--vscode-radius-sm);
+    box-shadow: 0 4px 12px var(--vscode-shadow);
+    font-size: 13px;
+    color: var(--vscode-text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 10001;
+    transform: translateX(400px);
+    transition: transform 0.3s ease;
+  }
+  .toast.show { transform: translateX(0); }
+  .toast svg { width: 16px; height: 16px; color: var(--vscode-error); }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════
+     Demo Toolbar
+     ════════════════════════════════════════════════════════════════ -->
+<div class="demo-toolbar">
+  <div class="left">
+    <div class="logo">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M14.85 1.15a.5.5 0 0 0-.7 0L9 6.3 7.35 4.65a.5.5 0 0 0-.7 0L1.15 10.15a.5.5 0 0 0 0 .7l1 1a.5.5 0 0 0 .7 0L7 7.7l1.65 1.65a.5.5 0 0 0 .7 0l5.5-5.5a.5.5 0 0 0 0-.7l-1-1z"/></svg>
+      VsSaros
+    </div>
+  </div>
+  <div class="right">
+    <button class="demo-btn" onclick="openFeedback()">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M9.1 4.4L8.6 2H4v12h1V9h3l.5 2.5h4V4.4z"/></svg>
+      反馈
+    </button>
+    <button class="demo-btn" onclick="toggleLogin()" title="Toggle login state for demo">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 0 0-3 3v2H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-1V4a3 3 0 0 0-3-3zm2 5H6V4a2 2 0 1 1 4 0v2z"/></svg>
+      <span id="loginLabel">已登录: qiuzijian</span>
+    </button>
+    <button class="demo-btn" onclick="toggleTheme()">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM8 3a5 5 0 0 1 0 10V3z"/></svg>
+      主题
+    </button>
+  </div>
+</div>
+
+<div class="demo-content">
+  点击右上角「反馈」按钮打开 Feedback Modal。<br>
+  点击锁图标可切换登录/未登录状态，查看不同 UI。
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     Feedback Modal
+     ════════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="feedback-modal">
+
+    <!-- Header -->
+    <div class="modal-header">
+      <div class="title">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M9.1 4.4L8.6 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V8.5l-1.5 1.5V13H5V3h2.7l.4 2H13v1.5l1.5-1.5V3a1 1 0 0 0-1-1H9.5z"/></svg>
+        提交反馈
+      </div>
+      <button class="close-btn" onclick="closeFeedback()">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.707.708L7.293 8l-3.646 3.646.707.708z"/></svg>
+      </button>
+    </div>
+
+    <!-- Body -->
+    <div class="modal-body" style="position: relative;">
+
+      <!-- Submitting overlay -->
+      <div class="submitting-overlay" id="submittingOverlay">
+        <div class="spinner"></div>
+        <div class="text">正在提交反馈...</div>
+      </div>
+
+      <!-- Success state -->
+      <div class="success-state" id="successState">
+        <div class="icon">
+          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.485 4.485a.5.5 0 0 1 0 .707l-7 7a.5.5 0 0 1-.707 0l-3-3a.5.5 0 0 1 .707-.707L6 11.293l6.778-6.778a.5.5 0 0 1 .707 0z"/></svg>
+        </div>
+        <h3>反馈已提交</h3>
+        <p>感谢您的反馈！我们会尽快处理。</p>
+        <a class="issue-link" href="#" onclick="event.preventDefault()">查看 Issue #142 →</a>
+      </div>
+
+      <!-- Login required -->
+      <div class="login-required" id="loginRequired">
+        <div class="icon">
+          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 0 0-3 3v2H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-1V4a3 3 0 0 0-3-3zm2 5H6V4a2 2 0 1 1 4 0v2z"/></svg>
+        </div>
+        <h3>需要登录</h3>
+        <p>提交反馈需要先登录 TOF 账号，以便我们更好地跟踪和回复您的问题。</p>
+        <button class="login-btn" onclick="simulateLogin()">前往登录</button>
+      </div>
+
+      <!-- Feedback Form -->
+      <div class="feedback-form show" id="feedbackForm">
+
+        <!-- Info Bar -->
+        <div class="info-bar">
+          <div class="info-item">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a4 4 0 0 0-4 4v1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-1V5a4 4 0 0 0-4-4zm3 5h-2V5a1 1 0 1 0-2 0v1H5V5a3 3 0 0 1 6 0v1z"/></svg>
+            <span class="label">提交者:</span>
+            <span class="value">邱子健 (qiuzijian)</span>
+          </div>
+          <div class="divider"></div>
+          <div class="info-item">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 2H13a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm.5 2v8h9V4h-9zm1 1h7v1H4V5zm0 2h5v1H4V7z"/></svg>
+            <span class="label">版本:</span>
+            <span class="value">v1.120.0 (d7440c06)</span>
+          </div>
+          <div class="divider"></div>
+          <div class="info-item">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zM5.5 8a2.5 2.5 0 1 1 5 0 2.5 2.5 0 0 1-5 0z"/></svg>
+            <span class="label">平台:</span>
+            <span class="value">win32-x64</span>
+          </div>
+        </div>
+
+        <!-- Type Selector -->
+        <div class="form-group">
+          <div class="form-label">反馈类型 <span class="required">*</span></div>
+          <div class="type-selector">
+            <div class="type-option selected" data-type="bug" onclick="selectType('bug')">
+              <div class="radio-dot"></div>
+              <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11 3.5l1.5-1.5.7.7-1.4 1.4A3 3 0 0 1 12 6v1h2v1h-2v2h2v1h-2v1a3 3 0 0 1-.2 1.1l1.4 1.4-.7.7-1.5-1.5a3 3 0 0 1-4.6 0L5 16.5l-.7-.7 1.4-1.4A3 3 0 0 1 5 13v-1H3v-1h2V8H3V7h2V6a3 3 0 0 1 .2-1L3.8 3.5l.7-.7L5.8 4a3 3 0 0 1 4.4 0zM8 5a2 2 0 0 0-2 2v5a2 2 0 0 0 4 0V7a2 2 0 0 0-2-2zM6.5 7.5a.5.5 0 1 1 1 0 .5.5 0 0 1-1 0zm2 0a.5.5 0 1 1 1 0 .5.5 0 0 1-1 0z"/></svg>
+              <div class="type-info">
+                <span class="type-label">Bug 报告</span>
+                <span class="type-desc">功能异常、崩溃、错误</span>
+              </div>
+            </div>
+            <div class="type-option" data-type="feature" onclick="selectType('feature')">
+              <div class="radio-dot"></div>
+              <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l2 5h5l-4 3 1.5 5L8 11l-4.5 3L5 9 1 6h5z"/></svg>
+              <div class="type-info">
+                <span class="type-label">需求建议</span>
+                <span class="type-desc">新功能、改进、优化</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Description -->
+        <div class="form-group">
+          <div class="form-label">问题描述 <span class="required">*</span></div>
+          <div class="textarea-wrapper">
+            <textarea class="form-textarea" id="description" placeholder="请详细描述您遇到的问题或建议..." maxlength="2000" oninput="updateCharCount()"></textarea>
+            <span class="char-counter" id="charCounter">0 / 2000</span>
+          </div>
+        </div>
+
+        <!-- Image Upload -->
+        <div class="form-group">
+          <div class="form-label">截图（可选）</div>
+          <div class="image-upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M14 4v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h2.5l1-1h3l1 1H13a1 1 0 0 1 1 1zM8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0-1a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+            <span class="upload-text">点击或拖拽图片到此处</span>
+            <span class="upload-hint">支持 PNG / JPG / GIF，单张最大 5MB</span>
+          </div>
+          <input type="file" id="fileInput" accept="image/*" multiple style="display:none" onchange="handleFiles(this.files)">
+          <div class="image-preview-list" id="previewList"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="modal-footer">
+      <div class="footer-hint">
+        <svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 3a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm1 8H7V7h2z"/></svg>
+        反馈将提交到工蜂 Issue
+      </div>
+      <button class="footer-btn" onclick="closeFeedback()">取消</button>
+      <button class="footer-btn primary" id="submitBtn" onclick="submitFeedback()">提交反馈</button>
+    </div>
+
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast">
+  <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 3a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm1 8H7V7h2z"/></svg>
+  <span id="toastMsg">请填写问题描述</span>
+</div>
+
+<script>
+  let isLoggedIn = true;
+  let selectedType = 'bug';
+  let uploadedImages = [];
+
+  function openFeedback() {
+    document.getElementById('modalOverlay').classList.add('active');
+    updateLoginState();
+  }
+
+  function closeFeedback() {
+    document.getElementById('modalOverlay').classList.remove('active');
+    // Reset after animation
+    setTimeout(() => {
+      document.getElementById('submittingOverlay').classList.remove('show');
+      document.getElementById('successState').classList.remove('show');
+      document.getElementById('feedbackForm').classList.add('show');
+      document.getElementById('loginRequired').classList.remove('show');
+    }, 200);
+  }
+
+  function updateLoginState() {
+    const form = document.getElementById('feedbackForm');
+    const loginReq = document.getElementById('loginRequired');
+    if (isLoggedIn) {
+      form.classList.add('show');
+      loginReq.classList.remove('show');
+    } else {
+      form.classList.remove('show');
+      loginReq.classList.add('show');
+    }
+  }
+
+  function toggleLogin() {
+    isLoggedIn = !isLoggedIn;
+    document.getElementById('loginLabel').textContent = isLoggedIn ? '已登录: qiuzijian' : '未登录';
+    updateLoginState();
+  }
+
+  function simulateLogin() {
+    isLoggedIn = true;
+    document.getElementById('loginLabel').textContent = '已登录: qiuzijian';
+    updateLoginState();
+  }
+
+  function toggleTheme() {
+    document.body.classList.toggle('light');
+  }
+
+  function selectType(type) {
+    selectedType = type;
+    document.querySelectorAll('.type-option').forEach(el => {
+      el.classList.toggle('selected', el.dataset.type === type);
+    });
+  }
+
+  function updateCharCount() {
+    const ta = document.getElementById('description');
+    document.getElementById('charCounter').textContent = `${ta.value.length} / 2000`;
+  }
+
+  function handleFiles(files) {
+    [...files].forEach(file => {
+      if (!file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        uploadedImages.push(e.target.result);
+        renderPreviews();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function renderPreviews() {
+    const list = document.getElementById('previewList');
+    list.innerHTML = uploadedImages.map((src, i) => `
+      <div class="image-preview-item">
+        <img src="${src}" alt="screenshot">
+        <button class="remove-btn" onclick="removeImage(${i})">
+          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.707.708L7.293 8l-3.646 3.646.707.708z"/></svg>
+        </button>
+      </div>
+    `).join('');
+  }
+
+  function removeImage(index) {
+    uploadedImages.splice(index, 1);
+    renderPreviews();
+  }
+
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    document.getElementById('toastMsg').textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 3000);
+  }
+
+  function submitFeedback() {
+    const desc = document.getElementById('description').value.trim();
+    if (!desc) {
+      showToast('请填写问题描述');
+      return;
+    }
+    if (desc.length < 10) {
+      showToast('问题描述至少需要 10 个字符');
+      return;
+    }
+
+    // Simulate submit
+    document.getElementById('submittingOverlay').classList.add('show');
+    setTimeout(() => {
+      document.getElementById('submittingOverlay').classList.remove('show');
+      document.getElementById('feedbackForm').classList.remove('show');
+      document.getElementById('successState').classList.add('show');
+    }, 1500);
+  }
+
+  // Drag & drop
+  const uploadArea = document.getElementById('uploadArea');
+  uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+  uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+  uploadArea.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    handleFiles(e.dataTransfer.files);
+  });
+
+  // Close on overlay click
+  document.getElementById('modalOverlay').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeFeedback();
+  });
+
+  // ESC to close
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeFeedback();
+  });
+</script>
+
+</body>
+</html>

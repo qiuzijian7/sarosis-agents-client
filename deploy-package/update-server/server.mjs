@@ -363,6 +363,39 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	// 直接更新 manifest 端点（不需要上传 exe，仅更新版本信息）
+	// POST /admin/manifest?platform=win32-x64-user&commit=<sha>&productVersion=1.2.3
+	if (url.pathname === '/admin/manifest' && req.method === 'POST') {
+		if (UPLOAD_TOKEN && req.headers['x-upload-token'] !== UPLOAD_TOKEN) {
+			res.writeHead(401, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'unauthorized: invalid or missing X-Upload-Token' }));
+			return;
+		}
+		const platform = url.searchParams.get('platform');
+		const commit = url.searchParams.get('commit');
+		const productVersion = url.searchParams.get('productVersion') || '';
+		if (!platform || !commit) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'missing required query: platform, commit' }));
+			return;
+		}
+		// 读取现有 manifest 条目，仅更新 version 和 productVersion，保留 url 和 sha256hash
+		let existing = null;
+		try { existing = readFromManifest(platform); } catch { /* ignore */ }
+		const entry = {
+			version: commit,
+			productVersion,
+			url: existing?.url || `http://${req.headers.host}/downloads/${ASSET_NAME_BY_PLATFORM[platform] || 'unknown'}.exe`,
+			sha256hash: existing?.sha256hash || '',
+			timestamp: Date.now()
+		};
+		updateManifestEntry(platform, entry);
+		console.log(`[manifest] updated platform=${platform} commit=${commit.substring(0, 10)} productVersion=${productVersion}`);
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ ok: true, platform, ...entry }));
+		return;
+	}
+
 	// /api/update/{platform}/{quality}/{commit}
 	const m = /^\/api\/update\/([^/]+)\/([^/]+)\/([^/]+)\/?$/.exec(url.pathname);
 	if (!m) {

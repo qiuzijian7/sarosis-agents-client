@@ -19,6 +19,7 @@
  *  10. metadata 完整性（压缩比 / token 估算 / 三段计数 / contextWindow）
  *  11. getCompressionStats 基于 contextWindow 的阈值判断
  *  12. contextWindow 硬地板（MINIMUM_CONTEXT_WINDOW）
+ *  13. 迭代压缩剥离上一轮注入的 Preserved Context 块（防累积）
  */
 
 import assert from 'assert';
@@ -429,5 +430,40 @@ suite('Agent Studio - Context Compression (Hermes 三段式)', () => {
 			'元数据应包含 msgCount 字段');
 		assert.ok(summaryMsg!.content.includes('estTokens='),
 			'元数据应包含 estTokens 字段');
+	});
+
+	// ─── 13. 迭代压缩剥离上一轮注入块 ──────────────────────────────────────────
+
+	test('迭代压缩：上一轮注入的 Preserved Context 应被剥离，不累积重复块', async () => {
+		const mock = new MockModelProvider();
+		const cm = createManager(mock, { minMessagesToCompress: 10 });
+		const messages = buildLargeConversation(20, 12000);
+		// 模拟上一轮压缩后头部注入的保留上下文 system 消息
+		const INJ = '## Preserved Context (from memory)';
+		messages.unshift(msg('system', `${INJ}\n\n### memory:episodic:m1\n上一轮的关键记忆`));
+
+		// 本轮 preCompactInject 回调：返回新的注入内容
+		let callCount = 0;
+		const inject = () => {
+			callCount++;
+			return { injectedContext: `${INJ}\n\n### memory:procedural:m2\n本轮注入的新记忆`, totalTokens: 50 };
+		};
+
+		const result = await cm.compressContext(messages, undefined, 64000, undefined, inject);
+		assert.strictEqual(callCount, 1, '应调用一次 preCompactInject');
+
+		// 结果中 ## Preserved Context (from memory) 开头的 system 消息应只有 1 条（本轮新注入）
+		const injCount = result.compressedMessages.filter(
+			(m: any) => m.role === 'system' && typeof m.content === 'string' && m.content.startsWith(INJ)
+		).length;
+		assert.strictEqual(injCount, 1, '应剥离上一轮注入块，只保留本轮新注入的一条');
+
+		// 保留的应是本轮注入的新记忆，而非上一轮的
+		const inj = result.compressedMessages.find(
+			(m: any) => m.role === 'system' && typeof m.content === 'string' && m.content.startsWith(INJ)
+		);
+		assert.ok(inj, '应存在注入块');
+		assert.ok(inj!.content.includes('本轮注入的新记忆'), '应保留本轮新注入内容');
+		assert.ok(!inj!.content.includes('上一轮的关键记忆'), '上一轮注入内容应被剥离');
 	});
 });

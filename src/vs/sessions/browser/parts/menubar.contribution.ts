@@ -10,7 +10,6 @@ import { INativeHostService } from '../../../platform/native/common/native.js';
 import { getActiveWindow } from '../../../base/browser/dom.js';
 import { Categories } from '../../../platform/action/common/actionCommonCategories.js';
 import { IOpenerService } from '../../../platform/opener/common/opener.js';
-import { IProductService } from '../../../platform/product/common/productService.js';
 import { URI } from '../../../base/common/uri.js';
 
 // ── Custom MenuIds for VsSaros-specific menus ──
@@ -208,11 +207,7 @@ registerAction2(class HelpFeedbackAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		const productService = accessor.get(IProductService);
 		const openerService = accessor.get(IOpenerService);
-		const url = productService.reportIssueUrl;
-		if (url) {
-			await openerService.open(URI.parse(url));
-		}
+		await openerService.open(URI.parse('https://git.woa.com/zijianqiu/VsSaros-Issues/issues/new'));
 	}
 });

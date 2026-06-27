@@ -4,16 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Codebase Graph Viewer EditorPane — 方案 B：通过 MCP 工具获取数据 + webview 中 Three.js 渲染
+ * Codebase Graph Viewer EditorPane — 原生 tree-sitter 解析 + Three.js 3D 渲染
  *
  * 实现方式：
- * 1. 通过 IMcpService 调用 search_graph 获取节点列表（分页，限制 2000 个）
- * 2. 通过 IMcpService 调用 query_graph (Cypher) 获取边列表（限制 200 条）
- * 3. 在 webview 中用力导向布局算法计算 3D 坐标
- * 4. 使用 Three.js (via CDN) 渲染交互式 3D 图谱
- * 5. 支持节点点击 → 在 VS Code 中打开代码文件
+ * 1. 通过 ICodebaseGraphService 直接获取内存中的 graph 数据（无 MCP 开销）
+ * 2. 在 webview 中用力导向布局算法计算 3D 坐标
+ * 3. 使用 Three.js (via CDN) 渲染交互式 3D 图谱
+ * 4. 支持节点点击 → 在 VS Code 中打开代码文件
  *
- * 不依赖 codebase-memory-mcp 的 UI 服务器（--ui=true），纯 MCP 协议获取数据。
+ * 无外部二进制依赖，直接使用 VS Code 内置 tree-sitter WASM。
  */
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -27,41 +26,13 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
-import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
+import { ICodebaseGraphService, VisualizationData } from './codebaseGraphService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../base/common/uri.js';
 
 const LOG_TAG = '[CodebaseGraphViewer]';
-const SERVER_NAME = 'codebase-memory-mcp';
-const MAX_NODES = 2000;
-const MAX_EDGES = 200;
-
-interface GraphNode {
-	id: string;
-	name: string;
-	type: string;
-	filePath?: string;
-	qualifiedName?: string;
-	inDegree: number;
-	outDegree: number;
-	x: number;
-	y: number;
-	z: number;
-}
-
-interface GraphEdge {
-	source: string;
-	target: string;
-	type: string;
-}
-
-interface GraphData {
-	nodes: GraphNode[];
-	edges: GraphEdge[];
-}
 
 export class CodebaseGraphViewerEditorPane extends EditorPane {
 
@@ -78,8 +49,7 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@ILogService private readonly _logService: ILogService,
-		@IMcpService private readonly _mcpService: IMcpService,
-		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
+		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
@@ -109,40 +79,64 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 		await this._loadVisualization(token);
 	}
 
-	// ─── Core: Load Visualization via MCP ───────────────────────────────
+	// ─── Core: Load Visualization via Native Graph Service ──────────────
 
 	private async _loadVisualization(token: CancellationToken): Promise<void> {
 		try {
-			// 1. 解析项目名（codebase-memory-mcp 格式）
-			const projectName = this._resolveFullProjectName();
-			if (!projectName) {
-				this._showError('无法解析项目名称。请确保已索引代码库。');
-				return;
+			const DOWNSAMPLE_THRESHOLD = 50000;
+
+			// 1. 轻量级检查：图中是否有数据（不创建完整数组）
+			let hasData = this._graphService.hasGraphData();
+
+			// 2. 如果图为空，尝试加载已保存的 graph.json
+			if (!hasData) {
+				this._showLoading('正在加载代码图谱...');
+				const folders = this._workspaceService.getWorkspace().folders;
+				if (folders.length === 0) {
+					this._showError('未打开工作区。');
+					return;
+				}
+				const wsUri = folders[0].uri;
+				const graphFileUri = URI.joinPath(wsUri, '.codebase-memory', 'graph.db.zst');
+				const loaded = await this._graphService.loadGraph(graphFileUri.fsPath);
+				if (!loaded) {
+					this._showError('代码图谱为空。请在 Codebase Memory 面板中索引代码库。');
+					return;
+				}
+				hasData = this._graphService.hasGraphData();
 			}
 
-			this._logService.info(LOG_TAG, `Fetching graph data for project "${projectName}"...`);
-
-			// 2. 通过 MCP 工具获取 graph 数据
-			const graphData = await this._fetchGraphData(projectName, token);
 			if (token.isCancellationRequested) { return; }
 
-			if (graphData.nodes.length === 0) {
+			if (!hasData) {
 				this._showError('图谱为空。请先索引代码库。');
 				return;
 			}
 
-		this._logService.info(LOG_TAG, `Graph data loaded: ${graphData.nodes.length} nodes, ${graphData.edges.length} edges`);
-		this._showLoading(`正在渲染 ${graphData.nodes.length} 个节点...`);
+			this._showLoading('正在准备图谱数据...');
 
-		// 3. 获取 graph 文件路径用于显示
-		let graphPath = '';
-		try {
-			const status = await this._cbmService.getGraphStatus();
-			graphPath = status.graphPath || '';
-		} catch { /* ignore */ }
+			// 3. 让 UI 有机会渲染 loading 状态
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
 
-		// 4. 在 webview 中渲染
-		this._renderGraph(graphData, graphPath);
+			// 4. 获取预计算的可视化数据（service 层已计算位置/颜色/大小，webview 直接渲染）
+			const vizData = this._graphService.getVisualizationData(DOWNSAMPLE_THRESHOLD);
+
+			if (token.isCancellationRequested) { return; }
+
+			this._logService.info(LOG_TAG, `Visualization data ready: ${vizData.nodes.length}/${vizData.totalNodes} nodes, ${vizData.edges.length} edges`);
+			this._showLoading(`正在渲染 ${vizData.nodes.length} 个节点...`);
+
+			// 5. 获取 graph 文件路径用于显示
+			let graphPath = '';
+			try {
+				const status = await this._graphService.getGraphStatus();
+				graphPath = status.graphPath || '';
+			} catch { /* ignore */ }
+
+			if (token.isCancellationRequested) { return; }
+
+			// 6. 在 webview 中渲染（数据已预计算，webview 直接渲染）
+			this._renderGraphDirect(vizData, graphPath, vizData.totalNodes > vizData.nodes.length, vizData.totalNodes);
 
 		} catch (err: any) {
 			const msg = err?.message || String(err);
@@ -151,151 +145,64 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 		}
 	}
 
-	/** 解析完整的 codebase-memory-mcp 项目名 */
-	private _resolveFullProjectName(): string | undefined {
-		const folders = this._workspaceService.getWorkspace().folders;
-		if (folders.length === 0) { return undefined; }
-		const wsPath = folders[0].uri.fsPath;
-
-		const config = this._cbmService.getIndexConfig();
-		let repoPath = wsPath;
-		if (config.subPath && config.subPath.trim()) {
-			const sep = this._isWindows() ? '\\' : '/';
-			repoPath = wsPath + sep + config.subPath.trim().replace(/[\\/]/g, sep);
-		}
-
-		// codebase-memory-mcp 项目名 = repo_path 去掉冒号 + 分隔符替换为 - + 盘符大写
-		// 例：g:\Foo\Bar → G-Foo-Bar（G- 来自盘符 G: 去掉冒号，不是前缀）
-		const normalized = repoPath.replace(/:/g, '').replace(/[\\\/]/g, '-').replace(/^([a-z])/, (_, c) => c.toUpperCase());
-		return normalized;
-	}
-
-	private _isWindows(): boolean {
-		return typeof process !== 'undefined' && process.platform === 'win32';
-	}
-
-	/** 通过 MCP search_graph + query_graph 获取 graph 数据 */
-	private async _fetchGraphData(projectName: string, token: CancellationToken): Promise<GraphData> {
-		// 1. 查找 MCP 服务器
-		const servers = this._mcpService.servers.get();
-		const server = servers.find(s =>
-			s.definition.label === SERVER_NAME
-			|| s.definition.id === SERVER_NAME
-			|| s.definition.id.includes('codebase_memory_mcp')
-			|| s.definition.id.includes('codebase-memory-mcp')
-		);
-		if (!server) {
-			throw new Error(`MCP server "${SERVER_NAME}" not found`);
-		}
-
-		// 2. 确保服务器已启动
-		const connState = server.connectionState.get();
-		if (connState.state !== McpConnectionState.Kind.Running) {
-			this._showLoading('正在启动 MCP 服务器...');
-			await server.start();
-		}
-
-		// 3. 查找工具
-		const tools = server.tools.get();
-		const searchTool = tools.find(t => t.definition.name === 'search_graph');
-		const queryTool = tools.find(t => t.definition.name === 'query_graph');
-		if (!searchTool) {
-			throw new Error('Tool "search_graph" not found on MCP server');
-		}
-
-		// 4. 获取节点数据（分页）
-		const nodes: GraphNode[] = [];
-		const pageSize = 100;
-		let offset = 0;
-
-		while (nodes.length < MAX_NODES) {
-			if (token.isCancellationRequested) { break; }
-
-			this._showLoading(`正在获取节点数据... (${nodes.length}/${MAX_NODES})`);
-
-			const params: Record<string, unknown> = {
-				project: projectName,
-				name_pattern: '.*',
-				limit: pageSize,
-				offset: offset,
-			};
-
-			const result = await searchTool.call(params, undefined, token);
-			const text = this._extractText(result);
-			const data = JSON.parse(text);
-
-			if (!data.results || data.results.length === 0) { break; }
-
-			for (const r of data.results) {
-				if (nodes.length >= MAX_NODES) { break; }
-				nodes.push({
-					id: r.qualified_name || r.name,
-					name: r.name,
-					type: (r.label || 'unknown').toLowerCase(),
-					filePath: r.file_path,
-					qualifiedName: r.qualified_name,
-					inDegree: r.in_degree || 0,
-					outDegree: r.out_degree || 0,
-					x: 0, y: 0, z: 0,
-				});
-			}
-
-			if (!data.has_more) { break; }
-			offset += pageSize;
-		}
-
-		this._logService.info(LOG_TAG, `Fetched ${nodes.length} nodes`);
-
-		// 5. 获取边数据（Cypher 查询，200 行上限）
-		const edges: GraphEdge[] = [];
-		if (queryTool) {
-			this._showLoading('正在获取边数据...');
-			try {
-				const cypher = 'MATCH (a)-[r]->(b) RETURN a.qualified_name, b.qualified_name, type(r) LIMIT ' + MAX_EDGES;
-				const result = await queryTool.call({ project: projectName, query: cypher }, undefined, token);
-				const text = this._extractText(result);
-				const data = JSON.parse(text);
-
-				if (data.results) {
-					for (const r of data.results) {
-						const source = r['a.qualified_name'] || r[0] || '';
-						const target = r['b.qualified_name'] || r[1] || '';
-						const type = r['type(r)'] || r[2] || 'UNKNOWN';
-						if (source && target) {
-							edges.push({ source, target, type });
-						}
-					}
-				}
-			} catch (err: any) {
-				this._logService.warn(LOG_TAG, `Failed to fetch edges: ${err?.message || err}`);
-			}
-		}
-
-		this._logService.info(LOG_TAG, `Fetched ${edges.length} edges`);
-		return { nodes, edges };
-	}
-
-	/** 从 MCP CallToolResult 中提取文本 */
-	private _extractText(result: any): string {
-		if (result.content && Array.isArray(result.content)) {
-			return result.content.map((c: any) => c.text || '').join('\n').trim();
-		}
-		return '';
-	}
-
 	// ─── Rendering: Three.js 3D Graph with Force-Directed Layout ─────────
 
-	private _renderGraph(graphData: GraphData, graphPath: string): void {
+	private _renderGraphDirect(vizData: VisualizationData, graphPath: string, wasDownsampled: boolean, totalNodes: number): void {
 		if (!this._container) { return; }
 
 		this._clearStatus();
 		this._disposeWebview();
 
-		// 将 graph 数据嵌入 webview HTML
-		const graphJson = JSON.stringify(graphData);
 		const graphPathDisplay = graphPath || 'N/A';
+		const totalEdges = vizData.edges.length;
 
-		const html = `<!DOCTYPE html>
+		this._logService.info(LOG_TAG, `Rendering graph: ${vizData.nodes.length} nodes (total: ${totalNodes}, downsampled: ${wasDownsampled}), ${totalEdges} edges`);
+
+		// 数据已限制大小（10k 节点 + 50k 边 ≈ 5MB），直接内嵌 HTML
+		const html = this._makeHtmlTemplate(graphPathDisplay, wasDownsampled, totalNodes, totalEdges, vizData);
+
+		this._webview = this._webviewService.createWebviewElement({
+			title: 'Codebase Graph 3D Visualization',
+			options: {
+				enableFindWidget: true,
+				retainContextWhenHidden: true,
+			},
+			contentOptions: {
+				allowScripts: true,
+				allowForms: true,
+				localResourceRoots: [],
+			},
+			extension: undefined,
+		});
+
+		this._register(this._webview);
+		this._webview.mountTo(this._container, mainWindow);
+		this._webview.setHtml(html);
+
+		// 消息处理：open-file, refresh-graph
+		this._register(this._webview.onMessage((msg: any) => {
+			if (msg.type === 'open-file') {
+				this._openFileInEditor(msg.filePath, msg.qualifiedName);
+			} else if (msg.type === 'refresh-graph') {
+				this._logService.info(LOG_TAG, 'Refresh requested by user');
+				this._loadVisualization(CancellationToken.None).catch(err => {
+					this._logService.error(LOG_TAG, 'Refresh failed:', err);
+				});
+			}
+		}));
+
+		this._logService.info(LOG_TAG, `Webview mounted with embedded data (${vizData.nodes.length} nodes, ${vizData.edges.length} edges)`);
+	}
+
+	/**
+	 * 生成 webview HTML 模板（不含 graph 数据，数据通过 postMessage 传递）
+	 */
+	private _makeHtmlTemplate(graphPathDisplay: string, wasDownsampled: boolean, totalNodes: number, totalEdges: number, vizData: VisualizationData): string {
+		const warning = wasDownsampled
+			? `<div id="downsample-warn" style="position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(220,220,170,0.15);color:#dcdcaa;padding:6px 16px;border-radius:6px;font-size:12px;z-index:10;">⚠️ 数据已降级：显示 ${totalNodes} 个节点中的 10000 个（按连接数排序）。在 Codebase Memory 面板中切换过滤条件可探索子集。</div>`
+			: '';
+
+		return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -307,7 +214,7 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
 #canvas-container { width: 100vw; height: 100vh; position: relative; }
 #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 18px; z-index: 100; }
-#info-panel { position: absolute; top: 20px; left: 20px; background: rgba(6,9,15,0.92); color: #fff; padding: 16px 20px; border-radius: 12px; font-size: 13px; max-width: 420px; display: none; z-index: 10; backdrop-filter: blur(10px); border: 1px solid rgba(128,160,255,0.2); box-shadow: 0 0 30px rgba(128,160,255,0.1); }
+#info-panel { position: absolute; top: 20px; left: 20px; background: rgba(6,9,15,0.95); color: #fff; padding: 16px 20px; border-radius: 12px; font-size: 13px; max-width: 420px; display: none; z-index: 100; backdrop-filter: blur(12px); border: 1px solid rgba(128,160,255,0.25); box-shadow: 0 8px 32px rgba(0,0,0,0.5); overflow: hidden; }
 #info-panel h3 { margin: 0 0 10px 0; font-size: 15px; color: #80a0ff; text-shadow: 0 0 10px rgba(128,160,255,0.3); }
 #info-panel .meta { color: #aaa; font-size: 12px; margin-bottom: 12px; }
 #info-panel .section { margin: 10px 0; }
@@ -321,7 +228,6 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
 #controls { position: absolute; top: 20px; right: 20px; z-index: 10; }
 #controls button { background: rgba(0,0,0,0.7); color: #fff; border: 1px solid rgba(255,255,255,0.2); padding: 8px 14px; margin-left: 8px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 #controls button:hover { background: rgba(255,255,255,0.15); }
-/* Filter Panel */
 #filter-panel { position: absolute; top: 0; left: 0; width: 260px; height: 100vh; background: rgba(6,9,15,0.95); color: #ccc; overflow-y: auto; z-index: 20; border-right: 1px solid rgba(128,160,255,0.15); backdrop-filter: blur(10px); font-size: 12px; }
 #filter-panel .fp-header { padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); }
 #filter-panel .fp-stats { font-size: 13px; color: #80a0ff; font-weight: 600; }
@@ -330,7 +236,12 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
 #filter-panel .fp-allnone { display: flex; gap: 4px; }
 #filter-panel .fp-allnone button { background: rgba(255,255,255,0.08); color: #aaa; border: none; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 10px; }
 #filter-panel .fp-allnone button:hover { background: rgba(255,255,255,0.2); color: #fff; }
-#filter-panel .fp-group-title { font-size: 11px; color: #888; margin: 10px 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+#filter-panel .fp-group-title { font-size: 11px; color: #888; margin: 10px 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none; }
+#filter-panel .fp-group-title:hover { color: #fff; }
+#filter-panel .fp-group-title .fp-toggle { font-size: 9px; color: #666; transition: transform 0.15s ease; }
+#filter-panel .fp-group-title.collapsed .fp-toggle { transform: rotate(-90deg); }
+#filter-panel .fp-group-content { overflow: hidden; transition: max-height 0.2s ease; }
+#filter-panel .fp-group-content.collapsed { display: none; }
 #filter-panel .fp-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer; }
 #filter-panel .fp-item:hover { color: #fff; }
 #filter-panel .fp-item input { accent-color: #80a0ff; cursor: pointer; }
@@ -364,10 +275,10 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
           <button onclick="setAllFilters(false)">None</button>
         </div>
       </div>
-      <div class="fp-group-title">Nodes</div>
-      <div id="fp-node-types"></div>
-      <div class="fp-group-title">Edges</div>
-      <div id="fp-edge-types"></div>
+      <div class="fp-group-title collapsed" onclick="toggleGroup('fp-node-types', this)"><span class="fp-toggle">▼</span>Nodes</div>
+      <div id="fp-node-types" class="fp-group-content collapsed"></div>
+      <div class="fp-group-title collapsed" onclick="toggleGroup('fp-edge-types', this)"><span class="fp-toggle">▼</span>Edges</div>
+      <div id="fp-edge-types" class="fp-group-content collapsed"></div>
       <div class="fp-checkbox">
         <input type="checkbox" id="fp-show-labels" checked onchange="toggleLabels()">
         <label for="fp-show-labels">Show labels</label>
@@ -375,45 +286,57 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
       <div class="fp-search">
         <input type="text" id="fp-search-input" placeholder="Search nodes..." oninput="onSearchNodes()">
       </div>
-      <div class="fp-group-title">Directories</div>
-      <div class="fp-dir-list" id="fp-dir-list"></div>
+      <div class="fp-group-title collapsed" onclick="toggleGroup('fp-dir-list', this)"><span class="fp-toggle">▼</span>Directories</div>
+      <div id="fp-dir-list" class="fp-group-content collapsed"></div>
     </div>
   </div>
-  <div id="loading">⏳ 正在计算 3D 布局...</div>
+  <div id="loading">⏳ Waiting for graph data...</div>
   <div id="info-panel">
     <span class="close-btn" onclick="closeInfoPanel()">×</span>
     <h3 id="info-title"></h3>
     <div class="meta" id="info-meta"></div>
     <div class="section">
-      <div class="label">文件路径</div>
+      <div class="label">File path</div>
       <div class="value" id="info-path"></div>
     </div>
     <div class="section">
-      <div class="label">节点类型</div>
+      <div class="label">Node type</div>
       <div class="value" id="info-type"></div>
     </div>
-    <button class="open-btn" onclick="openCodeFile()">📂 在编辑器中打开</button>
+    <button class="open-btn" onclick="openCodeFile()">📂 Open in editor</button>
   </div>
   <div id="controls">
     <button onclick="refreshGraphData()">🔄 Refresh</button>
     <button onclick="resetCamera()">🎥 Reset View</button>
   </div>
+  ${warning}
   <div id="graph-path">GRAPH: ${graphPathDisplay}</div>
   <div id="stats"></div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script>
-// ─── Graph Data (embedded from MCP) ──────────────────────────────────
-const GRAPH_DATA = ${graphJson};
-
-// ─── State ─────────────────────────────────────────────────────────────
+// ─── State (InstancedMesh — single draw call for all nodes) ──────────
+// ─── Embedded graph data (pre-computed by extension host) ────────────
+const VIZ_DATA = ${JSON.stringify(vizData)};
 let scene, camera, renderer;
-let nodeMeshes = [], edgeLines = null;
+let composer = null;      // EffectComposer for Bloom post-processing
+let nodeMesh = null;       // InstancedMesh
+let edgeLines = null;
 let nodeLabels = [];
+let nodeVisible = [];       // per-node visibility (for filtering)
+let originalMatrices = [];  // stored for filter toggle restore
 let selectedNode = null;
 let showLabels = true;
 let animationId = null;
+const tempObj = new THREE.Object3D();
+const tempColor = new THREE.Color();
 
 const EDGE_TYPE_COLORS = {
   CALLS: '#1DA27E', IMPORTS: '#3b82f6', DEFINES: '#a855f7', DEFINES_METHOD: '#a855f7',
@@ -424,99 +347,14 @@ const EDGE_TYPE_COLORS = {
 };
 const DEFAULT_EDGE_COLOR = '#1C8585';
 
-// Stellar color based on connection count (codebase-memory-mcp layout3d.c)
-function stellarColor(connections) {
-  if (connections >= 50) return '#80a0ff'; // O (Blue Giant)
-  if (connections >= 26) return '#c0d0ff'; // B (Blue-White)
-  if (connections >= 13) return '#e8e8ff'; // A (White)
-  if (connections >= 7) return '#fff0c0';  // F (Yellow-White)
-  if (connections >= 4) return '#ffe080';  // G (Yellow/Sun)
-  if (connections >= 2) return '#ffa060';  // K (Orange)
-  return '#ff6050'; // M (Red Dwarf)
-}
-
-function nodeSize(connections) {
-  return 2 + Math.min(connections, 50) * 0.15;
-}
-
-// ─── Force-Directed 3D Layout ─────────────────────────────────────────
-function computeLayout(nodes, edges, iterations) {
-  const n = nodes.length;
-  if (n === 0) { return; }
-
-  // Initialize random positions in a sphere
-  nodes.forEach(node => {
-    const r = 30 * Math.cbrt(n);
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    node.x = r * Math.sin(phi) * Math.cos(theta);
-    node.y = r * Math.sin(phi) * Math.sin(theta);
-    node.z = r * Math.cos(phi);
-  });
-
-  // Build node index map
-  const nodeMap = new Map();
-  nodes.forEach((node, i) => { nodeMap.set(node.id, i); });
-
-  // Force simulation
-  const repulsion = 200;
-  const attraction = 0.05;
-  const damping = 0.85;
-  const dt = 0.02;
-
-  for (let iter = 0; iter < iterations; iter++) {
-    const forces = nodes.map(() => ({ x: 0, y: 0, z: 0 }));
-
-    // Repulsion (all pairs)
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const dz = nodes[i].z - nodes[j].z;
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.1;
-        const force = repulsion / (dist * dist);
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        const fz = (dz / dist) * force;
-        forces[i].x += fx; forces[i].y += fy; forces[i].z += fz;
-        forces[j].x -= fx; forces[j].y -= fy; forces[j].z -= fz;
-      }
-    }
-
-    // Attraction (edges)
-    edges.forEach(edge => {
-      const si = nodeMap.get(edge.source);
-      const ti = nodeMap.get(edge.target);
-      if (si === undefined || ti === undefined) { return; }
-      const dx = nodes[si].x - nodes[ti].x;
-      const dy = nodes[si].y - nodes[ti].y;
-      const dz = nodes[si].z - nodes[ti].z;
-      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.1;
-      const force = attraction * dist;
-      const fx = (dx / dist) * force;
-      const fy = (dy / dist) * force;
-      const fz = (dz / dist) * force;
-      forces[si].x -= fx; forces[si].y -= fy; forces[si].z -= fz;
-      forces[ti].x += fx; forces[ti].y += fy; forces[ti].z += fz;
-    });
-
-    // Apply forces
-    for (let i = 0; i < n; i++) {
-      nodes[i].x += forces[i].x * dt * damping;
-      nodes[i].y += forces[i].y * dt * damping;
-      nodes[i].z += forces[i].z * dt * damping;
-    }
+// ─── Initialization (data has pre-computed x/y/z/size/color) ─────────
+function initWithData(data) {
+  if (typeof THREE === 'undefined') {
+    document.getElementById('loading').innerHTML = '⚠️ Three.js failed to load from CDN.';
+    document.getElementById('loading').style.color = '#f48771';
+    return;
   }
-
-  // Center the graph
-  let cx = 0, cy = 0, cz = 0;
-  nodes.forEach(node => { cx += node.x; cy += node.y; cz += node.z; });
-  cx /= n; cy /= n; cz /= n;
-  nodes.forEach(node => { node.x -= cx; node.y -= cy; node.z -= cz; });
-}
-
-// ─── Initialization ───────────────────────────────────────────────────
-function init() {
+  // VIZ_DATA is already set as const from embedded data
   const container = document.getElementById('canvas-container');
 
   scene = new THREE.Scene();
@@ -530,77 +368,87 @@ function init() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   container.appendChild(renderer.domElement);
 
-  // Lighting matching codebase-memory-mcp GraphScene
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-  scene.add(ambientLight);
-  const pointLight1 = new THREE.PointLight(0xffffff, 0.6);
-  pointLight1.position.set(500, 500, 500);
-  scene.add(pointLight1);
-  const pointLight2 = new THREE.PointLight(0x6040ff, 0.4);
-  pointLight2.position.set(-300, -200, -300);
-  scene.add(pointLight2);
+  // ── Bloom 后处理（对齐 codebase-memory-mcp 的视觉效果）──────────
+  // 颜色值 > 1.0 的节点会发光，产生光晕效果
+  if (typeof THREE.EffectComposer !== 'undefined') {
+    composer = new THREE.EffectComposer(renderer);
+    composer.addPass(new THREE.RenderPass(scene, camera));
+    const bloomPass = new THREE.UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      0.4,   // strength — 降低，避免过曝看不清节点
+      0.4,   // radius
+      0.6    // threshold — 提高，只有最亮的节点才发光
+    );
+    composer.addPass(bloomPass);
+  }
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const pl1 = new THREE.PointLight(0xffffff, 0.6); pl1.position.set(500, 500, 500); scene.add(pl1);
+  const pl2 = new THREE.PointLight(0x6040ff, 0.4); pl2.position.set(-300, -200, -300); scene.add(pl2);
 
   initControls();
 
-  // Compute layout and render
-  const nodes = GRAPH_DATA.nodes;
-  const edges = GRAPH_DATA.edges;
-
-  document.getElementById('loading').innerText = '⏳ 正在计算 3D 布局... (' + nodes.length + ' 节点)';
-
-  // Use setTimeout to let the loading message render
-  setTimeout(() => {
-    const iterCount = Math.min(100, Math.max(30, Math.floor(2000 / nodes.length)));
-    computeLayout(nodes, edges, iterCount);
-    document.getElementById('loading').style.display = 'none';
-    document.getElementById('stats').innerText = '节点: ' + nodes.length + ' | 边: ' + edges.length;
-    renderGraph(nodes, edges);
-  }, 50);
+  // No layout computation needed — positions are pre-computed!
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('stats').innerText = 'Nodes: ' + data.nodes.length + ' | Edges: ' + data.edges.length;
+  renderGraph(data.nodes, data.edges);
 
   window.addEventListener('resize', onWindowResize);
   animate();
 }
 
-// ─── Simple Orbit Controls ────────────────────────────────────────────
+// ─── Simple Orbit Controls (with damping + idle auto-rotate) ─────────
 let isDragging = false;
 let previousMouse = { x: 0, y: 0 };
 let spherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
+// 目标球面坐标（lerp 目标，实现阻尼效果）
+let targetSpherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
 let target = new THREE.Vector3(0, 0, 0);
+let lastInteractionTime = Date.now();
+const IDLE_AUTO_ROTTE_DELAY = 60000; // 60 秒无交互后自动旋转
+const DAMPING_FACTOR = 0.08; // 阻尼系数（对齐 codebase-memory-mcp OrbitControls）
 
 function initControls() {
   const canvas = renderer.domElement;
 
   canvas.addEventListener('mousedown', (e) => {
-    if (e.button === 0) { isDragging = true; previousMouse = { x: e.clientX, y: e.clientY }; }
+    if (e.button === 0) { isDragging = true; previousMouse = { x: e.clientX, y: e.clientY }; lastInteractionTime = Date.now(); }
   });
 
   canvas.addEventListener('mousemove', (e) => {
     if (!isDragging) { checkHover(e); return; }
     const dx = e.clientX - previousMouse.x;
     const dy = e.clientY - previousMouse.y;
-    spherical.theta -= dx * 0.005;
-    spherical.phi -= dy * 0.005;
-    spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+    targetSpherical.theta -= dx * 0.005;
+    targetSpherical.phi -= dy * 0.005;
+    targetSpherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, targetSpherical.phi));
     previousMouse = { x: e.clientX, y: e.clientY };
+    lastInteractionTime = Date.now();
   });
 
-  canvas.addEventListener('mouseup', () => { isDragging = false; });
+  canvas.addEventListener('mouseup', () => { isDragging = false; lastInteractionTime = Date.now(); });
   canvas.addEventListener('mouseleave', () => { isDragging = false; });
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    spherical.radius *= (1 + e.deltaY * 0.001);
-    spherical.radius = Math.max(10, Math.min(1000, spherical.radius));
+    targetSpherical.radius *= (1 + e.deltaY * 0.001);
+    targetSpherical.radius = Math.max(10, Math.min(50000, targetSpherical.radius));
+    lastInteractionTime = Date.now();
   }, { passive: false });
 
   canvas.addEventListener('click', (e) => {
     if (Math.abs(e.clientX - previousMouse.x) < 5 && Math.abs(e.clientY - previousMouse.y) < 5) {
       checkClick(e);
     }
+    lastInteractionTime = Date.now();
   });
 }
 
 function updateCamera() {
+  // 阻尼 lerp：spherical 平滑追赶 targetSpherical
+  spherical.theta += (targetSpherical.theta - spherical.theta) * DAMPING_FACTOR;
+  spherical.phi += (targetSpherical.phi - spherical.phi) * DAMPING_FACTOR;
+  spherical.radius += (targetSpherical.radius - spherical.radius) * DAMPING_FACTOR;
   camera.position.x = target.x + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
   camera.position.y = target.y + spherical.radius * Math.cos(spherical.phi);
   camera.position.z = target.z + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
@@ -608,63 +456,75 @@ function updateCamera() {
 }
 
 function resetCamera() {
-  spherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
+  targetSpherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
   target = new THREE.Vector3(0, 0, 0);
+  lastInteractionTime = Date.now();
 }
 
-// ─── Render Graph (codebase-memory-mcp style) ─────────────────────────
+// ─── Render Graph (InstancedMesh — single draw call) ─────────────────
 function renderGraph(nodes, edges) {
-  nodeMeshes.forEach(m => scene.remove(m));
-  nodeLabels.forEach(l => scene.remove(l));
+  // Cleanup old (dispose textures to prevent memory leaks)
+  if (nodeMesh) { scene.remove(nodeMesh); nodeMesh.geometry.dispose(); nodeMesh.material.dispose(); }
+  nodeLabels.forEach(l => {
+    if (l) {
+      scene.remove(l);
+      if (l.material && l.material.map) { l.material.map.dispose(); }
+      if (l.material) { l.material.dispose(); }
+    }
+  });
   if (edgeLines) { scene.remove(edgeLines); }
-  nodeMeshes = []; nodeLabels = []; edgeLines = null;
+  nodeMesh = null; nodeLabels = []; edgeLines = null; originalMatrices = []; nodeVisible = [];
 
   if (nodes.length === 0) { return; }
 
   const scale = Math.max(1, Math.sqrt(nodes.length) * 5);
   const posScale = 50 / scale;
 
-  // Pre-compute node colors and sizes (stellar mapping)
-  const nodeData = nodes.map(node => {
-    const connections = (node.inDegree || 0) + (node.outDegree || 0);
-    const colorHex = stellarColor(connections);
-    const color = new THREE.Color(colorHex);
-    // Color boost: brighter stars get stronger glow (simulates bloom)
-    const brightness = (color.r + color.g + color.b) / 3;
-    const boost = 1.2 + brightness * 0.8;
-    color.multiplyScalar(boost);
-    const size = nodeSize(connections);
-    return { color, size, connections };
-  });
+  // ── InstancedMesh for all nodes (1 draw call instead of N) ──
+  const geometry = new THREE.SphereGeometry(1, 24, 16);
+  const material = new THREE.MeshBasicMaterial({ toneMapped: false });
+  nodeMesh = new THREE.InstancedMesh(geometry, material, nodes.length);
+  nodeMesh.frustumCulled = false;
+  nodeMesh.userData = { nodes: nodes };
 
-  // Create nodes — sphereGeometry + meshBasicMaterial (toneMapped=false for glow)
-  const nodeGeometry = new THREE.SphereGeometry(1, 32, 24);
-  nodes.forEach((node, idx) => {
-    const nd = nodeData[idx];
-    const material = new THREE.MeshBasicMaterial({ color: nd.color, toneMapped: false });
-    const mesh = new THREE.Mesh(nodeGeometry, material);
-    mesh.scale.setScalar(nd.size * 0.5);
-    mesh.position.set(node.x * posScale, node.y * posScale, node.z * posScale);
-    mesh.userData = { nodeIndex: idx, node: node };
-    scene.add(mesh);
-    nodeMeshes.push(mesh);
-  });
+  const colorArray = new Float32Array(nodes.length * 3);
 
-  // Create labels — top 80 nodes by size, with stroke
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    // Use pre-computed position/size (scaled)
+    tempObj.position.set(n.x * posScale, n.y * posScale, n.z * posScale);
+    tempObj.scale.setScalar(n.size * 0.5);
+    tempObj.updateMatrix();
+    nodeMesh.setMatrixAt(i, tempObj.matrix);
+    originalMatrices.push(tempObj.matrix.clone());
+    nodeVisible.push(true);
+
+    // Use pre-computed color with mild brightness boost
+    tempColor.set(n.color);
+    const brightness = (tempColor.r + tempColor.g + tempColor.b) / 3;
+    tempColor.multiplyScalar(1.0 + brightness * 0.3);
+    colorArray[i * 3] = tempColor.r;
+    colorArray[i * 3 + 1] = tempColor.g;
+    colorArray[i * 3 + 2] = tempColor.b;
+  }
+
+  nodeMesh.instanceMatrix.needsUpdate = true;
+  nodeMesh.instanceColor = new THREE.InstancedBufferAttribute(colorArray, 3);
+  scene.add(nodeMesh);
+
+  // ── Labels (top 80 by pre-computed size) ──
   if (showLabels) {
+    const dpr = Math.min(window.devicePixelRatio, 2); // DPR 适配高清屏
     const labelCanvas = document.createElement('canvas');
     const ctx = labelCanvas.getContext('2d');
     const fontSize = 32;
     const font = '600 ' + fontSize + 'px Inter, system-ui, sans-serif';
 
-    // Sort by size, take top 80
-    const labeled = nodes.map((n, i) => ({ node: n, idx: i, size: nodeData[i].size }))
+    const labeled = nodes.map((n, i) => ({ node: n, idx: i, size: n.size }))
       .sort((a, b) => b.size - a.size)
       .slice(0, 80);
 
     labeled.forEach(({ node, idx }) => {
-      const nd = nodeData[idx];
-      const colorHex = stellarColor(nd.connections);
       const text = node.name || node.id || '?';
       const shortText = text.length > 24 ? text.substring(0, 22) + '...' : text;
 
@@ -672,8 +532,9 @@ function renderGraph(nodes, edges) {
       const metrics = ctx.measureText(shortText);
       const tw = Math.ceil(metrics.width) + 16;
       const th = fontSize + 8;
-      labelCanvas.width = tw;
-      labelCanvas.height = th;
+      labelCanvas.width = tw * dpr;
+      labelCanvas.height = th * dpr;
+      ctx.scale(dpr, dpr);
 
       ctx.font = font;
       ctx.textAlign = 'center';
@@ -681,7 +542,7 @@ function renderGraph(nodes, edges) {
       ctx.lineJoin = 'round';
       ctx.lineWidth = 4;
       ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-      ctx.fillStyle = colorHex;
+      ctx.fillStyle = node.color;
       ctx.strokeText(shortText, tw / 2, th / 2);
       ctx.fillText(shortText, tw / 2, th / 2);
 
@@ -691,10 +552,9 @@ function renderGraph(nodes, edges) {
       texture.generateMipmaps = false;
       const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false });
       const sprite = new THREE.Sprite(spriteMat);
-      const mesh = nodeMeshes[idx];
-      sprite.position.copy(mesh.position);
-      sprite.position.y += nd.size * 0.5 + 2;
-      const worldW = Math.max(4, nd.size * 1.5);
+      sprite.position.set(node.x * posScale, node.y * posScale, node.z * posScale);
+      sprite.position.y += node.size * 0.5 + 2;
+      const worldW = Math.max(4, node.size * 1.5);
       const worldH = worldW * (th / tw);
       sprite.scale.set(worldW, worldH, 1);
       sprite.userData = { nodeIndex: idx };
@@ -703,7 +563,7 @@ function renderGraph(nodes, edges) {
     });
   }
 
-  // Create edges — lineSegments + additiveBlending + type-based colors
+  // ── Edges (Float32Array + BufferGeometry — same as before) ──
   if (edges.length > 0) {
     const nodeMap = new Map();
     nodes.forEach((node, i) => { nodeMap.set(node.id, i); });
@@ -717,15 +577,12 @@ function renderGraph(nodes, edges) {
       const ti = nodeMap.get(edge.target);
       if (si !== undefined && ti !== undefined) {
         const sn = nodes[si], tn = nodes[ti];
-        const off = validCount * 6;
         positions.push(
           sn.x * posScale, sn.y * posScale, sn.z * posScale,
           tn.x * posScale, tn.y * posScale, tn.z * posScale
         );
-        // Edge color based on type
         const edgeColorHex = EDGE_TYPE_COLORS[edge.type] || DEFAULT_EDGE_COLOR;
         const ec = new THREE.Color(edgeColorHex);
-        // Intensity: same-cluster brighter, cross-cluster dimmer
         const sCluster = (sn.filePath || '').split('/').slice(0, 2).join('/');
         const tCluster = (tn.filePath || '').split('/').slice(0, 2).join('/');
         const intensity = sCluster === tCluster ? 0.25 : 0.06;
@@ -738,20 +595,19 @@ function renderGraph(nodes, edges) {
     });
 
     if (validCount > 0) {
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      const material = new THREE.LineBasicMaterial({
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      const mat = new THREE.LineBasicMaterial({
         vertexColors: true, transparent: true, opacity: 1.0,
         blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
       });
-      edgeLines = new THREE.LineSegments(geometry, material);
+      edgeLines = new THREE.LineSegments(geo, mat);
       scene.add(edgeLines);
     }
   }
 
-  spherical.radius = scale * 3 + 100;
-  
+  targetSpherical.radius = scale * 3 + 100;
   buildFilterPanel(nodes, edges);
 }
 
@@ -767,6 +623,14 @@ function getTopDir(filePath) {
   if (!filePath) return '(unknown)';
   var parts = filePath.replace(/\\\\/g, '/').split('/').filter(function(p) { return p && p !== '.'; });
   return parts[0] || '(root)';
+}
+
+// ─── Collapse/Expand Group ────────────────────────────────────────────
+function toggleGroup(contentId, titleEl) {
+  var content = document.getElementById(contentId);
+  if (!content) return;
+  var isCollapsed = content.classList.toggle('collapsed');
+  if (titleEl) { titleEl.classList.toggle('collapsed', isCollapsed); }
 }
 
 function buildFilterPanel(nodes, edges) {
@@ -869,6 +733,9 @@ function onSearchNodes() {
 
 function applyFilters() {
   var visibleNodeCount = 0;
+  var scale = Math.max(1, Math.sqrt(allNodes.length) * 5);
+  var posScale = 50 / scale;
+
   allNodes.forEach(function(node, i) {
     var type = (node.type || 'unknown').toLowerCase();
     var isVisible = activeNodeTypes.has(type);
@@ -876,36 +743,54 @@ function applyFilters() {
       var dir = getTopDir(node.filePath);
       if (dir !== activeDir) isVisible = false;
     }
-    if (nodeMeshes[i]) {
-      nodeMeshes[i].visible = isVisible;
-      if (isVisible) {
-        if (searchQuery) {
-          var name = (node.name || node.id || '').toLowerCase();
-          var qualName = (node.qualifiedName || '').toLowerCase();
-          if (!name.includes(searchQuery) && !qualName.includes(searchQuery)) {
-            nodeMeshes[i].material.opacity = 0.1;
-            nodeMeshes[i].material.transparent = true;
-          } else {
-            nodeMeshes[i].material.opacity = 1.0;
-            nodeMeshes[i].material.transparent = false;
-          }
-        } else {
-          nodeMeshes[i].material.opacity = 1.0;
-          nodeMeshes[i].material.transparent = false;
-        }
+    // Search dimming
+    var isDimmed = false;
+    if (isVisible && searchQuery) {
+      var name = (node.name || node.id || '').toLowerCase();
+      var qualName = (node.qualifiedName || '').toLowerCase();
+      if (!name.includes(searchQuery) && !qualName.includes(searchQuery)) {
+        isDimmed = true;
       }
     }
-    if (nodeLabels[i]) {
-      nodeLabels[i].visible = isVisible && showLabels;
+
+    nodeVisible[i] = isVisible;
+    // Toggle InstancedMesh instance: scale=0 to hide, restore original to show
+    if (nodeMesh && originalMatrices[i]) {
+      if (isVisible) {
+        nodeMesh.setMatrixAt(i, originalMatrices[i]);
+      } else {
+        tempObj.position.set(0, 0, 0);
+        tempObj.scale.setScalar(0);
+        tempObj.updateMatrix();
+        nodeMesh.setMatrixAt(i, tempObj.matrix);
+      }
     }
-    if (isVisible) visibleNodeCount++;
+    // Dim non-matching nodes by reducing color intensity
+    if (nodeMesh && nodeMesh.instanceColor) {
+      if (isDimmed) {
+        tempColor.set(node.color);
+        tempColor.multiplyScalar(0.1);
+      } else {
+        tempColor.set(node.color);
+        var brightness = (tempColor.r + tempColor.g + tempColor.b) / 3;
+        tempColor.multiplyScalar(1.0 + brightness * 0.3);
+      }
+      nodeMesh.instanceColor.setXYZ(i, tempColor.r, tempColor.g, tempColor.b);
+    }
+    if (nodeLabels[i]) {
+      nodeLabels[i].visible = isVisible && showLabels && !isDimmed;
+    }
+    if (isVisible && !isDimmed) visibleNodeCount++;
   });
 
+  if (nodeMesh) {
+    nodeMesh.instanceMatrix.needsUpdate = true;
+    if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
+  }
+
   if (edgeLines) {
-    scene.remove(edgeLines);
-    edgeLines.geometry.dispose();
-    edgeLines.material.dispose();
-    edgeLines = null;
+    // 复用 geometry：不销毁，只更新 buffer 数据（避免 GC 压力）
+    edgeLines.visible = false;
   }
 
   var visibleEdgeCount = 0;
@@ -913,10 +798,11 @@ function applyFilters() {
     var nodeMap = new Map();
     allNodes.forEach(function(node, i) { nodeMap.set(node.id, i); });
 
-    var positions = [];
-    var colors = [];
-    var scale = Math.max(1, Math.sqrt(allNodes.length) * 5);
-    var posScale = 50 / scale;
+    // 预分配 Float32Array（最大可能大小 = allEdges.length * 6）
+    var maxFloats = allEdges.length * 6;
+    var positions = new Float32Array(maxFloats);
+    var colors = new Float32Array(maxFloats);
+    var offset = 0;
 
     allEdges.forEach(function(edge) {
       var type = (edge.type || 'UNKNOWN').toLowerCase();
@@ -924,29 +810,60 @@ function applyFilters() {
       var si = nodeMap.get(edge.source);
       var ti = nodeMap.get(edge.target);
       if (si === undefined || ti === undefined) return;
-      if (nodeMeshes[si] && !nodeMeshes[si].visible) return;
-      if (nodeMeshes[ti] && !nodeMeshes[ti].visible) return;
+      if (!nodeVisible[si] || !nodeVisible[ti]) return;
       var sn = allNodes[si], tn = allNodes[ti];
-      positions.push(sn.x * posScale, sn.y * posScale, sn.z * posScale, tn.x * posScale, tn.y * posScale, tn.z * posScale);
+      positions[offset] = sn.x * posScale;
+      positions[offset + 1] = sn.y * posScale;
+      positions[offset + 2] = sn.z * posScale;
+      positions[offset + 3] = tn.x * posScale;
+      positions[offset + 4] = tn.y * posScale;
+      positions[offset + 5] = tn.z * posScale;
       var edgeColorHex = EDGE_TYPE_COLORS[edge.type] || DEFAULT_EDGE_COLOR;
       var ec = new THREE.Color(edgeColorHex);
       var sCluster = (sn.filePath || '').split('/').slice(0, 2).join('/');
       var tCluster = (tn.filePath || '').split('/').slice(0, 2).join('/');
       var intensity = sCluster === tCluster ? 0.25 : 0.06;
-      colors.push(ec.r * intensity, ec.g * intensity, ec.b * intensity, ec.r * intensity, ec.g * intensity, ec.b * intensity);
+      var r = ec.r * intensity, g = ec.g * intensity, b = ec.b * intensity;
+      colors[offset] = r; colors[offset + 1] = g; colors[offset + 2] = b;
+      colors[offset + 3] = r; colors[offset + 4] = g; colors[offset + 5] = b;
+      offset += 6;
       visibleEdgeCount++;
     });
 
     if (visibleEdgeCount > 0) {
-      var geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      var material = new THREE.LineBasicMaterial({
-        vertexColors: true, transparent: true, opacity: 1.0,
-        blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
-      });
-      edgeLines = new THREE.LineSegments(geometry, material);
-      scene.add(edgeLines);
+      if (edgeLines) {
+        // 复用已有 geometry：更新 buffer attribute 数据
+        var posAttr = edgeLines.geometry.getAttribute('position');
+        var colAttr = edgeLines.geometry.getAttribute('color');
+        if (posAttr.array.length >= offset) {
+          // 复制到现有 buffer
+          posAttr.array.set(positions.subarray(0, offset));
+          posAttr.needsUpdate = true;
+          posAttr.count = offset / 3;
+          colAttr.array.set(colors.subarray(0, offset));
+          colAttr.needsUpdate = true;
+          colAttr.count = offset / 3;
+          edgeLines.geometry.setDrawRange(0, offset / 3);
+          edgeLines.visible = true;
+        } else {
+          // buffer 不够大，需要重建
+          scene.remove(edgeLines);
+          edgeLines.geometry.dispose();
+          edgeLines.material.dispose();
+          edgeLines = null;
+        }
+      }
+      if (!edgeLines) {
+        var geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions.subarray(0, offset), 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors.subarray(0, offset), 3));
+        var material = new THREE.LineBasicMaterial({
+          vertexColors: true, transparent: true, opacity: 1.0,
+          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
+        });
+        edgeLines = new THREE.LineSegments(geometry, material);
+        scene.add(edgeLines);
+      }
     }
   }
 
@@ -956,8 +873,8 @@ function applyFilters() {
 }
 
 function refreshGraphData() {
-  if (window.parent !== window) {
-    window.parent.postMessage({ type: 'refresh-graph' }, '*');
+  if (vscode) {
+    vscode.postMessage({ type: 'refresh-graph' });
   }
 }
 
@@ -970,7 +887,8 @@ function checkHover(event) {
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(nodeMeshes);
+  if (!nodeMesh) { return; }
+  const intersects = raycaster.intersectObject(nodeMesh);
   renderer.domElement.style.cursor = intersects.length > 0 ? 'pointer' : 'default';
 }
 
@@ -979,21 +897,54 @@ function checkClick(event) {
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(nodeMeshes);
-  if (intersects.length > 0) {
-    showInfoPanel(intersects[0].object.userData.node);
+  if (!nodeMesh) { return; }
+  const intersects = raycaster.intersectObject(nodeMesh);
+  if (intersects.length > 0 && intersects[0].instanceId !== undefined) {
+    const idx = intersects[0].instanceId;
+    const nodes = nodeMesh.userData.nodes;
+    if (nodes && nodes[idx]) {
+      showInfoPanel(nodes[idx], event);
+    }
   } else {
     closeInfoPanel();
   }
 }
 
-function showInfoPanel(node) {
+function showInfoPanel(node, clickEvent) {
   selectedNode = node;
+  const panel = document.getElementById('info-panel');
   document.getElementById('info-title').innerText = node.name || node.id || 'Unknown';
-  document.getElementById('info-meta').innerText = '入度: ' + node.inDegree + ' | 出度: ' + node.outDegree;
+  document.getElementById('info-meta').innerText = 'In: ' + node.inDegree + ' | Out: ' + node.outDegree;
   document.getElementById('info-path').innerText = node.filePath || 'N/A';
   document.getElementById('info-type').innerText = node.type || 'unknown';
-  document.getElementById('info-panel').style.display = 'block';
+  panel.style.display = 'block';
+
+  // Position panel near the click / node, with boundary clamping
+  if (clickEvent) {
+    const container = document.getElementById('canvas-container');
+    const rect = container.getBoundingClientRect();
+    const pw = panel.offsetWidth;
+    const ph = panel.offsetHeight;
+    // Default: place below-right of cursor, offset slightly
+    let x = clickEvent.clientX - rect.left + 16;
+    let y = clickEvent.clientY - rect.top + 16;
+
+    // Clamp right edge
+    if (x + pw > rect.width - 10) { x = clickEvent.clientX - rect.left - pw - 16; }
+    // Clamp bottom edge
+    if (y + ph > rect.height - 10) { y = clickEvent.clientY - rect.top - ph - 16; }
+    // Clamp left edge
+    if (x < 10) { x = 10; }
+    // Clamp top edge
+    if (y < 10) { y = 10; }
+
+    panel.style.left = x + 'px';
+    panel.style.top = y + 'px';
+  } else {
+    // Fallback: top-left
+    panel.style.left = '20px';
+    panel.style.top = '20px';
+  }
 }
 
 function closeInfoPanel() {
@@ -1004,86 +955,73 @@ function closeInfoPanel() {
 function openCodeFile() {
   if (!selectedNode || !selectedNode.filePath) { return; }
   const msg = { type: 'open-file', filePath: selectedNode.filePath, qualifiedName: selectedNode.qualifiedName };
-  if (window.parent !== window) {
-    window.parent.postMessage(msg, '*');
+  if (vscode) {
+    vscode.postMessage(msg);
   }
 }
 
 function toggleLabels() {
   showLabels = document.getElementById('fp-show-labels').checked;
   nodeLabels.forEach((l, i) => {
-    if (l) { l.visible = showLabels && nodeMeshes[i] && nodeMeshes[i].visible; }
+    if (l) { l.visible = showLabels && nodeVisible[i]; }
   });
 }
 
-// ─── Animation Loop ──────────────────────────────────────────────────
+// ─── Animation Loop (Bloom + idle auto-rotate) ──────────────────────
 function animate() {
   animationId = requestAnimationFrame(animate);
   updateCamera();
-  if (!isDragging) { spherical.theta += 0.001; }
-  renderer.render(scene, camera);
+  // 空闲自动旋转：60 秒无交互后缓慢旋转（对齐 codebase-memory-mcp 的 IdleAutoRotate）
+  const idleTime = Date.now() - lastInteractionTime;
+  if (!isDragging && idleTime > IDLE_AUTO_ROTTE_DELAY) {
+    targetSpherical.theta += 0.0008;
+  }
+  // 使用 EffectComposer 渲染（含 Bloom），回退到普通渲染
+  if (composer) {
+    composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
 }
 
 function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) { composer.setSize(window.innerWidth, window.innerHeight); }
 }
 
-// ─── Start ───────────────────────────────────────────────────────────
-init();
+// ─── VS Code webview API (for open-file, refresh messages) ──────────
+// ─── Global error handler (display errors in webview instead of black screen) ──
+window.addEventListener('error', function(e) {
+  var loading = document.getElementById('loading');
+  if (loading) {
+    loading.innerHTML = '⚠️ Error: ' + (e.message || 'unknown');
+    loading.style.color = '#f48771';
+    loading.style.fontSize = '14px';
+  }
+});
+
+const vscode = (function() {
+  try { return acquireVsCodeApi(); } catch(e) { return null; }
+})();
+
+// ─── Start: data is embedded in HTML, initialize immediately ────────
+initWithData(VIZ_DATA);
 </script>
 </body>
 </html>`;
-
-		this._webview = this._webviewService.createWebviewElement({
-			title: 'Codebase Graph 3D Visualization',
-			options: {
-				enableFindWidget: true,
-				retainContextWhenHidden: true,
-			},
-			contentOptions: {
-				allowScripts: true,
-				allowForms: true,
-				localResourceRoots: [],
-			},
-			extension: undefined,
-		});
-
-		this._register(this._webview);
-		this._webview.mountTo(this._container, mainWindow);
-		this._webview.setHtml(html);
-		this._logService.info(LOG_TAG, 'Webview mounted with MCP data + Three.js 3D graph renderer');
-
-		// Listen for messages from webview (file open requests)
-		this._register(this._webview.onMessage((msg: any) => {
-			if (msg.type === 'open-file') {
-				this._openFileInEditor(msg.filePath, msg.qualifiedName);
-			} else if (msg.type === 'refresh-graph') {
-				this._logService.info(LOG_TAG, 'Refresh requested by user');
-				this._loadVisualization(CancellationToken.None).catch(err => {
-					this._logService.error(LOG_TAG, 'Refresh failed:', err);
-				});
-			}
-		}));
 	}
 
 	/** Open a file in VS Code editor */
 	private async _openFileInEditor(filePath: string, qualifiedName?: string): Promise<void> {
 		if (!filePath) { return; }
 		try {
-			// Resolve file path relative to workspace or subPath
-			const config = this._cbmService.getIndexConfig();
 			const folders = this._workspaceService.getWorkspace().folders;
 			if (folders.length === 0) { return; }
 
 			const wsUri = folders[0].uri;
-			let fileUri: URI;
-			if (config.subPath && config.subPath.trim()) {
-				fileUri = URI.joinPath(wsUri, config.subPath.trim(), filePath);
-			} else {
-				fileUri = URI.joinPath(wsUri, filePath);
-			}
+			const fileUri = URI.joinPath(wsUri, filePath);
 
 			await this._openerService.open(fileUri, { fromUserGesture: true, openToSide: false });
 			this._logService.info(LOG_TAG, `Opened file: ${filePath}`);

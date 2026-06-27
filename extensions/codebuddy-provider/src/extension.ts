@@ -1063,6 +1063,16 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		const controller = new AbortController();
 		cancellationToken.onCancellationRequested(() => controller.abort());
 
+		// ── Chat 请求超时 ──────────────────────────────────────────────
+		// fetchWithRetry 的 timeoutMs 仅覆盖「等待响应头」阶段（fetch 返回后
+		// 即 clearTimeout，SSE 流迭代不受此限制）。LLM 在处理大量工具 schema
+		// 或长上下文时，首字节延迟可能远超 30s 默认值。
+		// 使用 codebuddy.timeout 配置，但对 chat 请求设 120s 下限——
+		// 30s 的默认值对带工具的流式 LLM 请求太短，会触发 AbortError 导致空响应。
+		const configTimeoutMs = config.get<number>('timeout') ?? 0;
+		const chatTimeoutMs = Math.max(configTimeoutMs, 120_000);
+		console.log(`[CodeBuddy] Chat request timeout: ${chatTimeoutMs}ms (config=${configTimeoutMs}ms, min=120000ms)`);
+
 		const response = await fetchWithRetry(url, {
 			method: 'POST',
 			headers,
@@ -1070,7 +1080,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			// does not list Buffer, hence the cast.
 			body: body as unknown as BodyInit,
 			signal: controller.signal,
-		});
+		}, chatTimeoutMs);
 
 		// ── HTTP 响应 Debug（受 codebuddy.debugHttp 开关控制）──────────────────
 		// SSE 流式响应无法直接重放，这里记录：

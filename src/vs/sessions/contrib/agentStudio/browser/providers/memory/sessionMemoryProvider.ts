@@ -91,7 +91,7 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 	}
 
 	async writeMemory(agentId: string, entry: IMemoryEntry): Promise<void> {
-		const file = this._memFile(agentId, entry.type === 'short_term' ? SHORT_TERM_FILE : LONG_TERM_FILE);
+		const file = this._memFile(agentId, entry.type === 'working' ? SHORT_TERM_FILE : LONG_TERM_FILE);
 		const stamped: IMemoryEntry = { ...entry, timestamp: entry.timestamp ?? Date.now() };
 
 		try {
@@ -101,7 +101,7 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 		const lockKey = this._lockKey(agentId);
 		await this._acquireLock(lockKey);
 		try {
-			if (stamped.type === 'short_term') {
+			if (stamped.type === 'working') {
 				await this._writeCappedAtomic(file, stamped, SHORT_TERM_LIMIT);
 			} else {
 				await this._atomicWrite(file, stamped);
@@ -116,7 +116,7 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 	}
 
 	async searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]> {
-		let typeFilter: 'short_term' | 'long_term' | undefined;
+		let typeFilter: 'working' | 'episodic' | 'semantic' | 'procedural' | undefined;
 		let tagFilter: string | undefined;
 		let timeAfter: number | undefined;
 		let timeBefore: number | undefined;
@@ -126,7 +126,7 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 		for (const tok of tokens) {
 			if (tok.startsWith('type:')) {
 				const v = tok.slice(5);
-				typeFilter = v === 'short' ? 'short_term' : v === 'long' ? 'long_term' : undefined;
+				typeFilter = v === 'working' ? 'working' : v === 'episodic' ? 'episodic' : v === 'semantic' ? 'semantic' : v === 'procedural' ? 'procedural' : undefined;
 			} else if (tok.startsWith('tag:')) {
 				tagFilter = tok.slice(4);
 			} else if (tok.startsWith('after:')) {
@@ -153,8 +153,8 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 		textQuery = remaining.join(' ').trim().toLowerCase();
 
 		const [shortTerm, longTerm] = await Promise.all([
-			typeFilter === 'long_term' ? Promise.resolve([] as IMemoryEntry[]) : this._readJsonl(this._memFile(agentId, SHORT_TERM_FILE)),
-			typeFilter === 'short_term' ? Promise.resolve([] as IMemoryEntry[]) : this._readJsonl(this._memFile(agentId, LONG_TERM_FILE)),
+			typeFilter === 'episodic' ? Promise.resolve([] as IMemoryEntry[]) : this._readJsonl(this._memFile(agentId, SHORT_TERM_FILE)),
+			typeFilter === 'working' ? Promise.resolve([] as IMemoryEntry[]) : this._readJsonl(this._memFile(agentId, LONG_TERM_FILE)),
 		]);
 		const all = [...shortTerm, ...longTerm];
 		const matched = all.filter(e => {

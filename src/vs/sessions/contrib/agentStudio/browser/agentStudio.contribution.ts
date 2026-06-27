@@ -43,6 +43,7 @@ import { IModelSelectorService } from '../common/modelSelector.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { IAgentInstanceService, IAgentGalleryService } from '../common/agentInstance.js';
 import { IAgentStudioLogService, AgentStudioLogService } from './agentStudioLogService.js';
+import { IFeedbackService, FeedbackService } from './feedbackService.js';
 import { AgentStudioService } from './agentStudioService.js';
 import { AgentChatService } from './agentChatService.js';
 import { ConfigHtmlService } from './configHtmlService.js';
@@ -82,6 +83,7 @@ import {
 	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
 	AGENT_STUDIO_EVOLUTION_VIEW_ID,
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
+	AGENT_STUDIO_DASHBOARD_VIEW_ID,
 	AGENT_STUDIO_CHANNEL_VIEW_ID,
 	AGENT_STUDIO_WIKI_VIEW_ID,
 	AGENT_STUDIO_DATA_PATH_SETTING,
@@ -203,6 +205,13 @@ import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInp
 import { CodebaseGraphViewerEditorPane } from './codebaseGraphViewerEditorPane.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
 import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
+import { ICodebaseGraphService, CodebaseGraphService } from './codebaseGraphService.js';
+import { ICodebaseGraphWatcher, CodebaseGraphWatcher } from './codebaseGraphWatcher.js';
+import './codebaseGraphBootstrap.js';
+import { IAgentStudioDashboardService, AgentStudioDashboardService } from './agentStudioDashboardService.js';
+import { AgentStudioDashboardEditorPane } from './agentStudioDashboardEditorPane.js';
+import { AgentStudioDashboardEditorInput } from './agentStudioDashboardEditorInput.js';
+import { AgentStudioDashboardViewPane } from './views/agentStudioDashboardView.js';
 import { WorkflowEditorPane } from './workflowEditorPane.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { ISelfEvolutionService } from '../common/selfEvolution.js';
@@ -486,6 +495,7 @@ registerWorkbenchContribution2(BuiltinAgentMdSyncContribution.ID, BuiltinAgentMd
 // --- Services Registration -------------------------------------------------------
 
 registerSingleton(IAgentStudioLogService, AgentStudioLogService, InstantiationType.Delayed);
+registerSingleton(IFeedbackService, FeedbackService, InstantiationType.Delayed);
 registerSingleton(IAgentStudioService, AgentStudioService, InstantiationType.Delayed);
 registerSingleton(IAgentChatService, AgentChatService, InstantiationType.Delayed);
 registerSingleton(IAgentOSService, AgentOSService, InstantiationType.Delayed);
@@ -540,6 +550,11 @@ registerSingleton(ISwarmService, SwarmService, InstantiationType.Delayed);
 // Codebase-Memory-MCP service — detect, install, upgrade, configure MCP.
 // Delayed: instantiated by bootstrap contribution or EditorPane.
 registerSingleton(ICodebaseMemoryMcpService, CodebaseMemoryMcpService, InstantiationType.Delayed);
+// Native Codebase Graph Service — uses VS Code's built-in tree-sitter WASM, no external binary.
+registerSingleton(ICodebaseGraphService, CodebaseGraphService, InstantiationType.Delayed);
+registerSingleton(ICodebaseGraphWatcher, CodebaseGraphWatcher, InstantiationType.Delayed);
+// Dashboard Service — aggregates stats from AgentOS, ContextManager, Memory, Graph
+registerSingleton(IAgentStudioDashboardService, AgentStudioDashboardService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -688,7 +703,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register MemoryDetailEditorPane — shows memory entries (L0/L1/L2/L3)
+// Register MemoryDetailEditorPane — shows memory entries (Working/Episodic/Semantic/Procedural)
 // for the current agent. Opened from the system message panel toolbar.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
@@ -722,6 +737,19 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(CodebaseGraphViewerEditorInput)
+	]
+);
+
+// Register AgentStudioDashboardEditorPane — shows the full Dashboard with KPIs,
+// charts, compression metrics, sessions, memory, budget, and token distribution.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		AgentStudioDashboardEditorPane,
+		AgentStudioDashboardEditorPane.ID,
+		localize('agentStudioDashboardEditor', "AgentStudio Dashboard"),
+	),
+	[
+		new SyncDescriptor(AgentStudioDashboardEditorInput)
 	]
 );
 
@@ -865,6 +893,47 @@ registerAction2(class extends Action2 {
 		} else {
 			await editorService.openEditor(input, { pinned: true }, groups[0]);
 		}
+	}
+});
+
+// ─── Open Dashboard Command ────────────────────────────────────────────
+// Opens the AgentStudio Dashboard in the editor area.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openDashboard',
+			title: localize2('agentStudio.openDashboard', 'Open AgentStudio Dashboard'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const input = AgentStudioDashboardEditorInput.getOrCreate();
+		await editorService.openEditor(input, { pinned: true });
+	}
+});
+
+// ─── Open Memory Detail Command ───────────────────────────────────────
+// Opens the Memory Detail editor pane (4-Tier consolidation model).
+// Can be invoked from:
+//   1. Command Palette (F1 → "Open Memory Detail")
+//   2. The Memory sidebar view's "打开详情" button
+//   3. Any code that calls commandService.executeCommand('agentStudio.openMemoryDetail')
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openMemoryDetail',
+			title: localize2('agentStudio.openMemoryDetail', 'Open Memory Detail'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor, agentId?: string): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const id = agentId ?? 'default';
+		const input = MemoryDetailEditorInput.getOrCreate(id);
+		await editorService.openEditor(input, { pinned: true });
 	}
 });
 
@@ -1342,28 +1411,25 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	//      prevent the extension-point path from attempting a futile renderer-side load.
 private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
 	{
-		// tdb-am-memory：把每轮对话通过 POST /capture 上报给 tdb-am-gateway 子进程，
-		// 让 vendor TdaiGateway 写入 L0/L1/L2/L3 SQLite。
+		// agentmemory：替代 AgentMemory 的新记忆框架。
+		// 通过 POST /observe 记录观察，POST /remember 保存长期记忆，
+		// POST /smart-search 做 BM25+Vector+Graph 混合搜索。
 		//
-		// priority 80 > 内置 SessionMemoryProvider(50)，因此 saros 会优先调用本
-		// provider 的 writeMemory。
+		// priority 90 > agentmemory-memory(80) > SessionMemoryProvider(50)，
+		// 因此 saros 会优先调用本 provider 的 writeMemory。
 		//
-		// 注意：模块路径必须指向 `out/extension.js`（运行时实际产物），不能指向
-		// `src/extension.js`，因为 src 是 .ts，浏览器 ESM loader 不识别。
-		//
-		// 注：hermes-agent 已从此清单移除——其 dist 产物是 CJS（依赖
-		// "child_process" 等 bare specifier），无法在渲染端 ESM import() 中加载，
-		// 导致每次启动报 ERR_FILE_NOT_FOUND / Failed to resolve module specifier。
-		id: 'tdb-am-memory',
-			name: 'TDB-AM Memory',
+		// agentmemory server 由主进程 startAgentMemoryGateway() 启动，
+		// 监听 127.0.0.1:3111 (III_REST_PORT)。
+		id: 'agentmemory',
+			name: 'AgentMemory',
 			version: '1.0.0',
-			module: '../../../../extensions/tdb-am-memory/out/extension.js',
-			appResource: 'vs/../../extensions/tdb-am-memory/out/extension.js',
+			module: '../../../../extensions/agentmemory-memory/out/extension.js',
+			appResource: 'vs/../../extensions/agentmemory-memory/out/extension.js',
 			capabilities: [
-				{ capability: 'memory', provider: 'tdb-am-memory', priority: 80 },
+				{ capability: 'memory', provider: 'agentmemory', priority: 90 },
 			],
 		},
-		// tdb-am-gateway 不再走 AgentCapability 路径——它走 VSCode 扩展宿主，
+		// agentmemory-gateway 不再走 AgentCapability 路径——它走 VSCode 扩展宿主，
 		// 由 vscode 主框架在 builtInExtensions 加载时直接 activate，避免 bare specifier
 		// "vscode" / "fs" 等无法在渲染端 ESM 解析导致的启动失败。
 	];
@@ -1908,6 +1974,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
 			order: 130,
 			viewCtor: EvolutionViewPane,
+		});
+
+		// Dashboard (order: 140) — Agent 运维监控面板
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.dashboard',
+			title: localize2('agentStudio.dashboard.title', "Dashboard"),
+			icon: Codicon.dashboard,
+			viewId: AGENT_STUDIO_DASHBOARD_VIEW_ID,
+			order: 140,
+			viewCtor: AgentStudioDashboardViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //

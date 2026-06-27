@@ -1840,10 +1840,9 @@ export class CodeApplication extends Disposable {
 		// macOS: eagerly register the embedded app with Launch Services
 		this.registerEmbeddedAppWithLaunchServices();
 
-		// 启动 TDB-AM 内嵌网关子进程（vendor TdaiGateway 的独立 Node host）。
-		// 必须在主进程而非 renderer 启动：vendor 依赖 fs/sqlite/http server 等
-		// Node 原生模块，无法在 renderer ESM 加载。
-		this.startTdbamGateway();
+		// 启动 agentmemory 内嵌网关子进程（新记忆框架）。
+		// agentmemory server 监听 127.0.0.1:3111，提供 BM25+Vector+Graph 混合搜索。
+		this.startAgentMemoryGateway();
 	}
 
 	private registerEmbeddedAppWithLaunchServices(): void {
@@ -1873,32 +1872,50 @@ export class CodeApplication extends Disposable {
 	}
 
 	/**
-	 * 启动 TDB-AM 内嵌网关子进程（vendor TdaiGateway）。
+	 * 启动 agentmemory 轻量文件服务器子进程。
 	 *
-	 * 架构说明：
-	 *   - saros renderer 进程的 capability 扩展不能直接 import vendor TdaiGateway
-	 *     （vendor 依赖 fs/sqlite/http server 等 Node 原生模块，renderer 无法加载）。
-	 *   - 因此 vendor 由 Electron 主进程 spawn 独立的 Node 子进程承载，
-	 *     监听 127.0.0.1:8420 提供 HTTP API；renderer 端通过 fetch 访问。
-	 *   - 子进程入口 host.mjs 读取 env 变量获取配置，启动后 emit "ready" JSON 行。
+	 * 这不是 agentmemory + iii-engine，而是一个 ~60 行的 Node.js HTTP 文件服务器，
+	 * 仅提供 JSONL 文件的原子读写。所有智能算法（BM25、Vector、RRF、衰减、
+	 * 隐私过滤）在 renderer 进程内运行，无需外部 exe 或 npm 包。
+	 *
+	 * 零外部依赖：
+	 *   - 无 iii-engine（Rust 二进制）
+	 *   - 无 agentmemory npm 包
+	 *   - 无 Docker
+	 */
+
+	/**
+	 * 启动 agentmemory 轻量文件服务器子进程。
+	 *
+	 * 这不是 agentmemory + iii-engine，而是一个 ~60 行的 Node.js HTTP 文件服务器，
+	 * 仅提供 JSONL 文件的原子读写。所有智能算法（BM25、Vector、RRF、衰减、
+	 * 隐私过滤）在 renderer 进程内运行，无需外部 exe 或 npm 包。
+	 *
+	 * 零外部依赖：
+	 *   - 无 iii-engine（Rust 二进制）
+	 *   - 无 agentmemory npm 包
+	 *   - 无 Docker
+	 *   - 用户完全无感（自动启动，无安装步骤）
+	 *
+	 * 端点：
+	 *   GET  /mem/<agentId>/<file>  → 读取 JSONL
+	 *   PUT  /mem/<agentId>/<file>  → 原子写入 JSONL
+	 *   GET  /health                → 健康检查
 	 *
 	 * 容错：
-	 *   - host.mjs 找不到时只记录 warning，不阻塞 saros 启动。
-	 *   - 子进程异常退出时记录 error，不影响其他功能（chat 等仍可工作）。
-	 *   - saros 退出时通过 SIGTERM 触发优雅关闭。
+	 *   - host.mjs 找不到时只记录 warning，不阻塞 saros 启动（降级到内存模式）
+	 *   - 子进程异常退出时记录 error，不影响其他功能
+	 *   - saros 退出时通过 SIGTERM 触发优雅关闭
 	 */
-	private startTdbamGateway(): void {
+	private startAgentMemoryGateway(): void {
 		try {
 			const appRoot = this.environmentMainService.appRoot;
 
 			// 候选 host 路径（开发模式 vs 打包后）
 			const hostCandidates = [
-				// 开发模式：源码目录布局 <repo>/extensions/tdb-am-gateway/host/host.mjs
-				join(appRoot, 'extensions', 'tdb-am-gateway', 'host', 'host.mjs'),
-				// 兜底：从 appRoot 上爬一级
-				join(appRoot, '..', 'extensions', 'tdb-am-gateway', 'host', 'host.mjs'),
-				// 打包后：相对 process.resourcesPath（macOS Contents/Resources）
-				join(process.resourcesPath ?? appRoot, 'app', 'extensions', 'tdb-am-gateway', 'host', 'host.mjs'),
+				join(appRoot, 'extensions', 'agentmemory-gateway', 'host', 'host.mjs'),
+				join(appRoot, '..', 'extensions', 'agentmemory-gateway', 'host', 'host.mjs'),
+				join(process.resourcesPath ?? appRoot, 'app', 'extensions', 'agentmemory-gateway', 'host', 'host.mjs'),
 			];
 
 			let hostPath: string | undefined;
@@ -1910,30 +1927,21 @@ export class CodeApplication extends Disposable {
 			}
 
 			if (!hostPath) {
-				this.logService.warn('[tdbam-gateway] host.mjs 未找到，跳过启动。已尝试: ' + hostCandidates.join(' | '));
+				this.logService.warn('[agentmemory-gateway] host.mjs 未找到，跳过启动（将降级到内存模式）。已尝试: ' + hostCandidates.join(' | '));
 				return;
 			}
 
-			// 收集子进程 env：把 vendor 期望的变量都准备好
+			// 收集子进程 env — 仅文件服务器需要的变量
 			const env: NodeJS.ProcessEnv = {
 				...process.env,
-				TDAI_GATEWAY_PORT: process.env['TDAI_GATEWAY_PORT'] ?? '8420',
-				TDAI_GATEWAY_HOST: '127.0.0.1',
-				TDAI_DATA_DIR: process.env['TDAI_DATA_DIR'] ?? join(homedir(), '.saros', '.tdai'),
-				TDAI_LLM_BASE_URL: process.env['TDAI_LLM_BASE_URL'] ?? 'http://127.0.0.1:8421/v1',
-				TDAI_LLM_API_KEY: process.env['TDAI_LLM_API_KEY'] ?? 'saros-knot-bridge-token',
-				TDAI_LLM_MODEL: process.env['TDAI_LLM_MODEL'] ?? 'knot-default',
-				TDAI_EMBEDDING_PROVIDER: 'none',
-				TDAI_EMBEDDING_ENABLED: 'false',
-				TDAI_STORE_BACKEND: 'sqlite',
-				TDAI_RECALL_STRATEGY: process.env['TDAI_RECALL_STRATEGY'] ?? 'keyword',
+				AGENTMEMORY_PORT: process.env['AGENTMEMORY_PORT'] ?? '3111',
+				AGENTMEMORY_DATA_DIR: process.env['AGENTMEMORY_DATA_DIR'] ?? join(homedir(), '.saros', '.agentmemory'),
 			};
 
-			// 用 Electron 内置 Node 跑子进程（process.execPath 指向 Electron 二进制，
-			// 但通过 ELECTRON_RUN_AS_NODE=1 让它当纯 Node 跑，避免 GUI 依赖）。
+			// 用 Electron 内置 Node 跑子进程
 			env['ELECTRON_RUN_AS_NODE'] = '1';
 
-			this.logService.info(`[tdbam-gateway] 启动子进程: node host=${hostPath}`);
+			this.logService.info(`[agentmemory-gateway] 启动文件服务器子进程: node host=${hostPath}`);
 
 			const childProc: ChildProcess = spawn(process.execPath, [hostPath], {
 				env,
@@ -1951,30 +1959,27 @@ export class CodeApplication extends Disposable {
 				while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
 					const line = stdoutBuf.slice(0, nl).trim();
 					stdoutBuf = stdoutBuf.slice(nl + 1);
-					if (!line) {
-						continue;
-					}
+					if (!line) { continue; }
 					try {
 						const obj = JSON.parse(line);
 						if (obj && typeof obj === 'object') {
 							const kind = obj.kind ?? 'log';
 							const msg = obj.msg ?? JSON.stringify(obj);
 							if (kind === 'error') {
-								this.logService.error(`[tdbam-gateway] ${msg}`);
+								this.logService.error(`[agentmemory-gateway] ${msg}`);
 								if (obj.stack) {
-									this.logService.error(`[tdbam-gateway]   stack: ${obj.stack}`);
+									this.logService.error(`[agentmemory-gateway]   stack: ${obj.stack}`);
 								}
 							} else if (kind === 'ready') {
-								this.logService.info(`[tdbam-gateway] ✅ 网关就绪: port=${obj.port} dataDir=${obj.dataDir}`);
+								this.logService.info(`[agentmemory-gateway] ✅ 网关就绪: port=${obj.port} dataDir=${obj.dataDir}`);
 							} else {
-								this.logService.info(`[tdbam-gateway] ${msg}`);
+								this.logService.info(`[agentmemory-gateway] ${msg}`);
 							}
 						} else {
-							this.logService.info(`[tdbam-gateway] ${line}`);
+							this.logService.info(`[agentmemory-gateway] ${line}`);
 						}
 					} catch {
-						// 非 JSON 行原样打印
-						this.logService.info(`[tdbam-gateway] ${line}`);
+						this.logService.info(`[agentmemory-gateway] ${line}`);
 					}
 				}
 			});
@@ -1982,39 +1987,36 @@ export class CodeApplication extends Disposable {
 			childProc.stderr?.on('data', (chunk: string) => {
 				const s = String(chunk).trim();
 				if (s) {
-					this.logService.warn(`[tdbam-gateway/stderr] ${s}`);
+					this.logService.warn(`[agentmemory-gateway/stderr] ${s}`);
 				}
 			});
 
 			childProc.on('exit', (code, signal) => {
-				this.logService.info(`[tdbam-gateway] 子进程退出: code=${code} signal=${signal}`);
+				this.logService.info(`[agentmemory-gateway] 子进程退出: code=${code} signal=${signal}`);
 			});
 
 			childProc.on('error', (err) => {
-				this.logService.error(`[tdbam-gateway] spawn 错误: ${err.message}`);
+				this.logService.error(`[agentmemory-gateway] spawn 错误: ${err.message}`);
 			});
 
-			// 注册 saros 关闭时的 cleanup：发 SIGTERM，给 host.mjs 一秒做优雅关闭后强杀。
+			// 注册关闭时的 cleanup
 			this._register(this.lifecycleMainService.onWillShutdown(() => {
 				if (childProc.exitCode === null && !childProc.killed) {
-					this.logService.info('[tdbam-gateway] saros 关闭中，发送 SIGTERM 给网关子进程');
+					this.logService.info('[agentmemory-gateway] saros 关闭中，发送 SIGTERM');
 					try {
 						childProc.kill('SIGTERM');
 					} catch (err) {
-						this.logService.warn(`[tdbam-gateway] kill SIGTERM 失败: ${err instanceof Error ? err.message : String(err)}`);
+						this.logService.warn(`[agentmemory-gateway] kill SIGTERM 失败: ${err instanceof Error ? err.message : String(err)}`);
 					}
-					// 1 秒后兜底强杀
 					setTimeout(() => {
 						if (childProc.exitCode === null && !childProc.killed) {
-							try {
-								childProc.kill('SIGKILL');
-							} catch { /* ignore */ }
+							try { childProc.kill('SIGKILL'); } catch { /* ignore */ }
 						}
 					}, 1000);
 				}
 			}));
 		} catch (err) {
-			this.logService.error(`[tdbam-gateway] 启动逻辑异常（已忽略，不影响 saros 启动）: ${err instanceof Error ? err.message : String(err)}`);
+			this.logService.error(`[agentmemory-gateway] 启动逻辑异常（已忽略）: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 }

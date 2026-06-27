@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chat Footer Mockup</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   Dark theme base (VS Code Dark+ inspired)
+   ══════════════════════════════════════════════════════════════════ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+	background: #1e1e1e;
+	color: #d4d4d4;
+	font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+	display: flex;
+	justify-content: center;
+	padding: 40px 20px;
+}
+
+/* Chat container */
+.chat-container {
+	width: 680px;
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Message bubble
+   ══════════════════════════════════════════════════════════════════ */
+.chat-message { display: flex; gap: 10px; max-width: 85%; }
+.chat-message.assistant { align-self: flex-start; }
+.chat-message.user { align-self: flex-end; flex-direction: row-reverse; }
+
+/* Avatar */
+.chat-message-avatar {
+	width: 32px; height: 32px;
+	border-radius: 50%;
+	background: linear-gradient(135deg, #4a90d9, #6366f1);
+	display: flex; align-items: center; justify-content: center;
+	font-size: 14px; color: #fff; flex-shrink: 0;
+}
+
+/* Bubble */
+.chat-bubble {
+	background: #252526;
+	border: 1px solid #3c3c3c;
+	border-radius: 12px;
+	padding: 14px 16px;
+	font-size: 13.5px;
+	line-height: 1.7;
+	max-width: 100%;
+	position: relative;
+}
+.chat-message.user .chat-bubble {
+	background: #1a3a5c;
+	border-color: #1e4a6e;
+}
+
+/* Bubble content placeholder */
+.bubble-text { color: #d4d4d4; }
+.bubble-text code {
+	background: #1e1e1e;
+	padding: 1px 5px;
+	border-radius: 4px;
+	font-size: 12px;
+	color: #ce9178;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Chat Bubble Footer  (copy | sep | score | tokens | duration)
+   ══════════════════════════════════════════════════════════════════ */
+.chat-bubble-footer {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 4px;
+	margin-top: 8px;
+	padding: 2px 0;
+}
+
+/* Copy button — 同用户消息的 .chat-msg-action-btn 样式 */
+.chat-msg-action-btn {
+	width: 28px;
+	height: 24px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: #999;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	opacity: 0.6;
+	transition: opacity 0.15s, background 0.15s, color 0.15s;
+	flex-shrink: 0;
+}
+.chat-msg-action-btn:hover {
+	opacity: 1;
+	background: rgba(128, 128, 128, 0.12);
+	color: #d4d4d4;
+}
+.chat-msg-copy-copied {
+	color: #4ec9b0 !important;
+}
+.chat-msg-copy-btn svg {
+	display: block;
+}
+
+/* Separator */
+.chat-bubble-footer-sep {
+	width: 1px;
+	height: 14px;
+	background: rgba(255,255,255,0.12);
+	flex-shrink: 0;
+	opacity: 0.3;
+	margin: 0 2px;
+}
+
+/* Info item (icon + text) */
+.chat-bubble-footer-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 11px;
+	line-height: 1;
+	color: #999;
+	opacity: 0.55;
+	white-space: nowrap;
+	flex-shrink: 0;
+	user-select: none;
+	transition: opacity 0.15s;
+	cursor: default;
+	position: relative; /* for popup */
+}
+.chat-bubble-footer-item:hover {
+	opacity: 0.85;
+}
+
+/* Info item icon */
+.chat-bubble-footer-icon {
+	font-size: 11px;
+	line-height: 1;
+	opacity: 0.7;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Popup / Tooltip  (hover reveal)
+   ══════════════════════════════════════════════════════════════════ */
+
+/*
+  Popup 悬停桥接原理：
+  - popup 的 ::before 伪元素向下延伸 10px（朝向 footer-item）
+  - 使鼠标从 footer-item 移到 popup 时不中断 hover
+*/
+.score-popup::before,
+.tokens-popup::before,
+.duration-popup::before {
+	content: '';
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	height: 10px;
+	background: transparent;
+}
+
+/* --- Score popup --- */
+.score-popup {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 50%;
+	transform: translateX(-50%);
+	background: #2d2d2d;
+	border: 1px solid #4a4a4a;
+	border-radius: 8px;
+	padding: 10px 14px;
+	min-width: 180px;
+	box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+	z-index: 100;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.18s ease, transform 0.18s ease;
+	transform: translateX(-50%) translateY(4px);
+}
+.chat-bubble-footer-item.score-item:hover .score-popup,
+.score-popup:hover {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateX(-50%) translateY(0);
+}
+
+.score-popup-title {
+	font-size: 10px;
+	color: #888;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	margin-bottom: 6px;
+}
+.score-popup-value {
+	font-size: 22px;
+	font-weight: 600;
+	color: #f0c040;
+	font-family: 'Segoe UI', system-ui, sans-serif;
+}
+.score-popup-value .unit {
+	font-size: 12px;
+	font-weight: 400;
+	color: #999;
+	margin-left: 2px;
+}
+.score-popup-detail {
+	font-size: 11px;
+	color: #aaa;
+	margin-top: 6px;
+	line-height: 1.6;
+}
+.score-popup-detail span {
+	color: #f0c040;
+	font-weight: 500;
+}
+
+/* --- Tokens popup --- */
+.tokens-popup {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 50%;
+	transform: translateX(-50%);
+	background: #2d2d2d;
+	border: 1px solid #4a4a4a;
+	border-radius: 8px;
+	padding: 12px 14px;
+	min-width: 240px;
+	box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+	z-index: 100;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.18s ease, transform 0.18s ease;
+	transform: translateX(-50%) translateY(4px);
+}
+.chat-bubble-footer-item.tokens-item:hover .tokens-popup,
+.tokens-popup:hover {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateX(-50%) translateY(0);
+}
+
+.tokens-popup-title {
+	font-size: 10px;
+	color: #888;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	margin-bottom: 10px;
+}
+
+/* 总计行 */
+.tokens-popup-total {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	padding: 4px 0 8px;
+	border-bottom: 1px solid #3c3c3c;
+	margin-bottom: 8px;
+}
+.tokens-popup-total .label {
+	font-size: 12px;
+	color: #bbb;
+	font-weight: 500;
+}
+.tokens-popup-total .value {
+	font-size: 18px;
+	font-weight: 700;
+	color: #d4d4d4;
+	font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* 分组（输入 / 输出） */
+.tokens-popup-group {
+	margin-bottom: 6px;
+}
+.tokens-popup-group-title {
+	font-size: 11px;
+	color: #aaa;
+	font-weight: 500;
+	margin-bottom: 3px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+.tokens-popup-group-title .group-value {
+	font-family: 'JetBrains Mono', 'Fira Code', monospace;
+	font-size: 11px;
+	color: #d4d4d4;
+}
+.tokens-popup-sub-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-size: 11px;
+	padding: 2px 0 2px 12px;
+}
+.tokens-popup-sub-row .sub-label {
+	color: #888;
+}
+.tokens-popup-sub-row .sub-value {
+	font-family: 'JetBrains Mono', 'Fira Code', monospace;
+	font-size: 11px;
+	color: #ccc;
+}
+.tokens-popup-sub-row .sub-value.highlight {
+	color: #4ade80;
+}
+
+/* 缓存命中率 */
+.tokens-popup-hit-rate {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px solid #3c3c3c;
+	font-size: 12px;
+	color: #bbb;
+}
+.tokens-popup-hit-rate .rate-icon {
+	font-size: 14px;
+}
+.tokens-popup-hit-rate .rate-value {
+	font-family: 'JetBrains Mono', 'Fira Code', monospace;
+	font-size: 14px;
+	font-weight: 600;
+	color: #4ade80;
+}
+.tokens-popup-hit-rate .rate-label {
+	color: #888;
+	font-size: 11px;
+}
+
+/* --- Duration popup --- */
+.duration-popup {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 50%;
+	transform: translateX(-50%);
+	background: #2d2d2d;
+	border: 1px solid #4a4a4a;
+	border-radius: 8px;
+	padding: 10px 14px;
+	min-width: 170px;
+	box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+	z-index: 100;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.18s ease, transform 0.18s ease;
+	transform: translateX(-50%) translateY(4px);
+}
+.chat-bubble-footer-item.duration-item:hover .duration-popup,
+.duration-popup:hover {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateX(-50%) translateY(0);
+}
+
+.duration-popup-title {
+	font-size: 10px;
+	color: #888;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	margin-bottom: 6px;
+}
+.duration-popup-value {
+	font-size: 20px;
+	font-weight: 600;
+	color: #7cb9ff;
+	font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+.duration-popup-value .unit {
+	font-size: 12px;
+	font-weight: 400;
+	color: #999;
+	margin-left: 2px;
+}
+.duration-popup-detail {
+	font-size: 11px;
+	color: #aaa;
+	margin-top: 6px;
+	line-height: 1.6;
+}
+.duration-popup-detail span {
+	color: #7cb9ff;
+}
+
+/* Arrow  on popup */
+.score-popup::after,
+.tokens-popup::after,
+.duration-popup::after {
+	content: '';
+	position: absolute;
+	top: 100%;
+	left: 50%;
+	transform: translateX(-50%);
+	border: 6px solid transparent;
+	border-top-color: #2d2d2d;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Popup arrow tip
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════════
+   Section labels
+   ══════════════════════════════════════════════════════════════════ */
+.section-label {
+	font-size: 11px;
+	color: #666;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	margin: 10px 0 6px;
+	padding-left: 2px;
+}
+</style>
+</head>
+<body>
+<!-- 说明条 -->
+<div style="position:fixed;top:0;left:0;right:0;background:#2d2d2d;border-bottom:1px solid #4a4a4a;padding:8px 20px;font-size:12px;color:#aaa;z-index:999;display:flex;gap:16px;align-items:center;">
+	<span>👆 鼠标悬停 <b style="color:#d4d4d4;">Tokens / 耗时</b> 查看弹出明细</span>
+	<span style="margin-left:auto;">Footer 仅在 <b style="color:#4ade80;">流式结束后</b> 显示（流式期间隐藏）</span>
+</div>
+
+<div class="chat-container" style="margin-top:40px;">
+
+	<div class="section-label">Mockup 1 — 完整 Footer（积分 + Tokens + 耗时）— 新 Token 消耗明细格式</div>
+
+	<!-- Assistant message -->
+	<div class="chat-message assistant">
+		<div class="chat-message-avatar">AI</div>
+		<div class="chat-bubble">
+			<div class="bubble-text">
+				好的，让我帮你分析一下项目的结构。这个 <code>src/vs/sessions</code> 目录是整个 Agent Studio 的核心模块，包含了聊天面板、工具调用、会话管理等多个子系统……
+			</div>
+
+			<!-- ════════════════════════════════════════════════════════
+			     Footer: copy | sep | score | tokens | duration
+			     ════════════════════════════════════════════════════════ -->
+			<div class="chat-bubble-footer">
+				<!-- Copy  -->
+				<button class="chat-msg-action-btn chat-msg-copy-btn" title="复制">
+					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+				</button>
+
+				<!-- Sep -->
+				<div class="chat-bubble-footer-sep"></div>
+
+				<!-- Score / 积分 -->
+				<div class="chat-bubble-footer-item score-item">
+					<span class="chat-bubble-footer-icon">◎</span>
+					<span>72.44</span>
+
+					<!-- Score popup -->
+					<div class="score-popup">
+						<div class="score-popup-title">本次对话积分消耗</div>
+						<div class="score-popup-value">72.44 <span class="unit">分</span></div>
+						<div class="score-popup-detail">
+							输入折算: <span>51.20</span> 分<br>
+							输出折算: <span>21.24</span> 分<br>
+							模型: <span>Hy3-Preview-Agent-IOA</span>
+						</div>
+					</div>
+				</div>
+
+				<!-- Tokens -->
+				<div class="chat-bubble-footer-item tokens-item">
+					<span class="chat-bubble-footer-icon">◈</span>
+					<span>160,136</span>
+
+					<!-- Tokens popup (新格式) -->
+					<div class="tokens-popup">
+						<div class="tokens-popup-title">Token 消耗明细</div>
+
+						<!-- 总计 -->
+						<div class="tokens-popup-total">
+							<span class="label">总计</span>
+							<span class="value">160,136</span>
+						</div>
+
+						<!-- 输入分组 -->
+						<div class="tokens-popup-group">
+							<div class="tokens-popup-group-title">
+								<span>输入</span>
+								<span class="group-value">154,424</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存命中</span>
+								<span class="sub-value highlight">79,616</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存未命中</span>
+								<span class="sub-value">74,808</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存写入</span>
+								<span class="sub-value">0</span>
+							</div>
+						</div>
+
+						<!-- 输出分组 -->
+						<div class="tokens-popup-group">
+							<div class="tokens-popup-group-title">
+								<span>输出</span>
+								<span class="group-value">5,712</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">思考过程</span>
+								<span class="sub-value">0</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">回复内容</span>
+								<span class="sub-value">5,712</span>
+							</div>
+						</div>
+
+						<!-- 缓存命中率 -->
+						<div class="tokens-popup-hit-rate">
+							<span class="rate-icon">⚡</span>
+							<span class="rate-label">缓存命中率</span>
+							<span class="rate-value">51.6%</span>
+						</div>
+					</div>
+				</div>
+
+				<!-- Duration / 耗时 -->
+				<div class="chat-bubble-footer-item duration-item">
+					<span class="chat-bubble-footer-icon">⏱</span>
+					<span>2m 6s</span>
+
+					<!-- Duration popup -->
+					<div class="duration-popup">
+						<div class="duration-popup-title">耗时明细</div>
+						<div class="duration-popup-value">126.4 <span class="unit">秒</span></div>
+						<div class="duration-popup-detail">
+							LLM 首 token: <span>1.2s</span><br>
+							输出耗时: <span>124.8s</span><br>
+							工具调用: <span>3 次 / 8.4s</span>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- User message (no footer) -->
+	<div class="chat-message user" style="margin-top: 4px;">
+		<div class="chat-message-avatar" style="background:#1a3a5c;">U</div>
+		<div class="chat-bubble">
+			<div class="bubble-text">帮我分析一下 sessions 目录的架构</div>
+		</div>
+	</div>
+
+	<!-- ════════════════════════════════════════════════════════
+	     Mockup 2 — 无积分（只有 Tokens + 耗时）
+	     ════════════════════════════════════════════════════════ -->
+	<div class="section-label" style="margin-top: 28px;">Mockup 2 — 无积分时（仅 Tokens + 耗时）</div>
+
+	<div class="chat-message assistant">
+		<div class="chat-message-avatar">AI</div>
+		<div class="chat-bubble">
+			<div class="bubble-text">
+				已为你生成项目分析报告，详见 <code>doc/PROJECT_ANALYSIS_REPORT.md</code>。
+			</div>
+
+			<div class="chat-bubble-footer">
+				<button class="chat-msg-action-btn chat-msg-copy-btn" title="复制">
+					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+				</button>
+				<div class="chat-bubble-footer-sep"></div>
+
+				<!-- 无积分，不渲染 score item -->
+
+				<div class="chat-bubble-footer-item tokens-item">
+					<span class="chat-bubble-footer-icon">◈</span>
+					<span>12,845</span>
+
+					<div class="tokens-popup">
+						<div class="tokens-popup-title">Token 消耗明细</div>
+
+						<div class="tokens-popup-total">
+							<span class="label">总计</span>
+							<span class="value">12,845</span>
+						</div>
+
+						<div class="tokens-popup-group">
+							<div class="tokens-popup-group-title">
+								<span>输入</span>
+								<span class="group-value">10,203</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存命中</span>
+								<span class="sub-value highlight">0</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存未命中</span>
+								<span class="sub-value">10,203</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存写入</span>
+								<span class="sub-value">1,024</span>
+							</div>
+						</div>
+
+						<div class="tokens-popup-group">
+							<div class="tokens-popup-group-title">
+								<span>输出</span>
+								<span class="group-value">2,642</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">思考过程</span>
+								<span class="sub-value">0</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">回复内容</span>
+								<span class="sub-value">2,642</span>
+							</div>
+						</div>
+
+						<div class="tokens-popup-hit-rate">
+							<span class="rate-icon">⚡</span>
+							<span class="rate-label">缓存命中率</span>
+							<span class="rate-value">0%</span>
+						</div>
+					</div>
+				</div>
+
+				<div class="chat-bubble-footer-item duration-item">
+					<span class="chat-bubble-footer-icon">⏱</span>
+					<span>3.8s</span>
+
+					<div class="duration-popup">
+						<div class="duration-popup-title">耗时明细</div>
+						<div class="duration-popup-value">3.82 <span class="unit">秒</span></div>
+						<div class="duration-popup-detail">
+							LLM 首 token: <span>0.4s</span><br>
+							输出耗时: <span>3.4s</span><br>
+							工具调用: <span>0 次</span>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ════════════════════════════════════════════════════════
+	     Mockup 3a — 流式输出中（不显示 Footer）
+	     ════════════════════════════════════════════════════════ -->
+	<div class="section-label" style="margin-top: 28px;">Mockup 3a — 流式输出中（Footer 不显示）</div>
+
+	<div class="chat-message assistant">
+		<div class="chat-message-avatar">AI</div>
+		<div class="chat-bubble">
+			<div class="bubble-text" style="color:#888;">
+				正在生成回复…<span style="animation: blink 1s infinite;">|</span>
+			</div>
+			<style>
+				@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+			</style>
+			<!-- 流式期间不渲染 Footer（复制/积分/Tokens/耗时 均不显示） -->
+		</div>
+	</div>
+
+	<!-- ════════════════════════════════════════════════════════
+	     Mockup 3b — 流式结束后（Footer 出现，数据为单次 LLM 统计）
+	     ════════════════════════════════════════════════════════ -->
+	<div class="section-label" style="margin-top: 20px;">Mockup 3b — 流式结束后（Footer 出现，单次 LLM 统计数据）</div>
+
+	<div class="chat-message assistant">
+		<div class="chat-message-avatar">AI</div>
+		<div class="chat-bubble">
+			<div class="bubble-text">
+				好的，让我帮你分析一下项目的结构。这个 <code>src/vs/sessions</code> 目录是整个 Agent Studio 的核心模块……
+			</div>
+
+			<div class="chat-bubble-footer">
+				<button class="chat-msg-action-btn chat-msg-copy-btn" title="复制">
+					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+				</button>
+				<div class="chat-bubble-footer-sep"></div>
+
+				<div class="chat-bubble-footer-item tokens-item">
+					<span class="chat-bubble-footer-icon">◈</span>
+					<span>160,136</span>
+
+					<div class="tokens-popup">
+						<div class="tokens-popup-title">Token 消耗明细</div>
+						<div class="tokens-popup-total">
+							<span class="label">总计</span>
+							<span class="value">160,136</span>
+						</div>
+						<div class="tokens-popup-group">
+							<div class="tokens-popup-group-title">
+								<span>输入</span>
+								<span class="group-value">154,424</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存命中</span>
+								<span class="sub-value highlight">79,616</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存未命中</span>
+								<span class="sub-value">74,808</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">缓存写入</span>
+								<span class="sub-value">0</span>
+							</div>
+						</div>
+						<div class="tokens-popup-group">
+							<div class="tokens-popup-group-title">
+								<span>输出</span>
+								<span class="group-value">5,712</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">思考过程</span>
+								<span class="sub-value">0</span>
+							</div>
+							<div class="tokens-popup-sub-row">
+								<span class="sub-label">回复内容</span>
+								<span class="sub-value">5,712</span>
+							</div>
+						</div>
+						<div class="tokens-popup-hit-rate">
+							<span class="rate-icon">⚡</span>
+							<span class="rate-label">缓存命中率</span>
+							<span class="rate-value">51.6%</span>
+						</div>
+					</div>
+				</div>
+
+				<div class="chat-bubble-footer-item duration-item">
+					<span class="chat-bubble-footer-icon">⏱</span>
+					<span>2m 6s</span>
+
+					<div class="duration-popup">
+						<div class="duration-popup-title">耗时明细（单次 LLM 开始→结束）</div>
+						<div class="duration-popup-value">126.4 <span class="unit">秒</span></div>
+						<div class="duration-popup-detail">
+							开始时间: <span>11:30:02</span><br>
+							结束时间: <span>11:32:08</span><br>
+							工具调用: <span>3 次 / 8.4s</span>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+</div>
+
+<script>
+// ── 复制按钮交互 ──
+document.querySelectorAll('.chat-msg-action-btn').forEach(btn => {
+	btn.addEventListener('click', () => {
+		btn.classList.add('chat-msg-copy-copied');
+		const origSVG = btn.innerHTML;
+		btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+		setTimeout(() => {
+			btn.classList.remove('chat-msg-copy-copied');
+			btn.innerHTML = origSVG;
+		}, 1500);
+	});
+});
+</script>
+
+</body>
+</html>

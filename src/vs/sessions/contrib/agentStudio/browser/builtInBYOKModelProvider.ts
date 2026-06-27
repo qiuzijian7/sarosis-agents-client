@@ -506,7 +506,15 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			// 透传上层（agent loop 续跑兜底）指定的 tool_choice；默认 'auto'。
 			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
 			body.tool_choice = options.toolChoice ?? 'auto';
-			this._logService.info(`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools with tool_choice=${body.tool_choice}`);
+			const mcpToolCount = options.tools.filter(t => t.category?.startsWith('mcp:')).length;
+			this._logService.info(
+				`[BYOK:${this.id}] _streamChat: sending ${options.tools.length} tools ` +
+				`(MCP: ${mcpToolCount}, builtin: ${options.tools.length - mcpToolCount}) ` +
+				`with tool_choice=${body.tool_choice}\n` +
+				`  tool names: [${options.tools.map(t => t.name).join(', ')}]`
+			);
+		} else {
+			this._logService.warn(`[BYOK:${this.id}] _streamChat: NO tools in request (options.tools is empty or undefined)`);
 		}
 
 		// ── Thinking / Reasoning 参数注入 ─────────────────────────────

@@ -130,8 +130,8 @@ export type RequestType =
 	| 'chat.toolApprove'          // approve/reject a pending tool call
 	| 'worktree.list'           // list git worktrees for a workspace
 	| 'agent.worktree.switch'   // switch the active agent's binding to a different worktree path
-	| 'memory.listL0'           // list L0 raw conversation turns for an agent (TDB-AM)
-	| 'memory.listL1'           // list L1 distilled memories for an agent (TDB-AM)
+	| 'memory.listL0'           // list L0 raw conversation turns for an agent (AgentMemory)
+	| 'memory.listL1'           // list L1 distilled memories for an agent (AgentMemory)
 	| 'memory.deleteL0'         // hard-delete L0 record(s) by id
 	| 'memory.deleteL1'         // hard-delete L1 record(s) by id
 	| 'skills.list'
@@ -224,7 +224,7 @@ export interface IChatStreamDeltaPayload {
 }
 
 export interface IChatStreamChunk {
-	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change' | 'context_compacted' | 'discard_prior_text' | 'memory_extracted' | 'codebase_operation';
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'error' | 'done' | 'content_replace' | 'usage' | 'phase_change' | 'context_compacted' | 'discard_prior_text' | 'memory_extracted' | 'memory_injected' | 'codebase_operation';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -856,14 +856,14 @@ export interface IChatDeleteCheckpointPayload {
 	readonly sessionId: string;
 }
 
-// ─── Memory inspection (TDB-AM gateway proxy) ─────────────────────────────────
+// ─── Memory inspection (AgentMemory gateway proxy) ─────────────────────────────────
 
 /**
  * Common request shape for `memory.listL0` / `memory.listL1`.
  *
  * Both calls are scoped by **agentId**. The host derives the gateway
  * `session_key` from it (`agent:<agentId>`) — identical to the rule used by
- * `TdbAmMemoryProvider.deriveSessionKey()` so the panel sees exactly what the
+ * `AgentMemoryProvider.deriveSessionKey()` so the panel sees exactly what the
  * runtime writes.
  */
 export interface IMemoryListPayload {

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory Detail Editor Pane — agentmemory 4-Tier Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg-header: #252526;
+    --bg-card: #2d2d2d;
+    --bg-hover: #333333;
+    --bg-input: #3c3c3c;
+    --border: #3c3c3c;
+    --border-soft: #2d2d2d;
+    --text-main: #cccccc;
+    --text-sub: #8a8a8a;
+    --text-dim: #6a6a6a;
+    --accent-blue: #569cd6;
+    --accent-purple: #b799ff;
+    --accent-green: #5dcaa5;
+    --accent-orange: #f0a04b;
+    --accent-red: #f48771;
+    --accent-cyan: #4ec9b0;
+    --accent-yellow: #dcdcaa;
+    --tier-working: #569cd6;
+    --tier-episodic: #4ec9b0;
+    --tier-semantic: #b799ff;
+    --tier-procedural: #f0a04b;
+    --ret-hot: #5dcaa5;
+    --ret-warm: #dcdcaa;
+    --ret-cold: #f0a04b;
+    --ret-evict: #f48771;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,"Segoe UI","Segoe WPC",sans-serif; }
+  body { width:100%; min-height:100vh; background:var(--bg); color:var(--text-main); font-size:13px; }
+
+  .md-container { max-width:900px; margin:0 auto; padding:20px 24px 48px; }
+
+  /* ─── Header ─── */
+  .md-header { margin-bottom:16px; }
+  .md-header h1 { font-size:18px; font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .md-header .subtitle { font-size:12px; color:var(--text-sub); margin-bottom:12px; }
+
+  /* ─── Stats Grid ─── */
+  .md-stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }
+  .md-stat-card { background:var(--bg-card); border:1px solid var(--border-soft); border-radius:8px; padding:12px 14px; position:relative; overflow:hidden; cursor:pointer; transition:all 0.15s; }
+  .md-stat-card:hover { border-color:var(--border); transform:translateY(-1px); }
+  .md-stat-card::before { content:''; position:absolute; top:0; left:0; width:3px; height:100%; }
+  .md-stat-card.working::before { background:var(--tier-working); }
+  .md-stat-card.episodic::before { background:var(--tier-episodic); }
+  .md-stat-card.semantic::before { background:var(--tier-semantic); }
+  .md-stat-card.procedural::before { background:var(--tier-procedural); }
+  .md-stat-card .stat-icon { font-size:14px; margin-bottom:4px; }
+  .md-stat-card .stat-value { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .md-stat-card .stat-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
+  .md-stat-card .stat-sub { font-size:10px; color:var(--text-dim); margin-top:2px; }
+  .md-stat-card.working .stat-value { color:var(--tier-working); }
+  .md-stat-card.episodic .stat-value { color:var(--tier-episodic); }
+  .md-stat-card.semantic .stat-value { color:var(--tier-semantic); }
+  .md-stat-card.procedural .stat-value { color:var(--tier-procedural); }
+
+  /* ─── Extended Stats ─── */
+  .md-ext-stats { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .md-ext-stat { background:var(--bg-card); border:1px solid var(--border-soft); border-radius:6px; padding:5px 12px; font-size:11px; }
+  .md-ext-stat .label { color:var(--text-dim); font-size:9px; }
+  .md-ext-stat .value { font-weight:600; color:var(--text-main); }
+
+  /* ─── Pipeline Visualization ─── */
+  .md-pipeline { background:var(--bg-card); border:1px solid var(--border-soft); border-radius:8px; padding:14px 16px; margin-bottom:16px; }
+  .md-pipeline h3 { font-size:12px; font-weight:600; margin-bottom:10px; color:var(--text-sub); }
+  .md-pipeline-flow { display:flex; align-items:center; gap:8px; }
+  .md-pipeline-node { padding:8px 14px; border-radius:8px; font-size:11px; font-weight:600; text-align:center; flex:1; position:relative; }
+  .md-pipeline-node.working { background:rgba(86,156,214,0.12); color:var(--tier-working); border:1px solid rgba(86,156,214,0.25); }
+  .md-pipeline-node.episodic { background:rgba(78,201,176,0.12); color:var(--tier-episodic); border:1px solid rgba(78,201,176,0.25); }
+  .md-pipeline-node.semantic { background:rgba(183,153,255,0.12); color:var(--tier-semantic); border:1px solid rgba(183,153,255,0.25); }
+  .md-pipeline-node.procedural { background:rgba(240,160,75,0.12); color:var(--tier-procedural); border:1px solid rgba(240,160,75,0.25); }
+  .md-pipeline-node .node-count { font-size:16px; font-weight:700; display:block; }
+  .md-pipeline-node .node-label { font-size:9px; opacity:0.7; }
+  .md-pipeline-arrow { color:var(--text-dim); font-size:14px; }
+
+  /* ─── Toolbar ─── */
+  .md-toolbar { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .md-btn { padding:6px 14px; border-radius:6px; font-size:12px; cursor:pointer; border:1px solid var(--border); background:var(--bg-card); color:var(--text-sub); transition:all 0.15s; display:flex; align-items:center; gap:5px; }
+  .md-btn:hover { color:var(--text-main); border-color:var(--accent-blue); background:var(--bg-hover); }
+  .md-btn.primary { background:var(--accent-blue); color:#1a1a28; border-color:var(--accent-blue); font-weight:600; }
+  .md-btn.danger { color:var(--accent-red); border-color:rgba(244,135,113,0.3); }
+
+  /* ─── Layer Tabs ─── */
+  .md-layer-tabs { display:flex; border-bottom:1px solid var(--border); margin-bottom:0; }
+  .md-layer-tab { padding:8px 18px; cursor:pointer; font-size:12px; color:var(--text-sub); border-bottom:2px solid transparent; transition:all 0.15s; display:flex; align-items:center; gap:6px; }
+  .md-layer-tab:hover { color:var(--text-main); }
+  .md-layer-tab.active { color:var(--text-main); border-bottom-color:var(--accent-blue); }
+  .md-layer-tab .count { background:var(--bg-input); font-size:10px; padding:1px 7px; border-radius:8px; color:var(--text-dim); }
+  .md-layer-tab.active .count { background:var(--accent-blue); color:#1a1a28; }
+
+  /* ─── Filter Bar ─── */
+  .md-filter-bar { display:flex; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid var(--border-soft); margin-bottom:12px; }
+  .md-filter-label { font-size:11px; color:var(--text-dim); }
+  .md-filter-chip { padding:3px 10px; border-radius:12px; font-size:11px; cursor:pointer; border:1px solid var(--border); background:var(--bg-card); color:var(--text-sub); transition:all 0.15s; }
+  .md-filter-chip:hover { color:var(--text-main); border-color:var(--accent-blue); }
+  .md-filter-chip.active { background:var(--accent-blue); color:white; border-color:var(--accent-blue); }
+  .md-search { margin-left:auto; background:var(--bg-input); border:1px solid var(--border); border-radius:4px; padding:5px 12px; color:var(--text-main); font-size:12px; width:240px; outline:none; }
+  .md-search:focus { border-color:var(--accent-blue); }
+
+  /* ─── Memory List ─── */
+  .md-list { display:flex; flex-direction:column; gap:8px; }
+
+  /* ─── Memory Card ─── */
+  .md-card { background:var(--bg-card); border:1px solid var(--border-soft); border-radius:8px; overflow:hidden; transition:all 0.15s; }
+  .md-card:hover { border-color:var(--border); }
+  .md-card-header { display:flex; align-items:center; gap:8px; padding:10px 14px; cursor:pointer; }
+  .md-card-header:hover { background:var(--bg-hover); }
+  .md-badge { font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px; flex-shrink:0; }
+  .md-badge.pattern { background:rgba(78,201,176,0.12); color:var(--tier-episodic); }
+  .md-badge.preference { background:rgba(220,220,170,0.12); color:var(--accent-yellow); }
+  .md-badge.architecture { background:rgba(183,153,255,0.12); color:var(--tier-semantic); }
+  .md-badge.bug { background:rgba(244,135,113,0.12); color:var(--accent-red); }
+  .md-badge.workflow { background:rgba(240,160,75,0.12); color:var(--tier-procedural); }
+  .md-badge.fact { background:rgba(86,156,214,0.12); color:var(--accent-blue); }
+  .md-badge.observation { background:rgba(86,156,214,0.1); color:var(--tier-working); }
+  .md-badge.semantic { background:rgba(183,153,255,0.12); color:var(--tier-semantic); }
+  .md-badge.procedural { background:rgba(240,160,75,0.12); color:var(--tier-procedural); }
+
+  .md-retention { font-size:9px; font-weight:700; padding:2px 6px; border-radius:8px; flex-shrink:0; }
+  .md-retention.hot { background:rgba(93,202,165,0.12); color:var(--ret-hot); }
+  .md-retention.warm { background:rgba(220,220,170,0.12); color:var(--ret-warm); }
+  .md-retention.cold { background:rgba(240,160,75,0.12); color:var(--ret-cold); }
+  .md-retention.evict { background:rgba(244,135,113,0.1); color:var(--ret-evict); }
+
+  .md-card-title { font-size:13px; color:var(--text-main); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .md-card-time { font-size:10px; color:var(--text-dim); flex-shrink:0; }
+  .md-expand { color:var(--text-dim); font-size:10px; flex-shrink:0; transition:transform 0.2s; }
+  .md-card.expanded .md-expand { transform:rotate(90deg); }
+  .md-content-box { max-height:0; overflow:hidden; transition:max-height 0.25s ease; }
+  .md-card.expanded .md-content-box { max-height:600px; }
+  .md-content { padding:12px 14px; font-size:13px; line-height:1.6; color:var(--text-main); border-top:1px solid var(--border-soft); }
+  .md-meta { padding:6px 14px; border-top:1px solid var(--border-soft); display:flex; flex-wrap:wrap; gap:4px; }
+  .md-meta-chip { font-size:10px; padding:2px 8px; border-radius:10px; background:var(--bg-input); color:var(--text-dim); }
+  .md-meta-chip.confidence { background:rgba(93,202,165,0.1); color:var(--accent-green); }
+  .md-meta-chip.salience { background:rgba(183,153,255,0.1); color:var(--accent-purple); }
+  .md-meta-chip.access { background:rgba(86,156,214,0.1); color:var(--accent-blue); }
+
+  /* ─── Diagnostics Panel ─── */
+  .md-diag-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:999; display:none; }
+  .md-diag-panel { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:700px; max-height:80vh; overflow-y:auto; background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:20px 24px; z-index:1000; box-shadow:0 8px 32px rgba(0,0,0,0.4); display:none; }
+  .md-diag-panel h2 { font-size:15px; font-weight:700; margin-bottom:14px; }
+  .md-diag-section { margin-bottom:14px; }
+  .md-diag-section h3 { font-size:12px; font-weight:600; color:var(--text-sub); margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid var(--border-soft); }
+  .md-diag-item { display:flex; justify-content:space-between; padding:4px 0; font-size:12px; border-bottom:1px solid rgba(128,128,128,0.06); }
+  .md-diag-item .key { color:var(--text-sub); }
+  .md-diag-item .val { font-weight:500; }
+  .md-diag-item .val.pass { color:var(--ret-hot); }
+  .md-diag-item .val.warn { color:var(--ret-warm); }
+  .md-diag-item .val.fail { color:var(--ret-evict); }
+</style>
+</head>
+<body>
+
+<div class="md-container">
+
+  <!-- ═══ Header ═══ -->
+  <div class="md-header">
+    <h1>🧠 Memory Detail <span style="font-size:12px; color:var(--text-dim); font-weight:400;">agentId: default</span></h1>
+    <div class="subtitle">agentmemory 4-Tier Consolidation Model · 95 functional modules · BM25+Vector hybrid search</div>
+
+    <!-- Stats Grid: 4 Tiers -->
+    <div class="md-stats-grid">
+      <div class="md-stat-card working">
+        <div class="stat-icon">📝</div>
+        <div class="stat-value">156</div>
+        <div class="stat-label">Working</div>
+        <div class="stat-sub">原始观察 · file_read/write/edit, command_run, search, decision...</div>
+      </div>
+      <div class="md-stat-card episodic">
+        <div class="stat-icon">📖</div>
+        <div class="stat-value">38</div>
+        <div class="stat-label">Episodic</div>
+        <div class="stat-sub">会话摘要 · pattern, preference, architecture, bug, workflow, fact</div>
+      </div>
+      <div class="md-stat-card semantic">
+        <div class="stat-icon">🔗</div>
+        <div class="stat-value">12</div>
+        <div class="stat-label">Semantic</div>
+        <div class="stat-sub">事实模式 · 从 episodic 中 LLM 提取的结构化知识</div>
+      </div>
+      <div class="md-stat-card procedural">
+        <div class="stat-icon">⚙️</div>
+        <div class="stat-value">5</div>
+        <div class="stat-label">Procedural</div>
+        <div class="stat-sub">工作流 · 从 semantic 中提取的决策模式和操作流程</div>
+      </div>
+    </div>
+
+    <!-- Extended Stats -->
+    <div class="md-ext-stats">
+      <div class="md-ext-stat"><span class="label">BM25 Index:</span> <span class="value">206</span></div>
+      <div class="md-ext-stat"><span class="label">Vector Dim:</span> <span class="value">384</span></div>
+      <div class="md-ext-stat"><span class="label">Dedup:</span> <span class="value">23 skipped</span></div>
+      <div class="md-ext-stat"><span class="label">Bloom:</span> <span class="value">1.0% FP</span></div>
+      <div class="md-ext-stat"><span class="label">Contradictions:</span> <span class="value">2</span></div>
+      <div class="md-ext-stat"><span class="label">Graph:</span> <span class="value">47N/89E</span></div>
+      <div class="md-ext-stat"><span class="label">Crystals:</span> <span class="value">2</span></div>
+      <div class="md-ext-stat"><span class="label">Lessons:</span> <span class="value">8</span></div>
+      <div class="md-ext-stat"><span class="label">Insights:</span> <span class="value">4</span></div>
+    </div>
+
+    <!-- Pipeline Visualization -->
+    <div class="md-pipeline">
+      <h3>🔄 4-Tier Consolidation Pipeline</h3>
+      <div class="md-pipeline-flow">
+        <div class="md-pipeline-node working">
+          <span class="node-count">156</span>
+          <span class="node-label">Working</span>
+        </div>
+        <span class="md-pipeline-arrow">→</span>
+        <div class="md-pipeline-node episodic">
+          <span class="node-count">38</span>
+          <span class="node-label">Episodic</span>
+        </div>
+        <span class="md-pipeline-arrow">→</span>
+        <div class="md-pipeline-node semantic">
+          <span class="node-count">12</span>
+          <span class="node-label">Semantic</span>
+        </div>
+        <span class="md-pipeline-arrow">→</span>
+        <div class="md-pipeline-node procedural">
+          <span class="node-count">5</span>
+          <span class="node-label">Procedural</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="md-toolbar">
+      <div class="md-btn primary">🔄 刷新</div>
+      <div class="md-btn">💾 Flush</div>
+      <div class="md-btn">⚙️ 运行整合</div>
+      <div class="md-btn">📊 诊断</div>
+      <div class="md-btn">📥 导出 JSON</div>
+      <div class="md-btn">📄 导出 MD</div>
+      <div class="md-btn">🔍 搜索历史</div>
+      <div class="md-btn danger">🗑 清理 Evictable</div>
+    </div>
+  </div>
+
+  <!-- ═══ Layer Tabs ═══ -->
+  <div class="md-layer-tabs">
+    <div class="md-layer-tab active">全部 <span class="count">211</span></div>
+    <div class="md-layer-tab">Working <span class="count">156</span></div>
+    <div class="md-layer-tab">Episodic <span class="count">38</span></div>
+    <div class="md-layer-tab">Semantic <span class="count">12</span></div>
+    <div class="md-layer-tab">Procedural <span class="count">5</span></div>
+    <div class="md-layer-tab">Slots <span class="count">7</span></div>
+    <div class="md-layer-tab">Lessons <span class="count">8</span></div>
+    <div class="md-layer-tab">Insights <span class="count">4</span></div>
+  </div>
+
+  <!-- ═══ Filter Bar ═══ -->
+  <div class="md-filter-bar">
+    <span class="md-filter-label">类型:</span>
+    <div class="md-filter-chip active">全部</div>
+    <div class="md-filter-chip">pattern</div>
+    <div class="md-filter-chip">preference</div>
+    <div class="md-filter-chip">architecture</div>
+    <div class="md-filter-chip">bug</div>
+    <div class="md-filter-chip">workflow</div>
+    <div class="md-filter-chip">fact</div>
+    <span class="md-filter-label" style="margin-left:12px;">保留:</span>
+    <div class="md-filter-chip">🔥 Hot</div>
+    <div class="md-filter-chip">☀️ Warm</div>
+    <div class="md-filter-chip">❄️ Cold</div>
+    <input class="md-search" type="text" placeholder="🔍 混合搜索 (BM25 + Vector + RRF)..." />
+  </div>
+
+  <!-- ═══ Memory List ═══ -->
+  <div class="md-list">
+
+    <!-- Procedural -->
+    <div class="md-card expanded">
+      <div class="md-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="md-badge workflow">workflow</span>
+        <span class="md-retention hot">🔥 HOT</span>
+        <span class="md-card-title">调试-修复-验证: 编译错误和类型不匹配的标准处理流程</span>
+        <span class="md-card-time">06-26 16:20</span>
+        <span class="md-expand">▶</span>
+      </div>
+      <div class="md-content-box">
+        <div class="md-content">
+          <strong>调试-修复-验证工作流</strong><br>
+          1. <strong>复现错误</strong>: 运行编译命令，记录完整错误输出<br>
+          2. <strong>定位根因</strong>: 根据错误行号和类型信息，定位到具体文件和代码行<br>
+          3. <strong>修改代码</strong>: 使用 <code>replace_in_file</code> 做最小改动修复<br>
+          4. <strong>编译验证</strong>: 重新运行编译，确认 0 errors<br>
+          5. <strong>测试确认</strong>: 运行相关测试确保功能正确<br><br>
+          <em>适用场景: TypeScript 编译错误、类型不匹配、缺少导入、接口不兼容等</em>
+        </div>
+        <div class="md-meta">
+          <span class="md-meta-chip salience">显著性 0.6</span>
+          <span class="md-meta-chip confidence">置信度 0.92</span>
+          <span class="md-meta-chip access">使用 24 次</span>
+          <span class="md-meta-chip">tier: procedural</span>
+          <span class="md-meta-chip">source: LLM 提取</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Semantic -->
+    <div class="md-card">
+      <div class="md-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="md-badge architecture">architecture</span>
+        <span class="md-retention hot">🔥 HOT</span>
+        <span class="md-card-title">AgentMemoryProvider 进程内架构: 95 模块 + BM25/Vector 混合搜索</span>
+        <span class="md-card-time">06-26 17:30</span>
+        <span class="md-expand">▶</span>
+      </div>
+      <div class="md-content-box">
+        <div class="md-content">
+          AgentMemoryProvider 采用进程内架构，不依赖外部 HTTP 服务。95 个功能模块通过 <code>memoryProvider.ts</code> 集成为中心枢纽。<br><br>
+          核心搜索: BM25 + Vector 混合搜索 + RRF 融合。支持 Porter stemmer、CJK 分词（jieba + bigram fallback）、CLIP 多模态 embedding。<br><br>
+          生命周期: Hook/Trigger/EventBus 系统（8 hook 类型, 11 trigger topics, 17 event types）。writeMemory 通过 EventBus 发出 memory_written/memory_write_failed 事件供 UI 桥接。
+        </div>
+        <div class="md-meta">
+          <span class="md-meta-chip salience">显著性 0.9</span>
+          <span class="md-meta-chip access">access 18</span>
+          <span class="md-meta-chip">tier: semantic</span>
+          <span class="md-meta-chip">source: LLM 语义提取</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Episodic -->
+    <div class="md-card">
+      <div class="md-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="md-badge preference">preference</span>
+        <span class="md-retention hot">🔥 HOT</span>
+        <span class="md-card-title">用户偏好: 中文回复, 简洁直接, 先结论后细节</span>
+        <span class="md-card-time">06-26 18:08</span>
+        <span class="md-expand">▶</span>
+      </div>
+      <div class="md-content-box">
+        <div class="md-content">
+          用户偏好中文回复，代码注释也用中文。偏好简洁直接的沟通风格——先给结论，再展开细节。<br><br>
+          工作模式: 倾向于"先评估再行动"——总是先分析设计合理性，确认后才实施。偏好可控、低风险的迭代方式。
+        </div>
+        <div class="md-meta">
+          <span class="md-meta-chip salience">显著性 0.85</span>
+          <span class="md-meta-chip">tier: episodic</span>
+          <span class="md-meta-chip">session: 06-26</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Working (pending) -->
+    <div class="md-card" style="border-left:3px solid var(--accent-blue);">
+      <div class="md-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="md-badge observation">file_edit</span>
+        <span class="md-card-title">⏳ 写入中: memoryDetailEditorPane.ts</span>
+        <span class="md-card-time">写入中...</span>
+        <span class="md-expand">▶</span>
+      </div>
+    </div>
+
+    <!-- Episodic: bug -->
+    <div class="md-card">
+      <div class="md-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="md-badge bug">bug</span>
+        <span class="md-retention warm">☀️ WARM</span>
+        <span class="md-card-title">gulp 编译 ESM 扩展错误写入 out/package.json 导致 CJS/ESM 模式冲突</span>
+        <span class="md-card-time">06-26 14:10</span>
+        <span class="md-expand">▶</span>
+      </div>
+      <div class="md-content-box">
+        <div class="md-content">
+          <strong>根因</strong>: <code>gulpfile.extensions.ts</code> 的 compileTask 在编译每个扩展后，无条件写入 <code>out/package.json</code> = <code>{"type":"commonjs"}</code>。但 ESM 扩展（<code>package.json</code> 有 <code>"type": "module"</code>）会被这个 CJS 声明覆盖，导致 Node.js 以 CJS 模式加载 ESM 代码。<br><br>
+          <strong>修复</strong>: 在写入前检查扩展根 <code>package.json</code> 的 <code>type</code> 字段。如果 <code>type === "module"</code>（ESM 扩展），跳过写入。
+        </div>
+        <div class="md-meta">
+          <span class="md-meta-chip salience">显著性 0.7</span>
+          <span class="md-meta-chip">tier: episodic</span>
+          <span class="md-meta-chip">status: 已修复</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cold retention -->
+    <div class="md-card" style="opacity:0.7;">
+      <div class="md-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="md-badge fact">fact</span>
+        <span class="md-retention cold">❄️ COLD</span>
+        <span class="md-card-title">VS Code webview 通信必须用 acquireVsCodeApi()</span>
+        <span class="md-card-time">06-25 16:45</span>
+        <span class="md-expand">▶</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══ Diagnostics Panel (hidden) ═══ -->
+<div class="md-diag-overlay" onclick="this.style.display='none'; document.querySelector('.md-diag-panel').style.display='none';"></div>
+<div class="md-diag-panel">
+  <h2>📊 记忆系统诊断 — 12 项健康检查</h2>
+  <div class="md-diag-section">
+    <h3>存储</h3>
+    <div class="md-diag-item"><span class="key">SQLite 状态</span><span class="val pass">✅ PASS — 206 条, 2.3MB</span></div>
+    <div class="md-diag-item"><span class="key">BM25 索引</span><span class="val pass">✅ PASS — 206 文档已索引</span></div>
+    <div class="md-diag-item"><span class="key">Vector 索引</span><span class="val pass">✅ PASS — 384 维, 206 向量</span></div>
+    <div class="md-diag-item"><span class="key">Bloom Filter</span><span class="val pass">✅ PASS — 10000 容量, 1.0% FP率</span></div>
+  </div>
+  <div class="md-diag-section">
+    <h3>搜索质量</h3>
+    <div class="md-diag-item"><span class="key">Porter Stemmer</span><span class="val pass">✅ PASS — 已启用</span></div>
+    <div class="md-diag-item"><span class="key">CJK 分词</span><span class="val pass">✅ PASS — jieba + bigram fallback</span></div>
+    <div class="md-diag-item"><span class="key">RRF 融合</span><span class="val pass">✅ PASS — k=60</span></div>
+    <div class="md-diag-item"><span class="key">查询扩展</span><span class="val warn">⚠️ WARN — 50 同义词组, 4 领域特定</span></div>
+  </div>
+  <div class="md-diag-section">
+    <h3>生命周期</h3>
+    <div class="md-diag-item"><span class="key">Hook 系统</span><span class="val pass">✅ PASS — 8 hooks, 0 失败</span></div>
+    <div class="md-diag-item"><span class="key">Trigger 系统</span><span class="val pass">✅ PASS — 11 topics</span></div>
+    <div class="md-diag-item"><span class="key">EventBus</span><span class="val warn">⚠️ WARN — 17 types, 3 handlers 有延迟</span></div>
+    <div class="md-diag-item"><span class="key">Retention 衰减</span><span class="val fail">❌ FAIL — 12 条 evictable 未清理</span></div>
+  </div>
+</div>
+
+</body>
+</html>

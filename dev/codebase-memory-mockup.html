@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codebase Memory — Mockup</title>
+<style>
+:root {
+	--bg: #1e1e2e;
+	--bg-card: #252535;
+	--bg-card-hover: #2a2a3e;
+	--bg-input: #1a1a28;
+	--border: #3a3a4e;
+	--border-hover: #4a4a6e;
+	--fg: #e0e0ee;
+	--fg-dim: #8888aa;
+	--fg-muted: #666680;
+	--accent: #80a0ff;
+	--accent-glow: rgba(128, 160, 255, 0.15);
+	--green: #4ec9b0;
+	--blue: #569cd6;
+	--purple: #c586c0;
+	--yellow: #dcdcaa;
+	--red: #f48771;
+	--orange: #ce9178;
+	--radius: 10px;
+	--radius-sm: 6px;
+	--shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+	--transition: all 0.15s ease;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+	background: var(--bg);
+	color: var(--fg);
+	font-size: 13px;
+	line-height: 1.5;
+	overflow-x: hidden;
+}
+
+/* ─── Layout ─── */
+.cbm-container {
+	max-width: 900px;
+	margin: 0 auto;
+	padding: 24px 28px 48px;
+}
+
+/* ─── Header ─── */
+.cbm-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 24px;
+}
+
+.cbm-header-left {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+}
+
+.cbm-logo {
+	width: 40px;
+	height: 40px;
+	border-radius: 10px;
+	background: linear-gradient(135deg, #80a0ff 0%, #c586c0 100%);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 22px;
+	box-shadow: 0 0 20px rgba(128, 160, 255, 0.3);
+}
+
+.cbm-title-group h1 {
+	font-size: 18px;
+	font-weight: 700;
+	margin: 0;
+}
+
+.cbm-title-group p {
+	font-size: 12px;
+	color: var(--fg-dim);
+	margin: 2px 0 0;
+}
+
+.cbm-header-status {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 14px;
+	background: rgba(78, 201, 176, 0.1);
+	border: 1px solid rgba(78, 201, 176, 0.3);
+	border-radius: 20px;
+}
+
+.cbm-header-status .dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--green);
+	box-shadow: 0 0 6px var(--green);
+	animation: pulse 2s infinite;
+}
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.cbm-header-status .text {
+	font-size: 12px;
+	color: var(--green);
+	font-weight: 600;
+}
+
+/* ─── Stats Dashboard ─── */
+.cbm-stats-grid {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: 12px;
+	margin-bottom: 24px;
+}
+
+.cbm-stat-card {
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 16px 18px;
+	transition: var(--transition);
+	position: relative;
+	overflow: hidden;
+}
+
+.cbm-stat-card:hover {
+	border-color: var(--border-hover);
+	background: var(--bg-card-hover);
+	transform: translateY(-1px);
+}
+
+.cbm-stat-card::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 3px;
+	height: 100%;
+}
+
+.cbm-stat-card.accent::before { background: var(--accent); }
+.cbm-stat-card.green::before { background: var(--green); }
+.cbm-stat-card.purple::before { background: var(--purple); }
+.cbm-stat-card.blue::before { background: var(--blue); }
+
+.cbm-stat-card .stat-icon {
+	font-size: 18px;
+	margin-bottom: 8px;
+}
+
+.cbm-stat-card .stat-value {
+	font-size: 28px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.cbm-stat-card .stat-label {
+	font-size: 11px;
+	color: var(--fg-dim);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	margin-top: 4px;
+}
+
+.cbm-stat-card .stat-sub {
+	font-size: 10px;
+	color: var(--fg-muted);
+	margin-top: 2px;
+}
+
+/* ─── Section Cards ─── */
+.cbm-section {
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	margin-bottom: 16px;
+	overflow: hidden;
+}
+
+.cbm-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 18px;
+	border-bottom: 1px solid var(--border);
+	background: rgba(255, 255, 255, 0.02);
+}
+
+.cbm-section-header h2 {
+	font-size: 13px;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.cbm-section-header .badge {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 10px;
+	background: var(--accent-glow);
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.cbm-section-body {
+	padding: 16px 18px;
+}
+
+/* ─── Index Config ─── */
+.cbm-config-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.cbm-config-row:last-child { margin-bottom: 0; }
+
+.cbm-config-label {
+	min-width: 80px;
+	font-size: 12px;
+	color: var(--fg-dim);
+	flex-shrink: 0;
+}
+
+.cbm-segmented {
+	display: flex;
+	gap: 0;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+	flex: 1;
+}
+
+.cbm-segmented button {
+	flex: 1;
+	padding: 7px 12px;
+	border: none;
+	background: transparent;
+	color: var(--fg-dim);
+	font-size: 12px;
+	cursor: pointer;
+	transition: var(--transition);
+	border-right: 1px solid var(--border);
+}
+
+.cbm-segmented button:last-child { border-right: none; }
+
+.cbm-segmented button:hover {
+	background: rgba(255, 255, 255, 0.05);
+	color: var(--fg);
+}
+
+.cbm-segmented button.active {
+	background: var(--accent-glow);
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.cbm-input {
+	flex: 1;
+	padding: 7px 12px;
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	color: var(--fg);
+	font-size: 12px;
+	outline: none;
+	transition: var(--transition);
+}
+
+.cbm-input:focus {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.cbm-input::placeholder { color: var(--fg-muted); }
+
+/* ─── Buttons ─── */
+.cbm-btn-group {
+	display: flex;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-top: 16px;
+}
+
+.cbm-btn {
+	padding: 8px 18px;
+	border-radius: var(--radius-sm);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	border: 1px solid var(--border);
+	background: var(--bg-input);
+	color: var(--fg);
+	transition: var(--transition);
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.cbm-btn:hover {
+	border-color: var(--border-hover);
+	background: var(--bg-card-hover);
+}
+
+.cbm-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.cbm-btn.primary {
+	background: var(--accent);
+	color: #1a1a28;
+	border-color: var(--accent);
+	font-weight: 600;
+}
+
+.cbm-btn.primary:hover {
+	background: #90b0ff;
+	box-shadow: 0 0 12px rgba(128, 160, 255, 0.3);
+}
+
+.cbm-btn.danger {
+	background: rgba(244, 135, 113, 0.15);
+	border-color: rgba(244, 135, 113, 0.3);
+	color: var(--red);
+}
+
+.cbm-btn.danger:hover {
+	background: rgba(244, 135, 113, 0.25);
+}
+
+/* ─── Graph Info ─── */
+.cbm-info-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 8px 24px;
+}
+
+.cbm-info-item {
+	display: flex;
+	justify-content: space-between;
+	padding: 4px 0;
+	font-size: 12px;
+}
+
+.cbm-info-item .key {
+	color: var(--fg-dim);
+}
+
+.cbm-info-item .val {
+	color: var(--fg);
+	font-family: 'JetBrains Mono', 'Consolas', monospace;
+	font-size: 11px;
+}
+
+/* ─── Progress Bar ─── */
+.cbm-progress {
+	height: 4px;
+	background: var(--bg-input);
+	border-radius: 2px;
+	overflow: hidden;
+	margin-top: 12px;
+}
+
+.cbm-progress-bar {
+	height: 100%;
+	background: linear-gradient(90deg, var(--accent), var(--purple));
+	border-radius: 2px;
+	transition: width 0.3s ease;
+}
+
+.cbm-progress-text {
+	font-size: 11px;
+	color: var(--fg-dim);
+	margin-top: 6px;
+	display: flex;
+	justify-content: space-between;
+}
+
+/* ─── Log ─── */
+.cbm-log {
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 10px 14px;
+	font-family: 'JetBrains Mono', 'Consolas', monospace;
+	font-size: 11px;
+	line-height: 1.7;
+	max-height: 220px;
+	overflow-y: auto;
+	user-select: text;
+}
+
+.cbm-log-line { color: var(--fg-dim); }
+.cbm-log-line.success { color: var(--green); }
+.cbm-log-line.error { color: var(--red); }
+.cbm-log-line.warn { color: var(--yellow); }
+.cbm-log-line.info { color: var(--blue); }
+.cbm-log-line .timestamp { color: var(--fg-muted); margin-right: 8px; }
+
+/* ─── Language Badges ─── */
+.cbm-lang-badges {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin-top: 10px;
+}
+
+.cbm-lang-badge {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 10px;
+	font-weight: 600;
+}
+
+.cbm-lang-badge.ts { background: rgba(86, 156, 214, 0.15); color: var(--blue); }
+.cbm-lang-badge.js { background: rgba(220, 220, 170, 0.15); color: var(--yellow); }
+.cbm-lang-badge.py { background: rgba(78, 201, 176, 0.15); color: var(--green); }
+.cbm-lang-badge.go { background: rgba(128, 160, 255, 0.15); color: var(--accent); }
+.cbm-lang-badge.rs { background: rgba(206, 145, 120, 0.15); color: var(--orange); }
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+</style>
+</head>
+<body>
+<div class="cbm-container">
+
+	<!-- ═══ Header ═══ -->
+	<div class="cbm-header">
+		<div class="cbm-header-left">
+			<div class="cbm-logo">🧠</div>
+			<div class="cbm-title-group">
+				<h1>Codebase Memory</h1>
+				<p>Native tree-sitter code graph · No external binary required</p>
+			</div>
+		</div>
+		<div class="cbm-header-status">
+			<span class="dot"></span>
+			<span class="text">Ready</span>
+		</div>
+	</div>
+
+	<!-- ═══ Stats Dashboard ═══ -->
+	<div class="cbm-stats-grid">
+		<div class="cbm-stat-card accent">
+			<div class="stat-icon">🔗</div>
+			<div class="stat-value">12,847</div>
+			<div class="stat-label">Nodes</div>
+			<div class="stat-sub">functions · classes · interfaces</div>
+		</div>
+		<div class="cbm-stat-card green">
+			<div class="stat-icon">↔️</div>
+			<div class="stat-value">31,205</div>
+			<div class="stat-label">Edges</div>
+			<div class="stat-sub">calls · imports · defines</div>
+		</div>
+		<div class="cbm-stat-card blue">
+			<div class="stat-icon">📁</div>
+			<div class="stat-value">342</div>
+			<div class="stat-label">Files Indexed</div>
+			<div class="stat-sub">across 16 directories</div>
+		</div>
+		<div class="cbm-stat-card purple">
+			<div class="stat-icon">⚡</div>
+			<div class="stat-value">3.2s</div>
+			<div class="stat-label">Last Index</div>
+			<div class="stat-sub">fast mode · 2 min ago</div>
+		</div>
+	</div>
+
+	<!-- ═══ Index Control ═══ -->
+	<div class="cbm-section">
+		<div class="cbm-section-header">
+			<h2>⚙️ Index Configuration</h2>
+			<span class="badge">Fast Mode</span>
+		</div>
+		<div class="cbm-section-body">
+			<div class="cbm-config-row">
+				<span class="cbm-config-label">Mode</span>
+				<div class="cbm-segmented">
+					<button class="active">⚡ Fast</button>
+					<button>⚖️ Moderate</button>
+					<button>🔬 Full</button>
+				</div>
+			</div>
+			<div class="cbm-config-row">
+				<span class="cbm-config-label">Index Path</span>
+				<input class="cbm-input" placeholder="Leave empty for entire workspace, or e.g. src/vs/sessions" value="src/vs/sessions">
+			</div>
+			<div class="cbm-config-row">
+				<span class="cbm-config-label">Exclude</span>
+				<input class="cbm-input" placeholder="node_modules, .git, build, out..." value="node_modules, .git, build, out, dist, .worktrees">
+			</div>
+			<div class="cbm-config-row">
+				<span class="cbm-config-label">Languages</span>
+				<div class="cbm-lang-badges">
+					<span class="cbm-lang-badge ts">TypeScript · 284</span>
+					<span class="cbm-lang-badge js">JavaScript · 31</span>
+					<span class="cbm-lang-badge py">Python · 12</span>
+					<span class="cbm-lang-badge go">Go · 8</span>
+					<span class="cbm-lang-badge rs">Rust · 7</span>
+				</div>
+			</div>
+			<div class="cbm-btn-group">
+				<button class="cbm-btn primary">🔍 Index Codebase</button>
+				<button class="cbm-btn">💾 Save Config</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ Graph Info ═══ -->
+	<div class="cbm-section">
+		<div class="cbm-section-header">
+			<h2>📊 Graph Details</h2>
+			<span class="badge">graph.json · 2.4 MB</span>
+		</div>
+		<div class="cbm-section-body">
+			<div class="cbm-info-grid">
+				<div class="cbm-info-item">
+					<span class="key">Storage</span>
+					<span class="val">.sarosworkspace/.codebase-memory/graph.json</span>
+				</div>
+				<div class="cbm-info-item">
+					<span class="key">Last Modified</span>
+					<span class="val">2026-06-26 11:15:42</span>
+				</div>
+				<div class="cbm-info-item">
+					<span class="key">Node Types</span>
+					<span class="val">function(7238) · class(1631) · file(342) · interface(89) · module(647)</span>
+				</div>
+				<div class="cbm-info-item">
+					<span class="key">Edge Types</span>
+					<span class="val">defines(3264) · calls(1711) · imports(647) · contains(342)</span>
+				</div>
+			</div>
+			<div class="cbm-btn-group">
+				<button class="cbm-btn primary">🌐 View 3D Graph</button>
+				<button class="cbm-btn">🔄 Refresh</button>
+				<button class="cbm-btn">📂 Open Directory</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ Index Progress (shown during indexing) ═══ -->
+	<div class="cbm-section">
+		<div class="cbm-section-header">
+			<h2>⏳ Indexing...</h2>
+			<span class="badge" style="background: rgba(220,220,170,0.15); color: var(--yellow);">In Progress</span>
+		</div>
+		<div class="cbm-section-body">
+			<div class="cbm-progress">
+				<div class="cbm-progress-bar" style="width: 67%;"></div>
+			</div>
+			<div class="cbm-progress-text">
+				<span>📁 Parsed 230 / 342 files</span>
+				<span>⏱️ Elapsed: 2.1s · ETA: 1.0s</span>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══ Activity Log ═══ -->
+	<div class="cbm-section">
+		<div class="cbm-section-header">
+			<h2>📋 Activity Log</h2>
+			<button class="cbm-btn" style="padding: 3px 10px; font-size: 11px;">📋 Copy All</button>
+		</div>
+		<div class="cbm-section-body">
+			<div class="cbm-log">
+				<div class="cbm-log-line info"><span class="timestamp">11:15:38</span>▶ 开始索引: src/vs/sessions</div>
+				<div class="cbm-log-line"><span class="timestamp">11:15:38</span>📂 扫描文件...</div>
+				<div class="cbm-log-line"><span class="timestamp">11:15:39</span>📊 发现 342 个可解析文件</div>
+				<div class="cbm-log-line"><span class="timestamp">11:15:39</span>⏳ 已解析 50/342 文件, 2,847 节点...</div>
+				<div class="cbm-log-line"><span class="timestamp">11:15:40</span>⏳ 已解析 100/342 文件, 5,612 节点...</div>
+				<div class="cbm-log-line"><span class="timestamp">11:15:41</span>⏳ 已解析 200/342 文件, 9,348 节点...</div>
+				<div class="cbm-log-line"><span class="timestamp">11:15:42</span>🔗 匹配调用关系...</div>
+				<div class="cbm-log-line success"><span class="timestamp">11:15:42</span>✓ 索引完成: 342 文件, 12,847 节点, 31,205 边 (3.2s)</div>
+			</div>
+		</div>
+	</div>
+
+</div>
+</body>
+</html>

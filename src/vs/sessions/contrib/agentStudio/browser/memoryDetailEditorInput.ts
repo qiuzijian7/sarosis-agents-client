@@ -34,7 +34,7 @@ export class MemoryDetailEditorInput extends EditorInput {
 	private readonly _agentId: string;
 	/** 目标记忆 ID（点击系统栏条目时设置，用于滚动定位） */
 	public targetMemoryId: string | null = null;
-	/** 目标层级过滤（点击系统栏条目时设置，如 short_term/long_term） */
+	/** 目标层级过滤（点击系统栏条目时设置，如 working/episodic） */
 	public targetLayer: string | null = null;
 
 	constructor(agentId?: string) {

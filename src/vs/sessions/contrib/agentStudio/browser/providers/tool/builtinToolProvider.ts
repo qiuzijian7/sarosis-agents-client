@@ -51,6 +51,7 @@ import { SubAgentType, SubAgentResult, UnifiedSubAgentDispatch } from '../../../
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../../../common/workflowStorage.js';
 import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
+import { IMcpService, IMcpServer, McpConnectionState } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 
 
 type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<IToolResultContent[]>;
@@ -162,6 +163,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	@ICheckpointService private readonly checkpointService: ICheckpointService,
 	@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
+	@IMcpService private readonly mcpService: IMcpService,
 	) {
 		super();
 		this._registerCoreTools();
@@ -171,9 +173,193 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerDelegationTools();
 		this._registerKanbanTools();
 		this._registerWorkflowTools();
+		this._registerMcpBridgeTools();
 	}
 
-	// ─── 路径安全校验 ─────────────────────────────────────────────────────
+	// ─── MCP Bridge Tools ──────────────────────────────────────────────────
+
+	/**
+	 * 注册 MCP 桥接工具：用 2 个桥接工具替代 N 个 MCP 工具定义。
+	 *
+	 * LLM 先用 mcp_tool_search 搜索可用工具，再用 mcp_tool_call 执行。
+	 * 这样大幅减少发送给 LLM 的工具 schema 数量，避免 API 超时。
+	 *
+	 * 设计参考：Hermes-Agent 的 Tool Search progressive disclosure 机制。
+	 */
+	private _registerMcpBridgeTools(): void {
+
+		// ── mcp_tool_search: 搜索 MCP 工具 ──────────────────────────────
+		this._tools.set('mcp_tool_search', {
+			definition: {
+				name: 'mcp_tool_search',
+				description: [
+					'Search available MCP tools by keyword. Returns tool names and short descriptions.',
+					'Use this to find MCP tools before calling them with mcp_tool_call.',
+					'Pass "list" to see ALL available MCP tools.',
+					'Example: mcp_tool_search("architecture") → [{name: "get_architecture", description: "..."}]',
+					'Example: mcp_tool_search("list") → all MCP tools',
+				].join('\n'),
+				inputSchema: {
+					type: 'object',
+					properties: {
+						query: {
+							type: 'string',
+							description: 'Search query (matches tool name, description, and server name, case-insensitive). Pass "list" to see all tools.',
+						},
+					},
+					required: ['query'],
+				},
+				category: 'utility',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Safe,
+			},
+			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
+				const query = String(args.query ?? '').toLowerCase().trim();
+				if (!query) {
+					return [{ type: 'text', text: 'Error: query parameter is required. Pass "list" to see all tools.' }];
+				}
+
+				const listAll = query === 'list' || query === '*' || query === 'all';
+				const servers = this.mcpService.servers.get();
+				const results: Array<{ name: string; description: string; server: string }> = [];
+
+				for (const server of servers) {
+					const connState = server.connectionState.get();
+					if (connState.state !== McpConnectionState.Kind.Running) { continue; }
+					const serverLabel = server.definition.label;
+					const tools = server.tools.get();
+					for (const tool of tools) {
+						const toolName = tool.referenceName || tool.definition.name;
+						const desc = tool.definition.description || '';
+						// Match: list all, or query in tool name / description / server name
+						if (listAll ||
+							toolName.toLowerCase().includes(query) ||
+							desc.toLowerCase().includes(query) ||
+							serverLabel.toLowerCase().includes(query)) {
+							results.push({
+								name: toolName,
+								description: desc.slice(0, 200),
+								server: serverLabel,
+							});
+						}
+					}
+				}
+
+				if (results.length === 0) {
+					return [{ type: 'text', text: `No MCP tools found matching "${query}". Try different keywords or use mcp_tool_search("list") to see all available tools.` }];
+				}
+
+				const lines = results.map(r => `  - ${r.name}: ${r.description} [server: ${r.server}]`);
+				return [{ type: 'text', text: `Found ${results.length} MCP tool(s):\n${lines.join('\n')}\n\nUse mcp_tool_call(name, args) to execute any of these tools.` }];
+			},
+		});
+
+		// ── mcp_tool_call: 执行 MCP 工具 ───────────────────────────────
+		this._tools.set('mcp_tool_call', {
+			definition: {
+				name: 'mcp_tool_call',
+				description: [
+					'Execute an MCP tool by name, or inspect its parameter schema.',
+					'Use mcp_tool_search first to find available tools.',
+					'Pass describe_only=true to see the full parameter schema without executing.',
+					'Example: mcp_tool_call("get_architecture", {"project": "my-project"})',
+					'Example: mcp_tool_call("search_code", {"query": "auth"}, describe_only=true)',
+				].join('\n'),
+				inputSchema: {
+					type: 'object',
+					properties: {
+						name: {
+							type: 'string',
+							description: 'The MCP tool name (returned by mcp_tool_search)',
+						},
+						args: {
+							type: 'object',
+							description: 'Arguments object to pass to the MCP tool. Check the tool description for required parameters.',
+							additionalProperties: true,
+						},
+						describe_only: {
+							type: 'boolean',
+							description: 'If true, return the tool\'s full parameter schema without executing. Useful to check required parameters before calling.',
+						},
+					},
+					required: ['name'],
+				},
+				category: 'utility',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Cautious,
+			},
+			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
+				const toolName = String(args.name ?? '').trim();
+				const toolArgs = (args.args as Record<string, unknown>) ?? {};
+				const describeOnly = Boolean(args.describe_only);
+
+				if (!toolName) {
+					return [{ type: 'text', text: 'Error: name parameter is required' }];
+				}
+
+				const servers = this.mcpService.servers.get();
+				let foundServer: IMcpServer | undefined;
+				let foundTool: any | undefined;
+
+				for (const server of servers) {
+					const connState = server.connectionState.get();
+					if (connState.state !== McpConnectionState.Kind.Running) {
+						// Try to start the server if it's stopped
+						if (connState.state === McpConnectionState.Kind.Stopped || connState.state === McpConnectionState.Kind.Error) {
+							try { await server.start(); } catch { continue; }
+						} else { continue; }
+					}
+					const tools = server.tools.get();
+					for (const tool of tools) {
+						const refName = tool.referenceName || tool.definition.name;
+						if (refName === toolName || tool.definition.name === toolName || tool.id === toolName) {
+							foundServer = server;
+							foundTool = tool;
+							break;
+						}
+					}
+					if (foundTool) { break; }
+				}
+
+			if (!foundServer || !foundTool) {
+				return [{ type: 'text', text: `Error: MCP tool "${toolName}" not found. Use mcp_tool_search to find available tools.` }];
+			}
+
+				// describe_only mode: return the tool's full schema without executing
+				if (describeOnly) {
+					const schema = foundTool.definition.inputSchema || {};
+					const desc = foundTool.definition.description || '';
+					return [{ type: 'text', text: `Tool: ${toolName}\nDescription: ${desc}\nParameters:\n${JSON.stringify(schema, null, 2)}` }];
+				}
+
+			try {
+					const result = await foundTool.call(toolArgs, undefined, CancellationToken.None);
+					const contents: IToolResultContent[] = [];
+					if (Array.isArray(result.content)) {
+						for (const c of result.content) {
+							if (c?.type === 'text') {
+								contents.push({ type: 'text', text: String(c.text ?? '') });
+							} else if (c?.type === 'image') {
+								contents.push({ type: 'image', data: String(c.data ?? ''), mimeType: String(c.mimeType ?? 'image/png') });
+							} else {
+								contents.push({ type: 'text', text: JSON.stringify(c) });
+							}
+						}
+					}
+					if (result.isError) {
+						const errorText = contents.map(c => c.type === 'text' ? c.text : '').join('\n');
+						return [{ type: 'text', text: `MCP tool "${toolName}" returned an error:\n${errorText}` }];
+					}
+					return contents.length > 0 ? contents : [{ type: 'text', text: `MCP tool "${toolName}" executed successfully (no output).` }];
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return [{ type: 'text', text: `Error executing MCP tool "${toolName}": ${msg}` }];
+				}
+			},
+		});
+
+		this.logService.info('[BuiltinToolProvider] Registered MCP bridge tools: mcp_tool_search, mcp_tool_call');
+	}
 
 	/**
 	 * 检查请求的路径是否在允许的工作区目录内，并将相对路径解析为绝对路径。
@@ -712,13 +898,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 注册 Memory 相关工具。
 	 *
 	 * 设计动机：LLM 在 system prompt 里反复看到 “recall / 召回 / save and recall” 等字眼
-	 * （来自 tdb-am-memory 扩展描述、bundledTools 描述、builtinMemoryProvider 提示等），
+	 * （来自 agentmemory-memory 扩展描述、bundledTools 描述、builtinMemoryProvider 提示等），
 	 * 经常会幻觉调用一个不存在的 `recall` 工具，导致 toolCallUtils 抛出
 	 * `Tool "recall" does not exist` 错误。
 	 *
 	 * 这里把幻觉变成实际能力：通过 IAgentOSService.getActiveMemoryProvider().searchMemory()
-	 * 调用当前活跃的 Memory Provider（默认 builtinMemoryProvider；接入 TDB-AM 后是
-	 * TdbAmMemoryProvider，会走 vendor /search/memories）。
+	 * 调用当前活跃的 Memory Provider（默认 builtinMemoryProvider；接入 AgentMemory 后是
+	 * AgentMemoryProvider，会走 vendor /search/memories）。
 	 *
 	 * 懒查询：在 handler 内部解析 provider，避免构造期循环依赖（builtinToolProvider 自身
 	 * 也是 IToolProvider，会被 IAgentOSService 注册）。
@@ -787,7 +973,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				description: 'Save a memory entry (short-term or long-term). Use this to persist important information across sessions. Automatically detects and merges duplicate content (similarity >= 0.85) by updating the existing entry.',
 				inputSchema: { type: 'object', properties: {
 					content: { type: 'string', description: 'Memory content to save' },
-					memory_type: { type: 'string', enum: ['short_term', 'long_term'], description: 'Memory type (default: long_term)' },
+					memory_type: { type: 'string', enum: ['working', 'episodic', 'semantic', 'procedural'], description: 'Memory type (default: episodic)' },
 					tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for filtering' },
 					importance: { type: 'number', description: 'Importance score 0-10 (default: 5)' },
 				}, required: ['content'] },
@@ -798,7 +984,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!agentId) { return [{ type: 'text', text: 'memory_remember error: agentId is required' }]; }
 				const content = args['content'] as string;
 				if (!content) { return [{ type: 'text', text: 'memory_remember error: content is required' }]; }
-				const memType = (args['memory_type'] as string || 'long_term') === 'short_term' ? 'short_term' : 'long_term';
+				const memType = (args['memory_type'] as string || 'episodic') === 'working' ? 'working' : 'episodic';
 				const tags = Array.isArray(args['tags']) ? args['tags'] as string[] : undefined;
 				const importance = typeof args['importance'] === 'number' ? Math.max(0, Math.min(10, args['importance'] as number)) : 5;
 				const entry = {
@@ -809,7 +995,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					importance,
 					metadata: tags ? { tags } : undefined,
 				};
-				const file = self._getMemFile(agentId, memType === 'short_term' ? 'short-term.jsonl' : 'long-term.jsonl');
+				const file = self._getMemFile(agentId, memType === 'working' ? 'short-term.jsonl' : 'long-term.jsonl');
 				try { await self.fileService.createFolder(URI.joinPath(file, '..')); } catch {}
 				const existing = await self._readJsonl(file);
 
@@ -825,14 +1011,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 						}
 						if (tags) { existing[idx].metadata = { ...(existing[idx].metadata ?? {}), tags }; }
 					}
-					if (memType === 'short_term') { while (existing.length > 200) existing.shift(); }
+					if (memType === 'working') { while (existing.length > 200) existing.shift(); }
 					await self._writeAtomic(file, existing);
 					return [{ type: 'text', text: `Memory updated (duplicate detected, similarity >= ${BuiltinToolProvider.MEMORY_DUPLICATE_THRESHOLD}): ${content.slice(0, 100)}\n[memory_file: ${file.toString()}]` }];
 				}
 
 				// 无重复，写入新记忆
 				existing.push(entry);
-				if (memType === 'short_term') { while (existing.length > 200) existing.shift(); }
+				if (memType === 'working') { while (existing.length > 200) existing.shift(); }
 				await self._writeAtomic(file, existing);
 				return [{ type: 'text', text: `Memory saved (${memType}, importance=${importance}): ${content.slice(0, 100)}\n[memory_file: ${file.toString()}]` }];
 			},
@@ -854,14 +1040,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!agentId) { return [{ type: 'text', text: 'memory_search error: agentId is required' }]; }
 				const query = (args['query'] as string) || '';
 				const limit = typeof args['limit'] === 'number' ? Math.min(args['limit'] as number, 50) : 10;
-				let typeFilter: 'short_term' | 'long_term' | undefined;
+				let typeFilter: 'working' | 'episodic' | 'semantic' | 'procedural' | undefined;
 				let tagFilter: string | undefined;
 				const tokens = query.split(/\s+/);
 				const remaining: string[] = [];
 				for (const tok of tokens) {
 					if (tok.startsWith('type:')) {
 						const v = tok.slice(5);
-						typeFilter = v === 'short' ? 'short_term' : v === 'long' ? 'long_term' : undefined;
+						typeFilter = v === 'working' ? 'working' : v === 'episodic' ? 'episodic' : v === 'semantic' ? 'semantic' : v === 'procedural' ? 'procedural' : undefined;
 					} else if (tok.startsWith('tag:')) {
 						tagFilter = tok.slice(4);
 					} else {
@@ -870,8 +1056,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				}
 				const textQuery = remaining.join(' ').trim().toLowerCase();
 				const [shortTerm, longTerm] = await Promise.all([
-					typeFilter === 'long_term' ? Promise.resolve([] as any[]) : self._readJsonl(self._getMemFile(agentId, 'short-term.jsonl')),
-					typeFilter === 'short_term' ? Promise.resolve([] as any[]) : self._readJsonl(self._getMemFile(agentId, 'long-term.jsonl')),
+					typeFilter === 'episodic' ? Promise.resolve([] as any[]) : self._readJsonl(self._getMemFile(agentId, 'short-term.jsonl')),
+					typeFilter === 'working' ? Promise.resolve([] as any[]) : self._readJsonl(self._getMemFile(agentId, 'long-term.jsonl')),
 				]);
 				const all = [...shortTerm, ...longTerm];
 				const matched = all.filter(e => {
@@ -901,7 +1087,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				description: 'Delete a memory entry by its ID. Use memory_search first to find the entry ID.',
 				inputSchema: { type: 'object', properties: {
 					id: { type: 'string', description: 'Memory entry ID to delete' },
-					memory_type: { type: 'string', enum: ['short_term', 'long_term'], description: 'Memory type to delete from' },
+					memory_type: { type: 'string', enum: ['working', 'episodic', 'semantic', 'procedural'], description: 'Memory type to delete from' },
 				}, required: ['id', 'memory_type'] },
 				category: 'memory',
 				source: this.id,
@@ -909,9 +1095,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			handler: async (args, _signal, agentId) => {
 				if (!agentId) { return [{ type: 'text', text: 'memory_delete error: agentId is required' }]; }
 				const id = args['id'] as string;
-				const memType = (args['memory_type'] as string || 'long_term') === 'short_term' ? 'short_term' : 'long_term';
+				const memType = (args['memory_type'] as string || 'episodic') === 'working' ? 'working' : 'episodic';
 				if (!id) { return [{ type: 'text', text: 'memory_delete error: id is required' }]; }
-				const file = self._getMemFile(agentId, memType === 'short_term' ? 'short-term.jsonl' : 'long-term.jsonl');
+				const file = self._getMemFile(agentId, memType === 'working' ? 'short-term.jsonl' : 'long-term.jsonl');
 				const existing = await self._readJsonl(file);
 				const before = existing.length;
 				const filtered = existing.filter(e => e.id !== id);
@@ -929,7 +1115,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				name: 'memory_list',
 				description: 'List all memory entries of a given type.',
 				inputSchema: { type: 'object', properties: {
-					memory_type: { type: 'string', enum: ['short_term', 'long_term'], description: 'Memory type to list (default: long_term)' },
+					memory_type: { type: 'string', enum: ['working', 'episodic', 'semantic', 'procedural'], description: 'Memory type to list (default: episodic)' },
 					limit: { type: 'number', description: 'Max entries to return (default: 20)' },
 				} },
 				category: 'memory',
@@ -937,9 +1123,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 			handler: async (args, _signal, agentId) => {
 				if (!agentId) { return [{ type: 'text', text: 'memory_list error: agentId is required' }]; }
-				const memType = (args['memory_type'] as string || 'long_term') === 'short_term' ? 'short_term' : 'long_term';
+				const memType = (args['memory_type'] as string || 'episodic') === 'working' ? 'working' : 'episodic';
 				const limit = typeof args['limit'] === 'number' ? Math.min(args['limit'] as number, 50) : 20;
-				const file = self._getMemFile(agentId, memType === 'short_term' ? 'short-term.jsonl' : 'long-term.jsonl');
+				const file = self._getMemFile(agentId, memType === 'working' ? 'short-term.jsonl' : 'long-term.jsonl');
 				const entries = await self._readJsonl(file);
 				entries.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 				const slice = entries.slice(0, limit);

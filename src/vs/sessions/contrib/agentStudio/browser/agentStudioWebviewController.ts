@@ -58,9 +58,6 @@ import { VSBuffer } from "../../../../base/common/buffer.js";
 import { IModelService } from "../../../../editor/common/services/model.js";
 import type { IDiffEditorOptions } from "../../../../editor/common/config/editorOptions.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
-import { IRequestService, asText } from "../../../../platform/request/common/request.js";
-import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
-import { CancellationToken } from "../../../../base/common/cancellation.js";
 import {
 	IEditorService,
 	SIDE_GROUP,
@@ -201,8 +198,6 @@ export class AgentStudioWebviewController extends Disposable {
 		@IConfigHtmlService private readonly _configHtmlService: IConfigHtmlService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IModelService private readonly modelService: IModelService,
-		@IRequestService private readonly requestService: IRequestService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
@@ -450,10 +445,12 @@ export class AgentStudioWebviewController extends Disposable {
 			const resizeObserver = new ResizeObserver(syncLayout);
 			resizeObserver.observe(this.container);
 			this._register({ dispose: () => resizeObserver.disconnect() });
-			this._register({ dispose: () => {
-				this._poolSyncLayout = undefined;
-				poolContainer.remove();
-			}});
+			this._register({
+				dispose: () => {
+					this._poolSyncLayout = undefined;
+					poolContainer.remove();
+				}
+			});
 
 			// CRITICAL: register the message handler BEFORE sending pool.activate.
 			// When the webview processes pool.activate it will immediately start
@@ -573,10 +570,12 @@ export class AgentStudioWebviewController extends Disposable {
 		const coldResizeObserver = new ResizeObserver(coldSyncLayout);
 		coldResizeObserver.observe(this.container);
 		this._register({ dispose: () => coldResizeObserver.disconnect() });
-		this._register({ dispose: () => {
-			this._poolSyncLayout = undefined;
-			coldOverlay.remove();
-		}});
+		this._register({
+			dispose: () => {
+				this._poolSyncLayout = undefined;
+				coldOverlay.remove();
+			}
+		});
 
 		this._webview.mountTo(coldOverlay, targetWindow);
 		const _perfMountEnd = Date.now();
@@ -1439,55 +1438,55 @@ export class AgentStudioWebviewController extends Disposable {
 			case "skills.list":
 				return this._handleSkillsList();
 
-		// ─── Workflow Editor ──────────────────────────────────
-		case "workflow.get": {
-			const wp = p as unknown as { id: string; workspaceId?: string };
-			return this._handleWorkflowGet(wp);
-		}
-		case "workflow.save": {
-			const ws = p as unknown as { workflow: Record<string, unknown>; workspaceId?: string };
-			return this._handleWorkflowSave(ws);
-		}
-		case "workflow.execute": {
-			const ep = p as unknown as { workflowId: string; agentId?: string; context?: Record<string, unknown> };
-			return this._handleWorkflowExecute(ep);
-		}
-		case "workflow.resume": {
-			const rp = p as unknown as { executionId: string; userInput: string | string[] };
-			return this._handleWorkflowResume(rp);
-		}
-		case "workflow.cancel": {
-			const cp = p as unknown as { executionId: string };
-			return this._handleWorkflowCancel(cp);
-		}
-		case "workflow.breakpoint.set": {
-			const bp = p as unknown as { workflowId: string; nodeId: string; executionId?: string };
-			return this._handleWorkflowBreakpointSet(bp);
-		}
-		case "workflow.breakpoint.clear": {
-			const bp = p as unknown as { workflowId: string; nodeId: string; executionId?: string };
-			return this._handleWorkflowBreakpointClear(bp);
-		}
-		case "workflow.breakpoint.get": {
-			const bp = p as unknown as { workflowId: string };
-			return this._handleWorkflowBreakpointGet(bp);
-		}
-		case "workflow.list": {
-			const lp = p as unknown as { workspaceId?: string };
-			return this._handleWorkflowList(lp);
-		}
-		case "workflow.reorder": {
-			const rp = p as unknown as { orderedIds: string[]; workspaceId?: string };
-			return this._handleWorkflowReorder(rp);
-		}
-		case "workflow.open": {
-			const op = p as unknown as { workflowId: string };
-			return this._handleWorkflowOpen(op);
-		}
-		case "workflow.submitVariables": {
-			const vp = p as unknown as { executionId: string; values: Record<string, string> };
-			return this._handleWorkflowSubmitVariables(vp);
-		}
+			// ─── Workflow Editor ──────────────────────────────────
+			case "workflow.get": {
+				const wp = p as unknown as { id: string; workspaceId?: string };
+				return this._handleWorkflowGet(wp);
+			}
+			case "workflow.save": {
+				const ws = p as unknown as { workflow: Record<string, unknown>; workspaceId?: string };
+				return this._handleWorkflowSave(ws);
+			}
+			case "workflow.execute": {
+				const ep = p as unknown as { workflowId: string; agentId?: string; context?: Record<string, unknown> };
+				return this._handleWorkflowExecute(ep);
+			}
+			case "workflow.resume": {
+				const rp = p as unknown as { executionId: string; userInput: string | string[] };
+				return this._handleWorkflowResume(rp);
+			}
+			case "workflow.cancel": {
+				const cp = p as unknown as { executionId: string };
+				return this._handleWorkflowCancel(cp);
+			}
+			case "workflow.breakpoint.set": {
+				const bp = p as unknown as { workflowId: string; nodeId: string; executionId?: string };
+				return this._handleWorkflowBreakpointSet(bp);
+			}
+			case "workflow.breakpoint.clear": {
+				const bp = p as unknown as { workflowId: string; nodeId: string; executionId?: string };
+				return this._handleWorkflowBreakpointClear(bp);
+			}
+			case "workflow.breakpoint.get": {
+				const bp = p as unknown as { workflowId: string };
+				return this._handleWorkflowBreakpointGet(bp);
+			}
+			case "workflow.list": {
+				const lp = p as unknown as { workspaceId?: string };
+				return this._handleWorkflowList(lp);
+			}
+			case "workflow.reorder": {
+				const rp = p as unknown as { orderedIds: string[]; workspaceId?: string };
+				return this._handleWorkflowReorder(rp);
+			}
+			case "workflow.open": {
+				const op = p as unknown as { workflowId: string };
+				return this._handleWorkflowOpen(op);
+			}
+			case "workflow.submitVariables": {
+				const vp = p as unknown as { executionId: string; values: Record<string, string> };
+				return this._handleWorkflowSubmitVariables(vp);
+			}
 
 			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
 			case "memory.listL0": {
@@ -3226,218 +3225,65 @@ export class AgentStudioWebviewController extends Disposable {
 		return result;
 	}
 
-	// ─── Memory inspection helpers (TDB-AM gateway proxy) ──────────────────────
+	// ─── Memory inspection helpers (AgentMemoryProvider) ──────────────────────
 	//
-	// The webview cannot fetch http://127.0.0.1:<port> directly because the
-	// renderer's CSP `connect-src` does not whitelist arbitrary loopback
-	// origins. We forward through the host using `IRequestService` (same
-	// path TdbamViewPane already uses) and translate the gateway's wire
-	// format into a webview-friendly camelCase shape on the way out.
-	//
-	// `sessionKey` is derived from `agentId` via the same rule used by
-	// `TdbAmMemoryProvider.deriveSessionKey()` — without an explicit
-	// `metadata.sessionId` at write time, runtime falls back to
-	// `agent:<agentId>`. Mirroring it here ensures the panel reads back
-	// exactly what the runtime writes.
-
-	private static readonly _DEFAULT_GATEWAY_PORT = 8420;
-
-	private _gatewayBaseUrl(): string {
-		const port = this.configurationService.getValue<number>("tdbam.gatewayPort") ?? AgentStudioWebviewController._DEFAULT_GATEWAY_PORT;
-		return `http://127.0.0.1:${port}`;
-	}
-
-	private _deriveSessionKey(agentId: string): string {
-		const trimmed = (agentId ?? "").trim();
-		return trimmed.length > 0 ? `agent:${trimmed}` : "agent:default";
-	}
-
-	private async _gatewayPost<T>(pathSegment: string, body: unknown, callSite: string): Promise<T | null> {
-		const url = `${this._gatewayBaseUrl()}${pathSegment}`;
-		try {
-			const ctx = await this.requestService.request({
-				type: "POST",
-				url,
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify(body),
-				callSite,
-			}, CancellationToken.None);
-			const text = await asText(ctx);
-			if (!text) {
-				return null;
-			}
-			return JSON.parse(text) as T;
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logService.warn(`[AgentStudioWebviewController] ${callSite} failed: ${msg}`);
-			return null;
-		}
-	}
+	// Refactored from TDB-AM HTTP gateway proxy to in-process IMemoryProvider.
+	// Uses agentOSService.getActiveMemoryProvider() for data access.
 
 	private async _handleMemoryListL0(payload: IMemoryListPayload): Promise<IMemoryListL0Response> {
-		const sessionKey = this._deriveSessionKey(payload.agentId);
-		const limit = typeof payload.limit === "number" && payload.limit > 0 ? payload.limit : 200;
-
-		type GatewayItem = {
-			record_id: string;
-			session_key?: string;
-			session_id?: string;
-			role?: string;
-			message_text?: string;
-			recorded_at?: string;
-			timestamp?: number;
-		};
-		type GatewayResp = { items?: GatewayItem[]; total?: number; error?: string };
-
-		const resp = await this._gatewayPost<GatewayResp>("/list/conversations", {
-			limit,
-			session_key: sessionKey,
-		}, "agentStudio.memory.listL0");
-
-		if (!resp || resp.error) {
-			return { items: [], total: 0 };
-		}
-
-		const items: IMemoryL0Item[] = (resp.items ?? []).map((r) => ({
-			recordId: r.record_id,
-			sessionKey: r.session_key ?? sessionKey,
-			sessionId: r.session_id ?? "",
-			role: r.role ?? "",
-			messageText: r.message_text ?? "",
-			recordedAt: r.recorded_at ?? "",
-			timestamp: typeof r.timestamp === "number" ? r.timestamp : 0,
-		}));
-		return { items, total: typeof resp.total === "number" ? resp.total : items.length };
+		try {
+			const provider = this.agentOSService.getActiveMemoryProvider();
+			if (!provider) { return { items: [], total: 0 }; }
+			const results = await provider.searchMemory(payload.agentId || 'default', '');
+			const items: IMemoryL0Item[] = (results || [])
+				.filter(e => e.type === 'working')
+				.slice(0, payload.limit ?? 200)
+				.map(e => ({
+					recordId: e.id,
+					sessionKey: `agent:${payload.agentId ?? 'default'}`,
+					sessionId: (e.metadata?.['sessionId'] as string) ?? '',
+					role: (e.metadata?.['role'] as string) ?? '',
+					messageText: e.content,
+					recordedAt: e.timestamp ? new Date(e.timestamp).toISOString() : '',
+					timestamp: e.timestamp ?? 0,
+				}));
+			return { items, total: items.length };
+		} catch { return { items: [], total: 0 }; }
 	}
 
 	private async _handleMemoryListL1(payload: IMemoryListPayload): Promise<IMemoryListL1Response> {
-		const sessionKey = this._deriveSessionKey(payload.agentId);
-		const limit = typeof payload.limit === "number" && payload.limit > 0 ? payload.limit : 200;
-
-		type GatewayItem = {
-			id?: string;
-			content?: string;
-			timestamp?: string;
-		};
-		type GatewayResp = { items?: GatewayItem[]; total?: number; error?: string };
-
-		const resp = await this._gatewayPost<GatewayResp>("/list/memories", {
-			type: "L1",
-			limit,
-			session_key: sessionKey,
-		}, "agentStudio.memory.listL1");
-
-		if (!resp || resp.error) {
-			return { items: [], total: 0 };
-		}
-
-		const items: IMemoryL1Item[] = (resp.items ?? []).map((r) => ({
-			recordId: r.id ?? "",
-			content: r.content ?? "",
-			updatedTime: r.timestamp ?? "",
-		}));
-		return { items, total: typeof resp.total === "number" ? resp.total : items.length };
+		try {
+			const provider = this.agentOSService.getActiveMemoryProvider();
+			if (!provider) { return { items: [], total: 0 }; }
+			const results = await provider.searchMemory(payload.agentId || 'default', '');
+			const items: IMemoryL1Item[] = (results || [])
+				.filter(e => e.type === 'episodic')
+				.slice(0, payload.limit ?? 200)
+				.map(e => ({
+					recordId: e.id,
+					content: e.content,
+					updatedTime: e.timestamp ? new Date(e.timestamp).toISOString() : '',
+				}));
+			return { items, total: items.length };
+		} catch { return { items: [], total: 0 }; }
 	}
 
 	private async _handleMemoryDelete(
 		payload: IMemoryDeletePayload,
 		layer: "conversation" | "memory",
 	): Promise<IMemoryDeleteResponse> {
-		const recordIds = Array.isArray(payload.recordIds)
-			? payload.recordIds.filter((id) => typeof id === "string" && id.length > 0)
-			: [];
-		if (recordIds.length === 0) {
-			return { deleted: 0, failed: [] };
-		}
-
-		type GatewayResp = { deleted?: number; failed?: string[]; error?: string };
-		const callSite = layer === "conversation"
-			? "agentStudio.memory.deleteL0"
-			: "agentStudio.memory.deleteL1";
-		const path = layer === "conversation" ? "/delete/conversation" : "/delete/memory";
-
-		const resp = await this._gatewayPost<GatewayResp>(path, { record_ids: recordIds }, callSite);
-		if (!resp || resp.error) {
-			return { deleted: 0, failed: [...recordIds] };
-		}
-		return {
-			deleted: typeof resp.deleted === "number" ? resp.deleted : 0,
-			failed: Array.isArray(resp.failed) ? resp.failed : [],
-		};
+		// IMemoryProvider doesn't expose deleteMemory — graceful degradation.
+		this.logService.info(`[AgentStudioWebviewController] memory.delete (${layer}) not supported by in-process provider, skipping ${payload.recordIds?.length ?? 0} items`);
+		return { deleted: 0, failed: [...(payload.recordIds ?? [])] };
 	}
 
 	/**
-	 * 删除指定 Agent 关联的所有 L0 对话与 L1 记忆。
-	 *
-	 * 用于在删除 Agent 时级联清理其记忆痕迹，避免 TDB-AM "所有对话" 视图
-	 * 仍然残留已删除 Agent 的历史。
-	 *
-	 * 实现策略：
-	 *  - sessionKey 取自 {@link _deriveSessionKey}（标准为 `agent:<agentId>`），
-	 *    与 tdb-am-memory 扩展写入时的策略保持一致。
-	 *  - 通过 `/list/conversations` + `/list/memories` 拉取该 sessionKey 下
-	 *    全部 record_id（limit=500，与 tdbam 全量拉取一致），再批量调用
-	 *    `/delete/conversation` 与 `/delete/memory`。
-	 *  - 任意一步失败都不会抛错，只记录日志——Agent 删除流程不应被记忆
-	 *    清理失败阻断（gateway 可能未启动）。
-	 *
-	 * @param agentId 被删除的 Agent ID
+	 * 删除指定 Agent 关联的所有记忆（级联清理）。
+	 * IMemoryProvider 不支持批量删除，此处为 no-op（优雅降级）。
 	 */
 	private async _cleanupAgentMemory(agentId: string): Promise<void> {
-		if (!agentId) {
-			return;
-		}
-		const sessionKey = this._deriveSessionKey(agentId);
-		const FETCH_LIMIT = 500;
-
-		// 1) 收集 L0 record_ids
-		type L0Item = { record_id?: string };
-		type L0Resp = { items?: L0Item[]; error?: string };
-		const l0Resp = await this._gatewayPost<L0Resp>("/list/conversations", {
-			limit: FETCH_LIMIT,
-			session_key: sessionKey,
-		}, "agentStudio.cleanupAgentMemory.listL0");
-		const l0RecordIds = (l0Resp?.items ?? [])
-			.map((r) => r.record_id)
-			.filter((id): id is string => typeof id === "string" && id.length > 0);
-
-		// 2) 收集 L1 record_ids
-		type L1Item = { id?: string };
-		type L1Resp = { items?: L1Item[]; error?: string };
-		const l1Resp = await this._gatewayPost<L1Resp>("/list/memories", {
-			type: "L1",
-			limit: FETCH_LIMIT,
-			session_key: sessionKey,
-		}, "agentStudio.cleanupAgentMemory.listL1");
-		const l1RecordIds = (l1Resp?.items ?? [])
-			.map((r) => r.id)
-			.filter((id): id is string => typeof id === "string" && id.length > 0);
-
-		this.logService.info(
-			`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): sessionKey="${sessionKey}", L0=${l0RecordIds.length}, L1=${l1RecordIds.length}`,
-		);
-
-		// 3) 批量删除（每个网关接口一次调用即可批量删）
-		type DelResp = { deleted?: number; failed?: string[]; error?: string };
-		if (l0RecordIds.length > 0) {
-			const resp = await this._gatewayPost<DelResp>("/delete/conversation", {
-				record_ids: l0RecordIds,
-			}, "agentStudio.cleanupAgentMemory.deleteL0");
-			const failed = Array.isArray(resp?.failed) ? resp!.failed!.length : 0;
-			this.logService.info(
-				`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): L0 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
-			);
-		}
-		if (l1RecordIds.length > 0) {
-			const resp = await this._gatewayPost<DelResp>("/delete/memory", {
-				type: "L1",
-				record_ids: l1RecordIds,
-			}, "agentStudio.cleanupAgentMemory.deleteL1");
-			const failed = Array.isArray(resp?.failed) ? resp!.failed!.length : 0;
-			this.logService.info(
-				`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): L1 deleted=${resp?.deleted ?? 0}, failed=${failed}`,
-			);
-		}
+		if (!agentId) { return; }
+		this.logService.info(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): skipped (in-process provider doesn't support bulk delete)`);
 	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
-import { IAgentOSService } from '../common/agentOS.js';
+import { IAgentOSService, IAgentOSDashboardStats } from '../common/agentOS.js';
 import {
 	IModelProvider, IModelSelection, ModelAuthStatus,
 	IMemoryProvider, IToolProvider, IPlanningProvider,
@@ -88,34 +88,51 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	/** sessionId → 上一次响应流的 id（作为下一轮请求的 previous_response_id） */
 	private readonly _lastResponseIdBySession = new Map<string, string>();
 
-	// ─── L1 自动提取管线状态 ──────────────────────────────────────────
-	// 对齐 TDB-AM 的 L0→L1 pipeline：对话轮次达到阈值后，后台调用 LLM
+	// ─── Episodic 自动提取管线状态 ──────────────────────────────────────────
+	// 对齐 AgentMemory 的 Working→Episodic pipeline：对话轮次达到阈值后，后台调用 LLM
 	// 从最近对话中提取结构化长期记忆。不再完全依赖 LLM 主动调 memory_remember。
-	/** agentId → 对话轮次计数（达到 L1_THRESHOLD 后触发提取并清零） */
+	/** agentId → 对话轮次计数（达到 Episodic_THRESHOLD 后触发提取并清零） */
 	private readonly _l1ConversationCountByAgent = new Map<string, number>();
-	/** L1 提取的对话轮次阈值（每 N 轮触发一次） */
-	private static readonly L1_EXTRACTION_THRESHOLD = 3;
+	/** Episodic 提取的对话轮次阈值（每 N 轮触发一次） */
+	private static readonly EPISODIC_EXTRACTION_THRESHOLD = 3;
 
-	// ─── L2 场景提取管线状态 ──────────────────────────────────────────
-	// 对齐 TDB-AM L2：per-agent timer，L1 完成后延迟触发场景级摘要提取。
-	/** agentId → L2 定时器（L1 完成后延迟触发） */
+	// ─── Semantic 提取管线状态 ──────────────────────────────────────────
+	// 对齐 AgentMemory Semantic：per-agent timer，Episodic 完成后延迟触发场景级摘要提取。
+	/** agentId → Semantic 定时器（Episodic 完成后延迟触发） */
 	private readonly _l2TimersByAgent = new Map<string, ReturnType<typeof setTimeout>>();
-	/** L2 延迟触发时间（ms，L1 完成后等待此时间再触发 L2） */
-	private static readonly L2_DELAY_AFTER_L1_MS = 30_000; // 30 秒
-	/** L2 最小间隔（ms，两次 L2 之间的最小间隔） */
-	private static readonly L2_MIN_INTERVAL_MS = 300_000; // 5 分钟
-	/** agentId → 上次 L2 执行时间（epoch ms） */
+	/** Semantic 延迟触发时间（ms，Episodic 完成后等待此时间再触发 Semantic） */
+	private static readonly SEMANTIC_DELAY_AFTER_EPISODIC_MS = 30_000; // 30 秒
+	/** Semantic 最小间隔（ms，两次 Semantic 之间的最小间隔） */
+	private static readonly SEMANTIC_MIN_INTERVAL_MS = 300_000; // 5 分钟
+	/** agentId → 上次 Semantic 执行时间（epoch ms） */
 	private readonly _l2LastRunTime = new Map<string, number>();
 
-	// ─── L3 人格生成管线状态 ──────────────────────────────────────────
-	// 对齐 TDB-AM L3：global mutex (concurrency=1) + pending flag dedup。
-	/** L3 是否正在运行（全局互斥） */
-	private _l3Running = false;
-	/** L3 是否有待处理请求（dedup：运行中再来请求只设 flag，不重复入队） */
-	private _l3Pending = false;
+	// ─── Procedural 生成管线状态 ──────────────────────────────────────────
+	// 对齐 AgentMemory Procedural：global mutex (concurrency=1) + pending flag dedup。
+	/** Procedural 是否正在运行（全局互斥） */
+	private _proceduralRunning = false;
+	/** Procedural 是否有待处理请求（dedup：运行中再来请求只设 flag，不重复入队） */
+	private _proceduralPending = false;
 	/** 压缩冷却期：上次压缩时间戳。跨用户消息持久化，避免频繁压缩。 */
 	private _lastCompressionTime: number = 0;
 	private static readonly COMPRESSION_COOLDOWN_MS = 60_000;
+	/** MCP 工具初始等待标志：仅在首次 executeAgentTurn 时等待 MCP 服务器连接。
+	 *  避免对没有 MCP 服务器的用户在每条消息上都延迟。 */
+	private _mcpToolsInitialWaitDone = false;
+
+	// ─── Dashboard 统计追踪 ──────────────────────────────────────────
+	// 在 executeAgentTurn 流程中实时累积，供 IAgentStudioDashboardService 读取。
+	private _totalInputTokens = 0;
+	private _totalOutputTokens = 0;
+	private _totalCachedTokens = 0;
+	private _compressionCount = 0;
+	private _compressionIneffectiveCount = 0;
+	private _compressionBeforeTokens = 0;
+	private _compressionAfterTokens = 0;
+	private readonly _toolCallCounts = new Map<string, number>();
+	private _episodicExtractionCount = 0;
+	private _semanticExtractionCount = 0;
+	private _proceduralExtractionCount = 0;
 
 	/** 取（或惰性创建）某会话的稳定 conversationId。无 sessionId 时回退到随机串。 */
 	private _getOrCreateConversationId(sessionId: string | undefined): string {
@@ -170,6 +187,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	setToolApprovalHandler(handler: IToolApprovalHandler): void {
 		this._approvalService.setApprovalHandler(handler);
 		this._logService.info('[AgentOS] Tool approval handler registered');
+	}
+
+	getDashboardStats(): IAgentOSDashboardStats {
+		const selection = this._activeSelection;
+		return {
+			totalInputTokens: this._totalInputTokens,
+			totalOutputTokens: this._totalOutputTokens,
+			totalCachedTokens: this._totalCachedTokens,
+			activeModelId: selection?.modelId ?? 'unknown',
+			compressionCount: this._compressionCount,
+			compressionIneffectiveCount: this._compressionIneffectiveCount,
+			compressionBeforeTokens: this._compressionBeforeTokens,
+			compressionAfterTokens: this._compressionAfterTokens,
+			toolCallCounts: new Map(this._toolCallCounts),
+			episodicExtractionCount: this._episodicExtractionCount,
+			semanticExtractionCount: this._semanticExtractionCount,
+			proceduralExtractionCount: this._proceduralExtractionCount,
+		};
 	}
 
 	/**
@@ -306,6 +341,26 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	getActiveMemoryProvider(): IMemoryProvider | undefined {
 		return this._slotRegistry.getActiveMemoryProvider();
+	}
+
+	/**
+	 * Capture a git commit into memory. Called by git post-commit hook integration.
+	 * The commit info is stored as an episodic memory for future recall.
+	 */
+	captureGitCommit(commit: {
+		sha: string; message: string; author: string; authorEmail?: string;
+		filesChanged: string[]; insertions: number; deletions: number;
+		timestamp: number; branch?: string; repoPath?: string;
+	}): void {
+		const provider = this.getActiveMemoryProvider();
+		if (provider?.onGitCommit) {
+			try {
+				provider.onGitCommit(commit as any);
+				this._logService.info(`[AgentOS] Git commit captured: ${commit.sha.slice(0, 8)} (${commit.filesChanged.length} files, +${commit.insertions}/-${commit.deletions})`);
+			} catch (err) {
+				this._logService.warn(`[AgentOS] Git commit capture failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
 	}
 
 	getActiveToolProvider(): IToolProvider | undefined {
@@ -504,6 +559,27 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					`[AgentOS] Model override restored to: ${savedSelection?.providerId}/${savedSelection?.modelId}`,
 				);
 			}
+
+			// Fire onTaskCompleted lifecycle callback (if provider supports it)
+			const memProvider = this.getActiveMemoryProvider();
+
+			// ── Hook: stop + session_end ────────────────────────────────
+			if (memProvider?.triggerHook) {
+				memProvider.triggerHook('stop', {
+					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+				}).catch(() => {});
+				memProvider.triggerHook('session_end', {
+					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+				}).catch(() => {});
+			}
+
+			if (memProvider?.onTaskCompleted) {
+				try {
+					const userMsg = [...(request.messages as Array<{ role?: string; content?: string }>)]
+						.reverse().find(m => m?.role === 'user')?.content?.slice(0, 200) ?? 'Agent turn completed';
+					memProvider.onTaskCompleted(request.agentId, request.sessionId || '', userMsg);
+				} catch { /* best effort */ }
+			}
 		}
 	}
 
@@ -534,9 +610,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return;
 		}
 
-		// ─── 1. 收集启用的工具 ─────────────────────────────────────
-		const enabledTools = await this._getEnabledTools(request.agentId);
-		this._logService.info(`[AgentOS] Direct mode: ${enabledTools.length} enabled tools for agent ${request.agentId}`);
+		// ─── 1. 收集启用的工具（含 MCP 工具等待）─────────────────────
+		// MCP 服务器连接和工具枚举是异步的：McpToolProvider 的 autorun 在
+		// server.tools observable 变化后才填充 _routes。如果用户在 workbench
+		// 启动后立即发消息，MCP 工具可能尚未就绪。这里在首次执行时做一次短轮询等待。
+		let enabledTools = await this._getEnabledTools(request.agentId);
+		this._logService.info(`[AgentOS] Direct mode: initial ${enabledTools.length} enabled tools for agent ${request.agentId}`);
+		// 仅首次执行时，如果初始没有 MCP 工具，等待最多 3 秒让 MCP 服务器完成连接
+		const mcpToolCount0 = enabledTools.filter(t => t.category?.startsWith('mcp:')).length;
+		if (mcpToolCount0 === 0 && !this._mcpToolsInitialWaitDone) {
+			this._mcpToolsInitialWaitDone = true;
+			this._logService.info(`[AgentOS] No MCP tools found initially (first turn), waiting for MCP servers to connect...`);
+			enabledTools = await this._waitForMcpTools(request.agentId, enabledTools, 3000);
+		}
+		// 诊断日志：列出所有工具名（特别标注 MCP 工具）
+		const mcpToolNames = enabledTools.filter(t => t.category?.startsWith('mcp:')).map(t => t.name);
+		const builtinToolNames = enabledTools.filter(t => !t.category?.startsWith('mcp:')).map(t => t.name);
+		this._logService.info(`[AgentOS] Direct mode tools: ${enabledTools.length} total (${mcpToolNames.length} MCP: [${mcpToolNames.join(', ')}], ${builtinToolNames.length} builtin: [${builtinToolNames.slice(0, 10).join(', ')}${builtinToolNames.length > 10 ? '...' : ''}])`);
 
 		// ─── 2. 初始化消息历史 ─────────────────────────────────────
 		let messages: any[];
@@ -553,16 +643,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		// ─── 加载 Memory 上下文并注入 system prompt（冻结快照模式）──────
 		//
 		// 对齐 ExecutionProvider.runAgentLoop 的 memory 注入语义。
-		// 用户反馈："L1 看起来没有收集到跟随这次对话一起下发的 memory"
+		// 用户反馈："Episodic 看起来没有收集到跟随这次对话一起下发的 memory"
 		//
 		// 历史 BUG：这里之前只有一行 `_logService.info('Memory provider available')`
 		// 占位代码，根本没调用 loadContext，导致用户在工具栏选了模型走 Path 1 时，
-		// L1/L2/L3 记忆永远不会被注入到 system prompt。
+		// Episodic/Semantic/Procedural 记忆永远不会被注入到 system prompt。
 		//
 		// Hermes "冻结快照"：会话开始时一次性注入，会话内不再刷新（中途新写入的
 		// 记忆下次会话才生效），目的是保持 KV prefix cache 稳定。
 		// 参见：doc/Memory-Strategy.md §4.2 / §五.2
 		const memoryProvider = this.getActiveMemoryProvider();
+
+		// ── Hook: session_start + prompt_submit ──────────────────────────
+		// Fire session_start when the agent loop begins, and prompt_submit
+		// to capture the user's intent for memory.
+		if (memoryProvider?.triggerHook) {
+			const userMsg = [...(request.messages as Array<{ role?: string; content?: string }>)]
+				.reverse().find(m => m?.role === 'user')?.content ?? '';
+			memoryProvider.triggerHook('session_start', {
+				agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+			}).catch(() => {});
+			memoryProvider.triggerHook('prompt_submit', {
+				agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+				userMessage: userMsg.slice(0, 2000),
+			}).catch(() => {});
+		}
 		if (memoryProvider) {
 			try {
 				// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
@@ -586,10 +691,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				);
 
 				// ─── 按 memoryConfig.strategy 过滤 memoryContext ────────────
-				// 'summary' → 仅注入 L1（longTermMemories：摘要 / 长期记忆）
-				// 'full'    → 注入 L1 + L0（longTermMemories + shortTermMemories）
+				// 'summary' → 仅注入 Episodic（longTermMemories：摘要 / 长期记忆）
+				// 'full'    → 注入 Episodic + Working（longTermMemories + shortTermMemories）
 				//              即 full ⊇ summary，符合"全量"的语义直觉，
-				//              并保证跨 Agent / 跨 session 的 L1 共享在两种策略下都生效。
+				//              并保证跨 Agent / 跨 session 的 Episodic 共享在两种策略下都生效。
 				// 未指定时按 'full' 处理，与默认值一致。
 				const strategy: 'summary' | 'full' = request.memoryStrategy === 'summary' ? 'summary' : 'full';
 				const maxEntries = typeof request.memoryMaxEntries === 'number' && request.memoryMaxEntries > 0
@@ -601,20 +706,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					// 取最近 N 条（按 timestamp 升序时取尾部；这里直接 slice 末尾以保留既有顺序语义）
 					return arr.length > maxEntries ? arr.slice(-maxEntries) : arr;
 				};
-				// L1 在 summary 与 full 两种策略下都注入；L0 仅在 full 下注入。
+				// Episodic 在 summary 与 full 两种策略下都注入；Working 仅在 full 下注入。
 				const filteredLongTerm = cap(memoryContext.longTermMemories);
 				const filteredShortTerm = strategy === 'full' ? cap(memoryContext.shortTermMemories) : [];
 
-				const memoryParts: string[] = [];
+				const blocks: string[] = [];
 
-				// longTermMemories（L1/L2 召回内容）——TDB-AM 的核心记忆
+				// longTermMemories（Episodic/Semantic 召回内容）——AgentMemory 的核心记忆
 				if (filteredLongTerm.length > 0) {
 					const ltContents = filteredLongTerm
 						.map(m => m.content)
 						.filter(Boolean)
 						.join('\n\n');
 					if (ltContents.trim().length > 0) {
-						memoryParts.push(`## Long-term Memory (TDB-AM Recall)\n\n${ltContents}`);
+						blocks.push(`## Long-term Memory (AgentMemory Recall)\n\n${ltContents}`);
 					}
 				}
 
@@ -625,22 +730,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						.filter(Boolean)
 						.join('\n\n');
 					if (stContents.trim().length > 0) {
-						memoryParts.push(`## Short-term Memory\n\n${stContents}`);
+						blocks.push(`## Short-term Memory\n\n${stContents}`);
 					}
 				}
 
 				// systemPrompt（第三方 Memory Provider 直接返回的格式化字符串）
-				// 其本质是 provider 端的摘要表述，属于 L1 范畴，因此在 summary 与 full
+				// 其本质是 provider 端的摘要表述，属于 Episodic 范畴，因此在 summary 与 full
 				// 两种策略下均注入（full ⊇ summary）。
 				if (memoryContext.systemPrompt && memoryContext.systemPrompt.trim().length > 0) {
-					memoryParts.push(memoryContext.systemPrompt.trim());
+					blocks.push(memoryContext.systemPrompt.trim());
 				}
 
-				if (memoryParts.length > 0) {
-					const frozenMemoryBlock = `<memory_context>\n${memoryParts.join('\n\n')}\n</memory_context>`;
+				if (blocks.length > 0) {
+					// 对齐 agentmemory 源码：使用 <agentmemory-context> 标签 + token 估算
+					const usedTokens = Math.ceil(blocks.join('\n\n').length / 3);
+					const result = `<agentmemory-context>\n${blocks.join('\n\n')}\n</agentmemory-context>`;
 					// 注入为 system 消息（放在已有 systemPrompt 之后、用户消息之前）。
-					// 找到最后一条 system 消息位置，紧随其后插入；如无任何 system
-					// 消息则插入到最前面。
 					let insertIdx = 0;
 					for (let i = 0; i < messages.length; i++) {
 						if (messages[i]?.role === 'system') {
@@ -651,24 +756,45 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 					messages.splice(insertIdx, 0, {
 						role: 'system',
-						content: frozenMemoryBlock,
+						content: result,
 					});
 					this._logService.info(
-						`[AgentOS] Injected frozen memory snapshot (strategy=${strategy}, ${frozenMemoryBlock.length} chars, ` +
-						`L1/L2=${filteredLongTerm.length}, ` +
-						`L0=${filteredShortTerm.length}, ` +
+						`[AgentOS] Injected agentmemory-context (strategy=${strategy}, ${result.length} chars, ` +
+						`~${usedTokens} tokens, blocks=${blocks.length}, ` +
+						`Episodic/Semantic=${filteredLongTerm.length}, ` +
+						`Working=${filteredShortTerm.length}, ` +
 						`hasSystemPrompt=${!!memoryContext.systemPrompt}) for agent ${request.agentId}`
 					);
+
+					// 通知 UI 系统消息栏：记忆已注入
+					yield {
+						type: 'memory_injected',
+						content: `已注入 ${filteredLongTerm.length + filteredShortTerm.length} 条记忆 (~${usedTokens} tokens)`,
+						metadata: {
+							strategy,
+							episodicCount: filteredLongTerm.length,
+							workingCount: filteredShortTerm.length,
+							usedTokens,
+							hasSystemPrompt: !!memoryContext.systemPrompt,
+						},
+					} as any;
 				} else {
 					this._logService.info(
 						`[AgentOS] Memory provider returned empty context for agent ${request.agentId} ` +
 						`(strategy=${strategy}, ` +
-						`L1/L2=${filteredLongTerm.length}, ` +
-						`L0=${filteredShortTerm.length})`
+						`Episodic/Semantic=${filteredLongTerm.length}, ` +
+						`Working=${filteredShortTerm.length})`
 					);
+					// 注入内容为空，不向 UI 系统消息栏发送通知
 				}
 			} catch (error) {
 				this._logService.error('[AgentOS] Failed to load memory context', error);
+				// 通知 UI：记忆加载失败（让用户知道注入逻辑已执行但出错）
+				yield {
+					type: 'memory_injected',
+					content: `记忆加载失败: ${error instanceof Error ? error.message : String(error)}`.slice(0, 200),
+					metadata: { error: true },
+				} as any;
 			}
 		} else {
 			this._logService.info(`[AgentOS] No memory provider registered — skipping memory injection`);
@@ -755,11 +881,25 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					};
 				} else {
 					try {
+						// Pre-compact injection callback — passed into compressContext
+						// so injected memories are part of the compressed result.
+						const memProviderForInject = this.getActiveMemoryProvider();
+						const preCompactInject = memProviderForInject?.onPreCompact
+							? (ctx: { agentId: string; sessionId: string; messages: Array<{ role: string; content: string; timestamp: number }>; tokensSaved: number; contextWindow: number }) => {
+								const injectBudget = Math.min(
+									Math.max(Math.floor(ctx.tokensSaved * 0.1), 500),
+									Math.floor(ctx.contextWindow * 0.05),
+									2000,
+								);
+								return memProviderForInject.onPreCompact!(ctx.agentId, ctx.sessionId, ctx.messages, injectBudget);
+							}
+							: undefined;
 						compressionResult = await contextManager.compressContext(
 							messages as unknown as ReadonlyArray<ChatMessage>,
 							undefined,
 							compressionWindow,
-							lastRealPromptTokens
+							lastRealPromptTokens,
+							preCompactInject as any
 						);
 					} catch (compressionError) {
 						this._logService.error(
@@ -795,8 +935,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					`messageCount=${cmpMeta.messageCount ?? messages.length} ` +
 					`minMessagesToCompress=${cmpMeta.minMessagesToCompress ?? 'n/a'} ` +
 					`ineffectiveCompressionCount=${cmpMeta.ineffectiveCompressionCount ?? 'n/a'} ` +
-					`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
-				);
+				`compressionThreshold=${cmpMeta.compressionThreshold ?? 'n/a'}`
+			);
+			// ─── Dashboard 统计：压缩指标累积 ──
+			if (didCompress) {
+				this._compressionCount++;
+				const before = (cmpMeta.estimatedTokens as number) ?? 0;
+				const after = (cmpMeta.estimatedTokensAfter as number) ?? 0;
+				const savingRatio = before > 0 ? (before - after) / before : 0;
+				if (savingRatio < 0.1) {
+					this._compressionIneffectiveCount++;
+				}
+				this._compressionBeforeTokens += before;
+				this._compressionAfterTokens += after;
+			}
 				if (didCompress) {
 					this._lastCompressionTime = Date.now();
 					yield { type: 'phase_change', phase: 'compressing' };
@@ -856,7 +1008,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					};
 					const beforeText = fmtListBefore(messages);
 					messages = [...compressionResult.compressedMessages] as any[];
-					const afterText = fmtListSequential(messages);
+
+					// Calculate compression metrics (needed by P4 injection budget and P0 summary write)
 					const compressedEstimatedTokens = this._estimateMessagesTokens(messages);
 					const tokensSaved = originalEstimatedTokens - compressedEstimatedTokens;
 					const savePercent = originalEstimatedTokens > 0
@@ -867,9 +1020,47 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						`estimatedTokens=${compressedEstimatedTokens}, saved=${tokensSaved} (${savePercent}%), ` +
 						`duration=${compressionDurationMs}ms`
 					);
-					yield {
-						type: 'context_compacted',
-						compactedInputTokens: compressedEstimatedTokens,
+
+					// ── P0: 压缩摘要写入记忆 ──────────────────────────────────────
+					// 压缩摘要是宝贵的 Episodic 记忆，记录了"这段对话讲了什么"，
+					// 应该持久化到 memory 中供后续会话召回。
+					if (didCompress && compressionResult.summary && compressionResult.summary.length > 10) {
+						const memProviderForSummary = this.getActiveMemoryProvider();
+						if (memProviderForSummary) {
+							const summaryTs = Date.now();
+							void (async () => {
+								try {
+									await memProviderForSummary.writeMemory(request.agentId, {
+										id: `compression-${summaryTs}`,
+										type: 'episodic',
+										content: `[Context Compressed] ${compressionResult.summary}`,
+										metadata: {
+											memoryType: 'episodic',
+											source: 'context_compression',
+											originalCount: compressionResult.originalMessageCount,
+											compressedCount: compressionResult.compressedMessageCount,
+											tokensSaved,
+											savePercent,
+											sessionId: request.sessionId,
+											noticeId: `compression-${summaryTs}`,
+										},
+										timestamp: summaryTs,
+									});
+									this._logService.info(
+										`[AgentOS][Compression] Summary written to memory: ${compressionResult.summary.length} chars`
+									);
+								} catch (e) {
+									this._logService.warn(`[AgentOS][Compression] Failed to write summary to memory: ${e instanceof Error ? e.message : String(e)}`);
+								}
+							})();
+						}
+					}
+
+				const afterText = fmtListSequential(messages);
+				const finalEstimatedTokens = this._estimateMessagesTokens(messages);
+				yield {
+					type: 'context_compacted',
+					compactedInputTokens: finalEstimatedTokens,
 						compressionOriginalCount: originalMessageCount,
 						compressionCompressedCount: compressionResult.compressedMessageCount,
 						compressionTokensSaved: tokensSaved,
@@ -880,6 +1071,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					} as IChatStreamDelta;
 					yield { type: 'phase_change', phase: 'llm_streaming' };
 				}
+			}
+
+			// ─── 每轮迭代重新收集工具 ──────────────────────────────────
+			// MCP 服务器可能在 agent loop 进行中才完成连接并暴露工具。
+			// 每轮迭代重新收集确保新可用的 MCP 工具被纳入 LLM 请求。
+			// 首轮使用循环前已收集（含等待）的 enabledTools；后续轮次刷新。
+			if (iteration > 1) {
+				const refreshed = await this._getEnabledTools(request.agentId);
+				if (refreshed.length !== enabledTools.length) {
+					const newMcp = refreshed.filter(t => t.category?.startsWith('mcp:')).map(t => t.name);
+					this._logService.info(`[AgentOS] Iteration ${iteration}: tools refreshed ${enabledTools.length} → ${refreshed.length} (MCP: [${newMcp.join(', ')}])`);
+				}
+				enabledTools = refreshed;
 			}
 
 			// 构建模型选项（注入工具）
@@ -929,6 +1133,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			this._logService.info(`[AgentOS] Calling modelProvider.chat(modelId=${selection.modelId}, messages=${messages.length}, tools=${enabledTools.length}) convId=${conversationId} reqId=${requestId} prevRespId=${previousResponseId ?? '(none)'}`);
+
+			// ─── 诊断：列出实际发送给 LLM 的所有工具名 ──────────────────
+			if (enabledTools.length > 0) {
+				const mcpToolsSent = enabledTools.filter(t => t.category?.startsWith('mcp:'));
+				const builtinToolsSent = enabledTools.filter(t => !t.category?.startsWith('mcp:'));
+				this._logService.info(
+					`[AgentOS] TOOLS SENT TO LLM: ${enabledTools.length} total\n` +
+					`  MCP tools (${mcpToolsSent.length}): [${mcpToolsSent.map(t => t.name).join(', ')}]\n` +
+					`  Builtin tools (${builtinToolsSent.length}): [${builtinToolsSent.map(t => t.name).join(', ')}]`
+				);
+				if (mcpToolsSent.length === 0) {
+					this._logService.warn(`[AgentOS] ⚠ NO MCP TOOLS in API request! MCP server may not be connected.`);
+				}
+			} else {
+				this._logService.warn(`[AgentOS] ⚠ NO TOOLS at all in API request!`);
+			}
 
 			// 收集模型响应
 			let assistantContent = '';
@@ -980,6 +1200,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens}`
 						);
 					}
+					// ─── Dashboard 统计：累积 Token 用量 ──
+					this._totalInputTokens += (u.inputTokens ?? 0);
+					this._totalOutputTokens += (u.outputTokens ?? 0);
+					this._totalCachedTokens += (u.cachedTokens ?? 0);
 				}
 				// 收集完整的助手消息数据
 					if (delta.type === 'text' && delta.content) {
@@ -1351,8 +1575,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const canParallel = shouldParallelizeToolBatch(localExecutedCalls);
 			const toolResults: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 			// If all tool calls were server-executed, skip the local execution block entirely.
-			if (localExecutedCalls.length > 0) {
-				try {
+		if (localExecutedCalls.length > 0) {
+			// ── Hook: pre_tool_use ────────────────────────────────────────
+			if (memoryProvider?.triggerHook) {
+				for (const tc of localExecutedCalls) {
+					memoryProvider.triggerHook('pre_tool_use', {
+						agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+						toolName: tc.name, toolCallId: tc.id,
+					}).catch(() => {});
+				}
+			}
+			try {
 					if (canParallel) {
 						// Streaming parallel: yield as each tool finishes, in completion order.
 						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId, request.worktreePath)) {
@@ -1427,6 +1660,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 			} // end if (localExecutedCalls.length > 0)
 
+			// ── Hook: post_tool_use / post_tool_failure ───────────────────
+			if (memoryProvider?.triggerHook) {
+				for (const tr of toolResults) {
+					const tc = localExecutedCalls.find(c => c.id === tr.toolCallId);
+					memoryProvider.triggerHook(tr.success ? 'post_tool_use' : 'post_tool_failure', {
+						agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+						toolName: tc?.name ?? '', toolCallId: tr.toolCallId,
+						toolResult: typeof tr.content === 'string' ? tr.content.slice(0, 2000) : JSON.stringify(tr.content ?? '').slice(0, 2000),
+						error: tr.success ? undefined : (typeof tr.content === 'string' ? tr.content.slice(0, 2000) : JSON.stringify(tr.content ?? '').slice(0, 2000)),
+					}).catch(() => {});
+				}
+			}
+
 			// ─── Reconcile: emit synthetic tool_end for any orphaned tool_start ──
 			// IDs that received tool_start but never tool_end (lost via dedup,
 			// phantom filter, missing provider, or any other early-return path)
@@ -1485,10 +1731,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					for (const [key, val] of Object.entries(opMap)) {
 						if (tc.name.includes(key)) { op = val; break; }
 					}
+					// 解析工具参数，供前端显示详细内容
+					let argsSummary = '';
+					try {
+						const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
+						if (args) {
+							const parts: string[] = [];
+							for (const [k, v] of Object.entries(args)) {
+								const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+								parts.push(`${k}: ${valStr.length > 100 ? valStr.slice(0, 100) + '...' : valStr}`);
+							}
+							argsSummary = parts.join(', ');
+						}
+					} catch { /* ignore parse errors */ }
 					yield {
 						type: 'codebase_operation' as any,
 						content: tc.name,
-						metadata: { operation: op, toolName: tc.name },
+						metadata: { operation: op, toolName: tc.name, args: argsSummary },
 					} as any;
 				}
 			}
@@ -1506,24 +1765,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					? ` [工具: ${effectiveToolCalls.map(tc => tc.name).join(', ')}]`
 					: '';
 				// yield 记忆事件：仅显示记忆操作信息（不含工具调用详情，避免 Bug 1）
-				// 同时传递 contentPreview 作为稳定标识符，供 EditorPane 精确匹配 TDB-AM 记忆
+				// 同时传递 contentPreview 作为稳定标识符，供 EditorPane 精确匹配 AgentMemory 记忆
 				const assistantContentPreview = (trimmedAssistantContent || '').slice(0, 120);
+				const iterNoticeId = `mem-l0-iter-${memTs}`;
 				yield {
-					type: 'memory_extracted',
-					content: `L0 记忆写入：迭代 ${iteration}，助手回复 ${(trimmedAssistantContent || '').length} 字符`,
+					type: 'memory_writing',
+					content: `Working 写入中`,
 					metadata: {
-						memoryType: 'short_term',
-						sceneName: `L0 迭代 ${iteration}`,
-						priority: 50,
+						memoryType: 'working',
 						assistantContentPreview,
 						iteration,
+						noticeId: iterNoticeId,
 					},
 				};
 				void (async () => {
 					try {
 						await memProvider.writeMemory(request.agentId, {
 							id: `memory-iter-${memTs}`,
-							type: 'short_term',
+							type: 'working',
 							content: (trimmedAssistantContent || 'Tool execution completed') + toolSummary,
 							metadata: {
 								owner: 'default',
@@ -1534,6 +1793,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 								toolResults: toolResults.length,
 								iteration,
 								sessionId: request.sessionId,
+								noticeId: iterNoticeId,
 							},
 							timestamp: memTs,
 						});
@@ -1556,8 +1816,107 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private async _getEnabledTools(agentId: string): Promise<IToolDefinition[]> {
 		const allToolsWithState = await this.listAllToolsWithState(agentId);
 		const enabled = allToolsWithState.filter(t => t.enabled);
-		this._logService.info(`[AgentOS] _getEnabledTools: ${enabled.length}/${allToolsWithState.length} tools enabled for agent ${agentId}`);
-		return enabled.map(({ enabled: _, ...toolDef }) => toolDef);
+
+	// ─── 工具数量限制 ──────────────────────────────────────────
+	// MCP 工具被替换为 2 个桥接工具（mcp_tool_search + mcp_tool_call），
+	// 避免发送大量 MCP 工具 schema 导致请求体过大和 API 超时。
+	const MAX_TOOLS_FOR_LLM = 30;
+	const filtered = this._filterToolsForLLM(enabled, MAX_TOOLS_FOR_LLM);
+
+	// 将桥接工具排在前面：LLM 需要优先知道 mcp_tool_search/mcp_tool_call 的存在
+	const sorted = filtered.sort((a, b) => {
+		const bridge = new Set(['mcp_tool_search', 'mcp_tool_call']);
+		const aBridge = bridge.has(a.name) ? 0 : 1;
+		const bBridge = bridge.has(b.name) ? 0 : 1;
+		return aBridge - bBridge;
+	});
+	this._logService.info(`[AgentOS] _getEnabledTools: ${filtered.length}/${enabled.length}/${allToolsWithState.length} tools (MCP tools replaced with bridge) for agent ${agentId}`);
+	return sorted.map(({ enabled: _, ...toolDef }) => toolDef);
+	}
+
+	/**
+	 * 过滤工具列表以适应 LLM 请求大小限制。
+	 *
+	 * 策略（Tool Search 渐进式披露）：
+	 * 1. MCP 工具被替换为 2 个桥接工具（mcp_tool_search + mcp_tool_call），
+	 *    不发送原始 MCP 工具定义，大幅减少 schema 体积。
+	 * 2. 核心 builtin 工具（文件操作、搜索、终端等）全部保留。
+	 * 3. 桥接工具（mcp_tool_search, mcp_tool_call）始终保留。
+	 * 4. 其他 builtin 工具按名称排序，填满剩余名额。
+	 */
+	_filterToolsForLLM(tools: Array<IToolDefinition & { enabled: boolean }>, maxCount: number): Array<IToolDefinition & { enabled: boolean }> {
+		// 核心 builtin 工具名（文件操作 + 搜索 + 终端 + 任务管理）
+		const coreBuiltinTools = new Set([
+			'file_read', 'file_write', 'file_list', 'search_files', 'terminal',
+			'grep_search', 'replace_in_file', 'read_file', 'write_to_file',
+			'list_dir', 'edit_file', 'delegate_task', 'todo', 'memory_remember',
+			'memory_search', 'web_search',
+			// MCP 桥接工具 — 始终保留
+			'mcp_tool_search', 'mcp_tool_call',
+		]);
+
+		// 分离：MCP 原始工具（被替换）vs 核心 builtin vs 桥接工具 vs 其他 builtin
+		const mcpOriginalTools = tools.filter(t => t.category?.startsWith('mcp:'));
+		const coreBuiltin = tools.filter(t => !t.category?.startsWith('mcp:') && coreBuiltinTools.has(t.name));
+		const otherBuiltin = tools.filter(t => !t.category?.startsWith('mcp:') && !coreBuiltinTools.has(t.name));
+
+		// MCP 工具替换为桥接工具（已在 coreBuiltin 中，因为 mcp_tool_search/mcp_tool_call 在 coreBuiltinTools 集合中）
+		// 不发送 mcpOriginalTools，LLM 通过 mcp_tool_search + mcp_tool_call 访问
+		const result = [...coreBuiltin];
+		const remaining = maxCount - result.length;
+		if (remaining > 0) {
+			result.push(...otherBuiltin.slice(0, remaining));
+		}
+
+		if (mcpOriginalTools.length > 0) {
+			this._logService.info(`[AgentOS] _filterToolsForLLM: replaced ${mcpOriginalTools.length} MCP tools with 2 bridge tools (mcp_tool_search, mcp_tool_call)`);
+		}
+		if (tools.length - mcpOriginalTools.length > result.length) {
+			const dropped = tools.length - mcpOriginalTools.length - result.length;
+			const droppedNames = otherBuiltin.slice(remaining).map(t => t.name);
+			this._logService.info(`[AgentOS] _filterToolsForLLM: dropped ${dropped} non-essential tools: [${droppedNames.slice(0, 15).join(', ')}${droppedNames.length > 15 ? '...' : ''}]`);
+		}
+
+		return result;
+	}
+
+	/**
+	 * 等待 MCP 工具变为可用。
+	 *
+	 * MCP 服务器连接和工具枚举是异步的。McpToolProvider 的 autorun 在
+	 * server.tools observable 变化后才填充 _routes。如果在首轮工具收集时
+	 * 没有 MCP 工具，这里做一次短轮询等待（默认 3 秒，每 500ms 检查一次），
+	 * 让 MCP 服务器有时间完成连接。
+	 *
+	 * 返回最新的工具列表（如果 MCP 工具出现则包含它们，否则返回原始列表）。
+	 */
+	private async _waitForMcpTools(
+		agentId: string,
+		initialTools: IToolDefinition[],
+		timeoutMs: number = 3000,
+	): Promise<IToolDefinition[]> {
+		const POLL_INTERVAL = 500;
+		const deadline = Date.now() + timeoutMs;
+		let tools = initialTools;
+
+		while (Date.now() < deadline) {
+			// 检查是否已有 MCP 工具
+			const mcpCount = tools.filter(t => t.category?.startsWith('mcp:')).length;
+			if (mcpCount > 0) {
+				this._logService.info(`[AgentOS] MCP tools available after waiting: ${mcpCount} MCP tool(s) found`);
+				return tools;
+			}
+			// 等待一个轮询间隔后重新收集
+			await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+			tools = await this._getEnabledTools(agentId);
+		}
+
+		// 超时仍未获取到 MCP 工具
+		const mcpCount = tools.filter(t => t.category?.startsWith('mcp:')).length;
+		if (mcpCount === 0) {
+			this._logService.warn(`[AgentOS] No MCP tools after waiting ${timeoutMs}ms — MCP servers may not be connected or configured`);
+		}
+		return tools;
 	}
 
 	/**
@@ -1574,6 +1933,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 */
 	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
+
+		// ─── Dashboard 统计：工具调用计数 ──
+		for (const tc of toolCalls) {
+			if (tc.name) {
+				this._toolCallCounts.set(tc.name, (this._toolCallCounts.get(tc.name) ?? 0) + 1);
+			}
+		}
 
 		// v17: propagate the parent agent's worktree to tool providers that
 		// support inheriting it. Today this is BuiltinToolProvider, which
@@ -3072,44 +3438,59 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		return { type: 'text', content: '' };
 	}
 
-	// ─── L1 自动提取管线（对齐 TDB-AM L0→L1 pipeline）────────────────────
+	// ─── Episodic 自动提取管线（对齐 AgentMemory Working→Episodic pipeline）────────────────────
 
 	/**
-	 * L1 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取
+	 * Episodic 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取
 	 * 结构化长期记忆（persona/episodic/instruction），写入 Memory Provider。
 	 *
-	 * 设计参考 TDB-AM 的 auto-capture + pipeline-manager：
-	 * - TDB-AM 在 agent_end hook 自动记录 L0，由 pipeline-manager 调度 L1 提取
+	 * 设计参考 AgentMemory 的 auto-capture + pipeline-manager：
+	 * - AgentMemory 在 agent_end hook 自动记录 Working，由 pipeline-manager 调度 Episodic 提取
 	 * - 本方法在 AgentDriver finally 块调用，计数达阈值后 fire-and-forget 触发
 	 * - 不依赖 LLM 主动调 memory_remember，系统自动提取值得记住的事实
 	 */
-	triggerL1Extraction(
+	triggerEpisodicExtraction(
 		agentId: string,
 		sessionId: string | undefined,
 		recentUserText: string,
 		recentAssistantText: string
 	): void {
+		// 当 agentmemory 是活跃 MemoryProvider 时，跳过本地 Episodic/Semantic/Procedural 提取管线。
+		// agentmemory 有自己的 4-tier consolidation pipeline（Working→Episodic→Semantic→Procedural），
+		// 本地管线与之并行会导致双重提取（重复记忆 + LLM token 浪费）。
+		// 通过环境变量 AGENTMEMORY_DISABLE_LOCAL_Episodic=true 控制（默认启用本地管线以保持向后兼容）。
+		const activeProvider = this._slotRegistry.getActiveMemoryProvider();
+		// Safe access: process.env is not available in browser/renderer process.
+		// Default: skip local Episodic when agentmemory is the active provider.
+		// Set AGENTMEMORY_DISABLE_LOCAL_Episodic=false (in Node/main process) to override.
+		const disableLocalEpisodic = typeof process !== 'undefined' ? process.env?.['AGENTMEMORY_DISABLE_LOCAL_Episodic'] : undefined;
+		if (activeProvider?.id === 'agentmemory' && disableLocalEpisodic !== 'false') {
+			this._logService.info(`[AgentOS][Episodic] Skipped — agentmemory has its own consolidation pipeline (provider=${activeProvider.id})`);
+			return;
+		}
+
 		const count = (this._l1ConversationCountByAgent.get(agentId) ?? 0) + 1;
 		this._l1ConversationCountByAgent.set(agentId, count);
 
-		if (count < AgentOSService.L1_EXTRACTION_THRESHOLD) {
-			this._logService.info(`[AgentOS][L1] Conversation count for ${agentId}: ${count}/${AgentOSService.L1_EXTRACTION_THRESHOLD} — not yet triggering extraction`);
+		if (count < AgentOSService.EPISODIC_EXTRACTION_THRESHOLD) {
+			this._logService.info(`[AgentOS][Episodic] Conversation count for ${agentId}: ${count}/${AgentOSService.EPISODIC_EXTRACTION_THRESHOLD} — not yet triggering extraction`);
 			return;
 		}
 
 		// 达到阈值，清零并触发提取
 		this._l1ConversationCountByAgent.set(agentId, 0);
-		this._logService.info(`[AgentOS][L1] Threshold reached (${count}≥${AgentOSService.L1_EXTRACTION_THRESHOLD}), triggering L1 extraction for agent ${agentId}`);
+		this._logService.info(`[AgentOS][Episodic] Threshold reached (${count}≥${AgentOSService.EPISODIC_EXTRACTION_THRESHOLD}), triggering Episodic extraction for agent ${agentId}`);
 
 		// fire-and-forget：不阻塞 AgentDriver 的 finally 块
-		void this._performL1Extraction(agentId, sessionId, recentUserText, recentAssistantText);
+		void this._performEpisodicExtraction(agentId, sessionId, recentUserText, recentAssistantText);
+		this._episodicExtractionCount++;
 	}
 
 	/**
-	 * 实际执行 L1 提取：调用 LLM 分析最近对话，提取结构化长期记忆。
+	 * 实际执行 Episodic 提取：调用 LLM 分析最近对话，提取结构化长期记忆。
 	 * 失败时静默记录日志，不影响主流程。
 	 */
-	private async _performL1Extraction(
+	private async _performEpisodicExtraction(
 		agentId: string,
 		sessionId: string | undefined,
 		recentUserText: string,
@@ -3119,7 +3500,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const modelProvider = this._getActiveModelProvider();
 		const selection = this.getActiveModelSelection();
 		if (!memProvider || !modelProvider || !selection?.modelId) {
-			this._logService.info(`[AgentOS][L1] Skipping extraction: memoryProvider=${!!memProvider} modelProvider=${!!modelProvider} modelId=${selection?.modelId ?? 'none'}`);
+			this._logService.info(`[AgentOS][Episodic] Skipping extraction: memoryProvider=${!!memProvider} modelProvider=${!!modelProvider} modelId=${selection?.modelId ?? 'none'}`);
 			return;
 		}
 
@@ -3168,7 +3549,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const trimmed = extractionResult.trim();
 
 			if (!trimmed || trimmed === 'NONE') {
-				this._logService.info(`[AgentOS][L1] Extraction completed in ${durationMs}ms — nothing worth remembering`);
+				this._logService.info(`[AgentOS][Episodic] Extraction completed in ${durationMs}ms — nothing worth remembering`);
 				return;
 			}
 
@@ -3182,7 +3563,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					if (fact.content && fact.type) {
 						await memProvider.writeMemory(agentId, {
 							id: `l1-extract-${ts}-${extractedCount}`,
-							type: 'long_term',
+							type: 'episodic',
 							content: fact.content,
 							metadata: {
 								owner: 'default',
@@ -3203,67 +3584,68 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			this._logService.info(
-				`[AgentOS][L1] Extraction completed in ${durationMs}ms — extracted ${extractedCount} long-term memories for agent ${agentId}`
+				`[AgentOS][Episodic] Extraction completed in ${durationMs}ms — extracted ${extractedCount} long-term memories for agent ${agentId}`
 			);
 
-			// L1 完成后触发 L2 场景提取（对齐 TDB-AM delay-after-L1 触发路径）
+			// Episodic 完成后触发 Semantic 提取（对齐 AgentMemory delay-after-Episodic 触发路径）
 			if (extractedCount > 0) {
-				this.triggerL2Extraction(agentId);
+				this.triggerSemanticExtraction(agentId);
 			}
 		} catch (error) {
 			this._logService.warn(
-				`[AgentOS][L1] Extraction failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+				`[AgentOS][Episodic] Extraction failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
 			);
 		}
 	}
 
-	// ─── L2 场景提取管线（对齐 TDB-AM L2）────────────────────────────────
+	// ─── Semantic 提取管线（对齐 AgentMemory Semantic）────────────────────────────────
 
 	/**
-	 * L2 场景提取触发：L1 完成后延迟触发，提取场景级摘要。
+	 * Semantic 提取触发：Episodic 完成后延迟触发，提取场景级摘要。
 	 * 使用 per-agent 定时器，支持 downward-only 语义（只能提前不能延后）。
 	 */
-	triggerL2Extraction(agentId: string): void {
+	triggerSemanticExtraction(agentId: string): void {
 		const now = Date.now();
 		const lastRun = this._l2LastRunTime.get(agentId) ?? 0;
-		const minIntervalRemaining = Math.max(0, AgentOSService.L2_MIN_INTERVAL_MS - (now - lastRun));
-		const delay = Math.max(AgentOSService.L2_DELAY_AFTER_L1_MS, minIntervalRemaining);
+		const minIntervalRemaining = Math.max(0, AgentOSService.SEMANTIC_MIN_INTERVAL_MS - (now - lastRun));
+		const delay = Math.max(AgentOSService.SEMANTIC_DELAY_AFTER_EPISODIC_MS, minIntervalRemaining);
 
 		// Downward-only：如果已有定时器，只在新的延迟更短时重新设置
 		const existingTimer = this._l2TimersByAgent.get(agentId);
 		if (existingTimer !== undefined) {
 			// 已有定时器在等待，不重复设置（downward-only 语义由 delay 计算保证）
-			this._logService.info(`[AgentOS][L2] Timer already pending for ${agentId}, skipping (downward-only)`);
+			this._logService.info(`[AgentOS][Semantic] Timer already pending for ${agentId}, skipping (downward-only)`);
 			return;
 		}
 
-		this._logService.info(`[AgentOS][L2] Scheduling scene extraction for ${agentId} in ${delay}ms`);
+		this._logService.info(`[AgentOS][Semantic] Scheduling scene extraction for ${agentId} in ${delay}ms`);
 		const timer = setTimeout(() => {
 			this._l2TimersByAgent.delete(agentId);
-			void this._performL2Extraction(agentId);
+			void this._performSemanticExtraction(agentId);
+			this._semanticExtractionCount++;
 		}, delay);
 		this._l2TimersByAgent.set(agentId, timer);
 	}
 
 	/**
-	 * 执行 L2 场景提取：搜索近期 L1 记忆，调 LLM 生成场景级摘要。
+	 * 执行 Semantic 提取：搜索近期 Episodic 记忆，调 LLM 生成场景级摘要。
 	 */
-	private async _performL2Extraction(agentId: string): Promise<void> {
+	private async _performSemanticExtraction(agentId: string): Promise<void> {
 		const memProvider = this.getActiveMemoryProvider();
 		const modelProvider = this._getActiveModelProvider();
 		const selection = this.getActiveModelSelection();
 		if (!memProvider || !modelProvider || !selection?.modelId) {
-			this._logService.info(`[AgentOS][L2] Skipping: missing provider or model`);
+			this._logService.info(`[AgentOS][Semantic] Skipping: missing provider or model`);
 			return;
 		}
 
 		this._l2LastRunTime.set(agentId, Date.now());
 
 		try {
-			// 搜索近期 L1 提取的记忆（source=l1_auto_extraction）
+			// 搜索近期 Episodic 提取的记忆（source=l1_auto_extraction）
 			const recentMemories = await memProvider.searchMemory(agentId, '*');
 			if (!recentMemories || recentMemories.length === 0) {
-				this._logService.info(`[AgentOS][L2] No L1 memories found for ${agentId}, skipping scene extraction`);
+				this._logService.info(`[AgentOS][Semantic] No Episodic memories found for ${agentId}, skipping scene extraction`);
 				return;
 			}
 
@@ -3306,7 +3688,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const trimmed = sceneResult.trim();
 
 			if (!trimmed || trimmed === 'NONE') {
-				this._logService.info(`[AgentOS][L2] Scene extraction completed in ${durationMs}ms — no scenes extracted`);
+				this._logService.info(`[AgentOS][Semantic] Scene extraction completed in ${durationMs}ms — no scenes extracted`);
 				return;
 			}
 
@@ -3320,7 +3702,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					if (scene.scene_name && scene.summary) {
 						await memProvider.writeMemory(agentId, {
 							id: `l2-scene-${ts}-${sceneCount}`,
-							type: 'long_term',
+							type: 'semantic',
 							content: `[${scene.scene_name}] ${scene.summary}`,
 							metadata: {
 								owner: 'default',
@@ -3339,54 +3721,55 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			this._logService.info(
-				`[AgentOS][L2] Scene extraction completed in ${durationMs}ms — extracted ${sceneCount} scenes for agent ${agentId}`
+				`[AgentOS][Semantic] Scene extraction completed in ${durationMs}ms — extracted ${sceneCount} scenes for agent ${agentId}`
 			);
 
-			// L2 完成后触发 L3 人格生成
-			this.triggerL3Generation();
+			// Semantic 完成后触发 Procedural 生成
+			this.triggerProceduralGeneration();
 
 		} catch (error) {
 			this._logService.warn(
-				`[AgentOS][L2] Scene extraction failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+				`[AgentOS][Semantic] Scene extraction failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
 			);
 		}
 	}
 
-	// ─── L3 人格生成管线（对齐 TDB-AM L3）────────────────────────────────
+	// ─── Procedural 生成管线（对齐 AgentMemory Procedural）────────────────────────────────
 
 	/**
-	 * L3 人格生成触发：L2 完成后触发，全局互斥 (concurrency=1) + pending dedup。
-	 * 如果 L3 正在运行，只设 pending flag；运行中的 L3 结束后检查 flag 并重新触发。
+	 * Procedural 生成触发：Semantic 完成后触发，全局互斥 (concurrency=1) + pending dedup。
+	 * 如果 Procedural 正在运行，只设 pending flag；运行中的 Procedural 结束后检查 flag 并重新触发。
 	 */
-	triggerL3Generation(): void {
-		if (this._l3Running) {
-			// 已有 L3 在运行 → 设 pending flag，运行结束后自动重新触发
-			this._l3Pending = true;
-			this._logService.info(`[AgentOS][L3] Already running, setting pending flag for next round`);
+	triggerProceduralGeneration(): void {
+		if (this._proceduralRunning) {
+			// 已有 Procedural 在运行 → 设 pending flag，运行结束后自动重新触发
+			this._proceduralPending = true;
+			this._logService.info(`[AgentOS][Procedural] Already running, setting pending flag for next round`);
 			return;
 		}
-		void this._performL3Generation();
+		void this._performProceduralGeneration();
+		this._proceduralExtractionCount++;
 	}
 
 	/**
-	 * 执行 L3 人格生成：搜索所有场景摘要，调 LLM 生成用户人格画像。
-	 * 全局互斥：同时只有一个 L3 运行。
+	 * 执行 Procedural 生成：搜索所有场景摘要，调 LLM 生成用户人格画像。
+	 * 全局互斥：同时只有一个 Procedural 运行。
 	 */
-	private async _performL3Generation(): Promise<void> {
+	private async _performProceduralGeneration(): Promise<void> {
 		const memProvider = this.getActiveMemoryProvider();
 		const modelProvider = this._getActiveModelProvider();
 		const selection = this.getActiveModelSelection();
 		if (!memProvider || !modelProvider || !selection?.modelId) {
-			this._logService.info(`[AgentOS][L3] Skipping: missing provider or model`);
+			this._logService.info(`[AgentOS][Procedural] Skipping: missing provider or model`);
 			return;
 		}
 
-		this._l3Running = true;
+		this._proceduralRunning = true;
 		try {
 			// 搜索所有场景摘要（memoryType=scene）
 			const sceneMemories = await memProvider.searchMemory('*', 'scene');
 			if (!sceneMemories || sceneMemories.length === 0) {
-				this._logService.info(`[AgentOS][L3] No scene memories found, skipping persona generation`);
+				this._logService.info(`[AgentOS][Procedural] No scene memories found, skipping persona generation`);
 				return;
 			}
 
@@ -3428,7 +3811,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const trimmed = personaResult.trim();
 
 			if (!trimmed || trimmed === 'NONE') {
-				this._logService.info(`[AgentOS][L3] Persona generation completed in ${durationMs}ms — insufficient data`);
+				this._logService.info(`[AgentOS][Procedural] Persona generation completed in ${durationMs}ms — insufficient data`);
 				return;
 			}
 
@@ -3437,14 +3820,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// 提取第一个 JSON 对象（可能被 markdown 包裹）
 				const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
 				if (!jsonMatch) {
-					this._logService.warn(`[AgentOS][L3] Could not parse persona JSON from LLM response`);
+					this._logService.warn(`[AgentOS][Procedural] Could not parse persona JSON from LLM response`);
 					return;
 				}
 				const persona = JSON.parse(jsonMatch[0]);
 				const ts = Date.now();
 				await memProvider.writeMemory('*', {
 					id: `l3-persona-${ts}`,
-					type: 'long_term',
+					type: 'procedural',
 					content: JSON.stringify(persona),
 					metadata: {
 						owner: 'default',
@@ -3457,23 +3840,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				});
 
 				this._logService.info(
-					`[AgentOS][L3] Persona generation completed in ${durationMs}ms — persona written`
+					`[AgentOS][Procedural] Persona generation completed in ${durationMs}ms — persona written`
 				);
 			} catch (parseErr) {
-				this._logService.warn(`[AgentOS][L3] Failed to parse persona JSON: ${parseErr}`);
+				this._logService.warn(`[AgentOS][Procedural] Failed to parse persona JSON: ${parseErr}`);
 			}
 
 		} catch (error) {
 			this._logService.warn(
-				`[AgentOS][L3] Persona generation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+				`[AgentOS][Procedural] Persona generation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
 			);
 		} finally {
-			this._l3Running = false;
-			// 检查 pending flag：如果在运行期间有新的 L3 请求，重新触发
-			if (this._l3Pending) {
-				this._l3Pending = false;
-				this._logService.info(`[AgentOS][L3] Pending flag detected, re-triggering L3`);
-				void this._performL3Generation();
+			this._proceduralRunning = false;
+			// 检查 pending flag：如果在运行期间有新的 Procedural 请求，重新触发
+			if (this._proceduralPending) {
+				this._proceduralPending = false;
+				this._logService.info(`[AgentOS][Procedural] Pending flag detected, re-triggering Procedural`);
+				void this._performProceduralGeneration();
 			}
 		}
 	}

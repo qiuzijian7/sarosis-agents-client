@@ -423,9 +423,9 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				const sep = entry.id.indexOf('::');
 				const tail = sep > -1 ? entry.id.slice(sep + 2) : entry.id;
 				if (tail === modelId) {
-					this._logService.info(
-						`[LMBridge] Resolved bare modelId "${modelId}" → qualified "${entry.id}"`,
-					);
+				this._logService.trace(
+					`[LMBridge] Resolved bare modelId "${modelId}" → qualified "${entry.id}"`,
+				);
 					modelId = entry.id;
 					meta = entry.metadata;
 					break;
@@ -457,7 +457,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		// 传递 tools 定义给扩展（通过 modelOptions）
 		if (options.tools && options.tools.length > 0) {
 			requestOptions.modelOptions.tools = options.tools;
-			this._logService.info(`[LMBridge] Passing ${options.tools.length} tools to extension via modelOptions.tools`);
+			this._logService.trace(`[LMBridge] Passing ${options.tools.length} tools to extension via modelOptions.tools`);
 		}
 		
 		// 传递其他 modelOptions（如 temperature, maxTokens）
@@ -474,7 +474,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		// 仅在开启时透传，关闭/缺失时不注入，让 provider 走非推理路径。
 		if (options.reasoning?.enabled) {
 			requestOptions.modelOptions.reasoning = options.reasoning;
-			this._logService.info(`[LMBridge] Passing reasoning to extension: effort=${options.reasoning.effort ?? '(none)'} budget=${options.reasoning.budget ?? '(none)'}`);
+			this._logService.trace(`[LMBridge] Passing reasoning to extension: effort=${options.reasoning.effort ?? '(none)'} budget=${options.reasoning.budget ?? '(none)'}`);
 		}
 
 		// ── 透传抓包对齐的三个独立会话 id 给扩展（通过 modelOptions）──────────
@@ -497,11 +497,11 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			requestOptions.modelOptions.previousResponseId = context.previousResponseId; // 请求体 previous_response_id
 		}
 		if (conversationId || context?.requestId || context?.previousResponseId) {
-			this._logService.info(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
+			this._logService.trace(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
 		}
 
 	try {
-		this._logService.info(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})`);
+		this._logService.trace(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})`);
 		const t0_sendRequest = Date.now();
 		const response = await this._lmService.sendChatRequest(
 			modelId,
@@ -510,7 +510,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			requestOptions,
 			cts.token,
 		);
-		this._logService.info(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
+		this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
 
 		let capturedResponseId: string | undefined;
 		let _firstPartReceived = false;
@@ -932,7 +932,7 @@ export class LanguageModelsToAgentOSBridge extends Disposable implements IWorkbe
 		// 1. Remove vendors that disappeared.
 		for (const [vendor, entry] of Array.from(this._registered.entries())) {
 			if (!liveVendors.has(vendor)) {
-				this._logService.info(`[LMBridge] Vendor disappeared, unregistering: ${vendor}`);
+				this._logService.trace(`[LMBridge] Vendor disappeared, unregistering: ${vendor}`);
 				entry.registration.dispose();
 				entry.provider.dispose();
 				this._registered.delete(vendor);
@@ -962,7 +962,7 @@ export class LanguageModelsToAgentOSBridge extends Disposable implements IWorkbe
 			// Without this, a vendor declared via `contributes.languageModelChatProviders` would
 			// stay model-less until the user (or some other code path) calls selectLanguageModels.
 			this._lmService.selectLanguageModels({ vendor }).then(ids => {
-				this._logService.info(`[LMBridge] Resolved ${ids.length} model(s) for vendor=${vendor}`);
+				this._logService.trace(`[LMBridge] Resolved ${ids.length} model(s) for vendor=${vendor}`);
 				// _modelCache is now populated; _onLanguageModelChange will fire from inside
 				// _resolveAllLanguageModels and our onDidChangeLanguageModels listener will
 				// drive notifyModelsChanged for us — but fire one explicitly as a safety net.

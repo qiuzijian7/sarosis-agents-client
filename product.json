@@ -34,6 +34,8 @@
 	"linuxIconName": "vssaros",
 	"licenseFileName": "LICENSE.txt",
 	"reportIssueUrl": "https://github.com/microsoft/vscode/issues/new",
+	"gongfengClientId": "",
+	"gongfengClientSecret": "",
 	"nodejsRepository": "https://nodejs.org",
 	"urlProtocol": "vssaros",
 	"webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/ef65ac1ba57f57f2a3961bfe94aa20481caca4c6/out/vs/workbench/contrib/webview/browser/pre/",
@@ -87,48 +89,33 @@
 			}
 		},
 		{
-			"name": "tdb-am-gateway",
+			"name": "agentmemory-gateway",
 			"version": "1.0.0",
 			"sha256": "",
 			"metadata": {
-				"id": "tdb-am-gateway",
+				"id": "agentmemory-gateway",
 				"publisherId": {
-					"publisherId": "tdb-am",
-					"publisherName": "tdb-am",
-					"displayName": "TDB-AM",
+					"publisherId": "saros",
+					"publisherName": "saros",
+					"displayName": "Saros",
 					"flags": ""
 				},
-				"publisherDisplayName": "TDB-AM"
+				"publisherDisplayName": "Saros"
 			}
 		},
 		{
-			"name": "tdb-am-memory",
+			"name": "agentmemory-memory",
 			"version": "1.0.0",
 			"sha256": "",
 			"metadata": {
-				"id": "tdb-am-memory",
+				"id": "agentmemory-memory",
 				"publisherId": {
-					"publisherId": "tdb-am",
-					"publisherName": "tdb-am",
-					"displayName": "TDB-AM",
+					"publisherId": "saros",
+					"publisherName": "saros",
+					"displayName": "Saros",
 					"flags": ""
 				},
-				"publisherDisplayName": "TDB-AM"
-			}
-		},
-		{
-			"name": "tdb-am-viewer",
-			"version": "1.0.0",
-			"sha256": "",
-			"metadata": {
-				"id": "tdb-am-viewer",
-				"publisherId": {
-					"publisherId": "tdb-am",
-					"publisherName": "tdb-am",
-					"displayName": "TDB-AM",
-					"flags": ""
-				},
-				"publisherDisplayName": "TDB-AM"
+				"publisherDisplayName": "Saros"
 			}
 		},
 		{
@@ -287,8 +274,8 @@
 		}
 	],
 	"builtInExtensionsEnabledWithAutoUpdates": [
-		"tdb-am-gateway",
-		"tdb-am-memory",
-		"tdb-am-viewer"
-	]
+		"agentmemory-gateway",
+		"agentmemory-memory"
+	],
+	"commit": "61889cc1deca71f56ece46a812ad4c9593395a0f"
 }

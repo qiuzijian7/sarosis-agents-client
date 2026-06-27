@@ -549,7 +549,7 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 	{
 		name: "memory_remember",
 		description: "Save a memory entry (short-term or long-term). Use this to persist important information across sessions.",
-		inputSchema: {"type":"object","properties":{"content":{"type":"string","description":"Memory content to save"},"memory_type":{"type":"string","enum":["short_term","long_term"],"description":"Memory type (default: long_term)"},"tags":{"type":"array","items":{"type":"string"},"description":"Optional tags for filtering"}},"required":["content"]},
+		inputSchema: {"type":"object","properties":{"content":{"type":"string","description":"Memory content to save"},"memory_type":{"type":"string","enum":["working","episodic"],"description":"Memory type (default: episodic)"},"tags":{"type":"array","items":{"type":"string"},"description":"Optional tags for filtering"}},"required":["content"]},
 		category: "memory",
 		source: 'hermes-bundled',
 	},
@@ -563,14 +563,14 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 	{
 		name: "memory_delete",
 		description: "Delete a memory entry by its ID. Use memory_search first to find the entry ID.",
-		inputSchema: {"type":"object","properties":{"id":{"type":"string","description":"Memory entry ID to delete"},"memory_type":{"type":"string","enum":["short_term","long_term"],"description":"Memory type to delete from"}},"required":["id","memory_type"]},
+		inputSchema: {"type":"object","properties":{"id":{"type":"string","description":"Memory entry ID to delete"},"memory_type":{"type":"string","enum":["working","episodic"],"description":"Memory type to delete from"}},"required":["id","memory_type"]},
 		category: "memory",
 		source: 'hermes-bundled',
 	},
 	{
 		name: "memory_list",
 		description: "List all memory entries of a given type.",
-		inputSchema: {"type":"object","properties":{"memory_type":{"type":"string","enum":["short_term","long_term"],"description":"Memory type to list (default: long_term)"},"limit":{"type":"number","description":"Max entries to return (default: 20)"}}},
+		inputSchema: {"type":"object","properties":{"memory_type":{"type":"string","enum":["working","episodic"],"description":"Memory type to list (default: episodic)"},"limit":{"type":"number","description":"Max entries to return (default: 20)"}}},
 		category: "memory",
 		source: 'hermes-bundled',
 	},

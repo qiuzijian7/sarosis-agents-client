@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>设置页面优化 — Mockup</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252525;
+    --bg-tertiary: #2b2b2b;
+    --bg-hover: rgba(128,128,128,0.08);
+    --fg-primary: #d4d4d4;
+    --fg-secondary: #888;
+    --fg-tertiary: #555;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --accent-light: rgba(59,130,246,0.12);
+    --border: rgba(128,128,128,0.15);
+    --success: #34d399;
+    --warning: #f59e0b;
+    --danger: #f87171;
+    --purple: #a78bfa;
+  }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #1a1a1a;
+    color: var(--fg-primary);
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  /* ════════ Chat Panel Container (simulating right sidebar) ════════ */
+  .chat-panel {
+    width: 440px;
+    height: 90vh;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ════════ Settings Overlay (slide-in panel) ════════ */
+  .settings-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--bg-primary);
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    animation: slide-in 0.2s ease-out;
+  }
+  @keyframes slide-in {
+    from { transform: translateX(100%); opacity: 0.5; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  /* ─── Header ─── */
+  .settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .settings-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .settings-header-icon {
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+  }
+  .settings-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg-primary);
+    letter-spacing: 0.01em;
+  }
+  .settings-close-btn {
+    background: none;
+    border: none;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.12s;
+  }
+  .settings-close-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg-primary);
+  }
+
+  /* ─── Search ─── */
+  .settings-search {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .settings-search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    transition: border-color 0.15s;
+  }
+  .settings-search-box:focus-within {
+    border-color: var(--accent);
+  }
+  .settings-search-box svg {
+    color: var(--fg-secondary);
+    flex-shrink: 0;
+  }
+  .settings-search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--fg-primary);
+    font-size: 12.5px;
+    outline: none;
+  }
+  .settings-search-input::placeholder {
+    color: var(--fg-tertiary);
+  }
+
+  /* ─── Tab Bar (horizontal tabs, replaces TOC sidebar) ─── */
+  .settings-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .settings-tabs::-webkit-scrollbar { display: none; }
+  .settings-tab {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: all 0.12s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+  .settings-tab:hover {
+    color: var(--fg-primary);
+    background: var(--bg-hover);
+    border-radius: 4px 4px 0 0;
+  }
+  .settings-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+  .settings-tab-icon {
+    font-size: 13px;
+  }
+
+  /* ─── Content Area ─── */
+  .settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 14px 40px;
+  }
+  .settings-content::-webkit-scrollbar { width: 5px; }
+  .settings-content::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 3px; }
+
+  /* ─── Quick Toggle Card (for common settings) ─── */
+  .quick-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 14px 10px;
+    margin-bottom: 12px;
+  }
+  .quick-card-title {
+    font-size: 11px;
+    color: var(--fg-secondary);
+    margin-bottom: 10px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .quick-toggles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .quick-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    border: 1px solid transparent;
+    transition: border-color 0.12s;
+  }
+  .quick-toggle:hover { border-color: var(--border); }
+  .quick-toggle-label {
+    font-size: 11.5px;
+    color: var(--fg-primary);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  /* ─── Toggle Switch ─── */
+  .toggle-switch {
+    position: relative;
+    width: 32px;
+    height: 18px;
+    background: #444;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .toggle-switch.on { background: var(--accent); }
+  .toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle-switch.on::after { transform: translateX(14px); }
+
+  /* ─── Setting Section (collapsible card) ─── */
+  .setting-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: border-color 0.12s;
+  }
+  .setting-section:hover { border-color: rgba(128,128,128,0.25); }
+  .setting-section.expanded { border-color: rgba(59,130,246,0.2); }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 14px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.12s;
+  }
+  .section-header:hover { background: var(--bg-hover); }
+  .section-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .section-label {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-primary);
+  }
+  .section-desc {
+    font-size: 11px;
+    color: var(--fg-secondary);
+    margin-top: 1px;
+  }
+  .section-chevron {
+    color: var(--fg-tertiary);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+  }
+  .setting-section.expanded .section-chevron { transform: rotate(90deg); }
+
+  .section-body {
+    display: none;
+    padding: 0 14px 12px;
+  }
+  .setting-section.expanded .section-body { display: block; }
+
+  /* ─── Setting Field ─── */
+  .setting-field {
+    padding: 10px 0;
+    border-top: 1px solid rgba(128,128,128,0.08);
+  }
+  .setting-field:first-child { border-top: none; padding-top: 12px; }
+
+  .field-label {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--fg-primary);
+    margin-bottom: 2px;
+  }
+  .field-desc {
+    font-size: 11px;
+    color: var(--fg-secondary);
+    line-height: 1.4;
+    margin-bottom: 6px;
+  }
+
+  /* Input */
+  .field-input {
+    width: 100%;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 10px;
+    color: var(--fg-primary);
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.12s;
+  }
+  .field-input:focus { border-color: var(--accent); }
+  .field-input::placeholder { color: var(--fg-tertiary); }
+
+  /* Select */
+  .field-select {
+    width: 100%;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 10px;
+    color: var(--fg-primary);
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 28px;
+  }
+
+  /* Select with model */
+  .field-row {
+    display: flex;
+    gap: 8px;
+  }
+  .field-row .field-select,
+  .field-row .field-input { flex: 1; }
+
+  /* Toggle field (inline) */
+  .field-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+  }
+  .field-toggle-info { flex: 1; }
+  .field-toggle .field-label { margin-bottom: 0; }
+  .field-toggle .field-desc { margin-bottom: 0; margin-top: 1px; }
+
+  /* Password */
+  .field-password {
+    position: relative;
+  }
+  .field-password .field-input { padding-right: 32px; }
+  .field-password-toggle {
+    position: absolute;
+    right: 8px; top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    padding: 2px;
+    font-size: 12px;
+  }
+
+  /* ─── Provider Card (special) ─── */
+  .provider-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .provider-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(128,128,128,0.08);
+  }
+  .provider-logo {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .provider-logo.anthropic { background: #d97757; color: #fff; }
+  .provider-logo.openai { background: #10a37f; color: #fff; }
+  .provider-logo.gemini { background: #4285f4; color: #fff; }
+  .provider-logo.openrouter { background: #6366f1; color: #fff; }
+  .provider-logo.knot { background: #8b5cf6; color: #fff; }
+  .provider-info { flex: 1; min-width: 0; }
+  .provider-name { font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .provider-status {
+    font-size: 10.5px;
+    color: var(--success);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .provider-status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+  }
+  .provider-body { padding: 10px 14px 12px; }
+
+  /* ─── Footer Actions ─── */
+  .settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+  }
+  .footer-status {
+    font-size: 11px;
+    color: var(--success);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .footer-actions { display: flex; gap: 8px; }
+  .footer-btn {
+    padding: 5px 14px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .footer-btn:hover { background: var(--bg-hover); color: var(--fg-primary); }
+  .footer-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .footer-btn.primary:hover { background: var(--accent-hover); }
+  .footer-btn.danger:hover {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+
+  /* ─── Badge ─── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .badge.recommended { background: rgba(59,130,246,0.15); color: var(--accent); }
+  .badge.beta { background: rgba(245,158,11,0.15); color: var(--warning); }
+  .badge.new { background: rgba(52,211,153,0.15); color: var(--success); }
+
+  /* ─── Empty / placeholder ─── */
+  .annotation {
+    position: absolute;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    z-index: 100;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="chat-panel">
+  <div class="settings-overlay">
+    <!-- ═══ Header ═══ -->
+    <div class="settings-header">
+      <div class="settings-header-left">
+        <span class="settings-header-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </span>
+        <span class="settings-title">设置</span>
+      </div>
+      <button class="settings-close-btn" title="关闭">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- ═══ Search ═══ -->
+    <div class="settings-search">
+      <div class="settings-search-box">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <path d="M21 21l-4.35-4.35"/>
+        </svg>
+        <input class="settings-search-input" placeholder="搜索设置..." id="searchInput">
+      </div>
+    </div>
+
+    <!-- ═══ Horizontal Tabs ═══ -->
+    <div class="settings-tabs">
+      <div class="settings-tab active" data-tab="general" onclick="switchTab('general')">
+        <span class="settings-tab-icon">⚙️</span>通用
+      </div>
+      <div class="settings-tab" data-tab="model" onclick="switchTab('model')">
+        <span class="settings-tab-icon">🧠</span>模型
+      </div>
+      <div class="settings-tab" data-tab="provider" onclick="switchTab('provider')">
+        <span class="settings-tab-icon">🔌</span>Provider
+      </div>
+      <div class="settings-tab" data-tab="aux" onclick="switchTab('aux')">
+        <span class="settings-tab-icon">🎯</span>辅助
+      </div>
+      <div class="settings-tab" data-tab="cli" onclick="switchTab('cli')">
+        <span class="settings-tab-icon">💻</span>CLI
+      </div>
+    </div>
+
+    <!-- ═══ Content ═══ -->
+    <div class="settings-content" id="settingsContent">
+
+      <!-- ─── Tab: General ─── -->
+      <div class="tab-pane" data-pane="general">
+
+        <!-- Quick Toggles -->
+        <div class="quick-card">
+          <div class="quick-card-title">⚡ 快速开关</div>
+          <div class="quick-toggles">
+            <div class="quick-toggle">
+              <span class="quick-toggle-label">🔔 提示音</span>
+              <div class="toggle-switch" onclick="toggle(this)"></div>
+            </div>
+            <div class="quick-toggle">
+              <span class="quick-toggle-label">📊 Token用量</span>
+              <div class="toggle-switch on" onclick="toggle(this)"></div>
+            </div>
+            <div class="quick-toggle">
+              <span class="quick-toggle-label">🌐 浏览器通知</span>
+              <div class="toggle-switch" onclick="toggle(this)"></div>
+            </div>
+            <div class="quick-toggle">
+              <span class="quick-toggle-label">🔄 检查更新</span>
+              <div class="toggle-switch on" onclick="toggle(this)"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- General Section -->
+        <div class="setting-section expanded" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">🎨</span>
+            <div style="flex:1">
+              <div class="section-label">外观</div>
+              <div class="section-desc">主题、语言和显示偏好</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+          <div class="section-body">
+            <div class="setting-field">
+              <div class="field-label">颜色主题</div>
+              <div class="field-desc">选择界面配色方案</div>
+              <select class="field-select">
+                <option>Dark+ (default dark)</option>
+                <option>Light+ (default light)</option>
+                <option>Sarosis Dark</option>
+                <option>Monokai</option>
+              </select>
+            </div>
+            <div class="setting-field">
+              <div class="field-label">语言</div>
+              <div class="field-desc">界面显示语言</div>
+              <select class="field-select">
+                <option value="zh-CN">简体中文</option>
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+              </select>
+            </div>
+            <div class="setting-field">
+              <div class="field-label">助手名称</div>
+              <div class="field-desc">AI 助手在界面中的显示名称</div>
+              <input class="field-input" type="text" value="Sarosis" placeholder="Sarosis">
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Behavior Section -->
+        <div class="setting-section" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">💬</span>
+            <div style="flex:1">
+              <div class="section-label">聊天行为</div>
+              <div class="section-desc">发送键、输入行为</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+          <div class="section-body">
+            <div class="setting-field">
+              <div class="field-label">发送键</div>
+              <div class="field-desc">发送消息的快捷键</div>
+              <select class="field-select">
+                <option>Enter 发送，Shift+Enter 换行</option>
+                <option>Ctrl+Enter 发送，Enter 换行</option>
+              </select>
+            </div>
+            <div class="setting-field field-toggle">
+              <div class="field-toggle-info">
+                <div class="field-label">自动滚动</div>
+                <div class="field-desc">新消息到达时自动滚动到底部</div>
+              </div>
+              <div class="toggle-switch on" onclick="toggle(event, this)"></div>
+            </div>
+            <div class="setting-field field-toggle">
+              <div class="field-toggle-info">
+                <div class="field-label">流式渲染</div>
+                <div class="field-desc">实时显示 AI 回复内容</div>
+              </div>
+              <div class="toggle-switch on" onclick="toggle(event, this)"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ─── Tab: Provider ─── -->
+      <div class="tab-pane" data-pane="provider" style="display:none">
+
+        <div class="provider-card">
+          <div class="provider-header">
+            <div class="provider-logo anthropic">A</div>
+            <div class="provider-info">
+              <div class="provider-name">Anthropic</div>
+              <div class="provider-status">
+                <span class="provider-status-dot"></span>
+                已连接 · Claude 3.5 Sonnet
+              </div>
+            </div>
+            <span class="badge recommended">推荐</span>
+          </div>
+          <div class="provider-body">
+            <div class="setting-field">
+              <div class="field-label">API Key</div>
+              <div class="field-desc">Anthropic API 密钥</div>
+              <div class="field-password">
+                <input class="field-input" type="password" value="sk-ant-xxxxx" placeholder="sk-ant-...">
+                <button class="field-password-toggle">👁</button>
+              </div>
+            </div>
+            <div class="setting-field">
+              <div class="field-label">Base URL</div>
+              <div class="field-desc">API 端点（留空使用默认）</div>
+              <input class="field-input" type="text" placeholder="https://api.anthropic.com">
+            </div>
+            <div class="setting-field">
+              <div class="field-label">默认模型</div>
+              <select class="field-select">
+                <option>claude-3.5-sonnet</option>
+                <option>claude-3.5-haiku</option>
+                <option>claude-3-opus</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="provider-card">
+          <div class="provider-header">
+            <div class="provider-logo openai">O</div>
+            <div class="provider-info">
+              <div class="provider-name">OpenAI</div>
+              <div class="provider-status" style="color: var(--fg-secondary);">
+                <span class="provider-status-dot" style="background:#666;"></span>
+                未配置
+              </div>
+            </div>
+          </div>
+          <div class="provider-body">
+            <div class="setting-field">
+              <div class="field-label">API Key</div>
+              <input class="field-input" type="password" placeholder="sk-...">
+            </div>
+            <div class="setting-field">
+              <div class="field-label">默认模型</div>
+              <select class="field-select">
+                <option>gpt-4o</option>
+                <option>gpt-4o-mini</option>
+                <option>gpt-4-turbo</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="provider-card">
+          <div class="provider-header">
+            <div class="provider-logo gemini">G</div>
+            <div class="provider-info">
+              <div class="provider-name">Google Gemini</div>
+              <div class="provider-status">
+                <span class="provider-status-dot"></span>
+                已连接 · gemini-2.0-flash
+              </div>
+            </div>
+            <span class="badge new">新增</span>
+          </div>
+          <div class="provider-body">
+            <div class="setting-field">
+              <div class="field-label">API Key</div>
+              <div class="field-password">
+                <input class="field-input" type="password" value="AIzaSyxxxxx" placeholder="AIzaSy...">
+                <button class="field-password-toggle">👁</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="provider-card">
+          <div class="provider-header">
+            <div class="provider-logo openrouter">R</div>
+            <div class="provider-info">
+              <div class="provider-name">OpenRouter</div>
+              <div class="provider-status" style="color: var(--fg-secondary);">
+                <span class="provider-status-dot" style="background:#666;"></span>
+                未配置
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ─── Tab: Aux Models ─── -->
+      <div class="tab-pane" data-pane="aux" style="display:none">
+
+        <div class="setting-section expanded" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">👁️</span>
+            <div style="flex:1">
+              <div class="section-label">Vision 图像分析</div>
+              <div class="section-desc">用于分析上传的图片</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+          <div class="section-body">
+            <div class="setting-field">
+              <div class="field-label">Provider</div>
+              <div class="field-row">
+                <select class="field-select">
+                  <option>Auto（自动）</option>
+                  <option>Anthropic</option>
+                  <option>OpenRouter</option>
+                  <option>Gemini</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-field">
+              <div class="field-label">模型</div>
+              <div class="field-desc">留空使用默认模型</div>
+              <input class="field-input" type="text" placeholder="自定义模型名称">
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-section" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">🌐</span>
+            <div style="flex:1">
+              <div class="section-label">Web Extract 网页摘要</div>
+              <div class="section-desc">用于在研究中摘要网页</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="setting-section" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">📦</span>
+            <div style="flex:1">
+              <div class="section-label">Compression 上下文压缩</div>
+              <div class="section-desc">用于压缩长上下文窗口</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="setting-section" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">🎯</span>
+            <div style="flex:1">
+              <div class="section-label">Goal Judge 目标评估</div>
+              <div class="section-desc">用于评估目标完成</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="setting-section" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">🧑‍💻</span>
+            <div style="flex:1">
+              <div class="section-label">Curator 代码审查</div>
+              <div class="section-desc">用于审查代码变更</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ─── Tab: CLI ─── -->
+      <div class="tab-pane" data-pane="cli" style="display:none">
+        <div class="setting-section expanded" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">💻</span>
+            <div style="flex:1">
+              <div class="section-label">Local CLI</div>
+              <div class="section-desc">本地 CLI 后端连接设置</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+          <div class="section-body">
+            <div class="setting-field">
+              <div class="field-label">CLI 路径</div>
+              <div class="field-desc">CLI 可执行文件路径</div>
+              <input class="field-input" type="text" placeholder="/usr/local/bin/hermes">
+            </div>
+            <div class="setting-field">
+              <div class="field-label">默认工作目录</div>
+              <input class="field-input" type="text" placeholder="~/.hermes/workspace">
+            </div>
+            <div class="setting-field field-toggle">
+              <div class="field-toggle-info">
+                <div class="field-label">自动连接</div>
+                <div class="field-desc">启动时自动连接到本地 CLI</div>
+              </div>
+              <div class="toggle-switch on" onclick="toggle(event, this)"></div>
+            </div>
+            <div class="setting-field field-toggle">
+              <div class="field-toggle-info">
+                <div class="field-label">保存命令历史</div>
+                <div class="field-desc">保存 CLI 交互历史</div>
+              </div>
+              <div class="toggle-switch on" onclick="toggle(event, this)"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-section" onclick="toggleSection(this)">
+          <div class="section-header">
+            <span class="section-icon">📁</span>
+            <div style="flex:1">
+              <div class="section-label">数据存储</div>
+              <div class="section-desc">数据目录和工作区设置</div>
+            </div>
+            <span class="section-chevron">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </span>
+          </div>
+          <div class="section-body">
+            <div class="setting-field">
+              <div class="field-label">数据目录</div>
+              <div class="field-desc">自定义数据路径</div>
+              <input class="field-input" type="text" placeholder="/path/to/data">
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ═══ Footer ═══ -->
+    <div class="settings-footer">
+      <div class="footer-status">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+        设置已保存
+      </div>
+      <div class="footer-actions">
+        <button class="footer-btn danger">恢复默认</button>
+        <button class="footer-btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Annotations -->
+  <div class="annotation" style="top: 58px; right: 20px;">① 横向 Tab（节省空间）</div>
+  <div class="annotation" style="top: 115px; left: 20px;">② 快速开关卡片</div>
+  <div class="annotation" style="top: 230px; left: 20px;">③ 可折叠分区</div>
+  <div class="annotation" style="bottom: 55px; right: 20px;">④ 底部保存栏</div>
+</div>
+
+<script>
+  function toggleSection(el) {
+    if (event.target.closest('.section-body')) return;
+    if (event.target.closest('.toggle-switch')) return;
+    el.classList.toggle('expanded');
+  }
+
+  function toggle(e, el) {
+    if (e) e.stopPropagation();
+    el.classList.toggle('on');
+  }
+
+  function switchTab(tabId) {
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+
+    document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+    const pane = document.querySelector(`[data-pane="${tabId}"]`);
+    if (pane) pane.style.display = 'block';
+  }
+
+  // Search filter
+  document.getElementById('searchInput').addEventListener('input', function(e) {
+    const query = e.target.value.toLowerCase();
+    document.querySelectorAll('.setting-field, .section-label, .provider-name').forEach(el => {
+      const text = el.textContent.toLowerCase();
+      const field = el.closest('.setting-field, .provider-card, .setting-section');
+      if (field) {
+        if (query && !text.includes(query)) {
+          field.style.display = 'none';
+        } else {
+          field.style.display = '';
+        }
+      }
+    });
+  });
+</script>
+
+</body>
+</html>

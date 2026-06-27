@@ -27,7 +27,25 @@ export interface IAgentChatMessage {
 	thinking?: string;
 	isThinking?: boolean;
 	currentStep?: string;           // 'call_llm' | 'execute_tool' | custom
-	tokenUsage?: { input: number; output: number; total: number };
+	tokenUsage?: {
+		input: number;
+		output: number;
+		total: number;
+		/** KV Cache: tokens read from prompt cache (缓存命中). */
+		cached?: number;
+		/** KV Cache: tokens written to cache (缓存写入). */
+		cacheWrite?: number;
+		/** Tokens read from prompt cache (缓存命中, same as cached but explicit). */
+		cachedRead?: number;
+		/** Tokens NOT in cache that had to be processed fresh (缓存未命中). Computed if not provided. */
+		cacheMiss?: number;
+		/** Reasoning/thinking tokens (思考过程). */
+		reasoning?: number;
+		/** Cache hit rate as percentage, e.g. 51.6 for 51.6% (缓存命中率). */
+		cacheHitRate?: number;
+		/** Billing credits consumed by this turn (积分). */
+		credit?: number;
+	};
 	metadata?: Record<string, unknown>;
 	attachments?: IChatAttachment[];
 	subAgents?: ISubAgentData[];

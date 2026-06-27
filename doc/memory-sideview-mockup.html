@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory Side View — agentmemory 4-Tier Mockup</title>
+<style>
+  :root {
+    --bg-sideview: #1e1e1e;
+    --bg-header: #252526;
+    --bg-card: #2d2d2d;
+    --bg-hover: #333333;
+    --bg-input: #3c3c3c;
+    --border: #3c3c3c;
+    --border-soft: #2d2d2d;
+    --text-main: #cccccc;
+    --text-sub: #8a8a8a;
+    --text-dim: #6a6a6a;
+    --accent-blue: #569cd6;
+    --accent-purple: #b799ff;
+    --accent-green: #5dcaa5;
+    --accent-orange: #f0a04b;
+    --accent-red: #f48771;
+    --accent-cyan: #4ec9b0;
+    --accent-yellow: #dcdcaa;
+    /* 4-Tier colors */
+    --tier-working: #569cd6;   /* blue — raw observations */
+    --tier-episodic: #4ec9b0;  /* cyan — session summaries */
+    --tier-semantic: #b799ff;  /* purple — facts & patterns */
+    --tier-procedural: #f0a04b;/* orange — workflows & decisions */
+    /* Retention colors */
+    --ret-hot: #5dcaa5;
+    --ret-warm: #dcdcaa;
+    --ret-cold: #f0a04b;
+    --ret-evict: #f48771;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,"Segoe UI","Segoe WPC",sans-serif; }
+  body { width:320px; height:780px; background:var(--bg-sideview); color:var(--text-main); overflow:hidden; display:flex; flex-direction:column; font-size:12px; }
+
+  /* ─── Header ─── */
+  .sv-header { padding:10px 12px 6px; flex-shrink:0; border-bottom:1px solid var(--border-soft); }
+  .sv-header-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .sv-title { font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; }
+  .sv-status { display:flex; align-items:center; gap:4px; font-size:10px; color:var(--text-sub); }
+  .sv-status .dot { width:7px; height:7px; border-radius:50%; background:var(--accent-green); box-shadow:0 0 5px var(--accent-green); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+  /* ─── Consolidation Pipeline (4-Tier) ─── */
+  .sv-pipeline { display:flex; gap:3px; margin-bottom:8px; }
+  .sv-tier-stat { flex:1; background:var(--bg-card); border:1px solid var(--border-soft); border-radius:5px; padding:5px 4px; text-align:center; position:relative; overflow:hidden; cursor:pointer; transition:all 0.15s; }
+  .sv-tier-stat:hover { background:var(--bg-hover); }
+  .sv-tier-stat::before { content:''; position:absolute; top:0; left:0; width:100%; height:2px; }
+  .sv-tier-stat.working::before { background:var(--tier-working); }
+  .sv-tier-stat.episodic::before { background:var(--tier-episodic); }
+  .sv-tier-stat.semantic::before { background:var(--tier-semantic); }
+  .sv-tier-stat.procedural::before { background:var(--tier-procedural); }
+  .sv-tier-stat .t-label { font-size:8px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.3px; }
+  .sv-tier-stat .t-value { font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .sv-tier-stat.working .t-value { color:var(--tier-working); }
+  .sv-tier-stat.episodic .t-value { color:var(--tier-episodic); }
+  .sv-tier-stat.semantic .t-value { color:var(--tier-semantic); }
+  .sv-tier-stat.procedural .t-value { color:var(--tier-procedural); }
+  .sv-tier-stat .t-sub { font-size:7px; color:var(--text-dim); margin-top:1px; }
+
+  /* ─── Search + Actions ─── */
+  .sv-search-wrap { position:relative; margin-bottom:6px; }
+  .sv-search { width:100%; background:var(--bg-input); border:1px solid var(--border); border-radius:4px; padding:5px 10px 5px 26px; color:var(--text-main); font-size:11px; outline:none; }
+  .sv-search:focus { border-color:var(--accent-blue); }
+  .sv-search-icon { position:absolute; left:7px; top:50%; transform:translateY(-50%); font-size:10px; color:var(--text-dim); }
+  .sv-actions { display:flex; gap:4px; margin-bottom:6px; }
+  .sv-btn { flex:1; padding:4px 6px; border-radius:4px; font-size:10px; cursor:pointer; border:1px solid var(--border); background:var(--bg-card); color:var(--text-sub); transition:all 0.15s; display:flex; align-items:center; justify-content:center; gap:3px; }
+  .sv-btn:hover { color:var(--text-main); border-color:var(--accent-blue); background:var(--bg-hover); }
+  .sv-btn.primary { background:var(--accent-blue); color:#1a1a28; border-color:var(--accent-blue); font-weight:600; }
+
+  /* ─── Activity Feed ─── */
+  .sv-activity { flex-shrink:0; border-bottom:1px solid var(--border-soft); padding:6px 12px; max-height:80px; overflow-y:auto; }
+  .sv-activity-title { font-size:9px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:4px; display:flex; align-items:center; justify-content:space-between; }
+  .sv-activity-item { display:flex; align-items:center; gap:5px; padding:2px 0; font-size:10px; color:var(--text-sub); }
+  .sv-activity-icon { font-size:9px; flex-shrink:0; }
+  .sv-activity-text { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sv-activity-time { font-size:9px; color:var(--text-dim); flex-shrink:0; }
+
+  /* ─── Tab Switcher: Tiers vs Subsystems ─── */
+  .sv-tabs { display:flex; gap:0; padding:0 12px; border-bottom:1px solid var(--border-soft); flex-shrink:0; }
+  .sv-tab { padding:5px 10px; font-size:10px; color:var(--text-dim); cursor:pointer; border-bottom:2px solid transparent; transition:all 0.15s; }
+  .sv-tab:hover { color:var(--text-sub); }
+  .sv-tab.active { color:var(--text-main); border-bottom-color:var(--accent-blue); }
+
+  /* ─── Content Area ─── */
+  .sv-content { flex:1; overflow-y:auto; padding:4px 0; }
+  .sv-content::-webkit-scrollbar { width:5px; }
+  .sv-content::-webkit-scrollbar-thumb { background:rgba(128,128,128,0.3); border-radius:3px; }
+
+  /* ─── Section (collapsible) ─── */
+  .sv-section { margin-bottom:1px; }
+  .sv-section-header { display:flex; align-items:center; gap:6px; padding:6px 12px; cursor:pointer; transition:background 0.15s; }
+  .sv-section-header:hover { background:var(--bg-hover); }
+  .sv-section-badge { font-size:9px; font-weight:700; padding:2px 6px; border-radius:8px; flex-shrink:0; min-width:24px; text-align:center; }
+  .sv-section-badge.working { background:rgba(86,156,214,0.15); color:var(--tier-working); }
+  .sv-section-badge.episodic { background:rgba(78,201,176,0.15); color:var(--tier-episodic); }
+  .sv-section-badge.semantic { background:rgba(183,153,255,0.15); color:var(--tier-semantic); }
+  .sv-section-badge.procedural { background:rgba(240,160,75,0.15); color:var(--tier-procedural); }
+  .sv-section-badge.core { background:rgba(220,220,170,0.15); color:var(--accent-yellow); }
+  .sv-section-badge.slot { background:rgba(86,156,214,0.1); color:var(--accent-blue); }
+  .sv-section-badge.lesson { background:rgba(244,135,113,0.12); color:var(--accent-red); }
+  .sv-section-badge.insight { background:rgba(183,153,255,0.1); color:var(--accent-purple); }
+  .sv-section-badge.crystal { background:rgba(93,202,165,0.1); color:var(--accent-green); }
+  .sv-section-badge.graph { background:rgba(128,160,255,0.1); color:#80a0ff; }
+  .sv-section-label { flex:1; font-size:11px; color:var(--text-main); font-weight:500; }
+  .sv-section-count { font-size:10px; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+  .sv-section-caret { font-size:9px; color:var(--text-dim); transition:transform 0.2s; flex-shrink:0; }
+  .sv-section.expanded .sv-section-caret { transform:rotate(90deg); }
+  .sv-section-body { max-height:0; overflow:hidden; transition:max-height 0.25s ease; }
+  .sv-section.expanded .sv-section-body { max-height:500px; overflow-y:auto; }
+
+  /* ─── Memory Card ─── */
+  .sv-mem { padding:5px 12px 5px 26px; border-bottom:1px solid var(--border-soft); cursor:pointer; transition:background 0.15s; }
+  .sv-mem:hover { background:var(--bg-hover); }
+  .sv-mem-top { display:flex; align-items:center; gap:4px; margin-bottom:2px; }
+  .sv-mem-type { font-size:8px; padding:1px 5px; border-radius:6px; flex-shrink:0; font-weight:600; }
+  .sv-mem-type.pattern { background:rgba(78,201,176,0.12); color:var(--tier-episodic); }
+  .sv-mem-type.preference { background:rgba(220,220,170,0.12); color:var(--accent-yellow); }
+  .sv-mem-type.architecture { background:rgba(183,153,255,0.12); color:var(--tier-semantic); }
+  .sv-mem-type.bug { background:rgba(244,135,113,0.12); color:var(--accent-red); }
+  .sv-mem-type.workflow { background:rgba(240,160,75,0.12); color:var(--tier-procedural); }
+  .sv-mem-type.fact { background:rgba(86,156,214,0.12); color:var(--accent-blue); }
+  .sv-mem-type.observation { background:rgba(86,156,214,0.1); color:var(--tier-working); }
+  .sv-mem-type.semantic { background:rgba(183,153,255,0.12); color:var(--tier-semantic); }
+  .sv-mem-type.procedural { background:rgba(240,160,75,0.12); color:var(--tier-procedural); }
+  .sv-mem-type.slot { background:rgba(86,156,214,0.08); color:var(--accent-blue); }
+  .sv-mem-type.lesson { background:rgba(244,135,113,0.1); color:var(--accent-red); }
+  .sv-mem-type.insight { background:rgba(183,153,255,0.1); color:var(--accent-purple); }
+  .sv-mem-type.crystal { background:rgba(93,202,165,0.1); color:var(--accent-green); }
+
+  /* Retention indicator */
+  .sv-mem-retention { font-size:8px; padding:1px 4px; border-radius:6px; flex-shrink:0; font-weight:600; }
+  .sv-mem-retention.hot { background:rgba(93,202,165,0.12); color:var(--ret-hot); }
+  .sv-mem-retention.warm { background:rgba(220,220,170,0.12); color:var(--ret-warm); }
+  .sv-mem-retention.cold { background:rgba(240,160,75,0.12); color:var(--ret-cold); }
+  .sv-mem-retention.evict { background:rgba(244,135,113,0.1); color:var(--ret-evict); }
+
+  .sv-mem-time { font-size:9px; color:var(--text-dim); margin-left:auto; flex-shrink:0; }
+  .sv-mem-content { font-size:10px; color:var(--text-sub); line-height:1.4; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .sv-mem-meta { display:flex; gap:3px; margin-top:2px; flex-wrap:wrap; }
+  .sv-mem-chip { font-size:7px; padding:1px 4px; border-radius:6px; background:var(--bg-card); color:var(--text-dim); }
+  .sv-mem-chip.confidence { background:rgba(93,202,165,0.08); color:var(--accent-green); }
+
+  /* Write status */
+  .sv-mem.writing { border-left:2px solid var(--accent-blue); padding-left:24px; }
+  .sv-mem.saved { border-left:2px solid var(--accent-green); padding-left:24px; }
+  .sv-mem.failed { border-left:2px solid var(--accent-red); padding-left:24px; }
+
+  /* ─── Memory Slot Card (different from regular mem) ─── */
+  .sv-slot { padding:6px 12px 6px 26px; border-bottom:1px solid var(--border-soft); }
+  .sv-slot-top { display:flex; align-items:center; gap:4px; margin-bottom:3px; }
+  .sv-slot-name { font-size:11px; font-weight:600; color:var(--text-main); }
+  .sv-slot-scope { font-size:8px; padding:1px 5px; border-radius:6px; }
+  .sv-slot-scope.global { background:rgba(220,220,170,0.12); color:var(--accent-yellow); }
+  .sv-slot-scope.project { background:rgba(86,156,214,0.12); color:var(--accent-blue); }
+  .sv-slot-budget { font-size:8px; color:var(--text-dim); margin-left:auto; }
+  .sv-slot-content { font-size:10px; color:var(--text-sub); line-height:1.4; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; }
+  .sv-slot-bar { height:3px; background:var(--bg-input); border-radius:2px; margin-top:4px; overflow:hidden; }
+  .sv-slot-bar-fill { height:100%; border-radius:2px; transition:width 0.3s; }
+  .sv-slot-bar-fill.global { background:var(--accent-yellow); }
+  .sv-slot-bar-fill.project { background:var(--accent-blue); }
+
+  /* ─── Footer ─── */
+  .sv-footer { padding:6px 12px; border-top:1px solid var(--border-soft); display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+  .sv-footer-info { font-size:9px; color:var(--text-dim); }
+  .sv-footer-btn { font-size:10px; color:var(--accent-blue); cursor:pointer; display:flex; align-items:center; gap:3px; }
+  .sv-footer-btn:hover { text-decoration:underline; }
+
+  /* ─── Pipeline flow indicator ─── */
+  .sv-pipeline-flow { display:flex; align-items:center; gap:2px; padding:0 12px 6px; font-size:8px; color:var(--text-dim); }
+  .sv-pipeline-arrow { color:var(--text-dim); }
+</style>
+</head>
+<body>
+
+<!-- ═══ Header ═══ -->
+<div class="sv-header">
+  <div class="sv-header-top">
+    <div class="sv-title"><span>🧠</span><span>Memory</span></div>
+    <div class="sv-status"><span class="dot"></span><span>Active · 95 modules</span></div>
+  </div>
+
+  <!-- 4-Tier Consolidation Pipeline Stats -->
+  <div class="sv-pipeline">
+    <div class="sv-tier-stat working">
+      <div class="t-label">Working</div>
+      <div class="t-value">156</div>
+      <div class="t-sub">观察</div>
+    </div>
+    <div class="sv-tier-stat episodic">
+      <div class="t-label">Episodic</div>
+      <div class="t-value">38</div>
+      <div class="t-sub">会话摘要</div>
+    </div>
+    <div class="sv-tier-stat semantic">
+      <div class="t-label">Semantic</div>
+      <div class="t-value">12</div>
+      <div class="t-sub">事实模式</div>
+    </div>
+    <div class="sv-tier-stat procedural">
+      <div class="t-label">Procedural</div>
+      <div class="t-value">5</div>
+      <div class="t-sub">工作流</div>
+    </div>
+  </div>
+  <div class="sv-pipeline-flow">
+    <span>Working</span><span class="sv-pipeline-arrow">→</span>
+    <span>Episodic</span><span class="sv-pipeline-arrow">→</span>
+    <span>Semantic</span><span class="sv-pipeline-arrow">→</span>
+    <span>Procedural</span>
+    <span class="sv-pipeline-arrow" style="margin-left:auto;">整合管线</span>
+  </div>
+
+  <!-- Search -->
+  <div class="sv-search-wrap">
+    <span class="sv-search-icon">🔍</span>
+    <input class="sv-search" type="text" placeholder="混合搜索 (BM25 + Vector + RRF)..." />
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="sv-actions">
+    <div class="sv-btn primary">🔄 刷新</div>
+    <div class="sv-btn">⚙ 整合</div>
+    <div class="sv-btn">📊 诊断</div>
+    <div class="sv-btn">⬆ 详情</div>
+  </div>
+</div>
+
+<!-- ═══ Activity Feed ═══ -->
+<div class="sv-activity">
+  <div class="sv-activity-title"><span>最近活动</span><span style="color:var(--accent-green);">●</span></div>
+  <div class="sv-activity-item">
+    <span class="sv-activity-icon">✅</span>
+    <span class="sv-activity-text">Working 写入: file_edit memoryProvider.ts</span>
+    <span class="sv-activity-time">刚刚</span>
+  </div>
+  <div class="sv-activity-item">
+    <span class="sv-activity-icon">⚙</span>
+    <span class="sv-activity-text">Episodic 整合: 会话摘要生成</span>
+    <span class="sv-activity-time">2m</span>
+  </div>
+  <div class="sv-activity-item">
+    <span class="sv-activity-icon">🧠</span>
+    <span class="sv-activity-text">Semantic 提取: 3 条事实模式</span>
+    <span class="sv-activity-time">5m</span>
+  </div>
+  <div class="sv-activity-item">
+    <span class="sv-activity-icon">📦</span>
+    <span class="sv-activity-text">Procedural: "调试-修复-验证" 工作流</span>
+    <span class="sv-activity-time">12m</span>
+  </div>
+</div>
+
+<!-- ═══ Tab Switcher ═══ -->
+<div class="sv-tabs">
+  <div class="sv-tab active" onclick="switchTab('tiers')">4-Tier 整合</div>
+  <div class="sv-tab" onclick="switchTab('subsystems')">子系统</div>
+</div>
+
+<!-- ═══ Content: Tiers Tab ═══ -->
+<div class="sv-content" id="tab-tiers">
+
+  <!-- Procedural Memory -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge procedural">PROC</span>
+      <span class="sv-section-label">程序性记忆</span>
+      <span class="sv-section-count">5</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type workflow">workflow</span>
+          <span class="sv-mem-retention hot">HOT</span>
+          <span class="sv-mem-time">06-26 16:20</span>
+        </div>
+        <div class="sv-mem-content">调试-修复-验证: 1.复现错误 2.定位根因 3.修改代码 4.编译验证 5.测试确认。适用于编译错误和类型不匹配...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">使用 24 次</span>
+          <span class="sv-mem-chip confidence">置信度 0.92</span>
+        </div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type workflow">workflow</span>
+          <span class="sv-mem-retention warm">WARM</span>
+          <span class="sv-mem-time">06-25 14:30</span>
+        </div>
+        <div class="sv-mem-content">代码审查: 1.读文件结构 2.检查类型安全 3.验证错误处理 4.确认命名规范 5.测试覆盖...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">使用 12 次</span>
+          <span class="sv-mem-chip confidence">置信度 0.78</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Semantic Memory -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge semantic">SEM</span>
+      <span class="sv-section-label">语义记忆</span>
+      <span class="sv-section-count">12</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type architecture">architecture</span>
+          <span class="sv-mem-retention hot">HOT</span>
+          <span class="sv-mem-time">06-26 17:30</span>
+        </div>
+        <div class="sv-mem-content">AgentMemoryProvider 采用进程内架构，95 个功能模块通过 memoryProvider.ts 集成。BM25+Vector 混合搜索 + RRF 融合，无外部 HTTP 依赖...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">显著性 0.9</span>
+          <span class="sv-mem-chip">access 18</span>
+        </div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type pattern">pattern</span>
+          <span class="sv-mem-retention warm">WARM</span>
+          <span class="sv-mem-time">06-26 15:20</span>
+        </div>
+        <div class="sv-mem-content">writeMemory fire-and-forget 模式: async generator finally 块中不能 await，否则阻塞 for-await 退出。用 IIFE 包裹异步操作...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">显著性 0.8</span>
+          <span class="sv-mem-chip">access 6</span>
+        </div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type fact">fact</span>
+          <span class="sv-mem-retention warm">WARM</span>
+          <span class="sv-mem-time">06-25 16:45</span>
+        </div>
+        <div class="sv-mem-content">VS Code webview 通信必须用 acquireVsCodeApi()，不能用 window.parent.postMessage()...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">显著性 0.5</span>
+          <span class="sv-mem-chip">access 3</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Episodic Memory -->
+  <div class="sv-section expanded">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge episodic">EPI</span>
+      <span class="sv-section-label">情景记忆</span>
+      <span class="sv-section-count">38</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type preference">preference</span>
+          <span class="sv-mem-retention hot">HOT</span>
+          <span class="sv-mem-time">06-26 18:08</span>
+        </div>
+        <div class="sv-mem-content">用户偏好中文回复，代码注释用中文。偏好简洁直接的沟通风格，先给结论再展开细节...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">显著性 0.85</span>
+          <span class="sv-mem-chip">session 06-26</span>
+        </div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type bug">bug</span>
+          <span class="sv-mem-retention warm">WARM</span>
+          <span class="sv-mem-time">06-26 14:10</span>
+        </div>
+        <div class="sv-mem-content">gulp 编译 ESM 扩展时错误写入 out/package.json = {"type":"commonjs"}，导致 Node 以 CJS 加载 ESM 代码。修复: 检查扩展 type 字段...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">显著性 0.7</span>
+          <span class="sv-mem-chip">已修复</span>
+        </div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type architecture">architecture</span>
+          <span class="sv-mem-retention warm">WARM</span>
+          <span class="sv-mem-time">06-26 11:45</span>
+        </div>
+        <div class="sv-mem-content">记忆消息系统重构: 从单一 memory_extracted delta 改为三阶段 lifecycle (writing→written/failed)，通过 provider 事件桥接...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip">显著性 0.9</span>
+          <span class="sv-mem-chip">session 06-26</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Working Memory -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge working">WORK</span>
+      <span class="sv-section-label">工作记忆</span>
+      <span class="sv-section-count">156</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem writing">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type observation">file_edit</span>
+          <span class="sv-mem-time">写入中...</span>
+        </div>
+        <div class="sv-mem-content">编辑 memoryProvider.ts: 添加 onMemoryWritten/onMemoryWriteFailed 事件桥接...</div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type observation">command_run</span>
+          <span class="sv-mem-time">06-26 18:05</span>
+        </div>
+        <div class="sv-mem-content">tsc --noEmit --project extensions/agentmemory-memory/tsconfig.json → EXIT:0...</div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type observation">search</span>
+          <span class="sv-mem-time">06-26 17:50</span>
+        </div>
+        <div class="sv-mem-content">搜索 "memory_extracted" in agentChatService.ts → 4 matches...</div>
+      </div>
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type observation">decision</span>
+          <span class="sv-mem-time">06-26 17:44</span>
+        </div>
+        <div class="sv-mem-content">决定: writeMemory 与 UI 通知解耦。delta 是 UI 反馈信号，writeMemory 是异步数据写入...</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ Content: Subsystems Tab (hidden by default) ═══ -->
+<div class="sv-content" id="tab-subsystems" style="display:none;">
+
+  <!-- Memory Slots -->
+  <div class="sv-section expanded">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge slot">SLOT</span>
+      <span class="sv-section-label">记忆槽</span>
+      <span class="sv-section-count">7</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-slot">
+        <div class="sv-slot-top">
+          <span class="sv-slot-name">persona</span>
+          <span class="sv-slot-scope global">global</span>
+          <span class="sv-slot-budget">820/1000</span>
+        </div>
+        <div class="sv-slot-content">AI 编程助手，擅长 TypeScript/VS Code 扩展开发。风格：简洁直接，先结论后细节。关注架构设计和代码质量...</div>
+        <div class="sv-slot-bar"><div class="sv-slot-bar-fill global" style="width:82%;"></div></div>
+      </div>
+      <div class="sv-slot">
+        <div class="sv-slot-top">
+          <span class="sv-slot-name">user_preferences</span>
+          <span class="sv-slot-scope global">global</span>
+          <span class="sv-slot-budget">1,420/2000</span>
+        </div>
+        <div class="sv-slot-content">中文回复，代码注释中文。偏好函数式编程，避免 class。使用 yarn 而非 npm。ESM 优先...</div>
+        <div class="sv-slot-bar"><div class="sv-slot-bar-fill global" style="width:71%;"></div></div>
+      </div>
+      <div class="sv-slot">
+        <div class="sv-slot-top">
+          <span class="sv-slot-name">project_context</span>
+          <span class="sv-slot-scope project">project</span>
+          <span class="sv-slot-budget">2,100/3000</span>
+        </div>
+        <div class="sv-slot-content">sarosis-agents-client: VS Code fork，Agent Studio 框架。agentmemory-memory 扩展 95 模块。BM25+Vector 混合搜索...</div>
+        <div class="sv-slot-bar"><div class="sv-slot-bar-fill project" style="width:70%;"></div></div>
+      </div>
+      <div class="sv-slot">
+        <div class="sv-slot-top">
+          <span class="sv-slot-name">tool_guidelines</span>
+          <span class="sv-slot-scope global">global</span>
+          <span class="sv-slot-budget">680/1500</span>
+        </div>
+        <div class="sv-slot-content">writeMemory 必须 fire-and-forget。replace_in_file 前先 read_file。不删除 .codebuddy 目录...</div>
+        <div class="sv-slot-bar"><div class="sv-slot-bar-fill global" style="width:45%;"></div></div>
+      </div>
+      <div class="sv-slot">
+        <div class="sv-slot-top">
+          <span class="sv-slot-name">guidance</span>
+          <span class="sv-slot-scope project">project</span>
+          <span class="sv-slot-budget">320/1500</span>
+        </div>
+        <div class="sv-slot-content">下次: 实现 Memory SideView Pane，注册命令打开详情面板...</div>
+        <div class="sv-slot-bar"><div class="sv-slot-bar-fill project" style="width:21%;"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Core Memory -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge core">CORE</span>
+      <span class="sv-section-label">核心记忆</span>
+      <span class="sv-section-count">3</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type slot">pinned</span>
+          <span class="sv-mem-retention hot">HOT</span>
+          <span class="sv-mem-time">06-26 18:00</span>
+        </div>
+        <div class="sv-mem-content">[PINNED] 记忆消息系统已重构为三阶段生命周期。memory_writing → memory_written/failed，provider 事件桥接...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lessons -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge lesson">LESSON</span>
+      <span class="sv-section-label">经验教训</span>
+      <span class="sv-section-count">8</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type lesson">lesson</span>
+          <span class="sv-mem-retention warm">WARM</span>
+          <span class="sv-mem-time">06-26 14:00</span>
+        </div>
+        <div class="sv-mem-content">ESM 扩展不能简单删除 out/package.json — 需区分加载方式。Extension Host require() → 必须 CJS；import() 或子进程 → 可以 ESM...</div>
+        <div class="sv-mem-meta">
+          <span class="sv-mem-chip confidence">置信度 0.85</span>
+          <span class="sv-mem-chip">衰减中</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Insights -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge insight">INSIGHT</span>
+      <span class="sv-section-label">洞察</span>
+      <span class="sv-section-count">4</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type insight">insight</span>
+          <span class="sv-mem-retention hot">HOT</span>
+          <span class="sv-mem-time">06-26 16:00</span>
+        </div>
+        <div class="sv-mem-content">用户倾向于"先评估再行动"的工作模式: 总是先分析设计合理性，确认后才实施。这反映了偏好可控、低风险的迭代方式...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Crystals -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge crystal">CRYSTAL</span>
+      <span class="sv-section-label">结晶</span>
+      <span class="sv-section-count">2</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type crystal">crystal</span>
+          <span class="sv-mem-retention hot">HOT</span>
+          <span class="sv-mem-time">06-26 17:00</span>
+        </div>
+        <div class="sv-mem-content">[记忆消息重构] 完整 Action 链: 分析→评估→设计mockup→确认→实现→编译验证。8 步完成，总耗时 45min...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Knowledge Graph -->
+  <div class="sv-section">
+    <div class="sv-section-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span class="sv-section-badge graph">GRAPH</span>
+      <span class="sv-section-label">知识图谱</span>
+      <span class="sv-section-count">47 节点</span>
+      <span class="sv-section-caret">▶</span>
+    </div>
+    <div class="sv-section-body">
+      <div class="sv-mem saved">
+        <div class="sv-mem-top">
+          <span class="sv-mem-type slot">nodes</span>
+          <span class="sv-mem-time">06-26 18:00</span>
+        </div>
+        <div class="sv-mem-content">47 节点 · 89 边 · 13 类型 (file, function, concept, error, decision, pattern, library, person, project, preference, location, organization, event)</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ Footer ═══ -->
+<div class="sv-footer">
+  <div class="sv-footer-info">AgentMemory · 211 条 · 4-Tier · 95 模块</div>
+  <div class="sv-footer-btn"><span>打开详情</span><span>↗</span></div>
+</div>
+
+<script>
+function switchTab(tab) {
+  document.getElementById('tab-tiers').style.display = tab === 'tiers' ? '' : 'none';
+  document.getElementById('tab-subsystems').style.display = tab === 'subsystems' ? '' : 'none';
+  document.querySelectorAll('.sv-tab').forEach((t, i) => {
+    t.classList.toggle('active', (tab === 'tiers' && i === 0) || (tab === 'subsystems' && i === 1));
+  });
+}
+</script>
+
+</body>
+</html>

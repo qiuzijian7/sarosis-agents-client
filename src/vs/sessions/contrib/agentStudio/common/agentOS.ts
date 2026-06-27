@@ -128,32 +128,32 @@ export interface IAgentOSService {
 	cancelAgentLoop(): void;
 
 	/**
-	 * L1 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取
+	 * Episodic 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取
 	 * 结构化长期记忆（persona/episodic/instruction），写入 Memory Provider。
 	 * fire-and-forget，不阻塞调用方。
 	 *
-	 * 对齐 TDB-AM 的 L0→L1 管线：不再完全依赖 LLM 主动调 memory_remember，
+	 * 对齐 AgentMemory 的 Working→Episodic 管线：不再完全依赖 LLM 主动调 memory_remember，
 	 * 系统自动在对话累积后提取值得跨会话记住的事实。
 	 */
-	triggerL1Extraction(agentId: string, sessionId: string | undefined, recentUserText: string, recentAssistantText: string): void;
+	triggerEpisodicExtraction(agentId: string, sessionId: string | undefined, recentUserText: string, recentAssistantText: string): void;
 
 	/**
-	 * L2 场景提取：L1 完成后延迟触发，后台调用 LLM 从近期 L1 记忆中
+	 * Semantic 提取：Episodic 完成后延迟触发，后台调用 LLM 从近期 Episodic 记忆中
 	 * 提取场景级摘要（如"用户在做 X 项目时遇到 Y 问题"），写入 Memory Provider。
 	 * fire-and-forget，不阻塞调用方。
 	 *
-	 * 对齐 TDB-AM 的 L2 层：per-session downward-only timer，delay-after-L1 触发。
+	 * 对齐 AgentMemory 的 Semantic 层：per-session downward-only timer，delay-after-Episodic 触发。
 	 */
-	triggerL2Extraction(agentId: string): void;
+	triggerSemanticExtraction(agentId: string): void;
 
 	/**
-	 * L3 人格生成：L2 完成后触发，后台调用 LLM 从所有场景摘要中
+	 * Procedural 生成：Semantic 完成后触发，后台调用 LLM 从所有场景摘要中
 	 * 生成用户人格画像（偏好、习惯、专业领域等），写入 Memory Provider。
 	 * 全局互斥（concurrency=1），fire-and-forget。
 	 *
-	 * 对齐 TDB-AM 的 L3 层：global mutex + pending flag dedup。
+	 * 对齐 AgentMemory 的 Procedural 层：global mutex + pending flag dedup。
 	 */
-	triggerL3Generation(): void;
+	triggerProceduralGeneration(): void;
 
 	// ─── Tool 启用/禁用管理 ─────────────────────────────────────
 
@@ -211,4 +211,40 @@ export interface IAgentOSService {
 	 * @param handler 工具审批处理器
 	 */
 	setToolApprovalHandler(handler: IToolApprovalHandler): void;
+
+	// ─── Dashboard 统计 ───────────────────────────────────────────────
+
+	/**
+	 * 获取 Dashboard 统计数据（Token 消耗、压缩指标、工具调用频率等）
+	 * 数据在 executeAgentTurn 流程中实时累积，供 Dashboard UI 展示。
+	 */
+	getDashboardStats(): IAgentOSDashboardStats;
+}
+
+/** AgentOS Dashboard 统计数据快照 */
+export interface IAgentOSDashboardStats {
+	/** 累计输入 Token */
+	totalInputTokens: number;
+	/** 累计输出 Token */
+	totalOutputTokens: number;
+	/** 累计缓存命中 Token */
+	totalCachedTokens: number;
+	/** 当前活跃模型 ID */
+	activeModelId: string;
+	/** 压缩总次数 */
+	compressionCount: number;
+	/** 低效压缩次数（节省 < 阈值） */
+	compressionIneffectiveCount: number;
+	/** 累计压缩前 Token */
+	compressionBeforeTokens: number;
+	/** 累计压缩后 Token */
+	compressionAfterTokens: number;
+	/** 工具调用次数（按工具名） */
+	toolCallCounts: Map<string, number>;
+	/** Episodic 自动提取触发次数 */
+	episodicExtractionCount: number;
+	/** Semantic 提取触发次数 */
+	semanticExtractionCount: number;
+	/** Procedural 生成触发次数 */
+	proceduralExtractionCount: number;
 }

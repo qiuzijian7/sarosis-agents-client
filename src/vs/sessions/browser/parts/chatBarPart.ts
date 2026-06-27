@@ -860,7 +860,37 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 							memoryType: memMeta.memoryType,
 							priority: memMeta.priority,
 							sceneName: memMeta.sceneName,
+							status: 'saved',
 						});
+					}
+					break;
+				}
+				case 'memory_writing': {
+					const memContent = (delta as any).content ?? '';
+					const memMeta = (delta as any).metadata ?? {};
+					if (memContent) {
+						panel.addMemoryNotice({
+							content: memContent,
+							memoryType: memMeta.memoryType,
+							priority: memMeta.priority,
+							sceneName: memMeta.sceneName,
+							noticeId: memMeta.noticeId,
+							status: 'pending',
+						});
+					}
+					break;
+				}
+				case 'memory_written': {
+					const memMeta = (delta as any).metadata ?? {};
+					if (memMeta.noticeId) {
+						panel.updateMemoryNotice(memMeta.noticeId, 'saved', (delta as any).content);
+					}
+					break;
+				}
+				case 'memory_write_failed': {
+					const memMeta = (delta as any).metadata ?? {};
+					if (memMeta.noticeId) {
+						panel.updateMemoryNotice(memMeta.noticeId, 'failed', (delta as any).content);
 					}
 					break;
 				}

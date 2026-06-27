@@ -169,6 +169,24 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		}
 	}
 
+	/**
+	 * 确保已登录商城（下载/升级前调用）。
+	 * 优先复用 TOF 登录态，未登录则尝试同步。
+	 */
+	private async _ensureLoggedIn(): Promise<void> {
+		if (this._user && this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION)) {
+			return; // 已登录且有 token
+		}
+		// 尝试用 TOF 票据登录
+		const tofUser = this.tofAuthService.currentUser;
+		const ticket = this.tofAuthService.currentTicket;
+		if (tofUser && ticket) {
+			await this.loginWithTof();
+			return;
+		}
+		throw new Error('未登录商城，请先在 VsSaros 中完成 TOF 登录');
+	}
+
 	// ── 浏览 ──────────────────────────────────────────────────
 	async listPackages(opts: IListPackagesOptions = {}): Promise<{ items: readonly IMarketplacePackage[]; total: number }> {
 		const qs = new URLSearchParams();
@@ -197,10 +215,20 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	// ── 下载安装 ──────────────────────────────────────────────
 	async download(storeId: string, version: string, kind: PackageKind): Promise<IInstallResult> {
 		this.logService.info(`[Marketplace] 下载 ${kind}/${storeId} v${version}`);
+
+		// 确保已登录（复用 TOF 登录态）
+		await this._ensureLoggedIn();
+
 		const url = `${this.endpoint}/api/v1/packages/${storeId}/versions/${version}/download`;
 
-		// 1. 下载 tar.gz
-		const ctx = await this.requestService.request({ type: 'GET', url, callSite: 'marketplaceService.download' }, CancellationToken.None);
+		// 1. 下载 tar.gz — 携带 JWT token
+		const token = this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION);
+		const headers: Record<string, string> = {};
+		if (token) { headers['Authorization'] = `Bearer ${token}`; }
+		const ctx = await this.requestService.request(
+			{ type: 'GET', url, headers, callSite: 'marketplaceService.download' },
+			CancellationToken.None,
+		);
 		if (ctx.res.statusCode && ctx.res.statusCode >= 400) {
 			throw new Error(`下载失败: HTTP ${ctx.res.statusCode}`);
 		}
@@ -261,6 +289,9 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	async publish(localId: string, kind: PackageKind, opts: IPublishOptions = {}): Promise<{ version: string }> {
 		this.logService.info(`[Marketplace] 发布 ${kind}/${localId}`);
 
+		// 确保已登录
+		await this._ensureLoggedIn();
+
 		const installer = this.installerRegistry.get(kind);
 		if (!installer) {
 			throw new Error(`不支持发布 ${kind} 类型资源（未注册 installer）`);
@@ -312,6 +343,9 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 	// ── 升级检查 ──────────────────────────────────────────────
 	async checkUpgrades(items?: readonly IUpgradeCheckItem[]): Promise<readonly IUpgradeInfo[]> {
+		// 确保已登录
+		await this._ensureLoggedIn();
+
 		// 未传 items 时，从 installed-packages.json 统一读取
 		const checkItems = items ?? await this.readInstalled();
 		const res = await this.api<{ updates: any[] }>('POST', '/upgrade/check', { items: checkItems });
