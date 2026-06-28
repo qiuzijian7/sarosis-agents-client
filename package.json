@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.25889",
+  "version": "2.2.25890",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -20,8 +20,7 @@
     "check-cyclic-dependencies": "node build/lib/checkCyclicDependencies.ts out",
     "preinstall": "node build/npm/preinstall.ts",
     "postinstall": "node build/npm/postinstall.ts",
-    "compile": "npm run gulp compile && npm run compile-tdb-am-vendor && npm run compile-shared && npm run compile-codebuddy-provider",
-    "compile-tdb-am-vendor": "npm --prefix extensions/tdb-am-gateway run compile:vendor",
+    "compile": "npm run gulp compile && npm run compile-shared && npm run compile-codebuddy-provider",
     "compile-shared": "npm --prefix extensions/shared run compile",
     "compile-codebuddy-provider": "npm --prefix extensions/codebuddy-provider run compile",
     "compile-check-ts-native": "tsgo --project ./src/tsconfig.json --noEmit --skipLibCheck",
