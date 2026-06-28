@@ -1068,7 +1068,7 @@ export class AgentChatPanel extends Disposable {
 
 	setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void {
 		// 按更新时间倒序排列（最新的在最前面）
-		this._agentSessions = sessions.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+		this._agentSessions = sessions.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 		if (this._historyOverlayEl) {
 			this._renderHistoryOverlayContent();
 		}
