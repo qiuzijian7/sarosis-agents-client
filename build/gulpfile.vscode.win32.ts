@@ -9,6 +9,7 @@ import gulp from 'gulp';
 import * as path from 'path';
 import rcedit from 'rcedit';
 import vfs from 'vinyl-fs';
+import fancyLog from 'fancy-log';
 import pkg from '../package.json' with { type: 'json' };
 import product from '../product.json' with { type: 'json' };
 import { getVersion } from './lib/getVersion.ts';
