@@ -72,6 +72,12 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 		const outputPath = setupDir(arch, target);
 		fs.mkdirSync(outputPath, { recursive: true });
 
+		// Print version info for CI logging
+		fancyLog(`=== Packaging ${arch} ${target} ===`);
+		fancyLog(`  Version: ${pkg.version}`);
+		fancyLog(`  Commit:  ${commit?.substring(0, 10) ?? 'unknown'}`);
+		fancyLog(`  Date:    ${new Date().toISOString()}`);
+
 		const quality = (product as typeof product & { quality?: string }).quality || 'dev';
 		const useVersionedUpdate = (product as typeof product & { win32VersionedUpdate?: boolean })?.win32VersionedUpdate;
 		const versionedResourcesFolder = useVersionedUpdate ? commit!.substring(0, 10) : '';
@@ -81,15 +87,35 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 		const productJson = JSON.parse(fs.readFileSync(originalProductJsonPath, 'utf8'));
 		productJson['version'] = pkg.version;
 		productJson['target'] = target;
+		productJson['commit'] = commit;
+		productJson['buildDate'] = new Date().toISOString();
+
+		// Write version-info.json to build output for traceability
+		const versionInfoPath = path.join(outputPath, 'version-info.json');
+		fs.writeFileSync(versionInfoPath, JSON.stringify({
+			product: product.nameLong,
+			version: pkg.version,
+			commit: commit,
+			commitShort: commit?.substring(0, 10),
+			arch,
+			target,
+			quality,
+			buildDate: new Date().toISOString(),
+		}, null, 2));
+		fancyLog(`  Wrote: ${versionInfoPath}`);
 
 		const definitions: Record<string, unknown> = {
 			NameLong: product.nameLong,
 			NameShort: product.nameShort,
 			DirName: product.win32DirName,
 			Version: pkg.version,
-			// Inno Setup VersionInfoVersion: each segment must be 0-65535.
-			// commitCount-based patch (e.g. 156950) can exceed this, so clamp with % 65536.
-			RawVersion: pkg.version.replace(/-\w+$/, '').split('.').map(p => { const n = parseInt(p, 10); return isNaN(n) ? 0 : n % 65536; }).join('.'),
+			// Inno Setup VersionInfoVersion: requires exactly 4 segments (x.y.z.w),
+			// each segment 0-65535. Pad with .0 if needed.
+			RawVersion: (() => {
+				const parts = pkg.version.replace(/-\w+$/, '').split('.').map(p => { const n = parseInt(p, 10); return isNaN(n) ? 0 : n % 65536; });
+				while (parts.length < 4) parts.push(0);
+				return parts.slice(0, 4).join('.');
+			})(),
 			Commit: commit,
 			NameVersion: product.win32NameVersion + (target === 'user' ? ' (User)' : ''),
 			ExeBasename: product.nameShort,

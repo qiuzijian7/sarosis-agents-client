@@ -38,9 +38,36 @@ if (-not $commit -or $commit.Length -ne 40) {
     exit 1
 }
 
-Write-Host "Version: $productVersion"
-Write-Host "Commit: $($commit.Substring(0, 10))..."
+# ---- Print version banner ----
+$buildDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+$commitCount = (git rev-list --count HEAD 2>$null).Trim()
 Write-Host ""
+Write-Host "========================================"
+Write-Host "  Product:  VsSaros"
+Write-Host "  Version:  $productVersion"
+Write-Host "  Commit:   $($commit.Substring(0, 10)) ($commitCount commits)"
+Write-Host "  Date:     $buildDate"
+Write-Host "========================================"
+Write-Host ""
+
+# ---- Verify version-info.json exists (written by packaging step) ----
+$versionInfoPath = ".build\win32-x64\user-setup\version-info.json"
+if (Test-Path $versionInfoPath) {
+    $versionInfo = Get-Content $versionInfoPath -Raw | ConvertFrom-Json
+    Write-Host "Packaged version-info.json:"
+    Write-Host "  Version: $($versionInfo.version)"
+    Write-Host "  Commit:  $($versionInfo.commitShort)"
+    Write-Host "  Arch:    $($versionInfo.arch)"
+    Write-Host "  Target:  $($versionInfo.target)"
+    Write-Host "  Date:    $($versionInfo.buildDate)"
+    Write-Host ""
+    # Verify version matches
+    if ($versionInfo.version -ne $productVersion) {
+        Write-Host "[WARN] Version mismatch: product.json=$productVersion vs version-info.json=$($versionInfo.version)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[WARN] version-info.json not found at $versionInfoPath" -ForegroundColor Yellow
+}
 
 # ---- Check curl.exe availability ----
 $curlExe = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
