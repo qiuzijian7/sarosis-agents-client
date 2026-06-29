@@ -44,6 +44,8 @@ import { SidebarContentVisibleContext } from '../../common/contextkeys.js';
 import { IProductService } from '../../../platform/product/common/productService.js';
 import { IAgentStudioService } from '../../contrib/agentStudio/common/agentStudio.js';
 import { IFileDialogService } from '../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../platform/files/common/files.js';
+import { URI } from '../../../base/common/uri.js';
 import type { Workspace } from '../../contrib/agentStudio/common/types.js';
 
 /** CSS class names for sidebar content collapsed/expanded states */
@@ -501,6 +503,12 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		}
 		this._activeWorkspaceId = activeId;
 		this._updateSelectorLabel();
+
+		// Auto-fix workspaces whose path is a .code-workspace FILE (legacy bug).
+		// Resolve the JSON to extract the real folder directory so that
+		// WorkspaceViewPane._buildRealOrVirtualRoot gets a valid directory path.
+		await this._fixWorkspaceFilePaths();
+
 		// Re-render the list whenever data refreshes AND the dropdown is open,
 		// so an async load that resolves after _openWorkspaceDropdown() still
 		// fills the visible list (the open() path renders synchronously first
@@ -712,7 +720,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	private async _openFileAsWorkspace(): Promise<void> {
 		if (!this._wsAgentStudioService || !this._wsFileDialogService) { return; }
 
-		let filePath: string | undefined;
+		let fileUri: URI | undefined;
 		try {
 			const uris = await this._wsFileDialogService.showOpenDialog({
 				canSelectFiles: true,
@@ -723,25 +731,73 @@ export class SidebarPart extends AbstractPaneCompositePart {
 				filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
 			});
 			if (uris && uris.length > 0) {
-				filePath = uris[0].fsPath;
+				fileUri = uris[0];
 			}
 		} catch { /* user cancelled */ }
-		if (!filePath) { return; }
+		if (!fileUri) { return; }
+
+		const filePath = fileUri.fsPath;
 
 		// Derive workspace name from file name (without extension)
 		const segments = filePath.replace(/[/\\]+$/, '').split(/[/\\]/);
 		const fileName = segments[segments.length - 1] || filePath;
 		const name = fileName.replace(/\.code-workspace$/i, '') || fileName;
 
-		// If a workspace already bound to this exact file exists, reuse it
-		// instead of creating a duplicate — then just switch to it.
-		const norm = (p: string) => p.replace(/[/\\]+$/, '').toLowerCase();
-		const existing = this._workspaces.find(w => w.path && norm(w.path) === norm(filePath));
+		// A .code-workspace file is JSON with a "folders" array. Each entry has
+		// a "path" (relative to the workspace file, or absolute) or a "uri".
+		// We resolve ALL folder paths. The first folder becomes the workspace
+		// `path` (so .sarosworkspace can be created inside a real directory),
+		// and the rest become `relatedFolders` (shown as additional roots in
+		// WorkspaceViewPane).
+		let wsPath: string | undefined;
+		let extraFolders: { path: string; name: string }[] = [];
+		try {
+			const fileService = this.instantiationService.invokeFunction(a => a.get(IFileService));
+			const { primaryPath, extraFolders: extras } = await this._resolveCodeWorkspaceFolders(fileUri, fileService);
+			wsPath = primaryPath;
+			extraFolders = extras;
+		} catch { /* parse failed — fall back to parent directory */ }
 
-		const target = existing ?? await this._wsAgentStudioService.createWorkspace({
-			name,
-			path: filePath,
-		});
+		// Fallback: use the parent directory of the .code-workspace file
+		if (!wsPath) {
+			wsPath = URI.joinPath(fileUri, '..').fsPath;
+		}
+
+		// If a workspace already bound to this exact path exists, reuse it.
+		// Also check for old workspaces created with the .code-workspace FILE
+		// path (pre-fix) — if found, update their path to the resolved folder.
+		const norm = (p: string) => p.replace(/[/\\]+$/, '').toLowerCase();
+		let existing = this._workspaces.find(w => w.path && norm(w.path) === norm(wsPath));
+		if (!existing) {
+			existing = this._workspaces.find(w => w.path && norm(w.path) === norm(filePath));
+		}
+
+		let target: Workspace;
+		if (existing) {
+			if (existing.path && norm(existing.path) !== norm(wsPath)) {
+				// Old workspace had the .code-workspace file path — fix it
+				target = await this._wsAgentStudioService.updateWorkspace(existing.id, { path: wsPath });
+			} else {
+				target = existing;
+			}
+		} else {
+			target = await this._wsAgentStudioService.createWorkspace({
+				name,
+				path: wsPath,
+			});
+		}
+
+		// Sync extra folders (folders[1..]) as relatedFolders so that
+		// WorkspaceViewPane renders them as additional roots.
+		if (extraFolders.length > 0) {
+			const existingPaths = new Set(
+				(target.relatedFolders ?? []).map(f => f.path.replace(/[\\/]+$/, '').toLowerCase())
+			);
+			const toAdd = extraFolders.filter(f => !existingPaths.has(f.path.replace(/[\\/]+$/, '').toLowerCase()));
+			for (const f of toAdd) {
+				await this._wsAgentStudioService.addRelatedFolder(target.id, f.path);
+			}
+		}
 
 		// Refresh local cache so the new/target workspace is present, then
 		// activate it.
@@ -749,6 +805,98 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		await this._wsAgentStudioService.setActiveWorkspace(target.id);
 
 		this._closeWorkspaceDropdown();
+	}
+
+	/**
+	 * Scan loaded workspaces for legacy entries whose `path` points to a
+	 * `.code-workspace` FILE instead of the resolved folder directory.
+	 * Auto-fix each one by reading the JSON, extracting ALL folders'
+	 * paths, setting folders[0] as `path` and folders[1..] as
+	 * `relatedFolders`, so WorkspaceViewPane can stat real dirs.
+	 */
+	private async _fixWorkspaceFilePaths(): Promise<void> {
+		if (!this._wsAgentStudioService || this._workspaces.length === 0) { return; }
+
+		let fileService: IFileService;
+		try {
+			fileService = this.instantiationService.invokeFunction(a => a.get(IFileService));
+		} catch { return; /* file service not available */ }
+
+		const norm = (p: string) => p.replace(/[/\\]+$/, '').toLowerCase();
+		const CODE_WORKSPACE_RE = /\.code-workspace$/i;
+
+		for (const ws of this._workspaces) {
+			if (!ws.path || !CODE_WORKSPACE_RE.test(ws.path)) { continue; }
+			const fileUri = URI.file(ws.path);
+
+			// Resolve ALL folders from the .code-workspace file
+			let primaryPath: string | undefined;
+			let extraFolders: { path: string; name: string }[] = [];
+			try {
+				const result = await this._resolveCodeWorkspaceFolders(fileUri, fileService);
+				primaryPath = result.primaryPath;
+				extraFolders = result.extraFolders;
+			} catch { /* parse or read failed — use fallback */ }
+
+			if (!primaryPath) {
+				primaryPath = URI.joinPath(fileUri, '..').fsPath;
+			}
+
+			// Fix primary path if needed
+			const pathChanged = norm(ws.path) !== norm(primaryPath);
+			if (pathChanged) {
+				try {
+					await this._wsAgentStudioService.updateWorkspace(ws.id, { path: primaryPath });
+					ws.path = primaryPath;
+				} catch { /* non-fatal */ }
+			}
+
+			// Sync extra folders as relatedFolders
+			if (extraFolders.length > 0) {
+				const existingPaths = new Set(
+					(ws.relatedFolders ?? []).map(f => norm(f.path))
+				);
+				for (const f of extraFolders) {
+					if (!existingPaths.has(norm(f.path))) {
+						try {
+							await this._wsAgentStudioService.addRelatedFolder(ws.id, f.path);
+						} catch { /* non-fatal */ }
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * Parse a `.code-workspace` JSON file and resolve ALL folder paths.
+	 * Returns `{ primaryPath, extraFolders }` where `primaryPath` is the
+	 * resolved path of `folders[0]` (used as `workspace.path`) and
+	 * `extraFolders` is the rest (used as `workspace.relatedFolders`).
+	 */
+	private async _resolveCodeWorkspaceFolders(
+		fileUri: URI,
+		fileService: IFileService,
+	): Promise<{ primaryPath: string | undefined; extraFolders: { path: string; name: string }[] }> {
+		const content = await fileService.readFile(fileUri);
+		const parsed = JSON.parse(content.value.toString());
+		const folders: Array<{ path?: string; uri?: string; name?: string }> = parsed?.folders ?? [];
+
+		const resolveOne = (folder: { path?: string; uri?: string; name?: string }): string | undefined => {
+			const rawPath: string | undefined = folder.path
+				?? (folder.uri ? URI.parse(folder.uri).fsPath : undefined);
+			if (!rawPath) { return undefined; }
+			if (/^[A-Za-z]:[\\/]/.test(rawPath) || rawPath.startsWith('/')) {
+				return URI.file(rawPath).fsPath;
+			}
+			return URI.joinPath(fileUri, '..', rawPath).fsPath;
+		};
+
+		const primaryPath = folders.length > 0 ? resolveOne(folders[0]) : undefined;
+		const extraFolders: { path: string; name: string }[] = folders.slice(1)
+			.filter(f => resolveOne(f) !== undefined)
+			.map(f => ({ path: resolveOne(f)!, name: f.name || '' }));
+
+		return { primaryPath, extraFolders };
 	}
 
 	private createFooter(parent: HTMLElement): void {

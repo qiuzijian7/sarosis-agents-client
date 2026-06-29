@@ -25,6 +25,9 @@ import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 import { IMarketplaceService, IMarketplacePackage, IUpgradeInfo, PackageKind } from '../common/marketplace.js';
 import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
+import { IEventBridgeService } from '../common/eventBridge.js';
+import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
+import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +71,7 @@ export class McpServerEditorPane extends EditorPane {
 		@IPathService private readonly pathService: IPathService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
+		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
 	) {
 		super(McpServerEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -586,6 +590,44 @@ export class McpServerEditorPane extends EditorPane {
 		}
 	}
 
+	/** Sync a single MCP server config from ~/.saros/mcp/{slug}/config.json to VS Code MCP config */
+	private async _syncMcpToVsCode(slug: string): Promise<void> {
+		try {
+			const userHome = await this.pathService.userHome();
+			const configUri = URI.joinPath(userHome, '.saros', 'mcp', slug, 'config.json');
+			if (!await this.fileService.exists(configUri)) {
+				console.warn('[McpServerEditor] config.json not found for slug:', slug);
+				return;
+			}
+			const content = await this.fileService.readFile(configUri);
+			const config = JSON.parse(content.value.toString());
+
+			// Build IMcpServerConfiguration from config.json
+			const transport = config.transport || 'stdio';
+			let serverConfig: IMcpServerConfiguration;
+			if (transport === 'stdio') {
+				serverConfig = {
+					type: McpServerType.LOCAL,
+					command: config.command || '',
+					...(config.args ? { args: config.args } : {}),
+					...(config.env ? { env: config.env } : {}),
+				};
+			} else {
+				serverConfig = {
+					type: McpServerType.REMOTE,
+					url: config.url || '',
+					...(config.headers ? { headers: config.headers } : {}),
+				};
+			}
+
+			const installable: IInstallableMcpServer = { name: slug, config: serverConfig };
+			await this.mcpManagementService.install(installable);
+			console.log('[McpServerEditor] Synced MCP server to VS Code config:', slug);
+		} catch (e) {
+			console.warn('[McpServerEditor] Failed to sync MCP to VS Code config (non-fatal):', e);
+		}
+	}
+
 	/** Install a marketplace MCP package */
 	private async _installPackage(pkg: IMarketplacePackage): Promise<void> {
 		if (this._installingSlugs.has(pkg.slug)) { return; }
@@ -594,7 +636,10 @@ export class McpServerEditorPane extends EditorPane {
 
 		try {
 			const result = await this.marketplaceService.download(pkg.slug, pkg.latestVersion ?? '', 'mcp');
+			// Sync to VS Code MCP config so mcpService.servers discovers it
+			await this._syncMcpToVsCode(pkg.slug);
 			this.notificationService.info(`\u2705 ${pkg.name} v${result.version} 安装成功`);
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: pkg.slug });
 			await this._loadPackages();
 		} catch (err) {
 			this.notificationService.error(`安装失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -612,7 +657,10 @@ export class McpServerEditorPane extends EditorPane {
 
 		try {
 			const result = await this.marketplaceService.download(pkg.slug, upgrade.latest, 'mcp');
+			// Sync updated config to VS Code MCP config
+			await this._syncMcpToVsCode(pkg.slug);
 			this.notificationService.info(`\u2705 ${pkg.name} 已升级到 v${result.version}`);
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: pkg.slug });
 			await this._loadPackages();
 		} catch (err) {
 			this.notificationService.error(`升级失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -658,6 +706,8 @@ export class McpServerEditorPane extends EditorPane {
 			}
 
 			this.notificationService.info(`\u2705 ${pkg.name} 已卸载`);
+			const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'remove', serverId: sanitize(pkg.slug) });
 			await this._loadPackages();
 		} catch (err) {
 			this.notificationService.error(`卸载失败: ${err instanceof Error ? err.message : String(err)}`);

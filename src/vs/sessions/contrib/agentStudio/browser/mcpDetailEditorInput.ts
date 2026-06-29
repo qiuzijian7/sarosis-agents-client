@@ -6,7 +6,6 @@
 import { URI } from '../../../../base/common/uri.js';
 import { EditorInputCapabilities } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { KNOT_MCP_MARKET } from '../common/bundled-tools/knotMcpMarket.js';
 import { BUNDLED_MCP_PRESETS } from '../common/bundled-tools/bundledMcpPresets.js';
 
 /**
@@ -60,15 +59,11 @@ export class McpDetailEditorInput extends EditorInput {
 	}
 
 	override getName(): string {
-		const knot = KNOT_MCP_MARKET.find(k => k.id === this.marketId);
-		if (knot) {
-			return knot.displayName || knot.name;
-		}
 		const preset = BUNDLED_MCP_PRESETS.find(p => p.id === this.marketId);
 		if (preset) {
 			return preset.name;
 		}
-		return 'MCP Server';
+		return this.marketId;
 	}
 
 	override matches(otherInput: EditorInput | unknown): boolean {

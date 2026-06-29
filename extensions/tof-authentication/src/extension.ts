@@ -47,12 +47,17 @@ export function activate(context: vscode.ExtensionContext): void {
 					if (redirectCount > 5) { reject(new Error('Too many redirects')); return; }
 					const parsed = new URL(reqUrl);
 					const lib = parsed.protocol === 'https:' ? https : http;
+					// Auto-add Content-Length for POST/PUT with body (prevents socket hang up)
+					const finalHeaders: Record<string, string> = { ...opts.headers };
+					if (opts.body && opts.body.length > 0 && !finalHeaders['Content-Length'] && !finalHeaders['content-length']) {
+						finalHeaders['Content-Length'] = String(Buffer.byteLength(opts.body, 'utf-8'));
+					}
 					const reqOptions: http.RequestOptions = {
 						hostname: parsed.hostname,
 						port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
 						path: parsed.pathname + parsed.search,
 						method: opts.method || 'GET',
-						headers: opts.headers || {},
+						headers: finalHeaders,
 						timeout: 30000,
 					};
 

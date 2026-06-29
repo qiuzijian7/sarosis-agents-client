@@ -12,6 +12,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { $, clearNode } from '../../../../base/browser/dom.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Dimension } from '../../../../base/browser/dom.js';
 import { autorun } from '../../../../base/common/observable.js';
 import { timeout } from '../../../../base/common/async.js';
@@ -25,8 +26,10 @@ import { startServerAndWaitForLiveTools } from '../../../../workbench/contrib/mc
 import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
 import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
-import { KNOT_MCP_MARKET, IKnotMcpMarketItem } from '../common/bundled-tools/knotMcpMarket.js';
 import { BUNDLED_MCP_PRESETS } from '../common/bundled-tools/bundledMcpPresets.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { URI } from '../../../../base/common/uri.js';
 
 // ─── Unified detail model (from knot market OR bundled preset) ────────────────
 
@@ -50,28 +53,8 @@ interface IMcpDetailModel {
 
 const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
 
-/** Resolve a detail model by market id, from knot market first then bundled presets. */
+/** Resolve a detail model by market id, from bundled presets (synchronous). */
 export function resolveMcpDetailModel(marketId: string): IMcpDetailModel | undefined {
-	const knot: IKnotMcpMarketItem | undefined = KNOT_MCP_MARKET.find(k => k.id === marketId);
-	if (knot) {
-		return {
-			id: knot.id,
-			name: knot.name,
-			displayName: knot.displayName || knot.name,
-			description: knot.description,
-			useGuide: knot.useGuide,
-			toolsDescription: knot.toolsDescription,
-			icon: knot.icon,
-			type: knot.type,
-			creator: knot.creator,
-			transportType: knot.transportType,
-			url: knot.url,
-			command: knot.command,
-			args: knot.args,
-			headers: knot.headers,
-			tags: knot.tags ?? [],
-		};
-	}
 	const preset = BUNDLED_MCP_PRESETS.find(p => p.id === marketId);
 	if (preset) {
 		return {
@@ -122,6 +105,7 @@ export class McpDetailEditorPane extends EditorPane {
 	private _model: IMcpDetailModel | undefined;
 	private _installing = false;
 	private _installed = false;
+	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	constructor(
 		group: IEditorGroup,
@@ -131,6 +115,8 @@ export class McpDetailEditorPane extends EditorPane {
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
 		@IMcpService private readonly mcpService: IMcpService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
+		@IFileService private readonly fileService: IFileService,
+		@IPathService private readonly pathService: IPathService,
 	) {
 		super(McpDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -153,9 +139,47 @@ export class McpDetailEditorPane extends EditorPane {
 		await super.setInput(input, options, context, token);
 		if (!(input instanceof McpDetailEditorInput)) { return; }
 
+		// 1. Try built-in presets (synchronous)
 		this._model = resolveMcpDetailModel(input.marketId);
+		// 2. Fallback: read from ~/.saros/mcp/{marketId}/config.json
+		if (!this._model) {
+			this._model = await this._resolveMcpDetailModelFromDisk(input.marketId);
+		}
 		await this._refreshInstalledState();
 		this._render();
+	}
+
+	/** Read MCP config from ~/.saros/mcp/{marketId}/config.json and build a detail model. */
+	private async _resolveMcpDetailModelFromDisk(marketId: string): Promise<IMcpDetailModel | undefined> {
+		try {
+			const userHome = await this.pathService.userHome();
+			const configUri = URI.joinPath(userHome, '.saros', 'mcp', marketId, 'config.json');
+			if (!await this.fileService.exists(configUri)) {
+				return undefined;
+			}
+			const content = await this.fileService.readFile(configUri);
+			const config = JSON.parse(content.value.toString());
+			const transport = config.transport || 'stdio';
+			return {
+				id: marketId,
+				name: config.name || marketId,
+				displayName: config.name || marketId,
+				description: config.description || '',
+				useGuide: '',
+				toolsDescription: '',
+				icon: config.icon || '',
+				type: 'installed',
+				creator: config.author || '',
+				transportType: transport === 'stdio' ? 'stdio' : 'http',
+				url: config.url || '',
+				command: config.command || '',
+				args: config.args,
+				headers: config.headers,
+				tags: [],
+			};
+		} catch {
+			return undefined;
+		}
 	}
 
 	override layout(dimension: Dimension): void {
@@ -183,6 +207,7 @@ export class McpDetailEditorPane extends EditorPane {
 
 	private _render(): void {
 		clearNode(this._container);
+		this._renderDisposables.clear();
 
 		if (!this._model) {
 			const err = $('div');
@@ -365,6 +390,7 @@ export class McpDetailEditorPane extends EditorPane {
 		wrap.style.color = 'var(--vscode-foreground)';
 		try {
 			const rendered = renderMarkdown(new MarkdownString(text, { isTrusted: false, supportThemeIcons: true }));
+			this._renderDisposables.add(rendered);
 			rendered.element.style.overflowWrap = 'anywhere';
 			wrap.appendChild(rendered.element);
 		} catch {

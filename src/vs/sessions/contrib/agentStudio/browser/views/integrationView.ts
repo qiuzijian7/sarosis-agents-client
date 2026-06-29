@@ -29,7 +29,6 @@ import { startServerAndWaitForLiveTools } from '../../../../../workbench/contrib
 import { IWorkbenchMcpManagementService } from '../../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { BUNDLED_MCP_PRESETS } from '../../common/bundled-tools/bundledMcpPresets.js';
-import { KNOT_MCP_MARKET } from '../../common/bundled-tools/knotMcpMarket.js';
 import { McpServerEditorInput } from '../mcpServerEditorInput.js';
 import { McpDetailEditorInput } from '../mcpDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
@@ -183,11 +182,9 @@ export class IntegrationViewPane extends ViewPane {
 	}
 
 	/**
-	 * Resolve a market ID (from KNOT_MCP_MARKET or BUNDLED_MCP_PRESETS) from a
-	 * sanitized server ID or display name. The sidebar uses sanitized tool-prefix
-	 * IDs (McpToolProvider), but the detail EditorPane is keyed by the original
-	 * market ID. Definition IDs like "mcp.config.xxx.name" get sanitized to
-	 * "mcp_config_xxx_name" — we extract candidate name parts and try each.
+	 * Resolve a market ID from a sanitized server ID or display name.
+	 * Checks BUNDLED_MCP_PRESETS first; if not found, returns the display name
+	 * (or serverId) as the marketId so the detail pane can read from disk.
 	 */
 	private static _resolveMcpMarketId(serverId: string, displayName?: string): string | undefined {
 		const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
@@ -220,7 +217,7 @@ export class IntegrationViewPane extends ViewPane {
 			candidates.add(sanitize(displayName));
 		}
 
-		// 1. Built-in presets: id or sanitized(id)
+		// Built-in presets: id or sanitized(id)
 		for (const preset of BUNDLED_MCP_PRESETS) {
 			for (const c of candidates) {
 				if (preset.id === c || sanitize(preset.id) === c || preset.name === c || sanitize(preset.name) === c) {
@@ -228,16 +225,9 @@ export class IntegrationViewPane extends ViewPane {
 				}
 			}
 		}
-		// 2. Knot market items: id, name, or displayName
-		for (const item of KNOT_MCP_MARKET) {
-			for (const c of candidates) {
-				if (item.id === c || item.name === c || sanitize(item.name) === c
-					|| item.displayName === c || sanitize(item.displayName) === c) {
-					return item.id;
-				}
-			}
-		}
-		return undefined;
+		// Fallback: return display name (or serverId) as marketId — detail pane will
+		// read from ~/.saros/mcp/{marketId}/config.json
+		return displayName || serverId;
 	}
 
 	constructor(

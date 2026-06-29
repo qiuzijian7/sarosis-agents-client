@@ -454,32 +454,69 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 		// 1. 准备本地资源目录 + manifest
 		const { localDir, manifest } = await installer.preparePack(localId);
-		const version = opts.version || manifest.version;
 
-		// 1.5 预检：如果服务器已有同版本，拒绝上传
+		// Apply user-provided overrides to manifest
+		const finalManifest = {
+			...manifest,
+			name: opts.name || manifest.name,
+			version: opts.version || manifest.version,
+			description: opts.description ?? manifest.description,
+			category: opts.category ?? manifest.category,
+			author: opts.author ?? manifest.author,
+		};
+		const version = finalManifest.version;
+
+		// 1.5 预检：如果服务器已有同版本，拒绝上传；如果包不存在，先创建
+		let packageExists = false;
 		try {
 			const existing = await this.getPackage(localId);
+			packageExists = true;
 			if (existing.latestVersion === version) {
 				throw new Error(`版本 v${version} 已存在于商城，请递增版本号后重试`);
 			}
 		} catch (err) {
-			// 404 = 新技能，继续上传；其他错误（如已存在同版本）则抛出
+			// 版本冲突错误直接抛出
 			if (err instanceof Error && err.message.includes('已存在于商城')) {
 				throw err;
 			}
-			// 其他错误（如网络问题、404）忽略，继续上传
+			// 404 = 包不存在，需要先创建
+			if (!packageExists) {
+				try {
+					await this.api('POST', '/packages', {
+						slug: localId,
+						name: finalManifest.name,
+						kind: finalManifest.kind,
+						description: finalManifest.description ?? '',
+						category: finalManifest.category ?? 'other',
+					});
+					this.logService.info(`[Marketplace] 已创建新包: ${localId}`);
+				} catch (createErr) {
+					// 创建失败可能是因为包已存在（并发情况），忽略错误继续上传
+					this.logService.info(`[Marketplace] 创建包跳过: ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+				}
+			}
 		}
 
-		// 2. tar 打包
+		// 2. tar 打包（包含 manifest.json）
 		const userHome = await this.pathService.userHome();
 		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
 		await this.fileService.createFolder(URI.file(tmpBase));
+
+		// 2.1 将 manifest.json 写入技能目录（临时，打包后删除）
+		const manifestFile = URI.joinPath(localDir, 'manifest.json');
+		const hadManifestBefore = await this.fileService.exists(manifestFile);
+		await this.fileService.writeFile(manifestFile, VSBuffer.fromString(JSON.stringify(finalManifest, null, 2)));
 
 		const tmpFile = path.join(tmpBase, `saros-pub-${Date.now()}.tar.gz`);
 		try {
 			await this.execTar(['-czf', tmpFile, '-C', localDir.fsPath, '.']);
 		} catch (err) {
 			throw new Error(`打包失败: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			// 清理临时 manifest.json（如果之前不存在的话）
+			if (!hadManifestBefore) {
+				try { await this.fileService.del(manifestFile); } catch { /* ignore */ }
+			}
 		}
 
 		// 3. 流式上传 tar.gz（通过扩展宿主，不经 IPC 传二进制）

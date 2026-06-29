@@ -104,6 +104,14 @@ export interface IPublishOptions {
 	readonly changelog?: string;
 	/** 版本号（覆盖 manifest 中的 version） */
 	readonly version?: string;
+	/** 显示名称（覆盖 manifest 中的 name） */
+	readonly name?: string;
+	/** 描述（覆盖 manifest 中的 description） */
+	readonly description?: string;
+	/** 分类（覆盖 manifest 中的 category） */
+	readonly category?: string;
+	/** 作者（覆盖 manifest 中的 author） */
+	readonly author?: string;
 }
 
 /** 列表查询参数 */

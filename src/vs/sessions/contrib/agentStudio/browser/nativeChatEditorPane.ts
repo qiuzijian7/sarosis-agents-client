@@ -19,6 +19,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
@@ -98,13 +99,14 @@ export class NativeChatEditorPane extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@IModelService private readonly _modelService: IModelService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected createEditor(parent: HTMLElement): void {
 		const t0 = performance.now();
-		console.warn(`[NativeChatEditorPane][Init] createEditor START t=${t0.toFixed(0)}ms`);
+		this._logService.debug(`[NativeChatEditorPane][Init] createEditor START t=${t0.toFixed(0)}ms`);
 		this._container = document.createElement('div');
 		this._container.classList.add('native-chat-editor-pane');
 		this._container.style.width = '100%';
@@ -113,7 +115,7 @@ export class NativeChatEditorPane extends EditorPane {
 		parent.appendChild(this._container);
 
 		this._initChatPanel();
-		console.warn(`[NativeChatEditorPane][Init] createEditor END t=${(performance.now() - t0).toFixed(1)}ms`);
+		this._logService.debug(`[NativeChatEditorPane][Init] createEditor END t=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
 	private _initChatPanel(): void {
@@ -121,13 +123,13 @@ export class NativeChatEditorPane extends EditorPane {
 			return;
 		}
 		const t0 = performance.now();
-		console.warn(`[NativeChatEditorPane][Init] _initChatPanel START`);
+		this._logService.debug(`[NativeChatEditorPane][Init] _initChatPanel START`);
 
 		this._chatPanel = this._register(new AgentChatPanel({
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => {
 				// 防重入：如果正在发送中，忽略重复调用
 				if (this._isSending) {
-					console.warn('[NativeChatEditorPane] onSendMessage: already sending, ignoring duplicate');
+					this._logService.info('[NativeChatEditorPane] onSendMessage: already sending, ignoring duplicate');
 					return;
 				}
 				try {
@@ -136,7 +138,7 @@ export class NativeChatEditorPane extends EditorPane {
 					// "noSession bucket" (the historical cross-talk root cause).
 					const ensured = await this._ensureSession();
 					if (!ensured) {
-						console.warn('[NativeChatEditorPane] onSendMessage: no usable agent/session');
+						this._logService.info('[NativeChatEditorPane] onSendMessage: no usable agent/session');
 						return;
 					}
 					const agentId = ensured.agentId;
@@ -511,7 +513,7 @@ export class NativeChatEditorPane extends EditorPane {
 						},
 					);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] sendMessage failed:', err);
+					this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
 					this._chatPanel?.setSending(false);
 					this._isSending = false;
 				}
@@ -525,7 +527,7 @@ export class NativeChatEditorPane extends EditorPane {
 					// the in-flight LLM call and fires execution_end).
 					if (this._liveWorkflowExecId) {
 						this._workflowExecutionService.cancelExecution(this._liveWorkflowExecId).catch(err => {
-							console.error('[NativeChatEditorPane] cancelWorkflowExecution failed:', err);
+							this._logService.error('[NativeChatEditorPane] cancelWorkflowExecution failed:', err);
 						});
 					}
 					// Also cancel any in-flight chat stream
@@ -538,7 +540,7 @@ export class NativeChatEditorPane extends EditorPane {
 					this._chatPanel?.setSending(false);
 					this._isSending = false;
 				} catch (err) {
-					console.error('[NativeChatEditorPane] cancelExecution failed:', err);
+					this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
 				}
 			},
 			onToggleCollapse: () => {
@@ -555,32 +557,32 @@ export class NativeChatEditorPane extends EditorPane {
 			onOpenSettings: async () => {
 				// Open agent settings page (refer to AgentChat.tsx settings button)
 				if (!this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onOpenSettings: no agent selected');
+					this._logService.info('[NativeChatEditorPane] onOpenSettings: no agent selected');
 					return;
 				}
 				try {
 					const agent = await this._agentStudioService.getAgent(this._currentAgentId);
 					if (!agent) {
-						console.warn(`[NativeChatEditorPane] onOpenSettings: agent ${this._currentAgentId} not found`);
+						this._logService.info(`[NativeChatEditorPane] onOpenSettings: agent ${this._currentAgentId} not found`);
 						return;
 					}
 					const input = new AgentSettingsEditorInput(agent.id, agent.name);
 					await this.group.openEditor(input, { pinned: true });
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onOpenSettings failed:', err);
+					this._logService.error('[NativeChatEditorPane] onOpenSettings failed:', err);
 				}
 			},
 			onListSkills: () => [],
 			onNewSession: async () => {
 				// Create a new session for the current agent
 				if (!this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onNewSession: no agent selected');
+					this._logService.info('[NativeChatEditorPane] onNewSession: no agent selected');
 					return;
 				}
 				try {
 					const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
 					this._currentSessionId = session.id;
-					console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
+					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
 					// Clear messages in UI
 					this._chatPanel?.setMessages([]);
 					// 新会话无压缩历史 → 重置压缩基线
@@ -590,13 +592,13 @@ export class NativeChatEditorPane extends EditorPane {
 					// Refresh session list
 					await this._refreshSessionList();
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onNewSession failed:', err);
+					this._logService.error('[NativeChatEditorPane] onNewSession failed:', err);
 				}
 			},
 			onOpenSession: async (sessionId: string) => {
 				// Switch to the selected session and reload its history
 				if (!this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onOpenSession: no agent selected');
+					this._logService.info('[NativeChatEditorPane] onOpenSession: no agent selected');
 					return;
 				}
 				const agentId = this._currentAgentId;
@@ -609,31 +611,31 @@ export class NativeChatEditorPane extends EditorPane {
 					// Scope checkpoints to the newly opened session & refresh the bar.
 					this._activateCheckpointSession(agentId, sessionId);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onOpenSession failed:', err);
+					this._logService.error('[NativeChatEditorPane] onOpenSession failed:', err);
 					this._chatPanel?.setMessages([]);
 				}
 			},
 			onRenameSession: async (sessionId: string, newName: string) => {
 				if (!this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onRenameSession: no agent selected');
+					this._logService.info('[NativeChatEditorPane] onRenameSession: no agent selected');
 					return;
 				}
 				try {
 					await this._chatService.renameAgentSession(this._currentAgentId, sessionId, newName);
-					console.log(`[NativeChatEditorPane] onRenameSession: renamed session ${sessionId} to "${newName}"`);
+					this._logService.debug(`[NativeChatEditorPane] onRenameSession: renamed session ${sessionId} to "${newName}"`);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onRenameSession failed:', err);
+					this._logService.error('[NativeChatEditorPane] onRenameSession failed:', err);
 				}
 			},
 			onDeleteSession: async (sessionId: string) => {
 				if (!this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onDeleteSession: no agent selected');
+					this._logService.info('[NativeChatEditorPane] onDeleteSession: no agent selected');
 					return;
 				}
 				const agentId = this._currentAgentId;
 				try {
 					await this._chatService.deleteAgentSession(agentId, sessionId);
-					console.log(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
+					this._logService.debug(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
 					// If the deleted session is the current one, switch to the most recent
 					// remaining session (or clear the view) and reload history + checkpoints.
 					if (this._currentSessionId === sessionId) {
@@ -655,7 +657,7 @@ export class NativeChatEditorPane extends EditorPane {
 					}
 					await this._refreshSessionList();
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onDeleteSession failed:', err);
+					this._logService.error('[NativeChatEditorPane] onDeleteSession failed:', err);
 				}
 			},
 			// Orchestration plan callbacks
@@ -663,42 +665,42 @@ export class NativeChatEditorPane extends EditorPane {
 				try {
 					await this._taskOrchestrationService.approvePlan(planId);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] approvePlan failed:', err);
+					this._logService.error('[NativeChatEditorPane] approvePlan failed:', err);
 				}
 			},
 			onRejectPlan: async (planId: string) => {
 				try {
 					await this._taskOrchestrationService.rejectPlan(planId);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] rejectPlan failed:', err);
+					this._logService.error('[NativeChatEditorPane] rejectPlan failed:', err);
 				}
 			},
 			onApproveWithoutExecute: async (planId: string) => {
 				try {
 					await this._taskOrchestrationService.approveWithoutExecute(planId);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] approveWithoutExecute failed:', err);
+					this._logService.error('[NativeChatEditorPane] approveWithoutExecute failed:', err);
 				}
 			},
 			onTaskAction: async (planId: string, taskId: string, action: 'retry' | 'pause' | 'resume' | 'cancel' | 'approve' | 'reject' | 'block' | 'unblock') => {
 				try {
 					await this._taskOrchestrationService.taskAction(planId, taskId, action);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] taskAction failed:', err);
+					this._logService.error('[NativeChatEditorPane] taskAction failed:', err);
 				}
 			},
 			onUpdatePlan: async (planId: string, updates: Record<string, unknown>) => {
 				try {
 					await this._taskOrchestrationService.updatePlan(planId, updates);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] updatePlan failed:', err);
+					this._logService.error('[NativeChatEditorPane] updatePlan failed:', err);
 				}
 			},
 			onUpdateTask: async (planId: string, taskId: string, updates: Record<string, unknown>) => {
 				try {
 					await this._taskOrchestrationService.updateTask(planId, taskId, updates);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] updateTask failed:', err);
+					this._logService.error('[NativeChatEditorPane] updateTask failed:', err);
 				}
 			},
 			onDecomposeTask: async (planId: string, taskId: string) => {
@@ -709,17 +711,17 @@ export class NativeChatEditorPane extends EditorPane {
 						await this._taskOrchestrationService.decomposeTask(planId, taskId, plan.workspaceId, plan.plannerId);
 					}
 				} catch (err) {
-					console.error('[NativeChatEditorPane] decomposeTask failed:', err);
+					this._logService.error('[NativeChatEditorPane] decomposeTask failed:', err);
 				}
 			},
 			onClosePlanDialog: (planId: string) => {
 				// Just log for now, the dialog is closed in AgentChatPanel
-				console.log('[NativeChatEditorPane] closePlanDialog:', planId);
+				this._logService.debug('[NativeChatEditorPane] closePlanDialog:', planId);
 			},
 			onSelectWorktree: async (worktree: { path: string; branch: string }) => {
 				const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
 				if (!workspaceId || !this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onSelectWorktree: missing workspaceId or agentId');
+					this._logService.info('[NativeChatEditorPane] onSelectWorktree: missing workspaceId or agentId');
 					return;
 				}
 				try {
@@ -730,9 +732,9 @@ export class NativeChatEditorPane extends EditorPane {
 					// Update local state
 					this._currentWorkspaceId = workspaceId;
 					this._chatPanel?.setSelectedWorktree(worktree.path);
-					console.log(`[NativeChatEditorPane] onSelectWorktree: switched to worktree ${worktree.path}`);
+					this._logService.debug(`[NativeChatEditorPane] onSelectWorktree: switched to worktree ${worktree.path}`);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onSelectWorktree failed:', err);
+					this._logService.error('[NativeChatEditorPane] onSelectWorktree failed:', err);
 				}
 			},
 			// 参考 React WorktreeSwitcher 逻辑：下拉框打开时主动加载 worktree 列表
@@ -743,7 +745,7 @@ export class NativeChatEditorPane extends EditorPane {
 			onClearWorktree: async () => {
 				const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
 				if (!workspaceId || !this._currentAgentId) {
-					console.warn('[NativeChatEditorPane] onClearWorktree: missing workspaceId or agentId');
+					this._logService.info('[NativeChatEditorPane] onClearWorktree: missing workspaceId or agentId');
 					return;
 				}
 				try {
@@ -753,9 +755,9 @@ export class NativeChatEditorPane extends EditorPane {
 					});
 					// Update local state
 					this._chatPanel?.setSelectedWorktree('');
-					console.log(`[NativeChatEditorPane] onClearWorktree: switched to main repo`);
+					this._logService.debug(`[NativeChatEditorPane] onClearWorktree: switched to main repo`);
 				} catch (err) {
-					console.error('[NativeChatEditorPane] onClearWorktree failed:', err);
+					this._logService.error('[NativeChatEditorPane] onClearWorktree failed:', err);
 				}
 			},
 			onScrollToMessage: (_messageId: string) => {
@@ -788,7 +790,7 @@ export class NativeChatEditorPane extends EditorPane {
 				void this._handleConfirmationAction(confirmationId, buttonId);
 			},
 			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
-				console.log('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
+				this._logService.debug('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
 				// Optimistically mark the AskUser as answered
 				this._liveWorkflowAskUsers = this._liveWorkflowAskUsers.map(a =>
 					a.id === askUserId
@@ -798,7 +800,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._refreshLiveWorkflowMessage();
 				// Resume the paused workflow execution
 				this._workflowExecutionService.resumeExecution(executionId, selection).catch(err => {
-					console.error('[NativeChatEditorPane] Failed to resume workflow:', err);
+					this._logService.error('[NativeChatEditorPane] Failed to resume workflow:', err);
 					// Rollback on failure
 					this._liveWorkflowAskUsers = this._liveWorkflowAskUsers.map(a =>
 						a.id === askUserId
@@ -819,7 +821,7 @@ export class NativeChatEditorPane extends EditorPane {
 				if (ref?.kind === 'url' && ref.uri) {
 					const input = UrlPreviewEditorInput.getOrCreate(ref.uri);
 					this._editorService.openEditor(input, { pinned: true }).catch(err => {
-						console.error('[NativeChatEditorPane] onReferenceClick: failed to open URL:', err);
+						this._logService.error('[NativeChatEditorPane] onReferenceClick: failed to open URL:', err);
 					});
 				} else if (ref?.kind === 'file' || ref?.kind === 'code' || ref?.kind === 'symbol') {
 					const filePath = ref.uri || ref.name;
@@ -841,9 +843,9 @@ export class NativeChatEditorPane extends EditorPane {
 				void this._handleApplyCode(code, language, filePath);
 			},
 			onSubmitVariables: (executionId: string, values: Record<string, string>) => {
-				console.log('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
+				this._logService.debug('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
 				this._workflowExecutionService.submitWorkflowVariables(executionId, values).catch(err => {
-					console.error('[NativeChatEditorPane] Failed to submit variables:', err);
+					this._logService.error('[NativeChatEditorPane] Failed to submit variables:', err);
 				});
 			},
 			onOpenFile: (filePath: string, content?: string) => {
@@ -853,7 +855,7 @@ export class NativeChatEditorPane extends EditorPane {
 						resource: URI.from({ scheme: 'untitled', path: filePath }),
 						contents: content,
 					}).catch(err => {
-						console.error('[NativeChatEditorPane] onOpenFile: failed to open content:', err);
+						this._logService.error('[NativeChatEditorPane] onOpenFile: failed to open content:', err);
 					});
 				} else {
 					// 真实文件路径 — 在编辑器中打开文件
@@ -880,20 +882,20 @@ export class NativeChatEditorPane extends EditorPane {
 				// 其他 http(s) 链接在编辑器区域（webview iframe）中打开
 				const input = UrlPreviewEditorInput.getOrCreate(url);
 				this._editorService.openEditor(input, { pinned: true }).catch(err => {
-					console.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
+					this._logService.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
 				});
 			},
 		}));
 
 		this._container.appendChild(this._chatPanel.element);
 		this._isInitialized = true;
-		console.warn(`[NativeChatEditorPane][Init] _initChatPanel panel constructed + appended t=${(performance.now() - t0).toFixed(1)}ms`);
+		this._logService.debug(`[NativeChatEditorPane][Init] _initChatPanel panel constructed + appended t=${(performance.now() - t0).toFixed(1)}ms`);
 
 		// 设置系统消息面板的详情回调
 		this._chatPanel?.setOpenCompressionDetailCallback((data) => {
 			const input = CompressionDetailEditorInput.getOrCreate(data as any);
 			this._editorService.openEditor(input, { pinned: true }).catch(err => {
-				console.error('[NativeChatEditorPane] Failed to open compression detail:', err);
+				this._logService.error('[NativeChatEditorPane] Failed to open compression detail:', err);
 			});
 		});
 		this._chatPanel?.setOpenMemoryDetailCallback((agentId, memoryType, contentPreview) => {
@@ -906,19 +908,19 @@ export class NativeChatEditorPane extends EditorPane {
 					pane.navigateToTarget(memoryType ?? undefined, contentPreview);
 				}
 			}).catch(err => {
-				console.error('[NativeChatEditorPane] Failed to open memory detail:', err);
+				this._logService.error('[NativeChatEditorPane] Failed to open memory detail:', err);
 			});
 		});
 		this._chatPanel?.setOpenCodebaseDetailCallback(() => {
 			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
 			this._editorService.openEditor(input, { pinned: true }).catch(err => {
-				console.error('[NativeChatEditorPane] Failed to open codebase memory detail:', err);
+				this._logService.error('[NativeChatEditorPane] Failed to open codebase memory detail:', err);
 			});
 		});
-		console.warn(`[NativeChatEditorPane][Init] callbacks set up t=${(performance.now() - t0).toFixed(1)}ms`);
+		this._logService.debug(`[NativeChatEditorPane][Init] callbacks set up t=${(performance.now() - t0).toFixed(1)}ms`);
 
 		// Load available agents
-		console.warn(`[NativeChatEditorPane][Init] calling _loadAvailableAgents t=${(performance.now() - t0).toFixed(1)}ms`);
+		this._logService.debug(`[NativeChatEditorPane][Init] calling _loadAvailableAgents t=${(performance.now() - t0).toFixed(1)}ms`);
 		this._loadAvailableAgents();
 
 		// Model selector wiring — initialize provider/model data for toolbar
@@ -933,7 +935,7 @@ export class NativeChatEditorPane extends EditorPane {
 				void this._refreshModelSelector();
 			}, 300);
 		};
-		console.warn(`[NativeChatEditorPane][Init] calling _refreshModelSelector (debounced) t=${(performance.now() - t0).toFixed(1)}ms`);
+		this._logService.debug(`[NativeChatEditorPane][Init] calling _refreshModelSelector (debounced) t=${(performance.now() - t0).toFixed(1)}ms`);
 		debouncedRefreshModelSelector();
 		this._register(this._modelSelector.onDidChangeSelection(() => {
 			debouncedRefreshModelSelector();
@@ -1027,7 +1029,7 @@ export class NativeChatEditorPane extends EditorPane {
 					if (trace.nodeId === '__workflow__') {
 						// Workflow root: switch session + create live message
 						const { workflowAgentId, sessionId, nodeName } = trace;
-						console.log(`[NativeChatEditorPane] Workflow started: agent=${workflowAgentId}, session=${sessionId}, name=${nodeName}`);
+						this._logService.debug(`[NativeChatEditorPane] Workflow started: agent=${workflowAgentId}, session=${sessionId}, name=${nodeName}`);
 						this._currentAgentId = workflowAgentId;
 						this._currentSessionId = sessionId;
 						this._liveWorkflowExecId = trace.executionId;
@@ -1049,7 +1051,7 @@ export class NativeChatEditorPane extends EditorPane {
 							this._activateCheckpointSession(workflowAgentId, sessionId);
 							await this._refreshSessionList();
 						} catch (err) {
-							console.warn('[NativeChatEditorPane] Failed to load workflow session history:', err);
+							this._logService.info('[NativeChatEditorPane] Failed to load workflow session history:', err);
 						}
 						// Add live workflow assistant message with CURRENT state
 						// (events arriving during await already updated the arrays)
@@ -1084,13 +1086,13 @@ export class NativeChatEditorPane extends EditorPane {
 						}
 					} else {
 						// Non-root subagent start: add to subAgents list
-						console.log(`[NativeChatEditorPane] subagent_start: node=${trace.nodeId}, name=${trace.nodeName}, type=${trace.nodeType}`);
+						this._logService.debug(`[NativeChatEditorPane] subagent_start: node=${trace.nodeId}, name=${trace.nodeName}, type=${trace.nodeType}`);
 
 						// Fallback: if __workflow__ root event was missed (timing race
 						// or event dropped), auto-initialize the live workflow container
 						// so the sub-agent card can still render.
 						if (!this._liveWorkflowMsgId || !this._liveWorkflowExecId) {
-							console.warn(`[NativeChatEditorPane] subagent_start without __workflow__ root — auto-initializing live workflow (execId=${trace.executionId})`);
+							this._logService.info(`[NativeChatEditorPane] subagent_start without __workflow__ root — auto-initializing live workflow (execId=${trace.executionId})`);
 							this._liveWorkflowExecId = trace.executionId;
 							this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
 							this._liveWorkflowSubAgents = [];
@@ -1150,7 +1152,7 @@ export class NativeChatEditorPane extends EditorPane {
 					break;
 				}
 				case 'collect_variables': {
-					console.log(`[NativeChatEditorPane] collect_variables: executionId=${trace.executionId}, vars=${trace.variables.map((v: any) => v.name).join(',')}`);
+					this._logService.debug(`[NativeChatEditorPane] collect_variables: executionId=${trace.executionId}, vars=${trace.variables.map((v: any) => v.name).join(',')}`);
 					this._liveWorkflowEvents.push({
 						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
 						executionId: trace.executionId,
@@ -1171,7 +1173,7 @@ export class NativeChatEditorPane extends EditorPane {
 					break;
 				}
 				case 'collect_variables_end': {
-					console.log(`[NativeChatEditorPane] collect_variables_end: executionId=${trace.executionId}, status=${trace.status}`);
+					this._logService.debug(`[NativeChatEditorPane] collect_variables_end: executionId=${trace.executionId}, status=${trace.status}`);
 					this._liveWorkflowEvents.push({
 						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
 						executionId: trace.executionId,
@@ -1199,7 +1201,7 @@ export class NativeChatEditorPane extends EditorPane {
 					// We must read those same field names here — NOT d.id/d.name/d.args.
 					const d = trace.delta as any;
 					if (d?.type === 'tool_start' || d?.type === 'tool_end' || d?.type === 'tool_args' || d?.type === 'tool_result') {
-						console.log(`[NativeChatEditorPane] delta: node=${trace.nodeId}, type=${d.type}, tool=${d.toolName ?? d.name ?? d.id}`, JSON.stringify(d).slice(0, 200));
+						this._logService.debug(`[NativeChatEditorPane] delta: node=${trace.nodeId}, type=${d.type}, tool=${d.toolName ?? d.name ?? d.id}`, JSON.stringify(d).slice(0, 200));
 					}
 					const sa = this._liveWorkflowSubAgents.find(s => s.id === trace.nodeId);
 
@@ -1284,7 +1286,7 @@ export class NativeChatEditorPane extends EditorPane {
 					break;
 				}
 				case 'ask_user': {
-					console.log(`[NativeChatEditorPane] ask_user: node=${trace.nodeId}, question=${trace.question?.substring(0, 60)}`);
+					this._logService.debug(`[NativeChatEditorPane] ask_user: node=${trace.nodeId}, question=${trace.question?.substring(0, 60)}`);
 					const askId = `${trace.executionId}:${trace.nodeId}`;
 					// Dedup: skip if already registered
 					if (!this._liveWorkflowAskUsers.some(a => a.id === askId)) {
@@ -1316,7 +1318,7 @@ export class NativeChatEditorPane extends EditorPane {
 					break;
 				}
 				case 'ask_user_end': {
-					console.log(`[NativeChatEditorPane] ask_user_end: node=${trace.nodeId}, status=${trace.status}`);
+					this._logService.debug(`[NativeChatEditorPane] ask_user_end: node=${trace.nodeId}, status=${trace.status}`);
 					const askId = `${trace.executionId}:${trace.nodeId}`;
 					const status = (trace.status as 'answered' | 'cancelled' | 'expired') ?? 'answered';
 					if (status !== 'answered') {
@@ -1340,7 +1342,7 @@ export class NativeChatEditorPane extends EditorPane {
 					break;
 				}
 				case 'execution_end': {
-					console.log(`[NativeChatEditorPane] execution_end: status=${trace.status}`);
+					this._logService.debug(`[NativeChatEditorPane] execution_end: status=${trace.status}`);
 
 					// Snapshot data BEFORE any state mutation — we need it for the final
 					// card update AND for a safety-net delayed refresh.
@@ -1426,7 +1428,7 @@ export class NativeChatEditorPane extends EditorPane {
 			}
 		}));
 
-		console.log('[NativeChatEditorPane] Chat panel initialized');
+		this._logService.debug('[NativeChatEditorPane] Chat panel initialized');
 	}
 
 	/**
@@ -1478,10 +1480,10 @@ export class NativeChatEditorPane extends EditorPane {
 
 	private async _selectAndLoadAgent(agentId: string): Promise<void> {
 		const t0 = performance.now();
-		console.warn(`[NativeChatEditorPane][Init] _selectAndLoadAgent START agentId=${agentId}`);
+		this._logService.debug(`[NativeChatEditorPane][Init] _selectAndLoadAgent START agentId=${agentId}`);
 		try {
 			const emp = await this._agentStudioService.getAgent(agentId);
-			console.warn(`[NativeChatEditorPane][Init] getAgent done t=${(performance.now() - t0).toFixed(1)}ms`);
+			this._logService.debug(`[NativeChatEditorPane][Init] getAgent done t=${(performance.now() - t0).toFixed(1)}ms`);
 			if (emp && this._chatPanel) {
 				this._currentAgentId = agentId;
 				this._chatPanel.setAgent({
@@ -1498,35 +1500,35 @@ export class NativeChatEditorPane extends EditorPane {
 				});
 				// Auto-create or get active session for this agent
 				try {
-					console.warn(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
+					this._logService.debug(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
 					const session = await this._chatService.getOrCreateActiveSession(agentId);
 					this._currentSessionId = session.id;
-					console.warn(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
+					this._logService.debug(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
 
 					// Load history messages for this session
 					try {
-						console.warn(`[NativeChatEditorPane][Init] calling getHistory t=${(performance.now() - t0).toFixed(1)}ms`);
+						this._logService.debug(`[NativeChatEditorPane][Init] calling getHistory t=${(performance.now() - t0).toFixed(1)}ms`);
 						const history = await this._chatService.getHistory(agentId, this._currentSessionId);
-						console.warn(`[NativeChatEditorPane][Init] getHistory done count=${history?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
+						this._logService.debug(`[NativeChatEditorPane][Init] getHistory done count=${history?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 						// Yield to event loop: let the input box render and become
 						// interactive BEFORE the heavy synchronous setMessages call
 						// (which blocks ~1.4s for 259 messages).
 						const adapted = this._adaptHistoryMessages(history);
 						await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-						console.warn(`[NativeChatEditorPane][Init] setMessages START (after yield) t=${(performance.now() - t0).toFixed(1)}ms`);
+						this._logService.debug(`[NativeChatEditorPane][Init] setMessages START (after yield) t=${(performance.now() - t0).toFixed(1)}ms`);
 						this._chatPanel.setMessages(adapted);
-						console.warn(`[NativeChatEditorPane][Init] setMessages done t=${(performance.now() - t0).toFixed(1)}ms`);
+						this._logService.debug(`[NativeChatEditorPane][Init] setMessages done t=${(performance.now() - t0).toFixed(1)}ms`);
 						// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
 						this._restoreCompactedBaseline();
 					} catch (err) {
-						console.warn('[NativeChatEditorPane] Failed to load history:', err);
+						this._logService.info('[NativeChatEditorPane] Failed to load history:', err);
 						this._chatPanel.setMessages([]);
 					}
 					// Register active session for checkpoint scoping & refresh checkpoint bar
 					this._activateCheckpointSession(agentId, this._currentSessionId);
-					console.warn(`[NativeChatEditorPane][Init] _selectAndLoadAgent END t=${(performance.now() - t0).toFixed(1)}ms`);
+					this._logService.debug(`[NativeChatEditorPane][Init] _selectAndLoadAgent END t=${(performance.now() - t0).toFixed(1)}ms`);
 				} catch (err) {
-					console.warn('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
+					this._logService.info('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
 				}
 				// Load worktrees for the selected agent
 				await this._loadWorktrees();
@@ -1534,7 +1536,7 @@ export class NativeChatEditorPane extends EditorPane {
 				await this._refreshSessionList();
 			}
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);
+			this._logService.info('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);
 		}
 	}
 
@@ -1602,7 +1604,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._currentSessionId = sessionId;
 				this._activateCheckpointSession(agentId, sessionId);
 			} catch (err) {
-				console.error('[NativeChatEditorPane] _ensureSession failed:', err);
+				this._logService.error('[NativeChatEditorPane] _ensureSession failed:', err);
 				return null;
 			}
 		}
@@ -1632,7 +1634,7 @@ export class NativeChatEditorPane extends EditorPane {
 				await this._chatService.deleteMessagesAfter(agentId, sessionId, history[idx - 1].id);
 			}
 		} catch (err) {
-			console.error('[NativeChatEditorPane] _handleEditMessage: truncate failed:', err);
+			this._logService.error('[NativeChatEditorPane] _handleEditMessage: truncate failed:', err);
 			return;
 		}
 		await this._sendMessageInternal(newText);
@@ -1717,16 +1719,16 @@ export class NativeChatEditorPane extends EditorPane {
 				} catch { /* command not registered — silently ignore */ }
 			}
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _handleCheckpointAction failed:', err);
+			this._logService.info('[NativeChatEditorPane] _handleCheckpointAction failed:', err);
 		}
 	}
 
 	private async _loadAvailableAgents(): Promise<void> {
 		const t0 = performance.now();
-		console.warn(`[NativeChatEditorPane][Init] _loadAvailableAgents START`);
+		this._logService.debug(`[NativeChatEditorPane][Init] _loadAvailableAgents START`);
 		try {
 			const agents = await this._agentStudioService.getAgents();
-			console.warn(`[NativeChatEditorPane][Init] _loadAvailableAgents getAgents done count=${agents?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
+			this._logService.debug(`[NativeChatEditorPane][Init] _loadAvailableAgents getAgents done count=${agents?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 			console.info(
 				`[NativeChatEditorPane] _loadAvailableAgents: fetched ${agents?.length ?? 0} agents — ` +
 				`ids=[${(agents ?? []).map(a => a.id).join(', ')}]`
@@ -1765,7 +1767,7 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 			}
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _loadAvailableAgents failed:', err);
+			this._logService.info('[NativeChatEditorPane] _loadAvailableAgents failed:', err);
 		}
 	}
 
@@ -1776,10 +1778,10 @@ export class NativeChatEditorPane extends EditorPane {
 			return;
 		}
 		const t0 = performance.now();
-		console.warn(`[NativeChatEditorPane][Init] _refreshModelSelector START`);
+		this._logService.debug(`[NativeChatEditorPane][Init] _refreshModelSelector START`);
 		try {
 			const items = await this._modelSelector.getAvailableModels();
-			console.warn(`[NativeChatEditorPane][Init] _refreshModelSelector getAvailableModels done count=${items?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
+			this._logService.debug(`[NativeChatEditorPane][Init] _refreshModelSelector getAvailableModels done count=${items?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 
 			// Provider list — unique by id, preserving order
 			const seenProviders = new Set<string>();
@@ -1830,7 +1832,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._currentMaxContextTokens = undefined;
 			}
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _refreshModelSelector failed:', err);
+			this._logService.info('[NativeChatEditorPane] _refreshModelSelector failed:', err);
 		}
 	}
 
@@ -1868,7 +1870,7 @@ export class NativeChatEditorPane extends EditorPane {
 		try {
 			const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
 			if (!workspaceId) {
-				console.warn('[NativeChatEditorPane] _loadWorktrees: no workspaceId');
+				this._logService.info('[NativeChatEditorPane] _loadWorktrees: no workspaceId');
 				this._chatPanel.setWorktrees([]);
 				this._chatPanel.setSelectedWorktree('');
 				return;
@@ -1895,9 +1897,9 @@ export class NativeChatEditorPane extends EditorPane {
 					// ignore
 				}
 			}
-			console.log(`[NativeChatEditorPane] _loadWorktrees: loaded ${items.length} worktrees for workspace ${workspaceId}`);
+			this._logService.debug(`[NativeChatEditorPane] _loadWorktrees: loaded ${items.length} worktrees for workspace ${workspaceId}`);
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _loadWorktrees failed:', err);
+			this._logService.info('[NativeChatEditorPane] _loadWorktrees failed:', err);
 			this._chatPanel.setWorktrees([]);
 		}
 	}
@@ -1906,7 +1908,7 @@ export class NativeChatEditorPane extends EditorPane {
 	private async _getWorktrees(): Promise<ReadonlyArray<{ path: string; branch: string; outgoingChanges?: number; incomingChanges?: number; uncommittedChanges?: number }>> {
 		const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
 		if (!workspaceId) {
-			console.warn('[NativeChatEditorPane] _getWorktrees: no workspaceId');
+			this._logService.info('[NativeChatEditorPane] _getWorktrees: no workspaceId');
 			return [];
 		}
 		try {
@@ -1919,7 +1921,7 @@ export class NativeChatEditorPane extends EditorPane {
 				uncommittedChanges: wt.uncommittedChanges,
 			}));
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _getWorktrees failed:', err);
+			this._logService.info('[NativeChatEditorPane] _getWorktrees failed:', err);
 			return [];
 		}
 	}
@@ -1928,7 +1930,7 @@ export class NativeChatEditorPane extends EditorPane {
 		await super.setInput(input, options, context, token);
 
 		if (!(input instanceof NativeChatEditorInput)) {
-			console.warn('[NativeChatEditorPane] setInput: not a NativeChatEditorInput, skipping');
+			this._logService.info('[NativeChatEditorPane] setInput: not a NativeChatEditorInput, skipping');
 			return;
 		}
 
@@ -2007,7 +2009,7 @@ export class NativeChatEditorPane extends EditorPane {
 				});
 			}
 		} catch (err) {
-			console.error('[NativeChatEditorPane] _handleApplyCode failed:', err);
+			this._logService.error('[NativeChatEditorPane] _handleApplyCode failed:', err);
 			// 回退：直接写入
 			if (filePath) {
 				try {
@@ -2060,7 +2062,7 @@ export class NativeChatEditorPane extends EditorPane {
 				},
 			}, targetGroup);
 		} catch (err) {
-			console.error('[NativeChatEditorPane] _openFileInEditor failed:', err);
+			this._logService.error('[NativeChatEditorPane] _openFileInEditor failed:', err);
 		}
 	}
 
@@ -2138,7 +2140,7 @@ export class NativeChatEditorPane extends EditorPane {
 			const truncated = text.length > maxSize ? text.slice(0, maxSize) + '\n... (truncated)' : text;
 			this._chatPanel?.addFileContext(filePath, truncated);
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _addFileContextToChat: failed to read file:', filePath, err);
+			this._logService.info('[NativeChatEditorPane] _addFileContextToChat: failed to read file:', filePath, err);
 		}
 	}
 
@@ -2153,13 +2155,13 @@ export class NativeChatEditorPane extends EditorPane {
 			// 发送代码到终端
 			await this._commandService.executeCommand('workbench.action.terminal.sendSequence', { text: code + '\n' });
 		} catch (err) {
-			console.error('[NativeChatEditorPane] _runInTerminal failed:', err);
+			this._logService.error('[NativeChatEditorPane] _runInTerminal failed:', err);
 			// 回退：尝试创建新终端
 			try {
 				await this._commandService.executeCommand('workbench.action.terminal.new');
 				await this._commandService.executeCommand('workbench.action.terminal.sendSequence', { text: code + '\n' });
 			} catch (err2) {
-				console.error('[NativeChatEditorPane] _runInTerminal fallback failed:', err2);
+				this._logService.error('[NativeChatEditorPane] _runInTerminal fallback failed:', err2);
 			}
 		}
 	}
@@ -2183,7 +2185,7 @@ export class NativeChatEditorPane extends EditorPane {
 			const fileName = resource?.path.split('/').pop() || 'selection';
 			this._chatPanel?.addFileContext(`${fileName} (L${selection.startLineNumber}-${selection.endLineNumber})`, selectedText);
 		} catch (err) {
-			console.warn('[NativeChatEditorPane] _addEditorSelectionToChat: no active editor or selection:', err);
+			this._logService.info('[NativeChatEditorPane] _addEditorSelectionToChat: no active editor or selection:', err);
 		}
 	}
 

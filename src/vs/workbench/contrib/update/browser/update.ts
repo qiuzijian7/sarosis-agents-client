@@ -219,6 +219,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IProductService private readonly productService: IProductService,
 		@IDialogService private readonly dialogService: IDialogService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 		this.state = updateService.state;
@@ -252,6 +253,15 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 		this.updateStateContextKey.set(state.type);
 
 		switch (state.type) {
+			case StateType.Idle: {
+				// vssaros: 用户手动检查更新且无新版本时，提示"当前版本已是最新版本"
+				if (state.notAvailable) {
+					this.notificationService.info(
+						nls.localize('updateLatestVersion', "当前版本 {0} 已经是最新版本", this.productService.version)
+					);
+				}
+				break;
+			}
 			case StateType.AvailableForDownload: {
 				// vssaros: 检测到新版本，弹窗提示用户选择"更新/暂不"
 				this.promptForUpdate(state.update);

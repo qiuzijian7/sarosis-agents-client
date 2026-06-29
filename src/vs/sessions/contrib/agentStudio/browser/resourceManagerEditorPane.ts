@@ -12,6 +12,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { $, clearNode, Dimension } from '../../../../base/browser/dom.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -81,6 +82,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 	private _fileTreeEl: HTMLElement | undefined;
 	private _marketplacePkg: IMarketplacePackage | undefined;
 	private _isMarketplacePreview = false;
+	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	constructor(
 		group: IEditorGroup,
@@ -234,6 +236,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 
 	private _renderDetail(): void {
 		clearNode(this._detailEl);
+		this._renderDisposables.clear();
 
 		// Marketplace preview mode: build IResourceItem from package data
 		let item: IResourceItem | undefined;
@@ -601,10 +604,14 @@ export class ResourceManagerEditorPane extends EditorPane {
 			uploadBtn.style.borderRadius = '3px';
 			uploadBtn.style.cursor = 'pointer';
 			uploadBtn.onclick = async () => {
+				// Show manifest form dialog before uploading
+				const formData = await this._showUploadManifestDialog(item);
+				if (!formData) { return; } // User cancelled
+
 				uploadBtn.textContent = '\u23F3 上传中...';
 				uploadBtn.disabled = true;
 				try {
-					const result = await this.marketplaceService.publish(storeId, pkgKind as any);
+					const result = await this.marketplaceService.publish(storeId, pkgKind as any, formData);
 					this.notificationService.info(`\u2705 ${item.name} v${result.version} 已上传到商城`);
 					this._renderDetail();
 				} catch (err) {
@@ -617,7 +624,209 @@ export class ResourceManagerEditorPane extends EditorPane {
 		});
 	}
 
-	/** Compare two semver-like version strings. Returns >0 if a>b, 0 if equal, <0 if a<b */
+	/**
+	 * Show a dialog for the user to fill in manifest metadata before uploading.
+	 * Returns the form data, or undefined if cancelled.
+	 */
+	private _showUploadManifestDialog(item: IResourceItem): Promise<{ name?: string; version?: string; description?: string; category?: string; author?: string; changelog?: string } | undefined> {
+		return new Promise((resolve) => {
+			// Overlay
+			const overlay = $('div');
+			overlay.style.position = 'absolute';
+			overlay.style.inset = '0';
+			overlay.style.background = 'rgba(0,0,0,0.5)';
+			overlay.style.display = 'flex';
+			overlay.style.alignItems = 'center';
+			overlay.style.justifyContent = 'center';
+			overlay.style.zIndex = '1000';
+			overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(undefined); } };
+
+			// Dialog
+			const dialog = $('div');
+			dialog.style.background = 'var(--vscode-editor-background)';
+			dialog.style.border = '1px solid var(--vscode-panel-border)';
+			dialog.style.borderRadius = '8px';
+			dialog.style.width = '480px';
+			dialog.style.maxWidth = '90vw';
+			dialog.style.maxHeight = '85vh';
+			dialog.style.overflow = 'hidden';
+			dialog.style.display = 'flex';
+			dialog.style.flexDirection = 'column';
+			dialog.style.boxShadow = '0 8px 32px rgba(0,0,0,0.4)';
+			dialog.onclick = (e) => e.stopPropagation();
+
+			// Header
+			const head = $('div');
+			head.style.display = 'flex';
+			head.style.alignItems = 'center';
+			head.style.justifyContent = 'space-between';
+			head.style.padding = '14px 18px';
+			head.style.borderBottom = '1px solid var(--vscode-panel-border)';
+			head.style.flexShrink = '0';
+
+			const title = $('span');
+			title.textContent = '\u{1F4E4} 上传到商城';
+			title.style.fontSize = '14px';
+			title.style.fontWeight = '600';
+			head.appendChild(title);
+
+			const closeBtn = $('button') as HTMLButtonElement;
+			closeBtn.textContent = '\u2715';
+			closeBtn.style.background = 'none';
+			closeBtn.style.border = 'none';
+			closeBtn.style.color = 'var(--vscode-descriptionForeground)';
+			closeBtn.style.cursor = 'pointer';
+			closeBtn.style.fontSize = '16px';
+			closeBtn.onclick = () => { overlay.remove(); resolve(undefined); };
+			head.appendChild(closeBtn);
+			dialog.appendChild(head);
+
+			// Body (scrollable)
+			const body = $('div');
+			body.style.padding = '18px';
+			body.style.overflowY = 'auto';
+			body.style.flex = '1';
+
+			// Helper to create a form field
+			const createField = (labelText: string, inputEl: HTMLElement): HTMLElement => {
+				const field = $('div');
+				field.style.marginBottom = '14px';
+
+				const label = $('label');
+				label.textContent = labelText;
+				label.style.display = 'block';
+				label.style.fontSize = '12px';
+				label.style.color = 'var(--vscode-descriptionForeground)';
+				label.style.marginBottom = '4px';
+				field.appendChild(label);
+
+				inputEl.style.width = '100%';
+				inputEl.style.padding = '6px 10px';
+				inputEl.style.background = 'var(--vscode-input-background)';
+				inputEl.style.border = '1px solid var(--vscode-input-border)';
+				inputEl.style.borderRadius = '4px';
+				inputEl.style.color = 'var(--vscode-input-foreground)';
+				inputEl.style.fontSize = '13px';
+				inputEl.style.outline = 'none';
+				inputEl.style.boxSizing = 'border-box';
+				field.appendChild(inputEl);
+
+				return field;
+			};
+
+			const inputStyle = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) => {
+				el.onfocus = () => { el.style.borderColor = 'var(--vscode-focusBorder)'; };
+				el.onblur = () => { el.style.borderColor = 'var(--vscode-input-border)'; };
+			};
+
+			// Name
+			const nameInput = $('input') as HTMLInputElement;
+			nameInput.type = 'text';
+			nameInput.value = item.name || '';
+			inputStyle(nameInput);
+			body.appendChild(createField('显示名称 *', nameInput));
+
+			// Version
+			const versionInput = $('input') as HTMLInputElement;
+			versionInput.type = 'text';
+			versionInput.value = item.version || '1.0.0';
+			versionInput.style.width = '160px';
+			inputStyle(versionInput);
+			body.appendChild(createField('版本号 *', versionInput));
+
+			// Description
+			const descInput = $('textarea') as HTMLTextAreaElement;
+			descInput.rows = 3;
+			descInput.value = item.description || '';
+			descInput.style.resize = 'vertical';
+			inputStyle(descInput);
+			body.appendChild(createField('描述', descInput));
+
+			// Category
+			const catInput = $('select') as HTMLSelectElement;
+			const categories = ['code', 'data', 'web', 'filesystem', 'shell', 'utility', 'other'];
+			for (const cat of categories) {
+				const opt = $('option') as HTMLOptionElement;
+				opt.value = cat;
+				opt.textContent = cat;
+				if (item.tags?.includes(cat)) { opt.selected = true; }
+				catInput.appendChild(opt);
+			}
+			inputStyle(catInput);
+			body.appendChild(createField('分类', catInput));
+
+			// Author
+			const authorInput = $('input') as HTMLInputElement;
+			authorInput.type = 'text';
+			authorInput.value = item.author || '';
+			inputStyle(authorInput);
+			body.appendChild(createField('作者', authorInput));
+
+			// Changelog
+			const changelogInput = $('textarea') as HTMLTextAreaElement;
+			changelogInput.rows = 3;
+			changelogInput.placeholder = '本次版本的更新说明...';
+			changelogInput.style.resize = 'vertical';
+			inputStyle(changelogInput);
+			body.appendChild(createField('更新说明 (Changelog)', changelogInput));
+
+			dialog.appendChild(body);
+
+			// Footer
+			const footer = $('div');
+			footer.style.display = 'flex';
+			footer.style.justifyContent = 'flex-end';
+			footer.style.gap = '8px';
+			footer.style.padding = '12px 18px';
+			footer.style.borderTop = '1px solid var(--vscode-panel-border)';
+			footer.style.flexShrink = '0';
+
+			const cancelBtn = $('button') as HTMLButtonElement;
+			cancelBtn.textContent = '取消';
+			cancelBtn.style.padding = '6px 16px';
+			cancelBtn.style.background = 'var(--vscode-button-secondaryBackground)';
+			cancelBtn.style.color = 'var(--vscode-button-secondaryForeground)';
+			cancelBtn.style.border = 'none';
+			cancelBtn.style.borderRadius = '4px';
+			cancelBtn.style.cursor = 'pointer';
+			cancelBtn.style.fontSize = '13px';
+			cancelBtn.onclick = () => { overlay.remove(); resolve(undefined); };
+			footer.appendChild(cancelBtn);
+
+			const uploadBtn = $('button') as HTMLButtonElement;
+			uploadBtn.textContent = '\u2B06 上传';
+			uploadBtn.style.padding = '6px 16px';
+			uploadBtn.style.background = 'var(--vscode-button-background)';
+			uploadBtn.style.color = 'var(--vscode-button-foreground)';
+			uploadBtn.style.border = 'none';
+			uploadBtn.style.borderRadius = '4px';
+			uploadBtn.style.cursor = 'pointer';
+			uploadBtn.style.fontSize = '13px';
+			uploadBtn.onclick = () => {
+				const name = nameInput.value.trim();
+				const version = versionInput.value.trim();
+				if (!name) { nameInput.focus(); return; }
+				if (!version) { versionInput.focus(); return; }
+				overlay.remove();
+				resolve({
+					name,
+					version,
+					description: descInput.value.trim() || undefined,
+					category: catInput.value,
+					author: authorInput.value.trim() || undefined,
+					changelog: changelogInput.value.trim() || undefined,
+				});
+			};
+			footer.appendChild(uploadBtn);
+			dialog.appendChild(footer);
+
+			overlay.appendChild(dialog);
+			this._container.appendChild(overlay);
+
+			// Focus name input
+			nameInput.focus();
+		});
+	}
 	private _compareVersions(a: string, b: string): number {
 		const parseVer = (v: string) => v.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
 		const pa = parseVer(a);
@@ -717,6 +926,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 		try {
 			const md = new MarkdownString(mdText, { supportThemeIcons: true, isTrusted: false });
 			const rendered = renderMarkdown(md);
+			this._renderDisposables.add(rendered);
 			rendered.element.style.overflowWrap = 'anywhere';
 			// Ensure rendered markdown elements are visible with proper styling
 			rendered.element.querySelectorAll('h1').forEach(el => {
