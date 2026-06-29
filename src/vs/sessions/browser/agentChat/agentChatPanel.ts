@@ -329,7 +329,7 @@ export class AgentChatPanel extends Disposable {
 	// -- Context baseline --
 
 	// -- Callbacks --
-	private readonly _onSendMessage: (text: string, explicitSkillIds?: string[]) => void;
+	private readonly _onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => void;
 	private readonly _onCancelExecution: () => void;
 	private readonly _onSelectAgent: (id: string) => void;
 	private readonly _onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
@@ -357,7 +357,7 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onTipDismiss?: (tipId: string) => void;
 	private readonly _onApplyCode?: (code: string, language: string, filePath?: string) => void;
 	private readonly _onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
-	private readonly _onOpenFile?: (filePath: string) => void;
+	private readonly _onOpenFile?: (filePath: string, content?: string) => void;
 	/** P0-2: @提及文件搜索 */
 	private readonly _onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 	private readonly _onAddFileContext?: (filePath: string) => void;
@@ -380,7 +380,7 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onClosePlanDialog?: (planId: string) => void;
 
 	constructor(opts: {
-		onSendMessage: (text: string) => void;
+		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => void;
 		onCancelExecution: () => void;
 		onToggleCollapse: () => void;
 		onSelectAgent: (id: string) => void;
@@ -408,7 +408,7 @@ export class AgentChatPanel extends Disposable {
 		onTipDismiss?: (tipId: string) => void;
 		onApplyCode?: (code: string, language: string, filePath?: string) => void;
 		onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
-		onOpenFile?: (filePath: string) => void;
+		onOpenFile?: (filePath: string, content?: string) => void;
 		/** P0-2: @提及文件搜索——用户输入 @ 时搜索工作区文件 */
 		onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 		/** P0-2: @提及文件选择后——添加文件作为上下文 */
@@ -465,6 +465,7 @@ export class AgentChatPanel extends Disposable {
 		this._onRunInTerminal = opts.onRunInTerminal;
 		this._onAddSelectionToChat = opts.onAddSelectionToChat;
 		this._onOpenLink = opts.onOpenLink;
+		this._onOpenFile = opts.onOpenFile;
 		this._onToolApprove = opts.onToolApprove;
 		// Orchestration plan callbacks
 		this._onApprovePlan = opts.onApprovePlan;
@@ -1042,6 +1043,15 @@ export class AgentChatPanel extends Disposable {
 	private _refreshInputArea(): void {
 		if (this._inputAreaEl && this._inputAreaEl.isConnected) {
 			this._inputAreaEl.remove();
+		}
+		// 系统消息栏/列表是 _inputAreaEl 的兄弟元素（不是子元素），
+		// 不会被上面的 remove() 清除。需要手动移除，否则 _renderInputArea()
+		// 会创建新的，导致多个系统栏堆积。
+		if (this._systemMsgBar && this._systemMsgBar.isConnected) {
+			this._systemMsgBar.remove();
+		}
+		if (this._systemMsgList && this._systemMsgList.isConnected) {
+			this._systemMsgList.remove();
 		}
 		this._renderInputArea();
 	}
@@ -7100,12 +7110,17 @@ export class AgentChatPanel extends Disposable {
 
 	private _handleSendMessage(): void {
 		const text = this._textarea?.value?.trim();
-		if (!text || this._isSending) {
+		const hasAttachments = this._attachments.length > 0;
+		// 允许仅有附件无文本发送；正在发送中则阻止
+		if ((!text && !hasAttachments) || this._isSending) {
 			return;
 		}
 
 		// Get explicit skill IDs from skill chips
 		const explicitSkillIds = this._skillChips.length > 0 ? this._skillChips.map(c => c.id) : undefined;
+
+		// Snapshot attachments before clearing
+		const attachments = this._attachments.length > 0 ? this._attachments.slice() : undefined;
 
 		// Clear textarea and skill chips
 		this._textarea.value = "";
@@ -7119,8 +7134,12 @@ export class AgentChatPanel extends Disposable {
 		this._skillChips = [];
 		this._renderSkillChips();
 
-		// Send message with skill IDs
-		this._onSendMessage(text, explicitSkillIds);
+		// Clear attachments + update preview
+		this._attachments = [];
+		this._renderAttachmentPreviews();
+
+		// Send message with skill IDs + attachments
+		this._onSendMessage(text || '', explicitSkillIds, attachments);
 	}
 
 	// ─── Orchestration Plan Dialog ─────────────────────────────────────
@@ -8007,6 +8026,14 @@ export class AgentChatPanel extends Disposable {
 				}));
 			} else {
 				append(chip, $('span.chat-attachment-file-icon', undefined, '📄'));
+				// 点击文件附件时在编辑器中打开（有 filePath 的真实文件）或在编辑器中显示内容（纯内容附件）
+				chip.style.cursor = 'pointer';
+				chip.title = att.filePath || att.name;
+				this._register(addDisposableListener(chip, EventType.CLICK, (e) => {
+					// 排除删除按钮的点击
+					if ((e.target as HTMLElement).classList.contains('chat-attachment-remove')) { return; }
+					this._onOpenFile?.(att.filePath || att.name, att.filePath ? undefined : att.data);
+				}));
 			}
 			append(chip, $('span.chat-attachment-name', undefined, att.name));
 
@@ -8075,6 +8102,25 @@ export class AgentChatPanel extends Disposable {
 			id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 			type: 'file',
 			name: fileName,
+			mimeType: 'text/plain',
+			data: content,
+			size: content.length,
+			isPasted: false,
+			filePath,
+		};
+		this._attachments.push(att);
+		this._renderAttachmentPreviews();
+	}
+
+	/**
+	 * 添加纯文本内容作为聊天上下文附件（无文件路径，不可点击打开）。
+	 * 由内置浏览器的 "Add Console Logs to Chat" 等功能调用。
+	 */
+	addTextContext(name: string, content: string): void {
+		const att: IChatAttachment = {
+			id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+			type: 'file',
+			name,
 			mimeType: 'text/plain',
 			data: content,
 			size: content.length,

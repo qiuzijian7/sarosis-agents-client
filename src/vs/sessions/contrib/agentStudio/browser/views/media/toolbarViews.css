@@ -380,7 +380,6 @@ button.primary:hover,
 
 /* Common tab/filter styles */
 .preset-tabs,
-.skills-filters,
 .tasks-filters,
 .tools-tabs,
 .mcp-tabs,
@@ -395,7 +394,6 @@ button.primary:hover,
 }
 
 .preset-tab,
-.skill-filter-btn,
 .task-filter-btn,
 .tools-tab,
 .search-filter-btn,
@@ -410,7 +408,6 @@ button.primary:hover,
 }
 
 .preset-tab.active,
-.skill-filter-btn.active,
 .task-filter-btn.active,
 .tools-tab.active,
 .search-filter-btn.active,
@@ -1702,14 +1699,6 @@ button.primary:hover,
 	display: flex;
 	align-items: center;
 	gap: 8px;
-}
-
-.skills-filters {
-	flex-shrink: 0;
-	padding: 4px 12px;
-	display: flex;
-	gap: 4px;
-	flex-wrap: wrap;
 }
 
 .skills-search-row {

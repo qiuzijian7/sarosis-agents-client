@@ -19,7 +19,8 @@
 		}
 	},
 	"activationEvents": [
-		"onAuthenticationRequest:tof"
+		"onAuthenticationRequest:tof",
+		"onCommand:marketplace.proxyRequest"
 	],
 	"contributes": {
 		"authentication": [

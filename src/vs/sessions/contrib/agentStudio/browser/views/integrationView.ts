@@ -34,7 +34,8 @@ import { McpServerEditorInput } from '../mcpServerEditorInput.js';
 import { McpDetailEditorInput } from '../mcpDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
 import { SkillMarketEditorInput } from '../skillMarketEditorInput.js';
-import { MarketplaceEditorInput } from '../marketplaceEditorInput.js';
+import { ResourceManagerEditorInput } from '../resourceManagerEditorInput.js';
+import { ResourceManagerEditorPane } from '../resourceManagerEditorPane.js';
 import { IMarketplaceService, PackageKind } from '../../common/marketplace.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -85,7 +86,7 @@ interface McpToolUI {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function categorizeToolCategory(category: string | undefined): 'builtin' | 'custom' {
-	if (!category) { return 'builtin'; }
+	if (!category) { return 'custom'; }
 	if (category === 'utility' || category === 'filesystem' || category === 'web' || category === 'shell') { return 'builtin'; }
 	return 'custom';
 }
@@ -135,13 +136,11 @@ export class IntegrationViewPane extends ViewPane {
 
 	// ── Skills state ──────────────────────────────────────────────
 	private skills: ISkillDefinition[] = [];
-	private skillsActiveCategory = 'All';
 	private skillsSearchQuery = '';
 	private skillsViewMode: 'list' | 'install-hubs' | 'install-entries' = 'list';
 	private skillsLoadingHubId: string | undefined;
 	private skillsCountBadge!: HTMLElement;
 	private skillsSearchInput!: HTMLInputElement;
-	private skillsFilterRow!: HTMLElement;
 
 	// ── Tools state ───────────────────────────────────────────────
 	private tools: ToolDefinitionUI[] = [];
@@ -330,30 +329,7 @@ export class IntegrationViewPane extends ViewPane {
 		super.renderBody(container);
 		container.classList.add('integration-view');
 
-		// Global action bar — unified upload/download/check-updates for all resource kinds
-		// NOTE: Placed ABOVE tab bar to match mockup layout (⬆ 🛒 🔄 on top)
-		const globalBar = $('div.integration-global-bar');
-		const uploadBtn = $('button.integration-global-btn');
-		uploadBtn.textContent = '\u2B06';
-		uploadBtn.title = '\u4E0A\u4F20\u5F53\u524D\u8D44\u6E90\u5230\u5546\u57CE'; // 上传当前资源到商城
-		uploadBtn.onclick = () => this._handleUpload(this.activeTab);
-		globalBar.appendChild(uploadBtn);
-
-		const marketBtn = $('button.integration-global-btn');
-		marketBtn.classList.add('primary');
-		marketBtn.textContent = '\u{1F6D2} \u5546\u57CE'; // 🛒 商城
-		marketBtn.title = '\u6D4F\u89C8\u5546\u57CE'; // 浏览商城
-		marketBtn.onclick = () => this._handleBrowseMarket(this.activeTab);
-		globalBar.appendChild(marketBtn);
-
-		const checkUpdateBtn = $('button.integration-global-btn');
-		checkUpdateBtn.textContent = '\u{1F504}';
-		checkUpdateBtn.title = '\u68C0\u67E5\u66F4\u65B0'; // 检查更新
-		checkUpdateBtn.onclick = () => this._handleCheckUpdates();
-		globalBar.appendChild(checkUpdateBtn);
-		container.appendChild(globalBar);
-
-		// Tab bar (below global actions)
+		// Tab bar
 		this.tabBar = $('div.integration-tab-bar');
 		const tabDefs: { id: IntegrationTab; label: string; icon: string }[] = [
 			{ id: 'skill', label: '\u6280\u80FD', icon: '\u{1F4A1}' }, // 技能
@@ -514,9 +490,6 @@ export class IntegrationViewPane extends ViewPane {
 		container.appendChild(searchRow);
 
 		// Filter row
-		this.skillsFilterRow = $('div.skills-filters');
-		container.appendChild(this.skillsFilterRow);
-
 		// List container
 		const listContainer = $('div.integration-skills-list');
 		listContainer.id = 'integration-skills-list';
@@ -528,7 +501,7 @@ export class IntegrationViewPane extends ViewPane {
 		const allSkills = [...this.skillRegistry.getSkills()];
 
 		// Dedup
-		const sourcePriority: Record<string, number> = { workspace: 4, user: 3, extension: 2, memory: 1, builtin: 0 };
+		const sourcePriority: Record<string, number> = { user: 3, marketplace: 3, extension: 2, memory: 1, builtin: 0 };
 		const deduped = new Map<string, ISkillDefinition>();
 		for (const s of allSkills) {
 			const contentKey = `${s.id}::${s.contentHash ?? 'no-hash'}`;
@@ -545,7 +518,6 @@ export class IntegrationViewPane extends ViewPane {
 		}
 		this.skills = [...deduped.values()];
 		this._updateSkillsCount();
-		this._renderSkillsFilters();
 		this._renderSkillsList();
 	}
 
@@ -564,24 +536,6 @@ export class IntegrationViewPane extends ViewPane {
 		}
 	}
 
-	private _renderSkillsFilters(): void {
-		if (!this.skillsFilterRow) { return; }
-		clearNode(this.skillsFilterRow);
-		const categories = ['All', ...Array.from(new Set(this.skills.map(s => s.category ?? 'misc')))];
-		for (const cat of categories) {
-			const btn = $('button.skill-filter-btn');
-			btn.textContent = cat;
-			if (cat === this.skillsActiveCategory) { btn.classList.add('active'); }
-			btn.onclick = () => {
-				this.skillsFilterRow.querySelectorAll('.skill-filter-btn').forEach(b => b.classList.remove('active'));
-				btn.classList.add('active');
-				this.skillsActiveCategory = cat;
-				this._renderSkillsList();
-			};
-			this.skillsFilterRow.appendChild(btn);
-		}
-	}
-
 	private _renderSkillsList(): void {
 		const listEl = this.contentContainer.querySelector('#integration-skills-list') as HTMLElement;
 		if (!listEl) { return; }
@@ -592,9 +546,7 @@ export class IntegrationViewPane extends ViewPane {
 			return;
 		}
 
-		let filtered = this.skillsActiveCategory === 'All'
-			? this.skills
-			: this.skills.filter(s => (s.category ?? 'misc') === this.skillsActiveCategory);
+		let filtered = this.skills;
 
 		if (this.skillsSearchQuery) {
 			filtered = filtered.filter(s => {
@@ -679,9 +631,15 @@ export class IntegrationViewPane extends ViewPane {
 
 			// Unified action buttons (hover-visible) — replaces old uninstall button
 			const skillActions = this._createActionButtons('skill', skill.id, skill.name, {
+				// Only show upload for locally installed skills (user), not marketplace-downloaded
 				showUpload: skill.source === 'user',
-				showDelete: skill.source === 'user',
+				showDelete: skill.source === 'user' || skill.source === 'marketplace',
 			});
+			// Mark marketplace skills for async upgrade check
+			if (skill.source === 'marketplace') {
+				skillActions.dataset.skillId = skill.id;
+				skillActions.dataset.skillVersion = skill.version ?? '0';
+			}
 			item.appendChild(skillActions);
 			this._attachHoverActions(item);
 
@@ -691,20 +649,21 @@ export class IntegrationViewPane extends ViewPane {
 				if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.closest('button')) {
 					return;
 				}
-				if (skill.resource) {
-					const skillFileUri = URI.joinPath(skill.resource, 'SKILL.md');
-					this.editorService.openEditor({
-						resource: skillFileUri,
-						options: { pinned: false, preserveFocus: false },
-					});
-				}
+				const input = ResourceManagerEditorInput.getInstance();
+				this.editorService.openEditor(input, { pinned: true }).then((pane) => {
+					const control = pane?.getControl();
+					if (control instanceof ResourceManagerEditorPane) {
+						control.showDetailOnly('skill', skill.id);
+					}
+				});
 			};
 
 			listEl.appendChild(item);
 		}
-	}
 
-	// ── Skills: Install UI ────────────────────────────────────────
+		// Async check for marketplace skill upgrades
+		this._checkMarketSkillUpgrades(listEl).catch(() => { /* ignore */ });
+	}
 
 	private _showInstallHubs(): void {
 		this.skillsViewMode = 'install-hubs';
@@ -1267,18 +1226,6 @@ export class IntegrationViewPane extends ViewPane {
 			this.editorService.openEditor(input, { pinned: true });
 		};
 		header.appendChild(addBtn);
-
-		// Codebase Memory button — opens install/upgrade/status panel
-		const cbmBtn = $('button.mcp-add-btn');
-		cbmBtn.textContent = '🧠 Codebase Memory';
-		cbmBtn.title = 'Open Codebase Memory MCP panel (install / upgrade / status)';
-		cbmBtn.style.background = 'rgba(197,134,192,0.15)';
-		cbmBtn.style.borderColor = 'rgba(197,134,192,0.3)';
-		cbmBtn.onclick = () => {
-			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
-			this.editorService.openEditor(input, { pinned: true });
-		};
-		header.appendChild(cbmBtn);
 
 		container.appendChild(header);
 
@@ -2181,54 +2128,71 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		}
 	}
 
-	// ── Browse marketplace handler ─────────────────────────────────
-
-	private _handleBrowseMarket(tab: IntegrationTab): void {
-		// Open the marketplace page in the editor area (as a tab),
-		// alongside other editor tabs like SKILL.md, agent.json, etc.
-		const input = MarketplaceEditorInput.getInstance();
-		this.editorService.openEditor(input, { pinned: true });
-	}
-
-	// ── Check updates handler ──────────────────────────────────────
-
-	private async _handleCheckUpdates(): Promise<void> {
-		if (!this.marketplaceService.isLoggedIn()) {
-			this.notificationService.info('Please log in to the marketplace first.');
-			return;
-		}
-		try {
-			// Read installed-packages.json directly
-			const userHome = await this.pathService.userHome();
-			const installedUri = URI.joinPath(userHome, '.saros', 'installed-packages.json');
-			let installed: { kind: PackageKind; storeId: string; version: string }[] = [];
-			try {
-				const content = await this.fileService.readFile(installedUri);
-				const data = JSON.parse(content.value.toString());
-				installed = Array.isArray(data) ? data : (data.items ?? []);
-			} catch {
-				this.notificationService.info('No installed packages found to check.');
-				return;
-			}
-			if (installed.length === 0) {
-				this.notificationService.info('No installed packages found to check.');
-				return;
-			}
-			const updates = await this.marketplaceService.checkUpgrades(
-				installed.map(i => ({ kind: i.kind, storeId: i.storeId, version: i.version }))
-			);
-			if (updates.length === 0) {
-				this.notificationService.info('\u2705 All resources are up to date.');
-			} else {
-				const names = updates.map(u => `${u.storeId}: ${u.current} \u2192 ${u.latest}`).join('\n');
-				this.notificationService.info(`\u{1F504} ${updates.length} update(s) available:\n${names}`);
-			}
-		} catch (err) {
-			this.notificationService.error(`Check updates failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
 	// ── Upgrade handler ────────────────────────────────────────────
+
+	/**
+	 * Batch-check marketplace skills for available upgrades.
+	 * Adds an upgrade button to each skill item that has a newer version on the server.
+	 */
+	private async _checkMarketSkillUpgrades(listEl: HTMLElement): Promise<void> {
+		// Find all marketplace skill action containers with dataset
+		const actionContainers = listEl.querySelectorAll<HTMLElement>('div.item-actions[data-skill-id]');
+		if (actionContainers.length === 0) { return; }
+
+		// Collect upgrade check items
+		const checkItems: Array<{ storeId: string; version: string; container: HTMLElement }> = [];
+		for (const container of actionContainers) {
+			const storeId = container.dataset.skillId;
+			const version = container.dataset.skillVersion ?? '0';
+			if (storeId) { checkItems.push({ storeId, version, container }); }
+		}
+		if (checkItems.length === 0) { return; }
+
+		try {
+			const upgrades = await this.marketplaceService.checkUpgrades(
+				checkItems.map(c => ({ kind: 'skill' as PackageKind, storeId: c.storeId, version: c.version }))
+			);
+
+			// Add upgrade button to each skill that has an available upgrade
+			for (const info of upgrades) {
+				const match = checkItems.find(c => c.storeId === info.storeId);
+				if (!match) { continue; }
+
+				// Compare versions: only show if server version is higher
+				if (this._compareVersions(info.latest, info.current) <= 0) { continue; }
+
+				// Create upgrade button
+				const btn = $('button.act-btn.upgrade') as HTMLButtonElement;
+				btn.textContent = '\u2B06';
+				btn.title = `升级到 v${info.latest}`;
+				btn.onclick = (e) => {
+					e.stopPropagation();
+					void this._handleUpgrade('skill', info.storeId);
+				};
+				// Insert upgrade button before delete button (if any), otherwise append
+				const deleteBtn = match.container.querySelector('button.act-btn.delete');
+				if (deleteBtn) {
+					match.container.insertBefore(btn, deleteBtn);
+				} else {
+					match.container.appendChild(btn);
+				}
+			}
+		} catch {
+			// Silently ignore upgrade check failures
+		}
+	}
+
+	/** Compare semver versions. Returns >0 if a>b, 0 if equal, <0 if a<b */
+	private _compareVersions(a: string, b: string): number {
+		const pa = a.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+		const pb = b.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+		const len = Math.max(pa.length, pb.length);
+		for (let i = 0; i < len; i++) {
+			const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+			if (diff !== 0) { return diff; }
+		}
+		return 0;
+	}
 
 	private async _handleUpgrade(kind: PackageKind, storeId: string): Promise<void> {
 		if (!this.marketplaceService.isLoggedIn()) {

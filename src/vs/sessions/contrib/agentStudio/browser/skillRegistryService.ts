@@ -12,14 +12,14 @@
  *   1. 异步扫描内置技能目录 `.agents/skills/`（产品自带，文件形式）
  *      - 技能以 `SKILL.md` 文件形式存储在扩展目录下 `.agents/skills/<skill-name>/SKILL.md`
  *      - 参考 Hermes-Agent 的 `skills/` 项目目录模式
- *   2. `_scanFolder(userHome)`   —— 用户全局技能库 `~/.saros/skills-library/`
+ *   2. `_scanFolder(userHome)`   —— 用户全局技能库 `~/.saros/skills/`
  *   3. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
  *
  * 后注册的同名 skill 覆盖前者（运行时注入 > 用户 > 内置），
  * 这与 hermes 的 `optional-skills` < `skills` < `~/.hermes/skills` 优先级一致。
  *
  * 架构说明：
- *   - 技能统一存储于用户全局技能库（`~/.saros/skills-library/`）和内置技能目录（`.agents/skills/`）
+ *   - 技能统一存储于用户全局技能库（`~/.saros/skills/`）和内置技能目录（`.agents/skills/`）
  *   - 内置技能从 `.agents/skills/` 目录文件加载（参考 Hermes-Agent 模式）
  *   - 好处：技能以文件形式管理，便于版本控制和升级
  *
@@ -72,6 +72,8 @@ interface IRawFrontmatter {
 	category?: unknown;
 	recommended_tools?: unknown;
 	recommendedTools?: unknown;
+	storeId?: unknown;
+	version?: unknown;
 }
 
 /**
@@ -177,7 +179,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IAgentStudioLogService private readonly logService: ILogService,
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
-		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
+		@IWorkspaceContextService workspaceService: IWorkspaceContextService,
 		@IPathService private readonly pathService: IPathService,
 	) {
 		super();
@@ -357,31 +359,15 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this.logService.error('[SkillRegistry] builtin skills scan failed', err);
 		}
 
-		// 工作区技能目录（<workspaceFolder>/.agents/skills/）
-		try {
-			const workspaceFolders = this.workspaceService.getWorkspace().folders;
-			if (workspaceFolders.length > 0) {
-				const workspaceFolder = workspaceFolders[0].uri;
-				const workspaceSkillsDir = URI.joinPath(workspaceFolder, '.agents', 'skills');
-				this.logService.info(`[SkillRegistry] scanning workspace skills: ${workspaceSkillsDir.toString()}`);
-				await this._scanFolder(workspaceSkillsDir, 'workspace');
-				this.logService.info(`[SkillRegistry] after workspace scan: ${this._skills.size} skills`);
-			} else {
-				this.logService.info('[SkillRegistry] no workspace folder found, skipping workspace skills scan');
-			}
-		} catch (err) {
-			this.logService.info('[SkillRegistry] workspace skills scan failed or dir not found', err);
-		}
-
-		// 用户全局技能库（统一使用 ~/.saros/ 路径）
+		// 用户全局技能库（统一使用 ~/.saros/ 路径，不扫描工作区）
 		try {
 			const userHome = await this.pathService.userHome();
-			const userDir = URI.joinPath(userHome, '.saros', 'skills-library');
-			this.logService.info(`[SkillRegistry] scanning user skills-library: ${userDir.toString()}`);
+			const userDir = URI.joinPath(userHome, '.saros', 'skills');
+			this.logService.info(`[SkillRegistry] scanning user skills: ${userDir.toString()}`);
 			await this._scanFolder(userDir, 'user');
 			this.logService.info(`[SkillRegistry] after user scan: ${this._skills.size} skills`);
 		} catch (err) {
-			this.logService.info('[SkillRegistry] user skills-library scan failed or dir not found', err);
+			this.logService.info('[SkillRegistry] user skills scan failed or dir not found', err);
 		}
 
 		// 运行时注入的 skill 永远胜出
@@ -406,12 +392,12 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 * This triggers external consumers (like knot-cli sync) to do a full
 	 * reconciliation of their skill mirror directories.
 	 *
-	 * Note: Skills are now stored only in user global directory (~/.saros/skills-library/),
+	 * Note: Skills are now stored only in user global directory (~/.saros/skills/),
 	 * so we fire event with user skill IDs only.
 	 */
 	private _fireBatchSyncedEvent(): void {
 		const userSkillIds = [...this._skills.values()]
-			.filter(s => s.source === 'user')
+			.filter(s => s.source === 'user' || s.source === 'marketplace')
 			.map(s => s.id);
 
 		if (userSkillIds.length === 0) { return; }
@@ -433,7 +419,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	// _loadBuiltins() 已移除 - 技能现在从 skills/ 目录文件加载（参考 Hermes-Agent 模式）
 
-	private async _scanFolder(dir: URI, source: 'user' | 'builtin' | 'workspace'): Promise<void> {
+	private async _scanFolder(dir: URI, source: 'user' | 'builtin'): Promise<void> {
 		let stat: IFileStat;
 		try {
 			stat = await this.fileService.resolve(dir);
@@ -458,6 +444,10 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				this.logService.debug(`[SkillRegistry] _scanFolder: read ${text.length} chars from ${skillFile.toString()}`);
 				const skill = this._parseSkillFile(child.resource, text, source);
 				if (skill) {
+					if (this._skills.has(skill.id)) {
+						const existing = this._skills.get(skill.id)!;
+						this.logService.info(`[SkillRegistry] Skill "${skill.id}" overwritten: ${existing.source} → ${skill.source} (from ${child.resource.fsPath})`);
+					}
 					this._skills.set(skill.id, skill);
 					loaded++;
 					this.logService.debug(`[SkillRegistry] _scanFolder: loaded skill ${skill.id}`);
@@ -472,7 +462,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
 	}
 
-	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin' | 'workspace'): ISkillDefinition | undefined {
+	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin'): ISkillDefinition | undefined {
 		const { meta, body } = parseFrontmatter(text);
 		const name = typeof meta.name === 'string' ? meta.name : undefined;
 		if (!name) {
@@ -480,8 +470,11 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			return undefined;
 		}
 		const description = typeof meta.description === 'string' ? meta.description : '';
-		const id = name.toLowerCase().replace(/\s+/g, '-');
+		const id = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-_]/g, '').replace(/-+/g, '-');
 		const prompt = body.trim();
+		// 如果 SKILL.md frontmatter 含有 storeId，说明是商城下载的，标记为 marketplace
+		const hasStoreId = typeof meta.storeId === 'string' && meta.storeId.length > 0;
+		const effectiveSource = (hasStoreId && source === 'user') ? 'marketplace' : source;
 		return {
 			id,
 			name,
@@ -491,10 +484,12 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			category: typeof meta.category === 'string' ? meta.category : undefined,
 			recommendedTools: asStringArray(meta.recommended_tools) ?? asStringArray(meta.recommendedTools),
 			prompt,
-			source,
+			source: effectiveSource,
 			resource: folder,
 			contentHash: computeSkillContentHash(prompt),
 			enabled: true, // 默认启用
+			version: typeof meta.version === 'string' ? meta.version : undefined,
+			storeId: typeof meta.storeId === 'string' ? meta.storeId : undefined,
 		};
 	}
 

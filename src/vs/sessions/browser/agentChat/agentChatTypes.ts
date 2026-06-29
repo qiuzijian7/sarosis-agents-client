@@ -79,6 +79,8 @@ export interface IChatAttachment {
 	data: string; // base64
 	size: number;
 	isPasted?: boolean;
+	/** 原始文件路径（点击附件时在编辑器中打开） */
+	filePath?: string;
 }
 
 /** Sub-agent spawned during a conversation turn */

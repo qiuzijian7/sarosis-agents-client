@@ -17,7 +17,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { Event } from '../../../../base/common/event.js';
 
 /** 资源类型 */
-export type PackageKind = 'agent' | 'skill' | 'mcp' | 'knowledge';
+export type PackageKind = 'agent' | 'skill' | 'mcp' | 'knowledge' | 'workflow';
 
 /** 商城用户 */
 export interface IMarketplaceUser {
@@ -41,6 +41,14 @@ export interface IMarketplacePackage {
 	readonly tags: readonly string[];
 	readonly latestVersion?: string;
 	readonly downloads?: number;
+	/** 使用指南（Markdown 格式，用于详情页"描述"Tab展示） */
+	readonly useGuide?: string;
+	/** 作者名称 */
+	readonly authorName?: string;
+	/** 更新时间戳（毫秒） */
+	readonly updatedAt?: number;
+	/** 版本列表（列表接口可能不返回，详情接口返回） */
+	readonly versions?: readonly IMarketplaceVersion[];
 }
 
 /** 资源版本 */
@@ -52,6 +60,8 @@ export interface IMarketplaceVersion {
 	readonly size: number;
 	readonly isLatest: boolean;
 	readonly createdAt: number;
+	/** 版本的 manifest（含 MCP 配置等），从服务端获取 */
+	readonly manifest?: any;
 }
 
 /** 资源包详情（含版本列表） */
@@ -121,6 +131,8 @@ export interface IMarketplaceService {
 	isLoggedIn(): boolean;
 	getCurrentUser(): IMarketplaceUser | undefined;
 	login(username: string, password: string): Promise<void>;
+	/** 用 TOF 票据登录商城（复用 VsSaros 登录态） */
+	loginWithTof(): Promise<void>;
 	logout(): void;
 
 	// ── 浏览 ──────────────────────────────────────────────
@@ -131,8 +143,8 @@ export interface IMarketplaceService {
 	/**
 	 * 下载指定版本并安装到本地资源目录。
 	 * - agent  → ~/.saros/agents/custom/{id}/
-	 * - skill  → ~/.saros/skills-library/{id}/
-	 * - mcp    → ~/.saros/mcp-servers/{id}/
+	 * - skill  → ~/.saros/skills/{id}/
+	 * - mcp    → ~/.saros/mcp/{id}/
 	 * - knowledge → ~/.saros/knowledge-base/{id}/
 	 */
 	download(storeId: string, version: string, kind: PackageKind): Promise<IInstallResult>;

@@ -5,18 +5,36 @@
 
 /**
  * McpInstaller —— MCP 服务器配置的安装器实现。
- * 文件落地 config.json；完整 IMcpManagementService 自动注册留后续增强。
+ *
+ * install: 解压目录的 config.json → 写入 ~/.saros/mcp/{id}/
+ *          → 自动注册到 ~/.saros/mcp.json（IntegrationView 白名单）
+ * preparePack: 读 ~/.saros/mcp/{id}/config.json → 构造 manifest
+ * getInstalledVersion: 从 config.json 的 version 字段读取
  */
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 
-const MCP_SUBDIR = 'mcp-servers';
+const MCP_SUBDIR = 'mcp';
+
+interface McpConfig {
+	id?: string;
+	name?: string;
+	description?: string;
+	transport?: string;
+	command?: string;
+	args?: string[];
+	url?: string;
+	env?: Record<string, string>;
+	headers?: Record<string, string>;
+	version?: string;
+}
 
 export class McpInstaller extends Disposable implements IPackageInstaller {
 	declare readonly _serviceBrand: undefined;
@@ -41,8 +59,15 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		await this.fileService.createFolder(targetDir);
 		await this.copyContents(extractedDir, targetDir);
 
+		// 自动注册到 ~/.saros/mcp.json（IntegrationView 白名单）
+		try {
+			await this._registerToMcpJson(manifest.id, targetDir);
+		} catch (e) {
+			this.logService.warn(`[McpInstaller] 自动注册到 mcp.json 失败（不影响安装）: ${(e as Error).message}`);
+		}
+
 		this.logService.info(`[McpInstaller] 安装完成: ${manifest.id} v${manifest.version} → ${targetDir.fsPath}`);
-		this.logService.info(`[McpInstaller] 提示: 请在集成视图中手动添加该服务器（配置见 config.json）`);
+		this.logService.info(`[McpInstaller] 已自动注册到 ~/.saros/mcp.json，Integration 面板将显示该服务器`);
 
 		return { kind: 'mcp', storeId: manifest.id, version: manifest.version, targetDir: targetDir.fsPath };
 	}
@@ -54,7 +79,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		}
 
 		const configUri = URI.joinPath(localDir, 'config.json');
-		let config: { id?: string; name?: string; description?: string; transport?: string; command?: string; args?: string[]; url?: string };
+		let config: McpConfig;
 		try {
 			const content = await this.fileService.readFile(configUri);
 			config = JSON.parse(content.value.toString());
@@ -71,7 +96,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 			kind: 'mcp',
 			id: localId,
 			name: config.name || localId,
-			version: '1.0.0',
+			version: config.version || '1.0.0',
 			description: config.description,
 			category: 'tools',
 			author: 'saros',
@@ -82,6 +107,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 	}
 
 	getInstalledVersion(storeId: string): string | undefined {
+		// 同步读取 config.json 的 version 字段（无法做异步，返回 undefined 让 installed-packages.json 兜底）
 		return undefined;
 	}
 
@@ -90,6 +116,63 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 	private async resolveDir(id: string): Promise<URI> {
 		const userHome = await this.pathService.userHome();
 		return URI.joinPath(userHome, '.saros', MCP_SUBDIR, id);
+	}
+
+	/** 将 config.json 转换为 ~/.saros/mcp.json 的 server 条目格式 */
+	private _convertToMcpJsonEntry(config: McpConfig): Record<string, unknown> {
+		const transport = config.transport || 'stdio';
+		const entry: Record<string, unknown> = { disabled: false };
+
+		if (transport === 'stdio') {
+			// 本地进程型
+			entry.type = 'stdio';
+			if (config.command) { entry.command = config.command; }
+			if (config.args) { entry.args = config.args; }
+			if (config.env) { entry.env = config.env; }
+		} else {
+			// 远程型 (http/sse)
+			entry.type = transport; // "http" 或 "sse"
+			if (config.url) { entry.url = config.url; }
+			// env 中的键值对作为 HTTP headers
+			if (config.env) { entry.headers = config.env; }
+			else if (config.headers) { entry.headers = config.headers; }
+		}
+
+		return entry;
+	}
+
+	/** 读取/创建 ~/.saros/mcp.json，添加或更新服务器条目 */
+	private async _registerToMcpJson(serverId: string, configDir: URI): Promise<void> {
+		// 1. 读取刚安装的 config.json
+		const configUri = URI.joinPath(configDir, 'config.json');
+		const content = await this.fileService.readFile(configUri);
+		const config: McpConfig = JSON.parse(content.value.toString());
+
+		// 2. 转换为 mcp.json 格式
+		const entry = this._convertToMcpJsonEntry(config);
+
+		// 3. 读取现有 ~/.saros/mcp.json
+		const userHome = await this.pathService.userHome();
+		const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+		let mcpConfig: { servers: Record<string, any> } = { servers: {} };
+		try {
+			if (await this.fileService.exists(mcpJsonUri)) {
+				const raw = await this.fileService.readFile(mcpJsonUri);
+				mcpConfig = JSON.parse(raw.value.toString());
+				if (!mcpConfig.servers) { mcpConfig.servers = {}; }
+			}
+		} catch {
+			// 文件不存在或解析失败，使用空配置
+		}
+
+		// 4. 添加/更新服务器条目
+		mcpConfig.servers[serverId] = entry;
+
+		// 5. 写回 mcp.json
+		await this.fileService.createFolder(URI.joinPath(mcpJsonUri, '..'));
+		await this.fileService.writeFile(mcpJsonUri, VSBuffer.fromString(JSON.stringify(mcpConfig, null, 2)));
+
+		this.logService.info(`[McpInstaller] 已注册 MCP 服务器 "${serverId}" 到 ~/.saros/mcp.json (type=${entry.type})`);
 	}
 
 	private async copyContents(srcDir: URI, destDir: URI): Promise<void> {

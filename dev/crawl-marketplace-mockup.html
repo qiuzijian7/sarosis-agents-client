@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资源爬取 — VsSaros 商城 Mockup</title>
+<style>
+:root {
+	--bg: #1e1e1e;
+	--bg-sidebar: #252526;
+	--bg-card: #2d2d30;
+	--bg-card-hover: #333337;
+	--bg-input: #1e1e1e;
+	--border: #3c3c3c;
+	--border-hover: #007acc;
+	--fg: #cccccc;
+	--fg-dim: #9d9d9d;
+	--fg-muted: #6e6e6e;
+	--accent: #007acc;
+	--accent-hover: #1f8ad2;
+	--green: #4ec9b0;
+	--blue: #569cd6;
+	--purple: #c586c0;
+	--yellow: #dcdcaa;
+	--red: #f48771;
+	--orange: #ce9178;
+	--radius: 6px;
+	--radius-lg: 8px;
+	--shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+	background: var(--bg);
+	color: var(--fg);
+	font-size: 13px;
+	line-height: 1.6;
+	overflow-x: hidden;
+}
+
+/* ─── Page Layout ─── */
+.crawl-page {
+	max-width: 800px;
+	margin: 0 auto;
+	padding: 20px 28px 48px;
+}
+
+/* ─── Header ─── */
+.crawl-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 0 16px;
+	border-bottom: 1px solid var(--border);
+	margin-bottom: 20px;
+}
+.crawl-header h1 {
+	font-size: 17px;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.crawl-platform-badge {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 10px;
+	background: rgba(0, 122, 204, 0.2);
+	color: var(--accent);
+	border: 1px solid rgba(0, 122, 204, 0.3);
+}
+
+/* ─── URL Input Section ─── */
+.url-section {
+	background: var(--bg-sidebar);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 20px;
+	margin-bottom: 16px;
+}
+.url-label {
+	font-size: 13px;
+	font-weight: 600;
+	margin-bottom: 10px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.url-input-row {
+	display: flex;
+	gap: 8px;
+	align-items: stretch;
+}
+.url-input {
+	flex: 1;
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 8px 12px;
+	color: var(--fg);
+	font-size: 13px;
+	font-family: 'Consolas', 'Courier New', monospace;
+	outline: none;
+	transition: border-color 0.15s;
+}
+.url-input:focus { border-color: var(--accent); }
+.url-input::placeholder { color: var(--fg-muted); font-family: 'Segoe UI', sans-serif; }
+.crawl-btn {
+	padding: 8px 20px;
+	background: var(--accent);
+	color: #fff;
+	border: none;
+	border-radius: var(--radius);
+	cursor: pointer;
+	font-size: 13px;
+	font-weight: 500;
+	white-space: nowrap;
+	transition: background 0.15s;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.crawl-btn:hover { background: var(--accent-hover); }
+.crawl-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ─── Platform Auto-Detect ─── */
+.platform-detected {
+	margin-top: 10px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--fg-dim);
+}
+.platform-tag {
+	padding: 2px 8px;
+	border-radius: 3px;
+	font-weight: 600;
+	font-size: 11px;
+}
+.tag-knot { background: rgba(86, 156, 214, 0.15); color: var(--blue); }
+.tag-github { background: rgba(78, 201, 176, 0.15); color: var(--green); }
+.tag-unknown { background: rgba(244, 135, 113, 0.15); color: var(--red); }
+
+/* ─── Example URLs ─── */
+.url-examples {
+	margin-top: 12px;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.url-example {
+	font-size: 11px;
+	color: var(--fg-dim);
+	padding: 3px 10px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	cursor: pointer;
+	transition: 0.15s;
+	font-family: 'Consolas', monospace;
+}
+.url-example:hover { border-color: var(--accent); color: var(--fg); }
+
+/* ─── Progress Section ─── */
+.progress-section {
+	background: var(--bg-sidebar);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: 20px;
+	margin-bottom: 16px;
+	display: none;
+}
+.progress-section.show { display: block; }
+.progress-steps {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.progress-step {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-size: 13px;
+}
+.step-icon {
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	flex-shrink: 0;
+	border: 1px solid var(--border);
+	background: var(--bg-input);
+	color: var(--fg-muted);
+	transition: 0.3s;
+}
+.step-icon.pending::before { content: '\25CB'; }
+.step-icon.active {
+	border-color: var(--accent);
+	color: var(--accent);
+	animation: pulse 1s ease-in-out infinite;
+}
+.step-icon.active::before { content: '\25CF'; }
+.step-icon.done {
+	border-color: var(--green);
+	background: rgba(78, 201, 176, 0.15);
+	color: var(--green);
+}
+.step-icon.done::before { content: '\2713'; }
+.step-icon.error {
+	border-color: var(--red);
+	background: rgba(244, 135, 113, 0.15);
+	color: var(--red);
+}
+.step-icon.error::before { content: '\2715'; }
+.step-text { color: var(--fg-dim); }
+.step-text.active { color: var(--fg); font-weight: 500; }
+.step-text.done { color: var(--green); }
+.step-text.error { color: var(--red); }
+.step-detail {
+	font-size: 11px;
+	color: var(--fg-muted);
+	margin-left: 32px;
+	margin-top: -8px;
+	display: none;
+}
+.step-detail.show { display: block; }
+
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.5; }
+}
+
+/* ─── Preview Section ─── */
+.preview-section {
+	background: var(--bg-sidebar);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	overflow: hidden;
+	margin-bottom: 16px;
+	display: none;
+}
+.preview-section.show { display: block; }
+.preview-header {
+	padding: 14px 20px;
+	border-bottom: 1px solid var(--border);
+	font-weight: 600;
+	font-size: 14px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+.preview-type-badge {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 3px;
+	font-weight: 600;
+}
+.badge-skill { background: rgba(86, 156, 214, 0.2); color: var(--blue); }
+.badge-mcp { background: rgba(206, 145, 120, 0.15); color: var(--orange); }
+.badge-knowledge { background: rgba(197, 134, 192, 0.15); color: var(--purple); }
+.preview-body { padding: 18px 20px; }
+.preview-field {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	margin-bottom: 14px;
+}
+.preview-label {
+	width: 80px;
+	font-size: 12px;
+	color: var(--fg-dim);
+	flex-shrink: 0;
+	padding-top: 5px;
+	text-align: right;
+}
+.preview-value {
+	flex: 1;
+	font-size: 13px;
+	color: var(--fg);
+}
+.preview-input {
+	width: 100%;
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 5px 8px;
+	color: var(--fg);
+	font-size: 13px;
+	outline: none;
+	transition: border-color 0.15s;
+}
+.preview-input:focus { border-color: var(--accent); }
+.preview-textarea {
+	width: 100%;
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 6px 8px;
+	color: var(--fg);
+	font-size: 12px;
+	outline: none;
+	resize: vertical;
+	min-height: 60px;
+	font-family: inherit;
+	line-height: 1.5;
+}
+.preview-textarea:focus { border-color: var(--accent); }
+.preview-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.preview-tag {
+	font-size: 11px;
+	padding: 2px 8px;
+	border-radius: 3px;
+	background: rgba(86, 156, 214, 0.1);
+	color: var(--blue);
+	border: 1px solid rgba(86, 156, 214, 0.2);
+}
+.preview-meta-row {
+	display: flex;
+	gap: 16px;
+	font-size: 11px;
+	color: var(--fg-muted);
+	margin-top: 4px;
+}
+.preview-raw {
+	margin-top: 14px;
+	padding: 10px 12px;
+	background: var(--bg-input);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	font-size: 11px;
+	font-family: 'Consolas', monospace;
+	color: var(--fg-dim);
+	max-height: 120px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+.preview-raw-title {
+	font-size: 11px;
+	color: var(--fg-muted);
+	margin-bottom: 6px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	cursor: pointer;
+}
+.preview-raw-content { display: none; }
+.preview-raw-content.show { display: block; }
+
+/* ─── Upload Bar ─── */
+.upload-bar {
+	padding: 14px 20px;
+	border-top: 1px solid var(--border);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+.upload-hint {
+	font-size: 11px;
+	color: var(--fg-dim);
+}
+.upload-actions { display: flex; gap: 8px; }
+.btn-secondary {
+	padding: 6px 16px;
+	background: var(--bg-card);
+	color: var(--fg-dim);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 12px;
+	transition: 0.15s;
+}
+.btn-secondary:hover { border-color: var(--accent); color: var(--fg); }
+.btn-primary {
+	padding: 6px 20px;
+	background: var(--accent);
+	color: #fff;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 12px;
+	font-weight: 500;
+	transition: 0.15s;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ─── Upload Progress ─── */
+.upload-progress {
+	display: none;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--accent);
+}
+.upload-progress.show { display: flex; }
+.upload-spinner {
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--border);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Success Section ─── */
+.success-section {
+	background: var(--bg-sidebar);
+	border: 1px solid var(--green);
+	border-radius: var(--radius-lg);
+	padding: 24px 20px;
+	text-align: center;
+	display: none;
+}
+.success-section.show { display: block; }
+.success-icon { font-size: 40px; margin-bottom: 8px; }
+.success-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; color: var(--green); }
+.success-desc { font-size: 12px; color: var(--fg-dim); margin-bottom: 14px; }
+.success-link {
+	font-size: 12px;
+	color: var(--accent);
+	text-decoration: none;
+	border: 1px solid var(--border);
+	padding: 4px 14px;
+	border-radius: 4px;
+	display: inline-block;
+	cursor: pointer;
+}
+.success-link:hover { border-color: var(--accent); }
+
+/* ─── History Section ─── */
+.history-section {
+	margin-top: 20px;
+}
+.history-title {
+	font-size: 13px;
+	font-weight: 600;
+	margin-bottom: 10px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--fg-dim);
+}
+.history-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.history-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	background: var(--bg-sidebar);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-size: 12px;
+}
+.history-item .h-icon { font-size: 16px; }
+.history-item .h-name { flex: 1; color: var(--fg); }
+.history-item .h-type { font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+.history-item .h-status { font-size: 11px; color: var(--green); }
+.history-item .h-status.failed { color: var(--red); }
+.history-item .h-time { font-size: 10px; color: var(--fg-muted); }
+
+/* ─── Tabs (Crawl vs Manual) ─── */
+.mode-tabs {
+	display: flex;
+	gap: 2px;
+	margin-bottom: 16px;
+	border-bottom: 1px solid var(--border);
+}
+.mode-tab {
+	padding: 8px 16px;
+	font-size: 13px;
+	color: var(--fg-dim);
+	cursor: pointer;
+	border-bottom: 2px solid transparent;
+	transition: 0.15s;
+}
+.mode-tab:hover { color: var(--fg); }
+.mode-tab.active {
+	color: var(--fg);
+	border-bottom-color: var(--accent);
+	font-weight: 500;
+}
+</style>
+</head>
+<body>
+
+<div class="crawl-page">
+
+	<!-- ─── Header ─── -->
+	<div class="crawl-header">
+		<h1>🌐 资源爬取</h1>
+		<span class="crawl-platform-badge">Knot 平台已支持</span>
+	</div>
+
+	<!-- ─── Mode Tabs ─── -->
+	<div class="mode-tabs">
+		<div class="mode-tab active" onclick="switchMode('crawl')">🔗 URL 爬取</div>
+		<div class="mode-tab" onclick="switchMode('history')">📋 爬取历史</div>
+	</div>
+
+	<!-- ═══ CRAWL MODE ═══ -->
+	<div id="crawl-mode">
+
+		<!-- ─── URL Input ─── -->
+		<div class="url-section">
+			<div class="url-label">📎 输入资源页面 URL</div>
+			<div class="url-input-row">
+				<input type="text" class="url-input" id="url-input"
+					placeholder="https://knot.woa.com/skills/detail/1980"
+					value="https://knot.woa.com/skills/detail/1980">
+				<button class="crawl-btn" onclick="startCrawl()">🔍 开始爬取</button>
+			</div>
+			<div class="platform-detected" id="platform-detect">
+				<span>平台识别:</span>
+				<span class="platform-tag tag-knot" id="platform-tag">Knot</span>
+				<span id="platform-type">技能详情页</span>
+			</div>
+			<div class="url-examples">
+				<span style="font-size:11px;color:var(--fg-muted);align-self:center;">示例:</span>
+				<span class="url-example" onclick="setUrl('https://knot.woa.com/skills/detail/1980')">knot.woa.com/skills/detail/1980</span>
+				<span class="url-example" onclick="setUrl('https://knot.woa.com/mcp/detail/1566')">knot.woa.com/mcp/detail/1566</span>
+				<span class="url-example" onclick="setUrl('https://knot.woa.com/skills/detail/5600')">knot.woa.com/skills/detail/5600</span>
+			</div>
+		</div>
+
+		<!-- ─── Progress ─── -->
+		<div class="progress-section" id="progress-section">
+			<div class="progress-steps">
+				<div class="progress-step">
+					<div class="step-icon" id="step-1"></div>
+					<span class="step-text" id="step-1-text">检测平台与资源类型</span>
+				</div>
+				<div class="progress-step">
+					<div class="step-icon" id="step-2"></div>
+					<span class="step-text" id="step-2-text">爬取页面内容</span>
+				</div>
+				<div class="progress-step">
+					<div class="step-icon" id="step-3"></div>
+					<span class="step-text" id="step-3-text">解析资源元数据</span>
+				</div>
+				<div class="progress-step">
+					<div class="step-icon" id="step-4"></div>
+					<span class="step-text" id="step-4-text">提取资源文件</span>
+				</div>
+				<div class="step-detail" id="step-4-detail">→ 发现 SKILL.md (4.2 KB)</div>
+			</div>
+		</div>
+
+		<!-- ─── Preview ─── -->
+		<div class="preview-section" id="preview-section">
+			<div class="preview-header">
+				<span>📝 爬取结果预览（可编辑）</span>
+				<span class="preview-type-badge badge-skill" id="preview-badge">Skill</span>
+			</div>
+			<div class="preview-body">
+				<div class="preview-field">
+					<div class="preview-label">名称</div>
+					<div class="preview-value">
+						<input type="text" class="preview-input" id="edit-name" value="westock-data">
+					</div>
+				</div>
+				<div class="preview-field">
+					<div class="preview-label">Slug</div>
+					<div class="preview-value">
+						<input type="text" class="preview-input" id="edit-slug" value="knot-skill-westock-data" style="font-family:Consolas,monospace;font-size:12px;">
+					</div>
+				</div>
+				<div class="preview-field">
+					<div class="preview-label">描述</div>
+					<div class="preview-value">
+						<textarea class="preview-textarea" id="edit-desc">由腾讯证券团队提供。直连腾讯微证券/自选股核心行情引擎。以机构级专线数据为底座，为您提供毫秒级、零损耗的真实市场快照。</textarea>
+					</div>
+				</div>
+				<div class="preview-field">
+					<div class="preview-label">版本</div>
+					<div class="preview-value">
+						<input type="text" class="preview-input" id="edit-version" value="1.0.24" style="width:120px;font-family:Consolas,monospace;">
+					</div>
+				</div>
+				<div class="preview-field">
+					<div class="preview-label">标签</div>
+					<div class="preview-value">
+						<div class="preview-tags" id="preview-tags">
+							<span class="preview-tag">数据分析</span>
+							<span class="preview-tag">证券</span>
+							<span class="preview-tag">行情</span>
+						</div>
+					</div>
+				</div>
+				<div class="preview-field">
+					<div class="preview-label">来源</div>
+					<div class="preview-value">
+						<div class="preview-meta-row">
+							<span>👤 作者: galeqin</span>
+							<span>📥 下载: 33,707</span>
+							<span>🔗 knot.woa.com/skills/detail/1980</span>
+						</div>
+					</div>
+				</div>
+				<div class="preview-field">
+					<div class="preview-label">文件</div>
+					<div class="preview-value">
+						<div class="preview-meta-row">
+							<span>📄 SKILL.md (4.2 KB)</span>
+							<span>📄 manifest.json (0.3 KB)</span>
+						</div>
+					</div>
+				</div>
+				<div class="preview-raw-title" onclick="toggleRaw()">▶ 原始 HTML 片段（点击展开）</div>
+				<div class="preview-raw-content" id="raw-content">
+					<div class="preview-raw">&lt;div class="skill-detail"&gt;
+  &lt;h1&gt;westock-data&lt;/h1&gt;
+  &lt;p&gt;由腾讯证券团队提供...&lt;/p&gt;
+  &lt;span class="version"&gt;v1.0.24&lt;/span&gt;
+  &lt;span class="downloads"&gt;33707 次下载&lt;/span&gt;
+&lt;/div&gt;</div>
+				</div>
+			</div>
+			<div class="upload-bar">
+				<div class="upload-hint">上传后将创建新资源包并发布 v1.0.24 版本</div>
+				<div class="upload-actions">
+					<div class="upload-progress" id="upload-progress">
+						<div class="upload-spinner"></div>
+						<span>上传中...</span>
+					</div>
+					<button class="btn-secondary" onclick="cancelPreview()">取消</button>
+					<button class="btn-primary" id="upload-btn" onclick="startUpload()">⬆ 上传到商城</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- ─── Success ─── -->
+		<div class="success-section" id="success-section">
+			<div class="success-icon">✅</div>
+			<div class="success-title">westock-data v1.0.24 上传成功！</div>
+			<div class="success-desc">资源已发布到 VsSaros 商城，可在商城列表中查看和安装。</div>
+			<span class="success-link" onclick="resetAll()">🔄 继续爬取下一个</span>
+		</div>
+
+	</div>
+
+	<!-- ═══ HISTORY MODE ═══ -->
+	<div id="history-mode" style="display:none;">
+		<div class="history-section">
+			<div class="history-title">📋 最近爬取记录</div>
+			<div class="history-list">
+				<div class="history-item">
+					<span class="h-icon">📄</span>
+					<span class="h-name">westock-data</span>
+					<span class="h-type badge-skill">Skill</span>
+					<span class="h-status">✓ 已上传</span>
+					<span class="h-time">2026-06-28 10:45</span>
+				</div>
+				<div class="history-item">
+					<span class="h-icon">🔌</span>
+					<span class="h-name">mysql mcp（knot平台）</span>
+					<span class="h-type badge-mcp">MCP</span>
+					<span class="h-status">✓ 已上传</span>
+					<span class="h-time">2026-06-28 10:42</span>
+				</div>
+				<div class="history-item">
+					<span class="h-icon">📄</span>
+					<span class="h-name">PDF 处理技能</span>
+					<span class="h-type badge-skill">Skill</span>
+					<span class="h-status failed">✗ 解析失败</span>
+					<span class="h-time">2026-06-28 10:38</span>
+				</div>
+				<div class="history-item">
+					<span class="h-icon">📚</span>
+					<span class="h-name">VSCode 扩展开发指南</span>
+					<span class="h-type badge-knowledge">知识库</span>
+					<span class="h-status">✓ 已上传</span>
+					<span class="h-time">2026-06-27 18:20</span>
+				</div>
+			</div>
+		</div>
+	</div>
+
+</div>
+
+<script>
+// ─── Mode Switching ───
+function switchMode(mode) {
+	document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+	event.target.classList.add('active');
+	document.getElementById('crawl-mode').style.display = mode === 'crawl' ? '' : 'none';
+	document.getElementById('history-mode').style.display = mode === 'history' ? '' : 'none';
+}
+
+// ─── URL Input ───
+function setUrl(url) {
+	document.getElementById('url-input').value = url;
+	detectPlatform(url);
+}
+
+function detectPlatform(url) {
+	const tag = document.getElementById('platform-tag');
+	const type = document.getElementById('platform-type');
+	if (url.includes('knot.woa.com')) {
+		tag.className = 'platform-tag tag-knot';
+		tag.textContent = 'Knot';
+		if (url.includes('/skills/')) { type.textContent = '技能详情页'; }
+		else if (url.includes('/mcp/')) { type.textContent = 'MCP 服务页'; }
+		else { type.textContent = 'Knot 页面'; }
+	} else if (url.includes('github.com')) {
+		tag.className = 'platform-tag tag-github';
+		tag.textContent = 'GitHub';
+		type.textContent = '即将支持';
+	} else {
+		tag.className = 'platform-tag tag-unknown';
+		tag.textContent = '未知';
+		type.textContent = '请输入支持的平台 URL';
+	}
+}
+
+document.getElementById('url-input').addEventListener('input', function() {
+	detectPlatform(this.value);
+});
+
+// ─── Crawl Flow ───
+function startCrawl() {
+	const url = document.getElementById('url-input').value.trim();
+	if (!url) { return; }
+
+	// Reset states
+	document.getElementById('preview-section').classList.remove('show');
+	document.getElementById('success-section').classList.remove('show');
+
+	// Show progress
+	const progress = document.getElementById('progress-section');
+	progress.classList.add('show');
+
+	// Reset all steps
+	for (let i = 1; i <= 4; i++) {
+		setStep(i, 'pending');
+	}
+	document.getElementById('step-4-detail').classList.remove('show');
+
+	// Simulate crawl steps
+	setTimeout(() => { setStep(1, 'active'); }, 200);
+	setTimeout(() => { setStep(1, 'done'); setStep(2, 'active'); }, 800);
+	setTimeout(() => { setStep(2, 'done'); setStep(3, 'active'); }, 1600);
+	setTimeout(() => { setStep(3, 'done'); setStep(4, 'active'); }, 2400);
+	setTimeout(() => {
+		setStep(4, 'done');
+		document.getElementById('step-4-detail').classList.add('show');
+		// Show preview
+		setTimeout(() => {
+			progress.classList.remove('show');
+			document.getElementById('preview-section').classList.add('show');
+		}, 400);
+	}, 3200);
+}
+
+function setStep(n, state) {
+	const icon = document.getElementById('step-' + n);
+	const text = document.getElementById('step-' + n + '-text');
+	icon.className = 'step-icon ' + state;
+	text.className = 'step-text ' + state;
+}
+
+// ─── Preview ───
+function toggleRaw() {
+	const content = document.getElementById('raw-content');
+	const title = event.target;
+	content.classList.toggle('show');
+	title.textContent = content.classList.contains('show') ? '▼ 原始 HTML 片段（点击收起）' : '▶ 原始 HTML 片段（点击展开）';
+}
+
+function cancelPreview() {
+	document.getElementById('preview-section').classList.remove('show');
+}
+
+// ─── Upload ───
+function startUpload() {
+	document.getElementById('upload-btn').disabled = true;
+	document.getElementById('upload-progress').classList.add('show');
+
+	setTimeout(() => {
+		document.getElementById('upload-progress').classList.remove('show');
+		document.getElementById('preview-section').classList.remove('show');
+		document.getElementById('success-section').classList.add('show');
+		document.getElementById('upload-btn').disabled = false;
+	}, 2000);
+}
+
+function resetAll() {
+	document.getElementById('success-section').classList.remove('show');
+	document.getElementById('url-input').value = '';
+	document.getElementById('url-input').focus();
+}
+
+// ─── Init ───
+detectPlatform(document.getElementById('url-input').value);
+</script>
+
+</body>
+</html>

@@ -139,7 +139,14 @@ export class TofAuthService extends Disposable implements ITofAuthService {
 				const user = await this._fetchCurrentUser();
 				if (!user) {
 					this.logService.warn('[TofAuth] Saved session exists but no user info, possibly expired');
-					return null;
+					// 票据无效，清除旧 session 后自动重新登录
+					return await this._reloginIfExpired();
+				}
+
+				// 检查 expires_at 是否已过期
+				if (this._isTicketExpired(user)) {
+					this.logService.info(`[TofAuth] Ticket expired (expires_at=${user.expires_at}), auto re-login...`);
+					return await this._reloginIfExpired();
 				}
 
 				this._setUser(user);
@@ -148,10 +155,52 @@ export class TofAuthService extends Disposable implements ITofAuthService {
 			} catch (e) {
 				this.logService.warn('[TofAuth] Restore failed:', e);
 				return null;
+			} finally {
+				// 允许下次再次恢复
+				this._sessionRestoring = null;
 			}
 		})();
 
 		return this._sessionRestoring;
+	}
+
+	/**
+	 * 检查票据是否已过期（基于 ITofUser.expires_at）。
+	 * 解析失败时不判定为过期（保守策略，避免误判导致不必要的重新登录）。
+	 */
+	private _isTicketExpired(user: ITofUser): boolean {
+		if (!user.expires_at) {
+			return false;
+		}
+		const expiry = Date.parse(user.expires_at);
+		if (isNaN(expiry)) {
+			return false;
+		}
+		// 提前 60 秒判定为过期，避免边界条件下使用即将过期的票据
+		return expiry - 60_000 < Date.now();
+	}
+
+	/**
+	 * 票据过期时自动重新登录：先清除旧 session，再触发 login()。
+	 * 如果重新登录失败（如用户关闭浏览器），返回 null，不抛异常。
+	 */
+	private async _reloginIfExpired(): Promise<ITofUser | null> {
+		try {
+			// 清除旧的过期 session
+			await this.logout();
+			this.logService.info('[TofAuth] Old expired session cleared, triggering re-login...');
+		} catch (e) {
+			this.logService.warn('[TofAuth] Failed to clear expired session:', e);
+		}
+
+		try {
+			const user = await this.login();
+			this.logService.info(`[TofAuth] Auto re-login success: ${user.login_name}`);
+			return user;
+		} catch (e) {
+			this.logService.warn('[TofAuth] Auto re-login failed:', e);
+			return null;
+		}
 	}
 
 	// --- 内部 -----------------------------------------------------------------

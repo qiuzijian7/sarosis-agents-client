@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MCP Servers Editor — Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg-2: #252526;
+    --bg-3: #2d2d2d;
+    --bg-hover: #2a2d2e;
+    --border: #3c3c3c;
+    --fg: #cccccc;
+    --fg-muted: #9d9d9d;
+    --accent: #0e639c;
+    --accent-fg: #ffffff;
+    --accent-hover: #1177bb;
+    --error: #f85149;
+    --error-bg: rgba(248,81,73,0.12);
+    --error-border: rgba(248,81,73,0.3);
+    --success: #89d185;
+    --warn: #d29922;
+    --link: #4daafc;
+    --badge-bg: #4d4d4d;
+    --badge-fg: #cccccc;
+    --input-bg: #3c3c3c;
+    --focus: #007fd4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Tab bar (模拟编辑器标签页) ── */
+  .tab-bar {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    height: 35px;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 14px;
+    border-right: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab.active {
+    background: var(--bg);
+    color: var(--fg);
+    border-top: 1px solid var(--focus);
+  }
+  .tab .close { opacity: 0.5; font-size: 14px; }
+  .tab .close:hover { opacity: 1; }
+
+  /* ── Editor container ── */
+  .editor {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .toolbar h1 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+    white-space: nowrap;
+  }
+  .search {
+    flex: 1;
+    max-width: 360px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+  }
+  .search input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--fg);
+    font-size: 12px;
+  }
+  .search .icon { opacity: 0.6; font-size: 12px; }
+  .btn {
+    padding: 5px 12px;
+    font-size: 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+    background: var(--bg-3);
+    color: var(--fg);
+  }
+  .btn:hover { background: var(--bg-hover); }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border: none;
+    font-weight: 500;
+    padding: 6px 14px;
+  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .toolbar .spacer { flex: 1; }
+
+  /* ── Scroll area ── */
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 20px;
+  }
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .section-title .t { font-size: 14px; font-weight: 600; }
+  .section-title .count { font-size: 12px; color: var(--link); }
+  .section-title .src {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--fg-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .src .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+  }
+
+  /* ── Grid ── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .card:hover {
+    background: var(--bg-hover);
+    border-color: var(--focus);
+  }
+  .card.installed { border-left: 3px solid var(--success); }
+  .card.upgradable { border-left: 3px solid var(--warn); }
+
+  .card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .icon-box {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+    background: linear-gradient(135deg, #9b59b6, #8e44ad);
+  }
+  .icon-box.blue { background: linear-gradient(135deg, #3a7bd5, #2d5fa8); }
+  .icon-box.green { background: linear-gradient(135deg, #27ae60, #1e8449); }
+  .icon-box.orange { background: linear-gradient(135deg, #e67e22, #d35400); }
+  .icon-box.red { background: linear-gradient(135deg, #c0392b, #922b21); }
+  .card-info { flex: 1; min-width: 0; }
+  .card-name {
+    font-size: 13px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .card-meta {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 3px;
+  }
+  .card-meta .ver { font-size: 11px; color: var(--link); }
+  .card-meta .dl { font-size: 11px; color: var(--fg-muted); }
+  .card-desc {
+    font-size: 12px;
+    color: var(--fg-muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 36px;
+  }
+  .card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: auto;
+    gap: 6px;
+  }
+  .tags { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag {
+    font-size: 10px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: rgba(56,139,253,0.12);
+    color: var(--link);
+  }
+  .tag.cat { background: rgba(155,89,182,0.15); color: #bb8fce; }
+
+  .card-actions { display: flex; gap: 6px; }
+  .act-btn {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    border: none;
+  }
+  .act-install {
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
+  .act-install:hover { background: var(--accent-hover); }
+  .act-upgrade {
+    background: rgba(210,153,34,0.18);
+    color: var(--warn);
+    border: 1px solid rgba(210,153,34,0.4);
+  }
+  .act-delete {
+    background: var(--error-bg);
+    color: var(--error);
+    border: 1px solid var(--error-border);
+  }
+  .act-installed {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    background: rgba(137,209,133,0.12);
+    color: var(--success);
+    border: 1px solid rgba(137,209,133,0.3);
+  }
+
+  /* ── Empty / loading ── */
+  .empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--fg-muted);
+  }
+
+  /* ── "+ Add Server" 打开 mcp.json 的内嵌预览 ── */
+  /* 该视图作为独立标签页打开，此处用内嵌 panel 模拟 */
+  .json-preview {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .json-preview.show { display: flex; }
+  .json-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .json-toolbar .path { color: var(--fg-muted); font-family: Consolas, monospace; }
+  .json-toolbar .hint {
+    margin-left: auto;
+    color: var(--fg-muted);
+    font-size: 11px;
+  }
+  .json-editor {
+    flex: 1;
+    overflow: auto;
+    background: var(--bg);
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 12px 0;
+  }
+  .json-line {
+    display: flex;
+    padding: 0 16px 0 0;
+    white-space: pre;
+  }
+  .json-line:hover { background: var(--bg-hover); }
+  .ln {
+    display: inline-block;
+    width: 48px;
+    text-align: right;
+    padding-right: 14px;
+    color: var(--fg-muted);
+    opacity: 0.5;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .jk { color: #9cdcfe; }
+  .js { color: #ce9178; }
+  .jn { color: #b5cea8; }
+  .jb { color: #569cd6; }
+  .jp { color: var(--fg); }
+  .jc { color: #6a9955; }
+  .json-foot {
+    padding: 8px 16px;
+    background: var(--bg-2);
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--fg-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ── toast ── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--success);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all 0.2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  /* ── 说明面板 ── */
+  .legend {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    max-width: 320px;
+    z-index: 100;
+    line-height: 1.7;
+  }
+  .legend b { color: var(--fg); }
+  .legend .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<!-- 模拟编辑器标签页：主视图 / mcp.json 文件视图 -->
+<div class="tab-bar">
+  <div class="tab active" id="tab-main" onclick="showMain()">
+    <span>🔌 MCP Servers</span>
+    <span class="close">×</span>
+  </div>
+  <div class="tab" id="tab-json" onclick="showJson()" style="display:none;">
+    <span>📄 mcp.json</span>
+    <span class="close">×</span>
+  </div>
+</div>
+
+<div class="editor">
+  <!-- ── 主视图：MCP 网格列表 ── -->
+  <div id="main-view" class="editor">
+    <div class="toolbar">
+      <h1>🔌 MCP Servers</h1>
+      <div class="search">
+        <span class="icon">🔍</span>
+        <input type="text" placeholder="搜索 MCP..." id="searchInput" oninput="filterCards()">
+      </div>
+      <div class="spacer"></div>
+      <button class="btn" onclick="toast('🔄 刷新中...')">🔄 刷新</button>
+      <button class="btn-primary" onclick="openMcpJson()">+ Add Server</button>
+    </div>
+
+    <div class="scroll">
+      <div class="section-title">
+        <span class="t">📦 商城 MCP</span>
+        <span class="count" id="countEl">8 个</span>
+        <span class="src"><span class="dot"></span> 数据源：AnyDev 商城服务器</span>
+      </div>
+
+      <div class="grid" id="grid"></div>
+    </div>
+  </div>
+
+  <!-- ── mcp.json 文件视图（点击 + Add Server 后打开） ── -->
+  <div id="json-view" class="json-preview">
+    <div class="json-toolbar">
+      <span>📄</span>
+      <span class="path">~/.saros/mcp.json</span>
+      <span class="hint">💡 在此文件中手动添加/编辑 MCP 服务器配置，保存后自动生效</span>
+    </div>
+    <div class="json-editor" id="jsonEditor"></div>
+    <div class="json-foot">
+      <span>Syntax: JSON</span>
+      <span>·</span>
+      <span>UTF-8</span>
+      <span>·</span>
+      <span style="margin-left:auto; color: var(--link); cursor:pointer;" onclick="showMain()">← 返回 MCP 列表</span>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <b>Mockup 说明</b><br>
+  <span class="swatch" style="background:var(--success)"></span>已安装（最新）— 显示"已安装" + "删除"<br>
+  <span class="swatch" style="background:var(--warn)"></span>有新版本 — 显示"升级" + "删除"<br>
+  <span class="swatch" style="background:var(--accent)"></span>未安装 — 显示"安装"<br>
+  <b>点击卡片</b> → 打开独立 ResourceManager 详情窗口<br>
+  <b>+ Add Server</b> → 打开 <code>~/.saros/mcp.json</code> 文件
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// 模拟从 AnyDev 商城服务器获取的 MCP 数据
+const mockMcps = [
+  {
+    id: 'm1', slug: 'filesystem', name: 'Filesystem', icon: '📁', color: 'blue',
+    version: '1.0.3', downloads: 12500, category: '文件系统',
+    desc: '提供文件读写、目录浏览与搜索能力，支持本地工作区文件的安全访问。',
+    tags: ['filesystem', 'stdio'], status: 'installed'
+  },
+  {
+    id: 'm2', slug: 'github', name: 'GitHub MCP', icon: '🐙', color: '',
+    version: '2.4.1', latestInstalled: '2.3.0', downloads: 28800, category: '开发工具',
+    desc: '与 GitHub 仓库交互：创建 Issue、管理 PR、查询代码、触发 Actions 工作流。',
+    tags: ['github', 'api'], status: 'upgradable'
+  },
+  {
+    id: 'm3', slug: 'puppeteer', name: 'Puppeteer', icon: '🎭', color: 'green',
+    version: '0.9.0', downloads: 9400, category: '浏览器自动化',
+    desc: '通过无头 Chrome 控制浏览器，执行页面截图、点击、表单填写与数据抓取。',
+    tags: ['browser', 'automation'], status: 'not_installed'
+  },
+  {
+    id: 'm4', slug: 'postgres', name: 'PostgreSQL', icon: '🐘', color: 'blue',
+    version: '1.2.0', downloads: 6700, category: '数据库',
+    desc: '连接 PostgreSQL 数据库，执行只读 SQL 查询并返回结构化结果。',
+    tags: ['sql', 'database'], status: 'not_installed'
+  },
+  {
+    id: 'm5', slug: 'brave-search', name: 'Brave Search', icon: '🦁', color: 'orange',
+    version: '0.6.2', downloads: 15300, category: '搜索',
+    desc: '调用 Brave 搜索 API 进行网页搜索，返回标题、摘要与链接。',
+    tags: ['search', 'web'], status: 'installed'
+  },
+  {
+    id: 'm6', slug: 'memory', name: 'Memory KV', icon: '🧠', color: 'red',
+    version: '0.5.1', latestInstalled: '0.4.0', downloads: 4200, category: '存储',
+    desc: '基于键值对的内存存储，支持跨会话持久化记忆，适合保存用户偏好与上下文。',
+    tags: ['memory', 'kv'], status: 'upgradable'
+  },
+  {
+    id: 'm7', slug: 'slack', name: 'Slack', icon: '💬', color: '',
+    version: '1.1.0', downloads: 7800, category: '协作',
+    desc: '向 Slack 频道发送消息、读取历史记录、管理频道成员。',
+    tags: ['slack', 'messaging'], status: 'not_installed'
+  },
+  {
+    id: 'm8', slug: 'sequential-thinking', name: 'Sequential Thinking', icon: '🔀', color: 'orange',
+    version: '0.3.0', downloads: 21000, category: '推理',
+    desc: '提供结构化的逐步推理能力，支持思维分支、回溯与动态修正。',
+    tags: ['reasoning', 'thinking'], status: 'not_installed'
+  }
+];
+
+function renderGrid(list) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  document.getElementById('countEl').textContent = list.length + ' 个';
+  if (list.length === 0) {
+    grid.innerHTML = '<div class="empty">没有匹配的 MCP</div>';
+    return;
+  }
+  for (const m of list) {
+    grid.appendChild(buildCard(m));
+  }
+}
+
+function buildCard(m) {
+  const card = document.createElement('div');
+  card.className = 'card' + (m.status === 'installed' ? ' installed' : m.status === 'upgradable' ? ' upgradable' : '');
+  card.onclick = () => toast('→ 打开独立窗口: ResourceManager 详情 (slug=' + m.slug + ')');
+
+  // top
+  const top = document.createElement('div');
+  top.className = 'card-top';
+  top.innerHTML = `
+    <div class="icon-box ${m.color}">${m.icon}</div>
+    <div class="card-info">
+      <div class="card-name">${m.name}</div>
+      <div class="card-meta">
+        <span class="ver">v${m.version}</span>
+        <span class="dl">⬇ ${fmt(m.downloads)}</span>
+      </div>
+    </div>`;
+  card.appendChild(top);
+
+  // desc
+  const desc = document.createElement('div');
+  desc.className = 'card-desc';
+  desc.textContent = m.desc;
+  card.appendChild(desc);
+
+  // footer
+  const footer = document.createElement('div');
+  footer.className = 'card-footer';
+  let tagsHtml = `<div class="tags"><span class="tag cat">${m.category}</span>`;
+  for (const t of m.tags) { tagsHtml += `<span class="tag">${t}</span>`; }
+  tagsHtml += `</div>`;
+  footer.innerHTML = tagsHtml;
+
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+  if (m.status === 'installed') {
+    actions.innerHTML = `<span class="act-installed">✓ 已安装</span>
+      <button class="act-btn act-delete" onclick="event.stopPropagation();toast('🗑 删除 ${m.name}')">🗑 删除</button>`;
+  } else if (m.status === 'upgradable') {
+    actions.innerHTML = `<button class="act-btn act-upgrade" onclick="event.stopPropagation();toast('⬆ 升级 ${m.name} → v${m.version}')">⬆ 升级</button>
+      <button class="act-btn act-delete" onclick="event.stopPropagation();toast('🗑 删除 ${m.name}')">🗑 删除</button>`;
+  } else {
+    actions.innerHTML = `<button class="act-btn act-install" onclick="event.stopPropagation();toast('⬇ 安装 ${m.name}')">⬇ 安装</button>`;
+  }
+  footer.appendChild(actions);
+  card.appendChild(footer);
+  return card;
+}
+
+function fmt(n) {
+  if (n >= 10000) return (n/10000).toFixed(1).replace(/\.0$/,'') + 'w';
+  if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/,'') + 'k';
+  return String(n);
+}
+
+function filterCards() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  if (!q) { renderGrid(mockMcps); return; }
+  renderGrid(mockMcps.filter(m =>
+    m.name.toLowerCase().includes(q) ||
+    m.desc.toLowerCase().includes(q) ||
+    m.tags.some(t => t.toLowerCase().includes(q)) ||
+    m.category.toLowerCase().includes(q)
+  ));
+}
+
+// ── + Add Server → 打开 mcp.json 文件 ──
+function openMcpJson() {
+  document.getElementById('tab-json').style.display = 'flex';
+  showJson();
+  renderJson();
+  toast('已打开 ~/.saros/mcp.json，手动编辑后保存生效');
+}
+
+function showMain() {
+  document.getElementById('main-view').style.display = 'flex';
+  document.getElementById('json-view').classList.remove('show');
+  document.getElementById('tab-main').classList.add('active');
+  document.getElementById('tab-json').classList.remove('active');
+}
+function showJson() {
+  document.getElementById('main-view').style.display = 'none';
+  document.getElementById('json-view').classList.add('show');
+  document.getElementById('tab-main').classList.remove('active');
+  document.getElementById('tab-json').classList.add('active');
+}
+
+// 渲染带语法高亮的 mcp.json
+function renderJson() {
+  const data = {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+        "transportType": "stdio"
+      },
+      "brave-search": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+        "env": { "BRAVE_API_KEY": "<your-key>" },
+        "transportType": "stdio"
+      },
+      "memory-kv": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"],
+        "transportType": "stdio"
+      }
+    }
+  };
+  const lines = JSON.stringify(data, null, 2).split('\n');
+  const editor = document.getElementById('jsonEditor');
+  editor.innerHTML = '';
+  lines.forEach((line, i) => {
+    const div = document.createElement('div');
+    div.className = 'json-line';
+    let html = `<span class="ln">${i+1}</span>`;
+    // 简易 JSON 高亮
+    let content = line
+      .replace(/("(?:\\.|[^"\\])*")(\s*:)/g, '<span class="jk">$1</span>$2')   // key
+      .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span class="js">$1</span>')     // string value
+      .replace(/:\s*(true|false|null)/g, ': <span class="jb">$1</span>')       // bool/null
+      .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="jn">$1</span>');           // number
+    html += `<span class="jp">${content}</span>`;
+    div.innerHTML = html;
+    editor.appendChild(div);
+  });
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(window._tt);
+  window._tt = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// init
+renderGrid(mockMcps);
+</script>
+</body>
+</html>

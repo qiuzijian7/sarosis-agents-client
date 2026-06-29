@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Skill Marketplace — Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-hover: #2a2d2e;
+    --bg-active: #04395e;
+    --border: #3c3c3c;
+    --fg: #cccccc;
+    --fg-bright: #ffffff;
+    --fg-dim: #9d9d9d;
+    --accent: #0e639c;
+    --accent-hover: #1177bb;
+    --green: #3fb950;
+    --orange: #d29922;
+    --purple: #a371f7;
+    --blue: #58a6ff;
+    --radius: 6px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Segoe WPC", system-ui, sans-serif;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--fg);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ═══ Layout ═══ */
+  .sm-page { display:flex; flex-direction:column; height:100vh; }
+
+  /* ── Header ── */
+  .sm-header {
+    display:flex; align-items:center; gap:12px;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink:0;
+  }
+  .sm-header h1 { font-size:14px; font-weight:600; color:var(--fg-bright); white-space:nowrap; }
+  .sm-search {
+    flex:1; max-width:360px;
+    display:flex; align-items:center; gap:6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 10px;
+  }
+  .sm-search input {
+    flex:1; background:none; border:none; outline:none;
+    color: var(--fg); font-size:12px;
+  }
+  .sm-search-icon { font-size:12px; opacity:0.6; }
+  .sm-header-actions { display:flex; gap:8px; margin-left:auto; }
+  .sm-btn {
+    display:inline-flex; align-items:center; gap:5px;
+    padding: 4px 12px; font-size:12px;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    cursor: pointer; white-space:nowrap;
+  }
+  .sm-btn:hover { background: var(--bg-hover); border-color:var(--fg-dim); }
+  .sm-btn.primary { background: var(--accent); color:#fff; border-color:var(--accent); }
+  .sm-btn.primary:hover { background: var(--accent-hover); }
+
+  /* ── Grid Scroll Area ── */
+  .sm-grid-scroll { flex:1; overflow-y:auto; padding: 16px 20px; }
+  .sm-grid-scroll::-webkit-scrollbar { width:6px; }
+  .sm-grid-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+
+  .sm-section-title {
+    display:flex; align-items:center; gap:8px;
+    font-size:14px; font-weight:600; color:var(--fg-bright);
+    margin-bottom: 14px;
+  }
+  .sm-section-count { color:var(--blue); font-size:12px; font-weight:400; }
+
+  /* ── Skill Grid ── */
+  .sm-grid {
+    display:grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+
+  .sm-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .sm-card:hover {
+    background: var(--bg-hover);
+    border-color: var(--fg-dim);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+
+  .sm-card-top { display:flex; align-items:flex-start; gap:10px; }
+  .sm-card-icon {
+    width:36px; height:36px; border-radius:8px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:18px; flex-shrink:0;
+    background: linear-gradient(135deg,#9b59b6,#8e44ad);
+  }
+  .sm-card-info { flex:1; min-width:0; }
+  .sm-card-name {
+    font-size:13px; font-weight:600; color:var(--fg-bright);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .sm-card-meta { display:flex; align-items:center; gap:8px; margin-top:3px; }
+  .sm-card-ver { font-size:11px; color:var(--orange); }
+  .sm-card-dl { font-size:11px; color:var(--fg-dim); }
+
+  .sm-card-desc {
+    font-size:12px; color:var(--fg-dim); line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    overflow:hidden; min-height:36px;
+  }
+
+  .sm-card-footer {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-top:auto;
+  }
+  .sm-card-tags { display:flex; gap:4px; flex-wrap:wrap; }
+  .sm-card-tag {
+    font-size:10px; padding:1px 8px; border-radius:10px;
+    background: rgba(56,139,253,0.1); color: var(--blue);
+  }
+  .sm-card-action {
+    padding: 3px 10px; font-size:11px;
+    background: var(--accent); color:#fff;
+    border:none; border-radius:4px; cursor:pointer;
+    white-space:nowrap;
+  }
+  .sm-card-action:hover { background: var(--accent-hover); }
+  .sm-card-action.installed {
+    background: rgba(63,185,80,0.15); color: var(--green);
+    cursor: default;
+  }
+
+  /* ── Loading skeleton ── */
+  .sm-card.skeleton { animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+
+  /* ── Empty state ── */
+  .sm-empty {
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    padding: 60px 20px; color:var(--fg-dim); gap:12px;
+  }
+  .sm-empty-icon { font-size:48px; opacity:0.3; }
+
+  /* ── Install overlay (modal) ── */
+  .sm-overlay {
+    position:fixed; inset:0; background:rgba(0,0,0,0.5);
+    display:flex; align-items:center; justify-content:center;
+    z-index:100;
+  }
+  .sm-overlay.hidden { display:none; }
+  .sm-dialog {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 460px; max-width:90vw;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .sm-dialog-head {
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 14px 18px; border-bottom:1px solid var(--border);
+  }
+  .sm-dialog-title { font-size:14px; font-weight:600; color:var(--fg-bright); }
+  .sm-dialog-close { background:none; border:none; color:var(--fg-dim); cursor:pointer; font-size:16px; }
+  .sm-dialog-body { padding: 18px; }
+  .sm-dialog-row { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+  .sm-dialog-row label { font-size:12px; color:var(--fg-dim); min-width:50px; }
+  .sm-dialog-input {
+    flex:1; padding:6px 10px; background:var(--bg);
+    border:1px solid var(--border); border-radius:4px;
+    color:var(--fg); font-size:12px; outline:none;
+  }
+  .sm-dialog-input:focus { border-color: var(--accent); }
+  .sm-dialog-actions {
+    display:flex; gap:10px; justify-content:flex-end;
+    padding: 0 18px 18px;
+  }
+
+  /* ── Hint banner: click card opens ResourceManager ── */
+  .sm-hint {
+    display:flex; align-items:center; gap:6px;
+    padding: 6px 16px;
+    background: rgba(14,99,156,0.08);
+    border-bottom: 1px solid rgba(14,99,156,0.2);
+    font-size:11px; color: var(--blue);
+  }
+</style>
+</head>
+<body>
+
+<div class="sm-page">
+  <!-- ═══ Header ═══ -->
+  <div class="sm-header">
+    <h1>🧩 Skill Marketplace</h1>
+    <div class="sm-search">
+      <span class="sm-search-icon">🔍</span>
+      <input type="text" placeholder="搜索技能..." />
+    </div>
+    <div class="sm-header-actions">
+      <button class="sm-btn" onclick="document.getElementById('localOverlay').classList.remove('hidden')">📁 从本地文件安装</button>
+      <button class="sm-btn" onclick="document.getElementById('urlOverlay').classList.remove('hidden')">🔗 从 URL 安装</button>
+    </div>
+  </div>
+
+  <!-- Hint: clicking a card opens ResourceManager -->
+  <div class="sm-hint">
+    💡 点击技能卡片可在独立编辑器窗口中查看详细信息
+  </div>
+
+  <!-- ═══ Grid Scroll ═══ -->
+  <div class="sm-grid-scroll">
+    <div class="sm-section-title">
+      📦 商城技能 <span class="sm-section-count">12 个</span>
+    </div>
+
+    <div class="sm-grid">
+      <!-- Card 1 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane 编辑器窗口\n显示该技能的详细信息（使用说明/文件/版本历史等）')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">Code Review Assistant</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v2.1.0</span>
+              <span class="sm-card-dl">⬇ 1,234</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">自动审查代码变更，识别潜在问题并提供改进建议。支持多种编程语言和代码风格规范。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">代码审查</span>
+            <span class="sm-card-tag">QA</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">Git Commit Helper</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v1.3.0</span>
+              <span class="sm-card-dl">⬇ 856</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">生成规范的 Git 提交信息，支持 Conventional Commits 格式和自定义模板。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">Git</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">API Doc Generator</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v3.0.1</span>
+              <span class="sm-card-dl">⬇ 2,456</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">从代码注释自动生成 API 文档，支持 Markdown、OpenAPI 等多种格式输出。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">文档</span>
+            <span class="sm-card-tag">自动化</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+      <!-- Card 4 — already installed -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">Test Case Writer</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v1.0.0</span>
+              <span class="sm-card-dl">⬇ 432</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">根据函数签名和业务逻辑自动生成单元测试用例，支持多种测试框架。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">测试</span>
+          </div>
+          <button class="sm-card-action installed" onclick="event.stopPropagation()">✓ 已安装</button>
+        </div>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">SQL Optimizer</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v2.0.0</span>
+              <span class="sm-card-dl">⬇ 1,876</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">分析 SQL 查询性能，提供索引优化和查询重写建议，支持多种数据库。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">SQL</span>
+            <span class="sm-card-tag">性能</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+      <!-- Card 6 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">Refactoring Guide</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v1.5.2</span>
+              <span class="sm-card-dl">⬇ 987</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">识别代码异味并提供重构建议，支持多种设计模式和重构策略。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">重构</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+      <!-- Card 7 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">Security Scanner</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v2.3.0</span>
+              <span class="sm-card-dl">⬇ 3,210</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">扫描代码中的安全漏洞，包括 SQL 注入、XSS、CSRF 等常见安全问题。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">安全</span>
+            <span class="sm-card-tag">扫描</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+      <!-- Card 8 -->
+      <div class="sm-card" onclick="alert('→ 打开 ResourceManagerEditorPane')">
+        <div class="sm-card-top">
+          <div class="sm-card-icon">💡</div>
+          <div class="sm-card-info">
+            <div class="sm-card-name">Performance Profiler</div>
+            <div class="sm-card-meta">
+              <span class="sm-card-ver">v1.2.0</span>
+              <span class="sm-card-dl">⬇ 654</span>
+            </div>
+          </div>
+        </div>
+        <div class="sm-card-desc">分析代码性能瓶颈，生成火焰图和性能报告，提供优化建议。</div>
+        <div class="sm-card-footer">
+          <div class="sm-card-tags">
+            <span class="sm-card-tag">性能</span>
+            <span class="sm-card-tag">分析</span>
+          </div>
+          <button class="sm-card-action" onclick="event.stopPropagation(); alert('安装中...')">⬇ 安装</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Install from Local File Overlay ═══ -->
+<div class="sm-overlay hidden" id="localOverlay">
+  <div class="sm-dialog">
+    <div class="sm-dialog-head">
+      <span class="sm-dialog-title">📁 从本地文件安装</span>
+      <button class="sm-dialog-close" onclick="this.closest('.sm-overlay').classList.add('hidden')">✕</button>
+    </div>
+    <div class="sm-dialog-body">
+      <div class="sm-dialog-row">
+        <label>文件</label>
+        <input class="sm-dialog-input" type="text" placeholder="选择 SKILL.md 文件路径..." />
+      </div>
+      <div class="sm-dialog-row" style="margin-bottom:0;">
+        <button class="sm-btn" style="margin-left:50px;">📁 浏览...</button>
+      </div>
+    </div>
+    <div class="sm-dialog-actions">
+      <button class="sm-btn" onclick="this.closest('.sm-overlay').classList.add('hidden')">取消</button>
+      <button class="sm-btn primary">安装</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Install from URL Overlay ═══ -->
+<div class="sm-overlay hidden" id="urlOverlay">
+  <div class="sm-dialog">
+    <div class="sm-dialog-head">
+      <span class="sm-dialog-title">🔗 从 URL 安装</span>
+      <button class="sm-dialog-close" onclick="this.closest('.sm-overlay').classList.add('hidden')">✕</button>
+    </div>
+    <div class="sm-dialog-body">
+      <div class="sm-dialog-row">
+        <label>URL</label>
+        <input class="sm-dialog-input" type="text" placeholder="https://example.com/skill.md" />
+      </div>
+      <div class="sm-dialog-row" style="margin-bottom:0; color:var(--fg-dim); font-size:11px;">
+        支持 SKILL.md 文件 URL 或 Zip 包下载链接
+      </div>
+    </div>
+    <div class="sm-dialog-actions">
+      <button class="sm-btn" onclick="this.closest('.sm-overlay').classList.add('hidden')">取消</button>
+      <button class="sm-btn primary">下载并安装</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

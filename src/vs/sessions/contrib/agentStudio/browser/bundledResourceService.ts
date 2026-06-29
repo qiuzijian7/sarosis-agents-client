@@ -7,11 +7,11 @@
  * BundledResourceService — 从 JSON 文件加载内置 MCP 预设和工具定义。
  *
  * 资源位置（按优先级）：
- *   1. 用户覆盖：~/.saros/resources/mcp-presets/*.json
+ *   1. 用户覆盖：~/.saros/mcp-presets/*.json
  *   2. 内置资源：扩展安装目录/resources/.agents/mcp-presets/*.json
  *   3. Hardcoded fallback：bundledMcpPresets.ts 中的 BUNDLED_MCP_PRESETS
  *
- * 工具定义同理，从 ~/.saros/resources/tools/*.json 和
+ * 工具定义同理，从 ~/.saros/tools/*.json 和
  * 扩展安装目录/resources/.agents/tools/*.json 加载。
  */
 
@@ -83,13 +83,12 @@ export class BundledResourceService extends Disposable implements IBundledResour
 	}
 
 	/**
-	 * 从 ~/.saros/resources/{subdir}/*.json 加载 JSON 文件。
-	 * 未来可扩展为同时从扩展安装目录加载。
+	 * 从 ~/.saros/{subdir}/*.json 加载 JSON 文件。
 	 */
 	private async _loadJsonFromUserDir(subdir: string): Promise<unknown[]> {
 		try {
 			const userHome = this._envService.userHome;
-			const dir = URI.joinPath(userHome, '.saros', 'resources', subdir);
+			const dir = URI.joinPath(userHome, '.saros', subdir);
 
 			let children: { resource: URI; name: string; isDirectory?: boolean }[];
 			try {

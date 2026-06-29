@@ -393,6 +393,11 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		openFolderBtn.textContent = '+ 从文件夹打开工作区';
 		openFolderBtn.style.cssText = 'width:100%;border:none;background:transparent;color:var(--vscode-textLink-foreground,#3794ff);cursor:pointer;font-size:12px;padding:4px 8px;border-radius:4px;text-align:left';
 
+		// ── Open workspace from file button ──
+		const openFileBtn = append(createRow, $('button.ws-open-file-btn'));
+		openFileBtn.textContent = '+ 从文件打开工作区';
+		openFileBtn.style.cssText = 'width:100%;border:none;background:transparent;color:var(--vscode-textLink-foreground,#3794ff);cursor:pointer;font-size:12px;padding:4px 8px;border-radius:4px;text-align:left';
+
 		// ── Events ──
 		this._register(addDisposableListener(button, EventType.CLICK, (e: MouseEvent) => {
 			e.stopPropagation();
@@ -420,6 +425,11 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// ── Open folder button: browse folder → create workspace ──
 		this._register(addDisposableListener(openFolderBtn, EventType.CLICK, () => {
 			this._openFolderAsWorkspace();
+		}));
+
+		// ── Open workspace from file button ──
+		this._register(addDisposableListener(openFileBtn, EventType.CLICK, () => {
+			this._openFileAsWorkspace();
 		}));
 
 		// ── Connect services ──
@@ -693,6 +703,48 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// activate it. createWorkspace fires onDidChangeWorkspace (→ reload),
 		// but we also reload explicitly to avoid any ordering race before the
 		// setActiveWorkspace call below relies on the cached list.
+		await this._loadWorkspaces();
+		await this._wsAgentStudioService.setActiveWorkspace(target.id);
+
+		this._closeWorkspaceDropdown();
+	}
+
+	private async _openFileAsWorkspace(): Promise<void> {
+		if (!this._wsAgentStudioService || !this._wsFileDialogService) { return; }
+
+		let filePath: string | undefined;
+		try {
+			const uris = await this._wsFileDialogService.showOpenDialog({
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				openLabel: '打开工作区',
+				title: '选择工作区文件',
+				filters: [{ name: 'Workspace', extensions: ['code-workspace'] }],
+			});
+			if (uris && uris.length > 0) {
+				filePath = uris[0].fsPath;
+			}
+		} catch { /* user cancelled */ }
+		if (!filePath) { return; }
+
+		// Derive workspace name from file name (without extension)
+		const segments = filePath.replace(/[/\\]+$/, '').split(/[/\\]/);
+		const fileName = segments[segments.length - 1] || filePath;
+		const name = fileName.replace(/\.code-workspace$/i, '') || fileName;
+
+		// If a workspace already bound to this exact file exists, reuse it
+		// instead of creating a duplicate — then just switch to it.
+		const norm = (p: string) => p.replace(/[/\\]+$/, '').toLowerCase();
+		const existing = this._workspaces.find(w => w.path && norm(w.path) === norm(filePath));
+
+		const target = existing ?? await this._wsAgentStudioService.createWorkspace({
+			name,
+			path: filePath,
+		});
+
+		// Refresh local cache so the new/target workspace is present, then
+		// activate it.
 		await this._loadWorkspaces();
 		await this._wsAgentStudioService.setActiveWorkspace(target.id);
 

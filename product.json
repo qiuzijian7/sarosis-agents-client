@@ -87,51 +87,6 @@
 				},
 				"publisherDisplayName": "Microsoft"
 			}
-		},
-		{
-			"name": "agentmemory-gateway",
-			"version": "1.0.0",
-			"sha256": "",
-			"metadata": {
-				"id": "agentmemory-gateway",
-				"publisherId": {
-					"publisherId": "saros",
-					"publisherName": "saros",
-					"displayName": "Saros",
-					"flags": ""
-				},
-				"publisherDisplayName": "Saros"
-			}
-		},
-		{
-			"name": "agentmemory-memory",
-			"version": "1.0.0",
-			"sha256": "",
-			"metadata": {
-				"id": "agentmemory-memory",
-				"publisherId": {
-					"publisherId": "saros",
-					"publisherName": "saros",
-					"displayName": "Saros",
-					"flags": ""
-				},
-				"publisherDisplayName": "Saros"
-			}
-		},
-		{
-			"name": "tof-authentication",
-			"version": "0.0.1",
-			"sha256": "",
-			"metadata": {
-				"id": "tof-authentication",
-				"publisherId": {
-					"publisherId": "saros",
-					"publisherName": "saros",
-					"displayName": "Sarosis",
-					"flags": ""
-				},
-				"publisherDisplayName": "Sarosis"
-			}
 		}
 	],
 	"defaultChatAgent": {

@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ResourceManager EditorPane - Mockup</title>
+<style>
+/* ===== VS Code Theme ===== */
+:root {
+  --vscode-editor-background: #1e1e1e;
+  --vscode-editorForeground: #d4d4d4;
+  --vscode-sideBar-background: #252526;
+  --vscode-titleBar-activeBackground: #323233;
+  --vscode-tab-activeBackground: #1e1e1e;
+  --vscode-tab-inactiveBackground: #2d2d2d;
+  --vscode-tab-activeForeground: #ffffff;
+  --vscode-tab-inactiveForeground: #969696;
+  --vscode-borderColor: #3c3c3c;
+  --vscode-widget-background: #252526;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-activeSelectionBackground: #094771;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-button-background: #0e639c;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #3a3d41;
+  --vscode-badge-background: #4d4d4d;
+  --vscode-badge-foreground: #ffffff;
+  --vscode-textLink-foreground: #3794ff;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-focusBorder: #007fd4;
+  --vscode-input-background: #3c3c3c;
+  --vscode-input-foreground: #cccccc;
+  --vscode-icon-foreground: #c5c5c5;
+  --vscode-scrollbarSlider-background: rgba(121,121,121,0.4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100,100,100,0.7);
+
+  /* Tag colors */
+  --tag-safe-bg: rgba(46,160,67,0.12);
+  --tag-safe-fg: #3fb950;
+  --tag-warn-bg: rgba(210,153,34,0.12);
+  --tag-warn-fg: #e3b341;
+  --tag-info-bg: rgba(56,139,253,0.12);
+  --tag-info-fg: #58a6ff;
+  --tag-knot-bg: rgba(230,126,34,0.10);
+  --tag-knot-fg: #e67e22;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px; line-height: 1.5;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editorForeground);
+  height: 100vh; overflow: hidden;
+}
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ===== Title Bar ===== */
+.titlebar {
+  height: 30px; display: flex; align-items: center;
+  background: var(--vscode-titleBar-activeBackground); color: #fff;
+  padding: 0 14px; font-size: 12px; border-bottom: 1px solid var(--vscode-borderCode-color);
+}
+.titlebar-brand { font-weight: 600; margin-right: 16px; }
+.titlebar-menu { color: #ccc; cursor: pointer; margin-right: 12px; opacity: 0.8; }
+.titlebar-menu:hover { opacity: 1; }
+.titlebar-center { flex: 1; text-align: center; color: rgba(255,255,255,0.5); font-size: 11px; }
+
+/* ===== Workspace Layout ===== */
+.workspace { display: flex; flex: 1; overflow: hidden; }
+
+/* Activity Bar */
+.activity-bar {
+  width: 48px; background: var(--vscode-sideBar-background);
+  border-right: 1px solid var(--vscode-borderColor);
+  display: flex; flex-direction: column; align-items: center; padding-top: 4px;
+}
+.act-icon {
+  width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--vscode-icon-foreground); font-size: 18px; opacity: 0.65;
+  position: relative;
+}
+.act-icon:hover { opacity: 1; }
+.act-icon.active { opacity: 1; color: #fff; }
+.act-icon.active::before {
+  content:''; position:absolute; left:0; top:6px; bottom:6px; width:2px;
+  background:#fff; border-radius:0 2px 2px 0;
+}
+.act-bar-bottom { margin-top:auto; padding-bottom:8px; }
+
+/* ===== LEFT SIDEBAR: Resource List ===== */
+.sidebar {
+  width: 300px; min-width: 270px;
+  background: var(--vscode-sideBar-background);
+  border-right: 1px solid var(--vscode-borderColor);
+  display: flex; flex-direction: column;
+}
+
+/* Type Tabs */
+.type-tabs {
+  display: flex; border-bottom: 1px solid var(--vscode-borderColor);
+  background: var(--vscode-sideBar-background);
+}
+.type-tab {
+  flex:1; display:flex; align-items:center; justify-content:center; gap:4px;
+  padding:9px 4px; cursor:pointer; font-size:12px; color:var(--vscode-descriptionForeground);
+  border-right:1px solid var(--vscode-borderColor); position:relative;
+}
+.type-tab:hover{color:#fff;}
+.type-tab.active{
+  color:var(--vscode-tab-activeForeground);
+  background:var(--vscode-tab-activeBackground);
+  border-bottom:2px solid var(--vscode-focusBorder);
+}
+
+/* Section header */
+.sec-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 14px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--vscode-descriptionForeground);border-bottom:1px solid var(--vscode-borderColor);
+}
+.btn-install-sm{
+  background:var(--vscode-button-background);color:#fff;border:none;
+  padding:2px 10px;border-radius:3px;font-size:11px;cursor:pointer;
+}
+.btn-install-sm:hover{filter:brightness(1.15);}
+
+/* Search */
+.search-area{padding:7px 10px;}
+.search-wrap{position:relative;}
+.search-input{
+  width:100%;padding:5px 10px;padding-left:28px;
+  background:var(--vscode-input-background);border:1px solid transparent;
+  color:var(--vscode-input-foreground);border-radius:3px;font-size:12px;outline:none;
+}
+.search-input:focus{border-color:var(--vscode-focusBorder);}
+.search-icon{position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--vscode-descriptionForeground);}
+
+/* Filter chips */
+.filter-chips{display:flex;flex-wrap:wrap;gap:4px;padding:4px 10px 10px;}
+.chip{
+  padding:2px 8px;border-radius:3px;font-size:11px;cursor:pointer;
+  background:rgba(255,255,255,0.04);color:var(--vscode-descriptionForeground);
+  border:1px solid transparent;transition:all .12s;
+}
+.chip:hover{border-color:var(--vscode-borderColor);}
+.chip.on{background:var(--vscode-list-activeSelectionBackground);color:#fff;}
+
+/* Resource list */
+.res-list{flex:1;overflow-y:auto;}
+.res-item{
+  display:flex;flex-direction:column;padding:8px 14px;cursor:pointer;
+  border-bottom:1px solid rgba(255,255,255,0.02);transition:background .1s;
+}
+.res-item:hover{background:var(--vscode-list-hoverBackground);}
+.res-item.on{background:var(--vscode-list-activeSelectionBackground);}
+.item-top{display:flex;align-items:center;gap:6px;}
+.item-arrow{width:16px;text-align:center;color:var(--vscode-descriptionForeground);font-size:11px;cursor:pointer;flex-shrink:0;}
+.item-name{font-size:13px;font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.item-badges{display:flex;gap:3px;flex-shrink:0;}
+.badge{font-size:10px;padding:1px 6px;border-radius:2px;font-weight:500;}
+.badge-auto{background:var(--tag-info-bg);color:var(--tag-info-fg);}
+.badge-manual{background:var(--tag-warn-bg);color:var(--tag-warn-fg);}
+.badge-always{background:var(--tag-safe-bg);color:var(--tag-safe-fg);}
+.badge-safe{background:var(--tag-safe-bg);color:var(--tag-safe-fg);}
+.badge-builtin{background:rgba(150,150,150,0.12);color:#999;}
+.item-desc{
+  font-size:11px;color:var(--vscode-descriptionForeground);margin-top:3px;
+  line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-left:22px;
+}
+.item-src{
+  font-size:10px;color:var(--vscode-textLink-foreground);margin-top:2px;padding-left:22px;display:flex;align-items:center;gap:4px;
+}
+
+/* ===== CENTER: EDITOR PANE (Skill/MCP style) ===== */
+.editor-pane{
+  flex:1;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--vscode-editor-background);
+}
+
+/* === Pane Header (matches screenshot) === */
+.pane-header{
+  padding:14px 20px 12px;border-bottom:1px solid var(--vscode-borderColor);
+  background:var(--vscode-editor-background);flex-shrink:0;
+}
+.ph-row1{display:flex;align-items:center;gap:10px;}
+.ph-icon{
+  width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:17px;flex-shrink:0;
+}
+.ph-icon-skill{background:linear-gradient(135deg,#9b59b6,#8e44ad);}
+.ph-icon-mcp{background:linear-gradient(135deg,#f39c12,#e67e22);}
+.ph-icon-tool{background:linear-gradient(135deg,#1abc9c,#16a085);}
+.ph-icon-knowledge{background:linear-gradient(135deg,#3498db,#2980b9);}
+.ph-icon-workflow{background:linear-gradient(135deg,#e74c3c,#c0392b);}
+
+.ph-title{font-size:20px;font-weight:600;flex:1;}
+.ph-star{cursor:pointer;opacity:0.55;font-size:16px;margin-left:4px;}
+.ph-star:hover{opacity:1;}
+
+.ph-actions{display:flex;gap:8px;flex-shrink:0;align-items:center;}
+.btn-ph{
+  background:var(--vscode-button-background);color:#fff;border:none;
+  padding:5px 14px;border-radius:3px;cursor:pointer;font-size:12px;
+  display:flex;align-items:center;gap:4px;
+}
+.btn-ph:hover{filter:brightness(1.12);}
+.btn-ph-close{
+  background:none;border:none;color:var(--vscode-icon-foreground);
+  cursor:pointer;font-size:20px;line-height:1;padding:4px 8px;
+}
+.btn-ph-close:hover{color:#fff;}
+
+.ph-meta{display:flex;gap:18px;margin-top:6px;font-size:12px;color:var(--vscode-descriptionForeground);}
+.ph-meta i{margin-right:3px;font-style:normal;}
+.ph-tags{display:flex;gap:6px;margin-top:8px;}
+.tag-pill{
+  padding:2px 10px;border-radius:12px;font-size:11px;border:1px solid transparent;
+}
+.tag-pill-safe{background:var(--tag-safe-bg);color:var(--tag-safe-fg);border-color:var(--tag-safe-fg)35;}
+.tag-pill-office{background:var(--tag-info-bg);color:var(--tag-info-fg);border-color:var(--tag-info-fg)35;}
+.tag-pill-knot{color:var(--tag-knot-fg);border-color:var(--tag-knot-fg)40;background:var(--tag-knot-bg);}
+
+/* === Tab Navigation (matches screenshot) === */
+.pane-tabs{
+  display:flex;gap:0;border-bottom:1px solid var(--vscode-borderColor);
+  padding:0 20px;background:var(--vscode-editor-background);flex-shrink:0;
+}
+.ptab{
+  padding:10px 16px;background:none;border:none;color:var(--vscode-tab-inactiveForeground);
+  cursor:pointer;font-size:13px;position:relative;border-bottom:2px solid transparent;
+  transition:all .15s;
+}
+.ptab:hover{color:var(--vscode-tab-activeForeground);}
+.ptab.on{color:var(--vscode-tab-activeForeground);border-bottom-color:var(--vscode-button-background);font-weight:500;}
+
+/* === Content Area === */
+.pane-body{flex:1;overflow-y:auto;padding:20px 24px;}
+
+/* --- Usage content (使用说明) --- */
+.usage-content h1{font-size:20px;margin-bottom:10px;}
+.usage-content h2{font-size:16px;margin:18px 0 8px;color:var(--vscode-textLink-foreground);}
+.usage-content p{margin-bottom:8px;line-height:1.7;}
+.usage-content ol,.usage-content ul{padding-left:20px;margin-bottom:8px;}
+.usage-content li{margin-bottom:3px;line-height:1.6;}
+.usage-content code{
+  background:#333;padding:1px 5px;border-radius:3px;
+  font-family:'Cascadia Code',Consolas,monospace;font-size:12px;color:#ce9178;
+}
+.usage-content pre{
+  background:#1a1a1a;padding:12px 16px;border-radius:4px;
+  border:1px solid var(--vscode-borderColor);overflow-x:auto;margin:8px 0;font-size:12px;
+}
+.usage-content pre code{background:none;padding:0;color:#d4d4d4;}
+.usage-content strong{color:#fff;}
+
+/* Score summary */
+.score-box{
+  background:var(--vscode-widget-background);border:1px solid var(--vscode-borderColor);
+  border-radius:4px;padding:14px 18px;margin:14px 0;
+}
+.score-head{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+.score-total{font-size:26px;font-weight:700;color:var(--tag-safe-fg);}
+.score-max{font-size:14px;color:var(--vscode-descriptionForeground);}
+.score-grade{padding:2px 10px;border-radius:3px;font-size:12px;font-weight:600;}
+.grade-pass{background:var(--tag-safe-bg);color:var(--tag-safe-fg);}
+.grade-warn{background:var(--tag-warn-bg);color:var(--tag-warn-fg);}
+.score-verdict{font-size:13px;color:var(--vscode-descriptionForeground);}
+
+/* Score table */
+.stbl{width:100%;border-collapse:collapse;margin:12px 0;font-size:12px;}
+.stbl th,.stbl td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--vscode-borderColor);}
+.stbl th{color:var(--vscode-descriptionForeground);font-weight:500;width:110px;}
+.stbl th.sc{width:42px;text-align:center;}
+.stbl td.sn{text-align:center;font-weight:600;}
+.sg{color:var(--tag-safe-fg);}
+.sm{color:var(--tag-warn-fg);}
+.sb{color:#f85149;}
+
+/* File tree panel (文件) */
+.file-layout{display:flex;gap:0;height:100%;min-height:400px;}
+.file-tree{
+  width:240px;min-width:200px;border-right:1px solid var(--vscode-borderColor);
+  overflow-y:auto;padding:6px 0;
+}
+.ft-hdr{display:flex;align-items:center;gap:6px;padding:6px 14px;font-size:12px;font-weight:600;color:var(--vscode-descriptionForeground);}
+.ft-node{display:flex;align-items:center;padding:4px 14px;cursor:pointer;font-size:12px;}
+.ft-node:hover{background:var(--vscode-list-hoverBackground);}
+.ft-node.on{background:var(--vscode-list-activeSelectionBackground);}
+.ft-icon{width:18px;margin-right:6px;text-align:center;}
+.ft-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ft-size{color:var(--vscode-descriptionForeground);font-size:11px;margin-left:8px;}
+.ft-folder>.ft-node{font-weight:500;}
+.ft-children{display:none;}
+.ft-folder.open>.ft-children{display:block;}
+
+.file-preview{
+  flex:1;overflow-y:auto;padding:14px 18px;background:var(--vscode-editor-background);
+}
+.fp-hdr{display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--vscode-borderColor);margin-bottom:12px;font-size:12px;color:var(--vscode-descriptionForeground);}
+.fp-body{line-height:1.7;font-size:13px;}
+.fp-body h2{font-size:16px;margin-bottom:8px;color:#fff;}
+.fp-body code{background:#333;padding:1px 5px;border-radius:3px;font-size:12px;}
+.fp-key{color:#9cdcfe;}
+.fp-str{color:#ce9178;}
+
+.qref-tbl{width:100%;max-width:520px;border-collapse:collapse;margin:12px 0;font-size:12px;border:1px solid var(--vscode-borderColor);}
+.qref-tbl th,.qref-tbl td{padding:7px 12px;text-align:left;border:1px solid var(--vscode-borderColor);}
+.qref-tbl th{background:var(--vscode-widget-background);font-weight:600;width:140px;}
+.qref-tbl td code{background:none;color:var(--vscode-textLink-foreground);}
+
+/* Version history */
+.vitem{display:flex;align-items:baseline;gap:10px;padding:10px 0;border-bottom:1px solid var(--vscode-borderColor);}
+.vdot{width:8px;height:8px;border-radius:50%;background:var(--tag-safe-fg);flex-shrink:0;margin-top:5px;}
+.vnum{font-weight:600;font-size:14px;}
+.vbadge{font-size:10px;padding:1px 7px;border-radius:3px;background:var(--tag-warn-bg);color:var(--tag-warn-fg);}
+.vdate{margin-left:auto;color:var(--vscode-descriptionForeground);font-size:12px;}
+.vauth{color:var(--vscode-textLink-foreground);font-size:12px;margin-left:4px;}
+.vnote{color:var(--vscode-descriptionForeground);font-size:12px;margin-left:28px;margin-top:2px;}
+
+/* MCP Tool Description cards */
+.tcard{
+  background:var(--vscode-widget-background);border:1px solid var(--vscode-borderColor);
+  border-radius:4px;padding:14px 16px;margin-bottom:12px;transition:border-color .15s;
+}
+.tcard:hover{border-color:var(--vscode-focusBorder);}
+.tname{font-size:14px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+.tname code{background:#333;padding:2px 8px;border-radius:3px;font-size:12px;}
+.tdesc{color:var(--vscode-descriptionForeground);font-size:13px;line-height:1.6;}
+.tmeta{display:flex;gap:12px;margin-top:7px;font-size:11px;color:var(--vscode-descriptionForeground);}
+.tparam{background:#2a2a2a;padding:10px 14px;border-radius:4px;margin-top:8px;font-size:12px;}
+.tparam-title{font-weight:600;color:var(--vscode-textLink-foreground);margin-bottom:6px;font-size:11px;text-transform:uppercase;}
+.tparam table{width:100%;border-collapse:collapse;}
+.tparam th,.tparam td{padding:4px 8px;text-align:left;font-size:11px;border-bottom:1px solid var(--vscode-borderColor);}
+.tparam th{color:var(--vscode-descriptionForeground);font-weight:500;}
+.pt-type{color:#ce9178;}
+.pt-req{color:#f85149;font-weight:600;}
+.pt-opt{color:var(--vscode-descriptionForeground);}
+.ti-safe{background:var(--tag-safe-bg);color:var(--tag-safe-fg);padding:2px 8px;border-radius:3px;font-size:11px;}
+.ti-ro{background:var(--tag-info-bg);color:var(--tag-info-fg);padding:2px 8px;border-radius:3px;font-size:11px;}
+
+/* Empty state */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground);gap:10px;}
+.empty-state .es-icon{font-size:48px;opacity:0.3;}
+.empty-state .es-text{font-size:14px;}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:8px;height:8px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--vscode-scrollbarSlider-background);border-radius:4px;}
+::-webkit-scrollbar-thumb:hover{background:var(--vscode-scrollbarSlider-hoverBackground);}
+
+/* Status bar */
+.statusbar{
+  height:22px;display:flex;align-items:center;padding:0 10px;
+  background:#007acc;color:#fff;font-size:12px;border-top:1px solid var(--vscode-borderCode-color);
+}
+.si{margin-right:18px;display:flex;align-items:center;gap:4px;}
+.si-r{margin-left:auto;margin-right:0;}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+<!-- Title Bar -->
+<div class="titlebar">
+  <div><span class="titlebar-brand">📄 VsSaros</span></div>
+  <span class="titlebar-menu">编辑(E)</span>
+  <span class="titlebar-menu">窗口(W)</span>
+  <span class="titlebar-menu">帮助(H)</span>
+  <div class="titlebar-center">v2.2.5590 &nbsp; sarosis-agents-client ↘</div>
+</div>
+
+<div class="workspace">
+
+<!-- Activity Bar -->
+<div class="activity-bar">
+  <div class="act-icon active" title="资源管理器">📁</div>
+  <div class="act-icon" title="搜索">🔍</div>
+  <div class="act-icon" title="源码管理">📂</div>
+  <div class="act-icon" title="调试">🐛</div>
+  <div class="act-icon" title="扩展">⬛</div>
+  <div class="act-bar-bottom"><div class="act-icon" title="设置">⚙️</div></div>
+</div>
+
+<!-- LEFT SIDEBAR: Resource List -->
+<div class="sidebar">
+  <!-- Type Tabs -->
+  <div class="type-tabs">
+    <div class="type-tab active" onclick="switchType('skill')"><span>💡</span>技能</div>
+    <div class="type-tab" onclick="switchType('tool')"><span>🔧</span>工具</div>
+    <div class="type-tab" onclick="switchType('mcp')"><span>⚡</span>MCP</div>
+    <div class="type-tab" onclick="switchType('knowledge')"><span>📚</span>知识库</div>
+    <div class="type-tab" onclick="switchType('workflow')"><span>🔄</span>工作流</div>
+  </div>
+
+  <div class="sec-header">
+    <span id="secTitle">💡 Skills Library &nbsp;<span style="opacity:0.5;">1/119 matched</span></span>
+    <button class="btn-install-sm">+ 安装</button>
+  </div>
+
+  <div class="search-area">
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input class="search-input" placeholder="Search skills by name, description, or id..." />
+    </div>
+  </div>
+
+  <div class="filter-chips" id="filterChips"></div>
+
+  <div class="res-list" id="resList"></div>
+</div>
+
+<!-- CENTER: Editor Pane (Skill/MCP style) -->
+<div class="editor-pane" id="editorPane">
+  <!-- Filled dynamically by JS -->
+</div>
+
+</div><!-- /.workspace -->
+
+<!-- Status Bar -->
+<div class="statusbar">
+  <span class="si">💡 main</span>
+  <span class="si">✓ 0 ✕ 0 ⚠ 0</span>
+  <span class="si si-r">Ln 1, Col 1 &nbsp; Spaces: 2 &nbsp; UTF-8 &nbsp; Markdown &nbsp; CRLF</span>
+</div>
+
+</div><!-- /.app -->
+
+<script>
+// ========== DATA ==========
+const RESOURCES = {
+  skill: [
+    {
+      id: 'westock-data', name: 'westock-data',
+      desc: '"由腾讯证券团队提供" 直连腾讯微证券/自选股核心行情引擎。以机构级专线数据为底座...',
+      badges: [['manual','badge-manual'],['内置','badge-safe'],['bilibili','badge-builtin']],
+      src: '🔗 Knot 技能商城导入 · 使用前请到 Knot 平台阅读完整文档',
+      iconClass: 'ph-icon-skill',
+      author: 'galeqin', scope: '☁ 公共 ⓘ', installs: '892', updated: '2026-06-25 10:30',
+      tags: [{text:'⊘ KNOT官方',cls:'tag-pill-knot'},{text:'数据分析',cls:'tag-pill-office'},{text:'数据分析',cls:''},{text:'后台开发',cls:''}],
+      tabs: ['描述','使用说明','工具说明','评论 (2)'],
+      kind: 'mcp-style' // uses MCP layout for this demo
+    },
+    {
+      id: 'ponytail', name: 'ponytail',
+      desc: 'Lazy senior developer mode. Force simplest solution at every step.',
+      badges: [['auto','badge-auto'],['内置','badge-safe']],
+      src: '📦 内置技能',
+      iconClass: 'ph-icon-skill',
+      author: 'DietrichGebert', scope: '☁ 公共 ⓘ', installs: '1,247', updated: '2026-06-28 15:00',
+      tags: [{text:'✅ 安全认证',cls:'tag-pill-safe'},{text:'适用办公',cls:'tag-pill-office'}],
+      tabs: ['使用说明','文件','版本历史','评论','AI 评测'],
+      kind: 'skill'
+    },
+    {
+      id: 'pptx', name: 'pptx',
+      desc: 'Use this skill any time a .pptx file is involved — creating, editing, reading.',
+      badges: [['auto','badge-auto'],['安全认证','badge-safe']],
+      src: '☁️ yunliangxue · 公共 · ⬇31,894',
+      iconClass: 'ph-icon-skill',
+      author: 'yunliangxue', scope: '☁ 公共 ⓘ', installs: '31,894', updated: '2026-04-28 11:53:24',
+      tags: [{text:'✅ 安全认证',cls:'tag-pill-safe'},{text:'适用办公',cls:'tag-pill-office'}],
+      tabs: ['使用说明','文件','版本历史','评论','AI 评测'],
+      kind: 'skill'
+    },
+    {
+      id: 'code-review', name: 'code-review',
+      desc: 'Comprehensive code review for PR analysis and quality checks.',
+      badges: [['auto','badge-auto'],['内置','badge-safe']],
+      src: '📦 内置技能',
+      iconClass: 'ph-icon-skill',
+      author: 'builtin', scope: '', installs: '内置', updated: '2026-06-20',
+      tags: [{text:'✅ 安全认证',cls:'tag-pill-safe'}],
+      tabs: ['使用说明','文件','AI 评测'],
+      kind: 'skill'
+    },
+    {
+      id: 'be-concise', name: 'be-concise',
+      desc: 'Always respond concisely. Remove filler words and get to the point.',
+      badges: [['always','badge-always'],['内置','badge-safe']],
+      src: '📦 内置技能',
+      iconClass: 'ph-icon-skill',
+      author: 'builtin', scope: '', installs: '内置', updated: '2026-06-10',
+      tags: [],
+      tabs: ['使用说明','文件'],
+      kind: 'skill'
+    }
+  ],
+  tool: [
+    {id:'read_file',name:'read_file',desc:'Read file contents with offset and line limit support.',badges:[['Safe','badge-safe']],src:'📦 内置工具',iconClass:'ph-icon-tool',author:'VsSaros Built-in',scope:'',installs:'内置',updated:'2026-06-01',tags:[],tabs:['使用说明','参数定义'],kind:'tool'},
+    {id:'write_file',name:'write_file',desc:'Write or overwrite files to the filesystem.',badges:[['Unsafe','badge-manual']],src:'📦 内置工具',iconClass:'ph-icon-tool',author:'VsSaros Built-in',scope:'',installs:'内置',updated:'2026-06-01',tags:[],tabs:['使用说明','参数定义'],kind:'tool'},
+  ],
+  mcp: [
+    {id:'knot-data',name:'knot-data (knot平台)',desc:'knot 平台专用的数据查询 MCP 服务',badges:[['KNOT官方','badge-manual']],src:'☁️ yunliangxue · ⬇892',iconClass:'ph-icon-mcp',author:'yunliangxue',scope:'☁ 公共 ⓘ',installs:'892',updated:'2026-06-25',tags:[{text:'⊘ KNOT官方',cls:'tag-pill-knot'},{text:'数据分析',cls:'tag-pill-office'},{text:'数据分析',cls:''},{text:'后台开发',cls:''}],tabs:['描述','使用说明','工具说明','评论 (2)'],kind:'mcp'},
+    {id:'filesystem',name:'filesystem',desc:'Local filesystem access via MCP',badges:[['Safe','badge-safe']],src:'📦 内置 MCP',iconClass:'ph-icon-mcp',author:'builtin',scope:'',installs:'内置',updated:'2026-06-15',tags:[],tabs:['使用说明','工具说明'],kind:'mcp'},
+  ],
+  knowledge: [
+    {id:'project-docs',name:'project-docs',desc:'项目架构文档集合 (24 documents, 2.4MB)',badges:[['RAG就绪','badge-safe']],src:'📁 本地',iconClass:'ph-icon-knowledge',author:'User Local',scope:'',installs:'本地',updated:'2026-06-28',tags:[],tabs:['文档列表','搜索','统计'],kind:'knowledge'},
+  ],
+  workflow: [
+    {id:'pr-review',name:'pr-review',desc:'PR Review CI/CD Workflow',badges:[['已启用','badge-safe']],src:'📁 本地',iconClass:'ph-icon-workflow',author:'User Created',scope:'',installs:'本地',updated:'2026-06-27',tags:[{text:'已启用',cls:'tag-pill-safe'},{text:'CI/CD',cls:'tag-pill-office'}],tabs:['流程定义','运行记录','设置'],kind:'workflow'},
+  ]
+};
+
+const FILTER_CHIPS = ['All','misc','productivity','reasoning','apple','creative','research','mlops','meta','ai-agents','git','development','dogfood','security','email','data-science','devops','gaming','mcp','note-taking','smart-home','text','social-media','bilibili'];
+
+let currentType = 'skill';
+let currentRes = null;
+let currentTabIdx = 0;
+
+// ========== RENDER ==========
+function renderSidebar() {
+  const items = RESOURCES[currentType];
+  const listEl = document.getElementById('resList');
+  listEl.innerHTML = items.map((r, i) => `
+    <div class="res-item ${i===0?'on':''}" onclick="selectRes('${currentType}','${r.id}',this)">
+      <div class="item-top">
+        <span class="item-arrow">${i===0?'▼':'▶'}</span>
+        <span class="item-name">${r.name}</span>
+        <span class="item-badges">${r.badges.map(b=>`<span class="badge ${b[1]}">${b[0]}</span>`).join('')}</span>
+      </div>
+      <div class="item-desc">${r.desc}</div>
+      ${r.src ? `<div class="item-src">${r.src}</div>` : ''}
+    </div>
+  `).join('');
+
+  // Chips
+  const chipsEl = document.getElementById('filterChips');
+  chipsEl.innerHTML = FILTER_CHIPS.map((c,i)=>`<span class="chip ${i===0?'on':''}">${c}</span>`).join('');
+
+  // Section title
+  const typeNames = {skill:'Skills Library',tool:'Tools Library',mcp:'MCP Servers',knowledge:'Knowledge Base',workflow:'Workflows'};
+  const counts = {skill:'119',tool:'38',mcp:'12',knowledge:'5',workflow:'8'};
+  document.getElementById('secTitle').innerHTML = `💡 ${typeNames[currentType]} &nbsp;<span style="opacity:0.5;">1/${counts[currentType]} matched</span>`;
+}
+
+function selectRes(type, id, el) {
+  document.querySelectorAll('.res-item').forEach(i=>i.classList.remove('on'));
+  el.classList.add('on');
+  el.querySelector('.item-arrow').textContent='▼';
+  document.querySelectorAll('.res-item:not(.on)').forEach(i=>i.querySelector('.item-arrow').textContent='▶');
+
+  const res = RESOURCES[type].find(r=>r.id===id);
+  if(res){ currentRes=res; currentTabIdx=0; renderEditorPane(); }
+}
+
+function switchType(type) {
+  currentType = type;
+  document.querySelectorAll('.type-tab').forEach(t=>t.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  renderSidebar();
+  if(RESOURCES[type].length > 0){
+    currentRes = RESOURCES[type][0]; currentTabIdx=0;
+    renderEditorPane();
+  } else {
+    document.getElementById('editorPane').innerHTML = `<div class="empty-state"><div class="es-icon">📭</div><div class="es-text">暂无${type==='skill'?'技能':type==='tool'?'工具':type}资源</div></div>`;
+  }
+}
+
+// ========== EDITOR PANE RENDERING ==========
+function renderEditorPane() {
+  const r = currentRes;
+  if(!r)return;
+
+  const emoji = r.iconClass.includes('skill')?'🧠':r.iconClass.includes('mcp')?'⚡':r.iconClass.includes('tool')?'🔧':r.iconClass.includes('knowledge')?'📚':'🔄';
+
+  let html = '';
+
+  // ---- HEADER ----
+  html += `
+  <div class="pane-header">
+    <div class="ph-row1">
+      <div class="ph-icon ${r.iconClass}">${emoji}</div>
+      <div class="ph-title">${r.name}</div>
+      <span class="ph-star">☆</span>
+      <div class="ph-actions">
+        <button class="btn-ph">↓ 安装 ⌄</button>
+        <button class="btn-ph-close">×</button>
+      </div>
+    </div>
+    <div class="ph-meta">
+      ${r.author?`<i>👤</i>作者：<a href="#" style="color:var(--vscode-textLink-foreground);text-decoration:none;">${r.author}</a>`:''}
+      ${r.scope?`<i>🔗</i>共享范围：${r.scope}`:''}
+      ${r.installs?`<i>⬇</i>安装量：${r.installs}`:''}
+      ${r.updated?`<i>🕐</i>更新：${r.updated}`:''}
+    </div>
+    ${r.tags && r.tags.length ? `
+    <div class="ph-tags">${r.tags.map(t=>`<span class="tag-pill ${t.cls||''}">${t.text}</span>`).join('')}</div>
+    ` : ''}
+  </div>`;
+
+  // ---- TABS ----
+  html += `<div class="pane-tabs">`;
+  r.tabs.forEach((t,i)=>{
+    html += `<button class="ptab ${i===currentTabIdx?'on':''}" onclick="switchPaneTab(${i})">${t}</button>`;
+  });
+  html += `</div>`;
+
+  // ---- BODY ----
+  html += `<div class="pane-body">`;
+  html += renderTabContent(r.kind, r.id, currentTabIdx);
+  html += `</div>`;
+
+  document.getElementById('editorPane').innerHTML = html;
+}
+
+function switchPaneTab(idx){
+  currentTabIdx = idx;
+  // Re-render just the body
+  const bodyEl = document.querySelector('.pane-body');
+  if(bodyEl && currentRes){
+    bodyEl.innerHTML = renderTabContent(currentRes.kind, currentRes.id, idx);
+  }
+  // Update tab styles
+  document.querySelectorAll('.ptab').forEach((t,i)=>t.classList.toggle('on',i===idx));
+}
+
+function renderTabContent(kind, resId, tabIdx) {
+  // ---- SKILL KIND ----
+  if(kind === 'skill'){
+    switch(tabIdx){
+      case 0: return renderSkillUsage(resId);
+      case 1: return renderSkillFiles(resId);
+      case 2: return renderSkillVersion(resId);
+      case 3: return renderComments();
+      case 4: return renderSkillEval(resId);
+    }
+  }
+
+  // ---- MCP KIND ----
+  if(kind === 'mcp'){
+    switch(tabIdx){
+      case 0: return renderMcpDesc(resId);
+      case 1: return renderMcpUsage(resId);
+      case 2: return renderMcpTools(resId);
+      case 3: return renderComments();
+    }
+  }
+
+  // ---- TOOL KIND ----
+  if(kind === 'tool'){
+    switch(tabIdx){
+      case 0: return renderToolUsage(resId);
+      case 1: return renderToolParams(resId);
+    }
+  }
+
+  // ---- KNOWLEDGE KIND ----
+  if(kind === 'knowledge'){
+    switch(tabIdx){
+      case 0: return renderKnowledgeList();
+      case 1: return `<p style="color:var(--vscode-descriptionForeground);">搜索功能...</p>`;
+      case 2: return `<p style="color:var(--vscode-descriptionForeground);">统计信息...</p>`;
+    }
+  }
+
+  // ---- WORKFLOW KIND ----
+  if(kind === 'workflow'){
+    switch(tabIdx){
+      case 0: return renderWorkflowDef();
+      case 1: return `<p style="color:var(--vscode-descriptionForeground);">运行记录...</p>`;
+      case 2: return `<p style="color:var(--vscode-descriptionForeground);">工作流设置...</p>`;
+    }
+  }
+
+  // Fallback for mcp-style items showing description first
+  if(kind === 'mcp-style'){
+    switch(tabIdx){
+      case 0: return renderMcpDesc(resId);
+      case 1: return renderMcpUsage(resId);
+      case 2: return renderMcpTools(resId);
+      case 3: return renderComments();
+    }
+  }
+
+  return `<p>Content for ${kind}:${tabIdx}</p>`;
+}
+
+// ===== SKILL TAB CONTENTS =====
+function renderSkillUsage(id){
+  if(id==='pptx'){
+    return `<div class="usage-content">
+<h1>PPTX Skill</h1>
+<p><strong>pptx</strong> 技能为 Claude 提供了一套<strong>端到端的 PowerPoint</strong> 操作能力，覆盖新建、编辑、解析与视觉化验证四大场景。它既能从零生成符合品牌调性的演示文稿，也能在保留母版设计的前提下提取、替换文本 OOXML 以微调注释、动画、母版等高级元素，解决传统脚本无法兼顾"快速成稿"与"精细调整"的痛点。</p>
+
+<h2>使用方法</h2>
+<ol>
+<li><strong>环境准备：</strong>确认已安装 markdown、pptxgenjs、playwright、sharp、LibreOffice、Poppler 等依赖。</li>
+<li><strong>新建元模板文件：</strong>
+  <ul>
+  <li>a. 先完整阅读 <code>html2pptx.md</code> 摆谱语法；</li>
+  <li>b. 按 720×405 pt 画布写 HTML，仅用 p、h1~h6、ul、ol、标签；图表/表格区域用 class="placeholder" 并临时填充色背景；</li>
+  <li>c. 用 Sharp 预置渐变实与图标成 PNG 再引用；</li>
+  <li>d. 运行 <code>html2pptx.js</code> 将 HTML 数组转为 pptx，并调用 <code>thumbnail.py</code> 生成 4-5 列缩略图网格，逐页检查文字是否溢出、重叠或对比度不足，循环调整至通过。</li>
+  </ul></li>
+<li><strong>新建基于模板文件：</strong>
+  <ul>
+  <li>a. <code>thumbnail.py</code> 生成模板缩略图，markdown 提取文本，人工填写 <code>template-inventory.md</code> 记录每页版式；</li>
+  <li>b. 依照实际内容块数量选择版式（两栏仅放两项、三栏仅放二项，不硬塞），保存 <code>outline.md</code> 并给出 0-based 模板映射表；</li>
+  <li>c. <code>rearrange.py</code> 按映射射复制、排序、刷页得 working.pptx；</li>
+  <li>d. <code>inventory.py</code> 导出 text-inventory.json，按真实 shape 结构写 replacement-text.json（含 paragraphs、bullet、alignment、color 等属性，未列出的 shape 将被清空）；</li>
+  <li>e. <code>replace.py</code> 校验 shape 存在性与溢出问题，通过后生成 output.pptx。</li>
+  </ul></li>
+<li><strong>编辑现有文件：</strong>
+  <ul>
+  <li>a. 完整阅读 <code>ooxml.md</code>；</li>
+  <li>b. <code>unpack.py</code> 解压，直接修改 ppt/slides/slideN.xml、notesSlides、comments 等；</li>
+  <li>c. 每改一次即调用 <code>validate.py</code> 照原文件校验，消除 XML 错误；</li>
+  <li>d. <code>pack.py</code> 重新打包。</li>
+  </ul></li>
+<li><strong>文字抽取：</strong>仅阅读内容时，执行 <code>python -m markdown file.pptx</code> 即可得 Markdown。</li>
+</ol>
+
+<h2>预期输出</h2>
+<ul>
+<li><strong>新建场景：</strong>可直接交付的 .pptx 文件，附带缩略图与可选 PDF/图片序列，支持 16:9、文本层级、母版配色、图表占位完整，且通过视觉校验无溢框。</li>
+<li><strong>模版替换场景：</strong>版式、字体、配色与原母版保持一致，所有占位符被精准填充，未使用形伏自动清空，脚本一次性回滚错误。</li>
+<li><strong>编辑场景：</strong>保留原文件媒体与关系的有效 OOXML，<code>validate.py</code> 报告无错误，可继续二次开发。</li>
+</ul>
+</div>`;
+  }
+  // ponytail default
+  return `<div class="usage-content">
+<h1>Ponytail — 懒汉高级开发者模式</h1>
+<p><strong>ponytail</strong> 技能为 Claude 提供了一种<strong>懒汉高级开发者</strong>的工作方式，覆盖新建、编辑、分析与视觉化验证四大场景。强制最简方案阶梯（YAGNI → stdlib → native → one line → minimum）。</p>
+
+<h2>核心理念</h2>
+<p>每一步都问"真的需要吗？"</p>
+
+<h2>判定阶梯</h2>
+<pre><code>1. YAGNI     — 不需要？删掉
+2. stdlib    — 标准库有？用它
+3. native    — 语言原生语法？用它
+4. one line  — 能一行写完？
+5. minimum  — 最少依赖？</code></pre>
+
+<h2>使用方法</h2>
+<ol>
+<li><strong>环境准备：</strong>确认已安装 Claude Code / VsSaros IDE</li>
+<li><strong>自动激活：</strong>当检测到以下关键词时自动注入："懒人"、"最简"、"YAGNI"、"过度工程"</li>
+<li><strong>手动调用：</strong>输入 <code>/ponytail</code></li>
+<li><strong>三档强度：</strong>lite（仅标记）/ full（默认，标记+建议）/ ultra（直接重构）</li>
+</ol>
+
+<h2>预期输出</h2>
+<ul>
+<li><strong>审查场景：</strong>每条发现一行 <code>L42: yagni: factory, one product. Inline.</code></li>
+<li><strong>审计场景：</strong>全仓库按可删除量排序的过度工程清单</li>
+<li><strong>债务台账：</strong>收集 <code>ponytail:</code> 注释到 JSON 台账</li>
+</ul>
+</div>`;
+}
+
+function renderSkillFiles(id){
+  return `<div class="file-layout">
+<div class="file-tree">
+  <div class="ft-hdr">📁 文件浏览</div>
+  <div class="ft-folder open">
+    <div class="ft-node"><span class="ft-icon">📂</span><span class="ft-name">${id}</span></div>
+    <div class="ft-children">
+      <div class="ft-node on"><span class="ft-icon">📄</span><span class="ft-name">SKILL.md</span><span class="ft-size">9.0 KB</span></div>
+      <div class="ft-node"><span class="ft-icon">📜</span><span class="ft-name">LICENSE.txt</span><span class="ft-size">1.4 KB</span></div>
+      <div class="ft-node"><span class="ft-icon">📁</span><span class="ft-name">scripts</span></div>
+    </div>
+  </div>
+</div>
+<div class="file-preview">
+  <div class="fp-hdr">📄 正在浏览文件 <strong>SKILL.md</strong> <span style="margin-left:auto;">9.0 KB</span></div>
+  <div class="fp-body">
+    <h2>${id} Skill</h2>
+    <p><span class="fp-key">name:</span> <span class="fp-str">"${id}"</span></p>
+    <p><span class="fp-key">description:</span> <span class="fp-str">"${id==='pptx'?'Use this skill any time a .pptx file is involved in any way — as input, output, or both.':'Lazy senior developer mode. Force simplest solution at every step.'}"</span></p>
+    <p><span class="fp-key">activation:</span> <span class="fp-str">auto</span></p>
+    <br/>
+    <h2>Quick Reference</h2>
+    <table class="qref-tbl">
+      <tr><th>Task</th><th>Guide</th></tr>
+      <tr><td>Read or analyze content</td><td><code>python -m markdown presentation.pptx</code></td></tr>
+      <tr><td>Edit or create from template</td><td>Read <code style="color:var(--vscode-textLink-foreground)">editing.md</code></td></tr>
+      <tr><td>Create from scratch</td><td>Read <code style="color:var(--vscode-textLink-foreground)">pptxgenjs.md</code></td></tr>
+    </table>
+  </div>
+</div>
+</div>`;
+}
+
+function renderSkillVersion(id){
+  return `
+<div class="vitem"><span class="vdot"></span><span class="vnum">v${id==='pptx'?'1.0.0':'4.8.3'}</span><span class="vbadge">最新</span><span class="vdate">2026-${id==='pptx'?'04-28':'06-28'} ${id==='pptx'?'11:53:24':'15:00'}</span><span class="vauth">${id==='pptx'?'yunliangxue':'DietrichGebert'}</span></div>
+<div class="vnote">初始版本</div>
+<div class="vitem"><span class="vdot"></span><span class="vnum">v${id==='pptx'?'0.9.0':'4.8.2'}</span><span class="vdate">2026-${id==='pptx'?'04-15':'06-20'} ${id==='pptx'?'09:22':'10:22'}</span><span class="vauth">${id==='pptx'?'yunliangxue':'DietrichGebert'}</span></div>
+<div class="vnote">${id==='pptx'?'Beta release':'新增 ponytail-debt 和 ponytail-gain 子技能'}</div>
+<div class="vitem"><span class="vdot"></span><span class="vnum">v${id==='pptx'?'0.1.0':'4.8.0'}</span><span class="vdate">2026-${id==='pptx'?'03-01':'06-01'} ${id==='pptx'?'10:15':'09:15'}</span><span class="vauth">${id==='pptx'?'yunliangxue':'DietrichGebert'}</span></div>
+<div class="vnote">${id==='pptx'?'Initial version':'新增 ultra 模式和 ponytail-help'}</div>`;
+}
+
+function renderSkillEval(id){
+  const score = id==='pptx'?73:78;
+  const grade = score>=75?'良好':'合格';
+  return `<div class="score-box">
+<div class="score-head">
+  <span class="score-total">${score}</span><span class="score-max">/100</span>
+  <span class="score-grade grade-pass">${grade}</span>
+  <span class="score-verdict">· 结论：pass</span>
+</div></div>
+
+<h2>总结与建议</h2>
+<p>这是一个功能完善的 ${id.toUpperCase()} 技能，覆盖了读取、编辑、从零创建三大工作流。脚本工具链设计合理。QA 流程和常见陷阱部分尤其出色，体现了丰富的实战经验。</p>
+<p>主要提升空间在于：正文篇幅偏大（${id==='pptx'?'8345':'6200'}+ 字符），远超建议的 5000；设计指南和详细教程应移入 references/ 按需加载；description 缺少边界排除说明，可能导致误触发。</p>
+
+<h2>各维度得分</h2>
+<table class="stbl">
+<tr><th>维度</th><th class="sc">得分</th><th class="sc">满分</th><th>评语</th></tr>
+<tr><td>元数据合规</td><td class="sn sg">14</td><td class="sn">15</td><td>frontmatter 的 name 和 description 字段齐全，格式规范；仅缺 license 标准格式扣 1 分</td></tr>
+<tr><td>资源完整性</td><td class="sn sm">7</td><td class="sn">10</td><td>脚本工具链完整可用，但存在非标准顶层文件，建议移入 references/ 目录</td></tr>
+<tr><td>篇幅统计</td><td class="sn sm">${id==='pptx'?8:9}</td><td class="sn">15</td><td>正文明显超标；SKILL.md 中设计指南占大量篇幅，应按需加载</td></tr>
+<tr><td>触发准确性</td><td class="sn sm">11</td><td class="sn">15</td><td>description 三要素充分，列举了多种触发场景；但缺少排除项/负向边界</td></tr>
+<tr><td>指令正交质量</td><td class="sn sm">11</td><td class="sn">15</td><td>主流工作流步骤清晰，代码示例丰富；但缺少显式前置检查步骤</td></tr>
+<tr><td>安全合规</td><td class="sn sg">14</td><td class="sn">15</td><td>无高风险项；仅因写操作缺少确认机制扣 1 分</td></tr>
+<tr><td>Token 效率</td><td class="tn sm">8</td><td class="sn">15</td><td>职责聚焦；但正文过长且未合理拆分，Token 消耗偏高</td></tr>
+</table>`;
+}
+
+// ===== MCP TAB CONTENTS =====
+function renderMcpDesc(id){
+  if(id==='knot-data'){
+    return `<div class="usage-content">
+<h1>knot-data (knot平台)</h1>
+<p>knot 平台专用的 mysql mcp</p>
+</div>`;
+  }
+  return `<div class="usage-content"><h1>${id}</h1><p>MCP 服务描述...</p></div>`;
+}
+
+function renderMcpUsage(id){
+  return `<div class="usage-content">
+<h1>Knot Data MCP Server</h1>
+<p>knot 平台专用的数据查询与操作 MCP 服务，提供结构化数据访问能力。</p>
+
+<h2>连接配置</h2>
+<pre><code>{
+  "mcpServers": {
+    "knot-data": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/knot-data-mcp"],
+      "env": {
+        "KNOT_API_KEY": "your-api-key",
+        "KNOT_PROJECT_ID": "project-uuid"
+      }
+    }
+  }
+}</code></pre>
+
+<h2>支持的操作</h2>
+<ul>
+<li><strong>execute_sql</strong> — 执行 SQL 命令</li>
+<li><strong>list_tables</strong> — 列出所有可用数据表</li>
+<li><strong>get_schema</strong> — 获取表结构信息</li>
+<li><strong>export_data</strong> — 导出为 CSV/JSON</li>
+</ul>
+</div>`;
+}
+
+function renderMcpTools(id){
+  const tools = [
+    {name:'execute_sql',desc:'执行 SQL 命令，支持 SELECT / INSERT / UPDATE / DELETE 等操作。返回结果集或影响行数。',safe:true,params:[
+      {name:'sql',type:'string',req:true,desc:'要执行的 SQL 语句'},
+      {name:'params',type:'object[]',req:false,desc:'SQL 参数化绑定值（防 SQL 注入）'},
+      {name:'timeout_ms',type:'number',req:false,desc:'超时时间（毫秒），默认 30000'}
+    ]},
+    {name:'list_tables',desc:'列出当前数据库连接中所有可用的数据表，包含行数估算和最后更新时间。',safe:true,params:[
+      {name:'pattern',type:'string',req:false,desc:"表名过滤通配符（如 'user_*'）"}
+    ]},
+    {name:'get_schema',desc:'获取指定表的完整 schema 信息，包括字段名、类型、约束、索引等。',safe:true,params:[
+      {name:'table_name',type:'string',req:true,desc:'目标表名'}
+    ]},
+    {name:'export_data',desc:'导出查询结果为 CSV 或 JSON 格式，支持分页和大小限制。',safe:false,params:[
+      {name:'sql',type:'string',req:true,desc:'SELECT 查询语句'},
+      {name:"format",type:"'csv'|'json'",req:false,desc:'导出格式，默认 csv'},
+      {name:'limit',type:'number',req:false,desc:'最大行数限制，默认 10000'}
+    ]}
+  ];
+
+  return `<div class="tool-desc-section">
+${tools.map(t=>`
+<div class="tcard">
+  <div class="tname"><code>${t.name}</code> <span class="${t.safe?'ti-safe':'ti-ro'}">${t.safe?'Safe':'Read-Only'}</span></div>
+  <div class="tdesc">${t.desc}</div>
+  <div class="tmeta"><span>📥 输入：${t.params.filter(p=>p.req).map(p=>p.name).join(', ')||'—'}</span> <span style="margin-left:auto;">📤 输出：rows[], affected_rows</span></div>
+  <div class="tparam">
+    <div class="tparam-title">参数定义</div>
+    <table>
+      <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+      ${t.params.map(p=>`<tr><td><code>${p.name}</code></td><td><span class="pt-type">${p.type}</span></td><td><span class="${p.req?'pt-req':'pt-opt'}">${p.req?'✓':'可选'}</span></td><td>${p.desc}</td></tr>`).join('')}
+    </table>
+  </div>
+</div>`).join('')}
+</div>`;
+}
+
+// ===== TOOL TAB CONTENTS =====
+function renderToolUsage(id){
+  return `<div class="usage-content">
+<h1>${id}</h1>
+<p>Built-in tool for file system operations.</p>
+</div>`;
+}
+function renderToolParams(id){
+  return `<div class="tool-desc-section">
+<div class="tcard">
+  <div class="tname"><code>${id}</code> <span class="ti-safe">Safe</span></div>
+  <div class="tdesc">${id==='read_file'?'Read file contents with support for offset and line limiting. Supports absolute paths only.':'Write or create files to the local filesystem.'}</div>
+  <div class="tmeta"><span>📦 内置工具</span> <span style="margin-left:auto;">🔒 Safe</span></div>
+  <div class="tparam">
+    <div class="tparam-title">参数定义</div>
+    <table>
+      <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+      <tr><td><code>filePath</code></td><td><span class="pt-type">string</span></td><td><span class="pt-req">✓</span></td><td>文件的绝对路径</td></tr>
+      <tr><td><code>offset</code></td><td><span class="pt-type">number</span></td><td><span class="pt-opt">可选</span></td><td>起始行号（从1开始）</td></tr>
+      <tr><td><code>limit</code></td><td><span class="pt-type">number</span></td><td><span class="pt-opt">可选</span></td><td>最大读取行数</td></tr>
+    </table>
+  </div>
+</div>
+</div>`;
+}
+
+// ===== OTHER KINDS =====
+function renderComments(){return `<p style="color:var(--vscode-descriptionForeground);">暂无评论</p>`;}
+function renderKnowledgeList(){
+  return `<div class="usage-content">
+<h1>项目文档</h1>
+<div style="color:var(--vscode-descriptionForeground);margin-bottom:12px;">
+📊 文档数：24 &nbsp;|&nbsp; 📦 大小：2.4 MB &nbsp;|&nbsp; 🔗 索引词：1,847
+</div>
+<div class="tcard">
+  <div class="tname"><code>AGENTS.md</code></div>
+  <div class="tdesc">VS Code Agents Instructions — AI 编码代理工作指南</div>
+  <div class="tmeta"><span>📄 8.2 KB</span> <span>🕐 2026-06-28</span> <span>🏷️ architecture, guidelines</span></div>
+</div>
+<div class="tcard">
+  <div class="tname"><code>CURRENT_PROJECT_STATUS.md</code></div>
+  <div class="tdesc">当前项目状态总览</div>
+  <div class="tmeta"><span>📄 15.1 KB</span> <span>🕐 2026-06-27</span></div>
+</div>
+</div>`;
+}
+function renderWorkflowDef(){
+  return `<div class="usage-content">
+<h1>PR Review Workflow</h1>
+<div class="ph-tags" style="margin-bottom:16px;"><span class="tag-pill tag-pill-safe">已启用</span><span class="tag-pill tag-pill-office">CI/CD</span></div>
+<h2>流程步骤</h2>
+<div class="tcard" style="margin-bottom:8px;">
+  <div class="tname"><span style="background:var(--vscode-button-background);width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;">1</span> 触发条件</div>
+  <div class="tdesc">当 PR 创建或更新时自动触发</div>
+</div>
+<div class="tcard" style="margin-bottom:8px;">
+  <div class="tname"><span style="background:var(--vscode-button-background);width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;">2</span> 代码分析</div>
+  <div class="tdesc">运行 linter + type checker + security scan</div>
+</div>
+<div class="tcard" style="margin-bottom:8px;">
+  <div class="tname"><span style="background:var(--vscode-button-background);width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;">3</span> AI 审查</div>
+  <div class="tdesc">生成 review comment 并发布到 PR</div>
+</div>
+<div class="tcard">
+  <div class="tname"><span style="background:var(--tag-warn-fg);width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;">4</span> 结果通知</div>
+  <div class="tdesc">发送审查结果到飞书/邮件</div>
+</div>
+</div>`;
+}
+
+// ========== INIT ==========
+document.addEventListener('DOMContentLoaded', () => {
+  renderSidebar();
+  currentRes = RESOURCES.skill[0];
+  renderEditorPane();
+});
+</script>
+</body>
+</html>

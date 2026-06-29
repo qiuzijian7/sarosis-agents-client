@@ -114,6 +114,12 @@ export class BrowserView extends Disposable {
 			...(options?.webContents ? { webContents: options.webContents } : {})
 		});
 
+		// 设置 Chrome User-Agent（移除 Electron 标记，避免被网站反爬检测）
+		const chromeVersion = process.versions.chrome;
+		this._view.webContents.setUserAgent(
+			`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`
+		);
+
 		// Use a default size of 1024x768.
 		this._view.setBounds({ x: -10000, y: -10000, width: 1024, height: 768 });
 		this._view.setBackgroundColor('#FFFFFF');

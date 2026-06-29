@@ -6,9 +6,9 @@
 /**
  * SkillInstaller —— skill 资源的安装器实现。
  *
- * install: 解压目录的 SKILL.md → 写入 ~/.saros/skills-library/{id}/SKILL.md
+ * install: 解压目录的 SKILL.md → 写入 ~/.saros/skills/{id}/SKILL.md
  *          （回写 storeId/version 到 frontmatter）→ ISkillRegistry.reload()
- * preparePack: 读 ~/.saros/skills-library/{id}/SKILL.md frontmatter → 构造 manifest
+ * preparePack: 读 ~/.saros/skills/{id}/SKILL.md frontmatter → 构造 manifest
  * getInstalledVersion: 从 ISkillRegistry.getSkill(id).version 读取
  */
 
@@ -22,7 +22,7 @@ import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../co
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 
-const SKILL_SUBDIR = 'skills-library';
+const SKILL_SUBDIR = 'skills';
 
 export class SkillInstaller extends Disposable implements IPackageInstaller {
 	declare readonly _serviceBrand: undefined;
@@ -37,7 +37,7 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 		super();
 	}
 
-	async install(manifest: PackageManifest, extractedDir: URI): Promise<IInstallResult> {
+	async install(manifest: PackageManifest, extractedDir: URI, opts?: { force?: boolean }): Promise<IInstallResult> {
 		const skillFile = URI.joinPath(extractedDir, 'SKILL.md');
 		if (!await this.fileService.exists(skillFile)) {
 			throw new Error('包内缺少 SKILL.md');
@@ -48,8 +48,19 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 		const updated = this.injectFrontmatter(content, { storeId: manifest.id, version: manifest.version });
 
 		const targetDir = await this.resolveDir(manifest.id);
+		const targetSkillFile = URI.joinPath(targetDir, 'SKILL.md');
+
+		// 检查已存在：非 force 模式拒绝覆盖，force 模式先删除旧目录
+		if (await this.fileService.exists(targetSkillFile)) {
+			if (!opts?.force) {
+				throw new Error(`Skill "${manifest.id}" already exists. Use force=true to overwrite (upgrade).`);
+			}
+			// force 模式：删除旧目录后重新创建
+			try { await this.fileService.del(targetDir, { recursive: true }); } catch { /* ignore */ }
+		}
+
 		await this.fileService.createFolder(targetDir);
-		await this.fileService.writeFile(URI.joinPath(targetDir, 'SKILL.md'), VSBuffer.fromString(updated));
+		await this.fileService.writeFile(targetSkillFile, VSBuffer.fromString(updated));
 
 		await this.skillRegistry.reload();
 		this.logService.info(`[SkillInstaller] 安装完成: ${manifest.id} v${manifest.version} → ${targetDir.fsPath}`);
@@ -58,7 +69,15 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 	}
 
 	async preparePack(localId: string): Promise<IPreparePackResult> {
-		const localDir = await this.resolveDir(localId);
+		// Try to find the skill in the registry to get its actual directory
+		// (directory name may differ from skill id)
+		const skill = this.skillRegistry.getSkill(localId);
+		let localDir: URI;
+		if (skill?.resource) {
+			localDir = skill.resource;
+		} else {
+			localDir = await this.resolveDir(localId);
+		}
 		if (!await this.fileService.exists(localDir)) {
 			throw new Error(`skill 目录不存在: ${localDir.fsPath}`);
 		}

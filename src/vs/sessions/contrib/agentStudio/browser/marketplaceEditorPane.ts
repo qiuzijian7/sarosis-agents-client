@@ -14,16 +14,27 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { clearNode } from '../../../../base/browser/dom.js';
 import { Dimension } from '../../../../base/browser/dom.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer, decodeBase64 } from '../../../../base/common/buffer.js';
 import { MarketplaceEditorInput } from './marketplaceEditorInput.js';
 import { IMarketplaceService, PackageKind, IMarketplacePackage, IMarketplacePackageDetail } from '../common/marketplace.js';
+import { ITofAuthService } from '../common/tofAuth.js';
+import { IPlaywrightService } from '../../../../platform/browserView/common/playwrightService.js';
 import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
+import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 
 const KIND_LABEL: Record<PackageKind, string> = {
 	skill: 'Skill',
 	agent: 'Agent',
 	mcp: 'MCP',
 	knowledge: '知识库',
+	workflow: '工作流',
 };
 
 const KIND_ICON: Record<PackageKind, string> = {
@@ -31,6 +42,7 @@ const KIND_ICON: Record<PackageKind, string> = {
 	agent: '\u{1F916}',
 	mcp: '\u{1F50C}',
 	knowledge: '\u{1F4DA}',
+	workflow: '\u{1F527}',
 };
 
 /** Inline CSS — matches mockup integration-marketplace-mockup.html */
@@ -75,6 +87,7 @@ const CSS_TEXT = `
 .badge-agent{background:rgba(78,201,176,.15);color:#4ec9b0;}
 .badge-mcp{background:rgba(206,145,120,.15);color:#ce9178;}
 .badge-kb{background:rgba(197,134,192,.15);color:#c586c0;}
+.badge-workflow{background:rgba(220,220,170,.15);color:#dcdcaa;}
 .install-btn{padding:4px 14px;background:var(--vscode-button-background,#007acc);color:var(--vscode-button-foreground,#fff);border:none;border-radius:3px;cursor:pointer;font-size:12px;font-weight:500;transition:.15s;}
 .install-btn:hover{background:var(--vscode-button-hoverBackground,#1f8ad2);}
 .install-btn.installed{background:#4ec9b0;cursor:default;}
@@ -121,37 +134,24 @@ const CSS_TEXT = `
 .mp-empty{text-align:center;padding:40px;color:var(--vscode-descriptionForeground,#9d9d9d);}
 `;
 
-/** Mock data — used as fallback when marketplace API is unreachable. Matches mockup. */
-const MOCK_PACKAGES: IMarketplacePackage[] = [
-	{ id: '1', kind: 'skill', slug: 'pdf-skill', name: 'PDF Skill', icon: '\u{1F4C4}', description: '\u5904\u7406 PDF \u6587\u4EF6\u7684\u6280\u80FD\u3002\u652F\u6301\u63D0\u53D6\u6587\u672C\u3001\u8868\u683C\u3001\u56FE\u7247\uFF0C\u4EE5\u53CA PDF \u8F6C Markdown\u3002', visibility: 'public', tags: ['pdf', 'document'], latestVersion: '1.0.0', downloads: 128 },
-	{ id: '2', kind: 'skill', slug: 'code-review', name: 'Code Review', icon: '\u{1F50D}', description: '\u4EE3\u7801\u5BA1\u67E5\u6280\u80FD\uFF0C\u81EA\u52A8\u68C0\u67E5\u4EE3\u7801\u8D28\u91CF\u3001\u5B89\u5168\u6F0F\u6D1E\u3001\u6700\u4F73\u5B9E\u8DF5\u3002', visibility: 'public', tags: ['review', 'code'], latestVersion: '1.0.0', downloads: 96 },
-	{ id: '3', kind: 'agent', slug: 'deep-researcher', name: 'Deep Researcher', icon: '\u{1F916}', description: '\u6DF1\u5EA6\u7814\u7A76 Agent\uFF0C\u652F\u6301\u7F51\u7EDC\u641C\u7D22\u3001\u4FE1\u606F\u6574\u5408\u3001\u62A5\u544A\u751F\u6210\u3002', visibility: 'public', tags: ['research', 'search'], latestVersion: '1.1.0', downloads: 256 },
-	{ id: '4', kind: 'agent', slug: 'code-architect', name: 'Code Architect', icon: '\u{1F3D7}\uFE0F', description: '\u4EE3\u7801\u67B6\u6784\u5E08 Agent\uFF0C\u8F85\u52A9\u7CFB\u7EDF\u8BBE\u8BA1\u3001\u67B6\u6784\u51B3\u7B56\u3001\u6280\u672F\u9009\u578B\u3002', visibility: 'public', tags: ['architecture'], latestVersion: '1.0.0', downloads: 88 },
-	{ id: '5', kind: 'mcp', slug: 'filesystem-mcp', name: 'Filesystem MCP', icon: '\u{1F4C1}', description: '\u6587\u4EF6\u7CFB\u7EDF\u8BBF\u95EE MCP \u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u6587\u4EF6\u8BFB\u5199\u3001\u76EE\u5F55\u904D\u5386\u529F\u80FD\u3002', visibility: 'public', tags: ['filesystem'], latestVersion: '0.5.0', downloads: 64 },
-	{ id: '6', kind: 'mcp', slug: 'fetch-mcp', name: 'Fetch MCP', icon: '\u{1F310}', description: '\u7F51\u7EDC\u8BF7\u6C42 MCP \u670D\u52A1\u5668\uFF0C\u652F\u6301 HTTP/HTTPS \u8BF7\u6C42\u3001\u7F51\u9875\u6293\u53D6\u3002', visibility: 'public', tags: ['fetch', 'http'], latestVersion: '0.4.0', downloads: 42 },
-	{ id: '9', kind: 'mcp', slug: 'codebase-memory-mcp', name: 'Codebase Memory', icon: '\u{1F9E0}', description: '\u4EE3\u7801\u667A\u80FD\u5F15\u64CE\uFF1A\u5C06\u4ED3\u5E93\u7D22\u5F15\u4E3A\u51FD\u6570/\u7C7B/\u8C03\u7528\u94FE/\u8DE8\u670D\u52A1\u94FE\u63A5\u7684\u77E5\u8BC6\u56FE\u8C31\uFF0C\u63D0\u4F9B 14 \u4E2A\u7ED3\u6784\u5316\u67E5\u8BE2 MCP \u5DE5\u5177\u3002', visibility: 'public', tags: ['code', 'graph'], latestVersion: '1.0.0', downloads: 156 },
-	{ id: '10', kind: 'mcp', slug: 'github-mcp', name: 'GitHub MCP', icon: '\u{1F4C4}', description: 'GitHub API \u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u4ED3\u5E93\u3001Issue\u3001PR\u3001Action \u7B49 GitHub \u8D44\u6E90\u8BBF\u95EE\u80FD\u529B\u3002', visibility: 'public', tags: ['github', 'git'], latestVersion: '1.0.0', downloads: 320 },
-	{ id: '11', kind: 'mcp', slug: 'gitlab-mcp', name: 'GitLab MCP', icon: '\u{1F98A}', description: 'GitLab API \u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u9879\u76EE\u3001Issue\u3001MR \u7B49 GitLab \u8D44\u6E90\u8BBF\u95EE\u80FD\u529B\u3002', visibility: 'public', tags: ['gitlab', 'git'], latestVersion: '1.0.0', downloads: 88 },
-	{ id: '12', kind: 'mcp', slug: 'postgres-mcp', name: 'PostgreSQL MCP', icon: '\u{1F4BE}', description: 'PostgreSQL \u6570\u636E\u5E93\u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u53EA\u8BFB\u67E5\u8BE2\u4E0E Schema \u68C0\u67E5\u80FD\u529B\u3002', visibility: 'public', tags: ['database', 'postgres'], latestVersion: '1.0.0', downloads: 72 },
-	{ id: '13', kind: 'mcp', slug: 'sqlite-mcp', name: 'SQLite MCP', icon: '\u{1F5C3}\uFE0F', description: 'SQLite \u6570\u636E\u5E93\u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u67E5\u8BE2\u4E0E Schema \u68C0\u67E5\u80FD\u529B\u3002', visibility: 'public', tags: ['database', 'sqlite'], latestVersion: '1.0.0', downloads: 54 },
-	{ id: '14', kind: 'mcp', slug: 'brave-search-mcp', name: 'Brave Search MCP', icon: '\u{1F50E}', description: 'Brave Search API \u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u7F51\u9875\u641C\u7D22\u80FD\u529B\u3002', visibility: 'public', tags: ['search', 'web'], latestVersion: '1.0.0', downloads: 110 },
-	{ id: '15', kind: 'mcp', slug: 'puppeteer-mcp', name: 'Puppeteer MCP', icon: '\u{1F5BC}\uFE0F', description: 'Puppeteer \u6D4F\u89C8\u5668\u81EA\u52A8\u5316\u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u7F51\u9875\u6293\u53D6\u3001\u8868\u5355\u586B\u5199\u3001\u622A\u56FE\u7B49\u80FD\u529B\u3002', visibility: 'public', tags: ['browser', 'automation'], latestVersion: '1.0.0', downloads: 198 },
-	{ id: '16', kind: 'mcp', slug: 'memory-mcp', name: 'Memory MCP', icon: '\u{1F4DD}', description: '\u57FA\u4E8E\u77E5\u8BC6\u56FE\u8C31\u7684\u6301\u4E45\u5316\u8BB0\u5FC6\u7CFB\u7EDF\uFF0C\u5141\u8BB8 Agent \u5B58\u50A8\u548C\u68C0\u7D22\u7ED3\u6784\u5316\u8BB0\u5FC6\u3002', visibility: 'public', tags: ['memory', 'ai'], latestVersion: '1.0.0', downloads: 142 },
-	{ id: '17', kind: 'mcp', slug: 'sequential-thinking-mcp', name: 'Sequential Thinking MCP', icon: '\u{1F9E9}', description: '\u7ED3\u6784\u5316\u601D\u7EF4\u670D\u52A1\u5668\uFF0C\u901A\u8FC7\u6B65\u9AA4\u5316\u601D\u8003\u8FC7\u7A0B\u89E3\u51B3\u590D\u6742\u95EE\u9898\u3002', visibility: 'public', tags: ['thinking', 'ai'], latestVersion: '1.0.0', downloads: 76 },
-	{ id: '18', kind: 'mcp', slug: 'time-mcp', name: 'Time MCP', icon: '\u{23F1}\uFE0F', description: '\u65F6\u95F4\u4E0E\u65F6\u533A\u8F6C\u6362\u5DE5\u5177\u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u65F6\u95F4\u67E5\u8BE2\u4E0E\u65F6\u533A\u8F6C\u6362\u80FD\u529B\u3002', visibility: 'public', tags: ['time', 'timezone'], latestVersion: '1.0.0', downloads: 38 },
-	{ id: '19', kind: 'mcp', slug: 'notion-mcp', name: 'Notion MCP', icon: '\u{1F4D1}', description: 'Notion \u5DE5\u4F5C\u533A\u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u9875\u9762\u3001\u6570\u636E\u5E93\u3001\u5185\u5BB9\u8BBF\u95EE\u80FD\u529B\u3002', visibility: 'public', tags: ['notion', 'productivity'], latestVersion: '1.0.0', downloads: 164 },
-	{ id: '20', kind: 'mcp', slug: 'slack-mcp', name: 'Slack MCP', icon: '\u{1F4AC}', description: 'Slack \u5DE5\u4F5C\u533A\u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u9891\u9053\u3001\u6D88\u606F\u3001\u7528\u6237\u8BBF\u95EE\u80FD\u529B\u3002', visibility: 'public', tags: ['slack', 'productivity'], latestVersion: '1.0.0', downloads: 92 },
-	{ id: '21', kind: 'mcp', slug: 'google-drive-mcp', name: 'Google Drive MCP', icon: '\u{1F4C2}', description: 'Google Drive \u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u6587\u4EF6\u8BBF\u95EE\u4E0E\u641C\u7D22\u80FD\u529B\u3002', visibility: 'public', tags: ['gdrive', 'productivity'], latestVersion: '1.0.0', downloads: 58 },
-	{ id: '22', kind: 'mcp', slug: 'codex-mcp', name: 'Codex MCP', icon: '\u{1F4BB}', description: 'OpenAI Codex \u670D\u52A1\u5668\uFF0C\u63D0\u4F9B\u4EE3\u7801\u751F\u6210\u80FD\u529B\u3002', visibility: 'public', tags: ['codex', 'ai'], latestVersion: '1.0.0', downloads: 104 },
-	{ id: '23', kind: 'mcp', slug: 'mcp-everything', name: 'MCP Everything', icon: '\u{1F9F0}', description: 'MCP \u6D4B\u8BD5\u670D\u52A1\u5668\uFF0C\u5305\u542B\u6240\u6709 MCP \u529F\u80FD\uFF08\u5DE5\u5177\u3001\u8D44\u6E90\u3001\u63D0\u793A\u3001\u91C7\u6837\uFF09\uFF0C\u7528\u4E8E\u6D4B\u8BD5\u4E0E\u6F14\u793A\u3002', visibility: 'public', tags: ['test', 'demo'], latestVersion: '1.0.0', downloads: 24 },
-	{ id: '7', kind: 'knowledge', slug: 'sarosis-handbook', name: 'Sarosis \u4F7F\u7528\u624B\u518C', icon: '\u{1F4DA}', description: 'vsSarosis \u5B8C\u6574\u4F7F\u7528\u624B\u518C\uFF0C\u542B\u914D\u7F6E\u6307\u5357\u3001\u6700\u4F73\u5B9E\u8DF5\u3001FAQ\u3002', visibility: 'public', tags: ['docs', 'guide'], latestVersion: '2026.06', downloads: 32 },
-	{ id: '8', kind: 'knowledge', slug: 'vscode-dev', name: 'VSCode \u6269\u5C55\u5F00\u53D1\u6307\u5357', icon: '\u{1F4D6}', description: 'VSCode \u6269\u5C55 API \u53C2\u8003\u3001\u8C03\u8BD5\u6280\u5DE7\u3001\u53D1\u5E03\u6D41\u7A0B\u3002', visibility: 'public', tags: ['vscode', 'dev'], latestVersion: '1.0.0', downloads: 28 },
-];
-
 /**
  * EditorPane that renders the VsSaros Marketplace page inside the editor area.
  * Uses native DOM with CSS classes matching the mockup design.
  */
+
+/** Knot 认证错误 — 携带页面 URL 和资源信息供登录流程使用 */
+class KnotAuthError extends Error {
+	constructor(
+		public readonly pageUrl: string,
+		public readonly resourceType: string,
+		public readonly resourceId: string,
+		public readonly originalUrl: string,
+	) {
+		super('Knot 需要登录认证');
+		this.name = 'KnotAuthError';
+	}
+}
+
 export class MarketplaceEditorPane extends EditorPane {
 
 	static readonly ID = 'workbench.editor.marketplace';
@@ -170,6 +170,8 @@ export class MarketplaceEditorPane extends EditorPane {
 	private _activeCategory: PackageKind | 'all' | 'graph' = 'all';
 	private _searchQuery = '';
 	private _installingIds: Set<string> = new Set();
+	private _crawlPageId: string | null = null;
+	private _crawlBrowserInput: BrowserEditorInput | null = null;
 
 	constructor(
 		group: IEditorGroup,
@@ -179,6 +181,13 @@ export class MarketplaceEditorPane extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IFileService private readonly fileService: IFileService,
+		@IPathService private readonly pathService: IPathService,
+		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IPlaywrightService private readonly playwrightService: IPlaywrightService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 	) {
 		super(MarketplaceEditorPane.ID, group, telemetryService, themeService, storageService);
 
@@ -187,6 +196,11 @@ export class MarketplaceEditorPane extends EditorPane {
 			this._refreshUserDisplay();
 			this._loadPackages().catch(() => { /* ignore */ });
 		}));
+
+		// 监听 TOF 登录状态变化 → 更新显示（商城会自动同步，但先更新 UI 显示 TOF 状态）
+		this._register(this.tofAuthService.onDidChangeUser(() => {
+			this._refreshUserDisplay();
+		}));
 	}
 
 	/** 刷新用户信息显示区域 */
@@ -194,8 +208,10 @@ export class MarketplaceEditorPane extends EditorPane {
 		if (!this._userEl) { return; }
 		clearNode(this._userEl); // 不用 innerHTML（TrustedHTML CSP 拦截）
 		const user = this.marketplaceService.getCurrentUser();
-		console.log('[MarketplaceEditorPane] _refreshUserDisplay: user=', user ? user.username : 'null', 'isLoggedIn=', this.marketplaceService.isLoggedIn());
+		const tofUser = this.tofAuthService.currentUser;
+
 		if (user) {
+			// 商城已登录 → 显示用户名 + 已连接
 			const avatar = document.createElement('div');
 			avatar.className = 'avatar';
 			avatar.textContent = (user.username || '?').charAt(0).toUpperCase();
@@ -211,8 +227,39 @@ export class MarketplaceEditorPane extends EditorPane {
 			status.style.color = '#4ec9b0';
 			status.textContent = '\u25CF \u5DF2\u8FDE\u63A5'; // ● 已连接
 			this._userEl.appendChild(status);
+		} else if (tofUser) {
+			// 商城未登录但 TOF 已登录 → 显示 TOF 用户名 + 同步中（可点击重试）
+			const avatar = document.createElement('div');
+			avatar.className = 'avatar';
+			avatar.style.background = 'var(--vscode-descriptionForeground,#9d9d9d)';
+			avatar.textContent = (tofUser.login_name || '?').charAt(0).toUpperCase();
+			this._userEl.appendChild(avatar);
+			const nameSpan = document.createElement('span');
+			nameSpan.textContent = tofUser.login_name;
+			this._userEl.appendChild(nameSpan);
+			const sep = document.createElement('span');
+			sep.style.color = 'var(--vscode-descriptionForeground,#9d9d9d)';
+			sep.textContent = '|';
+			this._userEl.appendChild(sep);
+			const syncBtn = document.createElement('span');
+			syncBtn.style.cssText = 'color:#dcdcaa;cursor:pointer;text-decoration:underline;';
+			syncBtn.textContent = '\u26A1 \u540C\u6B65\u4E2D(\u70B9\u51FB\u91CD\u8BD5)'; // ⚡ 同步中(点击重试)
+			syncBtn.onclick = () => {
+				this.notificationService.info('\u6B63\u5728\u540C\u6B65\u5546\u57CE\u767B\u5F55\u6001...'); // 正在同步商城登录态...
+				this.marketplaceService.loginWithTof().then(() => {
+					this._refreshUserDisplay();
+				}).catch(err => {
+					this.notificationService.error(`\u540C\u6B65\u5931\u8D25: ${err instanceof Error ? err.message : String(err)}`); // 同步失败: ...
+				});
+			};
+			this._userEl.appendChild(syncBtn);
 		} else {
-			this._userEl.textContent = '\u26A0 \u672A\u767B\u5F55'; // ⚠ 未登录
+			// 均未登录 → 显示未登录（可点击登录）
+			const loginLink = document.createElement('span');
+			loginLink.style.cssText = 'cursor:pointer;text-decoration:underline;';
+			loginLink.textContent = '\u26A0 \u672A\u767B\u5F55(\u70B9\u51FB\u767B\u5F55)'; // ⚠ 未登录(点击登录)
+			loginLink.onclick = () => this._triggerLogin();
+			this._userEl.appendChild(loginLink);
 		}
 	}
 
@@ -242,6 +289,15 @@ export class MarketplaceEditorPane extends EditorPane {
 		this._userEl = userEl;
 		this._refreshUserDisplay(); // 使用统一方法填充内容
 		titleRow.appendChild(userEl);
+
+		// 爬取按钮
+		const crawlBtn = document.createElement('button');
+		crawlBtn.className = 'install-btn';
+		crawlBtn.style.cssText = 'font-size:12px;padding:4px 12px;';
+		crawlBtn.textContent = '\u{1F310} \u722C\u53D6'; // 🌐 爬取
+		crawlBtn.onclick = () => this._showCrawlOverlay();
+		titleRow.appendChild(crawlBtn);
+
 		header.appendChild(titleRow);
 
 		// Toolbar: search + categories
@@ -269,6 +325,7 @@ export class MarketplaceEditorPane extends EditorPane {
 			{ id: 'agent', label: '\u{1F916} Agent' },
 			{ id: 'mcp', label: '\u{1F50C} MCP' },
 			{ id: 'knowledge', label: '\u{1F4DA} \u77E5\u8BC6\u5E93' }, // 📚 知识库
+			{ id: 'workflow', label: '\u{1F527} \u5DE5\u4F5C\u6D41' }, // 🔧 工作流
 			{ id: 'graph', label: '\u{1F9E0} Graph' }, // 🧠 Graph
 		];
 		for (const opt of catOptions) {
@@ -375,26 +432,53 @@ export class MarketplaceEditorPane extends EditorPane {
 		this._gridEl.appendChild(el);
 	}
 
+	private _autoSyncAttempted = false;
+
 	private async _loadPackages(): Promise<void> {
 		if (this._loading) { return; }
+
+		// ── 后台静默同步商城登录态（不阻塞数据加载）──
+		// 服务端 /packages 使用 optionalAuth，允许匿名浏览公开资源。
+		// 登录态仅用于下载/上传操作，因此不阻塞列表加载。
+		if (!this.marketplaceService.isLoggedIn() && !this._autoSyncAttempted) {
+			this._autoSyncAttempted = true;
+			this.marketplaceService.loginWithTof().then(() => {
+				// 同步成功 → onDidChangeLogin 会触发 _refreshUserDisplay + _loadPackages
+			}).catch(() => {
+				// 同步失败（无 TOF 票据/网关不可达）→ 不阻塞浏览，header 显示"未登录"
+			});
+		}
+
 		this._loading = true;
 		this._showEmptyMessage('\u52A0\u8F7D\u4E2D...'); // 加载中...
 		try {
-			const result = await this.marketplaceService.listPackages({ pageSize: 100 });
+			// pageSize 设为较大值以获取所有类型的资源（skill/agent/mcp/knowledge）
+			// 避免因分页只取到部分类型（如仅 MCP）
+			const result = await this.marketplaceService.listPackages({ pageSize: 1000, sort: 'popular' });
 			this._packages = [...result.items];
 			if (!this._packages || this._packages.length === 0) {
-				// Fallback to mock data if server returns empty
-				console.log('[Marketplace] Server returned empty, using mock data');
-				this._packages = MOCK_PACKAGES;
+				this._showEmptyMessage('\u5546\u57CE\u4E2D\u6682\u65E0\u53EF\u7528\u8D44\u6E90'); // 商城中暂无可用资源
+				this._resultCountEl.textContent = '0 \u4E2A\u8D44\u6E90';
+				return;
 			}
 			this._renderGrid();
 		} catch (err) {
-			// Fallback to mock data if API is unreachable
 			console.error('[Marketplace] API error:', err);
-			this._packages = MOCK_PACKAGES;
-			this._renderGrid();
+			this._showEmptyMessage(`\u52A0\u8F7D\u5931\u8D25: ${err instanceof Error ? err.message : String(err)}`); // 加载失败: ...
+			this._resultCountEl.textContent = '';
 		} finally {
 			this._loading = false;
+		}
+	}
+
+	/** 触发 VsSaros TOF 登录（完整 OAuth 流程，打开浏览器） */
+	private async _triggerLogin(): Promise<void> {
+		try {
+			// 调用 agentStudio.tofLogin 命令发起完整 TOF OAuth 登录（打开浏览器）
+			// 登录成功后 onDidChangeUser → marketplaceService._syncTofLogin → onDidChangeLogin → _loadPackages
+			await this.commandService.executeCommand('agentStudio.tofLogin');
+		} catch (err) {
+			this.notificationService.error(`\u767B\u5F55\u5931\u8D25: ${err instanceof Error ? err.message : String(err)}`); // 登录失败: ...
 		}
 	}
 
@@ -618,6 +702,7 @@ export class MarketplaceEditorPane extends EditorPane {
 			case 'agent': return 'badge-agent';
 			case 'mcp': return 'badge-mcp';
 			case 'knowledge': return 'badge-kb';
+			case 'workflow': return 'badge-workflow';
 		}
 	}
 
@@ -733,7 +818,9 @@ export class MarketplaceEditorPane extends EditorPane {
 			return;
 		}
 		if (!this.marketplaceService.isLoggedIn()) {
-			this.notificationService.info('\u8BF7\u5148\u767B\u5F55\u5546\u57CE\u3002');
+			this.notificationService.info('\u6B63\u5728\u540C\u6B65\u767B\u5F55\u6001\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u5B89\u88C5...'); // 正在同步登录态，请稍后重试安装...
+			// 尝试同步登录态，成功后 onDidChangeLogin 会触发刷新
+			this._triggerLogin();
 			return;
 		}
 
@@ -780,7 +867,7 @@ export class MarketplaceEditorPane extends EditorPane {
 			['\u540D\u79F0', `${pkg.icon ?? KIND_ICON[pkg.kind]} ${pkg.name}`], // 名称
 			['\u7248\u672C', `v${pkg.latestVersion}`], // 版本
 			['\u7C7B\u578B', KIND_LABEL[pkg.kind]], // 类型
-			['\u5B89\u88C5\u4F4D\u7F6E', `~/.saros/${pkg.kind === 'knowledge' ? 'knowledge-base' : pkg.kind === 'mcp' ? 'mcp-servers' : pkg.kind === 'agent' ? 'agents/custom' : 'skills-library'}/${pkg.slug}/`], // 安装位置
+			['\u5B89\u88C5\u4F4D\u7F6E', `~/.saros/${pkg.kind === 'knowledge' ? 'knowledge-base' : pkg.kind === 'mcp' ? 'mcp' : pkg.kind === 'agent' ? 'agents/custom' : 'skills'}/${pkg.slug}/`], // 安装位置
 		];
 		for (const [label, val] of rows) {
 			const row = document.createElement('div');
@@ -949,6 +1036,1259 @@ export class MarketplaceEditorPane extends EditorPane {
 		dialog.appendChild(actions);
 
 		this._overlayEl.appendChild(dialog);
+	}
+
+	// ── 爬取功能 ──────────────────────────────────────────────────
+
+	/** 显示 Knot 登录流程：在内置浏览器中登录 → 重新抓取 */
+	private _showKnotAuthFlow(
+		statusEl: HTMLElement, previewEl: HTMLElement,
+		authErr: KnotAuthError,
+		crawlBtn: HTMLElement, cancelBtn: HTMLElement,
+		originalUrl: string,
+	): void {
+		clearNode(statusEl);
+		statusEl.style.color = '';
+		statusEl.style.display = 'block';
+
+		// 提示
+		const hint = document.createElement('div');
+		hint.style.cssText = 'margin-bottom:10px;color:var(--vscode-descriptionForeground,#9d9d9d);font-size:12px;line-height:1.6;';
+		hint.innerHTML = '检测到 Knot 需要登录认证。<br>已在编辑器中打开 Knot 页面，请在编辑器窗口中完成 OA 登录（扫码），登录完成后返回此处点击"已完成登录，开始抓取"。';
+		statusEl.appendChild(hint);
+
+		// 按钮行
+		const btnRow = document.createElement('div');
+		btnRow.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;';
+
+		const retryBtn = document.createElement('button');
+		retryBtn.className = 'id-btn';
+		retryBtn.textContent = '已完成登录，开始抓取';
+		statusEl.appendChild(btnRow);
+		btnRow.appendChild(retryBtn);
+
+		// 日志区域（在按钮下方）
+		const logArea = document.createElement('div');
+		logArea.style.cssText = 'margin-top:8px;max-height:200px;overflow-y:auto;background:var(--vscode-input-background,#1e1e1e);border:1px solid var(--vscode-input-border,#3c3c3c);border-radius:4px;padding:8px;font-size:11px;font-family:Consolas,monospace;line-height:1.6;display:none;';
+		statusEl.appendChild(logArea);
+
+		const appendLog = (msg: string, type: 'info' | 'success' | 'error' | 'step' = 'info') => {
+			logArea.style.display = 'block';
+			const entry = document.createElement('div');
+			const colors: Record<string, string> = {
+				step: 'color:#569cd6;font-weight:600;',
+				success: 'color:#4ec9b0;',
+				error: 'color:#f48771;',
+				info: 'color:var(--vscode-descriptionForeground,#9d9d9d);',
+			};
+			entry.style.cssText = colors[type] || colors.info;
+			const time = new Date().toLocaleTimeString();
+			entry.textContent = '[' + time + '] ' + msg;
+			logArea.appendChild(entry);
+			logArea.scrollTop = logArea.scrollHeight;
+		};
+
+		retryBtn.onclick = async () => {
+			retryBtn.disabled = true;
+			retryBtn.textContent = '抓取中...';
+			clearNode(logArea);
+			logArea.style.display = 'block';
+			appendLog('开始抓取流程...', 'step');
+
+			// 页面已在编辑器中打开且用户已登录，直接重新抓取
+			// _crawlPageId 保持不变，_crawlPreview 会重新导航到详情页
+			try {
+				const preview = await this._crawlPreview(originalUrl, appendLog);
+				appendLog('抓取成功，正在自动保存到本地...', 'step');
+				crawlBtn.textContent = '\u{1F4BE} 保存中...';
+				// 直接自动保存到 ~/.saros/skills/
+				const crawlData = {
+					url: preview.url,
+					kind: preview.kind as PackageKind,
+					slug: preview.slug,
+					name: preview.name,
+					description: preview.description,
+					version: preview.version,
+					tags: preview.tags || [],
+					category: preview.category,
+					icon: preview.icon,
+					mcpConfig: preview.mcpConfig,
+					skillContent: preview.skillContent,
+					useGuide: preview.useGuide,
+					toolsDescription: preview.toolsDescription,
+					files: preview.files,
+					versions: preview.versions,
+				author: preview.author,
+				wikiUrl: preview.wikiUrl,
+				_zipPath: preview._zipPath,
+			};
+			const localPath = await this._saveCrawlLocally(crawlData);
+			appendLog('已保存到: ' + localPath, 'success');
+			// 保存成功后关闭爬取页面（后台页面）
+				this._closeCrawlPage().catch(() => { /* ignore */ });
+				// 显示完成按钮，保留日志
+				retryBtn.disabled = true;
+				retryBtn.textContent = '\u2705 完成';
+				retryBtn.onclick = () => { this._overlayEl.classList.remove('show'); };
+				retryBtn.disabled = false;
+			} catch (err) {
+				appendLog('抓取失败: ' + (err instanceof Error ? err.message : String(err)), 'error');
+				retryBtn.disabled = false;
+				retryBtn.textContent = '已完成登录，重新抓取';
+			}
+		};
+	}
+
+	/** 显示爬取 URL 输入弹窗 */
+	private _showCrawlOverlay(): void {
+		clearNode(this._overlayEl);
+		this._overlayEl.classList.add('show');
+
+		const dialog = document.createElement('div');
+		dialog.className = 'install-dialog';
+		dialog.style.maxWidth = '500px';
+
+		// Head
+		const head = document.createElement('div');
+		head.className = 'id-head';
+		const headTitle = document.createElement('span');
+		headTitle.textContent = '\u{1F310} \u8D44\u6E90\u722C\u53D6'; // 🌐 资源爬取
+		head.appendChild(headTitle);
+		const closeX = document.createElement('span');
+		closeX.style.cssText = 'cursor:pointer;color:var(--vscode-descriptionForeground,#9d9d9d);font-size:18px;';
+		closeX.textContent = '\u2715';
+		closeX.onclick = () => { this._overlayEl.classList.remove('show'); };
+		head.appendChild(closeX);
+		dialog.appendChild(head);
+
+		// Body
+		const body = document.createElement('div');
+		body.className = 'id-body';
+		body.style.maxHeight = '60vh';
+		body.style.overflowY = 'auto';
+
+		const desc = document.createElement('div');
+		desc.style.cssText = 'font-size:12px;color:var(--vscode-descriptionForeground,#9d9d9d);margin-bottom:12px;';
+		desc.textContent = '\u8F93\u5165\u8D44\u6E90\u9875\u9762 URL\uFF0C\u81EA\u52A8\u722C\u53D6\u5E76\u5BFC\u5165\u5546\u57CE\u3002\u5F53\u524D\u652F\u6301 knot.woa.com'; // 输入资源页面 URL...
+		body.appendChild(desc);
+
+		const urlInput = document.createElement('input');
+		urlInput.type = 'text';
+		urlInput.placeholder = 'https://knot.woa.com/mcp/detail/1566';
+		urlInput.style.cssText = 'width:100%;background:var(--vscode-input-background,#1e1e1e);border:1px solid var(--vscode-input-border,#3c3c3c);border-radius:4px;padding:8px 10px;color:var(--vscode-input-foreground,#ccc);font-size:13px;font-family:Consolas,monospace;outline:none;';
+		body.appendChild(urlInput);
+
+		// 示例 URL
+		const examples = document.createElement('div');
+		examples.style.cssText = 'margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;';
+		const exampleUrls = [
+			'https://knot.woa.com/mcp/detail/1566',
+			'https://knot.woa.com/skills/detail/1980',
+		];
+		for (const exUrl of exampleUrls) {
+			const chip = document.createElement('span');
+			chip.style.cssText = 'font-size:10px;color:var(--vscode-descriptionForeground,#9d9d9d);padding:2px 8px;border:1px solid var(--vscode-panel-border,#3c3c3c);border-radius:10px;cursor:pointer;font-family:Consolas,monospace;';
+			chip.textContent = exUrl.split('/').slice(-2).join('/');
+			chip.onclick = () => { urlInput.value = exUrl; };
+			examples.appendChild(chip);
+		}
+		body.appendChild(examples);
+
+		// 状态区域
+		const statusEl = document.createElement('div');
+		statusEl.style.cssText = 'margin-top:12px;font-size:12px;color:var(--vscode-descriptionForeground,#9d9d9d);display:none;';
+		body.appendChild(statusEl);
+
+		// 预览区域
+		const previewEl = document.createElement('div');
+		previewEl.setAttribute('data-preview', 'true');
+		previewEl.style.cssText = 'margin-top:12px;display:none;';
+		body.appendChild(previewEl);
+
+		dialog.appendChild(body);
+
+		// Actions
+		const actions = document.createElement('div');
+		actions.className = 'id-actions';
+		const cancelBtn = document.createElement('button');
+		cancelBtn.className = 'id-btn';
+		cancelBtn.textContent = '\u53D6\u6D88'; // 取消
+		cancelBtn.onclick = () => { this._overlayEl.classList.remove('show'); };
+		actions.appendChild(cancelBtn);
+
+		const crawlBtn = document.createElement('button');
+		crawlBtn.className = 'id-btn primary';
+		crawlBtn.textContent = '\u{1F50D} \u5F00\u59CB\u722C\u53D6'; // 🔍 开始爬取
+		crawlBtn.onclick = async () => {
+			const url = urlInput.value.trim();
+			if (!url) { return; }
+			crawlBtn.disabled = true;
+			crawlBtn.textContent = '\u722C\u53D6\u4E2D...'; // 爬取中...
+			previewEl.style.display = 'none';
+
+			// 禁用关闭按钮，防止爬取过程中意外关闭
+			closeX.style.pointerEvents = 'none';
+			closeX.style.opacity = '0.5';
+			cancelBtn.disabled = true;
+
+			// 创建日志区域
+			clearNode(statusEl);
+			statusEl.style.display = 'block';
+			statusEl.style.color = '';
+
+			const logArea = document.createElement('div');
+			logArea.style.cssText = 'max-height:300px;overflow-y:auto;background:var(--vscode-input-background,#1e1e1e);border:1px solid var(--vscode-input-border,#3c3c3c);border-radius:4px;padding:8px;font-size:11px;font-family:Consolas,monospace;line-height:1.6;display:none;';
+			statusEl.appendChild(logArea);
+
+			const appendLog = (msg: string, type: 'info' | 'success' | 'error' | 'step' = 'info') => {
+				logArea.style.display = 'block';
+				const entry = document.createElement('div');
+				const colors: Record<string, string> = {
+					step: 'color:#569cd6;font-weight:600;',
+					success: 'color:#4ec9b0;',
+					error: 'color:#f48771;',
+					info: 'color:var(--vscode-descriptionForeground,#9d9d9d);',
+				};
+				entry.style.cssText = colors[type] || colors.info;
+				const time = new Date().toLocaleTimeString();
+				entry.textContent = '[' + time + '] ' + msg;
+				logArea.appendChild(entry);
+				logArea.scrollTop = logArea.scrollHeight;
+			};
+
+			try {
+				const preview = await this._crawlPreview(url, appendLog);
+				appendLog('抓取成功，正在自动保存到本地...', 'step');
+				crawlBtn.textContent = '\u{1F4BE} 保存中...';
+				// 直接自动保存到 ~/.saros/skills/
+				const crawlData = {
+					url: preview.url,
+					kind: preview.kind as PackageKind,
+					slug: preview.slug,
+					name: preview.name,
+					description: preview.description,
+					version: preview.version,
+					tags: preview.tags || [],
+					category: preview.category,
+					icon: preview.icon,
+					mcpConfig: preview.mcpConfig,
+					skillContent: preview.skillContent,
+					useGuide: preview.useGuide,
+					toolsDescription: preview.toolsDescription,
+					files: preview.files,
+					versions: preview.versions,
+					author: preview.author,
+					wikiUrl: preview.wikiUrl,
+					_zipPath: preview._zipPath,
+				};
+				const localPath = await this._saveCrawlLocally(crawlData);
+				appendLog('已保存到: ' + localPath, 'success');
+				// 保存成功后关闭爬取页面（后台页面）
+				this._closeCrawlPage().catch(() => { /* ignore */ });
+				// 显示完成按钮，保留日志
+				crawlBtn.disabled = true;
+				crawlBtn.textContent = '\u2705 完成';
+				// 重新启用关闭按钮
+				closeX.style.pointerEvents = '';
+				closeX.style.opacity = '';
+				cancelBtn.disabled = false;
+				crawlBtn.onclick = () => { this._overlayEl.classList.remove('show'); };
+				crawlBtn.disabled = false;
+			} catch (err) {
+				crawlBtn.disabled = false;
+				crawlBtn.textContent = '\u{1F50D} \u5F00\u59CB\u722C\u53D6';
+				// 重新启用关闭按钮
+				closeX.style.pointerEvents = '';
+				closeX.style.opacity = '';
+				cancelBtn.disabled = false;
+				// 如果是 Knot 认证错误，显示登录流程
+				if (err instanceof KnotAuthError) {
+					this._showKnotAuthFlow(statusEl, previewEl, err, crawlBtn, cancelBtn, url);
+				} else {
+					appendLog('错误: ' + (err instanceof Error ? err.message : String(err)), 'error');
+				}
+			}
+		};
+		actions.appendChild(crawlBtn);
+		dialog.appendChild(actions);
+
+		this._overlayEl.appendChild(dialog);
+		urlInput.focus();
+	}
+
+	/** 通过 Playwright 抓取 Knot 页面数据：设置 header → 导航 → 提取数据 → 下载 zip */
+	private async _crawlPreview(url: string, onLog?: (msg: string, type?: 'info' | 'success' | 'error' | 'step') => void): Promise<any> {
+		const log = (msg: string, type: 'info' | 'success' | 'error' | 'step' = 'info') => {
+			console.log('[Crawl] ' + msg);
+			onLog?.(msg, type);
+		};
+
+		// 解析 URL
+		let parsedUrl: URL;
+		try { parsedUrl = new URL(url); } catch { throw new Error('URL 格式无效'); }
+		if (parsedUrl.hostname !== 'knot.woa.com') { throw new Error('当前仅支持 knot.woa.com'); }
+
+		// 提取资源类型和 ID
+		let resourceType = 'unknown';
+		let resourceId = '';
+		const skillMatch = parsedUrl.pathname.match(/\/skills\/detail\/(\d+)/);
+		const mcpMatch = parsedUrl.pathname.match(/\/mcp\/detail\/(\d+)/);
+		if (skillMatch) { resourceType = 'skill'; resourceId = skillMatch[1]; }
+		else if (mcpMatch) { resourceType = 'mcp'; resourceId = mcpMatch[1]; }
+		if (!resourceId) { throw new Error('无法从 URL 提取资源 ID'); }
+
+		const sessionId = 'marketplace-crawl';
+		log('开始抓取: type=' + resourceType + ', id=' + resourceId, 'step');
+
+		// 在可见的编辑器窗口中打开页面（用户可以看到页面，需要时可登录）
+		if (!this._crawlPageId) {
+			log('在内置浏览器中打开页面...', 'step');
+			const browserId = 'knot-crawl-' + Date.now();
+			this._crawlBrowserInput = this.browserViewWorkbenchService.getOrCreateLazy(browserId, {
+				url, title: 'Knot - ' + resourceType + ' ' + resourceId, favicon: '',
+			});
+			await this.editorService.openEditor(this._crawlBrowserInput, { pinned: true });
+			this._crawlPageId = browserId;
+			log('已在编辑器中打开页面', 'info');
+			log('等待页面加载 (3秒)...', 'step');
+			await new Promise(resolve => setTimeout(resolve, 3000));
+		}
+
+		const viewId = this._crawlPageId!;
+		log('连接 Playwright...', 'step');
+		try {
+			await this.playwrightService.startTrackingPage(viewId);
+			log('Playwright 连接成功', 'success');
+		} catch (e) {
+			log('Playwright 连接失败: ' + (e as Error).message, 'error');
+		}
+
+		// Step 1: 设置 header + 导航 + 等待加载 + 检查登录（合并为一次调用）
+		log('设置请求头并导航...', 'step');
+		const navResult = await this.playwrightService.invokeFunction(sessionId, viewId,
+			`async (page, targetUrl) => {
+				// 设置模拟 Chrome 的请求头
+				try {
+					await page.setExtraHTTPHeaders({
+						'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+						'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+						'Accept-Encoding': 'gzip, deflate, br',
+						'Cache-Control': 'no-cache',
+						'Pragma': 'no-cache',
+						'Sec-Fetch-Dest': 'document',
+						'Sec-Fetch-Mode': 'navigate',
+						'Sec-Fetch-Site': 'none',
+						'Sec-Fetch-User': '?1',
+						'Upgrade-Insecure-Requests': '1'
+					});
+				} catch(e) {}
+
+				// 导航到目标 URL
+				await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+				// 等待详情页内容加载（等待"说明"文本出现，这是详情页特有的标签）
+				try {
+					await page.waitForFunction(() => {
+						const t = document.body.innerText || '';
+						// "说明" 和 "介绍" 同时出现表示详情页已加载
+					 return t.includes('说明') && t.includes('介绍');
+					}, { timeout: 15000 });
+				} catch(e) {
+					// fallback: 等待带 primary class 的安装按钮
+					try {
+						await page.waitForSelector('button[class*="bg-primary"]', { timeout: 5000 });
+					} catch(e2) {}
+				}
+
+				// 模拟人类行为：延迟
+				await page.evaluate(() => new Promise(r => setTimeout(r, 1500)));
+
+				// 获取页面状态
+				const pageUrl = page.url();
+				const pageText = await page.evaluate(() => (document.body.innerText || '').slice(0, 500));
+				return JSON.stringify({ url: pageUrl, text: pageText });
+			}`,
+			[url], 30000);
+
+		if (navResult.error) {
+			log('导航失败: ' + navResult.error, 'error');
+		}
+
+		// 检查登录页
+		let pageState: { url: string; text: string } = { url: '', text: '' };
+		try { pageState = JSON.parse(String(navResult.result || '{}')); } catch { /* ignore */ }
+		log('当前页面 URL: ' + pageState.url, 'info');
+		log('页面文本前100字: ' + (pageState.text || '').slice(0, 100), 'info');
+
+		const isLoginPage =
+			pageState.url.includes('passport.woa.com') ||
+			pageState.url.includes('signin.ashx') ||
+			pageState.url.includes('/_auth_login') ||
+			pageState.text.includes('iOA Mobile') ||
+			pageState.text.includes('Scan the QR code') ||
+			pageState.text.includes('扫码') ||
+			pageState.text.includes('请使用企业微信') ||
+			(pageState.text.includes('confirm') && pageState.text.includes('phone'));
+
+		if (isLoginPage) {
+			log('检测到登录页: ' + pageState.url, 'error');
+			throw new KnotAuthError(pageState.url || url, resourceType, resourceId, url);
+		}
+		log('页面已加载（非登录页）', 'success');
+
+		// Step 2: 提取数据（用精确 CSS 选择器，基于详情页 HTML 结构）
+		log('提取页面数据...', 'step');
+
+		// 2a. 等待详情页 sheet 加载 + 提取基本信息
+		const basicResult = await this.playwrightService.invokeFunction(sessionId, viewId,
+			`async (page) => {
+				var data = {};
+
+				// 等待详情页 sheet 出现（[data-slot="sheet-content"] 或 [role="dialog"]）
+				try {
+					await page.waitForSelector('[data-slot="sheet-content"]', { timeout: 10000 });
+				} catch(e) {
+					try { await page.waitForSelector('[role="dialog"]', { timeout: 5000 }); } catch(e2) {}
+				}
+
+				// 提取标题: h2[data-slot="sheet-title"] 或 .truncate.text-lg.font-semibold
+				data.name = await page.evaluate(() => {
+					var h2 = document.querySelector('[data-slot="sheet-title"]');
+					if (h2 && h2.textContent.trim()) return h2.textContent.trim();
+					var titleEl = document.querySelector('.truncate.text-lg.font-semibold');
+					if (titleEl && titleEl.textContent.trim()) return titleEl.textContent.trim();
+					return '';
+				});
+
+				// 提取作者、安装量、更新时间: 从 span.font-medium 标签中查找
+				data.author = await page.evaluate(() => {
+					var spans = document.querySelectorAll('span.font-medium');
+					for (var i = 0; i < spans.length; i++) {
+						if (spans[i].textContent.includes('作者')) {
+							var next = spans[i].nextElementSibling;
+							if (next) return next.textContent.trim();
+						}
+					}
+					return '';
+				});
+
+				data.installCount = await page.evaluate(() => {
+					var spans = document.querySelectorAll('span.font-medium');
+					for (var i = 0; i < spans.length; i++) {
+						if (spans[i].textContent.includes('安装量')) {
+							var next = spans[i].nextElementSibling;
+							if (next) return next.textContent.trim();
+						}
+					}
+					return '';
+				});
+
+				data.updatedAt = await page.evaluate(() => {
+					var spans = document.querySelectorAll('span.font-medium');
+					for (var i = 0; i < spans.length; i++) {
+						if (spans[i].textContent.includes('更新')) {
+							var next = spans[i].nextElementSibling;
+							if (next) return next.textContent.trim();
+						}
+					}
+					return '';
+				});
+
+				// 提取说明: .md-editor-preview p（"使用说明" tab 的内容）
+				data.description = await page.evaluate(() => {
+					var p = document.querySelector('.md-editor-preview p');
+					if (p) {
+						var text = p.textContent.trim();
+						// 移除 "介绍: url" 部分
+						var desc = text.split(/介绍\s*[:：]/)[0].trim();
+						return desc;
+					}
+					return '';
+				});
+
+				// 提取标签
+				data.tags = await page.evaluate(() => {
+					var badges = document.querySelectorAll('[data-slot="badge"]');
+					var tags = [];
+					for (var i = 0; i < badges.length; i++) {
+						var t = badges[i].textContent.trim();
+						if (t && t.length > 0 && t.length < 20) tags.push(t);
+					}
+					return tags;
+				});
+
+				// 提取页面文本（用于 fallback 解析）
+				data.bodyText = await page.evaluate(() => (document.body.innerText || '').slice(0, 5000));
+
+				return JSON.stringify(data);
+			}`,
+			undefined, 20000);
+
+		let extracted: any = {};
+		if (basicResult.error) {
+			log('基本信息提取失败: ' + basicResult.error, 'error');
+		} else {
+			try { extracted = JSON.parse(String(basicResult.result || '{}')); } catch { /* ignore */ }
+		}
+
+		const skillName = extracted.name || '';
+		const description = extracted.description || '';
+		const wikiUrl = extracted.wikiUrl || '';
+		const author = extracted.author || '';
+		const installCount = extracted.installCount || '';
+		const updatedAt = extracted.updatedAt || '';
+		const tags: string[] = extracted.tags || [];
+
+		log('  名称: ' + (skillName || '(未找到)'), skillName ? 'success' : 'error');
+		log('  描述: ' + (description ? description.slice(0, 80) + '...' : '(未找到)'), 'info');
+		log('  作者: ' + (author || '(未找到)'), 'info');
+		log('  安装量: ' + (installCount || '(未找到)'), 'info');
+		log('  更新时间: ' + (updatedAt || '(未找到)'), 'info');
+		if (tags.length > 0) { log('  标签: ' + tags.join(', '), 'info'); }
+
+		// 2b. 点击"文件"tab
+		log('切换到文件 tab...', 'step');
+		await this.playwrightService.invokeFunction(sessionId, viewId,
+			'async (page) => { await page.evaluate(() => { var tabs = document.querySelectorAll("[role=tab], button"); for (var i = 0; i < tabs.length; i++) { if (tabs[i].textContent.trim() === "文件") { tabs[i].click(); break; } } }); }',
+			undefined, 5000);
+		await new Promise(resolve => setTimeout(resolve, 2000));
+
+		// 2c. 获取 SKILL.md 内容
+		const skillMdResult = await this.playwrightService.invokeFunction(sessionId, viewId,
+			'async (page) => { return await page.evaluate(() => { var main = document.querySelector("main"); if (main) { var t = main.innerText.trim(); if (t.length > 50) return t; } return ""; }); }',
+			undefined, 10000);
+		if (skillMdResult.error) { log('SKILL.md 提取失败: ' + skillMdResult.error, 'error'); }
+		const skillMdContent = (skillMdResult.result as string) || '';
+		if (skillMdContent.length > 50) {
+			log('  SKILL.md: ' + skillMdContent.length + ' 字符', 'success');
+		} else {
+			log('  SKILL.md: 获取失败', 'error');
+		}
+
+		// 2d. 点击"版本历史"tab
+		log('切换到版本历史 tab...', 'step');
+		await this.playwrightService.invokeFunction(sessionId, viewId,
+			'async (page) => { await page.evaluate(() => { var tabs = document.querySelectorAll("[role=tab], button"); for (var i = 0; i < tabs.length; i++) { if (tabs[i].textContent.trim().indexOf("版本历史") >= 0) { tabs[i].click(); break; } } }); }',
+			undefined, 5000);
+		await new Promise(resolve => setTimeout(resolve, 1500));
+
+		// 2e. 获取版本历史
+		const verResult = await this.playwrightService.invokeFunction(sessionId, viewId,
+			'async (page) => { return await page.evaluate(() => { var items = document.querySelectorAll("li"); var vers = []; for (var i = 0; i < items.length; i++) { var t = items[i].textContent.trim(); var m = t.match(/v(\\d+\\.\\d+\\.\\d+)/); if (m) { vers.push({version: m[1], isLatest: t.indexOf("最新") >= 0, date: (t.match(/20\\d{2}-\\d{2}-\\d{2}[\\s\\d:]*/) || [""])[0]}); } } return JSON.stringify(vers.slice(0, 10)); }); }',
+			undefined, 8000);
+		if (verResult.error) { log('版本历史提取失败: ' + verResult.error, 'error'); }
+		let versions: any[] = [];
+		try { versions = JSON.parse((verResult.result as string) || '[]'); } catch { /* ignore */ }
+		if (versions.length > 0) {
+			log('  版本历史: ' + versions.length + ' 个版本', 'success');
+			for (const v of versions.slice(0, 3)) {
+				log('    v' + v.version + (v.isLatest ? ' (最新)' : '') + (v.date ? ' ' + v.date : ''), 'info');
+			}
+		} else {
+			log('  版本历史: (未找到)', 'error');
+		}
+
+		// Step 3: 构建最终数据
+		const finalData: any = {
+			display_name: skillName || ('Knot ' + resourceType + ' ' + resourceId),
+			description: description || '',
+			author: author || '',
+			install_count: installCount ? parseInt(installCount.replace(/,/g, '')) : undefined,
+			updated_at: updatedAt || '',
+			wiki_url: wikiUrl,
+			tags: tags,
+			version: versions[0]?.version || '1.0.0',
+		};
+		if (skillMdContent.length > 50) {
+			finalData.skill_content = skillMdContent;
+			finalData.use_guide = skillMdContent;
+		}
+		if (versions.length > 0) { finalData._versions = versions; }
+		log('技能数据提取完成: ' + finalData.display_name, 'success');
+
+		// Step 4: 下载 zip 文件
+		log('下载技能 zip 文件...', 'step');
+		await this._highlightInPage(sessionId, viewId, '下载技能文件...');
+		const downloadSlug = (finalData.display_name || 'unnamed').replace(/[/\\:*?"<>|]/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'unnamed';
+		const zipPath = await this._downloadSkillZip(sessionId, viewId, downloadSlug, log);
+		if (zipPath) {
+			finalData._zipPath = zipPath;
+			log('zip 下载成功: ' + zipPath, 'success');
+		} else {
+			log('zip 下载失败，使用 CDP 提取的文本作为 fallback', 'error');
+		}
+
+		const result = this._buildCrawlResult(url, resourceType, resourceId, finalData, 'cdp-extract');
+		log('抓取完成: ' + result.name + ' v' + result.version, 'success');
+		await this._highlightInPage(sessionId, viewId, '抓取完成: ' + result.name, true);
+		return result;
+	}
+
+	/** 通过 Playwright 下载技能 zip 文件：page.on('response') 捕获 zip 响应体（解决 CORS 问题） */
+	/** 通过 Playwright 下载技能 zip：page.on('response') 捕获 zip 响应体（解决 CORS） */
+	private async _downloadSkillZip(sessionId: string, viewId: string, skillSlug: string, log: (msg: string, type?: 'info' | 'success' | 'error' | 'step') => void): Promise<string | null> {
+		const userHome = await this.pathService.userHome();
+		const downloadDir = URI.joinPath(userHome, '.saros', 'skills', '.downloads');
+		try { await this.fileService.createFolder(downloadDir); } catch { /* ignore */ }
+
+		try {
+			log('点击安装 → 下载到本地 → 捕获 zip 响应...', 'step');
+
+			// 用 page.on('response') 捕获 zip 响应体（解决 CORS 问题）
+			const downloadResult = await this.playwrightService.invokeFunction(sessionId, viewId,
+				`async (page) => {
+					var zipBase64 = null;
+					var zipUrl = null;
+					var downloadApiResp = null;
+					var resolved = false;
+
+					// 设置 response 监听器，捕获 zip 文件响应
+					var responsePromise = new Promise(function(resolve) {
+						page.on('response', async function(response) {
+							var url = response.url();
+							try {
+								// 捕获 DownloadSkill API 响应
+								if (url.indexOf('DownloadSkill') >= 0) {
+									var body = await response.text();
+									downloadApiResp = body;
+								}
+								// 捕获 zip 文件响应（来自 mirrors.tencent.com 或其他 CDN）
+								if ((url.indexOf('.zip') >= 0 || url.indexOf('mirrors.tencent') >= 0) && response.status() === 200 && !resolved) {
+									var buf = await response.body();
+									if (buf.length > 100 && buf[0] === 0x50 && buf[1] === 0x4B) {
+										zipUrl = url;
+										// 将 buffer 转 base64
+										var arr = Array.from(new Uint8Array(buf));
+										zipBase64 = await page.evaluate(function(bytes) {
+											var binary = '';
+											for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+											return btoa(binary);
+										}, arr);
+										resolved = true;
+										resolve(zipBase64);
+									}
+								}
+							} catch(e) {}
+						});
+					});
+
+					// 点击"安装"按钮（优先选择带 primary class 的）
+					var installBtnText = await page.evaluate(function() {
+						var btns = document.querySelectorAll('button');
+						var target = null;
+						for (var i = 0; i < btns.length; i++) {
+							var t = btns[i].textContent.trim();
+							if (t === '安装' && btns[i].className.indexOf('primary') >= 0) { target = btns[i]; break; }
+						}
+						if (!target) {
+							for (var i = btns.length - 1; i >= 0; i--) {
+								if (btns[i].textContent.trim() === '安装') { target = btns[i]; break; }
+							}
+						}
+						if (target) { target.click(); return target.textContent.trim(); }
+						return '';
+					});
+
+					await page.evaluate(() => new Promise(r => setTimeout(r, 1000)));
+
+					// 点击"下载到本地"
+					var dlClicked = await page.evaluate(function() {
+						var items = document.querySelectorAll('[role=menuitem], button, a, li, div, span');
+						for (var i = 0; i < items.length; i++) {
+							var t = items[i].textContent.trim();
+							if (t === '下载到本地') { items[i].click(); return true; }
+						}
+						return false;
+					});
+
+					// 等待 zip 响应（最多 15 秒）- 用 page.evaluate 中的 setTimeout
+					var waitPromise = page.evaluate(() => new Promise(r => setTimeout(r, 15000))).then(function() { return null; });
+					var result = await Promise.race([responsePromise, waitPromise]);
+
+					return JSON.stringify({
+						installBtn: installBtnText,
+						downloadClicked: dlClicked,
+						zipBase64: zipBase64,
+						zipUrl: zipUrl,
+						downloadApiResp: downloadApiResp
+					});
+				}`,
+				undefined, 30000);
+
+			if (downloadResult.error) {
+				log('下载失败: ' + downloadResult.error, 'error');
+				return null;
+			}
+
+			let dlOutcome: any = {};
+			try { dlOutcome = JSON.parse(String(downloadResult.result || '{}')); } catch { /* ignore */ }
+
+			log('  安装按钮: ' + (dlOutcome.installBtn || '未找到'), dlOutcome.installBtn ? 'success' : 'error');
+			log('  下载到本地: ' + (dlOutcome.downloadClicked ? '已点击' : '未找到'), dlOutcome.downloadClicked ? 'success' : 'error');
+
+			if (dlOutcome.zipUrl) {
+				log('  ZIP URL: ' + dlOutcome.zipUrl.slice(0, 100), 'info');
+			}
+			if (dlOutcome.downloadApiResp) {
+				log('  DownloadSkill API: ' + dlOutcome.downloadApiResp.slice(0, 200), 'info');
+			}
+
+			// 方案1: 如果 page.on('response') 捕获到了 zip base64
+			if (dlOutcome.zipBase64) {
+				const zipName = skillSlug.replace(/\(.*\)/, '').trim().toLowerCase() + '.zip';
+				const zipUri = URI.joinPath(downloadDir, zipName);
+				log('写入文件: ' + zipUri.fsPath, 'step');
+				await this.fileService.writeFile(zipUri, decodeBase64(dlOutcome.zipBase64));
+				const stat = await this.fileService.stat(zipUri);
+				log('下载完成: ' + zipName + ' (' + stat.size + ' bytes)', 'success');
+				return zipUri.fsPath;
+			}
+
+			// 方案2: 从 DownloadSkill API 解析 file_url，从浏览器默认下载目录复制文件
+			if (dlOutcome.downloadApiResp) {
+				try {
+					const apiResp = JSON.parse(dlOutcome.downloadApiResp);
+					const fileUrl = apiResp?.data?.file_url;
+					if (fileUrl) {
+						log('  从 API 获取下载 URL: ' + fileUrl.slice(0, 100), 'info');
+						// 从 file_url 提取文件名
+						const urlFileName = fileUrl.split('?')[0].split('/').pop() || 'download.zip';
+						log('  文件名: ' + urlFileName, 'info');
+
+						// 浏览器点击"下载到本地"后文件会下载到默认目录（如 D:/Downloads 或 ~/Downloads）
+						// 等待文件出现在下载目录中
+						log('等待浏览器下载完成...', 'step');
+						const possibleDownloadDirs = [
+							URI.file('D:/Downloads'),
+							URI.joinPath(userHome, 'Downloads'),
+						];
+						let foundZip: URI | null = null;
+						for (let attempt = 0; attempt < 20; attempt++) {
+							for (const dir of possibleDownloadDirs) {
+								const zipUri = URI.joinPath(dir, urlFileName);
+								try {
+									if (await this.fileService.exists(zipUri)) {
+										const stat = await this.fileService.stat(zipUri);
+										if (stat.size > 100) {
+											foundZip = zipUri;
+											break;
+										}
+									}
+								} catch { /* ignore */ }
+							}
+							if (foundZip) break;
+							await new Promise(resolve => setTimeout(resolve, 1000));
+						}
+
+						if (foundZip) {
+							// 复制到 .downloads 目录
+							const zipName = urlFileName;
+							const targetZipUri = URI.joinPath(downloadDir, zipName);
+							log('复制文件: ' + foundZip.fsPath + ' → ' + targetZipUri.fsPath, 'step');
+							const content = await this.fileService.readFile(foundZip);
+							await this.fileService.writeFile(targetZipUri, content.value);
+							const stat = await this.fileService.stat(targetZipUri);
+							log('下载完成: ' + zipName + ' (' + stat.size + ' bytes)', 'success');
+							return targetZipUri.fsPath;
+						} else {
+							log('未在默认下载目录找到文件: ' + urlFileName, 'error');
+						}
+					}
+				} catch (e) {
+					log('解析下载 URL 失败: ' + (e as Error).message, 'error');
+				}
+			}
+
+			// Fallback: 检查下载目录
+			log('检查下载目录 (' + downloadDir.fsPath + ')...', 'step');
+			const possibleNames = [skillSlug + '.zip', skillSlug.replace(/\(.*\)/, '').trim().toLowerCase() + '.zip', 'download.zip'];
+			for (const name of possibleNames) {
+				try {
+					const zipUri = URI.joinPath(downloadDir, name);
+					if (await this.fileService.exists(zipUri)) {
+						const stat = await this.fileService.stat(zipUri);
+						if (stat.size > 100) { log('找到: ' + name + ' (' + stat.size + ' bytes)', 'success'); return zipUri.fsPath; }
+					}
+				} catch { /* ignore */ }
+			}
+
+			log('下载失败，未找到 zip 文件', 'error');
+			return null;
+		} catch (e) {
+			log('下载异常: ' + (e as Error).message, 'error');
+			return null;
+		}
+	}
+
+	/** 通过 Playwright 在页面上注入高亮覆盖层 */
+	private async _highlightInPage(sessionId: string, pageId: string, message: string, isDone = false): Promise<void> {
+		try {
+			const color = isDone ? 'rgba(78,201,176,.92)' : 'rgba(0,122,204,.92)';
+			const icon = isDone ? '\\u2705 ' : '\\u23F3 ';
+			await this.playwrightService.invokeFunction(sessionId, pageId,
+				'async (page, msg, color, icon) => { await page.evaluate((m, c, i) => { var e = document.getElementById("saros-crawl-overlay"); if (e) e.remove(); var o = document.createElement("div"); o.id = "saros-crawl-overlay"; o.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:999999;padding:8px 16px;font-size:13px;color:#fff;background:" + c; o.textContent = i + m; document.body.appendChild(o); }, msg, color, icon); }',
+				[message, color, icon], 5000);
+		} catch { /* ignore */ }
+	}
+
+
+
+
+
+	/** 关闭爬取用的 BrowserEditor 页面 */
+	private async _closeCrawlPage(): Promise<void> {
+		if (!this._crawlPageId) { return; }
+		const viewId = this._crawlPageId;
+		this._crawlPageId = null;
+		try { await this.playwrightService.stopTrackingPage(viewId); } catch { /* ignore */ }
+		try { await this.playwrightService.disposeSession('marketplace-crawl'); } catch { /* ignore */ }
+		// 关闭编辑器窗口并释放 input
+		try {
+			if (this._crawlBrowserInput) {
+				// editorService.closeEditor expects IEditorIdentifier ({ groupId, editor })
+				const editors = this.editorService.getEditors(0 /* EditorsOrder.SEQUENTIAL */);
+				const target = editors.find(e => e.editor === this._crawlBrowserInput);
+				if (target) {
+					await this.editorService.closeEditor(target);
+				}
+				this._crawlBrowserInput.dispose();
+				this._crawlBrowserInput = null;
+			}
+		} catch { /* ignore */ }
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	/** 构建爬取结果对象 */
+	private _buildCrawlResult(url: string, resourceType: string, resourceId: string, data: any, source: string): any {
+		const name = data.display_name || data.title || data.server_name || data.name || `Knot ${resourceType} ${resourceId}`;
+		const description = (data.description || data.desc || '').toString().slice(0, 500);
+		// version 可能是占位符（如 Knot 数据中 version 字段值为 "version"），需校验
+		const rawVersion = data.ver || data.version || '';
+		let version = /^\d+\.\d+/.test(rawVersion) ? rawVersion : '';
+		// 如果没有有效版本号，从版本历史中取最新版本
+		if (!version && data._versions?.length) {
+			const latest = data._versions.find((v: any) => v.isLatest) || data._versions[0];
+			if (latest?.version && /^\d+\.\d+/.test(latest.version)) {
+				version = latest.version;
+			}
+		}
+		if (!version) { version = '1.0.0'; }
+		const tags = Array.isArray(data.tags)
+			? data.tags.map((t: any) => typeof t === 'string' ? t : (t.display_name || t.tag_name || String(t))).filter(Boolean).slice(0, 5)
+			: [];
+		const category = tags[0] || data.type || data.category || 'other';
+		const icon = data.display_icon && !String(data.display_icon).startsWith('http') ? data.display_icon : undefined;
+
+		// Knot MCP/Skill 特有字段
+		const useGuide = (data.use_guide || '').toString().slice(0, 10000);
+		const toolsDescription = (data.tools_description || data.tool_desc || '').toString().slice(0, 5000);
+
+		// 文件列表
+		let files: Array<{ name: string; size?: string; type?: string }> | undefined;
+		if (data._files?.length) { files = data._files; }
+		else if (Array.isArray(data.files)) { files = data.files.map((f: any) => ({ name: typeof f === 'string' ? f : f.name || f.file_name || '', size: f.size, type: f.type })); }
+
+		// 版本历史
+		let versions: any[] | undefined;
+		if (data._versions?.length) { versions = data._versions; }
+		else if (Array.isArray(data.versions)) { versions = data.versions.map((v: any) => ({ version: v.version || v.ver, date: v.created_at || v.updated_at, size: v.size, isLatest: v.is_latest })); }
+		else if (data.version_list || data.versionList) { versions = data.version_list || data.versionList; }
+
+		// 作者信息
+		const author = data.author || data.creator || data.author_name || data.owner || '';
+
+		// 安装量/下载量
+		const downloads = data.install_count || data.download_count || data.installs || data.hot || undefined;
+
+		// iWiki 文档链接
+		const wikiUrl = (data.wiki_url || data.doc_url || data.iwiki_link || '').toString();
+
+		// SKILL.md 内容（如果 Knot 提供了完整内容）
+		let skillContent = '';
+		if (resourceType === 'skill') {
+			skillContent = (data.skill_content || data.content || data.markdown_content || data.raw || '').toString();
+			// 如果没有 skill content 但有 use guide，用 use guide 作为主要内容
+			if (!skillContent && useGuide) {
+				skillContent = `# ${name}\n\n${description}\n\n## 使用指南\n\n${useGuide}\n`;
+			}
+			// 如果还是没有，生成基础模板
+			if (!skillContent) {
+				skillContent = `# ${name}\n\n${description}\n`;
+			}
+		}
+
+		let mcpConfig: any = undefined;
+		if (resourceType === 'mcp' && data.config) {
+			try { mcpConfig = typeof data.config === 'string' ? JSON.parse(data.config) : data.config; } catch { /* ignore */ }
+		}
+
+		const kind = resourceType === 'mcp' ? 'mcp' : resourceType === 'skill' ? 'skill' : resourceType === 'agent' ? 'agent' : resourceType === 'knowledge' ? 'knowledge' : 'mcp';
+		// slug 直接用技能名称（保留中文，去除文件系统非法字符）
+		const slug = name.replace(/[/\\:*?"<>|]/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || ('knot-' + resourceType + '-' + resourceId);
+
+		return {
+			url, platform: 'knot', resourceType, resourceId,
+			name, description, slug, version, kind, tags, category, icon,
+			mcpConfig, useGuide, toolsDescription, source,
+			author, downloads, wikiUrl,
+			files, versions, skillContent,
+		};
+	}
+
+	/** 各 kind 的本地安装子目录 */
+	private static readonly KIND_SUBDIR: Record<PackageKind, string> = {
+		agent: 'agents',
+		skill: 'skills',
+		mcp: 'mcp',
+		knowledge: 'knowledge-base',
+		workflow: 'workflows',
+	};
+
+	/** 用 fileService + DecompressionStream 在渲染进程中解压 zip 文件 */
+	private async _extractZipFile(zipUri: URI, targetDir: URI): Promise<boolean> {
+		try {
+			const content = await this.fileService.readFile(zipUri);
+			const data = content.value.buffer;
+
+			let offset = 0;
+			while (offset < data.length - 30) {
+				// Local file header signature: PK\x03\x04
+				if (data[offset] !== 0x50 || data[offset + 1] !== 0x4B || data[offset + 2] !== 0x03 || data[offset + 3] !== 0x04) {
+					offset++;
+					continue;
+				}
+
+				const compMethod = data[offset + 8] | (data[offset + 9] << 8);
+				const compSize = (data[offset + 18] | (data[offset + 19] << 8) | (data[offset + 20] << 16) | (data[offset + 21] << 24)) >>> 0;
+				const nameLen = data[offset + 26] | (data[offset + 27] << 8);
+				const extraLen = data[offset + 28] | (data[offset + 29] << 8);
+				const nameStart = offset + 30;
+				const name = new TextDecoder('utf-8').decode(data.subarray(nameStart, nameStart + nameLen));
+				const dataStart = nameStart + nameLen + extraLen;
+
+				if (name && !name.endsWith('/') && compSize > 0) {
+					let fileData: Uint8Array;
+
+					if (compMethod === 0) {
+						// Stored (no compression)
+						fileData = data.subarray(dataStart, dataStart + compSize);
+					} else if (compMethod === 8) {
+						// Deflate
+						const compressed = new Uint8Array(data.subarray(dataStart, dataStart + compSize));
+						const ds = new DecompressionStream('deflate');
+						const writer = ds.writable.getWriter();
+						writer.write(compressed);
+						writer.close();
+						const decompressed = await new Response(ds.readable).arrayBuffer();
+						fileData = new Uint8Array(decompressed);
+					} else {
+						offset = dataStart + compSize;
+						continue;
+					}
+
+					// 创建父目录
+					const pathParts = name.split('/');
+					if (pathParts.length > 1) {
+						let dir = targetDir;
+						for (let i = 0; i < pathParts.length - 1; i++) {
+							dir = URI.joinPath(dir, pathParts[i]);
+							try { await this.fileService.createFolder(dir); } catch { /* ignore */ }
+						}
+					}
+
+					// 写入文件
+					await this.fileService.writeFile(URI.joinPath(targetDir, name), VSBuffer.wrap(fileData));
+				}
+
+				offset = dataStart + (compSize > 0 ? compSize : 1);
+			}
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** 将爬取的资源保存到本地 ~/.saros/{subdir}/{slug}/ */
+	private async _saveCrawlLocally(data: {
+		kind: PackageKind; slug: string; name: string; description: string;
+		version: string; tags: string[]; category?: string; icon?: string;
+		mcpConfig?: any; skillContent?: string;
+		useGuide?: string; toolsDescription?: string;
+		files?: Array<{ name: string; size?: string; type?: string }>;
+		versions?: Array<{ version: string; date: string; size?: string; isLatest?: boolean }>;
+		author?: string; wikiUrl?: string;
+		_zipPath?: string;
+	}	): Promise<string> {
+		const userHome = await this.pathService.userHome();
+		const subdir = MarketplaceEditorPane.KIND_SUBDIR[data.kind];
+		const targetDir = URI.joinPath(userHome, '.saros', subdir, data.slug);
+		console.log('[Crawl] 保存到: ' + targetDir.fsPath);
+
+		// 创建目录
+		await this.fileService.createFolder(targetDir);
+
+		// 如果有 zip 文件，解压到目标目录（保留完整文件结构）
+		if (data._zipPath) {
+			console.log('[Crawl] 解压 zip: ' + data._zipPath + ' → ' + targetDir.fsPath);
+			const zipUri = URI.file(data._zipPath);
+			const extracted = await this._extractZipFile(zipUri, targetDir);
+
+			if (extracted && await this.fileService.exists(URI.joinPath(targetDir, 'SKILL.md'))) {
+				console.log('[Crawl] 解压成功，SKILL.md 已找到');
+			} else {
+				console.log('[Crawl] 解压失败或 SKILL.md 未找到，尝试 PowerShell fallback');
+				// 解压失败，尝试 PowerShell Expand-Archive 作为 fallback
+				try {
+					const targetPath = targetDir.fsPath.replace(/'/g, "''");
+					const zipPath = data._zipPath.replace(/'/g, "''");
+					await this.commandService.executeCommand('agentStudio.proxyRequest', {
+						url: '', method: 'PS',
+						body: 'Expand-Archive -Path \'' + zipPath + '\' -DestinationPath \'' + targetPath + '\' -Force',
+					});
+					console.log('[Crawl] PowerShell 解压完成');
+				} catch {
+					console.log('[Crawl] PowerShell 解压失败，尝试 child_process');
+					try {
+						const cp = (globalThis as any).require?.('child_process');
+						if (cp) {
+							cp.execSync('powershell -Command "Expand-Archive -Path \'' + data._zipPath + '\' -DestinationPath \'' + targetDir.fsPath + '\' -Force"', { timeout: 15000 });
+							console.log('[Crawl] child_process 解压完成');
+						}
+					} catch { /* ignore */ }
+				}
+			}
+
+			// 写入 manifest.json（补充元数据）
+			const manifest: Record<string, unknown> = {
+				kind: data.kind, id: data.slug, name: data.name,
+				version: data.version || '1.0.0', description: data.description,
+				category: data.category, author: data.author || 'crawl',
+				source: 'knot-crawl', tags: data.tags, sourceUrl: data.wikiUrl,
+			};
+			await this.fileService.writeFile(URI.joinPath(targetDir, 'manifest.json'), VSBuffer.fromString(JSON.stringify(manifest, null, 2)));
+
+			await this._recordInstalled(data.kind, data.slug, data.version || '1.0.0');
+			return targetDir.fsPath;
+		}
+
+		// 没有 zip 文件，使用原有逻辑生成文件
+		// 生成 manifest.json
+		const files: string[] = ['manifest.json'];
+		if (data.kind === 'mcp') { files.push('server.json'); }
+		if (data.kind === 'skill') { files.push('SKILL.md'); }
+		files.push('README.md');
+		if (data.files?.length) { files.push('files.json'); }
+		if (data.versions?.length) { files.push('versions.json'); }
+
+		const manifest: Record<string, unknown> = {
+			kind: data.kind,
+			id: data.slug,
+			name: data.name,
+			version: data.version || '1.0.0',
+			description: data.description,
+			category: data.category,
+			author: data.author || 'crawl',
+			source: 'knot-crawl',
+			tags: data.tags,
+			files,
+		};
+
+		// 写入 manifest.json
+		await this.fileService.writeFile(
+			URI.joinPath(targetDir, 'manifest.json'),
+			VSBuffer.fromString(JSON.stringify(manifest, null, 2))
+		);
+
+		// 写入 README.md（完整文档：描述 + 使用指南 + 工具说明 + 来源信息 + 文件列表 + 版本历史）
+		let readmeParts: string[] = [`# ${data.name}`, '', data.description || ''];
+		if (data.author) { readmeParts.push('', `- **作者**: ${data.author}`); }
+		if (data.tags?.length) { readmeParts.push(`- **标签**: ${data.tags.map(t => '#' + t).join(' ')}`); }
+		readmeParts.push('', '---');
+
+		if (data.useGuide) {
+			readmeParts.push('', '## 使用指南', '', data.useGuide);
+		}
+		if (data.toolsDescription) {
+			readmeParts.push('', '## 工具说明', '', data.toolsDescription);
+		}
+		if (data.wikiUrl) {
+			readmeParts.push('', '## 相关文档', '', `[iWiki 文档](${data.wikiUrl})`);
+		}
+		if (data.files?.length) {
+			readmeParts.push('', '## 文件列表', '');
+			data.files.forEach(f => {
+				let fileLine = `- **${f.name}**`;
+				if (f.size) { fileLine += ` (${f.size})`; }
+				if (f.type) { fileLine += ` [${f.type}]`; }
+				readmeParts.push(fileLine);
+			});
+		}
+		if (data.versions?.length) {
+			readmeParts.push('', '## 版本历史', '');
+			data.versions.forEach(v => {
+				let verLine = `- **v${v.version}**`;
+				if (v.isLatest) { verLine += ' *(最新)*'; }
+				verLine += ` \u2014 ${v.date}`;
+				if (v.size) { verLine += ` (${v.size})`; }
+				readmeParts.push(verLine);
+			});
+		}
+		readmeParts.push('', '---', '', `_爬取来源: Knot 平台 | 版本: v${data.version || '1.0.0'}_`);
+
+		await this.fileService.writeFile(
+			URI.joinPath(targetDir, 'README.md'),
+			VSBuffer.fromString(readmeParts.join('\n'))
+		);
+
+		// 写入 SKILL.md (Skill) - 带完整 frontmatter
+		if (data.kind === 'skill') {
+			const skillMd = this._generateSkillMd(data);
+			await this.fileService.writeFile(
+				URI.joinPath(targetDir, 'SKILL.md'),
+				VSBuffer.fromString(skillMd)
+			);
+		}
+
+		// 写入 server.json (MCP)
+		if (data.kind === 'mcp' && data.mcpConfig) {
+			const serverJson = this._buildMcpServerJson(data.mcpConfig, data.slug, data.name, data.description);
+			await this.fileService.writeFile(
+				URI.joinPath(targetDir, 'server.json'),
+				VSBuffer.fromString(JSON.stringify(serverJson, null, 2))
+			);
+		}
+
+		// 写入 files.json（文件列表元数据）
+		if (data.files?.length) {
+			await this.fileService.writeFile(
+				URI.joinPath(targetDir, 'files.json'),
+				VSBuffer.fromString(JSON.stringify(data.files, null, 2))
+			);
+		}
+
+		// 写入 versions.json（版本历史元数据）
+		if (data.versions?.length) {
+			await this.fileService.writeFile(
+				URI.joinPath(targetDir, 'versions.json'),
+				VSBuffer.fromString(JSON.stringify(data.versions, null, 2))
+			);
+		}
+
+		// 记录到 installed-packages.json
+		await this._recordInstalled(data.kind, data.slug, data.version || '1.0.0');
+
+		return targetDir.fsPath;
+	}
+
+	/**
+	 * 生成完整的 SKILL.md 内容（带 frontmatter）
+	 * CodeBuddy 技能格式要求 frontmatter 包含 name + description
+	 */
+	private _generateSkillMd(data: {
+		name: string; description: string; version: string;
+		skillContent?: string; useGuide?: string; toolsDescription?: string;
+		tags?: string[]; author?: string; wikiUrl?: string;
+	}): string {
+		const lines: string[] = [];
+
+		// Frontmatter
+		lines.push('---');
+		lines.push(`name: ${data.name}`);
+		lines.push(`description: ${(data.description || '').replace(/\n/g, ' ').slice(0, 200)}`);
+		if (data.version) { lines.push(`version: "${data.version}"`); }
+		if (data.author) { lines.push(`author: "${data.author}"`); }
+		if (data.tags?.length) {
+			const tagsStr = data.tags.map(t => '"' + t + '"').join(', ');
+			lines.push('tags: [' + tagsStr + ']');
+		}
+		lines.push('---');
+		lines.push('');
+
+		// 如果有原始 skill content，直接使用（去掉可能的重复标题）
+		if (data.skillContent && data.skillContent.length > 20) {
+			// 清理内容，移除可能重复的 # 标题行
+			let content = data.skillContent.trim();
+			// 如果第一行就是 "# name" 且和我们的名字匹配，跳过它
+			const firstLineMatch = content.match(/^#\s+.+/m);
+			if (firstLineMatch && firstLineMatch[0].includes(data.name)) {
+				content = content.replace(/^#.+(\r?\n)/, '').trim();
+			}
+			lines.push(content);
+		} else {
+			// 从 useGuide 和 description 生成
+			lines.push(`# ${data.name}`, '');
+			if (data.description) { lines.push(data.description, ''); }
+
+			if (data.useGuide) {
+				lines.push('## 使用说明', '', data.useGuide, '');
+			}
+			if (data.toolsDescription) {
+				lines.push('## 工具/能力说明', '', data.toolsDescription, '');
+			}
+
+			// 添加通用技能使用指引
+			lines.push('## 使用方式', '', `这是一个从 Knot 平台爬取的技能资源（v${data.version || '1.0.0'}）。`, '');
+			if (data.wikiUrl) {
+				lines.push(`详细文档请参考: [iWiki](${data.wikiUrl})`, '');
+			}
+		}
+
+		return lines.join('\n');
+	}
+
+	/** 构建 MCP server.json */
+	private _buildMcpServerJson(config: any, slug: string, name: string, description: string): Record<string, unknown> {
+		const transportType = (config.transportType || config.transport_type || 'http').toLowerCase();
+		// streamable-http 归类为 http 传输
+		let transport = 'http';
+		if (transportType === 'sse') { transport = 'sse'; }
+		else if (transportType === 'stdio') { transport = 'stdio'; }
+		else if (transportType === 'streamable-http' || transportType === 'http') { transport = 'http'; }
+
+		const server: Record<string, unknown> = { id: slug, name, description, transport };
+		if (transport === 'stdio') {
+			if (config.command) { server.command = config.command; }
+			if (config.args) { server.args = Array.isArray(config.args) ? config.args : [config.args]; }
+		} else {
+			if (config.url) { server.url = config.url; }
+		}
+		if (config.headers && typeof config.headers === 'object') {
+			const env: Record<string, string> = {};
+			for (const [k, v] of Object.entries(config.headers)) { env[k] = String(v); }
+			if (Object.keys(env).length > 0) { server.env = env; }
+		}
+		if (config.timeout) { server.timeout = config.timeout; }
+		return server;
+	}
+
+	/** 记录到 installed-packages.json */
+	private async _recordInstalled(kind: PackageKind, storeId: string, version: string): Promise<void> {
+		const userHome = await this.pathService.userHome();
+		const fileUri = URI.joinPath(userHome, '.saros', 'installed-packages.json');
+		let entries: Array<{ kind: string; storeId: string; version: string; installedAt: string }> = [];
+		try {
+			if (await this.fileService.exists(fileUri)) {
+				const content = await this.fileService.readFile(fileUri);
+				entries = JSON.parse(content.value.toString());
+			}
+		} catch { /* ignore */ }
+		entries = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
+		entries.push({ kind, storeId, version, installedAt: new Date().toISOString() });
+		await this.fileService.createFolder(URI.joinPath(fileUri, '..'));
+		await this.fileService.writeFile(fileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
 	}
 
 	override layout(_dimension: Dimension): void {

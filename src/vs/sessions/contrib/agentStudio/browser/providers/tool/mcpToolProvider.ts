@@ -171,12 +171,19 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		const startTime = Date.now();
 		try {
 			const res = await routed.tool.call(call.arguments ?? {}, undefined, CancellationToken.None);
+			const elapsed = Date.now() - startTime;
+			if (res.isError) {
+				const errText = this._extractErrorText(res.content);
+				this.logService.warn(`[McpToolProvider] ${call.name} failed (${elapsed}ms): ${errText}`);
+			} else {
+				this.logService.debug(`[McpToolProvider] ${call.name} succeeded (${elapsed}ms)`);
+			}
 			return {
 				toolCallId: call.id,
 				success: !res.isError,
 				content: this._adaptContent(res.content),
 				error: res.isError ? this._extractErrorText(res.content) : undefined,
-				metadata: { executionTimeMs: Date.now() - startTime, mcpServer: routed.server.definition.id },
+				metadata: { executionTimeMs: elapsed, mcpServer: routed.server.definition.id },
 			};
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -191,7 +198,7 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		// 监听 IMcpService.servers，每当 server 列表或某 server 的 tools 列表变化时刷新路由表
 		this._register(autorun(reader => {
 			const servers = (this.mcpService.servers as IObservable<readonly IMcpServer[]>).read(reader);
-			this.logService.info(`[McpToolProvider] _wire autorun fired: ${servers.length} server(s) discovered`);
+			this.logService.debug(`[McpToolProvider] _wire autorun fired: ${servers.length} server(s)`);
 
 			// 第一遍：收集所有工具和 referenceName，检测碰撞
 			const allTools: Array<{ server: IMcpServer; tool: IMcpTool; refName: string }> = [];
@@ -199,9 +206,8 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 			for (const server of servers) {
 				const tools = server.tools.read(reader);
 				const connState = server.connectionState.get();
-				this.logService.info(
-					`[McpToolProvider] Server: id=${server.definition.id}, label="${server.definition.label}", ` +
-					`connState=${connState.state}, tools=${tools.length}`
+				this.logService.debug(
+					`[McpToolProvider] Server: id=${server.definition.id}, connState=${connState.state}, tools=${tools.length}`
 				);
 				for (const tool of tools) {
 					const refName = tool.referenceName || tool.definition.name;
@@ -213,22 +219,20 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 			// 第二遍：构建路由表 — 优先使用 referenceName（短名），碰撞时回退到 tool.id
 			const next = new Map<string, IRoutedTool>();
 			for (const { server, tool, refName } of allTools) {
-				// referenceName 无碰撞 → 用短名（如 'get_architecture'）
-				// referenceName 有碰撞 → 用 tool.id（如 'mcp_codebase-memo_get_architecture'）
 				const routedName = (refNameCount.get(refName) ?? 0) <= 1 ? refName : tool.id;
 				next.set(routedName, { server, tool });
-				this.logService.info(`[McpToolProvider]   route: ${routedName}${routedName === refName ? '' : ' (ref=' + refName + ')'}`);
+				this.logService.debug(`[McpToolProvider]   route: ${routedName}${routedName === refName ? '' : ' (ref=' + refName + ')'}`);
 			}
 
 			// 仅在变化时更新（避免无意义的 onDidChange）
 			if (!this._sameRoutes(next)) {
 				this._routes.clear();
-				this._securityLevelCache.clear(); // 路由变更时清空安全等级缓存
+				this._securityLevelCache.clear();
 				for (const [k, v] of next) { this._routes.set(k, v); }
 				this._onDidChangeTools.fire();
-				this.logService.info(`[McpToolProvider] tool routes updated: ${this._routes.size} tool(s): [${[...this._routes.keys()].join(', ')}]`);
+				this.logService.info(`[McpToolProvider] tool routes updated: ${this._routes.size} tool(s)`);
 			} else {
-				this.logService.info(`[McpToolProvider] routes unchanged (${this._routes.size} tool(s))`);
+				this.logService.debug(`[McpToolProvider] routes unchanged (${this._routes.size} tool(s))`);
 			}
 		}));
 	}
@@ -285,10 +289,10 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		// 1. MCP 协议标准注解
 		if (annotations?.readOnlyHint === true) {
 			result = ToolSecurityLevel.Safe;
-			this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Safe (annotations.readOnlyHint=true)`);
+			this.logService.debug(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Safe (annotations.readOnlyHint=true)`);
 		} else if (annotations?.destructiveHint === true) {
 			result = ToolSecurityLevel.Dangerous;
-			this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Dangerous (annotations.destructiveHint=true)`);
+			this.logService.debug(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Dangerous (annotations.destructiveHint=true)`);
 		} else {
 			// 2. 无注解时从描述首句推断
 			result = this._inferFromDescription(toolName, tool.definition.description);
@@ -304,7 +308,7 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 	 */
 	private _inferFromDescription(toolName: string, description: string | undefined): ToolSecurityLevel {
 		if (!description) {
-			this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Cautious (no description)`);
+			this.logService.debug(`[McpToolProvider] _inferSecurityLevel: ${toolName} → Cautious (no description)`);
 			return ToolSecurityLevel.Cautious;
 		}
 
@@ -332,7 +336,7 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 			result = ToolSecurityLevel.Cautious;
 		}
 
-		this.logService.info(`[McpToolProvider] _inferSecurityLevel: ${toolName} → ${result} (first sentence: "${firstSentence.trim().slice(0, 60)}")`);
+		this.logService.debug(`[McpToolProvider] _inferSecurityLevel: ${toolName} → ${result} (first sentence: "${firstSentence.trim().slice(0, 60)}")`);
 		return result;
 	}
 

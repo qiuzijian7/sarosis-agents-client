@@ -22,6 +22,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../../pla
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IChatWidgetService } from '../../../chat/browser/chat.js';
 import { IChatRequestVariableEntry } from '../../../chat/common/attachments/chatVariableEntries.js';
 import { ChatContextKeys } from '../../../chat/common/actions/chatContextKeys.js';
@@ -120,6 +121,7 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 		@IDialogService private readonly dialogService: IDialogService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(editor);
 		this._elementSelectionActiveContext = CONTEXT_BROWSER_ELEMENT_SELECTION_ACTIVE.bindTo(contextKeyService);
@@ -386,7 +388,14 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 		}
 
 		const widget = await this.chatWidgetService.revealWidget() ?? this.chatWidgetService.lastFocusedWidget;
-		widget?.attachmentModel?.addContext(...toAttach);
+		if (widget?.attachmentModel) {
+			widget.attachmentModel.addContext(...toAttach);
+		} else {
+			// Fallback for VsSaros: use command service to add to AgentChatPanel
+			for (const entry of toAttach) {
+				await this.commandService.executeCommand('agentStudio.addToChat', entry);
+			}
+		}
 
 		type IntegratedBrowserAddElementToChatAddedEvent = {
 			attachImages: boolean;
@@ -436,7 +445,18 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 			});
 
 			const widget = await this.chatWidgetService.revealWidget() ?? this.chatWidgetService.lastFocusedWidget;
-			widget?.attachmentModel?.addContext(...toAttach);
+			if (widget?.attachmentModel) {
+				widget.attachmentModel.addContext(...toAttach);
+			} else {
+				// Fallback for VsSaros: use command service to add to AgentChatPanel
+				console.log('[BrowserEditor] IChatWidgetService not available, using agentStudio.addToChat fallback');
+				for (const entry of toAttach) {
+					const result = await this.commandService.executeCommand('agentStudio.addToChat', entry);
+					if (!result) {
+						console.warn('[BrowserEditor] agentStudio.addToChat returned no result — command may not be registered. Try reloading the window.');
+					}
+				}
+			}
 		} catch (error) {
 			this.logService.error('BrowserEditor.addConsoleLogsToChat: Failed to get console logs', error);
 		}

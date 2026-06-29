@@ -36,7 +36,7 @@ import { IWorkflowExecutionService } from '../common/workflowExecutionService.js
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
-import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo, ILiveWorkflowAskUser, IContextUsage } from '../../../browser/agentChat/agentChatTypes.js';
+import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, ICheckpointInfo, ILiveWorkflowAskUser, IContextUsage, IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
@@ -67,7 +67,7 @@ export class NativeChatEditorPane extends EditorPane {
 	private _isSending = false;
 	private _currentMaxContextTokens: number | undefined;
 	/** Reusable streaming-send function, captured from the panel's onSendMessage. */
-	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[]) => Promise<void>;
+	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => Promise<void>;
 	/** Live workflow execution state for trace rendering in Native Chat. */
 	private _liveWorkflowExecId: string | null = null;
 	private _liveWorkflowMsgId: string | null = null;
@@ -124,7 +124,7 @@ export class NativeChatEditorPane extends EditorPane {
 		console.warn(`[NativeChatEditorPane][Init] _initChatPanel START`);
 
 		this._chatPanel = this._register(new AgentChatPanel({
-			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[]) => {
+			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => {
 				// 防重入：如果正在发送中，忽略重复调用
 				if (this._isSending) {
 					console.warn('[NativeChatEditorPane] onSendMessage: already sending, ignoring duplicate');
@@ -142,43 +142,40 @@ export class NativeChatEditorPane extends EditorPane {
 					const agentId = ensured.agentId;
 					const sessionId: string = ensured.sessionId;
 
+					// 将附件内容注入消息文本——文件附件以 <file> 标签包裹，
+					// 图片附件标注文件名（视觉能力取决于模型支持）
+					let fullText = text;
+					if (attachments && attachments.length > 0) {
+						for (const att of attachments) {
+							if (att.type === 'file') {
+								// 文本文件 data 为原文，二进制文件 data 为 base64
+								const isText = att.mimeType.startsWith('text/') || att.mimeType === 'application/json';
+								const content = isText ? att.data : `[binary file, ${att.size} bytes]`;
+								fullText += `\n\n<file name="${att.name}">\n${content}\n</file>`;
+							} else if (att.type === 'image') {
+								fullText += `\n\n[image: ${att.name}]`;
+							}
+						}
+					}
+
 					// Optimistically add user message
 					const userMsg: IAgentChatMessage = {
 						id: `msg_${Date.now()}_user`,
 						role: 'user',
-						content: text,
+						content: fullText,
 						timestamp: Date.now(),
 					};
 					this._chatPanel?.addMessage(userMsg);
 
-				// Set sending state BEFORE await — switches send button to stop icon immediately
-				this._chatPanel?.setSending(true);
-				this._isSending = true;
+					// Set sending state BEFORE await — switches send button to stop icon immediately
+					this._chatPanel?.setSending(true);
+					this._isSending = true;
 
-				// Create assistant message immediately with isThinking=true so the user
-				// sees a "正在思考..." indicator while waiting for the first LLM delta.
-				let assistantId: string | null = `msg_${Date.now()}_assistant`;
-				const turnId = `turn_${Date.now()}`;
-				let assistantMsg: IAgentChatMessage | null = {
-					id: assistantId,
-					role: 'assistant',
-					content: '',
-					timestamp: Date.now(),
-					isStreaming: true,
-					isThinking: true,
-					streamPhase: 'llm_streaming',
-					turnId,
-				};
-				this._chatPanel?.addMessage(assistantMsg);
-				let assistantAdded = true;
-
-				// No longer lazy — message is created above. This is kept as a no-op
-				// guard for any code paths that still call it.
-				const ensureAssistantMsg = () => {
-					if (assistantAdded) { return; }
-					// Fallback: should not normally reach here since message is pre-created.
-					assistantId = `msg_${Date.now()}_assistant`;
-					assistantMsg = {
+					// Create assistant message immediately with isThinking=true so the user
+					// sees a "正在思考..." indicator while waiting for the first LLM delta.
+					let assistantId: string | null = `msg_${Date.now()}_assistant`;
+					const turnId = `turn_${Date.now()}`;
+					let assistantMsg: IAgentChatMessage | null = {
 						id: assistantId,
 						role: 'assistant',
 						content: '',
@@ -186,48 +183,67 @@ export class NativeChatEditorPane extends EditorPane {
 						isStreaming: true,
 						isThinking: true,
 						streamPhase: 'llm_streaming',
-						turnId: `turn_${Date.now()}`,
+						turnId,
 					};
 					this._chatPanel?.addMessage(assistantMsg);
-					assistantAdded = true;
-				};
-					
+					let assistantAdded = true;
+
+					// No longer lazy — message is created above. This is kept as a no-op
+					// guard for any code paths that still call it.
+					const ensureAssistantMsg = () => {
+						if (assistantAdded) { return; }
+						// Fallback: should not normally reach here since message is pre-created.
+						assistantId = `msg_${Date.now()}_assistant`;
+						assistantMsg = {
+							id: assistantId,
+							role: 'assistant',
+							content: '',
+							timestamp: Date.now(),
+							isStreaming: true,
+							isThinking: true,
+							streamPhase: 'llm_streaming',
+							turnId: `turn_${Date.now()}`,
+						};
+						this._chatPanel?.addMessage(assistantMsg);
+						assistantAdded = true;
+					};
+
 					await this._chatService.sendMessage(
 						agentId,
-						text,
+						fullText,
 						{
 							chatMode: this._currentChatMode,
 							agentSessionId: sessionId,
 							explicitSkillIds: explicitSkillIds,
 						},
-					(delta) => {
-						if (!delta) return;
+						(delta) => {
+							if (!delta) return;
 
-						// Inter-turn gap: agent loop continued after `done` set _isSending=false.
-						// Re-activate streaming state so the panel uses the streaming scroll path
-						// (avoids the non-streaming 80px threshold falsely disabling auto-scroll
-						// when content growth between turns makes distFromBottom >= 80).
-						if (!this._isSending && (delta.type === 'text' || delta.type === 'thinking' || delta.type === 'tool_start' || delta.type === 'tool_result')) {
-							this._chatPanel?.setSending(true);
-							this._isSending = true;
-						}
+							// Inter-turn gap: agent loop continued after `done` set _isSending=false.
+							// Re-activate streaming state so the panel uses the streaming scroll path
+							// (avoids the non-streaming 80px threshold falsely disabling auto-scroll
+							// when content growth between turns makes distFromBottom >= 80).
+							if (!this._isSending && (delta.type === 'text' || delta.type === 'thinking' || delta.type === 'tool_start' || delta.type === 'tool_result')) {
+								this._chatPanel?.setSending(true);
+								this._isSending = true;
+							}
 
-						switch (delta.type) {
-							case 'text':
-								// First text delta → ensure assistant message exists, then update
-								ensureAssistantMsg();
-								if (!assistantMsg || !assistantId) return;
-								const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
-								assistantMsg.content = textContent;
-								this._chatPanel?.setStreamPhase('llm_streaming');
-								this._chatPanel?.setStreamTextBuffer(textContent);
-								this._chatPanel?.updateMessage(assistantId, {
-									content: textContent,
-									isStreaming: true,
-									isThinking: false,
-									streamPhase: 'llm_streaming',
-								});
-								break;
+							switch (delta.type) {
+								case 'text':
+									// First text delta → ensure assistant message exists, then update
+									ensureAssistantMsg();
+									if (!assistantMsg || !assistantId) return;
+									const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
+									assistantMsg.content = textContent;
+									this._chatPanel?.setStreamPhase('llm_streaming');
+									this._chatPanel?.setStreamTextBuffer(textContent);
+									this._chatPanel?.updateMessage(assistantId, {
+										content: textContent,
+										isStreaming: true,
+										isThinking: false,
+										streamPhase: 'llm_streaming',
+									});
+									break;
 								case 'thinking':
 									ensureAssistantMsg();
 									if (!assistantMsg || !assistantId) return;
@@ -254,13 +270,13 @@ export class NativeChatEditorPane extends EditorPane {
 										defaultShow: delta.defaultShow,
 										textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
 									});
-								this._chatPanel?.setStreamPhase('tool_executing');
-								this._chatPanel?.updateMessage(assistantId, {
-									toolCalls: assistantMsg.toolCalls.slice(),
-									isStreaming: true,
-									isThinking: false,
-									streamPhase: 'tool_executing',
-								});
+									this._chatPanel?.setStreamPhase('tool_executing');
+									this._chatPanel?.updateMessage(assistantId, {
+										toolCalls: assistantMsg.toolCalls.slice(),
+										isStreaming: true,
+										isThinking: false,
+										streamPhase: 'tool_executing',
+									});
 									break;
 								}
 								case 'tool_args': {
@@ -276,35 +292,35 @@ export class NativeChatEditorPane extends EditorPane {
 									}
 									break;
 								}
-							case 'tool_end': {
-								if (!assistantMsg || !assistantId) return;
-								const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-								if (endCall) {
-									endCall.status = 'success';
-									// After a tool completes, the LLM will process the result and
-									// generate the next response. Show "正在思考..." while waiting.
-									this._chatPanel?.setStreamPhase('llm_streaming');
-									this._chatPanel?.updateMessage(assistantId, {
-										toolCalls: assistantMsg.toolCalls!.slice(),
-										isStreaming: true,
-										isThinking: true,
-										streamPhase: 'llm_streaming',
-									});
+								case 'tool_end': {
+									if (!assistantMsg || !assistantId) return;
+									const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+									if (endCall) {
+										endCall.status = 'success';
+										// After a tool completes, the LLM will process the result and
+										// generate the next response. Show "正在思考..." while waiting.
+										this._chatPanel?.setStreamPhase('llm_streaming');
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls!.slice(),
+											isStreaming: true,
+											isThinking: true,
+											streamPhase: 'llm_streaming',
+										});
+									}
+									break;
 								}
-								break;
-							}
-							case 'tool_result': {
-								if (!assistantMsg || !assistantId) return;
-								const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-								if (resultCall) {
-									resultCall.result = delta.content;
-									if (resultCall.status === 'running') { resultCall.status = 'success'; }
-									this._chatPanel?.updateMessage(assistantId, {
-										toolCalls: assistantMsg.toolCalls!.slice(),
-									});
+								case 'tool_result': {
+									if (!assistantMsg || !assistantId) return;
+									const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+									if (resultCall) {
+										resultCall.result = delta.content;
+										if (resultCall.status === 'running') { resultCall.status = 'success'; }
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls!.slice(),
+										});
+									}
+									break;
 								}
-								break;
-							}
 								case 'phase_change':
 									// Phase changes can arrive before any content — don't create msg for them
 									if (delta.phase) {
@@ -317,32 +333,32 @@ export class NativeChatEditorPane extends EditorPane {
 										});
 									}
 									break;
-							case 'done': {
-								// Edge case: if no content ever arrived, ensure msg exists for done-state
-								if (!assistantAdded && assistantId === null) {
-									ensureAssistantMsg();
-								}
-								if (assistantMsg && assistantId) {
-									if (assistantMsg.toolCalls) {
-										for (const tc of assistantMsg.toolCalls) {
-											if (tc.status === 'running') { tc.status = 'success'; }
-										}
+								case 'done': {
+									// Edge case: if no content ever arrived, ensure msg exists for done-state
+									if (!assistantAdded && assistantId === null) {
+										ensureAssistantMsg();
 									}
-									// 单次 LLM 开始到结束的耗时（ms）
-									const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
-									this._chatPanel?.setStreamPhase('idle');
-									this._chatPanel?.updateMessage(assistantId, {
-										toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
-										isStreaming: false,
-										isThinking: false,
-										streamPhase: 'idle',
-										metadata: { ...(assistantMsg.metadata || {}), durationMs },
-									});
+									if (assistantMsg && assistantId) {
+										if (assistantMsg.toolCalls) {
+											for (const tc of assistantMsg.toolCalls) {
+												if (tc.status === 'running') { tc.status = 'success'; }
+											}
+										}
+										// 单次 LLM 开始到结束的耗时（ms）
+										const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
+										this._chatPanel?.setStreamPhase('idle');
+										this._chatPanel?.updateMessage(assistantId, {
+											toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
+											isStreaming: false,
+											isThinking: false,
+											streamPhase: 'idle',
+											metadata: { ...(assistantMsg.metadata || {}), durationMs },
+										});
+									}
+									this._chatPanel?.setSending(false);
+									this._isSending = false;
+									break;
 								}
-								this._chatPanel?.setSending(false);
-								this._isSending = false;
-								break;
-							}
 								case 'error':
 									// Ensure assistant msg exists to show error state
 									if (!assistantAdded && assistantId === null) {
@@ -360,137 +376,137 @@ export class NativeChatEditorPane extends EditorPane {
 									this._chatPanel?.setSending(false);
 									this._isSending = false;
 									break;
-							case 'usage':
-								if (delta.usage && assistantMsg && assistantId) {
-									const input = delta.usage.inputTokens ?? 0;
-									const output = delta.usage.outputTokens ?? 0;
-									const total = delta.usage.totalTokens ?? (input + output);
-									const cachedRead = delta.usage.cachedTokens ?? 0;
-									const cacheWrite = delta.usage.cacheWriteTokens ?? 0;
-									const credit = delta.usage.credit;
-									const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
-									const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
-									const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit };
-									assistantMsg.tokenUsage = tokenUsage;
-									this._chatPanel?.updateMessage(assistantId, { tokenUsage });
-									// 更新上下文环进度条
+								case 'usage':
+									if (delta.usage && assistantMsg && assistantId) {
+										const input = delta.usage.inputTokens ?? 0;
+										const output = delta.usage.outputTokens ?? 0;
+										const total = delta.usage.totalTokens ?? (input + output);
+										const cachedRead = delta.usage.cachedTokens ?? 0;
+										const cacheWrite = delta.usage.cacheWriteTokens ?? 0;
+										const credit = delta.usage.credit;
+										const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
+										const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
+										const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit };
+										assistantMsg.tokenUsage = tokenUsage;
+										this._chatPanel?.updateMessage(assistantId, { tokenUsage });
+										// 更新上下文环进度条
+										const limit = this._currentMaxContextTokens ?? 0;
+										if (limit > 0) {
+											this._chatPanel?.setStreamUsage({
+												input: delta.usage.inputTokens ?? 0,
+												output: delta.usage.outputTokens ?? 0,
+												seen: true,
+											});
+										}
+									}
+									break;
+								case 'context_compacted': {
+									// 上下文压缩完成：更新上下文环基线 + 添加压缩提示卡片
+									const compacted = (delta as any).compactedInputTokens ?? 0;
+									if (compacted > 0) {
+										this._chatPanel?.setCompactedBaseline(compacted);
+										// 持久化到 localStorage，窗口重载后可恢复 token 进度条基线
+										this._saveCompactedBaseline(compacted);
+									}
 									const limit = this._currentMaxContextTokens ?? 0;
-									if (limit > 0) {
-										this._chatPanel?.setStreamUsage({
-											input: delta.usage.inputTokens ?? 0,
-											output: delta.usage.outputTokens ?? 0,
-											seen: true,
+									if (limit > 0 && compacted > 0) {
+										const ratio = Math.max(0, Math.min(1, compacted / limit));
+										this._chatPanel?.setContextUsage({
+											used: compacted,
+											limit,
+											ratio,
+											percent: ratio * 100,
+										} as IContextUsage);
+									}
+									// 添加压缩提示卡片（对齐 webview 的 CompressionNoticeCard）
+									const origCount = (delta as any).compressionOriginalCount ?? 0;
+									const compCount = (delta as any).compressionCompressedCount ?? 0;
+									const tokensSaved = (delta as any).compressionTokensSaved ?? 0;
+									const durationMs = (delta as any).compressionDurationMs ?? 0;
+									if (origCount > 0 && compCount > 0 && compCount < origCount) {
+										this._chatPanel?.addCompressionNotice({
+											originalCount: origCount,
+											compressedCount: compCount,
+											tokensSaved,
+											durationMs,
+											beforeText: (delta as any).compressionBeforeText,
+											afterText: (delta as any).compressionAfterText,
+											summary: (delta as any).compressionSummary,
 										});
 									}
+									break;
 								}
-								break;
-							case 'context_compacted': {
-								// 上下文压缩完成：更新上下文环基线 + 添加压缩提示卡片
-								const compacted = (delta as any).compactedInputTokens ?? 0;
-								if (compacted > 0) {
-									this._chatPanel?.setCompactedBaseline(compacted);
-									// 持久化到 localStorage，窗口重载后可恢复 token 进度条基线
-									this._saveCompactedBaseline(compacted);
+								case 'memory_extracted': {
+									// LLM 输出 <memory_extract> 标签被捕获 → 显示记忆卡片（同步，已提取）
+									const memContent = (delta as any).content ?? '';
+									const memMeta = (delta as any).metadata ?? {};
+									if (memContent) {
+										this._chatPanel?.addMemoryNotice({
+											content: memContent,
+											memoryType: memMeta.memoryType,
+											priority: memMeta.priority,
+											sceneName: memMeta.sceneName,
+											assistantContentPreview: memMeta.assistantContentPreview,
+											iteration: memMeta.iteration,
+											status: 'saved',
+										});
+									}
+									break;
 								}
-								const limit = this._currentMaxContextTokens ?? 0;
-								if (limit > 0 && compacted > 0) {
-									const ratio = Math.max(0, Math.min(1, compacted / limit));
-									this._chatPanel?.setContextUsage({
-										used: compacted,
-										limit,
-										ratio,
-										percent: ratio * 100,
-									} as IContextUsage);
+								case 'memory_writing': {
+									// L0 记忆写入开始 → 显示 pending 卡片（含 noticeId 供后续更新）
+									const memContent = (delta as any).content ?? '';
+									const memMeta = (delta as any).metadata ?? {};
+									if (memContent) {
+										this._chatPanel?.addMemoryNotice({
+											content: memContent,
+											memoryType: memMeta.memoryType,
+											priority: memMeta.priority,
+											sceneName: memMeta.sceneName,
+											assistantContentPreview: memMeta.assistantContentPreview,
+											iteration: memMeta.iteration,
+											noticeId: memMeta.noticeId,
+											status: 'pending',
+										});
+									}
+									break;
 								}
-								// 添加压缩提示卡片（对齐 webview 的 CompressionNoticeCard）
-								const origCount = (delta as any).compressionOriginalCount ?? 0;
-								const compCount = (delta as any).compressionCompressedCount ?? 0;
-								const tokensSaved = (delta as any).compressionTokensSaved ?? 0;
-								const durationMs = (delta as any).compressionDurationMs ?? 0;
-								if (origCount > 0 && compCount > 0 && compCount < origCount) {
-									this._chatPanel?.addCompressionNotice({
-										originalCount: origCount,
-										compressedCount: compCount,
-										tokensSaved,
-										durationMs,
-										beforeText: (delta as any).compressionBeforeText,
-										afterText: (delta as any).compressionAfterText,
-										summary: (delta as any).compressionSummary,
-									});
+								case 'memory_written': {
+									// L0 记忆写入成功 → 更新 pending 卡片为 saved（或移除空内容卡片）
+									const memMeta = (delta as any).metadata ?? {};
+									if (memMeta.noticeId) {
+										if (memMeta.remove) {
+											this._chatPanel?.removeMemoryNotice(memMeta.noticeId);
+										} else {
+											this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'saved', (delta as any).content);
+										}
+									}
+									break;
 								}
-								break;
-							}
-						case 'memory_extracted': {
-							// LLM 输出 <memory_extract> 标签被捕获 → 显示记忆卡片（同步，已提取）
-							const memContent = (delta as any).content ?? '';
-							const memMeta = (delta as any).metadata ?? {};
-							if (memContent) {
-								this._chatPanel?.addMemoryNotice({
-									content: memContent,
-									memoryType: memMeta.memoryType,
-									priority: memMeta.priority,
-									sceneName: memMeta.sceneName,
-									assistantContentPreview: memMeta.assistantContentPreview,
-									iteration: memMeta.iteration,
-									status: 'saved',
-								});
+								case 'memory_write_failed': {
+									// L0 记忆写入失败 → 更新 pending 卡片为 failed
+									const memMeta = (delta as any).metadata ?? {};
+									if (memMeta.noticeId) {
+										this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'failed', (delta as any).content);
+									}
+									break;
 								}
-								break;
-							}
-						case 'memory_writing': {
-							// L0 记忆写入开始 → 显示 pending 卡片（含 noticeId 供后续更新）
-							const memContent = (delta as any).content ?? '';
-							const memMeta = (delta as any).metadata ?? {};
-							if (memContent) {
-								this._chatPanel?.addMemoryNotice({
-									content: memContent,
-									memoryType: memMeta.memoryType,
-									priority: memMeta.priority,
-									sceneName: memMeta.sceneName,
-									assistantContentPreview: memMeta.assistantContentPreview,
-									iteration: memMeta.iteration,
-									noticeId: memMeta.noticeId,
-									status: 'pending',
-								});
-							}
-							break;
-						}
-					case 'memory_written': {
-						// L0 记忆写入成功 → 更新 pending 卡片为 saved（或移除空内容卡片）
-						const memMeta = (delta as any).metadata ?? {};
-						if (memMeta.noticeId) {
-							if (memMeta.remove) {
-								this._chatPanel?.removeMemoryNotice(memMeta.noticeId);
-							} else {
-								this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'saved', (delta as any).content);
-							}
-						}
-						break;
-					}
-					case 'memory_write_failed': {
-						// L0 记忆写入失败 → 更新 pending 卡片为 failed
-						const memMeta = (delta as any).metadata ?? {};
-						if (memMeta.noticeId) {
-							this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'failed', (delta as any).content);
-						}
-						break;
-					}
-						case 'memory_injected': {
-							// 记忆上下文已注入 system prompt → 显示注入通知卡片
-							const memContent = (delta as any).content ?? '';
-							const memMeta = (delta as any).metadata ?? {};
-							if (memContent) {
-								this._chatPanel?.addMemoryNotice({
-									content: memContent,
-									memoryType: 'injected',
-									status: 'saved',
-									entries: memMeta.entries,
-								});
-							}
-							break;
-						}
-							default:
-								break;
+								case 'memory_injected': {
+									// 记忆上下文已注入 system prompt → 显示注入通知卡片
+									const memContent = (delta as any).content ?? '';
+									const memMeta = (delta as any).metadata ?? {};
+									if (memContent) {
+										this._chatPanel?.addMemoryNotice({
+											content: memContent,
+											memoryType: 'injected',
+											status: 'saved',
+											entries: memMeta.entries,
+										});
+									}
+									break;
+								}
+								default:
+									break;
 							}
 						},
 					);
@@ -516,6 +532,11 @@ export class NativeChatEditorPane extends EditorPane {
 					const agentId = this._currentAgentId ?? 'claw';
 					const sessionId = this._currentSessionId ?? undefined;
 					this._chatService.cancelStream(agentId, sessionId);
+					// 立即恢复 UI 状态——cancelStream 中断 AbortController 后，
+					// for-await 循环仅在下个 delta 到达时才 break，done/error delta
+					// 不会被发射，setSending(false) 不会被调用。这里手动恢复按钮 + 输入框。
+					this._chatPanel?.setSending(false);
+					this._isSending = false;
 				} catch (err) {
 					console.error('[NativeChatEditorPane] cancelExecution failed:', err);
 				}
@@ -526,52 +547,52 @@ export class NativeChatEditorPane extends EditorPane {
 			onSelectAgent: (agentId: string) => {
 				this._selectAndLoadAgent(agentId);
 			},
-		onChangeMode: (mode: ChatMode) => {
-			this._currentChatMode = mode;
-			// Persist the chat mode so it survives reloads.
-			try { localStorage.setItem('agentChatMode', mode); } catch { /* ignore */ }
-		},
-		onOpenSettings: async () => {
-			// Open agent settings page (refer to AgentChat.tsx settings button)
-			if (!this._currentAgentId) {
-				console.warn('[NativeChatEditorPane] onOpenSettings: no agent selected');
-				return;
-			}
-			try {
-				const agent = await this._agentStudioService.getAgent(this._currentAgentId);
-				if (!agent) {
-					console.warn(`[NativeChatEditorPane] onOpenSettings: agent ${this._currentAgentId} not found`);
+			onChangeMode: (mode: ChatMode) => {
+				this._currentChatMode = mode;
+				// Persist the chat mode so it survives reloads.
+				try { localStorage.setItem('agentChatMode', mode); } catch { /* ignore */ }
+			},
+			onOpenSettings: async () => {
+				// Open agent settings page (refer to AgentChat.tsx settings button)
+				if (!this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onOpenSettings: no agent selected');
 					return;
 				}
-				const input = new AgentSettingsEditorInput(agent.id, agent.name);
-				await this.group.openEditor(input, { pinned: true });
-			} catch (err) {
-				console.error('[NativeChatEditorPane] onOpenSettings failed:', err);
-			}
-		},
-		onListSkills: () => [],
-		onNewSession: async () => {
-			// Create a new session for the current agent
-			if (!this._currentAgentId) {
-				console.warn('[NativeChatEditorPane] onNewSession: no agent selected');
-				return;
-			}
-			try {
-				const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
-				this._currentSessionId = session.id;
-				console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
-				// Clear messages in UI
-				this._chatPanel?.setMessages([]);
-				// 新会话无压缩历史 → 重置压缩基线
-				this._restoreCompactedBaseline();
-				// New session has no checkpoints yet — reset bar & scope checkpoints to it.
-				this._activateCheckpointSession(this._currentAgentId, session.id);
-				// Refresh session list
-				await this._refreshSessionList();
-			} catch (err) {
-				console.error('[NativeChatEditorPane] onNewSession failed:', err);
-			}
-		},
+				try {
+					const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+					if (!agent) {
+						console.warn(`[NativeChatEditorPane] onOpenSettings: agent ${this._currentAgentId} not found`);
+						return;
+					}
+					const input = new AgentSettingsEditorInput(agent.id, agent.name);
+					await this.group.openEditor(input, { pinned: true });
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onOpenSettings failed:', err);
+				}
+			},
+			onListSkills: () => [],
+			onNewSession: async () => {
+				// Create a new session for the current agent
+				if (!this._currentAgentId) {
+					console.warn('[NativeChatEditorPane] onNewSession: no agent selected');
+					return;
+				}
+				try {
+					const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
+					this._currentSessionId = session.id;
+					console.log(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
+					// Clear messages in UI
+					this._chatPanel?.setMessages([]);
+					// 新会话无压缩历史 → 重置压缩基线
+					this._restoreCompactedBaseline();
+					// New session has no checkpoints yet — reset bar & scope checkpoints to it.
+					this._activateCheckpointSession(this._currentAgentId, session.id);
+					// Refresh session list
+					await this._refreshSessionList();
+				} catch (err) {
+					console.error('[NativeChatEditorPane] onNewSession failed:', err);
+				}
+			},
 			onOpenSession: async (sessionId: string) => {
 				// Switch to the selected session and reload its history
 				if (!this._currentAgentId) {
@@ -737,10 +758,10 @@ export class NativeChatEditorPane extends EditorPane {
 					console.error('[NativeChatEditorPane] onClearWorktree failed:', err);
 				}
 			},
-		onScrollToMessage: (_messageId: string) => {
-			// Scrolling is handled internally by AgentChatPanel._scrollToMessage().
-			// This callback is a notification hook only — no host-side action needed.
-		},
+			onScrollToMessage: (_messageId: string) => {
+				// Scrolling is handled internally by AgentChatPanel._scrollToMessage().
+				// This callback is a notification hook only — no host-side action needed.
+			},
 			onSelectProvider: (providerId: string) => {
 				const cur = this._modelSelector.getSelection();
 				this._modelSelector.setSelection({
@@ -760,12 +781,12 @@ export class NativeChatEditorPane extends EditorPane {
 				});
 				void this._refreshModelSelector();
 			},
-		onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => {
-			void this._handleCheckpointAction(action, payload);
-		},
-		onConfirmationAction: (confirmationId: string, buttonId: string) => {
-			void this._handleConfirmationAction(confirmationId, buttonId);
-		},
+			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => {
+				void this._handleCheckpointAction(action, payload);
+			},
+			onConfirmationAction: (confirmationId: string, buttonId: string) => {
+				void this._handleConfirmationAction(confirmationId, buttonId);
+			},
 			onAskUserSubmit: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => {
 				console.log('[NativeChatEditorPane] onAskUserSubmit:', askUserId, executionId, nodeId, selection);
 				// Optimistically mark the AskUser as answered
@@ -787,71 +808,81 @@ export class NativeChatEditorPane extends EditorPane {
 					this._refreshLiveWorkflowMessage();
 				});
 			},
-		onQuestionClick: (question: { label: string }) => {
-			// Send the suggested question as a new user message.
-			if (question?.label) {
-				void this._sendMessageInternal?.(question.label);
-			}
-		},
-		onReferenceClick: (ref: { kind: string; uri?: string; name: string; range?: { startLine: number } }) => {
-			// Open file references in the editor, URL references in the URL preview.
-			if (ref?.kind === 'url' && ref.uri) {
-				const input = UrlPreviewEditorInput.getOrCreate(ref.uri);
-				this._editorService.openEditor(input, { pinned: true }).catch(err => {
-					console.error('[NativeChatEditorPane] onReferenceClick: failed to open URL:', err);
-				});
-			} else if (ref?.kind === 'file' || ref?.kind === 'code' || ref?.kind === 'symbol') {
-				const filePath = ref.uri || ref.name;
-				if (filePath) {
-					void this._openFileInEditor(filePath, ref.range?.startLine);
+			onQuestionClick: (question: { label: string }) => {
+				// Send the suggested question as a new user message.
+				if (question?.label) {
+					void this._sendMessageInternal?.(question.label);
 				}
-			}
-		},
-		onTipAction: (_tipId: string, _actionId: string) => {
-			// Tip actions are forward-compatible hooks. Common actionIds like
-			// 'openSettings' or 'openMarket' can be routed here in the future.
-			// For now, tip actions are handled by the panel's internal logic.
-		},
-		onTipDismiss: (_tipId: string) => {
-			// Tip dismissal is a UI-only operation. The AgentChatPanel handles
-			// hiding the tip card internally; no host-side persistence needed.
-		},
-	onApplyCode: (code: string, language: string, filePath?: string) => {
-		void this._handleApplyCode(code, language, filePath);
-	},
-		onSubmitVariables: (executionId: string, values: Record<string, string>) => {
-			console.log('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
-			this._workflowExecutionService.submitWorkflowVariables(executionId, values).catch(err => {
-				console.error('[NativeChatEditorPane] Failed to submit variables:', err);
-			});
-		},
-	onOpenFile: (filePath: string) => {
-		void this._openFileInEditor(filePath);
-	},
-		// P0-2: @mention 文件搜索
-		onSearchFiles: async (query: string): Promise<Array<{ path: string; name: string }>> => {
-			return this._searchWorkspaceFiles(query);
-		},
-		// P0-2: @提及文件选择后添加为上下文
-		onAddFileContext: (filePath: string) => {
-			void this._addFileContextToChat(filePath);
-		},
-		// P1-1: 终端运行代码
-		onRunInTerminal: (code: string) => {
-			void this._runInTerminal(code);
-		},
-		// P1-3: 添加编辑器选中代码到聊天
-		onAddSelectionToChat: () => {
-			void this._addEditorSelectionToChat();
-		},
-		onOpenLink: (url: string) => {
-			// Open http(s) links from LLM output in the editor area (middle
-			// column) instead of an external browser.
-			const input = UrlPreviewEditorInput.getOrCreate(url);
-			this._editorService.openEditor(input, { pinned: true }).catch(err => {
-				console.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
-			});
-		},
+			},
+			onReferenceClick: (ref: { kind: string; uri?: string; name: string; range?: { startLine: number } }) => {
+				// Open file references in the editor, URL references in the URL preview.
+				if (ref?.kind === 'url' && ref.uri) {
+					const input = UrlPreviewEditorInput.getOrCreate(ref.uri);
+					this._editorService.openEditor(input, { pinned: true }).catch(err => {
+						console.error('[NativeChatEditorPane] onReferenceClick: failed to open URL:', err);
+					});
+				} else if (ref?.kind === 'file' || ref?.kind === 'code' || ref?.kind === 'symbol') {
+					const filePath = ref.uri || ref.name;
+					if (filePath) {
+						void this._openFileInEditor(filePath, ref.range?.startLine);
+					}
+				}
+			},
+			onTipAction: (_tipId: string, _actionId: string) => {
+				// Tip actions are forward-compatible hooks. Common actionIds like
+				// 'openSettings' or 'openMarket' can be routed here in the future.
+				// For now, tip actions are handled by the panel's internal logic.
+			},
+			onTipDismiss: (_tipId: string) => {
+				// Tip dismissal is a UI-only operation. The AgentChatPanel handles
+				// hiding the tip card internally; no host-side persistence needed.
+			},
+			onApplyCode: (code: string, language: string, filePath?: string) => {
+				void this._handleApplyCode(code, language, filePath);
+			},
+			onSubmitVariables: (executionId: string, values: Record<string, string>) => {
+				console.log('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
+				this._workflowExecutionService.submitWorkflowVariables(executionId, values).catch(err => {
+					console.error('[NativeChatEditorPane] Failed to submit variables:', err);
+				});
+			},
+			onOpenFile: (filePath: string, content?: string) => {
+				if (content) {
+					// 纯内容附件（如 Console Logs）— 在 untitled 编辑器中显示
+					this._editorService.openEditor({
+						resource: URI.from({ scheme: 'untitled', path: filePath }),
+						contents: content,
+					}).catch(err => {
+						console.error('[NativeChatEditorPane] onOpenFile: failed to open content:', err);
+					});
+				} else {
+					// 真实文件路径 — 在编辑器中打开文件
+					void this._openFileInEditor(filePath);
+				}
+			},
+			// P0-2: @mention 文件搜索
+			onSearchFiles: async (query: string): Promise<Array<{ path: string; name: string }>> => {
+				return this._searchWorkspaceFiles(query);
+			},
+			// P0-2: @提及文件选择后添加为上下文
+			onAddFileContext: (filePath: string) => {
+				void this._addFileContextToChat(filePath);
+			},
+			// P1-1: 终端运行代码
+			onRunInTerminal: (code: string) => {
+				void this._runInTerminal(code);
+			},
+			// P1-3: 添加编辑器选中代码到聊天
+			onAddSelectionToChat: () => {
+				void this._addEditorSelectionToChat();
+			},
+			onOpenLink: (url: string) => {
+				// 其他 http(s) 链接在编辑器区域（webview iframe）中打开
+				const input = UrlPreviewEditorInput.getOrCreate(url);
+				this._editorService.openEditor(input, { pinned: true }).catch(err => {
+					console.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
+				});
+			},
 		}));
 
 		this._container.appendChild(this._chatPanel.element);
@@ -1000,20 +1031,20 @@ export class NativeChatEditorPane extends EditorPane {
 						this._currentAgentId = workflowAgentId;
 						this._currentSessionId = sessionId;
 						this._liveWorkflowExecId = trace.executionId;
-					this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
-					this._liveWorkflowSubAgents = [];
-					this._liveWorkflowEvents = [];
-					this._liveWorkflowCollectVars = {};
-					this._liveWorkflowAskUsers = [];
-					this._liveWorkflowReady = false;
-					// Update chat input: switch send button to stop icon + start context ring tracking
-					this._chatPanel?.setSending(true);
-					this._isSending = true;
-					this._chatPanel?.setStreamPhase('llm_streaming');
-					this._chatPanel?.setStreamTextBuffer('');
-					this._chatPanel?.setStreamThinkingBuffer('');
-					try {
-						const history = await this._chatService.getHistory(workflowAgentId, sessionId);
+						this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
+						this._liveWorkflowSubAgents = [];
+						this._liveWorkflowEvents = [];
+						this._liveWorkflowCollectVars = {};
+						this._liveWorkflowAskUsers = [];
+						this._liveWorkflowReady = false;
+						// Update chat input: switch send button to stop icon + start context ring tracking
+						this._chatPanel?.setSending(true);
+						this._isSending = true;
+						this._chatPanel?.setStreamPhase('llm_streaming');
+						this._chatPanel?.setStreamTextBuffer('');
+						this._chatPanel?.setStreamThinkingBuffer('');
+						try {
+							const history = await this._chatService.getHistory(workflowAgentId, sessionId);
 							this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
 							this._activateCheckpointSession(workflowAgentId, sessionId);
 							await this._refreshSessionList();
@@ -1051,71 +1082,71 @@ export class NativeChatEditorPane extends EditorPane {
 						if (this._liveWorkflowSubAgents.length > 0) {
 							this._refreshLiveWorkflowMessage();
 						}
-				} else {
-					// Non-root subagent start: add to subAgents list
-					console.log(`[NativeChatEditorPane] subagent_start: node=${trace.nodeId}, name=${trace.nodeName}, type=${trace.nodeType}`);
+					} else {
+						// Non-root subagent start: add to subAgents list
+						console.log(`[NativeChatEditorPane] subagent_start: node=${trace.nodeId}, name=${trace.nodeName}, type=${trace.nodeType}`);
 
-					// Fallback: if __workflow__ root event was missed (timing race
-					// or event dropped), auto-initialize the live workflow container
-					// so the sub-agent card can still render.
-					if (!this._liveWorkflowMsgId || !this._liveWorkflowExecId) {
-						console.warn(`[NativeChatEditorPane] subagent_start without __workflow__ root — auto-initializing live workflow (execId=${trace.executionId})`);
-						this._liveWorkflowExecId = trace.executionId;
-					this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
-					this._liveWorkflowSubAgents = [];
-					this._liveWorkflowEvents = [];
-					this._liveWorkflowCollectVars = {};
-					this._liveWorkflowAskUsers = [];
-					this._liveWorkflowReady = false;
-					// Update chat input: switch send button to stop icon + start context ring tracking
-					this._chatPanel?.setSending(true);
-					this._isSending = true;
-					this._chatPanel?.setStreamPhase('llm_streaming');
-					this._chatPanel?.setStreamTextBuffer('');
-					this._chatPanel?.setStreamThinkingBuffer('');
-					if (trace.workflowAgentId) { this._currentAgentId = trace.workflowAgentId; }
-						if (trace.sessionId) { this._currentSessionId = trace.sessionId; }
-						// Create the live workflow message immediately
-						this._chatPanel?.addMessage({
-							id: this._liveWorkflowMsgId!,
-							role: 'assistant',
-							content: `▶ **${trace.nodeName || trace.nodeId}** — 执行中...`,
-							timestamp: Date.now(),
-							isStreaming: true,
-							workflowExecutions: {
-								[trace.executionId]: {
-									executionId: trace.executionId,
-									workflowName: trace.nodeName || trace.nodeId,
-									status: 'running' as const,
-									subAgents: this._liveWorkflowSubAgents,
-									startTime: Date.now(),
+						// Fallback: if __workflow__ root event was missed (timing race
+						// or event dropped), auto-initialize the live workflow container
+						// so the sub-agent card can still render.
+						if (!this._liveWorkflowMsgId || !this._liveWorkflowExecId) {
+							console.warn(`[NativeChatEditorPane] subagent_start without __workflow__ root — auto-initializing live workflow (execId=${trace.executionId})`);
+							this._liveWorkflowExecId = trace.executionId;
+							this._liveWorkflowMsgId = `wf_live_${trace.executionId}`;
+							this._liveWorkflowSubAgents = [];
+							this._liveWorkflowEvents = [];
+							this._liveWorkflowCollectVars = {};
+							this._liveWorkflowAskUsers = [];
+							this._liveWorkflowReady = false;
+							// Update chat input: switch send button to stop icon + start context ring tracking
+							this._chatPanel?.setSending(true);
+							this._isSending = true;
+							this._chatPanel?.setStreamPhase('llm_streaming');
+							this._chatPanel?.setStreamTextBuffer('');
+							this._chatPanel?.setStreamThinkingBuffer('');
+							if (trace.workflowAgentId) { this._currentAgentId = trace.workflowAgentId; }
+							if (trace.sessionId) { this._currentSessionId = trace.sessionId; }
+							// Create the live workflow message immediately
+							this._chatPanel?.addMessage({
+								id: this._liveWorkflowMsgId!,
+								role: 'assistant',
+								content: `▶ **${trace.nodeName || trace.nodeId}** — 执行中...`,
+								timestamp: Date.now(),
+								isStreaming: true,
+								workflowExecutions: {
+									[trace.executionId]: {
+										executionId: trace.executionId,
+										workflowName: trace.nodeName || trace.nodeId,
+										status: 'running' as const,
+										subAgents: this._liveWorkflowSubAgents,
+										startTime: Date.now(),
+									},
 								},
-							},
-							workflowEvents: this._liveWorkflowEvents,
-						} as any);
-						this._liveWorkflowReady = true;
-					}
+								workflowEvents: this._liveWorkflowEvents,
+							} as any);
+							this._liveWorkflowReady = true;
+						}
 
-					this._liveWorkflowSubAgents.push({
-						id: trace.nodeId,
-						name: trace.nodeName,
-						type: trace.nodeType,
-						task: trace.task,
-						status: 'running' as const,
-						startTime: Date.now(),
-					});
-					this._liveWorkflowEvents.push({
-						id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-						executionId: trace.executionId,
-						sessionId: trace.sessionId,
-						timestamp: Date.now(),
-						kind: 'subagent_start' as const,
-						nodeId: trace.nodeId,
-						nodeName: trace.nodeName,
-						nodeType: trace.nodeType,
-					});
-					this._refreshLiveWorkflowMessage();
-				}
+						this._liveWorkflowSubAgents.push({
+							id: trace.nodeId,
+							name: trace.nodeName,
+							type: trace.nodeType,
+							task: trace.task,
+							status: 'running' as const,
+							startTime: Date.now(),
+						});
+						this._liveWorkflowEvents.push({
+							id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+							executionId: trace.executionId,
+							sessionId: trace.sessionId,
+							timestamp: Date.now(),
+							kind: 'subagent_start' as const,
+							nodeId: trace.nodeId,
+							nodeName: trace.nodeName,
+							nodeType: trace.nodeType,
+						});
+						this._refreshLiveWorkflowMessage();
+					}
 					break;
 				}
 				case 'collect_variables': {
@@ -1161,77 +1192,77 @@ export class NativeChatEditorPane extends EditorPane {
 					this._refreshLiveWorkflowMessage();
 					break;
 				}
-			case 'delta': {
-				// Update subAgent streamed text / tool calls.
-				// IMPORTANT: _sanitizeDelta() in workflowExecutionService.ts maps the raw
-				// stream chunk fields to: toolCallId, toolName, arguments, content.
-				// We must read those same field names here — NOT d.id/d.name/d.args.
-				const d = trace.delta as any;
-				if (d?.type === 'tool_start' || d?.type === 'tool_end' || d?.type === 'tool_args' || d?.type === 'tool_result') {
-					console.log(`[NativeChatEditorPane] delta: node=${trace.nodeId}, type=${d.type}, tool=${d.toolName ?? d.name ?? d.id}`, JSON.stringify(d).slice(0, 200));
-				}
-				const sa = this._liveWorkflowSubAgents.find(s => s.id === trace.nodeId);
-
-				// ── Stream phase + context ring updates ──
-				// Keep the chat input's token progress bar and send button in sync
-				// with workflow subagent streaming activity.
-				if (d) {
-					if (d.type === 'text') {
-						this._chatPanel?.setStreamPhase('llm_streaming');
-					} else if (d.type === 'thinking') {
-						this._chatPanel?.setStreamPhase('llm_streaming');
-					} else if (d.type === 'tool_start' || d.type === 'tool_args' || d.type === 'tool_end' || d.type === 'tool_result') {
-						this._chatPanel?.setStreamPhase('tool_executing');
+				case 'delta': {
+					// Update subAgent streamed text / tool calls.
+					// IMPORTANT: _sanitizeDelta() in workflowExecutionService.ts maps the raw
+					// stream chunk fields to: toolCallId, toolName, arguments, content.
+					// We must read those same field names here — NOT d.id/d.name/d.args.
+					const d = trace.delta as any;
+					if (d?.type === 'tool_start' || d?.type === 'tool_end' || d?.type === 'tool_args' || d?.type === 'tool_result') {
+						console.log(`[NativeChatEditorPane] delta: node=${trace.nodeId}, type=${d.type}, tool=${d.toolName ?? d.name ?? d.id}`, JSON.stringify(d).slice(0, 200));
 					}
-					// Usage delta — update real token counts for the context ring
-					if (d.type === 'usage' && d.usage) {
-						const limit = this._currentMaxContextTokens ?? 0;
-						if (limit > 0 || d.usage.inputTokens || d.usage.outputTokens) {
-							this._chatPanel?.setStreamUsage({
-								input: d.usage.inputTokens ?? 0,
-								output: d.usage.outputTokens ?? 0,
-								seen: true,
+					const sa = this._liveWorkflowSubAgents.find(s => s.id === trace.nodeId);
+
+					// ── Stream phase + context ring updates ──
+					// Keep the chat input's token progress bar and send button in sync
+					// with workflow subagent streaming activity.
+					if (d) {
+						if (d.type === 'text') {
+							this._chatPanel?.setStreamPhase('llm_streaming');
+						} else if (d.type === 'thinking') {
+							this._chatPanel?.setStreamPhase('llm_streaming');
+						} else if (d.type === 'tool_start' || d.type === 'tool_args' || d.type === 'tool_end' || d.type === 'tool_result') {
+							this._chatPanel?.setStreamPhase('tool_executing');
+						}
+						// Usage delta — update real token counts for the context ring
+						if (d.type === 'usage' && d.usage) {
+							const limit = this._currentMaxContextTokens ?? 0;
+							if (limit > 0 || d.usage.inputTokens || d.usage.outputTokens) {
+								this._chatPanel?.setStreamUsage({
+									input: d.usage.inputTokens ?? 0,
+									output: d.usage.outputTokens ?? 0,
+									seen: true,
+								});
+							}
+						}
+					}
+
+					if (sa && d) {
+						if (d.type === 'text' && d.content) {
+							sa.streamedText = (sa.streamedText ?? '') + d.content;
+							// Update stream text buffer for context ring estimation
+							this._chatPanel?.setStreamTextBuffer(sa.streamedText);
+						} else if (d.type === 'thinking' && d.content) {
+							sa.streamedThinking = (sa.streamedThinking ?? '') + d.content;
+							this._chatPanel?.setStreamThinkingBuffer(sa.streamedThinking ?? '');
+						} else if (d.type === 'tool_start') {
+							sa.toolCalls = sa.toolCalls ?? [];
+							sa.toolCalls.push({
+								id: d.toolCallId ?? d.id ?? `tc_${Date.now()}`,
+								name: d.toolName ?? d.name ?? '',
+								status: 'running',
+								args: d.arguments ?? d.args ?? '',
 							});
+						} else if (d.type === 'tool_args') {
+							// Match by sanitized field name (toolCallId) with fallback
+							const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
+							if (tc) { tc.args = (tc.args ?? '') + (d.content ?? d.arguments ?? d.args ?? ''); }
+						} else if (d.type === 'tool_end') {
+							const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
+							if (tc) { tc.status = 'done'; tc.result = d.content ?? d.result ?? ''; }
+						} else if (d.type === 'tool_result') {
+							// Some streams emit tool_result instead of tool_end
+							const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
+							if (tc) {
+								tc.result = d.content ?? d.result ?? '';
+								if (tc.status === 'running') { tc.status = 'done'; }
+							}
 						}
 					}
+					this._scheduleDeltaRefresh();
+					break;
 				}
-
-				if (sa && d) {
-					if (d.type === 'text' && d.content) {
-						sa.streamedText = (sa.streamedText ?? '') + d.content;
-						// Update stream text buffer for context ring estimation
-						this._chatPanel?.setStreamTextBuffer(sa.streamedText);
-					} else if (d.type === 'thinking' && d.content) {
-						sa.streamedThinking = (sa.streamedThinking ?? '') + d.content;
-						this._chatPanel?.setStreamThinkingBuffer(sa.streamedThinking ?? '');
-					} else if (d.type === 'tool_start') {
-						sa.toolCalls = sa.toolCalls ?? [];
-						sa.toolCalls.push({
-							id: d.toolCallId ?? d.id ?? `tc_${Date.now()}`,
-							name: d.toolName ?? d.name ?? '',
-							status: 'running',
-							args: d.arguments ?? d.args ?? '',
-						});
-					} else if (d.type === 'tool_args') {
-						// Match by sanitized field name (toolCallId) with fallback
-						const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
-						if (tc) { tc.args = (tc.args ?? '') + (d.content ?? d.arguments ?? d.args ?? ''); }
-					} else if (d.type === 'tool_end') {
-						const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
-						if (tc) { tc.status = 'done'; tc.result = d.content ?? d.result ?? ''; }
-					} else if (d.type === 'tool_result') {
-						// Some streams emit tool_result instead of tool_end
-						const tc = sa.toolCalls?.find((t: any) => t.id === (d.toolCallId ?? d.id));
-						if (tc) {
-							tc.result = d.content ?? d.result ?? '';
-							if (tc.status === 'running') { tc.status = 'done'; }
-						}
-					}
-				}
-				this._scheduleDeltaRefresh();
-			break;
-			}
-			case 'subagent_end': {
+				case 'subagent_end': {
 					const sa = this._liveWorkflowSubAgents.find(s => s.id === trace.nodeId);
 					if (sa) {
 						sa.status = trace.status === 'done' ? 'done' as const : trace.status === 'cancelled' ? 'cancelled' as const : 'error' as const;
@@ -1323,7 +1354,7 @@ export class NativeChatEditorPane extends EditorPane {
 					})();
 					const finalStatus = trace.status === 'completed' ? 'completed' as const
 						: trace.status === 'failed' ? 'failed' as const
-						: 'cancelled' as const;
+							: 'cancelled' as const;
 
 					// ── Step 1: Update the live workflow card to final status ──
 					this._refreshLiveWorkflowMessage({
@@ -1629,22 +1660,22 @@ export class NativeChatEditorPane extends EditorPane {
 			// Build ICheckpointInfo for each checkpoint (including ghosts)
 			const infos: ICheckpointInfo[] = [];
 			for (const cp of list) {
-			const files = (cp.files ?? []).map(f => {
-				// ICheckpointFileChange has: uri (URI string), fsPath (filesystem path), fileName, additions, deletions
-				// Use fsPath for the editor (URI.file() compatible); fall back to uri parsed via URI.parse
-				const cf = f as { fsPath?: string; uri?: string; fileName?: string; additions?: number; deletions?: number };
-				let resolvedPath = cf.fsPath ?? '';
-				if (!resolvedPath && cf.uri) {
-					try { resolvedPath = URI.parse(cf.uri).fsPath; } catch { resolvedPath = cf.uri; }
-				}
-				// Derive status: only-additions → created; only-deletions → deleted; otherwise modified
-				const adds = cf.additions ?? 0;
-				const dels = cf.deletions ?? 0;
-				const status: 'modified' | 'created' | 'deleted' =
-					(adds > 0 && dels === 0) ? 'created' :
-					(adds === 0 && dels > 0) ? 'deleted' : 'modified';
-				return { path: resolvedPath, status };
-			}).filter(f => !!f.path);
+				const files = (cp.files ?? []).map(f => {
+					// ICheckpointFileChange has: uri (URI string), fsPath (filesystem path), fileName, additions, deletions
+					// Use fsPath for the editor (URI.file() compatible); fall back to uri parsed via URI.parse
+					const cf = f as { fsPath?: string; uri?: string; fileName?: string; additions?: number; deletions?: number };
+					let resolvedPath = cf.fsPath ?? '';
+					if (!resolvedPath && cf.uri) {
+						try { resolvedPath = URI.parse(cf.uri).fsPath; } catch { resolvedPath = cf.uri; }
+					}
+					// Derive status: only-additions → created; only-deletions → deleted; otherwise modified
+					const adds = cf.additions ?? 0;
+					const dels = cf.deletions ?? 0;
+					const status: 'modified' | 'created' | 'deleted' =
+						(adds > 0 && dels === 0) ? 'created' :
+							(adds === 0 && dels > 0) ? 'deleted' : 'modified';
+					return { path: resolvedPath, status };
+				}).filter(f => !!f.path);
 				infos.push({
 					id: cp.id,
 					label: cp.label || (cp.type === 'tool_edit' ? '工具修改' : '用户检查点'),
@@ -1756,10 +1787,10 @@ export class NativeChatEditorPane extends EditorPane {
 			for (const it of items) {
 				if (!seenProviders.has(it.provider.id)) {
 					seenProviders.add(it.provider.id);
-					providers.push({ 
-						id: it.provider.id, 
+					providers.push({
+						id: it.provider.id,
 						label: it.provider.name,
-						supportsAgents: it.provider.supportsAgents 
+						supportsAgents: it.provider.supportsAgents
 					});
 				}
 			}
@@ -2077,6 +2108,14 @@ export class NativeChatEditorPane extends EditorPane {
 			await searchRecursive(folder.uri, 0);
 		}
 		return results;
+	}
+
+	/**
+	 * 添加内容到聊天框作为附件（供外部命令调用）。
+	 * 使用 addTextContext 而非 addFileContext，因为内容可能不是真实文件（如 Console Logs）。
+	 */
+	addContentToChat(name: string, content: string): void {
+		this._chatPanel?.addTextContext(name, content);
 	}
 
 	/**

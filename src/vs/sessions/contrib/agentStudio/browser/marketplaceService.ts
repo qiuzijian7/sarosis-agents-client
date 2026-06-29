@@ -47,10 +47,11 @@ interface IInstalledEntry {
 
 /** 各 kind 的本地安装子目录（回退用，installer 注册后由 installer 决定） */
 const KIND_SUBDIR: Record<PackageKind, string> = {
-	agent: path.join('agents', 'custom'),
-	skill: 'skills-library',
-	mcp: 'mcp-servers',
+	agent: 'agents',
+	skill: 'skills',
+	mcp: 'mcp',
 	knowledge: 'knowledge-base',
+	workflow: 'workflows',
 };
 
 export class MarketplaceService extends Disposable implements IMarketplaceService {
@@ -157,9 +158,16 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			this.logService.warn('[Marketplace] loginWithTof: currentTicket 为空');
 			throw new Error('未找到 TOF 登录票据，请先登录 VsSaros');
 		}
+		const tofUser = this.tofAuthService.currentUser;
 		const url = `${this.endpoint}/api/v1/auth/tof`;
-		const body = JSON.stringify({ ticket });
-		this.logService.info(`[Marketplace] loginWithTof: 调用代理请求 POST ${url}, ticket 长度=${ticket.length}`);
+		// 同时发送 ticket + 用户信息（服务端网关不可达时作为 fallback）
+		const body = JSON.stringify({
+			ticket,
+			loginName: tofUser?.login_name,
+			staffId: tofUser?.staff_id,
+			isAdmin: tofUser?.is_admin ?? false,
+		});
+		this.logService.info(`[Marketplace] loginWithTof: 调用代理请求 POST ${url}, ticket 长度=${ticket.length}, user=${tofUser?.login_name ?? 'null'}`);
 
 		// 使用扩展宿主代理请求（Node.js 环境，无 CORS 限制）
 		const resp = await this.commandService.executeCommand<{
@@ -250,6 +258,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			versions: (res.versions ?? []).map((v: any) => ({
 				id: v.id, version: v.version, changelog: v.changelog ?? undefined,
 				sha256: v.sha256, size: v.asset_size, isLatest: Boolean(v.is_latest), createdAt: v.created_at,
+				manifest: v.manifest,
 			})),
 		};
 	}
@@ -261,22 +270,18 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		// 确保已登录（复用 TOF 登录态）
 		await this._ensureLoggedIn();
 
+		// MCP 特殊路径：MCP 只是配置（transport/url/command/env），不需要下载和解压 tar.gz
+		// 直接从 API 获取 manifest（含 MCP 配置），写入本地 config.json + 注册到 mcp.json
+		if (kind === 'mcp') {
+			return this._installMcpFromApi(storeId, version);
+		}
+
+		// 确保已登录（复用 TOF 登录态）
+		await this._ensureLoggedIn();
+
 		const url = `${this.endpoint}/api/v1/packages/${storeId}/versions/${version}/download`;
 
-		// 1. 下载 tar.gz — 通过扩展宿主代理绕过 CORS，携带 JWT token
-		const token = this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION);
-		const headers: Record<string, string> = {};
-		if (token) { headers['Authorization'] = `Bearer ${token}`; }
-		const resp = await this.commandService.executeCommand<{
-			statusCode: number; body: string;
-		}>('marketplace.proxyRequest', { url, method: 'GET', headers, binary: true });
-		if (!resp || resp.statusCode >= 400) {
-			throw new Error(`下载失败: HTTP ${resp?.statusCode || '无响应'}`);
-		}
-		// base64 → VSBuffer
-		const buffer = VSBuffer.wrap(Buffer.from(resp.body, 'base64'));
-
-		// 2. 准备临时目录
+		// 1. 准备临时目录
 		const userHome = await this.pathService.userHome();
 		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
 		await this.fileService.createFolder(URI.file(tmpBase));
@@ -284,11 +289,19 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const tmpFile = path.join(tmpBase, `saros-dl-${Date.now()}.tar.gz`);
 		const extractDir = path.join(tmpBase, `saros-extract-${Date.now()}`);
 
-		// 写入临时文件
-		await this.fileService.writeFile(URI.file(tmpFile), buffer);
+		// 2. 流式下载 tar.gz 到临时文件（通过扩展宿主，不经 IPC 传二进制）
+		const token = this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION);
+		const headers: Record<string, string> = {};
+		if (token) { headers['Authorization'] = `Bearer ${token}`; }
+		const dlResp = await this.commandService.executeCommand<{ statusCode: number }>(
+			'marketplace.downloadToFile', { url, headers, savePath: tmpFile }
+		);
+		if (!dlResp || dlResp.statusCode >= 400) {
+			throw new Error(`下载失败: HTTP ${dlResp?.statusCode || '无响应'}`);
+		}
 
 		try {
-			// 解压 tar.gz（需要 child_process，在浏览器环境中不可用）
+			// 3. 解压 tar.gz（通过扩展宿主执行 tar 命令）
 			await this.execTar(['-xzf', tmpFile, '-C', extractDir]);
 		} catch (err) {
 			throw new Error(`解压失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -309,14 +322,20 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		// 4. 委托 installer 安装；无 installer 则回退到通用解压
 		let result: IInstallResult;
 		const installer = this.installerRegistry.get(kind);
-		if (installer) {
-			result = await installer.install(manifest, URI.file(extractDir));
-		} else {
-			// 回退：直接解压到 ~/.saros/{subdir}/{id}/
-			const targetDir = await this.resolveInstallDir(kind, storeId);
-			await this.fileService.createFolder(targetDir);
-			result = { kind, storeId, version, targetDir: targetDir.fsPath };
-			this.logService.warn(`[Marketplace] 无 ${kind} installer，回退通用解压到 ${targetDir.fsPath}`);
+		try {
+			if (installer) {
+				result = await installer.install(manifest, URI.file(extractDir), { force: true });
+			} else {
+				// 回退：直接解压到 ~/.saros/{subdir}/{id}/
+				const targetDir = await this.resolveInstallDir(kind, storeId);
+				await this.fileService.createFolder(targetDir);
+				result = { kind, storeId, version, targetDir: targetDir.fsPath };
+				this.logService.warn(`[Marketplace] 无 ${kind} installer，回退通用解压到 ${targetDir.fsPath}`);
+			}
+		} catch (installErr) {
+			// 安装失败：回滚临时解压目录
+			try { await this.fileService.del(URI.file(extractDir), { recursive: true }); } catch { /* ignore */ }
+			throw installErr;
 		}
 
 		// 5. 清理临时目录 + 记录已安装
@@ -325,6 +344,100 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 		this.logService.info(`[Marketplace] 安装完成: ${kind}/${storeId} v${version}`);
 		return result;
+	}
+
+	/**
+	 * MCP 专用安装：直接从 API 获取配置，无需下载和解压 tar.gz。
+	 * MCP 本质上是连接配置（transport/url/command/env），不需要二进制文件。
+	 */
+	private async _installMcpFromApi(storeId: string, version: string): Promise<IInstallResult> {
+		this.logService.info(`[Marketplace] MCP 直接安装: ${storeId} v${version}`);
+
+		// 1. 获取包详情（含版本 manifest）
+		const detail = await this.getPackage(storeId);
+		const ver = detail.versions.find(v => v.version === version) || detail.versions.find(v => v.isLatest);
+		if (!ver || !ver.manifest) {
+			throw new Error('未找到版本或 manifest 信息');
+		}
+
+		const manifest = ver.manifest;
+		const mcpConfig = manifest.mcp || manifest; // manifest.mcp 或 manifest 本身
+		const actualVersion = ver.version;
+
+		// 2. 写入 ~/.saros/mcp/{storeId}/
+		const userHome = await this.pathService.userHome();
+		const targetDir = URI.joinPath(userHome, '.saros', 'mcp', storeId);
+		await this.fileService.createFolder(targetDir);
+
+		// config.json（MCP 连接配置）
+		const configJson = {
+			id: storeId,
+			name: manifest.name || mcpConfig.name || storeId,
+			description: manifest.description || mcpConfig.description || '',
+			transport: mcpConfig.transport || 'http',
+			command: mcpConfig.command,
+			args: mcpConfig.args,
+			url: mcpConfig.url,
+			env: mcpConfig.env || mcpConfig.headers,
+			version: actualVersion,
+		};
+		await this.fileService.writeFile(
+			URI.joinPath(targetDir, 'config.json'),
+			VSBuffer.fromString(JSON.stringify(configJson, null, 2))
+		);
+
+		// manifest.json（包元数据）
+		await this.fileService.writeFile(
+			URI.joinPath(targetDir, 'manifest.json'),
+			VSBuffer.fromString(JSON.stringify(manifest, null, 2))
+		);
+
+		// 3. 注册到 ~/.saros/mcp.json（IntegrationView 白名单）
+		await this._registerMcpToConfig(storeId, configJson);
+
+		// 4. 记录已安装
+		await this.upsertInstalled({ kind: 'mcp', storeId, version: actualVersion, installedAt: new Date().toISOString() });
+
+		this.logService.info(`[Marketplace] MCP 安装完成: ${storeId} v${actualVersion} → ${targetDir.fsPath}`);
+		this.logService.info(`[Marketplace] 已注册到 ~/.saros/mcp.json`);
+
+		return { kind: 'mcp', storeId, version: actualVersion, targetDir: targetDir.fsPath };
+	}
+
+	/** 将 MCP 配置注册到 ~/.saros/mcp.json */
+	private async _registerMcpToConfig(serverId: string, config: any): Promise<void> {
+		const userHome = await this.pathService.userHome();
+		const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+
+		// 读取现有配置
+		let mcpConfig: { servers: Record<string, any> } = { servers: {} };
+		try {
+			if (await this.fileService.exists(mcpJsonUri)) {
+				const raw = await this.fileService.readFile(mcpJsonUri);
+				mcpConfig = JSON.parse(raw.value.toString());
+				if (!mcpConfig.servers) { mcpConfig.servers = {}; }
+			}
+		} catch { /* 文件不存在或解析失败 */ }
+
+		// 转换为 mcp.json 格式
+		const transport = config.transport || 'stdio';
+		const entry: Record<string, unknown> = { disabled: false };
+		if (transport === 'stdio') {
+			entry.type = 'stdio';
+			if (config.command) { entry.command = config.command; }
+			if (config.args) { entry.args = config.args; }
+			if (config.env) { entry.env = config.env; }
+		} else {
+			entry.type = transport;
+			if (config.url) { entry.url = config.url; }
+			if (config.env) { entry.headers = config.env; }
+		}
+
+		mcpConfig.servers[serverId] = entry;
+
+		// 写回
+		await this.fileService.createFolder(URI.joinPath(mcpJsonUri, '..'));
+		await this.fileService.writeFile(mcpJsonUri, VSBuffer.fromString(JSON.stringify(mcpConfig, null, 2)));
 	}
 
 	// ── 上传发布 ──────────────────────────────────────────────
@@ -343,6 +456,20 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const { localDir, manifest } = await installer.preparePack(localId);
 		const version = opts.version || manifest.version;
 
+		// 1.5 预检：如果服务器已有同版本，拒绝上传
+		try {
+			const existing = await this.getPackage(localId);
+			if (existing.latestVersion === version) {
+				throw new Error(`版本 v${version} 已存在于商城，请递增版本号后重试`);
+			}
+		} catch (err) {
+			// 404 = 新技能，继续上传；其他错误（如已存在同版本）则抛出
+			if (err instanceof Error && err.message.includes('已存在于商城')) {
+				throw err;
+			}
+			// 其他错误（如网络问题、404）忽略，继续上传
+		}
+
 		// 2. tar 打包
 		const userHome = await this.pathService.userHome();
 		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
@@ -355,11 +482,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			throw new Error(`打包失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
-		const content = await this.fileService.readFile(URI.file(tmpFile));
-		const tarBuffer = content.value;
-		try { await this.fileService.del(URI.file(tmpFile)); } catch { /* ignore */ }
-
-		// 3. raw 上传
+		// 3. 流式上传 tar.gz（通过扩展宿主，不经 IPC 传二进制）
 		const url = `${this.endpoint}/api/v1/packages/${localId}/versions/raw`;
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/x-gzip',
@@ -368,7 +491,12 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const token = this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION);
 		if (token) { headers['Authorization'] = `Bearer ${token}`; }
 
-		const { statusCode, text } = await this.rawUpload(url, tarBuffer, headers);
+		const { statusCode, text } = await this.commandService.executeCommand<{ statusCode: number; text: string }>(
+			'marketplace.uploadFromFile', { url, filePath: tmpFile, headers }
+		) ?? { statusCode: 0, text: '' };
+
+		// 删除临时 tar 文件
+		try { await this.fileService.del(URI.file(tmpFile)); } catch { /* ignore */ }
 		if (statusCode >= 400) {
 			const err = text ? (JSON.parse(text).error || text) : `HTTP ${statusCode}`;
 			throw new Error(`发布失败: ${err}`);
@@ -429,39 +557,24 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 	/** 安全地执行 tar 命令（仅在支持 require 的 Node 环境中可用） */
 	private async execTar(args: string[]): Promise<void> {
-		const g = globalThis as unknown as { require?: (module: string) => unknown };
-		if (typeof g.require === 'function') {
-			const cp = g.require('child_process') as typeof import('child_process');
-			const { promisify } = g.require('util') as typeof import('util');
-			await promisify(cp.execFile)('tar', args);
+		// Route tar operations through the extension host (Node.js environment)
+		// via commands registered in tof-authentication extension
+		if (args[0] === '-xzf') {
+			// Extract: tar -xzf <tarFile> -C <extractDir>
+			const tarFile = args[1];
+			const extractDir = args[args.indexOf('-C') + 1];
+			await this.commandService.executeCommand('marketplace.extractTar', { tarFile, extractDir });
+		} else if (args[0] === '-czf') {
+			// Compress: tar -czf <outputFile> -C <sourceDir> .
+			const outputFile = args[1];
+			const sourceDir = args[args.indexOf('-C') + 1];
+			await this.commandService.executeCommand('marketplace.createTar', { sourceDir, outputFile });
 		} else {
-			throw new Error('[Marketplace] tar 功能在浏览器环境中不可用，请在支持 Node.js 的环境中运行此功能。');
+			throw new Error(`[Marketplace] Unsupported tar args: ${args.join(' ')}`);
 		}
 	}
 
-	/** 用 Node http/https 发送 raw binary body（IRequestService.data 仅支持 string，无法上传二进制） */
-	private rawUpload(url: string, body: VSBuffer, headers: Record<string, string>): Promise<{ statusCode: number; text: string }> {
-		return new Promise((resolve, reject) => {
-			const g = globalThis as unknown as { require?: (module: string) => unknown };
-			if (typeof g.require !== 'function') {
-				reject(new Error('[Marketplace] rawUpload 需要 Node.js 环境'));
-				return;
-			}
-			const http = g.require('http') as typeof import('http');
-			const https = g.require('https') as typeof import('https');
-			const lib = url.startsWith('https') ? https : http;
-			// 将 VSBuffer 转换为 Node.js Buffer
-			const nodeBuffer = Buffer.from(body.buffer);
-			const req = lib.request(url, { method: 'POST', headers }, (res) => {
-				let data = '';
-				res.on('data', (chunk: Buffer) => data += chunk.toString());
-				res.on('end', () => resolve({ statusCode: res.statusCode ?? 0, text: data }));
-			});
-			req.on('error', reject);
-			req.write(nodeBuffer);
-			req.end();
-		});
-	}
+
 
 	// ── 内部：installed-packages.json ─────────────────────────
 	private async getInstalledFileUri(): Promise<URI> {
@@ -512,5 +625,13 @@ function mapPackage(p: any): IMarketplacePackage {
 		description: p.description ?? undefined, category: p.category ?? undefined, icon: p.icon ?? undefined,
 		visibility: p.visibility, tags: p.tags ?? [],
 		latestVersion: p.latest_version ?? undefined, downloads: p.downloads ?? p.downloadCount,
+		useGuide: p.use_guide ?? p.useGuide ?? undefined,
+		authorName: p.author ?? (p.author_info?.username ?? p.author_info?.display_name) ?? undefined,
+		updatedAt: p.updated_at ?? p.updatedAt ?? undefined,
+		versions: p.versions ? p.versions.map((v: any) => ({
+			id: v.id, version: v.version, changelog: v.changelog ?? undefined,
+			sha256: v.sha256, size: v.asset_size ?? v.size, isLatest: Boolean(v.is_latest), createdAt: v.created_at ?? v.createdAt,
+			manifest: v.manifest,
+		})) : undefined,
 	};
 }

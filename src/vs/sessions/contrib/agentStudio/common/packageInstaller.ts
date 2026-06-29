@@ -53,8 +53,9 @@ export interface IPackageInstaller {
 	 * 将解压后的包目录安装到本地资源区，并注册到对应 registry。
 	 * @param manifest 包清单
 	 * @param extractedDir tar.gz 解压后的临时目录
+	 * @param opts 安装选项（force=true 时覆盖已存在的同名技能）
 	 */
-	install(manifest: PackageManifest, extractedDir: URI): Promise<IInstallResult>;
+	install(manifest: PackageManifest, extractedDir: URI, opts?: { force?: boolean }): Promise<IInstallResult>;
 
 	/**
 	 * 准备本地资源用于发布：返回资源目录 + 生成的清单。

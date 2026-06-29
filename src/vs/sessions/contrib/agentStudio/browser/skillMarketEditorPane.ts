@@ -11,44 +11,17 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { $, clearNode } from '../../../../base/browser/dom.js';
-import { Dimension } from '../../../../base/browser/dom.js';
+import { $, clearNode, Dimension } from '../../../../base/browser/dom.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
-import { ISkillInstallService, ISkillHubEntry, ISkillHubDefinition } from '../common/skillHubTypes.js';
+import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
+import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
+import { IMarketplaceService, IMarketplacePackage } from '../common/marketplace.js';
 import { ISkillRegistry } from '../common/skills.js';
-
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function skillIconForCategory(category?: string): string {
-	switch (category) {
-		case 'code': return '\u{1F4BB}';
-		case 'git': return '\u{1F500}';
-		case 'meta': return '\u{1F9E0}';
-		case 'docs': return '\u{1F4DD}';
-		case 'review': return '\u{1F50D}';
-		case 'writing': return '\u270D\uFE0F';
-		case 'data': return '\u{1F4CA}';
-		default: return '\u{1F4E6}';
-	}
-}
-
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-type ViewState =
-	| { mode: 'hubs' }
-	| { mode: 'hub-entries'; hubId: string };
-
-interface FilterState {
-	query: string;
-	category: string;
-	hubFilter: string;
-}
-
-/** 页面初始展示的条目数量，避免一次性渲染上千条卡片造成卡顿 */
-const ENTRY_PAGE_SIZE = 60;
+import { ISkillInstallService } from '../common/skillHubTypes.js';
 
 // ─── EditorPane ──────────────────────────────────────────────────────────────
 
@@ -57,14 +30,15 @@ export class SkillMarketEditorPane extends EditorPane {
 	static readonly ID = 'workbench.editor.skillMarket';
 
 	private _container!: HTMLElement;
+	private _gridEl!: HTMLElement;
+	private _countEl!: HTMLElement;
+	private _searchInput!: HTMLInputElement;
 
 	// Data
-	private _view: ViewState = { mode: 'hubs' };
-	private _filter: FilterState = { query: '', category: 'All', hubFilter: 'All' };
+	private _packages: readonly IMarketplacePackage[] = [];
 	private _loading = false;
-	private _installingIds: Set<string> = new Set();
-	/** 当前 hub-entries 视图下展示的最大条目数（点击「加载更多」递增） */
-	private _entryDisplayLimit = ENTRY_PAGE_SIZE;
+	private _installingSlugs = new Set<string>();
+	private _searchQuery = '';
 
 	constructor(
 		group: IEditorGroup,
@@ -72,8 +46,11 @@ export class SkillMarketEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IDialogService private readonly dialogService: IDialogService,
-		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
+		@IEditorService private readonly editorService: IEditorService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
+		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
 	) {
 		super(SkillMarketEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -88,12 +65,9 @@ export class SkillMarketEditorPane extends EditorPane {
 		this._container.style.fontSize = '13px';
 		parent.appendChild(this._container);
 
-		// Listen for skill changes (install/uninstall) to refresh installed state
+		// Listen for skill changes to refresh installed state
 		this._register(this.skillRegistry.onDidChangeSkills(() => {
-			this._renderContent();
-		}));
-		this._register(this.skillInstallService.onDidChangeEntries(() => {
-			this._renderContent();
+			this._renderGrid();
 		}));
 	}
 
@@ -104,17 +78,13 @@ export class SkillMarketEditorPane extends EditorPane {
 		token: CancellationToken,
 	): Promise<void> {
 		await super.setInput(input, options, context, token);
-
 		if (!(input instanceof SkillMarketEditorInput)) { return; }
 
-		// Build UI on first open
+		// Only build UI and load data on first open; don't reload on tab switch
 		if (this._container.childElementCount === 0) {
 			this._buildUI();
+			await this._loadPackages();
 		}
-
-		// Reset view to hubs on each open
-		this._view = { mode: 'hubs' };
-		this._renderContent();
 	}
 
 	override layout(dimension: Dimension): void {
@@ -129,764 +99,468 @@ export class SkillMarketEditorPane extends EditorPane {
 	private _buildUI(): void {
 		clearNode(this._container);
 
-		// ── Toolbar ──────────────────────────────────────────────────
-		const toolbar = $('div.skill-market-toolbar');
-		toolbar.style.display = 'flex';
-		toolbar.style.alignItems = 'center';
-		toolbar.style.justifyContent = 'space-between';
-		toolbar.style.padding = '12px 16px';
-		toolbar.style.borderBottom = '1px solid var(--vscode-panel-border)';
-		toolbar.style.flexShrink = '0';
+		// ── Header ──────────────────────────────────────────────────
+		const header = $('div.sm-header');
+		header.style.display = 'flex';
+		header.style.alignItems = 'center';
+		header.style.gap = '12px';
+		header.style.padding = '10px 16px';
+		header.style.background = 'var(--vscode-sideBar-background, #252526)';
+		header.style.borderBottom = '1px solid var(--vscode-panel-border)';
+		header.style.flexShrink = '0';
 
-		const left = $('div.skill-market-toolbar-left');
-		left.style.display = 'flex';
-		left.style.alignItems = 'center';
-		left.style.gap = '12px';
-
-		const title = $('h2.skill-market-title');
+		const title = $('h1');
 		title.textContent = '\u{1F9E9} Skill Marketplace';
-		title.style.margin = '0';
-		title.style.fontSize = '18px';
+		title.style.fontSize = '14px';
 		title.style.fontWeight = '600';
-		left.appendChild(title);
+		title.style.margin = '0';
+		title.style.color = 'var(--vscode-foreground)';
+		title.style.whiteSpace = 'nowrap';
+		header.appendChild(title);
 
-		// Back button (visible when browsing hub entries)
-		const backBtn = $('button.skill-market-back-btn') as HTMLButtonElement;
-		backBtn.textContent = '\u2190 Back to Hubs';
-		backBtn.title = 'Return to hub list';
-		backBtn.style.display = 'none';
-		backBtn.style.padding = '6px 12px';
-		backBtn.style.fontSize = '12px';
-		backBtn.style.background = 'var(--vscode-button-secondaryBackground)';
-		backBtn.style.color = 'var(--vscode-button-secondaryForeground)';
-		backBtn.style.border = 'none';
-		backBtn.style.borderRadius = '4px';
-		backBtn.style.cursor = 'pointer';
-		backBtn.id = 'skill-market-back-btn';
-		backBtn.onclick = () => {
-			this._view = { mode: 'hubs' };
-			this._filter.query = '';
-			this._entryDisplayLimit = ENTRY_PAGE_SIZE;
-			this._renderContent();
+		// Search
+		const searchWrap = $('div');
+		searchWrap.style.flex = '1';
+		searchWrap.style.maxWidth = '360px';
+		searchWrap.style.display = 'flex';
+		searchWrap.style.alignItems = 'center';
+		searchWrap.style.gap = '6px';
+		searchWrap.style.background = 'var(--vscode-input-background)';
+		searchWrap.style.border = '1px solid var(--vscode-input-border)';
+		searchWrap.style.borderRadius = '6px';
+		searchWrap.style.padding = '4px 10px';
+
+		const searchIcon = $('span');
+		searchIcon.textContent = '\u{1F50D}';
+		searchIcon.style.fontSize = '12px';
+		searchIcon.style.opacity = '0.6';
+		searchWrap.appendChild(searchIcon);
+
+		this._searchInput = $('input') as HTMLInputElement;
+		this._searchInput.type = 'text';
+		this._searchInput.placeholder = '搜索技能...';
+		this._searchInput.style.flex = '1';
+		this._searchInput.style.background = 'none';
+		this._searchInput.style.border = 'none';
+		this._searchInput.style.outline = 'none';
+		this._searchInput.style.color = 'var(--vscode-input-foreground)';
+		this._searchInput.style.fontSize = '12px';
+		this._searchInput.oninput = () => {
+			this._searchQuery = this._searchInput.value.trim().toLowerCase();
+			this._renderGrid();
 		};
-		left.appendChild(backBtn);
+		searchWrap.appendChild(this._searchInput);
+		header.appendChild(searchWrap);
 
-		toolbar.appendChild(left);
+		// Action buttons
+		const actions = $('div');
+		actions.style.display = 'flex';
+		actions.style.gap = '8px';
+		actions.style.marginLeft = 'auto';
 
-		const right = $('div.skill-market-toolbar-right');
-		right.style.display = 'flex';
-		right.style.alignItems = 'center';
-		right.style.gap = '8px';
-
-		// Filter input
-		const filterInput = $('input.skill-market-filter') as HTMLInputElement;
-		filterInput.type = 'text';
-		filterInput.placeholder = '\u{1F50D} Filter skills by name, description, or category...';
-		filterInput.style.padding = '6px 10px';
-		filterInput.style.fontSize = '12px';
-		filterInput.style.border = '1px solid var(--vscode-input-border)';
-		filterInput.style.borderRadius = '4px';
-		filterInput.style.background = 'var(--vscode-input-background)';
-		filterInput.style.color = 'var(--vscode-input-foreground)';
-		filterInput.style.width = '280px';
-		filterInput.style.outline = 'none';
-		filterInput.id = 'skill-market-filter-input';
-		filterInput.oninput = () => {
-			this._filter.query = filterInput.value.trim().toLowerCase();
-			this._entryDisplayLimit = ENTRY_PAGE_SIZE;
-			this._renderContent();
-		};
-		right.appendChild(filterInput);
-
-		const refreshBtn = $('button.skill-market-refresh-btn') as HTMLButtonElement;
-		refreshBtn.textContent = '\u{1F504} Refresh';
-		refreshBtn.title = 'Refresh skill hubs';
-		refreshBtn.style.padding = '6px 12px';
+		// Refresh button
+		const refreshBtn = $('button') as HTMLButtonElement;
+		refreshBtn.textContent = '\u{1F504}';
+		refreshBtn.title = '刷新技能列表';
+		refreshBtn.style.padding = '4px 8px';
 		refreshBtn.style.fontSize = '12px';
 		refreshBtn.style.background = 'var(--vscode-button-secondaryBackground)';
 		refreshBtn.style.color = 'var(--vscode-button-secondaryForeground)';
-		refreshBtn.style.border = 'none';
-		refreshBtn.style.borderRadius = '4px';
+		refreshBtn.style.border = '1px solid var(--vscode-panel-border)';
+		refreshBtn.style.borderRadius = '6px';
 		refreshBtn.style.cursor = 'pointer';
-		refreshBtn.onclick = () => { void this._refreshAll(); };
-		right.appendChild(refreshBtn);
+		refreshBtn.onclick = () => { void this._loadPackages(); };
+		actions.appendChild(refreshBtn);
 
-		toolbar.appendChild(right);
+		const localBtn = $('button') as HTMLButtonElement;
+		localBtn.textContent = '\u{1F4C1} 从本地文件安装';
+		localBtn.style.padding = '4px 12px';
+		localBtn.style.fontSize = '12px';
+		localBtn.style.background = 'var(--vscode-button-secondaryBackground)';
+		localBtn.style.color = 'var(--vscode-button-secondaryForeground)';
+		localBtn.style.border = '1px solid var(--vscode-panel-border)';
+		localBtn.style.borderRadius = '6px';
+		localBtn.style.cursor = 'pointer';
+		localBtn.style.whiteSpace = 'nowrap';
+		localBtn.onclick = () => this._showLocalInstallDialog();
+		actions.appendChild(localBtn);
 
-		this._container.appendChild(toolbar);
+		const urlBtn = $('button') as HTMLButtonElement;
+		urlBtn.textContent = '\u{1F517} 从 URL 安装';
+		urlBtn.style.padding = '4px 12px';
+		urlBtn.style.fontSize = '12px';
+		urlBtn.style.background = 'var(--vscode-button-secondaryBackground)';
+		urlBtn.style.color = 'var(--vscode-button-secondaryForeground)';
+		urlBtn.style.border = '1px solid var(--vscode-panel-border)';
+		urlBtn.style.borderRadius = '6px';
+		urlBtn.style.cursor = 'pointer';
+		urlBtn.style.whiteSpace = 'nowrap';
+		urlBtn.onclick = () => this._showUrlInstallDialog();
+		actions.appendChild(urlBtn);
 
-		// ── Content area ────────────────────────────────────────────
-		const content = $('div.skill-market-content');
-		content.id = 'skill-market-content';
-		content.style.flex = '1';
-		content.style.overflowY = 'auto';
-		content.style.padding = '16px';
-		this._container.appendChild(content);
+		header.appendChild(actions);
+		this._container.appendChild(header);
+
+		// ── Grid scroll area ────────────────────────────────────────
+		const scrollArea = $('div.sm-grid-scroll');
+		scrollArea.style.flex = '1';
+		scrollArea.style.overflowY = 'auto';
+		scrollArea.style.padding = '16px 20px';
+
+		// Section title
+		const sectionTitle = $('div');
+		sectionTitle.style.display = 'flex';
+		sectionTitle.style.alignItems = 'center';
+		sectionTitle.style.gap = '8px';
+		sectionTitle.style.marginBottom = '14px';
+
+		const titleText = $('span');
+		titleText.textContent = '\u{1F4E6} 商城技能 ';
+		titleText.style.fontSize = '14px';
+		titleText.style.fontWeight = '600';
+		titleText.style.color = 'var(--vscode-foreground)';
+		sectionTitle.appendChild(titleText);
+
+		this._countEl = $('span');
+		this._countEl.style.fontSize = '12px';
+		this._countEl.style.color = 'var(--vscode-textLink-foreground)';
+		sectionTitle.appendChild(this._countEl);
+		scrollArea.appendChild(sectionTitle);
+
+		// Grid container
+		this._gridEl = $('div.sm-grid');
+		this._gridEl.style.display = 'grid';
+		this._gridEl.style.gridTemplateColumns = 'repeat(auto-fill, minmax(260px, 1fr))';
+		this._gridEl.style.gap = '12px';
+		scrollArea.appendChild(this._gridEl);
+
+		this._container.appendChild(scrollArea);
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	//  DATA
 	// ══════════════════════════════════════════════════════════════════════════
 
-	private async _refreshAll(): Promise<void> {
+	private async _loadPackages(): Promise<void> {
 		if (this._loading) { return; }
 		this._loading = true;
-		const refreshBtn = this._container.querySelector('.skill-market-refresh-btn') as HTMLButtonElement;
-		if (refreshBtn) {
-			refreshBtn.textContent = '\u23F3 Loading...';
-			refreshBtn.disabled = true;
-		}
+
+		// Show loading state
+		clearNode(this._gridEl);
+		const loading = $('div');
+		loading.style.gridColumn = '1 / -1';
+		loading.style.textAlign = 'center';
+		loading.style.padding = '40px';
+		loading.style.color = 'var(--vscode-descriptionForeground)';
+		loading.textContent = '\u23F3 加载中...';
+		this._gridEl.appendChild(loading);
+		this._countEl.textContent = '';
 
 		try {
-			await this.skillInstallService.refreshAll();
+			const result = await this.marketplaceService.listPackages({ kind: 'skill' });
+			this._packages = result.items;
+			this._renderGrid();
 		} catch (err) {
-			console.error('[SkillMarketEditor] Failed to refresh:', err);
+			console.error('[SkillMarket] Failed to load packages:', err);
+			clearNode(this._gridEl);
+			const errEl = $('div');
+			errEl.style.gridColumn = '1 / -1';
+			errEl.style.textAlign = 'center';
+			errEl.style.padding = '40px';
+			errEl.style.color = 'var(--vscode-errorForeground)';
+			errEl.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
+			this._gridEl.appendChild(errEl);
+		} finally {
+			this._loading = false;
 		}
-
-		if (refreshBtn) {
-			refreshBtn.textContent = '\u{1F504} Refresh';
-			refreshBtn.disabled = false;
-		}
-		this._loading = false;
-		this._renderContent();
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	//  RENDER
 	// ══════════════════════════════════════════════════════════════════════════
 
-	private _renderContent(): void {
-		const content = this._container.querySelector('#skill-market-content') as HTMLElement;
-		if (!content) { return; }
+	private _renderGrid(): void {
+		if (!this._gridEl) { return; }
+		clearNode(this._gridEl);
 
-		// Update back button visibility
-		const backBtn = this._container.querySelector('#skill-market-back-btn') as HTMLElement;
-		if (backBtn) {
-			backBtn.style.display = this._view.mode === 'hub-entries' ? '' : 'none';
-		}
+		// Build installed lookup: match by id, slug, or name (case-insensitive)
+		const installedSkills = this.skillRegistry.getSkills();
+		const installedIds = new Set(installedSkills.map(s => s.id));
+		const installedNames = new Set(installedSkills.map(s => s.name.toLowerCase()));
 
-		// Update filter placeholder
-		const filterInput = this._container.querySelector('#skill-market-filter-input') as HTMLInputElement;
-		if (filterInput) {
-			if (this._view.mode === 'hubs') {
-				filterInput.placeholder = '\u{1F50D} Filter hubs...';
-			} else {
-				filterInput.placeholder = '\u{1F50D} Filter skills by name, description, or category...';
-			}
-		}
-
-		switch (this._view.mode) {
-			case 'hubs':
-				this._renderHubs(content);
-				break;
-			case 'hub-entries':
-				this._renderHubEntries(content, this._view.hubId);
-				break;
-		}
-	}
-
-	// ── Hubs View ─────────────────────────────────────────────────
-
-	private _renderHubs(container: HTMLElement): void {
-		clearNode(container);
-
-		const hubs = this.skillInstallService.getHubs();
-		const installedIds = new Set(
-			this.skillRegistry.getSkills().map(s => s.id)
-		);
-
-		// Apply filter
-		const q = this._filter.query;
-		let filteredHubs = hubs.slice();
-		if (q) {
-			filteredHubs = filteredHubs.filter(h =>
-				h.name.toLowerCase().includes(q) ||
-				h.id.toLowerCase().includes(q) ||
-				h.description.toLowerCase().includes(q)
+		// Apply search filter
+		let items = this._packages;
+		if (this._searchQuery) {
+			items = items.filter(p =>
+				p.name.toLowerCase().includes(this._searchQuery) ||
+				(p.description ?? '').toLowerCase().includes(this._searchQuery) ||
+				(p.tags ?? []).some(t => t.toLowerCase().includes(this._searchQuery))
 			);
 		}
 
-		// Section: Hubs
-		const hubSection = $('div.skill-market-section');
-		const hubHeader = $('div.skill-market-section-header');
-		hubHeader.style.display = 'flex';
-		hubHeader.style.alignItems = 'center';
-		hubHeader.style.justifyContent = 'space-between';
-		hubHeader.style.marginBottom = '12px';
+		this._countEl.textContent = `${items.length} 个`;
 
-		const hubTitle = $('h3.skill-market-section-title');
-		hubTitle.textContent = 'Skill Hubs';
-		if (filteredHubs.length !== hubs.length) {
-			hubTitle.textContent += ` (${filteredHubs.length}/${hubs.length} shown)`;
-		} else {
-			hubTitle.textContent += ` (${hubs.length})`;
-		}
-		hubTitle.style.margin = '0';
-		hubTitle.style.fontSize = '14px';
-		hubTitle.style.fontWeight = '600';
-		hubHeader.appendChild(hubTitle);
-
-		hubSection.appendChild(hubHeader);
-
-		if (filteredHubs.length === 0) {
-			const empty = $('p.skill-market-empty');
-			empty.textContent = q
-				? `No hubs match "${q}". Try a different search term.`
-				: 'No skill hubs available.';
-			empty.style.color = 'var(--vscode-descriptionForeground)';
-			empty.style.fontSize = '13px';
+		if (items.length === 0) {
+			const empty = $('div');
+			empty.style.gridColumn = '1 / -1';
 			empty.style.textAlign = 'center';
-			empty.style.padding = '24px';
-			hubSection.appendChild(empty);
-		} else {
-			const hubGrid = $('div.skill-market-hub-grid');
-			hubGrid.style.display = 'grid';
-			hubGrid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(300px, 1fr))';
-			hubGrid.style.gap = '12px';
-
-			for (const hub of filteredHubs) {
-				const card = this._buildHubCard(hub, installedIds);
-				hubGrid.appendChild(card);
-			}
-			hubSection.appendChild(hubGrid);
-		}
-
-		container.appendChild(hubSection);
-
-		// Divider
-		const divider = $('hr.skill-market-divider');
-		divider.style.margin = '20px 0';
-		divider.style.border = 'none';
-		divider.style.borderTop = '1px solid var(--vscode-panel-border)';
-		container.appendChild(divider);
-
-		// Section: Local Install
-		this._renderLocalInstallSection(container);
-
-		// Divider
-		const divider2 = $('hr.skill-market-divider');
-		divider2.style.margin = '20px 0';
-		divider2.style.border = 'none';
-		divider2.style.borderTop = '1px solid var(--vscode-panel-border)';
-		container.appendChild(divider2);
-
-		// Section: URL Install
-		this._renderUrlInstallSection(container);
-	}
-
-	private _buildHubCard(hub: ISkillHubDefinition, installedIds: Set<string>): HTMLElement {
-		const card = $('div.skill-market-hub-card');
-		card.style.padding = '16px';
-		card.style.border = '1px solid var(--vscode-panel-border)';
-		card.style.borderRadius = '8px';
-		card.style.cursor = 'pointer';
-		card.style.transition = 'border-color 0.15s, background 0.15s';
-		card.style.display = 'flex';
-		card.style.flexDirection = 'column';
-		card.style.gap = '8px';
-
-		if (hub.official) {
-			card.style.borderColor = 'var(--vscode-focusBorder, #007fd4)';
-		}
-
-		card.onmouseenter = () => {
-			card.style.borderColor = 'var(--vscode-focusBorder)';
-			card.style.background = 'var(--vscode-list-hoverBackground)';
-		};
-		card.onmouseleave = () => {
-			card.style.borderColor = hub.official ? 'var(--vscode-focusBorder, #007fd4)' : 'var(--vscode-panel-border)';
-			card.style.background = '';
-		};
-		card.onclick = () => {
-			this._view = { mode: 'hub-entries', hubId: hub.id };
-			this._filter.query = '';
-			this._entryDisplayLimit = ENTRY_PAGE_SIZE;
-			this._renderContent();
-		};
-
-		// Card header
-		const cardHeader = $('div.skill-market-hub-card-header');
-		cardHeader.style.display = 'flex';
-		cardHeader.style.alignItems = 'center';
-		cardHeader.style.gap = '10px';
-
-		const hubIcon = $('span.skill-market-hub-icon');
-		hubIcon.textContent = hub.icon ?? '\u{1F4E6}';
-		hubIcon.style.fontSize = '24px';
-		hubIcon.style.flexShrink = '0';
-		cardHeader.appendChild(hubIcon);
-
-		const headerInfo = $('div');
-		headerInfo.style.flex = '1';
-
-		const nameRow = $('div');
-		nameRow.style.display = 'flex';
-		nameRow.style.alignItems = 'center';
-		nameRow.style.gap = '8px';
-
-		const hubName = $('span.skill-market-hub-name');
-		hubName.textContent = hub.name;
-		hubName.style.fontSize = '15px';
-		hubName.style.fontWeight = '600';
-		nameRow.appendChild(hubName);
-
-		if (hub.official) {
-			const officialBadge = $('span.skill-market-hub-official');
-			officialBadge.textContent = 'Official';
-			officialBadge.style.fontSize = '10px';
-			officialBadge.style.padding = '2px 6px';
-			officialBadge.style.borderRadius = '8px';
-			officialBadge.style.background = 'rgba(0, 127, 212, 0.15)';
-			officialBadge.style.color = 'var(--vscode-focusBorder, #007fd4)';
-			officialBadge.style.fontWeight = '500';
-			nameRow.appendChild(officialBadge);
-		}
-
-		headerInfo.appendChild(nameRow);
-
-		const hubType = $('div.skill-market-hub-type');
-		hubType.textContent = hub.type === 'github' ? 'GitHub' : hub.type.toUpperCase();
-		hubType.style.fontSize = '11px';
-		hubType.style.color = 'var(--vscode-descriptionForeground)';
-		headerInfo.appendChild(hubType);
-
-		cardHeader.appendChild(headerInfo);
-		card.appendChild(cardHeader);
-
-		// Description
-		const hubDesc = $('p.skill-market-hub-desc');
-		hubDesc.textContent = hub.description;
-		hubDesc.style.margin = '0';
-		hubDesc.style.fontSize = '12px';
-		hubDesc.style.color = 'var(--vscode-descriptionForeground)';
-		hubDesc.style.lineHeight = '1.4';
-		card.appendChild(hubDesc);
-
-		// Browse button
-		const browseBtn = $('button.skill-market-browse-btn');
-		browseBtn.textContent = 'Browse Skills \u2192';
-		browseBtn.style.alignSelf = 'flex-start';
-		browseBtn.style.padding = '6px 14px';
-		browseBtn.style.fontSize = '12px';
-		browseBtn.style.fontWeight = '500';
-		browseBtn.style.background = 'var(--vscode-button-background)';
-		browseBtn.style.color = 'var(--vscode-button-foreground)';
-		browseBtn.style.border = 'none';
-		browseBtn.style.borderRadius = '4px';
-		browseBtn.style.cursor = 'pointer';
-		browseBtn.onclick = (e) => {
-			e.stopPropagation();
-			this._view = { mode: 'hub-entries', hubId: hub.id };
-			this._filter.query = '';
-			this._entryDisplayLimit = ENTRY_PAGE_SIZE;
-			this._renderContent();
-		};
-		card.appendChild(browseBtn);
-
-		return card;
-	}
-
-	// ── Hub Entries View ──────────────────────────────────────────
-
-	private async _renderHubEntries(container: HTMLElement, hubId: string): Promise<void> {
-		clearNode(container);
-
-		const hub = this.skillInstallService.getHubs().find(h => h.id === hubId);
-		const installedIds = new Set(
-			this.skillRegistry.getSkills().map(s => s.id)
-		);
-
-		// Hub header
-		const hubHeader = $('div.skill-market-hub-detail-header');
-		hubHeader.style.display = 'flex';
-		hubHeader.style.alignItems = 'center';
-		hubHeader.style.gap = '10px';
-		hubHeader.style.marginBottom = '16px';
-		hubHeader.style.padding = '12px 16px';
-		hubHeader.style.border = '1px solid var(--vscode-panel-border)';
-		hubHeader.style.borderRadius = '8px';
-		hubHeader.style.background = 'var(--vscode-sideBarSectionHeader-background)';
-
-		const hubIcon = $('span');
-		hubIcon.textContent = hub?.icon ?? '\u{1F4E6}';
-		hubIcon.style.fontSize = '20px';
-		hubHeader.appendChild(hubIcon);
-
-		const hubInfo = $('div');
-		hubInfo.style.flex = '1';
-
-		const hubName = $('div');
-		hubName.textContent = hub?.name ?? hubId;
-		hubName.style.fontSize = '14px';
-		hubName.style.fontWeight = '600';
-		hubInfo.appendChild(hubName);
-
-		const hubUrl = $('div');
-		hubUrl.textContent = hub?.url ?? '';
-		hubUrl.style.fontSize = '11px';
-		hubUrl.style.color = 'var(--vscode-descriptionForeground)';
-		hubUrl.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-		hubInfo.appendChild(hubUrl);
-
-		hubHeader.appendChild(hubInfo);
-		container.appendChild(hubHeader);
-
-		// Fetch or use cached entries
-		let entries: readonly ISkillHubEntry[] = [];
-		const cachedEntries = this.skillInstallService.getCachedEntries(hubId);
-
-		if (cachedEntries.length > 0) {
-			entries = cachedEntries;
-		} else {
-			// Show loading
-			const loading = $('div.skill-market-loading');
-			loading.textContent = '\u23F3 Loading skills from hub...';
-			loading.style.textAlign = 'center';
-			loading.style.padding = '24px';
-			loading.style.color = 'var(--vscode-descriptionForeground)';
-			loading.style.fontSize = '13px';
-			container.appendChild(loading);
-
-			try {
-				entries = await this.skillInstallService.fetchHubEntries(hubId);
-				loading.remove();
-			} catch (err) {
-				loading.textContent = `\u26A0\uFE0F Failed to load: ${err instanceof Error ? err.message : String(err)}`;
-				return;
-			}
-		}
-
-		// Filter
-		const q = this._filter.query;
-		let filteredEntries = entries.slice();
-		if (q) {
-			filteredEntries = filteredEntries.filter(e =>
-				e.name.toLowerCase().includes(q) ||
-				e.id.toLowerCase().includes(q) ||
-				(e.description ?? '').toLowerCase().includes(q) ||
-				(e.category ?? '').toLowerCase().includes(q) ||
-				(e.tags ?? []).some(t => t.toLowerCase().includes(q)) ||
-				(e.author ?? '').toLowerCase().includes(q)
-			);
-		}
-
-		// Update installed status
-		for (const entry of filteredEntries) {
-			(entry as any).installed = installedIds.has(entry.id);
-		}
-
-		// Count
-		const countBar = $('div.skill-market-entry-count');
-		countBar.style.display = 'flex';
-		countBar.style.alignItems = 'center';
-		countBar.style.justifyContent = 'space-between';
-		countBar.style.marginBottom = '12px';
-
-		const countText = $('span');
-		if (filteredEntries.length !== entries.length) {
-			countText.textContent = `${filteredEntries.length} / ${entries.length} 个技能匹配`;
-		} else {
-			countText.textContent = `共 ${entries.length} 个技能可用`;
-		}
-		countText.style.fontSize = '12px';
-		countText.style.color = 'var(--vscode-descriptionForeground)';
-		countBar.appendChild(countText);
-
-		container.appendChild(countBar);
-
-		if (filteredEntries.length === 0) {
-			const empty = $('p.skill-market-empty');
-			empty.textContent = q
-				? `没有匹配 "${q}" 的技能，换个关键词试试。`
-				: '该 Hub 中暂无技能，点击 Refresh 重新加载。';
+			empty.style.padding = '40px';
 			empty.style.color = 'var(--vscode-descriptionForeground)';
-			empty.style.fontSize = '13px';
-			empty.style.textAlign = 'center';
-			empty.style.padding = '24px';
-			container.appendChild(empty);
+			empty.textContent = this._searchQuery
+				? `没有匹配 "${this._searchQuery}" 的技能`
+				: '暂无可安装的技能';
+			this._gridEl.appendChild(empty);
 			return;
 		}
 
-		// Entry grid (limited by _entryDisplayLimit for big hubs like knot-market)
-		const limit = this._entryDisplayLimit;
-		const shown = filteredEntries.slice(0, limit);
-
-		const grid = $('div.skill-market-entry-grid');
-		grid.style.display = 'grid';
-		grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(280px, 1fr))';
-		grid.style.gap = '10px';
-
-		for (const entry of shown) {
-			grid.appendChild(this._buildEntryCard(entry, hubId));
-		}
-		container.appendChild(grid);
-
-		// Load-more footer
-		if (filteredEntries.length > limit) {
-			const moreWrap = $('div');
-			moreWrap.style.textAlign = 'center';
-			moreWrap.style.marginTop = '14px';
-			const moreBtn = $('button') as HTMLButtonElement;
-			moreBtn.textContent = `加载更多 (${filteredEntries.length - limit} 项剩余)`;
-			moreBtn.style.padding = '8px 20px';
-			moreBtn.style.fontSize = '12px';
-			moreBtn.style.background = 'var(--vscode-button-secondaryBackground)';
-			moreBtn.style.color = 'var(--vscode-button-secondaryForeground)';
-			moreBtn.style.border = 'none';
-			moreBtn.style.borderRadius = '4px';
-			moreBtn.style.cursor = 'pointer';
-			moreBtn.onclick = () => {
-				this._entryDisplayLimit += ENTRY_PAGE_SIZE;
-				this._renderContent();
-			};
-			moreWrap.appendChild(moreBtn);
-			container.appendChild(moreWrap);
+		for (const pkg of items) {
+			this._gridEl.appendChild(this._createCard(pkg, installedIds, installedNames));
 		}
 	}
 
-	/**
-	 * 构建单个 skill 卡片（参考 MCP server 卡片样式）。
-	 * - 14px 内边距、8px 圆角、面板边框，hover 高亮
-	 * - 头部：emoji icon + 名称 + 安装/已安装按钮
-	 * - 主体：2 行描述
-	 * - 页脚：tag/category badge
-	 */
-	private _buildEntryCard(entry: ISkillHubEntry, hubId: string): HTMLElement {
-		const isInstalled = entry.installed ?? this.skillInstallService.isInstalled(entry.id);
-		const isInstalling = this._installingIds.has(entry.id);
+	private _createCard(pkg: IMarketplacePackage, installedIds: Set<string>, installedNames: Set<string>): HTMLElement {
+		// Match by id, slug, or name (case-insensitive) to handle ID mismatch
+		const isInstalled = installedIds.has(pkg.slug) || installedIds.has(pkg.id) || installedNames.has(pkg.name.toLowerCase());
+		const isInstalling = this._installingSlugs.has(pkg.slug);
 
-		const card = $('div.skill-market-entry-card');
-		card.style.padding = '14px 16px';
+		const card = $('div.sm-card');
+		card.style.background = 'var(--vscode-sideBar-background, #252526)';
 		card.style.border = '1px solid var(--vscode-panel-border)';
 		card.style.borderRadius = '8px';
-		card.style.transition = 'border-color 0.15s, background 0.15s';
+		card.style.padding = '14px';
+		card.style.cursor = 'pointer';
+		card.style.transition = 'all 0.15s';
 		card.style.display = 'flex';
 		card.style.flexDirection = 'column';
-		card.style.gap = '8px';
+		card.style.gap = '10px';
 
 		card.onmouseenter = () => {
-			card.style.borderColor = 'var(--vscode-focusBorder)';
 			card.style.background = 'var(--vscode-list-hoverBackground)';
+			card.style.borderColor = 'var(--vscode-button-background)';
 		};
 		card.onmouseleave = () => {
+			card.style.background = 'var(--vscode-sideBar-background, #252526)';
 			card.style.borderColor = 'var(--vscode-panel-border)';
-			card.style.background = '';
 		};
 
-		// Header: icon + name + action button
-		const header = $('div');
-		header.style.display = 'flex';
-		header.style.alignItems = 'center';
-		header.style.gap = '8px';
+		// Click card → open ResourceManagerEditorPane
+		card.onclick = () => this._openInResourceManager(pkg);
 
-		const iconBox = $('div');
-		iconBox.style.width = '28px';
-		iconBox.style.height = '28px';
-		iconBox.style.flexShrink = '0';
-		iconBox.style.borderRadius = '6px';
-		iconBox.style.display = 'flex';
-		iconBox.style.alignItems = 'center';
-		iconBox.style.justifyContent = 'center';
-		iconBox.style.overflow = 'hidden';
-		iconBox.style.fontSize = '16px';
-		iconBox.style.background = 'var(--vscode-input-background)';
-		if (entry.icon && /^https?:\/\//.test(entry.icon)) {
-			const img = $('img') as HTMLImageElement;
-			img.src = entry.icon;
-			img.style.width = '100%';
-			img.style.height = '100%';
-			img.style.objectFit = 'cover';
-			img.onerror = () => { iconBox.textContent = skillIconForCategory(entry.category); };
-			iconBox.appendChild(img);
-		} else if (entry.icon) {
-			iconBox.textContent = entry.icon;
-		} else {
-			iconBox.textContent = skillIconForCategory(entry.category);
-		}
-		header.appendChild(iconBox);
+		// ── Top: icon + name + meta ─────────────────────────────────
+		const top = $('div');
+		top.style.display = 'flex';
+		top.style.alignItems = 'flex-start';
+		top.style.gap = '10px';
 
-		const nameWrap = $('div');
-		nameWrap.style.flex = '1';
-		nameWrap.style.minWidth = '0';
-		const cardName = $('div');
-		cardName.textContent = entry.name;
-		cardName.title = entry.name;
-		cardName.style.fontSize = '13px';
-		cardName.style.fontWeight = '600';
-		cardName.style.whiteSpace = 'nowrap';
-		cardName.style.overflow = 'hidden';
-		cardName.style.textOverflow = 'ellipsis';
-		nameWrap.appendChild(cardName);
+		const icon = $('div');
+		icon.style.width = '36px';
+		icon.style.height = '36px';
+		icon.style.borderRadius = '8px';
+		icon.style.display = 'flex';
+		icon.style.alignItems = 'center';
+		icon.style.justifyContent = 'center';
+		icon.style.fontSize = '18px';
+		icon.style.flexShrink = '0';
+		icon.style.background = 'linear-gradient(135deg,#9b59b6,#8e44ad)';
+		icon.textContent = pkg.icon || '\u{1F4A1}';
+		top.appendChild(icon);
 
-		// Subtitle: author / version / downloads
-		const subParts: string[] = [];
-		if (entry.author) {
-			subParts.push(`@${entry.author}`);
-		}
-		if (entry.version) {
-			subParts.push(`v${entry.version}`);
-		}
-		if (typeof entry.downloadCount === 'number' && entry.downloadCount > 0) {
-			subParts.push(`\u2B07 ${this._formatCount(entry.downloadCount)}`);
-		}
-		if (subParts.length > 0) {
-			const subtitle = $('div');
-			subtitle.textContent = subParts.join('  ·  ');
-			subtitle.style.fontSize = '11px';
-			subtitle.style.color = 'var(--vscode-descriptionForeground)';
-			subtitle.style.whiteSpace = 'nowrap';
-			subtitle.style.overflow = 'hidden';
-			subtitle.style.textOverflow = 'ellipsis';
-			subtitle.style.marginTop = '2px';
-			nameWrap.appendChild(subtitle);
-		}
-		header.appendChild(nameWrap);
+		const info = $('div');
+		info.style.flex = '1';
+		info.style.minWidth = '0';
 
-		// Action / status
+		const name = $('div');
+		name.textContent = pkg.name;
+		name.style.fontSize = '13px';
+		name.style.fontWeight = '600';
+		name.style.color = 'var(--vscode-foreground)';
+		name.style.whiteSpace = 'nowrap';
+		name.style.overflow = 'hidden';
+		name.style.textOverflow = 'ellipsis';
+		info.appendChild(name);
+
+		const meta = $('div');
+		meta.style.display = 'flex';
+		meta.style.alignItems = 'center';
+		meta.style.gap = '8px';
+		meta.style.marginTop = '3px';
+
+		if (pkg.latestVersion) {
+			const ver = $('span');
+			ver.textContent = `v${pkg.latestVersion}`;
+			ver.style.fontSize = '11px';
+			ver.style.color = 'var(--vscode-textLink-foreground)';
+			meta.appendChild(ver);
+		}
+		if (typeof pkg.downloads === 'number' && pkg.downloads > 0) {
+			const dl = $('span');
+			dl.textContent = `\u2B07 ${this._formatCount(pkg.downloads)}`;
+			dl.style.fontSize = '11px';
+			dl.style.color = 'var(--vscode-descriptionForeground)';
+			meta.appendChild(dl);
+		}
+		info.appendChild(meta);
+		top.appendChild(info);
+		card.appendChild(top);
+
+		// ── Description ─────────────────────────────────────────────
+		const desc = $('div');
+		desc.textContent = pkg.description || '(暂无描述)';
+		desc.style.fontSize = '12px';
+		desc.style.color = 'var(--vscode-descriptionForeground)';
+		desc.style.lineHeight = '1.5';
+		desc.style.display = '-webkit-box';
+		desc.style.webkitLineClamp = '2';
+		(desc.style as any).webkitBoxOrient = 'vertical';
+		desc.style.overflow = 'hidden';
+		desc.style.minHeight = '36px';
+		card.appendChild(desc);
+
+		// ── Footer: tags + action ───────────────────────────────────
+		const footer = $('div');
+		footer.style.display = 'flex';
+		footer.style.alignItems = 'center';
+		footer.style.justifyContent = 'space-between';
+		footer.style.marginTop = 'auto';
+
+		const tagsEl = $('div');
+		tagsEl.style.display = 'flex';
+		tagsEl.style.gap = '4px';
+		tagsEl.style.flexWrap = 'wrap';
+
+		const tagList = (pkg.tags ?? []).slice(0, 3);
+		if (pkg.category && !tagList.includes(pkg.category)) {
+			tagList.unshift(pkg.category);
+		}
+		for (const tag of tagList) {
+			const badge = $('span');
+			badge.textContent = tag;
+			badge.style.fontSize = '10px';
+			badge.style.padding = '1px 8px';
+			badge.style.borderRadius = '10px';
+			badge.style.background = 'rgba(56,139,253,0.1)';
+			badge.style.color = 'var(--vscode-textLink-foreground)';
+			tagsEl.appendChild(badge);
+		}
+		footer.appendChild(tagsEl);
+
+		// Action button
 		if (isInstalled) {
-			const installedBadge = $('span');
-			installedBadge.textContent = '\u2713 Installed';
-			installedBadge.style.fontSize = '11px';
-			installedBadge.style.padding = '4px 10px';
-			installedBadge.style.borderRadius = '4px';
-			installedBadge.style.background = 'rgba(137, 209, 133, 0.15)';
-			installedBadge.style.color = 'var(--vscode-testing-iconPassed, #89d185)';
-			installedBadge.style.fontWeight = '500';
-			installedBadge.style.flexShrink = '0';
-			header.appendChild(installedBadge);
+			// Show delete button for installed skills
+			const deleteBtn = $('button') as HTMLButtonElement;
+			deleteBtn.textContent = '\u2715 删除';
+			deleteBtn.style.fontSize = '11px';
+			deleteBtn.style.padding = '3px 10px';
+			deleteBtn.style.background = 'rgba(248,81,73,0.12)';
+			deleteBtn.style.color = '#f85149';
+			deleteBtn.style.border = '1px solid rgba(248,81,73,0.3)';
+			deleteBtn.style.borderRadius = '4px';
+			deleteBtn.style.cursor = 'pointer';
+			deleteBtn.style.whiteSpace = 'nowrap';
+			deleteBtn.onclick = async (e) => {
+				e.stopPropagation();
+				await this._uninstallPackage(pkg);
+			};
+			footer.appendChild(deleteBtn);
 		} else if (isInstalling) {
 			const loadingBadge = $('span');
 			loadingBadge.textContent = '\u23F3 安装中';
 			loadingBadge.style.fontSize = '11px';
-			loadingBadge.style.padding = '4px 10px';
+			loadingBadge.style.padding = '3px 10px';
 			loadingBadge.style.borderRadius = '4px';
-			loadingBadge.style.background = 'rgba(0, 127, 212, 0.15)';
-			loadingBadge.style.color = 'var(--vscode-focusBorder, #007fd4)';
-			loadingBadge.style.fontWeight = '500';
-			loadingBadge.style.flexShrink = '0';
-			header.appendChild(loadingBadge);
+			loadingBadge.style.background = 'rgba(14,99,156,0.15)';
+			loadingBadge.style.color = 'var(--vscode-button-background)';
+			footer.appendChild(loadingBadge);
 		} else {
 			const installBtn = $('button') as HTMLButtonElement;
 			installBtn.textContent = '\u2B07 安装';
 			installBtn.style.fontSize = '11px';
-			installBtn.style.padding = '4px 10px';
-			installBtn.style.flexShrink = '0';
+			installBtn.style.padding = '3px 10px';
 			installBtn.style.background = 'var(--vscode-button-background)';
 			installBtn.style.color = 'var(--vscode-button-foreground)';
 			installBtn.style.border = 'none';
 			installBtn.style.borderRadius = '4px';
 			installBtn.style.cursor = 'pointer';
+			installBtn.style.whiteSpace = 'nowrap';
 			installBtn.onclick = async (e) => {
 				e.stopPropagation();
-				if (this._installingIds.has(entry.id)) { return; }
-				this._installingIds.add(entry.id);
-				this._renderContent();
-
-				const result = await this.skillInstallService.installFromHub(hubId, entry.id);
-				this._installingIds.delete(entry.id);
-
-				if (result.success) {
-					(entry as any).installed = true;
-					this._renderContent();
-				} else {
-					this._renderContent();
-					await this.dialogService.info(
-						`Failed to install "${entry.name}": ${result.error ?? 'Unknown error'}`,
-						'Installation Failed'
-					);
-				}
+				await this._installPackage(pkg);
 			};
-			header.appendChild(installBtn);
-		}
-		card.appendChild(header);
-
-		// Description
-		const desc = $('p');
-		desc.textContent = entry.description || '(暂无描述)';
-		desc.style.margin = '0';
-		desc.style.fontSize = '12px';
-		desc.style.color = 'var(--vscode-descriptionForeground)';
-		desc.style.lineHeight = '1.4';
-		desc.style.display = '-webkit-box';
-		desc.style.webkitLineClamp = '2';
-		(desc.style as any).webkitBoxOrient = 'vertical';
-		desc.style.overflow = 'hidden';
-		card.appendChild(desc);
-
-		// Footer: category + tags
-		const footer = $('div');
-		footer.style.display = 'flex';
-		footer.style.flexWrap = 'wrap';
-		footer.style.gap = '4px';
-		footer.style.alignItems = 'center';
-
-		const tagSet = new Set<string>();
-		if (entry.category) {
-			tagSet.add(entry.category);
-		}
-		for (const t of (entry.tags ?? [])) {
-			if (t) { tagSet.add(t); }
-		}
-		const tagList = Array.from(tagSet).slice(0, 4);
-
-		if (tagList.length === 0 && entry.activation) {
-			tagList.push(entry.activation);
-		}
-
-		for (let i = 0; i < tagList.length; i++) {
-			const tag = tagList[i];
-			const badge = $('span');
-			badge.textContent = tag;
-			badge.style.fontSize = '10px';
-			badge.style.padding = '2px 6px';
-			badge.style.borderRadius = '8px';
-			if (i === 0) {
-				badge.style.background = 'var(--vscode-badge-background)';
-				badge.style.color = 'var(--vscode-badge-foreground)';
-			} else {
-				badge.style.background = 'var(--vscode-input-background)';
-				badge.style.color = 'var(--vscode-descriptionForeground)';
-			}
-			footer.appendChild(badge);
+			footer.appendChild(installBtn);
 		}
 
 		card.appendChild(footer);
-
 		return card;
 	}
 
-	private _formatCount(n: number): string {
-		if (n >= 10000) {
-			return `${(n / 10000).toFixed(1).replace(/\.0$/, '')}w`;
+	// ══════════════════════════════════════════════════════════════════════════
+	//  ACTIONS
+	// ══════════════════════════════════════════════════════════════════════════
+
+	/** Open the skill detail in a separate ResourceManagerEditorPane */
+	private async _openInResourceManager(pkg: IMarketplacePackage): Promise<void> {
+		const input = ResourceManagerEditorInput.getInstance();
+		const pane = await this.editorService.openEditor(input, { pinned: true });
+		const control = pane?.getControl();
+		if (control instanceof ResourceManagerEditorPane) {
+			control.showMarketplacePackage(pkg);
 		}
-		if (n >= 1000) {
-			return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
-		}
-		return String(n);
 	}
 
-	// ── Local File Install Section ─────────────────────────────────
+	/** Install a marketplace skill package */
+	private async _installPackage(pkg: IMarketplacePackage): Promise<void> {
+		if (this._installingSlugs.has(pkg.slug)) { return; }
+		this._installingSlugs.add(pkg.slug);
+		this._renderGrid();
 
-	private _renderLocalInstallSection(container: HTMLElement): void {
-		const section = $('div.skill-market-section');
-		const title = $('h3.skill-market-section-title');
-		title.textContent = '\u{1F4C1} Install from Local File';
-		title.style.margin = '0 0 8px 0';
-		title.style.fontSize = '14px';
-		title.style.fontWeight = '600';
-		section.appendChild(title);
+		try {
+			const result = await this.marketplaceService.download(pkg.slug, pkg.latestVersion ?? '', 'skill');
+			await this.skillRegistry.reload();
+			this.notificationService.info(`\u2705 ${pkg.name} v${result.version} 安装成功`);
+		} catch (err) {
+			this.notificationService.error(`安装失败: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			this._installingSlugs.delete(pkg.slug);
+			this._renderGrid();
+		}
+	}
 
-		const desc = $('p');
-		desc.textContent = 'Import a SKILL.md file from your computer';
-		desc.style.color = 'var(--vscode-descriptionForeground)';
-		desc.style.fontSize = '12px';
-		desc.style.margin = '0 0 10px 0';
-		section.appendChild(desc);
+	/** Uninstall a skill package */
+	private async _uninstallPackage(pkg: IMarketplacePackage): Promise<void> {
+		// Find the installed skill by slug, id, or name
+		const skills = this.skillRegistry.getSkills();
+		const skill = skills.find(s => s.id === pkg.slug || s.id === pkg.id || s.name.toLowerCase() === pkg.name.toLowerCase());
+		if (!skill) {
+			this.notificationService.warn(`未找到已安装的技能: ${pkg.name}`);
+			return;
+		}
 
-		const actions = $('div');
-		actions.style.display = 'flex';
-		actions.style.gap = '8px';
+		const confirmed = await this.dialogService.confirm({
+			message: `确定要卸载技能 "${pkg.name}" 吗？`,
+			primaryButton: '卸载',
+			cancelButton: '取消',
+		});
+		if (!confirmed.confirmed) { return; }
 
+		try {
+			const success = await this.skillInstallService.uninstallSkill(skill.id);
+			if (!success) {
+				this.notificationService.error(`卸载失败：无法卸载技能 "${pkg.name}"（可能不支持该来源的技能卸载）`);
+				return;
+			}
+			await this.skillRegistry.reload();
+			this.notificationService.info(`\u2705 ${pkg.name} 已卸载`);
+			this._renderGrid();
+		} catch (err) {
+			this.notificationService.error(`卸载失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	//  INSTALL DIALOGS
+	// ══════════════════════════════════════════════════════════════════════════
+
+	private _showLocalInstallDialog(): void {
 		const fileInput = $('input') as HTMLInputElement;
 		fileInput.type = 'file';
 		fileInput.accept = '.md,.markdown';
@@ -898,267 +572,211 @@ export class SkillMarketEditorPane extends EditorPane {
 			const result = await this.skillInstallService.installFromContent(text);
 			if (result.success) {
 				void this.skillRegistry.reload();
-				this._renderContent();
+				this._renderGrid();
 			} else {
 				await this.dialogService.info(
-					`Failed to install skill: ${result.error ?? 'Unknown error'}`,
-					'Installation Failed'
+					`安装失败: ${result.error ?? '未知错误'}`,
+					'安装失败'
 				);
 			}
 		};
-		actions.appendChild(fileInput);
-
-		const browseBtn = $('button') as HTMLButtonElement;
-		browseBtn.textContent = '\u{1F4C1} Browse SKILL.md';
-		browseBtn.style.padding = '8px 16px';
-		browseBtn.style.fontSize = '13px';
-		browseBtn.style.background = 'var(--vscode-button-background)';
-		browseBtn.style.color = 'var(--vscode-button-foreground)';
-		browseBtn.style.border = 'none';
-		browseBtn.style.borderRadius = '4px';
-		browseBtn.style.cursor = 'pointer';
-		browseBtn.onclick = () => fileInput.click();
-		actions.appendChild(browseBtn);
-
-		const pasteBtn = $('button') as HTMLButtonElement;
-		pasteBtn.textContent = '\u{1F4CB} Paste Content';
-		pasteBtn.style.padding = '8px 16px';
-		pasteBtn.style.fontSize = '13px';
-		pasteBtn.style.background = 'var(--vscode-button-secondaryBackground)';
-		pasteBtn.style.color = 'var(--vscode-button-secondaryForeground)';
-		pasteBtn.style.border = 'none';
-		pasteBtn.style.borderRadius = '4px';
-		pasteBtn.style.cursor = 'pointer';
-		pasteBtn.onclick = () => this._showPasteDialog();
-		actions.appendChild(pasteBtn);
-
-		section.appendChild(actions);
-		container.appendChild(section);
+		this._container.appendChild(fileInput);
+		fileInput.click();
+		fileInput.remove();
 	}
 
-	// ── URL Install Section ────────────────────────────────────────
-
-	private _renderUrlInstallSection(container: HTMLElement): void {
-		const section = $('div.skill-market-section');
-		const title = $('h3.skill-market-section-title');
-		title.textContent = '\u{1F310} Install from URL';
-		title.style.margin = '0 0 8px 0';
-		title.style.fontSize = '14px';
-		title.style.fontWeight = '600';
-		section.appendChild(title);
-
-		const desc = $('p');
-		desc.textContent = 'Install from a direct SKILL.md URL (GitHub raw, Gist, etc.)';
-		desc.style.color = 'var(--vscode-descriptionForeground)';
-		desc.style.fontSize = '12px';
-		desc.style.margin = '0 0 10px 0';
-		section.appendChild(desc);
-
-		const urlRow = $('div');
-		urlRow.style.display = 'flex';
-		urlRow.style.gap = '8px';
-
-		const urlInput = $('input') as HTMLInputElement;
-		urlInput.type = 'text';
-		urlInput.placeholder = 'https://raw.githubusercontent.com/.../SKILL.md';
-		urlInput.style.flex = '1';
-		urlInput.style.padding = '8px 10px';
-		urlInput.style.fontSize = '13px';
-		urlInput.style.border = '1px solid var(--vscode-input-border)';
-		urlInput.style.borderRadius = '4px';
-		urlInput.style.background = 'var(--vscode-input-background)';
-		urlInput.style.color = 'var(--vscode-input-foreground)';
-		urlInput.style.outline = 'none';
-		urlRow.appendChild(urlInput);
-
-		const urlBtn = $('button') as HTMLButtonElement;
-		urlBtn.textContent = 'Install';
-		urlBtn.style.padding = '8px 16px';
-		urlBtn.style.fontSize = '13px';
-		urlBtn.style.background = 'var(--vscode-button-background)';
-		urlBtn.style.color = 'var(--vscode-button-foreground)';
-		urlBtn.style.border = 'none';
-		urlBtn.style.borderRadius = '4px';
-		urlBtn.style.cursor = 'pointer';
-		urlBtn.style.flexShrink = '0';
-		urlBtn.onclick = async () => {
-			const url = urlInput.value.trim();
-			if (!url) { return; }
-			urlBtn.textContent = 'Installing...';
-			urlBtn.disabled = true;
-			try {
-				const content = await this._fetchUrlContent(url);
-				if (!content) { throw new Error('Failed to download content'); }
-				const result = await this.skillInstallService.installFromContent(content);
-				if (result.success) {
-					void this.skillRegistry.reload();
-					this._renderContent();
-					urlInput.value = '';
-				} else {
-					await this.dialogService.info(
-						`Failed to install: ${result.error ?? 'Unknown error'}`,
-						'Installation Failed'
-					);
-				}
-			} catch (err) {
-				await this.dialogService.info(
-					`Error: ${err instanceof Error ? err.message : String(err)}`,
-					'Installation Failed'
-				);
-			} finally {
-				urlBtn.textContent = 'Install';
-				urlBtn.disabled = false;
-			}
-		};
-		urlRow.appendChild(urlBtn);
-
-		section.appendChild(urlRow);
-		container.appendChild(section);
-	}
-
-	// ── Paste Dialog ────────────────────────────────────────────────
-
-	private _showPasteDialog(): void {
-		const existing = this._container.querySelector('.skill-market-overlay');
-		if (existing) { existing.remove(); return; }
-
-		const overlay = $('div.skill-market-overlay');
+	private _showUrlInstallDialog(): void {
+		const overlay = $('div');
 		overlay.style.position = 'absolute';
-		overlay.style.top = '0';
-		overlay.style.left = '0';
-		overlay.style.right = '0';
-		overlay.style.bottom = '0';
-		overlay.style.background = 'rgba(0, 0, 0, 0.5)';
+		overlay.style.inset = '0';
+		overlay.style.background = 'rgba(0,0,0,0.5)';
 		overlay.style.display = 'flex';
 		overlay.style.alignItems = 'center';
 		overlay.style.justifyContent = 'center';
 		overlay.style.zIndex = '1000';
-		overlay.onclick = (e) => {
-			if (e.target === overlay) { overlay.remove(); }
-		};
+		overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); } };
 
-		const dialog = $('div.skill-market-dialog');
+		const dialog = $('div');
 		dialog.style.background = 'var(--vscode-editor-background)';
 		dialog.style.border = '1px solid var(--vscode-panel-border)';
 		dialog.style.borderRadius = '8px';
-		dialog.style.width = '500px';
-		dialog.style.display = 'flex';
-		dialog.style.flexDirection = 'column';
-		dialog.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.35)';
+		dialog.style.width = '460px';
+		dialog.style.maxWidth = '90vw';
+		dialog.style.boxShadow = '0 8px 32px rgba(0,0,0,0.4)';
 		dialog.onclick = (e) => e.stopPropagation();
 
-		const dHeader = $('div');
-		dHeader.style.display = 'flex';
-		dHeader.style.alignItems = 'center';
-		dHeader.style.justifyContent = 'space-between';
-		dHeader.style.padding = '16px 20px 12px';
+		// Header
+		const head = $('div');
+		head.style.display = 'flex';
+		head.style.alignItems = 'center';
+		head.style.justifyContent = 'space-between';
+		head.style.padding = '14px 18px';
+		head.style.borderBottom = '1px solid var(--vscode-panel-border)';
 
-		const dTitle = $('h3');
-		dTitle.textContent = 'Paste SKILL.md Content';
-		dTitle.style.margin = '0';
-		dTitle.style.fontSize = '16px';
-		dTitle.style.fontWeight = '600';
-		dHeader.appendChild(dTitle);
+		const title = $('span');
+		title.textContent = '\u{1F517} 从 URL 安装';
+		title.style.fontSize = '14px';
+		title.style.fontWeight = '600';
+		head.appendChild(title);
 
-		const dClose = $('button') as HTMLButtonElement;
-		dClose.textContent = '\u2715';
-		dClose.style.padding = '4px 8px';
-		dClose.style.background = 'transparent';
-		dClose.style.color = 'var(--vscode-descriptionForeground)';
-		dClose.style.border = 'none';
-		dClose.style.borderRadius = '4px';
-		dClose.style.cursor = 'pointer';
-		dClose.style.fontSize = '14px';
-		dClose.onclick = () => overlay.remove();
-		dHeader.appendChild(dClose);
+		const closeBtn = $('button') as HTMLButtonElement;
+		closeBtn.textContent = '\u2715';
+		closeBtn.style.background = 'none';
+		closeBtn.style.border = 'none';
+		closeBtn.style.color = 'var(--vscode-descriptionForeground)';
+		closeBtn.style.cursor = 'pointer';
+		closeBtn.style.fontSize = '16px';
+		closeBtn.onclick = () => overlay.remove();
+		head.appendChild(closeBtn);
+		dialog.appendChild(head);
 
-		dialog.appendChild(dHeader);
+		// Body
+		const body = $('div');
+		body.style.padding = '18px';
 
-		const dBody = $('div');
-		dBody.style.padding = '8px 20px 16px';
+		const urlInput = $('input') as HTMLInputElement;
+		urlInput.type = 'text';
+		urlInput.placeholder = 'https://raw.githubusercontent.com/.../SKILL.md';
+		urlInput.style.width = '100%';
+		urlInput.style.padding = '6px 10px';
+		urlInput.style.background = 'var(--vscode-input-background)';
+		urlInput.style.border = '1px solid var(--vscode-input-border)';
+		urlInput.style.borderRadius = '4px';
+		urlInput.style.color = 'var(--vscode-input-foreground)';
+		urlInput.style.fontSize = '12px';
+		urlInput.style.outline = 'none';
+		urlInput.style.boxSizing = 'border-box';
+		body.appendChild(urlInput);
 
-		const textarea = $('textarea') as HTMLTextAreaElement;
-		textarea.placeholder = 'Paste the SKILL.md content here...\n\n---\nname: my-skill\ndescription: ...\n---\nSkill body...';
-		textarea.style.width = '100%';
-		textarea.style.height = '200px';
-		textarea.style.padding = '10px';
-		textarea.style.fontSize = '12px';
-		textarea.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-		textarea.style.border = '1px solid var(--vscode-input-border)';
-		textarea.style.borderRadius = '4px';
-		textarea.style.background = 'var(--vscode-input-background)';
-		textarea.style.color = 'var(--vscode-input-foreground)';
-		textarea.style.resize = 'vertical';
-		textarea.style.outline = 'none';
-		textarea.style.boxSizing = 'border-box';
-		dBody.appendChild(textarea);
+		const hint = $('div');
+		hint.textContent = '支持 SKILL.md 文件 URL 或 Zip 包下载链接';
+		hint.style.fontSize = '11px';
+		hint.style.color = 'var(--vscode-descriptionForeground)';
+		hint.style.marginTop = '8px';
+		body.appendChild(hint);
 
-		dialog.appendChild(dBody);
+		// Third-party skill hub links
+		const hubSection = $('div');
+		hubSection.style.marginTop = '14px';
+		hubSection.style.paddingTop = '12px';
+		hubSection.style.borderTop = '1px solid var(--vscode-panel-border)';
 
-		const dFooter = $('div');
-		dFooter.style.display = 'flex';
-		dFooter.style.justifyContent = 'flex-end';
-		dFooter.style.gap = '8px';
-		dFooter.style.padding = '12px 20px';
-		dFooter.style.borderTop = '1px solid var(--vscode-panel-border)';
+		const hubLabel = $('div');
+		hubLabel.textContent = '\u{1F310} 第三方 Skill Hub：';
+		hubLabel.style.fontSize = '11px';
+		hubLabel.style.color = 'var(--vscode-descriptionForeground)';
+		hubLabel.style.marginBottom = '6px';
+		hubSection.appendChild(hubLabel);
+
+		const hubLinks = $('div');
+		hubLinks.style.display = 'flex';
+		hubLinks.style.flexWrap = 'wrap';
+		hubLinks.style.gap = '6px';
+
+		const hubs = [
+			{ name: 'Knot Skills', url: 'https://knot.woa.com/skills' },
+			{ name: 'GitHub', url: 'https://github.com/topics/skill-md' },
+			{ name: 'Anthropic Skills', url: 'https://github.com/anthropics/anthropic-cookbook/tree/main/skills' },
+		];
+
+		for (const hub of hubs) {
+			const link = $('a') as HTMLAnchorElement;
+			link.textContent = hub.name;
+			link.href = hub.url;
+			link.style.fontSize = '11px';
+			link.style.padding = '2px 10px';
+			link.style.borderRadius = '10px';
+			link.style.background = 'rgba(56,139,253,0.1)';
+			link.style.color = 'var(--vscode-textLink-foreground)';
+			link.style.textDecoration = 'none';
+			link.style.cursor = 'pointer';
+			link.style.whiteSpace = 'nowrap';
+			link.onclick = (e) => {
+				e.preventDefault();
+				urlInput.value = hub.url;
+				urlInput.focus();
+			};
+			hubLinks.appendChild(link);
+		}
+		hubSection.appendChild(hubLinks);
+
+		const hubHint = $('div');
+		hubHint.textContent = '点击链接填充 URL，或在外部浏览器中打开浏览可用的技能';
+		hubHint.style.fontSize = '10px';
+		hubHint.style.color = 'var(--vscode-descriptionForeground)';
+		hubHint.style.marginTop = '6px';
+		hubHint.style.opacity = '0.7';
+		hubSection.appendChild(hubHint);
+
+		body.appendChild(hubSection);
+		dialog.appendChild(body);
+
+		// Actions
+		const actions = $('div');
+		actions.style.display = 'flex';
+		actions.style.gap = '10px';
+		actions.style.justifyContent = 'flex-end';
+		actions.style.padding = '0 18px 18px';
 
 		const cancelBtn = $('button') as HTMLButtonElement;
-		cancelBtn.textContent = 'Cancel';
-		cancelBtn.style.padding = '8px 16px';
-		cancelBtn.style.fontSize = '13px';
+		cancelBtn.textContent = '取消';
+		cancelBtn.style.padding = '6px 14px';
+		cancelBtn.style.fontSize = '12px';
 		cancelBtn.style.background = 'var(--vscode-button-secondaryBackground)';
 		cancelBtn.style.color = 'var(--vscode-button-secondaryForeground)';
-		cancelBtn.style.border = 'none';
+		cancelBtn.style.border = '1px solid var(--vscode-panel-border)';
 		cancelBtn.style.borderRadius = '4px';
 		cancelBtn.style.cursor = 'pointer';
 		cancelBtn.onclick = () => overlay.remove();
-		dFooter.appendChild(cancelBtn);
+		actions.appendChild(cancelBtn);
 
 		const installBtn = $('button') as HTMLButtonElement;
-		installBtn.textContent = 'Install';
-		installBtn.style.padding = '8px 20px';
-		installBtn.style.fontSize = '13px';
-		installBtn.style.fontWeight = '500';
+		installBtn.textContent = '下载并安装';
+		installBtn.style.padding = '6px 14px';
+		installBtn.style.fontSize = '12px';
 		installBtn.style.background = 'var(--vscode-button-background)';
 		installBtn.style.color = 'var(--vscode-button-foreground)';
 		installBtn.style.border = 'none';
 		installBtn.style.borderRadius = '4px';
 		installBtn.style.cursor = 'pointer';
 		installBtn.onclick = async () => {
-			const content = textarea.value.trim();
-			if (!content) { return; }
-			installBtn.textContent = 'Installing...';
+			const url = urlInput.value.trim();
+			if (!url) { return; }
+			installBtn.textContent = '安装中...';
 			installBtn.disabled = true;
-			const result = await this.skillInstallService.installFromContent(content);
-			if (result.success) {
-				overlay.remove();
-				void this.skillRegistry.reload();
-				this._renderContent();
-			} else {
-				installBtn.textContent = 'Install';
+			try {
+				const response = await fetch(url);
+				if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
+				const content = await response.text();
+				const result = await this.skillInstallService.installFromContent(content);
+				if (result.success) {
+					overlay.remove();
+					void this.skillRegistry.reload();
+					this._renderGrid();
+				} else {
+					throw new Error(result.error ?? '未知错误');
+				}
+			} catch (err) {
+				installBtn.textContent = '下载并安装';
 				installBtn.disabled = false;
-				await this.dialogService.info(
-					`Failed to install: ${result.error ?? 'Unknown error'}`,
-					'Installation Failed'
-				);
+				this.notificationService.error(`安装失败: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		};
-		dFooter.appendChild(installBtn);
+		actions.appendChild(installBtn);
+		dialog.appendChild(actions);
 
-		dialog.appendChild(dFooter);
 		overlay.appendChild(dialog);
 		this._container.appendChild(overlay);
+		urlInput.focus();
 	}
 
-	// ── Helpers ─────────────────────────────────────────────────────
+	// ══════════════════════════════════════════════════════════════════════════
+	//  HELPERS
+	// ══════════════════════════════════════════════════════════════════════════
 
-	private async _fetchUrlContent(url: string): Promise<string | undefined> {
-		try {
-			const response = await fetch(url);
-			if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
-			return await response.text();
-		} catch {
-			return undefined;
-		}
+	private _formatCount(n: number): string {
+		if (n >= 10000) { return `${(n / 10000).toFixed(1).replace(/\.0$/, '')}w`; }
+		if (n >= 1000) { return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`; }
+		return String(n);
 	}
 }

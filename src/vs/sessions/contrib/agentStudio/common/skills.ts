@@ -18,7 +18,7 @@
  *
  * Skill 来源（按优先级合并，重名后注册的覆盖前者）：
  *   1. 内置目录   `extensions/.../skills/*` （随产品发布）
- *   2. 用户全局目录   `~/.saros/skills-library/<id>/SKILL.md`
+ *   2. 用户全局目录   `~/.saros/skills/<id>/SKILL.md`
  *   3. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill
  */
 
@@ -51,8 +51,8 @@ export interface ISkillDefinition {
 	readonly recommendedTools?: readonly string[];
 	/** 注入到对话中的正文（已去除 frontmatter） */
 	readonly prompt: string;
-	/** 来源标记，用于 UI 区分内置 / 用户 / 扩展 / 工作区 */
-	readonly source: 'builtin' | 'user' | 'extension' | 'memory' | 'workspace';
+	/** 来源标记，用于 UI 区分内置 / 用户 / 商城 / 扩展 / 内存 */
+	readonly source: 'builtin' | 'user' | 'marketplace' | 'extension' | 'memory';
 	/** Skill 文件 URI（可选，用于「在编辑器中打开」） */
 	readonly resource?: URI;
 	/**

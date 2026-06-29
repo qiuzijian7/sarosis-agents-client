@@ -31,12 +31,11 @@ export const enum DiscoverySource {
 	CursorWorkspace = 'cursor-workspace',
 }
 
+// VsSarosis: 仅启用 ClaudeDesktop 和 Windsurf 发现源，不扫描 Cursor 配置
 export const allDiscoverySources = Object.keys({
 	[DiscoverySource.ClaudeDesktop]: true,
 	[DiscoverySource.Windsurf]: true,
-	[DiscoverySource.CursorGlobal]: true,
-	[DiscoverySource.CursorWorkspace]: true,
-} satisfies Record<DiscoverySource, true>) as DiscoverySource[];
+} satisfies Partial<Record<DiscoverySource, true>>) as DiscoverySource[];
 
 export const discoverySourceLabel: Record<DiscoverySource, string> = {
 	[DiscoverySource.ClaudeDesktop]: localize('mcp.discovery.source.claude-desktop', "Claude Desktop"),

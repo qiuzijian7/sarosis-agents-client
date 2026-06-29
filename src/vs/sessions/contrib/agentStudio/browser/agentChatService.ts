@@ -1020,6 +1020,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
 
+			// 用户点击 Stop → cancelStream 调用 controller.abort() → for-await break。
+			// 此时 done/error delta 尚未被 stream 发射，UI 不会收到 setSending(false)。
+			// 这里补发 done delta，让 nativeChatEditorPane 的 done handler 清理消息状态。
+			if (controller.signal.aborted) {
+				this.logService.info(`[AgentChatService] Stream aborted by user, emitting done delta for UI cleanup`);
+				onDelta({ type: 'done' } as any);
+			}
+
 			// 诊断日志：for-await 循环已退出，即将进入 finalization。
 			// 如果此日志不出现，说明 generator 的 finally 块阻塞了 for-await 退出。
 			this.logService.info(`[AgentChatService] for-await loop exited, starting finalization`);

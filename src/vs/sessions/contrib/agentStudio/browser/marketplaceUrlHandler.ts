@@ -71,6 +71,7 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 			mcp: 'MCP 服务器',
 			agent: 'Agent',
 			knowledge: '知识库',
+			workflow: '工作流',
 		};
 
 		// Show progress and install

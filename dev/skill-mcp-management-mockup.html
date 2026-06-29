@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Sarosis - 资源管理 (Skills / MCP / Agents)</title>
+<style>
+:root {
+  --bg: #1e1e1e;
+  --bg-card: #252526;
+  --bg-hover: #2a2d2e;
+  --bg-input: #1e1e1e;
+  --border: #3c3c3c;
+  --text: #ccc;
+  --text-muted: #9d9d9d;
+  --primary: #007acc;
+  --primary-hover: #1f8ad2;
+  --success: #4ec9b0;
+  --error: #f48771;
+  --warning: #dcdcaa;
+  --blue: #569cd6;
+  --purple: #c586c0;
+  --orange: #ce9178;
+  --green: #6a9955;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow: 0 2px 8px rgba(0,0,0,.3);
+  --font: 'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --mono: 'Consolas','Monaco',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;height:100vh;overflow:hidden;}
+
+/* === Layout === */
+.app{display:flex;flex-direction:column;height:100vh;}
+.app-header{display:flex;align-items:center;gap:16px;padding:12px 24px;background:var(--bg-card);border-bottom:1px solid var(--border);flex-shrink:0;}
+.app-header h1{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.app-header .logo{font-size:20px;}
+.app-tabs{display:flex;gap:2px;margin-left:20px;}
+.app-tab{padding:6px 16px;border:1px solid transparent;border-radius:var(--radius-sm);cursor:pointer;color:var(--text-muted);font-size:13px;transition:.15s;display:flex;align-items:center;gap:6px;}
+.app-tab:hover{color:var(--text);background:var(--bg-hover);}
+.app-tab.active{background:var(--primary);color:#fff;border-color:var(--primary);}
+.app-tab .count{background:rgba(255,255,255,.2);padding:1px 6px;border-radius:8px;font-size:10px;}
+.app-header .spacer{flex:1;}
+.app-header .btn{padding:5px 14px;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px;transition:.15s;}
+.btn-primary{background:var(--primary);color:#fff;}
+.btn-primary:hover{background:var(--primary-hover);}
+.btn-danger{background:var(--error);color:#fff;}
+.btn-danger:hover{opacity:.85;}
+.btn-success{background:var(--success);color:#1e1e1e;}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text);}
+.btn-outline:hover{border-color:var(--primary);}
+.btn-sm{padding:3px 10px;font-size:11px;}
+
+/* === Toolbar === */
+.toolbar{display:flex;align-items:center;gap:12px;padding:10px 24px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.search-box{flex:1;display:flex;align-items:center;gap:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 12px;max-width:400px;}
+.search-box:focus-within{border-color:var(--primary);}
+.search-box input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:13px;}
+.search-box input::placeholder{color:var(--text-muted);}
+.filter-chips{display:flex;gap:4px;}
+.chip{padding:4px 12px;border:1px solid var(--border);border-radius:14px;font-size:12px;cursor:pointer;color:var(--text-muted);background:var(--bg);transition:.15s;}
+.chip:hover{border-color:var(--primary);color:var(--text);}
+.chip.active{background:var(--primary);color:#fff;border-color:var(--primary);}
+.result-count{font-size:11px;color:var(--text-muted);margin-left:auto;}
+
+/* === Grid === */
+.grid-scroll{flex:1;overflow-y:auto;padding:16px 24px;}
+.grid-scroll::-webkit-scrollbar{width:8px;}
+.grid-scroll::-webkit-scrollbar-track{background:var(--bg);}
+.grid-scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;}
+
+/* === Card === */
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;transition:.15s;cursor:pointer;position:relative;}
+.card:hover{border-color:var(--primary);background:var(--bg-hover);transform:translateY(-1px);}
+.card-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:8px;}
+.card-icon{font-size:24px;flex-shrink:0;width:40px;height:40px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;}
+.card-info{flex:1;min-width:0;}
+.card-name{font-size:14px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.card-ver{font-size:10px;color:var(--blue);font-family:var(--mono);background:rgba(86,156,214,.15);padding:1px 6px;border-radius:3px;}
+.card-author{font-size:11px;color:var(--text-muted);}
+.card-desc{font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.card-footer{display:flex;align-items:center;justify-content:space-between;}
+.card-stats{font-size:10px;color:var(--text-muted);display:flex;gap:10px;}
+.card-actions{display:flex;gap:4px;opacity:0;transition:.15s;}
+.card:hover .card-actions{opacity:1;}
+.card-badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600;position:absolute;top:12px;right:12px;}
+.badge-skill{background:rgba(86,156,214,.2);color:var(--blue);}
+.badge-mcp{background:rgba(206,145,120,.15);color:var(--orange);}
+.badge-agent{background:rgba(78,201,176,.15);color:var(--success);}
+.badge-installed{background:rgba(78,201,176,.15);color:var(--success);}
+.icon-skill{background:rgba(86,156,214,.12);}
+.icon-mcp{background:rgba(206,145,120,.12);}
+.icon-agent{background:rgba(78,201,176,.12);}
+
+/* === Modal === */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:300;align-items:center;justify-content:center;}
+.modal-overlay.show{display:flex;}
+.modal{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);width:680px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow);}
+.modal::-webkit-scrollbar{width:8px;}
+.modal::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-card);z-index:1;}
+.modal-head h2{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.modal-close{cursor:pointer;color:var(--text-muted);font-size:18px;background:none;border:none;padding:4px;}
+.modal-close:hover{color:var(--text);}
+.modal-body{padding:20px;display:flex;flex-direction:column;gap:16px;}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--border);position:sticky;bottom:0;background:var(--bg-card);}
+
+/* === Form === */
+.form-group{display:flex;flex-direction:column;gap:6px;}
+.form-row{display:flex;gap:16px;}
+.form-row .form-group{flex:1;}
+.form-label{font-size:12px;font-weight:500;color:var(--text-muted);}
+.form-label .req{color:var(--error);}
+.form-input,.form-select,.form-textarea{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;color:var(--text);font-size:13px;outline:none;transition:.15s;font-family:var(--font);}
+.form-input:focus,.form-select:focus,.form-textarea:focus{border-color:var(--primary);}
+.form-textarea{min-height:80px;resize:vertical;font-family:var(--mono);font-size:12px;line-height:1.6;}
+.form-hint{font-size:11px;color:var(--text-muted);}
+.form-tag-input{display:flex;flex-wrap:wrap;gap:4px;padding:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);min-height:36px;align-items:center;}
+.form-tag-input:focus-within{border-color:var(--primary);}
+.form-tag-input input{flex:1;min-width:80px;background:none;border:none;outline:none;color:var(--text);font-size:12px;}
+.tag-pill{display:flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(86,156,214,.15);color:var(--blue);border-radius:10px;font-size:11px;}
+.tag-pill .remove{cursor:pointer;opacity:.6;}
+.tag-pill .remove:hover{opacity:1;}
+.form-section{border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;}
+.form-section-title{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;display:flex;align-items:center;gap:6px;}
+
+/* === Config Editor === */
+.config-editor{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;font-family:var(--mono);font-size:12px;color:var(--text);min-height:140px;white-space:pre;overflow:auto;line-height:1.6;outline:none;}
+.config-editor:focus{border-color:var(--primary);}
+
+/* === Agent specific === */
+.agent-models{display:flex;flex-direction:column;gap:6px;}
+.agent-model-row{display:flex;gap:8px;align-items:center;padding:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);}
+.agent-model-row select{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:4px 8px;color:var(--text);font-size:12px;outline:none;}
+.agent-model-row input{width:80px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:4px 8px;color:var(--text);font-size:12px;outline:none;text-align:center;}
+.agent-tool-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.agent-tool-chip{display:flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--border);border-radius:12px;font-size:11px;cursor:pointer;transition:.15s;}
+.agent-tool-chip:hover{border-color:var(--primary);}
+.agent-tool-chip.selected{background:rgba(86,156,214,.15);border-color:var(--blue);color:var(--blue);}
+.agent-persona{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;}
+.agent-persona-item{padding:4px 12px;border:1px solid var(--border);border-radius:4px;font-size:11px;cursor:pointer;transition:.15s;}
+.agent-persona-item:hover{border-color:var(--primary);}
+.agent-persona-item.selected{background:var(--primary);color:#fff;border-color:var(--primary);}
+
+/* === Empty State === */
+.empty{text-align:center;padding:60px 20px;color:var(--text-muted);}
+.empty-icon{font-size:48px;margin-bottom:12px;}
+.empty-text{font-size:14px;margin-bottom:8px;}
+.empty-hint{font-size:12px;}
+
+/* === Toast === */
+.toast{position:fixed;bottom:24px;right:24px;z-index:400;display:flex;flex-direction:column;gap:8px;}
+.toast-item{padding:10px 16px;border-radius:var(--radius-sm);font-size:12px;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow);animation:slideIn .3s ease;}
+.toast-success{background:var(--success);color:#1e1e1e;}
+.toast-error{background:var(--error);color:#fff;}
+.toast-info{background:var(--primary);color:#fff;}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0;}to{transform:translateX(0);opacity:1;}}
+
+/* === Detail Sheet === */
+.sheet-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:200;}
+.sheet-overlay.show{display:block;}
+.sheet{position:fixed;top:0;right:0;bottom:0;width:55%;max-width:700px;background:var(--bg-card);border-left:1px solid var(--border);z-index:201;transform:translateX(100%);transition:transform .3s ease;display:flex;flex-direction:column;}
+.sheet.show{transform:translateX(0);}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.sheet-head h2{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.sheet-body{flex:1;overflow-y:auto;padding:20px;}
+.sheet-body::-webkit-scrollbar{width:8px;}
+.sheet-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+.sheet-section{margin-bottom:20px;}
+.sheet-section-title{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;}
+.sheet-meta{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;margin-bottom:16px;}
+.sheet-meta-item{display:flex;align-items:center;gap:4px;}
+.sheet-meta-item .label{color:var(--text-muted);}
+.sheet-desc{font-size:13px;line-height:1.6;color:var(--text);margin-bottom:16px;}
+.sheet-files{display:flex;flex-direction:column;gap:4px;}
+.sheet-file{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg);border-radius:var(--radius-sm);font-size:12px;}
+.sheet-file .name{display:flex;align-items:center;gap:8px;}
+.sheet-file .size{color:var(--text-muted);font-family:var(--mono);}
+.sheet-config{font-family:var(--mono);font-size:12px;background:var(--bg);padding:12px;border-radius:4px;border:1px solid var(--border);line-height:1.6;overflow-x:auto;}
+
+/* === Confirm Dialog === */
+.confirm-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:350;align-items:center;justify-content:center;}
+.confirm-overlay.show{display:flex;}
+.confirm{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);width:400px;padding:20px;box-shadow:var(--shadow);}
+.confirm h3{font-size:14px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+.confirm p{font-size:12px;color:var(--text-muted);margin-bottom:16px;line-height:1.5;}
+.confirm-actions{display:flex;justify-content:flex-end;gap:8px;}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Header -->
+  <div class="app-header">
+    <h1><span class="logo">🧩</span> Sarosis 资源管理</h1>
+    <div class="app-tabs">
+      <div class="app-tab active" onclick="switchTab('skill')" id="tab-skill">📄 Skills <span class="count" id="count-skill">5</span></div>
+      <div class="app-tab" onclick="switchTab('mcp')" id="tab-mcp">🔌 MCP <span class="count" id="count-mcp">3</span></div>
+      <div class="app-tab" onclick="switchTab('agent')" id="tab-agent">🤖 Agents <span class="count" id="count-agent">4</span></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn btn-outline btn-sm" onclick="showImportModal()">📥 导入</button>
+    <button class="btn btn-primary btn-sm" onclick="showCreateModal()" id="btn-create">➕ 新建</button>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="search-box">
+      <span>🔍</span>
+      <input type="text" placeholder="搜索名称、描述、标签..." oninput="renderGrid()">
+    </div>
+    <div class="filter-chips">
+      <div class="chip active" onclick="setFilter('all', this)">全部</div>
+      <div class="chip" onclick="setFilter('installed', this)">已安装</div>
+      <div class="chip" onclick="setFilter('official', this)">官方</div>
+      <div class="chip" onclick="setFilter('custom', this)">自定义</div>
+    </div>
+    <div class="result-count" id="result-count">5 个资源</div>
+  </div>
+
+  <!-- Grid -->
+  <div class="grid-scroll">
+    <div class="grid" id="card-grid"></div>
+    <div class="empty" id="empty-state" style="display:none;">
+      <div class="empty-icon">📭</div>
+      <div class="empty-text">暂无资源</div>
+      <div class="empty-hint">点击右上角"新建"按钮创建</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create/Edit Modal -->
+<div class="modal-overlay" id="modal-create">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="modal-title">➕ 新建</h2>
+      <button class="modal-close" onclick="closeModal('modal-create')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-sm" onclick="closeModal('modal-create')">取消</button>
+      <button class="btn btn-primary btn-sm" onclick="saveItem()">💾 保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Sheet -->
+<div class="sheet-overlay" id="sheet-overlay" onclick="closeSheet()"></div>
+<div class="sheet" id="detail-sheet">
+  <div class="sheet-head">
+    <h2 id="sheet-title"></h2>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-outline btn-sm" onclick="editFromSheet()">✏️ 编辑</button>
+      <button class="btn btn-danger btn-sm" onclick="askDeleteFromSheet()">🗑️ 删除</button>
+      <button class="modal-close" onclick="closeSheet()">✕</button>
+    </div>
+  </div>
+  <div class="sheet-body" id="sheet-body"></div>
+</div>
+
+<!-- Delete Confirm -->
+<div class="confirm-overlay" id="confirm-delete">
+  <div class="confirm">
+    <h3>🗑️ 确认删除</h3>
+    <p id="confirm-msg">确定要删除此资源吗？</p>
+    <div class="confirm-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeConfirm()">取消</button>
+      <button class="btn btn-danger btn-sm" onclick="confirmDelete()">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Modal -->
+<div class="modal-overlay" id="modal-import">
+  <div class="modal" style="width:480px;">
+    <div class="modal-head">
+      <h2>📥 导入资源</h2>
+      <button class="modal-close" onclick="closeModal('modal-import')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group" style="margin-bottom:16px;">
+        <label class="form-label">导入来源</label>
+        <select class="form-select">
+          <option value="knot">从 Knot URL 导入</option>
+          <option value="zip">从本地 ZIP 导入</option>
+          <option value="json">从 JSON 配置导入</option>
+          <option value="git">从 Git 仓库导入</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:16px;">
+        <label class="form-label">URL / 路径</label>
+        <input type="text" class="form-input" placeholder="https://knot.woa.com/skills/detail/1954">
+      </div>
+      <div class="form-group" style="margin-bottom:16px;">
+        <label class="form-label">资源类型</label>
+        <select class="form-select">
+          <option value="skill">Skill</option>
+          <option value="mcp">MCP Server</option>
+          <option value="agent">Agent</option>
+        </select>
+      </div>
+      <div class="form-hint">导入后自动下载并解压到 ~/.saros/ 对应目录</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-sm" onclick="closeModal('modal-import')">取消</button>
+      <button class="btn btn-primary btn-sm" onclick="closeModal('modal-import');showToast('导入成功','success')">📥 导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast-container"></div>
+
+<script>
+// === Data ===
+let currentTab = 'skill';
+let currentFilter = 'all';
+let editId = null;
+let pendingDeleteId = null;
+
+const skills = [
+  { id:1, name:'devops-pipeline', display:'devops-pipeline(蓝盾流水线)', ver:'1.0.3', author:'yongyiduan', desc:'管理蓝盾流水线的构建操作，包括查询流水线列表、查询构建历史、获取启动参数、查看构建状态、启动构建、取消构建、修改流水线参数。', tags:['运维','安全认证'], installs:5061, installed:true, official:true, files:['SKILL.md','scripts/pipeline_client.py','build-list.md','build-start.md'] },
+  { id:2, name:'iwiki-doc', display:'iWiki文档助手', ver:'2.1.0', author:'josonyang', desc:'基于iwiki官方mcp工具包装，具备iwiki文档的检索、内容查看、编辑功能。', tags:['文档','官方'], installs:11252, installed:true, official:true, files:['SKILL.md'] },
+  { id:3, name:'make-deploy', display:'make-deploy', ver:'1.2.0', author:'yueuezhang', desc:'自动化部署工具，支持多种部署方式和环境管理。', tags:['部署','运维'], installs:13000, installed:false, official:false, files:['SKILL.md'] },
+  { id:4, name:'pptx', display:'PPT生成器', ver:'1.0.0', author:'yunliangxue', desc:'生成专业的PPT演示文稿，支持多种模板和布局。', tags:['办公'], installs:5670, installed:false, official:false, files:['SKILL.md'] },
+  { id:5, name:'custom-skill', display:'自定义技能', ver:'0.1.0', author:'me', desc:'自定义创建的技能示例。', tags:['自定义'], installs:0, installed:false, official:false, files:['SKILL.md'] },
+];
+
+const mcps = [
+  { id:1, name:'iwiki-mcp', display:'iWiki MCP', ver:'1.0.0', author:'josonyang', desc:'iWiki 文档检索和管理 MCP 服务器', tags:['文档','官方'], installs:8000, installed:true, official:true, transport:'stdio', command:'node server.js', config:'{"command":"node","args":["server.js"],"env":{"API_KEY":"xxx"}}' },
+  { id:2, name:'github-mcp', display:'GitHub MCP', ver:'2.0.0', author:'official', desc:'GitHub 仓库管理 MCP 服务器', tags:['开发'], installs:5000, installed:false, official:true, transport:'stdio', command:'npx @anthropic/github-mcp', config:'{"command":"npx","args":["@anthropic/github-mcp"]}' },
+  { id:3, name:'custom-mcp', display:'自定义 MCP', ver:'0.1.0', author:'me', desc:'自定义 MCP 服务器', tags:['自定义'], installs:0, installed:false, official:false, transport:'sse', command:'python server.py', config:'{"url":"http://localhost:3000/sse"}' },
+];
+
+const agents = [
+  { id:1, name:'code-reviewer', display:'代码审查专家', ver:'1.0.0', author:'me', desc:'专注于代码审查的 AI 智能体，能够分析代码质量、识别潜在问题、提供改进建议。', tags:['开发','审查'], installs:320, model:'claude-sonnet-4-20250514', systemPrompt:'你是一个专业的代码审查专家...', tools:['file-read','file-write','terminal','search'], persona:'严谨' },
+  { id:2, name:'doc-writer', display:'文档撰写助手', ver:'1.0.0', author:'me', desc:'帮助撰写技术文档、API 文档、用户手册等。', tags:['文档'], installs:150, model:'gemini-2.5-flash', systemPrompt:'你是一个技术文档撰写专家...', tools:['file-read','search'], persona:'专业' },
+  { id:3, name:'devops-helper', display:'DevOps 助手', ver:'2.1.0', author:'yongyiduan', desc:'协助管理 CI/CD 流水线、部署、监控等 DevOps 任务。', tags:['运维','DevOps'], installs:890, installed:true, official:false, model:'claude-sonnet-4-20250514', systemPrompt:'你是一个 DevOps 专家...', tools:['terminal','file-read','file-write','mcp:devops-pipeline'], persona:'高效' },
+  { id:4, name:'data-analyst', display:'数据分析专家', ver:'1.2.0', author:'official', desc:'进行数据分析、可视化、统计建模。', tags:['数据','分析'], installs:2100, installed:false, official:true, model:'gpt-4o', systemPrompt:'你是一个数据分析专家...', tools:['terminal','file-read','mcp:sqlite'], persona:'严谨' },
+];
+
+const TAB_CONFIG = {
+  skill: { icon:'📄', badge:'badge-skill', iconClass:'icon-skill', label:'Skill', dir:'skills' },
+  mcp:   { icon:'🔌', badge:'badge-mcp',   iconClass:'icon-mcp',   label:'MCP',   dir:'mcp' },
+  agent: { icon:'🤖', badge:'badge-agent', iconClass:'icon-agent', label:'Agent', dir:'agents' },
+};
+
+function getData() { return currentTab==='skill'?skills : currentTab==='mcp'?mcps : agents; }
+function getCfg() { return TAB_CONFIG[currentTab]; }
+
+// === Render Grid ===
+function renderGrid() {
+  const grid = document.getElementById('card-grid');
+  grid.innerHTML = '';
+  let items = getData();
+  const cfg = getCfg();
+  
+  // filter
+  if (currentFilter==='installed') items = items.filter(i=>i.installed);
+  else if (currentFilter==='official') items = items.filter(i=>i.official);
+  else if (currentFilter==='custom') items = items.filter(i=>!i.official);
+  
+  // search
+  const q = (document.querySelector('.search-box input')?.value || '').toLowerCase();
+  if (q) items = items.filter(i => 
+    (i.name||'').toLowerCase().includes(q) || 
+    (i.desc||'').toLowerCase().includes(q) || 
+    (i.tags||[]).some(t=>t.toLowerCase().includes(q))
+  );
+  
+  document.getElementById('result-count').textContent = `${items.length} 个${cfg.label}`;
+  document.getElementById('empty-state').style.display = items.length===0 ? 'block' : 'none';
+  
+  for (const item of items) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.onclick = () => openDetail(item);
+    
+    let extraInfo = '';
+    if (currentTab==='agent') {
+      extraInfo = `<span>🧠 ${item.model || 'default'}</span>`;
+    } else if (currentTab==='mcp') {
+      extraInfo = `<span>🚀 ${item.transport || 'stdio'}</span>`;
+    }
+    
+    card.innerHTML = `
+      ${item.installed ? '<div class="card-badge badge-installed">已安装</div>' : ''}
+      <div class="card-head">
+        <div class="card-icon ${cfg.iconClass}">${cfg.icon}</div>
+        <div class="card-info">
+          <div class="card-name">${item.display || item.name} <span class="card-ver">v${item.ver}</span></div>
+          <div class="card-author">👤 ${item.author}</div>
+        </div>
+      </div>
+      <div class="card-desc">${item.desc || '无描述'}</div>
+      <div class="card-footer">
+        <div class="card-stats">
+          <span>📥 ${(item.installs||0).toLocaleString()}</span>
+          ${extraInfo}
+          ${(item.tags||[]).slice(0,2).map(t=>`<span>🏷️ ${t}</span>`).join('')}
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();editItem(${item.id})">✏️</button>
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();askDelete(${item.id})">🗑️</button>
+        </div>
+      </div>`;
+    grid.appendChild(card);
+  }
+}
+
+// === Tab Switch ===
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.app-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+tab).classList.add('active');
+  document.getElementById('btn-create').textContent = `➕ 新建${TAB_CONFIG[tab].label}`;
+  // reset filter
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+  document.querySelector('.chip').classList.add('active');
+  currentFilter = 'all';
+  renderGrid();
+}
+
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  renderGrid();
+}
+
+// === Create/Edit Forms ===
+function showCreateModal() {
+  editId = null;
+  document.getElementById('modal-title').textContent = `➕ 新建${getCfg().label}`;
+  document.getElementById('modal-body').innerHTML = getFormHTML();
+  document.getElementById('modal-create').classList.add('show');
+}
+
+function editItem(id) {
+  const item = getData().find(i=>i.id===id);
+  if (!item) return;
+  editId = id;
+  document.getElementById('modal-title').textContent = `✏️ 编辑 ${item.name}`;
+  document.getElementById('modal-body').innerHTML = getFormHTML(item);
+  document.getElementById('modal-create').classList.add('show');
+}
+
+function getFormHTML(item) {
+  const i = item || {};
+  if (currentTab === 'skill') {
+    return `
+      <div class="form-group"><label class="form-label">名称 <span class="req">*</span></label><input type="text" class="form-input" placeholder="devops-pipeline" value="${i.name||''}" id="f-name"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">显示名称</label><input type="text" class="form-input" placeholder="蓝盾流水线" value="${i.display||''}" id="f-display"></div>
+        <div class="form-group"><label class="form-label">版本</label><input type="text" class="form-input" value="${i.ver||'1.0.0'}" id="f-version"></div>
+      </div>
+      <div class="form-group"><label class="form-label">描述 <span class="req">*</span></label><textarea class="form-textarea" placeholder="技能详细描述..." id="f-desc">${i.desc||''}</textarea></div>
+      <div class="form-group"><label class="form-label">标签</label><div class="form-tag-input" id="f-tags">${(i.tags||[]).map(t=>`<span class="tag-pill">${t}<span class="remove" onclick="this.parentElement.remove()">✕</span></span>`).join('')}<input type="text" placeholder="回车添加..." onkeydown="addTag(event,'f-tags')"></div></div>
+      <div class="form-section"><div class="form-section-title">📝 SKILL.md</div><textarea class="form-textarea" style="min-height:160px;" placeholder="# Skill Name&#10;&#10;Description..." id="f-skillmd"></textarea><div class="form-hint">Markdown 格式的技能核心文档</div></div>
+      <div class="form-section"><div class="form-section-title">📁 附加文件</div><div style="display:flex;gap:8px;"><input type="text" class="form-input" placeholder="scripts/helper.py" id="f-filename" style="flex:1;"><button class="btn btn-outline btn-sm" onclick="addFileField()">➕ 添加</button></div><div id="f-files" style="margin-top:8px;"></div></div>
+    `;
+  }
+  if (currentTab === 'mcp') {
+    return `
+      <div class="form-group"><label class="form-label">服务器名称 <span class="req">*</span></label><input type="text" class="form-input" placeholder="iwiki-mcp" value="${i.name||''}" id="m-name"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">显示名称</label><input type="text" class="form-input" placeholder="iWiki MCP" value="${i.display||''}" id="m-display"></div>
+        <div class="form-group"><label class="form-label">版本</label><input type="text" class="form-input" value="${i.ver||'1.0.0'}" id="m-version"></div>
+      </div>
+      <div class="form-group"><label class="form-label">描述 <span class="req">*</span></label><textarea class="form-textarea" placeholder="MCP 服务器功能描述..." id="m-desc">${i.desc||''}</textarea></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">传输类型</label><select class="form-select" id="m-transport"><option value="stdio" ${i.transport==='stdio'?'selected':''}>stdio</option><option value="sse" ${i.transport==='sse'?'selected':''}>SSE</option><option value="streamable" ${i.transport==='streamable'?'selected':''}>Streamable HTTP</option></select></div>
+        <div class="form-group"><label class="form-label">启动命令</label><input type="text" class="form-input" placeholder="node server.js" value="${i.command||''}" id="m-command"></div>
+      </div>
+      <div class="form-group"><label class="form-label">服务器配置 (JSON)</label><div class="config-editor" contenteditable="true" id="m-config">${i.config||'{\n  "command": "node",\n  "args": ["server.js"],\n  "env": {}\n}'}</div><div class="form-hint">MCP 标准配置格式</div></div>
+      <div class="form-group"><label class="form-label">工具说明</label><textarea class="form-textarea" placeholder="提供的工具列表及功能..." id="m-tools"></textarea></div>
+      <div class="form-group"><label class="form-label">标签</label><div class="form-tag-input" id="m-tags">${(i.tags||[]).map(t=>`<span class="tag-pill">${t}<span class="remove" onclick="this.parentElement.remove()">✕</span></span>`).join('')}<input type="text" placeholder="回车添加..." onkeydown="addTag(event,'m-tags')"></div></div>
+    `;
+  }
+  // agent form
+  return `
+    <div class="form-group"><label class="form-label">Agent 名称 <span class="req">*</span></label><input type="text" class="form-input" placeholder="code-reviewer" value="${i.name||''}" id="a-name"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">显示名称</label><input type="text" class="form-input" placeholder="代码审查专家" value="${i.display||''}" id="a-display"></div>
+      <div class="form-group"><label class="form-label">版本</label><input type="text" class="form-input" value="${i.ver||'1.0.0'}" id="a-version"></div>
+    </div>
+    <div class="form-group"><label class="form-label">描述 <span class="req">*</span></label><textarea class="form-textarea" placeholder="Agent 的功能描述..." id="a-desc">${i.desc||''}</textarea></div>
+    <div class="form-section">
+      <div class="form-section-title">🧠 模型配置</div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">LLM 模型</label><select class="form-select" id="a-model">
+          <option value="claude-sonnet-4-20250514" ${i.model==='claude-sonnet-4-20250514'?'selected':''}>Claude Sonnet 4</option>
+          <option value="claude-opus-4-20250514" ${i.model==='claude-opus-4-20250514'?'selected':''}>Claude Opus 4</option>
+          <option value="gemini-2.5-flash" ${i.model==='gemini-2.5-flash'?'selected':''}>Gemini 2.5 Flash</option>
+          <option value="gemini-2.5-pro" ${i.model==='gemini-2.5-pro'?'selected':''}>Gemini 2.5 Pro</option>
+          <option value="gpt-4o" ${i.model==='gpt-4o'?'selected':''}>GPT-4o</option>
+          <option value="deepseek-v3" ${i.model==='deepseek-v3'?'selected':''}>DeepSeek V3</option>
+        </select></div>
+        <div class="form-group"><label class="form-label">人设风格</label><select class="form-select" id="a-persona">
+          <option value="严谨" ${i.persona==='严谨'?'selected':''}>严谨</option>
+          <option value="专业" ${i.persona==='专业'?'selected':''}>专业</option>
+          <option value="高效" ${i.persona==='高效'?'selected':''}>高效</option>
+          <option value="创意" ${i.persona==='创意'?'selected':''}>创意</option>
+          <option value="友好" ${i.persona==='友好'?'selected':''}>友好</option>
+        </select></div>
+      </div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">⚡ 可用工具</div>
+      <div class="agent-tool-chips" id="a-tools">
+        ${['file-read','file-write','terminal','search','web-fetch','mcp:devops-pipeline','mcp:iwiki-mcp','mcp:github-mcp'].map(t=>{
+          const sel = (i.tools||[]).includes(t);
+          return `<div class="agent-tool-chip ${sel?'selected':''}" onclick="this.classList.toggle('selected')">${t}</div>`;
+        }).join('')}
+      </div>
+      <div class="form-hint">点击选择/取消工具，mcp: 前缀表示 MCP 服务器工具</div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">💬 System Prompt</div>
+      <textarea class="form-textarea" style="min-height:120px;" placeholder="你是一个..." id="a-prompt">${i.systemPrompt||''}</textarea>
+      <div class="form-hint">定义 Agent 的角色、行为和能力边界</div>
+    </div>
+    <div class="form-group"><label class="form-label">标签</label><div class="form-tag-input" id="a-tags">${(i.tags||[]).map(t=>`<span class="tag-pill">${t}<span class="remove" onclick="this.parentElement.remove()">✕</span></span>`).join('')}<input type="text" placeholder="回车添加..." onkeydown="addTag(event,'a-tags')"></div></div>
+  `;
+}
+
+function saveItem() {
+  showToast(editId ? '更新成功' : '创建成功', 'success');
+  closeModal('modal-create');
+  renderGrid();
+}
+
+// === Detail Sheet ===
+function openDetail(item) {
+  const cfg = getCfg();
+  document.getElementById('sheet-title').innerHTML = `${cfg.icon} ${item.display || item.name}`;
+  const body = document.getElementById('sheet-body');
+  
+  let extraSections = '';
+  if (currentTab === 'agent') {
+    extraSections = `
+      <div class="sheet-section">
+        <div class="sheet-section-title">🧠 模型配置</div>
+        <div class="sheet-config">模型: ${item.model || 'default'}\n人设: ${item.persona || '默认'}</div>
+      </div>
+      <div class="sheet-section">
+        <div class="sheet-section-title">⚡ 可用工具 (${(item.tools||[]).length})</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">${(item.tools||[]).map(t=>`<span style="padding:3px 10px;background:var(--bg);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--orange);">${t}</span>`).join('')}</div>
+      </div>
+      <div class="sheet-section">
+        <div class="sheet-section-title">💬 System Prompt</div>
+        <div class="sheet-config">${(item.systemPrompt||'').substring(0,300)}...</div>
+      </div>
+    `;
+  } else if (currentTab === 'mcp') {
+    extraSections = `
+      <div class="sheet-section">
+        <div class="sheet-section-title">🔌 MCP 配置</div>
+        <div class="sheet-config">传输: ${item.transport}\n命令: ${item.command}\n\n${item.config||''}</div>
+      </div>
+    `;
+  } else if (currentTab === 'skill' && item.files) {
+    extraSections = `
+      <div class="sheet-section">
+        <div class="sheet-section-title">📁 文件列表</div>
+        <div class="sheet-files">${item.files.map(f=>`<div class="sheet-file"><div class="name">📄 ${f}</div><div class="size">${(Math.random()*10+1).toFixed(1)} KB</div></div>`).join('')}</div>
+      </div>
+    `;
+  }
+  
+  body.innerHTML = `
+    <div class="sheet-meta">
+      <div class="sheet-meta-item"><span class="label">👤 作者:</span> ${item.author}</div>
+      <div class="sheet-meta-item"><span class="label">📦 版本:</span> <span style="color:var(--blue);font-family:var(--mono)">v${item.ver}</span></div>
+      <div class="sheet-meta-item"><span class="label">📥 安装:</span> ${(item.installs||0).toLocaleString()}</div>
+      ${item.installed ? '<div class="sheet-meta-item" style="color:var(--success)">✅ 已安装</div>' : ''}
+    </div>
+    <div class="sheet-section">
+      <div class="sheet-section-title">📝 说明</div>
+      <div class="sheet-desc">${item.desc || '无描述'}</div>
+    </div>
+    ${(item.tags||[]).length ? `<div class="sheet-section"><div class="sheet-section-title">🏷️ 标签</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${item.tags.map(t=>`<span style="padding:2px 10px;background:rgba(86,156,214,.15);color:var(--blue);border-radius:10px;font-size:11px;">${t}</span>`).join('')}</div></div>` : ''}
+    ${extraSections}
+    <div class="sheet-section">
+      <div class="sheet-section-title">⚡ 操作</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${item.installed ? '<button class="btn btn-outline btn-sm" onclick="showToast(\'已卸载\',\'info\')">📦 卸载</button>' : `<button class="btn btn-primary btn-sm" onclick="showToast('安装成功','success')">📥 安装</button>`}
+        <button class="btn btn-outline btn-sm" onclick="editItem(${item.id});closeSheet()">✏️ 编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="askDelete(${item.id});closeSheet()">🗑️ 删除</button>
+        ${currentTab==='agent' ? '<button class="btn btn-success btn-sm" onclick="showToast(\'对话已启动\',\'success\')">💬 开始对话</button>' : ''}
+      </div>
+    </div>`;
+  
+  document.getElementById('sheet-overlay').classList.add('show');
+  document.getElementById('detail-sheet').classList.add('show');
+}
+
+function closeSheet() {
+  document.getElementById('sheet-overlay').classList.remove('show');
+  document.getElementById('detail-sheet').classList.remove('show');
+}
+function editFromSheet(){ if(editId) editItem(editId); closeSheet(); }
+function askDeleteFromSheet(){ if(editId) askDelete(editId); closeSheet(); }
+
+// === Delete ===
+function askDelete(id) {
+  const item = getData().find(i=>i.id===id);
+  if (!item) return;
+  pendingDeleteId = id;
+  editId = id;
+  document.getElementById('confirm-msg').textContent = `确定要删除「${item.display || item.name}」吗？此操作不可撤销，相关文件将被永久删除。`;
+  document.getElementById('confirm-delete').classList.add('show');
+}
+function closeConfirm(){ document.getElementById('confirm-delete').classList.remove('show'); }
+function confirmDelete(){ closeConfirm(); showToast('删除成功','success'); renderGrid(); }
+
+// === Helpers ===
+function closeModal(id){ document.getElementById(id).classList.remove('show'); }
+function showImportModal(){ document.getElementById('modal-import').classList.add('show'); }
+
+function addTag(e, containerId) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const input = e.target;
+    if (input.value.trim()) {
+      const pill = document.createElement('span');
+      pill.className = 'tag-pill';
+      pill.innerHTML = `${input.value.trim()} <span class="remove" onclick="this.parentElement.remove()">✕</span>`;
+      input.parentNode.insertBefore(pill, input);
+      input.value = '';
+    }
+  }
+}
+
+function addFileField() {
+  const name = document.getElementById('f-filename').value.trim();
+  if (!name) return;
+  const container = document.getElementById('f-files');
+  const item = document.createElement('div');
+  item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--bg);border-radius:4px;margin-bottom:4px;font-size:12px;';
+  item.innerHTML = `<span>📄 ${name}</span><button class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">✕</button>`;
+  container.appendChild(item);
+  document.getElementById('f-filename').value = '';
+}
+
+function showToast(msg, type='info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast-item toast-${type}`;
+  const icons = { success:'✅', error:'❌', info:'ℹ️' };
+  toast.innerHTML = `${icons[type]||'ℹ️'} ${msg}`;
+  container.appendChild(toast);
+  setTimeout(() => { toast.style.opacity='0'; setTimeout(()=>toast.remove(),300); }, 3000);
+}
+
+// === Init ===
+renderGrid();
+</script>
+</body>
+</html>

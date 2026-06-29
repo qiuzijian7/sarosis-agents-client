@@ -214,6 +214,8 @@ import { AgentStudioDashboardEditorInput } from './agentStudioDashboardEditorInp
 import { AgentStudioDashboardViewPane } from './views/agentStudioDashboardView.js';
 import { WorkflowEditorPane } from './workflowEditorPane.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
+import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
+import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ISelfEvolutionService } from '../common/selfEvolution.js';
 import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
@@ -836,6 +838,21 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register ResourceManagerEditorPane — unified management page for locally
+// installed Skills / Tools / MCP / Knowledge / Workflows. Combines a sidebar
+// list with a Skill/MCP detail editor (header + tabbed content). Triggered by
+// the "agentStudio.openResourceManager" command or Integration sidebar.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		ResourceManagerEditorPane,
+		ResourceManagerEditorPane.ID,
+		localize('resourceManagerEditor', "Resource Manager"),
+	),
+	[
+		new SyncDescriptor(ResourceManagerEditorInput)
+	]
+);
+
 // Register NativeChatEditorPane — renders the Agent Chat UI natively in
 // the DOM (no WebView/iframe overlay). Mounted inside AgentEditorPart.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
@@ -848,6 +865,32 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 		new SyncDescriptor(NativeChatEditorInput)
 	]
 );
+
+// Register a command to add content to the active chat panel (used by integrated browser's "Add to Chat" buttons)
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.addToChat',
+			title: localize2('agentStudio.addToChat', 'Add to Chat'),
+			f1: false,
+		});
+	}
+
+	async run(accessor: ServicesAccessor, entry: { name?: string; value?: unknown; fullName?: string; modelDescription?: string }): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		// Find the active NativeChatEditorPane
+		for (const editor of editorService.visibleEditorPanes) {
+			if (editor instanceof NativeChatEditorPane) {
+				const name = entry?.fullName || entry?.name || 'Attachment';
+				const content = typeof entry?.value === 'string' ? entry.value : String(entry?.value ?? '');
+				editor.addContentToChat(name, content);
+				console.log(`[agentStudio.addToChat] Added "${name}" (${content.length} chars) to chat`);
+				return;
+			}
+		}
+		console.warn(`[agentStudio.addToChat] No NativeChatEditorPane found in visibleEditorPanes. Visible: ${editorService.visibleEditorPanes.map(e => e.constructor.name).join(', ')}`);
+	}
+});
 
 // Register a command to open the Agent Studio Settings editor directly
 registerAction2(class extends Action2 {
@@ -863,6 +906,30 @@ registerAction2(class extends Action2 {
 		const editorService = accessor.get(IEditorService);
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const input = SettingsEditorInput.getInstance();
+		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
+		if (groups.length <= 1) {
+			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
+		} else {
+			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+});
+
+// Register a command to open the Resource Manager editor (Skills/Tools/MCP/
+// Knowledge/Workflows unified management page).
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.openResourceManager',
+			title: localize2('agentStudio.openResourceManager', 'Open Resource Manager'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const input = ResourceManagerEditorInput.getInstance();
 		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
 		if (groups.length <= 1) {
 			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
