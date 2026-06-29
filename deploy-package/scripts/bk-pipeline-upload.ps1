@@ -2,11 +2,19 @@
 # ============================================================
 # Upload exe to update server after packaging.
 #
+# Uses curl.exe instead of Invoke-RestMethod for large file uploads.
+# PowerShell 5.1 (Windows Server 2016) has issues with Invoke-RestMethod
+# for large files (connection drops after ~95s). curl.exe streams the
+# file natively without buffering.
+#
 # Usage in BK pipeline:
 #   powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-pipeline-upload.ps1
 # ============================================================
 
 $ErrorActionPreference = "Stop"
+
+# Disable Expect: 100-continue for any .NET HTTP calls
+[System.Net.ServicePointManager]::Expect100Continue = $false
 
 # ---- Config ----
 $UpdateServer = $env:SAROS_UPDATE_SERVER
@@ -32,6 +40,15 @@ if (-not $commit -or $commit.Length -ne 40) {
 
 Write-Host "Version: $productVersion"
 Write-Host "Commit: $($commit.Substring(0, 10))..."
+Write-Host ""
+
+# ---- Check curl.exe availability ----
+$curlExe = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+if (-not $curlExe) {
+    Write-Host "[ERROR] curl.exe not found. Please install curl or add it to PATH." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Using: $curlExe"
 Write-Host ""
 
 # ---- Packages to upload ----
@@ -64,28 +81,51 @@ foreach ($pkg in $packages) {
     # Build upload URL
     $uploadUrl = "${UpdateServer}/admin/upload?platform=${platform}&commit=${commit}&productVersion=${productVersion}"
 
-    # Build headers (Content-Type via -ContentType param, not in headers)
-    $headers = @{}
-    if ($UploadToken) { $headers["X-Upload-Token"] = $UploadToken }
+    # Build curl arguments
+    # --upload-file streams the file without buffering (unlike --data-binary)
+    # -H "Expect:" suppresses Expect: 100-continue header
+    # -sS shows errors but not progress bar (we add our own logging)
+    # --connect-timeout 30 --max-time 600 sets reasonable timeouts
+    $curlArgs = @(
+        "-sS",
+        "-X", "POST",
+        "-H", "Content-Type: application/octet-stream",
+        "-H", "Expect:",
+        "--connect-timeout", "30",
+        "--max-time", "600",
+        "--upload-file", $exePath,
+        "-o", "NUL",
+        "-w", "`n%{http_code}"
+    )
+
+    if ($UploadToken) {
+        $curlArgs += @("-H", "X-Upload-Token: $UploadToken")
+    }
+    $curlArgs += $uploadUrl
 
     $uploaded = $false
     for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        try {
-            Write-Host "  Uploading... (attempt $attempt/$maxRetries)"
-            $response = Invoke-RestMethod -Uri $uploadUrl -Method POST -ContentType "application/octet-stream" -Headers $headers -InFile $exePath -TimeoutSec 600
-            Write-Host "  [OK] Upload successful" -ForegroundColor Green
-            Write-Host "  SHA256: $($response.sha256hash)"
+        Write-Host "  Uploading... (attempt $attempt/$maxRetries)"
+
+        $output = & $curlExe @curlArgs 2>&1
+        $exitCode = $LASTEXITCODE
+
+        # Extract HTTP status code from last line of output
+        $lines = ($output -join "`n").Trim().Split("`n")
+        $httpCode = $lines[-1].Trim()
+
+        if ($exitCode -eq 0 -and $httpCode -eq "200") {
+            Write-Host "  [OK] Upload successful (HTTP 200)" -ForegroundColor Green
             $successCount++
             $uploaded = $true
             break
-        } catch {
-            $statusCode = $_.Exception.Response.StatusCode.value__
-            $errMsg = $_.Exception.Message
+        } else {
+            $errMsg = ($output | Select-Object -First 5) -join " "
             if ($attempt -lt $maxRetries) {
-                Write-Host "  [WARN] Upload failed (HTTP $statusCode): $errMsg -- retrying in 5s..." -ForegroundColor Yellow
+                Write-Host "  [WARN] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg -- retrying in 5s..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 5
             } else {
-                Write-Host "  [ERROR] Upload failed (HTTP $statusCode): $errMsg" -ForegroundColor Red
+                Write-Host "  [ERROR] Upload failed (curl exit=$exitCode, HTTP $httpCode): $errMsg" -ForegroundColor Red
             }
         }
     }
